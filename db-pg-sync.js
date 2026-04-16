@@ -110,6 +110,7 @@ function pgQuerySync(sql, params, method) {
     if (result.error) throw new Error(result.error);
     return result;
   } catch (e) {
+    console.error('[PG] Query error:', e.code || e.message?.slice(0, 100));
     if (e.message && e.message.includes('{')) {
       try { const r = JSON.parse(e.message.match(/\{.*\}/)[0]); if (r.error) throw new Error(r.error); } catch{}
     }
