@@ -18,7 +18,8 @@ const fs = require('fs');
 
 // ── Worker script (runs in a separate process) ────────────────
 const WORKER_SRC = `
-const { Pool } = require('pg');
+require('module').Module._initPaths();
+const { Pool } = require(require('path').join(process.env.APP_DIR || '/app', 'node_modules', 'pg'));
 const pool = new Pool({
   connectionString: process.env.DATABASE_URL,
   ssl: { rejectUnauthorized: false },

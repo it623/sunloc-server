@@ -2087,5 +2087,5 @@ app.get('*', (req, res) => {
 // ── Start server ──────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
-  console.log(`[Sunloc] DB: ${resolveDbPath()}`);
+  console.log(`[Sunloc] DB: ${DB_PATH}`);
 });
