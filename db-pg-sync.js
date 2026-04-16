@@ -106,20 +106,134 @@ startWorker();
 // This avoids SharedArrayBuffer complexity while keeping the sync API.
 
 const SYNC_HELPER = `
-const net = require('net');
-const args = JSON.parse(process.argv[2]);
 const { Pool } = require('pg');
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 1 });
-let i = 0;
-const pgSql = args.sql.replace(/\\?/g, () => '$' + (++i));
-pool.query(pgSql, args.params || [])
-  .then(r => {
-    if (args.method === 'get') process.stdout.write(JSON.stringify({ row: r.rows[0] || null }));
-    else if (args.method === 'all') process.stdout.write(JSON.stringify({ rows: r.rows }));
-    else process.stdout.write(JSON.stringify({ changes: r.rowCount }));
-    pool.end();
-  })
-  .catch(e => { process.stdout.write(JSON.stringify({ error: e.message })); pool.end(); });
+let raw = '';
+process.stdin.on('data', d => { raw += d; });
+process.stdin.on('end', () => {
+  const args = JSON.parse(raw);
+  let i = 0;
+  const pgSql = args.sql.replace(/\\?/g, () => '`;
+
+const syncHelperPath = path.join(os.tmpdir(), 'sunloc-pg-sync.js');
+fs.writeFileSync(syncHelperPath, SYNC_HELPER);
+
+function pgQuerySync(sql, params, method) {
+  const args = JSON.stringify({ sql, params: params || [], method });
+  try {
+    const out = execFileSync(process.execPath, [syncHelperPath], {
+      env: { ...process.env, NODE_PATH: require('path').join(process.cwd(), 'node_modules') },
+      input: args,
+      timeout: 30000,
+      encoding: 'utf8',
+    });
+    const result = JSON.parse(out);
+    if (result.error) throw new Error(result.error);
+    return result;
+  } catch (e) {
+    if (e.message && e.message.includes('{')) {
+      try { const r = JSON.parse(e.message.match(/\{.*\}/)[0]); if (r.error) throw new Error(r.error); } catch{}
+    }
+    throw e;
+  }
+}
+
+// ── Prepared statement shim (same API as better-sqlite3) ──────
+class PgStatement {
+  constructor(sql) {
+    this.sql = sql;
+  }
+  get(...params) {
+    const result = pgQuerySync(this.sql, params.flat(), 'get');
+    return result.row || undefined;
+  }
+  all(...params) {
+    const result = pgQuerySync(this.sql, params.flat(), 'all');
+    return result.rows || [];
+  }
+  run(...params) {
+    const result = pgQuerySync(this.sql, params.flat(), 'run');
+    return { changes: result.changes || 0, lastInsertRowid: null };
+  }
+  iterate(...params) {
+    return this.all(...params)[Symbol.iterator]();
+  }
+}
+
+// ── Database shim (same API as better-sqlite3) ────────────────
+class PgDatabase {
+  constructor() {
+    this.isPostgres = true;
+    // Test connection on startup
+    try {
+      pgQuerySync('SELECT 1 as ok', [], 'get');
+      console.log('[DB] PostgreSQL connected successfully');
+    } catch(e) {
+      console.error('[DB] PostgreSQL connection failed:', e.message);
+      throw e;
+    }
+  }
+
+  prepare(sql) {
+    // Normalise SQLite-specific SQL to Postgres
+    const isIgnore = /\bINSERT OR IGNORE INTO\b/i.test(sql);
+    const isReplace = /\bINSERT OR REPLACE INTO\b/i.test(sql);
+    sql = sql
+      .replace(/\bINSERT OR IGNORE INTO\b/gi, 'INSERT INTO')
+      .replace(/\bINSERT OR REPLACE INTO\b/gi, 'INSERT INTO')
+      .replace(/datetime\('now'\)/gi, 'NOW()')
+      .replace(/datetime\(\\'now\\'\)/gi, 'NOW()')
+      .replace(/AUTOINCREMENT/gi, '')
+    ;
+    // Add ON CONFLICT DO NOTHING for OR IGNORE / OR REPLACE without existing conflict clause
+    if ((isIgnore || isReplace) && !/ON CONFLICT/i.test(sql)) {
+      sql = sql.trimEnd().replace(/;$/, '') + ' ON CONFLICT DO NOTHING';
+    }
+    return new PgStatement(sql);
+  }
+
+  exec(sql) {
+    // Split on semicolons and run each statement
+    const stmts = sql.split(';').map(s => s.trim()).filter(Boolean);
+    for (const stmt of stmts) {
+      // Skip SQLite-only CREATE TABLE patterns that use AUTOINCREMENT etc
+      const pgStmt = stmt
+        .replace(/INTEGER PRIMARY KEY AUTOINCREMENT/gi, 'SERIAL PRIMARY KEY')
+        .replace(/INTEGER PRIMARY KEY/gi, 'SERIAL PRIMARY KEY')
+        .replace(/datetime\('now'\)/gi, 'NOW()')
+        .replace(/AUTOINCREMENT/gi, '');
+      try {
+        pgQuerySync(pgStmt, [], 'run');
+      } catch(e) {
+        // Ignore "already exists" — idempotent DDL
+        if (!e.message.includes('already exists') && 
+            !e.message.includes('duplicate column') &&
+            !e.message.includes('does not exist')) {
+          console.error('[PG] DDL error:', e.message.slice(0, 120));
+        }
+      }
+    }
+  }
+
+  pragma() {} // No-op — Postgres has no pragmas
+  transaction(fn) {
+    // Wrap in a function that calls fn() — transactions not strictly atomic
+    // but operations run sequentially
+    return (...args) => fn(...args);
+  }
+}
+
+module.exports = { PgDatabase };
+ + (++i));
+  pool.query(pgSql, args.params || [])
+    .then(r => {
+      if (args.method === 'get') process.stdout.write(JSON.stringify({ row: r.rows[0] || null }));
+      else if (args.method === 'all') process.stdout.write(JSON.stringify({ rows: r.rows }));
+      else process.stdout.write(JSON.stringify({ changes: r.rowCount }));
+      pool.end();
+    })
+    .catch(e => { process.stdout.write(JSON.stringify({ error: e.message })); pool.end(); });
+});
 `;
 
 const syncHelperPath = path.join(os.tmpdir(), 'sunloc-pg-sync.js');
@@ -128,9 +242,10 @@ fs.writeFileSync(syncHelperPath, SYNC_HELPER);
 function pgQuerySync(sql, params, method) {
   const args = JSON.stringify({ sql, params: params || [], method });
   try {
-    const out = execFileSync(process.execPath, [syncHelperPath, args], {
+    const out = execFileSync(process.execPath, [syncHelperPath], {
       env: { ...process.env, NODE_PATH: require('path').join(process.cwd(), 'node_modules') },
-      timeout: 10000,
+      input: args,
+      timeout: 30000,
       encoding: 'utf8',
     });
     const result = JSON.parse(out);
