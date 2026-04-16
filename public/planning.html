@@ -542,6 +542,7 @@ let state = {
 function sanitizeServerUrl(url) {
   if (!url) return '';
   url = url.trim();
+  if (url && !url.startsWith('http://') && !url.startsWith('https://')) url = 'https://' + url;
   try {
     const u = new URL(url);
     return u.origin; // returns just https://hostname:port with no path
@@ -1181,6 +1182,7 @@ function render() {
   if (smEl) smEl.textContent = monthLabel(state.activeMonth) || '';
   const fn = pages[state.currentPage];
   if (fn) fn();
+  updateUserBadge();
 }
 
 // =============================
