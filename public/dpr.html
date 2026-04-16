@@ -203,7 +203,7 @@ td.r,th.r{text-align:right}
   .close-btn, .closed-badge { font-size: 9px !important; }
 
   /* ── User badge ── */
-  #dpr-user-badge { top: 6px; right: 8px; font-size: 10px; padding: 3px 7px; }
+  #dpr-user-badge { font-size: 10px; padding: 3px 7px; }
 }
 /* TABLE */
 .data-table{width:100%;border-collapse:collapse;font-size:12px}
@@ -3142,10 +3142,12 @@ function addDprUserBadge() {
   if (document.getElementById('dpr-user-badge')) return;
   const wrap = document.createElement('div');
   wrap.id = 'dpr-user-badge';
-  wrap.style.cssText = 'position:fixed;top:8px;right:10px;z-index:500;display:flex;align-items:center;gap:6px;background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.25);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer';
+  wrap.style.cssText = 'display:flex;align-items:center;gap:6px;background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.25);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;flex-shrink:0';
   wrap.innerHTML = `👤 ${dprUser.username} <span style="color:var(--t3)">[${dprUser.role.toUpperCase()}]</span> <span style="color:var(--t3)">▾</span>`;
   wrap.onclick = showDprUserMenu;
-  document.body.appendChild(wrap);
+  const nright = document.querySelector('.nright');
+  if (nright) nright.insertBefore(wrap, nright.firstChild);
+  else document.body.appendChild(wrap);
 
   // Show audit tab for admin
   if (dprUser.role === 'admin') {
