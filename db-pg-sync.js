@@ -72,7 +72,7 @@ const readyPromise = new Promise(r => { readyResolve = r; });
 
 function startWorker() {
   worker = spawn(process.execPath, [workerPath], {
-    env: process.env,
+    env: { ...process.env, NODE_PATH: path.join(process.cwd(), 'node_modules') },
     stdio: ['pipe', 'pipe', 'inherit'],
   });
 
@@ -128,7 +128,7 @@ function pgQuerySync(sql, params, method) {
   const args = JSON.stringify({ sql, params: params || [], method });
   try {
     const out = execFileSync(process.execPath, [syncHelperPath, args], {
-      env: process.env,
+      env: { ...process.env, NODE_PATH: require('path').join(process.cwd(), 'node_modules') },
       timeout: 10000,
       encoding: 'utf8',
     });
