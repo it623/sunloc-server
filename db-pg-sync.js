@@ -42,7 +42,7 @@ fs.writeFileSync(workerPath, WORKER_SRC);
 
 // ── Sync helper — reads from stdin ────────────────────────────
 const SYNC_HELPER = `
-const { Pool } = require('pg');
+const { Pool } = require(require('path').join(process.env.APP_DIR || '/app', 'node_modules', 'pg'));
 const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 1 });
 let raw = '';
 process.stdin.on('data', d => { raw += d; });
@@ -102,7 +102,8 @@ function pgQuerySync(sql, params, method) {
     const out = execFileSync(process.execPath, [syncHelperPath], {
       env: { ...process.env, NODE_PATH: path.join(process.cwd(), 'node_modules') },
       input: args,
-      timeout: 30000,
+      timeout: 60000,
+      maxBuffer: 50 * 1024 * 1024,
       encoding: 'utf8',
     });
     const result = JSON.parse(out);
