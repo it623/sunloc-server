@@ -395,7 +395,7 @@ for (const u of seedUsers) {
 }
 
 // Clean expired sessions on startup
-db.prepare('DELETE FROM app_sessions WHERE expires_at < to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS')').run();
+db.prepare(`DELETE FROM app_sessions WHERE expires_at < to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS')`).run();
 
 
 // ─── Helper: get latest planning state ────────────────────────
