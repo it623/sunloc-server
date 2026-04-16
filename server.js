@@ -386,15 +386,16 @@ const seedUsers = [
 ];
 
 const insertUser = db.prepare(`
-  INSERT OR IGNORE INTO app_users (username, pin_hash, role, app)
+  INSERT INTO app_users (username, pin_hash, role, app)
   VALUES (?, ?, ?, ?)
+  ON CONFLICT (username) DO NOTHING
 `);
 for (const u of seedUsers) {
   insertUser.run(u.username, hashPin(u.pin), u.role, u.app);
 }
 
 // Clean expired sessions on startup
-db.prepare(`DELETE FROM app_sessions WHERE expires_at < datetime('now')`).run();
+db.prepare('DELETE FROM app_sessions WHERE expires_at < NOW()').run();
 
 
 // ─── Helper: get latest planning state ────────────────────────
@@ -2086,5 +2087,5 @@ app.get('*', (req, res) => {
 // ── Start server ──────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
-  console.log(`[Sunloc] DB: ${DB_PATH}`);
+  console.log(`[Sunloc] DB: ${resolveDbPath()}`);
 });

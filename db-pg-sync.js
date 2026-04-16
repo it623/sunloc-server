@@ -72,7 +72,7 @@ const readyPromise = new Promise(r => { readyResolve = r; });
 
 function startWorker() {
   worker = spawn(process.execPath, [workerPath], {
-    env: { ...process.env, NODE_PATH: path.join(process.cwd(), 'node_modules') },
+    env: process.env,
     stdio: ['pipe', 'pipe', 'inherit'],
   });
 
@@ -181,14 +181,19 @@ class PgDatabase {
 
   prepare(sql) {
     // Normalise SQLite-specific SQL to Postgres
+    const isIgnore = /\bINSERT OR IGNORE INTO\b/i.test(sql);
+    const isReplace = /\bINSERT OR REPLACE INTO\b/i.test(sql);
     sql = sql
       .replace(/\bINSERT OR IGNORE INTO\b/gi, 'INSERT INTO')
       .replace(/\bINSERT OR REPLACE INTO\b/gi, 'INSERT INTO')
       .replace(/datetime\('now'\)/gi, 'NOW()')
       .replace(/datetime\(\\'now\\'\)/gi, 'NOW()')
-      .replace(/AUTOINCREMENT/gi, '')  // Postgres SERIAL handles this
-      // ON CONFLICT(col) DO UPDATE ... (already standard SQL, works in PG)
+      .replace(/AUTOINCREMENT/gi, '')
     ;
+    // Add ON CONFLICT DO NOTHING for OR IGNORE / OR REPLACE without existing conflict clause
+    if ((isIgnore || isReplace) && !/ON CONFLICT/i.test(sql)) {
+      sql = sql.trimEnd().replace(/;$/, '') + ' ON CONFLICT DO NOTHING';
+    }
     return new PgStatement(sql);
   }
 
