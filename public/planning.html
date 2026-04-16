@@ -286,7 +286,7 @@ input[type="file"] { display:none; }
   .summary-table td, .summary-table th { padding: 6px 8px; font-size: 11px; }
 
   /* ── User badge ── */
-  #user-badge-wrap { top: 6px; right: 8px; }
+  #user-badge-wrap { display:flex; align-items:center; }
   #user-badge { font-size: 11px; padding: 3px 8px; }
 
   /* ── Auth overlay card ── */
@@ -5665,9 +5665,9 @@ function updateUserBadge() {
     // Insert at start of body as fixed element
     const fixed = document.createElement('div');
     fixed.id = 'user-badge-wrap';
-    fixed.style.cssText = 'position:fixed;top:10px;right:16px;z-index:500';
+    fixed.style.cssText = 'display:flex;align-items:center';
     fixed.appendChild(badge);
-    document.body.appendChild(fixed);
+    topbar.appendChild(fixed);
   }
 }
 
