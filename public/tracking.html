@@ -4663,6 +4663,25 @@ function handleImportFile(input){
       if(data.dispatchRecs) state.dispatchRecs = data.dispatchRecs;
       // Keep existing batches from server (don't overwrite Planning data)
       saveLocal();
+      // Push imported data to server
+      if(serverUrl){
+        fetch(serverUrl+'/api/tracking/state',{
+          method:'POST',
+          headers:{'Content-Type':'application/json'},
+          body:JSON.stringify({
+            labels:state.labels,
+            scans:state.scans,
+            stageClosure:state.stageClosure,
+            wastage:state.wastage,
+            dispatchRecs:state.dispatchRecs,
+            alerts:state.alerts
+          }),
+          signal:AbortSignal.timeout(30000)
+        }).then(r=>r.json()).then(d=>{
+          if(d.ok) toast('✅ Data saved to server successfully','var(--green)',4000);
+          else toast('⚠️ Server save failed: '+d.error,'var(--amber)',5000);
+        }).catch(()=>toast('⚠️ Could not reach server to save','var(--amber)',4000));
+      }
       checkAlerts();
       renderPage(currentPage);
       toast(`✅ Imported: ${labelCount} labels, ${scanCount} scans`, 'var(--green)', 5000);
