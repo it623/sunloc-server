@@ -737,26 +737,19 @@ function canScanDept(batchNo, dept){
 }
 
 function checkAlerts(){
-  const ALERT_START = new Date('2026-04-21T00:00:00');
   const newAlerts = [];
   state.scans.forEach(scan=>{
     if(scan.type!=='in') return;
-    // Only count scans from 21/04/2026 onwards
-    if(new Date(scan.ts) < ALERT_START) return;
     // Check if there's a corresponding out
     const hasOut = state.scans.some(s=>s.labelId===scan.labelId&&s.dept===scan.dept&&s.type==='out'&&new Date(s.ts)>new Date(scan.ts));
     if(!hasOut && hoursAgo(scan.ts)>=ALERT_HOURS){
       const existing = state.alerts.find(a=>a.labelId===scan.labelId&&a.dept===scan.dept);
       if(!existing){
-        // Look up labelNumber (box number) from labels
-        const lbl = state.labels.find(l=>l.id===scan.labelId);
-        const boxNo = lbl ? Math.abs(lbl.labelNumber||0) : null;
-        newAlerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, boxNo, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1) });
+        newAlerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1) });
       }
     }
   });
-  state.alerts = [...state.alerts.filter(a=>!newAlerts.find(n=>n.labelId===a.labelId&&n.dept===a.dept)), ...newAlerts]
-    .filter(a=>!a.scanInTs || new Date(a.scanInTs) >= ALERT_START); // Remove pre-21-Apr alerts
+  state.alerts = [...state.alerts.filter(a=>!newAlerts.find(n=>n.labelId===a.labelId&&n.dept===a.dept)), ...newAlerts];
   return state.alerts;
 }
 
@@ -2015,7 +2008,7 @@ function renderLabels(){
         </table></div>
       </div>
       <!-- Right panel: print queue for selected batch -->
-      <div style="flex:1;min-width:0">
+      <div style="flex:1;min-width:0;max-height:420px;overflow-y:auto;position:sticky;top:0">
         ${selBatch ? `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <div>
@@ -2024,11 +2017,11 @@ function renderLabels(){
           </div>
           ${unprintedSel.length>0?`<button class="btn btn-sm" style="background:var(--orange);color:#fff" onclick="unprintedOrangeBatch('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
         </div>
-        <div class="tbl-wrap" style="max-height:320px;overflow-y:auto"><table>
+        <div class="tbl-wrap"><table>
           <thead><tr><th>#</th><th>Qty(L)</th><th>Status</th><th>Generated</th><th>Action</th></tr></thead>
           <tbody>
           ${selLabels.map(l=>`<tr style="${!l.printed?'background:rgba(234,88,12,0.06)':''}">
-            <td class="td-mono">${l.labelNumber}</td>
+            <td class="td-mono">${Math.abs(l.labelNumber||0)}</td>
             <td class="td-mono">${fmt(l.qty)}</td>
             <td>${l.printed?`<span class="badge badge-green">✅ Printed</span>`:'<span class="badge" style="background:rgba(234,88,12,0.15);color:var(--orange);border:1px solid rgba(234,88,12,0.4)">🟠 Pending</span>'}</td>
             <td class="text-sm">${fmtDateTime(l.generated)}</td>
@@ -2336,7 +2329,7 @@ function renderDeptScan(dept){
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">${cfg.label}</div><div class="section-sub">Scan boxes IN and OUT of this department</div></div>
     </div>
-    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.length} box(es) stuck 48h+: ${myAlerts.map(a=>(a.batchNumber||'')+'/'+(a.boxNo!=null?a.boxNo:'?')).join(', ')}</div>`:''}
+    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.length} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>a.batchNumber+' Box#'+(a.labelId||a.label_id||'').slice(-4)).join(', ')}</div>`:''}
     <!-- SCAN PANEL -->
     <div class="grid-2 scan-panels-grid">
       <div>
