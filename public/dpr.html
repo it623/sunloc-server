@@ -1071,9 +1071,10 @@ async function fetchActiveOrders(){
     if(!r.ok) return;
     const j=await r.json();
     if(j.ok && j.orders){
-      // Build map by machineId — only include orders that have a specific machineId assigned
+      // Build map by machineId — admin sees all orders, others only see In Production
       activeOrders={};
-      j.orders.filter(o => o.machineId).forEach(o=>{
+      const isDprAdmin = dprUser?.role === 'admin';
+      j.orders.filter(o => o.machineId && (isDprAdmin || o.status === 'running')).forEach(o=>{
         if(!activeOrders[o.machineId]) activeOrders[o.machineId]=[];
         activeOrders[o.machineId].push(o);
       });
