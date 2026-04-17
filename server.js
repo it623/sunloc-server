@@ -409,10 +409,41 @@ db.prepare(`DELETE FROM app_sessions WHERE expires_at < to_char(NOW(), 'YYYY-MM-
 
 
 // ─── Helper: get latest planning state ────────────────────────
+let _planningStateCache = null;
+let _planningStateCacheTime = 0;
+
+async function getPlanningStateAsync() {
+  if (pgPool) {
+    const r = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1');
+    if (!r.rows[0]) return { orders: [], printOrders: [], dispatchPlans: [], dailyPrinting: [], machineMaster: [], printMachineMaster: [], packSizes: {} };
+    try { return JSON.parse(r.rows[0].state_json); } catch { return {}; }
+  }
+  return getPlanningState();
+}
+
 function getPlanningState() {
+  // Use cache if fresh (within 5 seconds)
+  if (_planningStateCache && Date.now() - _planningStateCacheTime < 5000) return _planningStateCache;
   const row = db.prepare('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1').get();
   if (!row) return { orders: [], printOrders: [], dispatchPlans: [], dailyPrinting: [], machineMaster: [], printMachineMaster: [], packSizes: {} };
-  try { return JSON.parse(row.state_json); } catch { return {}; }
+  try {
+    _planningStateCache = JSON.parse(row.state_json);
+    _planningStateCacheTime = Date.now();
+    return _planningStateCache;
+  } catch { return {}; }
+}
+
+// Warm up cache using direct pg pool on startup
+async function warmPlanningCache() {
+  if (!pgPool) return;
+  try {
+    const r = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1');
+    if (r.rows[0]) {
+      _planningStateCache = JSON.parse(r.rows[0].state_json);
+      _planningStateCacheTime = Date.now();
+      console.log('[DB] Planning state cache warmed:', (_planningStateCache.orders||[]).length, 'orders');
+    }
+  } catch(e) { console.error('[DB] Cache warm error:', e.message); }
 }
 
 // ─── Helper: get active orders for a machine ──────────────────
@@ -2118,4 +2149,5 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
   console.log(`[Sunloc] DB: ${DB_PATH}`);
+  warmPlanningCache();
 });
