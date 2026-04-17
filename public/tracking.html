@@ -737,19 +737,23 @@ function canScanDept(batchNo, dept){
 }
 
 function checkAlerts(){
+  const ALERT_START = new Date('2026-04-21T00:00:00');
   const newAlerts = [];
   state.scans.forEach(scan=>{
     if(scan.type!=='in') return;
-    // Check if there's a corresponding out
+    if(new Date(scan.ts) < ALERT_START) return;
     const hasOut = state.scans.some(s=>s.labelId===scan.labelId&&s.dept===scan.dept&&s.type==='out'&&new Date(s.ts)>new Date(scan.ts));
     if(!hasOut && hoursAgo(scan.ts)>=ALERT_HOURS){
       const existing = state.alerts.find(a=>a.labelId===scan.labelId&&a.dept===scan.dept);
       if(!existing){
-        newAlerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1) });
+        const lbl = state.labels.find(l=>l.id===scan.labelId);
+        const boxNo = lbl ? Math.abs(lbl.labelNumber||0) : '?';
+        newAlerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, boxNo, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1) });
       }
     }
   });
-  state.alerts = [...state.alerts.filter(a=>!newAlerts.find(n=>n.labelId===a.labelId&&n.dept===a.dept)), ...newAlerts];
+  state.alerts = [...state.alerts.filter(a=>!newAlerts.find(n=>n.labelId===a.labelId&&n.dept===a.dept)), ...newAlerts]
+    .filter(a=>!a.scanInTs || new Date(a.scanInTs) >= ALERT_START);
   return state.alerts;
 }
 
@@ -2329,7 +2333,7 @@ function renderDeptScan(dept){
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">${cfg.label}</div><div class="section-sub">Scan boxes IN and OUT of this department</div></div>
     </div>
-    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.length} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>a.batchNumber+' Box#'+(a.labelId||a.label_id||'').slice(-4)).join(', ')}</div>`:''}
+    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.length} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>(a.batchNumber||'')+'/'+( a.boxNo!=null?a.boxNo:'?')).join(', ')}</div>`:''}
     <!-- SCAN PANEL -->
     <div class="grid-2 scan-panels-grid">
       <div>
