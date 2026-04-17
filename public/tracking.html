@@ -2258,7 +2258,7 @@ function renderDeptScan(dept){
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">${cfg.label}</div><div class="section-sub">Scan boxes IN and OUT of this department</div></div>
     </div>
-    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.length} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>a.batchNumber+' Box#'+a.labelId.slice(-4)).join(', ')}</div>`:''}
+    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.length} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>a.batchNumber+' Box#'+(a.labelId||a.label_id||'').slice(-4)).join(', ')}</div>`:''}
     <!-- SCAN PANEL -->
     <div class="grid-2 scan-panels-grid">
       <div>
