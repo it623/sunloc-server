@@ -470,6 +470,11 @@ function getActiveOrdersForMachine(machineId) {
 
 // Helper: get total actuals for an order (sums all runs across all machines/shifts)
 function getOrderActuals(orderId, batchNumber) {
+  // Use cached actuals if available (set by warmActualsCache)
+  if (_actualsCache) {
+    const key = orderId || batchNumber;
+    return _actualsCache[key] || 0;
+  }
   let rows;
   if (orderId) {
     rows = db.prepare('SELECT SUM(qty_lakhs) as total FROM production_actuals WHERE order_id = ?').get(orderId);
@@ -480,6 +485,20 @@ function getOrderActuals(orderId, batchNumber) {
     rows = db.prepare('SELECT SUM(qty_lakhs) as total FROM production_actuals WHERE batch_number = ?').get(batchNumber);
   }
   return rows?.total || 0;
+}
+
+let _actualsCache = null;
+async function warmActualsCache() {
+  if (!pgPool) return;
+  try {
+    const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
+    _actualsCache = {};
+    for (const row of r.rows) {
+      if (row.order_id) _actualsCache[row.order_id] = parseFloat(row.total) || 0;
+      if (row.batch_number) _actualsCache[row.batch_number] = parseFloat(row.total) || 0;
+    }
+    console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries');
+  } catch(e) { console.error('[DB] Actuals cache error:', e.message); }
 }
 
 // ═══════════════════════════════════════════════════════════════
@@ -2150,4 +2169,5 @@ app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
   console.log(`[Sunloc] DB: ${DB_PATH}`);
   warmPlanningCache();
+  warmActualsCache();
 });
