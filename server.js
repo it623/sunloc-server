@@ -1708,61 +1708,92 @@ app.get('/api/tracking/state', async (req, res) => {
 });
 
 // POST /api/tracking/state — save full tracking state
-app.post('/api/tracking/state', (req, res) => {
+app.post('/api/tracking/state', async (req, res) => {
   try {
     const { labels, scans, stageClosure, wastage, dispatchRecs, alerts } = req.body;
-    const saveAll = db.transaction(() => {
-      if (labels && labels.length) {
-        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_labels
-          (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,
-          colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,
-          voided,void_reason,voided_at,voided_by,qr_data,
-          wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-        labels.forEach(l => stmt.run(
-          l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,
-          l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,
-          l.poNumber||null,l.machineId||null,l.printingMatter||null,
-          l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,
-          l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,
-          l.woStatus||null,l.shipTo||null,l.billTo||null,
-          l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null
-        ));
-      }
-      if (scans && scans.length) {
-        const stmt = db.prepare(`INSERT OR IGNORE INTO tracking_scans
-          (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?)`);
-        scans.forEach(s => stmt.run(s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,
-          s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null));
-      }
-      if (stageClosure && stageClosure.length) {
-        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_stage_closure
-          (id,batch_number,dept,closed,closed_at,closed_by) VALUES (?,?,?,?,?,?)`);
-        stageClosure.forEach(s => stmt.run(s.id,s.batchNumber||s.batch_number,
-          s.dept,s.closed?1:0,s.closedAt||s.closed_at,s.closedBy||s.closed_by||null));
-      }
-      if (wastage && wastage.length) {
-        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_wastage
-          (id,batch_number,dept,type,qty,ts,by) VALUES (?,?,?,?,?,?,?)`);
-        wastage.forEach(w => stmt.run(w.id,w.batchNumber||w.batch_number,
-          w.dept,w.type,w.qty,w.ts,w.by||null));
-      }
-      if (dispatchRecs && dispatchRecs.length) {
-        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_dispatch_records
-          (id,batch_number,customer,qty,boxes,vehicle_no,invoice_no,remarks,ts,by) VALUES (?,?,?,?,?,?,?,?,?,?)`);
-        dispatchRecs.forEach(d => stmt.run(d.id,d.batchNumber||d.batch_number,
-          d.customer||null,d.qty,d.boxes,d.vehicleNo||d.vehicle_no||null,
-          d.invoiceNo||d.invoice_no||null,d.remarks||null,d.ts,d.by||null));
-      }
-      if (alerts && alerts.length) {
-        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_alerts
-          (id,label_id,batch_number,dept,scan_in_ts,hours_stuck,resolved,msg) VALUES (?,?,?,?,?,?,?,?)`);
-        alerts.forEach(a => stmt.run(a.id,a.labelId||a.label_id,
-          a.batchNumber||a.batch_number,a.dept,a.scanInTs||a.scan_in_ts,
-          a.hoursStuck||a.hours_stuck||null,a.resolved?1:0,a.msg||null));
-      }
-    });
-    saveAll();
+    if (pgPool) {
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+        if (labels && labels.length) {
+          for (const l of labels) {
+            await client.query(`INSERT INTO tracking_labels
+              (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,
+              colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,
+              voided,void_reason,voided_at,voided_by,qr_data,
+              wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total)
+              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
+              ON CONFLICT (id) DO UPDATE SET
+              batch_number=EXCLUDED.batch_number,label_number=EXCLUDED.label_number,
+              printed=EXCLUDED.printed,printed_at=EXCLUDED.printed_at,
+              voided=EXCLUDED.voided,void_reason=EXCLUDED.void_reason,voided_at=EXCLUDED.voided_at,
+              wo_status=EXCLUDED.wo_status,ship_to=EXCLUDED.ship_to,bill_to=EXCLUDED.bill_to`,
+              [l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,
+              l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,
+              l.poNumber||null,l.machineId||null,l.printingMatter||null,
+              l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,
+              l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,
+              l.woStatus||null,l.shipTo||null,l.billTo||null,
+              l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null]);
+          }
+        }
+        if (scans && scans.length) {
+          for (const s of scans) {
+            await client.query(`INSERT INTO tracking_scans
+              (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+              ON CONFLICT (id) DO NOTHING`,
+              [s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,
+              s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null]);
+          }
+        }
+        if (stageClosure && stageClosure.length) {
+          for (const s of stageClosure) {
+            await client.query(`INSERT INTO tracking_stage_closure
+              (id,batch_number,dept,closed,closed_at,closed_by) VALUES ($1,$2,$3,$4,$5,$6)
+              ON CONFLICT (id) DO UPDATE SET closed=EXCLUDED.closed,closed_at=EXCLUDED.closed_at`,
+              [s.id,s.batchNumber||s.batch_number,s.dept,s.closed?1:0,
+              s.closedAt||s.closed_at,s.closedBy||s.closed_by||null]);
+          }
+        }
+        if (wastage && wastage.length) {
+          for (const w of wastage) {
+            await client.query(`INSERT INTO tracking_wastage
+              (id,batch_number,dept,type,qty,ts,by) VALUES ($1,$2,$3,$4,$5,$6,$7)
+              ON CONFLICT (id) DO NOTHING`,
+              [w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null]);
+          }
+        }
+        if (dispatchRecs && dispatchRecs.length) {
+          for (const d of dispatchRecs) {
+            await client.query(`INSERT INTO tracking_dispatch_records
+              (id,batch_number,customer,qty,boxes,vehicle_no,invoice_no,remarks,ts,by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+              ON CONFLICT (id) DO NOTHING`,
+              [d.id,d.batchNumber||d.batch_number,d.customer||null,d.qty,d.boxes,
+              d.vehicleNo||d.vehicle_no||null,d.invoiceNo||d.invoice_no||null,
+              d.remarks||null,d.ts,d.by||null]);
+          }
+        }
+        if (alerts && alerts.length) {
+          for (const a of alerts) {
+            await client.query(`INSERT INTO tracking_alerts
+              (id,label_id,batch_number,dept,scan_in_ts,hours_stuck,resolved,msg) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+              ON CONFLICT (id) DO UPDATE SET resolved=EXCLUDED.resolved`,
+              [a.id,a.labelId||a.label_id,a.batchNumber||a.batch_number,
+              a.dept,a.scanInTs||a.scan_in_ts,a.hoursStuck||a.hours_stuck||null,
+              a.resolved?1:0,a.msg||null]);
+          }
+        }
+        await client.query('COMMIT');
+      } catch(e) { await client.query('ROLLBACK'); throw e; }
+      finally { client.release(); }
+    } else {
+      const saveAll = db.transaction(() => {
+        if (labels?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_labels (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`); labels.forEach(l => stmt.run(l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,l.poNumber||null,l.machineId||null,l.printingMatter||null,l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,l.woStatus||null,l.shipTo||null,l.billTo||null,l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null)); }
+        if (scans?.length) { const stmt = db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?)`); scans.forEach(s => stmt.run(s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null)); }
+        if (wastage?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by) VALUES (?,?,?,?,?,?,?)`); wastage.forEach(w => stmt.run(w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null)); }
+      });
+      saveAll();
+    }
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
