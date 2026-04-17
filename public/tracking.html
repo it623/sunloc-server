@@ -1964,61 +1964,82 @@ function renderLabels(){
 
   </div>`;
 
-  // Orange Labels section — printed batches only, grouped by machine with search
+  // Orange Labels section — two panel layout matching Active Batches
   const orangeLabels = state.labels.filter(l=>l.isOrange&&!l.voided);
   const ptdBatches = activeBatches.filter(b=>b.isPrinted);
   if(orangeLabels.length || ptdBatches.length){
     const unprintedOrange = orangeLabels.filter(l=>!l.printed);
-    // Group PTD batches by machine for the filter UI
-    const machineGroups = {};
-    ptdBatches.forEach(b=>{
-      const mc = b.machineId||'Other';
-      if(!machineGroups[mc]) machineGroups[mc]=[];
-      machineGroups[mc].push(b);
+    // Group orange labels by batch
+    const byBatch = {};
+    orangeLabels.forEach(l=>{
+      if(!byBatch[l.batchNumber]) byBatch[l.batchNumber]=[];
+      byBatch[l.batchNumber].push(l);
     });
-    const batchFilterOpts = `<option value="">All Batches</option>`
-      + Object.entries(machineGroups).map(([mc,bArr])=>
-          `<optgroup label="Machine ${mc}">`
-          + bArr.map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''} | Sz${b.size}</option>`).join('')
-          + `</optgroup>`
-        ).join('');
+    const selBatch = window._olSelBatch || Object.keys(byBatch)[0] || '';
+    const selLabels = selBatch ? (byBatch[selBatch]||[]).sort((a,b)=>a.labelNumber-b.labelNumber) : [];
+    const unprintedSel = selLabels.filter(l=>!l.printed);
+
     el.innerHTML += `
   <div class="card" style="border:2px solid var(--orange);background:rgba(234,88,12,0.04);margin-top:16px">
     <div class="card-title" style="color:var(--orange)">🟠 Orange Labels — Printed Batches</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Auto-generated at PI scan-in for each printed batch box. One orange label per box.</div>
-    ${unprintedOrange.length>0?`<div style="background:rgba(234,88,12,0.1);border:1px solid rgba(234,88,12,0.4);border-radius:6px;padding:8px 12px;margin-bottom:10px;font-size:13px;font-weight:600;color:var(--orange)">⚠️ ${unprintedOrange.length} orange label${unprintedOrange.length>1?'s':''} pending print</div>`:''}
-    <div class="form-row cols-2 mb-12" style="max-width:520px">
-      <div class="form-group" style="margin-bottom:0">
-        <label style="font-size:11px">Filter by Batch (grouped by machine)</label>
-        <select id="ol-batch-filter" onchange="filterOrangeLabels()" style="font-size:12px">
-          ${batchFilterOpts}
-        </select>
+    ${unprintedOrange.length>0?`<div style="background:rgba(234,88,12,0.1);border:1px solid rgba(234,88,12,0.4);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:13px;font-weight:600;color:var(--orange)">⚠️ ${unprintedOrange.length} orange label${unprintedOrange.length>1?'s':''} pending print</div>`:''}
+    <div style="display:flex;gap:16px;align-items:flex-start">
+      <!-- Left panel: batch list -->
+      <div style="width:340px;flex-shrink:0">
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>GEN</th><th>PRT</th><th>REM</th></tr></thead>
+          <tbody>
+          ${Object.keys(byBatch).length ? Object.entries(byBatch).map(([bn,lbls])=>{
+            const batch=getBatch(bn);
+            const gen=lbls.length;
+            const prt=lbls.filter(l=>l.printed).length;
+            const rem=gen-prt;
+            const isSelected=bn===selBatch;
+            return `<tr onclick="window._olSelBatch='${bn}';renderLabels()" style="cursor:pointer;${isSelected?'background:rgba(234,88,12,0.12);outline:2px solid var(--orange);outline-offset:-2px':''}">
+              <td class="td-mono fw-bold" style="color:var(--orange)">${bn}</td>
+              <td class="text-sm">${batch?.customer||lbls[0]?.customer||'-'}</td>
+              <td class="td-mono">${batch?.size||'-'}</td>
+              <td class="td-mono">${gen}</td>
+              <td class="td-mono">${prt}</td>
+              <td class="td-mono" style="color:${rem>0?'var(--orange)':'var(--green)'};font-weight:700">${rem}</td>
+            </tr>`;
+          }).join('') : `<tr><td colspan="6" class="text-center text-muted">No orange labels yet</td></tr>`}
+          </tbody>
+        </table></div>
       </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label style="font-size:11px">Search</label>
-        <input type="text" id="ol-search" placeholder="Batch / customer…" oninput="filterOrangeLabels()" style="font-size:12px">
+      <!-- Right panel: print queue for selected batch -->
+      <div style="flex:1;min-width:0">
+        ${selBatch ? `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div>
+            <div style="font-weight:700;font-size:14px;color:var(--orange)">${selBatch}</div>
+            <div style="font-size:12px;color:var(--text3)">${getBatch(selBatch)?.customer||selLabels[0]?.customer||''} | ${selLabels.length} labels | <span style="color:${unprintedSel.length>0?'var(--orange)':'var(--green);'}">${unprintedSel.length} unprinted</span></div>
+          </div>
+          ${unprintedSel.length>0?`<button class="btn btn-sm" style="background:var(--orange);color:#fff" onclick="unprintedOrangeBatch('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
+        </div>
+        <div class="tbl-wrap" style="max-height:320px;overflow-y:auto"><table>
+          <thead><tr><th>#</th><th>Qty(L)</th><th>Status</th><th>Generated</th><th>Action</th></tr></thead>
+          <tbody>
+          ${selLabels.map(l=>`<tr style="${!l.printed?'background:rgba(234,88,12,0.06)':''}">
+            <td class="td-mono">${l.labelNumber}</td>
+            <td class="td-mono">${fmt(l.qty)}</td>
+            <td>${l.printed?`<span class="badge badge-green">✅ Printed</span>`:'<span class="badge" style="background:rgba(234,88,12,0.15);color:var(--orange);border:1px solid rgba(234,88,12,0.4)">🟠 Pending</span>'}</td>
+            <td class="text-sm">${fmtDateTime(l.generated)}</td>
+            <td>${!l.printed?`<button class="btn btn-sm" style="background:var(--orange);color:#fff;padding:3px 10px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:'<span style="color:var(--text3)">—</span>'}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>` : '<div class="text-center text-muted" style="padding:32px">← Select a batch to view its print queue</div>'}
       </div>
     </div>
-    ${orangeLabels.length ? `<div class="tbl-wrap"><table id="ol-table">
-      <thead><tr><th>Batch</th><th>Machine</th><th>Customer</th><th>Box #</th><th>Qty (L)</th><th>Generated</th><th>Status</th><th>Action</th></tr></thead>
-      <tbody>
-      ${orangeLabels.sort((a,b)=>b.generated.localeCompare(a.generated)).map(l=>{
-        const batch=getBatch(l.batchNumber);
-        return `<tr data-batch="${l.batchNumber}" data-search="${(l.batchNumber+' '+(l.customer||batch?.customer||'')).toLowerCase()}" style="${!l.printed?'background:rgba(234,88,12,0.06)':''}">
-          <td class="td-mono fw-bold">${l.batchNumber}</td>
-          <td class="td-mono text-sm">${batch?.machineId||'—'}</td>
-          <td class="text-sm">${l.customer||batch?.customer||'-'}</td>
-          <td class="td-mono">${l.labelNumber}</td>
-          <td class="td-mono">${fmt(l.qty)}</td>
-          <td class="text-sm">${fmtDateTime(l.generated)}</td>
-          <td>${l.printed?`<span class="badge badge-green">✅ Printed</span>`:'<span class="badge" style="background:rgba(234,88,12,0.15);color:var(--orange);border:1px solid rgba(234,88,12,0.4)">🟠 Pending</span>'}</td>
-          <td>${!l.printed?`<button class="btn btn-sm" style="background:var(--orange);color:#fff" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:'—'}</td>
-        </tr>`;
-      }).join('')}
-      </tbody>
-    </table></div>` : '<div class="text-center text-muted" style="padding:16px">No orange labels yet — generated automatically when printed batch boxes are scanned IN at PI.</div>'}
   </div>`;
   }
+}
+
+function unprintedOrangeBatch(batchNumber){
+  const unprinted = state.labels.filter(l=>l.isOrange&&!l.voided&&!l.printed&&l.batchNumber===batchNumber);
+  unprinted.forEach(l=>printLabel(l.id));
+  renderLabels();
 }
 
 function filterOrangeLabels(){
