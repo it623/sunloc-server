@@ -977,20 +977,13 @@ async function pullFromServer(){
     if(j.ok && j.state){
       // Normalise DB snake_case fields to camelCase
       const normLabels = (j.state.labels||[]).map(normLabel);
-      const serverLabelIds = new Set(normLabels.map(l=>l.id));
-      const localOnlyLabels = state.labels.filter(l=>!serverLabelIds.has(l.id));
+      const normScans = (j.state.scans||[]).map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
+      const normWastage = (j.state.wastage||[]).map(w=>({...w, batchNumber:w.batchNumber||w.batch_number}));
+      // Server is source of truth — replace local state with server state
       Object.assign(state, j.state);
       state.labels = normLabels;
-      // Re-add local-only labels
-      if(localOnlyLabels.length > 0){
-        state.labels = [...state.labels, ...localOnlyLabels];
-        // Push local-only labels to server so other devices can find them
-        fetch(serverUrl+'/api/tracking/state',{
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({labels:localOnlyLabels,scans:[],stageClosure:[],wastage:[],dispatchRecs:[],alerts:[]}),
-          signal:AbortSignal.timeout(8000)
-        }).catch(()=>{});
-      }
+      state.scans = normScans;
+      state.wastage = normWastage;
     }
     // Also pull planning orders for batch data
     const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(8000)});
@@ -1032,13 +1025,15 @@ function saveLocal(){
 }
 
 function loadState(){
-  try{
-    const saved=localStorage.getItem('sunloc_tracking');
-    if(saved){ const p=JSON.parse(saved); Object.assign(state,p); }
-  }catch{}
-  // Pull from server immediately — batches from Planning must load on every login
+  // Always pull from server — server is the source of truth
   if(serverUrl){
     pullFromServer();
+  } else {
+    // Offline fallback: use localStorage
+    try{
+      const saved=localStorage.getItem('sunloc_tracking');
+      if(saved){ const p=JSON.parse(saved); Object.assign(state,p); }
+    }catch{}
   }
 }
 
@@ -1874,58 +1869,6 @@ function getBoxCurrentStageForBatch(batchNo){
 // PAGE: LABEL GENERATION
 // ═══════════════════════════════════════════════════════
 
-function viewLabel(id){
-  const l = state.labels.find(x=>x.id===id);
-  if(!l) return;
-  const batch = getBatch(l.batchNumber);
-  openModal('Label Details — #'+Math.abs(l.labelNumber||0), '', `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:13px">
-      <div><span style="color:var(--text3)">Batch</span><div class="fw-bold">${l.batchNumber}</div></div>
-      <div><span style="color:var(--text3)">Label #</span><div class="fw-bold">${Math.abs(l.labelNumber||0)}${l.isExcess?' (Excess)':''}</div></div>
-      <div><span style="color:var(--text3)">Customer</span><div>${l.customer||batch?.customer||'—'}</div></div>
-      <div><span style="color:var(--text3)">Size</span><div>${l.size||batch?.size||'—'}</div></div>
-      <div><span style="color:var(--text3)">Qty (L)</span><div class="fw-bold">${fmt(l.qty)}</div></div>
-      <div><span style="color:var(--text3)">PC Code</span><div>${l.pcCode||'—'}</div></div>
-      <div><span style="color:var(--text3)">Colour</span><div>${l.colour||'—'}</div></div>
-      <div><span style="color:var(--text3)">Machine</span><div>${l.machineId||batch?.machineId||'—'}</div></div>
-      <div><span style="color:var(--text3)">Status</span><div>${l.voided?'<span class="badge badge-red">Voided</span>':l.printed?'<span class="badge badge-green">Printed</span>':'<span class="badge badge-gray">Pending</span>'}</div></div>
-      <div><span style="color:var(--text3)">Generated</span><div>${fmtDateTime(l.generated)}</div></div>
-      ${l.printed?'<div><span style="color:var(--text3)">Printed At</span><div>'+fmtDateTime(l.printedAt)+'</div></div>':''}
-      ${l.voided?'<div><span style="color:var(--text3)">Void Reason</span><div>'+l.voidReason+'</div></div>':''}
-    </div>
-  `, [{label:'Close', action:'closeModal()'}]);
-}
-
-function editLabelQty(id){
-  const l = state.labels.find(x=>x.id===id);
-  if(!l) return;
-  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0),
-    'Change quantity for this label. Updated qty will print on the label.',
-    `<div class="form-group">
-      <label>New Qty (Lakhs)</label>
-      <input type="number" id="edit-qty-input" value="${l.qty}" step="0.01" min="0.01" style="font-size:16px;font-weight:700">
-      <div style="font-size:12px;color:var(--text3);margin-top:4px">Current qty: ${fmt(l.qty)}L</div>
-    </div>`,
-    [{label:'Cancel', action:'closeModal()', secondary:true},
-     {label:'Save & Reprint', action:'saveEditLabelQty("'+id+'")'}]
-  );
-}
-
-function saveEditLabelQty(id){
-  const newQty = parseFloat(document.getElementById('edit-qty-input')?.value);
-  if(!newQty || newQty<=0) { toast('Invalid qty','var(--red)'); return; }
-  const l = state.labels.find(x=>x.id===id);
-  if(!l) return;
-  l.qty = newQty;
-  l.printed = false; // mark for reprint with new qty
-  l.printedAt = null;
-  saveLocal();
-  pushToServer('/api/tracking/labels', {labels:[l]});
-  closeModal();
-  toast('Qty updated — label ready to reprint','var(--green)');
-  renderLabels();
-}
-
 function renderLabels(){
   const el=document.getElementById('page-labels');
   const activeBatches=state.batches.filter(b=>b.status==='running');
@@ -1959,14 +1902,14 @@ function renderLabels(){
         const isExcessAvailable=normalGenerated>=normalBoxMax2&&remaining>0;
         const isSelected=b.batchNumber===selBatch;
         const pct=maxLabels>0?(generated/maxLabels*100):0;
-        return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">
-          <td class="td-bold td-mono">${b.batchNumber}</td>
+        return `<tr style="${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}">
+          <td class="td-bold td-mono" style="cursor:pointer" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">${b.batchNumber}</td>
           <td class="text-sm">${b.customer||'-'}</td>
           <td class="td-mono">${b.size}</td>
           <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:48px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
           <td class="td-mono">${printed}</td>
           <td class="td-mono ${remaining===0?'':'fw-bold amber'}">${remaining}</td>
-          <td onclick="event.stopPropagation()">
+          <td>
             <div class="flex gap-4">
               ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕':'+ Gen'}</button>`:''}
               <button class="btn btn-sm btn-secondary" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">📋</button>
@@ -2003,8 +1946,6 @@ function renderLabels(){
           <td class="td-mono text-sm">${fmtDateTime(l.generated)}</td>
           <td>
             <div class="flex gap-4">
-              <button class="btn btn-sm btn-secondary" style="padding:3px 8px;font-size:11px" onclick="viewLabel('${l.id}')">👁 View</button>
-              ${!l.voided?`<button class="btn btn-sm btn-secondary" style="padding:3px 8px;font-size:11px;background:#f0f0f0" onclick="editLabelQty('${l.id}')">✏️ Edit</button>`:''}
               ${!l.voided&&!l.printed?`<button class="btn btn-sm btn-primary" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:''}
               ${!l.voided&&l.printed?`<button class="btn btn-sm btn-secondary" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">Reprint</button>`:''}
               ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-danger" style="padding:3px 8px;font-size:11px" onclick="voidLabel('${l.id}','Admin void');renderLabels()">Void</button>`:''}
@@ -2088,58 +2029,6 @@ function renderLabels(){
     </div>
   </div>`;
   }
-}
-
-function viewLabel(labelId){
-  const l = state.labels.find(x=>x.id===labelId);
-  if(!l) return;
-  const batch = getBatch(l.batchNumber);
-  openModal('Label Details — #'+Math.abs(l.labelNumber||0), '', `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:13px">
-      <div><span style="color:var(--text3)">Label #</span><div class="fw-bold td-mono">${Math.abs(l.labelNumber||0)}${l.isPartial?' (Partial)':''}${l.isExcess?' (Excess)':''}</div></div>
-      <div><span style="color:var(--text3)">Batch</span><div class="fw-bold td-mono">${l.batchNumber}</div></div>
-      <div><span style="color:var(--text3)">Customer</span><div class="fw-bold">${l.customer||batch?.customer||'-'}</div></div>
-      <div><span style="color:var(--text3)">Size</span><div class="fw-bold td-mono">${l.size||batch?.size||'-'}</div></div>
-      <div><span style="color:var(--text3)">Qty (L)</span><div class="fw-bold td-mono">${fmt(l.qty)}</div></div>
-      <div><span style="color:var(--text3)">PC Code</span><div class="fw-bold td-mono">${l.pcCode||'-'}</div></div>
-      <div><span style="color:var(--text3)">Colour</span><div class="fw-bold">${l.colour||batch?.colour||'-'}</div></div>
-      <div><span style="color:var(--text3)">Machine</span><div class="fw-bold td-mono">${l.machineId||batch?.machineId||'-'}</div></div>
-      <div><span style="color:var(--text3)">Status</span><div class="fw-bold">${l.voided?'<span style="color:var(--red)">Voided</span>':l.printed?'<span style="color:var(--green)">Printed</span>':'Pending'}</div></div>
-      <div><span style="color:var(--text3)">Generated</span><div class="fw-bold text-sm">${fmtDateTime(l.generated)}</div></div>
-      ${l.printed?'<div><span style="color:var(--text3)">Printed At</span><div class="fw-bold text-sm">'+fmtDateTime(l.printedAt)+'</div></div>':''}
-      ${l.voided?'<div><span style="color:var(--text3)">Void Reason</span><div style="color:var(--red)">'+(l.voidReason||'-')+'</div></div>':''}
-    </div>
-  `, [{label:'Close', onClick:'closeModal()'}]);
-}
-
-function editLabelQty(labelId){
-  const l = state.labels.find(x=>x.id===labelId);
-  if(!l) return;
-  const packSize = getPackSize(l.size);
-  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0), 'Change qty (L). The updated qty will print on the label.', `
-    <div class="form-group">
-      <label>Current Qty: ${fmt(l.qty)}L (Pack size: ${packSize}L/box)</label>
-      <input type="number" id="edit-qty-input" value="${l.qty}" min="0.01" step="${packSize}" style="font-size:16px;font-weight:700" />
-      <div style="font-size:11px;color:var(--text3);margin-top:4px">Enter new quantity in Lakhs</div>
-    </div>
-  `, [
-    {label:'Cancel', onClick:'closeModal()', secondary:true},
-    {label:'✏️ Save & Reprint', onClick:`saveLabelQtyEdit('${labelId}')`, primary:true}
-  ]);
-}
-
-function saveLabelQtyEdit(labelId){
-  const newQty = parseFloat(document.getElementById('edit-qty-input')?.value);
-  if(!newQty || newQty <= 0) { alert('Invalid qty'); return; }
-  const l = state.labels.find(x=>x.id===labelId);
-  if(!l) return;
-  l.qty = newQty;
-  l.printed = false; // mark as unprinted so it gets reprinted
-  saveLocal();
-  pushToServer('/api/tracking/label-update', {labelId, qty: newQty});
-  closeModal();
-  renderLabels();
-  toast('Qty updated — label marked for reprint', 'var(--accent)', 3000);
 }
 
 function unprintedOrangeBatch(batchNumber){
