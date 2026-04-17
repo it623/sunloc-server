@@ -1691,9 +1691,20 @@ app.get('/api/tracking/state', async (req, res) => {
         pgPool.query('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC'),
         pgPool.query('SELECT * FROM tracking_alerts WHERE resolved = 0'),
       ]);
+      // Map snake_case PG columns to camelCase for frontend compatibility
+      const mapLabel = r => ({ ...r, batchNumber: r.batch_number, labelNumber: r.label_number, isPartial: r.is_partial, isOrange: r.is_orange, parentLabelId: r.parent_label_id, pcCode: r.pc_code, poNumber: r.po_number, machineId: r.machine_id, printingMatter: r.printing_matter, printedAt: r.printed_at, voidReason: r.void_reason, voidedAt: r.voided_at, voidedBy: r.voided_by, qrData: r.qr_data, woStatus: r.wo_status, shipTo: r.ship_to, billTo: r.bill_to, isExcess: r.is_excess, excessNum: r.excess_num, excessTotal: r.excess_total, normalTotal: r.normal_total });
+      const mapScan = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number });
+      const mapClosure = r => ({ ...r, batchNumber: r.batch_number, closedAt: r.closed_at, closedBy: r.closed_by });
+      const mapWastage = r => ({ ...r, batchNumber: r.batch_number });
+      const mapDispatch = r => ({ ...r, batchNumber: r.batch_number, vehicleNo: r.vehicle_no, invoiceNo: r.invoice_no });
+      const mapAlert = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, scanInTs: r.scan_in_ts, hoursStuck: r.hours_stuck });
       res.json({ ok: true, state: {
-        labels: labels.rows, scans: scans.rows, stageClosure: closure.rows,
-        wastage: wastage.rows, dispatchRecs: dispatch.rows, alerts: alerts.rows
+        labels: labels.rows.map(mapLabel),
+        scans: scans.rows.map(mapScan),
+        stageClosure: closure.rows.map(mapClosure),
+        wastage: wastage.rows.map(mapWastage),
+        dispatchRecs: dispatch.rows.map(mapDispatch),
+        alerts: alerts.rows.map(mapAlert)
       }});
     } else {
       const labels  = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
