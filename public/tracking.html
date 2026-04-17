@@ -873,6 +873,7 @@ function navigate(page){
   const navEl = document.getElementById('nav-'+page);
   if(navEl) navEl.classList.add('active');
   renderPage(page);
+  focusScanInput();
 }
 
 // ═══════════════════════════════════════════════════════
@@ -4823,6 +4824,8 @@ function loadDemoData(){
 
 // Auto-focus scan input when dept page loads or clicked
 function focusScanInput(){
+  const isMobile = window.matchMedia('(max-width:768px)').matches || ('ontouchstart' in window);
+  if(isMobile) return; // Skip auto-focus on mobile
   const page=currentPage;
   if(['aim','printing','pi','packing','dispatch'].includes(page)){
     const scanIn=document.getElementById(`scan-in-${page}`);
@@ -4831,10 +4834,13 @@ function focusScanInput(){
 }
 document.addEventListener('click',e=>{
   const page=currentPage;
+  const isMobile = window.matchMedia('(max-width:768px)').matches || ('ontouchstart' in window);
+  if(isMobile) return; // Don't auto-focus on mobile — keyboard would pop up constantly
   if(['aim','printing','pi','packing','dispatch'].includes(page)){
-    const scanIn=document.getElementById(`scan-in-${page}`);
-    if(scanIn&&!e.target.closest('button')&&!e.target.closest('input')&&!e.target.closest('select')&&!e.target.closest('textarea')){
-      scanIn.focus();
+    const ignore = e.target.closest('input')||e.target.closest('select')||e.target.closest('textarea')||e.target.closest('#modal-overlay');
+    if(!ignore){
+      const scanIn=document.getElementById(`scan-in-${page}`);
+      if(scanIn) setTimeout(()=>scanIn.focus(),100);
     }
   }
 });
