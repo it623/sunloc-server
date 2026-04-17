@@ -2418,7 +2418,7 @@ function renderDeptScan(dept){
       <tbody>
       ${state.scans.filter(s=>s.dept===dept).slice(-20).reverse().map(s=>`<tr>
         <td class="td-mono text-sm">${fmtDateTime(s.ts)}</td>
-        <td class="td-mono text-sm">${s.labelId.slice(-8)}</td>
+        <td class="td-mono text-sm">${(s.labelId||s.label_id||"").slice(-8)}</td>
         <td class="td-bold td-mono">${s.batchNumber}</td>
         <td>${s.type==='in'?'<span class="badge badge-blue">📥 IN</span>':'<span class="badge badge-green">📤 OUT</span>'}</td>
         <td class="td-mono">${fmt(s.qty)}</td>
