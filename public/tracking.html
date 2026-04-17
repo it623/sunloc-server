@@ -1889,7 +1889,7 @@ function renderLabels(){
   <div class="card" style="max-height:520px;overflow-y:auto">
     <div class="card-title">Active Batches</div>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Batch</th><th>Customer</th><th>Size</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Action</th></tr></thead>
+      <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>PC Code</th><th>Actual(L)</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Action</th></tr></thead>
       <tbody>
       ${activeBatches.map(b=>{
         const maxLabels=lakhToBox(b.qty,b.size);
@@ -1906,6 +1906,8 @@ function renderLabels(){
           <td class="td-bold td-mono">${b.batchNumber}</td>
           <td class="text-sm">${b.customer||'-'}</td>
           <td class="td-mono">${b.size}</td>
+          <td class="td-mono text-sm">${b.pcCode||'—'}</td>
+          <td class="td-mono ${(b.actualQty||b.actualProd||0)>0?'':'text-muted'}">${((b.actualQty||b.actualProd||0)).toFixed(2)}</td>
           <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:48px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
           <td class="td-mono">${printed}</td>
           <td class="td-mono ${remaining===0?'':'fw-bold amber'}">${remaining}</td>
@@ -1915,7 +1917,7 @@ function renderLabels(){
             </div>
           </td>
         </tr>`;
-      }).join('')||'<tr><td colspan="7" class="text-center text-muted">No active batches from Planning App</td></tr>'}
+      }).join('')||'<tr><td colspan="9" class="text-center text-muted">No active batches from Planning App</td></tr>'}
       </tbody>
     </table></div>
   </div>
