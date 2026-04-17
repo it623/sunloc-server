@@ -33,6 +33,16 @@ if (USE_POSTGRES) {
   const { PgDatabase } = require('./db-pg-sync');
   db = new PgDatabase();
   console.log('[DB] Mode: PostgreSQL');
+}
+
+// Direct async pg pool for large queries (planning state)
+let pgPool = null;
+if (USE_POSTGRES) {
+  try {
+    const { Pool } = require('pg');
+    pgPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5 });
+    console.log('[DB] Direct pg pool ready');
+  } catch(e) { console.error('[DB] pg pool error:', e.message); }
 } else {
   const Database = require('better-sqlite3');
 
@@ -445,10 +455,16 @@ function getOrderActuals(orderId, batchNumber) {
 // PLANNING APP ROUTES
 // ═══════════════════════════════════════════════════════════════
 
-// GET full planning state
-app.get('/api/planning/state', (req, res) => {
+// GET full planning state — uses direct pg pool for large JSON
+app.get('/api/planning/state', async (req, res) => {
   try {
-    const state = getPlanningState();
+    let state = {};
+    if (pgPool) {
+      const r = await pgPool.query('SELECT state_json, saved_at FROM planning_state ORDER BY id DESC LIMIT 1');
+      if (r.rows[0]) { state = JSON.parse(r.rows[0].state_json); }
+    } else {
+      state = getPlanningState();
+    }
 
     // Enrich orders with live actuals from DPR
     if (state.orders) {
@@ -459,24 +475,38 @@ app.get('/api/planning/state', (req, res) => {
       }
     }
 
-    res.json({ ok: true, state, savedAt: db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get()?.saved_at });
+    const savedAt = pgPool
+      ? (await pgPool.query('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1')).rows[0]?.saved_at
+      : db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get()?.saved_at;
+
+    res.json({ ok: true, state, savedAt });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// POST save planning state
-app.post('/api/planning/state', (req, res) => {
+// POST save planning state — uses direct pg pool for large JSON
+app.post('/api/planning/state', async (req, res) => {
   try {
     const { state } = req.body;
     if (!state) return res.status(400).json({ ok: false, error: 'No state provided' });
 
     const json = JSON.stringify(state);
-    const existing = db.prepare('SELECT id FROM planning_state LIMIT 1').get();
-    if (existing) {
-      db.prepare('UPDATE planning_state SET state_json = ?, saved_at = datetime(\'now\') WHERE id = ?').run(json, existing.id);
+
+    if (pgPool) {
+      const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
+      if (existing.rows[0]) {
+        await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
+      } else {
+        await pgPool.query('INSERT INTO planning_state (state_json) VALUES ($1)', [json]);
+      }
     } else {
-      db.prepare('INSERT INTO planning_state (state_json) VALUES (?)').run(json);
+      const existing = db.prepare('SELECT id FROM planning_state LIMIT 1').get();
+      if (existing) {
+        db.prepare(`UPDATE planning_state SET state_json = ?, saved_at = NOW() WHERE id = ?`).run(json, existing.id);
+      } else {
+        db.prepare('INSERT INTO planning_state (state_json) VALUES (?)').run(json);
+      }
     }
 
     res.json({ ok: true, savedAt: new Date().toISOString() });
