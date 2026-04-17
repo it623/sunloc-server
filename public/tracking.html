@@ -1886,10 +1886,11 @@ function renderLabels(){
   <div class="grid-2" style="align-items:start;gap:16px">
 
   <!-- LEFT: Batch Status + Generate -->
-  <div class="card">
+  <div class="card" style="max-height:520px;overflow-y:auto">
     <div class="card-title">Active Batches</div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Batch</th><th>Customer</th><th>Size</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Action</th></tr></thead>
+    <div style="overflow-x:auto">
+    <table style="font-size:12px;min-width:700px;width:100%">
+      <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>PC Code</th><th>Actual(L)</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Act</th></tr></thead>
       <tbody>
       ${activeBatches.map(b=>{
         const maxLabels=lakhToBox(b.qty,b.size);
@@ -1902,27 +1903,27 @@ function renderLabels(){
         const isExcessAvailable=normalGenerated>=normalBoxMax2&&remaining>0;
         const isSelected=b.batchNumber===selBatch;
         const pct=maxLabels>0?(generated/maxLabels*100):0;
-        return `<tr style="${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}">
-          <td class="td-bold td-mono" style="cursor:pointer" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">${b.batchNumber}</td>
-          <td class="text-sm">${b.customer||'-'}</td>
+        const actualProd=(b.actualQty||b.actualProd||0);
+        return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">
+          <td class="td-bold td-mono">${b.batchNumber}</td>
+          <td class="text-sm" style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||'-'}</td>
           <td class="td-mono">${b.size}</td>
-          <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:48px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
+          <td class="td-mono text-sm">${b.pcCode||'—'}</td>
+          <td class="td-mono ${actualProd>0?'':'text-muted'}">${actualProd>0?actualProd.toFixed(2):'—'}</td>
+          <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:36px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
           <td class="td-mono">${printed}</td>
           <td class="td-mono ${remaining===0?'':'fw-bold amber'}">${remaining}</td>
-          <td>
-            <div class="flex gap-4">
-              ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕':'+ Gen'}</button>`:''}
-              <button class="btn btn-sm btn-secondary" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">📋</button>
-            </div>
+          <td onclick="event.stopPropagation()" style="white-space:nowrap">
+            ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" style="font-size:11px;padding:2px 6px" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕':'+Gen'}</button>`:''}
           </td>
         </tr>`;
-      }).join('')||'<tr><td colspan="7" class="text-center text-muted">No active batches from Planning App</td></tr>'}
+      }).join('')||'<tr><td colspan="9" class="text-center text-muted">No active batches from Planning App</td></tr>'}
       </tbody>
     </table></div>
   </div>
 
   <!-- RIGHT: Inline Print Queue for selected batch -->
-  <div class="card" style="min-height:200px">
+  <div class="card" style="min-height:200px;max-height:520px;overflow-y:auto;position:sticky;top:16px">
     ${(()=>{
       if(!selBatch) return '<div class="text-center text-muted" style="padding:40px">← Select a batch to view its print queue</div>';
       const batch=getBatch(selBatch);
