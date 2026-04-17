@@ -203,7 +203,7 @@ td.r,th.r{text-align:right}
   .close-btn, .closed-badge { font-size: 9px !important; }
 
   /* ── User badge ── */
-  #dpr-user-badge { font-size: 10px; padding: 3px 7px; }
+  #dpr-user-badge { top: 6px; right: 8px; font-size: 10px; padding: 3px 7px; }
 }
 /* TABLE */
 .data-table{width:100%;border-collapse:collapse;font-size:12px}
@@ -2935,6 +2935,32 @@ function importData(input){
       Object.keys(data).forEach(k=>localStorage.setItem(k,data[k]));
       toast('Import successful!','var(--green)');
       renderEntry();
+      // Push all DPR records to server
+      if(serverUrl){
+        const records = [];
+        Object.keys(localStorage).filter(k=>k.startsWith('dpr3_')).forEach(k=>{
+          try {
+            const parts = k.replace('dpr3_','').split('_');
+            if(parts.length >= 2){
+              const date = parts[parts.length-1];
+              const floor = parts.slice(0,-1).join('_');
+              const raw = localStorage.getItem(k);
+              if(raw) records.push({floor, date, data: JSON.parse(raw)});
+            }
+          } catch(e){}
+        });
+        if(records.length > 0){
+          fetch(serverUrl+'/api/dpr/bulk-import',{
+            method:'POST',
+            headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({records}),
+            signal:AbortSignal.timeout(60000)
+          }).then(r=>r.json()).then(d=>{
+            if(d.ok) toast('✅ '+d.saved+' DPR records saved to server','var(--green)',5000);
+            else toast('⚠️ Server save failed: '+d.error,'var(--amber)',5000);
+          }).catch(()=>toast('⚠️ Could not reach server','var(--amber)',4000));
+        }
+      }
     }catch{toast('Invalid file','var(--red)');}
     input.value='';
   };
@@ -3142,12 +3168,10 @@ function addDprUserBadge() {
   if (document.getElementById('dpr-user-badge')) return;
   const wrap = document.createElement('div');
   wrap.id = 'dpr-user-badge';
-  wrap.style.cssText = 'display:flex;align-items:center;gap:6px;background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.25);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer;flex-shrink:0';
+  wrap.style.cssText = 'position:fixed;top:8px;right:10px;z-index:500;display:flex;align-items:center;gap:6px;background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.25);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer';
   wrap.innerHTML = `👤 ${dprUser.username} <span style="color:var(--t3)">[${dprUser.role.toUpperCase()}]</span> <span style="color:var(--t3)">▾</span>`;
   wrap.onclick = showDprUserMenu;
-  const nright = document.querySelector('.nright');
-  if (nright) nright.insertBefore(wrap, nright.firstChild);
-  else document.body.appendChild(wrap);
+  document.body.appendChild(wrap);
 
   // Show audit tab for admin
   if (dprUser.role === 'admin') {

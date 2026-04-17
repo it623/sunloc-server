@@ -605,6 +605,33 @@ app.get('/api/orders/active', async (req, res) => {
 // DPR APP ROUTES
 // ═══════════════════════════════════════════════════════════════
 
+// POST bulk import DPR records from backup
+app.post('/api/dpr/bulk-import', async (req, res) => {
+  try {
+    const { records } = req.body;
+    if (!records || !Array.isArray(records)) return res.status(400).json({ ok: false, error: 'No records provided' });
+    let saved = 0;
+    if (pgPool) {
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+        for (const { floor, date, data } of records) {
+          if (!floor || !date || !data) continue;
+          await client.query(
+            `INSERT INTO dpr_records (floor, date, data_json) VALUES ($1, $2, $3)
+             ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW()`,
+            [floor, date, JSON.stringify(data)]
+          );
+          saved++;
+        }
+        await client.query('COMMIT');
+      } catch(e) { await client.query('ROLLBACK'); throw e; }
+      finally { client.release(); }
+    }
+    res.json({ ok: true, saved });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // GET DPR record for a floor + date
 app.get('/api/dpr/:floor/:date', (req, res) => {
   try {
