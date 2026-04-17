@@ -33,16 +33,6 @@ if (USE_POSTGRES) {
   const { PgDatabase } = require('./db-pg-sync');
   db = new PgDatabase();
   console.log('[DB] Mode: PostgreSQL');
-}
-
-// Direct async pg pool for large queries (planning state)
-let pgPool = null;
-if (USE_POSTGRES) {
-  try {
-    const { Pool } = require('pg');
-    pgPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5 });
-    console.log('[DB] Direct pg pool ready');
-  } catch(e) { console.error('[DB] pg pool error:', e.message); }
 } else {
   const Database = require('better-sqlite3');
 
@@ -409,41 +399,10 @@ db.prepare(`DELETE FROM app_sessions WHERE expires_at < to_char(NOW(), 'YYYY-MM-
 
 
 // ─── Helper: get latest planning state ────────────────────────
-let _planningStateCache = null;
-let _planningStateCacheTime = 0;
-
-async function getPlanningStateAsync() {
-  if (pgPool) {
-    const r = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1');
-    if (!r.rows[0]) return { orders: [], printOrders: [], dispatchPlans: [], dailyPrinting: [], machineMaster: [], printMachineMaster: [], packSizes: {} };
-    try { return JSON.parse(r.rows[0].state_json); } catch { return {}; }
-  }
-  return getPlanningState();
-}
-
 function getPlanningState() {
-  // Use cache if fresh (within 5 seconds)
-  if (_planningStateCache && Date.now() - _planningStateCacheTime < 5000) return _planningStateCache;
   const row = db.prepare('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1').get();
   if (!row) return { orders: [], printOrders: [], dispatchPlans: [], dailyPrinting: [], machineMaster: [], printMachineMaster: [], packSizes: {} };
-  try {
-    _planningStateCache = JSON.parse(row.state_json);
-    _planningStateCacheTime = Date.now();
-    return _planningStateCache;
-  } catch { return {}; }
-}
-
-// Warm up cache using direct pg pool on startup
-async function warmPlanningCache() {
-  if (!pgPool) return;
-  try {
-    const r = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1');
-    if (r.rows[0]) {
-      _planningStateCache = JSON.parse(r.rows[0].state_json);
-      _planningStateCacheTime = Date.now();
-      console.log('[DB] Planning state cache warmed:', (_planningStateCache.orders||[]).length, 'orders');
-    }
-  } catch(e) { console.error('[DB] Cache warm error:', e.message); }
+  try { return JSON.parse(row.state_json); } catch { return {}; }
 }
 
 // ─── Helper: get active orders for a machine ──────────────────
@@ -470,11 +429,6 @@ function getActiveOrdersForMachine(machineId) {
 
 // Helper: get total actuals for an order (sums all runs across all machines/shifts)
 function getOrderActuals(orderId, batchNumber) {
-  // Use cached actuals if available (set by warmActualsCache)
-  if (_actualsCache) {
-    const key = orderId || batchNumber;
-    return _actualsCache[key] || 0;
-  }
   let rows;
   if (orderId) {
     rows = db.prepare('SELECT SUM(qty_lakhs) as total FROM production_actuals WHERE order_id = ?').get(orderId);
@@ -487,76 +441,42 @@ function getOrderActuals(orderId, batchNumber) {
   return rows?.total || 0;
 }
 
-let _actualsCache = null;
-async function warmActualsCache() {
-  if (!pgPool) return;
-  try {
-    const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
-    _actualsCache = {};
-    for (const row of r.rows) {
-      if (row.order_id) _actualsCache[row.order_id] = parseFloat(row.total) || 0;
-      if (row.batch_number) _actualsCache[row.batch_number] = parseFloat(row.total) || 0;
-    }
-    console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries');
-  } catch(e) { console.error('[DB] Actuals cache error:', e.message); }
-}
-
 // ═══════════════════════════════════════════════════════════════
 // PLANNING APP ROUTES
 // ═══════════════════════════════════════════════════════════════
 
-// GET full planning state — uses direct pg pool for large JSON
-app.get('/api/planning/state', async (req, res) => {
+// GET full planning state
+app.get('/api/planning/state', (req, res) => {
   try {
-    let state = {};
-    if (pgPool) {
-      const r = await pgPool.query('SELECT state_json, saved_at FROM planning_state ORDER BY id DESC LIMIT 1');
-      if (r.rows[0]) { state = JSON.parse(r.rows[0].state_json); }
-    } else {
-      state = getPlanningState();
-    }
+    const state = getPlanningState();
 
-    // Enrich orders with live actuals from DPR (use cache to avoid sync adapter)
-    if (state.orders && _actualsCache) {
+    // Enrich orders with live actuals from DPR
+    if (state.orders) {
       for (const ord of state.orders) {
-        const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
+        const actual = getOrderActuals(ord.id, ord.batchNumber);
         ord.actualProd = actual;
         if (actual > 0 && ord.status === 'pending') ord.status = 'running';
       }
     }
 
-    const savedAt = pgPool
-      ? (await pgPool.query('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1')).rows[0]?.saved_at
-      : db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get()?.saved_at;
-
-    res.json({ ok: true, state, savedAt });
+    res.json({ ok: true, state, savedAt: db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get()?.saved_at });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
 
-// POST save planning state — uses direct pg pool for large JSON
-app.post('/api/planning/state', async (req, res) => {
+// POST save planning state
+app.post('/api/planning/state', (req, res) => {
   try {
     const { state } = req.body;
     if (!state) return res.status(400).json({ ok: false, error: 'No state provided' });
 
     const json = JSON.stringify(state);
-
-    if (pgPool) {
-      const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
-      if (existing.rows[0]) {
-        await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
-      } else {
-        await pgPool.query('INSERT INTO planning_state (state_json) VALUES ($1)', [json]);
-      }
+    const existing = db.prepare('SELECT id FROM planning_state LIMIT 1').get();
+    if (existing) {
+      db.prepare('UPDATE planning_state SET state_json = ?, saved_at = datetime(\'now\') WHERE id = ?').run(json, existing.id);
     } else {
-      const existing = db.prepare('SELECT id FROM planning_state LIMIT 1').get();
-      if (existing) {
-        db.prepare(`UPDATE planning_state SET state_json = ?, saved_at = NOW() WHERE id = ?`).run(json, existing.id);
-      } else {
-        db.prepare('INSERT INTO planning_state (state_json) VALUES (?)').run(json);
-      }
+      db.prepare('INSERT INTO planning_state (state_json) VALUES (?)').run(json);
     }
 
     res.json({ ok: true, savedAt: new Date().toISOString() });
@@ -576,9 +496,9 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 });
 
 // GET all active orders (summary for DPR to cache on load) — only 'running' status
-app.get('/api/orders/active', async (req, res) => {
+app.get('/api/orders/active', (req, res) => {
   try {
-    const state = await getPlanningStateAsync();
+    const state = getPlanningState();
     const orders = (state.orders || [])
       .filter(o => o.status === 'running' && !o.deleted)
       .map(o => ({
@@ -604,33 +524,6 @@ app.get('/api/orders/active', async (req, res) => {
 // ═══════════════════════════════════════════════════════════════
 // DPR APP ROUTES
 // ═══════════════════════════════════════════════════════════════
-
-// POST bulk import DPR records from backup
-app.post('/api/dpr/bulk-import', async (req, res) => {
-  try {
-    const { records } = req.body;
-    if (!records || !Array.isArray(records)) return res.status(400).json({ ok: false, error: 'No records provided' });
-    let saved = 0;
-    if (pgPool) {
-      const client = await pgPool.connect();
-      try {
-        await client.query('BEGIN');
-        for (const { floor, date, data } of records) {
-          if (!floor || !date || !data) continue;
-          await client.query(
-            `INSERT INTO dpr_records (floor, date, data_json) VALUES ($1, $2, $3)
-             ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW()`,
-            [floor, date, JSON.stringify(data)]
-          );
-          saved++;
-        }
-        await client.query('COMMIT');
-      } catch(e) { await client.query('ROLLBACK'); throw e; }
-      finally { client.release(); }
-    }
-    res.json({ ok: true, saved });
-  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
-});
 
 // GET DPR record for a floor + date
 app.get('/api/dpr/:floor/:date', (req, res) => {
@@ -1707,131 +1600,74 @@ app.get('/api/tracking/label', (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-app.get('/api/tracking/state', async (req, res) => {
+app.get('/api/tracking/state', (req, res) => {
   try {
-    if (pgPool) {
-      const [labels, scans, closure, wastage, dispatch, alerts] = await Promise.all([
-        pgPool.query('SELECT * FROM tracking_labels ORDER BY generated DESC'),
-        pgPool.query('SELECT * FROM tracking_scans ORDER BY ts ASC'),
-        pgPool.query('SELECT * FROM tracking_stage_closure'),
-        pgPool.query('SELECT * FROM tracking_wastage ORDER BY ts ASC'),
-        pgPool.query('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC'),
-        pgPool.query('SELECT * FROM tracking_alerts WHERE resolved = 0'),
-      ]);
-      // Map snake_case PG columns to camelCase for frontend compatibility
-      const mapLabel = r => ({ ...r, batchNumber: r.batch_number, labelNumber: r.label_number, isPartial: r.is_partial, isOrange: r.is_orange, parentLabelId: r.parent_label_id, pcCode: r.pc_code, poNumber: r.po_number, machineId: r.machine_id, printingMatter: r.printing_matter, printedAt: r.printed_at, voidReason: r.void_reason, voidedAt: r.voided_at, voidedBy: r.voided_by, qrData: r.qr_data, woStatus: r.wo_status, shipTo: r.ship_to, billTo: r.bill_to, isExcess: r.is_excess, excessNum: r.excess_num, excessTotal: r.excess_total, normalTotal: r.normal_total });
-      const mapScan = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number });
-      const mapClosure = r => ({ ...r, batchNumber: r.batch_number, closedAt: r.closed_at, closedBy: r.closed_by });
-      const mapWastage = r => ({ ...r, batchNumber: r.batch_number });
-      const mapDispatch = r => ({ ...r, batchNumber: r.batch_number, vehicleNo: r.vehicle_no, invoiceNo: r.invoice_no });
-      const mapAlert = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, scanInTs: r.scan_in_ts, hoursStuck: r.hours_stuck });
-      res.json({ ok: true, state: {
-        labels: labels.rows.map(mapLabel),
-        scans: scans.rows.map(mapScan),
-        stageClosure: closure.rows.map(mapClosure),
-        wastage: wastage.rows.map(mapWastage),
-        dispatchRecs: dispatch.rows.map(mapDispatch),
-        alerts: alerts.rows.map(mapAlert)
-      }});
-    } else {
-      const labels  = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
-      const scans   = db.prepare('SELECT * FROM tracking_scans ORDER BY ts ASC').all();
-      const closure = db.prepare('SELECT * FROM tracking_stage_closure').all();
-      const wastage = db.prepare('SELECT * FROM tracking_wastage ORDER BY ts ASC').all();
-      const dispatch= db.prepare('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC').all();
-      const alerts  = db.prepare('SELECT * FROM tracking_alerts WHERE resolved = 0').all();
-      res.json({ ok: true, state: { labels, scans, stageClosure: closure, wastage, dispatchRecs: dispatch, alerts } });
-    }
+    const labels  = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
+    const scans   = db.prepare('SELECT * FROM tracking_scans ORDER BY ts ASC').all();
+    const closure = db.prepare('SELECT * FROM tracking_stage_closure').all();
+    const wastage = db.prepare('SELECT * FROM tracking_wastage ORDER BY ts ASC').all();
+    const dispatch= db.prepare('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC').all();
+    const alerts  = db.prepare('SELECT * FROM tracking_alerts WHERE resolved = 0').all();
+    res.json({ ok: true, state: { labels, scans, stageClosure: closure, wastage, dispatchRecs: dispatch, alerts } });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // POST /api/tracking/state — save full tracking state
-app.post('/api/tracking/state', async (req, res) => {
+app.post('/api/tracking/state', (req, res) => {
   try {
     const { labels, scans, stageClosure, wastage, dispatchRecs, alerts } = req.body;
-    if (pgPool) {
-      const client = await pgPool.connect();
-      try {
-        await client.query('BEGIN');
-        if (labels && labels.length) {
-          for (const l of labels) {
-            await client.query(`INSERT INTO tracking_labels
-              (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,
-              colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,
-              voided,void_reason,voided_at,voided_by,qr_data,
-              wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total)
-              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
-              ON CONFLICT (id) DO UPDATE SET
-              batch_number=EXCLUDED.batch_number,label_number=EXCLUDED.label_number,
-              printed=EXCLUDED.printed,printed_at=EXCLUDED.printed_at,
-              voided=EXCLUDED.voided,void_reason=EXCLUDED.void_reason,voided_at=EXCLUDED.voided_at,
-              wo_status=EXCLUDED.wo_status,ship_to=EXCLUDED.ship_to,bill_to=EXCLUDED.bill_to`,
-              [l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,
-              l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,
-              l.poNumber||null,l.machineId||null,l.printingMatter||null,
-              l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,
-              l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,
-              l.woStatus||null,l.shipTo||null,l.billTo||null,
-              l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null]);
-          }
-        }
-        if (scans && scans.length) {
-          for (const s of scans) {
-            await client.query(`INSERT INTO tracking_scans
-              (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-              ON CONFLICT (id) DO NOTHING`,
-              [s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,
-              s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null]);
-          }
-        }
-        if (stageClosure && stageClosure.length) {
-          for (const s of stageClosure) {
-            await client.query(`INSERT INTO tracking_stage_closure
-              (id,batch_number,dept,closed,closed_at,closed_by) VALUES ($1,$2,$3,$4,$5,$6)
-              ON CONFLICT (id) DO UPDATE SET closed=EXCLUDED.closed,closed_at=EXCLUDED.closed_at`,
-              [s.id,s.batchNumber||s.batch_number,s.dept,s.closed?1:0,
-              s.closedAt||s.closed_at,s.closedBy||s.closed_by||null]);
-          }
-        }
-        if (wastage && wastage.length) {
-          for (const w of wastage) {
-            await client.query(`INSERT INTO tracking_wastage
-              (id,batch_number,dept,type,qty,ts,by) VALUES ($1,$2,$3,$4,$5,$6,$7)
-              ON CONFLICT (id) DO NOTHING`,
-              [w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null]);
-          }
-        }
-        if (dispatchRecs && dispatchRecs.length) {
-          for (const d of dispatchRecs) {
-            await client.query(`INSERT INTO tracking_dispatch_records
-              (id,batch_number,customer,qty,boxes,vehicle_no,invoice_no,remarks,ts,by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
-              ON CONFLICT (id) DO NOTHING`,
-              [d.id,d.batchNumber||d.batch_number,d.customer||null,d.qty,d.boxes,
-              d.vehicleNo||d.vehicle_no||null,d.invoiceNo||d.invoice_no||null,
-              d.remarks||null,d.ts,d.by||null]);
-          }
-        }
-        if (alerts && alerts.length) {
-          for (const a of alerts) {
-            await client.query(`INSERT INTO tracking_alerts
-              (id,label_id,batch_number,dept,scan_in_ts,hours_stuck,resolved,msg) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-              ON CONFLICT (id) DO UPDATE SET resolved=EXCLUDED.resolved`,
-              [a.id,a.labelId||a.label_id,a.batchNumber||a.batch_number,
-              a.dept,a.scanInTs||a.scan_in_ts,a.hoursStuck||a.hours_stuck||null,
-              a.resolved?1:0,a.msg||null]);
-          }
-        }
-        await client.query('COMMIT');
-      } catch(e) { await client.query('ROLLBACK'); throw e; }
-      finally { client.release(); }
-    } else {
-      const saveAll = db.transaction(() => {
-        if (labels?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_labels (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`); labels.forEach(l => stmt.run(l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,l.poNumber||null,l.machineId||null,l.printingMatter||null,l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,l.woStatus||null,l.shipTo||null,l.billTo||null,l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null)); }
-        if (scans?.length) { const stmt = db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?)`); scans.forEach(s => stmt.run(s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null)); }
-        if (wastage?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by) VALUES (?,?,?,?,?,?,?)`); wastage.forEach(w => stmt.run(w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null)); }
-      });
-      saveAll();
-    }
+    const saveAll = db.transaction(() => {
+      if (labels && labels.length) {
+        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_labels
+          (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,
+          colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,
+          voided,void_reason,voided_at,voided_by,qr_data,
+          wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+        labels.forEach(l => stmt.run(
+          l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,
+          l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,
+          l.poNumber||null,l.machineId||null,l.printingMatter||null,
+          l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,
+          l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,
+          l.woStatus||null,l.shipTo||null,l.billTo||null,
+          l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null
+        ));
+      }
+      if (scans && scans.length) {
+        const stmt = db.prepare(`INSERT OR IGNORE INTO tracking_scans
+          (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?)`);
+        scans.forEach(s => stmt.run(s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,
+          s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null));
+      }
+      if (stageClosure && stageClosure.length) {
+        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_stage_closure
+          (id,batch_number,dept,closed,closed_at,closed_by) VALUES (?,?,?,?,?,?)`);
+        stageClosure.forEach(s => stmt.run(s.id,s.batchNumber||s.batch_number,
+          s.dept,s.closed?1:0,s.closedAt||s.closed_at,s.closedBy||s.closed_by||null));
+      }
+      if (wastage && wastage.length) {
+        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_wastage
+          (id,batch_number,dept,type,qty,ts,by) VALUES (?,?,?,?,?,?,?)`);
+        wastage.forEach(w => stmt.run(w.id,w.batchNumber||w.batch_number,
+          w.dept,w.type,w.qty,w.ts,w.by||null));
+      }
+      if (dispatchRecs && dispatchRecs.length) {
+        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_dispatch_records
+          (id,batch_number,customer,qty,boxes,vehicle_no,invoice_no,remarks,ts,by) VALUES (?,?,?,?,?,?,?,?,?,?)`);
+        dispatchRecs.forEach(d => stmt.run(d.id,d.batchNumber||d.batch_number,
+          d.customer||null,d.qty,d.boxes,d.vehicleNo||d.vehicle_no||null,
+          d.invoiceNo||d.invoice_no||null,d.remarks||null,d.ts,d.by||null));
+      }
+      if (alerts && alerts.length) {
+        const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_alerts
+          (id,label_id,batch_number,dept,scan_in_ts,hours_stuck,resolved,msg) VALUES (?,?,?,?,?,?,?,?)`);
+        alerts.forEach(a => stmt.run(a.id,a.labelId||a.label_id,
+          a.batchNumber||a.batch_number,a.dept,a.scanInTs||a.scan_in_ts,
+          a.hoursStuck||a.hours_stuck||null,a.resolved?1:0,a.msg||null));
+      }
+    });
+    saveAll();
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -2122,6 +1958,20 @@ app.post('/api/tracking/label-void', (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// POST update label qty (edit)
+app.post('/api/tracking/label-update', async (req, res) => {
+  try {
+    const { labelId, qty } = req.body;
+    if (!labelId || !qty) return res.status(400).json({ ok: false, error: 'labelId and qty required' });
+    if (pgPool) {
+      await pgPool.query('UPDATE tracking_labels SET qty = $1, printed = 0 WHERE id = $2', [qty, labelId]);
+    } else {
+      db.prepare('UPDATE tracking_labels SET qty = ?, printed = 0 WHERE id = ?').run(qty, labelId);
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ── Stage status — record which departments are closed per batch ─
 app.post('/api/tracking/stage-status', (req, res) => {
   try {
@@ -2252,6 +2102,4 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
   console.log(`[Sunloc] DB: ${DB_PATH}`);
-  warmPlanningCache();
-  warmActualsCache();
 });
