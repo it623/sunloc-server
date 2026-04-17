@@ -1680,15 +1680,30 @@ app.get('/api/tracking/label', (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-app.get('/api/tracking/state', (req, res) => {
+app.get('/api/tracking/state', async (req, res) => {
   try {
-    const labels  = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
-    const scans   = db.prepare('SELECT * FROM tracking_scans ORDER BY ts ASC').all();
-    const closure = db.prepare('SELECT * FROM tracking_stage_closure').all();
-    const wastage = db.prepare('SELECT * FROM tracking_wastage ORDER BY ts ASC').all();
-    const dispatch= db.prepare('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC').all();
-    const alerts  = db.prepare('SELECT * FROM tracking_alerts WHERE resolved = 0').all();
-    res.json({ ok: true, state: { labels, scans, stageClosure: closure, wastage, dispatchRecs: dispatch, alerts } });
+    if (pgPool) {
+      const [labels, scans, closure, wastage, dispatch, alerts] = await Promise.all([
+        pgPool.query('SELECT * FROM tracking_labels ORDER BY generated DESC'),
+        pgPool.query('SELECT * FROM tracking_scans ORDER BY ts ASC'),
+        pgPool.query('SELECT * FROM tracking_stage_closure'),
+        pgPool.query('SELECT * FROM tracking_wastage ORDER BY ts ASC'),
+        pgPool.query('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC'),
+        pgPool.query('SELECT * FROM tracking_alerts WHERE resolved = 0'),
+      ]);
+      res.json({ ok: true, state: {
+        labels: labels.rows, scans: scans.rows, stageClosure: closure.rows,
+        wastage: wastage.rows, dispatchRecs: dispatch.rows, alerts: alerts.rows
+      }});
+    } else {
+      const labels  = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
+      const scans   = db.prepare('SELECT * FROM tracking_scans ORDER BY ts ASC').all();
+      const closure = db.prepare('SELECT * FROM tracking_stage_closure').all();
+      const wastage = db.prepare('SELECT * FROM tracking_wastage ORDER BY ts ASC').all();
+      const dispatch= db.prepare('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC').all();
+      const alerts  = db.prepare('SELECT * FROM tracking_alerts WHERE resolved = 0').all();
+      res.json({ ok: true, state: { labels, scans, stageClosure: closure, wastage, dispatchRecs: dispatch, alerts } });
+    }
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
