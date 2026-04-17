@@ -516,10 +516,10 @@ app.get('/api/planning/state', async (req, res) => {
       state = getPlanningState();
     }
 
-    // Enrich orders with live actuals from DPR
-    if (state.orders) {
+    // Enrich orders with live actuals from DPR (use cache to avoid sync adapter)
+    if (state.orders && _actualsCache) {
       for (const ord of state.orders) {
-        const actual = getOrderActuals(ord.id, ord.batchNumber);
+        const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
         ord.actualProd = actual;
         if (actual > 0 && ord.status === 'pending') ord.status = 'running';
       }
@@ -576,9 +576,9 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 });
 
 // GET all active orders (summary for DPR to cache on load) — only 'running' status
-app.get('/api/orders/active', (req, res) => {
+app.get('/api/orders/active', async (req, res) => {
   try {
-    const state = getPlanningState();
+    const state = await getPlanningStateAsync();
     const orders = (state.orders || [])
       .filter(o => o.status === 'running' && !o.deleted)
       .map(o => ({
