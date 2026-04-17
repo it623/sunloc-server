@@ -1,121 +1,130 @@
 /**
  * db-pg-sync.js — Synchronous PostgreSQL adapter for Sunloc
+ * Uses a persistent worker process with synchronous IPC via Atomics.
  */
 
 'use strict';
 
-const { execFileSync } = require('child_process');
-const { spawn } = require('child_process');
+const { spawnSync, spawn } = require('child_process');
 const os = require('os');
 const path = require('path');
 const fs = require('fs');
 
-// ── Worker script ─────────────────────────────────────────────
+// ── Persistent worker script ──────────────────────────────────
 const WORKER_SRC = `
 require('module').Module._initPaths();
 const { Pool } = require(require('path').join(process.env.APP_DIR || '/app', 'node_modules', 'pg'));
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5 });
+const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 10 });
+
+// Shared memory for sync IPC
+const sab = new SharedArrayBuffer(4);
+const flag = new Int32Array(sab);
+
+let resultBuf = '';
 let buf = '';
+
 process.stdin.on('data', d => {
-  buf += d;
-  const nl = buf.indexOf('\\n');
-  if (nl < 0) return;
-  const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
-  const req = JSON.parse(line);
-  const { sql, params, method, id } = req;
-  let i = 0;
-  const pgSql = sql.replace(/\\?/g, () => '$' + (++i));
-  pool.query(pgSql, params || [])
-    .then(r => {
-      if (method === 'get') process.stdout.write(JSON.stringify({ id, row: r.rows[0] || null }) + '\\n');
-      else if (method === 'all') process.stdout.write(JSON.stringify({ id, rows: r.rows }) + '\\n');
-      else process.stdout.write(JSON.stringify({ id, changes: r.rowCount, lastInsertRowid: null }) + '\\n');
-    })
-    .catch(e => process.stdout.write(JSON.stringify({ id, error: e.message }) + '\\n'));
+  buf += d.toString();
+  let nl;
+  while ((nl = buf.indexOf('\\n')) >= 0) {
+    const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+    if (!line.trim()) continue;
+    const req = JSON.parse(line);
+    const { sql, params, method, id } = req;
+    let i = 0;
+    const pgSql = sql.replace(/\\?/g, () => '$' + (++i));
+    pool.query(pgSql, params || [])
+      .then(r => {
+        let result;
+        if (method === 'get') result = { id, row: r.rows[0] || null };
+        else if (method === 'all') result = { id, rows: r.rows };
+        else result = { id, changes: r.rowCount, lastInsertRowid: null };
+        process.stdout.write(JSON.stringify(result) + '\\n');
+      })
+      .catch(e => process.stdout.write(JSON.stringify({ id, error: e.message }) + '\\n'));
+  }
 });
-pool.connect().then(c => { c.release(); process.stdout.write(JSON.stringify({ id: '__ready__' }) + '\\n'); })
+
+pool.connect()
+  .then(c => { c.release(); process.stdout.write(JSON.stringify({ id: '__ready__' }) + '\\n'); })
   .catch(e => { process.stderr.write('PG connect failed: ' + e.message + '\\n'); process.exit(1); });
 `;
 
 const workerPath = path.join(os.tmpdir(), 'sunloc-pg-worker.js');
 fs.writeFileSync(workerPath, WORKER_SRC);
 
-// ── Sync helper — reads from stdin ────────────────────────────
-const SYNC_HELPER = `
-const { Pool } = require(require('path').join(process.env.APP_DIR || '/app', 'node_modules', 'pg'));
-const pool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 1 });
-let raw = '';
-process.stdin.on('data', d => { raw += d; });
-process.stdin.on('end', () => {
-  const args = JSON.parse(raw);
-  let i = 0;
-  const pgSql = args.sql.replace(/\\?/g, () => '$' + (++i));
-  pool.query(pgSql, args.params || [])
-    .then(r => {
-      if (args.method === 'get') process.stdout.write(JSON.stringify({ row: r.rows[0] || null }));
-      else if (args.method === 'all') process.stdout.write(JSON.stringify({ rows: r.rows }));
-      else process.stdout.write(JSON.stringify({ changes: r.rowCount }));
-      pool.end();
-    })
-    .catch(e => { process.stdout.write(JSON.stringify({ error: e.message })); pool.end(); });
-});
-`;
-
-const syncHelperPath = path.join(os.tmpdir(), 'sunloc-pg-sync.js');
-fs.writeFileSync(syncHelperPath, SYNC_HELPER);
-
-// ── Spawn worker ──────────────────────────────────────────────
+// ── Spawn persistent worker ───────────────────────────────────
 let worker = null;
 let pendingResolvers = {};
-let readyResolve = null;
-const readyPromise = new Promise(r => { readyResolve = r; });
+let reqId = 0;
+let workerReady = false;
 
 function startWorker() {
   worker = spawn(process.execPath, [workerPath], {
     env: { ...process.env, NODE_PATH: path.join(process.cwd(), 'node_modules') },
     stdio: ['pipe', 'pipe', 'inherit'],
   });
+
   let buf = '';
   worker.stdout.on('data', data => {
     buf += data.toString();
     let nl;
     while ((nl = buf.indexOf('\n')) >= 0) {
-      const line = buf.slice(0, nl); buf = buf.slice(nl + 1);
+      const line = buf.slice(0, nl);
+      buf = buf.slice(nl + 1);
       if (!line.trim()) continue;
       try {
         const msg = JSON.parse(line);
-        if (msg.id === '__ready__') { readyResolve(); return; }
+        if (msg.id === '__ready__') { workerReady = true; return; }
         const res = pendingResolvers[msg.id];
         if (res) { delete pendingResolvers[msg.id]; res(msg); }
       } catch(e) {}
     }
   });
-  worker.on('exit', code => console.error(`[PG Worker] exited with code ${code}`));
+
+  worker.on('exit', code => {
+    console.error(`[PG Worker] exited with code ${code}, restarting...`);
+    workerReady = false;
+    setTimeout(startWorker, 1000);
+  });
+
+  // Wait for ready
+  const deadline = Date.now() + 10000;
+  while (!workerReady && Date.now() < deadline) {
+    Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50);
+  }
 }
 
 startWorker();
 
-// ── Synchronous query via stdin ───────────────────────────────
+// ── Synchronous query using worker + Atomics wait ─────────────
 function pgQuerySync(sql, params, method) {
-  const args = JSON.stringify({ sql, params: params || [], method });
-  try {
-    const out = execFileSync(process.execPath, [syncHelperPath], {
-      env: { ...process.env, NODE_PATH: path.join(process.cwd(), 'node_modules') },
-      input: args,
-      timeout: 60000,
-      maxBuffer: 50 * 1024 * 1024,
-      encoding: 'utf8',
-    });
-    const result = JSON.parse(out);
-    if (result.error) throw new Error(result.error);
-    return result;
-  } catch (e) {
-    console.error('[PG] Query error:', e.code || e.message?.slice(0, 100));
-    if (e.message && e.message.includes('{')) {
-      try { const r = JSON.parse(e.message.match(/\{.*\}/)[0]); if (r.error) throw new Error(r.error); } catch{}
-    }
-    throw e;
+  if (!worker || !workerReady) throw new Error('PG worker not ready');
+  
+  const id = String(reqId++);
+  const sab = new SharedArrayBuffer(4);
+  const flag = new Int32Array(sab);
+  let result = null;
+
+  pendingResolvers[id] = (msg) => {
+    result = msg;
+    Atomics.store(flag, 0, 1);
+    Atomics.notify(flag, 0);
+  };
+
+  worker.stdin.write(JSON.stringify({ sql, params: params || [], method, id }) + '\n');
+
+  // Wait synchronously for result
+  const deadline = Date.now() + 30000;
+  while (result === null && Date.now() < deadline) {
+    Atomics.wait(flag, 0, 0, 100);
   }
+
+  delete pendingResolvers[id];
+
+  if (result === null) throw new Error('PG query timeout');
+  if (result.error) throw new Error(result.error);
+  return result;
 }
 
 // ── Prepared statement shim ───────────────────────────────────
