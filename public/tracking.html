@@ -1883,13 +1883,13 @@ function renderLabels(){
   </div>
   <div class="alert alert-info">Labels are capped by: (1) order quantity in Planning — amend planned qty to unlock more, (2) daily machine target in boxes.</div>
 
-  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
+  <div class="grid-2" style="align-items:start;gap:16px">
 
   <!-- LEFT: Batch Status + Generate -->
-  <div class="card" style="max-height:520px;overflow-y:auto">
+  <div class="card">
     <div class="card-title">Active Batches</div>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>PC Code</th><th>Actual(L)</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Action</th></tr></thead>
+      <thead><tr><th>Batch</th><th>Customer</th><th>Size</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Action</th></tr></thead>
       <tbody>
       ${activeBatches.map(b=>{
         const maxLabels=lakhToBox(b.qty,b.size);
@@ -1902,28 +1902,27 @@ function renderLabels(){
         const isExcessAvailable=normalGenerated>=normalBoxMax2&&remaining>0;
         const isSelected=b.batchNumber===selBatch;
         const pct=maxLabels>0?(generated/maxLabels*100):0;
-        return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">
-          <td class="td-bold td-mono">${b.batchNumber}</td>
+        return `<tr style="${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}">
+          <td class="td-bold td-mono" style="cursor:pointer" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">${b.batchNumber}</td>
           <td class="text-sm">${b.customer||'-'}</td>
           <td class="td-mono">${b.size}</td>
-          <td class="td-mono text-sm">${b.pcCode||'—'}</td>
-          <td class="td-mono ${(b.actualQty||b.actualProd||0)>0?'':'text-muted'}">${((b.actualQty||b.actualProd||0)).toFixed(2)}</td>
           <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:48px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
           <td class="td-mono">${printed}</td>
           <td class="td-mono ${remaining===0?'':'fw-bold amber'}">${remaining}</td>
-          <td onclick="event.stopPropagation()">
+          <td>
             <div class="flex gap-4">
               ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕':'+ Gen'}</button>`:''}
+              <button class="btn btn-sm btn-secondary" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">📋</button>
             </div>
           </td>
         </tr>`;
-      }).join('')||'<tr><td colspan="9" class="text-center text-muted">No active batches from Planning App</td></tr>'}
+      }).join('')||'<tr><td colspan="7" class="text-center text-muted">No active batches from Planning App</td></tr>'}
       </tbody>
     </table></div>
   </div>
 
   <!-- RIGHT: Inline Print Queue for selected batch -->
-  <div class="card" style="min-height:200px;max-height:520px;overflow-y:auto;position:sticky;top:16px">
+  <div class="card" style="min-height:200px">
     ${(()=>{
       if(!selBatch) return '<div class="text-center text-muted" style="padding:40px">← Select a batch to view its print queue</div>';
       const batch=getBatch(selBatch);
@@ -1982,9 +1981,9 @@ function renderLabels(){
     <div class="card-title" style="color:var(--orange)">🟠 Orange Labels — Printed Batches</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Auto-generated at PI scan-in for each printed batch box. One orange label per box.</div>
     ${unprintedOrange.length>0?`<div style="background:rgba(234,88,12,0.1);border:1px solid rgba(234,88,12,0.4);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:13px;font-weight:600;color:var(--orange)">⚠️ ${unprintedOrange.length} orange label${unprintedOrange.length>1?'s':''} pending print</div>`:''}
-    <div style="display:flex;gap:16px;align-items:start">
+    <div style="display:flex;gap:16px;align-items:flex-start">
       <!-- Left panel: batch list -->
-      <div style="width:340px;flex-shrink:0;max-height:400px;overflow-y:auto">
+      <div style="width:340px;flex-shrink:0">
         <div class="tbl-wrap"><table>
           <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>GEN</th><th>PRT</th><th>REM</th></tr></thead>
           <tbody>
@@ -2007,7 +2006,7 @@ function renderLabels(){
         </table></div>
       </div>
       <!-- Right panel: print queue for selected batch -->
-      <div style="flex:1;min-width:0;max-height:400px;overflow-y:auto;position:sticky;top:0">
+      <div style="flex:1;min-width:0">
         ${selBatch ? `
         <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
           <div>
@@ -4052,8 +4051,27 @@ function renderReportE(){
         const packUnptd=!b.isPrinted?boxToLakh(scansForBatch.filter(s=>s.dept==='packing'&&s.type==='out').length,b.size):0;
         const packPtd=b.isPrinted?boxToLakh(scansForBatch.filter(s=>s.dept==='packing'&&s.type==='out').length,b.size):0;
         const disp=state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber&&(!filterDate||r.ts?.slice(0,10)===filterDate)).reduce((s,r)=>s+r.qty,0);
-        rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,plannedQty:b.qty||0,grossProd:fmt(grossProd),aimRunTotal:fmt(aimIn),aimSalvage:fmt(aimW.salvage),aimRemelt:fmt(aimW.remelt),aimAGrade:fmt(aimOutQty),aimAGradePct:fmt(aGradePct,1),manInspect:fmt(manW.total),totalAGrade:fmt(totalAG),aGradePctUnptd:fmt(aGradePct,1),wip:fmt(wip),availUnptd:fmt(!b.isPrinted?totalAG:0),availPrint:fmt(b.isPrinted?totalAG:0),
-          printingTD:fmt(printingTD),printRej:fmt(printW.salvage),piInspect:fmt(piOut),piSalRem:fmt(piW.salvage),packingUP:fmt(packUnptd),packingPTD:fmt(packPtd),dispatch:fmt(disp)});
+        rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,
+          plannedQty:b.qty||0,
+          grossProd:fmt(grossProd),_grossProd:grossProd,
+          aimRunTotal:fmt(aimIn),_aimRunTotal:aimIn,
+          aimSalvage:fmt(aimW.salvage),_aimSalvage:aimW.salvage,
+          aimRemelt:fmt(aimW.remelt),_aimRemelt:aimW.remelt,
+          aimAGrade:fmt(aimOutQty),_aimAGrade:aimOutQty,
+          aimAGradePct:fmt(aGradePct,1),
+          manInspect:fmt(manW.total),_manInspect:manW.total,
+          totalAGrade:fmt(totalAG),_totalAGrade:totalAG,
+          aGradePctUnptd:fmt(aGradePct,1),
+          wip:fmt(wip),_wip:wip,
+          availUnptd:fmt(!b.isPrinted?totalAG:0),_availUnptd:!b.isPrinted?totalAG:0,
+          availPrint:fmt(b.isPrinted?totalAG:0),_availPrint:b.isPrinted?totalAG:0,
+          printingTD:fmt(printingTD),_printingTD:printingTD,
+          printRej:fmt(printW.salvage),_printRej:printW.salvage,
+          piInspect:fmt(piOut),_piInspect:piOut,
+          piSalRem:fmt(piW.salvage),_piSalRem:piW.salvage,
+          packingUP:fmt(packUnptd),_packingUP:packUnptd,
+          packingPTD:fmt(packPtd),_packingPTD:packPtd,
+          dispatch:fmt(disp),_dispatch:disp});
       });
     });
   });
@@ -4076,8 +4094,8 @@ function renderReportE(){
   </tr>`).join('') || '<tr><td colspan="27" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
 
   // Build totals row
-  const fmtN = v => isNaN(v)||v===0?'—':v.toFixed(2);
-  const sum = k => rows.reduce((a,r)=>a+(parseFloat(r[k])||0),0);
+  const fmtN = v => (v===0||v===undefined)?'—':v.toFixed(2);
+  const sum = k => rows.reduce((a,r)=>a+(r['_'+k]||0),0);
   const totalAG = sum('totalAGrade'), totalGross = sum('grossProd');
   const totalsRow = rows.length ? `<tr style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
     <td colspan="7" style="text-align:right;padding-right:8px">TOTALS (${rows.length} batches)</td>
