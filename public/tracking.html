@@ -1883,10 +1883,10 @@ function renderLabels(){
   </div>
   <div class="alert alert-info">Labels are capped by: (1) order quantity in Planning — amend planned qty to unlock more, (2) daily machine target in boxes.</div>
 
-  <div class="grid-2" style="align-items:start;gap:16px">
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px;align-items:start">
 
   <!-- LEFT: Batch Status + Generate -->
-  <div class="card">
+  <div class="card" style="max-height:520px;overflow-y:auto">
     <div class="card-title">Active Batches</div>
     <div class="tbl-wrap"><table>
       <thead><tr><th>Batch</th><th>Customer</th><th>Size</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Action</th></tr></thead>
@@ -1902,17 +1902,16 @@ function renderLabels(){
         const isExcessAvailable=normalGenerated>=normalBoxMax2&&remaining>0;
         const isSelected=b.batchNumber===selBatch;
         const pct=maxLabels>0?(generated/maxLabels*100):0;
-        return `<tr style="${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}">
-          <td class="td-bold td-mono" style="cursor:pointer" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">${b.batchNumber}</td>
+        return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">
+          <td class="td-bold td-mono">${b.batchNumber}</td>
           <td class="text-sm">${b.customer||'-'}</td>
           <td class="td-mono">${b.size}</td>
           <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:48px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
           <td class="td-mono">${printed}</td>
           <td class="td-mono ${remaining===0?'':'fw-bold amber'}">${remaining}</td>
-          <td>
+          <td onclick="event.stopPropagation()">
             <div class="flex gap-4">
               ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕':'+ Gen'}</button>`:''}
-              <button class="btn btn-sm btn-secondary" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">📋</button>
             </div>
           </td>
         </tr>`;
@@ -1922,7 +1921,7 @@ function renderLabels(){
   </div>
 
   <!-- RIGHT: Inline Print Queue for selected batch -->
-  <div class="card" style="min-height:200px">
+  <div class="card" style="min-height:200px;max-height:520px;overflow-y:auto;position:sticky;top:16px">
     ${(()=>{
       if(!selBatch) return '<div class="text-center text-muted" style="padding:40px">← Select a batch to view its print queue</div>';
       const batch=getBatch(selBatch);
@@ -2052,7 +2051,7 @@ function viewLabel(labelId){
       ${l.printed?'<div><span style="color:var(--text3)">Printed At</span><div class="fw-bold text-sm">'+fmtDateTime(l.printedAt)+'</div></div>':''}
       ${l.voided?'<div><span style="color:var(--text3)">Void Reason</span><div style="color:var(--red)">'+(l.voidReason||'-')+'</div></div>':''}
     </div>
-  `, [{label:'Close', onClick:'closeModal()'}]);
+  `, [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);
 }
 
 function editLabelQty(labelId){
@@ -2065,8 +2064,8 @@ function editLabelQty(labelId){
       <div style="font-size:11px;color:var(--text3);margin-top:4px">Enter new quantity in Lakhs</div>
     </div>
   `, [
-    {label:'Cancel', onClick:'closeModal()', secondary:true},
-    {label:'✏️ Save & Mark for Reprint', onClick:`saveLabelQtyEdit('${labelId}')`, primary:true}
+    {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'},
+    {label:'✏️ Save & Mark for Reprint', cls:'btn-primary', fn:`saveLabelQtyEdit('${labelId}')`}
   ]);
 }
 
