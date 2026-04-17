@@ -1946,6 +1946,8 @@ function renderLabels(){
           <td class="td-mono text-sm">${fmtDateTime(l.generated)}</td>
           <td>
             <div class="flex gap-4">
+              <button class="btn btn-sm btn-ghost" style="padding:3px 8px;font-size:11px" onclick="viewLabel('${l.id}')">👁 View</button>
+              ${!l.voided?`<button class="btn btn-sm btn-ghost" style="padding:3px 8px;font-size:11px;border-color:var(--accent)" onclick="editLabelQty('${l.id}')">✏️ Edit</button>`:''}
               ${!l.voided&&!l.printed?`<button class="btn btn-sm btn-primary" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:''}
               ${!l.voided&&l.printed?`<button class="btn btn-sm btn-secondary" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">Reprint</button>`:''}
               ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-danger" style="padding:3px 8px;font-size:11px" onclick="voidLabel('${l.id}','Admin void');renderLabels()">Void</button>`:''}
@@ -2029,6 +2031,57 @@ function renderLabels(){
     </div>
   </div>`;
   }
+}
+
+function viewLabel(labelId){
+  const l = state.labels.find(x=>x.id===labelId);
+  if(!l) return;
+  const batch = getBatch(l.batchNumber);
+  openModal('Label Details — #'+Math.abs(l.labelNumber||0), '', `
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:8px 16px;font-size:13px">
+      <div><span style="color:var(--text3)">Label #</span><div class="fw-bold td-mono">${Math.abs(l.labelNumber||0)}${l.isPartial?' (Partial)':''}${l.isExcess?' (Excess)':''}</div></div>
+      <div><span style="color:var(--text3)">Batch</span><div class="fw-bold td-mono">${l.batchNumber}</div></div>
+      <div><span style="color:var(--text3)">Customer</span><div class="fw-bold">${l.customer||batch?.customer||'-'}</div></div>
+      <div><span style="color:var(--text3)">Size</span><div class="fw-bold td-mono">${l.size||batch?.size||'-'}</div></div>
+      <div><span style="color:var(--text3)">Qty (L)</span><div class="fw-bold td-mono">${fmt(l.qty)}</div></div>
+      <div><span style="color:var(--text3)">PC Code</span><div class="fw-bold td-mono">${l.pcCode||'-'}</div></div>
+      <div><span style="color:var(--text3)">Colour</span><div class="fw-bold">${l.colour||batch?.colour||'-'}</div></div>
+      <div><span style="color:var(--text3)">Machine</span><div class="fw-bold td-mono">${l.machineId||batch?.machineId||'-'}</div></div>
+      <div><span style="color:var(--text3)">Status</span><div class="fw-bold">${l.voided?'<span style="color:var(--red)">Voided</span>':l.printed?'<span style="color:var(--green)">✅ Printed</span>':'Pending'}</div></div>
+      <div><span style="color:var(--text3)">Generated</span><div class="fw-bold text-sm">${fmtDateTime(l.generated)}</div></div>
+      ${l.printed?'<div><span style="color:var(--text3)">Printed At</span><div class="fw-bold text-sm">'+fmtDateTime(l.printedAt)+'</div></div>':''}
+      ${l.voided?'<div><span style="color:var(--text3)">Void Reason</span><div style="color:var(--red)">'+(l.voidReason||'-')+'</div></div>':''}
+    </div>
+  `, [{label:'Close', onClick:'closeModal()'}]);
+}
+
+function editLabelQty(labelId){
+  const l = state.labels.find(x=>x.id===labelId);
+  if(!l) return;
+  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0), 'Change qty only. Updated qty will print on the label when reprinted.', `
+    <div class="form-group">
+      <label>Current Qty: <strong>${fmt(l.qty)}L</strong></label>
+      <input type="number" id="edit-qty-input" value="${l.qty}" min="0.01" step="0.01" style="font-size:16px;font-weight:700;margin-top:8px" />
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">Enter new quantity in Lakhs</div>
+    </div>
+  `, [
+    {label:'Cancel', onClick:'closeModal()', secondary:true},
+    {label:'✏️ Save & Mark for Reprint', onClick:`saveLabelQtyEdit('${labelId}')`, primary:true}
+  ]);
+}
+
+function saveLabelQtyEdit(labelId){
+  const newQty = parseFloat(document.getElementById('edit-qty-input')?.value);
+  if(!newQty || newQty <= 0) { alert('Please enter a valid quantity'); return; }
+  const l = state.labels.find(x=>x.id===labelId);
+  if(!l) return;
+  l.qty = newQty;
+  l.printed = false;
+  saveLocal();
+  pushToServer('/api/tracking/label-update', {labelId, qty: newQty});
+  closeModal();
+  renderLabels();
+  toast('✅ Qty updated — label marked for reprint', 'var(--green)', 3000);
 }
 
 function unprintedOrangeBatch(batchNumber){
@@ -4019,7 +4072,23 @@ function renderReportE(){
     <td>${r.printingTD}</td><td>${r.printRej}</td><td>${r.piInspect}</td>
     <td>${r.piSalRem}</td><td>${r.packingUP}</td><td>${r.packingPTD}</td>
     <td><b>${r.dispatch}</b></td>
-  </tr>`).join('') || '<tr><td colspan="24" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
+  </tr>`).join('') || '<tr><td colspan="27" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
+
+  // Build totals row
+  const fmtN = v => isNaN(v)||v===0?'—':v.toFixed(2);
+  const sum = k => rows.reduce((a,r)=>a+(parseFloat(r[k])||0),0);
+  const totalAG = sum('totalAGrade'), totalGross = sum('grossProd');
+  const totalsRow = rows.length ? `<tr style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
+    <td colspan="7" style="text-align:right;padding-right:8px">TOTALS (${rows.length} batches)</td>
+    <td>${fmtN(sum('plannedQty'))}</td><td>${fmtN(totalGross)}</td>
+    <td>${fmtN(sum('aimRunTotal'))}</td><td>${fmtN(sum('aimSalvage'))}</td><td>${fmtN(sum('aimRemelt'))}</td>
+    <td>${fmtN(sum('aimAGrade'))}</td><td>${totalGross>0?(sum('aimAGrade')/totalGross*100).toFixed(1)+'%':'—'}</td><td>${fmtN(sum('manInspect'))}</td>
+    <td>${fmtN(totalAG)}</td><td>${totalGross>0?(totalAG/totalGross*100).toFixed(1)+'%':'—'}</td>
+    <td>${fmtN(sum('wip'))}</td><td>${fmtN(sum('availUnptd'))}</td><td>${fmtN(sum('availPrint'))}</td>
+    <td>${fmtN(sum('printingTD'))}</td><td>${fmtN(sum('printRej'))}</td><td>${fmtN(sum('piInspect'))}</td>
+    <td>${fmtN(sum('piSalRem'))}</td><td>${fmtN(sum('packingUP'))}</td><td>${fmtN(sum('packingPTD'))}</td>
+    <td>${fmtN(sum('dispatch'))}</td>
+  </tr>` : '';
 
   const fullHtml = `<!DOCTYPE html>
 <html lang="en">
@@ -4075,7 +4144,7 @@ function renderReportE(){
       <th>Pack UNPTD (L)</th><th>Pack PTD (L)</th><th>Dispatch (L)</th>
     </tr>
   </thead>
-  <tbody>${tableRows}</tbody>
+  <tbody>${tableRows}${totalsRow}</tbody>
 </table>
 </div>
 <script>
