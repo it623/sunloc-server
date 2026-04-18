@@ -1841,14 +1841,21 @@ app.get('/api/tracking/wip-summary', (req, res) => {
 
 
 // ── Labels lookup by batchNumber (scanning fallback) ──
-app.get('/api/tracking/labels', (req, res) => {
+app.get('/api/tracking/labels', async (req, res) => {
   try {
     const { batchNumber } = req.query;
     if(!batchNumber) return res.status(400).json({ok:false,error:'batchNumber required'});
-    const labels = db.prepare(
-      'SELECT * FROM tracking_labels WHERE batch_number = ? AND voided = 0'
-    ).all(batchNumber);
-    res.json({ok:true, labels});
+    if (pgPool) {
+      const r = await pgPool.query(
+        'SELECT * FROM tracking_labels WHERE batch_number = $1 AND voided = 0', [batchNumber]
+      );
+      res.json({ok:true, labels: r.rows});
+    } else {
+      const labels = db.prepare(
+        'SELECT * FROM tracking_labels WHERE batch_number = ? AND voided = 0'
+      ).all(batchNumber);
+      res.json({ok:true, labels});
+    }
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });
 

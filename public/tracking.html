@@ -1085,6 +1085,12 @@ function showScanFlash(type, batchNo, boxNo, qty){
 }
 
 function recordScan(labelId, dept, type, operator, parsed){
+  // Extra guard: prevent double-scan within 5 seconds (network retry protection)
+  const recentDup = state.scans.find(s=>
+    s.labelId===labelId && s.dept===dept && s.type===type &&
+    (new Date() - new Date(s.ts)) < 5000
+  );
+  if(recentDup) return {ok:false, msg:'Duplicate scan — already recorded just now'};
   // Primary lookup: by exact id
   let label = state.labels.find(l=>l.id===labelId);
   // Secondary lookup: by batchNumber + labelNumber (handles sync edge cases)
@@ -1575,7 +1581,7 @@ ${hBand}
 ^FO30,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
 ^FO30,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
 ^FO30,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
-^FO30,${tTop+RH*4+10}^FDPRINTED       :^FS
+^FO30,${tTop+RH*4+10}^FDPRINTED       :  ${label.pcCode||batch?.pcCode||''}^FS
 
 ^FO420,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
 ^FO420,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
@@ -2603,63 +2609,35 @@ function processScanInput(dept,type){
     // Label not in local state — sync from server then retry
     zoneEl.className='scan-zone';
     resultEl.innerHTML=`<div class="alert" style="background:rgba(255,171,0,0.1);border:1px solid rgba(255,171,0,0.4);padding:8px 12px">🔄 Syncing labels from server...</div>`;
-    // Use async IIFE so errors are always caught and UI always updates
     (async ()=>{
       let retry = {ok:false, msg:'Label not found'};
       try{
-        // Direct targeted fetch — get this specific label from server
-        // More reliable than full pullFromServer which may re-render page
-        // Fetch labels directly from server — no page re-render
-        const r = await fetch(serverUrl+'/api/tracking/state',
-          {signal:AbortSignal.timeout(8000)});
-        const j = await r.json();
-
-        if(j.ok && j.state){
-          // Merge server labels into local state without triggering page re-render
-          const normLabels = (j.state.labels||[]).map(normLabel);
-          const serverIds = new Set(normLabels.map(l=>l.id));
-          const localOnly = state.labels.filter(l=>!serverIds.has(l.id));
-          state.labels = [...normLabels, ...localOnly];
-          saveLocal();
-          retry = recordScan(parsed.labelId, dept, type, currentDept, parsed);
-          // If still not found, try matching by batchNumber+labelNumber from QR
-          if(!retry.ok && parsed.batchNumber && parsed.boxNumber != null){
-            const byBatch = state.labels.find(l =>
-              l.batchNumber === parsed.batchNumber &&
-              Math.abs(l.labelNumber) === Math.abs(parsed.boxNumber)
-            );
-            if(byBatch) retry = recordScan(byBatch.id, dept, type, currentDept,
-              {...parsed, labelId: byBatch.id});
+        // Fetch batch-specific labels FIRST — fast, targeted
+        if(parsed.batchNumber){
+          const br = await fetch(
+            serverUrl+'/api/tracking/labels?batchNumber='+encodeURIComponent(parsed.batchNumber),
+            {signal:AbortSignal.timeout(8000)}
+          );
+          const bj = await br.json();
+          if(bj.ok && bj.labels && bj.labels.length){
+            const normBatch = bj.labels.map(normLabel);
+            normBatch.forEach(nl => {
+              if(!state.labels.find(l=>l.id===nl.id)) state.labels.push(nl);
+            });
+            saveLocal();
+            retry = recordScan(parsed.labelId, dept, type, currentDept, parsed);
+            if(!retry.ok && parsed.boxNumber != null){
+              const byBatch = state.labels.find(l =>
+                l.batchNumber===parsed.batchNumber &&
+                Math.abs(l.labelNumber)===Math.abs(parsed.boxNumber)
+              );
+              if(byBatch) retry = recordScan(byBatch.id, dept, type, currentDept,
+                {...parsed, labelId:byBatch.id});
+            }
           }
         }
       }catch(e){
-        // Network error on full state sync — try batch-specific label fetch as last resort
-        if(parsed.batchNumber){
-          try{
-            const br = await fetch(
-              serverUrl+'/api/tracking/labels?batchNumber='+encodeURIComponent(parsed.batchNumber),
-              {signal:AbortSignal.timeout(5000)}
-            );
-            const bj = await br.json();
-            if(bj.ok && bj.labels && bj.labels.length){
-              const normBatch = bj.labels.map(normLabel);
-              normBatch.forEach(nl => {
-                if(!state.labels.find(l=>l.id===nl.id)) state.labels.push(nl);
-              });
-              saveLocal();
-              retry = recordScan(parsed.labelId, dept, type, currentDept, parsed);
-              if(!retry.ok && parsed.boxNumber != null){
-                const byBatch = state.labels.find(l =>
-                  l.batchNumber===parsed.batchNumber &&
-                  Math.abs(l.labelNumber)===Math.abs(parsed.boxNumber)
-                );
-                if(byBatch) retry = recordScan(byBatch.id, dept, type, currentDept,
-                  {...parsed, labelId:byBatch.id});
-              }
-            }
-          }catch(e2){ /* ignore */ }
-        }
-        if(!retry.ok) retry = {ok:false, msg:'Cannot reach server — check connection'};
+        retry = {ok:false, msg:'Cannot reach server — check connection'};
       }
       // Always update UI — never stuck
       if(retry.ok){
