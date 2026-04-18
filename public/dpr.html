@@ -31,7 +31,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--t1);font-size:13px
 .ntab:hover{color:rgba(255,255,255,0.85)}
 .ntab.on{color:#f0c060;border-bottom-color:#f0c060}
 .nright{display:flex;align-items:center;gap:4px;margin-left:6px;flex-shrink:0;min-width:0;overflow:visible}
-#ndate{background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:var(--r);color:#fff;padding:5px 8px;font-family:var(--fc);font-size:12px;font-weight:700;cursor:pointer;outline:none}
+#ndate{background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:var(--r);color:#fff;padding:5px 6px;font-family:var(--fc);font-size:11px;font-weight:700;cursor:pointer;outline:none;width:120px}
 #ndate::-webkit-calendar-picker-indicator{filter:invert(1)}
 .nbtn{padding:5px 11px;border-radius:var(--r);font-family:var(--fc);font-weight:700;font-size:11px;letter-spacing:.8px;cursor:pointer;border:1.5px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);transition:.15s;white-space:nowrap}
 .nbtn:hover{background:rgba(255,255,255,0.22);color:#fff}
@@ -203,7 +203,7 @@ td.r,th.r{text-align:right}
   .close-btn, .closed-badge { font-size: 9px !important; }
 
   /* ── User badge ── */
-  #dpr-user-badge { top: 6px; right: 8px; font-size: 10px; padding: 3px 7px; }
+  
 }
 /* TABLE */
 .data-table{width:100%;border-collapse:collapse;font-size:12px}
@@ -287,13 +287,13 @@ td.r,th.r{text-align:right}
     <div id="unsavedDot"></div>
     <span id="syncBadge" class="offline" onclick="configureServer()">⚙ Server</span>
     <input type="date" id="ndate" onchange="onDateChange()">
-    <select id="recentDatesSelect" style="background:var(--s2);border:1px solid var(--b2);border-radius:var(--r);color:var(--t1);padding:5px 6px;font-family:var(--fc);font-size:11px;cursor:pointer;outline:none;max-width:110px" onchange="if(this.value){document.getElementById('ndate').value=this.value;onDateChange();this.value=''}" title="Jump to a previous date">
+    <select id="recentDatesSelect" style="display:none" onchange="if(this.value){document.getElementById('ndate').value=this.value;onDateChange();this.value=''}">
       <option value="">📅 History</option>
     </select>
-    <button class="nbtn" onclick="exportData()" title="Export data">↓ Exp.</button>
-    <button class="nbtn" onclick="document.getElementById('imp').click()" title="Import data">↑ Imp.</button>
+    <button class="nbtn" onclick="exportData()" title="Export data" style="padding:5px 7px">↓</button>
+    <button class="nbtn" onclick="document.getElementById('imp').click()" title="Import data" style="padding:5px 7px">↑</button>
     <input type="file" id="imp" accept=".json" style="display:none" onchange="importData(this)">
-    <button class="nbtn primary" id="saveBtn" onclick="saveDay()">Save</button>
+    <button class="nbtn primary" id="saveBtn" onclick="saveDay()" style="padding:5px 14px;font-size:12px">💾 Save</button>
   </div>
 </div>
 
@@ -3166,10 +3166,13 @@ function addDprUserBadge() {
   if (document.getElementById('dpr-user-badge')) return;
   const wrap = document.createElement('div');
   wrap.id = 'dpr-user-badge';
-  wrap.style.cssText = 'position:fixed;top:8px;right:10px;z-index:500;display:flex;align-items:center;gap:6px;background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.25);border-radius:6px;padding:4px 10px;font-size:11px;cursor:pointer';
-  wrap.innerHTML = `👤 ${dprUser.username} <span style="color:var(--t3)">[${dprUser.role.toUpperCase()}]</span> <span style="color:var(--t3)">▾</span>`;
+  wrap.style.cssText = 'display:flex;align-items:center;gap:5px;background:rgba(0,212,255,0.1);border:1px solid rgba(0,212,255,0.25);border-radius:6px;padding:3px 8px;font-size:10px;cursor:pointer;white-space:nowrap;flex-shrink:0';
+  wrap.innerHTML = `👤 <strong>${dprUser.username}</strong> <span style="color:var(--t3);font-size:9px">[${dprUser.role.toUpperCase()}]</span>`;
   wrap.onclick = showDprUserMenu;
-  document.body.appendChild(wrap);
+  // Insert into nright BEFORE save button
+  const saveBtn = document.getElementById('saveBtn');
+  if(saveBtn) saveBtn.parentNode.insertBefore(wrap, saveBtn);
+  else document.body.appendChild(wrap);
 
   // Show audit tab for admin
   if (dprUser.role === 'admin') {
