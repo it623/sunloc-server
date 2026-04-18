@@ -1853,18 +1853,29 @@ app.get('/api/tracking/labels', (req, res) => {
 });
 
 // ── Individual scan save (called after each scan in/out) ──
-app.post('/api/tracking/scan', (req, res) => {
+app.post('/api/tracking/scan', async (req, res) => {
   try {
     const { scan } = req.body;
     if(!scan || !scan.id) return res.status(400).json({ok:false,error:'Missing scan'});
-    db.prepare(`INSERT OR IGNORE INTO tracking_scans
-      (id,label_id,batch_number,dept,type,ts,operator,size,qty)
-      VALUES (?,?,?,?,?,?,?,?,?)`).run(
-      scan.id, scan.labelId||scan.label_id,
-      scan.batchNumber||scan.batch_number,
-      scan.dept, scan.type, scan.ts,
-      scan.operator||null, scan.size||null, scan.qty||null
-    );
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
+        [scan.id, scan.labelId||scan.label_id,
+         scan.batchNumber||scan.batch_number,
+         scan.dept, scan.type, scan.ts,
+         scan.operator||null, scan.size||null, scan.qty||null]
+      );
+    } else {
+      db.prepare(`INSERT OR IGNORE INTO tracking_scans
+        (id,label_id,batch_number,dept,type,ts,operator,size,qty)
+        VALUES (?,?,?,?,?,?,?,?,?)`).run(
+        scan.id, scan.labelId||scan.label_id,
+        scan.batchNumber||scan.batch_number,
+        scan.dept, scan.type, scan.ts,
+        scan.operator||null, scan.size||null, scan.qty||null
+      );
+    }
     res.json({ok:true});
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });

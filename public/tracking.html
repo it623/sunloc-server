@@ -174,6 +174,13 @@ input[type=number]{font-family:var(--mono)}
 .scan-zone{background:var(--surface2);border:2px dashed var(--border2);border-radius:var(--r);padding:24px;text-align:center;transition:.15s}
 .scan-zone.active{border-color:var(--accent);background:var(--accent-light)}
 .scan-zone.success{border-color:var(--accent2);background:var(--accent2-light)}
+.scan-flash{position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:none;opacity:0;transition:opacity .15s}
+.scan-flash.show{opacity:1}
+.scan-flash.green{background:rgba(5,150,105,0.92)}
+.scan-flash.blue{background:rgba(37,99,235,0.92)}
+.scan-flash.red{background:rgba(220,38,38,0.88)}
+.scan-flash-icon{font-size:80px;line-height:1}
+.scan-flash-text{font-size:28px;font-weight:700;color:#fff;text-align:center;padding:0 24px}
 .scan-zone.error{border-color:var(--accent4);background:var(--accent4-light)}
 .scan-input{font-size:18px;font-family:var(--mono);text-align:center;border:2px solid var(--border2);border-radius:var(--r-sm);padding:12px;width:100%;max-width:320px;letter-spacing:2px}
 .scan-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.15)}
@@ -406,6 +413,10 @@ input[type=number]{font-family:var(--mono)}
 </style>
 </head>
 <body>
+<div id="scan-flash" class="scan-flash">
+  <div class="scan-flash-icon" id="scan-flash-icon">✅</div>
+  <div class="scan-flash-text" id="scan-flash-text"></div>
+</div>
 
 <!-- MOBILE BOTTOM NAV (hidden on desktop via CSS) -->
 <div id="mobile-nav" style="display:none">
@@ -1008,7 +1019,11 @@ async function pullFromServer(){
       if(sr.ok){
         const sj=await sr.json();
         if(sj.ok && sj.scans){
-          state.scans = sj.scans.map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
+          const serverScans = sj.scans.map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
+          // Deduplicate: server is source of truth, add only local-only scans
+          const serverIds = new Set(serverScans.map(s=>s.id));
+          const localOnly = state.scans.filter(s=>!serverIds.has(s.id));
+          state.scans = [...serverScans, ...localOnly];
           saveLocal();
           if(currentPage) renderPage(currentPage);
         }
@@ -1067,6 +1082,20 @@ function loadState(){
 // ═══════════════════════════════════════════════════════
 // SCAN ENGINE
 // ═══════════════════════════════════════════════════════
+
+function showScanFlash(type, batchNo, boxNo, qty){
+  const el = document.getElementById('scan-flash');
+  const icon = document.getElementById('scan-flash-icon');
+  const text = document.getElementById('scan-flash-text');
+  if(!el) return;
+  const isIn = type==='in';
+  el.className = 'scan-flash show green';
+  icon.textContent = isIn ? '✅' : '📤';
+  text.innerHTML = '<div style="font-size:36px;font-weight:900;letter-spacing:2px">' + (isIn ? 'SCAN IN ✓' : 'SCAN OUT ✓') + '</div>'
+    + '<div style="font-size:22px;margin-top:8px">' + batchNo + ' &nbsp;/&nbsp; Box ' + boxNo + '</div>'
+    + '<div style="font-size:18px;margin-top:4px;opacity:0.9">' + qty + ' L</div>';
+  setTimeout(()=>{ el.className='scan-flash'; }, 3500);
+}
 
 function recordScan(labelId, dept, type, operator, parsed){
   // Primary lookup: by exact id
@@ -1534,7 +1563,7 @@ function generateZPL(label, batch){
 ^LH0,0
 ${oBorder}
 ^CF0,46
-^FO10,50^FB780,1,0,C^FDSUNIL HEALTHCARE LIMITED^FS
+^FO30,50^FB740,1,0,C^FDSUNIL HEALTHCARE LIMITED^FS
 ^CF0,30
 ^FO10,102^FB780,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
 ^FO10,${136+D}^GB780,2,2^FS
@@ -1574,10 +1603,9 @@ ${hBand}
 
 ^FO10,${qrY}^BQN,2,9^FDLA,${label.qrData}^FS
 ^CF0,28
-^FO260,${qRelY}^FB300,1,0,C^FDQ RELEASED^FS
-^FO580,${sigY}^GB200,2,2^FS
-^CF0,22
-^FO580,${sigY+10}^FB200,1,0,C^FDSIGNATURE^FS
+^FO30,${qRelY}^FDQ RELEASED^FS
+^FO500,${qRelY}^FB270,1,0,R^FDSIGNATURE^FS
+^FO500,${qRelY-4}^GB270,2,2^FS
 
 ^FO10,${botY}^GB780,3,3^FS
 ^XZ`;
@@ -2560,6 +2588,7 @@ function processScanInput(dept,type){
       zoneEl.className='scan-zone success';
       const warnHtml = result.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${result.warning}</div>` : '';
       resultEl.innerHTML=`<div class="alert alert-success">✅ Scanned ${type.toUpperCase()} — Batch ${result.label.batchNumber} Label #${result.label.labelNumber} (${fmt(result.label.qty)}L)</div>${warnHtml}`;
+      showScanFlash(type, result.label.batchNumber, Math.abs(result.label.labelNumber), fmt(result.label.qty));
       setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, result.warning ? 6000 : 3000);
       renderDeptScan(dept);
     } else {
@@ -2578,6 +2607,7 @@ function processScanInput(dept,type){
     const warnHtml = firstResult.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${firstResult.warning}</div>` : '';
     const orangeHtml = firstResult.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${firstResult.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${firstResult.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
     resultEl.innerHTML=`<div class="alert alert-success">✅ Scanned ${type.toUpperCase()} — Batch ${firstResult.label.batchNumber} Label #${firstResult.label.labelNumber} (${fmt(firstResult.label.qty)}L)</div>${warnHtml}${orangeHtml}`;
+    showScanFlash(type, firstResult.label.batchNumber, Math.abs(firstResult.label.labelNumber), fmt(firstResult.label.qty));
     setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (firstResult.warning||firstResult.newOrangeLabel) ? 8000 : 3000);
     renderDeptScan(dept);
     el.focus();
@@ -2649,6 +2679,7 @@ function processScanInput(dept,type){
         const warnHtml = retry.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${retry.warning}</div>` : '';
         const orangeHtml = retry.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${retry.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${retry.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
         resultEl.innerHTML=`<div class="alert alert-success">✅ Scanned ${type.toUpperCase()} — Batch ${retry.label.batchNumber} Label #${retry.label.labelNumber} (${fmt(retry.label.qty)}L)</div>${warnHtml}${orangeHtml}`;
+        showScanFlash(type, retry.label.batchNumber, Math.abs(retry.label.labelNumber), fmt(retry.label.qty));
         setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (retry.warning||retry.newOrangeLabel) ? 8000 : 3000);
         renderDeptScan(dept);
       } else {
