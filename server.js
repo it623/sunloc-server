@@ -522,6 +522,26 @@ app.get('/api/planning/state', async (req, res) => {
 });
 
 // POST save planning state — uses direct pg pool for large JSON
+// ── Emergency restore from backup file ─────────────────────────
+app.post('/api/planning/restore', async (req, res) => {
+  try {
+    const state = req.body;
+    if (!state || !state.orders) return res.status(400).json({ ok: false, error: 'Invalid backup format' });
+    const json = JSON.stringify(state);
+    if (pgPool) {
+      const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
+      if (existing.rows.length > 0) {
+        await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
+      } else {
+        await pgPool.query('INSERT INTO planning_state (state_json) VALUES ($1)', [json]);
+      }
+      _planningStateCache = state;
+      _planningStateCacheTime = Date.now();
+    }
+    res.json({ ok: true, orders: state.orders.length, savedAt: new Date().toISOString() });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.post('/api/planning/state', async (req, res) => {
   try {
     const { state } = req.body;
@@ -1388,6 +1408,25 @@ app.post('/api/temp-batches/create', (req, res) => {
 });
 
 // GET /api/temp-batches/active — all active TEMP batches (for alerts)
+// ── Delete TEMP batches for a specific date ─────────────────
+app.delete('/api/temp-batches/by-date', async (req, res) => {
+  try {
+    const { date } = req.query; // date = YYYY-MM-DD
+    if (!date) return res.status(400).json({ ok: false, error: 'date required' });
+    let deleted = 0;
+    if (pgPool) {
+      const r = await pgPool.query(
+        `DELETE FROM temp_batches WHERE date = $1 AND status != 'reconciled'`, [date]
+      );
+      deleted = r.rowCount;
+    } else {
+      const r = db.prepare(`DELETE FROM temp_batches WHERE date = ? AND status != 'reconciled'`).run(date);
+      deleted = r.changes;
+    }
+    res.json({ ok: true, deleted, date });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.get('/api/temp-batches/active', (req, res) => {
   try {
     const batches = db.prepare(
