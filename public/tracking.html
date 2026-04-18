@@ -1950,7 +1950,7 @@ function renderLabels(){
       <div class="card-title" style="margin:0">Active Batches</div>
       <input type="search" id="label-batch-search" placeholder="Search batch, customer, size, PC code..."
         value="${window._labelSearch||''}"
-        oninput="window._labelSearch=this.value;renderLabels()"
+        oninput="window._labelSearch=this.value;window._labelSearchFocus=true;renderLabels()"
         style="flex:1;font-size:13px;padding:5px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--text1)">
     </div>
     <div style="overflow-x:auto;transform:rotateX(180deg)">
@@ -2096,6 +2096,12 @@ function renderLabels(){
       </div>
     </div>
   </div>`;
+  }
+  // Restore search box focus if user was typing
+  if(window._labelSearchFocus){
+    const s=document.getElementById('label-batch-search');
+    if(s){ const v=s.value; s.focus(); s.setSelectionRange(v.length,v.length); }
+    window._labelSearchFocus=false;
   }
 }
 
