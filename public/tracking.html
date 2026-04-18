@@ -677,7 +677,7 @@ function getMachineFloor(machineId){
 function getBatch(batchNo){ return state.batches.find(b=>b.batchNumber===batchNo||b.id===batchNo)||null }
 function getBatchFlow(batch){ return batch?.isPrinted ? WIP_FLOW.printed : WIP_FLOW.unprinted }
 
-function getScansForBox(labelId){ return state.scans.filter(s=>s.labelId===labelId).sort((a,b)=>new Date(a.ts)-new Date(b.ts)) }
+function getScansForBox(labelId){ return state.scans.filter(s=>(s.labelId===labelId||s.label_id===labelId)).sort((a,b)=>new Date(a.ts)-new Date(b.ts)) }
 function getScansForBatch(batchNo){ return state.scans.filter(s=>s.batchNumber===batchNo) }
 
 function getBoxCurrentStage(labelId){
@@ -1087,8 +1087,8 @@ function showScanFlash(type, batchNo, boxNo, qty){
 function recordScan(labelId, dept, type, operator, parsed){
   // Extra guard: prevent double-scan within 5 seconds (network retry protection)
   const recentDup = state.scans.find(s=>
-    s.labelId===labelId && s.dept===dept && s.type===type &&
-    (new Date() - new Date(s.ts)) < 5000
+    (s.labelId===labelId||s.label_id===labelId) && s.dept===dept && s.type===type &&
+    (new Date() - new Date(s.ts)) < 10000
   );
   if(recentDup) return {ok:false, msg:'Duplicate scan — already recorded just now'};
   // Primary lookup: by exact id
@@ -1113,14 +1113,20 @@ function recordScan(labelId, dept, type, operator, parsed){
 
 
   // Check not already scanned in without out
+  // Use both labelId and batchNumber+labelNumber for robust duplicate detection
+  const allBoxScans = state.scans.filter(s=>
+    (s.labelId===label.id||s.label_id===label.id||
+     (s.batchNumber===label.batchNumber && Math.abs(s.labelNumber||0)===Math.abs(label.labelNumber||0)))
+    && s.dept===dept
+  ).sort((a,b)=>new Date(a.ts)-new Date(b.ts));
+
+  // Strict: one IN and one OUT only per label per dept — no second scans ever
   if(type==='in'){
-    const lastScan = getScansForBox(labelId).filter(s=>s.dept===dept).pop();
-    if(lastScan && lastScan.type==='in') return {ok:false,msg:'Box already scanned IN at this department'};
+    if(allBoxScans.some(s=>s.type==='in')) return {ok:false,msg:'Box already scanned IN at this department'};
   }
   if(type==='out'){
-    const deptScans = getScansForBox(labelId).filter(s=>s.dept===dept);
-    if(!deptScans.some(s=>s.type==='in')) return {ok:false,msg:'Box not scanned IN at this department'};
-    if(deptScans.filter(s=>s.type==='out').length>=deptScans.filter(s=>s.type==='in').length) return {ok:false,msg:'Box already scanned OUT at this department'};
+    if(!allBoxScans.some(s=>s.type==='in')) return {ok:false,msg:'Box not scanned IN at this department'};
+    if(allBoxScans.some(s=>s.type==='out')) return {ok:false,msg:'Box already scanned OUT at this department'};
   }
 
   const scan = { id:uid(), labelId, batchNumber:label.batchNumber, dept, type, ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty };

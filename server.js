@@ -1864,22 +1864,29 @@ app.post('/api/tracking/scan', async (req, res) => {
   try {
     const { scan } = req.body;
     if(!scan || !scan.id) return res.status(400).json({ok:false,error:'Missing scan'});
+    const labelId = scan.labelId||scan.label_id;
+    const batchNumber = scan.batchNumber||scan.batch_number;
     if (pgPool) {
+      // Server-side duplicate check: one IN and one OUT max per label per dept — no exceptions
+      const existing = await pgPool.query(
+        `SELECT type FROM tracking_scans WHERE label_id=$1 AND dept=$2`,
+        [labelId, scan.dept]
+      );
+      const doneTypes = existing.rows.map(r=>r.type);
+      if(doneTypes.includes(scan.type)){
+        return res.json({ok:false, duplicate:true, error:'Already scanned '+scan.type.toUpperCase()+' at '+scan.dept});
+      }
       await pgPool.query(
         `INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty)
          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
-        [scan.id, scan.labelId||scan.label_id,
-         scan.batchNumber||scan.batch_number,
-         scan.dept, scan.type, scan.ts,
+        [scan.id, labelId, batchNumber, scan.dept, scan.type, scan.ts,
          scan.operator||null, scan.size||null, scan.qty||null]
       );
     } else {
       db.prepare(`INSERT OR IGNORE INTO tracking_scans
         (id,label_id,batch_number,dept,type,ts,operator,size,qty)
         VALUES (?,?,?,?,?,?,?,?,?)`).run(
-        scan.id, scan.labelId||scan.label_id,
-        scan.batchNumber||scan.batch_number,
-        scan.dept, scan.type, scan.ts,
+        scan.id, labelId, batchNumber, scan.dept, scan.type, scan.ts,
         scan.operator||null, scan.size||null, scan.qty||null
       );
     }
