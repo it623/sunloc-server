@@ -584,18 +584,15 @@ const SYNC = (() => {
   }
 
   async function push(stateObj) {
-    if (!_url) return;
-    // Force fresh connectivity check on every push attempt
-    _lastCheck = 0;
-    if (!(await online())) return;
+    if (!_url || !stateObj || !stateObj.orders || stateObj.orders.length === 0) return;
     try {
-      await fetch(_url + '/api/planning/state', {
+      const r = await fetch(_url + '/api/planning/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state: stateObj }),
-        signal: AbortSignal.timeout(6000)
+        signal: AbortSignal.timeout(10000)
       });
-      _online = true; updateBadge();
+      if (r.ok) { _online = true; _lastCheck = Date.now(); updateBadge(); }
     } catch { _online = false; updateBadge(); }
   }
 
@@ -620,8 +617,13 @@ const SYNC = (() => {
   }
 
   async function loadFromServer() {
-    const serverState = await pull();
-    if (!serverState) return;
+    if (!_url) return;
+    let serverState = null;
+    try {
+      const r = await fetch(_url + '/api/planning/state', { signal: AbortSignal.timeout(15000) });
+      if (r.ok) { const j = await r.json(); serverState = j.state || null; _online = true; updateBadge(); }
+    } catch { _online = false; updateBadge(); }
+    if (!serverState || !serverState.orders || serverState.orders.length === 0) return;
     Object.assign(state, serverState);
     state.pcCodes = PC_CODES_RAW;
     state.zoneMap = ZONE_MAP_RAW;
@@ -747,8 +749,7 @@ function loadState() {
   // Always load from server — ensures fresh data on any device
   // If local state is empty (new browser/localStorage blocked), server is the only source
   setTimeout(() => SYNC.loadFromServer(), 300);
-  // Push local state to server immediately on load — ensures server is always up to date
-  setTimeout(() => { if (state.orders && state.orders.length > 0) { const toSave = {...state}; delete toSave.pcCodes; delete toSave.zoneMap; SYNC.push(toSave); } }, 1500);
+  // Server is source of truth — never auto-push local state on startup
   // Check for month rollover after state is loaded
   setTimeout(() => initMonthlyArchive(), 800);
   // Ensure actualProd is populated from actualQty on local load (server enriches actualProd fresh;
