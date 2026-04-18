@@ -927,6 +927,8 @@ function recalcMachineScheduleQuiet(machineId) {
     ord.endDate     = calcEndDate(ord.startDate, sc.daysNeeded);
     cursor = new Date(ord.endDate);
   }
+  // Cascade to print schedule — production end dates drive print start dates
+  recalcPrintScheduleQuiet();
 }
 
 function recalcMachineSchedule(machineId) {
@@ -963,12 +965,91 @@ function recalcMachineSchedule(machineId) {
   saveState();
 }
 
-// Recalculate print schedule based on production
-function recalcPrintSchedule() {
-  const printedOrders = state.orders.filter(o=>o.isPrinted && o.startDate && !o.deleted);
+// ── Print schedule helpers ────────────────────────────────────────────────
+// Calculates how much qty remains to be printed for a PTD order, using live
+// tracking data when available, falling back to the planned formula.
+function calcPrintQtyAndStart(ord) {
+  const live = window._liveAGrade && ord.batchNumber ? (window._liveAGrade[ord.batchNumber] || {}) : {};
+
+  // --- Qty to print ---
+  // If AIM has started, use actual AIM Out (material available for printing)
+  // minus what's already been printed (Print Out from tracking)
+  const liveAimOut   = live.aim?.outQty   || 0;
+  const livePrintOut = live.printing?.outQty || 0;
+  let qtyToPrint;
+  if (liveAimOut > 0) {
+    qtyToPrint = Math.max(0, liveAimOut - livePrintOut);
+  } else {
+    const printFactor = (live.printing?.aGradePct != null)
+      ? (100 / live.printing.aGradePct) : (1 + STD_PRINT_WASTE);
+    const piFactor = (live.pi?.aGradePct != null)
+      ? (100 / live.pi.aGradePct) : (1 + STD_PI_WASTE);
+    qtyToPrint = ord.qty * piFactor * printFactor;
+  }
+
+  // --- Print start date ---
+  let printStart;
+  if (liveAimOut > livePrintOut && livePrintOut >= 0) {
+    const t = today();
+    printStart = new Date(t);
+  } else {
+    printStart = new Date(ord.startDate || today());
+  }
+
+  return { qtyToPrint, printStart };
+}
+
+// Quiet version: updates print schedule from live data without saving or rendering
+function recalcPrintScheduleQuiet() {
+  const printedOrders = state.orders.filter(o => o.isPrinted && o.startDate && !o.deleted);
   for (const ord of printedOrders) {
-    const existing = state.printOrders.find(p=>p.productionOrderId===ord.id);
-    const printStart = new Date(ord.startDate);
+    const existing = state.printOrders.find(p => p.productionOrderId === ord.id);
+    if (!existing) continue;
+    const pm = getPrintMachine(existing.machineId);
+    if (!pm) continue;
+    const { qtyToPrint, printStart } = calcPrintQtyAndStart(ord);
+    existing.startDate   = printStart;
+    existing.qtyToPrint  = parseFloat(qtyToPrint.toFixed(3));
+    existing.endDate     = calcEndDate(printStart, qtyToPrint / pm.cap);
+  }
+  recalcPrintMachineSequence();
+}
+
+// Re-sequence print orders per OPM machine
+function recalcPrintMachineSequence() {
+  const assignedPOs = state.printOrders.filter(p => p.machineId && p.status !== 'completed');
+  const byMachine = {};
+  assignedPOs.forEach(p => {
+    if (!byMachine[p.machineId]) byMachine[p.machineId] = [];
+    byMachine[p.machineId].push(p);
+  });
+  Object.values(byMachine).forEach(pos => {
+    pos.sort((a,b) => new Date(a.startDate) - new Date(b.startDate));
+    let cursor = null;
+    for (const po of pos) {
+      if (!cursor) { cursor = new Date(po.startDate || today()); }
+      else { po.startDate = new Date(cursor); }
+      const pm = getPrintMachine(po.machineId);
+      if (pm && po.qtyToPrint) {
+        po.endDate = calcEndDate(po.startDate, po.qtyToPrint / pm.cap);
+        cursor = new Date(po.endDate);
+      }
+    }
+  });
+}
+
+// Full version: updates print schedule and saves/renders
+function recalcPrintSchedule() {
+  const printedOrders = state.orders.filter(o => o.isPrinted && o.startDate && !o.deleted);
+  for (const ord of printedOrders) {
+    const existing = state.printOrders.find(p => p.productionOrderId === ord.id);
+    if (!existing) continue;
+    const pm = getPrintMachine(existing.machineId);
+    if (!pm) continue;
+    const { qtyToPrint, printStart } = calcPrintQtyAndStart(ord);
+    existing.startDate  = printStart;
+    existing.qtyToPrint = parseFloat(qtyToPrint.toFixed(3));
+    existing.endDate    = calcEndDate(printStart, qtyToPrint / pm.cap);
     printStart.setHours(printStart.getHours() + 16);
     if (existing) {
       existing.startDate = printStart;
@@ -982,6 +1063,8 @@ function recalcPrintSchedule() {
   }
   // Recalc dispatch
   recalcDispatch();
+  // Re-sequence print orders per OPM machine
+  recalcPrintMachineSequence();
 }
 
 function recalcDispatch() {
@@ -1305,7 +1388,7 @@ function renderOrderRow(ord, idx, mc) {
   const aimProgress = (!ord.isPrinted && liveAimOut > 0 && ord.grossQty)
     ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">AIM Out: ${fmt(liveAimOut)}L / ${fmt(ord.grossQty)}L planned</div>` : '';
   const dprClosed = window._dprClosedBatches && ord.id ? window._dprClosedBatches[ord.id] : null;
-  const canClose = !isClosed && ord.actualProd >= (ord.qty * 0.99) && !!dprClosed;
+  const canClose = !isClosed && ord.actualProd > 0 && !!dprClosed;
   const woBadge = isWO ? '<span class="badge" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.4);font-size:10px">🔶 W/O</span>' :
                   isWOReconciled ? '<span class="badge badge-completed" style="font-size:10px">✅ W/O Assigned</span>' : '';
   return `<tr class="${isClosed?'closed':''}" style="${isWO?'background:rgba(255,171,0,0.03);border-left:3px solid rgba(255,171,0,0.4)':''}">
@@ -1349,7 +1432,9 @@ function renderOrderRow(ord, idx, mc) {
       onchange="updateOrderRemark('${ord.id}',this.value)"></td>
     <td style="white-space:nowrap">
       ${isClosed
-        ? '<span class="badge badge-completed">✅ Closed</span>'
+        ? (ord.mismatchFlag
+            ? `<span class="badge badge-completed">✅ Closed</span> <span class="badge badge-amber" style="font-size:9px" title="Gross planned ${fmt(ord.mismatchFlag.grossPlanned)}L vs actual ${fmt(ord.mismatchFlag.actual)}L — please amend gross planned qty">⚠️ Qty Mismatch</span>`
+            : '<span class="badge badge-completed">✅ Closed</span>')
         : dprClosed
           ? '<span class="badge badge-green" style="font-size:9px" title="Closed by '+( dprClosed.closedBy||'DPR')+'">🔒 DPR Closed</span>'
           : '<span class="badge badge-pending" style="font-size:9px" title="Close in DPR first">⏳ DPR Open</span>'
@@ -1422,18 +1507,34 @@ function changeOrderStatus(ordId, machineId, newStatus) {
 function closeOrder(ordId, machineId) {
   const ord = state.orders.find(o=>o.id===ordId);
   if (!ord) return;
-  const planned = ord.qty || 0;
+  const grossPlanned = ord.grossQty || 0;
   const actual = ord.actualQty || 0;
+
   if (actual === 0) {
     alert('⚠️ Cannot close order — no actual production has been recorded in DPR.\n\nPlease enter production data in DPR first, then close this order.');
     return;
   }
-  if (Math.abs(actual - planned) > 0.01) {
-    const diff = actual - planned;
+
+  // Allow closure regardless of mismatch — but warn and flag if quantities differ
+  if (grossPlanned > 0 && Math.abs(actual - grossPlanned) > 0.05) {
+    const diff = actual - grossPlanned;
     const direction = diff > 0 ? 'MORE' : 'LESS';
     const absDiff = fmt(Math.abs(diff));
-    alert(`⚠️ Cannot close order — quantities do not match.\n\nPlanned: ${fmt(planned)}L\nActual:  ${fmt(actual)}L\nDifference: ${absDiff}L ${direction} than planned.\n\nPlease amend the Planned Quantity in the order form to match actual production (${fmt(actual)}L), then close.`);
-    return;
+    const pct = fmt(Math.abs(diff / grossPlanned * 100), 1);
+    const proceed = confirm(
+      `⚠️ Quantity Mismatch — Closing with alert flag\n\n` +
+      `Gross Planned: ${fmt(grossPlanned)}L\n` +
+      `Actual (DPR):  ${fmt(actual)}L\n` +
+      `Difference:    ${absDiff}L ${direction} than planned (${pct}%)\n\n` +
+      `The order will be closed and flagged in Planning.\n` +
+      `Please amend the Gross Planned Qty in the order form to reconcile.\n\n` +
+      `Click OK to close anyway, or Cancel to abort.`
+    );
+    if (!proceed) return;
+    // Flag the mismatch on the order for visibility
+    ord.mismatchFlag = { actual, grossPlanned, diff: parseFloat(diff.toFixed(3)), flaggedAt: new Date().toISOString() };
+  } else {
+    ord.mismatchFlag = null; // clear any prior flag if now matched
   }
   ord.status = 'closed';
   ord.closedDate = new Date();
@@ -1707,13 +1808,21 @@ function saveOrderModal(existingId, defaultMachine) {
   }
   daysNeeded = grossQty / mc.cap;
 
-  // Fix 1: Validate that actualProd never exceeds planned qty × gross factor
-  // If actual production recorded (from DPR) is MORE than grossQty, the planned qty is too low.
+  // Fix 3: If actual DPR production exceeds planned gross qty, warn but allow save
+  // Planning should amend grossQty to reconcile — not be blocked from saving
   const existingOrd = existingId ? state.orders.find(o=>o.id===existingId) : null;
   const actualProdSoFar = existingOrd?.actualProd || existingOrd?.actualQty || 0;
   if (actualProdSoFar > 0 && actualProdSoFar > grossQty + 0.05) {
-    alert(`⚠️ Planned quantity too low.\n\nActual production recorded: ${fmt(actualProdSoFar)}L\nGross quantity from this order qty: ${fmt(grossQty)}L\n\nPlease increase the Order Quantity so that Gross Qty ≥ ${fmt(actualProdSoFar)}L.\nRequired Order Qty ≥ ${fmt(isPrinted ? actualProdSoFar/(1.07*1.02) : actualProdSoFar*(ag/100), 2)}L`);
-    return;
+    const minOrderQty = isPrinted ? parseFloat((actualProdSoFar/(1.07*1.02)).toFixed(2)) : parseFloat((actualProdSoFar*(ag/100)).toFixed(2));
+    alert(
+      `⚠️ Quantity Mismatch Alert\n\n` +
+      `Actual production (DPR): ${fmt(actualProdSoFar)}L\n` +
+      `Gross Qty from this order: ${fmt(grossQty)}L\n\n` +
+      `Actual exceeds planned gross by ${fmt(actualProdSoFar - grossQty)}L.\n` +
+      `Consider increasing Order Qty to ≥ ${fmt(minOrderQty)}L to reconcile.\n\n` +
+      `Saving with current values — batch will be flagged if closed with mismatch.`
+    );
+    // Do not return — allow save to proceed
   }
 
   const startDate = new Date(document.getElementById('fo-startdate')?.value || today());
