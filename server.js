@@ -2099,8 +2099,16 @@ app.post('/api/tracking/label-void', (req, res) => {
 // ── Recent scans — lightweight endpoint (last 200 scans per dept) ─
 app.get('/api/tracking/scans', async (req, res) => {
   try {
+    // Return deduplicated scans — keep earliest scan per (label_id, dept, type, minute)
+    const dedupeSQL = `
+      SELECT DISTINCT ON (label_id, dept, type, date_trunc('minute', ts::timestamp))
+        id, label_id, batch_number, dept, type, ts, operator, size, qty
+      FROM tracking_scans
+      ORDER BY label_id, dept, type, date_trunc('minute', ts::timestamp), ts ASC
+      LIMIT 1000
+    `;
     if (pgPool) {
-      const r = await pgPool.query('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500');
+      const r = await pgPool.query(dedupeSQL);
       res.json({ ok: true, scans: r.rows });
     } else {
       const scans = db.prepare('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500').all();
@@ -2131,6 +2139,41 @@ app.post('/api/tracking/label-update', async (req, res) => {
       }
     }
     res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Clean duplicate scans from DB ─────────────────────────────
+app.post('/api/tracking/cleanup-scans', async (req, res) => {
+  try {
+    if (!pgPool) return res.json({ ok: false, error: 'PostgreSQL only' });
+    // Delete duplicate scans — keep only the earliest per (label_id, dept, type, minute)
+    const result = await pgPool.query(`
+      DELETE FROM tracking_scans
+      WHERE id NOT IN (
+        SELECT DISTINCT ON (label_id, dept, type, date_trunc('minute', ts::timestamp))
+          id
+        FROM tracking_scans
+        ORDER BY label_id, dept, type, date_trunc('minute', ts::timestamp), ts ASC
+      )
+    `);
+    res.json({ ok: true, deleted: result.rowCount });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Clean duplicate scans — keep only first scan per label+dept+type ─
+app.post('/api/admin/clean-duplicate-scans', async (req, res) => {
+  try {
+    if (!pgPool) return res.status(400).json({ ok: false, error: 'PostgreSQL only' });
+    // Delete duplicates: keep the earliest scan per label_id+dept+type combination
+    const result = await pgPool.query(`
+      DELETE FROM tracking_scans
+      WHERE id NOT IN (
+        SELECT DISTINCT ON (label_id, dept, type) id
+        FROM tracking_scans
+        ORDER BY label_id, dept, type, ts ASC
+      )
+    `);
+    res.json({ ok: true, deleted: result.rowCount });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
