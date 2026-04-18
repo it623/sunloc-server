@@ -615,7 +615,13 @@ function sanitizeServerUrl(url) {
   }
 }
 
-let serverUrl = sanitizeServerUrl(localStorage.getItem('sunloc_server_url') || '');
+// Auto-detect server URL from current page origin (works even if localStorage is blocked)
+const _defaultUrl = (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+  ? window.location.origin
+  : '';
+let _savedUrl = '';
+try { _savedUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+let serverUrl = sanitizeServerUrl(_savedUrl || _defaultUrl);
 let syncStatus = 'offline';
 let camStream = null;
 let scanCallback = null;
@@ -931,7 +937,7 @@ function configureServer(){
   const url=prompt('Enter Sunloc Server URL:\n(e.g. https://sunloc.up.railway.app)\n\nLeave blank for offline mode.',serverUrl);
   if(url===null) return;
   serverUrl=sanitizeServerUrl(url);
-  localStorage.setItem('sunloc_server_url',serverUrl);
+  try { localStorage.setItem('sunloc_server_url',serverUrl); } catch(e) {}
   checkServer().then(ok=>{ if(ok) pullFromServer(); });
 }
 
@@ -976,29 +982,14 @@ function normLabel(l){
 async function pullFromServer(){
   if(!serverUrl) return;
   try{
-    const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(8000)});
-    if(!r.ok) return;
-    const j=await r.json();
-    if(j.ok && j.state){
-      // Normalise DB snake_case fields to camelCase
-      const normLabels = (j.state.labels||[]).map(normLabel);
-      const normScans = (j.state.scans||[]).map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
-      const normWastage = (j.state.wastage||[]).map(w=>({...w, batchNumber:w.batchNumber||w.batch_number}));
-      // Server is source of truth — replace local state with server state
-      Object.assign(state, j.state);
-      state.labels = normLabels;
-      state.scans = normScans;
-      state.wastage = normWastage;
-    }
-    // Also pull planning orders for batch data
-    const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(8000)});
+    // STEP 1: Load planning batches FIRST — fast, shows batches immediately
+    const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(30000)});
     if(pr.ok){
       const pj=await pr.json();
       if(pj.ok && pj.state?.orders){
         const isAdminUser = currentDept==='admin';
         const batches = pj.state.orders.filter(o=>!o.deleted && (isAdminUser || o.status==='running')).map(b=>({
           ...b,
-          // Normalise: server returns actualProd from DPR; tracking also uses actualQty
           actualQty: b.actualQty || b.actualProd || 0,
           actualProd: b.actualProd || b.actualQty || 0,
         }));
@@ -1006,11 +997,29 @@ async function pullFromServer(){
           state.batches = batches;
         }
         state.machineMaster = pj.state.machineMaster||[];
+        saveLocal();
+        setSyncBadge('synced');
+        if(currentPage) renderPage(currentPage); // show batches immediately
       }
     }
-    saveLocal();
-    setSyncBadge('synced');
-    if(currentPage) renderPage(currentPage);
+    // STEP 2: Load tracking state in background — large data, may be slow
+    try{
+      const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
+      if(r.ok){
+        const j=await r.json();
+        if(j.ok && j.state){
+          const normLabels = (j.state.labels||[]).map(normLabel);
+          const normScans = (j.state.scans||[]).map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
+          const normWastage = (j.state.wastage||[]).map(w=>({...w, batchNumber:w.batchNumber||w.batch_number}));
+          Object.assign(state, j.state);
+          state.labels = normLabels;
+          state.scans = normScans;
+          state.wastage = normWastage;
+          saveLocal();
+          if(currentPage) renderPage(currentPage);
+        }
+      }
+    }catch(e2){ /* tracking state timeout is ok — batches already shown */ }
   }catch(e){ setSyncBadge('offline'); }
 }
 
@@ -1467,16 +1476,14 @@ function generateZPL(label, batch){
   if(label.isOrange){
     const pm = label.printingMatter || batch?.printingMatter || batch?.printMatter || '';
     return `^XA^CI28^PW800^LL400^MMT^PON^LH0,0
-^FO10,10^GB780,378,3^FS
-^FO520,10^GB3,378,3^FS
-^CF B,38^FO20,20^FDBatch NO.      :  ${batchNo}^FS
-^FO20,66^FDContainer NO. :  ${containerNo}^FS
-^FO20,112^FDPrinted          :^FS
-^CF B,40^FO20,158^FD${pm}^FS
-^FO20,212^GB510,3,3^FS
-^CF B,46^FO20,228^FDQ  RELEASED^FS
-^FO320,228^FB190,1,0,R^FDSIGNATURE^FS
-^FO530,10^BQN,2,8^FDLA,${label.qrData}^FS
+^FO10,10^GB780,378,2^FS
+^CF0,28^FO20,22^FDBatch NO.      :  ${batchNo}^FS
+^FO20,60^FDContainer NO. :  ${containerNo}^FS
+^FO20,98^FDPrinted          :^FS
+^CF0,30^FO20,138^FD${pm}^FS
+^CF0,30^FO20,310^FDQ  RELEASED^FS
+^CF0,30^FO500,310^FDSIGNATURE^FS
+^FO580,20^BQN,2,5^FDLA,${label.qrData}^FS
 ^XZ`;
   }
 
@@ -4720,7 +4727,7 @@ function submitBackfillWastage(){
 
 function saveServerUrl(){
   serverUrl=sanitizeServerUrl(document.getElementById('s-server')?.value||'');
-  localStorage.setItem('sunloc_server_url',serverUrl);
+  try { localStorage.setItem('sunloc_server_url',serverUrl); } catch(e) {}
   checkServer().then(ok=>{
     if(ok){
       pullFromServer().then(()=>{
