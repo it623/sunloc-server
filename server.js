@@ -1870,7 +1870,7 @@ app.post('/api/tracking/scan', (req, res) => {
 });
 
 // ── A-Grade summary per batch — for Planning live update ──────
-app.get('/api/tracking/agrade-summary', (req, res) => {
+app.get('/api/tracking/agrade-summary', async (req, res) => {
   try {
     // Pack sizes for fallback calculation
     const PACK_SIZES = {'0':1.5,'00':1.5,'000':1.5,'1':1.25,'2':1.0,'3':0.75,'4':0.5,'5':0.333};
@@ -1881,25 +1881,19 @@ app.get('/api/tracking/agrade-summary', (req, res) => {
     (planState.orders||[]).forEach(o => { if(o.batchNumber) batchSizeMap[o.batchNumber] = String(o.size||'2'); });
 
     // Scan counts per batch per dept per type
-    const scans = db.prepare(`
-      SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty
-      FROM tracking_scans
-      GROUP BY batch_number, dept, type
-    `).all();
-
-    // Wastage per batch per dept
-    const wastage = db.prepare(`
-      SELECT batch_number, dept, type, SUM(qty) as total_qty
-      FROM tracking_wastage
-      GROUP BY batch_number, dept, type
-    `).all();
-
-    // Gross production per batch from DPR actuals (for WIP calculation)
-    const prodActuals = db.prepare(`
-      SELECT batch_number, SUM(qty_lakhs) as gross_prod
-      FROM production_actuals
-      GROUP BY batch_number
-    `).all();
+    let scans, wastage, prodActuals;
+    if (pgPool) {
+      const [r1, r2, r3] = await Promise.all([
+        pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type'),
+        pgPool.query('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type'),
+        pgPool.query('SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number'),
+      ]);
+      scans = r1.rows; wastage = r2.rows; prodActuals = r3.rows;
+    } else {
+      scans = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type').all();
+      wastage = db.prepare('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type').all();
+      prodActuals = db.prepare('SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number').all();
+    }
     const grossProdMap = {};
     prodActuals.forEach(r => { grossProdMap[r.batch_number] = parseFloat(r.gross_prod||0); });
 
