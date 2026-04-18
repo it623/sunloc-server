@@ -682,7 +682,12 @@ function sanitizeServerUrl(url) {
   }
 }
 
-let serverUrl = sanitizeServerUrl(localStorage.getItem('sunloc_server_url') || '');
+// Auto-detect server URL from page origin (works even when localStorage is blocked)
+const _dprDefaultUrl = (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+  ? window.location.origin : '';
+let _dprSavedUrl = '';
+try { _dprSavedUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+let serverUrl = sanitizeServerUrl(_dprSavedUrl || _dprDefaultUrl);
 let syncStatus = 'offline'; // 'synced' | 'offline' | 'syncing'
 let unsaved = false;
 
@@ -1283,7 +1288,7 @@ function configureServer(){
   const url=prompt('Enter Sunloc Server URL:\n(e.g. https://sunloc.up.railway.app)\n\nLeave blank for offline mode.',serverUrl||'');
   if(url===null) return;
   serverUrl=sanitizeServerUrl(url);
-  localStorage.setItem('sunloc_server_url',serverUrl);
+  try { localStorage.setItem('sunloc_server_url',serverUrl); } catch(e) {}
   checkServer().then(ok=>{ 
   if(ok){ 
     fetchActiveOrders(); 
@@ -1300,7 +1305,7 @@ function configureServer(){
 function saveServerUrl(){
   const val=sanitizeServerUrl(document.getElementById('serverUrlInput').value);
   serverUrl=val;
-  localStorage.setItem('sunloc_server_url',val);
+  try { localStorage.setItem('sunloc_server_url',val); } catch(e) {}
   checkServer().then(ok=>{
     if(ok){ fetchActiveOrders(); toast('Server connected!','var(--green)'); }
     else toast('Cannot reach server — saved for retry','var(--amber)');
@@ -1308,7 +1313,7 @@ function saveServerUrl(){
 }
 function clearServerUrl(){
   serverUrl='';
-  localStorage.removeItem('sunloc_server_url');
+  try { localStorage.removeItem('sunloc_server_url'); } catch(e) {}
   setSyncBadge('offline');
   document.getElementById('serverUrlInput').value='';
   toast('Offline mode — data saved locally only','var(--amber)');

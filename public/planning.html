@@ -553,7 +553,12 @@ function sanitizeServerUrl(url) {
 }
 
 const SYNC = (() => {
-  let _url = sanitizeServerUrl(localStorage.getItem('sunloc_server_url') || '');
+  // Auto-detect server URL from page origin (works even when localStorage is blocked)
+  const _defaultServerUrl = (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+    ? window.location.origin : '';
+  let _savedServerUrl = '';
+  try { _savedServerUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  let _url = sanitizeServerUrl(_savedServerUrl || _defaultServerUrl);
   let _online = false, _lastCheck = 0;
 
   async function online() {
@@ -609,7 +614,7 @@ const SYNC = (() => {
     const newUrl = prompt('Enter Sunloc Server URL:\n(e.g. https://sunloc.up.railway.app)\n\nLeave blank for offline mode.', _url);
     if (newUrl === null) return;
     _url = sanitizeServerUrl(newUrl);
-    localStorage.setItem('sunloc_server_url', _url);
+    try { localStorage.setItem('sunloc_server_url', _url); } catch(e) {}
     _lastCheck = 0;
     online().then(ok => { if (ok) loadFromServer(); });
   }
@@ -755,7 +760,9 @@ function loadState() {
 }
 
 function openTrackingApp() {
-  const url = localStorage.getItem('sunloc_server_url') || '';
+  let url = '';
+  try { url = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  if(!url && window.location.hostname !== 'localhost') url = window.location.origin;
   if (url) window.open(url + '/tracking.html', '_blank');
   else alert('Please configure the Server URL in Settings first.');
 }
@@ -3354,7 +3361,7 @@ function renderTruckCard(truck, cap) {
 }
 
 async function showBatchTrackingModal(batchNumber) {
-  const serverUrl = localStorage.getItem('sunloc_server_url') || '';
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   openModal(`📦 Batch Tracker — ${batchNumber}`, `
     <div id="btm-loading" style="text-align:center;padding:24px;color:var(--text3)">
       <div style="font-size:24px;margin-bottom:8px">⏳</div>
@@ -5052,7 +5059,7 @@ async function proposeWOReconciliation(orderId) {
   const poNumber = document.getElementById('woc-ponum')?.value?.trim();
   const zone = document.getElementById('woc-zone')?.value;
   const qtyConfirmed = parseFloat(document.getElementById('woc-qty')?.value) || null;
-  const serverUrl = localStorage.getItem('sunloc_server_url') || '';
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) { alert('Server not connected'); return; }
   try {
     const r = await fetch(serverUrl + '/api/wo/propose-reconciliation', {
@@ -5703,7 +5710,7 @@ async function doLogin() {
   const errEl = document.getElementById('auth-error');
   errEl.textContent = '';
   if (!pin) { errEl.textContent = 'Please enter your PIN'; return; }
-  const serverUrl = localStorage.getItem('sunloc_server_url') || '';
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) {
     // Offline fallback — simple hardcoded check
     const defaults = {Planning_Manager:'3333',Printing_Manager:'4444',Dispatch_Manager:'5555',Plan_Admin:'9999'};
@@ -5812,7 +5819,7 @@ async function saveNewPin() {
   const username = document.getElementById('cp-user').value;
   const newPin = document.getElementById('cp-newpin').value;
   if (!newPin || newPin.length < 4) { alert('PIN must be at least 4 digits'); return; }
-  const serverUrl = localStorage.getItem('sunloc_server_url') || '';
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) { alert('Server not connected'); return; }
   try {
     const r = await fetch(serverUrl + '/api/auth/change-pin', {
@@ -5828,7 +5835,7 @@ async function saveNewPin() {
 
 async function doLogout() {
   closeModal();
-  const serverUrl = localStorage.getItem('sunloc_server_url') || '';
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (serverUrl && currentUser?.token) {
     try { await fetch(serverUrl + '/api/auth/logout', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({token:currentUser.token}),signal:AbortSignal.timeout(3000)}); } catch(e){}
   }
@@ -5842,7 +5849,7 @@ async function doLogout() {
 
 async function auditLog(action, details) {
   if (!currentUser) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url') || '';
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl || !currentUser.token) return;
   try {
     await fetch(serverUrl + '/api/audit/log', {
@@ -5867,7 +5874,7 @@ function renderAuditLog() {
 }
 
 async function loadAuditLog() {
-  const serverUrl = localStorage.getItem('sunloc_server_url') || '';
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) { document.getElementById('audit-log-content').innerHTML = '<div style="color:var(--accent4)">Server not connected</div>'; return; }
   try {
     const r = await fetch(`${serverUrl}/api/audit/view?app=planning&limit=300`, {headers:{'x-session-token': currentUser.token}, signal: AbortSignal.timeout(5000)});
