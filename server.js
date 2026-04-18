@@ -422,7 +422,15 @@ async function getPlanningStateAsync() {
 }
 
 function getPlanningState() {
-  if (_planningStateCache && Date.now() - _planningStateCacheTime < 5000) return _planningStateCache;
+  // Return cache if fresh
+  if (_planningStateCache && _planningStateCache.orders && _planningStateCache.orders.length > 0 && Date.now() - _planningStateCacheTime < 30000) return _planningStateCache;
+  // Try pgPool first (PostgreSQL)
+  if (pgPool) {
+    // Return cache while async fetch happens — warmPlanningCache() keeps this updated
+    if (_planningStateCache) return _planningStateCache;
+    return { orders: [], printOrders: [], dispatchPlans: [], dailyPrinting: [], machineMaster: [], printMachineMaster: [], packSizes: {} };
+  }
+  // SQLite fallback
   const row = db.prepare('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1').get();
   if (!row) return { orders: [], printOrders: [], dispatchPlans: [], dailyPrinting: [], machineMaster: [], printMachineMaster: [], packSizes: {} };
   try {
@@ -434,6 +442,16 @@ function getPlanningState() {
 
 async function warmPlanningCache() {
   if (!pgPool) return;
+  // Refresh cache every 60 seconds
+  setInterval(async () => {
+    try {
+      const r = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1');
+      if (r.rows[0]) {
+        _planningStateCache = JSON.parse(r.rows[0].state_json);
+        _planningStateCacheTime = Date.now();
+      }
+    } catch(e) {}
+  }, 60000);
   try {
     const r = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1');
     if (r.rows[0]) {
