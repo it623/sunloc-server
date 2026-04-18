@@ -174,13 +174,8 @@ input[type=number]{font-family:var(--mono)}
 .scan-zone{background:var(--surface2);border:2px dashed var(--border2);border-radius:var(--r);padding:24px;text-align:center;transition:.15s}
 .scan-zone.active{border-color:var(--accent);background:var(--accent-light)}
 .scan-zone.success{border-color:var(--accent2);background:var(--accent2-light)}
-.scan-flash{position:fixed;top:0;left:0;right:0;bottom:0;z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;gap:12px;pointer-events:none;opacity:0;transition:opacity .15s}
-.scan-flash.show{opacity:1}
-.scan-flash.green{background:rgba(5,150,105,0.92)}
-.scan-flash.blue{background:rgba(37,99,235,0.92)}
-.scan-flash.red{background:rgba(220,38,38,0.88)}
-.scan-flash-icon{font-size:80px;line-height:1}
-.scan-flash-text{font-size:28px;font-weight:700;color:#fff;text-align:center;padding:0 24px}
+.scan-toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);z-index:9999;background:#059669;color:#fff;font-size:17px;font-weight:700;padding:14px 28px;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.18);pointer-events:none;opacity:0;transition:opacity .2s;white-space:nowrap}
+.scan-toast.show{opacity:1}
 .scan-zone.error{border-color:var(--accent4);background:var(--accent4-light)}
 .scan-input{font-size:18px;font-family:var(--mono);text-align:center;border:2px solid var(--border2);border-radius:var(--r-sm);padding:12px;width:100%;max-width:320px;letter-spacing:2px}
 .scan-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.15)}
@@ -413,10 +408,7 @@ input[type=number]{font-family:var(--mono)}
 </style>
 </head>
 <body>
-<div id="scan-flash" class="scan-flash">
-  <div class="scan-flash-icon" id="scan-flash-icon">✅</div>
-  <div class="scan-flash-text" id="scan-flash-text"></div>
-</div>
+<div id="scan-toast" class="scan-toast"></div>
 
 <!-- MOBILE BOTTOM NAV (hidden on desktop via CSS) -->
 <div id="mobile-nav" style="display:none">
@@ -1084,17 +1076,12 @@ function loadState(){
 // ═══════════════════════════════════════════════════════
 
 function showScanFlash(type, batchNo, boxNo, qty){
-  const el = document.getElementById('scan-flash');
-  const icon = document.getElementById('scan-flash-icon');
-  const text = document.getElementById('scan-flash-text');
+  const el = document.getElementById('scan-toast');
   if(!el) return;
-  const isIn = type==='in';
-  el.className = 'scan-flash show green';
-  icon.textContent = isIn ? '✅' : '📤';
-  text.innerHTML = '<div style="font-size:36px;font-weight:900;letter-spacing:2px">' + (isIn ? 'SCAN IN ✓' : 'SCAN OUT ✓') + '</div>'
-    + '<div style="font-size:22px;margin-top:8px">' + batchNo + ' &nbsp;/&nbsp; Box ' + boxNo + '</div>'
-    + '<div style="font-size:18px;margin-top:4px;opacity:0.9">' + qty + ' L</div>';
-  setTimeout(()=>{ el.className='scan-flash'; }, 3500);
+  el.textContent = '✅ Scanned ' + (type==='in'?'IN':'OUT') + ' — ' + batchNo + ' / Box ' + boxNo + ' (' + qty + 'L)';
+  el.className = 'scan-toast show';
+  clearTimeout(el._t);
+  el._t = setTimeout(()=>{ el.className='scan-toast'; }, 3500);
 }
 
 function recordScan(labelId, dept, type, operator, parsed){
@@ -1569,7 +1556,7 @@ ${oBorder}
 ^FO10,${136+D}^GB780,2,2^FS
 ${hBand}
 ^CF0,26
-^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
+^FO30,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
 ^FO10,${tTop-4}^GB780,2,2^FS
 
 ^FO10,${tTop}^GB390,${RH*5+2},2^FS
@@ -1584,28 +1571,29 @@ ${hBand}
 ^FO404,${tTop+RH*4}^GB386,2,2^FS
 
 ^CF0,26
-^FO18,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
-^FO18,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
-^FO18,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
-^FO18,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
-^FO18,${tTop+RH*4+10}^FDPRINTED       :^FS
+^FO30,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
+^FO30,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
+^FO30,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
+^FO30,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
+^FO30,${tTop+RH*4+10}^FDPRINTED       :^FS
 
-^FO412,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
-^FO412,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
-^FO412,${tTop+RH*2+10}^FDGROSS WT.:^FS
-^FO412,${tTop+RH*3+10}^FDNETT WT.  :^FS
-^FO412,${tTop+RH*4+10}^FDMFG DATE:  ${mfgDate}^FS
+^FO420,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
+^FO420,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
+^FO420,${tTop+RH*2+10}^FDGROSS WT.:^FS
+^FO420,${tTop+RH*3+10}^FDNETT WT.  :^FS
+^FO420,${tTop+RH*4+10}^FDMFG DATE:  ${mfgDate}^FS
 
 ^FO10,${tBot}^GB780,2,2^FS
 ^CF0,20
-^FO10,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
+^FO30,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
 ^FO10,${ruleY}^GB780,2,2^FS
 
-^FO10,${qrY}^BQN,2,9^FDLA,${label.qrData}^FS
+^FO30,${qrY}^BQN,2,9^FDLA,${label.qrData}^FS
 ^CF0,28
-^FO30,${qRelY}^FDQ RELEASED^FS
-^FO500,${qRelY}^FB270,1,0,R^FDSIGNATURE^FS
-^FO500,${qRelY-4}^GB270,2,2^FS
+^FO30,${botY-60}^FDQ RELEASED^FS
+^FO500,${botY-80}^GB250,2,2^FS
+^CF0,22
+^FO500,${botY-60}^FB250,1,0,C^FDSIGNATURE^FS
 
 ^FO10,${botY}^GB780,3,3^FS
 ^XZ`;
