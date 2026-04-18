@@ -615,7 +615,13 @@ function sanitizeServerUrl(url) {
   }
 }
 
-let serverUrl = sanitizeServerUrl(localStorage.getItem('sunloc_server_url') || '');
+// Auto-detect server URL from current page origin (works even if localStorage is blocked)
+const _defaultUrl = (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
+  ? window.location.origin
+  : '';
+let _savedUrl = '';
+try { _savedUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+let serverUrl = sanitizeServerUrl(_savedUrl || _defaultUrl);
 let syncStatus = 'offline';
 let camStream = null;
 let scanCallback = null;
@@ -931,7 +937,7 @@ function configureServer(){
   const url=prompt('Enter Sunloc Server URL:\n(e.g. https://sunloc.up.railway.app)\n\nLeave blank for offline mode.',serverUrl);
   if(url===null) return;
   serverUrl=sanitizeServerUrl(url);
-  localStorage.setItem('sunloc_server_url',serverUrl);
+  try { localStorage.setItem('sunloc_server_url',serverUrl); } catch(e) {}
   checkServer().then(ok=>{ if(ok) pullFromServer(); });
 }
 
@@ -4718,7 +4724,7 @@ function submitBackfillWastage(){
 
 function saveServerUrl(){
   serverUrl=sanitizeServerUrl(document.getElementById('s-server')?.value||'');
-  localStorage.setItem('sunloc_server_url',serverUrl);
+  try { localStorage.setItem('sunloc_server_url',serverUrl); } catch(e) {}
   checkServer().then(ok=>{
     if(ok){
       pullFromServer().then(()=>{
