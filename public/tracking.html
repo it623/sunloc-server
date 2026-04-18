@@ -2028,7 +2028,7 @@ function renderLabels(){
             <td class="td-mono">${fmt(l.qty)}</td>
             <td>${l.printed?`<span class="badge badge-green">✅ Printed</span>`:'<span class="badge" style="background:rgba(234,88,12,0.15);color:var(--orange);border:1px solid rgba(234,88,12,0.4)">🟠 Pending</span>'}</td>
             <td class="text-sm">${fmtDateTime(l.generated)}</td>
-            <td>${!l.printed?`<button class="btn btn-sm" style="background:var(--orange);color:#fff;padding:3px 10px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:'<span style="color:var(--text3)">—</span>'}</td>
+            <td>${!l.printed?`<button class="btn btn-sm" style="background:var(--orange);color:#fff;padding:3px 10px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:`<button class="btn btn-sm btn-ghost" style="padding:3px 10px;font-size:11px" onclick="reprintOrangeLabel('${l.id}')">🔁 Reprint</button>`}</td>
           </tr>`).join('')}
           </tbody>
         </table></div>` : '<div class="text-center text-muted" style="padding:32px">← Select a batch to view its print queue</div>'}
@@ -2093,6 +2093,21 @@ function unprintedOrangeBatch(batchNumber){
   const unprinted = state.labels.filter(l=>l.isOrange&&!l.voided&&!l.printed&&l.batchNumber===batchNumber);
   unprinted.forEach(l=>printLabel(l.id));
   renderLabels();
+}
+
+function reprintOrangeLabel(labelId){
+  const l = state.labels.find(x=>x.id===labelId);
+  if(!l) return;
+  const batch = getBatch(l.batchNumber);
+  const zpl = generateZPL(l, batch);
+  const printerUrl = localStorage.getItem('sunloc_printer_url');
+  if(printerUrl){
+    fetch(printerUrl,{method:'POST',headers:{'Content-Type':'text/plain'},body:zpl})
+      .then(r=>{ if(r.ok){ toast('✅ Reprint sent to printer','var(--green)',3000); } else { downloadZPL(zpl,l); } })
+      .catch(()=>downloadZPL(zpl,l));
+  } else {
+    downloadZPL(zpl,l);
+  }
 }
 
 function filterOrangeLabels(){
@@ -2391,7 +2406,7 @@ function renderDeptScan(dept){
         <td class="td-mono">${fmt(l.qty)}</td>
         <td class="text-sm">${fmtDateTime(l.generated)}</td>
         <td>${l.printed?'<span class="badge badge-green">✅ Printed</span>':'<span class="badge" style="background:rgba(234,88,12,0.15);color:var(--orange);border:1px solid rgba(234,88,12,0.4)">🟠 Pending</span>'}</td>
-        <td>${!l.printed?`<button class="btn btn-sm" style="background:var(--orange);color:#fff" onclick="printLabel('${l.id}');renderPage('pi')">🖨️ Print</button>`:'—'}</td>
+        <td>${!l.printed?`<button class="btn btn-sm" style="background:var(--orange);color:#fff" onclick="printLabel('${l.id}');renderPage('pi')">🖨️ Print</button>`:`<button class="btn btn-sm btn-ghost" style="font-size:11px" onclick="reprintOrangeLabel('${l.id}')">🔁 Reprint</button>`}</td>
       </tr>`).join('') : '<tr><td colspan="6" class="text-center text-muted">No orange labels yet — scan printed batch boxes IN to generate</td></tr>'}
       </tbody>
     </table></div>
