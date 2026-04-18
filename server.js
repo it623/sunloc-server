@@ -2085,6 +2085,19 @@ app.post('/api/tracking/label-void', (req, res) => {
 });
 
 // POST update label qty (edit)
+// ── Recent scans — lightweight endpoint (last 200 scans per dept) ─
+app.get('/api/tracking/scans', async (req, res) => {
+  try {
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500');
+      res.json({ ok: true, scans: r.rows });
+    } else {
+      const scans = db.prepare('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500').all();
+      res.json({ ok: true, scans });
+    }
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.post('/api/tracking/label-update', async (req, res) => {
   try {
     const { labelId, qty, printed, printedAt } = req.body;

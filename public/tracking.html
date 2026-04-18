@@ -1002,7 +1002,19 @@ async function pullFromServer(){
         if(currentPage) renderPage(currentPage); // show batches immediately
       }
     }
-    // STEP 2: Load tracking state in background — large data, may be slow
+    // STEP 2a: Load scans from lightweight endpoint — fast
+    try{
+      const sr=await fetch(serverUrl+'/api/tracking/scans',{signal:AbortSignal.timeout(15000)});
+      if(sr.ok){
+        const sj=await sr.json();
+        if(sj.ok && sj.scans){
+          state.scans = sj.scans.map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
+          saveLocal();
+          if(currentPage) renderPage(currentPage);
+        }
+      }
+    }catch(e2){}
+    // STEP 2b: Load full tracking state in background — labels, wastage etc
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
       if(r.ok){
@@ -1019,7 +1031,7 @@ async function pullFromServer(){
           if(currentPage) renderPage(currentPage);
         }
       }
-    }catch(e2){ /* tracking state timeout is ok — batches already shown */ }
+    }catch(e2){ /* tracking state timeout ok — scans already loaded */ }
   }catch(e){ setSyncBadge('offline'); }
 }
 
