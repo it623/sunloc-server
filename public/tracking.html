@@ -1468,15 +1468,13 @@ function generateZPL(label, batch){
     const pm = label.printingMatter || batch?.printingMatter || batch?.printMatter || '';
     return `^XA^CI28^PW800^LL400^MMT^PON^LH0,0
 ^FO10,10^GB780,378,2^FS
-^FO550,10^GB2,378,2^FS
 ^CF0,28^FO20,22^FDBatch NO.      :  ${batchNo}^FS
 ^FO20,60^FDContainer NO. :  ${containerNo}^FS
 ^FO20,98^FDPrinted          :^FS
 ^CF0,30^FO20,138^FD${pm}^FS
-^CF0,28^FO20,320^FDQ RELEASED^FS
-^FO280,340^GB260,2,2^FS
-^CF0,22^FO280,350^FB260,1,0,C^FDSIGNATURE^FS
-^FO560,10^BQN,2,7^FDLA,${label.qrData}^FS
+^CF0,30^FO20,310^FDQ  RELEASED^FS
+^CF0,30^FO500,310^FDSIGNATURE^FS
+^FO580,20^BQN,2,5^FDLA,${label.qrData}^FS
 ^XZ`;
   }
 
