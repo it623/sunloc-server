@@ -2089,8 +2089,8 @@ app.post('/api/tracking/label-update', async (req, res) => {
   try {
     const { labelId, qty, printed, printedAt } = req.body;
     if (!labelId) return res.status(400).json({ ok: false, error: 'labelId required' });
-    // Update printed status
     if (printed !== undefined && qty === undefined) {
+      // Update printed status only
       const pVal = printed ? 1 : 0;
       const pAt  = printedAt || new Date().toISOString();
       if (pgPool) {

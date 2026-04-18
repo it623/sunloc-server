@@ -1463,27 +1463,20 @@ function generateZPL(label, batch){
     : isWO ? 'W/O - WITHOUT ORDER - CUSTOMER PENDING'
     : (shipTo && billTo && billTo !== shipTo ? shipTo+' ('+billTo+')' : shipTo);
 
-  // ── ORANGE LABEL 100mm x 50mm ─────────────────────────────────
+  // ── ORANGE LABEL 100mm x 50mm ───────────────────────
   if(label.isOrange){
-    const pm=label.printingMatter||batch?.printMatter||'', pmP=pm.split('/');
-    const pmCap=(pmP[0]||'').trim()||pm, pmBody=(pmP[1]||'').trim()||'';
+    const pm = label.printingMatter || batch?.printingMatter || batch?.printMatter || '';
     return `^XA^CI28^PW800^LL400^MMT^PON^LH0,0
 ^FO10,10^GB780,378,3^FS
-^FO540,10^GB3,378,3^FS
-^CF0,32^FO20,14^FB510,1,0,C^FDPRINTING DETAILS^FS
-^FO20,50^GB520,3,3^FS
-^CF0,30^FO25,60^FDCAP   :  ${pmCap}^FS
-^FO25,96^FDBODY :  ${pmBody}^FS
-^FO20,132^GB520,2,2^FS
-^CF0,26^FO25,140^FDBatch NO.      :  ${batchNo}^FS
-^FO25,172^FDContainer NO. :  ${containerNo}^FS
-^FO25,204^FDPrinted          :^FS
-^FO20,232^GB520,2,2^FS
-^CF0,20^FO25,240^FDExpiry: 5 yrs from Mfg. RAJ-867, Dt 08.12.1981^FS
-^FO20,268^GB520,2,2^FS
-^CF0,28^FO25,284^FDQ RELEASED^FS
-^FO360,284^FB170,1,0,R^FDSIGNATURE^FS
-^FO548,10^BQN,2,6^FDLA,${label.qrData}^FS
+^FO520,10^GB3,378,3^FS
+^CF B,38^FO20,20^FDBatch NO.      :  ${batchNo}^FS
+^FO20,66^FDContainer NO. :  ${containerNo}^FS
+^FO20,112^FDPrinted          :^FS
+^CF B,40^FO20,158^FD${pm}^FS
+^FO20,212^GB510,3,3^FS
+^CF B,46^FO20,228^FDQ  RELEASED^FS
+^FO320,228^FB190,1,0,R^FDSIGNATURE^FS
+^FO530,10^BQN,2,8^FDLA,${label.qrData}^FS
 ^XZ`;
   }
 
