@@ -3297,8 +3297,33 @@ function showDprAuditPage() {
   }
 }
 
-// On init — check saved session
-(function initDprAuth() {
+// On init — load settings from server first, then check saved session
+(async function initDprAuth() {
+  // Load settings from server before rendering so machine/target config
+  // is available even after browser history is cleared
+  const savedUrl = localStorage.getItem('sunloc_server_url') || '';
+  if (savedUrl) {
+    try {
+      const r = await fetch(savedUrl + '/api/dpr/settings', {signal: AbortSignal.timeout(4000)});
+      if (r.ok) {
+        const j = await r.json();
+        if (j.ok && j.settings) {
+          const s = j.settings;
+          if (s.dpr_targets && Object.keys(s.dpr_targets).length > 0) {
+            Object.assign(targets, s.dpr_targets);
+            localStorage.setItem('dpr_targets', JSON.stringify(targets));
+          }
+          if (s.dpr_active_machines && Object.keys(s.dpr_active_machines).length > 0) {
+            localStorage.setItem('dpr_active_machines', JSON.stringify(s.dpr_active_machines));
+          }
+          if (s.dpr_machine_sizes && Object.keys(s.dpr_machine_sizes).length > 0) {
+            localStorage.setItem('dpr_machine_sizes', JSON.stringify(s.dpr_machine_sizes));
+          }
+        }
+      }
+    } catch(e) {} // silent — offline fallback to localStorage
+  }
+  // Now restore session
   const saved = sessionStorage.getItem('dpr_session');
   if (saved) {
     try {
