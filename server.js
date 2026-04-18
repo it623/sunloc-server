@@ -2087,12 +2087,24 @@ app.post('/api/tracking/label-void', (req, res) => {
 // POST update label qty (edit)
 app.post('/api/tracking/label-update', async (req, res) => {
   try {
-    const { labelId, qty } = req.body;
-    if (!labelId || !qty) return res.status(400).json({ ok: false, error: 'labelId and qty required' });
-    if (pgPool) {
-      await pgPool.query('UPDATE tracking_labels SET qty = $1, printed = 0 WHERE id = $2', [qty, labelId]);
-    } else {
-      db.prepare('UPDATE tracking_labels SET qty = ?, printed = 0 WHERE id = ?').run(qty, labelId);
+    const { labelId, qty, printed, printedAt } = req.body;
+    if (!labelId) return res.status(400).json({ ok: false, error: 'labelId required' });
+    // Update printed status
+    if (printed !== undefined && qty === undefined) {
+      const pVal = printed ? 1 : 0;
+      const pAt  = printedAt || new Date().toISOString();
+      if (pgPool) {
+        await pgPool.query('UPDATE tracking_labels SET printed = $1, printed_at = $2 WHERE id = $3', [pVal, pAt, labelId]);
+      } else {
+        db.prepare('UPDATE tracking_labels SET printed = ?, printed_at = ? WHERE id = ?').run(pVal, pAt, labelId);
+      }
+    } else if (qty) {
+      // Update qty and mark for reprint
+      if (pgPool) {
+        await pgPool.query('UPDATE tracking_labels SET qty = $1, printed = 0 WHERE id = $2', [qty, labelId]);
+      } else {
+        db.prepare('UPDATE tracking_labels SET qty = ?, printed = 0 WHERE id = ?').run(qty, labelId);
+      }
     }
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }

@@ -985,22 +985,10 @@ async function pullFromServer(){
       const normScans = (j.state.scans||[]).map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
       const normWastage = (j.state.wastage||[]).map(w=>({...w, batchNumber:w.batchNumber||w.batch_number}));
       // Server is source of truth — replace local state with server state
-      const serverLabelIds = new Set(normLabels.map(l=>l.id));
-      const localOnlyLabels = state.labels.filter(l=>!serverLabelIds.has(l.id));
       Object.assign(state, j.state);
       state.labels = normLabels;
       state.scans = normScans;
       state.wastage = normWastage;
-      // Re-add local-only labels
-      if(localOnlyLabels.length > 0){
-        state.labels = [...state.labels, ...localOnlyLabels];
-        // Push local-only labels to server so other devices can find them
-        fetch(serverUrl+'/api/tracking/state',{
-          method:'POST', headers:{'Content-Type':'application/json'},
-          body:JSON.stringify({labels:localOnlyLabels,scans:[],stageClosure:[],wastage:[],dispatchRecs:[],alerts:[]}),
-          signal:AbortSignal.timeout(8000)
-        }).catch(()=>{});
-      }
     }
     // Also pull planning orders for batch data
     const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(8000)});
@@ -1285,12 +1273,13 @@ function getBatchWIPDays(batchNo){
   const machine = state.machineMaster.find(m=>m.id===batch.machineId||m.machineId===batch.machineId);
   const dailyTarget = machine?.dailyTarget||machine?.yTarget||machine?.cap||10;
 
-  // WIP Days = totalWIP / Daily Target
-  // totalWIP = (Gross − total salvage all depts − total remelt all depts) − Pack Out
-  // Uses getBatchWIPBreakdown to avoid duplicating formula and ensure consistency
-  const wip = getBatchWIPBreakdown(batchNo);
-  const totalWIP = wip ? wip.totalWIP : 0;
-  const wipDays = dailyTarget > 0 ? totalWIP / dailyTarget : 0;
+  // WIP Days = (Gross Production − Packed Out Qty) / Daily Target
+  // Consistent with Report C formula
+  const grossProd  = batch.actualProd || batch.actualQty || 0;
+  const packedOut  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+  const packedQty  = boxToLakh(packedOut, batch.size);
+  const remaining  = Math.max(0, grossProd - packedQty);
+  const wipDays    = dailyTarget > 0 ? remaining / dailyTarget : 0;
   return Math.max(0, wipDays);
 }
 
@@ -1353,19 +1342,13 @@ function getBatchWIPBreakdown(batchNo){
   // Gross production from DPR
   const grossProd = batch.actualProd || batch.actualQty || 0;
 
-  // Stage WIPs — each stage: In - Out - Salvage - Remelt
-  // (Print In = AIM Out proxy, PI In = Print Out proxy — intentional: holds upstream accountable)
+  // Stage WIPs
   const preAIM   = Math.max(0, grossProd - aimIn - wAIM.salvage - wAIM.remelt);
   const aimWIP   = Math.max(0, aimIn - aimOut - wAIM.salvage - wAIM.remelt);
   const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - wPrint.salvage - wPrint.remelt) : 0;
   const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt) : 0;
   const packWIP  = Math.max(0, packIn - packOut);
-
-  // Overall WIP = (Gross − total wastage all depts) − Pack Out
-  // Do NOT sum stage WIPs — AIM wastage would be double-counted (subtracted in both preAIM and aimWIP)
-  const totalSalvage = wAIM.salvage + wPrint.salvage + wPI.salvage;
-  const totalRemelt  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
-  const totalWIP = Math.max(0, grossProd - totalSalvage - totalRemelt - packOut);
+  const totalWIP = preAIM + aimWIP + printWIP + piWIP + packWIP;
 
   return {
     grossProd, aimIn, aimOut,
@@ -1463,7 +1446,6 @@ function generateZPL(label, batch){
   const mfgRaw     = batch?.startDate ? new Date(batch.startDate) : new Date();
   const mfgDate    = mfgRaw.toLocaleDateString('en-IN',{month:'short',year:'numeric'}).toUpperCase();
   const batchNo    = label.batchNumber || '';
-  const pcCode     = label.pcCode || batch?.pcCode || '';
 
   const _b      = getBatch(batchNo);
   const normTot = label.normalTotal || (_b ? lakhToBox(_b.qty, label.size) : null) || '?';
@@ -1486,18 +1468,22 @@ function generateZPL(label, batch){
     const pm=label.printingMatter||batch?.printMatter||'', pmP=pm.split('/');
     const pmCap=(pmP[0]||'').trim()||pm, pmBody=(pmP[1]||'').trim()||'';
     return `^XA^CI28^PW800^LL400^MMT^PON^LH0,0
-^FO10,10^GB780,378,2^FS^FO560,10^GB2,378,2^FS
-^CF0,30^FO20,18^FB530,1,0,C^FDPRINTING DETAILS^FS
-^FO20,52^GB540,2,2^FS
-^CF0,26^FO25,60^FDCAP   :  ${pmCap}^FS
-^FO25,100^FDBODY :  ${pmBody}^FS
-^FO20,144^GB540,2,2^FS
-^CF0,22^FO25,154^FDBatch :  ${batchNo}^FS
-^FO25,186^FDContainer :  ${containerNo}^FS
-^FO25,218^FDSize :  ${label.size}^FS
-^FO20,260^GB540,2,2^FS
-^CF0,18^FO25,268^FDExpiry: 5 yrs from Mfg. RAJ-867, Dt 08.12.1981^FS
-^FO574,10^BQN,2,4^FDLA,${label.qrData}^FS
+^FO10,10^GB780,378,3^FS
+^FO540,10^GB3,378,3^FS
+^CF0,32^FO20,14^FB510,1,0,C^FDPRINTING DETAILS^FS
+^FO20,50^GB520,3,3^FS
+^CF0,30^FO25,60^FDCAP   :  ${pmCap}^FS
+^FO25,96^FDBODY :  ${pmBody}^FS
+^FO20,132^GB520,2,2^FS
+^CF0,26^FO25,140^FDBatch NO.      :  ${batchNo}^FS
+^FO25,172^FDContainer NO. :  ${containerNo}^FS
+^FO25,204^FDPrinted          :^FS
+^FO20,232^GB520,2,2^FS
+^CF0,20^FO25,240^FDExpiry: 5 yrs from Mfg. RAJ-867, Dt 08.12.1981^FS
+^FO20,268^GB520,2,2^FS
+^CF0,28^FO25,284^FDQ RELEASED^FS
+^FO360,284^FB170,1,0,R^FDSIGNATURE^FS
+^FO548,10^BQN,2,6^FDLA,${label.qrData}^FS
 ^XZ`;
   }
 
@@ -1519,7 +1505,7 @@ function generateZPL(label, batch){
   const custY = 140 + D;
   const tTop  = 180 + D;
   const RH    = 90;             // compact rows to give QR maximum space
-  const tBot  = tTop + RH*6;   // 180+540=720 normal, 762 special
+  const tBot  = tTop + RH*5;   // 180+450=630 normal, 672 special
   const expY  = tBot + 8;
   const ruleY = tBot + 46;
   const qrY   = ruleY + 10;    // QR starts here
@@ -1545,18 +1531,16 @@ ${hBand}
 ^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
 ^FO10,${tTop-4}^GB780,2,2^FS
 
-^FO10,${tTop}^GB390,${RH*6+2},2^FS
-^FO404,${tTop}^GB386,${RH*6+2},2^FS
+^FO10,${tTop}^GB390,${RH*5+2},2^FS
+^FO404,${tTop}^GB386,${RH*5+2},2^FS
 ^FO10,${tTop+RH}^GB390,2,2^FS
 ^FO10,${tTop+RH*2}^GB390,2,2^FS
 ^FO10,${tTop+RH*3}^GB390,2,2^FS
 ^FO10,${tTop+RH*4}^GB390,2,2^FS
-^FO10,${tTop+RH*5}^GB390,2,2^FS
 ^FO404,${tTop+RH}^GB386,2,2^FS
 ^FO404,${tTop+RH*2}^GB386,2,2^FS
 ^FO404,${tTop+RH*3}^GB386,2,2^FS
 ^FO404,${tTop+RH*4}^GB386,2,2^FS
-^FO404,${tTop+RH*5}^GB386,2,2^FS
 
 ^CF0,26
 ^FO18,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
@@ -1564,7 +1548,6 @@ ${hBand}
 ^FO18,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
 ^FO18,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
 ^FO18,${tTop+RH*4+10}^FDPRINTED       :^FS
-^FO18,${tTop+RH*5+10}^FDPC CODE     :  ${pcCode}^FS
 
 ^FO412,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
 ^FO412,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
@@ -1598,7 +1581,7 @@ function printLabel(labelId){
   const printerUrl = localStorage.getItem('sunloc_printer_url');
   if(printerUrl){
     fetch(printerUrl,{method:'POST',headers:{'Content-Type':'text/plain'},body:zpl})
-      .then(r=>{ if(r.ok){ label.printed=true; label.printedAt=now(); saveLocal(); renderPage(currentPage); } })
+      .then(r=>{ if(r.ok){ label.printed=true; label.printedAt=now(); saveLocal(); pushToServer('/api/tracking/label-update',{labelId:label.id,printed:true,printedAt:label.printedAt}); renderPage(currentPage); } })
       .catch(()=>downloadZPL(zpl,label));
   } else {
     downloadZPL(zpl,label);
@@ -1628,6 +1611,7 @@ function printBatchLabels(batchNo){
         if(r.ok){
           labels.forEach(l=>{l.printed=true;l.printedAt=now();});
           saveLocal();
+          labels.forEach(l=>pushToServer('/api/tracking/label-update',{labelId:l.id,printed:true,printedAt:l.printedAt}));
           renderPage(currentPage);
           toast(`✅ ${labels.length} labels sent to printer`,'var(--green)');
         } else {
@@ -3024,8 +3008,14 @@ function renderBatchCard(batch){
   const batchNo=batch.batchNumber;
   const flow=getBatchFlow(batch);
   const alerts=state.alerts.filter(a=>a.batchNumber===batchNo);
-  // WIP Days — uses corrected formula: (Gross − allWastage − packOut) / dailyCap
-  const wipDays = getBatchWIPDays(batchNo);
+  // WIP Days — consistent with Report C: (Gross − Packed) / machine daily cap
+  const machine = state.machineMaster.find(m=>m.id===batch.machineId||m.machineId===batch.machineId);
+  const dailyCap = machine?.dailyTarget || machine?.yTarget || machine?.cap || 10;
+  const packedOut = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+  const packedQty = boxToLakh(packedOut, batch.size);
+  const grossProd = batch.actualProd || batch.actualQty || 0;
+  const remainingWIP = Math.max(0, grossProd - packedQty);
+  const wipDays = dailyCap > 0 ? remainingWIP / dailyCap : 0;
   const std=batch.isPrinted?3:2;
   const dispDate=calcDispatchDate(batch);
   const ag=getBatchAGrade(batchNo,batch.isPrinted?'printed':'unprinted');
@@ -3399,7 +3389,6 @@ function exportReportH(){
 function renderReportG(){
   const batches = state.batches.filter(b=>!b.deleted && b.batchNumber);
 
-  let totalPackedQty = 0;
   let totalGrossProd = 0;
   let totalAGradeQty = 0;
   let totalInspected = 0;
@@ -3416,9 +3405,6 @@ function renderReportG(){
     totalInspected += ag.inspected;
     totalSalvage   += ag.salvage || 0;
     totalRemelt    += ag.remelt  || 0;
-    const packedOut = state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
-    const packedQty = boxToLakh(packedOut, b.size);
-    totalPackedQty += packedQty;
 
     // Alert: inspected > gross production (DPR entry is less than scans)
     const overInspected = ag.inspected > 0 && grossProd > 0 && ag.inspected > grossProd;
@@ -3475,10 +3461,8 @@ function renderReportG(){
   const cumPct = totalInspected>0 ? (totalAGradeQty/totalInspected*100) : 0;
   const cumCls = cumPct>=95?'green':cumPct>=90?'var(--amber)':'var(--red)';
 
-  // Unsorted Production = material not yet through any inspection stage
-  const totalUnsorted = Math.max(0, totalGrossProd - totalInspected);
-  // WIP = unpacked A-Grade = good material produced but not yet packed/dispatched
-  const totalWIP = Math.max(0, totalAGradeQty - totalPackedQty);
+  // Total WIP = Gross Production − Total Inspected (correct formula per requirement)
+  const totalWIP = Math.max(0, totalGrossProd - totalInspected);
 
   const alertsHtml = alerts.length > 0 ? `
     <div class="alert" style="background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.3);border-left:4px solid #dc2626;padding:10px 14px;margin-bottom:16px">
@@ -3493,12 +3477,11 @@ function renderReportG(){
 
     <div class="kpi-grid mb-16">
       <div class="kpi"><div class="kpi-label">Total Gross Production</div><div class="kpi-val cyan">${fmt(totalGrossProd)}L</div></div>
-      <div class="kpi"><div class="kpi-label">Total Inspected</div><div class="kpi-val">${fmt(totalInspected)}L</div><div class="kpi-sub">A-Grade + Salvage + Remelt</div></div>
+      <div class="kpi"><div class="kpi-label">Total Inspected</div><div class="kpi-val">${fmt(totalInspected)}L</div><div class="kpi-sub" style="color:var(--text3)">Excl. ${fmt(totalWIP)}L WIP</div></div>
       <div class="kpi"><div class="kpi-label">Total A-Grade Qty</div><div class="kpi-val green">${fmt(totalAGradeQty)}L</div></div>
-      <div class="kpi"><div class="kpi-label">Total Salvage</div><div class="kpi-val amber">${fmt(totalSalvage)}L</div></div>
+      <div class="kpi"><div class="kpi-label">Total Salvage</div><div class="kpi-val amber">${fmt(totalSalvage)}L</div><div class="kpi-sub">Inspected = A-Grade + Salvage + Remelt</div></div>
       <div class="kpi"><div class="kpi-label">Total Remelt</div><div class="kpi-val red">${fmt(totalRemelt)}L</div></div>
-      <div class="kpi"><div class="kpi-label">Unsorted Production</div><div class="kpi-val amber">${fmt(totalUnsorted)}L</div><div class="kpi-sub">= Gross − Inspected</div></div>
-      <div class="kpi"><div class="kpi-label">Total WIP (Unpacked A-Grade)</div><div class="kpi-val amber">${fmt(totalWIP)}L</div><div class="kpi-sub">= A-Grade − Packed</div></div>
+      <div class="kpi"><div class="kpi-label">Total WIP (All Stages)</div><div class="kpi-val amber">${fmt(totalWIP)}L</div><div class="kpi-sub">= Gross − Inspected</div></div>
       <div class="kpi"><div class="kpi-label">Cumulative A-Grade %</div><div class="kpi-val" style="color:${cumCls};font-size:28px">${fmt(cumPct,2)}%</div><div class="kpi-sub">= ${fmt(totalAGradeQty)}L ÷ ${fmt(totalInspected)}L inspected</div></div>
     </div>
 
@@ -3507,8 +3490,8 @@ function renderReportG(){
     <div style="font-size:11px;color:var(--text3);margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid var(--accent)">
       <b>A-Grade % (UP)</b> = AIM Out ÷ (AIM Out + AIM Salvage + AIM Remelt) × 100. &nbsp;|&nbsp;
       <b>A-Grade % (PTD)</b> = (AIM Out − Print Sal − Print Rem − PI Sal − PI Rem) ÷ (AIM Out + AIM Sal + AIM Rem) × 100. &nbsp;|&nbsp;
-      <b>Unsorted Production</b> = Gross − Inspected (material not yet through any inspection). &nbsp;|&nbsp;
-      <b>WIP</b> = A-Grade − Packed (good material in pipeline, broken down by stage). &nbsp;|&nbsp;
+      <b>Total WIP</b> = Gross Production − Total Inspected &nbsp;|&nbsp;
+      <b>Total Inspected</b> = A-Grade + Salvage + Remelt &nbsp;|&nbsp;
       <b>⚠️</b> = Inspected &gt; Gross Production (check DPR entry)
     </div>
 
@@ -3526,7 +3509,7 @@ function renderReportG(){
         <td class="td-mono green">${fmt(totalAGradeQty)}L</td>
         <td class="td-mono amber">${fmt(totalSalvage)}L</td>
         <td class="td-mono red">${fmt(totalRemelt)}L</td>
-        <td class="td-mono amber">${fmt(totalUnsorted)}L Unsorted &nbsp;|&nbsp; ${fmt(totalWIP)}L WIP</td>
+        <td class="td-mono amber">${fmt(totalWIP)}L WIP</td>
         <td><span style="font-size:13px;font-weight:700;color:${cumCls}">${fmt(cumPct,2)}%</span></td>
       </tr></tfoot>
     </table></div>
@@ -3891,12 +3874,11 @@ function renderReportC(){
       const packedOut=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
       const packedQty=boxToLakh(packedOut,b.size);
       const grossProd=b.actualProd||b.actualQty||0;
-      const wipDays=getBatchWIPDays(b.batchNumber);
-      const wip=getBatchWIPBreakdown(b.batchNumber);
-      const wipLakhs=wip?wip.totalWIP:Math.max(0,grossProd-packedQty);
+      const remainingWIP = Math.max(0, grossProd - packedQty);
+      const wipDays = dailyCap > 0 ? remainingWIP / dailyCap : 0;
       const std=b.isPrinted?3:2;
       let statusBadge='';
-      if(wipLakhs===0&&packedOut>0) statusBadge='<span class="badge badge-green">✅ Packed</span>';
+      if(remainingWIP===0&&packedOut>0) statusBadge='<span class="badge badge-green">✅ Packed</span>';
       else if(wipDays<=std) statusBadge='<span class="badge badge-blue">🔵 In Progress</span>';
       else statusBadge='<span class="badge badge-amber">⚠️ Delayed</span>';
       html+=`<tr>
@@ -4076,8 +4058,7 @@ function renderReportE(){
         const ag=getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
         const totalAG=ag.aGrade;
         const aGradePct=ag.pct;
-        const wipBreakdown=getBatchWIPBreakdown(b.batchNumber);
-        const wip=wipBreakdown?wipBreakdown.totalWIP:Math.max(0,grossProd-aimIn);
+        const wip=Math.max(0,grossProd-aimIn);
         const printingTD=b.isPrinted?boxToLakh(scansForBatch.filter(s=>s.dept==='printing'&&s.type==='out').length,b.size):0;
         const piOut=b.isPrinted?boxToLakh(scansForBatch.filter(s=>s.dept==='pi'&&s.type==='out').length,b.size):0;
         const printW=getTotalWastage(b.batchNumber,'printing');
@@ -4424,8 +4405,7 @@ function exportReportE(){
         const ag=getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
         const aGradePct=ag.pct;
         const netAGrade=ag.aGrade;
-        const wipBreakdown=getBatchWIPBreakdown(b.batchNumber);
-        const wip=wipBreakdown?wipBreakdown.totalWIP:Math.max(0,grossProd-aimIn);
+        const wip=Math.max(0,grossProd-aimIn);
         summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,'PLANNED QUANTITY (lac)':fmt(b.qty),'TOTAL PRODUCTION (lac)':fmt(grossProd),'AIM TOTAL RUN (lac)':fmt(aimIn),'SALVAGE':fmt(aimW.salvage),'REMELT':fmt(aimW.remelt),'A GRADE QTY (lac)':fmt(netAGrade),'AIM A GRADE %':fmt(aGradePct,2),'TOTAL A GRADE QTY (lac)':fmt(netAGrade),'A GRADE % (UNPTD)':fmt(aGradePct,2),'WIP (lac)':fmt(wip),'PACKING UNPTD (lac)':fmt(!b.isPrinted?boxToLakh(state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length,b.size):0),'PACKING PTD (lac)':fmt(b.isPrinted?boxToLakh(state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length,b.size):0),'DISPATCH (lac)':fmt(state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0))});
       });
     });
