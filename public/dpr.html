@@ -849,6 +849,28 @@ function getDefaultsForKey(storeKey){
   return (MANPOWER_MASTER[fl]||{})[role] || [];
 }
 
+function addMachineToFloor(fl){
+  const mcId = prompt('Enter Machine ID (e.g. MC35, MC36):','')?.trim().toUpperCase();
+  if(!mcId) return;
+  if(!mcId.match(/^MC\d+$/)) { alert('Invalid format. Use format like MC35, MC36'); return; }
+  if(FLOORS[fl].machines.find(m=>m.id===mcId)){ alert(mcId+' already exists on this floor.'); return; }
+  const sz = prompt('Enter default size (#0, #1, #2, #3, #4, #00):', '#2')?.trim() || '#2';
+  FLOORS[fl].machines.push({id:mcId, sz:sz});
+  // Save to localStorage so it persists
+  const saved = JSON.parse(localStorage.getItem('dpr_machine_sizes')||'{}');
+  saved[fl+'_'+mcId] = sz;
+  localStorage.setItem('dpr_machine_sizes', JSON.stringify(saved));
+  // Also mark active
+  const active = JSON.parse(localStorage.getItem('dpr_active_machines')||'{}');
+  if(!active[fl]) active[fl] = {};
+  active[fl][mcId] = true;
+  localStorage.setItem('dpr_active_machines', JSON.stringify(active));
+  pushSettingsToServer();
+  renderMachineSettings();
+  renderEntry();
+  toast('✅ '+mcId+' added to '+FLOORS[fl].label,'var(--green)',3000);
+}
+
 function renderMachineSettings(){
   const container=document.getElementById('machine-settings-area');
   if(!container) return;
@@ -860,6 +882,8 @@ function renderMachineSettings(){
         ${flData.label}
         <button onclick="resetAllMachinesActive('${fl}');renderMachineSettings();renderEntry()"
           style="margin-left:8px;font-size:10px;padding:2px 8px;background:transparent;border:1px solid var(--b2);border-radius:3px;color:var(--t3);cursor:pointer">Reset All</button>
+        <button onclick="addMachineToFloor('${fl}')"
+          style="margin-left:6px;font-size:10px;padding:2px 8px;background:rgba(0,212,255,0.12);border:1px solid var(--accent);border-radius:3px;color:var(--accent);cursor:pointer;font-weight:700">+ Add Machine</button>
       </div>
       <div style="display:flex;flex-wrap:wrap;gap:6px">
         ${flData.machines.map(m=>{
