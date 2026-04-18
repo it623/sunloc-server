@@ -744,8 +744,9 @@ function loadState() {
       state.zoneMap = ZONE_MAP_RAW;
     }
   } catch(e) {}
-  // Async: try server (enriches actuals from DPR)
-  setTimeout(() => SYNC.loadFromServer(), 500);
+  // Always load from server — ensures fresh data on any device
+  // If local state is empty (new browser/localStorage blocked), server is the only source
+  setTimeout(() => SYNC.loadFromServer(), 300);
   // Push local state to server immediately on load — ensures server is always up to date
   setTimeout(() => { if (state.orders && state.orders.length > 0) { const toSave = {...state}; delete toSave.pcCodes; delete toSave.zoneMap; SYNC.push(toSave); } }, 1500);
   // Check for month rollover after state is loaded
