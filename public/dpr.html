@@ -30,7 +30,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--t1);font-size:13px
 .ntab{display:flex;align-items:center;gap:4px;padding:0 8px;height:100%;font-family:var(--fc);font-weight:700;font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:rgba(255,255,255,0.55);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;transition:.15s;flex-shrink:0}
 .ntab:hover{color:rgba(255,255,255,0.85)}
 .ntab.on{color:#f0c060;border-bottom-color:#f0c060}
-.nright{display:flex;align-items:center;gap:4px;margin-left:6px;flex-shrink:0;min-width:0}
+.nright{display:flex;align-items:center;gap:4px;margin-left:6px;flex-shrink:0;min-width:0;overflow:visible}
 #ndate{background:rgba(255,255,255,0.15);border:1.5px solid rgba(255,255,255,0.3);border-radius:var(--r);color:#fff;padding:5px 8px;font-family:var(--fc);font-size:12px;font-weight:700;cursor:pointer;outline:none}
 #ndate::-webkit-calendar-picker-indicator{filter:invert(1)}
 .nbtn{padding:5px 11px;border-radius:var(--r);font-family:var(--fc);font-weight:700;font-size:11px;letter-spacing:.8px;cursor:pointer;border:1.5px solid rgba(255,255,255,0.3);background:rgba(255,255,255,0.12);color:rgba(255,255,255,0.85);transition:.15s;white-space:nowrap}
@@ -287,11 +287,11 @@ td.r,th.r{text-align:right}
     <div id="unsavedDot"></div>
     <span id="syncBadge" class="offline" onclick="configureServer()">⚙ Server</span>
     <input type="date" id="ndate" onchange="onDateChange()">
-    <select id="recentDatesSelect" style="background:var(--s2);border:1px solid var(--b2);border-radius:var(--r);color:var(--t1);padding:5px 8px;font-family:var(--fc);font-size:11px;cursor:pointer;outline:none;max-width:140px" onchange="if(this.value){document.getElementById('ndate').value=this.value;onDateChange();this.value=''}" title="Jump to a previous date">
+    <select id="recentDatesSelect" style="background:var(--s2);border:1px solid var(--b2);border-radius:var(--r);color:var(--t1);padding:5px 6px;font-family:var(--fc);font-size:11px;cursor:pointer;outline:none;max-width:110px" onchange="if(this.value){document.getElementById('ndate').value=this.value;onDateChange();this.value=''}" title="Jump to a previous date">
       <option value="">📅 History</option>
     </select>
-    <button class="nbtn" onclick="exportData()">↓ Export</button>
-    <button class="nbtn" onclick="document.getElementById('imp').click()">↑ Import</button>
+    <button class="nbtn" onclick="exportData()" title="Export data">↓ Exp.</button>
+    <button class="nbtn" onclick="document.getElementById('imp').click()" title="Import data">↑ Imp.</button>
     <input type="file" id="imp" accept=".json" style="display:none" onchange="importData(this)">
     <button class="nbtn primary" id="saveBtn" onclick="saveDay()">Save</button>
   </div>
@@ -1426,13 +1426,13 @@ function renderDayKpis(){
   const effCls=s.eff>=90?'green':s.eff>=75?'amber':'red';
   const dtCls=s.dtPct<=5?'green':s.dtPct<=10?'amber':'red';
   document.getElementById('dayKpis').innerHTML=`
-    <div class="kpi"><div class="kpi-label">Target</div><div class="kpi-val cyan">${s.totTgt||'—'}</div><div class="kpi-sub">units/day</div></div>
-    <div class="kpi"><div class="kpi-label">Production</div><div class="kpi-val ${s.totProd>0?'green':'t2'}">${s.totProd||'—'}</div><div class="kpi-sub">units today</div></div>
+    <div class="kpi"><div class="kpi-label">Target</div><div class="kpi-val cyan">${s.totTgt>0?parseFloat(s.totTgt).toFixed(2):'—'}</div><div class="kpi-sub">units/day</div></div>
+    <div class="kpi"><div class="kpi-label">Production</div><div class="kpi-val ${s.totProd>0?'green':'t2'}">${s.totProd>0?parseFloat(s.totProd).toFixed(2):'—'}</div><div class="kpi-sub">units today</div></div>
     <div class="kpi"><div class="kpi-label">VS Target</div><div class="kpi-val ${effCls}">${s.totTgt>0?(s.totProd-s.totTgt>=0?'+':'')+parseFloat((s.totProd-s.totTgt).toFixed(2)):'—'}</div><div class="kpi-sub">${s.totTgt>0?s.eff.toFixed(1)+'%':''}</div></div>
-    <div class="kpi"><div class="kpi-label">AIM Output</div><div class="kpi-val cyan">${s.totAim||'—'}</div><div class="kpi-sub">planned today</div></div>
-    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog>0?'amber':'green'}">${s.backlog||'—'}</div><div class="kpi-sub">units behind</div></div>
-    <div class="kpi"><div class="kpi-label">Re-Sort</div><div class="kpi-val ${s.totResort>0?'red':'green'}">${s.totResort}</div><div class="kpi-sub">units</div></div>
-    <div class="kpi"><div class="kpi-label">Downtime</div><div class="kpi-val ${dtCls}">${s.totDT||'—'}</div><div class="kpi-sub">${s.totDT>0?s.dtPct.toFixed(1)+'% DT':''}</div></div>
+    <div class="kpi"><div class="kpi-label">AIM Output</div><div class="kpi-val cyan">${s.totAim>0?parseFloat(s.totAim).toFixed(2):'—'}</div><div class="kpi-sub">planned today</div></div>
+    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog>0?'amber':'green'}">${s.backlog>0?parseFloat(s.backlog).toFixed(2):'—'}</div><div class="kpi-sub">units behind</div></div>
+    <div class="kpi"><div class="kpi-label">Re-Sort</div><div class="kpi-val ${s.totResort>0?'red':'green'}">${s.totResort>0?parseFloat(s.totResort).toFixed(2):'0'}</div><div class="kpi-sub">units</div></div>
+    <div class="kpi"><div class="kpi-label">Downtime</div><div class="kpi-val ${dtCls}">${s.totDT>0?parseFloat(s.totDT).toFixed(0):'—'}</div><div class="kpi-sub">${s.totDT>0?s.dtPct.toFixed(1)+'% DT':''}</div></div>
   `;
 }
 
@@ -1583,11 +1583,11 @@ function renderShifts(){
     const shVs=shProd>0?shProd-shTgt:null;
     html+=`</tbody><tfoot><tr class="tot-row">
       <td colspan="4" style="font-family:var(--fc);font-size:10px;letter-spacing:.8px">SHIFT ${sh} TOTAL</td>
-      <td class="r" style="font-family:var(--mono)">${shTgt}</td>
-      <td class="r" id="shtot-${sh}" style="font-family:var(--mono)">${shProd||'—'}</td>
-      <td class="r">${shVs===null?'<span class="vs-zero">—</span>':shVs>=0?`<span class="vs-pos">+${shVs}</span>`:`<span class="vs-neg">${shVs}</span>`}</td>
-      <td class="r" id="shaim-${sh}" style="font-family:var(--mono)">${shAim||'—'}</td>
-      <td class="r" style="font-family:var(--mono);color:var(--amber)">${shResort>0?`<span style="color:var(--red)">${shResort}</span>`:'<span style="color:var(--t3)">0</span>'}</td>
+      <td class="r" style="font-family:var(--mono)">${shTgt>0?parseFloat(shTgt).toFixed(2):'—'}</td>
+      <td class="r" id="shtot-${sh}" style="font-family:var(--mono)">${shProd>0?parseFloat(shProd).toFixed(2):'—'}</td>
+      <td class="r">${shVs===null?'<span class="vs-zero">—</span>':shVs>=0?`<span class="vs-pos">+${parseFloat(shVs).toFixed(2)}</span>`:`<span class="vs-neg">${parseFloat(shVs).toFixed(2)}</span>`}</td>
+      <td class="r" id="shaim-${sh}" style="font-family:var(--mono)">${shAim>0?parseFloat(shAim).toFixed(2):'—'}</td>
+      <td class="r" style="font-family:var(--mono);color:var(--amber)">${shResort>0?`<span style="color:var(--red)">${parseFloat(shResort).toFixed(2)}</span>`:'<span style="color:var(--t3)">0</span>'}</td>
       <td></td>
     </tr></tfoot></table></div></div></div>`;
   });
@@ -2742,10 +2742,10 @@ function renderHistory(){
     html+=`<tr>
       <td class="mono">${parseInt(dy)} ${months[parseInt(mo)-1]} ${y}</td>
       <td style="color:var(--t2)">${FLOORS[e.floor]?.label||e.floor}</td>
-      <td class="mono">${s.totProd||'—'}</td>
+      <td class="mono">${s.totProd>0?parseFloat(s.totProd).toFixed(2):'—'}</td>
       <td><span class="pill ${s.eff>=90?'g':s.eff>=75?'a':'r'}">${s.totProd>0?s.eff.toFixed(1)+'%':'—'}</span></td>
       <td><span class="pill ${s.dtPct<=5?'g':s.dtPct<=10?'a':'r'}">${s.totDT>0?s.dtPct.toFixed(1)+'%':'—'}</span></td>
-      <td class="mono">${s.totResort>0?`<span style="color:var(--red)">${s.totResort}</span>`:'—'}</td>
+      <td class="mono">${s.totResort>0?`<span style="color:var(--red)">${parseFloat(s.totResort).toFixed(2)}</span>`:'—'}</td>
       <td><button class="btn-sm" onclick="loadRecord('${e.floor}','${e.date}')">Load</button></td>
     </tr>`;
   });
