@@ -1581,7 +1581,8 @@ ${hBand}
 ^FO30,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
 ^FO30,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
 ^FO30,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
-^FO30,${tTop+RH*4+10}^FDPRINTED       :  ${label.pcCode||batch?.pcCode||''}^FS
+^FO30,${tTop+RH*4+10}^FDPRINTED       :^FS
+^FO30,${tTop+RH*4+38}^FDPC CODE   :  ${label.pcCode||batch?.pcCode||''}^FS
 
 ^FO420,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
 ^FO420,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
