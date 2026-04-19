@@ -537,6 +537,200 @@ async function ensurePostgresTables() {
         updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
       )
     `);
+
+    // planning_state
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS planning_state (
+        id SERIAL PRIMARY KEY,
+        state_json TEXT NOT NULL,
+        saved_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+
+    // dpr_records
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS dpr_records (
+        id SERIAL PRIMARY KEY,
+        floor TEXT NOT NULL,
+        date TEXT NOT NULL,
+        data_json TEXT NOT NULL,
+        saved_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        UNIQUE(floor, date)
+      )
+    `);
+
+    // production_actuals
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS production_actuals (
+        id SERIAL PRIMARY KEY,
+        order_id TEXT,
+        batch_number TEXT,
+        machine_id TEXT NOT NULL,
+        date TEXT NOT NULL,
+        shift TEXT NOT NULL,
+        run_index INTEGER NOT NULL DEFAULT 0,
+        qty_lakhs REAL NOT NULL,
+        floor TEXT,
+        synced_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        UNIQUE(machine_id, date, shift, run_index)
+      )
+    `);
+
+    // app_users
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS app_users (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL UNIQUE,
+        pin_hash TEXT NOT NULL,
+        role TEXT NOT NULL,
+        app TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+
+    // app_sessions
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS app_sessions (
+        token TEXT PRIMARY KEY,
+        user_id INTEGER NOT NULL,
+        username TEXT NOT NULL,
+        role TEXT NOT NULL,
+        app TEXT NOT NULL,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        expires_at TEXT NOT NULL
+      )
+    `);
+
+    // audit_log
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS audit_log (
+        id SERIAL PRIMARY KEY,
+        username TEXT NOT NULL,
+        role TEXT NOT NULL,
+        app TEXT NOT NULL,
+        action TEXT NOT NULL,
+        details TEXT,
+        ip TEXT,
+        ts TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+
+    // temp_batches
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS temp_batches (
+        id TEXT PRIMARY KEY,
+        machine_id TEXT NOT NULL,
+        machine_size TEXT NOT NULL,
+        date TEXT NOT NULL,
+        daily_cap_lakhs REAL NOT NULL,
+        label_count INTEGER NOT NULL,
+        pack_size_lakhs REAL NOT NULL,
+        status TEXT NOT NULL DEFAULT 'active',
+        reconciled_order_id TEXT,
+        reconciled_at TEXT,
+        reconciled_by TEXT,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        UNIQUE(machine_id, date)
+      )
+    `);
+
+    // temp_batch_alerts
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS temp_batch_alerts (
+        id TEXT PRIMARY KEY,
+        temp_batch_id TEXT NOT NULL,
+        machine_id TEXT NOT NULL,
+        date TEXT NOT NULL,
+        alert_type TEXT NOT NULL,
+        message TEXT,
+        resolved INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+
+    // tracking_alerts
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS tracking_alerts (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        dept TEXT NOT NULL,
+        alert_type TEXT NOT NULL,
+        message TEXT,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        resolved INTEGER DEFAULT 0
+      )
+    `);
+
+    // tracking_dispatch_records
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS tracking_dispatch_records (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        qty REAL,
+        ts TEXT NOT NULL DEFAULT NOW()::TEXT,
+        operator TEXT,
+        note TEXT
+      )
+    `);
+
+    // tracking_dispatch_actuals
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS tracking_dispatch_actuals (
+        id SERIAL PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        qty REAL,
+        ts TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+
+    // reconciliation_requests
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS reconciliation_requests (
+        id TEXT PRIMARY KEY,
+        temp_batch_id TEXT NOT NULL,
+        order_id TEXT,
+        batch_number TEXT,
+        requested_by TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        resolved_at TEXT,
+        resolved_by TEXT,
+        notes TEXT
+      )
+    `);
+
+    // wo_reconciliation_requests
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS wo_reconciliation_requests (
+        id TEXT PRIMARY KEY,
+        temp_batch_id TEXT NOT NULL,
+        order_id TEXT,
+        batch_number TEXT,
+        requested_by TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        resolved_at TEXT,
+        resolved_by TEXT,
+        notes TEXT
+      )
+    `);
+
+    // schema_migrations (for tracking)
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS schema_migrations (
+        id SERIAL PRIMARY KEY,
+        version INTEGER NOT NULL UNIQUE,
+        name TEXT NOT NULL,
+        applied_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+
+    // Indexes for performance
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_prod_actuals_date ON production_actuals(date, machine_id)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_records_date ON dpr_records(date)`).catch(()=>{});
+
     console.log('[DB] PostgreSQL tables verified/created');
   } catch(e) {
     console.error('[DB] ensurePostgresTables error:', e.message);
