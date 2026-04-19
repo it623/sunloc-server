@@ -244,6 +244,16 @@ td.r,th.r{text-align:right}
 .auth-btn:hover{opacity:.9}
 .auth-err{color:#ff4060;font-size:12px;text-align:center;margin-top:8px;min-height:16px}
 .audit-row{display:grid;grid-template-columns:140px 70px 90px 1fr;gap:6px;padding:6px 10px;border-bottom:1px solid #1e2535;font-size:11px}
+
+/* Hide number input spinners */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button{-webkit-appearance:none;margin:0}
+input[type=number]{-moz-appearance:textfield;appearance:textfield}
+
+/* Hide number input spinners globally */
+input[type=number]::-webkit-inner-spin-button,
+input[type=number]::-webkit-outer-spin-button { -webkit-appearance:none; margin:0; }
+input[type=number] { -moz-appearance:textfield; appearance:textfield; }
 </style>
 </head>
 <body>
@@ -965,9 +975,11 @@ function collectForm(){
   const d=getDate(), fl=curFloor;
   const day=loadDay(fl,d);
   SHIFTS.forEach(sh=>{
-    day.shifts[sh].incharge=v(`si-${sh}-incharge`)||'';
-    day.shifts[sh].fitter=v(`si-${sh}-fitter`)||'';
-    day.shifts[sh].chemist=v(`si-${sh}-chemist`)||'';
+    // Read multi-staff dropdowns (incharge/chemist/fitter now use renderMultiStaff)
+    const readMS=(role)=>{const c=document.getElementById(`ms-${sh}-${role}`);if(!c)return[];return [...c.querySelectorAll('select.ms-input')].map(s=>s.value).filter(Boolean);};
+    day.shifts[sh].incharge=readMS('incharge');
+    day.shifts[sh].chemist=readMS('chemist');
+    day.shifts[sh].fitter=readMS('fitter');
     day.shifts[sh].electrical=getMultiStaff(sh,'electrical');
     day.shifts[sh].utility=getMultiStaff(sh,'utility');
     day.shifts[sh].aim_staff=getMultiStaff(sh,'aim_staff');
@@ -1089,6 +1101,21 @@ async function pushToServer(fl,d,data){
     setSyncBadge('synced');
   }catch{ setSyncBadge('offline'); }
 }
+async function fetchDayFromServer(fl, d){
+  if(!serverUrl) return null;
+  try{
+    const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(6000)});
+    if(!r.ok) return null;
+    const j=await r.json();
+    if(j.data){
+      // Cache to localStorage so loadDay works offline
+      localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+      return j.data;
+    }
+  }catch(e){ console.warn('fetchDayFromServer failed:', e?.message); }
+  return null;
+}
+
 async function fetchActiveOrders(){
   if(!serverUrl){
     const cached=localStorage.getItem('dpr_active_orders');
@@ -1337,17 +1364,52 @@ function getDprNavCells(sh){
 }
 
 function dprTableNav(e, sh){
-  if(e.key!=='ArrowDown'&&e.key!=='ArrowUp'&&e.key!=='Enter') return;
+  if(!['ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Enter','Tab'].includes(e.key)) return;
+  // ArrowLeft/Right: move between run-qty and aim in same row
+  if(e.key==='ArrowLeft'||e.key==='ArrowRight'){
+    const allInputs=[...document.querySelectorAll(`input[id^="run-qty-${sh}-"],input[id^="aim-${sh}-"],input[id^="dt-${sh}-"]`)];
+    const idx=allInputs.indexOf(e.target);
+    if(idx<0) return;
+    e.preventDefault();
+    const next=e.key==='ArrowRight'?allInputs[idx+1]:allInputs[idx-1];
+    if(next){next.focus();next.select();}
+    return;
+  }
   e.preventDefault();
   const cells=getDprNavCells(sh);
   const idx=cells.indexOf(e.target);
   if(idx<0) return;
-  if((e.key==='ArrowDown'||e.key==='Enter') && idx<cells.length-1){
+  if((e.key==='ArrowDown'||e.key==='Enter'||e.key==='Tab') && idx<cells.length-1){
     cells[idx+1].focus(); cells[idx+1].select();
   }
   if(e.key==='ArrowUp' && idx>0){
     cells[idx-1].focus(); cells[idx-1].select();
   }
+}
+
+// Global keyboard nav for downtime table
+function dtNav(e){
+  if(!['ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Enter','Tab'].includes(e.key)) return;
+  const allDt=[...document.querySelectorAll('input[id^="dt-"]')];
+  const idx=allDt.indexOf(e.target);
+  if(idx<0) return;
+  e.preventDefault();
+  // Downtime table: rows = machines, cols = categories
+  // Find total columns by counting distinct category suffixes
+  const cols=document.querySelectorAll('input[id^="dt-A-'+e.target.id.split('-')[2]+'-"]').length||1;
+  let next=null;
+  if(e.key==='ArrowRight'||e.key==='Tab') next=allDt[idx+1];
+  else if(e.key==='ArrowLeft') next=allDt[idx-1];
+  else if(e.key==='ArrowDown'||e.key==='Enter'){
+    // Count actual columns in downtime table
+    const dtCols=document.querySelectorAll('.dt-table thead th').length-1||18;
+    next=allDt[idx+dtCols];
+  }
+  else if(e.key==='ArrowUp'){
+    const dtCols=document.querySelectorAll('.dt-table thead th').length-1||18;
+    next=allDt[idx-dtCols];
+  }
+  if(next){next.focus();next.select();}
 }
 
 function dprQtyNav(e, sh, mcId){
@@ -1459,7 +1521,7 @@ function renderDayKpis(){
     <div class="kpi"><div class="kpi-label">Production</div><div class="kpi-val ${s.totProd>0?'green':'t2'}">${s.totProd>0?parseFloat(s.totProd).toFixed(2):'—'}</div><div class="kpi-sub">units today</div></div>
     <div class="kpi"><div class="kpi-label">VS Target</div><div class="kpi-val ${effCls}">${s.totTgt>0?(s.totProd-s.totTgt>=0?'+':'')+parseFloat((s.totProd-s.totTgt).toFixed(2)):'—'}</div><div class="kpi-sub">${s.totTgt>0?s.eff.toFixed(1)+'%':''}</div></div>
     <div class="kpi"><div class="kpi-label">AIM Output</div><div class="kpi-val cyan">${s.totAim>0?parseFloat(s.totAim).toFixed(2):'—'}</div><div class="kpi-sub">planned today</div></div>
-    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog>0?'amber':'green'}">${s.backlog>0?parseFloat(s.backlog).toFixed(2):'—'}</div><div class="kpi-sub">units behind</div></div>
+    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog>0?'amber':'green'}">${s.totAim>0?parseFloat(s.backlog).toFixed(2):'—'}</div><div class="kpi-sub">units behind</div></div>
     <div class="kpi"><div class="kpi-label">Re-Sort</div><div class="kpi-val ${s.totResort>0?'red':'green'}">${s.totResort>0?parseFloat(s.totResort).toFixed(2):'0'}</div><div class="kpi-sub">units</div></div>
     <div class="kpi"><div class="kpi-label">Downtime</div><div class="kpi-val ${dtCls}">${s.totDT>0?parseFloat(s.totDT).toFixed(0):'—'}</div><div class="kpi-sub">${s.totDT>0?s.dtPct.toFixed(1)+'% DT':''}</div></div>
   `;
@@ -1476,16 +1538,18 @@ function renderShifts(){
       const m=migrateMachineData(sd.machines[mc.id]||blankMachine());
       return mcTotalProd(m)>0;
     });
-    html+=`<div class="shift-block">
-      <div class="shift-hdr" onclick="toggleShift('sb-${sh}')">
-        <span class="shift-title">SHIFT — ${sh}</span>
-        <span class="shift-badge ${hasData?'done':'pending'}">${hasData?'DATA ENTERED':'PENDING'}</span>
+    const shColors={A:{bg:'#064e3b',border:'#6ee7b7',badge:'#d1fae5',badgeTxt:'#064e3b'},B:{bg:'#1e3a5f',border:'#60a5fa',badge:'#dbeafe',badgeTxt:'#1e3a5f'},C:{bg:'#78350f',border:'#fcd34d',badge:'#fef3c7',badgeTxt:'#78350f'}};
+    const sc=shColors[sh]||shColors.A;
+    html+=`<div class="shift-block" style="border-color:${sc.border}">
+      <div class="shift-hdr" onclick="toggleShift('sb-${sh}')" style="background:${sc.bg};color:#fff">
+        <span class="shift-title" style="color:#fff">SHIFT — ${sh}</span>
+        <span class="shift-badge ${hasData?'done':'pending'}" style="background:${sc.badge};color:${sc.badgeTxt};border-color:${sc.border}">${hasData?'DATA ENTERED':'PENDING'}</span>
       </div>
       <div class="shift-body open" id="sb-${sh}">
         <div class="staff-row" style="grid-template-columns:repeat(4,1fr);gap:8px">
-          <div class="field-grp"><label>Process Incharge</label><input type="text" id="si-${sh}-incharge" value="${esc(sd.incharge||'')}" placeholder="Name" oninput="markUnsaved()"></div>
-          <div class="field-grp"><label>Shift Chemist</label><input type="text" id="si-${sh}-chemist" value="${esc(sd.chemist||'')}" placeholder="Name" oninput="markUnsaved()"></div>
-          <div class="field-grp"><label>Shift Fitter</label><input type="text" id="si-${sh}-fitter" value="${esc(sd.fitter||'')}" placeholder="Name" oninput="markUnsaved()"></div>
+          ${renderMultiStaff(sh,'incharge','Process Incharge',Array.isArray(sd.incharge)?sd.incharge:(sd.incharge?[sd.incharge]:[]))}
+          ${renderMultiStaff(sh,'chemist','Shift Chemist',Array.isArray(sd.chemist)?sd.chemist:(sd.chemist?[sd.chemist]:[]))}
+          ${renderMultiStaff(sh,'fitter','Shift Fitter',Array.isArray(sd.fitter)?sd.fitter:(sd.fitter?[sd.fitter]:[]))}
           <div class="field-grp"></div>
         </div>
         <div class="staff-row" style="grid-template-columns:repeat(4,1fr);gap:8px;margin-top:6px">
@@ -1551,7 +1615,7 @@ function renderShifts(){
               const rem2     = Math.max(0, gross2 - actual2);
               const over2    = actual2 > gross2;
               const col2     = over2 ? 'var(--red)' : rem2 <= 0 ? 'var(--green)' : 'var(--t3)';
-              return `<span class="run-ord-info" style="font-size:9px;color:${col2};font-family:var(--mono);white-space:nowrap;flex-shrink:0">Gross:${gross2}L Prod:${actual2}L Rem:${rem2}L</span>`;
+              return `<span class="run-ord-info" style="font-size:9px;color:${col2};font-family:var(--mono);white-space:nowrap;flex-shrink:0">Gross:${parseFloat(gross2).toFixed(2)}L Prod:${parseFloat(actual2).toFixed(2)}L Rem:${parseFloat(rem2).toFixed(2)}L</span>`;
             })()}
           </div>`;
       });
@@ -1703,7 +1767,7 @@ function onRunOrderChange(sh, mcId, ri){
         const actual   = ord.actualQty || 0;
         const remaining = Math.max(0, gross - actual);
         const overrun   = actual > gross;
-        infoEl.textContent = `Gross:${gross}L Prod:${actual}L Rem:${remaining}L`;
+        infoEl.textContent = `Gross:${parseFloat(gross).toFixed(2)}L Prod:${parseFloat(actual).toFixed(2)}L Rem:${parseFloat(remaining).toFixed(2)}L`;
         infoEl.style.color = overrun ? 'var(--red)' : remaining <= 0 ? 'var(--green)' : 'var(--t3)';
       }
     }
@@ -1813,7 +1877,7 @@ function renderDTTable(){
     SHIFTS.forEach(sh=>DT_CATS.forEach(c=>{
       const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
       const val=m[c]||'';
-      html+=`<td><input type="number" id="dt-${sh}-${mc.id}-${c}" value="${val}" placeholder="0" min="0" style="width:44px" oninput="markUnsaved();updateDTSummary()"></td>`;
+      html+=`<td><input type="number" id="dt-${sh}-${mc.id}-${c}" value="${val}" placeholder="0" min="0" style="width:44px" oninput="markUnsaved();updateDTSummary()" onkeydown="dtNav(event)"></td>`;
     }));
     html+=`</tr>`;
   });
@@ -1867,14 +1931,20 @@ function renderRemarks(){
   const fl=curFloor, d=getDate(), day=loadDay(fl,d);
   const rem=day.remarks||[];
   if(rem.length===0){document.getElementById('remList').innerHTML=`<div style="color:var(--t3);font-size:12px;padding:8px">No remarks. Click "+ Add Remark" to log issues.</div>`;return;}
+  const shColors={A:{bg:'rgba(6,78,59,0.12)',border:'#6ee7b7',badge:'#064e3b'},B:{bg:'rgba(30,58,95,0.12)',border:'#60a5fa',badge:'#1e3a5f'},C:{bg:'rgba(120,53,15,0.12)',border:'#fcd34d',badge:'#78350f'},General:{bg:'rgba(100,100,100,0.08)',border:'var(--b2)',badge:'var(--t2)'}};
+  // Sort: A first, B second, C third, General last
+  const order={A:0,B:1,C:2,General:3};
+  const sorted=[...rem.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(order[a.shift]??9)-(order[b.shift]??9));
   let html='';
-  rem.forEach((r,i)=>{
-    const mcLabel=r.mc?`<span style="font-family:var(--mono);font-size:10px;color:var(--accent);margin-right:6px">${r.mc}</span>`:'';
-    html+=`<div class="remark-row" style="align-items:flex-start;gap:8px;padding:7px 10px;border-bottom:1px solid var(--b1)">
-      <span class="rem-shift" style="flex-shrink:0">Shift ${r.shift}</span>
+  sorted.forEach(r=>{
+    const i=r.origIdx;
+    const sc=shColors[r.shift]||shColors.General;
+    const mcLabel=r.mc?`<span style="font-family:var(--mono);font-size:10px;color:var(--accent);margin-right:6px;background:rgba(96,165,250,0.1);padding:1px 5px;border-radius:3px">${r.mc}</span>`:'';
+    html+=`<div class="remark-row" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
+      <span class="rem-shift" style="flex-shrink:0;background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700">Shift ${r.shift}</span>
       ${mcLabel}
       <div style="flex:1;min-width:0">
-        <textarea id="rem-edit-${i}" style="width:100%;min-height:48px;resize:vertical;font-size:12px;background:transparent;border:1px solid transparent;border-radius:3px;padding:2px 4px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='var(--cyan)'" onblur="this.style.borderColor='transparent'">${esc(r.text)}</textarea>
+        <textarea id="rem-edit-${i}" style="width:100%;min-height:48px;resize:vertical;font-size:12px;background:transparent;border:1px solid transparent;border-radius:3px;padding:2px 4px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='transparent'">${esc(r.text)}</textarea>
       </div>
       <button class="btn-sm danger" style="flex-shrink:0" onclick="deleteRemark(${i})">✕</button>
     </div>`;
@@ -1904,6 +1974,7 @@ function addRemark(){
       const mc=v('rem-mc')||'';
       day.remarks.push({shift:v('rem-shift'),mc,text:v('rem-text'),ts:new Date().toISOString()});
       localStorage.setItem(skey(fl,d),JSON.stringify(day));
+      pushToServer(fl,d,day);
       closeModal();renderRemarks();markUnsaved();
     }},
     {label:'Cancel',fn:closeModal}
@@ -1921,17 +1992,33 @@ function renderResort(){
   const fl=curFloor, d=getDate(), day=loadDay(fl,d);
   const entries=day.resort||[];
   if(entries.length===0){document.getElementById('resortList').innerHTML=`<p style="color:var(--t3);font-size:12px">No re-sort entries. Click "+ Add Re-Sort Entry" to log machine-wise re-sort reasons.</p>`;return;}
+  const shColors={A:{bg:'rgba(6,78,59,0.12)',border:'#6ee7b7',badge:'#064e3b'},B:{bg:'rgba(30,58,95,0.12)',border:'#60a5fa',badge:'#1e3a5f'},C:{bg:'rgba(120,53,15,0.12)',border:'#fcd34d',badge:'#78350f'}};
+  const order={A:0,B:1,C:2};
+  const sorted=[...entries.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(order[a.shift]??9)-(order[b.shift]??9));
   let html='';
-  entries.forEach((r,i)=>{
-    html+=`<div class="resort-entry">
-      <span style="font-family:var(--fc);font-weight:700;color:var(--cyan)">${r.mc}</span>
-      <span class="pill a">${r.shift}</span>
-      <span style="font-size:11px;color:var(--t2)">${esc(r.reason)} — <b style="color:var(--red)">${r.qty} units</b></span>
-      <span style="font-size:11px;color:var(--t3)">${esc(r.note||'')}</span>
-      <button class="btn-sm danger" onclick="deleteResort(${i})">✕</button>
+  sorted.forEach(r=>{
+    const i=r.origIdx;
+    const sc=shColors[r.shift]||shColors.A;
+    html+=`<div class="resort-entry" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
+      <span style="font-family:var(--fc);font-weight:700;color:var(--cyan);min-width:36px">${r.mc}</span>
+      <span style="background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0">Shift ${r.shift}</span>
+      <div style="flex:1;min-width:0">
+        <div style="font-size:12px;color:var(--t2)">${esc(r.reason)} — <b style="color:var(--red)">${r.qty} units</b></div>
+        <textarea id="rs-edit-note-${i}" style="width:100%;min-height:36px;resize:vertical;font-size:11px;background:transparent;border:1px solid transparent;border-radius:3px;padding:2px 4px;color:var(--t3);margin-top:2px" oninput="saveResortEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='transparent'" placeholder="Add note...">${esc(r.note||'')}</textarea>
+      </div>
+      <button class="btn-sm danger" style="flex-shrink:0" onclick="deleteResort(${i})">✕</button>
     </div>`;
   });
   document.getElementById('resortList').innerHTML=html;
+}
+
+function saveResortEdit(i){
+  const fl=curFloor,d=getDate(),day=loadDay(fl,d);
+  const el=document.getElementById(`rs-edit-note-${i}`);
+  if(!el||!day.resort[i]) return;
+  day.resort[i].note=el.value;
+  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  markUnsaved();
 }
 function addResort(){
   const fl=curFloor;
@@ -1949,6 +2036,7 @@ function addResort(){
       if(!v('rs-qty')){toast('Enter quantity','var(--red)');return;}
       day.resort.push({mc:v('rs-mc'),shift:v('rs-shift'),reason:v('rs-reason'),qty:parseFloat(v('rs-qty')),note:v('rs-note'),ts:new Date().toISOString()});
       localStorage.setItem(skey(fl,d),JSON.stringify(day));
+      pushToServer(fl,d,day);
       closeModal();renderResort();renderDayKpis();renderShifts();markUnsaved();
     }},
     {label:'Cancel',fn:closeModal}
@@ -2075,7 +2163,30 @@ function renderAnalytics(){
       <td><span class="pill ${effCls}">${prod>0?eff.toFixed(1)+'%':'—'}</span></td>
       <td class="mono">${dt||'—'}</td><td class="mono">${rs>0?`<span style="color:var(--red)">${rs}</span>`:'—'}</td></tr>`;
   });
-  html+=`</tbody></table>`;
+  // Totals row
+  let totProd=0,totDT=0,totBatches=0,totTarget=0,totRs=0;
+  mcs.forEach(mc=>{
+    let prod=0,dt=0,batchCount=0;
+    SHIFTS.forEach(sh=>{
+      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+      prod+=mcTotalProd(m);
+      batchCount+=m.runs.filter(r=>r.qty||r.batchNumber).length;
+      DT_CATS.forEach(cat=>dt+=parseFloat(m[cat]||0));
+    });
+    const t=tgt(fl,mc.id)*3;
+    const rs=(day.resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
+    totProd+=prod; totDT+=dt; totBatches+=batchCount; totTarget+=t; totRs+=rs;
+  });
+  const totEff=totTarget>0?(totProd/totTarget*100):0;
+  html+=`</tbody><tfoot><tr style="font-weight:700;background:rgba(100,100,100,0.1);border-top:2px solid var(--b2)">
+    <td colspan="2" style="font-size:11px;color:var(--t3);padding:6px 8px">TOTAL</td>
+    <td class="mono">${totBatches}</td>
+    <td class="mono">${totTarget.toFixed(2)}</td>
+    <td class="mono">${totProd>0?totProd.toFixed(2):'—'}</td>
+    <td><span class="pill ${totEff>=90?'g':totEff>=75?'a':'r'}">${totProd>0?totEff.toFixed(1)+'%':'—'}</span></td>
+    <td class="mono">${totDT||'—'}</td>
+    <td class="mono">${totRs>0?`<span style="color:var(--red)">${totRs.toFixed(2)}</span>`:'—'}</td>
+  </tr></tfoot></table>`;
   document.getElementById('mcSummaryTable').innerHTML=html;
 }
 
@@ -2121,6 +2232,7 @@ function renderAIM(){
   const fl=curFloor, d=getDate(), day=loadDay(fl,d);
   const mcs=getActiveMachines(fl);
   let html=`<table class="data-table"><thead><tr><th>Machine</th><th>Sz</th><th>AIM</th><th>Produced</th><th>Backlog</th><th>Status</th></tr></thead><tbody>`;
+  let totAIM=0,totProdAIM=0,totBlAIM=0;
   mcs.forEach(mc=>{
     let prod=0,aim=0;
     SHIFTS.forEach(sh=>{
@@ -2128,14 +2240,25 @@ function renderAIM(){
       prod+=mcTotalProd(m);
       aim+=parseFloat(m.aim||0);
     });
-    const bl=aim>0?Math.max(0,aim-prod):null;
+    prod=parseFloat(prod.toFixed(2));
+    aim=parseFloat(aim.toFixed(2));
+    const bl=aim>0?parseFloat(Math.max(0,aim-prod).toFixed(2)):null;
     const st=aim===0?'<span class="pill" style="background:rgba(58,70,90,.5);color:var(--t3)">No AIM</span>':
       bl===0?'<span class="pill g">On Track</span>':
-      bl>0?`<span class="pill a">Behind by ${bl}</span>`:
+      bl>0?`<span class="pill a">Behind by ${bl.toFixed(2)}</span>`:
       '<span class="pill g">Ahead</span>';
-    html+=`<tr><td class="mono">${mc.id}</td><td style="color:var(--t3)">${mc.sz}</td><td class="mono">${aim||'—'}</td><td class="mono">${prod||'—'}</td><td class="mono">${bl===null?'—':bl}</td><td>${st}</td></tr>`;
+    totAIM+=aim; totProdAIM+=prod; if(bl!==null) totBlAIM+=bl;
+    html+=`<tr><td class="mono">${mc.id}</td><td style="color:var(--t3)">${mc.sz}</td><td class="mono">${aim||'—'}</td><td class="mono">${prod||'—'}</td><td class="mono">${bl===null?'—':bl.toFixed(2)}</td><td>${st}</td></tr>`;
   });
-  html+=`</tbody></table>`;
+  // Totals row
+  const totBlFmt=parseFloat(totBlAIM.toFixed(2));
+  html+=`</tbody><tfoot><tr style="font-weight:700;background:rgba(100,100,100,0.1);border-top:2px solid var(--b2)">
+    <td colspan="2" style="font-size:11px;color:var(--t3);padding:6px 8px">TOTAL</td>
+    <td class="mono">${totAIM.toFixed(2)||'—'}</td>
+    <td class="mono">${totProdAIM.toFixed(2)||'—'}</td>
+    <td class="mono">${totBlFmt.toFixed(2)}</td>
+    <td>${totBlFmt===0?'<span class="pill g">On Track</span>':totBlFmt>0?`<span class="pill a">Behind by ${totBlFmt.toFixed(2)}</span>`:'<span class="pill g">Ahead</span>'}</td>
+  </tr></tfoot></table>`;
   document.getElementById('aimTable').innerHTML=html;
 
   // AIM chart
@@ -2847,6 +2970,13 @@ function setFloor(fl){
 function onDateChange(){
   refreshRecentDates();
   renderEntry();
+  // Fetch day data from server when date changes
+  if(serverUrl){
+    const fl=curFloor, d=getDate();
+    fetchDayFromServer(fl, d).then(serverData=>{
+      if(serverData){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
+    });
+  }
   // C-shift date handling: if current time is 00:00–08:00 and today is selected, auto-switch to previous day
   const now=new Date(), h=now.getHours();
   const selectedDate=getDate(), todayStr=now.toISOString().split('T')[0];
@@ -3090,9 +3220,19 @@ async function loadSettingsFromServer(){
 function postAuthServerInit() {
   checkServer().then(ok=>{
     if(ok){
-      loadSettingsFromServer().then(()=>{
+      loadSettingsFromServer().then(async ()=>{
         fetchActiveOrders();
         fetchClosedBatches();
+        // Fetch today's data from server for all accessible floors
+        const fl=curFloor, d=getDate();
+        const serverData=await fetchDayFromServer(fl, d);
+        if(serverData){
+          renderDayKpis();
+          renderShifts();
+          renderRemarks();
+          renderResort();
+          toast('✓ Data loaded from server','var(--green)',2000);
+        }
       });
     } else {
       const cached=localStorage.getItem('dpr_active_orders');
