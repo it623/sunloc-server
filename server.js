@@ -1987,37 +1987,44 @@ app.get('/api/tracking/labels-all', async (req, res) => {
 // ── Recent scans fast endpoint ──
 app.get('/api/tracking/scans-recent', async (req, res) => {
   try {
-    // Map scan row — use s.label_number first, fall back to joined label's label_number
-    const m=r=>({
-      ...r,
+    const mapScan = r => ({
+      id: r.id,
       labelId: r.label_id,
       batchNumber: r.batch_number,
-      labelNumber: r.scan_label_number != null ? r.scan_label_number : r.lbl_label_number
+      dept: r.dept,
+      type: r.type,
+      ts: r.ts,
+      operator: r.operator || null,
+      size: r.size || null,
+      qty: r.qty || null,
+      labelNumber: r.label_number || null
     });
-    if(pgPool){
-      const r=await pgPool.query(`
-        SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts,
-               s.operator, s.size, s.qty,
-               s.label_number AS scan_label_number,
-               l.label_number AS lbl_label_number
-        FROM tracking_scans s
-        LEFT JOIN tracking_labels l ON s.label_id = l.id
-        ORDER BY s.ts DESC LIMIT 2000
-      `);
-      res.json({ok:true,scans:r.rows.map(m)});
+    if (pgPool) {
+      // Try with label_number column first (after migration v10)
+      let rows;
+      try {
+        const r = await pgPool.query(
+          'SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 2000'
+        );
+        rows = r.rows;
+      } catch(e) {
+        // Fallback if column issues — select without label_number
+        const r = await pgPool.query(
+          'SELECT id,label_id,batch_number,dept,type,ts,operator,size,qty FROM tracking_scans ORDER BY ts DESC LIMIT 2000'
+        );
+        rows = r.rows;
+      }
+      res.json({ ok: true, scans: rows.map(mapScan) });
     } else {
-      const scans=db.prepare(`
-        SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts,
-               s.operator, s.size, s.qty,
-               s.label_number AS scan_label_number,
-               l.label_number AS lbl_label_number
-        FROM tracking_scans s
-        LEFT JOIN tracking_labels l ON s.label_id = l.id
-        ORDER BY s.ts DESC LIMIT 2000
-      `).all();
-      res.json({ok:true,scans:scans.map(m)});
+      let scans;
+      try {
+        scans = db.prepare('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 2000').all();
+      } catch(e) {
+        scans = db.prepare('SELECT id,label_id,batch_number,dept,type,ts,operator,size,qty FROM tracking_scans ORDER BY ts DESC LIMIT 2000').all();
+      }
+      res.json({ ok: true, scans: scans.map(mapScan) });
     }
-  }catch(err){res.status(500).json({ok:false,error:err.message});}
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // ── Wastage fast endpoint ──
