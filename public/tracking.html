@@ -981,8 +981,6 @@ function normLabel(l){
 
 async function pullFromServer(){
   if(!serverUrl) return;
-  // Flush any labels that failed to reach server previously
-  flushPendingLabelPush();
   try{
     // STEP 1: Load planning batches FIRST — fast, shows batches immediately
     const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(30000)});
@@ -1004,56 +1002,53 @@ async function pullFromServer(){
         if(currentPage) renderPage(currentPage); // show batches immediately
       }
     }
-    // STEP 2: Load labels fast from dedicated endpoint
+    // STEP 2: Load all labels fast (dedicated lightweight endpoint)
     try{
-      const lr = await fetch(serverUrl+'/api/tracking/labels-all', {signal:AbortSignal.timeout(30000)});
+      flushPendingLabelPush(); // push any labels that failed previously
+      const lr=await fetch(serverUrl+'/api/tracking/labels-all',{signal:AbortSignal.timeout(30000)});
       if(lr.ok){
-        const lj = await lr.json();
+        const lj=await lr.json();
         if(lj.ok && lj.labels){
-          const normLabels = lj.labels.map(normLabel);
-          // Merge: keep any local-only labels server doesn't have
-          const serverIds = new Set(normLabels.map(l=>l.id));
+          // labels-all already returns camelCase — no normLabel needed
+          const serverLabels = lj.labels;
+          // Merge: keep local-only labels not yet on server, push them
+          const serverIds = new Set(serverLabels.map(l=>l.id));
           const localOnly = state.labels.filter(l=>!serverIds.has(l.id));
-          state.labels = [...normLabels, ...localOnly];
-          // Push local-only labels to server so they persist
-          if(localOnly.length > 0 && serverUrl){
-            fetch(serverUrl+'/api/tracking/labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels:localOnly}),signal:AbortSignal.timeout(10000)}).catch(()=>{});
-          }
+          if(localOnly.length > 0) pushLabelsToServer(localOnly);
+          state.labels = serverLabels;
           saveLocal();
           if(currentPage) renderPage(currentPage);
         }
       }
-    }catch(e2){ /* labels load failed — local state kept */ }
+    }catch(e2){ /* labels load failed — keep local state */ }
 
     // STEP 3: Load recent scans fast
     try{
-      const sr = await fetch(serverUrl+'/api/tracking/scans-recent', {signal:AbortSignal.timeout(20000)});
+      const sr=await fetch(serverUrl+'/api/tracking/scans-recent',{signal:AbortSignal.timeout(20000)});
       if(sr.ok){
-        const sj = await sr.json();
+        const sj=await sr.json();
         if(sj.ok && sj.scans){
-          const normScans = sj.scans.map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
-          // Merge: server scans take priority, keep local scans not on server
-          const serverScanIds = new Set(normScans.map(s=>s.id));
-          const localOnlyScans = state.scans.filter(s=>!serverScanIds.has(s.id));
-          state.scans = [...normScans, ...localOnlyScans];
+          const normScans=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number}));
+          const serverScanIds=new Set(normScans.map(s=>s.id));
+          const localOnlyScans=state.scans.filter(s=>!serverScanIds.has(s.id));
+          state.scans=[...normScans,...localOnlyScans];
           saveLocal();
           if(currentPage) renderPage(currentPage);
         }
       }
-    }catch(e3){ /* scans load failed — local state kept */ }
+    }catch(e3){ /* scans load failed — keep local state */ }
 
-    // STEP 4: Load wastage + other state in background (non-critical)
+    // STEP 4: Load wastage + alerts in background (non-critical)
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
       if(r.ok){
         const j=await r.json();
         if(j.ok && j.state){
-          const normWastage = (j.state.wastage||[]).map(w=>({...w, batchNumber:w.batchNumber||w.batch_number}));
-          // Only update wastage/alerts/dispatch — labels and scans already loaded fresh above
-          state.wastage = normWastage;
-          if(j.state.stageClosure) state.stageClosure = j.state.stageClosure;
-          if(j.state.dispatchRecs) state.dispatchRecs = j.state.dispatchRecs;
-          if(j.state.alerts) state.alerts = j.state.alerts;
+          const normWastage=(j.state.wastage||[]).map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));
+          state.wastage=normWastage;
+          if(j.state.stageClosure) state.stageClosure=j.state.stageClosure;
+          if(j.state.dispatchRecs) state.dispatchRecs=j.state.dispatchRecs;
+          if(j.state.alerts) state.alerts=j.state.alerts;
           saveLocal();
           if(currentPage) renderPage(currentPage);
         }
@@ -1239,51 +1234,40 @@ function canGenerateLabels(batchNo, requestedBoxes){
   return {ok:true, maxTotal:maxTotalBoxes, remainingAllowed, isExcessRun};
 }
 
-// Push labels to server with retry — ensures labels always reach PostgreSQL
-const _pendingLabelPush = []; // queue for labels that failed to push
-let _labelPushTimer = null;
-
+// ── Push labels to server with retry — labels must NEVER be lost ──
+const _pendingLabelPush = [];
 async function pushLabelsToServer(labels, attempt=1){
   if(!serverUrl || !labels || !labels.length) return;
   try{
     const r = await fetch(serverUrl+'/api/tracking/labels',{
-      method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({labels}),
-      signal:AbortSignal.timeout(15000)
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({labels}), signal:AbortSignal.timeout(15000)
     });
     const j = await r.json();
     if(j.ok){
-      // Success — remove from pending queue if present
-      labels.forEach(l => {
-        const idx = _pendingLabelPush.findIndex(p=>p.id===l.id);
-        if(idx>=0) _pendingLabelPush.splice(idx,1);
-      });
+      // Remove from pending queue
+      const ids = new Set(labels.map(l=>l.id));
+      for(let i=_pendingLabelPush.length-1;i>=0;i--){
+        if(ids.has(_pendingLabelPush[i].id)) _pendingLabelPush.splice(i,1);
+      }
+      try{ localStorage.setItem('sunloc_pending_labels', JSON.stringify(_pendingLabelPush)); }catch(e){}
       setSyncBadge('synced');
-    } else { throw new Error(j.error||'Server error'); }
-  } catch(e) {
-    // Failed — add to pending queue and retry
-    labels.forEach(l => { if(!_pendingLabelPush.find(p=>p.id===l.id)) _pendingLabelPush.push(l); });
-    // Save pending queue to localStorage so it survives page reload
+    } else { throw new Error(j.error||'Server rejected labels'); }
+  } catch(e){
+    // Add to pending queue
+    labels.forEach(l=>{ if(!_pendingLabelPush.find(p=>p.id===l.id)) _pendingLabelPush.push(l); });
     try{ localStorage.setItem('sunloc_pending_labels', JSON.stringify(_pendingLabelPush)); }catch(e2){}
-    // Retry with backoff: 5s, 15s, 30s, 60s
-    const delay = Math.min(5000 * attempt, 60000);
-    if(attempt <= 5){
-      setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(), attempt+1), delay);
-    }
+    // Retry with backoff: 5s, 15s, 30s, 60s max
+    if(attempt <= 5) setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(), attempt+1), Math.min(5000*attempt,60000));
     setSyncBadge('offline');
   }
 }
-
-// On page load — push any labels that failed to reach server previously
 function flushPendingLabelPush(){
   try{
-    const pending = JSON.parse(localStorage.getItem('sunloc_pending_labels')||'[]');
-    if(pending.length > 0){
-      _pendingLabelPush.push(...pending.filter(p=>!_pendingLabelPush.find(q=>q.id===p.id)));
-      pushLabelsToServer(_pendingLabelPush.slice());
-    }
-  } catch(e){}
+    const saved = JSON.parse(localStorage.getItem('sunloc_pending_labels')||'[]');
+    saved.forEach(l=>{ if(!_pendingLabelPush.find(p=>p.id===l.id)) _pendingLabelPush.push(l); });
+    if(_pendingLabelPush.length > 0) pushLabelsToServer(_pendingLabelPush.slice());
+  }catch(e){}
 }
 
 function generateLabels(batchNo, count, isPartialLast, partialQty){
@@ -1331,7 +1315,7 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
 
   state.labels.push(...newLabels);
   saveLocal();
-  // Push to PostgreSQL with retry — labels must reach server
+  // Push to PostgreSQL with retry — never lost even if connection drops
   pushLabelsToServer(newLabels);
   return newLabels;
 }

@@ -360,6 +360,47 @@ const MIGRATIONS = [
       );
     `
   },
+  {
+    version: 10,
+    name: 'labels_drop_unique_constraint',
+    sql: `
+      CREATE TABLE IF NOT EXISTS tracking_labels_new (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        label_number INTEGER NOT NULL,
+        size TEXT NOT NULL,
+        qty REAL NOT NULL,
+        is_partial INTEGER DEFAULT 0,
+        is_orange INTEGER DEFAULT 0,
+        parent_label_id TEXT,
+        customer TEXT,
+        colour TEXT,
+        pc_code TEXT,
+        po_number TEXT,
+        machine_id TEXT,
+        printing_matter TEXT,
+        generated TEXT NOT NULL DEFAULT (datetime('now')),
+        printed INTEGER DEFAULT 0,
+        printed_at TEXT,
+        voided INTEGER DEFAULT 0,
+        void_reason TEXT,
+        voided_at TEXT,
+        voided_by TEXT,
+        qr_data TEXT,
+        wo_status TEXT,
+        ship_to TEXT,
+        bill_to TEXT,
+        is_excess INTEGER DEFAULT 0,
+        excess_num INTEGER,
+        excess_total INTEGER,
+        normal_total INTEGER
+      );
+      INSERT OR IGNORE INTO tracking_labels_new SELECT * FROM tracking_labels;
+      DROP TABLE tracking_labels;
+      ALTER TABLE tracking_labels_new RENAME TO tracking_labels;
+      CREATE INDEX IF NOT EXISTS idx_labels_batch ON tracking_labels(batch_number);
+    `
+  },
 ];
 
 function runMigrations() {
@@ -1912,7 +1953,15 @@ app.post('/api/tracking/labels', async (req, res) => {
              printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,
              is_excess,excess_num,excess_total,normal_total)
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
-          ON CONFLICT (id) DO NOTHING`,
+          ON CONFLICT (id) DO UPDATE SET
+            batch_number=EXCLUDED.batch_number, label_number=EXCLUDED.label_number,
+            qty=EXCLUDED.qty, is_partial=EXCLUDED.is_partial,
+            printed=EXCLUDED.printed, printed_at=EXCLUDED.printed_at,
+            voided=EXCLUDED.voided, void_reason=EXCLUDED.void_reason,
+            voided_at=EXCLUDED.voided_at, voided_by=EXCLUDED.voided_by,
+            qr_data=EXCLUDED.qr_data, pc_code=EXCLUDED.pc_code,
+            is_excess=EXCLUDED.is_excess, excess_num=EXCLUDED.excess_num,
+            excess_total=EXCLUDED.excess_total, normal_total=EXCLUDED.normal_total`,
           [l.id, l.batchNumber||l.batch_number, l.labelNumber||l.label_number,
            l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
            l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
@@ -1963,32 +2012,34 @@ app.get('/api/tracking/labels', async (req, res) => {
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });
 
-// ── All labels (lightweight — no scans) for fast initial load ──
+// ── All labels fast endpoint (labels only, no scans) ──
 app.get('/api/tracking/labels-all', async (req, res) => {
   try {
     const mapLabel = r => ({
       id: r.id, batchNumber: r.batch_number, labelNumber: r.label_number,
-      size: r.size, qty: r.qty, isPartial: r.is_partial, isOrange: r.is_orange,
-      parentLabelId: r.parent_label_id, customer: r.customer, colour: r.colour,
-      pcCode: r.pc_code, poNumber: r.po_number, machineId: r.machine_id,
-      printingMatter: r.printing_matter, generated: r.generated,
-      printed: r.printed, printedAt: r.printed_at, voided: r.voided,
-      voidReason: r.void_reason, voidedAt: r.voided_at, voidedBy: r.voided_by,
-      qrData: r.qr_data, woStatus: r.wo_status, shipTo: r.ship_to, billTo: r.bill_to,
-      isExcess: r.is_excess, excessNum: r.excess_num, excessTotal: r.excess_total,
-      normalTotal: r.normal_total
+      size: r.size, qty: r.qty, isPartial: !!r.is_partial, isOrange: !!r.is_orange,
+      parentLabelId: r.parent_label_id||null, customer: r.customer||'', colour: r.colour||'',
+      pcCode: r.pc_code||'', poNumber: r.po_number||'', machineId: r.machine_id||'',
+      printingMatter: r.printing_matter||'', generated: r.generated,
+      printed: !!r.printed, printedAt: r.printed_at||null,
+      voided: !!r.voided, voidReason: r.void_reason||'',
+      voidedAt: r.voided_at||null, voidedBy: r.voided_by||null,
+      qrData: r.qr_data||'', woStatus: r.wo_status||null,
+      shipTo: r.ship_to||'', billTo: r.bill_to||'',
+      isExcess: !!r.is_excess, excessNum: r.excess_num||null,
+      excessTotal: r.excess_total||null, normalTotal: r.normal_total||null
     });
     if (pgPool) {
       const r = await pgPool.query('SELECT * FROM tracking_labels ORDER BY generated DESC');
       res.json({ ok: true, labels: r.rows.map(mapLabel) });
     } else {
       const labels = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
-      res.json({ ok: true, labels });
+      res.json({ ok: true, labels: labels.map(mapLabel) });
     }
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// ── Recent scans only (last 500) for fast initial load ──
+// ── Recent scans fast endpoint (last 500) ──
 app.get('/api/tracking/scans-recent', async (req, res) => {
   try {
     const mapScan = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number });
