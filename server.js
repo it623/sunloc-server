@@ -807,12 +807,21 @@ app.get('/api/dpr/dates/:floor', (req, res) => {
 });
 
 // POST close a batch in DPR (manager action)
-app.post('/api/dpr/batch-close', (req, res) => {
+app.post('/api/dpr/batch-close', async (req, res) => {
   try {
     const { orderId, batchNumber, closedBy, notes } = req.body;
     if (!orderId) return res.status(400).json({ ok: false, error: 'orderId required' });
-    db.prepare(`INSERT OR REPLACE INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
-      VALUES (?, ?, datetime('now'), ?, ?)`).run(orderId, batchNumber||null, closedBy||null, notes||null);
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
+         VALUES ($1,$2,NOW(),$3,$4)
+         ON CONFLICT(order_id) DO UPDATE SET batch_number=EXCLUDED.batch_number, closed_at=NOW(), closed_by=EXCLUDED.closed_by, notes=EXCLUDED.notes`,
+        [orderId, batchNumber||null, closedBy||null, notes||null]
+      );
+    } else {
+      db.prepare(`INSERT OR REPLACE INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
+        VALUES (?, ?, datetime('now'), ?, ?)`).run(orderId, batchNumber||null, closedBy||null, notes||null);
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -820,9 +829,13 @@ app.post('/api/dpr/batch-close', (req, res) => {
 });
 
 // DELETE reopen a batch in DPR (admin only)
-app.delete('/api/dpr/batch-close/:orderId', (req, res) => {
+app.delete('/api/dpr/batch-close/:orderId', async (req, res) => {
   try {
-    db.prepare('DELETE FROM dpr_batch_closed WHERE order_id = ?').run(req.params.orderId);
+    if (pgPool) {
+      await pgPool.query('DELETE FROM dpr_batch_closed WHERE order_id = $1', [req.params.orderId]);
+    } else {
+      db.prepare('DELETE FROM dpr_batch_closed WHERE order_id = ?').run(req.params.orderId);
+    }
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -830,9 +843,15 @@ app.delete('/api/dpr/batch-close/:orderId', (req, res) => {
 });
 
 // GET all DPR-closed batches (used by Planning to gate close button)
-app.get('/api/dpr/batch-closed', (req, res) => {
+app.get('/api/dpr/batch-closed', async (req, res) => {
   try {
-    const rows = db.prepare('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed').all();
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed');
+      rows = r.rows;
+    } else {
+      rows = db.prepare('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed').all();
+    }
     res.json({ ok: true, closed: rows });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
