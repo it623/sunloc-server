@@ -566,7 +566,7 @@ const FLOORS = {
     {id:'MC32',sz:'#3'},{id:'MC33',sz:'#1'},{id:'MC34',sz:'#00'}
   ]},
   '1F': { label:'First Floor (FF)', machines:[
-    {id:'MC14',sz:'#1'},{id:'MC15',sz:'#0'},{id:'MC16',sz:'#0'}
+    {id:'MC7',sz:'#4'},{id:'MC8',sz:'#4'},{id:'MC14',sz:'#1'},{id:'MC15',sz:'#0'},{id:'MC16',sz:'#0'}
   ]},
   '2F': { label:'Second Floor (SF)', machines:[
     {id:'MC23',sz:'#1'},{id:'MC24',sz:'#2'},{id:'MC25',sz:'#0'},
@@ -584,6 +584,7 @@ const MC_GROUPS = {
     { label:'MC 20, 21 & 22', machines:['MC20','MC21','MC22'] },
   ],
   '1F': [
+    { label:'MC 7 & 8',       machines:['MC7','MC8'] },
     { label:'MC 14, 15 & 16', machines:['MC14','MC15','MC16'] },
   ],
   '2F': [
@@ -713,14 +714,17 @@ function tgt(fl,mcId){ return parseFloat(targets[`${fl}_${mcId}`]||8); }
 //   DT fields: proc, mech, elec, gpr, hvac, dw — stay at machine level
 function blankRun(){ return {orderId:'', batchNumber:'', qty:'', note:''}; }
 // Machine availability — admin managed per floor
+function mcNum(id){ return parseInt((id||'').replace(/[^0-9]/g,''))||999; }
+function sortMcNumerically(arr){ return [...arr].sort((a,b)=>mcNum(a.id)-mcNum(b.id)); }
+
 function getActiveMachines(fl){
   try{
     const saved=localStorage.getItem('dpr_active_machines');
     const cfg=saved?JSON.parse(saved):{};
     const all=FLOORS[fl]?FLOORS[fl].machines:[];
-    if(!cfg[fl]||cfg[fl].length===0) return all; // default: all active
-    return all.filter(m=>cfg[fl].includes(m.id));
-  }catch{ return FLOORS[fl]?FLOORS[fl].machines:[]; }
+    const active=(!cfg[fl]||cfg[fl].length===0)?all:all.filter(m=>cfg[fl].includes(m.id));
+    return sortMcNumerically(active);
+  }catch{ return sortMcNumerically(FLOORS[fl]?FLOORS[fl].machines:[]); }
 }
 
 function setMachineActive(fl, mcId, active){
@@ -2046,7 +2050,8 @@ function renderResort(){
   const shOrder={A:0,B:1,C:2};
   const sorted=[...entries.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(shOrder[a.shift]??9)-(shOrder[b.shift]??9));
   let html='';
-  entries.forEach((r,i)=>{
+  sorted.forEach(r=>{
+    const i=r.origIdx;
     const sc=shColors[r.shift]||shColors.A;
     html+=`<div class="resort-entry" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
       <span style="font-family:var(--fc);font-weight:700;color:var(--cyan);min-width:36px">${r.mc}</span>
@@ -3232,17 +3237,12 @@ setTimeout(()=>onDateChange&&onDateChange(),200);
 // device opening DPR picks up the same configuration.
 
 function collectAllManpower(){
-  // Collect all manpower keys from localStorage into one object for server sync
-  const mp={};
   try{
-    for(let i=0;i<localStorage.length;i++){
-      const k=localStorage.key(i);
-      if(k&&k.startsWith('dpr_manpower_')){
-        try{ mp[k.replace('dpr_manpower_','')]=JSON.parse(localStorage.getItem(k)||'[]'); }catch{}
-      }
-    }
-  }catch{}
-  return mp;
+    const mp={};
+    const keys=Object.keys(localStorage).filter(k=>k&&k.startsWith('dpr_manpower_'));
+    keys.forEach(k=>{ try{ mp[k.replace('dpr_manpower_','')]=JSON.parse(localStorage.getItem(k)||'[]'); }catch{} });
+    return mp;
+  }catch{ return {}; }
 }
 
 function pushSettingsToServer(){
