@@ -1987,17 +1987,34 @@ app.get('/api/tracking/labels-all', async (req, res) => {
 // ── Recent scans fast endpoint ──
 app.get('/api/tracking/scans-recent', async (req, res) => {
   try {
-    const m=r=>({...r,labelId:r.label_id,batchNumber:r.batch_number,labelNumber:r.label_number});
+    // Map scan row — use s.label_number first, fall back to joined label's label_number
+    const m=r=>({
+      ...r,
+      labelId: r.label_id,
+      batchNumber: r.batch_number,
+      labelNumber: r.scan_label_number != null ? r.scan_label_number : r.lbl_label_number
+    });
     if(pgPool){
       const r=await pgPool.query(`
-        SELECT s.*, COALESCE(s.label_number, l.label_number) as label_number
+        SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts,
+               s.operator, s.size, s.qty,
+               s.label_number AS scan_label_number,
+               l.label_number AS lbl_label_number
         FROM tracking_scans s
         LEFT JOIN tracking_labels l ON s.label_id = l.id
         ORDER BY s.ts DESC LIMIT 2000
       `);
       res.json({ok:true,scans:r.rows.map(m)});
     } else {
-      const scans=db.prepare('SELECT s.*, COALESCE(s.label_number, l.label_number) as label_number FROM tracking_scans s LEFT JOIN tracking_labels l ON s.label_id = l.id ORDER BY s.ts DESC LIMIT 2000').all();
+      const scans=db.prepare(`
+        SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts,
+               s.operator, s.size, s.qty,
+               s.label_number AS scan_label_number,
+               l.label_number AS lbl_label_number
+        FROM tracking_scans s
+        LEFT JOIN tracking_labels l ON s.label_id = l.id
+        ORDER BY s.ts DESC LIMIT 2000
+      `).all();
       res.json({ok:true,scans:scans.map(m)});
     }
   }catch(err){res.status(500).json({ok:false,error:err.message});}
