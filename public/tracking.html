@@ -1029,6 +1029,7 @@ async function pullFromServer(){
       const sr=await fetch(serverUrl+'/api/tracking/scans-recent',{signal:AbortSignal.timeout(20000)});
       if(sr.ok){
         const sj=await sr.json();
+        if(!sj.ok){ console.warn('scans-recent returned error:',sj.error); }
         if(sj.ok&&sj.scans){
           const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number,labelNumber:s.labelNumber||s.label_number}));
           const serverIds=new Set(ns.map(s=>s.id));
@@ -1041,16 +1042,30 @@ async function pullFromServer(){
           if(currentPage) renderPage(currentPage);
         }
       }
-    }catch(e3){}
+    }catch(e3){ console.warn('STEP 3 scans failed:',e3?.message||e3); }
     // STEP 3.5: Load wastage fast (dedicated endpoint)
     try{
       const wr=await fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)});
       if(wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){state.wastage=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));saveLocal();if(currentPage)renderPage(currentPage);}}
     }catch(e35){}
-    // STEP 4: Alerts + stageClosure background
+    // STEP 4: Full state fallback (scans + alerts + stageClosure)
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
-      if(r.ok){const j=await r.json();if(j.ok&&j.state){if(j.state.stageClosure)state.stageClosure=j.state.stageClosure;if(j.state.dispatchRecs)state.dispatchRecs=j.state.dispatchRecs;if(j.state.alerts)state.alerts=j.state.alerts;saveLocal();if(currentPage)renderPage(currentPage);}}
+      if(r.ok){
+        const j=await r.json();
+        if(j.ok&&j.state){
+          // If STEP 3 failed and scans are still empty, load from full state
+          if(state.scans.length===0 && j.state.scans?.length>0){
+            const ns=(j.state.scans||[]).map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number,labelNumber:s.labelNumber||s.label_number}));
+            state.scans=ns;
+          }
+          if(j.state.stageClosure) state.stageClosure=j.state.stageClosure;
+          if(j.state.dispatchRecs) state.dispatchRecs=j.state.dispatchRecs;
+          if(j.state.alerts) state.alerts=j.state.alerts;
+          saveLocal();
+          if(currentPage) renderPage(currentPage);
+        }
+      }
     }catch(e4){}
   }catch(e){ setSyncBadge('offline'); }
 }
