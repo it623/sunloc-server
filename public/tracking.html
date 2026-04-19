@@ -1002,55 +1002,22 @@ async function pullFromServer(){
         if(currentPage) renderPage(currentPage); // show batches immediately
       }
     }
-    // STEP 2: Load all labels fast (dedicated endpoint)
+    // STEP 2: Load all labels fast
     try{
       flushPendingLabelPush();
       const lr=await fetch(serverUrl+'/api/tracking/labels-all',{signal:AbortSignal.timeout(30000)});
-      if(lr.ok){
-        const lj=await lr.json();
-        if(lj.ok && lj.labels){
-          const serverLabels = lj.labels;
-          const serverIds = new Set(serverLabels.map(l=>l.id));
-          const localOnly = state.labels.filter(l=>!serverIds.has(l.id));
-          if(localOnly.length > 0) pushLabelsToServer(localOnly);
-          state.labels = serverLabels;
-          saveLocal();
-          if(currentPage) renderPage(currentPage);
-        }
-      }
-    }catch(e2){ /* labels load failed — keep local state */ }
-
+      if(lr.ok){ const lj=await lr.json(); if(lj.ok&&lj.labels){ const sl=lj.labels; const sids=new Set(sl.map(l=>l.id)); const lo=state.labels.filter(l=>!sids.has(l.id)); if(lo.length>0) pushLabelsToServer(lo); state.labels=sl; saveLocal(); if(currentPage) renderPage(currentPage); } }
+    }catch(e2){}
     // STEP 3: Load recent scans fast
     try{
       const sr=await fetch(serverUrl+'/api/tracking/scans-recent',{signal:AbortSignal.timeout(20000)});
-      if(sr.ok){
-        const sj=await sr.json();
-        if(sj.ok && sj.scans){
-          const normScans=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number}));
-          const serverScanIds=new Set(normScans.map(s=>s.id));
-          const localOnlyScans=state.scans.filter(s=>!serverScanIds.has(s.id));
-          state.scans=[...normScans,...localOnlyScans];
-          saveLocal();
-          if(currentPage) renderPage(currentPage);
-        }
-      }
-    }catch(e3){ /* scans load failed — keep local state */ }
-
-    // STEP 4: Load wastage + alerts in background
+      if(sr.ok){ const sj=await sr.json(); if(sj.ok&&sj.scans){ const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number})); const ssids=new Set(ns.map(s=>s.id)); state.scans=[...ns,...state.scans.filter(s=>!ssids.has(s.id))]; saveLocal(); if(currentPage) renderPage(currentPage); } }
+    }catch(e3){}
+    // STEP 4: Wastage + alerts background
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
-      if(r.ok){
-        const j=await r.json();
-        if(j.ok && j.state){
-          state.wastage=(j.state.wastage||[]).map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));
-          if(j.state.stageClosure) state.stageClosure=j.state.stageClosure;
-          if(j.state.dispatchRecs) state.dispatchRecs=j.state.dispatchRecs;
-          if(j.state.alerts) state.alerts=j.state.alerts;
-          saveLocal();
-          if(currentPage) renderPage(currentPage);
-        }
-      }
-    }catch(e4){ /* wastage timeout ok */ }
+      if(r.ok){ const j=await r.json(); if(j.ok&&j.state){ state.wastage=(j.state.wastage||[]).map(w=>({...w,batchNumber:w.batchNumber||w.batch_number})); if(j.state.stageClosure) state.stageClosure=j.state.stageClosure; if(j.state.dispatchRecs) state.dispatchRecs=j.state.dispatchRecs; if(j.state.alerts) state.alerts=j.state.alerts; saveLocal(); if(currentPage) renderPage(currentPage); } }
+    }catch(e4){}
   }catch(e){ setSyncBadge('offline'); }
 }
 
@@ -1231,38 +1198,17 @@ function canGenerateLabels(batchNo, requestedBoxes){
   return {ok:true, maxTotal:maxTotalBoxes, remainingAllowed, isExcessRun};
 }
 
-// ── Push labels to server with retry — labels must NEVER be lost ──
 const _pendingLabelPush = [];
 async function pushLabelsToServer(labels, attempt=1){
   if(!serverUrl || !labels || !labels.length) return;
   try{
-    const r = await fetch(serverUrl+'/api/tracking/labels',{
-      method:'POST', headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({labels}), signal:AbortSignal.timeout(15000)
-    });
-    const j = await r.json();
-    if(j.ok){
-      const ids = new Set(labels.map(l=>l.id));
-      for(let i=_pendingLabelPush.length-1;i>=0;i--){
-        if(ids.has(_pendingLabelPush[i].id)) _pendingLabelPush.splice(i,1);
-      }
-      try{ localStorage.setItem('sunloc_pending_labels', JSON.stringify(_pendingLabelPush)); }catch(e){}
-      setSyncBadge('synced');
-    } else { throw new Error(j.error||'Server rejected'); }
-  } catch(e){
-    labels.forEach(l=>{ if(!_pendingLabelPush.find(p=>p.id===l.id)) _pendingLabelPush.push(l); });
-    try{ localStorage.setItem('sunloc_pending_labels', JSON.stringify(_pendingLabelPush)); }catch(e2){}
-    if(attempt <= 5) setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(), attempt+1), Math.min(5000*attempt,60000));
-    setSyncBadge('offline');
-  }
+    const r=await fetch(serverUrl+'/api/tracking/labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels}),signal:AbortSignal.timeout(15000)});
+    const j=await r.json();
+    if(j.ok){ const ids=new Set(labels.map(l=>l.id)); for(let i=_pendingLabelPush.length-1;i>=0;i--){ if(ids.has(_pendingLabelPush[i].id)) _pendingLabelPush.splice(i,1); } try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e){} setSyncBadge('synced'); }
+    else { throw new Error(j.error||'rejected'); }
+  }catch(e){ labels.forEach(l=>{if(!_pendingLabelPush.find(p=>p.id===l.id))_pendingLabelPush.push(l);}); try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e2){} if(attempt<=5) setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(),attempt+1),Math.min(5000*attempt,60000)); setSyncBadge('offline'); }
 }
-function flushPendingLabelPush(){
-  try{
-    const saved = JSON.parse(localStorage.getItem('sunloc_pending_labels')||'[]');
-    saved.forEach(l=>{ if(!_pendingLabelPush.find(p=>p.id===l.id)) _pendingLabelPush.push(l); });
-    if(_pendingLabelPush.length > 0) pushLabelsToServer(_pendingLabelPush.slice());
-  }catch(e){}
-}
+function flushPendingLabelPush(){ try{ const s=JSON.parse(localStorage.getItem('sunloc_pending_labels')||'[]'); s.forEach(l=>{if(!_pendingLabelPush.find(p=>p.id===l.id))_pendingLabelPush.push(l);}); if(_pendingLabelPush.length>0) pushLabelsToServer(_pendingLabelPush.slice()); }catch(e){} }
 
 function generateLabels(batchNo, count, isPartialLast, partialQty){
   const batch = getBatch(batchNo);
@@ -1956,14 +1902,14 @@ function renderLabels(){
   </div>
   <div class="alert alert-info">Labels are capped by: (1) order quantity in Planning — amend planned qty to unlock more, (2) daily machine target in boxes.</div>
 
-  <div class="grid-2" style="align-items:start;gap:16px">
+  <div style="display:flex;gap:12px;align-items:start">
 
   <!-- LEFT: Batch Status + Generate -->
-  <div class="card" style="max-height:520px;overflow-y:auto">
-    <div class="card-title">Active Batches</div>
-    <div style="overflow-x:auto;transform:rotateX(180deg)">
-    <table style="font-size:12px;min-width:700px;width:100%;transform:rotateX(180deg)">
-      <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>PC Code</th><th>Actual(L)</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Act</th></tr></thead>
+  <div class="card" style="width:42%;flex-shrink:0;max-height:calc(100vh - 200px);display:flex;flex-direction:column;padding:0;overflow:hidden">
+    <div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:700;letter-spacing:0.06em;color:var(--text3)">ACTIVE BATCHES</div>
+    <div style="overflow-x:auto;overflow-y:auto;flex:1;transform:rotateX(180deg)">
+    <table style="font-size:11px;width:100%;transform:rotateX(180deg);border-collapse:collapse">
+      <thead><tr style="border-bottom:2px solid var(--border)"><th style="padding:5px 6px;white-space:nowrap">Batch</th><th style="padding:5px 6px">Customer</th><th style="padding:5px 6px">Sz</th><th style="padding:5px 6px">PC</th><th style="padding:5px 6px">Actual</th><th style="padding:5px 6px">Gen</th><th style="padding:5px 6px">Prt</th><th style="padding:5px 6px">Rem</th><th style="padding:5px 6px">Act</th></tr></thead>
       <tbody>
       ${activeBatches.map(b=>{
         const maxLabels=lakhToBox(b.qty,b.size);
@@ -1978,16 +1924,16 @@ function renderLabels(){
         const pct=maxLabels>0?(generated/maxLabels*100):0;
         const actualProd=(b.actualQty||b.actualProd||0);
         return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">
-          <td class="td-bold td-mono">${b.batchNumber}</td>
-          <td class="text-sm" style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||'-'}</td>
-          <td class="td-mono">${b.size}</td>
-          <td class="td-mono text-sm">${b.pcCode||'—'}</td>
-          <td class="td-mono ${actualProd>0?'':'text-muted'}">${actualProd>0?actualProd.toFixed(2):'—'}</td>
-          <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:36px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
-          <td class="td-mono">${printed}</td>
-          <td class="td-mono ${remaining===0?'':'fw-bold amber'}">${remaining}</td>
-          <td onclick="event.stopPropagation()" style="white-space:nowrap">
-            ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" style="font-size:11px;padding:2px 6px" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕':'+Gen'}</button>`:''}
+          <td style="padding:5px 6px;font-weight:700;font-family:monospace;font-size:11px;white-space:nowrap">${b.batchNumber}</td>
+          <td style="padding:5px 6px;font-size:11px;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||'-'}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px;text-align:center">${b.size}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px">${b.pcCode||'—'}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px;color:${actualProd>0?'var(--text1)':'var(--text3)'}">${actualProd>0?actualProd.toFixed(2):'—'}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${generated}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px">${printed}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:${remaining===0?'400':'700'};color:${remaining===0?'var(--text3)':'var(--accent2)'}">${remaining}</td>
+          <td style="padding:4px 6px" onclick="event.stopPropagation()">
+            ${remaining>0?`<button style="font-size:10px;padding:2px 7px;border:1px solid ${isExcessAvailable?'var(--accent2)':'var(--accent)'};border-radius:4px;background:${isExcessAvailable?'rgba(255,171,0,0.15)':'rgba(96,165,250,0.15)'};color:${isExcessAvailable?'var(--accent2)':'var(--accent)'};cursor:pointer;white-space:nowrap" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕ Exc':'+Gen'}</button>`:''}
           </td>
         </tr>`;
       }).join('')||'<tr><td colspan="9" class="text-center text-muted">No active batches from Planning App</td></tr>'}
@@ -1996,7 +1942,7 @@ function renderLabels(){
   </div>
 
   <!-- RIGHT: Inline Print Queue for selected batch -->
-  <div class="card" style="min-height:200px;max-height:520px;overflow-y:auto;position:sticky;top:16px">
+  <div class="card" style="flex:1;min-width:0;max-height:calc(100vh - 200px);overflow-y:auto;position:sticky;top:16px">
     ${(()=>{
       if(!selBatch) return '<div class="text-center text-muted" style="padding:40px">← Select a batch to view its print queue</div>';
       const batch=getBatch(selBatch);
@@ -2005,53 +1951,51 @@ function renderLabels(){
       return `
       <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px;gap:8px">
         <div style="min-width:0">
-          <div style="font-size:15px;font-weight:700;letter-spacing:0.03em;color:var(--text1)">PRINT QUEUE — ${selBatch}</div>
-          <div style="font-size:12px;color:var(--text3);margin-top:2px">${batch?.customer||''} | Size ${batch?.size} | ${labels.length} labels</div>
-          <div style="font-size:12px;margin-top:2px">${unprintedCount>0?`<span style="color:var(--accent3);font-weight:600">${unprintedCount} unprinted</span>`:'<span style="color:var(--green);font-weight:600">✅ All printed</span>'}</div>
+          <div style="font-size:14px;font-weight:700;letter-spacing:0.03em">PRINT QUEUE — ${selBatch}</div>
+          <div style="font-size:11px;color:var(--text3);margin-top:2px">${batch?.customer||''} | Size ${batch?.size} | ${labels.length} labels</div>
+          <div style="font-size:11px;margin-top:2px">${unprintedCount>0?`<span style="color:var(--accent3);font-weight:600">${unprintedCount} unprinted</span>`:'<span style="color:var(--green);font-weight:600">✅ All printed</span>'}</div>
         </div>
-        ${unprintedCount>0?`<button class="btn btn-sm btn-success" style="white-space:nowrap;flex-shrink:0" onclick="printBatchLabels('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
+        ${unprintedCount>0?`<button class="btn btn-sm btn-success" style="white-space:nowrap;flex-shrink:0;font-size:11px" onclick="printBatchLabels('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
       </div>
-      <div style="overflow-y:auto;max-height:calc(100vh - 280px)">
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
+      <table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead>
           <tr style="border-bottom:2px solid var(--border)">
-            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600;white-space:nowrap">#</th>
-            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600">QTY (L)</th>
-            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600">STATUS</th>
-            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600">GENERATED</th>
-            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600">ACTION</th>
+            <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">#</th>
+            <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">QTY</th>
+            <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">STATUS</th>
+            <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">GENERATED</th>
+            <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">ACTION</th>
           </tr>
         </thead>
         <tbody>
         ${labels.map(l=>`
           <tr style="border-bottom:1px solid var(--border);${l.voided?'opacity:0.4':''}${!l.printed&&!l.voided?'background:rgba(240,192,96,0.05)':''}">
-            <td style="padding:8px;font-weight:700;color:var(--accent);font-family:monospace;font-size:13px">
+            <td style="padding:6px;font-weight:700;color:var(--accent);font-family:monospace">
               ${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}</span>`:`${Math.abs(l.labelNumber||0)}`}
-              ${l.isPartial?'<span style="font-size:9px;background:var(--accent2);color:#fff;border-radius:3px;padding:1px 4px;margin-left:2px">P</span>':''}
+              ${l.isPartial?'<span style="font-size:9px;background:var(--accent2);color:#fff;border-radius:3px;padding:1px 3px;margin-left:2px">P</span>':''}
             </td>
-            <td style="padding:8px;font-family:monospace;font-size:13px">${fmt(l.qty)}</td>
-            <td style="padding:8px">
+            <td style="padding:6px;font-family:monospace">${fmt(l.qty)}</td>
+            <td style="padding:6px">
               ${l.voided
-                ?'<span style="background:#ef444422;color:#ef4444;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">Voided</span>'
+                ?'<span style="background:#ef444422;color:#ef4444;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">Voided</span>'
                 :l.printed
-                  ?'<span style="background:#22c55e22;color:#22c55e;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">✅ Printed</span>'
-                  :'<span style="background:var(--accent2)22;color:var(--accent2);padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">Pending</span>'
+                  ?'<span style="background:#22c55e22;color:#22c55e;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">✅ Printed</span>'
+                  :'<span style="background:rgba(240,192,96,0.2);color:var(--accent2);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">Pending</span>'
               }
             </td>
-            <td style="padding:8px;font-size:11px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}</td>
-            <td style="padding:8px">
-              <div style="display:flex;gap:4px;flex-wrap:nowrap">
-                <button onclick="viewLabel('${l.id}')" style="padding:3px 8px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;color:var(--text2);white-space:nowrap">👁</button>
-                ${!l.voided?`<button onclick="editLabelQty('${l.id}')" style="padding:3px 8px;font-size:11px;border:1px solid var(--accent);border-radius:4px;background:none;cursor:pointer;color:var(--accent);white-space:nowrap">✏️</button>`:''}
-                ${!l.voided&&!l.printed?`<button onclick="printLabel('${l.id}');renderLabels()" style="padding:3px 10px;font-size:11px;border:none;border-radius:4px;background:var(--accent);color:#fff;cursor:pointer;white-space:nowrap">🖨️ Print</button>`:''}
-                ${!l.voided&&l.printed?`<button onclick="printLabel('${l.id}');renderLabels()" style="padding:3px 8px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;color:var(--text2);white-space:nowrap">Reprint</button>`:''}
-                ${!l.voided&&currentDept==='admin'?`<button onclick="voidLabel('${l.id}','Admin void');renderLabels()" style="padding:3px 6px;font-size:11px;border:1px solid #ef4444;border-radius:4px;background:none;cursor:pointer;color:#ef4444;white-space:nowrap">✕</button>`:''}
+            <td style="padding:6px;font-size:10px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}</td>
+            <td style="padding:6px">
+              <div style="display:flex;gap:3px;flex-wrap:nowrap;align-items:center">
+                <button onclick="viewLabel('${l.id}')" title="View" style="padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:3px;background:none;cursor:pointer;color:var(--text2)">👁</button>
+                ${!l.voided?`<button onclick="editLabelQty('${l.id}')" title="Edit" style="padding:2px 6px;font-size:11px;border:1px solid var(--accent);border-radius:3px;background:none;cursor:pointer;color:var(--accent)">✏️</button>`:''}
+                ${!l.voided&&!l.printed?`<button onclick="printLabel('${l.id}');renderLabels()" style="padding:2px 8px;font-size:11px;border:none;border-radius:3px;background:var(--accent);color:#fff;cursor:pointer">🖨️ Print</button>`:''}
+                ${!l.voided&&l.printed?`<button onclick="printLabel('${l.id}');renderLabels()" style="padding:2px 8px;font-size:11px;border:1px solid var(--border);border-radius:3px;background:none;cursor:pointer;color:var(--text2)">Reprint</button>`:''}
+                ${!l.voided&&currentDept==='admin'?`<button onclick="voidLabel('${l.id}','Admin void');renderLabels()" title="Void" style="padding:2px 6px;font-size:11px;border:1px solid #ef4444;border-radius:3px;background:none;cursor:pointer;color:#ef4444">✕</button>`:''}
               </div>
             </td>
           </tr>`).join('')||'<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text3)">No labels generated yet</td></tr>'}
         </tbody>
-      </table>
-      </div>`;
+      </table>`;
     })()}
   </div>
 
