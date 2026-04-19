@@ -1906,7 +1906,7 @@ function renderDTTable(){
     DT_CATS.forEach((cat,ci)=>{
       const bL=ci===0?`border-left:2px solid ${clr.border}`:'';
       const bR=ci===DT_CATS.length-1?`border-right:2px solid ${clr.border}`:'';
-      html+=`<th style="background:${clr.bg};color:${clr.text};${bL};${bR};font-size:9px;padding:4px 3px;font-weight:600">${DT_LABELS[cat].substring(0,4)}</th>`;
+      html+=`<th style="background:${clr.bg};color:var(--t1);${bL};${bR};font-size:9px;padding:4px 3px;font-weight:700;letter-spacing:.3px">${DT_LABELS[cat].substring(0,4)}</th>`;
     });
   });
   html+=`</tr></thead><tbody>`;
@@ -1919,7 +1919,7 @@ function renderDTTable(){
         const val=m[cat]||'';
         const bL=ci===0?`border-left:2px solid ${clr.border}`:'';
         const bR=ci===DT_CATS.length-1?`border-right:2px solid ${clr.border}`:'';
-        html+=`<td style="${bL};${bR};background:${clr.inputBg}"><input type="number" id="dt-${sh}-${mc.id}-${cat}" value="${val}" placeholder="0" min="0" style="width:44px;background:transparent" oninput="markUnsaved();updateDTSummary()" onkeydown="dtNav(event)"></td>`;
+        html+=`<td style="${bL};${bR};background:${clr.inputBg};padding:2px"><input type="number" id="dt-${sh}-${mc.id}-${cat}" value="${val}" placeholder="0" min="0" style="width:44px;background:var(--s1);border:1px solid var(--b2);border-radius:3px;color:var(--t1);text-align:center;padding:3px 2px" oninput="markUnsaved();updateDTSummary()" onkeydown="dtNav(event)"></td>`;
       });
     });
     html+=`</tr>`;
