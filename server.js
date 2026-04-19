@@ -1963,6 +1963,45 @@ app.get('/api/tracking/labels', async (req, res) => {
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });
 
+// ── All labels (lightweight — no scans) for fast initial load ──
+app.get('/api/tracking/labels-all', async (req, res) => {
+  try {
+    const mapLabel = r => ({
+      id: r.id, batchNumber: r.batch_number, labelNumber: r.label_number,
+      size: r.size, qty: r.qty, isPartial: r.is_partial, isOrange: r.is_orange,
+      parentLabelId: r.parent_label_id, customer: r.customer, colour: r.colour,
+      pcCode: r.pc_code, poNumber: r.po_number, machineId: r.machine_id,
+      printingMatter: r.printing_matter, generated: r.generated,
+      printed: r.printed, printedAt: r.printed_at, voided: r.voided,
+      voidReason: r.void_reason, voidedAt: r.voided_at, voidedBy: r.voided_by,
+      qrData: r.qr_data, woStatus: r.wo_status, shipTo: r.ship_to, billTo: r.bill_to,
+      isExcess: r.is_excess, excessNum: r.excess_num, excessTotal: r.excess_total,
+      normalTotal: r.normal_total
+    });
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM tracking_labels ORDER BY generated DESC');
+      res.json({ ok: true, labels: r.rows.map(mapLabel) });
+    } else {
+      const labels = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
+      res.json({ ok: true, labels });
+    }
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Recent scans only (last 500) for fast initial load ──
+app.get('/api/tracking/scans-recent', async (req, res) => {
+  try {
+    const mapScan = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number });
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500');
+      res.json({ ok: true, scans: r.rows.map(mapScan) });
+    } else {
+      const scans = db.prepare('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500').all();
+      res.json({ ok: true, scans });
+    }
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ── Individual scan save (called after each scan in/out) ──
 app.post('/api/tracking/scan', async (req, res) => {
   try {

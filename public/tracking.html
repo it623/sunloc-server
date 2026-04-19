@@ -1002,24 +1002,61 @@ async function pullFromServer(){
         if(currentPage) renderPage(currentPage); // show batches immediately
       }
     }
-    // STEP 2: Load tracking state in background — large data, may be slow
+    // STEP 2: Load labels fast from dedicated endpoint
+    try{
+      const lr = await fetch(serverUrl+'/api/tracking/labels-all', {signal:AbortSignal.timeout(30000)});
+      if(lr.ok){
+        const lj = await lr.json();
+        if(lj.ok && lj.labels){
+          const normLabels = lj.labels.map(normLabel);
+          // Merge: keep any local-only labels server doesn't have
+          const serverIds = new Set(normLabels.map(l=>l.id));
+          const localOnly = state.labels.filter(l=>!serverIds.has(l.id));
+          state.labels = [...normLabels, ...localOnly];
+          // Push local-only labels to server so they persist
+          if(localOnly.length > 0 && serverUrl){
+            fetch(serverUrl+'/api/tracking/labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels:localOnly}),signal:AbortSignal.timeout(10000)}).catch(()=>{});
+          }
+          saveLocal();
+          if(currentPage) renderPage(currentPage);
+        }
+      }
+    }catch(e2){ /* labels load failed — local state kept */ }
+
+    // STEP 3: Load recent scans fast
+    try{
+      const sr = await fetch(serverUrl+'/api/tracking/scans-recent', {signal:AbortSignal.timeout(20000)});
+      if(sr.ok){
+        const sj = await sr.json();
+        if(sj.ok && sj.scans){
+          const normScans = sj.scans.map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
+          // Merge: server scans take priority, keep local scans not on server
+          const serverScanIds = new Set(normScans.map(s=>s.id));
+          const localOnlyScans = state.scans.filter(s=>!serverScanIds.has(s.id));
+          state.scans = [...normScans, ...localOnlyScans];
+          saveLocal();
+          if(currentPage) renderPage(currentPage);
+        }
+      }
+    }catch(e3){ /* scans load failed — local state kept */ }
+
+    // STEP 4: Load wastage + other state in background (non-critical)
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
       if(r.ok){
         const j=await r.json();
         if(j.ok && j.state){
-          const normLabels = (j.state.labels||[]).map(normLabel);
-          const normScans = (j.state.scans||[]).map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
           const normWastage = (j.state.wastage||[]).map(w=>({...w, batchNumber:w.batchNumber||w.batch_number}));
-          Object.assign(state, j.state);
-          state.labels = normLabels;
-          state.scans = normScans;
+          // Only update wastage/alerts/dispatch — labels and scans already loaded fresh above
           state.wastage = normWastage;
+          if(j.state.stageClosure) state.stageClosure = j.state.stageClosure;
+          if(j.state.dispatchRecs) state.dispatchRecs = j.state.dispatchRecs;
+          if(j.state.alerts) state.alerts = j.state.alerts;
           saveLocal();
           if(currentPage) renderPage(currentPage);
         }
       }
-    }catch(e2){ /* tracking state timeout is ok — batches already shown */ }
+    }catch(e4){ /* wastage timeout ok — core data already loaded */ }
   }catch(e){ setSyncBadge('offline'); }
 }
 
