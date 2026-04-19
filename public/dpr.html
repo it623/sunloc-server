@@ -329,7 +329,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       <span class="col-title">⏱ Machine-wise Downtime (minutes per shift)</span>
       <span style="font-size:11px;color:var(--t3)">▼ expand</span>
     </div>
-    <div class="col-body" id="dtBlock"><div id="dtTable"></div></div>
+    <div class="col-body open" id="dtBlock"><div id="dtTable"></div></div>
   </div>
   <!-- Shift DT summary -->
   <div class="collapsible">
@@ -337,23 +337,23 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       <span class="col-title">📋 Shift-level Downtime Summary</span>
       <span style="font-size:11px;color:var(--t3)">▼ expand</span>
     </div>
-    <div class="col-body" id="dtSumBlock"><div id="dtSumTable"></div></div>
+    <div class="col-body open" id="dtSumBlock"><div id="dtSumTable"></div></div>
   </div>
-  <!-- Remarks -->
+  <!-- Remarks — always visible at bottom -->
   <div class="collapsible">
     <div class="col-hdr" onclick="toggleCol('remBlock')">
       <span class="col-title" style="color:var(--t2)">💬 Shift Remarks / Issues</span>
       <button class="btn-add" onclick="event.stopPropagation();addRemark()">+ Add Remark</button>
     </div>
-    <div class="col-body" id="remBlock"><div id="remList"><p style="color:var(--t3);font-size:12px">No remarks. Click "+ Add Remark" to log issues.</p></div></div>
+    <div class="col-body open" id="remBlock"><div id="remList"><p style="color:var(--t3);font-size:12px">No remarks. Click "+ Add Remark" to log issues.</p></div></div>
   </div>
-  <!-- Resort -->
+  <!-- Resort — always visible at bottom -->
   <div class="collapsible">
     <div class="col-hdr" onclick="toggleCol('resortBlock')">
       <span class="col-title" style="color:var(--amber)">↩ Re-Sort Entry — Machine-wise Reasons</span>
       <button class="btn-add" onclick="event.stopPropagation();addResort()">+ Add Re-Sort Entry</button>
     </div>
-    <div class="col-body" id="resortBlock">
+    <div class="col-body open" id="resortBlock">
       <p style="color:var(--t3);font-size:11px;margin-bottom:10px">Log machine-wise re-sort quantity and root cause. Target is always ZERO. Each entry links to a machine, shift, and defect reason.</p>
       <div id="resortList"><p style="color:var(--t3);font-size:12px">No re-sort entries. Click "+ Add Re-Sort Entry" to log machine-wise re-sort reasons.</p></div>
     </div>
@@ -1390,25 +1390,20 @@ function dprTableNav(e, sh){
 // Global keyboard nav for downtime table
 function dtNav(e){
   if(!['ArrowDown','ArrowUp','ArrowLeft','ArrowRight','Enter','Tab'].includes(e.key)) return;
-  const allDt=[...document.querySelectorAll('input[id^="dt-"]')];
+  // Get all DT table inputs from the dttable element (excludes dts- summary inputs)
+  const tbl=document.querySelector('.dttable');
+  if(!tbl) return;
+  const allDt=[...tbl.querySelectorAll('input[type="number"]')];
   const idx=allDt.indexOf(e.target);
   if(idx<0) return;
   e.preventDefault();
-  // Downtime table: rows = machines, cols = categories
-  // Find total columns by counting distinct category suffixes
-  const cols=document.querySelectorAll('input[id^="dt-A-'+e.target.id.split('-')[2]+'-"]').length||1;
+  // Hardcoded: SHIFTS(3) * DT_CATS(6) = 18 columns per row — reliable even if DOM query fails
+  const colCount = SHIFTS.length * DT_CATS.length;
   let next=null;
   if(e.key==='ArrowRight'||e.key==='Tab') next=allDt[idx+1];
   else if(e.key==='ArrowLeft') next=allDt[idx-1];
-  else if(e.key==='ArrowDown'||e.key==='Enter'){
-    // Count actual columns in downtime table
-    const dtCols=document.querySelectorAll('.dt-table thead th').length-1||18;
-    next=allDt[idx+dtCols];
-  }
-  else if(e.key==='ArrowUp'){
-    const dtCols=document.querySelectorAll('.dt-table thead th').length-1||18;
-    next=allDt[idx-dtCols];
-  }
+  else if(e.key==='ArrowDown'||e.key==='Enter') next=allDt[idx+colCount];
+  else if(e.key==='ArrowUp') next=allDt[idx-colCount];
   if(next){next.focus();next.select();}
 }
 
@@ -1881,7 +1876,17 @@ function renderDTTable(){
     }));
     html+=`</tr>`;
   });
-  html+=`</tbody></table>`;
+  // Totals row — uses id so it updates live when inputs change
+  html+=`<tfoot><tr id="dt-totals-row" style="font-weight:700;background:rgba(100,100,100,0.12);border-top:2px solid var(--b2)"><td style="font-size:10px;padding:4px 6px;color:var(--t3)">TOTAL</td>`;
+  SHIFTS.forEach(sh=>DT_CATS.forEach(c=>{
+    let colTotal=0;
+    mcs.forEach(mc=>{
+      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+      colTotal+=parseFloat(m[c]||0);
+    });
+    html+=`<td id="dt-tot-${sh}-${c}" style="text-align:center;font-family:var(--mono);font-size:12px;padding:4px;color:${colTotal>0?'var(--amber)':'var(--t3)'}">${colTotal||'0'}</td>`;
+  }));
+  html+=`</tr></tfoot></table>`;
   document.getElementById('dtTable').innerHTML=`<div class="dttable-wrap">`+html+`</div>`;
 }
 
@@ -1925,16 +1930,51 @@ function renderDTSummary(){
   html+='</div>';
   document.getElementById('dtSumTable').innerHTML=html;
 }
-function updateDTSummary(){ renderDTSummary(); renderDayKpis(); }
+function updateDTSummary(){
+  // Update live total cells in DT table without full re-render
+  const fl=curFloor;
+  const mcs=getActiveMachines(fl);
+  SHIFTS.forEach(sh=>DT_CATS.forEach(c=>{
+    let colTotal=0;
+    mcs.forEach(mc=>{
+      const inp=document.getElementById(`dt-${sh}-${mc.id}-${c}`);
+      colTotal+=parseFloat(inp?.value||0);
+    });
+    const totEl=document.getElementById(`dt-tot-${sh}-${c}`);
+    if(totEl){
+      totEl.textContent=colTotal||'0';
+      totEl.style.color=colTotal>0?'var(--amber)':'var(--t3)';
+    }
+  }));
+  renderDTSummary();
+  renderDayKpis();
+}
+
+function updateDTTotals(){
+  // Refresh the live totals row in the downtime table from actual input values
+  const fl=curFloor;
+  const mcs=getActiveMachines(fl);
+  SHIFTS.forEach(sh=>DT_CATS.forEach(c=>{
+    const cell=document.getElementById(`dt-tot-${sh}-${c}`);
+    if(!cell) return;
+    let colTotal=0;
+    mcs.forEach(mc=>{
+      const inp=document.getElementById(`dt-${sh}-${mc.id}-${c}`);
+      colTotal+=parseFloat(inp?inp.value||0:0);
+    });
+    cell.textContent=colTotal||'0';
+    cell.style.color=colTotal>0?'var(--amber)':'var(--t3)';
+  });
+}
 
 function renderRemarks(){
   const fl=curFloor, d=getDate(), day=loadDay(fl,d);
   const rem=day.remarks||[];
   if(rem.length===0){document.getElementById('remList').innerHTML=`<div style="color:var(--t3);font-size:12px;padding:8px">No remarks. Click "+ Add Remark" to log issues.</div>`;return;}
   const shColors={A:{bg:'rgba(6,78,59,0.12)',border:'#6ee7b7',badge:'#064e3b'},B:{bg:'rgba(30,58,95,0.12)',border:'#60a5fa',badge:'#1e3a5f'},C:{bg:'rgba(120,53,15,0.12)',border:'#fcd34d',badge:'#78350f'},General:{bg:'rgba(100,100,100,0.08)',border:'var(--b2)',badge:'var(--t2)'}};
-  // Sort: A first, B second, C third, General last
-  const order={A:0,B:1,C:2,General:3};
-  const sorted=[...rem.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(order[a.shift]??9)-(order[b.shift]??9));
+  // Sort: A → B → C → General
+  const shOrder={A:0,B:1,C:2,General:3};
+  const sorted=[...rem.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(shOrder[a.shift]??9)-(shOrder[b.shift]??9));
   let html='';
   sorted.forEach(r=>{
     const i=r.origIdx;
@@ -1950,6 +1990,9 @@ function renderRemarks(){
     </div>`;
   });
   document.getElementById('remList').innerHTML=html;
+  // Mark last item for scroll target
+  const rows=document.querySelectorAll('#remList .remark-row');
+  if(rows.length) rows[rows.length-1].id='rem-last';
 }
 
 function saveRemarkEdit(i){
@@ -1976,6 +2019,8 @@ function addRemark(){
       localStorage.setItem(skey(fl,d),JSON.stringify(day));
       pushToServer(fl,d,day);
       closeModal();renderRemarks();markUnsaved();
+      // Scroll to bottom so new remark is visible
+      setTimeout(()=>{const el=document.getElementById('rem-last');if(el)el.scrollIntoView({behavior:'smooth',block:'nearest'});},100);
     }},
     {label:'Cancel',fn:closeModal}
   ]);
@@ -1993,11 +2038,11 @@ function renderResort(){
   const entries=day.resort||[];
   if(entries.length===0){document.getElementById('resortList').innerHTML=`<p style="color:var(--t3);font-size:12px">No re-sort entries. Click "+ Add Re-Sort Entry" to log machine-wise re-sort reasons.</p>`;return;}
   const shColors={A:{bg:'rgba(6,78,59,0.12)',border:'#6ee7b7',badge:'#064e3b'},B:{bg:'rgba(30,58,95,0.12)',border:'#60a5fa',badge:'#1e3a5f'},C:{bg:'rgba(120,53,15,0.12)',border:'#fcd34d',badge:'#78350f'}};
-  const order={A:0,B:1,C:2};
-  const sorted=[...entries.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(order[a.shift]??9)-(order[b.shift]??9));
+  // Sort: A → B → C
+  const shOrder={A:0,B:1,C:2};
+  const sorted=[...entries.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(shOrder[a.shift]??9)-(shOrder[b.shift]??9));
   let html='';
-  sorted.forEach(r=>{
-    const i=r.origIdx;
+  entries.forEach((r,i)=>{
     const sc=shColors[r.shift]||shColors.A;
     html+=`<div class="resort-entry" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
       <span style="font-family:var(--fc);font-weight:700;color:var(--cyan);min-width:36px">${r.mc}</span>
@@ -2010,6 +2055,8 @@ function renderResort(){
     </div>`;
   });
   document.getElementById('resortList').innerHTML=html;
+  const rrows=document.querySelectorAll('#resortList .resort-entry');
+  if(rrows.length) rrows[rrows.length-1].id='resort-last';
 }
 
 function saveResortEdit(i){
@@ -2038,6 +2085,8 @@ function addResort(){
       localStorage.setItem(skey(fl,d),JSON.stringify(day));
       pushToServer(fl,d,day);
       closeModal();renderResort();renderDayKpis();renderShifts();markUnsaved();
+      // Scroll to bottom so new re-sort entry is visible
+      setTimeout(()=>{const el=document.getElementById('resort-last');if(el)el.scrollIntoView({behavior:'smooth',block:'nearest'});},100);
     }},
     {label:'Cancel',fn:closeModal}
   ]);
