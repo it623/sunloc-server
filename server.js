@@ -696,110 +696,84 @@ app.get('/api/dpr/:floor/:date', async (req, res) => {
 });
 
 // POST save DPR record + extract actuals into bridge table
-app.post('/api/dpr/save', (req, res) => {
+app.post('/api/dpr/save', async (req, res) => {
   try {
     const { floor, date, data, actuals } = req.body;
     if (!floor || !date || !data) return res.status(400).json({ ok: false, error: 'Missing floor, date, or data' });
 
-    // Save full DPR record
-    db.prepare(`
-      INSERT INTO dpr_records (floor, date, data_json)
-      VALUES (?, ?, ?)
-      ON CONFLICT(floor, date) DO UPDATE SET data_json = excluded.data_json, saved_at = datetime('now')
-    `).run(floor, date, JSON.stringify(data));
+    if (pgPool) {
+      // Save full DPR record to PostgreSQL
+      await pgPool.query(
+        `INSERT INTO dpr_records (floor, date, data_json)
+         VALUES ($1, $2, $3)
+         ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW()`,
+        [floor, date, JSON.stringify(data)]
+      );
 
-    // Upsert actuals — supports multi-run (colour change / batch change within same shift)
-    const upsertActual = db.prepare(`
-      INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-      ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
-        order_id = excluded.order_id,
-        batch_number = excluded.batch_number,
-        qty_lakhs = excluded.qty_lakhs,
-        synced_at = datetime('now')
-    `);
+      // Delete old actuals for this floor+date, then re-insert
+      await pgPool.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2', [floor, date]);
 
-    // Delete old runs for this floor+date first (clean re-sync)
-    const deleteOld = db.prepare(`
-      DELETE FROM production_actuals WHERE floor = ? AND date = ?
-    `);
-
-    const syncActuals = db.transaction((actualsArr, floor, date) => {
-      deleteOld.run(floor, date);
-      if (actualsArr && actualsArr.length > 0) {
-        // New format: pre-flattened actuals array from DPR app (supports multi-run)
-        for (const a of actualsArr) {
+      const actualsToSave = [];
+      if (actuals && actuals.length > 0) {
+        for (const a of actuals) {
           if (!a.qty || a.qty <= 0) continue;
-          upsertActual.run(a.orderId || null, a.batchNumber || null, a.machineId, date, a.shift, a.runIndex || 0, a.qty, a.floor || floor);
+          actualsToSave.push([a.orderId||null, a.batchNumber||null, a.machineId, date, a.shift, a.runIndex||0, a.qty, a.floor||floor]);
         }
       } else {
-        // Fallback: parse from data.shifts for old single-run format
         const shifts = data.shifts || {};
         for (const [shiftName, shiftData] of Object.entries(shifts)) {
           if (!shiftData.machines) continue;
           for (const [machineId, machineData] of Object.entries(shiftData.machines)) {
-            const runs = machineData.runs || [{ orderId: machineData.orderId, batchNumber: machineData.batchNumber, qty: machineData.prod }];
-            runs.forEach((run, ri) => {
-              const qty = parseFloat(run.qty) || 0;
+            const runs = machineData.runs || [{orderId:machineData.orderId,batchNumber:machineData.batchNumber,qty:machineData.prod}];
+            runs.forEach((run,ri) => {
+              const qty = parseFloat(run.qty)||0;
               if (qty <= 0) return;
-              upsertActual.run(run.orderId || null, run.batchNumber || null, machineId, date, shiftName, ri, qty, floor);
+              actualsToSave.push([run.orderId||null, run.batchNumber||null, machineId, date, shiftName, ri, qty, floor]);
             });
           }
         }
       }
-    });
-
-    syncActuals(actuals, floor, date);
-
-    // Update actualQty on planning orders (two-way sync: DPR → Planning)
-    try {
-      const planningState = getPlanningState();
-      if (planningState && planningState.orders) {
-        // Cumulative actuals per order_id
-        const byOrderId = db.prepare(`
-          SELECT order_id, SUM(qty_lakhs) as total_qty
-          FROM production_actuals
-          WHERE order_id IS NOT NULL AND order_id != ''
-          GROUP BY order_id
-        `).all();
-        // Also cumulative by batch_number for rows where order_id not set
-        const byBatch = db.prepare(`
-          SELECT batch_number, SUM(qty_lakhs) as total_qty
-          FROM production_actuals
-          WHERE (order_id IS NULL OR order_id = '') AND batch_number IS NOT NULL AND batch_number != ''
-          GROUP BY batch_number
-        `).all();
-
-        let changed = false;
-        // Reset all actuals first to avoid stale data
-        for (const ord of planningState.orders) {
-          if (ord.actualQty !== undefined) { ord.actualQty = 0; }
-        }
-        // Apply by orderId (most reliable)
-        for (const row of byOrderId) {
-          const ord = planningState.orders.find(o => o.id === row.order_id);
-          if (ord) { ord.actualQty = parseFloat(row.total_qty.toFixed(3)); changed = true; }
-        }
-        // Apply by batchNumber for any not matched by orderId
-        for (const row of byBatch) {
-          const ord = planningState.orders.find(o =>
-            o.batchNumber === row.batch_number && (!o.actualQty || o.actualQty === 0)
-          );
-          if (ord) { ord.actualQty = parseFloat(row.total_qty.toFixed(3)); changed = true; }
-        }
-        if (changed) {
-          db.prepare(`
-            INSERT INTO planning_state (id, state_json)
-            VALUES (1, ?)
-            ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')
-          `).run(JSON.stringify(planningState));
-        }
+      for (const row of actualsToSave) {
+        await pgPool.query(
+          `INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+           ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
+             order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number,
+             qty_lakhs=EXCLUDED.qty_lakhs, synced_at=NOW()`,
+          row
+        );
       }
-    } catch (syncErr) {
-      console.error('Planning actualQty sync error:', syncErr.message);
+
+      // Update planning actuals (two-way sync)
+      try {
+        const planningState = getPlanningState();
+        if (planningState && planningState.orders) {
+          const byOrderId = await pgPool.query(`SELECT order_id, SUM(qty_lakhs) as total_qty FROM production_actuals WHERE order_id IS NOT NULL AND order_id != '' GROUP BY order_id`);
+          const byBatch = await pgPool.query(`SELECT batch_number, SUM(qty_lakhs) as total_qty FROM production_actuals WHERE (order_id IS NULL OR order_id = '') AND batch_number IS NOT NULL AND batch_number != '' GROUP BY batch_number`);
+          let changed = false;
+          for (const ord of planningState.orders) { if (ord.actualQty !== undefined) ord.actualQty = 0; }
+          for (const row of byOrderId.rows) {
+            const ord = planningState.orders.find(o => o.id === row.order_id);
+            if (ord) { ord.actualQty = parseFloat(row.total_qty)||0; changed = true; }
+          }
+          for (const row of byBatch.rows) {
+            const ord = planningState.orders.find(o => o.batchNumber === row.batch_number && (!o.actualQty));
+            if (ord) { ord.actualQty = parseFloat(row.total_qty)||0; changed = true; }
+          }
+          if (changed) savePlanningState(planningState);
+        }
+      } catch(e) { console.warn('Planning sync error:', e.message); }
+
+    } else {
+      // SQLite fallback
+      db.prepare(`INSERT INTO dpr_records (floor, date, data_json) VALUES (?, ?, ?) ON CONFLICT(floor, date) DO UPDATE SET data_json = excluded.data_json, saved_at = datetime('now')`).run(floor, date, JSON.stringify(data));
+      db.prepare('DELETE FROM production_actuals WHERE floor = ? AND date = ?').run(floor, date);
+      const upsert = db.prepare(`INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET order_id=excluded.order_id, batch_number=excluded.batch_number, qty_lakhs=excluded.qty_lakhs, synced_at=datetime('now')`);
+      const rows = actuals && actuals.length > 0 ? actuals.filter(a=>a.qty>0).map(a=>[a.orderId||null,a.batchNumber||null,a.machineId,date,a.shift,a.runIndex||0,a.qty,a.floor||floor]) : [];
+      db.transaction(rows => rows.forEach(r => upsert.run(...r)))(rows);
     }
 
-    res.json({ ok: true, savedAt: new Date().toISOString() });
+    res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -920,18 +894,26 @@ function logAudit(username, role, app, action, details, ip) {
 }
 
 // POST /api/auth/login
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, pin, app: appName } = req.body;
     if (!username || !pin || !appName) return res.status(400).json({ ok: false, error: 'Missing credentials' });
-    const user = db.prepare(`SELECT * FROM app_users WHERE username = ? AND app = ?`).get(username, appName);
+    let user;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM app_users WHERE username = $1 AND app = $2', [username, appName]);
+      user = r.rows[0];
+    } else {
+      user = db.prepare('SELECT * FROM app_users WHERE username = ? AND app = ?').get(username, appName);
+    }
     if (!user) return res.status(401).json({ ok: false, error: 'User not found' });
     if (user.pin_hash !== hashPin(pin)) return res.status(401).json({ ok: false, error: 'Invalid PIN' });
-    // Create session (8 hour expiry)
     const token = generateToken();
     const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T',' ').slice(0,19);
-    db.prepare(`INSERT INTO app_sessions (token, user_id, username, role, app, expires_at) VALUES (?,?,?,?,?,?)`)
-      .run(token, user.id, user.username, user.role, appName, expires);
+    if (pgPool) {
+      await pgPool.query('INSERT INTO app_sessions (token, user_id, username, role, app, expires_at) VALUES ($1,$2,$3,$4,$5,$6)', [token, user.id, user.username, user.role, appName, expires]);
+    } else {
+      db.prepare('INSERT INTO app_sessions (token, user_id, username, role, app, expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
+    }
     logAudit(user.username, user.role, appName, 'LOGIN', 'Successful login', req.ip);
     res.json({ ok: true, token, username: user.username, role: user.role });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
