@@ -174,8 +174,6 @@ input[type=number]{font-family:var(--mono)}
 .scan-zone{background:var(--surface2);border:2px dashed var(--border2);border-radius:var(--r);padding:24px;text-align:center;transition:.15s}
 .scan-zone.active{border-color:var(--accent);background:var(--accent-light)}
 .scan-zone.success{border-color:var(--accent2);background:var(--accent2-light)}
-.scan-toast{position:fixed;bottom:32px;left:50%;transform:translateX(-50%);z-index:9999;background:#059669;color:#fff;font-size:17px;font-weight:700;padding:14px 28px;border-radius:12px;box-shadow:0 4px 24px rgba(0,0,0,0.18);pointer-events:none;opacity:0;transition:opacity .2s;white-space:nowrap}
-.scan-toast.show{opacity:1}
 .scan-zone.error{border-color:var(--accent4);background:var(--accent4-light)}
 .scan-input{font-size:18px;font-family:var(--mono);text-align:center;border:2px solid var(--border2);border-radius:var(--r-sm);padding:12px;width:100%;max-width:320px;letter-spacing:2px}
 .scan-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.15)}
@@ -408,7 +406,6 @@ input[type=number]{font-family:var(--mono)}
 </style>
 </head>
 <body>
-<div id="scan-toast" class="scan-toast"></div>
 
 <!-- MOBILE BOTTOM NAV (hidden on desktop via CSS) -->
 <div id="mobile-nav" style="display:none">
@@ -677,7 +674,7 @@ function getMachineFloor(machineId){
 function getBatch(batchNo){ return state.batches.find(b=>b.batchNumber===batchNo||b.id===batchNo)||null }
 function getBatchFlow(batch){ return batch?.isPrinted ? WIP_FLOW.printed : WIP_FLOW.unprinted }
 
-function getScansForBox(labelId){ return state.scans.filter(s=>(s.labelId===labelId||s.label_id===labelId)).sort((a,b)=>new Date(a.ts)-new Date(b.ts)) }
+function getScansForBox(labelId){ return state.scans.filter(s=>s.labelId===labelId).sort((a,b)=>new Date(a.ts)-new Date(b.ts)) }
 function getScansForBatch(batchNo){ return state.scans.filter(s=>s.batchNumber===batchNo) }
 
 function getBoxCurrentStage(labelId){
@@ -1005,23 +1002,7 @@ async function pullFromServer(){
         if(currentPage) renderPage(currentPage); // show batches immediately
       }
     }
-    // STEP 2a: Load scans from lightweight endpoint — fast
-    try{
-      const sr=await fetch(serverUrl+'/api/tracking/scans',{signal:AbortSignal.timeout(15000)});
-      if(sr.ok){
-        const sj=await sr.json();
-        if(sj.ok && sj.scans){
-          const serverScans = sj.scans.map(s=>({...s, labelId:s.labelId||s.label_id, batchNumber:s.batchNumber||s.batch_number}));
-          // Deduplicate: server is source of truth, add only local-only scans
-          const serverIds = new Set(serverScans.map(s=>s.id));
-          const localOnly = state.scans.filter(s=>!serverIds.has(s.id));
-          state.scans = [...serverScans, ...localOnly];
-          saveLocal();
-          if(currentPage) renderPage(currentPage);
-        }
-      }
-    }catch(e2){}
-    // STEP 2b: Load full tracking state in background — labels, wastage etc
+    // STEP 2: Load tracking state in background — large data, may be slow
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
       if(r.ok){
@@ -1038,7 +1019,7 @@ async function pullFromServer(){
           if(currentPage) renderPage(currentPage);
         }
       }
-    }catch(e2){ /* tracking state timeout ok — scans already loaded */ }
+    }catch(e2){ /* tracking state timeout is ok — batches already shown */ }
   }catch(e){ setSyncBadge('offline'); }
 }
 
@@ -1075,22 +1056,7 @@ function loadState(){
 // SCAN ENGINE
 // ═══════════════════════════════════════════════════════
 
-function showScanFlash(type, batchNo, boxNo, qty){
-  const el = document.getElementById('scan-toast');
-  if(!el) return;
-  el.textContent = '✅ Scanned ' + (type==='in'?'IN':'OUT') + ' — ' + batchNo + ' / Box ' + boxNo + ' (' + qty + 'L)';
-  el.className = 'scan-toast show';
-  clearTimeout(el._t);
-  el._t = setTimeout(()=>{ el.className='scan-toast'; }, 3500);
-}
-
 function recordScan(labelId, dept, type, operator, parsed){
-  // Extra guard: prevent double-scan within 5 seconds (network retry protection)
-  const recentDup = state.scans.find(s=>
-    (s.labelId===labelId||s.label_id===labelId) && s.dept===dept && s.type===type &&
-    (new Date() - new Date(s.ts)) < 10000
-  );
-  if(recentDup) return {ok:false, msg:'Duplicate scan — already recorded just now'};
   // Primary lookup: by exact id
   let label = state.labels.find(l=>l.id===labelId);
   // Secondary lookup: by batchNumber + labelNumber (handles sync edge cases)
@@ -1113,20 +1079,14 @@ function recordScan(labelId, dept, type, operator, parsed){
 
 
   // Check not already scanned in without out
-  // Use both labelId and batchNumber+labelNumber for robust duplicate detection
-  const allBoxScans = state.scans.filter(s=>
-    (s.labelId===label.id||s.label_id===label.id||
-     (s.batchNumber===label.batchNumber && Math.abs(s.labelNumber||0)===Math.abs(label.labelNumber||0)))
-    && s.dept===dept
-  ).sort((a,b)=>new Date(a.ts)-new Date(b.ts));
-
-  // Strict: one IN and one OUT only per label per dept — no second scans ever
   if(type==='in'){
-    if(allBoxScans.some(s=>s.type==='in')) return {ok:false,msg:'Box already scanned IN at this department'};
+    const lastScan = getScansForBox(labelId).filter(s=>s.dept===dept).pop();
+    if(lastScan && lastScan.type==='in') return {ok:false,msg:'Box already scanned IN at this department'};
   }
   if(type==='out'){
-    if(!allBoxScans.some(s=>s.type==='in')) return {ok:false,msg:'Box not scanned IN at this department'};
-    if(allBoxScans.some(s=>s.type==='out')) return {ok:false,msg:'Box already scanned OUT at this department'};
+    const deptScans = getScansForBox(labelId).filter(s=>s.dept===dept);
+    if(!deptScans.some(s=>s.type==='in')) return {ok:false,msg:'Box not scanned IN at this department'};
+    if(deptScans.filter(s=>s.type==='out').length>=deptScans.filter(s=>s.type==='in').length) return {ok:false,msg:'Box already scanned OUT at this department'};
   }
 
   const scan = { id:uid(), labelId, batchNumber:label.batchNumber, dept, type, ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty };
@@ -1517,13 +1477,13 @@ function generateZPL(label, batch){
     const pm = label.printingMatter || batch?.printingMatter || batch?.printMatter || '';
     return `^XA^CI28^PW800^LL400^MMT^PON^LH0,0
 ^FO10,10^GB780,378,2^FS
-^CF B,31^FO20,22^FDBatch NO.      :  ${batchNo}^FS
-^FO20,62^FDContainer NO. :  ${containerNo}^FS
-^FO20,102^FDPrinted          :^FS
-^CF B,33^FO20,144^FD${pm}^FS
-^CF B,33^FO20,310^FDQ  RELEASED^FS
-^FO460,310^FB180,1,0,R^FDSIGNATURE^FS
-^FO555,14^BQN,2,7^FDLA,${label.qrData}^FS
+^CF0,28^FO20,22^FDBatch NO.      :  ${batchNo}^FS
+^FO20,60^FDContainer NO. :  ${containerNo}^FS
+^FO20,98^FDPrinted          :^FS
+^CF0,30^FO20,138^FD${pm}^FS
+^CF0,30^FO20,310^FDQ  RELEASED^FS
+^CF0,30^FO500,310^FDSIGNATURE^FS
+^FO580,20^BQN,2,5^FDLA,${label.qrData}^FS
 ^XZ`;
   }
 
@@ -1562,13 +1522,13 @@ function generateZPL(label, batch){
 ^LH0,0
 ${oBorder}
 ^CF0,46
-^FO30,50^FB740,1,0,C^FDSUNIL HEALTHCARE LIMITED^FS
+^FO10,50^FB780,1,0,C^FDSUNIL HEALTHCARE LIMITED^FS
 ^CF0,30
 ^FO10,102^FB780,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
 ^FO10,${136+D}^GB780,2,2^FS
 ${hBand}
 ^CF0,26
-^FO30,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
+^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
 ^FO10,${tTop-4}^GB780,2,2^FS
 
 ^FO10,${tTop}^GB390,${RH*5+2},2^FS
@@ -1583,30 +1543,29 @@ ${hBand}
 ^FO404,${tTop+RH*4}^GB386,2,2^FS
 
 ^CF0,26
-^FO30,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
-^FO30,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
-^FO30,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
-^FO30,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
-^FO30,${tTop+RH*4+10}^FDPRINTED       :^FS
-^FO30,${tTop+RH*4+38}^FDPC CODE   :  ${label.pcCode||batch?.pcCode||''}^FS
+^FO18,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
+^FO18,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
+^FO18,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
+^FO18,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
+^FO18,${tTop+RH*4+10}^FDPRINTED       :^FS
 
-^FO420,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
-^FO420,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
-^FO420,${tTop+RH*2+10}^FDGROSS WT.:^FS
-^FO420,${tTop+RH*3+10}^FDNETT WT.  :^FS
-^FO420,${tTop+RH*4+10}^FDMFG DATE:  ${mfgDate}^FS
+^FO412,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
+^FO412,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
+^FO412,${tTop+RH*2+10}^FDGROSS WT.:^FS
+^FO412,${tTop+RH*3+10}^FDNETT WT.  :^FS
+^FO412,${tTop+RH*4+10}^FDMFG DATE:  ${mfgDate}^FS
 
 ^FO10,${tBot}^GB780,2,2^FS
 ^CF0,20
-^FO30,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
+^FO10,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
 ^FO10,${ruleY}^GB780,2,2^FS
 
-^FO30,${qrY}^BQN,2,9^FDLA,${label.qrData}^FS
+^FO10,${qrY}^BQN,2,9^FDLA,${label.qrData}^FS
 ^CF0,28
-^FO30,${botY-60}^FDQ RELEASED^FS
-^FO500,${botY-80}^GB250,2,2^FS
+^FO260,${qRelY}^FB300,1,0,C^FDQ RELEASED^FS
+^FO580,${sigY}^GB200,2,2^FS
 ^CF0,22
-^FO500,${botY-60}^FB250,1,0,C^FDSIGNATURE^FS
+^FO580,${sigY+10}^FB200,1,0,C^FDSIGNATURE^FS
 
 ^FO10,${botY}^GB780,3,3^FS
 ^XZ`;
@@ -1923,43 +1882,28 @@ function getBoxCurrentStageForBatch(batchNo){
 
 function renderLabels(){
   const el=document.getElementById('page-labels');
-  const allActiveBatches=state.batches.filter(b=>b.status==='running');
-  const _lq=(window._labelSearch||'').toLowerCase().trim();
-  const activeBatches=(_lq ? allActiveBatches.filter(b=>
-    (b.batchNumber||'').toLowerCase().includes(_lq)||
-    (b.customer||'').toLowerCase().includes(_lq)||
-    String(b.size||'').toLowerCase().includes(_lq)||
-    (b.pcCode||'').toLowerCase().includes(_lq)
-  ) : allActiveBatches).slice().sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const activeBatches=state.batches.filter(b=>b.status==='running');
   const selBatch=window._labelSelBatch||activeBatches[0]?.batchNumber||'';
 
   document.getElementById('tb-actions').innerHTML=`
     <button class="btn btn-secondary" onclick="configurePrinter()">🖨️ Printer Setup</button>`;
 
   el.innerHTML=`
-  <div style="margin-bottom:14px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
-    <div>
-      <div class="section-title" style="font-size:18px">Label Generation &amp; Print</div>
-      <div class="section-sub">Select a batch → generate &amp; print box labels</div>
-    </div>
-    <div style="font-size:12px;color:var(--text3);background:var(--surface2);padding:6px 12px;border-radius:8px;border:1px solid var(--border2)">
-      ℹ️ Capped by order qty in Planning &amp; daily machine target
-    </div>
+  <div class="section-header">
+    <div><div class="section-title">Label Generation &amp; Print</div><div class="section-sub">Generate and print box labels — select a batch to see its print queue inline</div></div>
   </div>
+  <div class="alert alert-info">Labels are capped by: (1) order quantity in Planning — amend planned qty to unlock more, (2) daily machine target in boxes.</div>
 
-  <div style="display:flex;gap:14px;align-items:stretch;height:calc(100vh - 200px);min-height:500px">
+  <div class="grid-2" style="align-items:start;gap:16px">
 
-  <!-- LEFT: Batch list -->
-  <div style="width:340px;flex-shrink:0;display:flex;flex-direction:column;background:var(--surface);border:1.5px solid var(--border2);border-radius:12px;overflow:hidden">
-    <div style="padding:12px 14px;border-bottom:1px solid var(--border2);background:var(--surface2)">
-      <input type="search" id="label-batch-search" placeholder="🔍  Search batch, customer, PC code..."
-        value="${window._labelSearch||''}"
-        oninput="window._labelSearch=this.value;window._labelSearchFocus=true;renderLabels()"
-        style="width:100%;font-size:13px;padding:7px 12px;border:1.5px solid var(--border2);border-radius:8px;background:var(--surface);color:var(--text1);outline:none">
-    </div>
-    <div style="overflow-y:auto;flex:1">
-    ${activeBatches.length===0?`<div style="padding:40px;text-align:center;color:var(--text3)">No active batches</div>`:
-    activeBatches.map(b=>{
+  <!-- LEFT: Batch Status + Generate -->
+  <div class="card" style="max-height:520px;overflow-y:auto">
+    <div class="card-title">Active Batches</div>
+    <div style="overflow-x:auto;transform:rotateX(180deg)">
+    <table style="font-size:12px;min-width:700px;width:100%;transform:rotateX(180deg)">
+      <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>PC Code</th><th>Actual(L)</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Act</th></tr></thead>
+      <tbody>
+      ${activeBatches.map(b=>{
         const maxLabels=lakhToBox(b.qty,b.size);
         const generated=state.labels.filter(l=>l.batchNumber===b.batchNumber&&!l.voided&&!l.isOrange).length;
         const printed=state.labels.filter(l=>l.batchNumber===b.batchNumber&&l.printed&&!l.voided&&!l.isOrange).length;
@@ -1969,77 +1913,135 @@ function renderLabels(){
         const remaining=Math.max(0,maxLabels-generated);
         const isExcessAvailable=normalGenerated>=normalBoxMax2&&remaining>0;
         const isSelected=b.batchNumber===selBatch;
-        const pct=maxLabels>0?Math.min(100,generated/maxLabels*100):0;
-        const allPrinted=generated>0&&printed===generated;
+        const pct=maxLabels>0?(generated/maxLabels*100):0;
         const actualProd=(b.actualQty||b.actualProd||0);
-        return `<div onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()" style="padding:12px 14px;cursor:pointer;border-bottom:1px solid var(--border2);transition:.12s;${isSelected?'background:rgba(240,192,96,0.12);border-left:3px solid var(--accent)':'border-left:3px solid transparent'}">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-            <span style="font-family:var(--mono);font-weight:700;font-size:14px;color:var(--accent)">${b.batchNumber}</span>
-            <span style="font-size:11px;padding:2px 7px;border-radius:10px;font-weight:600;${allPrinted?'background:rgba(5,150,105,0.12);color:var(--green)':remaining===0?'background:rgba(240,192,96,0.15);color:var(--accent)':'background:rgba(59,130,246,0.12);color:var(--blue)'}">${allPrinted?'✅ Done':remaining===0?'⊕ Excess':'📋 '+remaining+' rem'}</span>
-          </div>
-          <div style="font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:4px">${b.customer||'-'}</div>
-          <div style="display:flex;align-items:center;gap:8px;font-size:11px;color:var(--text3)">
-            <span>Sz ${b.size}</span>
-            <span>·</span>
-            <span>${b.pcCode||'—'}</span>
-            <span>·</span>
-            <span>${actualProd>0?actualProd.toFixed(1)+'L':'-'}</span>
-            <div style="flex:1;background:var(--border2);border-radius:4px;height:4px;margin-left:4px">
-              <div style="width:${pct}%;height:4px;border-radius:4px;background:${pct>=100?'var(--green)':'var(--accent)'}"></div>
-            </div>
-          </div>
-          ${remaining>0?`<div style="margin-top:6px"><button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" style="font-size:11px;padding:3px 10px" onclick="event.stopPropagation();openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕ Gen Excess':'+Gen Labels'}</button></div>`:''}
-        </div>`;
-    }).join('')}
-    </div>
+        return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">
+          <td class="td-bold td-mono">${b.batchNumber}</td>
+          <td class="text-sm" style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||'-'}</td>
+          <td class="td-mono">${b.size}</td>
+          <td class="td-mono text-sm">${b.pcCode||'—'}</td>
+          <td class="td-mono ${actualProd>0?'':'text-muted'}">${actualProd>0?actualProd.toFixed(2):'—'}</td>
+          <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:36px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
+          <td class="td-mono">${printed}</td>
+          <td class="td-mono ${remaining===0?'':'fw-bold amber'}">${remaining}</td>
+          <td onclick="event.stopPropagation()" style="white-space:nowrap">
+            ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" style="font-size:11px;padding:2px 6px" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕':'+Gen'}</button>`:''}
+          </td>
+        </tr>`;
+      }).join('')||'<tr><td colspan="9" class="text-center text-muted">No active batches from Planning App</td></tr>'}
+      </tbody>
+    </table></div>
   </div>
 
-  <!-- RIGHT: Print Queue -->
-  <div style="flex:1;display:flex;flex-direction:column;background:var(--surface);border:1.5px solid var(--border2);border-radius:12px;overflow:hidden">
+  <!-- RIGHT: Inline Print Queue for selected batch -->
+  <div class="card" style="min-height:200px;max-height:520px;overflow-y:auto;position:sticky;top:16px">
     ${(()=>{
-      if(!selBatch) return '<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;height:100%;color:var(--text3);gap:12px"><div style="font-size:40px">📋</div><div>Select a batch to view print queue</div></div>';
+      if(!selBatch) return '<div class="text-center text-muted" style="padding:40px">← Select a batch to view its print queue</div>';
       const batch=getBatch(selBatch);
       const labels=state.labels.filter(l=>l.batchNumber===selBatch&&!l.isOrange).sort((a,b)=>a.labelNumber-b.labelNumber);
       const unprintedCount=labels.filter(l=>!l.printed&&!l.voided).length;
-      const voidedCount=labels.filter(l=>l.voided).length;
       return `
-      <div style="padding:14px 16px;border-bottom:1px solid var(--border2);background:var(--surface2);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
+      <div class="flex items-center justify-between mb-12">
         <div>
-          <div style="font-weight:700;font-size:15px;font-family:var(--mono);color:var(--accent)">${selBatch}</div>
-          <div style="font-size:12px;color:var(--text3);margin-top:2px">${batch?.customer||''} &nbsp;·&nbsp; Size ${batch?.size} &nbsp;·&nbsp; ${labels.length} labels &nbsp;·&nbsp; ${labels.filter(l=>l.printed&&!l.voided).length} printed &nbsp;·&nbsp; ${unprintedCount} pending</div>
+          <div class="card-title" style="margin-bottom:2px">Print Queue — ${selBatch}</div>
+          <div class="text-sm text-muted">${batch?.customer||''} | Size ${batch?.size} | ${labels.length} labels${unprintedCount>0?` | <span style="color:var(--accent3);font-weight:600">${unprintedCount} unprinted</span>`:' | ✅ All printed'}</div>
         </div>
-        ${unprintedCount>0?`<button class="btn btn-success" style="font-size:13px;padding:7px 16px" onclick="printBatchLabels('${selBatch}')">🖨️ Print All (${unprintedCount})</button>`:'<span style="color:var(--green);font-weight:600;font-size:13px">✅ All Printed</span>'}
+        ${unprintedCount>0?`<button class="btn btn-sm btn-success" onclick="printBatchLabels('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
       </div>
-      <div style="overflow-y:auto;flex:1">
-      <table style="width:100%;font-size:13px">
-        <thead><tr style="background:var(--surface2);position:sticky;top:0"><th style="padding:8px 14px;text-align:left;font-size:11px;color:var(--text3);font-weight:600">#</th><th style="padding:8px 14px;text-align:left;font-size:11px;color:var(--text3);font-weight:600">QTY (L)</th><th style="padding:8px 14px;text-align:left;font-size:11px;color:var(--text3);font-weight:600">STATUS</th><th style="padding:8px 14px;text-align:left;font-size:11px;color:var(--text3);font-weight:600">GENERATED</th><th style="padding:8px 14px;text-align:left;font-size:11px;color:var(--text3);font-weight:600">ACTION</th></tr></thead>
+      <div class="tbl-wrap" style="max-height:420px;overflow-y:auto"><table>
+        <thead><tr><th>#</th><th>Qty (L)</th><th>Status</th><th>Generated</th><th>Action</th></tr></thead>
         <tbody>
-        ${labels.map(l=>`<tr style="border-bottom:1px solid var(--border2);${l.voided?'opacity:0.4':''}${!l.printed&&!l.voided?'background:rgba(240,192,96,0.04)':''}">
-          <td style="padding:9px 14px;font-family:var(--mono);font-weight:700;color:var(--accent)">${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}</span>`:`${Math.abs(l.labelNumber||0)}`}${l.isPartial?' <span style="font-size:10px;color:var(--amber)">P</span>':''}</td>
-          <td style="padding:9px 14px;font-family:var(--mono)">${fmt(l.qty)}</td>
-          <td style="padding:9px 14px">${l.voided?'<span style="color:var(--red);font-size:12px">Voided</span>':l.printed?'<span style="color:var(--green);font-size:12px;font-weight:600">✅ Printed</span>':'<span style="color:var(--amber);font-size:12px">⏳ Pending</span>'}</td>
-          <td style="padding:9px 14px;font-size:12px;color:var(--text3)">${fmtDateTime(l.generated)}</td>
-          <td style="padding:9px 14px">
-            <div style="display:flex;gap:5px;flex-wrap:wrap">
-              <button class="btn btn-sm btn-ghost" style="padding:3px 8px;font-size:11px" onclick="viewLabel('${l.id}')">View</button>
-              ${!l.voided&&!l.printed?`<button class="btn btn-sm btn-primary" style="padding:3px 10px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:''}
-              ${!l.voided&&l.printed?`<button class="btn btn-sm btn-ghost" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">Reprint</button>`:''}
-              ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm" style="padding:3px 8px;font-size:11px;color:var(--red);background:transparent;border:1px solid var(--red)" onclick="voidLabel('${l.id}','Admin void');renderLabels()">Void</button>`:''}
+        ${labels.map(l=>`<tr style="${l.voided?'opacity:0.45':''}${!l.printed&&!l.voided?';background:rgba(240,192,96,0.07)':''}">
+          <td class="td-mono fw-bold" style="color:var(--accent)">${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}</span>`:`${Math.abs(l.labelNumber||0)}`}${l.isPartial?' <span class="badge badge-amber" style="font-size:8px">P</span>':''}</td>
+          <td class="td-mono">${fmt(l.qty)}</td>
+          <td>${l.voided?'<span class="badge badge-red">Voided</span>':l.printed?`<span class="badge badge-green">✅ Printed</span>`:'<span class="badge badge-gray">Pending</span>'}</td>
+          <td class="td-mono text-sm">${fmtDateTime(l.generated)}</td>
+          <td>
+            <div class="flex gap-4">
+              <button class="btn btn-sm btn-ghost" style="padding:3px 8px;font-size:11px" onclick="viewLabel('${l.id}')">👁 View</button>
+              ${!l.voided?`<button class="btn btn-sm btn-ghost" style="padding:3px 8px;font-size:11px;border-color:var(--accent)" onclick="editLabelQty('${l.id}')">✏️ Edit</button>`:''}
+              ${!l.voided&&!l.printed?`<button class="btn btn-sm btn-primary" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:''}
+              ${!l.voided&&l.printed?`<button class="btn btn-sm btn-secondary" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">Reprint</button>`:''}
+              ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-danger" style="padding:3px 8px;font-size:11px" onclick="voidLabel('${l.id}','Admin void');renderLabels()">Void</button>`:''}
             </div>
           </td>
-        </tr>`).join('')||'<tr><td colspan="5" style="padding:40px;text-align:center;color:var(--text3)">No labels generated yet</td></tr>'}
+        </tr>`).join('')||'<tr><td colspan="5" class="text-center text-muted">No labels generated yet for this batch</td></tr>'}
         </tbody>
-      </table>
-      </div>`;
+      </table></div>`;
     })()}
   </div>
 
-  </div>
-  // Restore search box focus if user was typing
-  if(window._labelSearchFocus){
-    const s=document.getElementById('label-batch-search');
-    if(s){ const v=s.value; s.focus(); s.setSelectionRange(v.length,v.length); }
-    window._labelSearchFocus=false;
+  </div>`;
+
+  // Orange Labels section — two panel layout matching Active Batches
+  const orangeLabels = state.labels.filter(l=>l.isOrange&&!l.voided);
+  const ptdBatches = activeBatches.filter(b=>b.isPrinted);
+  if(orangeLabels.length || ptdBatches.length){
+    const unprintedOrange = orangeLabels.filter(l=>!l.printed);
+    // Group orange labels by batch
+    const byBatch = {};
+    orangeLabels.forEach(l=>{
+      if(!byBatch[l.batchNumber]) byBatch[l.batchNumber]=[];
+      byBatch[l.batchNumber].push(l);
+    });
+    const selBatch = window._olSelBatch || Object.keys(byBatch)[0] || '';
+    const selLabels = selBatch ? (byBatch[selBatch]||[]).sort((a,b)=>a.labelNumber-b.labelNumber) : [];
+    const unprintedSel = selLabels.filter(l=>!l.printed);
+
+    el.innerHTML += `
+  <div class="card" style="border:2px solid var(--orange);background:rgba(234,88,12,0.04);margin-top:16px">
+    <div class="card-title" style="color:var(--orange)">🟠 Orange Labels — Printed Batches</div>
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Auto-generated at PI scan-in for each printed batch box. One orange label per box.</div>
+    ${unprintedOrange.length>0?`<div style="background:rgba(234,88,12,0.1);border:1px solid rgba(234,88,12,0.4);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:13px;font-weight:600;color:var(--orange)">⚠️ ${unprintedOrange.length} orange label${unprintedOrange.length>1?'s':''} pending print</div>`:''}
+    <div style="display:flex;gap:16px;align-items:flex-start">
+      <!-- Left panel: batch list -->
+      <div style="width:340px;flex-shrink:0">
+        <div class="tbl-wrap"><table>
+          <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>GEN</th><th>PRT</th><th>REM</th></tr></thead>
+          <tbody>
+          ${Object.keys(byBatch).length ? Object.entries(byBatch).map(([bn,lbls])=>{
+            const batch=getBatch(bn);
+            const gen=lbls.length;
+            const prt=lbls.filter(l=>l.printed).length;
+            const rem=gen-prt;
+            const isSelected=bn===selBatch;
+            return `<tr onclick="window._olSelBatch='${bn}';renderLabels()" style="cursor:pointer;${isSelected?'background:rgba(234,88,12,0.12);outline:2px solid var(--orange);outline-offset:-2px':''}">
+              <td class="td-mono fw-bold" style="color:var(--orange)">${bn}</td>
+              <td class="text-sm">${batch?.customer||lbls[0]?.customer||'-'}</td>
+              <td class="td-mono">${batch?.size||'-'}</td>
+              <td class="td-mono">${gen}</td>
+              <td class="td-mono">${prt}</td>
+              <td class="td-mono" style="color:${rem>0?'var(--orange)':'var(--green)'};font-weight:700">${rem}</td>
+            </tr>`;
+          }).join('') : `<tr><td colspan="6" class="text-center text-muted">No orange labels yet</td></tr>`}
+          </tbody>
+        </table></div>
+      </div>
+      <!-- Right panel: print queue for selected batch -->
+      <div style="flex:1;min-width:0">
+        ${selBatch ? `
+        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+          <div>
+            <div style="font-weight:700;font-size:14px;color:var(--orange)">${selBatch}</div>
+            <div style="font-size:12px;color:var(--text3)">${getBatch(selBatch)?.customer||selLabels[0]?.customer||''} | ${selLabels.length} labels | <span style="color:${unprintedSel.length>0?'var(--orange)':'var(--green);'}">${unprintedSel.length} unprinted</span></div>
+          </div>
+          ${unprintedSel.length>0?`<button class="btn btn-sm" style="background:var(--orange);color:#fff" onclick="unprintedOrangeBatch('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
+        </div>
+        <div class="tbl-wrap" style="max-height:320px;overflow-y:auto"><table>
+          <thead><tr><th>#</th><th>Qty(L)</th><th>Status</th><th>Generated</th><th>Action</th></tr></thead>
+          <tbody>
+          ${selLabels.map(l=>`<tr style="${!l.printed?'background:rgba(234,88,12,0.06)':''}">
+            <td class="td-mono">${l.labelNumber}</td>
+            <td class="td-mono">${fmt(l.qty)}</td>
+            <td>${l.printed?`<span class="badge badge-green">✅ Printed</span>`:'<span class="badge" style="background:rgba(234,88,12,0.15);color:var(--orange);border:1px solid rgba(234,88,12,0.4)">🟠 Pending</span>'}</td>
+            <td class="text-sm">${fmtDateTime(l.generated)}</td>
+            <td>${!l.printed?`<button class="btn btn-sm" style="background:var(--orange);color:#fff;padding:3px 10px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:`<button class="btn btn-sm btn-ghost" style="padding:3px 10px;font-size:11px" onclick="reprintOrangeLabel('${l.id}')">🔁 Reprint</button>`}</td>
+          </tr>`).join('')}
+          </tbody>
+        </table></div>` : '<div class="text-center text-muted" style="padding:32px">← Select a batch to view its print queue</div>'}
+      </div>
+    </div>
+  </div>`;
   }
 }
 
@@ -2129,7 +2131,7 @@ function filterOrangeLabels(){
 }
 
 function openLabelGen(preselect){
-  const activeBatches=state.batches.filter(b=>b.status==='running').slice().sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const activeBatches=state.batches.filter(b=>b.status==='running');
   openModal('Generate Labels','Select batch and quantity to generate',`
     <div class="form-group">
       <label>Batch</label>
@@ -2546,7 +2548,6 @@ function processScanInput(dept,type){
       zoneEl.className='scan-zone success';
       const warnHtml = result.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${result.warning}</div>` : '';
       resultEl.innerHTML=`<div class="alert alert-success">✅ Scanned ${type.toUpperCase()} — Batch ${result.label.batchNumber} Label #${result.label.labelNumber} (${fmt(result.label.qty)}L)</div>${warnHtml}`;
-      showScanFlash(type, result.label.batchNumber, Math.abs(result.label.labelNumber), fmt(result.label.qty));
       setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, result.warning ? 6000 : 3000);
       renderDeptScan(dept);
     } else {
@@ -2565,7 +2566,6 @@ function processScanInput(dept,type){
     const warnHtml = firstResult.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${firstResult.warning}</div>` : '';
     const orangeHtml = firstResult.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${firstResult.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${firstResult.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
     resultEl.innerHTML=`<div class="alert alert-success">✅ Scanned ${type.toUpperCase()} — Batch ${firstResult.label.batchNumber} Label #${firstResult.label.labelNumber} (${fmt(firstResult.label.qty)}L)</div>${warnHtml}${orangeHtml}`;
-    showScanFlash(type, firstResult.label.batchNumber, Math.abs(firstResult.label.labelNumber), fmt(firstResult.label.qty));
     setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (firstResult.warning||firstResult.newOrangeLabel) ? 8000 : 3000);
     renderDeptScan(dept);
     el.focus();
@@ -2573,35 +2573,63 @@ function processScanInput(dept,type){
     // Label not in local state — sync from server then retry
     zoneEl.className='scan-zone';
     resultEl.innerHTML=`<div class="alert" style="background:rgba(255,171,0,0.1);border:1px solid rgba(255,171,0,0.4);padding:8px 12px">🔄 Syncing labels from server...</div>`;
+    // Use async IIFE so errors are always caught and UI always updates
     (async ()=>{
       let retry = {ok:false, msg:'Label not found'};
       try{
-        // Fetch batch-specific labels FIRST — fast, targeted
-        if(parsed.batchNumber){
-          const br = await fetch(
-            serverUrl+'/api/tracking/labels?batchNumber='+encodeURIComponent(parsed.batchNumber),
-            {signal:AbortSignal.timeout(8000)}
-          );
-          const bj = await br.json();
-          if(bj.ok && bj.labels && bj.labels.length){
-            const normBatch = bj.labels.map(normLabel);
-            normBatch.forEach(nl => {
-              if(!state.labels.find(l=>l.id===nl.id)) state.labels.push(nl);
-            });
-            saveLocal();
-            retry = recordScan(parsed.labelId, dept, type, currentDept, parsed);
-            if(!retry.ok && parsed.boxNumber != null){
-              const byBatch = state.labels.find(l =>
-                l.batchNumber===parsed.batchNumber &&
-                Math.abs(l.labelNumber)===Math.abs(parsed.boxNumber)
-              );
-              if(byBatch) retry = recordScan(byBatch.id, dept, type, currentDept,
-                {...parsed, labelId:byBatch.id});
-            }
+        // Direct targeted fetch — get this specific label from server
+        // More reliable than full pullFromServer which may re-render page
+        // Fetch labels directly from server — no page re-render
+        const r = await fetch(serverUrl+'/api/tracking/state',
+          {signal:AbortSignal.timeout(8000)});
+        const j = await r.json();
+
+        if(j.ok && j.state){
+          // Merge server labels into local state without triggering page re-render
+          const normLabels = (j.state.labels||[]).map(normLabel);
+          const serverIds = new Set(normLabels.map(l=>l.id));
+          const localOnly = state.labels.filter(l=>!serverIds.has(l.id));
+          state.labels = [...normLabels, ...localOnly];
+          saveLocal();
+          retry = recordScan(parsed.labelId, dept, type, currentDept, parsed);
+          // If still not found, try matching by batchNumber+labelNumber from QR
+          if(!retry.ok && parsed.batchNumber && parsed.boxNumber != null){
+            const byBatch = state.labels.find(l =>
+              l.batchNumber === parsed.batchNumber &&
+              Math.abs(l.labelNumber) === Math.abs(parsed.boxNumber)
+            );
+            if(byBatch) retry = recordScan(byBatch.id, dept, type, currentDept,
+              {...parsed, labelId: byBatch.id});
           }
         }
       }catch(e){
-        retry = {ok:false, msg:'Cannot reach server — check connection'};
+        // Network error on full state sync — try batch-specific label fetch as last resort
+        if(parsed.batchNumber){
+          try{
+            const br = await fetch(
+              serverUrl+'/api/tracking/labels?batchNumber='+encodeURIComponent(parsed.batchNumber),
+              {signal:AbortSignal.timeout(5000)}
+            );
+            const bj = await br.json();
+            if(bj.ok && bj.labels && bj.labels.length){
+              const normBatch = bj.labels.map(normLabel);
+              normBatch.forEach(nl => {
+                if(!state.labels.find(l=>l.id===nl.id)) state.labels.push(nl);
+              });
+              saveLocal();
+              retry = recordScan(parsed.labelId, dept, type, currentDept, parsed);
+              if(!retry.ok && parsed.boxNumber != null){
+                const byBatch = state.labels.find(l =>
+                  l.batchNumber===parsed.batchNumber &&
+                  Math.abs(l.labelNumber)===Math.abs(parsed.boxNumber)
+                );
+                if(byBatch) retry = recordScan(byBatch.id, dept, type, currentDept,
+                  {...parsed, labelId:byBatch.id});
+              }
+            }
+          }catch(e2){ /* ignore */ }
+        }
+        if(!retry.ok) retry = {ok:false, msg:'Cannot reach server — check connection'};
       }
       // Always update UI — never stuck
       if(retry.ok){
@@ -2609,7 +2637,6 @@ function processScanInput(dept,type){
         const warnHtml = retry.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${retry.warning}</div>` : '';
         const orangeHtml = retry.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${retry.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${retry.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
         resultEl.innerHTML=`<div class="alert alert-success">✅ Scanned ${type.toUpperCase()} — Batch ${retry.label.batchNumber} Label #${retry.label.labelNumber} (${fmt(retry.label.qty)}L)</div>${warnHtml}${orangeHtml}`;
-        showScanFlash(type, retry.label.batchNumber, Math.abs(retry.label.labelNumber), fmt(retry.label.qty));
         setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (retry.warning||retry.newOrangeLabel) ? 8000 : 3000);
         renderDeptScan(dept);
       } else {
@@ -2722,8 +2749,9 @@ function getActiveBatchesForDept(dept){
     if(b.status==='closed') return false;
     const flow=getBatchFlow(b);
     if(!flow.includes(dept)) return false;
+    // Show if previous stage is complete or it's the first stage
     return canScanDept(b.batchNumber,dept)||isStageComplete(b.batchNumber,dept)||currentDept==='admin';
-  }).slice().sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  });
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2968,7 +2996,7 @@ function applyBatchFilter(){
   const filterMachine=document.getElementById('bt-filter-machine')?.value||'';
   const filterPc=(document.getElementById('bt-filter-pc')?.value||'');
   const filterColour=(document.getElementById('bt-filter-colour')?.value||'');
-  let batches=state.batches.filter(b=>!b.deleted).slice().sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  let batches=state.batches.filter(b=>!b.deleted);
   if(filterBatch) batches=batches.filter(b=>b.batchNumber?.toLowerCase().includes(filterBatch)||b.customer?.toLowerCase().includes(filterBatch));
   if(filterMachine) batches=batches.filter(b=>b.machineId===filterMachine);
   if(filterPc) batches=batches.filter(b=>b.pcCode===filterPc);
