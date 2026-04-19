@@ -1590,8 +1590,13 @@ function renderShifts(){
       let runsHtml='';
       runs.forEach((run,ri)=>{
         const orders=activeOrders[mc.id]||[];
-        const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}" ${run.orderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
-        const runColour = run.colour || (run.orderId && activeOrders[mc.id]?.find(o=>o.id===run.orderId)?.colour) || '';
+        // Resolve effective orderId: use saved orderId, or match by batchNumber if orderId missing
+        const matchedOrder = orders.find(o=>o.id===run.orderId) || orders.find(o=>o.batchNumber===run.batchNumber);
+        const effectiveOrderId = run.orderId || matchedOrder?.id || '';
+        // Auto-fix run.orderId if we found a match (so saveDay captures it)
+        if(!run.orderId && matchedOrder) run.orderId = matchedOrder.id;
+        const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
+        const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
         runsHtml+=`
           <div class="run-row" data-sh="${sh}" data-mc="${mc.id}" data-ri="${ri}" style="display:flex;align-items:center;gap:5px;margin-bottom:${ri<runs.length-1?'5':'0'}px;${isMult&&ri>0?'padding-top:5px;border-top:1px dashed var(--b2)':''}">
