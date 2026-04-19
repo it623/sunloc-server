@@ -2735,7 +2735,7 @@ function renderDeptScan(dept){
     <div class="card-title">Recent Scans — ${cfg.label}</div>
     <div class="tbl-wrap"><table>
       <thead><tr><th>Time</th><th>Batch / Box</th><th>Qty (L)</th><th>Type</th></tr></thead>
-      <tbody>
+      <tbody id="recent-scans-${dept}">
       ${state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30).map(s=>{
         const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
         // Fallback: if label not in state, try matching by batch+labelNumber from scan, or show box from scan qty
@@ -5102,43 +5102,36 @@ let _lastScanTs = 0;
 
 async function refreshScans(){
   if(!serverUrl) return;
-  // Skip if we just recorded a scan (avoid race condition with local scan)
+  // Skip if scan just recorded on this device (avoid race condition)
   if(Date.now() - _lastScanTs < 8000) return;
   try{
     const sr=await fetch(serverUrl+'/api/tracking/scans-recent',{signal:AbortSignal.timeout(10000)});
-    if(sr.ok){
-      const sj=await sr.json();
-      if(sj.ok&&sj.scans){
-        const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number,labelNumber:s.labelNumber||s.label_number}));
-        const serverIds=new Set(ns.map(s=>s.id));
-        const localOnly=state.scans.filter(s=>!serverIds.has(s.id)&&s._local);
-        state.scans=[...ns,...localOnly];
-        // Only re-render the recent scans section — not the whole page
-        const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
-        if(dept){
-          // Update just the recent scans table without full re-render
-          const recentEl=document.querySelector(`#page-${dept} .tbl-wrap table tbody`);
-          if(recentEl){
-            const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
-            recentEl.innerHTML=scans.map(s=>{
-              const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
-              const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):'?'));
-              return `<tr>
-                <td class="td-mono text-sm">${fmtDateTime(s.ts)}</td>
-                <td class="td-bold td-mono">${s.batchNumber}/<span style="color:var(--accent)">${boxNum}</span></td>
-                <td class="td-mono">${fmt(s.qty)}</td>
-                <td>${s.type==='in'?'<span class="badge badge-blue">📥 IN</span>':'<span class="badge badge-green">📤 OUT</span>'}</td>
-              </tr>`;
-            }).join('')||'<tr><td colspan="4" class="text-center text-muted">No scans recorded yet</td></tr>';
-          } else {
-            // Fallback: full re-render if DOM element not found
-            if(currentPage) renderPage(currentPage);
-          }
-        }
-        saveLocal();
-      }
-    }
-  }catch(e){}
+    if(!sr.ok) return;
+    const sj=await sr.json();
+    if(!sj.ok||!sj.scans) return;
+    // Merge server scans with any local-only scans not yet confirmed
+    const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number,labelNumber:s.labelNumber||s.label_number}));
+    const serverIds=new Set(ns.map(s=>s.id));
+    const localOnly=state.scans.filter(s=>!serverIds.has(s.id)&&s._local);
+    state.scans=[...ns,...localOnly];
+    saveLocal();
+    // Update recent scans table using unique id — no full page re-render
+    const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
+    if(!dept) return;
+    const tbody=document.getElementById(`recent-scans-${dept}`);
+    if(!tbody){ renderPage(currentPage); return; }
+    const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
+    tbody.innerHTML=scans.map(s=>{
+      const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
+      const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):'?'));
+      return `<tr>
+        <td class="td-mono text-sm">${fmtDateTime(s.ts)}</td>
+        <td class="td-bold td-mono">${s.batchNumber}/<span style="color:var(--accent)">${boxNum}</span></td>
+        <td class="td-mono">${fmt(s.qty)}</td>
+        <td>${s.type==='in'?'<span class="badge badge-blue">📥 IN</span>':'<span class="badge badge-green">📤 OUT</span>'}</td>
+      </tr>`;
+    }).join('')||'<tr><td colspan="4" class="text-center text-muted">No scans recorded yet</td></tr>';
+  }catch(e){ console.warn('refreshScans error:',e?.message); }
 }
 
 // Refresh scans every 15 seconds — real-time across all devices
