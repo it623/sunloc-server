@@ -360,6 +360,11 @@ const MIGRATIONS = [
       );
     `
   },
+  {
+    version: 10,
+    name: 'tracking_scans_label_number',
+    sql: `ALTER TABLE tracking_scans ADD COLUMN label_number INTEGER;`
+  },
 ];
 
 function runMigrations() {
@@ -1778,7 +1783,7 @@ app.get('/api/tracking/state', async (req, res) => {
         pgPool.query('SELECT * FROM tracking_alerts WHERE resolved = 0'),
       ]);
       const mapLabel = r => ({ ...r, batchNumber: r.batch_number, labelNumber: r.label_number, isPartial: r.is_partial, isOrange: r.is_orange, parentLabelId: r.parent_label_id, pcCode: r.pc_code, poNumber: r.po_number, machineId: r.machine_id, printingMatter: r.printing_matter, printedAt: r.printed_at, voidReason: r.void_reason, voidedAt: r.voided_at, voidedBy: r.voided_by, qrData: r.qr_data, woStatus: r.wo_status, shipTo: r.ship_to, billTo: r.bill_to, isExcess: r.is_excess, excessNum: r.excess_num, excessTotal: r.excess_total, normalTotal: r.normal_total });
-      const mapScan = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number });
+      const mapScan = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, labelNumber: r.label_number });
       const mapClosure = r => ({ ...r, batchNumber: r.batch_number, closedAt: r.closed_at, closedBy: r.closed_by });
       const mapWastage = r => ({ ...r, batchNumber: r.batch_number });
       const mapDispatch = r => ({ ...r, batchNumber: r.batch_number, vehicleNo: r.vehicle_no, invoiceNo: r.invoice_no });
@@ -2005,16 +2010,16 @@ app.post('/api/tracking/scan', async (req, res) => {
         return res.json({ok:false, duplicate:true, error:'Already scanned '+scan.type.toUpperCase()+' at '+scan.dept});
       }
       await pgPool.query(
-        `INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
-        [scan.id, labelId, batchNumber, scan.dept, scan.type, scan.ts,
+        `INSERT INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO NOTHING`,
+        [scan.id, labelId, batchNumber, scan.labelNumber||null, scan.dept, scan.type, scan.ts,
          scan.operator||null, scan.size||null, scan.qty||null]
       );
     } else {
       db.prepare(`INSERT OR IGNORE INTO tracking_scans
-        (id,label_id,batch_number,dept,type,ts,operator,size,qty)
-        VALUES (?,?,?,?,?,?,?,?,?)`).run(
-        scan.id, labelId, batchNumber, scan.dept, scan.type, scan.ts,
+        (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty)
+        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+        scan.id, labelId, batchNumber, scan.labelNumber||null, scan.dept, scan.type, scan.ts,
         scan.operator||null, scan.size||null, scan.qty||null
       );
     }
