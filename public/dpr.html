@@ -3032,10 +3032,12 @@ function onDateChange(){
   renderEntry();
   // Fetch day data from server when date changes
   if(serverUrl){
-    const fl=curFloor, d=getDate();
-    fetchDayFromServer(fl, d).then(serverData=>{
+    (async ()=>{
+      const fl=curFloor, d=getDate();
+      if(!Object.keys(activeOrders).length) await fetchActiveOrders();
+      const serverData=await fetchDayFromServer(fl, d);
       if(serverData){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
-    });
+    })();
   }
   // C-shift date handling: if current time is 00:00–08:00 and today is selected, auto-switch to previous day
   const now=new Date(), h=now.getHours();
@@ -3275,9 +3277,19 @@ async function loadSettingsFromServer(){
       Object.assign(targets, s.dpr_targets);
       localStorage.setItem('dpr_targets',JSON.stringify(targets));
     }
-    // Active machines
+    // Active machines — merge server config with FLOORS definition
+    // (new machines added to FLOORS are auto-included if not explicitly disabled)
     if(s.dpr_active_machines && Object.keys(s.dpr_active_machines).length>0){
-      localStorage.setItem('dpr_active_machines',JSON.stringify(s.dpr_active_machines));
+      const merged=JSON.parse(JSON.stringify(s.dpr_active_machines));
+      Object.keys(FLOORS).forEach(fl=>{
+        const floorMcs=(FLOORS[fl]?.machines||[]).map(m=>m.id);
+        if(!merged[fl]) merged[fl]=floorMcs;
+        else{
+          // Add any new machines from FLOORS not yet in saved config
+          floorMcs.forEach(mcId=>{ if(!merged[fl].includes(mcId)) merged[fl].push(mcId); });
+        }
+      });
+      localStorage.setItem('dpr_active_machines',JSON.stringify(merged));
     }
     // Machine sizes
     if(s.dpr_machine_sizes && Object.keys(s.dpr_machine_sizes).length>0){
@@ -3297,9 +3309,10 @@ function postAuthServerInit() {
   checkServer().then(ok=>{
     if(ok){
       loadSettingsFromServer().then(async ()=>{
-        fetchActiveOrders();
+        // Fetch orders FIRST so dropdowns populate correctly when shifts render
+        await fetchActiveOrders();
         fetchClosedBatches();
-        // Fetch today's data from server for all accessible floors
+        // Fetch today's data from server
         const fl=curFloor, d=getDate();
         const serverData=await fetchDayFromServer(fl, d);
         if(serverData){
@@ -3308,6 +3321,10 @@ function postAuthServerInit() {
           renderRemarks();
           renderResort();
           toast('✓ Data loaded from server','var(--green)',2000);
+        } else {
+          // Even without server data, re-render with loaded orders
+          renderDayKpis();
+          renderShifts();
         }
       });
     } else {
