@@ -1940,13 +1940,13 @@ function updateDTSummary(){
   // Update live total cells in DT table without full re-render
   const fl=curFloor;
   const mcs=getActiveMachines(fl);
-  SHIFTS.forEach(sh=>DT_CATS.forEach(c=>{
+  SHIFTS.forEach(sh=>DT_CATS.forEach(cat=>{
     let colTotal=0;
     mcs.forEach(mc=>{
-      const inp=document.getElementById(`dt-${sh}-${mc.id}-${c}`);
+      const inp=document.getElementById(`dt-${sh}-${mc.id}-${cat}`);
       colTotal+=parseFloat(inp?.value||0);
     });
-    const totEl=document.getElementById(`dt-tot-${sh}-${c}`);
+    const totEl=document.getElementById(`dt-tot-${sh}-${cat}`);
     if(totEl){
       totEl.textContent=colTotal||'0';
       totEl.style.color=colTotal>0?'var(--amber)':'var(--t3)';
@@ -1960,13 +1960,13 @@ function updateDTTotals(){
   // Refresh the live totals row in the downtime table from actual input values
   const fl=curFloor;
   const mcs=getActiveMachines(fl);
-  SHIFTS.forEach(sh=>DT_CATS.forEach(c=>{
-    const cell=document.getElementById(`dt-tot-${sh}-${c}`);
+  SHIFTS.forEach(sh=>DT_CATS.forEach(cat=>{
+    const cell=document.getElementById(`dt-tot-${sh}-${cat}`);
     if(!cell) return;
     let colTotal=0;
     mcs.forEach(mc=>{
-      const inp=document.getElementById(`dt-${sh}-${mc.id}-${c}`);
-      colTotal+=parseFloat(inp?inp.value||0:0);
+      const inp=document.getElementById(`dt-${sh}-${mc.id}-${cat}`);
+      colTotal+=parseFloat(inp?.value||0);
     });
     cell.textContent=colTotal||'0';
     cell.style.color=colTotal>0?'var(--amber)':'var(--t3)';
