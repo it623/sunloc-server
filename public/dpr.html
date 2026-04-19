@@ -665,6 +665,7 @@ function getCustomNames(key, defaults){
 function saveCustomNames(fl, role, names){
   const key = MANPOWER_MASTER.common[role] ? role : `${fl}_${role}`;
   localStorage.setItem('dpr_manpower_'+key, JSON.stringify(names));
+  pushSettingsToServer();
 }
 
 const SHIFTS = ['A','B','C'];
@@ -846,6 +847,7 @@ function addManpowerName(storeKey){
   if(!names.includes(name)){
     names.push(name);
     localStorage.setItem('dpr_manpower_'+storeKey, JSON.stringify(names));
+    pushSettingsToServer();
   }
   inp.value = '';
   renderManpowerSettings();
@@ -856,6 +858,7 @@ function removeManpowerName(storeKey, idx){
   const names = getCustomNames(storeKey, defaults);
   names.splice(idx, 1);
   localStorage.setItem('dpr_manpower_'+storeKey, JSON.stringify(names));
+  pushSettingsToServer();
   renderManpowerSettings();
 }
 
