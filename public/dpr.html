@@ -3318,8 +3318,8 @@ function postAuthServerInit() {
     if(ok){
       loadSettingsFromServer().then(async ()=>{
         // Fetch orders FIRST so dropdowns populate correctly when shifts render
-        await fetchActiveOrders();
-        fetchClosedBatches();
+        // Fetch orders AND closed batches FIRST — both needed before renderShifts
+        await Promise.all([fetchActiveOrders(), fetchClosedBatches()]);
         // Fetch today's data from server
         const fl=curFloor, d=getDate();
         const serverData=await fetchDayFromServer(fl, d);
@@ -3330,7 +3330,7 @@ function postAuthServerInit() {
           renderResort();
           toast('✓ Data loaded from server','var(--green)',2000);
         } else {
-          // Even without server data, re-render with loaded orders
+          // Even without server data, re-render with loaded orders + closed badges
           renderDayKpis();
           renderShifts();
         }
