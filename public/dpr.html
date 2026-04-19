@@ -1655,11 +1655,14 @@ function renderShifts(){
           <div id="runs-${sh}-${mc.id}">${runsHtml}</div>
           <div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap">
             <button onclick="addRun('${sh}','${mc.id}')" style="padding:2px 8px;background:transparent;border:1px dashed var(--b2);border-radius:3px;color:var(--t3);font-size:10px;font-family:var(--fc);letter-spacing:.5px;cursor:pointer" title="Add another batch/colour change run">+ Add Run</button>
-            ${runs.filter(r=>r.orderId).map(r=>{
-              const isClosed=dprClosedBatches[r.orderId];
-              // Show close button for any logged-in user — the server enforces role on the actual close action
+            ${runs.filter(r=>r.orderId||r.batchNumber).map(r=>{
+              // Match closed status by orderId OR batchNumber
+              const isClosed=dprClosedBatches[r.orderId]||
+                (r.batchNumber&&Object.values(dprClosedBatches).find(cb=>cb.batchNumber===r.batchNumber));
+              // Resolve orderId from activeOrders if not set (fallback by batchNumber)
+              const resolvedOrderId=r.orderId||(activeOrders[mc.id]||[]).find(o=>o.batchNumber===r.batchNumber)?.id||'';
               if(isClosed) return `<span style="padding:2px 8px;background:rgba(0,230,118,0.1);border:1px solid rgba(0,230,118,0.3);border-radius:3px;color:var(--green);font-size:10px;font-family:var(--fc)">✅ ${r.batchNumber||'Batch'} Closed in DPR</span>`;
-              return `<button onclick="closeBatchInDPR('${r.orderId}','${r.batchNumber||''}')" style="padding:2px 8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);border-radius:3px;color:var(--red);font-size:10px;font-family:var(--fc);cursor:pointer" title="Mark production complete for this batch">🔒 Close ${r.batchNumber||'Batch'}</button>`;
+              return `<button onclick="closeBatchInDPR('${resolvedOrderId}','${r.batchNumber||''}')" style="padding:2px 8px;background:rgba(239,68,68,0.1);border:1px solid rgba(239,68,68,0.4);border-radius:3px;color:var(--red);font-size:10px;font-family:var(--fc);cursor:pointer" title="Mark production complete for this batch">🔒 Close ${r.batchNumber||'Batch'}</button>`;
             }).join('')}
           </div>
         </td>
