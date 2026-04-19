@@ -1988,8 +1988,8 @@ app.get('/api/tracking/labels-all', async (req, res) => {
 app.get('/api/tracking/scans-recent', async (req, res) => {
   try {
     const m=r=>({...r,labelId:r.label_id,batchNumber:r.batch_number});
-    if(pgPool){const r=await pgPool.query('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500');res.json({ok:true,scans:r.rows.map(m)});}
-    else{const scans=db.prepare('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500').all();res.json({ok:true,scans});}
+    if(pgPool){const r=await pgPool.query('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 2000');res.json({ok:true,scans:r.rows.map(m)});}
+    else{const scans=db.prepare('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 2000').all();res.json({ok:true,scans});}
   }catch(err){res.status(500).json({ok:false,error:err.message});}
 });
 // ── Individual scan save (called after each scan in/out) ──

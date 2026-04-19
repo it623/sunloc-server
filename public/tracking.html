@@ -1027,7 +1027,20 @@ async function pullFromServer(){
     // STEP 3: Recent scans fast
     try{
       const sr=await fetch(serverUrl+'/api/tracking/scans-recent',{signal:AbortSignal.timeout(20000)});
-      if(sr.ok){const sj=await sr.json();if(sj.ok&&sj.scans){const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number}));const ssids=new Set(ns.map(s=>s.id));state.scans=[...ns,...state.scans.filter(s=>!ssids.has(s.id))];saveLocal();if(currentPage)renderPage(currentPage);}}
+      if(sr.ok){
+        const sj=await sr.json();
+        if(sj.ok&&sj.scans){
+          const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number,labelNumber:s.labelNumber||s.label_number}));
+          const serverIds=new Set(ns.map(s=>s.id));
+          // Always keep local scans not yet confirmed on server
+          const localOnly=state.scans.filter(s=>!serverIds.has(s.id));
+          // Remove _local flag from scans now confirmed on server
+          ns.forEach(s=>{ delete s._local; });
+          state.scans=[...ns,...localOnly];
+          saveLocal();
+          if(currentPage) renderPage(currentPage);
+        }
+      }
     }catch(e3){}
     // STEP 4: Wastage + alerts background
     try{
@@ -1103,8 +1116,9 @@ function recordScan(labelId, dept, type, operator, parsed){
     if(deptScans.filter(s=>s.type==='out').length>=deptScans.filter(s=>s.type==='in').length) return {ok:false,msg:'Box already scanned OUT at this department'};
   }
 
-  const scan = { id:uid(), labelId, batchNumber:label.batchNumber, labelNumber:label.labelNumber, dept, type, ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty };
+  const scan = { id:uid(), labelId, batchNumber:label.batchNumber, labelNumber:label.labelNumber, dept, type, ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty, _local:true };
   state.scans.push(scan);
+  _lastScanTs = Date.now(); // Guard against pullFromServer race condition
 
   // Auto-generate orange label on PI scan-in
   let newOrangeLabel = null;
@@ -2651,7 +2665,7 @@ function renderDeptScan(dept){
     <div class="tbl-wrap"><table>
       <thead><tr><th>Time</th><th>Batch / Box</th><th>Qty (L)</th><th>Type</th></tr></thead>
       <tbody>
-      ${state.scans.filter(s=>s.dept===dept).slice(-20).reverse().map(s=>{
+      ${state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30).map(s=>{
         const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
         // Fallback: if label not in state, try matching by batch+labelNumber from scan, or show box from scan qty
         const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):'?'));
@@ -5014,8 +5028,12 @@ setInterval(()=>{
 },5*60*1000);
 
 // Auto sync every 2 minutes
+let _lastScanTs = 0;
 setInterval(()=>{
-  if(serverUrl) pullFromServer();
+  if(!serverUrl) return;
+  // Don't pull if a scan was recorded in the last 10 seconds (avoid race condition)
+  if(Date.now() - _lastScanTs < 10000) return;
+  pullFromServer();
 },2*60*1000);
 
 // Check TEMP batch alerts every 5 minutes
