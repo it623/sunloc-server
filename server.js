@@ -1898,6 +1898,53 @@ app.get('/api/tracking/wip-summary', (req, res) => {
 
 
 // ── Labels lookup by batchNumber (scanning fallback) ──
+// ── Save new labels to PostgreSQL directly ──────────────────
+app.post('/api/tracking/labels', async (req, res) => {
+  try {
+    const { labels } = req.body;
+    if (!labels || !labels.length) return res.status(400).json({ ok: false, error: 'No labels' });
+    if (pgPool) {
+      for (const l of labels) {
+        await pgPool.query(`
+          INSERT INTO tracking_labels
+            (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,
+             customer,colour,pc_code,po_number,machine_id,printing_matter,generated,
+             printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,
+             is_excess,excess_num,excess_total,normal_total)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+          ON CONFLICT (id) DO NOTHING`,
+          [l.id, l.batchNumber||l.batch_number, l.labelNumber||l.label_number,
+           l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
+           l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
+           l.machineId||null, l.printingMatter||l.printMatter||null,
+           l.generated||new Date().toISOString(),
+           l.printed?1:0, l.printedAt||null, l.voided?1:0, l.voidReason||null,
+           l.voidedAt||null, l.voidedBy||null, l.qrData||null,
+           l.isExcess?1:0, l.excessNum||null, l.excessTotal||null, l.normalTotal||null]
+        );
+      }
+    } else {
+      const stmt = db.prepare(`INSERT OR IGNORE INTO tracking_labels
+        (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,
+         customer,colour,pc_code,po_number,machine_id,printing_matter,generated,
+         printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,
+         is_excess,excess_num,excess_total,normal_total)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      labels.forEach(l => stmt.run(
+        l.id, l.batchNumber||l.batch_number, l.labelNumber||l.label_number,
+        l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
+        l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
+        l.machineId||null, l.printingMatter||l.printMatter||null,
+        l.generated||new Date().toISOString(),
+        l.printed?1:0, l.printedAt||null, l.voided?1:0, l.voidReason||null,
+        l.voidedAt||null, l.voidedBy||null, l.qrData||null,
+        l.isExcess?1:0, l.excessNum||null, l.excessTotal||null, l.normalTotal||null
+      ));
+    }
+    res.json({ ok: true, saved: labels.length });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.get('/api/tracking/labels', async (req, res) => {
   try {
     const { batchNumber } = req.query;

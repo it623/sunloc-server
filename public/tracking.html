@@ -1245,9 +1245,8 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
 
   state.labels.push(...newLabels);
   saveLocal();
-  // Save via state sync (labels stored in saveLocal above)
-  // Trigger immediate state push to ensure persistence
-  if(serverUrl){ fetch(serverUrl+'/api/tracking/state',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels:newLabels,scans:[],stageClosure:[],wastage:[],dispatchRecs:[],alerts:[]}),signal:AbortSignal.timeout(8000)}).catch(()=>{}); }
+  // Push new labels directly to PostgreSQL — available on all devices immediately
+  if(serverUrl){ fetch(serverUrl+'/api/tracking/labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels:newLabels}),signal:AbortSignal.timeout(10000)}).catch(()=>{}); }
   return newLabels;
 }
 
