@@ -1006,17 +1006,17 @@ async function pullFromServer(){
     try{
       flushPendingLabelPush();
       const lr=await fetch(serverUrl+'/api/tracking/labels-all',{signal:AbortSignal.timeout(30000)});
-      if(lr.ok){ const lj=await lr.json(); if(lj.ok&&lj.labels){ const sl=lj.labels; const sids=new Set(sl.map(l=>l.id)); const lo=state.labels.filter(l=>!sids.has(l.id)); if(lo.length>0) pushLabelsToServer(lo); state.labels=sl; saveLocal(); if(currentPage) renderPage(currentPage); } }
+      if(lr.ok){const lj=await lr.json();if(lj.ok&&lj.labels){const sl=lj.labels;const sids=new Set(sl.map(l=>l.id));const lo=state.labels.filter(l=>!sids.has(l.id));if(lo.length>0)pushLabelsToServer(lo);state.labels=sl;saveLocal();if(currentPage)renderPage(currentPage);}}
     }catch(e2){}
-    // STEP 3: Load recent scans fast
+    // STEP 3: Recent scans fast
     try{
       const sr=await fetch(serverUrl+'/api/tracking/scans-recent',{signal:AbortSignal.timeout(20000)});
-      if(sr.ok){ const sj=await sr.json(); if(sj.ok&&sj.scans){ const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number})); const ssids=new Set(ns.map(s=>s.id)); state.scans=[...ns,...state.scans.filter(s=>!ssids.has(s.id))]; saveLocal(); if(currentPage) renderPage(currentPage); } }
+      if(sr.ok){const sj=await sr.json();if(sj.ok&&sj.scans){const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number}));const ssids=new Set(ns.map(s=>s.id));state.scans=[...ns,...state.scans.filter(s=>!ssids.has(s.id))];saveLocal();if(currentPage)renderPage(currentPage);}}
     }catch(e3){}
     // STEP 4: Wastage + alerts background
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
-      if(r.ok){ const j=await r.json(); if(j.ok&&j.state){ state.wastage=(j.state.wastage||[]).map(w=>({...w,batchNumber:w.batchNumber||w.batch_number})); if(j.state.stageClosure) state.stageClosure=j.state.stageClosure; if(j.state.dispatchRecs) state.dispatchRecs=j.state.dispatchRecs; if(j.state.alerts) state.alerts=j.state.alerts; saveLocal(); if(currentPage) renderPage(currentPage); } }
+      if(r.ok){const j=await r.json();if(j.ok&&j.state){state.wastage=(j.state.wastage||[]).map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));if(j.state.stageClosure)state.stageClosure=j.state.stageClosure;if(j.state.dispatchRecs)state.dispatchRecs=j.state.dispatchRecs;if(j.state.alerts)state.alerts=j.state.alerts;saveLocal();if(currentPage)renderPage(currentPage);}}
     }catch(e4){}
   }catch(e){ setSyncBadge('offline'); }
 }
@@ -1198,17 +1198,17 @@ function canGenerateLabels(batchNo, requestedBoxes){
   return {ok:true, maxTotal:maxTotalBoxes, remainingAllowed, isExcessRun};
 }
 
-const _pendingLabelPush = [];
-async function pushLabelsToServer(labels, attempt=1){
-  if(!serverUrl || !labels || !labels.length) return;
+const _pendingLabelPush=[];
+async function pushLabelsToServer(labels,attempt=1){
+  if(!serverUrl||!labels||!labels.length)return;
   try{
     const r=await fetch(serverUrl+'/api/tracking/labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels}),signal:AbortSignal.timeout(15000)});
     const j=await r.json();
-    if(j.ok){ const ids=new Set(labels.map(l=>l.id)); for(let i=_pendingLabelPush.length-1;i>=0;i--){ if(ids.has(_pendingLabelPush[i].id)) _pendingLabelPush.splice(i,1); } try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e){} setSyncBadge('synced'); }
-    else { throw new Error(j.error||'rejected'); }
-  }catch(e){ labels.forEach(l=>{if(!_pendingLabelPush.find(p=>p.id===l.id))_pendingLabelPush.push(l);}); try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e2){} if(attempt<=5) setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(),attempt+1),Math.min(5000*attempt,60000)); setSyncBadge('offline'); }
+    if(j.ok){const ids=new Set(labels.map(l=>l.id));for(let i=_pendingLabelPush.length-1;i>=0;i--){if(ids.has(_pendingLabelPush[i].id))_pendingLabelPush.splice(i,1);}try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e){}setSyncBadge('synced');}
+    else{throw new Error(j.error||'rejected');}
+  }catch(e){labels.forEach(l=>{if(!_pendingLabelPush.find(p=>p.id===l.id))_pendingLabelPush.push(l);});try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e2){}if(attempt<=5)setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(),attempt+1),Math.min(5000*attempt,60000));setSyncBadge('offline');}
 }
-function flushPendingLabelPush(){ try{ const s=JSON.parse(localStorage.getItem('sunloc_pending_labels')||'[]'); s.forEach(l=>{if(!_pendingLabelPush.find(p=>p.id===l.id))_pendingLabelPush.push(l);}); if(_pendingLabelPush.length>0) pushLabelsToServer(_pendingLabelPush.slice()); }catch(e){} }
+function flushPendingLabelPush(){try{const s=JSON.parse(localStorage.getItem('sunloc_pending_labels')||'[]');s.forEach(l=>{if(!_pendingLabelPush.find(p=>p.id===l.id))_pendingLabelPush.push(l);});if(_pendingLabelPush.length>0)pushLabelsToServer(_pendingLabelPush.slice());}catch(e){}}
 
 function generateLabels(batchNo, count, isPartialLast, partialQty){
   const batch = getBatch(batchNo);
@@ -1904,14 +1904,33 @@ function renderLabels(){
 
   <div style="display:flex;gap:12px;align-items:start">
 
-  <!-- LEFT: Batch Status + Generate -->
-  <div class="card" style="width:42%;flex-shrink:0;max-height:calc(100vh - 200px);display:flex;flex-direction:column;padding:0;overflow:hidden">
-    <div style="padding:10px 14px;border-bottom:1px solid var(--border);font-size:12px;font-weight:700;letter-spacing:0.06em;color:var(--text3)">ACTIVE BATCHES</div>
+  <!-- LEFT: Active Batches with Search — 55% width -->
+  <div class="card" style="width:55%;flex-shrink:0;max-height:calc(100vh - 195px);display:flex;flex-direction:column;padding:0;overflow:hidden">
+    <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px">
+      <span style="font-size:11px;font-weight:700;letter-spacing:0.06em;color:var(--text3);white-space:nowrap">ACTIVE BATCHES</span>
+      <input id="label-search" type="text" placeholder="Search batch, customer, sz, colour, PC..." oninput="window._labelSearch=this.value;renderLabels()" style="flex:1;font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);outline:none" value="${window._labelSearch||''}">
+    </div>
     <div style="overflow-x:auto;overflow-y:auto;flex:1;transform:rotateX(180deg)">
-    <table style="font-size:11px;width:100%;transform:rotateX(180deg);border-collapse:collapse">
-      <thead><tr style="border-bottom:2px solid var(--border)"><th style="padding:5px 6px;white-space:nowrap">Batch</th><th style="padding:5px 6px">Customer</th><th style="padding:5px 6px">Sz</th><th style="padding:5px 6px">PC</th><th style="padding:5px 6px">Actual</th><th style="padding:5px 6px">Gen</th><th style="padding:5px 6px">Prt</th><th style="padding:5px 6px">Rem</th><th style="padding:5px 6px">Act</th></tr></thead>
+    <table style="font-size:11px;width:100%;transform:rotateX(180deg);border-collapse:collapse;min-width:580px">
+      <thead>
+        <tr style="border-bottom:2px solid var(--border)">
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600;white-space:nowrap">BATCH</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">CUSTOMER</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">SZ</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">COLOUR</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">PC</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">ACTUAL</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">GEN</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">PRT</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">REM</th>
+          <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">ACT</th>
+        </tr>
+      </thead>
       <tbody>
-      ${activeBatches.map(b=>{
+      ${(()=>{
+        const srch=(window._labelSearch||'').toLowerCase();
+        const filtered=srch?activeBatches.filter(b=>(b.batchNumber||'').toLowerCase().includes(srch)||(b.customer||'').toLowerCase().includes(srch)||(b.colour||'').toLowerCase().includes(srch)||(b.pcCode||'').toLowerCase().includes(srch)||String(b.size||'').includes(srch)):activeBatches;
+        return filtered.map(b=>{
         const maxLabels=lakhToBox(b.qty,b.size);
         const generated=state.labels.filter(l=>l.batchNumber===b.batchNumber&&!l.voided&&!l.isOrange).length;
         const printed=state.labels.filter(l=>l.batchNumber===b.batchNumber&&l.printed&&!l.voided&&!l.isOrange).length;
@@ -1923,28 +1942,30 @@ function renderLabels(){
         const isSelected=b.batchNumber===selBatch;
         const pct=maxLabels>0?(generated/maxLabels*100):0;
         const actualProd=(b.actualQty||b.actualProd||0);
+        const clr=b.colour||'';
         return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">
-          <td style="padding:5px 6px;font-weight:700;font-family:monospace;font-size:11px;white-space:nowrap">${b.batchNumber}</td>
-          <td style="padding:5px 6px;font-size:11px;max-width:100px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||'-'}</td>
+          <td style="padding:5px 6px;font-weight:700;font-family:monospace;font-size:11px;white-space:nowrap;color:var(--accent)">${b.batchNumber}</td>
+          <td style="padding:5px 6px;font-size:11px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||'-'}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;text-align:center">${b.size}</td>
+          <td style="padding:5px 6px;font-size:11px;max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${clr?`<span style="display:inline-block;max-width:75px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${clr}">${clr}</span>`:'—'}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px">${b.pcCode||'—'}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;color:${actualProd>0?'var(--text1)':'var(--text3)'}">${actualProd>0?actualProd.toFixed(2):'—'}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${generated}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px">${printed}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:${remaining===0?'400':'700'};color:${remaining===0?'var(--text3)':'var(--accent2)'}">${remaining}</td>
-          <td style="padding:4px 6px" onclick="event.stopPropagation()">
-            ${remaining>0?`<button style="font-size:10px;padding:2px 7px;border:1px solid ${isExcessAvailable?'var(--accent2)':'var(--accent)'};border-radius:4px;background:${isExcessAvailable?'rgba(255,171,0,0.15)':'rgba(96,165,250,0.15)'};color:${isExcessAvailable?'var(--accent2)':'var(--accent)'};cursor:pointer;white-space:nowrap" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕ Exc':'+Gen'}</button>`:''}
+          <td style="padding:4px 5px" onclick="event.stopPropagation()">
+            ${remaining>0?`<button style="font-size:10px;padding:2px 7px;border:1px solid ${isExcessAvailable?'var(--accent2)':'var(--accent)'};border-radius:3px;background:${isExcessAvailable?'rgba(255,171,0,0.15)':'rgba(96,165,250,0.15)'};color:${isExcessAvailable?'var(--accent2)':'var(--accent)'};cursor:pointer;white-space:nowrap" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕Exc':'+Gen'}</button>`:''}
           </td>
         </tr>`;
-      }).join('')||'<tr><td colspan="9" class="text-center text-muted">No active batches from Planning App</td></tr>'}
+      }).join('')||'<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--text3)">No batches found</td></tr>'})()}
       </tbody>
     </table></div>
   </div>
 
-  <!-- RIGHT: Inline Print Queue for selected batch -->
-  <div class="card" style="flex:1;min-width:0;max-height:calc(100vh - 200px);overflow-y:auto;position:sticky;top:16px">
+  <!-- RIGHT: Inline Print Queue — flex:1 takes remaining space -->
+  <div class="card" style="flex:1;min-width:0;max-height:calc(100vh - 195px);overflow-y:auto;position:sticky;top:16px">
     ${(()=>{
-      if(!selBatch) return '<div class="text-center text-muted" style="padding:40px">← Select a batch to view its print queue</div>';
+      if(!selBatch) return '<div style="padding:40px;text-align:center;color:var(--text3)">← Select a batch to view its print queue</div>';
       const batch=getBatch(selBatch);
       const labels=state.labels.filter(l=>l.batchNumber===selBatch&&!l.isOrange).sort((a,b)=>a.labelNumber-b.labelNumber);
       const unprintedCount=labels.filter(l=>!l.printed&&!l.voided).length;
