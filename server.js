@@ -445,6 +445,104 @@ function getPlanningState() {
   } catch { return {}; }
 }
 
+async function ensurePostgresTables() {
+  if (!pgPool) return;
+  try {
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS tracking_labels (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        label_number INTEGER,
+        size TEXT,
+        qty REAL,
+        is_partial INTEGER DEFAULT 0,
+        is_orange INTEGER DEFAULT 0,
+        parent_label_id TEXT,
+        customer TEXT,
+        colour TEXT,
+        pc_code TEXT,
+        po_number TEXT,
+        machine_id TEXT,
+        printing_matter TEXT,
+        generated TEXT NOT NULL DEFAULT NOW()::TEXT,
+        printed INTEGER DEFAULT 0,
+        printed_at TEXT,
+        voided INTEGER DEFAULT 0,
+        void_reason TEXT,
+        voided_at TEXT,
+        voided_by TEXT,
+        qr_data TEXT,
+        wo_status TEXT,
+        ship_to TEXT,
+        bill_to TEXT,
+        is_excess INTEGER DEFAULT 0,
+        excess_num INTEGER,
+        excess_total INTEGER,
+        normal_total INTEGER
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS tracking_scans (
+        id TEXT PRIMARY KEY,
+        label_id TEXT,
+        batch_number TEXT,
+        label_number INTEGER,
+        dept TEXT NOT NULL,
+        type TEXT NOT NULL,
+        ts TEXT NOT NULL DEFAULT NOW()::TEXT,
+        operator TEXT,
+        size TEXT,
+        qty REAL
+      )
+    `);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_dept_ts ON tracking_scans(dept, ts DESC)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_batch ON tracking_scans(batch_number, dept)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_batch ON tracking_labels(batch_number)`);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS tracking_wastage (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        dept TEXT NOT NULL,
+        type TEXT,
+        qty REAL,
+        by TEXT,
+        ts TEXT NOT NULL DEFAULT NOW()::TEXT,
+        note TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS tracking_stage_closure (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        dept TEXT NOT NULL,
+        closed INTEGER DEFAULT 1,
+        closed_at TEXT,
+        closed_by TEXT,
+        UNIQUE(batch_number, dept)
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS dpr_batch_closed (
+        order_id TEXT PRIMARY KEY,
+        batch_number TEXT,
+        closed_at TEXT,
+        closed_by TEXT,
+        notes TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS dpr_settings (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    console.log('[DB] PostgreSQL tables verified/created');
+  } catch(e) {
+    console.error('[DB] ensurePostgresTables error:', e.message);
+  }
+}
+
 async function warmPlanningCache() {
   if (!pgPool) return;
   // Refresh cache every 60 seconds
@@ -2511,6 +2609,9 @@ app.get('*', (req, res) => {
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
   console.log(`[Sunloc] DB: ${DB_PATH}`);
-  warmPlanningCache();
-  warmActualsCache();
+  // Ensure PostgreSQL tables exist (handles cases where PgDatabase migrations didn't create them)
+  ensurePostgresTables().then(()=>{
+    warmPlanningCache();
+    warmActualsCache();
+  });
 });
