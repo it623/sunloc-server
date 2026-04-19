@@ -1889,24 +1889,19 @@ function renderLabels(){
     <button class="btn btn-secondary" onclick="configurePrinter()">🖨️ Printer Setup</button>`;
 
   el.innerHTML=`
-  <div style="margin-bottom:10px;display:flex;align-items:center;justify-content:space-between">
-    <div><div class="section-title">Label Generation &amp; Print</div><div class="section-sub">Select a batch to generate &amp; print box labels</div></div>
-    <div style="font-size:11px;color:var(--text3);background:var(--surface2);padding:4px 10px;border-radius:6px;border:1px solid var(--border2)">ℹ️ Capped by Planning qty &amp; daily machine target</div>
+  <div class="section-header">
+    <div><div class="section-title">Label Generation &amp; Print</div><div class="section-sub">Generate and print box labels — select a batch to see its print queue inline</div></div>
   </div>
+  <div class="alert alert-info">Labels are capped by: (1) order quantity in Planning — amend planned qty to unlock more, (2) daily machine target in boxes.</div>
 
-  <div style="display:flex;gap:14px;align-items:flex-start">
+  <div class="grid-2" style="align-items:start;gap:16px">
 
   <!-- LEFT: Batch Status + Generate -->
-  <div class="card" style="width:340px;flex-shrink:0;max-height:540px;display:flex;flex-direction:column;padding:0">
-    <div style="padding:10px 14px;border-bottom:1px solid var(--border2)">
-      <div class="card-title" style="margin-bottom:8px">Active Batches</div>
-    </div>
-    <div style="padding:8px 14px;border-bottom:1px solid var(--border2)">
-      <input type="search" id="label-batch-search" placeholder="🔍 Search batch, customer, size, PC code..." value="${window._labelSearch||''}" oninput="window._labelSearch=this.value;window._labelSearchFocus=true;renderLabels()" style="width:100%;font-size:12px;padding:6px 10px;border:1px solid var(--border2);border-radius:6px;background:var(--surface2);color:var(--text1)">
-    </div>
-    <div style="overflow-x:auto;overflow-y:auto;flex:1">
-    <table style="font-size:12px;width:100%">
-      <thead><tr style="background:var(--surface2)"><th style="padding:7px 10px;text-align:left">Batch</th><th style="padding:7px 10px;text-align:left">Customer</th><th style="padding:7px 10px">Sz</th><th style="padding:7px 10px">PC</th><th style="padding:7px 10px">Rem</th><th style="padding:7px 10px">Act</th></tr></thead>
+  <div class="card" style="max-height:520px;overflow-y:auto">
+    <div class="card-title">Active Batches</div>
+    <div style="overflow-x:auto;transform:rotateX(180deg)">
+    <table style="font-size:12px;min-width:700px;width:100%;transform:rotateX(180deg)">
+      <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>PC Code</th><th>Actual(L)</th><th>Gen</th><th>Prt</th><th>Rem</th><th>Act</th></tr></thead>
       <tbody>
       ${activeBatches.map(b=>{
         const maxLabels=lakhToBox(b.qty,b.size);
@@ -1920,14 +1915,17 @@ function renderLabels(){
         const isSelected=b.batchNumber===selBatch;
         const pct=maxLabels>0?(generated/maxLabels*100):0;
         const actualProd=(b.actualQty||b.actualProd||0);
-        return `<tr style="cursor:pointer;border-bottom:1px solid var(--border2);${isSelected?\'background:rgba(240,192,96,0.12);border-left:3px solid var(--accent)\':\'\' }" onclick="window._labelSelBatch=\'${b.batchNumber}\';renderLabels()">
-          <td style="padding:10px 10px;font-family:var(--mono);font-weight:700;color:var(--accent)">${b.batchNumber}</td>
-          <td style="padding:10px 10px;font-size:11px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||\'-\'}</td>
-          <td style="padding:10px 10px;text-align:center">${b.size}</td>
-          <td style="padding:10px 10px;font-size:11px">${b.pcCode||\'—\'}</td>
-          <td style="padding:10px 10px;text-align:center;font-weight:700;color:${remaining===0?\'var(--text3)\':\'var(--amber)\'}">${remaining}</td>
-          <td onclick="event.stopPropagation()" style="padding:10px 6px;white-space:nowrap;text-align:center">
-            ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?\'btn-warning\':\'btn-primary\'}" style="font-size:11px;padding:2px 6px" onclick="openLabelGen(\'${b.batchNumber||b.id}\')">${isExcessAvailable?\'⊕\':\'+Gen\'}</button>`:\'<span style="color:var(--green);font-size:14px">✅</span>\'}
+        return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" onclick="window._labelSelBatch='${b.batchNumber}';renderLabels()">
+          <td class="td-bold td-mono">${b.batchNumber}</td>
+          <td class="text-sm" style="max-width:120px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||'-'}</td>
+          <td class="td-mono">${b.size}</td>
+          <td class="td-mono text-sm">${b.pcCode||'—'}</td>
+          <td class="td-mono ${actualProd>0?'':'text-muted'}">${actualProd>0?actualProd.toFixed(2):'—'}</td>
+          <td class="td-mono"><span class="fw-bold">${generated}</span><div class="progress mt-2" style="width:36px"><div class="progress-bar ${pct>=100?'green':'blue'}" style="width:${Math.min(100,pct)}%"></div></div></td>
+          <td class="td-mono">${printed}</td>
+          <td class="td-mono ${remaining===0?'':'fw-bold amber'}">${remaining}</td>
+          <td onclick="event.stopPropagation()" style="white-space:nowrap">
+            ${remaining>0?`<button class="btn btn-sm ${isExcessAvailable?'btn-warning':'btn-primary'}" style="font-size:11px;padding:2px 6px" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕':'+Gen'}</button>`:''}
           </td>
         </tr>`;
       }).join('')||'<tr><td colspan="9" class="text-center text-muted">No active batches from Planning App</td></tr>'}
@@ -1936,17 +1934,16 @@ function renderLabels(){
   </div>
 
   <!-- RIGHT: Inline Print Queue for selected batch -->
-  <div class="card" style="flex:1;min-width:0;max-height:540px;overflow-y:auto;position:sticky;top:16px;padding:0">
-  <div class="card" style="flex:1;min-width:0;max-height:540px;overflow-y:auto;position:sticky;top:16px;padding:0">
+  <div class="card" style="min-height:200px;max-height:520px;overflow-y:auto;position:sticky;top:16px">
     ${(()=>{
       if(!selBatch) return '<div class="text-center text-muted" style="padding:40px">← Select a batch to view its print queue</div>';
       const batch=getBatch(selBatch);
       const labels=state.labels.filter(l=>l.batchNumber===selBatch&&!l.isOrange).sort((a,b)=>a.labelNumber-b.labelNumber);
       const unprintedCount=labels.filter(l=>!l.printed&&!l.voided).length;
       return `
-      <div style="display:flex;align-items:center;justify-content:space-between;padding:12px 16px;border-bottom:1px solid var(--border2);background:var(--surface2)">
+      <div class="flex items-center justify-between mb-12">
         <div>
-          <div class="card-title" style="margin-bottom:2px;color:var(--accent)">Print Queue — ${selBatch}</div>
+          <div class="card-title" style="margin-bottom:2px">Print Queue — ${selBatch}</div>
           <div class="text-sm text-muted">${batch?.customer||''} | Size ${batch?.size} | ${labels.length} labels${unprintedCount>0?` | <span style="color:var(--accent3);font-weight:600">${unprintedCount} unprinted</span>`:' | ✅ All printed'}</div>
         </div>
         ${unprintedCount>0?`<button class="btn btn-sm btn-success" onclick="printBatchLabels('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
@@ -1972,10 +1969,6 @@ function renderLabels(){
         </tbody>
       </table></div>`;
     })()}
-  </div>
-
-  </div>
-
   </div>
 
   </div>`;
