@@ -1151,19 +1151,17 @@ app.get('/api/dpr/batch-closed', async (req, res) => {
 });
 
 // GET actuals summary for a machine (for DPR to show cumulative vs planned)
-app.get('/api/actuals/machine/:machineId', (req, res) => {
+app.get('/api/actuals/machine/:machineId', async (req, res) => {
   try {
-    const rows = db.prepare(`
-      SELECT date, shift, qty_lakhs, order_id, batch_number
-      FROM production_actuals
-      WHERE machine_id = ?
-      ORDER BY date DESC, shift
-      LIMIT 90
-    `).all(req.params.machineId);
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT date,shift,qty_lakhs,order_id,batch_number FROM production_actuals WHERE machine_id=$1 ORDER BY date DESC, shift LIMIT 90`, [req.params.machineId]);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT date,shift,qty_lakhs,order_id,batch_number FROM production_actuals WHERE machine_id=? ORDER BY date DESC, shift LIMIT 90`).all(req.params.machineId);
+    }
     res.json({ ok: true, actuals: rows });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // GET actuals for a specific order
@@ -1191,30 +1189,50 @@ function generateToken() { return crypto.randomBytes(32).toString('hex'); }
 
 function verifyToken(token) {
   if (!token) return null;
-  const session = db.prepare(`
-    SELECT * FROM app_sessions WHERE token = ? AND expires_at > datetime('now')
-  `).get(token);
-  return session || null;
+  try {
+    // db wrapper reads from PostgreSQL when pgPool is active
+    // Using simple token lookup (datetime comparison handled by expiry logic below)
+    const session = db.prepare(`SELECT * FROM app_sessions WHERE token = ?`).get(token);
+    if (!session) return null;
+    // Check expiry in JS (works for both SQLite and PostgreSQL datetime formats)
+    if (session.expires_at && new Date(session.expires_at) < new Date()) return null;
+    return session;
+  } catch(e) { return null; }
 }
 
 function logAudit(username, role, app, action, details, ip) {
   try {
-    db.prepare(`INSERT INTO audit_log (username, role, app, action, details, ip) VALUES (?,?,?,?,?,?)`)
-      .run(username, role, app, action, details || null, ip || null);
+    if (pgPool) {
+      pgPool.query(`INSERT INTO audit_log (username,role,app,action,details,ip) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [username, role, app, action, details||null, ip||null]).catch(e=>console.error('Audit log error:',e.message));
+    } else {
+      db.prepare(`INSERT INTO audit_log (username,role,app,action,details,ip) VALUES (?,?,?,?,?,?)`).run(username,role,app,action,details||null,ip||null);
+    }
   } catch(e) { console.error('Audit log error:', e.message); }
 }
 
 // POST /api/auth/login
-app.post('/api/auth/login', (req, res) => {
+app.post('/api/auth/login', async (req, res) => {
   try {
     const { username, pin, app: appName } = req.body;
     if (!username || !pin || !appName) return res.status(400).json({ ok: false, error: 'Missing credentials' });
-    const user = db.prepare('SELECT * FROM app_users WHERE username = ? AND app = ?').get(username, appName);
+    let user;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM app_users WHERE username=$1 AND app=$2', [username, appName]);
+      user = r.rows[0];
+    } else {
+      user = db.prepare('SELECT * FROM app_users WHERE username=? AND app=?').get(username, appName);
+    }
     if (!user) return res.status(401).json({ ok: false, error: 'User not found' });
     if (user.pin_hash !== hashPin(pin)) return res.status(401).json({ ok: false, error: 'Invalid PIN' });
     const token = generateToken();
     const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T',' ').slice(0,19);
-    db.prepare('INSERT INTO app_sessions (token, user_id, username, role, app, expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
+    if (pgPool) {
+      await pgPool.query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING',
+        [token, user.id, user.username, user.role, appName, expires]);
+    } else {
+      db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
+    }
     logAudit(user.username, user.role, appName, 'LOGIN', 'Successful login', req.ip);
     res.json({ ok: true, token, username: user.username, role: user.role });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -1229,20 +1247,21 @@ app.post('/api/auth/verify', (req, res) => {
 });
 
 // POST /api/auth/logout
-app.post('/api/auth/logout', (req, res) => {
+app.post('/api/auth/logout', async (req, res) => {
   const { token } = req.body;
   if (token) {
     const session = verifyToken(token);
     if (session) {
       logAudit(session.username, session.role, session.app, 'LOGOUT', null, req.ip);
-      db.prepare(`DELETE FROM app_sessions WHERE token = ?`).run(token);
+      if (pgPool) await pgPool.query('DELETE FROM app_sessions WHERE token=$1', [token]);
+      else db.prepare('DELETE FROM app_sessions WHERE token=?').run(token);
     }
   }
   res.json({ ok: true });
 });
 
 // POST /api/auth/change-pin
-app.post('/api/auth/change-pin', (req, res) => {
+app.post('/api/auth/change-pin', async (req, res) => {
   try {
     const { token, username, newPin } = req.body;
     const session = verifyToken(token);
@@ -1250,8 +1269,11 @@ app.post('/api/auth/change-pin', (req, res) => {
     if (session.role !== 'admin' && session.username !== username) {
       return res.status(403).json({ ok: false, error: 'Only admin can change other users PINs' });
     }
-    db.prepare(`UPDATE app_users SET pin_hash = ?, updated_at = datetime('now') WHERE username = ? AND app = ?`)
-      .run(hashPin(newPin), username, session.app);
+    if (pgPool) {
+      await pgPool.query('UPDATE app_users SET pin_hash=$1, updated_at=NOW() WHERE username=$2 AND app=$3', [hashPin(newPin), username, session.app]);
+    } else {
+      db.prepare(`UPDATE app_users SET pin_hash=?, updated_at=datetime('now') WHERE username=? AND app=?`).run(hashPin(newPin), username, session.app);
+    }
     logAudit(session.username, session.role, session.app, 'CHANGE_PIN', `Changed PIN for ${username}`, req.ip);
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -1357,7 +1379,7 @@ app.post('/api/wo/assign-customer', (req, res) => {
 });
 
 // POST /api/wo/propose-reconciliation — Planning Manager proposes W/O → real order
-app.post('/api/wo/propose-reconciliation', (req, res) => {
+app.post('/api/wo/propose-reconciliation', async (req, res) => {
   try {
     const { token, orderId, customer, poNumber, zone, qtyConfirmed } = req.body;
     const session = verifyToken(token);
@@ -1368,15 +1390,13 @@ app.post('/api/wo/propose-reconciliation', (req, res) => {
     if (!customer) return res.status(400).json({ ok: false, error: 'Customer name required' });
     const id = `WORECON-${Date.now()}`;
     const billTo = req.body.billTo || '';
-    db.prepare(`
-      INSERT INTO wo_reconciliation_requests
-        (id, proposed_by, status, order_id, customer, po_number, zone, qty_confirmed)
-      VALUES (?,?,?,?,?,?,?,?)
-    `).run(id, session.username, 'pending', orderId, customer, poNumber||null, zone||null, qtyConfirmed||null);
-    // Store billTo in the request details (append to customer field with separator if different)
-    if (billTo && billTo !== customer) {
-      db.prepare(`UPDATE wo_reconciliation_requests SET customer = ? WHERE id = ?`)
-        .run(customer + '|||' + billTo, id);
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO wo_reconciliation_requests (id,proposed_by,status,order_id,customer,po_number,zone,qty_confirmed) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, session.username, 'pending', orderId, customer, poNumber||null, zone||null, qtyConfirmed||null]);
+      if (billTo && billTo !== customer) await pgPool.query('UPDATE wo_reconciliation_requests SET customer=$1 WHERE id=$2', [customer+'|||'+billTo, id]);
+    } else {
+      db.prepare(`INSERT INTO wo_reconciliation_requests (id,proposed_by,status,order_id,customer,po_number,zone,qty_confirmed) VALUES (?,?,?,?,?,?,?,?)`).run(id, session.username, 'pending', orderId, customer, poNumber||null, zone||null, qtyConfirmed||null);
+      if (billTo && billTo !== customer) db.prepare('UPDATE wo_reconciliation_requests SET customer=? WHERE id=?').run(customer+'|||'+billTo, id);
     }
     logAudit(session.username, session.role, 'planning', 'WO_RECON_PROPOSED',
       `W/O reconciliation proposed: ${id} for order ${orderId} → customer ${customer}`);
@@ -1385,33 +1405,31 @@ app.post('/api/wo/propose-reconciliation', (req, res) => {
 });
 
 // GET /api/wo/pending — Admin views pending W/O reconciliation requests
-app.get('/api/wo/pending', (req, res) => {
+app.get('/api/wo/pending', async (req, res) => {
   try {
     const token = req.headers['x-session-token'];
     const session = verifyToken(token);
     if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
-    const requests = db.prepare(`SELECT * FROM wo_reconciliation_requests WHERE status = 'pending' ORDER BY proposed_at DESC`).all();
-    // Enrich with order details from planning state
+    let woRows;
+    if (pgPool) { const r = await pgPool.query(`SELECT * FROM wo_reconciliation_requests WHERE status='pending' ORDER BY proposed_at DESC`); woRows=r.rows; }
+    else { woRows = db.prepare(`SELECT * FROM wo_reconciliation_requests WHERE status='pending' ORDER BY proposed_at DESC`).all(); }
     const planState = getPlanningState();
-    const enriched = requests.map(r => ({
-      ...r,
-      orderDetails: (planState.orders || []).find(o => o.id === r.order_id) || {}
-    }));
+    const enriched = woRows.map(r => ({...r, orderDetails:(planState.orders||[]).find(o=>o.id===r.order_id)||{}}));
     res.json({ ok: true, requests: enriched });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // POST /api/wo/approve/:id — Admin approves W/O reconciliation
-app.post('/api/wo/approve/:id', (req, res) => {
+app.post('/api/wo/approve/:id', async (req, res) => {
   try {
     const token = req.headers['x-session-token'];
     const session = verifyToken(token);
     if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
-    const request = db.prepare('SELECT * FROM wo_reconciliation_requests WHERE id = ?').get(req.params.id);
+    const request = pgPool ? (await pgPool.query('SELECT * FROM wo_reconciliation_requests WHERE id=$1',[req.params.id])).rows[0] : db.prepare('SELECT * FROM wo_reconciliation_requests WHERE id=?').get(req.params.id);
     if (!request) return res.status(404).json({ ok: false, error: 'Request not found' });
     if (request.status !== 'pending') return res.status(400).json({ ok: false, error: 'Already processed' });
 
-    const approveWO = db.transaction(() => {
+    const approveWO = async () => {
       const now = new Date().toISOString();
       // 1. Update planning state: change woStatus to 'active', add customer
       const planState = getPlanningState();
@@ -1435,30 +1453,21 @@ app.post('/api/wo/approve/:id', (req, res) => {
             d.zone = request.zone || d.zone;
           }
         });
-        db.prepare(`
-          INSERT INTO planning_state (id, state_json) VALUES (1, ?)
-          ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')
-        `).run(JSON.stringify(planState));
+        if(pgPool){ await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`,[JSON.stringify(planState)]); _planningStateCache=planState; _planningStateCacheTime=Date.now(); }
+        else { db.prepare(`INSERT INTO planning_state (id,state_json) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json,updated_at=datetime('now')`).run(JSON.stringify(planState)); }
       }
       // 2. Update all tracking labels for this order's batch
       if (ord) {
-        db.prepare(`
-          UPDATE tracking_labels SET
-            customer = ?,
-            wo_status = 'wo-reconciled'
-          WHERE batch_number = ?
-        `).run(request.customer, ord.batchNumber);
+        if(pgPool) await pgPool.query(`UPDATE tracking_labels SET customer=$1,wo_status='wo-reconciled' WHERE batch_number=$2`,[request.customer,ord.batchNumber]);
+        else db.prepare(`UPDATE tracking_labels SET customer=?,wo_status='wo-reconciled' WHERE batch_number=?`).run(request.customer,ord.batchNumber);
       }
       // 3. Mark request approved
-      db.prepare(`
-        UPDATE wo_reconciliation_requests SET
-          status = 'approved', approved_by = ?, approved_at = ?
-        WHERE id = ?
-      `).run(session.username, now, request.id);
+      if(pgPool) await pgPool.query(`UPDATE wo_reconciliation_requests SET status='approved',approved_by=$1,approved_at=$2 WHERE id=$3`,[session.username,now,request.id]);
+      else db.prepare(`UPDATE wo_reconciliation_requests SET status='approved',approved_by=?,approved_at=? WHERE id=?`).run(session.username,now,request.id);
       return { orderId: request.order_id, customer: request.customer };
-    });
+    };
 
-    const result = approveWO();
+    const result = await approveWO();
     logAudit(session.username, session.role, 'planning', 'WO_RECON_APPROVED',
       `W/O reconciliation ${req.params.id} approved — order ${result.orderId} → ${result.customer}`);
     res.json({ ok: true, result, message: 'W/O reconciliation complete. Replacement labels ready for printing.' });
@@ -1466,27 +1475,33 @@ app.post('/api/wo/approve/:id', (req, res) => {
 });
 
 // POST /api/wo/reject/:id
-app.post('/api/wo/reject/:id', (req, res) => {
+app.post('/api/wo/reject/:id', async (req, res) => {
   try {
     const token = req.headers['x-session-token'];
     const session = verifyToken(token);
     if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
     const { reason } = req.body;
-    db.prepare(`UPDATE wo_reconciliation_requests SET status='rejected', approved_by=?, approved_at=datetime('now'), rejection_reason=? WHERE id=?`)
-      .run(session.username, reason || 'No reason given', req.params.id);
+    if (pgPool) {
+      await pgPool.query(`UPDATE wo_reconciliation_requests SET status='rejected',approved_by=$1,approved_at=NOW(),rejection_reason=$2 WHERE id=$3`,
+        [session.username, reason||'No reason given', req.params.id]);
+    } else {
+      db.prepare(`UPDATE wo_reconciliation_requests SET status='rejected',approved_by=?,approved_at=datetime('now'),rejection_reason=? WHERE id=?`).run(session.username, reason||'No reason given', req.params.id);
+    }
     logAudit(session.username, session.role, 'planning', 'WO_RECON_REJECTED', `Rejected ${req.params.id}: ${reason}`);
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // GET /api/wo/history
-app.get('/api/wo/history', (req, res) => {
+app.get('/api/wo/history', async (req, res) => {
   try {
     const token = req.headers['x-session-token'];
     const session = verifyToken(token);
     if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
-    const rows = db.prepare('SELECT * FROM wo_reconciliation_requests ORDER BY proposed_at DESC LIMIT 50').all();
-    res.json({ ok: true, requests: rows });
+    let woHistRows;
+    if (pgPool) { const r = await pgPool.query('SELECT * FROM wo_reconciliation_requests ORDER BY proposed_at DESC LIMIT 50'); woHistRows=r.rows; }
+    else { woHistRows = db.prepare('SELECT * FROM wo_reconciliation_requests ORDER BY proposed_at DESC LIMIT 50').all(); }
+    res.json({ ok: true, requests: woHistRows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -1739,25 +1754,23 @@ app.delete('/api/temp-batches/by-date', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-app.get('/api/temp-batches/active', (req, res) => {
+app.get('/api/temp-batches/active', async (req, res) => {
   try {
-    const batches = db.prepare(
-      `SELECT * FROM temp_batches WHERE status = 'active' ORDER BY machine_id, date DESC`
-    ).all();
-
-    // Enrich with days active count
+    let batches;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT * FROM temp_batches WHERE status='active' ORDER BY machine_id, date DESC`);
+      batches = r.rows;
+    } else {
+      batches = db.prepare(`SELECT * FROM temp_batches WHERE status='active' ORDER BY machine_id, date DESC`).all();
+    }
     const today = new Date().toISOString().split('T')[0];
-    const enriched = batches.map(b => ({
-      ...b,
-      daysActive: Math.floor((new Date(today) - new Date(b.date)) / 86400000) + 1
-    }));
-
+    const enriched = batches.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
     res.json({ ok:true, batches: enriched, count: enriched.length });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
 // POST /api/reconciliation/propose — Planning Manager proposes reconciliation
-app.post('/api/reconciliation/propose', (req, res) => {
+app.post('/api/reconciliation/propose', async (req, res) => {
   try {
     const { token, orderDetails, backDate, tempBatchMappings } = req.body;
     const session = verifyToken(token);
@@ -1780,7 +1793,9 @@ app.post('/api/reconciliation/propose', (req, res) => {
 
     // Validate all TEMP batches exist and are active
     for (const mapping of tempBatchMappings) {
-      const tb = db.prepare(`SELECT * FROM temp_batches WHERE id = ?`).get(mapping.tempBatchId);
+      let tb;
+      if (pgPool) { const r = await pgPool.query('SELECT * FROM temp_batches WHERE id=$1',[mapping.tempBatchId]); tb=r.rows[0]; }
+      else { tb = db.prepare('SELECT * FROM temp_batches WHERE id=?').get(mapping.tempBatchId); }
       if (!tb) return res.status(400).json({ ok:false, error:`TEMP batch ${mapping.tempBatchId} not found` });
       if (tb.status !== 'active') return res.status(400).json({ ok:false, error:`TEMP batch ${mapping.tempBatchId} is not active` });
     }
@@ -1788,18 +1803,13 @@ app.post('/api/reconciliation/propose', (req, res) => {
     const totalBoxes = tempBatchMappings.reduce((s,m) => s + (m.boxes || 0), 0);
     const id = `RECON-${Date.now()}`;
 
-    db.prepare(`
-      INSERT INTO reconciliation_requests
-        (id, proposed_by, status, order_id, order_details, back_date, temp_batch_mappings, total_boxes)
-      VALUES (?,?,?,?,?,?,?,?)
-    `).run(
-      id, session.username, 'pending',
-      orderDetails.id || `ORDER-${Date.now()}`,
-      JSON.stringify(orderDetails),
-      backDate,
-      JSON.stringify(tempBatchMappings),
-      totalBoxes
-    );
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO reconciliation_requests (id,proposed_by,status,order_id,order_details,back_date,temp_batch_mappings,total_boxes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, session.username, 'pending', orderDetails.id||`ORDER-${Date.now()}`, JSON.stringify(orderDetails), backDate, JSON.stringify(tempBatchMappings), totalBoxes]);
+    } else {
+      db.prepare(`INSERT INTO reconciliation_requests (id,proposed_by,status,order_id,order_details,back_date,temp_batch_mappings,total_boxes) VALUES (?,?,?,?,?,?,?,?)`).run(
+        id, session.username, 'pending', orderDetails.id||`ORDER-${Date.now()}`, JSON.stringify(orderDetails), backDate, JSON.stringify(tempBatchMappings), totalBoxes);
+    }
 
     logAudit(session.username, session.role, 'planning', 'RECON_PROPOSED',
       `Reconciliation proposed: ${id} — ${tempBatchMappings.length} TEMP batches → Order, ${totalBoxes} boxes`);
@@ -1809,26 +1819,25 @@ app.post('/api/reconciliation/propose', (req, res) => {
 });
 
 // GET /api/reconciliation/pending — Admin views pending requests
-app.get('/api/reconciliation/pending', (req, res) => {
+app.get('/api/reconciliation/pending', async (req, res) => {
   try {
     const token = req.headers['x-session-token'];
     const session = verifyToken(token);
-    if (!session || session.role !== 'admin') {
-      return res.status(403).json({ ok:false, error:'Admin only' });
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin only' });
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT * FROM reconciliation_requests WHERE status='pending' ORDER BY proposed_at DESC`);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT * FROM reconciliation_requests WHERE status='pending' ORDER BY proposed_at DESC`).all();
     }
-    const requests = db.prepare(
-      `SELECT * FROM reconciliation_requests WHERE status = 'pending' ORDER BY proposed_at DESC`
-    ).all().map(r => ({
-      ...r,
-      order_details: JSON.parse(r.order_details),
-      temp_batch_mappings: JSON.parse(r.temp_batch_mappings)
-    }));
+    const requests = rows.map(r => ({...r, order_details:JSON.parse(r.order_details||'{}'), temp_batch_mappings:JSON.parse(r.temp_batch_mappings||'[]')}));
     res.json({ ok:true, requests });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
 // POST /api/reconciliation/approve/:id — Admin approves and executes reconciliation
-app.post('/api/reconciliation/approve/:id', (req, res) => {
+app.post('/api/reconciliation/approve/:id', async (req, res) => {
   try {
     const token = req.headers['x-session-token'];
     const session = verifyToken(token);
@@ -1836,7 +1845,7 @@ app.post('/api/reconciliation/approve/:id', (req, res) => {
       return res.status(403).json({ ok:false, error:'Admin only' });
     }
 
-    const request = db.prepare(`SELECT * FROM reconciliation_requests WHERE id = ?`).get(req.params.id);
+    const request = pgPool ? (await pgPool.query('SELECT * FROM reconciliation_requests WHERE id=$1',[req.params.id])).rows[0] : db.prepare('SELECT * FROM reconciliation_requests WHERE id=?').get(req.params.id);
     if (!request) return res.status(404).json({ ok:false, error:'Request not found' });
     if (request.status !== 'pending') return res.status(400).json({ ok:false, error:'Request is not pending' });
 
@@ -1845,13 +1854,13 @@ app.post('/api/reconciliation/approve/:id', (req, res) => {
     const orderId = request.order_id;
 
     // Execute reconciliation atomically
-    const reconcile = db.transaction(() => {
+    const reconcileAsync = async () => {
       const now = new Date().toISOString();
       const results = { migratedScans:0, migratedLabels:0, migratedWastage:0, tempBatchesReconciled:0 };
 
       for (const mapping of mappings) {
         const { tempBatchId: tbId, boxes, startLabelNumber, endLabelNumber } = mapping;
-        const tb = db.prepare(`SELECT * FROM temp_batches WHERE id = ?`).get(tbId);
+        const tb = pgPool ? (await pgPool.query('SELECT * FROM temp_batches WHERE id=$1',[tbId])).rows[0] : db.prepare('SELECT * FROM temp_batches WHERE id=?').get(tbId);
         if (!tb) continue;
 
         // Determine production month from TEMP batch date (never changes)
@@ -1865,72 +1874,37 @@ app.post('/api/reconciliation/approve/:id', (req, res) => {
           ? [tbId, startLabelNumber, endLabelNumber]
           : [tbId];
 
-        const labelsToMigrate = db.prepare(
-          `SELECT * FROM tracking_labels WHERE ${labelFilter}`
-        ).all(...labelArgs);
+        const labelsToMigrate = pgPool ? (await pgPool.query(`SELECT * FROM tracking_labels WHERE ${labelFilter.replace('?','$1').replace('?','$2').replace('?','$3')}`, labelArgs)).rows : db.prepare(`SELECT * FROM tracking_labels WHERE ${labelFilter}`).all(...labelArgs);
 
         for (const label of labelsToMigrate) {
           const newLabelId = label.id.replace(tbId, orderId);
-          db.prepare(`
-            INSERT OR REPLACE INTO tracking_labels SELECT
-              replace(id,?,?) as id,
-              ? as batch_number,
-              label_number, size, qty, is_partial, is_orange,
-              parent_label_id, customer, colour, pc_code, po_number, machine_id,
-              printing_matter, generated, printed, printed_at,
-              voided, void_reason, voided_at, voided_by, qr_data
-            FROM tracking_labels WHERE id = ?
-          `).run(tbId, orderId, orderId, label.id);
+          if(pgPool){ await pgPool.query(`INSERT INTO tracking_labels SELECT replace(id,$1,$2) as id,$2 as batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data FROM tracking_labels WHERE id=$3 ON CONFLICT(id) DO NOTHING`,[tbId,orderId,label.id]); } else { db.prepare(`INSERT OR REPLACE INTO tracking_labels SELECT replace(id,?,?) as id,? as batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data FROM tracking_labels WHERE id=?`).run(tbId,orderId,orderId,label.id); }
 
           // Migrate scans for this label
-          const scanMigrated = db.prepare(`
-            UPDATE tracking_scans SET
-              label_id = replace(label_id,?,?),
-              batch_number = ?
-            WHERE label_id = ?
-          `).run(tbId, orderId, orderId, label.id);
-          results.migratedScans += scanMigrated.changes;
+          if(pgPool){ const sm=await pgPool.query(`UPDATE tracking_scans SET label_id=replace(label_id,$1,$2),batch_number=$2 WHERE label_id=$3`,[tbId,orderId,label.id]); results.migratedScans+=sm.rowCount||0; } else { const scanMigrated=db.prepare(`UPDATE tracking_scans SET label_id=replace(label_id,?,?),batch_number=? WHERE label_id=?`).run(tbId,orderId,orderId,label.id); results.migratedScans+=scanMigrated.changes; }
           results.migratedLabels++;
 
           // Remove old TEMP label if new one created
           if (newLabelId !== label.id) {
-            db.prepare(`DELETE FROM tracking_labels WHERE id = ? AND id != ?`).run(label.id, newLabelId);
+            if(pgPool) await pgPool.query('DELETE FROM tracking_labels WHERE id=$1 AND id!=$2',[label.id,newLabelId]); else db.prepare('DELETE FROM tracking_labels WHERE id=? AND id!=?').run(label.id,newLabelId);
           }
         }
 
         // 2. Migrate wastage records
-        const wastage = db.prepare(
-          `UPDATE tracking_wastage SET batch_number = ? WHERE batch_number = ?`
-        ).run(orderId, tbId);
-        results.migratedWastage += wastage.changes;
+        if(pgPool){ const wm=await pgPool.query('UPDATE tracking_wastage SET batch_number=$1 WHERE batch_number=$2',[orderId,tbId]); results.migratedWastage+=wm.rowCount||0; } else { const wastage=db.prepare('UPDATE tracking_wastage SET batch_number=? WHERE batch_number=?').run(orderId,tbId); results.migratedWastage+=wastage.changes; }
 
         // 3. Migrate stage closures
-        db.prepare(
-          `UPDATE tracking_stage_closure SET batch_number = ? WHERE batch_number = ?`
-        ).run(orderId, tbId);
+        if(pgPool) await pgPool.query('UPDATE tracking_stage_closure SET batch_number=$1 WHERE batch_number=$2',[orderId,tbId]); else db.prepare('UPDATE tracking_stage_closure SET batch_number=? WHERE batch_number=?').run(orderId,tbId);
 
         // 4. Migrate DPR production actuals
-        db.prepare(`
-          UPDATE production_actuals SET
-            order_id = ?, batch_number = ?
-          WHERE batch_number = ?
-        `).run(orderId, orderDetails.batchNumber || orderId, tbId);
+        if(pgPool) await pgPool.query('UPDATE production_actuals SET order_id=$1,batch_number=$2 WHERE batch_number=$3',[orderId,orderDetails.batchNumber||orderId,tbId]); else db.prepare('UPDATE production_actuals SET order_id=?,batch_number=? WHERE batch_number=?').run(orderId,orderDetails.batchNumber||orderId,tbId);
 
         // 5. Update dispatch records
-        db.prepare(`
-          UPDATE tracking_dispatch_records SET batch_number = ? WHERE batch_number = ?
-        `).run(orderId, tbId);
+        if(pgPool) await pgPool.query('UPDATE tracking_dispatch_records SET batch_number=$1 WHERE batch_number=$2',[orderId,tbId]); else db.prepare('UPDATE tracking_dispatch_records SET batch_number=? WHERE batch_number=?').run(orderId,tbId);
 
         // 6. Mark TEMP batch as reconciled (or partially reconciled)
         const isFullReconcile = !startLabelNumber; // full batch
-        db.prepare(`
-          UPDATE temp_batches SET
-            status = ?,
-            reconciled_order_id = ?,
-            reconciled_at = ?,
-            reconciled_by = ?
-          WHERE id = ?
-        `).run(isFullReconcile ? 'reconciled' : 'partial', orderId, now, session.username, tbId);
+        if(pgPool) await pgPool.query('UPDATE temp_batches SET status=$1,reconciled_order_id=$2,reconciled_at=$3,reconciled_by=$4 WHERE id=$5',[isFullReconcile?'reconciled':'partial',orderId,now,session.username,tbId]); else db.prepare('UPDATE temp_batches SET status=?,reconciled_order_id=?,reconciled_at=?,reconciled_by=? WHERE id=?').run(isFullReconcile?'reconciled':'partial',orderId,now,session.username,tbId);
         results.tempBatchesReconciled++;
       }
 
@@ -1951,24 +1925,18 @@ app.post('/api/reconciliation/approve/:id', (req, res) => {
         } else {
           planState.orders.push(orderToSave);
         }
-        db.prepare(`
-          INSERT INTO planning_state (id, state_json)
-          VALUES (1, ?)
-          ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')
-        `).run(JSON.stringify(planState));
+        await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json, saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
+        _planningStateCache = planState; _planningStateCacheTime = Date.now();
       }
 
       // 8. Mark reconciliation request as approved
-      db.prepare(`
-        UPDATE reconciliation_requests SET
-          status = 'approved', approved_by = ?, approved_at = ?
-        WHERE id = ?
-      `).run(session.username, now, request.id);
+      await pgPool.query(`UPDATE reconciliation_requests SET status='approved',approved_by=$1,approved_at=$2 WHERE id=$3`,
+        [session.username, now, request.id]);
 
       return results;
-    });
+    };
 
-    const results = reconcile();
+    const results = await reconcileAsync();
 
     logAudit(session.username, session.role, 'planning', 'RECON_APPROVED',
       `Reconciliation ${req.params.id} approved — ${results.migratedLabels} labels, ${results.migratedScans} scans migrated`);
@@ -1980,35 +1948,38 @@ app.post('/api/reconciliation/approve/:id', (req, res) => {
 });
 
 // POST /api/reconciliation/reject/:id — Admin rejects
-app.post('/api/reconciliation/reject/:id', (req, res) => {
+app.post('/api/reconciliation/reject/:id', async (req, res) => {
   try {
     const token = req.headers['x-session-token'];
     const session = verifyToken(token);
     if (!session || session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin only' });
     const { reason } = req.body;
-    db.prepare(`
-      UPDATE reconciliation_requests SET status='rejected', approved_by=?, approved_at=datetime('now'), rejection_reason=?
-      WHERE id = ?
-    `).run(session.username, reason||'No reason given', req.params.id);
+    if (pgPool) {
+      await pgPool.query(`UPDATE reconciliation_requests SET status='rejected',approved_by=$1,approved_at=NOW(),rejection_reason=$2 WHERE id=$3`,
+        [session.username, reason||'No reason given', req.params.id]);
+    } else {
+      db.prepare(`UPDATE reconciliation_requests SET status='rejected',approved_by=?,approved_at=datetime('now'),rejection_reason=? WHERE id=?`).run(session.username, reason||'No reason given', req.params.id);
+    }
     logAudit(session.username, session.role, 'planning', 'RECON_REJECTED', `Rejected: ${req.params.id} — ${reason}`);
     res.json({ ok:true });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
 // GET /api/reconciliation/history — all reconciliation requests
-app.get('/api/reconciliation/history', (req, res) => {
+app.get('/api/reconciliation/history', async (req, res) => {
   try {
     const token = req.headers['x-session-token'];
     const session = verifyToken(token);
     if (!session) return res.status(401).json({ ok:false, error:'Not authenticated' });
-    const rows = db.prepare(
-      `SELECT * FROM reconciliation_requests ORDER BY proposed_at DESC LIMIT 100`
-    ).all().map(r => ({
-      ...r,
-      order_details: JSON.parse(r.order_details),
-      temp_batch_mappings: JSON.parse(r.temp_batch_mappings)
-    }));
-    res.json({ ok:true, requests: rows });
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT * FROM reconciliation_requests ORDER BY proposed_at DESC LIMIT 100`);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT * FROM reconciliation_requests ORDER BY proposed_at DESC LIMIT 100`).all();
+    }
+    const requests = rows.map(r => ({...r, order_details:JSON.parse(r.order_details||'{}'), temp_batch_mappings:JSON.parse(r.temp_batch_mappings||'[]')}));
+    res.json({ ok:true, requests });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
