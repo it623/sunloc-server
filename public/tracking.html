@@ -1938,6 +1938,61 @@ function getBoxCurrentStageForBatch(batchNo){
 // PAGE: LABEL GENERATION
 // ═══════════════════════════════════════════════════════
 
+// ── Orange Labels helpers ──
+function filterOrangeRows(q){
+  const term=(q||'').toLowerCase().trim();
+  document.querySelectorAll('#ol-batch-list tr[data-ol-srch]').forEach(tr=>{
+    tr.style.display=(!term||tr.dataset.olSrch.includes(term))?'':'none';
+  });
+}
+
+function selectOrangeBatch(bn){
+  window._olSelBatch=bn;
+  document.querySelectorAll('#ol-batch-list tr[data-ol-batch]').forEach(tr=>{
+    const sel=tr.dataset.olBatch===bn;
+    tr.style.background=sel?'rgba(234,88,12,0.12)':'';
+    tr.style.outline=sel?'2px solid var(--orange)':'';
+    tr.style.outlineOffset=sel?'-2px':'';
+  });
+  const allOrange=state.labels.filter(l=>l.isOrange&&!l.voided);
+  const selLabels=(allOrange.filter(l=>l.batchNumber===bn)||[]).sort((a,b)=>a.labelNumber-b.labelNumber);
+  const unprintedSel=selLabels.filter(l=>!l.printed);
+  const rp=document.getElementById('ol-print-queue');
+  if(rp) rp.innerHTML=renderOrangePrintQueue(bn,selLabels,unprintedSel);
+}
+
+function renderOrangePrintQueue(selBatch,selLabels,unprintedSel){
+  if(!selBatch||!selLabels||!selLabels.length) return '<div style="padding:32px;text-align:center;color:var(--text3)">← Select a batch to view its print queue</div>';
+  const batch=getBatch(selBatch);
+  return `
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:10px;gap:8px">
+    <div>
+      <div style="font-weight:700;font-size:13px;color:var(--orange)">${selBatch}</div>
+      <div style="font-size:11px;color:var(--text3)">${batch?.customer||selLabels[0]?.customer||''} | ${selLabels.length} labels | <span style="color:${unprintedSel.length>0?'var(--orange)':'var(--green)'};font-weight:600">${unprintedSel.length} unprinted</span></div>
+    </div>
+    ${unprintedSel.length>0?`<button class="btn btn-sm" style="background:var(--orange);color:#fff;font-size:11px;white-space:nowrap" onclick="unprintedOrangeBatch('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
+  </div>
+  <table style="width:100%;border-collapse:collapse;font-size:11px">
+    <thead><tr style="border-bottom:2px solid var(--border)">
+      <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">#</th>
+      <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">QTY(L)</th>
+      <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">STATUS</th>
+      <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">GENERATED</th>
+      <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">ACTION</th>
+    </tr></thead>
+    <tbody>
+    ${selLabels.map(l=>`
+      <tr style="border-bottom:1px solid var(--border);${!l.printed?'background:rgba(234,88,12,0.04)':''}">
+        <td style="padding:5px 6px;font-family:monospace;font-weight:700;color:var(--orange)">${Math.abs(l.labelNumber||0)}</td>
+        <td style="padding:5px 6px;font-family:monospace">${fmt(l.qty)}</td>
+        <td style="padding:5px 6px">${l.printed?'<span style="background:#22c55e22;color:#22c55e;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">✅ Printed</span>':'<span style="background:rgba(234,88,12,0.15);color:var(--orange);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;border:1px solid rgba(234,88,12,0.4)">Pending</span>'}</td>
+        <td style="padding:5px 6px;font-size:10px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}</td>
+        <td style="padding:5px 6px">${!l.printed?`<button style="background:var(--orange);color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer" onclick="printLabel('${l.id}');selectOrangeBatch('${window._olSelBatch||l.batchNumber}')">🖨️ Print</button>`:`<button style="border:1px solid var(--border);background:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;color:var(--text2)" onclick="reprintOrangeLabel('${l.id}')">🔁 Reprint</button>`}</td>
+      </tr>`).join('')}
+    </tbody>
+  </table>`;
+}
+
 // ── Filter wastage history rows — cursor stays ──
 function filterWastageRows(q,dept){
   const term=(q||'').toLowerCase().trim();
@@ -2159,59 +2214,55 @@ function renderLabels(){
     const unprintedSel = selLabels.filter(l=>!l.printed);
 
     el.innerHTML += `
-  <div class="card" style="border:2px solid var(--orange);background:rgba(234,88,12,0.04);margin-top:16px">
-    <div class="card-title" style="color:var(--orange)">🟠 Orange Labels — Printed Batches</div>
-    <div style="font-size:12px;color:var(--text3);margin-bottom:10px">Auto-generated at PI scan-in for each printed batch box. One orange label per box.</div>
-    ${unprintedOrange.length>0?`<div style="background:rgba(234,88,12,0.1);border:1px solid rgba(234,88,12,0.4);border-radius:6px;padding:8px 12px;margin-bottom:12px;font-size:13px;font-weight:600;color:var(--orange)">⚠️ ${unprintedOrange.length} orange label${unprintedOrange.length>1?'s':''} pending print</div>`:''}
-    <div style="display:flex;gap:16px;align-items:flex-start">
-      <!-- Left panel: batch list -->
-      <div style="width:340px;flex-shrink:0">
-        <div class="tbl-wrap"><table>
-          <thead><tr><th>Batch</th><th>Customer</th><th>Sz</th><th>GEN</th><th>PRT</th><th>REM</th></tr></thead>
-          <tbody>
-          ${Object.keys(byBatch).length ? Object.entries(byBatch).map(([bn,lbls])=>{
+  <div class="card" style="border:2px solid var(--orange);background:rgba(234,88,12,0.04);margin-top:16px;padding:0;overflow:hidden">
+    <div style="padding:12px 16px;border-bottom:1px solid rgba(234,88,12,0.2);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+      <div style="font-weight:700;font-size:13px;color:var(--orange);letter-spacing:0.04em;white-space:nowrap">🟠 ORANGE LABELS — PRINTED BATCHES</div>
+      <div style="font-size:11px;color:var(--text3);flex:1;min-width:180px">Auto-generated at PI scan-in for each printed batch box.</div>
+      <input id="ol-search" type="text" placeholder="Search batch, customer, sz, PC..." oninput="filterOrangeRows(this.value)" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);outline:none;width:200px">
+    </div>
+    ${unprintedOrange.length>0?`<div style="background:rgba(234,88,12,0.1);border-bottom:1px solid rgba(234,88,12,0.2);padding:8px 16px;font-size:12px;font-weight:600;color:var(--orange)">⚠️ ${unprintedOrange.length} orange label${unprintedOrange.length>1?'s':''} pending print</div>`:''}
+    <div style="display:flex;gap:0;align-items:stretch">
+      <!-- Left panel: batch list 50% -->
+      <div style="width:52%;flex-shrink:0;border-right:1px solid rgba(234,88,12,0.2);max-height:calc(100vh - 260px);overflow-y:auto">
+        <table style="width:100%;border-collapse:collapse;font-size:11px">
+          <thead><tr style="border-bottom:2px solid rgba(234,88,12,0.2);background:rgba(234,88,12,0.05)">
+            <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600;white-space:nowrap">BATCH</th>
+            <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">CUSTOMER</th>
+            <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">SZ</th>
+            <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">PC</th>
+            <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">GEN</th>
+            <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">PRT</th>
+            <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">REM</th>
+          </tr></thead>
+          <tbody id="ol-batch-list">
+          ${Object.keys(byBatch).length ? Object.entries(byBatch).sort(([a],[b])=>a.localeCompare(b)).map(([bn,lbls])=>{
             const batch=getBatch(bn);
             const gen=lbls.length;
             const prt=lbls.filter(l=>l.printed).length;
             const rem=gen-prt;
             const isSelected=bn===selBatch;
-            return `<tr onclick="window._olSelBatch='${bn}';renderLabels()" style="cursor:pointer;${isSelected?'background:rgba(234,88,12,0.12);outline:2px solid var(--orange);outline-offset:-2px':''}">
-              <td class="td-mono fw-bold" style="color:var(--orange)">${bn}</td>
-              <td class="text-sm">${batch?.customer||lbls[0]?.customer||'-'}</td>
-              <td class="td-mono">${batch?.size||'-'}</td>
-              <td class="td-mono">${gen}</td>
-              <td class="td-mono">${prt}</td>
-              <td class="td-mono" style="color:${rem>0?'var(--orange)':'var(--green)'};font-weight:700">${rem}</td>
+            const pc=batch?.pcCode||lbls[0]?.pcCode||'—';
+            const cust=batch?.customer||lbls[0]?.customer||'-';
+            const sz=batch?.size||'-';
+            return `<tr data-ol-srch="${(bn+' '+cust+' '+sz+' '+pc).toLowerCase()}" data-ol-batch="${bn}" onclick="selectOrangeBatch('${bn}')" style="cursor:pointer;border-bottom:1px solid var(--border);${isSelected?'background:rgba(234,88,12,0.12);outline:2px solid var(--orange);outline-offset:-2px':''}">
+              <td style="padding:5px 6px;font-weight:700;font-family:monospace;font-size:11px;color:var(--orange);white-space:nowrap">${bn}</td>
+              <td style="padding:5px 6px;font-size:11px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${cust}</td>
+              <td style="padding:5px 6px;font-family:monospace;font-size:11px;text-align:center">${sz}</td>
+              <td style="padding:5px 6px;font-family:monospace;font-size:11px">${pc}</td>
+              <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${gen}</td>
+              <td style="padding:5px 6px;font-family:monospace;font-size:11px">${prt}</td>
+              <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:${rem>0?'700':'400'};color:${rem>0?'var(--orange)':'var(--text3)'}">${rem}</td>
             </tr>`;
-          }).join('') : `<tr><td colspan="6" class="text-center text-muted">No orange labels yet</td></tr>`}
+          }).join('') : `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text3)">No orange labels yet</td></tr>`}
           </tbody>
-        </table></div>
+        </table>
       </div>
-      <!-- Right panel: print queue for selected batch -->
-      <div style="flex:1;min-width:0">
-        ${selBatch ? `
-        <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
-          <div>
-            <div style="font-weight:700;font-size:14px;color:var(--orange)">${selBatch}</div>
-            <div style="font-size:12px;color:var(--text3)">${getBatch(selBatch)?.customer||selLabels[0]?.customer||''} | ${selLabels.length} labels | <span style="color:${unprintedSel.length>0?'var(--orange)':'var(--green);'}">${unprintedSel.length} unprinted</span></div>
-          </div>
-          ${unprintedSel.length>0?`<button class="btn btn-sm" style="background:var(--orange);color:#fff" onclick="unprintedOrangeBatch('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
-        </div>
-        <div class="tbl-wrap" style="max-height:320px;overflow-y:auto"><table>
-          <thead><tr><th>#</th><th>Qty(L)</th><th>Status</th><th>Generated</th><th>Action</th></tr></thead>
-          <tbody>
-          ${selLabels.map(l=>`<tr style="${!l.printed?'background:rgba(234,88,12,0.06)':''}">
-            <td class="td-mono">${l.labelNumber}</td>
-            <td class="td-mono">${fmt(l.qty)}</td>
-            <td>${l.printed?`<span class="badge badge-green">✅ Printed</span>`:'<span class="badge" style="background:rgba(234,88,12,0.15);color:var(--orange);border:1px solid rgba(234,88,12,0.4)">🟠 Pending</span>'}</td>
-            <td class="text-sm">${fmtDateTime(l.generated)}</td>
-            <td>${!l.printed?`<button class="btn btn-sm" style="background:var(--orange);color:#fff;padding:3px 10px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:`<button class="btn btn-sm btn-ghost" style="padding:3px 10px;font-size:11px" onclick="reprintOrangeLabel('${l.id}')">🔁 Reprint</button>`}</td>
-          </tr>`).join('')}
-          </tbody>
-        </table></div>` : '<div class="text-center text-muted" style="padding:32px">← Select a batch to view its print queue</div>'}
+      <!-- Right panel: print queue -->
+      <div id="ol-print-queue" style="flex:1;min-width:0;max-height:calc(100vh - 260px);overflow-y:auto;padding:12px">
+        ${renderOrangePrintQueue(selBatch,selLabels,unprintedSel)}
       </div>
     </div>
-  </div>`;
+  </div>\`;
   }
 }
 
