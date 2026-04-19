@@ -514,6 +514,7 @@ input[type=number]{font-family:var(--mono)}
 
 <!-- TOAST -->
 <div id="toast" style="position:fixed;bottom:24px;left:50%;transform:translateX(-50%);background:#1a3a2e;color:#f0c060;padding:10px 20px;border-radius:8px;font-size:13px;font-weight:600;opacity:0;transition:opacity .3s;z-index:9999;pointer-events:none;white-space:nowrap"></div>
+<div id="scan-flash" style="position:fixed;top:0;left:0;right:0;z-index:99999;pointer-events:none;opacity:0;transition:opacity 0.2s;padding:0"></div>
 
 <!-- MODAL -->
 <div class="modal-overlay" id="modal-overlay">
@@ -662,6 +663,21 @@ function toast(msg, col, duration){
   t.style.opacity = '1';
   clearTimeout(t._t);
   t._t = setTimeout(()=>{ t.style.opacity='0'; }, duration || 2500);
+}
+
+function showScanFlash(batchNo, boxNo, qty, type){
+  const el = document.getElementById('scan-flash');
+  if(!el) return;
+  const isIn = type === 'in';
+  const bg = isIn ? '#15803d' : '#1d4ed8';
+  const icon = isIn ? '📥' : '📤';
+  const label = isIn ? 'SCAN IN' : 'SCAN OUT';
+  el.innerHTML = `<div style="background:${bg};color:#fff;padding:14px 20px;font-size:16px;font-weight:700;text-align:center;letter-spacing:0.04em;box-shadow:0 4px 16px rgba(0,0,0,0.3)">
+    ${icon} ${label} — ${batchNo} / Box ${boxNo} &nbsp;·&nbsp; ${qty}L
+  </div>`;
+  el.style.opacity = '1';
+  clearTimeout(el._t);
+  el._t = setTimeout(()=>{ el.style.opacity='0'; }, 3000);
 }
 
 function getMachineFloor(machineId){
@@ -2672,6 +2688,7 @@ function processScanInput(dept,type){
       zoneEl.className='scan-zone success';
       const warnHtml = result.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${result.warning}</div>` : '';
       const _msg1=`✅ SCAN ${type.toUpperCase()} — ${result.label.batchNumber}/${Math.abs(result.label.labelNumber||0)} (${fmt(result.label.qty)}L)`;
+      showScanFlash(result.label.batchNumber, Math.abs(result.label.labelNumber||0), fmt(result.label.qty), type);
       toast(_msg1,'#166534',3500);
       resultEl.innerHTML=`<div class="alert alert-success">${_msg1}</div>${warnHtml}`;
       setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, result.warning ? 6000 : 3500);
@@ -2692,6 +2709,7 @@ function processScanInput(dept,type){
     const warnHtml = firstResult.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${firstResult.warning}</div>` : '';
     const orangeHtml = firstResult.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${firstResult.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${firstResult.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
     const _msg2=`✅ SCAN ${type.toUpperCase()} — ${firstResult.label.batchNumber}/${Math.abs(firstResult.label.labelNumber||0)} (${fmt(firstResult.label.qty)}L)`;
+    showScanFlash(firstResult.label.batchNumber, Math.abs(firstResult.label.labelNumber||0), fmt(firstResult.label.qty), type);
     toast(_msg2,'#166534',3500);
     resultEl.innerHTML=`<div class="alert alert-success">${_msg2}</div>${warnHtml}${orangeHtml}`;
     setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (firstResult.warning||firstResult.newOrangeLabel) ? 8000 : 3500);
@@ -2753,6 +2771,7 @@ function processScanInput(dept,type){
         const warnHtml = retry.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${retry.warning}</div>` : '';
         const orangeHtml = retry.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${retry.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${retry.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
         const _msg3=`✅ SCAN ${type.toUpperCase()} — ${retry.label.batchNumber}/${Math.abs(retry.label.labelNumber||0)} (${fmt(retry.label.qty)}L)`;
+        showScanFlash(retry.label.batchNumber, Math.abs(retry.label.labelNumber||0), fmt(retry.label.qty), type);
         toast(_msg3,'#166534',3500);
         resultEl.innerHTML=`<div class="alert alert-success">${_msg3}</div>${warnHtml}${orangeHtml}`;
         setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (retry.warning||retry.newOrangeLabel) ? 8000 : 3000);
