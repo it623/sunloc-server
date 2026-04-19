@@ -2463,9 +2463,15 @@ app.post('/api/tracking/reprint-log', (req, res) => {
 });
 
 // ── DPR Settings — GET all settings ──────────────────────────
-app.get('/api/dpr/settings', (req, res) => {
+app.get('/api/dpr/settings', async (req, res) => {
   try {
-    const rows = db.prepare('SELECT key, value_json FROM dpr_settings').all();
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT key, value_json FROM dpr_settings');
+      rows = r.rows;
+    } else {
+      rows = db.prepare('SELECT key, value_json FROM dpr_settings').all();
+    }
     const settings = {};
     rows.forEach(r => {
       try { settings[r.key] = JSON.parse(r.value_json); } catch { settings[r.key] = r.value_json; }
@@ -2475,17 +2481,28 @@ app.get('/api/dpr/settings', (req, res) => {
 });
 
 // ── DPR Settings — POST save/update one or more settings ─────
-app.post('/api/dpr/settings', (req, res) => {
+app.post('/api/dpr/settings', async (req, res) => {
   try {
     const { settings } = req.body;
     if (!settings || typeof settings !== 'object') return res.status(400).json({ ok: false, error: 'settings object required' });
-    const upsert = db.prepare(`
-      INSERT INTO dpr_settings (key, value_json, updated_at)
-      VALUES (?, ?, datetime('now'))
-      ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
-    `);
-    for (const [key, value] of Object.entries(settings)) {
-      upsert.run(key, JSON.stringify(value));
+    if (pgPool) {
+      for (const [key, value] of Object.entries(settings)) {
+        await pgPool.query(
+          `INSERT INTO dpr_settings (key, value_json, updated_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT(key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = NOW()`,
+          [key, JSON.stringify(value)]
+        );
+      }
+    } else {
+      const upsert = db.prepare(`
+        INSERT INTO dpr_settings (key, value_json, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+      `);
+      for (const [key, value] of Object.entries(settings)) {
+        upsert.run(key, JSON.stringify(value));
+      }
     }
     res.json({ ok: true, saved: Object.keys(settings).length });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }

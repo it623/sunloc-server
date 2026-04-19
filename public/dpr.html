@@ -1691,6 +1691,7 @@ function addRun(sh, mcId){
   m.runs.push(blankRun());
   data.shifts[sh].machines[mcId]=m;
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
+  pushToServer(fl,d,data);
   markUnsaved();
 
   // Inject new run row directly into DOM without full re-render (avoids shift collapse)
@@ -1731,6 +1732,7 @@ function removeRun(sh, mcId, ri){
   m.runs.splice(ri,1);
   data.shifts[sh].machines[mcId]=m;
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
+  pushToServer(fl,d,data);
   markUnsaved();
   renderShifts();
   document.getElementById(`sb-${sh}`)?.classList.add('open');
@@ -2001,6 +2003,7 @@ function saveRemarkEdit(i){
   if(!el||!day.remarks[i]) return;
   day.remarks[i].text=el.value;
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
   markUnsaved();
 }
 function addRemark(){
@@ -2030,6 +2033,7 @@ function deleteRemark(i){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   day.remarks.splice(i,1);
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
   renderRemarks();
 }
 
@@ -2065,6 +2069,7 @@ function saveResortEdit(i){
   if(!el||!day.resort[i]) return;
   day.resort[i].note=el.value;
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
   markUnsaved();
 }
 function addResort(){
@@ -2095,6 +2100,7 @@ function deleteResort(i){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   day.resort.splice(i,1);
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
   renderResort();renderDayKpis();renderShifts();
 }
 
@@ -3225,6 +3231,20 @@ setTimeout(()=>onDateChange&&onDateChange(),200);
 // Pushes targets + active machines + machine sizes to server so any
 // device opening DPR picks up the same configuration.
 
+function collectAllManpower(){
+  // Collect all manpower keys from localStorage into one object for server sync
+  const mp={};
+  try{
+    for(let i=0;i<localStorage.length;i++){
+      const k=localStorage.key(i);
+      if(k&&k.startsWith('dpr_manpower_')){
+        try{ mp[k.replace('dpr_manpower_','')]=JSON.parse(localStorage.getItem(k)||'[]'); }catch{}
+      }
+    }
+  }catch{}
+  return mp;
+}
+
 function pushSettingsToServer(){
   if(!serverUrl) return;
   const activeMachines = JSON.parse(localStorage.getItem('dpr_active_machines')||'{}');
@@ -3236,6 +3256,7 @@ function pushSettingsToServer(){
       dpr_targets:        targets,
       dpr_active_machines:activeMachines,
       dpr_machine_sizes:  machineSizes,
+      dpr_manpower:       collectAllManpower(),
     }}),
     signal:AbortSignal.timeout(5000)
   }).catch(()=>{});
@@ -3261,6 +3282,12 @@ async function loadSettingsFromServer(){
     // Machine sizes
     if(s.dpr_machine_sizes && Object.keys(s.dpr_machine_sizes).length>0){
       localStorage.setItem('dpr_machine_sizes',JSON.stringify(s.dpr_machine_sizes));
+    }
+    // Manpower names
+    if(s.dpr_manpower && Object.keys(s.dpr_manpower).length>0){
+      Object.entries(s.dpr_manpower).forEach(([k,v])=>{
+        localStorage.setItem('dpr_manpower_'+k, JSON.stringify(v));
+      });
     }
     toast('✓ Settings loaded from server','var(--cyan)');
   }catch(e){}
