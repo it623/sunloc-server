@@ -1002,16 +1002,14 @@ async function pullFromServer(){
         if(currentPage) renderPage(currentPage); // show batches immediately
       }
     }
-    // STEP 2: Load all labels fast (dedicated lightweight endpoint)
+    // STEP 2: Load all labels fast (dedicated endpoint)
     try{
-      flushPendingLabelPush(); // push any labels that failed previously
+      flushPendingLabelPush();
       const lr=await fetch(serverUrl+'/api/tracking/labels-all',{signal:AbortSignal.timeout(30000)});
       if(lr.ok){
         const lj=await lr.json();
         if(lj.ok && lj.labels){
-          // labels-all already returns camelCase — no normLabel needed
           const serverLabels = lj.labels;
-          // Merge: keep local-only labels not yet on server, push them
           const serverIds = new Set(serverLabels.map(l=>l.id));
           const localOnly = state.labels.filter(l=>!serverIds.has(l.id));
           if(localOnly.length > 0) pushLabelsToServer(localOnly);
@@ -1038,14 +1036,13 @@ async function pullFromServer(){
       }
     }catch(e3){ /* scans load failed — keep local state */ }
 
-    // STEP 4: Load wastage + alerts in background (non-critical)
+    // STEP 4: Load wastage + alerts in background
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
       if(r.ok){
         const j=await r.json();
         if(j.ok && j.state){
-          const normWastage=(j.state.wastage||[]).map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));
-          state.wastage=normWastage;
+          state.wastage=(j.state.wastage||[]).map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));
           if(j.state.stageClosure) state.stageClosure=j.state.stageClosure;
           if(j.state.dispatchRecs) state.dispatchRecs=j.state.dispatchRecs;
           if(j.state.alerts) state.alerts=j.state.alerts;
@@ -1053,7 +1050,7 @@ async function pullFromServer(){
           if(currentPage) renderPage(currentPage);
         }
       }
-    }catch(e4){ /* wastage timeout ok — core data already loaded */ }
+    }catch(e4){ /* wastage timeout ok */ }
   }catch(e){ setSyncBadge('offline'); }
 }
 
@@ -1245,19 +1242,16 @@ async function pushLabelsToServer(labels, attempt=1){
     });
     const j = await r.json();
     if(j.ok){
-      // Remove from pending queue
       const ids = new Set(labels.map(l=>l.id));
       for(let i=_pendingLabelPush.length-1;i>=0;i--){
         if(ids.has(_pendingLabelPush[i].id)) _pendingLabelPush.splice(i,1);
       }
       try{ localStorage.setItem('sunloc_pending_labels', JSON.stringify(_pendingLabelPush)); }catch(e){}
       setSyncBadge('synced');
-    } else { throw new Error(j.error||'Server rejected labels'); }
+    } else { throw new Error(j.error||'Server rejected'); }
   } catch(e){
-    // Add to pending queue
     labels.forEach(l=>{ if(!_pendingLabelPush.find(p=>p.id===l.id)) _pendingLabelPush.push(l); });
     try{ localStorage.setItem('sunloc_pending_labels', JSON.stringify(_pendingLabelPush)); }catch(e2){}
-    // Retry with backoff: 5s, 15s, 30s, 60s max
     if(attempt <= 5) setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(), attempt+1), Math.min(5000*attempt,60000));
     setSyncBadge('offline');
   }
@@ -1315,7 +1309,6 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
 
   state.labels.push(...newLabels);
   saveLocal();
-  // Push to PostgreSQL with retry — never lost even if connection drops
   pushLabelsToServer(newLabels);
   return newLabels;
 }
@@ -2010,33 +2003,55 @@ function renderLabels(){
       const labels=state.labels.filter(l=>l.batchNumber===selBatch&&!l.isOrange).sort((a,b)=>a.labelNumber-b.labelNumber);
       const unprintedCount=labels.filter(l=>!l.printed&&!l.voided).length;
       return `
-      <div class="flex items-center justify-between mb-12">
-        <div>
-          <div class="card-title" style="margin-bottom:2px">Print Queue — ${selBatch}</div>
-          <div class="text-sm text-muted">${batch?.customer||''} | Size ${batch?.size} | ${labels.length} labels${unprintedCount>0?` | <span style="color:var(--accent3);font-weight:600">${unprintedCount} unprinted</span>`:' | ✅ All printed'}</div>
+      <div style="display:flex;align-items:flex-start;justify-content:space-between;margin-bottom:10px;gap:8px">
+        <div style="min-width:0">
+          <div style="font-size:15px;font-weight:700;letter-spacing:0.03em;color:var(--text1)">PRINT QUEUE — ${selBatch}</div>
+          <div style="font-size:12px;color:var(--text3);margin-top:2px">${batch?.customer||''} | Size ${batch?.size} | ${labels.length} labels</div>
+          <div style="font-size:12px;margin-top:2px">${unprintedCount>0?`<span style="color:var(--accent3);font-weight:600">${unprintedCount} unprinted</span>`:'<span style="color:var(--green);font-weight:600">✅ All printed</span>'}</div>
         </div>
-        ${unprintedCount>0?`<button class="btn btn-sm btn-success" onclick="printBatchLabels('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
+        ${unprintedCount>0?`<button class="btn btn-sm btn-success" style="white-space:nowrap;flex-shrink:0" onclick="printBatchLabels('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
       </div>
-      <div class="tbl-wrap" style="max-height:420px;overflow-y:auto"><table>
-        <thead><tr><th>#</th><th>Qty (L)</th><th>Status</th><th>Generated</th><th>Action</th></tr></thead>
+      <div style="overflow-y:auto;max-height:calc(100vh - 280px)">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead>
+          <tr style="border-bottom:2px solid var(--border)">
+            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600;white-space:nowrap">#</th>
+            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600">QTY (L)</th>
+            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600">STATUS</th>
+            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600">GENERATED</th>
+            <th style="padding:6px 8px;text-align:left;color:var(--text3);font-weight:600">ACTION</th>
+          </tr>
+        </thead>
         <tbody>
-        ${labels.map(l=>`<tr style="${l.voided?'opacity:0.45':''}${!l.printed&&!l.voided?';background:rgba(240,192,96,0.07)':''}">
-          <td class="td-mono fw-bold" style="color:var(--accent)">${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}</span>`:`${Math.abs(l.labelNumber||0)}`}${l.isPartial?' <span class="badge badge-amber" style="font-size:8px">P</span>':''}</td>
-          <td class="td-mono">${fmt(l.qty)}</td>
-          <td>${l.voided?'<span class="badge badge-red">Voided</span>':l.printed?`<span class="badge badge-green">✅ Printed</span>`:'<span class="badge badge-gray">Pending</span>'}</td>
-          <td class="td-mono text-sm">${fmtDateTime(l.generated)}</td>
-          <td>
-            <div class="flex gap-4">
-              <button class="btn btn-sm btn-ghost" style="padding:3px 8px;font-size:11px" onclick="viewLabel('${l.id}')">👁 View</button>
-              ${!l.voided?`<button class="btn btn-sm btn-ghost" style="padding:3px 8px;font-size:11px;border-color:var(--accent)" onclick="editLabelQty('${l.id}')">✏️ Edit</button>`:''}
-              ${!l.voided&&!l.printed?`<button class="btn btn-sm btn-primary" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">🖨️ Print</button>`:''}
-              ${!l.voided&&l.printed?`<button class="btn btn-sm btn-secondary" style="padding:3px 8px;font-size:11px" onclick="printLabel('${l.id}');renderLabels()">Reprint</button>`:''}
-              ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-danger" style="padding:3px 8px;font-size:11px" onclick="voidLabel('${l.id}','Admin void');renderLabels()">Void</button>`:''}
-            </div>
-          </td>
-        </tr>`).join('')||'<tr><td colspan="5" class="text-center text-muted">No labels generated yet for this batch</td></tr>'}
+        ${labels.map(l=>`
+          <tr style="border-bottom:1px solid var(--border);${l.voided?'opacity:0.4':''}${!l.printed&&!l.voided?'background:rgba(240,192,96,0.05)':''}">
+            <td style="padding:8px;font-weight:700;color:var(--accent);font-family:monospace;font-size:13px">
+              ${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}</span>`:`${Math.abs(l.labelNumber||0)}`}
+              ${l.isPartial?'<span style="font-size:9px;background:var(--accent2);color:#fff;border-radius:3px;padding:1px 4px;margin-left:2px">P</span>':''}
+            </td>
+            <td style="padding:8px;font-family:monospace;font-size:13px">${fmt(l.qty)}</td>
+            <td style="padding:8px">
+              ${l.voided
+                ?'<span style="background:#ef444422;color:#ef4444;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">Voided</span>'
+                :l.printed
+                  ?'<span style="background:#22c55e22;color:#22c55e;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">✅ Printed</span>'
+                  :'<span style="background:var(--accent2)22;color:var(--accent2);padding:2px 8px;border-radius:12px;font-size:11px;font-weight:600">Pending</span>'
+              }
+            </td>
+            <td style="padding:8px;font-size:11px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}</td>
+            <td style="padding:8px">
+              <div style="display:flex;gap:4px;flex-wrap:nowrap">
+                <button onclick="viewLabel('${l.id}')" style="padding:3px 8px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;color:var(--text2);white-space:nowrap">👁</button>
+                ${!l.voided?`<button onclick="editLabelQty('${l.id}')" style="padding:3px 8px;font-size:11px;border:1px solid var(--accent);border-radius:4px;background:none;cursor:pointer;color:var(--accent);white-space:nowrap">✏️</button>`:''}
+                ${!l.voided&&!l.printed?`<button onclick="printLabel('${l.id}');renderLabels()" style="padding:3px 10px;font-size:11px;border:none;border-radius:4px;background:var(--accent);color:#fff;cursor:pointer;white-space:nowrap">🖨️ Print</button>`:''}
+                ${!l.voided&&l.printed?`<button onclick="printLabel('${l.id}');renderLabels()" style="padding:3px 8px;font-size:11px;border:1px solid var(--border);border-radius:4px;background:none;cursor:pointer;color:var(--text2);white-space:nowrap">Reprint</button>`:''}
+                ${!l.voided&&currentDept==='admin'?`<button onclick="voidLabel('${l.id}','Admin void');renderLabels()" style="padding:3px 6px;font-size:11px;border:1px solid #ef4444;border-radius:4px;background:none;cursor:pointer;color:#ef4444;white-space:nowrap">✕</button>`:''}
+              </div>
+            </td>
+          </tr>`).join('')||'<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text3)">No labels generated yet</td></tr>'}
         </tbody>
-      </table></div>`;
+      </table>
+      </div>`;
     })()}
   </div>
 
