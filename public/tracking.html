@@ -981,6 +981,8 @@ function normLabel(l){
 
 async function pullFromServer(){
   if(!serverUrl) return;
+  // Flush any labels that failed to reach server previously
+  flushPendingLabelPush();
   try{
     // STEP 1: Load planning batches FIRST — fast, shows batches immediately
     const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(30000)});
@@ -1237,6 +1239,53 @@ function canGenerateLabels(batchNo, requestedBoxes){
   return {ok:true, maxTotal:maxTotalBoxes, remainingAllowed, isExcessRun};
 }
 
+// Push labels to server with retry — ensures labels always reach PostgreSQL
+const _pendingLabelPush = []; // queue for labels that failed to push
+let _labelPushTimer = null;
+
+async function pushLabelsToServer(labels, attempt=1){
+  if(!serverUrl || !labels || !labels.length) return;
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/labels',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({labels}),
+      signal:AbortSignal.timeout(15000)
+    });
+    const j = await r.json();
+    if(j.ok){
+      // Success — remove from pending queue if present
+      labels.forEach(l => {
+        const idx = _pendingLabelPush.findIndex(p=>p.id===l.id);
+        if(idx>=0) _pendingLabelPush.splice(idx,1);
+      });
+      setSyncBadge('synced');
+    } else { throw new Error(j.error||'Server error'); }
+  } catch(e) {
+    // Failed — add to pending queue and retry
+    labels.forEach(l => { if(!_pendingLabelPush.find(p=>p.id===l.id)) _pendingLabelPush.push(l); });
+    // Save pending queue to localStorage so it survives page reload
+    try{ localStorage.setItem('sunloc_pending_labels', JSON.stringify(_pendingLabelPush)); }catch(e2){}
+    // Retry with backoff: 5s, 15s, 30s, 60s
+    const delay = Math.min(5000 * attempt, 60000);
+    if(attempt <= 5){
+      setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(), attempt+1), delay);
+    }
+    setSyncBadge('offline');
+  }
+}
+
+// On page load — push any labels that failed to reach server previously
+function flushPendingLabelPush(){
+  try{
+    const pending = JSON.parse(localStorage.getItem('sunloc_pending_labels')||'[]');
+    if(pending.length > 0){
+      _pendingLabelPush.push(...pending.filter(p=>!_pendingLabelPush.find(q=>q.id===p.id)));
+      pushLabelsToServer(_pendingLabelPush.slice());
+    }
+  } catch(e){}
+}
+
 function generateLabels(batchNo, count, isPartialLast, partialQty){
   const batch = getBatch(batchNo);
   if(!batch) return [];
@@ -1282,8 +1331,8 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
 
   state.labels.push(...newLabels);
   saveLocal();
-  // Push new labels directly to PostgreSQL — available on all devices immediately
-  if(serverUrl){ fetch(serverUrl+'/api/tracking/labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels:newLabels}),signal:AbortSignal.timeout(10000)}).catch(()=>{}); }
+  // Push to PostgreSQL with retry — labels must reach server
+  pushLabelsToServer(newLabels);
   return newLabels;
 }
 
