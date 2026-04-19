@@ -1887,28 +1887,58 @@ function updateBacklog(sh,mcId){
 function renderDTTable(){
   const fl=curFloor, d=getDate(), day=loadDay(fl,d);
   const mcs=getActiveMachines(fl);
-  let html=`<table class="dttable"><thead><tr><th>Machine</th>`;
-  SHIFTS.forEach(sh=>DT_CATS.forEach(c=>html+=`<th>${sh}/${DT_LABELS[c].substring(0,4)}</th>`));
+  // Shift colour scheme: A=dark green, B=dark blue, C=dark amber
+  const shClr={
+    A:{bg:'rgba(6,78,59,0.15)',border:'#6ee7b7',hdr:'#064e3b',text:'#d1fae5',inputBg:'rgba(6,78,59,0.07)'},
+    B:{bg:'rgba(30,58,95,0.15)',border:'#60a5fa',hdr:'#1e3a5f',text:'#dbeafe',inputBg:'rgba(30,58,95,0.07)'},
+    C:{bg:'rgba(120,53,15,0.15)',border:'#fcd34d',hdr:'#78350f',text:'#fef3c7',inputBg:'rgba(120,53,15,0.07)'}
+  };
+  // 2-row header: row 1 = Shift group, row 2 = category names
+  let html=`<table class="dttable"><thead>`;
+  html+=`<tr><th rowspan="2" style="vertical-align:middle;min-width:52px">Machine</th>`;
+  SHIFTS.forEach(sh=>{
+    const clr=shClr[sh];
+    html+=`<th colspan="${DT_CATS.length}" style="background:${clr.hdr};color:${clr.text};border-left:2px solid ${clr.border};border-right:2px solid ${clr.border};text-align:center;padding:5px 3px;font-size:11px;letter-spacing:.6px">SHIFT ${sh}</th>`;
+  });
+  html+=`</tr><tr>`;
+  SHIFTS.forEach(sh=>{
+    const clr=shClr[sh];
+    DT_CATS.forEach((cat,ci)=>{
+      const bL=ci===0?`border-left:2px solid ${clr.border}`:'';
+      const bR=ci===DT_CATS.length-1?`border-right:2px solid ${clr.border}`:'';
+      html+=`<th style="background:${clr.bg};color:${clr.text};${bL};${bR};font-size:9px;padding:4px 3px;font-weight:600">${DT_LABELS[cat].substring(0,4)}</th>`;
+    });
+  });
   html+=`</tr></thead><tbody>`;
   mcs.forEach(mc=>{
-    html+=`<tr><td>MC${mc.id.replace('MC','')}</td>`;
-    SHIFTS.forEach(sh=>DT_CATS.forEach(c=>{
-      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
-      const val=m[c]||'';
-      html+=`<td><input type="number" id="dt-${sh}-${mc.id}-${c}" value="${val}" placeholder="0" min="0" style="width:44px" oninput="markUnsaved();updateDTSummary()" onkeydown="dtNav(event)"></td>`;
-    }));
+    html+=`<tr><td style="font-weight:700;color:var(--cyan)">MC${mc.id.replace('MC','')}</td>`;
+    SHIFTS.forEach(sh=>{
+      const clr=shClr[sh];
+      DT_CATS.forEach((cat,ci)=>{
+        const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+        const val=m[cat]||'';
+        const bL=ci===0?`border-left:2px solid ${clr.border}`:'';
+        const bR=ci===DT_CATS.length-1?`border-right:2px solid ${clr.border}`:'';
+        html+=`<td style="${bL};${bR};background:${clr.inputBg}"><input type="number" id="dt-${sh}-${mc.id}-${cat}" value="${val}" placeholder="0" min="0" style="width:44px;background:transparent" oninput="markUnsaved();updateDTSummary()" onkeydown="dtNav(event)"></td>`;
+      });
+    });
     html+=`</tr>`;
   });
-  // Totals row — uses id so it updates live when inputs change
-  html+=`<tfoot><tr id="dt-totals-row" style="font-weight:700;background:rgba(100,100,100,0.12);border-top:2px solid var(--b2)"><td style="font-size:10px;padding:4px 6px;color:var(--t3)">TOTAL</td>`;
-  SHIFTS.forEach(sh=>DT_CATS.forEach(c=>{
-    let colTotal=0;
-    mcs.forEach(mc=>{
-      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
-      colTotal+=parseFloat(m[c]||0);
+  // Totals row with shift colour per group
+  html+=`<tfoot><tr id="dt-totals-row" style="font-weight:700;border-top:2px solid var(--b2)"><td style="font-size:10px;padding:4px 6px;color:var(--t3)">TOTAL</td>`;
+  SHIFTS.forEach(sh=>{
+    const clr=shClr[sh];
+    DT_CATS.forEach((cat,ci)=>{
+      let colTotal=0;
+      mcs.forEach(mc=>{
+        const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+        colTotal+=parseFloat(m[cat]||0);
+      });
+      const bL=ci===0?`border-left:2px solid ${clr.border}`:'';
+      const bR=ci===DT_CATS.length-1?`border-right:2px solid ${clr.border}`:'';
+      html+=`<td id="dt-tot-${sh}-${cat}" style="text-align:center;font-family:var(--mono);font-size:12px;padding:4px;background:${clr.bg};${bL};${bR};color:${colTotal>0?'var(--amber)':'var(--t3)'}">${colTotal||'0'}</td>`;
     });
-    html+=`<td id="dt-tot-${sh}-${c}" style="text-align:center;font-family:var(--mono);font-size:12px;padding:4px;color:${colTotal>0?'var(--amber)':'var(--t3)'}">${colTotal||'0'}</td>`;
-  }));
+  });
   html+=`</tr></tfoot></table>`;
   document.getElementById('dtTable').innerHTML=`<div class="dttable-wrap">`+html+`</div>`;
 }
