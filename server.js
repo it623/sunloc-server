@@ -894,26 +894,16 @@ function logAudit(username, role, app, action, details, ip) {
 }
 
 // POST /api/auth/login
-app.post('/api/auth/login', async (req, res) => {
+app.post('/api/auth/login', (req, res) => {
   try {
     const { username, pin, app: appName } = req.body;
     if (!username || !pin || !appName) return res.status(400).json({ ok: false, error: 'Missing credentials' });
-    let user;
-    if (pgPool) {
-      const r = await pgPool.query('SELECT * FROM app_users WHERE username = $1 AND app = $2', [username, appName]);
-      user = r.rows[0];
-    } else {
-      user = db.prepare('SELECT * FROM app_users WHERE username = ? AND app = ?').get(username, appName);
-    }
+    const user = db.prepare('SELECT * FROM app_users WHERE username = ? AND app = ?').get(username, appName);
     if (!user) return res.status(401).json({ ok: false, error: 'User not found' });
     if (user.pin_hash !== hashPin(pin)) return res.status(401).json({ ok: false, error: 'Invalid PIN' });
     const token = generateToken();
     const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T',' ').slice(0,19);
-    if (pgPool) {
-      await pgPool.query('INSERT INTO app_sessions (token, user_id, username, role, app, expires_at) VALUES ($1,$2,$3,$4,$5,$6)', [token, user.id, user.username, user.role, appName, expires]);
-    } else {
-      db.prepare('INSERT INTO app_sessions (token, user_id, username, role, app, expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
-    }
+    db.prepare('INSERT INTO app_sessions (token, user_id, username, role, app, expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
     logAudit(user.username, user.role, appName, 'LOGIN', 'Successful login', req.ip);
     res.json({ ok: true, token, username: user.username, role: user.role });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
