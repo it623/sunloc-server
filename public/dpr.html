@@ -343,19 +343,25 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   <div class="collapsible">
     <div class="col-hdr" onclick="toggleCol('remBlock')">
       <span class="col-title" style="color:var(--t2)">💬 Shift Remarks / Issues</span>
-      <button class="btn-add" onclick="event.stopPropagation();addRemark()">+ Add Remark</button>
     </div>
-    <div class="col-body open" id="remBlock"><div id="remList"><p style="color:var(--t3);font-size:12px">No remarks. Click "+ Add Remark" to log issues.</p></div></div>
+    <div class="col-body open" id="remBlock">
+      <div id="remList"><p style="color:var(--t3);font-size:12px">No remarks. Click "+ Add Remark" to log issues.</p></div>
+      <div style="padding:10px 0 2px 0">
+        <button class="btn-add" onclick="addRemark()" style="width:100%;padding:8px;text-align:center">+ Add Remark</button>
+      </div>
+    </div>
   </div>
   <!-- Resort — always visible at bottom -->
   <div class="collapsible">
     <div class="col-hdr" onclick="toggleCol('resortBlock')">
       <span class="col-title" style="color:var(--amber)">↩ Re-Sort Entry — Machine-wise Reasons</span>
-      <button class="btn-add" onclick="event.stopPropagation();addResort()">+ Add Re-Sort Entry</button>
     </div>
     <div class="col-body open" id="resortBlock">
-      <p style="color:var(--t3);font-size:11px;margin-bottom:10px">Log machine-wise re-sort quantity and root cause. Target is always ZERO. Each entry links to a machine, shift, and defect reason.</p>
+      <p style="color:var(--t3);font-size:11px;margin-bottom:8px">Log machine-wise re-sort quantity and root cause. Target is always ZERO. Each entry links to a machine, shift, and defect reason.</p>
       <div id="resortList"><p style="color:var(--t3);font-size:12px">No re-sort entries. Click "+ Add Re-Sort Entry" to log machine-wise re-sort reasons.</p></div>
+      <div style="padding:10px 0 2px 0">
+        <button class="btn-add" onclick="addResort()" style="width:100%;padding:8px;text-align:center">+ Add Re-Sort Entry</button>
+      </div>
     </div>
   </div>
 </div>
