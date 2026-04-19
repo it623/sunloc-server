@@ -2043,18 +2043,24 @@ app.get('/api/health', (req, res) => {
 // ─── TRACKING ROUTES ──────────────────────────────────────────
 
 // GET /api/tracking/state — full tracking state
-app.get('/api/tracking/label', (req, res) => {
+app.get('/api/tracking/label', async (req, res) => {
   // Direct label lookup by id or by batchNumber+labelNumber
   try {
     const { id, batchNumber, labelNumber } = req.query;
     let label = null;
     if (id) {
-      label = pgPool ? (await pgPool.query('SELECT * FROM tracking_labels WHERE id=$1',[id])).rows[0] : db.prepare('SELECT * FROM tracking_labels WHERE id=?').get(id);
+      if (pgPool) {
+        label = (await pgPool.query('SELECT * FROM tracking_labels WHERE id=$1',[id])).rows[0] || null;
+      } else {
+        label = db.prepare('SELECT * FROM tracking_labels WHERE id=?').get(id);
+      }
     }
     if (!label && batchNumber && labelNumber != null) {
-      label = db.prepare(
-        'SELECT * FROM tracking_labels WHERE batch_number = ? AND ABS(label_number) = ABS(?)'
-      ).get(batchNumber, parseInt(labelNumber));
+      if (pgPool) {
+        label = (await pgPool.query('SELECT * FROM tracking_labels WHERE batch_number=$1 AND ABS(label_number)=ABS($2)',[batchNumber, parseInt(labelNumber)])).rows[0] || null;
+      } else {
+        label = db.prepare('SELECT * FROM tracking_labels WHERE batch_number=? AND ABS(label_number)=ABS(?)').get(batchNumber, parseInt(labelNumber));
+      }
     }
     res.json({ ok: true, label: label || null });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
