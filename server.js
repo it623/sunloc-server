@@ -1987,9 +1987,28 @@ app.get('/api/tracking/labels-all', async (req, res) => {
 // ── Recent scans fast endpoint ──
 app.get('/api/tracking/scans-recent', async (req, res) => {
   try {
-    const m=r=>({...r,labelId:r.label_id,batchNumber:r.batch_number});
-    if(pgPool){const r=await pgPool.query('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 2000');res.json({ok:true,scans:r.rows.map(m)});}
-    else{const scans=db.prepare('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 2000').all();res.json({ok:true,scans});}
+    const m=r=>({...r,labelId:r.label_id,batchNumber:r.batch_number,labelNumber:r.label_number});
+    if(pgPool){
+      const r=await pgPool.query(`
+        SELECT s.*, COALESCE(s.label_number, l.label_number) as label_number
+        FROM tracking_scans s
+        LEFT JOIN tracking_labels l ON s.label_id = l.id
+        ORDER BY s.ts DESC LIMIT 2000
+      `);
+      res.json({ok:true,scans:r.rows.map(m)});
+    } else {
+      const scans=db.prepare('SELECT s.*, COALESCE(s.label_number, l.label_number) as label_number FROM tracking_scans s LEFT JOIN tracking_labels l ON s.label_id = l.id ORDER BY s.ts DESC LIMIT 2000').all();
+      res.json({ok:true,scans:scans.map(m)});
+    }
+  }catch(err){res.status(500).json({ok:false,error:err.message});}
+});
+
+// ── Wastage fast endpoint ──
+app.get('/api/tracking/wastage', async (req, res) => {
+  try {
+    const m=r=>({...r,batchNumber:r.batch_number});
+    if(pgPool){const r=await pgPool.query('SELECT * FROM tracking_wastage ORDER BY ts DESC');res.json({ok:true,wastage:r.rows.map(m)});}
+    else{const wastage=db.prepare('SELECT * FROM tracking_wastage ORDER BY ts DESC').all();res.json({ok:true,wastage:wastage.map(m)});}
   }catch(err){res.status(500).json({ok:false,error:err.message});}
 });
 // ── Individual scan save (called after each scan in/out) ──

@@ -1042,10 +1042,15 @@ async function pullFromServer(){
         }
       }
     }catch(e3){}
-    // STEP 4: Wastage + alerts background
+    // STEP 3.5: Load wastage fast (dedicated endpoint)
+    try{
+      const wr=await fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)});
+      if(wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){state.wastage=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));saveLocal();if(currentPage)renderPage(currentPage);}}
+    }catch(e35){}
+    // STEP 4: Alerts + stageClosure background
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
-      if(r.ok){const j=await r.json();if(j.ok&&j.state){state.wastage=(j.state.wastage||[]).map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));if(j.state.stageClosure)state.stageClosure=j.state.stageClosure;if(j.state.dispatchRecs)state.dispatchRecs=j.state.dispatchRecs;if(j.state.alerts)state.alerts=j.state.alerts;saveLocal();if(currentPage)renderPage(currentPage);}}
+      if(r.ok){const j=await r.json();if(j.ok&&j.state){if(j.state.stageClosure)state.stageClosure=j.state.stageClosure;if(j.state.dispatchRecs)state.dispatchRecs=j.state.dispatchRecs;if(j.state.alerts)state.alerts=j.state.alerts;saveLocal();if(currentPage)renderPage(currentPage);}}
     }catch(e4){}
   }catch(e){ setSyncBadge('offline'); }
 }
@@ -1989,7 +1994,7 @@ function renderPrintQueue(selBatch){
 
 function renderLabels(){
   const el=document.getElementById('page-labels');
-  const activeBatches=state.batches.filter(b=>b.status==='running');
+  const activeBatches=state.batches.filter(b=>b.status==='running').sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const selBatch=window._labelSelBatch||activeBatches[0]?.batchNumber||'';
 
   document.getElementById('tb-actions').innerHTML=`
@@ -2281,7 +2286,7 @@ function filterOrangeLabels(){
 }
 
 function openLabelGen(preselect){
-  const activeBatches=state.batches.filter(b=>b.status==='running');
+  const activeBatches=state.batches.filter(b=>b.status==='running').sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   openModal('Generate Labels','Select batch and quantity to generate',`
     <div class="form-group">
       <label>Batch</label>
@@ -2900,9 +2905,8 @@ function getActiveBatchesForDept(dept){
     if(b.status==='closed') return false;
     const flow=getBatchFlow(b);
     if(!flow.includes(dept)) return false;
-    // Show if previous stage is complete or it's the first stage
     return canScanDept(b.batchNumber,dept)||isStageComplete(b.batchNumber,dept)||currentDept==='admin';
-  });
+  }).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
 }
 
 // ═══════════════════════════════════════════════════════
@@ -3147,7 +3151,7 @@ function applyBatchFilter(){
   const filterMachine=document.getElementById('bt-filter-machine')?.value||'';
   const filterPc=(document.getElementById('bt-filter-pc')?.value||'');
   const filterColour=(document.getElementById('bt-filter-colour')?.value||'');
-  let batches=state.batches.filter(b=>!b.deleted);
+  let batches=state.batches.filter(b=>!b.deleted).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   if(filterBatch) batches=batches.filter(b=>b.batchNumber?.toLowerCase().includes(filterBatch)||b.customer?.toLowerCase().includes(filterBatch));
   if(filterMachine) batches=batches.filter(b=>b.machineId===filterMachine);
   if(filterPc) batches=batches.filter(b=>b.pcCode===filterPc);
@@ -3360,7 +3364,7 @@ function renderReports(){
 }
 
 function renderReportH(){
-  const batches = state.batches.filter(b=>!b.deleted&&b.batchNumber);
+  const batches = state.batches.filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions = (batch) => batch.isPrinted
     ? [['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
     : [['aim','packing'],['packing','dispatch']];
@@ -3531,7 +3535,7 @@ function renderReportH(){
 }
 
 function exportReportH(){
-  const batches=state.batches.filter(b=>!b.deleted&&b.batchNumber);
+  const batches=state.batches.filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions=(batch)=>batch.isPrinted
     ?[['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
     :[['aim','packing'],['packing','dispatch']];
@@ -3553,7 +3557,7 @@ function exportReportH(){
 }
 
 function renderReportG(){
-  const batches = state.batches.filter(b=>!b.deleted && b.batchNumber);
+  const batches = state.batches.filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
 
   let totalGrossProd = 0;
   let totalAGradeQty = 0;
@@ -3687,7 +3691,7 @@ function renderReportG(){
 }
 
 function exportReportG(){
-  const batches = state.batches.filter(b=>!b.deleted&&b.batchNumber);
+  const batches = state.batches.filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const rows = batches.map(b=>{
     const ag  = getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
     const wip = getBatchWIPBreakdown(b.batchNumber);
@@ -4005,7 +4009,7 @@ function renderReportC(){
     return `<option value="${bn}" ${filterBatch===bn?'selected':''}>${bn}${b?.customer?' — '+b.customer:''}</option>`;
   }).join('');
 
-  let batches = state.batches.filter(b=>!b.deleted);
+  let batches = state.batches.filter(b=>!b.deleted).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   if(filterMachine) batches = batches.filter(b=>b.machineId===filterMachine);
   if(filterBatch)   batches = batches.filter(b=>b.batchNumber===filterBatch);
 
