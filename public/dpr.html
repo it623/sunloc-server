@@ -975,8 +975,47 @@ function loadDay(fl,d){
     return p;
   }catch{return blankDay(fl);}
 }
+function validateBeforeSave(){
+  // Check all runs with qty entered have an order selected
+  const fl=curFloor;
+  const errors=[];
+  SHIFTS.forEach(sh=>{
+    getActiveMachines(fl).forEach(mc=>{
+      const runEls=document.querySelectorAll(`.run-row[data-sh="${sh}"][data-mc="${mc.id}"]`);
+      runEls.forEach(el=>{
+        const ri=el.dataset.ri;
+        const qty=parseFloat(v(`run-qty-${sh}-${mc.id}-${ri}`)||0);
+        const orderId=v(`run-ord-${sh}-${mc.id}-${ri}`);
+        const batchNo=v(`run-batch-${sh}-${mc.id}-${ri}`);
+        // If qty is entered but no order selected AND no batch number typed
+        if(qty>0 && !orderId && !batchNo){
+          errors.push(`Shift ${sh} → ${mc.id}: Please select active order`);
+        }
+      });
+    });
+  });
+  return errors;
+}
+
 function saveDay(){
   const fl=curFloor, d=getDate();
+  // Validate: all runs with qty must have order selected
+  const errors=validateBeforeSave();
+  if(errors.length>0){
+    // Show alert with all missing orders
+    const msg='⚠️ Please select active order before saving:\n\n'+errors.join('\n');
+    alert(msg);
+    // Highlight the first problematic dropdown
+    const firstError=errors[0];
+    const shMatch=firstError.match(/Shift ([A-C])/);
+    const mcMatch=firstError.match(/(MC\d+)/);
+    if(shMatch&&mcMatch){
+      const sh=shMatch[1], mcId=mcMatch[1];
+      const sel=document.querySelector(`.run-row[data-sh="${sh}"][data-mc="${mcId}"] select`);
+      if(sel){ sel.style.border='2px solid var(--red)'; sel.focus(); setTimeout(()=>sel.style.border='',3000); }
+    }
+    return;
+  }
   const data=collectForm();
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
