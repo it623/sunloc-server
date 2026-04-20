@@ -1415,7 +1415,12 @@ function renderOrderRow(ord, idx, mc) {
   const aimProgress = (!ord.isPrinted && liveAimOut > 0 && ord.grossQty)
     ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">AIM Out: ${fmt(liveAimOut)}L / ${fmt(ord.grossQty)}L planned</div>` : '';
   const dprClosed = window._dprClosedBatches && ord.id ? window._dprClosedBatches[ord.id] : null;
-  const canClose = !isClosed && ord.actualProd > 0 && !!dprClosed;
+  // Temporary force-close window: 20-Apr-2026 to 22-Apr-2026 only
+  // Allows closing legacy IN PRODUCTION orders without DPR batch close
+  // After 22-Apr-2026 this automatically reverts to normal (dprClosed required)
+  const _todayStr = new Date().toISOString().slice(0,10);
+  const _forceCloseAllowed = _todayStr >= '2026-04-20' && _todayStr <= '2026-04-22';
+  const canClose = !isClosed && ord.actualProd > 0 && (!!dprClosed || _forceCloseAllowed);
   const woBadge = isWO ? '<span class="badge" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.4);font-size:10px">🔶 W/O</span>' :
                   isWOReconciled ? '<span class="badge badge-completed" style="font-size:10px">✅ W/O Assigned</span>' : '';
   return `<tr class="${isClosed?'closed':''}" style="${isWO?'background:rgba(255,171,0,0.03);border-left:3px solid rgba(255,171,0,0.4)':''}">
@@ -1701,6 +1706,10 @@ function showAddOrderModal(machineId, existingOrder) {
         <input class="form-control" id="fo-startdate" type="date" value="${toDateInput(ord.startDate)||toDateInput(today())}">
       </div>
       <div class="form-group">
+        <label>End Date <span style="font-size:11px;color:var(--text3);font-weight:400">(leave blank = auto-calculated)</span></label>
+        <input class="form-control" id="fo-enddate" type="date" value="${toDateInput(ord.endDate)||''}">
+      </div>
+      <div class="form-group">
         <label>Packing</label>
         <input class="form-control" id="fo-packing" value="${ord.packing||''}" placeholder="e.g. HDCL">
       </div>
@@ -1936,8 +1945,9 @@ function saveOrderModal(existingId, defaultMachine) {
     }
   }
 
-  // Recalculate end date using (possibly adjusted) startDate
-  const endDate = calcEndDate(startDate, daysNeeded);
+  // Use manual End Date if entered, otherwise auto-calculate from qty + machine speed
+  const manualEndDateVal = document.getElementById('fo-enddate')?.value;
+  const endDate = manualEndDateVal ? new Date(manualEndDateVal) : calcEndDate(startDate, daysNeeded);
 
   const size = document.getElementById('fo-size')?.value;
   const pcCode = document.getElementById('fo-pccode')?.value;
@@ -2689,6 +2699,10 @@ function showAddPrintModal(machineId, existingId) {
         <input class="form-control" id="fp-startdate" type="date" value="${toDateInput(existing?.startDate)||toDateInput(today())}">
       </div>
       <div class="form-group">
+        <label>Printing End Date <span style="font-size:11px;color:var(--text3);font-weight:400">(leave blank = auto-calculated)</span></label>
+        <input class="form-control" id="fp-enddate" type="date" value="${toDateInput(existing?.endDate)||''}">
+      </div>
+      <div class="form-group">
         <label>Zone</label>
         <select class="form-control" id="fp-zone">
           ${ZONES.map(z=>`<option value="${z}" ${existing?.zone===z?'selected':''}>${z}</option>`).join('')}
@@ -2729,7 +2743,8 @@ function savePrintModal(existingId) {
   const pm = machineId ? getPrintMachine(machineId) : null;
   const qty = parseFloat(document.getElementById('fp-qty')?.value)||0;
   const startDate = new Date(document.getElementById('fp-startdate')?.value||today());
-  const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
+  const manualPrintEndVal = document.getElementById('fp-enddate')?.value;
+  const endDate = manualPrintEndVal ? new Date(manualPrintEndVal) : (pm && qty ? calcEndDate(startDate, qty/pm.cap) : null);
   const ord = {
     id: existingId||uid(),
     productionOrderId: existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null,
