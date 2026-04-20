@@ -371,7 +371,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   <div class="card" style="padding:10px 14px;margin-bottom:12px">
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">FLOOR</span>
-      <select id="analyticsFloor" onchange="renderAnalytics()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
+      <select id="analyticsFloor" onchange="this.dataset.userSet='1';renderAnalytics()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
         <option value="GF">Ground Floor</option>
         <option value="1F">First Floor (FF)</option>
         <option value="2F">Second Floor (SF)</option>
@@ -423,7 +423,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   <div class="card" style="padding:10px 14px;margin-bottom:12px">
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">FLOOR</span>
-      <select id="perfFloor" onchange="renderPerf()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
+      <select id="perfFloor" onchange="this.dataset.userSet='1';renderPerf()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
         <option value="GF">Ground Floor</option>
         <option value="1F">First Floor (FF)</option>
         <option value="2F">Second Floor (SF)</option>
