@@ -1086,7 +1086,7 @@ function calcDayStats(fl,d){
   (day.resort||[]).forEach(r=>totResort+=parseFloat(r.qty||0));
   const dtPct = mcs.length>0 ? (totDT/(480*mcs.length*3)*100) : 0;
   const eff = totTgt>0 ? (totProd/totTgt*100):0;
-  const backlog = Math.max(0, totAim - totProd);
+  const backlog = totAim>0 ? parseFloat((totProd - totAim).toFixed(2)) : null;
   return {
     totTgt:    parseFloat(totTgt.toFixed(2)),
     totProd:   parseFloat(totProd.toFixed(2)),
@@ -1569,7 +1569,7 @@ function renderDayKpis(){
     <div class="kpi"><div class="kpi-label">Production</div><div class="kpi-val ${s.totProd>0?'green':'t2'}">${s.totProd>0?parseFloat(s.totProd).toFixed(2):'—'}</div><div class="kpi-sub">units today</div></div>
     <div class="kpi"><div class="kpi-label">VS Target</div><div class="kpi-val ${effCls}">${s.totTgt>0?(s.totProd-s.totTgt>=0?'+':'')+parseFloat((s.totProd-s.totTgt).toFixed(2)):'—'}</div><div class="kpi-sub">${s.totTgt>0?s.eff.toFixed(1)+'%':''}</div></div>
     <div class="kpi"><div class="kpi-label">AIM Output</div><div class="kpi-val cyan">${s.totAim>0?parseFloat(s.totAim).toFixed(2):'—'}</div><div class="kpi-sub">planned today</div></div>
-    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog>0?'amber':'green'}">${s.totAim>0?parseFloat(s.backlog).toFixed(2):'—'}</div><div class="kpi-sub">units behind</div></div>
+    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog===null?'':s.backlog>=0?'green':'red'}">${s.backlog===null?'—':(s.backlog>=0?'+':'')+s.backlog.toFixed(2)}</div><div class="kpi-sub">${s.backlog===null?'':'vs AIM'}</div></div>
     <div class="kpi"><div class="kpi-label">Re-Sort</div><div class="kpi-val ${s.totResort>0?'red':'green'}">${s.totResort>0?parseFloat(s.totResort).toFixed(2):'0'}</div><div class="kpi-sub">units</div></div>
     <div class="kpi"><div class="kpi-label">Downtime</div><div class="kpi-val ${dtCls}">${s.totDT>0?parseFloat(s.totDT).toFixed(0):'—'}</div><div class="kpi-sub">${s.totDT>0?s.dtPct.toFixed(1)+'% DT':''}</div></div>
   `;
@@ -2146,7 +2146,12 @@ function renderResort(){
       <span style="font-family:var(--fc);font-weight:700;color:var(--cyan);min-width:36px">${r.mc}</span>
       <span style="background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0">Shift ${r.shift}</span>
       <div style="flex:1;min-width:0">
-        <div style="font-size:12px;color:var(--t2)">${esc(r.reason)} — <b style="color:var(--red)">${r.qty} units</b></div>
+        <div style="font-size:12px;color:var(--t2);display:flex;align-items:center;gap:6px;flex-wrap:wrap">
+          ${esc(r.reason)} —
+          <input type="number" id="rs-edit-qty-${i}" value="${r.qty}" min="0" step="1"
+            style="width:70px;font-size:12px;font-weight:700;color:var(--red);font-family:var(--mono);padding:1px 4px;border:1px solid var(--b2);border-radius:3px;background:var(--s2)"
+            oninput="saveResortQty(${i})" title="Edit quantity"> units
+        </div>
         <textarea id="rs-edit-note-${i}" style="width:100%;min-height:36px;resize:vertical;font-size:11px;background:transparent;border:1px solid transparent;border-radius:3px;padding:2px 4px;color:var(--t3);margin-top:2px" oninput="saveResortEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='transparent'" placeholder="Add note...">${esc(r.note||'')}</textarea>
       </div>
       <button class="btn-sm danger" style="flex-shrink:0" onclick="deleteResort(${i})">✕</button>
@@ -2164,6 +2169,19 @@ function saveResortEdit(i){
   day.resort[i].note=el.value;
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
+  markUnsaved();
+}
+function saveResortQty(i){
+  const fl=curFloor,d=getDate(),day=loadDay(fl,d);
+  const el=document.getElementById(`rs-edit-qty-${i}`);
+  if(!el||!day.resort[i]) return;
+  const val=parseFloat(el.value||0);
+  if(isNaN(val)||val<0) return;
+  day.resort[i].qty=val;
+  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
+  renderDayKpis();
+  renderShifts();
   markUnsaved();
 }
 function addResort(){
