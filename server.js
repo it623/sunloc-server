@@ -906,6 +906,18 @@ app.get('/api/orders/active', async (req, res) => {
     const state = await getPlanningStateAsync();
     const running = (state.orders || []).filter(o => o.status === 'running' && !o.deleted);
 
+    // Helper: extract YYYY-MM-DD from any startDate format (Date object, ISO string, etc.)
+    const getDateStr = (d) => {
+      if (!d) return '';
+      const s = String(d);
+      // ISO format: "2026-04-15T00:00:00.000Z" → "2026-04-15"
+      if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0,10);
+      // Try parsing as Date
+      const dt = new Date(s);
+      if (!isNaN(dt)) return dt.toISOString().slice(0,10);
+      return '';
+    };
+
     const mapOrder = o => ({
       id: o.id,
       batchNumber: o.batchNumber || '',
@@ -919,15 +931,15 @@ app.get('/api/orders/active', async (req, res) => {
       actualQty: o.actualQty || 0,
       status: o.status || 'running',
       isPrinted: o.isPrinted || false,
-      isLegacy: !o.startDate || String(o.startDate).slice(0,10) <= LEGACY_CUTOFF,
+      isLegacy: !o.startDate || getDateStr(o.startDate) <= LEGACY_CUTOFF,
     });
 
     // Separate legacy (startDate <= CUTOFF) and new orders
     const legacyOrders = running.filter(o =>
-      !o.startDate || String(o.startDate).slice(0,10) <= LEGACY_CUTOFF
+      !o.startDate || getDateStr(o.startDate) <= LEGACY_CUTOFF
     );
     const newOrders = running.filter(o =>
-      o.startDate && String(o.startDate).slice(0,10) > LEGACY_CUTOFF
+      o.startDate && getDateStr(o.startDate) > LEGACY_CUTOFF
     );
 
     // For new orders: max 2 per machine (new business rule from 20 Apr 2026)

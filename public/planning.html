@@ -1390,7 +1390,7 @@ function renderOrderRow(ord, idx, mc) {
   const isWO = ord.woStatus === 'wo';
   const isWOReconciled = ord.woStatus === 'wo-reconciled';
   const LEGACY_CUTOFF_PL = '2026-04-19';
-  const ordStartStr = ord.startDate ? String(ord.startDate).slice(0,10) : '';
+  const ordStartStr = ord.startDate ? toDateInput(ord.startDate) : '';
   const isLegacyOrd = !ordStartStr || ordStartStr <= LEGACY_CUTOFF_PL;
   const legacyBadge = isLegacyOrd && ord.status === 'running'
     ? `<span title="Legacy order — exempt from 2-order limit (started before 20 Apr 2026)" style="font-size:9px;padding:1px 5px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.5);border-radius:3px;color:#d97706;font-family:var(--font-mono);letter-spacing:.3px;margin-left:3px">LEGACY</span>`
@@ -1511,7 +1511,7 @@ function changeOrderStatus(ordId, machineId, newStatus) {
   // Max 2 In Production per machine — applies ONLY to new orders (startDate > LEGACY_CUTOFF)
   const LEGACY_CUTOFF = '2026-04-19';
   if (newStatus === 'running') {
-    const ordStartDate = ord.startDate ? String(ord.startDate).slice(0,10) : '';
+    const ordStartDate = ord.startDate ? toDateInput(ord.startDate) : '';
     const isLegacyOrder = !ordStartDate || ordStartDate <= LEGACY_CUTOFF;
     if (!isLegacyOrder) {
       // Count only NEW (non-legacy) running orders on this machine
@@ -1520,7 +1520,7 @@ function changeOrderStatus(ordId, machineId, newStatus) {
         o.status === 'running' &&
         o.id !== ordId &&
         !o.deleted &&
-        o.startDate && String(o.startDate).slice(0,10) > LEGACY_CUTOFF
+        o.startDate && toDateInput(o.startDate) > LEGACY_CUTOFF
       ).length;
       if (newRunningCount >= 2) {
         alert('⚠️ Maximum 2 new orders can be In Production simultaneously on this machine.\n\nPlease close one of the current running orders before starting a new one.\n\n(Legacy orders from before 20 Apr 2026 are not counted in this limit.)');
@@ -2000,7 +2000,7 @@ function saveOrderModal(existingId, defaultMachine) {
     }
     // ── 2-order limit check for NEW orders (startDate > LEGACY_CUTOFF) ──
     const LEGACY_CUTOFF_SAVE = '2026-04-19';
-    const newOrdStartStr = ord.startDate ? String(ord.startDate).slice(0,10) : '';
+    const newOrdStartStr = ord.startDate ? toDateInput(ord.startDate) : '';
     const isNewOrder = newOrdStartStr > LEGACY_CUTOFF_SAVE;
     if (isNewOrder && ord.status === 'running') {
       const newRunningOnMachine = state.orders.filter(o =>
@@ -2008,7 +2008,7 @@ function saveOrderModal(existingId, defaultMachine) {
         o.status === 'running' &&
         o.id !== ord.id &&
         !o.deleted &&
-        o.startDate && String(o.startDate).slice(0,10) > LEGACY_CUTOFF_SAVE
+        o.startDate && toDateInput(o.startDate) > LEGACY_CUTOFF_SAVE
       ).length;
       if (newRunningOnMachine >= 2) {
         alert(`⚠️ Maximum 2 new orders can be In Production on ${ord.machineId} simultaneously.\n\nThis machine already has ${newRunningOnMachine} new running orders.\n\nPlease set Status to Pending, or close an existing running order first.`);
