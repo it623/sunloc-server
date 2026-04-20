@@ -1416,8 +1416,7 @@ function renderOrderRow(ord, idx, mc) {
     ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">AIM Out: ${fmt(liveAimOut)}L / ${fmt(ord.grossQty)}L planned</div>` : '';
   const dprClosed = window._dprClosedBatches && ord.id ? window._dprClosedBatches[ord.id] : null;
   // Temporary force-close window: 20-Apr-2026 to 22-Apr-2026 only
-  // Allows closing legacy IN PRODUCTION orders without DPR batch close
-  // After 22-Apr-2026 this automatically reverts to normal (dprClosed required)
+  // After 22-Apr-2026 reverts to normal automatically (dprClosed required)
   const _todayStr = new Date().toISOString().slice(0,10);
   const _forceCloseAllowed = _todayStr >= '2026-04-20' && _todayStr <= '2026-04-22';
   const canClose = !isClosed && ord.actualProd > 0 && (!!dprClosed || _forceCloseAllowed);
@@ -1932,16 +1931,21 @@ function saveOrderModal(existingId, defaultMachine) {
   const startDate = new Date(document.getElementById('fo-startdate')?.value || today());
 
   // Fix 2: Validate start date sequencing — warn if this order starts before previous order ends
-  const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
-  if (machineOrders.length > 0) {
-    const latestEnd = machineOrders.reduce((max, o) => {
-      const d = o.endDate ? new Date(o.endDate) : null;
-      return (d && (!max || d > max)) ? d : max;
-    }, null);
-    if (latestEnd && startDate < latestEnd) {
-      const suggested = new Date(latestEnd);
-      alert(`⚠️ Date Sequencing Conflict\n\nChosen start: ${fmtDate(startDate)}\nPrevious order ends: ${fmtDate(latestEnd)}\n\nStart date has been adjusted to ${fmtDate(suggested)} to maintain sequence.\n\nYou can edit the start date of the previous order if you need an earlier start.`);
-      startDate.setTime(suggested.getTime());
+  // TEMPORARILY DISABLED 20-Apr-2026 to 22-Apr-2026 so users can set any start/end date freely
+  const _dateCheckToday = new Date().toISOString().slice(0,10);
+  const _skipDateCheck = _dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22';
+  if (!_skipDateCheck) {
+    const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
+    if (machineOrders.length > 0) {
+      const latestEnd = machineOrders.reduce((max, o) => {
+        const d = o.endDate ? new Date(o.endDate) : null;
+        return (d && (!max || d > max)) ? d : max;
+      }, null);
+      if (latestEnd && startDate < latestEnd) {
+        const suggested = new Date(latestEnd);
+        alert(`⚠️ Date Sequencing Conflict\n\nChosen start: ${fmtDate(startDate)}\nPrevious order ends: ${fmtDate(latestEnd)}\n\nStart date has been adjusted to ${fmtDate(suggested)} to maintain sequence.\n\nYou can edit the start date of the previous order if you need an earlier start.`);
+        startDate.setTime(suggested.getTime());
+      }
     }
   }
 
