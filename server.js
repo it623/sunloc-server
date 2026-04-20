@@ -27,6 +27,11 @@ app.use(express.static(path.join(__dirname, 'public')));
 
 let db;
 const USE_POSTGRES = !!process.env.DATABASE_URL;
+
+// ── Legacy order cutoff: orders with startDate on or before this date
+//    are treated as legacy (already in plant) and exempt from 2-order limit
+const LEGACY_CUTOFF = '2026-04-19';
+
 let DB_PATH = 'postgres'; // overwritten below in SQLite mode; must be top-level so health endpoint never throws ReferenceError
 
 if (USE_POSTGRES) {
@@ -899,22 +904,48 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 app.get('/api/orders/active', async (req, res) => {
   try {
     const state = await getPlanningStateAsync();
-    const orders = (state.orders || [])
-      .filter(o => o.status === 'running' && !o.deleted)
-      .map(o => ({
-        id: o.id,
-        batchNumber: o.batchNumber || '',
-        poNumber: o.poNumber || '',
-        customer: o.customer || '',
-        machineId: o.machineId || '',
-        size: o.size || '',
-        colour: o.colour || '',
-        qty: o.qty || 0,
-        grossQty: o.grossQty || o.qty || 0,
-        actualQty: o.actualQty || 0,
-        status: o.status || 'running',
-        isPrinted: o.isPrinted || false,
-      }));
+    const running = (state.orders || []).filter(o => o.status === 'running' && !o.deleted);
+
+    const mapOrder = o => ({
+      id: o.id,
+      batchNumber: o.batchNumber || '',
+      poNumber: o.poNumber || '',
+      customer: o.customer || '',
+      machineId: o.machineId || '',
+      size: o.size || '',
+      colour: o.colour || '',
+      qty: o.qty || 0,
+      grossQty: o.grossQty || o.qty || 0,
+      actualQty: o.actualQty || 0,
+      status: o.status || 'running',
+      isPrinted: o.isPrinted || false,
+      isLegacy: !o.startDate || String(o.startDate).slice(0,10) <= LEGACY_CUTOFF,
+    });
+
+    // Separate legacy (startDate <= CUTOFF) and new orders
+    const legacyOrders = running.filter(o =>
+      !o.startDate || String(o.startDate).slice(0,10) <= LEGACY_CUTOFF
+    );
+    const newOrders = running.filter(o =>
+      o.startDate && String(o.startDate).slice(0,10) > LEGACY_CUTOFF
+    );
+
+    // For new orders: max 2 per machine (new business rule from 20 Apr 2026)
+    const newOrdersFiltered = [];
+    const newCountPerMachine = {};
+    // Sort new orders by startDate so earliest 2 per machine are kept
+    const newSorted = [...newOrders].sort((a,b) => String(a.startDate).localeCompare(String(b.startDate)));
+    for (const o of newSorted) {
+      const mc = o.machineId || 'unknown';
+      if (!newCountPerMachine[mc]) newCountPerMachine[mc] = 0;
+      if (newCountPerMachine[mc] < 2) {
+        newOrdersFiltered.push(o);
+        newCountPerMachine[mc]++;
+      }
+    }
+
+    // Return ALL legacy orders + filtered new orders
+    const orders = [...legacyOrders, ...newOrdersFiltered].map(mapOrder);
     res.json({ ok: true, orders });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });

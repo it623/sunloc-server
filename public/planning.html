@@ -1377,11 +1377,17 @@ function renderOrderRow(ord, idx, mc) {
   const isRunning = ord.status === 'running';
   const isWO = ord.woStatus === 'wo';
   const isWOReconciled = ord.woStatus === 'wo-reconciled';
+  const LEGACY_CUTOFF_PL = '2026-04-19';
+  const ordStartStr = ord.startDate ? String(ord.startDate).slice(0,10) : '';
+  const isLegacyOrd = !ordStartStr || ordStartStr <= LEGACY_CUTOFF_PL;
+  const legacyBadge = isLegacyOrd && ord.status === 'running'
+    ? `<span title="Legacy order — exempt from 2-order limit (started before 20 Apr 2026)" style="font-size:9px;padding:1px 5px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.5);border-radius:3px;color:#d97706;font-family:var(--font-mono);letter-spacing:.3px;margin-left:3px">LEGACY</span>`
+    : '';
   const statusBadge = `<select class="status-select" onchange="changeOrderStatus('${ord.id}','${mc.id}',this.value)" style="font-size:11px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface3);color:var(--text);cursor:pointer">
     <option value="pending" ${ord.status==='pending'?'selected':''}>Pending</option>
     <option value="running" ${ord.status==='running'?'selected':''}>In Production</option>
     <option value="closed" ${ord.status==='closed'?'selected':''}>Closed</option>
-  </select>`;
+  </select>${legacyBadge}`;
   const ptdBadge = ord.isPrinted ? '<span class="badge badge-ptd">PTD</span>' : '<span class="badge badge-up">UP</span>';
   const grossQty = ord.grossQty ? fmt(ord.grossQty) : '-';
   // Live A-grade flag for this order's batch
@@ -1490,15 +1496,27 @@ function updateOrderRemark(ordId, val) {
 function changeOrderStatus(ordId, machineId, newStatus) {
   const ord = state.orders.find(o=>o.id===ordId);
   if (!ord) return;
-  // Max 2 consecutive In Production orders per machine
+  // Max 2 In Production per machine — applies ONLY to new orders (startDate > LEGACY_CUTOFF)
+  const LEGACY_CUTOFF = '2026-04-19';
   if (newStatus === 'running') {
-    const runningCount = state.orders.filter(o=>o.machineId===machineId&&o.status==='running'&&o.id!==ordId&&!o.deleted).length;
-    if (runningCount >= 2) {
-      alert('⚠️ Maximum 2 orders can be In Production simultaneously on this machine.\n\nPlease close one of the current running orders before starting a new one.');
-      // Reset the select back to previous value
-      const sel = document.querySelector(`select[onchange*="${ordId}"]`);
-      if (sel) sel.value = ord.status;
-      return;
+    const ordStartDate = ord.startDate ? String(ord.startDate).slice(0,10) : '';
+    const isLegacyOrder = !ordStartDate || ordStartDate <= LEGACY_CUTOFF;
+    if (!isLegacyOrder) {
+      // Count only NEW (non-legacy) running orders on this machine
+      const newRunningCount = state.orders.filter(o =>
+        o.machineId === machineId &&
+        o.status === 'running' &&
+        o.id !== ordId &&
+        !o.deleted &&
+        o.startDate && String(o.startDate).slice(0,10) > LEGACY_CUTOFF
+      ).length;
+      if (newRunningCount >= 2) {
+        alert('⚠️ Maximum 2 new orders can be In Production simultaneously on this machine.\n\nPlease close one of the current running orders before starting a new one.\n\n(Legacy orders from before 20 Apr 2026 are not counted in this limit.)');
+        // Reset the select back to previous value
+        const sel = document.querySelector(`select[onchange*="${ordId}"]`);
+        if (sel) sel.value = ord.status;
+        return;
+      }
     }
   }
   ord.status = newStatus;
