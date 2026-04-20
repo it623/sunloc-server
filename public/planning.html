@@ -624,7 +624,17 @@ const SYNC = (() => {
       if (r.ok) { const j = await r.json(); serverState = j.state || null; _online = true; updateBadge(); }
     } catch { _online = false; updateBadge(); }
     if (!serverState || !serverState.orders || serverState.orders.length === 0) return;
-    Object.assign(state, serverState);
+    // Use whichever state is NEWER: localStorage or server
+    // This prevents server from overwriting recent local changes on quick refresh
+    const localSavedAt = state._savedAt || 0;
+    const serverSavedAt = serverState._savedAt || 0;
+    if (serverSavedAt >= localSavedAt) {
+      Object.assign(state, serverState);
+    } else {
+      // localStorage is newer — push it to server to sync
+      console.log('[Sync] localStorage is newer than server, pushing local state to server');
+      SYNC.push({...state});
+    }
     state.pcCodes = PC_CODES_RAW;
     state.zoneMap = ZONE_MAP_RAW;
     // Re-merge static fields (pref, cap) from PRINT_MACHINES constant
@@ -769,13 +779,15 @@ function openTrackingApp() {
   else alert('Please configure the Server URL in Settings first.');
 }
 
-function saveState() {
+async function saveState() {
   try {
     const toSave = {...state};
     delete toSave.pcCodes;
     delete toSave.zoneMap;
+    toSave._savedAt = Date.now(); // timestamp for conflict resolution
     localStorage.setItem('sunloc_state', JSON.stringify(toSave));
-    SYNC.push(toSave); // async push to server — non-blocking
+    // Await server save so refresh always shows latest state
+    await SYNC.push(toSave);
     auditLog('SAVE', `Saved planning state — page: ${state.currentPage}`);
   } catch(e) {}
 }
@@ -1832,6 +1844,62 @@ function saveOrderModal(existingId, defaultMachine) {
 
   const qty = parseFloat(document.getElementById('fo-qty')?.value)||0;
   if (!qty) return alert('Please enter order quantity');
+
+  // ══════════════════════════════════════════════════════════
+  // MANDATORY VALIDATION — 3 CHECKPOINTS (cannot bypass)
+  // ══════════════════════════════════════════════════════════
+
+  // CHECKPOINT 1: Batch Number — must start with 2 digits (year) + letter(s) + digit(s)
+  // Rule: starts with 2 digits, then at least 1 uppercase letter, then at least 1 digit
+  // Examples valid  : 26N013, 26ZH043, 27A001, 26ZA123
+  // Examples blocked: 'test', 'demo', 'abc', '123', 'TEMP', blank, random text
+  // Note: TEMP batches (TEMP-MC14-...) are auto-created by server, never entered here
+  const batchVal = (document.getElementById('fo-batch')?.value || '').trim();
+  if (!batchVal) {
+    alert('⚠️ Checkpoint 1 Failed: Batch Number is mandatory.\n\nBatch Number cannot be empty.\nFormat: Year (2 digits) + Letters + Digits\nExamples: 26N013, 26ZH043, 27A001');
+    document.getElementById('fo-batch')?.focus();
+    return;
+  }
+  const batchFormatOK = /^\d{2}[A-Z]+\d+$/.test(batchVal);
+  if (!batchFormatOK) {
+    alert(`⚠️ Checkpoint 1 Failed: Invalid Batch Number format.\n\nEntered: "${batchVal}"\n\nRequired: Start with 2 digits (year) + uppercase letters + digits\n\nValid examples: 26N013, 26ZH043, 26ZA001, 27B025\n\nNote: Must start with year digits (e.g. 26 or 27).\nNo test/dummy/random names allowed.`);
+    document.getElementById('fo-batch')?.focus();
+    return;
+  }
+
+  // CHECKPOINT 2: Order Qty (Lakhs) — must be > 0 (already checked above)
+  // Additional check: must be a realistic value (not test data like 0.001 or 9999)
+  if (qty <= 0) {
+    alert('⚠️ Checkpoint 2 Failed: Order Qty is mandatory.\n\nPlease enter a valid quantity in Lakhs (e.g. 10, 25.5, 100)');
+    document.getElementById('fo-qty')?.focus();
+    return;
+  }
+  if (qty > 500) {
+    alert(`⚠️ Checkpoint 2 Warning: Order Qty ${qty}L seems very high.\n\nPlease verify the quantity before saving.\n\nIf correct, proceed. This is a warning only.`);
+    // Don't return — allow save but warn
+  }
+
+  // CHECKPOINT 3: Machine + Size + PC Code + Packing — all mandatory
+  const pcCodeVal = (document.getElementById('fo-pccode')?.value || '').trim();
+  const packingVal = (document.getElementById('fo-packing')?.value || '').trim();
+  const sizeVal = document.getElementById('fo-size')?.value || '';
+  const missing3 = [];
+  if (!machineId) missing3.push('Machine');
+  if (!sizeVal) missing3.push('Size');
+  if (!pcCodeVal) missing3.push('PC Code');
+  if (!packingVal) missing3.push('Packing');
+  if (missing3.length > 0) {
+    alert(`⚠️ Checkpoint 3 Failed: The following mandatory fields are missing:\n\n${missing3.map(f => '  • ' + f).join('\n')}\n\nAll fields must be filled before saving.`);
+    if (!machineId) document.getElementById('fo-machine')?.focus();
+    else if (!sizeVal) document.getElementById('fo-size')?.focus();
+    else if (!pcCodeVal) document.getElementById('fo-pccode')?.focus();
+    else document.getElementById('fo-packing')?.focus();
+    return;
+  }
+
+  // ══════════════════════════════════════════════════════════
+  // END MANDATORY VALIDATIONS
+  // ══════════════════════════════════════════════════════════
 
   const isPrinted = document.getElementById('fo-printed')?.value === '1';
   const ag = parseFloat(document.getElementById('fo-agrade')?.value)||mc.aGrade;
