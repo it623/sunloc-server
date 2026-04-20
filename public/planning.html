@@ -1704,6 +1704,14 @@ function showAddOrderModal(machineId, existingOrder) {
         <input class="form-control" id="fo-containerref" value="${ord.containerRef||''}" placeholder="e.g. CONT-2026-001 (links all orders in this shipment)">
         <div style="font-size:11px;color:var(--text3);margin-top:3px">All production orders with the same Container Ref will be dispatched together once all are closed.</div>
       </div>
+      <div class="form-group">
+        <label>Status</label>
+        <select class="form-control" id="fo-status">
+          <option value="pending" ${(ord.status||'pending')==='pending'?'selected':''}>Pending</option>
+          <option value="running" ${ord.status==='running'?'selected':''}>Running</option>
+          <option value="closed" ${ord.status==='closed'?'selected':''}>Completed</option>
+        </select>
+      </div>
       <div class="form-group" style="grid-column:1/-1">
         <label>Remarks</label>
         <input class="form-control" id="fo-remarks" value="${ord.remarks||''}" placeholder="Special considerations...">
@@ -1901,7 +1909,7 @@ function saveOrderModal(existingId, defaultMachine) {
     zone: document.getElementById('fo-zone')?.value,
     containerRef: document.getElementById('fo-containerref')?.value || '',
     remarks: document.getElementById('fo-remarks')?.value,
-    status: existingId ? (state.orders.find(o=>o.id===existingId)?.status||'pending') : 'pending',
+    status: document.getElementById('fo-status')?.value || (existingId ? (state.orders.find(o=>o.id===existingId)?.status||'pending') : 'pending'),
     actualProd: existingId ? (state.orders.find(o=>o.id===existingId)?.actualProd||0) : 0,
   };
 
