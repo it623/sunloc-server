@@ -1938,6 +1938,23 @@ function saveOrderModal(existingId, defaultMachine) {
       alert(`⚠️ Batch number "${ord.batchNumber}" already exists (Order for ${batchExists.customer||'unknown customer'}, Machine ${batchExists.machineId}, Status: ${batchExists.status}).\n\nPlease use a unique batch number.`);
       return;
     }
+    // ── 2-order limit check for NEW orders (startDate > LEGACY_CUTOFF) ──
+    const LEGACY_CUTOFF_SAVE = '2026-04-19';
+    const newOrdStartStr = ord.startDate ? String(ord.startDate).slice(0,10) : '';
+    const isNewOrder = newOrdStartStr > LEGACY_CUTOFF_SAVE;
+    if (isNewOrder && ord.status === 'running') {
+      const newRunningOnMachine = state.orders.filter(o =>
+        o.machineId === ord.machineId &&
+        o.status === 'running' &&
+        o.id !== ord.id &&
+        !o.deleted &&
+        o.startDate && String(o.startDate).slice(0,10) > LEGACY_CUTOFF_SAVE
+      ).length;
+      if (newRunningOnMachine >= 2) {
+        alert(`⚠️ Maximum 2 new orders can be In Production on ${ord.machineId} simultaneously.\n\nThis machine already has ${newRunningOnMachine} new running orders.\n\nPlease set Status to Pending, or close an existing running order first.`);
+        return;
+      }
+    }
     state.orders.push(ord);
   }
 
