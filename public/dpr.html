@@ -606,6 +606,7 @@ const MC_GROUPS = {
 const MANPOWER_MASTER = {
   common: {
     hvac:       ['Pawan','Monu Kumar','Sunil Saini','Pradeep Kumar'],
+    utility:    ['Pawan','Monu Kumar','Sunil Saini','Pradeep Kumar'],
     electrical: ['Mr. Narendra Singh','Mr. Arun Solanki','Mr. Anil Singh Rajput',
                  'Mr. Sachin Sharma','Manog Gaur','Jitendra Sharma','Gajendra Pal Singh'],
     chemist:    ['Satyendra Singh','Manish Kumar Saini','Govind Singh','Satyendra Sharma',
@@ -1509,13 +1510,12 @@ function renderMultiStaff(sh, role, label, values){
   const fl = curFloor;
   const masterNames = getMasterNames(fl, role);
   const vals = (values&&values.length) ? values : [''];
-  const opts = masterNames.map(n=>`<option value="${esc(n)}">${esc(n)}</option>`).join('');
   return `<div class="field-grp" id="ms-${sh}-${role}">
     <label>${label}</label>
     ${vals.map((v,i)=>`<div style="display:flex;gap:4px;margin-bottom:3px">
-      <select class="ms-input" oninput="markUnsaved()" style="flex:1;font-size:11px">
+      <select class="ms-input" oninput="markUnsaved()" style="flex:1;font-size:11px" data-saved="${esc(v||'')}">
         <option value="">— Select —</option>
-        ${opts}
+        ${masterNames.map(n=>`<option value="${esc(n)}" ${v===n?'selected':''}>${esc(n)}</option>`).join('')}
         ${v && !masterNames.includes(v)?`<option value="${esc(v)}" selected>${esc(v)}</option>`:''}
       </select>
       ${i===0?`<button onclick="addStaffName('${sh}','${role}')" style="background:transparent;border:1px solid var(--b2);border-radius:3px;color:var(--accent);font-size:11px;padding:2px 6px;cursor:pointer" title="Add another person">+</button>`
@@ -1675,7 +1675,9 @@ function renderShifts(){
 
       // Group operator row — rendered before first machine in group
       const grp = getGroupForMachine(fl, mc.id);
-      const isFirstInGrp = grp && grp.machines[0]===mc.id;
+      const activeMcIds = mcs.map(m=>m.id);
+      const firstActiveInGrp = grp && grp.machines.find(id=>activeMcIds.includes(id));
+      const isFirstInGrp = grp && firstActiveInGrp === mc.id;
       const isInGrp = !!grp;
       if(isFirstInGrp){
         const grpOps = (m.operators&&m.operators.length) ? m.operators : [''];
@@ -3371,15 +3373,18 @@ async function loadSettingsFromServer(){
       localStorage.setItem('dpr_targets',JSON.stringify(targets));
     }
     // Active machines — merge server config with FLOORS definition
-    // (new machines added to FLOORS are auto-included if not explicitly disabled)
+    // If server has a config for a floor, trust it exactly (respects disabled machines).
+    // Only auto-fill all machines if this floor has never been configured on server before.
     if(s.dpr_active_machines && Object.keys(s.dpr_active_machines).length>0){
-      const merged=JSON.parse(JSON.stringify(s.dpr_active_machines));
+      const merged={};
       Object.keys(FLOORS).forEach(fl=>{
         const floorMcs=(FLOORS[fl]?.machines||[]).map(m=>m.id);
-        if(!merged[fl]) merged[fl]=floorMcs;
-        else{
-          // Add any new machines from FLOORS not yet in saved config
-          floorMcs.forEach(mcId=>{ if(!merged[fl].includes(mcId)) merged[fl].push(mcId); });
+        if(!s.dpr_active_machines[fl]){
+          // Floor never configured on server — include all machines by default
+          merged[fl]=floorMcs;
+        } else {
+          // Floor was configured on server — trust it exactly, do not re-add disabled machines
+          merged[fl]=[...s.dpr_active_machines[fl]];
         }
       });
       localStorage.setItem('dpr_active_machines',JSON.stringify(merged));
@@ -3402,23 +3407,19 @@ function postAuthServerInit() {
   checkServer().then(ok=>{
     if(ok){
       loadSettingsFromServer().then(async ()=>{
-        // Fetch orders FIRST so dropdowns populate correctly when shifts render
         // Fetch orders AND closed batches FIRST — both needed before renderShifts
         await Promise.all([fetchActiveOrders(), fetchClosedBatches()]);
-        // Fetch today's data from server
-        const fl=curFloor, d=getDate();
-        const serverData=await fetchDayFromServer(fl, d);
-        if(serverData){
-          renderDayKpis();
-          renderShifts();
-          renderRemarks();
-          renderResort();
-          toast('✓ Data loaded from server','var(--green)',2000);
-        } else {
-          // Even without server data, re-render with loaded orders + closed badges
-          renderDayKpis();
-          renderShifts();
-        }
+        // Fetch today's data from server for ALL floors so any browser/device
+        // gets the latest saved data regardless of its local localStorage state.
+        const d=getDate();
+        const allFloors=Object.keys(FLOORS);
+        await Promise.all(allFloors.map(fl=>fetchDayFromServer(fl, d)));
+        // Now localStorage is populated with server data for all floors — render
+        renderDayKpis();
+        renderShifts();
+        renderRemarks();
+        renderResort();
+        toast('✓ Data loaded from server','var(--green)',2000);
       });
     } else {
       const cached=localStorage.getItem('dpr_active_orders');
