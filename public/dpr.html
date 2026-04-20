@@ -2202,7 +2202,7 @@ let chartInstances={};
 function destroyChart(id){ if(chartInstances[id]){chartInstances[id].destroy();delete chartInstances[id];} }
 function newChart(id,cfg){ destroyChart(id); const c=document.getElementById(id); if(!c)return; chartInstances[id]=new Chart(c,cfg); }
 
-function renderAnalytics(){
+async function renderAnalytics(){
   // Sync floor selector to current floor when first opening, then use selector value
   const flSel = document.getElementById('analyticsFloor');
   if(flSel && !flSel.dataset.userSet) flSel.value = curFloor;
@@ -2210,6 +2210,9 @@ function renderAnalytics(){
   const dateSel = document.getElementById('analyticsDate');
   if(dateSel && !dateSel.value) dateSel.value = getDate();
   const d = (dateSel && dateSel.value) ? dateSel.value : getDate();
+  // Fetch from server for selected floor/date (may differ from current floor)
+  const serverData = await fetchDayFromServer(fl, d);
+  if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
   const day = loadDay(fl, d);
   const mcs = getActiveMachines(fl);
 
@@ -2305,9 +2308,9 @@ function renderAnalytics(){
     const effCls=eff>=90?'g':eff>=75?'a':'r';
     html+=`<tr><td class="mono">${mc.id}</td><td style="color:var(--t3)">${mc.sz}</td>
       <td style="color:var(--t2)">${batchCount>1?`<span class="pill a">${batchCount} runs</span>`:'<span style="color:var(--t3)">1</span>'}</td>
-      <td class="mono">${t}</td><td class="mono">${prod||'—'}</td>
+      <td class="mono">${t}</td><td class="mono">${prod>0?prod.toFixed(2):'—'}</td>
       <td><span class="pill ${effCls}">${prod>0?eff.toFixed(1)+'%':'—'}</span></td>
-      <td class="mono">${dt||'—'}</td><td class="mono">${rs>0?`<span style="color:var(--red)">${rs}</span>`:'—'}</td></tr>`;
+      <td class="mono">${dt||'—'}</td><td class="mono">${rs>0?`<span style="color:var(--red)">${parseFloat(rs).toFixed(2)}</span>`:'—'}</td></tr>`;
   });
   // Totals row
   let totProd=0,totDT=0,totBatches=0,totTarget=0,totRs=0;
@@ -2582,13 +2585,16 @@ function renderShiftPersonnelPerf(){
   section.innerHTML=html;
 }
 
-function renderPerf(){
+async function renderPerf(){
   const flSel  = document.getElementById('perfFloor');
   if(flSel && !flSel.dataset.userSet) flSel.value = curFloor;
   const fl = flSel ? flSel.value : curFloor;
   const dateSel = document.getElementById('perfDate');
   if(dateSel && !dateSel.value) dateSel.value = getDate();
   const d = (dateSel && dateSel.value) ? dateSel.value : getDate();
+  // Fetch from server for selected floor/date (may differ from current floor)
+  const serverData = await fetchDayFromServer(fl, d);
+  if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
   const day = loadDay(fl, d);
 
   // Scorecard for selected date
