@@ -567,12 +567,13 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
 // ═══════════════════════════════════════════════════════
 const FLOORS = {
   GF: { label:'Ground Floor', machines:[
+    {id:'MC7',sz:'#4'},{id:'MC8',sz:'#4'},
     {id:'MC20',sz:'#2'},{id:'MC21',sz:'#0'},{id:'MC22',sz:'#0'},
     {id:'MC29',sz:'#0'},{id:'MC30',sz:'#2'},{id:'MC31',sz:'#2'},
     {id:'MC32',sz:'#3'},{id:'MC33',sz:'#1'},{id:'MC34',sz:'#00'}
   ]},
   '1F': { label:'First Floor (FF)', machines:[
-    {id:'MC7',sz:'#4'},{id:'MC8',sz:'#4'},{id:'MC14',sz:'#1'},{id:'MC15',sz:'#0'},{id:'MC16',sz:'#0'}
+    {id:'MC14',sz:'#1'},{id:'MC15',sz:'#0'},{id:'MC16',sz:'#0'}
   ]},
   '2F': { label:'Second Floor (SF)', machines:[
     {id:'MC23',sz:'#1'},{id:'MC24',sz:'#2'},{id:'MC25',sz:'#0'},
@@ -584,13 +585,13 @@ const FLOORS = {
 // Multiple operators allowed per group
 const MC_GROUPS = {
   GF: [
+    { label:'MC 7 & 8',       machines:['MC7','MC8'] },
+    { label:'MC 20, 21 & 22', machines:['MC20','MC21','MC22'] },
     { label:'MC 29 & 30',     machines:['MC29','MC30'] },
     { label:'MC 31, 32 & 33', machines:['MC31','MC32','MC33'] },
     { label:'MC 34',          machines:['MC34'] },
-    { label:'MC 20, 21 & 22', machines:['MC20','MC21','MC22'] },
   ],
   '1F': [
-    { label:'MC 7 & 8',       machines:['MC7','MC8'] },
     { label:'MC 14, 15 & 16', machines:['MC14','MC15','MC16'] },
   ],
   '2F': [
