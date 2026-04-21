@@ -1071,31 +1071,53 @@ async function pullFromServer(){
 }
 
 async function pushToServer(endpoint, data){
-  if(!serverUrl) return;
+  if(!serverUrl) return null;
   try{
-    await fetch(serverUrl+endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(8000)});
+    const r=await fetch(serverUrl+endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(8000)});
     setSyncBadge('synced');
-  }catch{ setSyncBadge('offline'); }
+    try{ return await r.json(); }catch{ return null; }
+  }catch{ setSyncBadge('offline'); return null; }
 }
 
 function saveLocal(){
   try{
-    const toSave={labels:state.labels,scans:state.scans,stageClosure:state.stageClosure,wastage:state.wastage,dispatchRecs:state.dispatchRecs,alerts:state.alerts};
+    // SCANS ARE NEVER SAVED TO LOCALSTORAGE — always read from server
+    // Labels, stageClosure, wastage, dispatchRecs, alerts cached locally for speed
+    const toSave={labels:state.labels,stageClosure:state.stageClosure,wastage:state.wastage,dispatchRecs:state.dispatchRecs,alerts:state.alerts};
     localStorage.setItem('sunloc_tracking',JSON.stringify(toSave));
     trkAuditLog('SAVE', `Tracking data saved — dept: ${currentDept}`);
   }catch(e){}
 }
 
 function loadState(){
-  // Always pull from server — server is the source of truth
-  if(serverUrl){
-    pullFromServer();
-  } else {
-    // Offline fallback: use localStorage
+  // SCANS ARE NEVER LOADED FROM LOCALSTORAGE — always from server
+  // Load other cached data (labels, wastage etc.) from localStorage for instant first render
+  if(!serverUrl){
     try{
       const saved=localStorage.getItem('sunloc_tracking');
-      if(saved){ const p=JSON.parse(saved); Object.assign(state,p); }
+      if(saved){
+        const p=JSON.parse(saved);
+        const {scans,...rest}=p; // strip scans — server is only source
+        Object.assign(state,rest);
+        state.scans=[]; // always start empty — server will fill
+      }
     }catch{}
+  } else {
+    // Has server — try localStorage for labels/wastage cache only (not scans)
+    try{
+      const saved=localStorage.getItem('sunloc_tracking');
+      if(saved){
+        const p=JSON.parse(saved);
+        if(p.labels) state.labels=p.labels;
+        if(p.stageClosure) state.stageClosure=p.stageClosure;
+        if(p.wastage) state.wastage=p.wastage;
+        if(p.dispatchRecs) state.dispatchRecs=p.dispatchRecs;
+        if(p.alerts) state.alerts=p.alerts;
+        state.scans=[]; // always empty until server loads
+      }
+    }catch{}
+    // Always pull from server — scans come from here only
+    pullFromServer();
   }
 }
 
@@ -1125,16 +1147,14 @@ function recordScan(labelId, dept, type, operator, parsed){
   }
 
 
-  // Check not already scanned in without out
-  if(type==='in'){
-    const lastScan = getScansForBox(labelId).filter(s=>s.dept===dept).pop();
-    if(lastScan && lastScan.type==='in') return {ok:false,msg:'Box already scanned IN at this department'};
-  }
-  if(type==='out'){
-    const deptScans = getScansForBox(labelId).filter(s=>s.dept===dept);
-    if(!deptScans.some(s=>s.type==='in')) return {ok:false,msg:'Box not scanned IN at this department'};
-    if(deptScans.filter(s=>s.type==='out').length>=deptScans.filter(s=>s.type==='in').length) return {ok:false,msg:'Box already scanned OUT at this department'};
-  }
+  // Strong duplicate check — matches server logic exactly
+  // Check ALL scans for this label+dept, not just the last one
+  const allDeptScans = getScansForBox(labelId).filter(s=>s.dept===dept);
+  const alreadyIn  = allDeptScans.some(s=>s.type==='in');
+  const alreadyOut = allDeptScans.some(s=>s.type==='out');
+  if(type==='in' && alreadyIn)  return {ok:false,msg:'Box already scanned IN at this department'};
+  if(type==='out' && !alreadyIn) return {ok:false,msg:'Box not scanned IN at this department'};
+  if(type==='out' && alreadyOut) return {ok:false,msg:'Box already scanned OUT at this department'};
 
   const scan = { id:uid(), labelId, batchNumber:label.batchNumber, labelNumber:label.labelNumber, dept, type, ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty, _local:true };
   state.scans.push(scan);
@@ -1147,10 +1167,17 @@ function recordScan(labelId, dept, type, operator, parsed){
     newOrangeLabel = autoGenerateOrangeLabel(label, {...batch, isPrinted:true});
   }
 
-  saveLocal();
-  pushToServer('/api/tracking/scan',{scan}).then(()=>{
-    // Refresh scans from server after save — shows on all devices immediately
-    setTimeout(refreshScans, 1500);
+  // SCANS GO DIRECTLY TO SERVER — never to localStorage
+  // Push to server, handle duplicate rejection, refresh all devices immediately
+  pushToServer('/api/tracking/scan',{scan}).then(result=>{
+    if(result && result.duplicate){
+      // Server rejected — another device already scanned this label
+      // Remove from local state and show error
+      state.scans=state.scans.filter(s=>s.id!==scan.id);
+      showFlash('❌ Already scanned '+type.toUpperCase()+' at '+dept.toUpperCase()+' — duplicate rejected','#dc2626');
+    }
+    // Refresh from server immediately so all devices see latest scans
+    setTimeout(refreshScans, 500);
   });
 
   // Update planning app stage status
@@ -5136,8 +5163,8 @@ async function refreshScans(){
   }catch(e){ console.warn('refreshScans error:',e?.message); }
 }
 
-// Refresh scans every 15 seconds — real-time across all devices
-setInterval(refreshScans, 15000);
+// Refresh scans every 5 seconds — real-time across all devices
+setInterval(refreshScans, 5000);
 
 // Full sync every 2 minutes for labels, wastage, batches
 setInterval(()=>{
