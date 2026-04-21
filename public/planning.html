@@ -584,7 +584,7 @@ const SYNC = (() => {
   }
 
   async function push(stateObj) {
-    if (!_url || !stateObj || !stateObj.orders || stateObj.orders.length === 0) return;
+    if (!_url || !stateObj) return false;
     try {
       const r = await fetch(_url + '/api/planning/state', {
         method: 'POST',
@@ -592,8 +592,9 @@ const SYNC = (() => {
         body: JSON.stringify({ state: stateObj }),
         signal: AbortSignal.timeout(10000)
       });
-      if (r.ok) { _online = true; _lastCheck = Date.now(); updateBadge(); }
-    } catch { _online = false; updateBadge(); }
+      if (r.ok) { _online = true; _lastCheck = Date.now(); updateBadge(); return true; }
+      return false;
+    } catch { _online = false; updateBadge(); return false; }
   }
 
   async function pull() {
@@ -623,22 +624,13 @@ const SYNC = (() => {
       const r = await fetch(_url + '/api/planning/state', { signal: AbortSignal.timeout(15000) });
       if (r.ok) { const j = await r.json(); serverState = j.state || null; _online = true; updateBadge(); }
     } catch { _online = false; updateBadge(); }
-    if (!serverState || !serverState.orders || serverState.orders.length === 0) return;
-    // Use whichever state is NEWER: localStorage or server
-    // This prevents server from overwriting recent local changes on quick refresh
-    const localSavedAt = state._savedAt || 0;
-    const serverSavedAt = serverState._savedAt || 0;
-    if (serverSavedAt >= localSavedAt) {
-      Object.assign(state, serverState);
-    } else {
-      // localStorage is newer — push it to server to sync
-      console.log('[Sync] localStorage is newer than server, pushing local state to server');
-      SYNC.push({...state});
-    }
+    if (!serverState || !serverState.orders) return;
+    // SERVER IS ALWAYS SOURCE OF TRUTH — always apply server state on load
+    // Never push localStorage over server — server has the latest data from all devices
+    Object.assign(state, serverState);
     state.pcCodes = PC_CODES_RAW;
     state.zoneMap = ZONE_MAP_RAW;
     // Re-merge static fields (pref, cap) from PRINT_MACHINES constant
-    // These are not saved in server state and become undefined after load
     if (state.printMachineMaster && state.printMachineMaster.length > 0) {
       state.printMachineMaster = state.printMachineMaster.map(pm => {
         const def = PRINT_MACHINES.find(m => m.id === pm.id);
@@ -647,9 +639,9 @@ const SYNC = (() => {
     } else {
       state.printMachineMaster = JSON.parse(JSON.stringify(PRINT_MACHINES));
     }
-    // Persist locally too
+    // Update localStorage cache so offline mode works
     try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
-    // Recalc all machine schedules — actualQty from DPR affects remaining daysNeeded and endDate
+    // Recalc all machine schedules
     const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
     allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
     await loadTrackingStatus();
@@ -747,6 +739,7 @@ const SYNC = (() => {
 
 // Load from localStorage (with server enrichment on init)
 function loadState() {
+  // Load localStorage only for instant initial render — server will overwrite it shortly
   try {
     const saved = localStorage.getItem('sunloc_state');
     if (saved) {
@@ -756,14 +749,12 @@ function loadState() {
       state.zoneMap = ZONE_MAP_RAW;
     }
   } catch(e) {}
-  // Always load from server — ensures fresh data on any device
-  // If local state is empty (new browser/localStorage blocked), server is the only source
-  setTimeout(() => SYNC.loadFromServer(), 300);
-  // Server is source of truth — never auto-push local state on startup
+  // ALWAYS load from server immediately — server is source of truth
+  // This runs on every page load on every device — guarantees latest data
+  SYNC.loadFromServer();
   // Check for month rollover after state is loaded
   setTimeout(() => initMonthlyArchive(), 800);
-  // Ensure actualProd is populated from actualQty on local load (server enriches actualProd fresh;
-  // localStorage only has actualQty). This prevents the column showing 0 before server sync.
+  // Ensure actualProd is populated from actualQty on local load
   if (state.orders) {
     state.orders.forEach(o => {
       if (!o.actualProd && o.actualQty) o.actualProd = o.actualQty;
@@ -779,15 +770,42 @@ function openTrackingApp() {
   else alert('Please configure the Server URL in Settings first.');
 }
 
+// Retry queue — if server save fails, retry every 30 seconds until it succeeds
+let _pendingSave = null;
+let _retryTimer = null;
+function _scheduleRetry(toSave) {
+  _pendingSave = toSave;
+  if (_retryTimer) return; // already scheduled
+  _retryTimer = setInterval(async () => {
+    if (!_pendingSave) { clearInterval(_retryTimer); _retryTimer = null; return; }
+    const ok = await SYNC.push(_pendingSave);
+    if (ok) {
+      _pendingSave = null;
+      clearInterval(_retryTimer);
+      _retryTimer = null;
+      console.log('[Sync] Retry succeeded — data saved to server');
+    }
+  }, 30000);
+}
+
 async function saveState() {
   try {
     const toSave = {...state};
     delete toSave.pcCodes;
     delete toSave.zoneMap;
-    toSave._savedAt = Date.now(); // timestamp for conflict resolution
-    localStorage.setItem('sunloc_state', JSON.stringify(toSave));
-    // Await server save so refresh always shows latest state
-    await SYNC.push(toSave);
+    toSave._savedAt = Date.now();
+    // SERVER IS PRIMARY — save to server first
+    const serverOk = await SYNC.push(toSave);
+    if (serverOk) {
+      // Server confirmed — update localStorage cache
+      try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
+      _pendingSave = null; // clear any pending retry
+    } else {
+      // Server failed — keep localStorage as temporary cache and retry
+      try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
+      _scheduleRetry(toSave);
+      console.warn('[Sync] Server save failed — will retry in 30s');
+    }
     auditLog('SAVE', `Saved planning state — page: ${state.currentPage}`);
   } catch(e) {}
 }
@@ -934,8 +952,6 @@ function recalcMachineScheduleQuiet(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
-  const _rToday = new Date().toISOString().slice(0,10);
-  const _inWindow = _rToday >= '2026-04-20' && _rToday <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') continue;
@@ -947,10 +963,7 @@ function recalcMachineScheduleQuiet(machineId) {
     ord.printOut    = sc.printOut;
     ord.piOut       = sc.piOut;
     ord.daysNeeded  = sc.daysNeeded;
-    // During 2-day window: if end date was manually set, do not overwrite it
-    if (!(_inWindow && ord.manualEndDate)) {
-      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
-    }
+    ord.endDate     = calcEndDate(ord.startDate, sc.daysNeeded);
     cursor = new Date(ord.endDate);
   }
   // Cascade to print schedule — production end dates drive print start dates
@@ -961,8 +974,6 @@ function recalcMachineSchedule(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
-  const _rToday2 = new Date().toISOString().slice(0,10);
-  const _inWindow2 = _rToday2 >= '2026-04-20' && _rToday2 <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') continue;
@@ -974,10 +985,7 @@ function recalcMachineSchedule(machineId) {
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty = sc.grossQty;
     ord.daysNeeded = sc.daysNeeded;
-    // During 2-day window: if end date was manually set, do not overwrite it
-    if (!(_inWindow2 && ord.manualEndDate)) {
-      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
-    }
+    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     cursor = new Date(ord.endDate);
   }
   // Sync batchNumber changes to linked printOrders and dispatchPlans
@@ -1425,11 +1433,7 @@ function renderOrderRow(ord, idx, mc) {
   const aimProgress = (!ord.isPrinted && liveAimOut > 0 && ord.grossQty)
     ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">AIM Out: ${fmt(liveAimOut)}L / ${fmt(ord.grossQty)}L planned</div>` : '';
   const dprClosed = window._dprClosedBatches && ord.id ? window._dprClosedBatches[ord.id] : null;
-  // Temporary force-close window: 20-Apr-2026 to 22-Apr-2026 only
-  // After 22-Apr-2026 reverts to normal automatically (dprClosed required)
-  const _todayStr = new Date().toISOString().slice(0,10);
-  const _forceCloseAllowed = _todayStr >= '2026-04-20' && _todayStr <= '2026-04-22';
-  const canClose = !isClosed && ord.actualProd > 0 && (!!dprClosed || _forceCloseAllowed);
+  const canClose = !isClosed && ord.actualProd > 0 && !!dprClosed;
   const woBadge = isWO ? '<span class="badge" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.4);font-size:10px">🔶 W/O</span>' :
                   isWOReconciled ? '<span class="badge badge-completed" style="font-size:10px">✅ W/O Assigned</span>' : '';
   return `<tr class="${isClosed?'closed':''}" style="${isWO?'background:rgba(255,171,0,0.03);border-left:3px solid rgba(255,171,0,0.4)':''}">
@@ -1715,10 +1719,6 @@ function showAddOrderModal(machineId, existingOrder) {
         <input class="form-control" id="fo-startdate" type="date" value="${toDateInput(ord.startDate)||toDateInput(today())}">
       </div>
       <div class="form-group">
-        <label>End Date <span style="font-size:11px;color:var(--text3);font-weight:400">(leave blank = auto-calculated)</span></label>
-        <input class="form-control" id="fo-enddate" type="date" value="${toDateInput(ord.endDate)||''}">
-      </div>
-      <div class="form-group">
         <label>Packing</label>
         <input class="form-control" id="fo-packing" value="${ord.packing||''}" placeholder="e.g. HDCL">
       </div>
@@ -1941,27 +1941,21 @@ function saveOrderModal(existingId, defaultMachine) {
   const startDate = new Date(document.getElementById('fo-startdate')?.value || today());
 
   // Fix 2: Validate start date sequencing — warn if this order starts before previous order ends
-  // TEMPORARILY DISABLED 20-Apr-2026 to 22-Apr-2026 so users can set any start/end date freely
-  const _dateCheckToday = new Date().toISOString().slice(0,10);
-  const _skipDateCheck = _dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22';
-  if (!_skipDateCheck) {
-    const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
-    if (machineOrders.length > 0) {
-      const latestEnd = machineOrders.reduce((max, o) => {
-        const d = o.endDate ? new Date(o.endDate) : null;
-        return (d && (!max || d > max)) ? d : max;
-      }, null);
-      if (latestEnd && startDate < latestEnd) {
-        const suggested = new Date(latestEnd);
-        alert(`⚠️ Date Sequencing Conflict\n\nChosen start: ${fmtDate(startDate)}\nPrevious order ends: ${fmtDate(latestEnd)}\n\nStart date has been adjusted to ${fmtDate(suggested)} to maintain sequence.\n\nYou can edit the start date of the previous order if you need an earlier start.`);
-        startDate.setTime(suggested.getTime());
-      }
+  const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
+  if (machineOrders.length > 0) {
+    const latestEnd = machineOrders.reduce((max, o) => {
+      const d = o.endDate ? new Date(o.endDate) : null;
+      return (d && (!max || d > max)) ? d : max;
+    }, null);
+    if (latestEnd && startDate < latestEnd) {
+      const suggested = new Date(latestEnd);
+      alert(`⚠️ Date Sequencing Conflict\n\nChosen start: ${fmtDate(startDate)}\nPrevious order ends: ${fmtDate(latestEnd)}\n\nStart date has been adjusted to ${fmtDate(suggested)} to maintain sequence.\n\nYou can edit the start date of the previous order if you need an earlier start.`);
+      startDate.setTime(suggested.getTime());
     }
   }
 
-  // Use manual End Date if entered, otherwise auto-calculate from qty + machine speed
-  const manualEndDateVal = document.getElementById('fo-enddate')?.value;
-  const endDate = manualEndDateVal ? new Date(manualEndDateVal) : calcEndDate(startDate, daysNeeded);
+  // Recalculate end date using (possibly adjusted) startDate
+  const endDate = calcEndDate(startDate, daysNeeded);
 
   const size = document.getElementById('fo-size')?.value;
   const pcCode = document.getElementById('fo-pccode')?.value;
@@ -1989,7 +1983,6 @@ function saveOrderModal(existingId, defaultMachine) {
     daysNeeded,
     startDate,
     endDate,
-    manualEndDate: !!manualEndDateVal,
     packing: document.getElementById('fo-packing')?.value,
     zone: document.getElementById('fo-zone')?.value,
     containerRef: document.getElementById('fo-containerref')?.value || '',
@@ -2714,10 +2707,6 @@ function showAddPrintModal(machineId, existingId) {
         <input class="form-control" id="fp-startdate" type="date" value="${toDateInput(existing?.startDate)||toDateInput(today())}">
       </div>
       <div class="form-group">
-        <label>Printing End Date <span style="font-size:11px;color:var(--text3);font-weight:400">(leave blank = auto-calculated)</span></label>
-        <input class="form-control" id="fp-enddate" type="date" value="${toDateInput(existing?.endDate)||''}">
-      </div>
-      <div class="form-group">
         <label>Zone</label>
         <select class="form-control" id="fp-zone">
           ${ZONES.map(z=>`<option value="${z}" ${existing?.zone===z?'selected':''}>${z}</option>`).join('')}
@@ -2758,8 +2747,7 @@ function savePrintModal(existingId) {
   const pm = machineId ? getPrintMachine(machineId) : null;
   const qty = parseFloat(document.getElementById('fp-qty')?.value)||0;
   const startDate = new Date(document.getElementById('fp-startdate')?.value||today());
-  const manualPrintEndVal = document.getElementById('fp-enddate')?.value;
-  const endDate = manualPrintEndVal ? new Date(manualPrintEndVal) : (pm && qty ? calcEndDate(startDate, qty/pm.cap) : null);
+  const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
   const ord = {
     id: existingId||uid(),
     productionOrderId: existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null,
