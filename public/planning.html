@@ -626,11 +626,9 @@ const SYNC = (() => {
     } catch { _online = false; updateBadge(); }
     if (!serverState || !serverState.orders) return;
     // SERVER IS ALWAYS SOURCE OF TRUTH — always apply server state on load
-    // Never push localStorage over server — server has the latest data from all devices
     Object.assign(state, serverState);
     state.pcCodes = PC_CODES_RAW;
     state.zoneMap = ZONE_MAP_RAW;
-    // Re-merge static fields (pref, cap) from PRINT_MACHINES constant
     if (state.printMachineMaster && state.printMachineMaster.length > 0) {
       state.printMachineMaster = state.printMachineMaster.map(pm => {
         const def = PRINT_MACHINES.find(m => m.id === pm.id);
@@ -639,9 +637,7 @@ const SYNC = (() => {
     } else {
       state.printMachineMaster = JSON.parse(JSON.stringify(PRINT_MACHINES));
     }
-    // Update localStorage cache so offline mode works
     try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
-    // Recalc all machine schedules
     const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
     allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
     await loadTrackingStatus();
@@ -739,7 +735,6 @@ const SYNC = (() => {
 
 // Load from localStorage (with server enrichment on init)
 function loadState() {
-  // Load localStorage only for instant initial render — server will overwrite it shortly
   try {
     const saved = localStorage.getItem('sunloc_state');
     if (saved) {
@@ -750,11 +745,8 @@ function loadState() {
     }
   } catch(e) {}
   // ALWAYS load from server immediately — server is source of truth
-  // This runs on every page load on every device — guarantees latest data
   SYNC.loadFromServer();
-  // Check for month rollover after state is loaded
   setTimeout(() => initMonthlyArchive(), 800);
-  // Ensure actualProd is populated from actualQty on local load
   if (state.orders) {
     state.orders.forEach(o => {
       if (!o.actualProd && o.actualQty) o.actualProd = o.actualQty;
@@ -775,7 +767,7 @@ let _pendingSave = null;
 let _retryTimer = null;
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
-  if (_retryTimer) return; // already scheduled
+  if (_retryTimer) return;
   _retryTimer = setInterval(async () => {
     if (!_pendingSave) { clearInterval(_retryTimer); _retryTimer = null; return; }
     const ok = await SYNC.push(_pendingSave);
@@ -797,11 +789,9 @@ async function saveState() {
     // SERVER IS PRIMARY — save to server first
     const serverOk = await SYNC.push(toSave);
     if (serverOk) {
-      // Server confirmed — update localStorage cache
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
-      _pendingSave = null; // clear any pending retry
+      _pendingSave = null;
     } else {
-      // Server failed — keep localStorage as temporary cache and retry
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _scheduleRetry(toSave);
       console.warn('[Sync] Server save failed — will retry in 30s');
@@ -952,6 +942,8 @@ function recalcMachineScheduleQuiet(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
+  const _rToday = new Date().toISOString().slice(0,10);
+  const _inWindow = _rToday >= '2026-04-20' && _rToday <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') continue;
@@ -963,7 +955,10 @@ function recalcMachineScheduleQuiet(machineId) {
     ord.printOut    = sc.printOut;
     ord.piOut       = sc.piOut;
     ord.daysNeeded  = sc.daysNeeded;
-    ord.endDate     = calcEndDate(ord.startDate, sc.daysNeeded);
+    // During 2-day window: if end date was manually set, do not overwrite it
+    if (!(_inWindow && ord.manualEndDate)) {
+      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    }
     cursor = new Date(ord.endDate);
   }
   // Cascade to print schedule — production end dates drive print start dates
@@ -974,6 +969,8 @@ function recalcMachineSchedule(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
+  const _rToday2 = new Date().toISOString().slice(0,10);
+  const _inWindow2 = _rToday2 >= '2026-04-20' && _rToday2 <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') continue;
@@ -985,7 +982,10 @@ function recalcMachineSchedule(machineId) {
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty = sc.grossQty;
     ord.daysNeeded = sc.daysNeeded;
-    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    // During 2-day window: if end date was manually set, do not overwrite it
+    if (!(_inWindow2 && ord.manualEndDate)) {
+      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    }
     cursor = new Date(ord.endDate);
   }
   // Sync batchNumber changes to linked printOrders and dispatchPlans
@@ -1407,17 +1407,11 @@ function renderOrderRow(ord, idx, mc) {
   const isRunning = ord.status === 'running';
   const isWO = ord.woStatus === 'wo';
   const isWOReconciled = ord.woStatus === 'wo-reconciled';
-  const LEGACY_CUTOFF_PL = '2026-04-19';
-  const ordStartStr = ord.startDate ? toDateInput(ord.startDate) : '';
-  const isLegacyOrd = !ordStartStr || ordStartStr <= LEGACY_CUTOFF_PL;
-  const legacyBadge = isLegacyOrd && ord.status === 'running'
-    ? `<span title="Legacy order — exempt from 2-order limit (started before 20 Apr 2026)" style="font-size:9px;padding:1px 5px;background:rgba(251,191,36,0.15);border:1px solid rgba(251,191,36,0.5);border-radius:3px;color:#d97706;font-family:var(--font-mono);letter-spacing:.3px;margin-left:3px">LEGACY</span>`
-    : '';
   const statusBadge = `<select class="status-select" onchange="changeOrderStatus('${ord.id}','${mc.id}',this.value)" style="font-size:11px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface3);color:var(--text);cursor:pointer">
     <option value="pending" ${ord.status==='pending'?'selected':''}>Pending</option>
     <option value="running" ${ord.status==='running'?'selected':''}>In Production</option>
     <option value="closed" ${ord.status==='closed'?'selected':''}>Closed</option>
-  </select>${legacyBadge}`;
+  </select>`;
   const ptdBadge = ord.isPrinted ? '<span class="badge badge-ptd">PTD</span>' : '<span class="badge badge-up">UP</span>';
   const grossQty = ord.grossQty ? fmt(ord.grossQty) : '-';
   // Live A-grade flag for this order's batch
@@ -1433,7 +1427,11 @@ function renderOrderRow(ord, idx, mc) {
   const aimProgress = (!ord.isPrinted && liveAimOut > 0 && ord.grossQty)
     ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">AIM Out: ${fmt(liveAimOut)}L / ${fmt(ord.grossQty)}L planned</div>` : '';
   const dprClosed = window._dprClosedBatches && ord.id ? window._dprClosedBatches[ord.id] : null;
-  const canClose = !isClosed && ord.actualProd > 0 && !!dprClosed;
+  // Temporary force-close window: 20-Apr-2026 to 22-Apr-2026 only
+  // After 22-Apr-2026 reverts to normal automatically (dprClosed required)
+  const _todayStr = new Date().toISOString().slice(0,10);
+  const _forceCloseAllowed = _todayStr >= '2026-04-20' && _todayStr <= '2026-04-22';
+  const canClose = !isClosed && ord.actualProd > 0 && (!!dprClosed || _forceCloseAllowed);
   const woBadge = isWO ? '<span class="badge" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.4);font-size:10px">🔶 W/O</span>' :
                   isWOReconciled ? '<span class="badge badge-completed" style="font-size:10px">✅ W/O Assigned</span>' : '';
   return `<tr class="${isClosed?'closed':''}" style="${isWO?'background:rgba(255,171,0,0.03);border-left:3px solid rgba(255,171,0,0.4)':''}">
@@ -1719,6 +1717,10 @@ function showAddOrderModal(machineId, existingOrder) {
         <input class="form-control" id="fo-startdate" type="date" value="${toDateInput(ord.startDate)||toDateInput(today())}">
       </div>
       <div class="form-group">
+        <label>End Date <span style="font-size:11px;color:var(--text3);font-weight:400">(leave blank = auto-calculated)</span></label>
+        <input class="form-control" id="fo-enddate" type="date" value="${toDateInput(ord.endDate)||''}">
+      </div>
+      <div class="form-group">
         <label>Packing</label>
         <input class="form-control" id="fo-packing" value="${ord.packing||''}" placeholder="e.g. HDCL">
       </div>
@@ -1941,21 +1943,27 @@ function saveOrderModal(existingId, defaultMachine) {
   const startDate = new Date(document.getElementById('fo-startdate')?.value || today());
 
   // Fix 2: Validate start date sequencing — warn if this order starts before previous order ends
-  const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
-  if (machineOrders.length > 0) {
-    const latestEnd = machineOrders.reduce((max, o) => {
-      const d = o.endDate ? new Date(o.endDate) : null;
-      return (d && (!max || d > max)) ? d : max;
-    }, null);
-    if (latestEnd && startDate < latestEnd) {
-      const suggested = new Date(latestEnd);
-      alert(`⚠️ Date Sequencing Conflict\n\nChosen start: ${fmtDate(startDate)}\nPrevious order ends: ${fmtDate(latestEnd)}\n\nStart date has been adjusted to ${fmtDate(suggested)} to maintain sequence.\n\nYou can edit the start date of the previous order if you need an earlier start.`);
-      startDate.setTime(suggested.getTime());
+  // TEMPORARILY DISABLED 20-Apr-2026 to 22-Apr-2026 so users can set any start/end date freely
+  const _dateCheckToday = new Date().toISOString().slice(0,10);
+  const _skipDateCheck = _dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22';
+  if (!_skipDateCheck) {
+    const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
+    if (machineOrders.length > 0) {
+      const latestEnd = machineOrders.reduce((max, o) => {
+        const d = o.endDate ? new Date(o.endDate) : null;
+        return (d && (!max || d > max)) ? d : max;
+      }, null);
+      if (latestEnd && startDate < latestEnd) {
+        const suggested = new Date(latestEnd);
+        alert(`⚠️ Date Sequencing Conflict\n\nChosen start: ${fmtDate(startDate)}\nPrevious order ends: ${fmtDate(latestEnd)}\n\nStart date has been adjusted to ${fmtDate(suggested)} to maintain sequence.\n\nYou can edit the start date of the previous order if you need an earlier start.`);
+        startDate.setTime(suggested.getTime());
+      }
     }
   }
 
-  // Recalculate end date using (possibly adjusted) startDate
-  const endDate = calcEndDate(startDate, daysNeeded);
+  // Use manual End Date if entered, otherwise auto-calculate from qty + machine speed
+  const manualEndDateVal = document.getElementById('fo-enddate')?.value;
+  const endDate = manualEndDateVal ? new Date(manualEndDateVal) : calcEndDate(startDate, daysNeeded);
 
   const size = document.getElementById('fo-size')?.value;
   const pcCode = document.getElementById('fo-pccode')?.value;
@@ -1983,6 +1991,7 @@ function saveOrderModal(existingId, defaultMachine) {
     daysNeeded,
     startDate,
     endDate,
+    manualEndDate: !!manualEndDateVal,
     packing: document.getElementById('fo-packing')?.value,
     zone: document.getElementById('fo-zone')?.value,
     containerRef: document.getElementById('fo-containerref')?.value || '',
