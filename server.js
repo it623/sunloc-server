@@ -824,6 +824,9 @@ function getOrderActuals(orderId, batchNumber) {
 // GET full planning state — uses direct pg pool for large JSON
 app.get('/api/planning/state', async (req, res) => {
   try {
+    // Always refresh actuals from DPR before returning state
+    // This ensures actualProd is always current across all devices
+    await warmActualsCache();
     const state = await getPlanningStateAsync();
     if (state.orders && _actualsCache) {
       for (const ord of state.orders) {
