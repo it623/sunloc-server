@@ -788,7 +788,6 @@ function getActiveOrdersForMachine(machineId) {
 
 // Helper: get total actuals for an order (sums all runs across all machines/shifts)
 let _actualsCache = null;
-let jsqrCache = null;
 async function warmActualsCache() {
   if (!pgPool) return;
   try {
@@ -1096,19 +1095,7 @@ app.post('/api/dpr/save', async (req, res) => {
             const ord = planningState.orders.find(o => o.batchNumber === row.batch_number && (!o.actualQty));
             if (ord) { ord.actualQty = parseFloat(row.total_qty)||0; changed = true; }
           }
-          if (changed) {
-            try {
-              const json = JSON.stringify(planningState);
-              const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
-              if (existing.rows.length > 0) {
-                await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
-              } else {
-                await pgPool.query('INSERT INTO planning_state (state_json) VALUES ($1)', [json]);
-              }
-              _planningStateCache = planningState;
-              _planningStateCacheTime = Date.now();
-            } catch(saveErr) { console.warn('Planning state save error:', saveErr.message); }
-          }
+          if (changed) savePlanningState(planningState);
         }
       } catch(e) { console.warn('Planning sync error:', e.message); }
 
