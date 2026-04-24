@@ -1476,8 +1476,11 @@ function getGroupForMachine(fl, mcId){
 function collectGroupOperators(sh, fl, mcId){
   const grp = getGroupForMachine(fl, mcId);
   if(!grp) return null;
-  const grpKey = grp.machines[0]; // use first MC as group key
-  if(mcId !== grpKey) return null; // only collect from first MC
+  // Use first ACTIVE machine as group key — not grp.machines[0] which may be disabled
+  const activeMcIds = getActiveMachines(fl).map(m=>m.id);
+  const grpKey = grp.machines.find(id => activeMcIds.includes(id));
+  if(!grpKey) return null;
+  if(mcId !== grpKey) return null; // only collect from first active MC
   const container = document.getElementById(`grp-ops-${sh}-${grpKey}`);
   if(!container) return null;
   return Array.from(container.querySelectorAll('.grp-op-input'))
@@ -2074,10 +2077,12 @@ function renderRemarks(){
   sorted.forEach(r=>{
     const i=r.origIdx;
     const sc=shColors[r.shift]||shColors.General;
-    const mcLabel=r.mc?`<span style="font-family:var(--mono);font-size:10px;color:var(--accent);margin-right:6px;background:rgba(96,165,250,0.1);padding:1px 5px;border-radius:3px">${r.mc}</span>`:'';
+    const mcOpts = `<option value="">— All —</option>` +
+      getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
+    const mcEdit = `<select onchange="saveRemarkMc(${i},this.value)" style="font-family:var(--mono);font-size:10px;color:var(--accent);background:rgba(96,165,250,0.1);border:1px solid var(--b2);border-radius:3px;padding:1px 4px;margin-right:6px">${mcOpts}</select>`;
     html+=`<div class="remark-row" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
       <span class="rem-shift" style="flex-shrink:0;background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700">Shift ${r.shift}</span>
-      ${mcLabel}
+      ${mcEdit}
       <div style="flex:1;min-width:0">
         <textarea id="rem-edit-${i}" style="width:100%;min-height:48px;resize:vertical;font-size:12px;background:transparent;border:1px solid transparent;border-radius:3px;padding:2px 4px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='transparent'">${esc(r.text)}</textarea>
       </div>
@@ -2095,6 +2100,14 @@ function saveRemarkEdit(i){
   const el=document.getElementById(`rem-edit-${i}`);
   if(!el||!day.remarks[i]) return;
   day.remarks[i].text=el.value;
+  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
+  markUnsaved();
+}
+function saveRemarkMc(i, val){
+  const fl=curFloor,d=getDate(),day=loadDay(fl,d);
+  if(!day.remarks[i]) return;
+  day.remarks[i].mc=val;
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   markUnsaved();
@@ -2142,8 +2155,9 @@ function renderResort(){
   sorted.forEach(r=>{
     const i=r.origIdx;
     const sc=shColors[r.shift]||shColors.A;
+    const rsMcOpts = getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
     html+=`<div class="resort-entry" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
-      <span style="font-family:var(--fc);font-weight:700;color:var(--cyan);min-width:36px">${r.mc}</span>
+      <select onchange="saveResortMc(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:var(--cyan);font-size:12px;min-width:60px;background:transparent;border:1px solid var(--b2);border-radius:3px;padding:1px 3px">${rsMcOpts}</select>
       <span style="background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0">Shift ${r.shift}</span>
       <div style="flex:1;min-width:0">
         <div style="font-size:12px;color:var(--t2);display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -2178,6 +2192,16 @@ function saveResortQty(i){
   const val=parseFloat(el.value||0);
   if(isNaN(val)||val<0) return;
   day.resort[i].qty=val;
+  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
+  renderDayKpis();
+  renderShifts();
+  markUnsaved();
+}
+function saveResortMc(i, val){
+  const fl=curFloor,d=getDate(),day=loadDay(fl,d);
+  if(!day.resort[i]) return;
+  day.resort[i].mc=val;
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
   renderDayKpis();
