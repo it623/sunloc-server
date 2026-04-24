@@ -592,11 +592,8 @@ const SYNC = (() => {
         body: JSON.stringify({ state: stateObj }),
         signal: AbortSignal.timeout(30000)
       });
-      if (r.ok) {
-        const j = await r.json().catch(()=>({ok:true}));
-        if (j.ok !== false) { _online = true; _lastCheck = Date.now(); updateBadge(); return true; }
-      }
-      _online = false; updateBadge(); return false;
+      if (r.ok) { _online = true; _lastCheck = Date.now(); updateBadge(); return true; }
+      return false;
     } catch { _online = false; updateBadge(); return false; }
   }
 
@@ -627,9 +624,17 @@ const SYNC = (() => {
       const r = await fetch(_url + '/api/planning/state', { signal: AbortSignal.timeout(15000) });
       if (r.ok) { const j = await r.json(); serverState = j.state || null; _online = true; updateBadge(); }
     } catch { _online = false; updateBadge(); }
-    // Only skip if server returned nothing at all — never skip if orders array exists (even empty)
-    if (!serverState) return;
-    // SERVER IS ALWAYS SOURCE OF TRUTH — always apply server state on load
+    if (!serverState || !serverState.orders) return;
+    // SAFETY GUARD: never apply server state if it has fewer orders than current local state
+    // This prevents partial/stale server responses from overwriting good local data
+    const currentOrderCount = (state.orders || []).length;
+    const serverOrderCount = (serverState.orders || []).length;
+    if (serverOrderCount > 0 && serverOrderCount < currentOrderCount) {
+      console.warn(`[Sync] Server has ${serverOrderCount} orders, local has ${currentOrderCount} — pushing local to fix server`);
+      SYNC.push({...state, _savedAt: Date.now()});
+      return;
+    }
+    // SERVER IS ALWAYS SOURCE OF TRUTH — apply server state
     Object.assign(state, serverState);
     state.pcCodes = PC_CODES_RAW;
     state.zoneMap = ZONE_MAP_RAW;
@@ -748,8 +753,7 @@ function loadState() {
       state.zoneMap = ZONE_MAP_RAW;
     }
   } catch(e) {}
-  // ALWAYS load from server immediately — server is permanent source of truth
-  // loadFromServer() will overwrite localStorage state with server state
+  // ALWAYS load from server immediately — server is source of truth
   SYNC.loadFromServer();
   setTimeout(() => initMonthlyArchive(), 800);
   if (state.orders) {
@@ -784,10 +788,9 @@ function _scheduleRetry(toSave) {
     }
   }, 30000);
 }
-// Also flush pending save when user returns to tab — catches cases where tab was minimised
+// Flush pending save when user returns to tab
 document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible' && _pendingSave) {
-    console.log('[Sync] Tab visible — flushing pending save');
     const ok = await SYNC.push(_pendingSave);
     if (ok) { _pendingSave = null; if (_retryTimer) { clearInterval(_retryTimer); _retryTimer = null; } }
   }
