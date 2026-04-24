@@ -1480,7 +1480,7 @@ function collectGroupOperators(sh, fl, mcId){
   const activeMcIds = getActiveMachines(fl).map(m=>m.id);
   const grpKey = grp.machines.find(id => activeMcIds.includes(id));
   if(!grpKey) return null;
-  if(mcId !== grpKey) return null; // only collect from first active MC
+  if(mcId !== grpKey) return null;
   const container = document.getElementById(`grp-ops-${sh}-${grpKey}`);
   if(!container) return null;
   return Array.from(container.querySelectorAll('.grp-op-input'))
@@ -2070,27 +2070,23 @@ function renderRemarks(){
   const rem=day.remarks||[];
   if(rem.length===0){document.getElementById('remList').innerHTML=`<div style="color:var(--t3);font-size:12px;padding:8px">No remarks. Click "+ Add Remark" to log issues.</div>`;return;}
   const shColors={A:{bg:'rgba(6,78,59,0.12)',border:'#6ee7b7',badge:'#064e3b'},B:{bg:'rgba(30,58,95,0.12)',border:'#60a5fa',badge:'#1e3a5f'},C:{bg:'rgba(120,53,15,0.12)',border:'#fcd34d',badge:'#78350f'},General:{bg:'rgba(100,100,100,0.08)',border:'var(--b2)',badge:'var(--t2)'}};
-  // Sort: A → B → C → General
   const shOrder={A:0,B:1,C:2,General:3};
   const sorted=[...rem.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(shOrder[a.shift]??9)-(shOrder[b.shift]??9));
   let html='';
   sorted.forEach(r=>{
     const i=r.origIdx;
     const sc=shColors[r.shift]||shColors.General;
-    const mcOpts = `<option value="">— All —</option>` +
-      getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
-    const mcEdit = `<select onchange="saveRemarkMc(${i},this.value)" style="font-family:var(--mono);font-size:10px;color:var(--accent);background:rgba(96,165,250,0.1);border:1px solid var(--b2);border-radius:3px;padding:1px 4px;margin-right:6px">${mcOpts}</select>`;
+    const mcOpts=`<option value="">— All —</option>`+getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
     html+=`<div class="remark-row" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
-      <span class="rem-shift" style="flex-shrink:0;background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700">Shift ${r.shift}</span>
-      ${mcEdit}
+      <select onchange="saveRemarkMc(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:var(--cyan);font-size:12px;min-width:60px;background:transparent;border:1px solid var(--b2);border-radius:3px;padding:1px 3px;flex-shrink:0">${mcOpts}</select>
+      <span style="flex-shrink:0;background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700">Shift ${r.shift}</span>
       <div style="flex:1;min-width:0">
-        <textarea id="rem-edit-${i}" style="width:100%;min-height:48px;resize:vertical;font-size:12px;background:transparent;border:1px solid transparent;border-radius:3px;padding:2px 4px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='transparent'">${esc(r.text)}</textarea>
+        <textarea id="rem-edit-${i}" style="width:100%;min-height:48px;resize:vertical;font-size:12px;background:var(--s2);border:1px solid var(--b2);border-radius:3px;padding:4px 6px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='var(--b2)'">${esc(r.text)}</textarea>
       </div>
       <button class="btn-sm danger" style="flex-shrink:0" onclick="deleteRemark(${i})">✕</button>
     </div>`;
   });
   document.getElementById('remList').innerHTML=html;
-  // Mark last item for scroll target
   const rows=document.querySelectorAll('#remList .remark-row');
   if(rows.length) rows[rows.length-1].id='rem-last';
 }
@@ -2104,7 +2100,7 @@ function saveRemarkEdit(i){
   pushToServer(fl,d,day);
   markUnsaved();
 }
-function saveRemarkMc(i, val){
+function saveRemarkMc(i,val){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   if(!day.remarks[i]) return;
   day.remarks[i].mc=val;
@@ -2155,9 +2151,9 @@ function renderResort(){
   sorted.forEach(r=>{
     const i=r.origIdx;
     const sc=shColors[r.shift]||shColors.A;
-    const rsMcOpts = getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
+    const rsMcOpts=getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
     html+=`<div class="resort-entry" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
-      <select onchange="saveResortMc(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:var(--cyan);font-size:12px;min-width:60px;background:transparent;border:1px solid var(--b2);border-radius:3px;padding:1px 3px">${rsMcOpts}</select>
+      <select onchange="saveResortMc(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:var(--cyan);font-size:12px;min-width:60px;background:transparent;border:1px solid var(--b2);border-radius:3px;padding:1px 3px;flex-shrink:0">${rsMcOpts}</select>
       <span style="background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0">Shift ${r.shift}</span>
       <div style="flex:1;min-width:0">
         <div style="font-size:12px;color:var(--t2);display:flex;align-items:center;gap:6px;flex-wrap:wrap">
@@ -2198,7 +2194,7 @@ function saveResortQty(i){
   renderShifts();
   markUnsaved();
 }
-function saveResortMc(i, val){
+function saveResortMc(i,val){
   const fl=curFloor,d=getDate(),day=loadDay(fl,d);
   if(!day.resort[i]) return;
   day.resort[i].mc=val;
