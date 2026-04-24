@@ -965,7 +965,14 @@ function recalcMachineScheduleQuiet(machineId) {
   const _inWindow = _rToday >= '2026-04-20' && _rToday <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
-    if (ord.status === 'closed') continue;
+    if (ord.status === 'closed') {
+      // Advance cursor through closed orders so next order starts right after
+      if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+        const closedEnd = new Date(ord.endDate);
+        if (!cursor || closedEnd > cursor) cursor = closedEnd;
+      }
+      continue;
+    }
     if (!cursor) cursor = new Date(ord.startDate || today());
     else ord.startDate = new Date(cursor);
     const sc = calcOrderSchedule(ord, mc);
@@ -994,7 +1001,14 @@ function recalcMachineSchedule(machineId) {
   const _inWindow2 = _rToday2 >= '2026-04-20' && _rToday2 <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
-    if (ord.status === 'closed') continue;
+    if (ord.status === 'closed') {
+      // Advance cursor through closed orders so next order starts right after
+      if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+        const closedEnd = new Date(ord.endDate);
+        if (!cursor || closedEnd > cursor) cursor = closedEnd;
+      }
+      continue;
+    }
     if (!cursor) {
       cursor = new Date(ord.startDate || today());
     } else {
