@@ -903,6 +903,8 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 // GET all active orders (summary for DPR to cache on load) — only 'running' status
 app.get('/api/orders/active', async (req, res) => {
   try {
+    // Always refresh actuals so Gross/Prod/Rem is current in DPR
+    await warmActualsCache();
     const state = await getPlanningStateAsync();
     const running = (state.orders || []).filter(o => o.status === 'running' && !o.deleted);
 
@@ -918,21 +920,26 @@ app.get('/api/orders/active', async (req, res) => {
       return '';
     };
 
-    const mapOrder = o => ({
-      id: o.id,
-      batchNumber: o.batchNumber || '',
-      poNumber: o.poNumber || '',
-      customer: o.customer || '',
-      machineId: o.machineId || '',
-      size: o.size || '',
-      colour: o.colour || '',
-      qty: o.qty || 0,
-      grossQty: o.grossQty || o.qty || 0,
-      actualQty: o.actualQty || 0,
-      status: o.status || 'running',
-      isPrinted: o.isPrinted || false,
-      isLegacy: !o.startDate || getDateStr(o.startDate) <= LEGACY_CUTOFF,
-    });
+    const mapOrder = o => {
+      // Get actual production from DPR actuals cache — this is the real produced qty
+      const actualFromCache = _actualsCache ? (_actualsCache[o.id] || _actualsCache[o.batchNumber] || 0) : 0;
+      const actualQty = actualFromCache || o.actualQty || o.actualProd || 0;
+      return {
+        id: o.id,
+        batchNumber: o.batchNumber || '',
+        poNumber: o.poNumber || '',
+        customer: o.customer || '',
+        machineId: o.machineId || '',
+        size: o.size || '',
+        colour: o.colour || '',
+        qty: o.qty || 0,
+        grossQty: o.grossQty || o.qty || 0,
+        actualQty,
+        status: o.status || 'running',
+        isPrinted: o.isPrinted || false,
+        isLegacy: !o.startDate || getDateStr(o.startDate) <= LEGACY_CUTOFF,
+      };
+    };
 
     // Separate legacy (startDate <= CUTOFF) and new orders
     const legacyOrders = running.filter(o =>
