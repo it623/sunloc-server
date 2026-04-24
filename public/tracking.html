@@ -774,8 +774,19 @@ function checkAlerts(){
       }
     }
   });
-  state.alerts = [...state.alerts.filter(a=>!newAlerts.find(n=>n.labelId===a.labelId&&n.dept===a.dept)), ...newAlerts]
+  // Also remove alerts where box has now been scanned out (resolved)
+  const resolvedIds = new Set();
+  state.alerts.forEach(a=>{
+    const hasOut = state.scans.some(s=>s.labelId===a.labelId&&s.dept===a.dept&&s.type==='out');
+    if(hasOut) resolvedIds.add(a.id);
+  });
+  state.alerts = [...state.alerts.filter(a=>!newAlerts.find(n=>n.labelId===a.labelId&&n.dept===a.dept)&&!resolvedIds.has(a.id)), ...newAlerts]
     .filter(a=>!a.scanInTs || new Date(a.scanInTs) >= ALERT_START);
+  // Save updated alerts to server so all devices see same alerts
+  if(serverUrl && state.alerts.length >= 0){
+    pushToServer('/api/tracking/state', {state:{alerts: state.alerts}});
+  }
+  saveLocal();
   return state.alerts;
 }
 
@@ -1208,6 +1219,8 @@ function autoGenerateOrangeLabel(label, batch){
   orangeLabel.qrData = generateQRData(orangeLabel);
   state.labels.push(orangeLabel);
   saveLocal();
+  // Push orange label to server — so all devices (other phones, desktops) can see and print it
+  pushToServer('/api/tracking/labels', {labels: [orangeLabel]});
   return orangeLabel;
 }
 
@@ -2913,24 +2926,27 @@ function saveWastage(dept){
   const resultEl=document.getElementById(`wastage-result-${dept}`);
   if(!batchNo){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Please select a batch.</div>'; return; }
   if(salvage===0&&remelt===0){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Enter salvage or remelt quantity.</div>'; return; }
+  if(salvage<0||remelt<0){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Quantity cannot be negative.</div>'; return; }
   const batch=getBatch(batchNo);
   if(!batch) return;
-  // Validate: total wastage cannot exceed scanned in qty
-  const inCount=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
-  const inQty=boxToLakh(inCount,batch.size);
-  const existing=getTotalWastage(batchNo,dept);
-  if(existing.total+salvage+remelt>inQty){
-    if(resultEl) resultEl.innerHTML=`<div class="alert alert-danger">Total wastage (${fmt(existing.total+salvage+remelt)}L) exceeds scanned IN qty (${fmt(inQty)}L)</div>`;
-    return;
-  }
-  if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept});
-  if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept});
-  saveLocal();
-  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt});
+  // Push to server first — server is the source of truth, not local scan count
+  // (Local scan count may be stale if scans came from other devices)
+  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt}).then(result=>{
+    if(result && result.ok){
+      // Update local state after server confirms
+      if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept});
+      if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept});
+      saveLocal();
+      if(resultEl) resultEl.innerHTML=`<div class="alert alert-success">✅ Wastage saved — S:${fmt(salvage)}L R:${fmt(remelt)}L</div>`;
+    } else {
+      if(resultEl) resultEl.innerHTML=`<div class="alert alert-danger">❌ Server save failed — please try again.</div>`;
+    }
+    setTimeout(()=>{ if(resultEl) resultEl.innerHTML=''; renderDeptScan(dept); },2000);
+  });
+  // Clear inputs immediately for next entry
   document.getElementById(`wastage-salvage-${dept}`).value='';
   document.getElementById(`wastage-remelt-${dept}`).value='';
-  if(resultEl) resultEl.innerHTML=`<div class="alert alert-success">✅ Wastage saved — S:${fmt(salvage)}L R:${fmt(remelt)}L</div>`;
-  setTimeout(()=>{ if(resultEl) resultEl.innerHTML=''; renderDeptScan(dept); },2000);
+  if(resultEl) resultEl.innerHTML='<div class="alert" style="background:rgba(59,130,246,0.1);border:1px solid rgba(59,130,246,0.4);padding:8px 12px">⏳ Saving...</div>';
 }
 
 function openWastageEdit(wastageId, dept){
@@ -5143,11 +5159,11 @@ async function refreshScans(){
     // Keep local scans that server doesn't have yet (just recorded, not saved yet)
     const localOnly=state.scans.filter(s=>!serverIds.has(s.id)&&s._local);
     state.scans=[...ns,...localOnly];
-    saveLocal();
-    // Update only the recent scans tbody — no page re-render, no flicker
+    // Update only the recent scans tbody — no full page re-render, no flicker
     const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
-    if(!dept) return;
+    if(!dept){ if(currentPage) renderPage(currentPage); return; }
     const tbody=document.getElementById(`recent-scans-${dept}`);
+    // If tbody doesn't exist yet, do a full page render to build the DOM
     if(!tbody){ renderPage(currentPage); return; }
     const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
     tbody.innerHTML=scans.map(s=>{
@@ -5166,12 +5182,12 @@ async function refreshScans(){
 // Refresh scans every 5 seconds — real-time across all devices
 setInterval(refreshScans, 5000);
 
-// Full sync every 2 minutes for labels, wastage, batches
+// Full sync every 30 seconds for labels, wastage, batches — real-time across all devices
 setInterval(()=>{
   if(!serverUrl) return;
   if(Date.now() - _lastScanTs < 10000) return;
   pullFromServer();
-},2*60*1000);
+},30*1000);
 
 // Check TEMP batch alerts every 5 minutes
 setInterval(checkTrackingTempAlerts, 5*60*1000);
