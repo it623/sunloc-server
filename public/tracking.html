@@ -616,10 +616,8 @@ function sanitizeServerUrl(url) {
   }
 }
 
-// ── Cache version — bump this string any time the localStorage schema changes ──
-// On page load, if stored version doesn't match, localStorage is wiped automatically.
-// This means NO user needs to manually clear their browser — it happens silently.
-const CACHE_VERSION = 'v3'; // bump to v4, v5 etc. if schema changes again
+// Cache version — bump when localStorage schema changes — triggers auto-wipe on all devices
+const CACHE_VERSION = 'v3';
 
 // Auto-detect server URL from current page origin (works even if localStorage is blocked)
 const _defaultUrl = (window.location.hostname !== 'localhost' && window.location.hostname !== '127.0.0.1')
@@ -779,7 +777,6 @@ function checkAlerts(){
       }
     }
   });
-  // Auto-resolve alerts where box has since been scanned OUT
   const resolvedIds=new Set();
   state.alerts.forEach(a=>{
     const hasOut=state.scans.some(s=>s.labelId===a.labelId&&s.dept===a.dept&&s.type==='out');
@@ -787,7 +784,6 @@ function checkAlerts(){
   });
   state.alerts=[...state.alerts.filter(a=>!newAlerts.find(n=>n.labelId===a.labelId&&n.dept===a.dept)&&!resolvedIds.has(a.id)),...newAlerts]
     .filter(a=>!a.scanInTs||new Date(a.scanInTs)>=ALERT_START);
-  // Push new alerts to server — all devices will load them from DB
   if(serverUrl && newAlerts.length>0){
     pushToServer('/api/tracking/state',{alerts:newAlerts});
   }
@@ -1076,7 +1072,6 @@ async function pullFromServer(){
           }
           if(j.state.stageClosure) state.stageClosure=j.state.stageClosure;
           if(j.state.dispatchRecs) state.dispatchRecs=j.state.dispatchRecs;
-          // Always load alerts from server — map PostgreSQL snake_case → camelCase
           if(j.state.alerts){
             state.alerts=j.state.alerts.map(a=>({
               ...a,
@@ -1107,8 +1102,6 @@ async function pushToServer(endpoint, data){
 function saveLocal(){
   try{
     // SCANS and ALERTS: NEVER saved to localStorage — always read fresh from server
-    // Only labels, stageClosure, wastage, dispatchRecs cached for speed
-    // _v field: if version changes, loadState() wipes this blob automatically on next open
     const toSave={_v:CACHE_VERSION,labels:state.labels,stageClosure:state.stageClosure,wastage:state.wastage,dispatchRecs:state.dispatchRecs};
     localStorage.setItem('sunloc_tracking',JSON.stringify(toSave));
     trkAuditLog('SAVE', `Tracking data saved — dept: ${currentDept}`);
@@ -1116,29 +1109,40 @@ function saveLocal(){
 }
 
 function loadState(){
-  // AUTO-WIPE stale localStorage if version doesn't match — no user action needed
   // SCANS and ALERTS: NEVER loaded from localStorage — always from server only
+  // RESCUE: if old localStorage has scans that never reached server, push them now
   try{
     const saved=localStorage.getItem('sunloc_tracking');
     if(saved){
       const p=JSON.parse(saved);
-      // Version mismatch → silently wipe entire blob — server will fill everything fresh
+      // Rescue any scans trapped in old localStorage — push each to server immediately
+      if(p.scans && p.scans.length>0 && serverUrl){
+        console.log(`[Tracking] Rescuing ${p.scans.length} scans from old localStorage → pushing to server`);
+        p.scans.forEach(scan=>{
+          if(scan && scan.id && scan.dept && scan.type){
+            fetch(serverUrl+'/api/tracking/scan',{
+              method:'POST',
+              headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({scan})
+            }).catch(()=>{});
+          }
+        });
+      }
+      // Version check — wipe if stale, load safe fields if current
       if(p._v !== CACHE_VERSION){
         localStorage.removeItem('sunloc_tracking');
         console.log('[Tracking] Cache version mismatch — wiped stale localStorage automatically');
       } else {
-        // Version matches — load only safe cached fields (NOT scans, NOT alerts)
         if(p.labels)       state.labels       = p.labels;
         if(p.stageClosure) state.stageClosure  = p.stageClosure;
         if(p.wastage)      state.wastage       = p.wastage;
         if(p.dispatchRecs) state.dispatchRecs  = p.dispatchRecs;
       }
     }
-  }catch{ localStorage.removeItem('sunloc_tracking'); }
+  }catch(e){ localStorage.removeItem('sunloc_tracking'); }
   // scans and alerts always start empty — server fills them
   state.scans  = [];
   state.alerts = [];
-  // Always pull fresh from server
   if(serverUrl) pullFromServer();
 }
 
@@ -5162,14 +5166,10 @@ async function refreshScans(){
     const serverIds=new Set(ns.map(s=>s.id));
     const localOnly=state.scans.filter(s=>!serverIds.has(s.id)&&s._local);
     state.scans=[...ns,...localOnly];
-    // Recheck alerts now that scans are fresh
     checkAlerts();
-    // Update the recent scans tbody directly — no full page re-render, no flicker
     const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
-    // Not on a dept page — do full render to keep dashboard fresh
     if(!dept){ if(currentPage) renderPage(currentPage); return; }
     const tbody=document.getElementById(`recent-scans-${dept}`);
-    // tbody not found — page not built yet, trigger full render
     if(!tbody){ renderPage(currentPage); return; }
     const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
     tbody.innerHTML=scans.map(s=>{
