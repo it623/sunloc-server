@@ -824,12 +824,26 @@ function getOrderActuals(orderId, batchNumber) {
 // GET full planning state — uses direct pg pool for large JSON
 app.get('/api/planning/state', async (req, res) => {
   try {
-    const state = await getPlanningStateAsync();
+    const rawState = await getPlanningStateAsync();
+    // CRITICAL: deep clone before mutating — never mutate the cached state object
+    // Mutating the cache causes status changes (pending→running) to persist in cache
+    // and corrupt the saved state on next client load
+    const state = JSON.parse(JSON.stringify(rawState));
     if (state.orders && _actualsCache) {
       for (const ord of state.orders) {
         const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
         ord.actualProd = actual;
         if (actual > 0 && ord.status === 'pending') ord.status = 'running';
+      }
+    }
+    const savedAt = pgPool
+      ? (await pgPool.query('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1')).rows[0]?.saved_at
+      : db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get()?.saved_at;
+    res.json({ ok: true, state, savedAt });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
       }
     }
     const savedAt = pgPool
@@ -949,12 +963,11 @@ app.get('/api/orders/active', async (req, res) => {
       o.startDate && getDateStr(o.startDate) > LEGACY_CUTOFF
     );
 
-    // For new orders: max 2 per machine — show the LATEST 2 (most recently started)
-    // This ensures current running orders always show, not old ones that should be closed
+    // For new orders: max 2 per machine (new business rule from 20 Apr 2026)
     const newOrdersFiltered = [];
     const newCountPerMachine = {};
-    // Sort by startDate DESCENDING — latest first, so newest running orders are kept
-    const newSorted = [...newOrders].sort((a,b) => String(b.startDate).localeCompare(String(a.startDate)));
+    // Sort new orders by startDate so earliest 2 per machine are kept
+    const newSorted = [...newOrders].sort((a,b) => String(a.startDate).localeCompare(String(b.startDate)));
     for (const o of newSorted) {
       const mc = o.machineId || 'unknown';
       if (!newCountPerMachine[mc]) newCountPerMachine[mc] = 0;
