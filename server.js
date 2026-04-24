@@ -825,25 +825,13 @@ function getOrderActuals(orderId, batchNumber) {
 app.get('/api/planning/state', async (req, res) => {
   try {
     const rawState = await getPlanningStateAsync();
-    // CRITICAL: deep clone before mutating — never mutate the cached state object
-    // Mutating the cache causes status changes (pending→running) to persist in cache
-    // and corrupt the saved state on next client load
+    // Deep clone before mutating — never mutate the cached state object directly
     const state = JSON.parse(JSON.stringify(rawState));
     if (state.orders && _actualsCache) {
       for (const ord of state.orders) {
         const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
         ord.actualProd = actual;
         if (actual > 0 && ord.status === 'pending') ord.status = 'running';
-      }
-    }
-    const savedAt = pgPool
-      ? (await pgPool.query('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1')).rows[0]?.saved_at
-      : db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get()?.saved_at;
-    res.json({ ok: true, state, savedAt });
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
       }
     }
     const savedAt = pgPool
