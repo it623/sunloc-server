@@ -949,11 +949,12 @@ app.get('/api/orders/active', async (req, res) => {
       o.startDate && getDateStr(o.startDate) > LEGACY_CUTOFF
     );
 
-    // For new orders: max 2 per machine (new business rule from 20 Apr 2026)
+    // For new orders: max 2 per machine — show the LATEST 2 (most recently started)
+    // This ensures current running orders always show, not old ones that should be closed
     const newOrdersFiltered = [];
     const newCountPerMachine = {};
-    // Sort new orders by startDate so earliest 2 per machine are kept
-    const newSorted = [...newOrders].sort((a,b) => String(a.startDate).localeCompare(String(b.startDate)));
+    // Sort by startDate DESCENDING — latest first, so newest running orders are kept
+    const newSorted = [...newOrders].sort((a,b) => String(b.startDate).localeCompare(String(a.startDate)));
     for (const o of newSorted) {
       const mc = o.machineId || 'unknown';
       if (!newCountPerMachine[mc]) newCountPerMachine[mc] = 0;
