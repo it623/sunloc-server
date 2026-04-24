@@ -1664,7 +1664,7 @@ function renderShifts(){
               if(!ord2) return '';
               const planned2 = ord2.qty || 0;
               const gross2   = ord2.grossQty || planned2;
-              const actual2  = ord2.actualQty || 0;
+              const actual2  = ord2.actualProd || ord2.actualQty || 0;
               const rem2     = Math.max(0, gross2 - actual2);
               const over2    = actual2 > gross2;
               const col2     = over2 ? 'var(--red)' : rem2 <= 0 ? 'var(--green)' : 'var(--t3)';
@@ -1824,7 +1824,7 @@ function onRunOrderChange(sh, mcId, ri){
         }
         const planned  = ord.qty     || 0;
         const gross    = ord.grossQty || planned;
-        const actual   = ord.actualQty || 0;
+        const actual   = ord.actualProd || ord.actualQty || 0;
         const remaining = Math.max(0, gross - actual);
         const overrun   = actual > gross;
         infoEl.textContent = `Gross:${parseFloat(gross).toFixed(2)}L Prod:${parseFloat(actual).toFixed(2)}L Rem:${parseFloat(remaining).toFixed(2)}L`;
@@ -3323,7 +3323,7 @@ function renderDprSearch(){
   if(matched.length===0){out.innerHTML='<p style="color:var(--t3);font-size:12px">No results found.</p>';return;}
   let html=`<table class="data-table"><thead><tr><th>Batch No</th><th>Customer</th><th>PC Code</th><th>Size</th><th>Machine</th><th>Qty (L)</th><th>Actual (L)</th><th>Remaining (L)</th><th>Status</th></tr></thead><tbody>`;
   matched.forEach(o=>{
-    const rem=Math.max(0,(o.qty||0)-(o.actualQty||0));
+    const rem=Math.max(0,(o.qty||0)-((o.actualProd||o.actualQty)||0));
     html+=`<tr>
       <td class="mono">${o.batchNumber||o.poNumber||'-'}</td>
       <td>${o.customer||'-'}</td>
@@ -3331,7 +3331,7 @@ function renderDprSearch(){
       <td class="mono">${o.size||'-'}</td>
       <td class="mono">${o.machineId||'-'}</td>
       <td class="mono">${o.qty||0}</td>
-      <td class="mono">${o.actualQty||0}</td>
+      <td class="mono">${o.actualProd||o.actualQty||0}</td>
       <td class="mono" style="color:${rem>0?'var(--amber)':'var(--green)'}">${rem}</td>
       <td><span class="pill ${o.status==='closed'?'g':o.status==='running'?'a':'r'}">${o.status||'-'}</span></td>
     </tr>`;
