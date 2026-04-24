@@ -803,7 +803,7 @@ async function saveState() {
 // =============================
 // HELPERS
 // =============================
-function fmt(n, dec=2) { return n==null?'-':(+n).toFixed(dec); }
+function fmt(n, dec=2) { if (n==null) return '-'; const v=+n; if (!isFinite(v) || isNaN(v)) return '-'; return v.toFixed(dec); }
 function fmtColour(colour){
   if(!colour) return '-';
   const parts = colour.split('/');
@@ -816,7 +816,7 @@ function fmtColour(colour){
 function fmtDate(d) {
   if (!d) return '-';
   const dt = d instanceof Date ? d : new Date(d);
-  if (isNaN(dt)) return d;
+  if (isNaN(dt)) return '-';
   return dt.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'});
 }
 function addDays(d, n) {
@@ -849,14 +849,13 @@ const STD_PI_WASTE     = 0.01;  // 1% print inspection wastage
 function calcOrderSchedule(order, mc) {
   // Use live A-grade from tracking if available, else use order/machine default
   const liveAG   = window._liveAGrade && window._liveAGrade[order.batchNumber];
-  // AIM factor: actual if available, else 1/(1 - STD_AIM_WASTE) = 1/0.93 ≈ 1.0753
-  const aimFactor   = (liveAG?.aim?.aGradePct != null)
-    ? (100 / liveAG.aim.aGradePct)
-    : (order.aGrade || mc.aGrade) ? (100 / (order.aGrade || mc.aGrade)) : (1 / (1 - STD_AIM_WASTE));
+  // AIM factor: guard against aGradePct=0 causing division-by-zero → Infinity
+  const rawAimPct = (liveAG?.aim?.aGradePct != null) ? liveAG.aim.aGradePct : (order.aGrade || mc.aGrade || 0);
+  const aimFactor = rawAimPct > 0 ? (100 / rawAimPct) : (1 / (1 - STD_AIM_WASTE));
   const printFactor = (liveAG?.printing?.aGradePct != null)
-    ? (100 / liveAG.printing.aGradePct) : (1 + STD_PRINT_WASTE);
+    ? (100 / Math.max(1, liveAG.printing.aGradePct)) : (1 + STD_PRINT_WASTE);
   const piFactor    = (liveAG?.pi?.aGradePct != null)
-    ? (100 / liveAG.pi.aGradePct) : (1 + STD_PI_WASTE);
+    ? (100 / Math.max(1, liveAG.pi.aGradePct)) : (1 + STD_PI_WASTE);
 
   let grossQty, aimOut, printOut, piOut;
   if (order.isPrinted) {
@@ -876,7 +875,9 @@ function calcOrderSchedule(order, mc) {
   // This makes endDate shift out when production is slow and pull in when fast
   const alreadyProduced = Math.min(order.actualQty || 0, grossQty);
   const remainingGross  = Math.max(0, grossQty - alreadyProduced);
-  const daysNeeded = remainingGross / mc.cap;
+  // Guard: if machine cap is 0 or missing, return null daysNeeded (not Infinity)
+  const safeCap = (mc.cap > 0) ? mc.cap : null;
+  const daysNeeded = safeCap ? (remainingGross / safeCap) : null;
   const aGradePct  = 1 / aimFactor * 100;
   return { grossQty, aimOut, printOut, piOut, daysNeeded, aGradePct,
            aimFactor, printFactor, piFactor };
@@ -884,7 +885,9 @@ function calcOrderSchedule(order, mc) {
 
 // Recalculate end date for an order given start date and machine
 function calcEndDate(startDate, daysNeeded) {
+  if (daysNeeded == null || !isFinite(daysNeeded) || isNaN(daysNeeded) || daysNeeded < 0) return null;
   const start = new Date(startDate);
+  if (isNaN(start)) return null;
   const end = new Date(start);
   end.setDate(end.getDate() + Math.ceil(daysNeeded));
   return end;
@@ -959,7 +962,9 @@ function recalcMachineScheduleQuiet(machineId) {
     if (!(_inWindow && ord.manualEndDate)) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
-    cursor = new Date(ord.endDate);
+    if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+      cursor = new Date(ord.endDate);
+    }
   }
   // Cascade to print schedule — production end dates drive print start dates
   recalcPrintScheduleQuiet();
@@ -986,7 +991,9 @@ function recalcMachineSchedule(machineId) {
     if (!(_inWindow2 && ord.manualEndDate)) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
-    cursor = new Date(ord.endDate);
+    if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+      cursor = new Date(ord.endDate);
+    }
   }
   // Sync batchNumber changes to linked printOrders and dispatchPlans
   for (const ord of state.orders.filter(o=>o.machineId===machineId&&!o.deleted)) {
@@ -1071,7 +1078,9 @@ function recalcPrintMachineSequence() {
       const pm = getPrintMachine(po.machineId);
       if (pm && po.qtyToPrint) {
         po.endDate = calcEndDate(po.startDate, po.qtyToPrint / pm.cap);
-        cursor = new Date(po.endDate);
+        if (po.endDate && !isNaN(new Date(po.endDate))) {
+          cursor = new Date(po.endDate);
+        }
       }
     }
   });
