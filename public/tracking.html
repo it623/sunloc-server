@@ -616,7 +616,7 @@ function sanitizeServerUrl(url) {
   }
 }
 
-// Cache version — bump when localStorage schema changes — triggers auto-wipe on all devices
+// Cache version — auto-wipes stale localStorage on all devices when bumped
 const CACHE_VERSION = 'v3';
 
 // Auto-detect server URL from current page origin (works even if localStorage is blocked)
@@ -1090,18 +1090,71 @@ async function pullFromServer(){
   }catch(e){ setSyncBadge('offline'); }
 }
 
+// Pending scan queue — scans that failed to reach server are retried automatically
+let _pendingScanQueue = [];
+try { _pendingScanQueue = JSON.parse(localStorage.getItem('sunloc_pending_scans')||'[]'); } catch(e){}
+
+function _savePendingScans(){
+  try{ localStorage.setItem('sunloc_pending_scans', JSON.stringify(_pendingScanQueue)); }catch(e){}
+}
+
+async function _flushPendingScans(){
+  if(!serverUrl || _pendingScanQueue.length===0) return;
+  const toFlush = [..._pendingScanQueue];
+  for(const scan of toFlush){
+    try{
+      const r = await fetch(serverUrl+'/api/tracking/scan',{
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body:JSON.stringify({scan}), signal:AbortSignal.timeout(8000)
+      });
+      if(r.ok){
+        const j = await r.json();
+        if(j.ok || j.duplicate){
+          // Confirmed — remove from pending queue
+          _pendingScanQueue = _pendingScanQueue.filter(s=>s.id!==scan.id);
+          _savePendingScans();
+        }
+      }
+    }catch(e){ break; } // stop on network error, try again next cycle
+  }
+}
+
+// Flush pending scans every 10 seconds
+setInterval(_flushPendingScans, 10000);
+
 async function pushToServer(endpoint, data){
   if(!serverUrl) return null;
   try{
     const r=await fetch(serverUrl+endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data),signal:AbortSignal.timeout(8000)});
+    if(!r.ok){
+      setSyncBadge('offline');
+      // Queue scan for retry if it's a scan push
+      if(endpoint==='/api/tracking/scan' && data?.scan){
+        if(!_pendingScanQueue.find(s=>s.id===data.scan.id)){
+          _pendingScanQueue.push(data.scan);
+          _savePendingScans();
+        }
+      }
+      return null;
+    }
     setSyncBadge('synced');
     try{ return await r.json(); }catch{ return null; }
-  }catch{ setSyncBadge('offline'); return null; }
+  }catch(e){
+    setSyncBadge('offline');
+    // Queue scan for retry on network failure
+    if(endpoint==='/api/tracking/scan' && data?.scan){
+      if(!_pendingScanQueue.find(s=>s.id===data.scan.id)){
+        _pendingScanQueue.push(data.scan);
+        _savePendingScans();
+      }
+    }
+    return null;
+  }
 }
 
 function saveLocal(){
   try{
-    // SCANS and ALERTS: NEVER saved to localStorage — always read fresh from server
+    // SCANS and ALERTS: NEVER saved to localStorage
     const toSave={_v:CACHE_VERSION,labels:state.labels,stageClosure:state.stageClosure,wastage:state.wastage,dispatchRecs:state.dispatchRecs};
     localStorage.setItem('sunloc_tracking',JSON.stringify(toSave));
     trkAuditLog('SAVE', `Tracking data saved — dept: ${currentDept}`);
@@ -1110,25 +1163,25 @@ function saveLocal(){
 
 function loadState(){
   // SCANS and ALERTS: NEVER loaded from localStorage — always from server only
-  // RESCUE: if old localStorage has scans that never reached server, push them now
+  // RESCUE: push any scans trapped in old localStorage or pending queue to server
   try{
     const saved=localStorage.getItem('sunloc_tracking');
     if(saved){
       const p=JSON.parse(saved);
-      // Rescue any scans trapped in old localStorage — push each to server immediately
+      // Rescue scans from old localStorage format (pre-CACHE_VERSION)
       if(p.scans && p.scans.length>0 && serverUrl){
-        console.log(`[Tracking] Rescuing ${p.scans.length} scans from old localStorage → pushing to server`);
+        console.log(`[Tracking] Rescuing ${p.scans.length} scans from old localStorage`);
         p.scans.forEach(scan=>{
-          if(scan && scan.id && scan.dept && scan.type){
-            fetch(serverUrl+'/api/tracking/scan',{
-              method:'POST',
-              headers:{'Content-Type':'application/json'},
-              body:JSON.stringify({scan})
-            }).catch(()=>{});
+          if(scan&&scan.id&&scan.dept&&scan.type){
+            // Add to pending queue for reliable delivery
+            if(!_pendingScanQueue.find(s=>s.id===scan.id)){
+              _pendingScanQueue.push(scan);
+            }
           }
         });
+        _savePendingScans();
       }
-      // Version check — wipe if stale, load safe fields if current
+      // Version check
       if(p._v !== CACHE_VERSION){
         localStorage.removeItem('sunloc_tracking');
         console.log('[Tracking] Cache version mismatch — wiped stale localStorage automatically');
@@ -1143,7 +1196,10 @@ function loadState(){
   // scans and alerts always start empty — server fills them
   state.scans  = [];
   state.alerts = [];
-  if(serverUrl) pullFromServer();
+  if(serverUrl){
+    // Flush any pending scans immediately before loading state
+    _flushPendingScans().then(()=> pullFromServer());
+  }
 }
 
 // ═══════════════════════════════════════════════════════
