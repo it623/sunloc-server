@@ -2007,7 +2007,6 @@ function saveOrderModal(existingId, defaultMachine) {
   const startDate = new Date(document.getElementById('fo-startdate')?.value || today());
 
   // Fix 2: Validate start date sequencing — warn if this order starts before previous order ends
-  // TEMPORARILY DISABLED 20-Apr-2026 to 22-Apr-2026 so users can set any start/end date freely
   const _dateCheckToday = new Date().toISOString().slice(0,10);
   const _skipDateCheck = _dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22';
   if (!_skipDateCheck) {
@@ -2018,9 +2017,12 @@ function saveOrderModal(existingId, defaultMachine) {
         return (d && (!max || d > max)) ? d : max;
       }, null);
       if (latestEnd && startDate < latestEnd) {
-        const suggested = new Date(latestEnd);
-        alert(`⚠️ Date Sequencing Conflict\n\nChosen start: ${fmtDate(startDate)}\nPrevious order ends: ${fmtDate(latestEnd)}\n\nStart date has been adjusted to ${fmtDate(suggested)} to maintain sequence.\n\nYou can edit the start date of the previous order if you need an earlier start.`);
-        startDate.setTime(suggested.getTime());
+        // WARN only — do not force override user's manual date entry
+        // User may be intentionally correcting a wrong date
+        const proceed = confirm(`⚠️ Date Sequencing Notice\n\nChosen start: ${fmtDate(startDate)}\nAnother order ends: ${fmtDate(latestEnd)}\n\nDo you want to keep your chosen start date (${fmtDate(startDate)})?\n\nClick OK to keep your date.\nClick Cancel to auto-adjust to ${fmtDate(latestEnd)}.`);
+        if (!proceed) {
+          startDate.setTime(latestEnd.getTime());
+        }
       }
     }
   }
