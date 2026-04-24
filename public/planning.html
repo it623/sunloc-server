@@ -1460,7 +1460,7 @@ function renderOrderRow(ord, idx, mc) {
   const liveAG = window._liveAGrade && ord.batchNumber ? (window._liveAGrade[ord.batchNumber]||{}) : {};
   const liveAimPct = liveAG.aim?.aGradePct;
   const stdAimPct = ord.aGrade || mc?.aGrade || 93;
-  const extraNeeded = (liveAimPct != null && liveAimPct < stdAimPct && ord.grossQty)
+  const extraNeeded = (liveAimPct != null && liveAimPct > 0 && liveAimPct < stdAimPct && ord.grossQty)
     ? Math.max(0, (ord.qty / (liveAimPct/100)) - ord.grossQty) : 0;
   const extraFlag = extraNeeded > 0.05
     ? `<div style="font-size:10px;color:var(--accent4);margin-top:2px">⚠️ +${fmt(extraNeeded,2)}L extra needed (actual AIM: ${fmt(liveAimPct,1)}%)</div>` : '';
@@ -1747,7 +1747,7 @@ function showAddOrderModal(machineId, existingOrder) {
       </div>
       <div class="form-group">
         <label>Colour (Cap / Body)</label>
-        <input class="form-control" id="fo-colour" value="${ord.colour||''}" placeholder="Auto-filled from PC Code" readonly style="opacity:0.8;cursor:default">
+        <input class="form-control" id="fo-colour" value="${ord.colour||''}" placeholder="e.g. Pink / White (auto-filled or type manually)">
       </div>
       <div class="form-group">
         <label>Printed / Unprinted</label>
