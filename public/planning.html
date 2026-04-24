@@ -849,7 +849,7 @@ const STD_PI_WASTE     = 0.01;  // 1% print inspection wastage
 function calcOrderSchedule(order, mc) {
   // Use live A-grade from tracking if available, else use order/machine default
   const liveAG   = window._liveAGrade && window._liveAGrade[order.batchNumber];
-  // AIM factor: guard against aGradePct=0 causing division-by-zero → Infinity
+  // Guard: clamp aGradePct to minimum 1 to prevent division-by-zero → Infinity
   const rawAimPct = (liveAG?.aim?.aGradePct != null) ? liveAG.aim.aGradePct : (order.aGrade || mc.aGrade || 0);
   const aimFactor = rawAimPct > 0 ? (100 / rawAimPct) : (1 / (1 - STD_AIM_WASTE));
   const printFactor = (liveAG?.printing?.aGradePct != null)
@@ -985,7 +985,10 @@ function recalcMachineSchedule(machineId) {
       ord.startDate = new Date(cursor);
     }
     const sc = calcOrderSchedule(ord, mc);
-    ord.grossQty = sc.grossQty;
+    ord.grossQty   = sc.grossQty;
+    ord.aimOut     = sc.aimOut;
+    ord.printOut   = sc.printOut;
+    ord.piOut      = sc.piOut;
     ord.daysNeeded = sc.daysNeeded;
     // During 2-day window: if end date was manually set, do not overwrite it
     if (!(_inWindow2 && ord.manualEndDate)) {
@@ -1520,7 +1523,29 @@ function updateActualProd(ordId, val, machineId) {
   const ord = state.orders.find(o=>o.id===ordId);
   if (ord) {
     ord.actualProd = parseFloat(val)||0;
-    if (ord.actualProd > 0 && ord.status === 'pending') ord.status = 'running';
+    // Auto-promote pending → running only if within 2-order limit
+    if (ord.actualProd > 0 && ord.status === 'pending') {
+      const LEGACY_CUTOFF_AP = '2026-04-19';
+      const ordStartStr = ord.startDate ? toDateInput(ord.startDate) : '';
+      const isNewOrd = ordStartStr > LEGACY_CUTOFF_AP;
+      if (isNewOrd) {
+        const newRunningCount = state.orders.filter(o =>
+          o.machineId === machineId &&
+          o.status === 'running' &&
+          o.id !== ordId &&
+          !o.deleted &&
+          o.startDate && toDateInput(o.startDate) > LEGACY_CUTOFF_AP
+        ).length;
+        if (newRunningCount >= 2) {
+          alert('⚠️ Maximum 2 orders can be In Production on this machine.\n\nPlease close one of the current running orders before starting a new one.');
+          ord.actualProd = 0;
+          const inp = document.querySelector(`input[onchange*="${ordId}"]`);
+          if (inp) inp.value = 0;
+          return;
+        }
+      }
+      ord.status = 'running';
+    }
     recalcMachineSchedule(machineId);
   }
 }
