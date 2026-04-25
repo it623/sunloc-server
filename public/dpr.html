@@ -690,7 +690,6 @@ const CHART_COLORS = ['#00d4ff','#00e676','#ffab00','#ff4060','#b388ff','#1de9b6
 let curFloor = 'GF';
 let targets = JSON.parse(localStorage.getItem('dpr_targets')||'{}');
 let activeOrders = {}; // {machineId: [{id, batchNumber, customer, poNumber}]}
-let _suppressRenderShifts = false; // prevents premature render during init
 let dprClosedBatches = {}; // {orderId: {closedAt, closedBy}} — batches closed in DPR
 // Sanitize server URL — strip any file path and trailing slashes
 function sanitizeServerUrl(url) {
@@ -1054,7 +1053,8 @@ function collectForm(){
         m.runs=Array.from(runEls).map(el=>{
           const ri=el.dataset.ri;
           const selEl=document.getElementById(`run-ord-${sh}-${mc.id}-${ri}`);
-          // Fallback to data-orderid so orderId is NEVER lost on refresh/new device/cleared history
+          // Use select.value first; fall back to data-orderid attribute
+          // This ensures orderId is NEVER lost — survives refresh, cleared history, new device
           const savedOrderId = selEl?.value || selEl?.dataset?.orderid || '';
           const savedBatch = v(`run-batch-${sh}-${mc.id}-${ri}`) || selEl?.dataset?.batchnumber || '';
           return{
@@ -1133,9 +1133,10 @@ async function checkServer(){
     setSyncBadge('offline'); return false;
   }catch{ setSyncBadge('offline'); return false; }
 }
-// ── Pending save queue: retries every 15s until server confirms ──────
+// ── Pending save queue: retries every 15s until server confirms ─────
 let _dprPendingSave = null;
 let _dprRetryTimer = null;
+let _suppressRenderShifts = false;
 function _dprScheduleRetry(){
   if(_dprRetryTimer) return;
   _dprRetryTimer = setInterval(async()=>{
@@ -1168,13 +1169,11 @@ async function _dprPushRaw(fl,d,data){
       body:JSON.stringify({floor:fl,date:d,data,actuals}),
       signal:AbortSignal.timeout(15000)
     });
-    if(!r.ok) throw new Error('HTTP '+r.status);
-    setSyncBadge('synced');
-    return true;
+    if(r.ok){ setSyncBadge('synced'); return true; }
+    setSyncBadge('offline'); return false;
   }catch(e){
     console.warn('[DPR] save failed:',e?.message);
-    setSyncBadge('offline');
-    return false;
+    setSyncBadge('offline'); return false;
   }
 }
 async function pushToServer(fl,d,data){
@@ -1675,11 +1674,12 @@ function renderShifts(){
         // Resolve effective orderId: use saved orderId, or match by batchNumber if orderId missing
         const matchedOrder = orders.find(o=>o.id===run.orderId) || orders.find(o=>o.batchNumber===run.batchNumber);
         const effectiveOrderId = matchedOrder?.id || run.orderId || '';
-        // Auto-fix run.orderId if we found a match (so orderId stays current)
+        // Keep run.orderId in sync with matched order id
         if(matchedOrder && run.orderId !== matchedOrder.id) run.orderId = matchedOrder.id;
-        // If batch saved but not in activeOrders — show as disabled placeholder
+        // If saved batch is not in activeOrders (order closed, different device, timing)
+        // show a disabled placeholder so user always sees what was saved — never blank
         const orphanOpt = (run.batchNumber && !matchedOrder)
-          ? `<option value="${run.orderId||run.batchNumber}" selected disabled>[saved] ${run.batchNumber} (not in active list)</option>`
+          ? `<option value="${run.orderId||run.batchNumber}" selected disabled>[saved] ${run.batchNumber}</option>`
           : '';
         const ordOpts=`<option value="">— Order —</option>`+orphanOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
@@ -1807,7 +1807,7 @@ function addRun(sh, mcId){
     const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}">${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp&&o.pcCode?' | PC:'+esc(o.pcCode):''}${o.isTemp&&!o.colourConfirmed?' ⚠️ PC not set':''}</option>`).join('');
     div.innerHTML=`
       ${isMult?`<span style="font-family:var(--mono);font-size:9px;color:var(--t3);width:14px;flex-shrink:0">${ri+1}</span>`:''}
-      <select id="run-ord-${sh}-${mcId}-${ri}" data-orderid="" data-batchnumber="" style="font-size:10px;padding:3px 5px;width:150px;flex-shrink:0" onchange="onRunOrderChange('${sh}','${mcId}',${ri})" title="Select active order">${ordOpts}</select>
+      <select id="run-ord-${sh}-${mcId}-${ri}" style="font-size:10px;padding:3px 5px;width:150px;flex-shrink:0" onchange="onRunOrderChange('${sh}','${mcId}',${ri})" title="Select active order">${ordOpts}</select>
       <input type="text" id="run-batch-${sh}-${mcId}-${ri}" placeholder="Batch #" readonly style="width:80px;font-size:10px;font-family:var(--mono);flex-shrink:0;background:var(--s2);cursor:default;opacity:0.8" title="Auto-filled from order selection">
       <input type="number" id="run-qty-${sh}-${mcId}-${ri}" placeholder="Qty" min="0" style="width:60px;font-size:14px;font-family:var(--mono);flex-shrink:0;font-weight:600" oninput="markUnsaved();updateMcTotals('${sh}','${mcId}')" title="Production in Lakhs">
       <span id="run-colour-${sh}-${mcId}-${ri}" style="font-size:10px;font-weight:700;color:var(--cyan);font-family:var(--mono);flex-shrink:0;min-width:60px">—</span>
@@ -1869,7 +1869,7 @@ function onRunOrderChange(sh, mcId, ri){
       }
     }
   }
-  // Sync data-* so collectForm always has correct orderId even before save
+  // Sync data-* attributes immediately so collectForm always has correct orderId
   const _selEl=document.getElementById(`run-ord-${sh}-${mcId}-${ri}`);
   const _batchEl=document.getElementById(`run-batch-${sh}-${mcId}-${ri}`);
   if(_selEl){
@@ -1877,7 +1877,8 @@ function onRunOrderChange(sh, mcId, ri){
     _selEl.dataset.batchnumber=_batchEl?.value||'';
   }
   markUnsaved();
-  // Auto-save immediately — persists to server so any device/browser shows correctly
+  // Auto-save to server immediately — order selection persists permanently:
+  // page refresh, browser history clear, new device, any browser
   const _fl=curFloor, _d=getDate(), _data=collectForm();
   localStorage.setItem(skey(_fl,_d), JSON.stringify(_data));
   pushToServer(_fl,_d,_data);
@@ -3508,16 +3509,16 @@ function postAuthServerInit() {
   checkServer().then(ok=>{
     if(ok){
       loadSettingsFromServer().then(async ()=>{
-        // Step 1: fetch orders + closed batches (suppress early renderShifts inside fetchActiveOrders)
+        // Step 1: fetch orders + closed batches — suppress early renderShifts inside fetchActiveOrders
         _suppressRenderShifts = true;
         await Promise.all([fetchActiveOrders(), fetchClosedBatches()]);
         _suppressRenderShifts = false;
-        // Step 2: fetch today's DPR data for all floors — server is source of truth
+        // Step 2: fetch today's data for all floors — server is always source of truth
         // Must run AFTER fetchActiveOrders so activeOrders is populated when rendering
         const d=getDate();
         const allFloors=Object.keys(FLOORS);
         await Promise.all(allFloors.map(fl=>fetchDayFromServer(fl, d)));
-        // Step 3: now both activeOrders AND day data are ready — render once correctly
+        // Step 3: both activeOrders AND day data ready — render once, correctly
         renderDayKpis();
         renderShifts();
         renderRemarks();
@@ -3534,7 +3535,7 @@ function postAuthServerInit() {
 
 window.addEventListener('beforeunload',e=>{ if(unsaved){e.preventDefault();e.returnValue='';} });
 
-// ── Auto-sync: pull latest from server every 30s — all devices stay in sync ──
+// ── Auto-sync: all devices get same data every 30s ───────────────────
 let _dprSyncTimer=null;
 async function _dprAutoSync(){
   if(!serverUrl||!dprUser) return;
@@ -3549,7 +3550,7 @@ function _startAutoSync(){
   if(_dprSyncTimer) clearInterval(_dprSyncTimer);
   _dprSyncTimer=setInterval(_dprAutoSync,30000);
 }
-// Flush pending save + pull fresh data when user returns to tab
+// Flush pending save + pull fresh when user returns to this tab
 document.addEventListener('visibilitychange',async()=>{
   if(document.visibilityState==='visible'&&serverUrl&&dprUser){
     if(_dprPendingSave) await pushToServer(_dprPendingSave.fl,_dprPendingSave.d,_dprPendingSave.data);
@@ -3560,7 +3561,6 @@ document.addEventListener('visibilitychange',async()=>{
     }
   }
 });
-
 
 // ══════════════════════════════════════════════════════
 // AUTH SYSTEM — DPR
