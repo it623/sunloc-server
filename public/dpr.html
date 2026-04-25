@@ -113,6 +113,7 @@ td.r,th.r{text-align:right}
 .col-body.open{display:block}
 /* REMARKS */
 .remark-row{background:var(--s2);border:2px solid var(--b2);border-radius:4px;padding:10px 12px;margin-bottom:8px;display:grid;grid-template-columns:auto auto 1fr auto;gap:8px;align-items:center}
+@keyframes spin{to{transform:rotate(360deg)}}
 .remark-row:last-child{border-bottom:none}
 .rem-shift{font-family:var(--fc);font-size:10px;letter-spacing:.8px;color:var(--cyan);font-weight:800;width:52px;flex-shrink:0}
 .rem-text{flex:1;font-size:12px;color:var(--t2);font-weight:600}
@@ -1172,11 +1173,11 @@ async function fetchDayFromServer(fl, d){
 }
 
 async function fetchActiveOrders(){
-  if(!serverUrl){
-    const cached=localStorage.getItem('dpr_active_orders');
-    if(cached) try{activeOrders=JSON.parse(cached);}catch{}
-    return;
-  }
+  // ALWAYS load from cache first so dropdowns are never blank while server loads
+  const cached=localStorage.getItem('dpr_active_orders');
+  if(cached) try{ activeOrders=JSON.parse(cached); }catch{}
+
+  if(!serverUrl) return;
   try{
     const r=await fetch(serverUrl+'/api/orders/active',{signal:AbortSignal.timeout(5000)});
     if(!r.ok) return;
@@ -1199,8 +1200,7 @@ async function fetchActiveOrders(){
       renderShifts(); // Re-render so dropdowns populate
     }
   }catch{
-    const cached=localStorage.getItem('dpr_active_orders');
-    if(cached) try{activeOrders=JSON.parse(cached);}catch{}
+    // Already loaded from cache above — no action needed
   }
   await fetchTrackingAGrade();
 }
@@ -1649,7 +1649,10 @@ function renderShifts(){
         const effectiveOrderId = run.orderId || matchedOrder?.id || '';
         // Auto-fix run.orderId if we found a match (so saveDay captures it)
         if(!run.orderId && matchedOrder) run.orderId = matchedOrder.id;
-        const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
+        // If saved order not in activeOrders (e.g. closed in planning), add as ghost option so it still shows
+        const ghostOpt = (effectiveOrderId && !matchedOrder && run.batchNumber)
+          ? `<option value="${esc(effectiveOrderId)}" selected>${esc(run.batchNumber)} | (closed)</option>` : '';
+        const ordOpts=`<option value="">— Order —</option>`+ghostOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
         runsHtml+=`
@@ -3474,15 +3477,17 @@ function postAuthServerInit() {
   checkServer().then(ok=>{
     if(ok){
       loadSettingsFromServer().then(async ()=>{
-        // Fetch orders AND closed batches FIRST — both needed before renderShifts
-        await Promise.all([fetchActiveOrders(), fetchClosedBatches()]);
-        // Fetch today's data from server for ALL floors so any browser/device
-        // gets the latest saved data regardless of its local localStorage state.
+        // Step 1: Fetch active orders from server FIRST — must complete before any render
+        // This ensures order dropdowns are never blank even after delete browser history
+        await fetchActiveOrders();
+        // Step 2: Fetch closed batches in parallel with day data
         const d=getDate();
         const allFloors=Object.keys(FLOORS);
-        await Promise.all(allFloors.map(fl=>fetchDayFromServer(fl, d)));
-        // Now localStorage is populated with server data for all floors — render
-        // Restore correct floor tab (set during applyDprRoleRestrictions)
+        await Promise.all([
+          fetchClosedBatches(),
+          ...allFloors.map(fl=>fetchDayFromServer(fl, d))
+        ]);
+        // Step 3: Now all data is ready — render
         document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
         document.getElementById('ftab-'+curFloor)?.classList.add('on');
         renderDayKpis();
@@ -3559,8 +3564,13 @@ async function doDprLogin() {
     applyDprRoleRestrictions();
     document.getElementById('auth-overlay').classList.add('hidden');
     addDprUserBadge();
-    renderEntry();
     go('entry');
+    // Show loading spinner — do NOT render empty form before server data arrives
+    document.getElementById('shiftsArea').innerHTML=`
+      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px;color:var(--t3)">
+        <div style="width:36px;height:36px;border:3px solid var(--b2);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite"></div>
+        <div style="font-size:13px;font-weight:600">Loading data from server...</div>
+      </div>`;
     postAuthServerInit();
     dprAuditLog('LOGIN', 'Logged in to DPR');
   }
@@ -3773,8 +3783,13 @@ function showDprAuditPage() {
       document.getElementById('auth-overlay').classList.add('hidden');
       applyDprRoleRestrictions();
       addDprUserBadge();
-      renderEntry();
       go('entry');
+      // Show loading spinner — do NOT render empty form before server data arrives
+      document.getElementById('shiftsArea').innerHTML=`
+        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px;color:var(--t3)">
+          <div style="width:36px;height:36px;border:3px solid var(--b2);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite"></div>
+          <div style="font-size:13px;font-weight:600">Loading data from server...</div>
+        </div>`;
       postAuthServerInit();
       return;
     } catch(e) {}
