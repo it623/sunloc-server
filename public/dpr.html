@@ -1173,11 +1173,11 @@ async function fetchDayFromServer(fl, d){
 }
 
 async function fetchActiveOrders(){
-  // ALWAYS load from cache first so dropdowns are never blank while server loads
-  const cached=localStorage.getItem('dpr_active_orders');
-  if(cached) try{ activeOrders=JSON.parse(cached); }catch{}
-
-  if(!serverUrl) return;
+  if(!serverUrl){
+    const cached=localStorage.getItem('dpr_active_orders');
+    if(cached) try{activeOrders=JSON.parse(cached);}catch{}
+    return;
+  }
   try{
     const r=await fetch(serverUrl+'/api/orders/active',{signal:AbortSignal.timeout(5000)});
     if(!r.ok) return;
@@ -1200,7 +1200,8 @@ async function fetchActiveOrders(){
       renderShifts(); // Re-render so dropdowns populate
     }
   }catch{
-    // Already loaded from cache above — no action needed
+    const cached=localStorage.getItem('dpr_active_orders');
+    if(cached) try{activeOrders=JSON.parse(cached);}catch{}
   }
   await fetchTrackingAGrade();
 }
@@ -1650,9 +1651,9 @@ function renderShifts(){
         // Auto-fix run.orderId if we found a match (so saveDay captures it)
         if(!run.orderId && matchedOrder) run.orderId = matchedOrder.id;
         // If saved order not in activeOrders (e.g. closed in planning), add as ghost option so data is preserved
-        // Show batch number only — no "(closed)" label confusing users
+        // If saved order not in activeOrders (e.g. closed in planning), add as ghost option so it still shows
         const ghostOpt = (effectiveOrderId && !matchedOrder && run.batchNumber)
-          ? `<option value="${esc(effectiveOrderId)}" selected>${esc(run.batchNumber)}</option>` : '';
+          ? `<option value="${esc(effectiveOrderId)}" selected>${esc(run.batchNumber)} | (closed)</option>` : '';
         const ordOpts=`<option value="">— Order —</option>`+ghostOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
