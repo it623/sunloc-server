@@ -2079,9 +2079,10 @@ function renderRemarks(){
     const i=r.origIdx;
     const sc=shColors[r.shift]||shColors.General;
     const mcOpts=`<option value="">— All —</option>`+getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
+    const shOpts=['A','B','C','General'].map(s=>`<option value="${s}" ${r.shift===s?'selected':''}>${s}</option>`).join('');
     html+=`<div class="remark-row" style="background:${sc.bg};border-color:${sc.border};border-left:3px solid ${sc.border}">
       <select onchange="saveRemarkMc(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:var(--cyan);font-size:12px;min-width:60px;background:transparent;border:1px solid var(--b2);border-radius:3px;padding:1px 3px">${mcOpts}</select>
-      <span style="background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;white-space:nowrap">Shift ${r.shift}</span>
+      <select onchange="saveRemarkShift(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:#fff;font-size:11px;background:${sc.badge};border:none;border-radius:4px;padding:2px 6px;cursor:pointer">${shOpts}</select>
       <textarea id="rem-edit-${i}" style="width:100%;min-height:36px;resize:vertical;font-size:12px;background:transparent;border:1px solid transparent;border-radius:3px;padding:2px 4px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='transparent'" placeholder="Describe the issue...">${esc(r.text)}</textarea>
       <button class="btn-sm danger" onclick="deleteRemark(${i})">✕</button>
     </div>`;
@@ -2106,6 +2107,15 @@ function saveRemarkMc(i,val){
   day.remarks[i].mc=val;
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
+  markUnsaved();
+}
+function saveRemarkShift(i,val){
+  const fl=curFloor,d=getDate(),day=loadDay(fl,d);
+  if(!day.remarks[i]) return;
+  day.remarks[i].shift=val;
+  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
+  renderRemarks();
   markUnsaved();
 }
 function addRemark(){
@@ -2150,9 +2160,10 @@ function renderResort(){
     const i=r.origIdx;
     const sc=shColors[r.shift]||shColors.A;
     const rsMcOpts=getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
+    const rsShOpts=['A','B','C'].map(s=>`<option value="${s}" ${r.shift===s?'selected':''}>${s}</option>`).join('');
     html+=`<div class="resort-entry" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
       <select onchange="saveResortMc(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:var(--cyan);font-size:12px;min-width:60px;background:transparent;border:1px solid var(--b2);border-radius:3px;padding:1px 3px;flex-shrink:0">${rsMcOpts}</select>
-      <span style="background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0">Shift ${r.shift}</span>
+      <select onchange="saveResortShift(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:#fff;font-size:11px;background:${sc.badge};border:none;border-radius:4px;padding:2px 6px;cursor:pointer;flex-shrink:0">${rsShOpts}</select>
       <div style="flex:1;min-width:0">
         <div style="font-size:12px;color:var(--t2);display:flex;align-items:center;gap:6px;flex-wrap:wrap">
           ${esc(r.reason)} —
@@ -2198,6 +2209,17 @@ function saveResortMc(i,val){
   day.resort[i].mc=val;
   localStorage.setItem(skey(fl,d),JSON.stringify(day));
   pushToServer(fl,d,day);
+  renderDayKpis();
+  renderShifts();
+  markUnsaved();
+}
+function saveResortShift(i,val){
+  const fl=curFloor,d=getDate(),day=loadDay(fl,d);
+  if(!day.resort[i]) return;
+  day.resort[i].shift=val;
+  localStorage.setItem(skey(fl,d),JSON.stringify(day));
+  pushToServer(fl,d,day);
+  renderResort();
   renderDayKpis();
   renderShifts();
   markUnsaved();
