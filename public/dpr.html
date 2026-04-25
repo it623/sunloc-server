@@ -1649,9 +1649,10 @@ function renderShifts(){
         const effectiveOrderId = run.orderId || matchedOrder?.id || '';
         // Auto-fix run.orderId if we found a match (so saveDay captures it)
         if(!run.orderId && matchedOrder) run.orderId = matchedOrder.id;
-        // If saved order not in activeOrders (e.g. closed in planning), add as ghost option so it still shows
+        // If saved order not in activeOrders (e.g. closed in planning), add as ghost option so data is preserved
+        // Show batch number only — no "(closed)" label confusing users
         const ghostOpt = (effectiveOrderId && !matchedOrder && run.batchNumber)
-          ? `<option value="${esc(effectiveOrderId)}" selected>${esc(run.batchNumber)} | (closed)</option>` : '';
+          ? `<option value="${esc(effectiveOrderId)}" selected>${esc(run.batchNumber)}</option>` : '';
         const ordOpts=`<option value="">— Order —</option>`+ghostOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
