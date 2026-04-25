@@ -345,7 +345,8 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       <span class="col-title" style="color:var(--t2)">💬 Shift Remarks / Issues</span>
     </div>
     <div class="col-body open" id="remBlock">
-      <div id="remList"><p style="color:var(--t3);font-size:12px">No remarks. Click "+ Add Remark" to log issues.</p></div>
+      <p style="color:var(--t3);font-size:11px;margin-bottom:8px">Log machine-wise shift remarks and issues. Each entry links to a machine and shift.</p>
+      <div id="remList"><p style="color:var(--t3);font-size:12px">No remarks. Click "+ Add Remark" to log shift issues.</p></div>
       <div style="padding:10px 0 2px 0">
         <button class="btn-add" onclick="addRemark()" style="width:100%;padding:8px;text-align:center">+ Add Remark</button>
       </div>
@@ -2082,7 +2083,7 @@ function renderRemarks(){
       <select onchange="saveRemarkMc(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:var(--cyan);font-size:12px;min-width:60px;background:transparent;border:1px solid var(--b2);border-radius:3px;padding:1px 3px;flex-shrink:0">${mcOpts}</select>
       <span style="background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0">Shift ${r.shift}</span>
       <div style="flex:1;min-width:0">
-        <textarea id="rem-edit-${i}" style="width:100%;min-height:48px;resize:vertical;font-size:12px;background:var(--s2);border:1px solid var(--b2);border-radius:3px;padding:4px 6px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='var(--b2)'" placeholder="Describe the issue...">${esc(r.text)}</textarea>
+        <textarea id="rem-edit-${i}" style="width:100%;min-height:36px;resize:vertical;font-size:12px;background:transparent;border:1px solid transparent;border-radius:3px;padding:2px 4px;color:var(--t1);margin-top:2px" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='transparent'" placeholder="Describe the issue...">${esc(r.text)}</textarea>
       </div>
       <button class="btn-sm danger" style="flex-shrink:0" onclick="deleteRemark(${i})">✕</button>
     </div>`;
@@ -2111,11 +2112,10 @@ function saveRemarkMc(i,val){
 }
 function addRemark(){
   const fl=curFloor;
-  const mcOpts=`<option value="">— All Machines —</option>`+
-    getActiveMachines(fl).map(m=>`<option value="${m.id}">${m.id} (${m.sz})</option>`).join('');
+  const mcOpts=getActiveMachines(fl).map(m=>`<option value="${m.id}">${m.id} (${m.sz})</option>`).join('');
   openModal('Add Remark',`
+    <div class="modal-fgrp"><label>Machine</label><select id="rem-mc" style="width:100%"><option value="">— All Machines —</option>${mcOpts}</select></div>
     <div class="modal-fgrp"><label>Shift</label><select id="rem-shift" style="width:100%"><option>A</option><option>B</option><option>C</option><option>General</option></select></div>
-    <div class="modal-fgrp"><label>Machine (optional)</label><select id="rem-mc" style="width:100%">${mcOpts}</select></div>
     <div class="modal-fgrp"><label>Remark / Issue</label><textarea id="rem-text" placeholder="Describe the issue..." style="width:100%;min-height:80px;resize:vertical"></textarea></div>
   `,[
     {label:'Add',cls:'primary',fn:()=>{
@@ -2125,7 +2125,6 @@ function addRemark(){
       localStorage.setItem(skey(fl,d),JSON.stringify(day));
       pushToServer(fl,d,day);
       closeModal();renderRemarks();markUnsaved();
-      // Scroll to bottom so new remark is visible
       setTimeout(()=>{const el=document.getElementById('rem-last');if(el)el.scrollIntoView({behavior:'smooth',block:'nearest'});},100);
     }},
     {label:'Cancel',fn:closeModal}
