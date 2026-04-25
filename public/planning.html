@@ -748,12 +748,20 @@ function loadState() {
     const saved = localStorage.getItem('sunloc_state');
     if (saved) {
       const parsed = JSON.parse(saved);
-      Object.assign(state, parsed);
-      state.pcCodes = PC_CODES_RAW;
-      state.zoneMap = ZONE_MAP_RAW;
+      // SAFETY: if localStorage has very few orders (likely stale/corrupted), wipe it
+      // Server will always provide the authoritative count
+      const localOrderCount = (parsed.orders || []).length;
+      if (localOrderCount > 0 && localOrderCount < 180) {
+        console.warn(`[LoadState] localStorage has only ${localOrderCount} orders — likely stale. Wiping to force server load.`);
+        localStorage.removeItem('sunloc_state');
+      } else {
+        Object.assign(state, parsed);
+        state.pcCodes = PC_CODES_RAW;
+        state.zoneMap = ZONE_MAP_RAW;
+      }
     }
-  } catch(e) {}
-  // ALWAYS load from server immediately — server is source of truth
+  } catch(e) { localStorage.removeItem('sunloc_state'); }
+  // ALWAYS load from server immediately — server is permanent source of truth
   SYNC.loadFromServer();
   setTimeout(() => initMonthlyArchive(), 800);
   if (state.orders) {
