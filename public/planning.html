@@ -897,8 +897,8 @@ function calcOrderSchedule(order, mc) {
     piOut    = null;
   }
   // Remaining gross = total gross minus what's already been produced (from DPR actuals)
-  // This makes endDate shift out when production is slow and pull in when fast
-  const alreadyProduced = Math.min(order.actualQty || 0, grossQty);
+  // actualProd is the server-enriched field from _actualsCache; actualQty is fallback
+  const alreadyProduced = Math.min((order.actualProd || order.actualQty || 0), grossQty);
   const remainingGross  = Math.max(0, grossQty - alreadyProduced);
   // Guard: if machine cap is 0 or missing, return null daysNeeded (not Infinity)
   const safeCap = (mc.cap > 0) ? mc.cap : null;
