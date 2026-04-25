@@ -1069,24 +1069,9 @@ app.post('/api/dpr/save', async (req, res) => {
         );
       }
 
-      // Update planning actuals (two-way sync)
+      // Update planning actuals cache (two-way sync) — warm cache so Planning sees fresh data
       try {
-        const planningState = getPlanningState();
-        if (planningState && planningState.orders) {
-          const byOrderId = await pgPool.query(`SELECT order_id, SUM(qty_lakhs) as total_qty FROM production_actuals WHERE order_id IS NOT NULL AND order_id != '' GROUP BY order_id`);
-          const byBatch = await pgPool.query(`SELECT batch_number, SUM(qty_lakhs) as total_qty FROM production_actuals WHERE (order_id IS NULL OR order_id = '') AND batch_number IS NOT NULL AND batch_number != '' GROUP BY batch_number`);
-          let changed = false;
-          for (const ord of planningState.orders) { if (ord.actualQty !== undefined) ord.actualQty = 0; }
-          for (const row of byOrderId.rows) {
-            const ord = planningState.orders.find(o => o.id === row.order_id);
-            if (ord) { ord.actualQty = parseFloat(row.total_qty)||0; changed = true; }
-          }
-          for (const row of byBatch.rows) {
-            const ord = planningState.orders.find(o => o.batchNumber === row.batch_number && (!o.actualQty));
-            if (ord) { ord.actualQty = parseFloat(row.total_qty)||0; changed = true; }
-          }
-          if (changed) savePlanningState(planningState);
-        }
+        await warmActualsCache();
       } catch(e) { console.warn('Planning sync error:', e.message); }
 
     } else {
