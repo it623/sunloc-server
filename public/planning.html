@@ -620,8 +620,8 @@ const SYNC = (() => {
   async function loadFromServer() {
     if (!_url) return;
 
-    // STEP 1: Render immediately from localStorage — user sees orders at once
-    render();
+    // STEP 1: Render immediately if already logged in
+    if (typeof currentUser !== 'undefined' && currentUser) render();
 
     // STEP 2: Fetch planning state from server (10s timeout)
     let serverState = null;
@@ -753,8 +753,9 @@ function loadState() {
       }
     }
   } catch(e) { localStorage.removeItem('sunloc_state'); }
-  // Render immediately from localStorage so user sees data at once
-  render();
+  // Only render if user is already logged in (currentUser set after this runs on first load)
+  // render() will be called again after login completes
+  if (typeof currentUser !== 'undefined' && currentUser) render();
   // Then sync with server in background — server is permanent source of truth
   SYNC.loadFromServer();
   setTimeout(() => initMonthlyArchive(), 800);
