@@ -3175,9 +3175,18 @@ function go(page){
 
 function setFloor(fl){
   curFloor=fl;
+  sessionStorage.setItem('dpr_curFloor', fl);
   document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
   document.getElementById('ftab-'+fl)?.classList.add('on');
-  renderEntry();
+  renderEntry(); // Show immediately from localStorage (fast)
+  // Then fetch latest from server — ensures same data on all devices
+  if(serverUrl){
+    (async()=>{
+      const d=getDate();
+      const serverData=await fetchDayFromServer(fl, d);
+      if(serverData){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
+    })();
+  }
 }
 
 function onDateChange(){
@@ -3473,6 +3482,9 @@ function postAuthServerInit() {
         const allFloors=Object.keys(FLOORS);
         await Promise.all(allFloors.map(fl=>fetchDayFromServer(fl, d)));
         // Now localStorage is populated with server data for all floors — render
+        // Restore correct floor tab (set during applyDprRoleRestrictions)
+        document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
+        document.getElementById('ftab-'+curFloor)?.classList.add('on');
         renderDayKpis();
         renderShifts();
         renderRemarks();
@@ -3487,6 +3499,14 @@ function postAuthServerInit() {
 }
 
 window.addEventListener('beforeunload',e=>{ if(unsaved){e.preventDefault();e.returnValue='';} });
+
+// Auto-refresh from server every 30 seconds — keeps all devices in sync
+setInterval(async ()=>{
+  if(!serverUrl || unsaved) return; // Don't refresh if user has unsaved changes
+  const fl=curFloor, d=getDate();
+  const serverData=await fetchDayFromServer(fl, d);
+  if(serverData){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
+}, 30000);
 
 // ══════════════════════════════════════════════════════
 // AUTH SYSTEM — DPR
@@ -3559,13 +3579,18 @@ function applyDprRoleRestrictions() {
     }
   });
 
+  // Restore floor from sessionStorage if available and allowed
+  const savedFloor = sessionStorage.getItem('dpr_curFloor');
+  if (savedFloor && allowedFloors.includes(savedFloor)) {
+    curFloor = savedFloor;
+  }
+
   // Switch to first allowed floor if current is blocked
   if (!allowedFloors.includes(curFloor)) {
     curFloor = allowedFloors[0];
-    document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
-    document.getElementById('ftab-'+curFloor)?.classList.add('on');
-    renderEntry();
   }
+  document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
+  document.getElementById('ftab-'+curFloor)?.classList.add('on');
 }
 
 function isBackDateAllowed() {
