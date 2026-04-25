@@ -1020,23 +1020,6 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
 });
 
 // GET DPR record for a floor + date
-app.get('/api/dpr/:floor/:date', async (req, res) => {
-  try {
-    const { floor, date } = req.params;
-    if (pgPool) {
-      const r = await pgPool.query('SELECT data_json, saved_at FROM dpr_records WHERE floor = $1 AND date = $2', [floor, date]);
-      if (!r.rows.length) return res.json({ ok: true, data: null });
-      res.json({ ok: true, data: JSON.parse(r.rows[0].data_json), savedAt: r.rows[0].saved_at });
-    } else {
-      const row = db.prepare('SELECT data_json, saved_at FROM dpr_records WHERE floor = ? AND date = ?').get(floor, date);
-      if (!row) return res.json({ ok: true, data: null });
-      res.json({ ok: true, data: JSON.parse(row.data_json), savedAt: row.saved_at });
-    }
-  } catch (err) {
-    res.status(500).json({ ok: false, error: err.message });
-  }
-});
-
 // POST save DPR record + extract actuals into bridge table
 app.post('/api/dpr/save', async (req, res) => {
   try {
@@ -1115,6 +1098,8 @@ app.post('/api/dpr/save', async (req, res) => {
       db.transaction(rows => rows.forEach(r => upsert.run(...r)))(rows);
     }
 
+    // Refresh actuals cache so Planning sees new DPR data immediately
+    warmActualsCache().catch(e => console.warn('[DPR] cache warm failed:', e.message));
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -1195,6 +1180,24 @@ app.get('/api/dpr/batch-closed', async (req, res) => {
       rows = db.prepare('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed').all();
     }
     res.json({ ok: true, closed: rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET DPR record for a floor + date — MUST be after all specific /api/dpr/* routes
+app.get('/api/dpr/:floor/:date', async (req, res) => {
+  try {
+    const { floor, date } = req.params;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT data_json, saved_at FROM dpr_records WHERE floor = $1 AND date = $2', [floor, date]);
+      if (!r.rows.length) return res.json({ ok: true, data: null });
+      res.json({ ok: true, data: JSON.parse(r.rows[0].data_json), savedAt: r.rows[0].saved_at });
+    } else {
+      const row = db.prepare('SELECT data_json, saved_at FROM dpr_records WHERE floor = ? AND date = ?').get(floor, date);
+      if (!row) return res.json({ ok: true, data: null });
+      res.json({ ok: true, data: JSON.parse(row.data_json), savedAt: row.saved_at });
+    }
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
