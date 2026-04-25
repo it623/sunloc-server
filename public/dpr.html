@@ -1807,7 +1807,7 @@ function addRun(sh, mcId){
     const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}">${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp&&o.pcCode?' | PC:'+esc(o.pcCode):''}${o.isTemp&&!o.colourConfirmed?' ⚠️ PC not set':''}</option>`).join('');
     div.innerHTML=`
       ${isMult?`<span style="font-family:var(--mono);font-size:9px;color:var(--t3);width:14px;flex-shrink:0">${ri+1}</span>`:''}
-      <select id="run-ord-${sh}-${mcId}-${ri}" style="font-size:10px;padding:3px 5px;width:150px;flex-shrink:0" onchange="onRunOrderChange('${sh}','${mcId}',${ri})" title="Select active order">${ordOpts}</select>
+      <select id="run-ord-${sh}-${mcId}-${ri}" data-orderid="" data-batchnumber="" style="font-size:10px;padding:3px 5px;width:150px;flex-shrink:0" onchange="onRunOrderChange('${sh}','${mcId}',${ri})" title="Select active order">${ordOpts}</select>
       <input type="text" id="run-batch-${sh}-${mcId}-${ri}" placeholder="Batch #" readonly style="width:80px;font-size:10px;font-family:var(--mono);flex-shrink:0;background:var(--s2);cursor:default;opacity:0.8" title="Auto-filled from order selection">
       <input type="number" id="run-qty-${sh}-${mcId}-${ri}" placeholder="Qty" min="0" style="width:60px;font-size:14px;font-family:var(--mono);flex-shrink:0;font-weight:600" oninput="markUnsaved();updateMcTotals('${sh}','${mcId}')" title="Production in Lakhs">
       <span id="run-colour-${sh}-${mcId}-${ri}" style="font-size:10px;font-weight:700;color:var(--cyan);font-family:var(--mono);flex-shrink:0;min-width:60px">—</span>
