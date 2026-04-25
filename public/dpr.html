@@ -2069,7 +2069,7 @@ function updateDTTotals(){
 function renderRemarks(){
   const fl=curFloor, d=getDate(), day=loadDay(fl,d);
   const rem=day.remarks||[];
-  if(rem.length===0){document.getElementById('remList').innerHTML=`<div style="color:var(--t3);font-size:12px;padding:8px">No remarks. Click "+ Add Remark" to log issues.</div>`;return;}
+  if(rem.length===0){document.getElementById('remList').innerHTML=`<p style="color:var(--t3);font-size:12px">No remarks. Click "+ Add Remark" to log shift issues.</p>`;return;}
   const shColors={A:{bg:'rgba(6,78,59,0.12)',border:'#6ee7b7',badge:'#064e3b'},B:{bg:'rgba(30,58,95,0.12)',border:'#60a5fa',badge:'#1e3a5f'},C:{bg:'rgba(120,53,15,0.12)',border:'#fcd34d',badge:'#78350f'},General:{bg:'rgba(100,100,100,0.08)',border:'var(--b2)',badge:'var(--t2)'}};
   const shOrder={A:0,B:1,C:2,General:3};
   const sorted=[...rem.map((r,i)=>({...r,origIdx:i}))].sort((a,b)=>(shOrder[a.shift]??9)-(shOrder[b.shift]??9));
@@ -2080,9 +2080,9 @@ function renderRemarks(){
     const mcOpts=`<option value="">— All —</option>`+getActiveMachines(fl).map(m=>`<option value="${m.id}" ${r.mc===m.id?'selected':''}>${m.id}</option>`).join('');
     html+=`<div class="remark-row" style="align-items:flex-start;gap:8px;padding:8px 10px;border-bottom:1px solid var(--b1);background:${sc.bg};border-left:3px solid ${sc.border}">
       <select onchange="saveRemarkMc(${i},this.value)" style="font-family:var(--mono);font-weight:700;color:var(--cyan);font-size:12px;min-width:60px;background:transparent;border:1px solid var(--b2);border-radius:3px;padding:1px 3px;flex-shrink:0">${mcOpts}</select>
-      <span style="flex-shrink:0;background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700">Shift ${r.shift}</span>
+      <span style="background:${sc.badge};color:#fff;padding:2px 8px;border-radius:4px;font-size:10px;font-weight:700;flex-shrink:0">Shift ${r.shift}</span>
       <div style="flex:1;min-width:0">
-        <textarea id="rem-edit-${i}" style="width:100%;min-height:48px;resize:vertical;font-size:12px;background:var(--s2);border:1px solid var(--b2);border-radius:3px;padding:4px 6px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='var(--b2)'">${esc(r.text)}</textarea>
+        <textarea id="rem-edit-${i}" style="width:100%;min-height:48px;resize:vertical;font-size:12px;background:var(--s2);border:1px solid var(--b2);border-radius:3px;padding:4px 6px;color:var(--t1)" oninput="saveRemarkEdit(${i})" onfocus="this.style.borderColor='${sc.border}'" onblur="this.style.borderColor='var(--b2)'" placeholder="Describe the issue...">${esc(r.text)}</textarea>
       </div>
       <button class="btn-sm danger" style="flex-shrink:0" onclick="deleteRemark(${i})">✕</button>
     </div>`;
