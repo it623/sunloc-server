@@ -1010,7 +1010,7 @@ async function pullFromServer(){
   if(!serverUrl) return;
   try{
     // STEP 1: Load planning batches FIRST — fast, shows batches immediately
-    const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(30000)});
+    const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(8000)});
     if(pr.ok){
       const pj=await pr.json();
       if(pj.ok && pj.state?.orders){

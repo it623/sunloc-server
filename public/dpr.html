@@ -1220,6 +1220,9 @@ async function fetchActiveOrders(){
       localStorage.setItem('dpr_active_orders',JSON.stringify(activeOrders));
       toast('✓ Orders synced from Planning App','var(--green)');
 
+      // Check each machine — if no active order, ensure TEMP batch exists for today
+      await checkAndCreateTempBatches();
+
       if(!_suppressRenderShifts) renderShifts(); // Re-render so dropdowns populate
     }
   }catch{
@@ -1263,6 +1266,94 @@ async function closeBatchInDPR(orderId, batchNumber){
 }
 
 
+
+// ── TEMP Batch Logic ─────────────────────────────────────────────
+// Check all machines on current floor — create TEMP batch if no active order
+async function checkAndCreateTempBatches(){
+  if(!serverUrl) return;
+  const fl = curFloor;
+  const machines = FLOORS[fl]?.machines || [];
+  for(const mc of machines){
+    // Skip if machine already has at least one real running order
+    const hasRealOrder = (activeOrders[mc.id]||[]).some(o => !o.isTemp && o.status === 'running');
+    if(hasRealOrder) continue;
+    if(!activeOrders[mc.id] || activeOrders[mc.id].length === 0){
+      try{
+        const r = await fetch(serverUrl+'/api/temp-batches/check/'+mc.id, {signal:AbortSignal.timeout(4000)});
+        const j = await r.json();
+        if(j.ok && j.needsTemp){
+          // Create TEMP if not yet exists for today
+          if(!j.todayTempBatch){
+            await fetch(serverUrl+'/api/temp-batches/create',{
+              method:'POST', headers:{'Content-Type':'application/json'},
+              body:JSON.stringify({machineId:mc.id}), signal:AbortSignal.timeout(4000)
+            });
+          }
+          // Fetch the batch (may have just been created)
+          const tb = j.todayTempBatch || (await fetch(serverUrl+'/api/temp-batches/check/'+mc.id,
+            {signal:AbortSignal.timeout(4000)}).then(r=>r.json()).then(j=>j.todayTempBatch));
+          if(tb){
+            if(!activeOrders[mc.id]) activeOrders[mc.id]=[];
+            activeOrders[mc.id].push({
+              id: tb.id,
+              batchNumber: tb.id,
+              customer: 'TEMP BATCH',
+              machineId: mc.id,
+              size: tb.machine_size,
+              qty: tb.daily_cap_lakhs,
+              actualQty: 0,
+              status: 'temp',
+              isTemp: true,
+              labelCount: tb.label_count,
+              colour: tb.colour || null,
+              pcCode: tb.pc_code || null,
+              colourConfirmed: !!tb.colour_confirmed
+            });
+            // Prompt for PC Code if not yet confirmed (one-time per TEMP batch)
+            if(!tb.colour_confirmed){
+              setTimeout(() => promptTempBatchDetails(tb.id, mc.id), 400);
+            }
+          }
+        }
+      }catch(e){ /* non-blocking */ }
+    }
+  }
+  updateTempAlertBanner();
+}
+
+// Show/hide TEMP batch alert banner
+async function updateTempAlertBanner(){
+  if(!serverUrl) return;
+  try{
+    const r = await fetch(serverUrl+'/api/temp-batches/active',{signal:AbortSignal.timeout(4000)});
+    const j = await r.json();
+    let banner = document.getElementById('temp-alert-banner');
+    if(!banner){
+      banner = document.createElement('div');
+      banner.id = 'temp-alert-banner';
+      banner.style.cssText = 'position:fixed;top:var(--nav);left:0;right:0;z-index:400;background:rgba(255,171,0,0.15);border-bottom:2px solid var(--amber);padding:8px 16px;display:flex;align-items:center;gap:10px;font-size:12px';
+      document.body.appendChild(banner);
+    }
+    if(j.ok && j.count > 0){
+      // Only show machines that truly have no real planned order
+      const realOrderMachines = new Set(Object.keys(activeOrders).filter(mid => {
+        return (activeOrders[mid]||[]).some(o => !o.isTemp && o.status === 'running');
+      }));
+      const trueTempBatches = j.batches.filter(b => !realOrderMachines.has(b.machine_id));
+      if(trueTempBatches.length > 0){
+        const machines = [...new Set(trueTempBatches.map(b=>b.machine_id))];
+        banner.style.display = 'flex';
+        banner.innerHTML = `⚠️ <strong style="color:var(--amber)">${trueTempBatches.length} TEMP batch${trueTempBatches.length>1?'es':''} active</strong>
+          — Machines: ${machines.join(', ')} — No planned orders assigned.
+          <span style="color:var(--amber);margin-left:4px">Planning entry + Admin reconciliation required.</span>`;
+      } else {
+        banner.style.display = 'none';
+      }
+    } else {
+      banner.style.display = 'none';
+    }
+  }catch(e){}
+}
 
 let trackingAGrade = {}; // { machineId: { batchNumber, aGradePct, inspected } }
 
@@ -1604,7 +1695,7 @@ function renderShifts(){
         const orphanOpt = (run.batchNumber && !matchedOrder)
           ? `<option value="${run.orderId||run.batchNumber}" selected disabled>[saved] ${run.batchNumber}</option>`
           : '';
-        const ordOpts=`<option value="">— Order —</option>`+orphanOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}</option>`).join('');
+        const ordOpts=`<option value="">— Order —</option>`+orphanOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
         runsHtml+=`
@@ -1727,7 +1818,7 @@ function addRun(sh, mcId){
     div.dataset.sh=sh; div.dataset.mc=mcId; div.dataset.ri=ri;
     div.style.cssText=`display:flex;align-items:center;gap:5px;margin-bottom:0;${isMult?'padding-top:5px;border-top:1px dashed var(--b2)':''}`;
     const orders=activeOrders[mcId]||[];
-    const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}">${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}</option>`).join('');
+    const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}">${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp&&o.pcCode?' | PC:'+esc(o.pcCode):''}${o.isTemp&&!o.colourConfirmed?' ⚠️ PC not set':''}</option>`).join('');
     div.innerHTML=`
       ${isMult?`<span style="font-family:var(--mono);font-size:9px;color:var(--t3);width:14px;flex-shrink:0">${ri+1}</span>`:''}
       <select id="run-ord-${sh}-${mcId}-${ri}" style="font-size:10px;padding:3px 5px;width:150px;flex-shrink:0" onchange="onRunOrderChange('${sh}','${mcId}',${ri})" title="Select active order">${ordOpts}</select>
@@ -3754,6 +3845,70 @@ function showDprAuditPage() {
   document.getElementById('auth-overlay').classList.remove('hidden');
 })();
 
+// ── TEMP Batch PC Code Prompt ────────────────────────────────────
+const _tempPromptShown = new Set();
+
+async function promptTempBatchDetails(tempBatchId, machineId){
+  if(_tempPromptShown.has(tempBatchId)) return;
+  _tempPromptShown.add(tempBatchId);
+  openModal('⚠️ TEMP Batch — Enter PC Code', `
+    <div style="padding:4px 0">
+      <div style="background:rgba(255,64,96,0.08);border:1px solid rgba(255,64,96,0.3);border-left:4px solid #ff4060;border-radius:6px;padding:10px 14px;margin-bottom:16px;font-size:13px">
+        <strong>TEMP Batch:</strong> ${tempBatchId}<br>
+        <span style="font-size:12px;color:var(--t2)">Machine is running without a planned order. Please enter the PC Code being produced.</span>
+      </div>
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div>
+          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.8px">PC Code <span style="color:var(--red)">*</span></label>
+          <input id="tmp-pccode" style="width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:5px;color:var(--t1);padding:9px 12px;font-size:13px" placeholder="e.g. 00145" oninput="onTempPcInput(this.value)">
+        </div>
+        <div>
+          <label style="font-size:11px;font-weight:600;display:block;margin-bottom:5px;text-transform:uppercase;letter-spacing:.8px">Colour (from PC Code)</label>
+          <input id="tmp-colour" style="width:100%;background:var(--s2);border:1px solid var(--b1);border-radius:5px;color:var(--t1);padding:9px 12px;font-size:13px;opacity:0.7" placeholder="Auto-filled" readonly>
+        </div>
+      </div>
+    </div>
+  `, [
+    { label: 'Save', fn: 'saveTempBatchDetails(\'' + tempBatchId + '\')' },
+    { label: 'Skip', fn: 'closeModal()' }
+  ]);
+}
+
+function onTempPcInput(pcCode){
+  const colourEl = document.getElementById('tmp-colour');
+  if(!colourEl) return;
+  let found = '';
+  Object.values(activeOrders||{}).forEach(orders=>{
+    orders.forEach(o=>{ if(o.pcCode===pcCode && o.colour) found=o.colour; });
+  });
+  colourEl.value = found||'';
+  colourEl.placeholder = found?'':'— not found for this PC Code';
+}
+
+async function saveTempBatchDetails(tempBatchId){
+  const pcCode = document.getElementById('tmp-pccode')?.value?.trim();
+  const colour = document.getElementById('tmp-colour')?.value?.trim();
+  if(!pcCode){ alert('Please enter a PC Code'); return; }
+  if(!serverUrl){ closeModal(); return; }
+  try{
+    const r = await fetch(serverUrl+'/api/temp-batches/update-details',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({tempBatchId, colour, pcCode}),
+      signal:AbortSignal.timeout(5000)
+    });
+    const j = await r.json();
+    if(j.ok){
+      Object.values(activeOrders||{}).forEach(orders=>{
+        orders.forEach(o=>{
+          if(o.id===tempBatchId){ o.colour=colour; o.pcCode=pcCode; o.colourConfirmed=true; }
+        });
+      });
+      closeModal();
+      renderShifts();
+      dprAuditLog('TEMP_DETAILS_SET','TEMP '+tempBatchId+': PC Code='+pcCode+', Colour='+(colour||'—'));
+    } else alert('Error saving: '+j.error);
+  }catch(e){ alert('Server error: '+e.message); }
+}
 </script>
 </body>
 </html>

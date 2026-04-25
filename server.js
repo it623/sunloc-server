@@ -824,7 +824,10 @@ function getOrderActuals(orderId, batchNumber) {
 // GET full planning state — uses direct pg pool for large JSON
 app.get('/api/planning/state', async (req, res) => {
   try {
-    const state = await getPlanningStateAsync();
+    const rawState = await getPlanningStateAsync();
+    // CRITICAL: deep clone before mutating — never modify the cached object directly
+    // Direct mutation corrupts the cache and causes order count drops (194→175 bug)
+    const state = JSON.parse(JSON.stringify(rawState));
     if (state.orders && _actualsCache) {
       for (const ord of state.orders) {
         const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);

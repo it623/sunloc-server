@@ -563,7 +563,7 @@ const SYNC = (() => {
 
   async function online() {
     const now = Date.now();
-    if (now - _lastCheck < 5000) return _online;
+    if (now - _lastCheck < 30000) return _online;
     _lastCheck = now;
     if (!_url) { _online = false; return false; }
     try {
@@ -590,7 +590,7 @@ const SYNC = (() => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state: stateObj }),
-        signal: AbortSignal.timeout(30000)
+        signal: AbortSignal.timeout(10000)
       });
       if (r.ok) { _online = true; _lastCheck = Date.now(); updateBadge(); return true; }
       return false;
@@ -619,102 +619,98 @@ const SYNC = (() => {
 
   async function loadFromServer() {
     if (!_url) return;
+
+    // STEP 1: Render immediately from localStorage — user sees orders at once
+    render();
+
+    // STEP 2: Fetch planning state from server (10s timeout)
     let serverState = null;
     try {
-      const r = await fetch(_url + '/api/planning/state', { signal: AbortSignal.timeout(15000) });
+      const r = await fetch(_url + '/api/planning/state', { signal: AbortSignal.timeout(10000) });
       if (r.ok) { const j = await r.json(); serverState = j.state || null; _online = true; updateBadge(); }
     } catch { _online = false; updateBadge(); }
-    if (!serverState || !serverState.orders) return;
-    // SAFETY GUARD: never apply server state if it has fewer orders than current local state
-    // This prevents partial/stale server responses from overwriting good local data
-    const currentOrderCount = (state.orders || []).length;
-    const serverOrderCount = (serverState.orders || []).length;
-    if (serverOrderCount > 0 && serverOrderCount < currentOrderCount) {
-      console.warn(`[Sync] Server has ${serverOrderCount} orders, local has ${currentOrderCount} — pushing local to fix server`);
-      SYNC.push({...state, _savedAt: Date.now()});
-      return;
+
+    if (serverState && serverState.orders) {
+      const currentOrderCount = (state.orders || []).length;
+      const serverOrderCount = (serverState.orders || []).length;
+      if (serverOrderCount > 0 && serverOrderCount < currentOrderCount) {
+        console.warn(`[Sync] Server has ${serverOrderCount} orders, local has ${currentOrderCount} — pushing local to fix server`);
+        SYNC.push({...state, _savedAt: Date.now()});
+      } else {
+        Object.assign(state, serverState);
+        state.pcCodes = PC_CODES_RAW;
+        state.zoneMap = ZONE_MAP_RAW;
+        if (state.printMachineMaster && state.printMachineMaster.length > 0) {
+          state.printMachineMaster = state.printMachineMaster.map(pm => {
+            const def = PRINT_MACHINES.find(m => m.id === pm.id);
+            return def ? { ...def, ...pm, pref: pm.pref || def.pref, cap: pm.cap || def.cap } : pm;
+          });
+        } else {
+          state.printMachineMaster = JSON.parse(JSON.stringify(PRINT_MACHINES));
+        }
+        try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
+        const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
+        allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
+        render();
+      }
     }
-    // SERVER IS ALWAYS SOURCE OF TRUTH — apply server state
-    Object.assign(state, serverState);
-    state.pcCodes = PC_CODES_RAW;
-    state.zoneMap = ZONE_MAP_RAW;
-    if (state.printMachineMaster && state.printMachineMaster.length > 0) {
-      state.printMachineMaster = state.printMachineMaster.map(pm => {
-        const def = PRINT_MACHINES.find(m => m.id === pm.id);
-        return def ? { ...def, ...pm, pref: pm.pref || def.pref, cap: pm.cap || def.cap } : pm;
-      });
-    } else {
-      state.printMachineMaster = JSON.parse(JSON.stringify(PRINT_MACHINES));
-    }
-    try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
-    const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
-    allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
-    await loadTrackingStatus();
-    render();
+
+    // STEP 3: Load tracking/DPR status in background — does NOT block render
+    loadTrackingStatus().then(() => render()).catch(() => {});
   }
 
   async function loadTrackingStatus() {
     if (!_url) return;
+    // Run all 4 fetches in PARALLEL — ~5s max instead of ~20s sequential
+    const [wipRes, agRes, daRes, dcRes] = await Promise.allSettled([
+      fetch(_url + '/api/tracking/wip-summary',      { signal: AbortSignal.timeout(5000) }),
+      fetch(_url + '/api/tracking/agrade-summary',   { signal: AbortSignal.timeout(5000) }),
+      fetch(_url + '/api/tracking/dispatch-actuals', { signal: AbortSignal.timeout(5000) }),
+      fetch(_url + '/api/dpr/batch-closed',          { signal: AbortSignal.timeout(5000) })
+    ]);
     try {
-      const r = await fetch(_url + '/api/tracking/wip-summary', { signal: AbortSignal.timeout(5000) });
-      if (!r.ok) return;
-      const j = await r.json();
-      if (!j.ok) return;
-      // wip-summary returns scanSummary (not closures) — build closure map from it
-      const closureMap = {};
-      const scanSummary = j.closures || j.scanSummary || [];
-      scanSummary.forEach(c => {
-        if (!closureMap[c.batch_number]) closureMap[c.batch_number] = {};
-        if (c.dept) closureMap[c.batch_number][c.dept] = 'closed';
-      });
-      state.orders.forEach(ord => {
-        if (ord.batchNumber && closureMap[ord.batchNumber]) {
-          ord.stageStatus = closureMap[ord.batchNumber];
+      if (wipRes.status==='fulfilled' && wipRes.value.ok) {
+        const j = await wipRes.value.json();
+        if (j.ok) {
+          const closureMap = {};
+          (j.closures||j.scanSummary||[]).forEach(c => {
+            if (!closureMap[c.batch_number]) closureMap[c.batch_number] = {};
+            if (c.dept) closureMap[c.batch_number][c.dept] = 'closed';
+          });
+          state.orders.forEach(ord => {
+            if (ord.batchNumber && closureMap[ord.batchNumber]) ord.stageStatus = closureMap[ord.batchNumber];
+          });
         }
-      });
+      }
     } catch(e) {}
-    // Pull A-grade actuals from Tracking — updates live yield calculations
     try {
-      const ag = await fetch(_url + '/api/tracking/agrade-summary', { signal: AbortSignal.timeout(5000) });
-      if (ag.ok) {
-        const agj = await ag.json();
+      if (agRes.status==='fulfilled' && agRes.value.ok) {
+        const agj = await agRes.value.json();
         if (agj.ok && agj.batches) {
           window._liveAGrade = agj.batches;
-          // Recalculate all machine schedules with live A-grade
           const machineIds = [...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.machineId))];
-          machineIds.forEach(mid => {
-            if (mid) recalcMachineScheduleQuiet(mid);
-          });
-          // Sync packing progress and WIP into dispatch plans for date recalc
+          machineIds.forEach(mid => { if (mid) recalcMachineScheduleQuiet(mid); });
           state.dispatchPlans.forEach(dp => {
             if (dp.batchNumber && agj.batches[dp.batchNumber]) {
               const bd = agj.batches[dp.batchNumber];
               dp.packedQty = bd.packing?.outQty || 0;
-              dp.wipLakhs  = bd.wipLakhs || 0;   // Lakhs still in pipeline
+              dp.wipLakhs  = bd.wipLakhs || 0;
               dp.grossProd = bd.grossProd || 0;
             }
           });
-          // Recalc dispatch dates now that packing progress is updated
           recalcDispatch();
         }
       }
     } catch(e) {}
-
-    // Also pull dispatch actuals from Tracking
     try {
-      const da = await fetch(_url + '/api/tracking/dispatch-actuals', { signal: AbortSignal.timeout(5000) });
-      if (da.ok) {
-        const dj = await da.json();
+      if (daRes.status==='fulfilled' && daRes.value.ok) {
+        const dj = await daRes.value.json();
         if (dj.ok && dj.actuals) {
-          // Build lookup: batchNumber -> dispatchedQty
           const actualsMap = {};
           dj.actuals.forEach(a => { actualsMap[a.batch_number] = a.dispatched_qty||0; });
-          // Update dispatch plans with actual quantities from Tracking
           state.dispatchPlans.forEach(dp => {
             if (dp.batchNumber && actualsMap[dp.batchNumber] !== undefined) {
               const trackingActual = actualsMap[dp.batchNumber];
-              // Only update if tracking shows MORE than what planning has recorded
-              // (tracking is the authoritative source for actual dispatches)
               if (trackingActual > (dp.actualDispatched||0)) {
                 dp.actualDispatched = trackingActual;
                 if (dp.actualDispatched >= dp.qty) dp.status = 'dispatched';
@@ -725,12 +721,9 @@ const SYNC = (() => {
         }
       }
     } catch(e) {}
-
-    // Pull DPR batch-closed status — gates Planning close button
     try {
-      const dc = await fetch(_url + '/api/dpr/batch-closed', { signal: AbortSignal.timeout(5000) });
-      if (dc.ok) {
-        const dcj = await dc.json();
+      if (dcRes.status==='fulfilled' && dcRes.value.ok) {
+        const dcj = await dcRes.value.json();
         if (dcj.ok && dcj.closed) {
           window._dprClosedBatches = {};
           dcj.closed.forEach(c => { window._dprClosedBatches[c.order_id] = { closedAt: c.closed_at, closedBy: c.closed_by }; });
@@ -738,8 +731,7 @@ const SYNC = (() => {
       }
     } catch(e) {}
   }
-
-  return { online, push, pull, configure, updateBadge, loadFromServer, loadTrackingStatus };
+    return { online, push, pull, configure, updateBadge, loadFromServer, loadTrackingStatus };
 })();
 
 // Load from localStorage (with server enrichment on init)
@@ -761,7 +753,9 @@ function loadState() {
       }
     }
   } catch(e) { localStorage.removeItem('sunloc_state'); }
-  // ALWAYS load from server immediately — server is permanent source of truth
+  // Render immediately from localStorage so user sees data at once
+  render();
+  // Then sync with server in background — server is permanent source of truth
   SYNC.loadFromServer();
   setTimeout(() => initMonthlyArchive(), 800);
   if (state.orders) {
@@ -798,9 +792,14 @@ function _scheduleRetry(toSave) {
 }
 // Flush pending save when user returns to tab
 document.addEventListener('visibilitychange', async () => {
-  if (document.visibilityState === 'visible' && _pendingSave) {
-    const ok = await SYNC.push(_pendingSave);
-    if (ok) { _pendingSave = null; if (_retryTimer) { clearInterval(_retryTimer); _retryTimer = null; } }
+  if (document.visibilityState === 'visible') {
+    // Flush pending save first
+    if (_pendingSave) {
+      const ok = await SYNC.push(_pendingSave);
+      if (ok) { _pendingSave = null; if (_retryTimer) { clearInterval(_retryTimer); _retryTimer = null; } }
+    }
+    // Pull latest planning state — catches changes made on other devices while tab was hidden
+    SYNC.loadFromServer().catch(()=>{});
   }
 });
 
@@ -1311,8 +1310,8 @@ function navigate(page) {
     el.classList.toggle('active', el.getAttribute('onclick')?.includes(`'${page}'`));
   });
   render();
-  // If server data is older than 5 minutes, refresh silently in background
-  const staleMs = 5 * 60 * 1000;
+  // If server data is older than 60 seconds, refresh silently in background
+  const staleMs = 60 * 1000;
   const lastSaved = state._savedAt || 0;
   if (Date.now() - lastSaved > staleMs) {
     SYNC.loadFromServer().catch(()=>{});
@@ -5860,10 +5859,16 @@ loadState();
 // Start server sync check after render
 setTimeout(() => SYNC.online().then(() => SYNC.updateBadge()), 800);
 
-// Refresh tracking WIP every 3 minutes
-// Load tracking data immediately on page load, then refresh every 3 minutes
+// Load tracking data immediately, then every 3 minutes
 (async()=>{try{await SYNC.loadTrackingStatus();render();}catch(e){}})();
 setInterval(async()=>{try{await SYNC.loadTrackingStatus();render();}catch(e){}},180000);
+
+// Auto-sync planning state every 30s — all devices stay in sync automatically
+let _planningAutoSyncTimer = null;
+async function _planningAutoSync(){
+  if(!document.hidden){ await SYNC.loadFromServer(); }
+}
+_planningAutoSyncTimer = setInterval(_planningAutoSync, 30000);
 
 // Check TEMP batch alerts every 5 minutes
 setInterval(checkPlanningTempAlerts, 5*60*1000);
