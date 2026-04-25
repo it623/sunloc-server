@@ -864,7 +864,8 @@ const STD_PI_WASTE     = 0.01;  // 1% print inspection wastage
 
 function calcOrderSchedule(order, mc) {
   // Use live A-grade from tracking if available, else use order/machine default
-  const liveAG   = window._liveAGrade && window._liveAGrade[order.batchNumber];
+  const _bn867 = order.batchNumber ? order.batchNumber.trim().toUpperCase() : null;
+  const liveAG   = window._liveAGrade && _bn867 ? (window._liveAGrade[_bn867] || window._liveAGrade[order.batchNumber] || null) : null;
   // Guard: clamp aGradePct to minimum 1 to prevent division-by-zero → Infinity
   const rawAimPct = (liveAG?.aim?.aGradePct != null) ? liveAG.aim.aGradePct : (order.aGrade || mc.aGrade || 0);
   const aimFactor = rawAimPct > 0 ? (100 / rawAimPct) : (1 / (1 - STD_AIM_WASTE));
@@ -1048,7 +1049,7 @@ function recalcMachineSchedule(machineId) {
 // Calculates how much qty remains to be printed for a PTD order, using live
 // tracking data when available, falling back to the planned formula.
 function calcPrintQtyAndStart(ord) {
-  const live = window._liveAGrade && ord.batchNumber ? (window._liveAGrade[ord.batchNumber] || {}) : {};
+  const live = window._liveAGrade && ord.batchNumber ? (window._liveAGrade[ord.batchNumber.trim().toUpperCase()] || window._liveAGrade[ord.batchNumber] || {}) : {};
 
   // --- Qty to print ---
   // If AIM has started, use actual AIM Out (material available for printing)
@@ -1302,6 +1303,12 @@ function navigate(page) {
     el.classList.toggle('active', el.getAttribute('onclick')?.includes(`'${page}'`));
   });
   render();
+  // If server data is older than 5 minutes, refresh silently in background
+  const staleMs = 5 * 60 * 1000;
+  const lastSaved = state._savedAt || 0;
+  if (Date.now() - lastSaved > staleMs) {
+    SYNC.loadFromServer().catch(()=>{});
+  }
 }
 
 function render() {
@@ -1457,7 +1464,9 @@ function renderOrderRow(ord, idx, mc) {
   const ptdBadge = ord.isPrinted ? '<span class="badge badge-ptd">PTD</span>' : '<span class="badge badge-up">UP</span>';
   const grossQty = ord.grossQty ? fmt(ord.grossQty) : '-';
   // Live A-grade flag for this order's batch
-  const liveAG = window._liveAGrade && ord.batchNumber ? (window._liveAGrade[ord.batchNumber]||{}) : {};
+  const liveAG = window._liveAGrade && ord.batchNumber
+    ? (window._liveAGrade[ord.batchNumber.trim().toUpperCase()] || window._liveAGrade[ord.batchNumber] || {})
+    : {};
   const liveAimPct = liveAG.aim?.aGradePct;
   const stdAimPct = ord.aGrade || mc?.aGrade || 93;
   const extraNeeded = (liveAimPct != null && liveAimPct > 0 && liveAimPct < stdAimPct && ord.grossQty)
@@ -5844,6 +5853,8 @@ loadState();
 setTimeout(() => SYNC.online().then(() => SYNC.updateBadge()), 800);
 
 // Refresh tracking WIP every 3 minutes
+// Load tracking data immediately on page load, then refresh every 3 minutes
+(async()=>{try{await SYNC.loadTrackingStatus();render();}catch(e){}})();
 setInterval(async()=>{try{await SYNC.loadTrackingStatus();render();}catch(e){}},180000);
 
 // Check TEMP batch alerts every 5 minutes
