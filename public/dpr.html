@@ -690,6 +690,7 @@ const CHART_COLORS = ['#00d4ff','#00e676','#ffab00','#ff4060','#b388ff','#1de9b6
 let curFloor = 'GF';
 let targets = JSON.parse(localStorage.getItem('dpr_targets')||'{}');
 let activeOrders = {}; // {machineId: [{id, batchNumber, customer, poNumber}]}
+let _suppressRenderShifts = false; // prevents premature render during init
 let dprClosedBatches = {}; // {orderId: {closedAt, closedBy}} — batches closed in DPR
 // Sanitize server URL — strip any file path and trailing slashes
 function sanitizeServerUrl(url) {
@@ -1052,9 +1053,13 @@ function collectForm(){
       if(runEls.length>0){
         m.runs=Array.from(runEls).map(el=>{
           const ri=el.dataset.ri;
+          const selEl=document.getElementById(`run-ord-${sh}-${mc.id}-${ri}`);
+          // Fallback to data-orderid so orderId is NEVER lost on refresh/new device/cleared history
+          const savedOrderId = selEl?.value || selEl?.dataset?.orderid || '';
+          const savedBatch = v(`run-batch-${sh}-${mc.id}-${ri}`) || selEl?.dataset?.batchnumber || '';
           return{
-            orderId:v(`run-ord-${sh}-${mc.id}-${ri}`)||'',
-            batchNumber:v(`run-batch-${sh}-${mc.id}-${ri}`)||'',
+            orderId: savedOrderId,
+            batchNumber: savedBatch,
             qty:v(`run-qty-${sh}-${mc.id}-${ri}`)||'',
             note:v(`run-note-${sh}-${mc.id}-${ri}`)||''
           };
@@ -1128,9 +1133,19 @@ async function checkServer(){
     setSyncBadge('offline'); return false;
   }catch{ setSyncBadge('offline'); return false; }
 }
-async function pushToServer(fl,d,data){
-  if(!serverUrl) return;
-  // Flatten runs into actuals array for server to process
+// ── Pending save queue: retries every 15s until server confirms ──────
+let _dprPendingSave = null;
+let _dprRetryTimer = null;
+function _dprScheduleRetry(){
+  if(_dprRetryTimer) return;
+  _dprRetryTimer = setInterval(async()=>{
+    if(!_dprPendingSave||!serverUrl) return;
+    const {fl,d,data}=_dprPendingSave;
+    const ok=await _dprPushRaw(fl,d,data);
+    if(ok){ _dprPendingSave=null; clearInterval(_dprRetryTimer); _dprRetryTimer=null; }
+  },15000);
+}
+async function _dprPushRaw(fl,d,data){
   const actuals=[];
   Object.keys(FLOORS).forEach(f=>{
     if(!data.shifts) return;
@@ -1147,14 +1162,27 @@ async function pushToServer(fl,d,data){
     });
   });
   try{
-    await fetch(serverUrl+'/api/dpr/save',{
+    const r=await fetch(serverUrl+'/api/dpr/save',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
       body:JSON.stringify({floor:fl,date:d,data,actuals}),
-      signal:AbortSignal.timeout(6000)
+      signal:AbortSignal.timeout(15000)
     });
+    if(!r.ok) throw new Error('HTTP '+r.status);
     setSyncBadge('synced');
-  }catch{ setSyncBadge('offline'); }
+    return true;
+  }catch(e){
+    console.warn('[DPR] save failed:',e?.message);
+    setSyncBadge('offline');
+    return false;
+  }
+}
+async function pushToServer(fl,d,data){
+  if(!serverUrl){ _dprPendingSave={fl,d,data}; _dprScheduleRetry(); return; }
+  setSyncBadge('syncing');
+  const ok=await _dprPushRaw(fl,d,data);
+  if(!ok){ _dprPendingSave={fl,d,data}; _dprScheduleRetry(); }
+  else { _dprPendingSave=null; }
 }
 async function fetchDayFromServer(fl, d){
   if(!serverUrl) return null;
@@ -1196,7 +1224,7 @@ async function fetchActiveOrders(){
       // Check each machine on current floor — if no active order, ensure TEMP batch exists
       await checkAndCreateTempBatches();
 
-      renderShifts(); // Re-render so dropdowns populate
+      if(!_suppressRenderShifts) renderShifts(); // Re-render so dropdowns populate
     }
   }catch{
     const cached=localStorage.getItem('dpr_active_orders');
@@ -1646,16 +1674,20 @@ function renderShifts(){
         const orders=activeOrders[mc.id]||[];
         // Resolve effective orderId: use saved orderId, or match by batchNumber if orderId missing
         const matchedOrder = orders.find(o=>o.id===run.orderId) || orders.find(o=>o.batchNumber===run.batchNumber);
-        const effectiveOrderId = run.orderId || matchedOrder?.id || '';
-        // Auto-fix run.orderId if we found a match (so saveDay captures it)
-        if(!run.orderId && matchedOrder) run.orderId = matchedOrder.id;
-        const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
+        const effectiveOrderId = matchedOrder?.id || run.orderId || '';
+        // Auto-fix run.orderId if we found a match (so orderId stays current)
+        if(matchedOrder && run.orderId !== matchedOrder.id) run.orderId = matchedOrder.id;
+        // If batch saved but not in activeOrders — show as disabled placeholder
+        const orphanOpt = (run.batchNumber && !matchedOrder)
+          ? `<option value="${run.orderId||run.batchNumber}" selected disabled>[saved] ${run.batchNumber} (not in active list)</option>`
+          : '';
+        const ordOpts=`<option value="">— Order —</option>`+orphanOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
         runsHtml+=`
           <div class="run-row" data-sh="${sh}" data-mc="${mc.id}" data-ri="${ri}" style="display:flex;align-items:center;gap:5px;margin-bottom:${ri<runs.length-1?'5':'0'}px;${isMult&&ri>0?'padding-top:5px;border-top:1px dashed var(--b2)':''}">
             ${isMult?`<span style="font-family:var(--mono);font-size:9px;color:var(--t3);width:14px;flex-shrink:0">${ri+1}</span>`:''}
-            <select id="run-ord-${sh}-${mc.id}-${ri}" style="font-size:10px;padding:3px 5px;width:150px;flex-shrink:0" onchange="onRunOrderChange('${sh}','${mc.id}',${ri})" title="Select active order">
+            <select id="run-ord-${sh}-${mc.id}-${ri}" data-orderid="${esc(run.orderId||effectiveOrderId||'')}" data-batchnumber="${esc(run.batchNumber||'')}" style="font-size:10px;padding:3px 5px;width:150px;flex-shrink:0" onchange="onRunOrderChange('${sh}','${mc.id}',${ri})" title="Select active order">
               ${ordOpts}
             </select>
             <input type="text" id="run-batch-${sh}-${mc.id}-${ri}" value="${esc(run.batchNumber||'')}" placeholder="Batch #" readonly style="width:80px;font-size:10px;font-family:var(--mono);flex-shrink:0;background:var(--s2);cursor:default;opacity:0.8" title="Auto-filled from order selection">
@@ -1837,7 +1869,18 @@ function onRunOrderChange(sh, mcId, ri){
       }
     }
   }
+  // Sync data-* so collectForm always has correct orderId even before save
+  const _selEl=document.getElementById(`run-ord-${sh}-${mcId}-${ri}`);
+  const _batchEl=document.getElementById(`run-batch-${sh}-${mcId}-${ri}`);
+  if(_selEl){
+    _selEl.dataset.orderid=_selEl.value||'';
+    _selEl.dataset.batchnumber=_batchEl?.value||'';
+  }
   markUnsaved();
+  // Auto-save immediately — persists to server so any device/browser shows correctly
+  const _fl=curFloor, _d=getDate(), _data=collectForm();
+  localStorage.setItem(skey(_fl,_d), JSON.stringify(_data));
+  pushToServer(_fl,_d,_data);
 }
 
 // Recalculate total prod + VS TGT for a machine live as user types qty
@@ -3465,19 +3508,22 @@ function postAuthServerInit() {
   checkServer().then(ok=>{
     if(ok){
       loadSettingsFromServer().then(async ()=>{
-        // Fetch orders AND closed batches FIRST — both needed before renderShifts
+        // Step 1: fetch orders + closed batches (suppress early renderShifts inside fetchActiveOrders)
+        _suppressRenderShifts = true;
         await Promise.all([fetchActiveOrders(), fetchClosedBatches()]);
-        // Fetch today's data from server for ALL floors so any browser/device
-        // gets the latest saved data regardless of its local localStorage state.
+        _suppressRenderShifts = false;
+        // Step 2: fetch today's DPR data for all floors — server is source of truth
+        // Must run AFTER fetchActiveOrders so activeOrders is populated when rendering
         const d=getDate();
         const allFloors=Object.keys(FLOORS);
         await Promise.all(allFloors.map(fl=>fetchDayFromServer(fl, d)));
-        // Now localStorage is populated with server data for all floors — render
+        // Step 3: now both activeOrders AND day data are ready — render once correctly
         renderDayKpis();
         renderShifts();
         renderRemarks();
         renderResort();
         toast('✓ Data loaded from server','var(--green)',2000);
+        _startAutoSync(); // 30s polling — all devices stay in sync
       });
     } else {
       const cached=localStorage.getItem('dpr_active_orders');
@@ -3487,6 +3533,34 @@ function postAuthServerInit() {
 }
 
 window.addEventListener('beforeunload',e=>{ if(unsaved){e.preventDefault();e.returnValue='';} });
+
+// ── Auto-sync: pull latest from server every 30s — all devices stay in sync ──
+let _dprSyncTimer=null;
+async function _dprAutoSync(){
+  if(!serverUrl||!dprUser) return;
+  if(!unsaved){
+    const d=getDate();
+    await Promise.all(Object.keys(FLOORS).map(fl=>fetchDayFromServer(fl,d)));
+    renderShifts(); renderRemarks(); renderResort(); renderDayKpis();
+  }
+  await fetchActiveOrders();
+}
+function _startAutoSync(){
+  if(_dprSyncTimer) clearInterval(_dprSyncTimer);
+  _dprSyncTimer=setInterval(_dprAutoSync,30000);
+}
+// Flush pending save + pull fresh data when user returns to tab
+document.addEventListener('visibilitychange',async()=>{
+  if(document.visibilityState==='visible'&&serverUrl&&dprUser){
+    if(_dprPendingSave) await pushToServer(_dprPendingSave.fl,_dprPendingSave.d,_dprPendingSave.data);
+    if(!unsaved){
+      const d=getDate();
+      await Promise.all(Object.keys(FLOORS).map(fl=>fetchDayFromServer(fl,d)));
+      renderShifts(); renderRemarks(); renderResort(); renderDayKpis();
+    }
+  }
+});
+
 
 // ══════════════════════════════════════════════════════
 // AUTH SYSTEM — DPR
