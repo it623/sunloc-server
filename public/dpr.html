@@ -113,7 +113,6 @@ td.r,th.r{text-align:right}
 .col-body.open{display:block}
 /* REMARKS */
 .remark-row{background:var(--s2);border:2px solid var(--b2);border-radius:4px;padding:10px 12px;margin-bottom:8px;display:grid;grid-template-columns:auto auto 1fr auto;gap:8px;align-items:center}
-@keyframes spin{to{transform:rotate(360deg)}}
 .remark-row:last-child{border-bottom:none}
 .rem-shift{font-family:var(--fc);font-size:10px;letter-spacing:.8px;color:var(--cyan);font-weight:800;width:52px;flex-shrink:0}
 .rem-text{flex:1;font-size:12px;color:var(--t2);font-weight:600}
@@ -1650,11 +1649,7 @@ function renderShifts(){
         const effectiveOrderId = run.orderId || matchedOrder?.id || '';
         // Auto-fix run.orderId if we found a match (so saveDay captures it)
         if(!run.orderId && matchedOrder) run.orderId = matchedOrder.id;
-        // If saved order not in activeOrders (e.g. closed in planning), add as ghost option so data is preserved
-        // If saved order not in activeOrders (e.g. closed in planning), add as ghost option so it still shows
-        const ghostOpt = (effectiveOrderId && !matchedOrder && run.batchNumber)
-          ? `<option value="${esc(effectiveOrderId)}" selected>${esc(run.batchNumber)} | (closed)</option>` : '';
-        const ordOpts=`<option value="">— Order —</option>`+ghostOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
+        const ordOpts=`<option value="">— Order —</option>`+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
         runsHtml+=`
@@ -3180,18 +3175,9 @@ function go(page){
 
 function setFloor(fl){
   curFloor=fl;
-  sessionStorage.setItem('dpr_curFloor', fl);
   document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
   document.getElementById('ftab-'+fl)?.classList.add('on');
-  renderEntry(); // Show immediately from localStorage (fast)
-  // Then fetch latest from server — ensures same data on all devices
-  if(serverUrl){
-    (async()=>{
-      const d=getDate();
-      const serverData=await fetchDayFromServer(fl, d);
-      if(serverData){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
-    })();
-  }
+  renderEntry();
 }
 
 function onDateChange(){
@@ -3479,19 +3465,14 @@ function postAuthServerInit() {
   checkServer().then(ok=>{
     if(ok){
       loadSettingsFromServer().then(async ()=>{
-        // Step 1: Fetch active orders from server FIRST — must complete before any render
-        // This ensures order dropdowns are never blank even after delete browser history
-        await fetchActiveOrders();
-        // Step 2: Fetch closed batches in parallel with day data
+        // Fetch orders AND closed batches FIRST — both needed before renderShifts
+        await Promise.all([fetchActiveOrders(), fetchClosedBatches()]);
+        // Fetch today's data from server for ALL floors so any browser/device
+        // gets the latest saved data regardless of its local localStorage state.
         const d=getDate();
         const allFloors=Object.keys(FLOORS);
-        await Promise.all([
-          fetchClosedBatches(),
-          ...allFloors.map(fl=>fetchDayFromServer(fl, d))
-        ]);
-        // Step 3: Now all data is ready — render
-        document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
-        document.getElementById('ftab-'+curFloor)?.classList.add('on');
+        await Promise.all(allFloors.map(fl=>fetchDayFromServer(fl, d)));
+        // Now localStorage is populated with server data for all floors — render
         renderDayKpis();
         renderShifts();
         renderRemarks();
@@ -3506,14 +3487,6 @@ function postAuthServerInit() {
 }
 
 window.addEventListener('beforeunload',e=>{ if(unsaved){e.preventDefault();e.returnValue='';} });
-
-// Auto-refresh from server every 30 seconds — keeps all devices in sync
-setInterval(async ()=>{
-  if(!serverUrl || unsaved) return; // Don't refresh if user has unsaved changes
-  const fl=curFloor, d=getDate();
-  const serverData=await fetchDayFromServer(fl, d);
-  if(serverData){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
-}, 30000);
 
 // ══════════════════════════════════════════════════════
 // AUTH SYSTEM — DPR
@@ -3566,13 +3539,8 @@ async function doDprLogin() {
     applyDprRoleRestrictions();
     document.getElementById('auth-overlay').classList.add('hidden');
     addDprUserBadge();
+    renderEntry();
     go('entry');
-    // Show loading spinner — do NOT render empty form before server data arrives
-    document.getElementById('shiftsArea').innerHTML=`
-      <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px;color:var(--t3)">
-        <div style="width:36px;height:36px;border:3px solid var(--b2);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite"></div>
-        <div style="font-size:13px;font-weight:600">Loading data from server...</div>
-      </div>`;
     postAuthServerInit();
     dprAuditLog('LOGIN', 'Logged in to DPR');
   }
@@ -3591,18 +3559,13 @@ function applyDprRoleRestrictions() {
     }
   });
 
-  // Restore floor from sessionStorage if available and allowed
-  const savedFloor = sessionStorage.getItem('dpr_curFloor');
-  if (savedFloor && allowedFloors.includes(savedFloor)) {
-    curFloor = savedFloor;
-  }
-
   // Switch to first allowed floor if current is blocked
   if (!allowedFloors.includes(curFloor)) {
     curFloor = allowedFloors[0];
+    document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
+    document.getElementById('ftab-'+curFloor)?.classList.add('on');
+    renderEntry();
   }
-  document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
-  document.getElementById('ftab-'+curFloor)?.classList.add('on');
 }
 
 function isBackDateAllowed() {
@@ -3785,13 +3748,8 @@ function showDprAuditPage() {
       document.getElementById('auth-overlay').classList.add('hidden');
       applyDprRoleRestrictions();
       addDprUserBadge();
+      renderEntry();
       go('entry');
-      // Show loading spinner — do NOT render empty form before server data arrives
-      document.getElementById('shiftsArea').innerHTML=`
-        <div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;gap:16px;color:var(--t3)">
-          <div style="width:36px;height:36px;border:3px solid var(--b2);border-top-color:var(--accent);border-radius:50%;animation:spin 0.8s linear infinite"></div>
-          <div style="font-size:13px;font-weight:600">Loading data from server...</div>
-        </div>`;
       postAuthServerInit();
       return;
     } catch(e) {}
