@@ -949,11 +949,11 @@ app.get('/api/orders/active', async (req, res) => {
       o.startDate && getDateStr(o.startDate) > LEGACY_CUTOFF
     );
 
-    // For new orders: max 2 per machine (new business rule from 20 Apr 2026)
+    // For new orders: max 2 per machine — show LATEST 2 (most recently started)
+    // Sort DESC so newest orders are kept, not oldest ones that should be closed
     const newOrdersFiltered = [];
     const newCountPerMachine = {};
-    // Sort new orders by startDate so earliest 2 per machine are kept
-    const newSorted = [...newOrders].sort((a,b) => String(a.startDate).localeCompare(String(b.startDate)));
+    const newSorted = [...newOrders].sort((a,b) => String(b.startDate).localeCompare(String(a.startDate)));
     for (const o of newSorted) {
       const mc = o.machineId || 'unknown';
       if (!newCountPerMachine[mc]) newCountPerMachine[mc] = 0;
@@ -2415,28 +2415,24 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
     const grossProdMap = {};
     prodActuals.forEach(r => { grossProdMap[r.batch_number] = parseFloat(r.gross_prod||0); });
 
-    // Build per-batch summary — normalize batch numbers to UPPERCASE to match planning app
+    // Build per-batch summary
     const batches = {};
     scans.forEach(s => {
-      const bn = (s.batch_number||'').trim().toUpperCase();
-      if (!bn) return;
-      if (!batches[bn]) batches[bn] = {};
-      if (!batches[bn][s.dept]) batches[bn][s.dept] = {in:0,out:0,inQty:0,outQty:0};
-      batches[bn][s.dept][s.type] = s.cnt;
+      if (!batches[s.batch_number]) batches[s.batch_number] = {};
+      if (!batches[s.batch_number][s.dept]) batches[s.batch_number][s.dept] = {in:0,out:0,inQty:0,outQty:0};
+      batches[s.batch_number][s.dept][s.type] = s.cnt;
       // Use SUM(qty) if available, else fallback to COUNT * packSize
       const sumQty = parseFloat(s.total_qty||0);
-      const ps = PACK_SIZES[batchSizeMap[bn]||'2'] || 1.0;
+      const ps = PACK_SIZES[batchSizeMap[s.batch_number]||'2'] || 1.0;
       const effectiveQty = sumQty > 0 ? sumQty : s.cnt * ps;
-      batches[bn][s.dept][s.type+'Qty'] = effectiveQty;
+      batches[s.batch_number][s.dept][s.type+'Qty'] = effectiveQty;
     });
 
     wastage.forEach(w => {
-      const bn = (w.batch_number||'').trim().toUpperCase();
-      if (!bn) return;
-      if (!batches[bn]) batches[bn] = {};
-      if (!batches[bn][w.dept]) batches[bn][w.dept] = {in:0,out:0,inQty:0,outQty:0};
-      if (!batches[bn][w.dept].wastage) batches[bn][w.dept].wastage = {};
-      batches[bn][w.dept].wastage[w.type] = parseFloat(w.total_qty||0);
+      if (!batches[w.batch_number]) batches[w.batch_number] = {};
+      if (!batches[w.batch_number][w.dept]) batches[w.batch_number][w.dept] = {in:0,out:0,inQty:0,outQty:0};
+      if (!batches[w.batch_number][w.dept].wastage) batches[w.batch_number][w.dept].wastage = {};
+      batches[w.batch_number][w.dept].wastage[w.type] = parseFloat(w.total_qty||0);
     });
 
     // Calculate A-grade per batch per stage

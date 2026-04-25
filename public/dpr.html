@@ -1476,15 +1476,16 @@ function getGroupForMachine(fl, mcId){
 function collectGroupOperators(sh, fl, mcId){
   const grp = getGroupForMachine(fl, mcId);
   if(!grp) return null;
-  // Use first ACTIVE machine as group key — not grp.machines[0] which may be disabled
+  // Use first ACTIVE machine as group key
   const activeMcIds = getActiveMachines(fl).map(m=>m.id);
   const grpKey = grp.machines.find(id => activeMcIds.includes(id));
   if(!grpKey) return null;
-  if(mcId !== grpKey) return null;
+  if(mcId !== grpKey) return null; // only collect from first active MC in group
   const container = document.getElementById(`grp-ops-${sh}-${grpKey}`);
   if(!container) return null;
-  return Array.from(container.querySelectorAll('.grp-op-input'))
+  const ops = Array.from(container.querySelectorAll('.grp-op-input'))
     .map(el=>el.value.trim()).filter(Boolean);
+  return ops; // always return array (even empty) so save always updates
 }
 
 function addGroupOperator(sh, mcId){
