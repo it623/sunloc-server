@@ -1229,10 +1229,9 @@ function recordScan(labelId, dept, type, operator, parsed){
   const batch = getBatch(label.batchNumber);
   if(!batch) return {ok:false,msg:'Batch not found'};
 
-  // Sequential check (skip for admin override)
-  // Check if unprinted batch is being scanned at wrong department
+  // ABSOLUTE BLOCK: Unprinted batches can NEVER go to Printing or PI — even admin cannot bypass
   if(!batch.isPrinted && (dept === 'printing' || dept === 'pi')){
-    return {ok:false, msg:`❌ Batch ${label.batchNumber} is UNPRINTED — cannot scan at ${dept==='printing'?'Printing':'Print Inspection'}. Unprinted batches go directly from AIM to Packing.`};
+    return {ok:false, msg:`❌ Batch ${label.batchNumber} is UNPRINTED — scanning at ${dept==='printing'?'Printing':'Print Inspection'} is not allowed. Unprinted batches go AIM → Packing directly.`};
   }
 
   if(currentDept!=='admin' && !canScanDept(label.batchNumber, dept)){

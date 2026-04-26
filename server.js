@@ -2364,6 +2364,20 @@ app.post('/api/tracking/scan', async (req, res) => {
     if(!scan || !scan.id) return res.status(400).json({ok:false,error:'Missing scan'});
     const labelId = scan.labelId||scan.label_id;
     const batchNumber = scan.batchNumber||scan.batch_number;
+    // HARD BLOCK: Unprinted batches can never be scanned at Printing or PI
+    // Check planning state to get isPrinted for this batch
+    if (scan.dept === 'printing' || scan.dept === 'pi') {
+      const planState = await getPlanningStateAsync();
+      const order = (planState.orders||[]).find(o =>
+        o.batchNumber === batchNumber || o.id === batchNumber
+      );
+      if (order && order.isPrinted === false) {
+        return res.json({ok:false, blocked:true,
+          error:`Batch ${batchNumber} is UNPRINTED — scanning at ${scan.dept} is not allowed. Unprinted batches go AIM → Packing directly.`
+        });
+      }
+    }
+
     if (pgPool) {
       // Server-side duplicate check: one IN and one OUT max per label per dept per batch
       // Scoped to batch_number so same label in a new batch is never blocked
