@@ -1941,7 +1941,21 @@ function startCanvasScan(video){
 // PAGE: DASHBOARD
 // ═══════════════════════════════════════════════════════
 
+
+// --- Cursor/focus preservation helper ---
+function _saveFocus(){
+  const el=document.activeElement;
+  if(!el||el===document.body)return null;
+  return{id:el.id,sel:el.selectionStart,selE:el.selectionEnd};
+}
+function _restoreFocus(s){
+  if(!s||!s.id)return;
+  const el=document.getElementById(s.id);
+  if(!el)return;
+  try{el.focus({preventScroll:true});if(s.sel!=null){el.selectionStart=s.sel;el.selectionEnd=s.selE;}}catch(e){}
+}
 function renderPage(page){
+  const _f=_saveFocus();
   document.getElementById('tb-title').textContent = NAV_ITEMS.find(n=>n.id===page)?.label||page;
   document.getElementById('tb-subtitle').textContent = DEPT_INFO[currentDept]?.role||'';
   document.getElementById('tb-actions').innerHTML='';
@@ -1959,6 +1973,7 @@ function renderPage(page){
     case 'search': renderTrackingSearch(); break;
     case 'settings': renderSettings(); break;
   }
+  if(_f)setTimeout(()=>_restoreFocus(_f),0);
 }
 
 function renderDashboard(){
@@ -3733,7 +3748,7 @@ function renderReportH(){
   </div>`;
 
   document.getElementById('report-output').innerHTML=html;
-  document.getElementById('report-output').scrollIntoView({behavior:'smooth'});
+  /* scrollIntoView removed – cursor fix */
 }
 
 function exportReportH(){
@@ -3889,7 +3904,7 @@ function renderReportG(){
   </div>`;
 
   document.getElementById('report-output').innerHTML = html;
-  document.getElementById('report-output').scrollIntoView({behavior:'smooth'});
+  /* scrollIntoView removed – cursor fix */
 }
 
 function exportReportG(){
@@ -4085,7 +4100,7 @@ function renderReportF(){
   </div>`;
 
   document.getElementById('report-output').innerHTML = html;
-  document.getElementById('report-output').scrollIntoView({behavior:'smooth'});
+  /* scrollIntoView removed – cursor fix */
 }
 
 function exportReportF(){
@@ -4189,14 +4204,14 @@ function renderReportB(){
   }
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportB()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-  document.getElementById('report-output').scrollIntoView({behavior:'smooth'});
+  /* scrollIntoView removed – cursor fix */
 }
 
 function renderReportC(){
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
     reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Report C — Machine-wise WIP Status</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer().then(()=>renderReportC())">🔄 Sync & Retry</button></div>`;
-    reportEl.scrollIntoView({behavior:'smooth'});
+    /* scrollIntoView removed – cursor fix */
     return;
   }
 
@@ -4267,7 +4282,7 @@ function renderReportC(){
   }
   html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
   reportEl.innerHTML=html;
-  reportEl.scrollIntoView({behavior:'smooth'});
+  /* scrollIntoView removed – cursor fix */
 }
 
 function renderReportD(){
@@ -4305,7 +4320,7 @@ function renderReportD(){
   </table></div>
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-  document.getElementById('report-output').scrollIntoView({behavior:'smooth'});
+  /* scrollIntoView removed – cursor fix */
 }
 
 function renderReportA(){
@@ -4386,7 +4401,7 @@ function renderReportA(){
   });
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportA()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-  document.getElementById('report-output').scrollIntoView({behavior:'smooth'});
+  /* scrollIntoView removed – cursor fix */
 }
 
 function renderBatchFlowSummary(batch){
@@ -4620,7 +4635,7 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
       <div class="text-sm mt-8">${rows.length} rows ready · ${dateLabel}</div>
     </div>
   </div>`;
-  document.getElementById('report-output').scrollIntoView({behavior:'smooth'});
+  /* scrollIntoView removed – cursor fix */
 
   // Store the HTML for the tab opener
   window._reportEHtml = fullHtml;

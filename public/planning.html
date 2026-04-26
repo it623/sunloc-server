@@ -1315,7 +1315,21 @@ function navigate(page) {
   }
 }
 
+
+// --- Cursor/focus preservation helper ---
+function _saveFocus(){
+  const el=document.activeElement;
+  if(!el||el===document.body)return null;
+  return{id:el.id,sel:el.selectionStart,selE:el.selectionEnd};
+}
+function _restoreFocus(s){
+  if(!s||!s.id)return;
+  const el=document.getElementById(s.id);
+  if(!el)return;
+  try{el.focus({preventScroll:true});if(s.sel!=null){el.selectionStart=s.sel;el.selectionEnd=s.selE;}}catch(e){}
+}
 function render() {
+  const _f=_saveFocus();
   const pages = {
     'production': renderProduction,
     'prod-summary': renderProdSummary,
@@ -1358,6 +1372,7 @@ function render() {
   const fn = pages[state.currentPage];
   if (fn) fn();
   updateUserBadge();
+  if(_f)setTimeout(()=>_restoreFocus(_f),0);
 }
 
 // =============================
@@ -3734,7 +3749,7 @@ function toggleTruckDetail(id) {
   const isOpen = el.style.display !== 'none';
   el.style.display = isOpen ? 'none' : '';
   if (!isOpen) {
-    setTimeout(() => el.scrollIntoView({behavior:'smooth', block:'nearest'}), 50);
+    /* scrollIntoView removed – cursor fix */
   }
 }
 
@@ -4260,7 +4275,7 @@ function showDayDispatch(day, month, year) {
           </div>`;
       }).join('')}
     </div>`;
-  det.scrollIntoView({behavior:'smooth',block:'nearest'});
+  /* scrollIntoView removed – cursor fix */
 }
 
 // =============================

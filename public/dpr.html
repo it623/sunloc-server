@@ -1596,13 +1596,28 @@ function removeStaffName(btn){
   markUnsaved();
 }
 
+
+// --- Cursor/focus preservation helper ---
+function _saveFocus(){
+  const el=document.activeElement;
+  if(!el||el===document.body)return null;
+  return{id:el.id,sel:el.selectionStart,selE:el.selectionEnd};
+}
+function _restoreFocus(s){
+  if(!s||!s.id)return;
+  const el=document.getElementById(s.id);
+  if(!el)return;
+  try{el.focus({preventScroll:true});if(s.sel!=null){el.selectionStart=s.sel;el.selectionEnd=s.selE;}}catch(e){}
+}
 function renderEntry(){
+  const _f=_saveFocus();
   renderDayKpis();
   renderShifts();
   renderDTTable();
   renderDTSummary();
   renderRemarks();
   renderResort();
+  if(_f)setTimeout(()=>_restoreFocus(_f),0);
 }
 
 function renderDayKpis(){
@@ -1829,12 +1844,12 @@ function addRun(sh, mcId){
       <button onclick="removeRun('${sh}','${mcId}',${ri})" style="background:transparent;border:none;color:var(--t3);cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0" title="Remove this run">✕</button>
     `;
     runsContainer.appendChild(div);
-    div.scrollIntoView({behavior:'smooth',block:'nearest'});
+    /* scrollIntoView removed – cursor fix */
   } else {
     // Fallback: full re-render
     renderShifts();
     document.getElementById(`sb-${sh}`)?.classList.add('open');
-    setTimeout(()=>document.getElementById(`mcrow-${sh}-${mcId}`)?.scrollIntoView({behavior:'smooth',block:'nearest'}),50);
+    /* scrollIntoView removed – cursor fix */
   }
 }
 
@@ -2191,7 +2206,7 @@ function addRemark(){
       localStorage.setItem(skey(fl,d),JSON.stringify(day));
       pushToServer(fl,d,day);
       closeModal();renderRemarks();markUnsaved();
-      setTimeout(()=>{const el=document.getElementById('rem-last');if(el)el.scrollIntoView({behavior:'smooth',block:'nearest'});},100);
+      /* scrollIntoView removed – cursor fix */
     }},
     {label:'Cancel',fn:closeModal}
   ]);
@@ -2301,7 +2316,7 @@ function addResort(){
       pushToServer(fl,d,day);
       closeModal();renderResort();renderDayKpis();renderShifts();markUnsaved();
       // Scroll to bottom so new re-sort entry is visible
-      setTimeout(()=>{const el=document.getElementById('resort-last');if(el)el.scrollIntoView({behavior:'smooth',block:'nearest'});},100);
+      /* scrollIntoView removed – cursor fix */
     }},
     {label:'Cancel',fn:closeModal}
   ]);
