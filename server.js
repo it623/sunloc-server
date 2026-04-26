@@ -414,10 +414,8 @@ for (const u of seedUsers) {
   insertUser.run(u.username, hashPin(u.pin), u.role, u.app);
 }
 
-// Clean expired sessions on startup (SQLite only — PostgreSQL handles this via pgPool)
-if (!USE_POSTGRES) {
-  try { db.prepare(`DELETE FROM app_sessions WHERE expires_at < datetime('now')`).run(); } catch(e) {}
-}
+// Clean expired sessions on startup
+db.prepare(`DELETE FROM app_sessions WHERE expires_at < to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS')`).run();
 
 
 // ─── Helper: get latest planning state ────────────────────────
@@ -502,10 +500,6 @@ async function ensurePostgresTables() {
         qty REAL
       )
     `);
-    // Ensure label_number column exists (may be missing from older deployments)
-    await pgPool.query(`ALTER TABLE tracking_scans ADD COLUMN IF NOT EXISTS label_number INTEGER`).catch(()=>{});
-    // CRITICAL: ensure label_number column exists — missing column causes all scans to fail with 500
-    await pgPool.query(`ALTER TABLE tracking_scans ADD COLUMN IF NOT EXISTS label_number INTEGER`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_dept_ts ON tracking_scans(dept, ts DESC)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_batch ON tracking_scans(batch_number, dept)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_batch ON tracking_labels(batch_number)`);
@@ -794,11 +788,7 @@ function getActiveOrdersForMachine(machineId) {
 
 // Helper: get total actuals for an order (sums all runs across all machines/shifts)
 let _actualsCache = null;
-let _actualsCacheTime = 0;
 async function warmActualsCache() {
-  // Only re-warm if older than 60 seconds — prevents hammering DB on every 30s auto-sync
-  if (Date.now() - _actualsCacheTime < 60000 && _actualsCache) return;
-  _actualsCacheTime = Date.now();
   if (!pgPool) return;
   try {
     const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
@@ -916,8 +906,8 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 // GET all active orders (summary for DPR to cache on load) — only 'running' status
 app.get('/api/orders/active', async (req, res) => {
   try {
-    // Refresh actuals in background — throttled to 60s, non-blocking
-    warmActualsCache().catch(()=>{});
+    // Always refresh actuals so Gross/Prod/Rem is current in DPR
+    await warmActualsCache();
     const state = await getPlanningStateAsync();
     const running = (state.orders || []).filter(o => o.status === 'running' && !o.deleted);
 
@@ -2273,7 +2263,10 @@ app.post('/api/tracking/labels', async (req, res) => {
       ));
     }
     res.json({ ok: true, saved: labels.length });
-  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch (err) {
+    console.error('[LABEL ERROR]', err.message, '| first label:', JSON.stringify(req.body?.labels?.[0]||{}).substring(0,300));
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.get('/api/tracking/labels', async (req, res) => {
@@ -2358,54 +2351,34 @@ app.post('/api/tracking/scan', async (req, res) => {
   try {
     const { scan } = req.body;
     if(!scan || !scan.id) return res.status(400).json({ok:false,error:'Missing scan'});
-    const labelId = scan.labelId||scan.label_id||null;
-    const batchNumber = scan.batchNumber||scan.batch_number||null;
-    const dept = scan.dept||null;
-    const type = scan.type||null;
-    // Validate required fields before hitting DB
-    if(!dept || !type) return res.status(400).json({ok:false,error:'Missing dept or type'});
+    const labelId = scan.labelId||scan.label_id;
+    const batchNumber = scan.batchNumber||scan.batch_number;
     if (pgPool) {
-      // Duplicate check: one IN and one OUT max per label per dept per batch
-      if(labelId && dept && batchNumber) {
-        const existing = await pgPool.query(
-          `SELECT type FROM tracking_scans WHERE label_id=$1 AND dept=$2 AND batch_number=$3`,
-          [labelId, dept, batchNumber]
-        );
-        const doneTypes = existing.rows.map(r=>r.type);
-        if(doneTypes.includes(type)){
-          return res.json({ok:false, duplicate:true, error:'Already scanned '+type.toUpperCase()+' at '+dept});
-        }
+      // Server-side duplicate check: one IN and one OUT max per label per dept — no exceptions
+      const existing = await pgPool.query(
+        `SELECT type FROM tracking_scans WHERE label_id=$1 AND dept=$2`,
+        [labelId, scan.dept]
+      );
+      const doneTypes = existing.rows.map(r=>r.type);
+      if(doneTypes.includes(scan.type)){
+        return res.json({ok:false, duplicate:true, error:'Already scanned '+scan.type.toUpperCase()+' at '+scan.dept});
       }
-      // Try with label_number first, fall back without it if column doesn't exist
-      try {
-        await pgPool.query(
-          `INSERT INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO NOTHING`,
-          [scan.id, labelId, batchNumber, scan.labelNumber||null, dept, type, scan.ts||new Date().toISOString(),
-           scan.operator||null, scan.size||null, scan.qty||null]
-        );
-      } catch(colErr) {
-        // Fallback: insert without label_number if column doesn't exist
-        await pgPool.query(
-          `INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
-          [scan.id, labelId, batchNumber, dept, type, scan.ts||new Date().toISOString(),
-           scan.operator||null, scan.size||null, scan.qty||null]
-        );
-      }
+      await pgPool.query(
+        `INSERT INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO NOTHING`,
+        [scan.id, labelId, batchNumber, scan.labelNumber||null, scan.dept, scan.type, scan.ts,
+         scan.operator||null, scan.size||null, scan.qty||null]
+      );
     } else {
       db.prepare(`INSERT OR IGNORE INTO tracking_scans
         (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty)
         VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
-        scan.id, labelId, batchNumber, scan.labelNumber||null, dept, type, scan.ts||new Date().toISOString(),
+        scan.id, labelId, batchNumber, scan.labelNumber||null, scan.dept, scan.type, scan.ts,
         scan.operator||null, scan.size||null, scan.qty||null
       );
     }
     res.json({ok:true});
-  } catch(err) {
-    console.error('[SCAN ERROR]', err.message, '| scan:', JSON.stringify(req.body?.scan||{}).substring(0,200));
-    res.status(500).json({ok:false,error:err.message});
-  }
+  } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });
 
 // ── A-Grade summary per batch — for Planning live update ──────
