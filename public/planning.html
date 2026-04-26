@@ -650,12 +650,13 @@ const SYNC = (() => {
         try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
         const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
         allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
-        render();
+        // Don't re-render if user is actively typing (cursor fix)
+        if(!_userIsFocused()) render();
       }
     }
 
-    // STEP 3: Load tracking/DPR status in background — does NOT block render
-    loadTrackingStatus().then(() => render()).catch(() => {});
+    // STEP 3: Load tracking/DPR status in background — only render if user not typing
+    loadTrackingStatus().then(() => { if(!_userIsFocused()) render(); }).catch(() => {});
   }
 
   async function loadTrackingStatus() {
@@ -1334,6 +1335,8 @@ function _userIsFocused(){
   return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
 }
 function render() {
+  // Never switch away from search page if user is actively typing in it
+  if(_userIsFocused() && state.currentPage==='search') return;
   const _f=_saveFocus();
   const pages = {
     'production': renderProduction,
@@ -5878,7 +5881,7 @@ setTimeout(() => SYNC.online().then(() => SYNC.updateBadge()), 800);
 
 // Load tracking data immediately, then every 3 minutes
 (async()=>{try{await SYNC.loadTrackingStatus();render();}catch(e){}})();
-setInterval(async()=>{try{await SYNC.loadTrackingStatus();render();}catch(e){}},180000);
+setInterval(async()=>{try{await SYNC.loadTrackingStatus();if(!_userIsFocused())render();}catch(e){}},180000);
 
 // Auto-sync planning state every 30s — all devices stay in sync automatically
 let _planningAutoSyncTimer = null;
