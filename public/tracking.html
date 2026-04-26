@@ -893,8 +893,17 @@ function canScanDept(batchNo, dept){
 }
 
 function checkAlerts(){
+  // Server alerts are authoritative — loaded from /api/tracking/alerts (ALL scans in DB).
+  // Here we only: resolve alerts with local OUT scan, add new local ones, update hoursStuck.
   const ALERT_START = new Date('2026-04-21T00:00:00');
-  const newAlerts = [];
+  // Resolve alerts where OUT scan now exists locally
+  const resolvedIds = new Set();
+  state.alerts.forEach(a=>{
+    const hasOut = state.scans.some(s=>s.labelId===a.labelId&&s.dept===a.dept&&s.type==='out'&&(!a.scanInTs||new Date(s.ts)>new Date(a.scanInTs)));
+    if(hasOut) resolvedIds.add(a.id||a.labelId+a.dept);
+  });
+  state.alerts = state.alerts.filter(a=>!resolvedIds.has(a.id||a.labelId+a.dept));
+  // Supplement: new alerts from local 2000-scan window not yet on server
   state.scans.forEach(scan=>{
     if(scan.type!=='in') return;
     if(new Date(scan.ts) < ALERT_START) return;
@@ -904,20 +913,12 @@ function checkAlerts(){
       if(!existing){
         const lbl = state.labels.find(l=>l.id===scan.labelId);
         const boxNo = lbl ? Math.abs(lbl.labelNumber||0) : '?';
-        newAlerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, boxNo, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1), resolved:0 });
+        state.alerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, boxNo, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1), resolved:0 });
       }
     }
   });
-  const resolvedIds=new Set();
-  state.alerts.forEach(a=>{
-    const hasOut=state.scans.some(s=>s.labelId===a.labelId&&s.dept===a.dept&&s.type==='out');
-    if(hasOut) resolvedIds.add(a.id);
-  });
-  state.alerts=[...state.alerts.filter(a=>!newAlerts.find(n=>n.labelId===a.labelId&&n.dept===a.dept)&&!resolvedIds.has(a.id)),...newAlerts]
-    .filter(a=>!a.scanInTs||new Date(a.scanInTs)>=ALERT_START);
-  if(serverUrl && newAlerts.length>0){
-    pushToServer('/api/tracking/state',{alerts:newAlerts});
-  }
+  // Update hoursStuck dynamically on every call
+  state.alerts.forEach(a=>{ if(a.scanInTs) a.hoursStuck = hoursAgo(a.scanInTs).toFixed(1); });
   return state.alerts;
 }
 
@@ -1180,7 +1181,12 @@ async function pullFromServer(){
           // Remove _local flag from scans now confirmed on server
           ns.forEach(s=>{ delete s._local; });
           state.scans=[...ns,...localOnly];
-          checkAlerts();
+          // Load server-computed alerts (uses ALL scans in DB, not just 2000 recent)
+          try{
+            const ar=await fetch(serverUrl+'/api/tracking/alerts',{signal:AbortSignal.timeout(8000)});
+            if(ar.ok){ const aj=await ar.json(); if(aj.ok&&Array.isArray(aj.alerts)) state.alerts=aj.alerts; else checkAlerts(); }
+            else checkAlerts();
+          }catch(ae){ checkAlerts(); }
           if(currentPage) renderPage(currentPage);
         }
       }

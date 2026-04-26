@@ -2202,6 +2202,53 @@ app.get('/api/tracking/batch-summary/:batchNumber', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// GET /api/tracking/alerts — boxes stuck 48h+ in any dept (server-computed from ALL scans)
+app.get('/api/tracking/alerts', async (req, res) => {
+  try {
+    const ALERT_HOURS = 48;
+    const alertStart = new Date('2026-04-21T00:00:00').toISOString();
+    let alerts = [];
+    if (pgPool) {
+      const r = await pgPool.query(`
+        SELECT s.id, s.label_id as "labelId", s.batch_number as "batchNumber",
+          s.label_number as "boxNo", s.dept, s.ts as "scanInTs", s.operator, s.size,
+          EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 as "hoursStuck"
+        FROM tracking_scans s
+        WHERE s.type = 'in'
+          AND s.ts >= $1
+          AND EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 >= $2
+          AND NOT EXISTS (
+            SELECT 1 FROM tracking_scans o
+            WHERE o.label_id = s.label_id AND o.dept = s.dept
+              AND o.type = 'out' AND o.ts > s.ts
+          )
+        ORDER BY s.ts ASC LIMIT 500
+      `, [alertStart, ALERT_HOURS]);
+      alerts = r.rows.map(a => ({ ...a, hoursStuck: parseFloat(a.hoursStuck).toFixed(1), resolved: 0 }));
+    } else {
+      const rows = db.prepare(`
+        SELECT s.id, s.label_id as labelId, s.batch_number as batchNumber,
+          s.label_number as boxNo, s.dept, s.ts as scanInTs, s.operator, s.size,
+          (julianday('now') - julianday(s.ts)) * 24 as hoursStuck
+        FROM tracking_scans s
+        WHERE s.type = 'in' AND s.ts >= ?
+          AND (julianday('now') - julianday(s.ts)) * 24 >= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM tracking_scans o
+            WHERE o.label_id = s.label_id AND o.dept = s.dept
+              AND o.type = 'out' AND o.ts > s.ts
+          )
+        ORDER BY s.ts ASC LIMIT 500
+      `).all(alertStart, ALERT_HOURS);
+      alerts = rows.map(a => ({ ...a, hoursStuck: parseFloat(a.hoursStuck).toFixed(1), resolved: 0 }));
+    }
+    res.json({ ok: true, alerts, count: alerts.length });
+  } catch(err) {
+    console.error('[ALERTS]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /api/tracking/wip-summary — scan counts + stage closures for Planning
 app.get('/api/tracking/wip-summary', async (req, res) => {
   try {
