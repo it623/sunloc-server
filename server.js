@@ -2421,7 +2421,7 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
     // Get batch sizes from planning state for fallback
     const planState = getPlanningState();
     const batchSizeMap = {};
-    (planState.orders||[]).forEach(o => { if(o.batchNumber) batchSizeMap[o.batchNumber] = String(o.size||'2'); });
+    (planState.orders||[]).forEach(o => { if(o.batchNumber) batchSizeMap[o.batchNumber.toUpperCase()] = String(o.size||'2'); });
 
     // Scan counts per batch per dept per type
     let scans, wastage, prodActuals;
@@ -2438,26 +2438,28 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       prodActuals = db.prepare('SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number').all();
     }
     const grossProdMap = {};
-    prodActuals.forEach(r => { grossProdMap[r.batch_number] = parseFloat(r.gross_prod||0); });
+    prodActuals.forEach(r => { if(r.batch_number) grossProdMap[r.batch_number.toUpperCase()] = parseFloat(r.gross_prod||0); });
 
     // Build per-batch summary
     const batches = {};
     scans.forEach(s => {
-      if (!batches[s.batch_number]) batches[s.batch_number] = {};
-      if (!batches[s.batch_number][s.dept]) batches[s.batch_number][s.dept] = {in:0,out:0,inQty:0,outQty:0};
-      batches[s.batch_number][s.dept][s.type] = s.cnt;
+      const bn = (s.batch_number||'').toUpperCase(); // normalize to uppercase
+      if (!batches[bn]) batches[bn] = {};
+      if (!batches[bn][s.dept]) batches[bn][s.dept] = {in:0,out:0,inQty:0,outQty:0};
+      batches[bn][s.dept][s.type] = parseInt(s.cnt||0, 10);
       // Use SUM(qty) if available, else fallback to COUNT * packSize
       const sumQty = parseFloat(s.total_qty||0);
-      const ps = PACK_SIZES[batchSizeMap[s.batch_number]||'2'] || 1.0;
-      const effectiveQty = sumQty > 0 ? sumQty : s.cnt * ps;
-      batches[s.batch_number][s.dept][s.type+'Qty'] = effectiveQty;
+      const ps = PACK_SIZES[batchSizeMap[bn]||batchSizeMap[s.batch_number]||'2'] || 1.0;
+      const effectiveQty = sumQty > 0 ? sumQty : parseInt(s.cnt||0,10) * ps;
+      batches[bn][s.dept][s.type+'Qty'] = effectiveQty;
     });
 
     wastage.forEach(w => {
-      if (!batches[w.batch_number]) batches[w.batch_number] = {};
-      if (!batches[w.batch_number][w.dept]) batches[w.batch_number][w.dept] = {in:0,out:0,inQty:0,outQty:0};
-      if (!batches[w.batch_number][w.dept].wastage) batches[w.batch_number][w.dept].wastage = {};
-      batches[w.batch_number][w.dept].wastage[w.type] = parseFloat(w.total_qty||0);
+      const bn = (w.batch_number||'').toUpperCase(); // normalize to uppercase
+      if (!batches[bn]) batches[bn] = {};
+      if (!batches[bn][w.dept]) batches[bn][w.dept] = {in:0,out:0,inQty:0,outQty:0};
+      if (!batches[bn][w.dept].wastage) batches[bn][w.dept].wastage = {};
+      batches[bn][w.dept].wastage[w.type] = parseFloat(w.total_qty||0);
     });
 
     // Calculate A-grade per batch per stage
@@ -2479,12 +2481,12 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       const piOut = pi.outQty || 0;
       const piInspected = piOut + piWaste;
 
-      const grossProd = grossProdMap[batchNo] || 0;
+      const grossProd = grossProdMap[batchNo.toUpperCase()] || 0;
       const packOutQty = pack.outQty || 0;
       // WIP = everything produced but not yet packed out
       const wipLakhs = Math.max(0, grossProd - packOutQty);
 
-      result[batchNo] = {
+      result[batchNo.toUpperCase()] = { // normalize to uppercase for consistent lookup
         aim: {
           inQty: aim.inQty||0, outQty: aimOut,
           wastage: aimWaste, inspected: aimInspected,
