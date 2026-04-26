@@ -1379,7 +1379,7 @@ function _renderImmediate() {
   if(_userIsFocused() && state.currentPage==='search') return;
   // Save scroll position before rebuilding DOM — prevents auto-scroll-to-top on every render
   const _content = document.getElementById('content');
-  const _scrollTop = _content ? _content.scrollTop : 0;
+  const _scrollTop = _content ? _content.scrollTop : (window.scrollY || document.documentElement.scrollTop || 0);
   const _f=_saveFocus();
   const pages = {
     'production': renderProduction,
@@ -1424,7 +1424,10 @@ function _renderImmediate() {
   if (fn) fn();
   updateUserBadge();
   // Restore scroll position and focus after DOM rebuild
-  if(_content && _scrollTop > 0) setTimeout(()=>{ _content.scrollTop = _scrollTop; }, 0);
+  if(_scrollTop > 0) setTimeout(()=>{
+    if(_content && _content.scrollTop !== undefined) _content.scrollTop = _scrollTop;
+    else window.scrollTo(0, _scrollTop);
+  }, 0);
   if(_f)setTimeout(()=>_restoreFocus(_f),0);
 }
 
