@@ -2724,6 +2724,29 @@ app.post('/api/tracking/stage-status', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ── Stage Close — mark a dept stage as closed for a batch ──────
+app.post('/api/tracking/stage-close', async (req, res) => {
+  try {
+    const { batchNumber, dept, closedBy } = req.body;
+    if (!batchNumber || !dept) return res.status(400).json({ ok: false, error: 'Missing batchNumber or dept' });
+    const id = `${batchNumber}-${dept}`;
+    const ts = new Date().toISOString();
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO tracking_stage_closure (id, batch_number, dept, closed, closed_at, closed_by)
+         VALUES ($1,$2,$3,1,$4,$5)
+         ON CONFLICT(batch_number, dept) DO UPDATE SET closed=1, closed_at=EXCLUDED.closed_at, closed_by=EXCLUDED.closed_by`,
+        [id, batchNumber, dept, ts, closedBy||null]
+      );
+    } else {
+      db.prepare(`INSERT INTO tracking_stage_closure (id,batch_number,dept,closed,closed_at,closed_by)
+        VALUES (?,?,?,1,?,?) ON CONFLICT(batch_number,dept) DO UPDATE SET closed=1,closed_at=excluded.closed_at,closed_by=excluded.closed_by`)
+        .run(id, batchNumber, dept, ts, closedBy||null);
+    }
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ── Wastage — save salvage/remelt records ─────────────────────
 app.post('/api/tracking/wastage', async (req, res) => {
   try {
