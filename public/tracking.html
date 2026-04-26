@@ -924,7 +924,8 @@ function checkAlerts(){
 
 function getAlertCount(dept){
   checkAlerts();
-  return dept ? state.alerts.filter(a=>a.dept===dept).length : state.alerts.length;
+  const filtered = dept ? state.alerts.filter(a=>a.dept===dept) : state.alerts;
+  return filtered.reduce((s,a)=>s+(parseInt(a.stuckBoxes)||1),0);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2116,7 +2117,7 @@ function renderDashboard(){
   checkAlerts();
   const totalBatches=state.batches.filter(b=>b.status!=='closed').length;
   const totalLabels=state.labels.filter(l=>!l.voided&&!l.isOrange).length;
-  const totalAlerts=state.alerts.length;
+  const totalAlerts=state.alerts.reduce((s,a)=>s+(parseInt(a.stuckBoxes)||1),0);
   const packedBoxes=state.scans.filter(s=>s.dept==='packing'&&s.type==='out').length;
   const dispBoxes=state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out').length;
 
@@ -2156,8 +2157,8 @@ function renderDashboard(){
       ${state.alerts.length===0?'<div class="text-muted text-sm text-center" style="padding:20px">✅ No active alerts</div>':
         state.alerts.slice(0,6).map(a=>`
           <div class="flex items-center justify-between mb-8 p-8" style="background:var(--accent4-light);border-radius:6px;cursor:pointer" onclick="navigateToAlertBatch('${a.batchNumber}')">
-            <div><div class="fw-bold text-sm" style="color:var(--accent4)">${a.batchNumber}</div>
-            <div class="text-sm text-muted">Box in ${DEPT_LABELS[a.dept]} for ${parseFloat(a.hoursStuck).toFixed(0)}h</div></div>
+            <div><div class="fw-bold text-sm" style="color:var(--accent4)">${a.batchNumber} — ${parseInt(a.stuckBoxes)||1} box(es)</div>
+            <div class="text-sm text-muted">Stuck in ${DEPT_LABELS[a.dept]||a.dept} for ${parseFloat(a.hoursStuck).toFixed(0)}h</div></div>
             <span class="red-flag">🚩 ${parseFloat(a.hoursStuck).toFixed(0)}h</span>
           </div>`).join('')
       }
@@ -2861,7 +2862,7 @@ function renderDeptScan(dept){
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">${cfg.label}</div><div class="section-sub">Scan boxes IN and OUT of this department</div></div>
     </div>
-    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.length} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>(a.batchNumber||'')+'/'+(a.boxNo!=null?a.boxNo:'?')).join(', ')}</div>`:''}
+    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.reduce((s,a)=>s+(parseInt(a.stuckBoxes)||1),0)} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>`${a.batchNumber||''}(${parseInt(a.stuckBoxes)||1})`).join(', ')}</div>`:''}
     <!-- SCAN PANEL -->
     <div class="grid-2 scan-panels-grid">
       <div>
