@@ -5649,12 +5649,7 @@ async function rejectWOReconciliation(reqId) {
 // =============================
 // SEARCH PAGE
 // =============================
-function renderSearch() {
-  const topActions = document.getElementById('topbar-actions');
-  topActions.innerHTML = '';
-  const q = window._searchQuery || '';
-  const by = window._searchBy || 'all';
-
+function _renderSearchResults(q, by) {
   let results = [];
   if (q.length >= 2) {
     const ql = q.toLowerCase();
@@ -5668,24 +5663,14 @@ function renderSearch() {
     const prints = state.printOrders.filter(p=>matchOrder(p)).map(p=>({...p,_type:'Print Order'}));
     results = [...orders, ...prints];
   }
-
-  document.getElementById('content').innerHTML = `
-    <div class="card mb-4">
-      <div class="card-title">🔍 Search Orders</div>
-      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
-        <input class="form-control" id="search-input" value="${q}" placeholder="Enter batch number, customer name, or PC code..."
-          style="max-width:360px" oninput="window._searchQuery=this.value;renderSearch()">
-        <select class="form-control" id="search-by" style="max-width:180px" onchange="window._searchBy=this.value;renderSearch()">
-          <option value="all" ${by==='all'?'selected':''}>All Fields</option>
-          <option value="batch" ${by==='batch'?'selected':''}>Batch Number</option>
-          <option value="customer" ${by==='customer'?'selected':''}>Customer Name</option>
-          <option value="pccode" ${by==='pccode'?'selected':''}>PC Code</option>
-        </select>
-        ${q?`<button class="btn btn-ghost btn-sm" onclick="window._searchQuery='';renderSearch()">✕ Clear</button>`:''}
-      </div>
-      ${q.length<2&&q.length>0?'<div style="color:var(--text3);font-size:12px;margin-top:8px">Type at least 2 characters to search</div>':''}
-    </div>
-    ${q.length>=2?`
+  const hint = document.getElementById('search-hint');
+  if (hint) hint.innerHTML = q.length<2&&q.length>0?'<div style="color:var(--text3);font-size:12px;margin-top:8px">Type at least 2 characters to search</div>':'';
+  const clearBtn = document.getElementById('search-clear-btn');
+  if (clearBtn) clearBtn.style.display = q ? '' : 'none';
+  const rc = document.getElementById('search-results-container');
+  if (!rc) return;
+  if (q.length >= 2) {
+    rc.innerHTML = `
     <div class="card">
       <div class="card-title">${results.length} result${results.length!==1?'s':''} for "${q}"</div>
       ${results.length===0?'<div class="empty-state"><p>No matches found</p></div>':`
@@ -5705,10 +5690,49 @@ function renderSearch() {
           </tr>`).join('')}
         </tbody>
       </table></div>`}
-    </div>`:''}
+    </div>`;
+  } else {
+    rc.innerHTML = '';
+  }
+}
+
+function renderSearch() {
+  document.getElementById('topbar-actions').innerHTML = '';
+  const q = window._searchQuery || '';
+  const by = window._searchBy || 'all';
+
+  // If input already exists, only update results — NEVER rebuild input (preserves cursor)
+  if (document.getElementById('search-input')) {
+    _renderSearchResults(q, by);
+    return;
+  }
+
+  // First time: build the shell with stable input element
+  document.getElementById('content').innerHTML = `
+    <div class="card mb-4">
+      <div class="card-title">🔍 Search Orders</div>
+      <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center">
+        <input class="form-control" id="search-input" value="${q}"
+          placeholder="Enter batch number, customer name, or PC code..."
+          style="max-width:360px"
+          oninput="window._searchQuery=this.value;_renderSearchResults(this.value,window._searchBy||'all')">
+        <select class="form-control" id="search-by" style="max-width:180px"
+          onchange="window._searchBy=this.value;_renderSearchResults(window._searchQuery||'',this.value)">
+          <option value="all" ${by==='all'?'selected':''}>All Fields</option>
+          <option value="batch" ${by==='batch'?'selected':''}>Batch Number</option>
+          <option value="customer" ${by==='customer'?'selected':''}>Customer Name</option>
+          <option value="pccode" ${by==='pccode'?'selected':''}>PC Code</option>
+        </select>
+        <button class="btn btn-ghost btn-sm" id="search-clear-btn"
+          onclick="window._searchQuery='';document.getElementById('search-input').value='';_renderSearchResults('',window._searchBy||'all')"
+          style="${q?'':'display:none'}">✕ Clear</button>
+      </div>
+      <div id="search-hint"></div>
+    </div>
+    <div id="search-results-container"></div>
   `;
-  // Focus search input
-  setTimeout(()=>document.getElementById('search-input')?.focus(),50);
+  _renderSearchResults(q, by);
+  setTimeout(()=>document.getElementById('search-input')?.focus(), 50);
 }
 
 // =============================
