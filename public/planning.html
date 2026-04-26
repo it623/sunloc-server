@@ -694,7 +694,12 @@ const SYNC = (() => {
       if (agRes.status==='fulfilled' && agRes.value.ok) {
         const agj = await agRes.value.json();
         if (agj.ok && agj.batches) {
-          window._liveAGrade = agj.batches;
+          // Normalize batch number keys to uppercase for consistent lookup
+          window._liveAGrade = {};
+          Object.entries(agj.batches).forEach(([k, v]) => {
+            window._liveAGrade[k.trim().toUpperCase()] = v;
+            window._liveAGrade[k] = v; // also keep original for fallback
+          });
           const machineIds = [...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.machineId))];
           machineIds.forEach(mid => { if (mid) recalcMachineScheduleQuiet(mid); });
           state.dispatchPlans.forEach(dp => {
@@ -991,6 +996,14 @@ function recalcMachineScheduleQuiet(machineId) {
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') {
+      // Still calculate grossQty/aimOut for closed orders so they show in the table
+      if (!ord.grossQty) {
+        const scClosed = calcOrderSchedule(ord, mc);
+        ord.grossQty = scClosed.grossQty;
+        ord.aimOut   = scClosed.aimOut;
+        ord.printOut = scClosed.printOut;
+        ord.piOut    = scClosed.piOut;
+      }
       // Advance cursor through closed orders so next order starts right after
       if (ord.endDate && !isNaN(new Date(ord.endDate))) {
         const closedEnd = new Date(ord.endDate);
@@ -1027,6 +1040,14 @@ function recalcMachineSchedule(machineId) {
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') {
+      // Still calculate grossQty/aimOut for closed orders so they show in the table
+      if (!ord.grossQty) {
+        const scClosed = calcOrderSchedule(ord, mc);
+        ord.grossQty = scClosed.grossQty;
+        ord.aimOut   = scClosed.aimOut;
+        ord.printOut = scClosed.printOut;
+        ord.piOut    = scClosed.piOut;
+      }
       // Advance cursor through closed orders so next order starts right after
       if (ord.endDate && !isNaN(new Date(ord.endDate))) {
         const closedEnd = new Date(ord.endDate);
