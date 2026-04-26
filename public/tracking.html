@@ -893,9 +893,9 @@ function canScanDept(batchNo, dept){
 }
 
 function checkAlerts(){
-  // Server alerts are authoritative — loaded from /api/tracking/alerts (ALL scans in DB).
-  // Here we only: resolve alerts with local OUT scan, add new local ones, update hoursStuck.
-  const ALERT_START = new Date('2026-04-21T00:00:00');
+  const ALERT_START = new Date('2026-04-25T00:00:00');
+  // Drop any alerts older than ALERT_START immediately
+  state.alerts = state.alerts.filter(a=>!a.scanInTs||new Date(a.scanInTs)>=ALERT_START);
   // Resolve alerts where OUT scan now exists locally
   const resolvedIds = new Set();
   state.alerts.forEach(a=>{
@@ -903,7 +903,7 @@ function checkAlerts(){
     if(hasOut) resolvedIds.add(a.id||a.labelId+a.dept);
   });
   state.alerts = state.alerts.filter(a=>!resolvedIds.has(a.id||a.labelId+a.dept));
-  // Supplement: new alerts from local 2000-scan window not yet on server
+  // Supplement from local scans
   state.scans.forEach(scan=>{
     if(scan.type!=='in') return;
     if(new Date(scan.ts) < ALERT_START) return;
@@ -917,7 +917,6 @@ function checkAlerts(){
       }
     }
   });
-  // Update hoursStuck dynamically on every call
   state.alerts.forEach(a=>{ if(a.scanInTs) a.hoursStuck = hoursAgo(a.scanInTs).toFixed(1); });
   return state.alerts;
 }
@@ -1182,10 +1181,9 @@ async function pullFromServer(){
           // Remove _local flag from scans now confirmed on server
           ns.forEach(s=>{ delete s._local; });
           state.scans=[...ns,...localOnly];
-          // Load server-computed alerts (uses ALL scans in DB, not just 2000 recent)
           try{
             const ar=await fetch(serverUrl+'/api/tracking/alerts',{signal:AbortSignal.timeout(8000)});
-            if(ar.ok){ const aj=await ar.json(); if(aj.ok&&Array.isArray(aj.alerts)) state.alerts=aj.alerts; else checkAlerts(); }
+            if(ar.ok){const aj=await ar.json();if(aj.ok&&Array.isArray(aj.alerts))state.alerts=aj.alerts;else checkAlerts();}
             else checkAlerts();
           }catch(ae){ checkAlerts(); }
           if(currentPage) renderPage(currentPage);
@@ -2157,11 +2155,9 @@ function renderDashboard(){
       ${state.alerts.length===0?'<div class="text-muted text-sm text-center" style="padding:20px">✅ No active alerts</div>':
         state.alerts.slice(0,6).map(a=>`
           <div class="flex items-center justify-between mb-8 p-8" style="background:var(--accent4-light);border-radius:6px;cursor:pointer" onclick="showAlertDetail('${a.batchNumber}','${a.dept}')">
-            <div>
-              <div class="fw-bold text-sm" style="color:var(--accent4)">${a.batchNumber}</div>
-              <div class="text-sm text-muted">${parseInt(a.stuckBoxes)||1} box(es) stuck in <b>${DEPT_LABELS[a.dept]||a.dept}</b> for ${parseFloat(a.hoursStuck).toFixed(0)}h</div>
-            </div>
-            <span class="badge" style="background:var(--accent4);color:#fff">🚩 ${parseInt(a.stuckBoxes)||1} boxes</span>
+            <div><div class="fw-bold text-sm" style="color:var(--accent4)">${a.batchNumber}</div>
+            <div class="text-sm text-muted">${parseInt(a.stuckBoxes)||1} box(es) in <b>${DEPT_LABELS[a.dept]||a.dept}</b> for ${parseFloat(a.hoursStuck).toFixed(0)}h</div></div>
+            <span class="badge" style="background:var(--accent4);color:#fff">🚩 ${parseInt(a.stuckBoxes)||1}</span>
           </div>`).join('')
       }
     </div>
@@ -2864,10 +2860,7 @@ function renderDeptScan(dept){
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">${cfg.label}</div><div class="section-sub">Scan boxes IN and OUT of this department</div></div>
     </div>
-    ${myAlerts.length>0?`<div class="alert alert-danger" style="cursor:pointer" onclick="navigate('batch-tracker')">
-    🚨 <strong>${myAlerts.reduce((s,a)=>s+(parseInt(a.stuckBoxes)||1),0)} box(es) stuck in this department 48h+</strong><br>
-    <span style="font-size:11px">${myAlerts.map(a=>`<b>${a.batchNumber}</b>: ${parseInt(a.stuckBoxes)||1} box(es) — ${parseFloat(a.hoursStuck).toFixed(0)}h`).join(' &nbsp;|&nbsp; ')}</span>
-  </div>`:''}
+    ${myAlerts.length>0?`<div class="alert alert-danger" style="cursor:pointer" onclick="navigate('batch-tracker')">🚨 <strong>${myAlerts.reduce((s,a)=>s+(parseInt(a.stuckBoxes)||1),0)} box(es) stuck 48h+</strong> — ${myAlerts.map(a=>`<b>${a.batchNumber}</b>: ${parseInt(a.stuckBoxes)||1} box(es) ${parseFloat(a.hoursStuck).toFixed(0)}h`).join(' | ')}</div>`:''}
     <!-- SCAN PANEL -->
     <div class="grid-2 scan-panels-grid">
       <div>
@@ -3437,31 +3430,20 @@ function confirmDispatch(batchNo){
 // ═══════════════════════════════════════════════════════
 
 // Navigate to Batch Tracker filtered to a specific batch (called from dashboard alert clicks)
-async function showAlertDetail(batchNumber, dept){
-  // Show modal with individual box numbers for this alert
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
-  let boxList = 'Loading...';
-  try {
-    const r = await fetch(`${serverUrl}/api/tracking/alerts/detail?batchNumber=${encodeURIComponent(batchNumber)}&dept=${encodeURIComponent(dept)}`);
-    const j = await r.json();
-    if(j.ok && j.boxes && j.boxes.length > 0) {
-      const boxNums = j.boxes.map(b => b.boxNo !== '?' ? `Box #${b.boxNo} (${parseFloat(b.hoursStuck).toFixed(0)}h)` : `Label ${b.labelId?.slice(-6)} (${parseFloat(b.hoursStuck).toFixed(0)}h)`);
-      boxList = `<div style="columns:3;gap:8px;font-family:var(--mono);font-size:12px">${boxNums.map(b=>`<div style="break-inside:avoid;padding:3px 0;color:var(--accent4)">${b}</div>`).join('')}</div>`;
-    } else {
-      boxList = '<div class="text-muted">No individual box data available</div>';
-    }
-  } catch(e) {
-    boxList = `<div class="text-muted">Could not load box details: ${e.message}</div>`;
-  }
-  showModal(`🚨 Alert: ${batchNumber} — ${DEPT_LABELS[dept]||dept}`,
-    `<div class="mb-12"><b>${batchNumber}</b> has boxes stuck at <b>${DEPT_LABELS[dept]||dept}</b> for 48h+.</div>
-     <div class="mb-8 text-sm text-muted">Individual box numbers:</div>
-     ${boxList}
-     <div class="mt-16"><button class="btn btn-primary btn-sm" onclick="navigateToAlertBatch('${batchNumber}');closeModal()">View Batch Tracker →</button></div>`,
-    [{label:'Close', cls:'btn-ghost', fn:'closeModal()'}]
-  );
+async function showAlertDetail(batchNumber,dept){
+  const sv=localStorage.getItem('sunloc_server_url')||'';
+  showModal(`🚨 ${batchNumber} — ${DEPT_LABELS[dept]||dept}`,
+    `<div class="mb-12"><b>${batchNumber}</b>: boxes stuck at <b>${DEPT_LABELS[dept]||dept}</b> for 48h+</div><div id="ad-body" class="text-muted text-sm">Loading...</div>
+     <div class="mt-16"><button class="btn btn-primary btn-sm" onclick="navigateToAlertBatch('${batchNumber}');closeModal()">View in Batch Tracker →</button></div>`,
+    [{label:'Close',cls:'btn-ghost',fn:'closeModal()'}]);
+  try{
+    const r=await fetch(`${sv}/api/tracking/alerts/detail?batchNumber=${encodeURIComponent(batchNumber)}&dept=${encodeURIComponent(dept)}`);
+    const j=await r.json();const el=document.getElementById('ad-body');
+    if(el&&j.ok&&j.boxes?.length>0){
+      el.innerHTML=`<div style="columns:3;gap:8px;line-height:2">${j.boxes.map(b=>`<span style="font-family:var(--mono);color:var(--accent4);font-weight:700">Box #${b.boxNo}</span> <span class="text-muted">(${parseFloat(b.hoursStuck).toFixed(0)}h)</span>`).join(' ')}</div>`;
+    }else if(el){el.textContent='No box details available';}
+  }catch(e){}
 }
-
 function navigateToAlertBatch(batchNo){
   window._btNavBatch  = batchNo;
   window._btNavStatus = '';   // show only this batch, no status filter
