@@ -704,8 +704,8 @@ const SYNC = (() => {
             batchNums.forEach(bn => {
               const bd = agj.batches[bn];
               if (!bd) return;
-              totalPackedQty   += bd.packing?.outQty || 0;
-              totalPackedBoxes += bd.packing?.out    || 0; // scan OUT count = box count
+              totalPackedQty   += parseFloat(bd.packing?.outQty || 0);
+              totalPackedBoxes += parseInt(bd.packing?.out    || 0, 10); // scan OUT count = box count (force int)
               totalWip         += bd.wipLakhs || 0;
               totalGross       += bd.grossProd || 0;
             });
@@ -1355,6 +1355,9 @@ function _userIsFocused(){
 function _renderImmediate() {
   // Never switch away from search page if user is actively typing in it
   if(_userIsFocused() && state.currentPage==='search') return;
+  // Save scroll position before rebuilding DOM — prevents auto-scroll-to-top on every render
+  const _content = document.getElementById('content');
+  const _scrollTop = _content ? _content.scrollTop : 0;
   const _f=_saveFocus();
   const pages = {
     'production': renderProduction,
@@ -1398,6 +1401,8 @@ function _renderImmediate() {
   const fn = pages[state.currentPage];
   if (fn) fn();
   updateUserBadge();
+  // Restore scroll position and focus after DOM rebuild
+  if(_content && _scrollTop > 0) setTimeout(()=>{ _content.scrollTop = _scrollTop; }, 0);
   if(_f)setTimeout(()=>_restoreFocus(_f),0);
 }
 
@@ -3343,7 +3348,7 @@ function buildTruckPlans(zone) {
     truck.etd = dates.length > 0 ? new Date(Math.max(...dates.map(d => d.getTime()))) : null;
     truck.isFull = truck.totalBoxes >= cap;
     truck.cap = cap;
-    truck.packedBoxes = truck.orders.reduce((s, p) => s + (p.packedBoxes||0), 0);
+    truck.packedBoxes = truck.orders.reduce((s, p) => s + (parseInt(p.packedBoxes||0, 10)), 0);
     truck.pendingBoxes = truck.totalBoxes - truck.packedBoxes;
     // Identify the bottleneck order (the one driving ETD)
     truck.bottleneckOrderId = truck.orders.reduce((worst, p) => {
