@@ -414,8 +414,10 @@ for (const u of seedUsers) {
   insertUser.run(u.username, hashPin(u.pin), u.role, u.app);
 }
 
-// Clean expired sessions on startup
-db.prepare(`DELETE FROM app_sessions WHERE expires_at < to_char(NOW(), 'YYYY-MM-DD HH24:MI:SS')`).run();
+// Clean expired sessions on startup (SQLite only — PostgreSQL handles via pgPool)
+if (!USE_POSTGRES) {
+  try { db.prepare(`DELETE FROM app_sessions WHERE expires_at < datetime('now')`).run(); } catch(e) {}
+}
 
 
 // ─── Helper: get latest planning state ────────────────────────
@@ -500,6 +502,8 @@ async function ensurePostgresTables() {
         qty REAL
       )
     `);
+    // CRITICAL: ensure label_number column exists — missing column causes all scans to fail with 500
+    await pgPool.query(`ALTER TABLE tracking_scans ADD COLUMN IF NOT EXISTS label_number INTEGER`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_dept_ts ON tracking_scans(dept, ts DESC)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_batch ON tracking_scans(batch_number, dept)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_batch ON tracking_labels(batch_number)`);
@@ -788,7 +792,11 @@ function getActiveOrdersForMachine(machineId) {
 
 // Helper: get total actuals for an order (sums all runs across all machines/shifts)
 let _actualsCache = null;
+let _actualsCacheTime = 0;
 async function warmActualsCache() {
+  // Throttle to 60s — prevents DB hammering from every device's 30s auto-sync
+  if (Date.now() - _actualsCacheTime < 60000 && _actualsCache) return;
+  _actualsCacheTime = Date.now();
   if (!pgPool) return;
   try {
     const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
@@ -906,8 +914,8 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 // GET all active orders (summary for DPR to cache on load) — only 'running' status
 app.get('/api/orders/active', async (req, res) => {
   try {
-    // Always refresh actuals so Gross/Prod/Rem is current in DPR
-    await warmActualsCache();
+    // Refresh actuals in background — throttled to 60s, non-blocking
+    warmActualsCache().catch(()=>{});
     const state = await getPlanningStateAsync();
     const running = (state.orders || []).filter(o => o.status === 'running' && !o.deleted);
 
@@ -2357,10 +2365,11 @@ app.post('/api/tracking/scan', async (req, res) => {
     const labelId = scan.labelId||scan.label_id;
     const batchNumber = scan.batchNumber||scan.batch_number;
     if (pgPool) {
-      // Server-side duplicate check: one IN and one OUT max per label per dept — no exceptions
+      // Server-side duplicate check: one IN and one OUT max per label per dept per batch
+      // Scoped to batch_number so same label in a new batch is never blocked
       const existing = await pgPool.query(
-        `SELECT type FROM tracking_scans WHERE label_id=$1 AND dept=$2`,
-        [labelId, scan.dept]
+        `SELECT type FROM tracking_scans WHERE label_id=$1 AND dept=$2 AND batch_number=$3`,
+        [labelId, scan.dept, batchNumber]
       );
       const doneTypes = existing.rows.map(r=>r.type);
       if(doneTypes.includes(scan.type)){
