@@ -2096,7 +2096,7 @@ function renderPage(page){
     case 'packing': renderDeptScan('packing'); break;
     case 'dispatch': renderDispatch(); break;
     case 'batch-tracker': renderBatchTracker(); break;
-    case 'reports': renderReports(); break;
+    case 'reports': renderReports(true); break; // forceRebuild=true — user navigated here
     case 'search': renderTrackingSearch(); break;
     case 'settings': renderSettings(); break;
   }
@@ -3648,11 +3648,13 @@ function renderBatchDetail(batch){
   </table></div>`;
 }
 
-function renderReports(){
+function renderReports(forceRebuild){
   const el=document.getElementById('page-reports');
-  // If a report is already open, don't rebuild — prevents 5s refresh from wiping it
+  // Preserve existing report output across rebuilds
   const existingOutput=document.getElementById('report-output');
-  if(existingOutput && existingOutput.innerHTML.trim().length>0) return;
+  const savedReport = existingOutput ? existingOutput.innerHTML : '';
+  // If called from auto-refresh (not user navigation) and a report is showing — skip rebuild
+  if(!forceRebuild && savedReport.trim().length>0) return;
   el.innerHTML=`
   <div class="section-header">
     <div><div class="section-title">Reports</div><div class="section-sub">Generate and export operational reports</div></div>
@@ -3708,6 +3710,11 @@ function renderReports(){
     </div>
   </div>
   <div id="report-output" class="mt-20"></div>`;
+  // Restore previously generated report (user navigated back to Reports)
+  if(savedReport.trim().length>0){
+    const newOutput=document.getElementById('report-output');
+    if(newOutput) newOutput.innerHTML=savedReport;
+  }
 }
 
 function renderReportH(){
