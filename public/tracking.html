@@ -739,6 +739,13 @@ function isStageComplete(batchNo, dept){
 function canScanDept(batchNo, dept){
   const batch = getBatch(batchNo);
   if(!batch) return false;
+
+  // HARD BLOCK: Unprinted batches can NEVER be scanned at Printing or PI
+  // This is an absolute rule regardless of scan history or flow
+  if(!batch.isPrinted && (dept === 'printing' || dept === 'pi')){
+    return false;
+  }
+
   const flow = getBatchFlow(batch);
   const idx = flow.indexOf(dept);
   if(idx < 0) return false;
@@ -1223,6 +1230,11 @@ function recordScan(labelId, dept, type, operator, parsed){
   if(!batch) return {ok:false,msg:'Batch not found'};
 
   // Sequential check (skip for admin override)
+  // Check if unprinted batch is being scanned at wrong department
+  if(!batch.isPrinted && (dept === 'printing' || dept === 'pi')){
+    return {ok:false, msg:`❌ Batch ${label.batchNumber} is UNPRINTED — cannot scan at ${dept==='printing'?'Printing':'Print Inspection'}. Unprinted batches go directly from AIM to Packing.`};
+  }
+
   if(currentDept!=='admin' && !canScanDept(label.batchNumber, dept)){
     return {ok:false,msg:'Previous department has not closed this batch yet'};
   }
