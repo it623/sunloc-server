@@ -246,120 +246,192 @@ input[type=number]{font-family:var(--mono)}
 .dept-strip.labels{background:linear-gradient(90deg,#2563eb,#3b82f6)}
 
 /* ── RESPONSIVE ── */
+/* ══════════════════════════════════════════════════
+   TRACKING — ENHANCED MOBILE RESPONSIVE
+   ══════════════════════════════════════════════════ */
 @media(max-width:768px){
-  /* ── Layout ── */
-  #sidebar{position:fixed;left:-var(--nav-w);transition:.3s;z-index:200}
-  #sidebar.open{left:0}
-  #main{width:100%}
+
+  /* ── Sidebar — slide in from left ── */
+  #sidebar{
+    position:fixed;
+    left:-270px;
+    top:0;bottom:0;
+    width:270px;
+    z-index:500;
+    transition:left .28s cubic-bezier(.4,0,.2,1);
+    overflow-y:auto;
+  }
+  #sidebar.open{left:0;box-shadow:6px 0 32px rgba(0,0,0,0.5)}
+  #sidebar-backdrop{
+    display:none;
+    position:fixed;inset:0;
+    background:rgba(0,0,0,0.55);
+    z-index:499;
+    backdrop-filter:blur(2px);
+    -webkit-backdrop-filter:blur(2px);
+  }
+  #sidebar.open ~ #sidebar-backdrop{display:block}
+
+  /* ── Main full width ── */
+  #main{width:100%;padding-bottom:68px}
+
+  /* ── Topbar — compact ── */
+  #topbar{
+    padding:0 10px;
+    height:52px;
+  }
+  #tb-title{font-size:14px;font-weight:700}
+  #tb-subtitle{display:none}
+  #tb-actions .btn{padding:5px 8px;font-size:11px;min-height:36px}
+  #tb-actions .btn-sm{padding:4px 7px;font-size:10px}
+
+  /* ── Hamburger ── */
+  #mobile-menu-btn{display:block!important}
+
+  /* ── Layout grids ── */
   .grid-2,.grid-3,.grid-4{grid-template-columns:1fr}
   .form-row.cols-2,.form-row.cols-3{grid-template-columns:1fr}
 
-  /* ── Hamburger button ── */
-  #mobile-menu-btn{display:block!important}
+  /* ── Login / dept picker ── */
+  .login-card{
+    padding:24px 16px;
+    margin:12px;
+    border-radius:16px;
+  }
+  .dept-grid{grid-template-columns:repeat(2,1fr)!important;gap:10px}
+  .dept-btn{
+    padding:14px 8px;
+    font-size:13px;
+    border-radius:10px;
+    min-height:72px;
+  }
+  .dept-btn .dept-icon{font-size:26px;margin-bottom:4px}
 
-  /* ── Sidebar overlay backdrop ── */
-  #sidebar{position:fixed;left:-260px;top:0;bottom:0;width:260px;z-index:400;transition:left .25s;overflow-y:auto}
-  #sidebar.open{left:0;box-shadow:4px 0 20px rgba(0,0,0,0.5)}
-  #sidebar-backdrop{display:none;position:fixed;inset:0;background:rgba(0,0,0,0.5);z-index:399}
-  #sidebar.open ~ #sidebar-backdrop{display:block}
-
-  /* ── Topbar ── */
-  #topbar{padding:0 10px;height:52px}
-  #tb-title{font-size:14px}
-  #tb-subtitle{display:none}
-  #tb-actions .btn{padding:5px 8px;font-size:11px}
-
-  /* ── Login page ── */
-  .login-card{padding:24px 18px;margin:16px}
-  .dept-grid{grid-template-columns:repeat(2,1fr)!important;gap:8px}
-  .dept-btn{padding:12px 8px;font-size:12px}
-  .dept-btn .dept-icon{font-size:22px}
-
-  /* ── Scan zones — MOBILE OPTIMISED ── */
+  /* ── Scan zones — optimised for scanning ── */
   .scan-zone{
     padding:16px 12px;
-    min-height:140px;
-    border-radius:10px;
-    border:2px dashed var(--border)
+    min-height:130px;
+    border-radius:12px;
+    border:2px dashed var(--border);
   }
   .scan-zone .scan-input{
-    font-size:16px!important;  /* prevents iOS zoom */
+    font-size:16px!important;
     padding:12px 14px!important;
-    border-radius:8px;
+    border-radius:10px;
     width:100%;
     -webkit-appearance:none;
+    min-height:48px;
   }
   .scan-zone .btn{
-    padding:12px 20px!important;
+    padding:13px 18px!important;
     font-size:14px!important;
-    min-height:44px;  /* minimum touch target */
-    border-radius:8px;
-  }
-  /* Stack IN/OUT scan panels vertically on mobile */
-  .scan-panels-grid{
-    grid-template-columns:1fr!important;
-    gap:12px
+    min-height:48px;
+    border-radius:10px;
+    width:100%;
   }
 
-  /* ── Camera button prominence on mobile ── */
+  /* ── Scan panels stack vertically ── */
+  .scan-panels-grid{grid-template-columns:1fr!important;gap:12px}
+
+  /* ── Camera button — full width prominent ── */
   .btn-camera-mobile{
-    display:flex;
+    display:flex!important;
     align-items:center;
     justify-content:center;
-    gap:8px;
+    gap:10px;
     width:100%;
-    padding:14px!important;
-    font-size:15px!important;
+    padding:16px!important;
+    font-size:16px!important;
     font-weight:700;
-    min-height:52px;
+    min-height:56px;
     background:var(--accent)!important;
     color:#0a0f1e!important;
-    border-radius:10px;
-    margin-bottom:8px;
+    border-radius:12px;
+    margin-bottom:10px;
+    letter-spacing:0.3px;
   }
 
-  /* ── Tables → scrollable on mobile ── */
-  .tbl-wrap{overflow-x:auto;-webkit-overflow-scrolling:touch}
-  table{min-width:500px}
-  /* Report F and H have many columns — ensure minimum width */
-  .tbl-wrap.tbl-sticky table{min-width:600px}
+  /* ── Tables — horizontal scroll ── */
+  .tbl-wrap{
+    overflow-x:auto;
+    -webkit-overflow-scrolling:touch;
+    border-radius:8px;
+  }
+  table{min-width:520px;font-size:12px}
+  thead th{padding:8px 8px!important;font-size:10px!important;white-space:nowrap}
+  tbody td{padding:7px 8px!important;font-size:12px!important}
+  .tbl-wrap.tbl-sticky table{min-width:620px}
 
   /* ── Cards ── */
-  .card{padding:12px;border-radius:8px;margin-bottom:12px}
-  .card-title{font-size:13px}
+  .card{
+    padding:14px 12px;
+    border-radius:10px;
+    margin-bottom:10px;
+  }
+  .card-sm{padding:10px 10px}
+  .card-title{font-size:11px;margin-bottom:10px}
 
-  /* ── Batch tracker ── */
-  .batch-card{padding:12px}
-  .batch-card .stage-pills{flex-wrap:wrap;gap:4px}
-  .stage-pill{font-size:11px;padding:3px 8px}
+  /* ── KPI grid — 2 cols ── */
+  .kpi-grid{grid-template-columns:repeat(2,1fr)!important;gap:8px!important}
+  .kpi{padding:14px 10px!important}
+  .kpi-label{font-size:9px!important}
 
-  /* ── Report H summary cards ── */
-  #report-output [style*="gap:8px"][style*="border-radius:6px"]{flex-wrap:wrap}
+  /* ── Buttons — proper touch targets ── */
+  .btn{min-height:42px;padding:9px 14px;font-size:13px;border-radius:8px}
+  .btn-sm{min-height:36px;padding:6px 10px;font-size:11px}
+  .btn-lg{min-height:50px;padding:12px 20px;font-size:15px}
 
-  /* ── Report E new tab button ── */
-  #report-output .btn{min-width:0;white-space:normal;height:auto;min-height:40px}
-
-  /* ── KPI grids ── */
-  .kpi-grid{grid-template-columns:repeat(2,1fr)!important}
-
-  /* ── General touch targets ── */
-  .btn{min-height:40px;padding:8px 12px}
-  .btn-sm{min-height:36px}
-  select,input[type=text],input[type=number]{
+  /* ── Inputs — prevent iOS zoom ── */
+  select,input[type=text],input[type=number],textarea{
     font-size:16px!important;
-    min-height:42px;
-    padding:8px 10px;
+    min-height:44px!important;
+    padding:10px 12px!important;
+    border-radius:8px!important;
   }
 
-  /* ── Navigation bottom bar for mobile ── */
+  /* ── Batch tracker ── */
+  .batch-card{padding:12px 10px}
+  .batch-card .stage-pills{flex-wrap:wrap;gap:6px}
+  .stage-pill{font-size:11px;padding:4px 10px;border-radius:20px}
+
+  /* ── Alert badges ── */
+  .alert{font-size:12px!important;padding:8px 10px!important}
+  .badge{font-size:10px!important;padding:2px 7px!important}
+
+  /* ── Report ── */
+  #report-output .btn{min-width:0;white-space:normal;height:auto;min-height:42px}
+  #report-output [style*="gap:8px"][style*="border-radius:6px"]{flex-wrap:wrap}
+
+  /* ── Orange label search ── */
+  #ol-search{width:100%!important;font-size:16px!important;min-height:44px!important;padding:10px 12px!important}
+
+  /* ── Dashboard stats — 2x2 grid on mobile ── */
+  .stats-grid{grid-template-columns:repeat(2,1fr)!important;gap:8px!important}
+  .stat-card{padding:14px 10px!important;border-radius:10px!important}
+
+  /* ── Label gen form — stack fields ── */
+  .label-form-row{flex-direction:column!important;gap:8px!important}
+
+  /* ── Sidebar nav items — bigger tap targets ── */
+  .nav-item{padding:14px 20px!important;font-size:14px!important;border-radius:0!important}
+
+  /* ── Report filters — stack on mobile ── */
+  .filter-row{flex-direction:column!important;gap:8px!important}
+  .filter-row select,.filter-row input{width:100%!important}
+
+  /* ── Main content bottom padding — clear mobile nav ── */
+  #main{padding-bottom:72px}
+
+  /* ── Mobile bottom nav ── */
   #mobile-nav{
     display:flex!important;
     position:fixed;
     bottom:0;left:0;right:0;
-    background:var(--surface2);
+    background:var(--surface);
     border-top:1px solid var(--border);
-    z-index:300;
-    padding:4px 0 env(safe-area-inset-bottom);
+    z-index:400;
+    padding:4px 0 env(safe-area-inset-bottom,4px);
+    box-shadow:0 -2px 12px rgba(0,0,0,0.15);
   }
   .mobile-nav-item{
     flex:1;
@@ -370,23 +442,74 @@ input[type=number]{font-family:var(--mono)}
     font-size:10px;
     color:var(--text3);
     cursor:pointer;
-    gap:2px;
+    gap:3px;
+    transition:color .15s;
   }
   .mobile-nav-item.active{color:var(--accent)}
-  .mobile-nav-item .nav-icon{font-size:18px}
+  .mobile-nav-item .nav-icon{font-size:20px;line-height:1}
 
-  /* ── Content bottom padding for mobile nav ── */
-  #main{padding-bottom:64px}
-
-  /* ── Hide desktop-only elements ── */
+  /* ── Hide desktop-only ── */
   .desktop-only{display:none!important}
   .mobile-show{display:block!important}
+
+  /* ── Forms ── */
+  .form-group{margin-bottom:14px}
+  label{font-size:12px!important}
+
+  /* ── Settings ── */
+  .settings-grid{grid-template-columns:1fr!important}
+}
+
+@media(max-width:480px){
+  /* ── Extra small screens ── */
+  .dept-grid{grid-template-columns:repeat(2,1fr)!important;gap:8px!important}
+  .kpi-grid{grid-template-columns:repeat(2,1fr)!important;gap:6px!important}
+  .kpi{padding:10px 8px!important}
+  .kpi-value,.kpi-val{font-size:20px!important}
+  .kpi-label{font-size:9px!important}
+  .card{padding:12px 10px;border-radius:8px}
+  .card-title{font-size:13px!important}
+  .btn{font-size:13px;padding:10px 14px;min-height:44px}
+  .btn-sm{font-size:11px;padding:7px 10px;min-height:38px}
+  .dept-btn{padding:14px 6px;font-size:12px;min-height:70px}
+  .dept-btn .dept-icon{font-size:24px!important}
+  /* Scan input — very prominent on small screens */
+  .scan-input{font-size:16px!important;padding:14px!important;border-radius:10px!important}
+  /* Labels table columns compact */
+  table{font-size:11px!important}
+  th,td{padding:6px 5px!important}
+  .badge{font-size:9px!important;padding:2px 5px!important}
+  /* Stage pills wrap */
+  .stage-pills{flex-wrap:wrap!important;gap:4px!important}
+  .stage-pill{font-size:10px!important;padding:3px 7px!important}
+}
+
+/* ── Touch/tap feedback — mobile UX polish ── */
+@media(hover:none) and (pointer:coarse){
+  .btn:active{opacity:0.82;transform:scale(0.97);transition:transform .08s,opacity .08s}
+  .dept-btn:active{opacity:0.8;transform:scale(0.96)}
+  .mobile-nav-item:active{opacity:0.7}
+  .nav-item:active{background:rgba(0,212,255,0.1)!important}
+  .scan-zone .btn:active{transform:scale(0.96);opacity:0.85}
+  /* Better focus ring for scan input on touch */
+  .scan-input:focus{
+    outline:3px solid rgba(0,212,255,0.7)!important;
+    outline-offset:2px;
+    box-shadow:0 0 0 6px rgba(0,212,255,0.12)!important;
+  }
+  input:focus,select:focus{outline:2px solid rgba(0,212,255,0.5)!important;outline-offset:1px}
+  /* Bigger tap area for table buttons */
+  tbody .btn-sm{min-height:38px!important;padding:7px 10px!important}
+  /* Card tap feedback */
+  .batch-card:active{opacity:0.96}
 }
 
 @media(min-width:769px){
   #mobile-nav{display:none!important}
   .mobile-show{display:none!important}
 }
+
+
 
 /* ── MISC ── */
 .divider{height:1px;background:var(--border);margin:16px 0}

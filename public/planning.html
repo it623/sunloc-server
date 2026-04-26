@@ -214,87 +214,201 @@ input[type="file"] { display:none; }
 /* ════════════════════════════════════════
    PLANNING — MOBILE RESPONSIVE
    ════════════════════════════════════════ */
+/* ══════════════════════════════════════════════════════
+   PLANNING — ENHANCED MOBILE RESPONSIVE
+   ══════════════════════════════════════════════════════ */
 @media (max-width: 768px) {
-  /* ── Sidebar ── */
+
+  /* ── Sidebar — slides in from left ── */
   #sidebar {
     position: fixed;
-    left: -240px;
+    left: -260px;
     top: 0; bottom: 0;
-    width: 240px !important;
-    min-width: 240px !important;
-    z-index: 400;
-    transition: left .25s;
+    width: 260px !important;
+    min-width: 260px !important;
+    z-index: 500;
+    transition: left .28s cubic-bezier(.4,0,.2,1);
     overflow-y: auto;
+    box-shadow: none;
   }
-  #sidebar.open { left: 0; box-shadow: 4px 0 20px rgba(0,0,0,0.5); }
+  #sidebar.open { left: 0; box-shadow: 6px 0 32px rgba(0,0,0,0.45); }
   #sidebar-backdrop {
     display: none;
     position: fixed; inset: 0;
-    background: rgba(0,0,0,0.5);
-    z-index: 399;
+    background: rgba(0,0,0,0.55);
+    z-index: 499;
+    backdrop-filter: blur(2px);
+    -webkit-backdrop-filter: blur(2px);
   }
   #sidebar.open ~ #sidebar-backdrop { display: block; }
 
-  /* ── Main content full width ── */
+  /* ── Main full width ── */
   #main { width: 100% !important; }
-  #content { padding: 12px !important; }
+  #content { padding: 12px 10px 24px !important; }
 
-  /* ── Topbar ── */
-  #topbar { padding: 0 10px !important; }
-  #topbar-actions { gap: 4px; }
+  /* ── Topbar — compact mobile bar ── */
+  #topbar {
+    padding: 0 10px !important;
+    height: 50px !important;
+  }
+  .topbar-title { font-size: 14px !important; font-weight: 800 !important; }
+  #topbar-actions { gap: 4px; flex-wrap: nowrap; }
   #topbar-actions .btn { padding: 5px 8px !important; font-size: 11px !important; }
-  #topbar-actions .btn-sm { padding: 4px 7px !important; }
-  .page-title { font-size: 14px !important; }
+  #topbar-actions .btn-sm { padding: 4px 7px !important; font-size: 10px !important; }
+  #topbar-actions select { font-size: 11px !important; min-height: 32px !important; padding: 3px 6px !important; }
 
   /* ── Hamburger ── */
   #plan-menu-btn { display: flex !important; }
 
-  /* ── Grids → single column ── */
-  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr !important; }
-  .form-grid { grid-template-columns: 1fr !important; }
-  .kpi-grid { grid-template-columns: repeat(2, 1fr) !important; }
+  /* ── KPI grid — 2 cols on mobile ── */
+  .kpi-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 8px !important; }
+  .kpi { padding: 12px 10px !important; }
+  .kpi-value { font-size: 22px !important; }
+  .kpi-label { font-size: 9px !important; }
 
-  /* ── Tables ── */
-  .tbl-wrap, .table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  table { min-width: 900px; } /* wider to accommodate DPR Status + Actions columns */
+  /* ── Grids collapse to 1 col ── */
+  .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr !important; gap: 10px !important; }
+  .form-grid { grid-template-columns: 1fr !important; gap: 8px !important; }
 
   /* ── Cards ── */
-  .card { padding: 12px; margin-bottom: 12px; overflow-x: hidden; }
-  .card-title { font-size: 13px; }
+  .card { padding: 12px 10px !important; margin-bottom: 10px !important; border-radius: 8px !important; }
+  .card-title { font-size: 13px !important; margin-bottom: 10px !important; }
 
-  /* ── Forms ── */
-  select, input[type=text], input[type=number], input[type=date] {
-    font-size: 16px !important;
-    min-height: 40px;
-    padding: 8px 10px;
+  /* ── Tables — horizontal scroll ── */
+  .tbl-wrap, .table-wrap {
+    overflow-x: auto !important;
+    -webkit-overflow-scrolling: touch;
+    border-radius: 6px;
   }
-  .btn { min-height: 40px; }
-  .btn-sm { min-height: 36px; }
-
-  /* ── Dispatch truck view ── */
-  .truck-card { padding: 10px; }
-
-  /* ── Bottom padding for safety ── */
-  #content { padding-bottom: 20px !important; }
-
-  /* ── Table scroll wrappers ── */
-  .tbl-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+  table { min-width: 700px; font-size: 12px; }
   .summary-table { min-width: 700px; }
-
-  /* ── Production table ── */
-  .summary-table { min-width: 700px; }
+  thead th { padding: 8px 8px !important; font-size: 10px !important; }
+  tbody td { padding: 8px 8px !important; font-size: 12px !important; }
   .summary-table td, .summary-table th { padding: 6px 8px; font-size: 11px; }
 
+  /* ── Inputs and selects — prevent iOS zoom ── */
+  input[type=text], input[type=number], input[type=date], select, textarea {
+    font-size: 16px !important;
+    min-height: 42px !important;
+    padding: 8px 10px !important;
+    border-radius: 6px !important;
+  }
+  .form-control { font-size: 16px !important; min-height: 42px !important; }
+
+  /* ── Buttons — bigger touch targets ── */
+  .btn { min-height: 42px !important; padding: 9px 14px !important; font-size: 13px !important; border-radius: 8px !important; }
+  .btn-sm { min-height: 36px !important; padding: 6px 10px !important; font-size: 11px !important; }
+  .btn-primary, .btn-success, .btn-danger, .btn-secondary, .btn-ghost {
+    min-height: 42px !important;
+  }
+
+  /* ── Tabs — scrollable ── */
+  .tabs { overflow-x: auto; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; width: 100% !important; }
+  .tab { white-space: nowrap; flex-shrink: 0; padding: 7px 14px !important; font-size: 12px !important; }
+
+  /* ── Modals ── */
+  .modal { width: 96% !important; max-width: none !important; margin: 0 !important; border-radius: 12px 12px 0 0 !important; position: fixed; bottom: 0; left: 0; right: 0; top: auto !important; max-height: 90vh !important; }
+  .modal-overlay { align-items: flex-end !important; padding: 0 !important; }
+  .modal-body { padding: 16px !important; }
+  .modal-footer { padding: 12px 16px !important; }
+  .modal-header { padding: 14px 16px !important; }
+
+  /* ── Dispatch truck view — mobile stack ── */
+  #dispatch-view-tabs { width: 100% !important; }
+  #dispatch-view-tabs .tab { flex: 1; text-align: center; }
+
+  /* ── Zone readiness dashboard ── */
+  .mc-card { padding: 10px !important; }
+
   /* ── User badge ── */
-  #user-badge-wrap { display:flex; align-items:center; }
-  #user-badge { font-size: 11px; padding: 3px 8px; }
+  #user-badge-wrap { display: flex; align-items: center; }
+  #user-badge { font-size: 10px !important; padding: 3px 7px !important; }
 
-  /* ── Auth overlay card ── */
-  .auth-card { margin: 20px; padding: 24px 20px; }
+  /* ── Auth card ── */
+  .auth-card { margin: 16px !important; padding: 24px 18px !important; border-radius: 12px !important; }
 
-  /* ── TEMP alert banner ── */
-  #plan-temp-banner { left: 0 !important; font-size: 11px; padding: 6px 10px; }
+  /* ── Zone tabs — scrollable ── */
+  #dispatch-zone-tabs { overflow-x: auto; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; }
+  #dispatch-zone-tabs .tab { flex-shrink: 0; }
+
+  /* ── Progress bars — readable ── */
+  .progress-bar { height: 6px !important; }
+
+  /* ── Alerts ── */
+  .alert { font-size: 12px !important; padding: 8px 10px !important; }
+
+  /* ── Badge ── */
+  .badge { font-size: 10px !important; padding: 2px 7px !important; }
+
+  /* ── TEMP banner ── */
+  #plan-temp-banner { left: 0 !important; font-size: 11px !important; padding: 6px 10px !important; }
+
+  /* ── Safe bottom padding ── */
+  #content { padding-bottom: env(safe-area-inset-bottom, 20px) !important; }
+
+  /* ── Modal — higher z-index than sidebar backdrop ── */
+  #modal-overlay { z-index: 600 !important; }
+  .modal { z-index: 601 !important; }
+
+  /* ── Production plan — machine header compact ── */
+  .machine-header { flex-wrap: wrap; gap: 6px; }
+  .machine-header .mc-meta { font-size: 11px; }
+
+  /* ── Gantt chart — scroll on mobile ── */
+  .gantt-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* ── Order rows — tighter on mobile ── */
+  .order-row td { padding: 6px 6px !important; font-size: 11px !important; }
+
+  /* ── Status select — compact ── */
+  .status-select { font-size: 11px !important; min-height: 32px !important; padding: 3px 6px !important; }
+
+  /* ── Printing plan ── */
+  .print-machine-header { flex-direction: column; align-items: flex-start; gap: 6px; }
+
+  /* ── Customer view — dropdown full width ── */
+  #cust-dropdown { width: 100% !important; max-width: 100% !important; }
+
+  /* ── Scroll tabs — no scrollbar visible ── */
+  .tabs { scrollbar-width: none; }
+  .tabs::-webkit-scrollbar { display: none; }
 }
+
+@media (max-width: 480px) {
+  /* ── Very small screens (iPhone SE, Pixel 4a etc) ── */
+  .kpi-grid { grid-template-columns: repeat(2, 1fr) !important; gap: 6px !important; }
+  .kpi-value { font-size: 20px !important; }
+  .kpi { padding: 8px 8px !important; }
+  #topbar { height: 48px !important; }
+  .topbar-title { font-size: 12px !important; }
+  .btn { padding: 8px 10px !important; font-size: 12px !important; min-height: 40px !important; }
+  .btn-sm { padding: 6px 8px !important; font-size: 11px !important; min-height: 36px !important; }
+  .card { padding: 10px 8px !important; }
+  .card-title { font-size: 12px !important; }
+  table { font-size: 11px !important; }
+  th, td { padding: 6px 6px !important; }
+  .badge { font-size: 9px !important; padding: 2px 5px !important; }
+  /* Dispatch truck grid: single col on tiny screens */
+  [style*="grid-template-columns:1fr 1fr 1fr"] { grid-template-columns: 1fr 1fr !important; }
+}
+
+/* ── Touch/tap visual feedback ── */
+@media (hover: none) and (pointer: coarse) {
+  .btn:active { opacity: 0.82; transform: scale(0.97); transition: transform 0.08s, opacity 0.08s; }
+  .nav-item:active { background: rgba(0,212,255,0.12) !important; }
+  .tab:active { opacity: 0.7; }
+  .card:active { opacity: 0.97; }
+  /* Larger touch target for table action buttons */
+  tbody .btn-sm { min-height: 38px !important; padding: 7px 10px !important; }
+  /* Focus ring for inputs on touch */
+  input:focus, select:focus, textarea:focus {
+    outline: 2px solid rgba(0,212,255,0.6) !important;
+    outline-offset: 1px;
+  }
+  /* Truck view cards: bigger tap area */
+  [onclick*="toggleTruckDetail"] { padding: 16px !important; }
+}
+
 @media (min-width: 769px) {
   #plan-menu-btn { display: none !important; }
 }

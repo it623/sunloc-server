@@ -136,75 +136,206 @@ td.r,th.r{text-align:right}
 }
 
 /* ════════════════════════════════════════
-   DPR — MOBILE RESPONSIVE
+   DPR — ENHANCED MOBILE RESPONSIVE
    ════════════════════════════════════════ */
 @media(max-width:768px){
-  /* ── Nav tabs → scrollable ── */
-  #nav { height: auto; min-height: var(--nav); flex-wrap: nowrap; padding: 0 4px; }
+
+  /* ── Nav bar — horizontal scroll tabs ── */
+  #nav { height: auto; min-height: var(--nav); flex-wrap: nowrap; padding: 0 6px; gap: 0; }
+  .nbrand { font-size: 13px !important; white-space: nowrap; margin-right: 4px; }
+  .nbrand small { display: none; } /* hide version on mobile */
   .ntabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
   .ntabs::-webkit-scrollbar { display: none; }
-  .ntab { padding: 0 10px; font-size: 12px; white-space: nowrap; flex-shrink: 0; }
-  .nbrand { font-size: 14px; white-space: nowrap; }
-  .nright { flex-shrink: 0; gap: 4px; }
-  .nright .btn { padding: 4px 7px; font-size: 11px; }
+  .ntab { padding: 0 10px; font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+  .nright { flex-shrink: 0; gap: 3px; }
+  .nright .nbtn { padding: 4px 7px; font-size: 10px; }
+  #syncBadge { font-size: 9px !important; padding: 3px 7px !important; }
 
-  /* ── Content padding ── */
-  .container, .content-wrap { padding: 10px !important; }
+  /* ── Wrap & content ── */
+  #wrap { padding: 10px 8px !important; margin-top: var(--nav); }
 
-  /* ── Floor tabs ── */
-  .ftabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; }
-  .ftab { white-space: nowrap; flex-shrink: 0; padding: 6px 14px; font-size: 12px; }
+  /* ── Date input ── */
+  #ndate { font-size: 11px; padding: 4px 5px; width: 105px; }
 
-  /* ── Machine table ── */
-  .mtable-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
-  .mtable { min-width: 700px; }
-  .mtable th, .mtable td { padding: 5px 6px; font-size: 11px; }
+  /* ── Floor tabs — scrollable ── */
+  .ftabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; gap: 4px; padding-bottom: 2px; }
+  .ftab { white-space: nowrap; flex-shrink: 0; padding: 6px 12px; font-size: 11px; }
 
-  /* ── Shift header ── */
-  .shift-hdr { padding: 8px 12px; }
+  /* ── Shift block ── */
+  .shift-hdr { padding: 10px 12px; }
   .shift-title { font-size: 13px; }
+  .shift-body { padding: 8px 6px; }
 
-  /* ── Staff row ── */
-  .staff-row { grid-template-columns: 1fr !important; gap: 8px; }
+  /* ── Machine table — horizontal scroll ── */
+  .mtable-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; border-radius: 6px; }
+  .mtable { min-width: 740px; }
+  .mtable th { padding: 7px 7px; font-size: 10px; }
+  .mtable td { padding: 6px 6px; font-size: 11px; }
 
-  /* ── Inputs ── */
-  input[type=text], input[type=number], select {
+  /* ── Run row inputs — bigger touch targets ── */
+  .run-row input[type=number] {
+    width: 60px !important;
     font-size: 16px !important;
-    min-height: 38px;
+    min-height: 40px !important;
+    padding: 6px 4px !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+    border-radius: 6px !important;
   }
-  .btn { min-height: 38px; }
+  .run-row input[type=text] { width: 72px !important; font-size: 13px !important; min-height: 36px !important; }
+  .run-row select { font-size: 11px !important; min-height: 36px !important; padding: 4px !important; border-radius: 6px !important; }
 
-  /* ── DT table ── */
+  /* ── Staff / operator row ── */
+  .staff-row { grid-template-columns: 1fr !important; gap: 8px; }
+  .grp-op-input { font-size: 14px !important; min-height: 38px !important; }
+
+  /* ── All inputs — prevent iOS zoom ── */
+  input[type=text], input[type=number], select, textarea {
+    font-size: 16px !important;
+    min-height: 40px;
+  }
+
+  /* ── Buttons ── */
+  .btn { min-height: 40px; border-radius: 6px; }
+  .nbtn { min-height: 34px; }
+
+  /* ── KPI grid ── */
+  .kpi-grid { grid-template-columns: repeat(2,1fr) !important; gap: 8px !important; }
+  .kpi { padding: 10px 8px !important; }
+  .kpi-val { font-size: 20px !important; }
+  .kpi-label { font-size: 9px !important; }
+
+  /* ── DT (Downtime) table ── */
   .dttable-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
   .dttable { min-width: 600px; }
 
   /* ── Analytics grids ── */
-  .agrid { grid-template-columns: 1fr !important; }
-  .kpi-grid { grid-template-columns: repeat(2,1fr) !important; }
-  .kpi { padding: 10px; }
+  .agrid { grid-template-columns: 1fr !important; gap: 10px; }
 
   /* ── History table ── */
-  .hist-table-wrap { overflow-x: auto; }
+  .hist-table-wrap { overflow-x: auto; -webkit-overflow-scrolling: touch; }
 
-  /* ── Modal ── */
-  .modal-box { margin: 10px; padding: 16px; max-width: calc(100vw - 20px); }
+  /* ── Modal — bottom sheet style ── */
+  .modal-box {
+    position: fixed !important;
+    bottom: 0 !important; left: 0 !important; right: 0 !important; top: auto !important;
+    margin: 0 !important;
+    padding: 20px 16px !important;
+    max-width: 100% !important;
+    border-radius: 16px 16px 0 0 !important;
+    max-height: 90vh !important;
+    overflow-y: auto;
+  }
 
-  /* ── Plant report table ── */
+  /* ── Modal overlay ── */
+  #modal-overlay { align-items: flex-end !important; }
+
+  /* ── Plant report ── */
   #plant-report-output { overflow-x: auto; -webkit-overflow-scrolling: touch; }
+
+  /* ── History page filters ── */
+  #page-history .field-grp { margin-bottom: 8px; }
+  #page-history > .card > div:first-of-type { flex-direction: column; align-items: flex-start; gap: 8px; }
+
+  /* ── Close/batch buttons ── */
+  .close-btn, .closed-badge { font-size: 9px !important; padding: 2px 5px !important; }
+
+  /* ── Cards ── */
+  .card { padding: 12px 10px; border-radius: 8px; }
+  .card-title { font-size: 11px; }
+
+  /* ── AIM status blocks ── */
+  .aim-grid { grid-template-columns: 1fr !important; }
+
+  /* ── Remarks/Resort inputs ── */
+  .remark-row, .resort-row { flex-wrap: wrap; gap: 6px; }
 
   /* ── Gross qty warning ── */
   [id^="gross-warn-"] { font-size: 10px !important; padding: 5px 8px !important; }
 
-  /* ── History page filters ── */
-  #page-history .field-grp { margin-bottom: 8px; }
-  #page-history > .card > div:first-of-type { flex-direction: column; align-items: flex-start; }
+  /* ── Bottom safe area padding ── */
+  #wrap { padding-bottom: calc(16px + env(safe-area-inset-bottom, 0px)) !important; }
 
-  /* ── Close batch buttons in run rows ── */
-  .close-btn, .closed-badge { font-size: 9px !important; }
+  /* ── Qty input — bigger on mobile for data entry ── */
+  input[id^="run-qty-"] {
+    width: 64px !important;
+    font-size: 18px !important;
+    min-height: 42px !important;
+    padding: 4px 6px !important;
+    text-align: center !important;
+    font-weight: 700 !important;
+  }
 
-  /* ── User badge ── */
-  
+  /* ── Batch run row — wrap on small screens ── */
+  .run-row { flex-wrap: wrap; gap: 4px; }
+
+  /* ── Order select — wider on mobile ── */
+  select[id^="run-ord-"] { width: 140px !important; font-size: 12px !important; min-height: 36px !important; }
+
+  /* ── Save button — full width sticky bar ── */
+  .save-bar { position: sticky; bottom: 0; background: var(--bg); padding: 10px; border-top: 1px solid var(--b2); z-index: 50; }
+
+  /* ── TEMP alert banner — full width ── */
+  #temp-alert-banner { font-size: 11px !important; padding: 6px 10px !important; flex-wrap: wrap; }
+
+  /* ── Sync badge — compact ── */
+  #syncBadge { padding: 2px 6px !important; font-size: 9px !important; }
+
+  /* ── Date picker — wider ── */
+  #ndate { width: 110px !important; }
+
+  /* ── Shift header action buttons ── */
+  .shift-hdr .btn { padding: 4px 8px !important; font-size: 10px !important; min-height: 30px !important; }
+
+  /* ── Analytics charts — full height ── */
+  .chart-wrap canvas { max-height: 220px !important; }
+
+  /* ── Plant report ── */
+  .plant-summary { flex-direction: column !important; gap: 8px; }
 }
+
+@media(max-width:480px){
+  /* ── Very small screens (iPhone SE, etc) ── */
+  .nbrand { font-size: 12px !important; }
+  .ntab { padding: 0 8px; font-size: 10px; }
+  .kpi-val { font-size: 18px !important; }
+  .kpi { padding: 8px 6px !important; }
+  .ftab { padding: 5px 10px; font-size: 10px; }
+  #wrap { padding: 8px 6px !important; }
+
+  /* ── Run row: qty input even more prominent ── */
+  .run-row input[type=number] {
+    width: 62px !important;
+    font-size: 17px !important;
+    min-height: 40px !important;
+    font-weight: 700 !important;
+    text-align: center !important;
+  }
+  /* ── Batch select: full legible ── */
+  .run-row select { width: 120px !important; font-size: 10px !important; }
+
+  /* ── Shift header: compact ── */
+  .shift-title { font-size: 12px !important; }
+  .shift-hdr { padding: 8px 10px !important; }
+
+  /* ── Date picker: compact ── */
+  #ndate { width: 100px !important; font-size: 10px !important; }
+
+  /* ── MC label: compact ── */
+  .mtable th:first-child, .mtable td:first-child { padding: 5px 5px !important; }
+}
+/* ── Touch/tap feedback ── */
+@media (hover: none) and (pointer: coarse) {
+  .ntab:active { opacity: 0.7; }
+  .ftab:active { opacity: 0.7; }
+  .btn:active { opacity: 0.85; transform: scale(0.97); }
+  .nbtn:active { opacity: 0.7; }
+  .run-row input:focus { outline: 2px solid var(--cyan); outline-offset: 1px; border-color: var(--cyan) !important; }
+  .mtable td { -webkit-tap-highlight-color: rgba(0,212,255,0.08); }
+  /* Bigger close batch button target on touch */
+  .close-btn { padding: 5px 10px !important; min-height: 32px !important; }
+}
+
 /* TABLE */
 .data-table{width:100%;border-collapse:collapse;font-size:12px}
 .data-table th{font-family:var(--fc);font-size:10px;letter-spacing:.8px;color:var(--t3);padding:7px 10px;border-bottom:1px solid var(--b1);text-align:left}
