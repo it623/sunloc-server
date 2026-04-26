@@ -2156,10 +2156,12 @@ function renderDashboard(){
       </div>
       ${state.alerts.length===0?'<div class="text-muted text-sm text-center" style="padding:20px">✅ No active alerts</div>':
         state.alerts.slice(0,6).map(a=>`
-          <div class="flex items-center justify-between mb-8 p-8" style="background:var(--accent4-light);border-radius:6px;cursor:pointer" onclick="navigateToAlertBatch('${a.batchNumber}')">
-            <div><div class="fw-bold text-sm" style="color:var(--accent4)">${a.batchNumber} — ${parseInt(a.stuckBoxes)||1} box(es)</div>
-            <div class="text-sm text-muted">Stuck in ${DEPT_LABELS[a.dept]||a.dept} for ${parseFloat(a.hoursStuck).toFixed(0)}h</div></div>
-            <span class="red-flag">🚩 ${parseFloat(a.hoursStuck).toFixed(0)}h</span>
+          <div class="flex items-center justify-between mb-8 p-8" style="background:var(--accent4-light);border-radius:6px;cursor:pointer" onclick="showAlertDetail('${a.batchNumber}','${a.dept}')">
+            <div>
+              <div class="fw-bold text-sm" style="color:var(--accent4)">${a.batchNumber}</div>
+              <div class="text-sm text-muted">${parseInt(a.stuckBoxes)||1} box(es) stuck in <b>${DEPT_LABELS[a.dept]||a.dept}</b> for ${parseFloat(a.hoursStuck).toFixed(0)}h</div>
+            </div>
+            <span class="badge" style="background:var(--accent4);color:#fff">🚩 ${parseInt(a.stuckBoxes)||1} boxes</span>
           </div>`).join('')
       }
     </div>
@@ -2862,7 +2864,10 @@ function renderDeptScan(dept){
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">${cfg.label}</div><div class="section-sub">Scan boxes IN and OUT of this department</div></div>
     </div>
-    ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.reduce((s,a)=>s+(parseInt(a.stuckBoxes)||1),0)} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>`${a.batchNumber||''}(${parseInt(a.stuckBoxes)||1})`).join(', ')}</div>`:''}
+    ${myAlerts.length>0?`<div class="alert alert-danger" style="cursor:pointer" onclick="navigate('batch-tracker')">
+    🚨 <strong>${myAlerts.reduce((s,a)=>s+(parseInt(a.stuckBoxes)||1),0)} box(es) stuck in this department 48h+</strong><br>
+    <span style="font-size:11px">${myAlerts.map(a=>`<b>${a.batchNumber}</b>: ${parseInt(a.stuckBoxes)||1} box(es) — ${parseFloat(a.hoursStuck).toFixed(0)}h`).join(' &nbsp;|&nbsp; ')}</span>
+  </div>`:''}
     <!-- SCAN PANEL -->
     <div class="grid-2 scan-panels-grid">
       <div>
@@ -3432,6 +3437,31 @@ function confirmDispatch(batchNo){
 // ═══════════════════════════════════════════════════════
 
 // Navigate to Batch Tracker filtered to a specific batch (called from dashboard alert clicks)
+async function showAlertDetail(batchNumber, dept){
+  // Show modal with individual box numbers for this alert
+  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  let boxList = 'Loading...';
+  try {
+    const r = await fetch(`${serverUrl}/api/tracking/alerts/detail?batchNumber=${encodeURIComponent(batchNumber)}&dept=${encodeURIComponent(dept)}`);
+    const j = await r.json();
+    if(j.ok && j.boxes && j.boxes.length > 0) {
+      const boxNums = j.boxes.map(b => b.boxNo !== '?' ? `Box #${b.boxNo} (${parseFloat(b.hoursStuck).toFixed(0)}h)` : `Label ${b.labelId?.slice(-6)} (${parseFloat(b.hoursStuck).toFixed(0)}h)`);
+      boxList = `<div style="columns:3;gap:8px;font-family:var(--mono);font-size:12px">${boxNums.map(b=>`<div style="break-inside:avoid;padding:3px 0;color:var(--accent4)">${b}</div>`).join('')}</div>`;
+    } else {
+      boxList = '<div class="text-muted">No individual box data available</div>';
+    }
+  } catch(e) {
+    boxList = `<div class="text-muted">Could not load box details: ${e.message}</div>`;
+  }
+  showModal(`🚨 Alert: ${batchNumber} — ${DEPT_LABELS[dept]||dept}`,
+    `<div class="mb-12"><b>${batchNumber}</b> has boxes stuck at <b>${DEPT_LABELS[dept]||dept}</b> for 48h+.</div>
+     <div class="mb-8 text-sm text-muted">Individual box numbers:</div>
+     ${boxList}
+     <div class="mt-16"><button class="btn btn-primary btn-sm" onclick="navigateToAlertBatch('${batchNumber}');closeModal()">View Batch Tracker →</button></div>`,
+    [{label:'Close', cls:'btn-ghost', fn:'closeModal()'}]
+  );
+}
+
 function navigateToAlertBatch(batchNo){
   window._btNavBatch  = batchNo;
   window._btNavStatus = '';   // show only this batch, no status filter

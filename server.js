@@ -2203,42 +2203,38 @@ app.get('/api/tracking/batch-summary/:batchNumber', async (req, res) => {
 });
 
 // GET /api/tracking/alerts — boxes stuck 48h+ in any dept (server-computed from ALL scans)
-// Groups by batch+dept so one alert per batch per department, not per individual box
+// One row per batch per dept — counts DISTINCT stuck labels
 app.get('/api/tracking/alerts', async (req, res) => {
   try {
     const ALERT_HOURS = 48;
     let alerts = [];
     if (pgPool) {
-      // Group by batch_number + dept — count stuck boxes per batch per dept
-      // Only include batches that are not fully dispatched
       const r = await pgPool.query(`
         SELECT 
           s.batch_number as "batchNumber",
           s.dept,
-          COUNT(*) as "stuckBoxes",
+          COUNT(DISTINCT s.label_id) as "stuckBoxes",
           MIN(s.ts) as "scanInTs",
           EXTRACT(EPOCH FROM (NOW() - MIN(s.ts)::timestamptz))/3600 as "hoursStuck",
-          s.size
+          MAX(s.size) as "size"
         FROM tracking_scans s
         WHERE s.type = 'in'
           AND EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 >= $1
           AND NOT EXISTS (
             SELECT 1 FROM tracking_scans o
-            WHERE o.label_id = s.label_id 
+            WHERE o.label_id = s.label_id
               AND o.dept = s.dept
-              AND o.type = 'out' 
+              AND o.type = 'out'
               AND o.ts > s.ts
           )
-        GROUP BY s.batch_number, s.dept, s.size
-        HAVING COUNT(*) > 0
+        GROUP BY s.batch_number, s.dept
+        HAVING COUNT(DISTINCT s.label_id) > 0
         ORDER BY MIN(s.ts) ASC
-        LIMIT 200
+        LIMIT 100
       `, [ALERT_HOURS]);
       alerts = r.rows.map(a => ({
         id: a.batchNumber + '_' + a.dept,
-        labelId: null,
         batchNumber: a.batchNumber,
-        boxNo: a.stuckBoxes, // number of stuck boxes
         stuckBoxes: parseInt(a.stuckBoxes),
         dept: a.dept,
         scanInTs: a.scanInTs,
@@ -2248,8 +2244,9 @@ app.get('/api/tracking/alerts', async (req, res) => {
       }));
     } else {
       const rows = db.prepare(`
-        SELECT s.batch_number as batchNumber, s.dept, COUNT(*) as stuckBoxes,
-          MIN(s.ts) as scanInTs, s.size,
+        SELECT s.batch_number as batchNumber, s.dept,
+          COUNT(DISTINCT s.label_id) as stuckBoxes,
+          MIN(s.ts) as scanInTs, MAX(s.size) as size,
           (julianday('now') - julianday(MIN(s.ts))) * 24 as hoursStuck
         FROM tracking_scans s
         WHERE s.type = 'in'
@@ -2259,14 +2256,12 @@ app.get('/api/tracking/alerts', async (req, res) => {
             WHERE o.label_id = s.label_id AND o.dept = s.dept
               AND o.type = 'out' AND o.ts > s.ts
           )
-        GROUP BY s.batch_number, s.dept, s.size
-        ORDER BY MIN(s.ts) ASC LIMIT 200
+        GROUP BY s.batch_number, s.dept
+        ORDER BY MIN(s.ts) ASC LIMIT 100
       `).all(ALERT_HOURS);
       alerts = rows.map(a => ({
         id: a.batchNumber + '_' + a.dept,
-        labelId: null,
         batchNumber: a.batchNumber,
-        boxNo: a.stuckBoxes,
         stuckBoxes: parseInt(a.stuckBoxes),
         dept: a.dept,
         scanInTs: a.scanInTs,
@@ -2278,6 +2273,43 @@ app.get('/api/tracking/alerts', async (req, res) => {
     res.json({ ok: true, alerts, count: alerts.length });
   } catch(err) {
     console.error('[ALERTS]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/tracking/alerts/detail — individual box numbers stuck for a batch+dept
+app.get('/api/tracking/alerts/detail', async (req, res) => {
+  try {
+    const { batchNumber, dept } = req.query;
+    if (!batchNumber || !dept) return res.status(400).json({ ok: false, error: 'batchNumber and dept required' });
+    const ALERT_HOURS = 48;
+    let boxes = [];
+    if (pgPool) {
+      const r = await pgPool.query(`
+        SELECT s.label_id as "labelId", l.label_number as "labelNumber",
+          s.ts as "scanInTs",
+          EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 as "hoursStuck"
+        FROM tracking_scans s
+        LEFT JOIN tracking_labels l ON l.id = s.label_id
+        WHERE s.type = 'in'
+          AND s.batch_number = $1 AND s.dept = $2
+          AND EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 >= $3
+          AND NOT EXISTS (
+            SELECT 1 FROM tracking_scans o
+            WHERE o.label_id = s.label_id AND o.dept = s.dept
+              AND o.type = 'out' AND o.ts > s.ts
+          )
+        ORDER BY l.label_number ASC
+      `, [batchNumber, dept, ALERT_HOURS]);
+      boxes = r.rows.map(b => ({
+        labelId: b.labelId,
+        boxNo: b.labelNumber != null ? Math.abs(parseInt(b.labelNumber)) : '?',
+        hoursStuck: parseFloat(b.hoursStuck).toFixed(1),
+        scanInTs: b.scanInTs
+      }));
+    }
+    res.json({ ok: true, batchNumber, dept, boxes });
+  } catch(err) {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
