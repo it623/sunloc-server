@@ -2496,7 +2496,7 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
           wastage: piWaste, inspected: piInspected,
           aGradePct: piInspected>0 ? (piOut/piInspected*100) : null
         },
-        packing: { inQty: pack.inQty||0, outQty: packOutQty },
+        packing: { inQty: pack.inQty||0, outQty: packOutQty, in: pack.in||0, out: pack.out||0 }, // .out = box count (scan count)
         grossProd,
         wipLakhs  // Lakhs still in pipeline (not yet packed out)
       };

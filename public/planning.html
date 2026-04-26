@@ -1352,7 +1352,7 @@ function _userIsFocused(){
   if(!el||el===document.body||el===document.documentElement)return false;
   return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
 }
-function render() {
+function _renderImmediate() {
   // Never switch away from search page if user is actively typing in it
   if(_userIsFocused() && state.currentPage==='search') return;
   const _f=_saveFocus();
@@ -1399,6 +1399,18 @@ function render() {
   if (fn) fn();
   updateUserBadge();
   if(_f)setTimeout(()=>_restoreFocus(_f),0);
+}
+
+// Debounced render — collapses multiple rapid render() calls into ONE DOM rebuild
+// Prevents screen flapping from back-to-back auto-sync renders (30s poll + tracking status)
+let _renderDebounceTimer = null;
+function render() {
+  if(_userIsFocused() && state.currentPage==='search') return; // fast path
+  clearTimeout(_renderDebounceTimer);
+  _renderDebounceTimer = setTimeout(() => {
+    _renderDebounceTimer = null;
+    _renderImmediate();
+  }, 80); // 80ms window — invisible to user, collapses all sync-triggered renders
 }
 
 // =============================
