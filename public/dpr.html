@@ -1261,7 +1261,18 @@ async function fetchActiveOrders(){
       // Check each machine — if no active order, ensure TEMP batch exists for today
       await checkAndCreateTempBatches();
 
-      if(!_suppressRenderShifts) renderShifts(); // Re-render so dropdowns populate
+      // Only re-render if user has no unsaved typed data AND is not actively typing
+      // This prevents wiping qty/note fields the user is filling in
+      if(!_suppressRenderShifts && !unsaved && !_userIsFocused()){
+        renderShifts(); // Safe — no unsaved data will be lost
+      } else if(!_suppressRenderShifts && !unsaved && _userIsFocused()){
+        // User is typing in a non-data field (e.g. search) — defer render
+        clearTimeout(_deferredRender);
+        _deferredRender = setTimeout(()=>{
+          if(!unsaved && !_userIsFocused()) renderShifts();
+        }, 800);
+      }
+      // If unsaved=true: skip render entirely — user's typed data is safe in the DOM
     }
   }catch{
     const cached=localStorage.getItem('dpr_active_orders');
@@ -1456,7 +1467,7 @@ function configureServer(){
   } else {
     // Try cache even if offline
     const cached=localStorage.getItem('dpr_active_orders');
-    if(cached) try{activeOrders=JSON.parse(cached); renderShifts();}catch{}
+    if(cached) try{activeOrders=JSON.parse(cached); if(!unsaved&&!_userIsFocused()) renderShifts();}catch{}
   }
 });
   // Update settings input
@@ -3614,7 +3625,7 @@ function postAuthServerInit() {
       });
     } else {
       const cached=localStorage.getItem('dpr_active_orders');
-      if(cached) try{activeOrders=JSON.parse(cached); renderShifts();}catch{}
+      if(cached) try{activeOrders=JSON.parse(cached); if(!unsaved&&!_userIsFocused()) renderShifts();}catch{}
     }
   });
 }
