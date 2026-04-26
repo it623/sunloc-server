@@ -2234,7 +2234,9 @@ app.post('/api/tracking/labels', async (req, res) => {
             qr_data=EXCLUDED.qr_data, pc_code=EXCLUDED.pc_code,
             is_excess=EXCLUDED.is_excess, excess_num=EXCLUDED.excess_num,
             excess_total=EXCLUDED.excess_total, normal_total=EXCLUDED.normal_total`,
-          [l.id, l.batchNumber||l.batch_number, l.labelNumber||l.label_number,
+          [l.id, l.batchNumber||l.batch_number,
+           // labelNumber may be "OL-15" (orange) or a number — always store as integer
+           (()=>{ const n=l.labelNumber||l.label_number; if(n==null) return null; const s=String(n).replace(/^OL-/i,''); return parseInt(s)||null; })(),
            l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
            l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
            l.machineId||null, l.printingMatter||l.printMatter||null,
@@ -2251,8 +2253,9 @@ app.post('/api/tracking/labels', async (req, res) => {
          printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,
          is_excess,excess_num,excess_total,normal_total)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+      const parseLabelNum = n => { if(n==null) return null; const s=String(n).replace(/^OL-/i,''); return parseInt(s)||null; };
       labels.forEach(l => stmt.run(
-        l.id, l.batchNumber||l.batch_number, l.labelNumber||l.label_number,
+        l.id, l.batchNumber||l.batch_number, parseLabelNum(l.labelNumber||l.label_number),
         l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
         l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
         l.machineId||null, l.printingMatter||l.printMatter||null,
