@@ -2351,10 +2351,11 @@ app.post('/api/tracking/scan', async (req, res) => {
     const labelId = scan.labelId||scan.label_id;
     const batchNumber = scan.batchNumber||scan.batch_number;
     if (pgPool) {
-      // Server-side duplicate check: one IN and one OUT max per label per dept — no exceptions
+      // Server-side duplicate check: one IN and one OUT max per label per dept per batch
+      // Include batch_number in check so same label in a new batch is not blocked
       const existing = await pgPool.query(
-        `SELECT type FROM tracking_scans WHERE label_id=$1 AND dept=$2`,
-        [labelId, scan.dept]
+        `SELECT type FROM tracking_scans WHERE label_id=$1 AND dept=$2 AND batch_number=$3`,
+        [labelId, scan.dept, batchNumber]
       );
       const doneTypes = existing.rows.map(r=>r.type);
       if(doneTypes.includes(scan.type)){
