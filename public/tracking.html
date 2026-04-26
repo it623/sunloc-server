@@ -3651,6 +3651,9 @@ function renderBatchDetail(batch){
 
 function renderReports(){
   const el=document.getElementById('page-reports');
+  // If a report is already open, don't rebuild — prevents 5s refresh from wiping it
+  const existingOutput=document.getElementById('report-output');
+  if(existingOutput && existingOutput.innerHTML.trim().length>0) return;
   el.innerHTML=`
   <div class="section-header">
     <div><div class="section-title">Reports</div><div class="section-sub">Generate and export operational reports</div></div>
@@ -3709,6 +3712,7 @@ function renderReports(){
 }
 
 function renderReportH(){
+  if(!document.getElementById('report-output')) renderReports();
   const batches = state.batches.filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions = (batch) => batch.isPrinted
     ? [['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
@@ -3902,6 +3906,7 @@ function exportReportH(){
 }
 
 function renderReportG(){
+  if(!document.getElementById('report-output')) renderReports();
   const batches = state.batches.filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
 
   let totalGrossProd = 0;
@@ -4072,6 +4077,7 @@ function exportReportG(){
 }
 
 function renderReportF(){
+  if(!document.getElementById('report-output')) renderReports();
   // End-of-day production vs scan reconciliation
   const todayStr = today();
   const filterStatus  = window._rptFStatus  || '';
@@ -4254,6 +4260,7 @@ function exportReportF(){
 
 
 function renderReportB(){
+  if(!document.getElementById('report-output')) renderReports();
   const filterDept  = window._rptBDept  || '';
   const filterBatch = window._rptBBatch || '';
 
@@ -4336,6 +4343,7 @@ function renderReportB(){
 }
 
 function renderReportC(){
+  if(!document.getElementById('report-output')) renderReports();
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
     reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Report C — Machine-wise WIP Status</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer().then(()=>renderReportC())">🔄 Sync & Retry</button></div>`;
@@ -4414,6 +4422,7 @@ function renderReportC(){
 }
 
 function renderReportD(){
+  if(!document.getElementById('report-output')) renderReports();
   const totalGross=state.batches.reduce((s,b)=>s+(b.actualProd||0),0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageWIP={};
@@ -4452,6 +4461,7 @@ function renderReportD(){
 }
 
 function renderReportA(){
+  if(!document.getElementById('report-output')) renderReports();
   // Date filter
   const filterBatch = window._rptABatch||'';
   const batches = state.batches.filter(b=>!b.deleted && (!filterBatch||b.batchNumber===filterBatch));
@@ -5395,7 +5405,9 @@ async function refreshScans(){
     if(currentPage==='labels') setTimeout(_restoreOlSearch, 50);
     const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
     if(!dept){
-      // Only re-render non-scan pages if user isn't typing
+      // Never re-render reports page on background refresh — wipes open reports
+      if(currentPage==='reports') return;
+      // Only re-render other non-scan pages if user isn't typing
       if(currentPage&&!_userIsFocused()) renderPage(currentPage);
       return;
     }
