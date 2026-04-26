@@ -273,7 +273,9 @@ input[type=number]{font-family:var(--mono)}
   #sidebar.open ~ #sidebar-backdrop{display:block}
 
   /* ── Main full width ── */
-  #main{width:100%;padding-bottom:68px}
+  #main{width:100%}
+  /* Mobile nav is 68px — pad #content so reports aren't clipped */
+  #content{padding-bottom:80px!important}
 
   /* ── Topbar — compact ── */
   #topbar{
@@ -418,9 +420,6 @@ input[type=number]{font-family:var(--mono)}
   /* ── Report filters — stack on mobile ── */
   .filter-row{flex-direction:column!important;gap:8px!important}
   .filter-row select,.filter-row input{width:100%!important}
-
-  /* ── Main content bottom padding — clear mobile nav ── */
-  #main{padding-bottom:72px}
 
   /* ── Mobile bottom nav ── */
   #mobile-nav{
@@ -4261,6 +4260,10 @@ function exportReportF(){
 
 function renderReportB(){
   if(!document.getElementById('report-output')) renderReports();
+  if(!state.scans||!state.scans.length){
+    document.getElementById('report-output').innerHTML=`<div class="card"><div class="alert alert-warning mb-12">No scan data loaded yet.</div><button class="btn btn-primary btn-sm" onclick="pullFromServer().then(()=>renderReportB())">🔄 Sync & Retry</button></div>`;
+    return;
+  }
   const filterDept  = window._rptBDept  || '';
   const filterBatch = window._rptBBatch || '';
 
@@ -4423,6 +4426,10 @@ function renderReportC(){
 
 function renderReportD(){
   if(!document.getElementById('report-output')) renderReports();
+  if(!state.batches||!state.batches.length){
+    document.getElementById('report-output').innerHTML=`<div class="card"><div class="alert alert-warning mb-12">No batch data loaded yet.</div><button class="btn btn-primary btn-sm" onclick="pullFromServer().then(()=>renderReportD())">🔄 Sync & Retry</button></div>`;
+    return;
+  }
   const totalGross=state.batches.reduce((s,b)=>s+(b.actualProd||0),0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageWIP={};
@@ -4462,6 +4469,10 @@ function renderReportD(){
 
 function renderReportA(){
   if(!document.getElementById('report-output')) renderReports();
+  if(!state.batches||!state.batches.length){
+    document.getElementById('report-output').innerHTML=`<div class="card"><div class="alert alert-warning mb-12">No batch data loaded yet.</div><button class="btn btn-primary btn-sm" onclick="pullFromServer().then(()=>renderReportA())">🔄 Sync & Retry</button></div>`;
+    return;
+  }
   // Date filter
   const filterBatch = window._rptABatch||'';
   const batches = state.batches.filter(b=>!b.deleted && (!filterBatch||b.batchNumber===filterBatch));
@@ -4561,6 +4572,11 @@ function renderBatchFlowSummary(batch){
 function normMcId(id){ return (id||'').replace(/[.\s]/g,'').toUpperCase(); }
 
 function renderReportE(){
+  if(!document.getElementById('report-output')) renderReports();
+  if(!state.batches||!state.batches.length){
+    document.getElementById('report-output').innerHTML=`<div class="card"><div class="alert alert-warning mb-12">No batch data loaded yet.</div><button class="btn btn-primary btn-sm" onclick="pullFromServer().then(()=>renderReportE())">🔄 Sync & Retry</button></div>`;
+    return;
+  }
   // Build all data first (same computation as before)
   const filterDate = window._rptEDate || '';
   const allScanDates = [...new Set(state.scans.map(s=>s.ts?.slice(0,10)).filter(Boolean))].sort();
