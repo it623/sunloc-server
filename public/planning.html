@@ -1326,7 +1326,12 @@ function _restoreFocus(s){
   if(!s||!s.id)return;
   const el=document.getElementById(s.id);
   if(!el)return;
-  try{el.focus({preventScroll:true});if(s.sel!=null){el.selectionStart=s.sel;el.selectionEnd=s.selE;}}catch(e){}
+  try{el.focus({preventScroll:true});if(s.sel!=null&&el.setSelectionRange)el.setSelectionRange(s.sel,s.selE);}catch(e){}
+}
+function _userIsFocused(){
+  const el=document.activeElement;
+  if(!el||el===document.body||el===document.documentElement)return false;
+  return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
 }
 function render() {
   const _f=_saveFocus();
@@ -3749,7 +3754,7 @@ function toggleTruckDetail(id) {
   const isOpen = el.style.display !== 'none';
   el.style.display = isOpen ? 'none' : '';
   if (!isOpen) {
-    /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
   }
 }
 
@@ -4275,7 +4280,7 @@ function showDayDispatch(day, month, year) {
           </div>`;
       }).join('')}
     </div>`;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 }
 
 // =============================

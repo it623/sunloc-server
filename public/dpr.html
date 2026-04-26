@@ -1597,7 +1597,7 @@ function removeStaffName(btn){
 }
 
 
-// --- Cursor/focus preservation helper ---
+// --- Cursor/focus preservation + anti-flicker guard ---
 function _saveFocus(){
   const el=document.activeElement;
   if(!el||el===document.body)return null;
@@ -1607,7 +1607,26 @@ function _restoreFocus(s){
   if(!s||!s.id)return;
   const el=document.getElementById(s.id);
   if(!el)return;
-  try{el.focus({preventScroll:true});if(s.sel!=null){el.selectionStart=s.sel;el.selectionEnd=s.selE;}}catch(e){}
+  try{el.focus({preventScroll:true});if(s.sel!=null&&el.setSelectionRange)el.setSelectionRange(s.sel,s.selE);}catch(e){}
+}
+// Returns true if user is actively typing in any input/textarea/select
+function _userIsFocused(){
+  const el=document.activeElement;
+  if(!el||el===document.body||el===document.documentElement)return false;
+  return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
+}
+// Safe render: if user is typing, defer render until they leave the field
+let _deferredRender=null;
+function _safeRenderAll(){
+  if(_userIsFocused()){
+    // Queue a render for when focus leaves current field
+    clearTimeout(_deferredRender);
+    _deferredRender=setTimeout(()=>{
+      if(!_userIsFocused()){renderShifts();renderRemarks();renderResort();renderDayKpis();}
+    },500);
+    return;
+  }
+  renderShifts();renderRemarks();renderResort();renderDayKpis();
 }
 function renderEntry(){
   const _f=_saveFocus();
@@ -1844,12 +1863,12 @@ function addRun(sh, mcId){
       <button onclick="removeRun('${sh}','${mcId}',${ri})" style="background:transparent;border:none;color:var(--t3);cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0" title="Remove this run">✕</button>
     `;
     runsContainer.appendChild(div);
-    /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
   } else {
     // Fallback: full re-render
     renderShifts();
     document.getElementById(`sb-${sh}`)?.classList.add('open');
-    /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
   }
 }
 
@@ -2206,7 +2225,7 @@ function addRemark(){
       localStorage.setItem(skey(fl,d),JSON.stringify(day));
       pushToServer(fl,d,day);
       closeModal();renderRemarks();markUnsaved();
-      /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
     }},
     {label:'Cancel',fn:closeModal}
   ]);
@@ -2316,7 +2335,7 @@ function addResort(){
       pushToServer(fl,d,day);
       closeModal();renderResort();renderDayKpis();renderShifts();markUnsaved();
       // Scroll to bottom so new re-sort entry is visible
-      /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
     }},
     {label:'Cancel',fn:closeModal}
   ]);
@@ -3571,7 +3590,7 @@ async function _dprAutoSync(){
   if(!unsaved){
     const d=getDate();
     await Promise.all(Object.keys(FLOORS).map(fl=>fetchDayFromServer(fl,d)));
-    renderShifts(); renderRemarks(); renderResort(); renderDayKpis();
+    _safeRenderAll(); // skips rebuild if user is actively typing
   }
   await fetchActiveOrders();
 }
@@ -3586,7 +3605,7 @@ document.addEventListener('visibilitychange',async()=>{
     if(!unsaved){
       const d=getDate();
       await Promise.all(Object.keys(FLOORS).map(fl=>fetchDayFromServer(fl,d)));
-      renderShifts(); renderRemarks(); renderResort(); renderDayKpis();
+      _safeRenderAll();
     }
   }
 });

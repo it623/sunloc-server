@@ -1952,7 +1952,13 @@ function _restoreFocus(s){
   if(!s||!s.id)return;
   const el=document.getElementById(s.id);
   if(!el)return;
-  try{el.focus({preventScroll:true});if(s.sel!=null){el.selectionStart=s.sel;el.selectionEnd=s.selE;}}catch(e){}
+  try{el.focus({preventScroll:true});if(s.sel!=null&&el.setSelectionRange)el.setSelectionRange(s.sel,s.selE);}catch(e){}
+}
+// Returns true if user is actively typing
+function _userIsFocused(){
+  const el=document.activeElement;
+  if(!el||el===document.body||el===document.documentElement)return false;
+  return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
 }
 function renderPage(page){
   const _f=_saveFocus();
@@ -3748,7 +3754,7 @@ function renderReportH(){
   </div>`;
 
   document.getElementById('report-output').innerHTML=html;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 }
 
 function exportReportH(){
@@ -3904,7 +3910,7 @@ function renderReportG(){
   </div>`;
 
   document.getElementById('report-output').innerHTML = html;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 }
 
 function exportReportG(){
@@ -4100,7 +4106,7 @@ function renderReportF(){
   </div>`;
 
   document.getElementById('report-output').innerHTML = html;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 }
 
 function exportReportF(){
@@ -4204,14 +4210,14 @@ function renderReportB(){
   }
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportB()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 }
 
 function renderReportC(){
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
     reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Report C — Machine-wise WIP Status</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer().then(()=>renderReportC())">🔄 Sync & Retry</button></div>`;
-    /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
     return;
   }
 
@@ -4282,7 +4288,7 @@ function renderReportC(){
   }
   html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
   reportEl.innerHTML=html;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 }
 
 function renderReportD(){
@@ -4320,7 +4326,7 @@ function renderReportD(){
   </table></div>
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 }
 
 function renderReportA(){
@@ -4401,7 +4407,7 @@ function renderReportA(){
   });
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportA()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 }
 
 function renderBatchFlowSummary(batch){
@@ -4635,7 +4641,7 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
       <div class="text-sm mt-8">${rows.length} rows ready · ${dateLabel}</div>
     </div>
   </div>`;
-  /* scrollIntoView removed – cursor fix */
+/* scrollIntoView removed */
 
   // Store the HTML for the tab opener
   window._reportEHtml = fullHtml;
@@ -5266,9 +5272,13 @@ async function refreshScans(){
     // Restore orange label search after scan refresh (re-render wipes input value)
     if(currentPage==='labels') setTimeout(_restoreOlSearch, 50);
     const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
-    if(!dept){ if(currentPage) renderPage(currentPage); return; }
+    if(!dept){
+      // Only re-render non-scan pages if user isn't typing
+      if(currentPage&&!_userIsFocused()) renderPage(currentPage);
+      return;
+    }
     const tbody=document.getElementById(`recent-scans-${dept}`);
-    if(!tbody){ renderPage(currentPage); return; }
+    if(!tbody){ if(!_userIsFocused()) renderPage(currentPage); return; }
     const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
     tbody.innerHTML=scans.map(s=>{
       const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
