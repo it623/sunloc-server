@@ -2064,9 +2064,22 @@ function getBoxCurrentStageForBatch(batchNo){
 // ── Orange Labels helpers ──
 function filterOrangeRows(q){
   const term=(q||'').toLowerCase().trim();
+  window._olSearch = q||''; // persist across renders
   document.querySelectorAll('#ol-batch-list tr[data-ol-srch]').forEach(tr=>{
     tr.style.display=(!term||tr.dataset.olSrch.includes(term))?'':'none';
   });
+}
+
+// Restore orange search focus + value after any re-render
+function _restoreOlSearch(){
+  const el = document.getElementById('ol-search');
+  if(!el || !window._olSearch) return;
+  if(el.value !== window._olSearch){
+    const pos = el.selectionStart;
+    el.value = window._olSearch;
+    try{ el.setSelectionRange(pos,pos); }catch(e){}
+  }
+  filterOrangeRows(window._olSearch);
 }
 
 function selectOrangeBatch(bn){
@@ -2341,7 +2354,7 @@ function renderLabels(){
     <div style="padding:12px 16px;border-bottom:1px solid rgba(234,88,12,0.2);display:flex;align-items:center;gap:10px;flex-wrap:wrap">
       <div style="font-weight:700;font-size:13px;color:var(--orange);letter-spacing:0.04em;white-space:nowrap">🟠 ORANGE LABELS — PRINTED BATCHES</div>
       <div style="font-size:11px;color:var(--text3);flex:1;min-width:180px">Auto-generated at PI scan-in for each printed batch box.</div>
-      <input id="ol-search" type="text" placeholder="Search batch, customer, sz, PC..." oninput="filterOrangeRows(this.value)" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);outline:none;width:200px">
+      <input id="ol-search" type="text" placeholder="Search batch, customer, sz, PC..." oninput="window._olSearch=this.value;filterOrangeRows(this.value)" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);outline:none;width:200px" value="${window._olSearch||''}">
     </div>
     ${unprintedOrange.length>0?`<div style="background:rgba(234,88,12,0.1);border-bottom:1px solid rgba(234,88,12,0.2);padding:8px 16px;font-size:12px;font-weight:600;color:var(--orange)">⚠️ ${unprintedOrange.length} orange label${unprintedOrange.length>1?'s':''} pending print</div>`:''}
     <div style="display:flex;gap:0;align-items:stretch">
@@ -5235,6 +5248,8 @@ async function refreshScans(){
     const localOnly=state.scans.filter(s=>!serverIds.has(s.id)&&s._local);
     state.scans=[...ns,...localOnly];
     checkAlerts();
+    // Restore orange label search after scan refresh (re-render wipes input value)
+    if(currentPage==='labels') setTimeout(_restoreOlSearch, 50);
     const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
     if(!dept){ if(currentPage) renderPage(currentPage); return; }
     const tbody=document.getElementById(`recent-scans-${dept}`);
