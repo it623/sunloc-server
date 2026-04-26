@@ -788,7 +788,11 @@ function getActiveOrdersForMachine(machineId) {
 
 // Helper: get total actuals for an order (sums all runs across all machines/shifts)
 let _actualsCache = null;
+let _actualsCacheTime = 0;
 async function warmActualsCache() {
+  // Only re-warm if older than 60 seconds — prevents hammering DB on every 30s auto-sync
+  if (Date.now() - _actualsCacheTime < 60000 && _actualsCache) return;
+  _actualsCacheTime = Date.now();
   if (!pgPool) return;
   try {
     const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
@@ -906,8 +910,8 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 // GET all active orders (summary for DPR to cache on load) — only 'running' status
 app.get('/api/orders/active', async (req, res) => {
   try {
-    // Always refresh actuals so Gross/Prod/Rem is current in DPR
-    await warmActualsCache();
+    // Refresh actuals in background — throttled to 60s, non-blocking
+    warmActualsCache().catch(()=>{});
     const state = await getPlanningStateAsync();
     const running = (state.orders || []).filter(o => o.status === 'running' && !o.deleted);
 
