@@ -3557,7 +3557,10 @@ function openModal(title,body,actions){
   });
   document.getElementById('modal-actions').innerHTML=actHtml;
   (actions||[]).forEach(a=>{
-    document.getElementById('modal-btn-'+a.label)?.addEventListener('click',a.fn);
+    const btn=document.getElementById('modal-btn-'+a.label);
+    if(!btn) return;
+    if(typeof a.fn==='function') btn.addEventListener('click',a.fn);
+    else if(typeof a.fn==='string') btn.addEventListener('click',()=>{ try{eval(a.fn);}catch(e){console.warn('modal action error:',e);} });
   });
   document.getElementById('modal-overlay').classList.add('open');
 }
