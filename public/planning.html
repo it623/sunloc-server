@@ -679,7 +679,8 @@ const SYNC = (() => {
         const j = await wipRes.value.json();
         if (j.ok) {
           const closureMap = {};
-          (j.closures||j.scanSummary||[]).forEach(c => {
+          // Use j.closures only — j.scanSummary has different schema (scan counts, not closures)
+          (j.closures||[]).forEach(c => {
             if (!closureMap[c.batch_number]) closureMap[c.batch_number] = {};
             if (c.dept) closureMap[c.batch_number][c.dept] = 'closed';
           });
@@ -3319,14 +3320,17 @@ function buildTruckPlans(zone) {
       const isSplit = remainingBoxes > boxesThisTruck || splitIndex > 0;
 
       // Create a (possibly partial) order entry for this truck
+      // Scale qty and packedBoxes proportionally when order is split across trucks
+      const splitRatio = (p.boxes && p.boxes > 0) ? boxesThisTruck / p.boxes : 1;
       const orderEntry = {
         ...p,
         boxes: boxesThisTruck,
         _originalBoxes: p.boxes || 0,
         _isSplit: isSplit,
         _splitPart: splitIndex + 1,
-        // Scale qty proportionally if split
         qty: p.qty && p.boxes ? (p.qty / p.boxes) * boxesThisTruck : p.qty,
+        // Scale packedBoxes proportionally — prevents double-counting when split
+        packedBoxes: Math.round(parseInt(p.packedBoxes||0, 10) * splitRatio),
       };
 
       currentTruck.orders.push(orderEntry);
@@ -3443,7 +3447,7 @@ function renderDispatch() {
   for (const z of ['all', ...zones]) {
     const zPlans = z==='all' ? plans : plans.filter(p=>(p.zone||'Unassigned')===z);
     const totalQty = zPlans.reduce((s,p)=>s+p.qty,0);
-    const dispatched = zPlans.filter(p=>p.status==='dispatched').reduce((s,p)=>s+p.qty,0);
+    const dispatched = zPlans.reduce((s,p)=>s+(p.actualDispatched||0),0);
     html += `
       <div class="dispatch-zone-panel ${z!=='all'?'dispatch-zone-panel-zone':''}" data-zone="${z}" ${z!=='all'?'style="display:none"':''}>
         <div class="card mb-4">
@@ -3461,8 +3465,10 @@ function renderDispatch() {
                   <td colspan="8">TOTAL</td>
                   <td class="text-mono text-accent">${fmt(totalQty)}</td>
                   <td class="text-mono">${zPlans.reduce((s,p)=>s+(p.boxes||0),0)}</td>
-                  <td>-</td><td class="text-mono text-green">${fmt(dispatched)}</td>
-                  <td colspan="3"></td>
+                  <td>-</td>
+                  <td class="text-mono text-green">${fmt(dispatched)}</td>
+                  <td class="text-mono text-accent">${fmt(Math.max(0, totalQty - dispatched))}</td>
+                  <td colspan="2"></td>
                 </tr>
               </tbody>
             </table>

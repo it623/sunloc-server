@@ -2202,18 +2202,22 @@ app.get('/api/tracking/batch-summary/:batchNumber', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// GET /api/tracking/wip-summary — scan counts for DPR A-grade
+// GET /api/tracking/wip-summary — scan counts + stage closures for Planning
 app.get('/api/tracking/wip-summary', async (req, res) => {
   try {
-    // pgPool: uses PgDatabase wrapper which reads from PostgreSQL after ensurePostgresTables
-    const summary = db.prepare(`
-      SELECT batch_number, dept, type, COUNT(*) as cnt
-      FROM tracking_scans GROUP BY batch_number, dept, type
-    `).all();
-    const closures = db.prepare(`
-      SELECT batch_number, dept, closed, closed_at
-      FROM tracking_stage_closure WHERE closed = 1
-    `).all();
+    let summary, closures;
+    if (pgPool) {
+      // PostgreSQL: use pgPool directly for reliable GROUP BY results
+      const [r1, r2] = await Promise.all([
+        pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type'),
+        pgPool.query("SELECT batch_number, dept, closed, closed_at FROM tracking_stage_closure WHERE closed = 1 OR closed = '1' OR closed = true")
+      ]);
+      summary = r1.rows;
+      closures = r2.rows;
+    } else {
+      summary = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type').all();
+      closures = db.prepare("SELECT batch_number, dept, closed, closed_at FROM tracking_stage_closure WHERE closed = 1").all();
+    }
     res.json({ ok: true, scanSummary: summary, closures });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
