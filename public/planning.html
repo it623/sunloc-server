@@ -697,11 +697,23 @@ const SYNC = (() => {
           const machineIds = [...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.machineId))];
           machineIds.forEach(mid => { if (mid) recalcMachineScheduleQuiet(mid); });
           state.dispatchPlans.forEach(dp => {
-            if (dp.batchNumber && agj.batches[dp.batchNumber]) {
-              const bd = agj.batches[dp.batchNumber];
-              dp.packedQty = bd.packing?.outQty || 0;
-              dp.wipLakhs  = bd.wipLakhs || 0;
-              dp.grossProd = bd.grossProd || 0;
+            if (!dp.batchNumber) return;
+            // Handle single or comma-separated batch numbers (consolidated exports)
+            const batchNums = dp.batchNumber.split(',').map(b=>b.trim()).filter(Boolean);
+            let totalPackedQty=0, totalPackedBoxes=0, totalWip=0, totalGross=0;
+            batchNums.forEach(bn => {
+              const bd = agj.batches[bn];
+              if (!bd) return;
+              totalPackedQty   += bd.packing?.outQty || 0;
+              totalPackedBoxes += bd.packing?.out    || 0; // scan OUT count = box count
+              totalWip         += bd.wipLakhs || 0;
+              totalGross       += bd.grossProd || 0;
+            });
+            if (totalPackedQty > 0 || totalPackedBoxes > 0) {
+              dp.packedQty   = totalPackedQty;
+              dp.packedBoxes = totalPackedBoxes;
+              dp.wipLakhs    = totalWip;
+              dp.grossProd   = totalGross;
             }
           });
           recalcDispatch();
