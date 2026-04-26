@@ -1814,7 +1814,10 @@ app.get('/api/temp-batches/active', async (req, res) => {
       batches = db.prepare(`SELECT * FROM temp_batches WHERE status='active' ORDER BY machine_id, date DESC`).all();
     }
     const today = new Date().toISOString().split('T')[0];
-    const enriched = batches.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
+    const TEMP_CUTOFF = '2026-04-27';
+    // Ignore TEMP batches created before April 25 2026
+    const filtered = batches.filter(b => (b.created_at||b.date||'') >= TEMP_CUTOFF);
+    const enriched = filtered.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
     res.json({ ok:true, batches: enriched, count: enriched.length });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
@@ -2206,7 +2209,7 @@ app.get('/api/tracking/batch-summary/:batchNumber', async (req, res) => {
 app.get('/api/tracking/alerts', async (req, res) => {
   try {
     const ALERT_HOURS = 48;
-    const ALERT_START = '2026-04-25T00:00:00';
+    const ALERT_START = '2026-04-27T00:00:00';
     let alerts = [];
     if (pgPool) {
       const r = await pgPool.query(`
@@ -2243,7 +2246,7 @@ app.get('/api/tracking/alerts/detail', async (req, res) => {
   try {
     const { batchNumber, dept } = req.query;
     if (!batchNumber || !dept) return res.status(400).json({ ok:false, error:'batchNumber and dept required' });
-    const ALERT_START = '2026-04-25T00:00:00';
+    const ALERT_START = '2026-04-27T00:00:00';
     let boxes = [];
     if (pgPool) {
       const r = await pgPool.query(`
