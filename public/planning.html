@@ -632,9 +632,15 @@ const SYNC = (() => {
     if (serverState && serverState.orders) {
       const currentOrderCount = (state.orders || []).length;
       const serverOrderCount = (serverState.orders || []).length;
+      const localSavedAt = state._savedAt || 0;
+      const serverSavedAt = serverState._savedAt || 0;
+      // Guard 1: local has more orders than server — local wins, push to fix server
       if (serverOrderCount > 0 && serverOrderCount < currentOrderCount) {
         console.warn(`[Sync] Server has ${serverOrderCount} orders, local has ${currentOrderCount} — pushing local to fix server`);
         SYNC.push({...state, _savedAt: Date.now()});
+      // Guard 2: pending unsaved local changes are newer than server — skip overwrite
+      } else if (_pendingSave && localSavedAt > serverSavedAt) {
+        console.log('[Sync] Skipping server data — local pending save is newer');
       } else {
         Object.assign(state, serverState);
         state.pcCodes = PC_CODES_RAW;
@@ -5905,7 +5911,7 @@ setTimeout(() => SYNC.online().then(() => SYNC.updateBadge()), 800);
 
 // Load tracking data immediately, then every 3 minutes
 (async()=>{try{await SYNC.loadTrackingStatus();render();}catch(e){}})();
-setInterval(async()=>{try{await SYNC.loadTrackingStatus();if(!_userIsFocused())render();}catch(e){}},180000);
+setInterval(async()=>{try{await SYNC.loadTrackingStatus();if(!_userIsFocused())render();}catch(e){}},60000); // every 60s — DPR actuals visible faster
 
 // Auto-sync planning state every 30s — all devices stay in sync automatically
 let _planningAutoSyncTimer = null;

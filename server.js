@@ -1094,9 +1094,10 @@ app.post('/api/dpr/save', async (req, res) => {
       db.transaction(rows => rows.forEach(r => upsert.run(...r)))(rows);
     }
 
-    // Refresh actuals cache so Planning sees new DPR data immediately
+    // Refresh actuals cache so Planning sees new DPR data immediately (force — bypass throttle)
+    _actualsCacheTime = 0; // bypass 60s throttle so save is visible immediately
     warmActualsCache().catch(e => console.warn('[DPR] cache warm failed:', e.message));
-    res.json({ ok: true });
+    res.json({ ok: true, savedAt: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

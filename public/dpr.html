@@ -1020,6 +1020,7 @@ function saveDay(){
     return;
   }
   const data=collectForm();
+  data._savedAt = Date.now(); // stamp for staleness comparison on sync
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
   pushToServer(fl,d,data);
@@ -1134,16 +1135,23 @@ async function checkServer(){
   }catch{ setSyncBadge('offline'); return false; }
 }
 // ── Pending save queue: retries every 15s until server confirms ─────
-let _dprPendingSave = null;
+let _dprPendingSaves = new Map(); // keyed by "fl|d" — no save is ever overwritten
 let _dprRetryTimer = null;
 let _suppressRenderShifts = false;
+// Legacy alias so old code still works
+Object.defineProperty(window,'_dprPendingSave',{
+  get(){ const v=[..._dprPendingSaves.values()]; return v.length?v[v.length-1]:null; },
+  set(v){ if(v) _dprPendingSaves.set(v.fl+'|'+v.d,v); else _dprPendingSaves.clear(); }
+});
 function _dprScheduleRetry(){
   if(_dprRetryTimer) return;
   _dprRetryTimer = setInterval(async()=>{
-    if(!_dprPendingSave||!serverUrl) return;
-    const {fl,d,data}=_dprPendingSave;
-    const ok=await _dprPushRaw(fl,d,data);
-    if(ok){ _dprPendingSave=null; clearInterval(_dprRetryTimer); _dprRetryTimer=null; }
+    if(!_dprPendingSaves.size||!serverUrl) return;
+    for(const [key,{fl,d,data}] of _dprPendingSaves){
+      const ok=await _dprPushRaw(fl,d,data);
+      if(ok) _dprPendingSaves.delete(key);
+    }
+    if(!_dprPendingSaves.size){ clearInterval(_dprRetryTimer); _dprRetryTimer=null; }
   },15000);
 }
 async function _dprPushRaw(fl,d,data){
@@ -1169,7 +1177,22 @@ async function _dprPushRaw(fl,d,data){
       body:JSON.stringify({floor:fl,date:d,data,actuals}),
       signal:AbortSignal.timeout(15000)
     });
-    if(r.ok){ setSyncBadge('synced'); return true; }
+    if(r.ok){
+      // Update _savedAt in localStorage from server-confirmed time
+      // This ensures fetchDayFromServer staleness check is accurate
+      try{
+        const j=await r.json();
+        if(j.savedAt){
+          const raw=localStorage.getItem(skey(fl,d));
+          if(raw){
+            const saved=JSON.parse(raw);
+            saved._savedAt=new Date(j.savedAt).getTime();
+            localStorage.setItem(skey(fl,d),JSON.stringify(saved));
+          }
+        }
+      }catch(_){}
+      setSyncBadge('synced'); return true;
+    }
     setSyncBadge('offline'); return false;
   }catch(e){
     console.warn('[DPR] save failed:',e?.message);
@@ -1177,22 +1200,37 @@ async function _dprPushRaw(fl,d,data){
   }
 }
 async function pushToServer(fl,d,data){
-  if(!serverUrl){ _dprPendingSave={fl,d,data}; _dprScheduleRetry(); return; }
+  // Stamp local save time so fetchDayFromServer can compare freshness
+  if(!data._savedAt) data._savedAt = Date.now();
+  // Always keep localStorage in sync with the stamped data
+  try{ localStorage.setItem(skey(fl,d), JSON.stringify(data)); }catch(_){}
+  if(!serverUrl){ _dprPendingSaves.set(fl+'|'+d,{fl,d,data}); _dprScheduleRetry(); return; }
   setSyncBadge('syncing');
   const ok=await _dprPushRaw(fl,d,data);
-  if(!ok){ _dprPendingSave={fl,d,data}; _dprScheduleRetry(); }
-  else { _dprPendingSave=null; }
+  if(!ok){ _dprPendingSaves.set(fl+'|'+d,{fl,d,data}); _dprScheduleRetry(); }
+  else { _dprPendingSaves.delete(fl+'|'+d); }
 }
 async function fetchDayFromServer(fl, d){
   if(!serverUrl) return null;
+  // Don't fetch if this floor/date has a pending (unsaved) save in the queue
+  if(_dprPendingSaves.has(fl+'|'+d)) return null;
   try{
     const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(6000)});
     if(!r.ok) return null;
     const j=await r.json();
     if(j.data){
-      // Cache to localStorage so loadDay works offline
-      localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
-      return j.data;
+      // Only overwrite localStorage if server data is newer than what we saved locally
+      const localRaw = localStorage.getItem(skey(fl,d));
+      const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt||0) : 0;
+      const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
+      if(serverSavedAt >= localSavedAt){
+        j.data._savedAt = serverSavedAt || Date.now();
+        localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+        return j.data;
+      } else {
+        console.log('[DPR] Skipping stale server data for',fl,d,'(local is newer)');
+        return null;
+      }
     }
   }catch(e){ console.warn('fetchDayFromServer failed:', e?.message); }
   return null;
@@ -1218,7 +1256,7 @@ async function fetchActiveOrders(){
       });
       // Cache locally
       localStorage.setItem('dpr_active_orders',JSON.stringify(activeOrders));
-      toast('✓ Orders synced from Planning App','var(--green)');
+      // Orders synced silently — toast only on manual sync button click
 
       // Check each machine — if no active order, ensure TEMP batch exists for today
       await checkAndCreateTempBatches();
@@ -3587,7 +3625,14 @@ window.addEventListener('beforeunload',e=>{ if(unsaved){e.preventDefault();e.ret
 let _dprSyncTimer=null;
 async function _dprAutoSync(){
   if(!serverUrl||!dprUser) return;
-  if(!unsaved){
+  // First flush any pending saves (they take priority over fetching)
+  if(_dprPendingSaves.size){
+    for(const [key,{fl,d,data}] of _dprPendingSaves){
+      const ok=await _dprPushRaw(fl,d,data);
+      if(ok) _dprPendingSaves.delete(key);
+    }
+  }
+  if(!unsaved && !_dprPendingSaves.size){
     const d=getDate();
     await Promise.all(Object.keys(FLOORS).map(fl=>fetchDayFromServer(fl,d)));
     _safeRenderAll(); // skips rebuild if user is actively typing
@@ -3601,7 +3646,13 @@ function _startAutoSync(){
 // Flush pending save + pull fresh when user returns to this tab
 document.addEventListener('visibilitychange',async()=>{
   if(document.visibilityState==='visible'&&serverUrl&&dprUser){
-    if(_dprPendingSave) await pushToServer(_dprPendingSave.fl,_dprPendingSave.d,_dprPendingSave.data);
+    // Flush ALL pending saves (one per floor/date) before pulling fresh data
+    if(_dprPendingSaves.size){
+      for(const [key,{fl,d,data}] of _dprPendingSaves){
+        const ok=await _dprPushRaw(fl,d,data);
+        if(ok) _dprPendingSaves.delete(key);
+      }
+    }
     if(!unsaved){
       const d=getDate();
       await Promise.all(Object.keys(FLOORS).map(fl=>fetchDayFromServer(fl,d)));
