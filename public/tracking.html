@@ -274,7 +274,6 @@ input[type=number]{font-family:var(--mono)}
 
   /* ── Main full width ── */
   #main{width:100%}
-  /* Mobile nav is 68px — pad #content so reports aren't clipped */
   #content{padding-bottom:80px!important}
 
   /* ── Topbar — compact ── */
@@ -420,6 +419,9 @@ input[type=number]{font-family:var(--mono)}
   /* ── Report filters — stack on mobile ── */
   .filter-row{flex-direction:column!important;gap:8px!important}
   .filter-row select,.filter-row input{width:100%!important}
+
+  /* ── Main content bottom padding — clear mobile nav ── */
+  #main{padding-bottom:72px}
 
   /* ── Mobile bottom nav ── */
   #mobile-nav{
@@ -2096,7 +2098,7 @@ function renderPage(page){
     case 'packing': renderDeptScan('packing'); break;
     case 'dispatch': renderDispatch(); break;
     case 'batch-tracker': renderBatchTracker(); break;
-    case 'reports': renderReports(true); break; // forceRebuild=true — user navigated here
+    case 'reports': renderReports(true); break;
     case 'search': renderTrackingSearch(); break;
     case 'settings': renderSettings(); break;
   }
@@ -3664,31 +3666,31 @@ function renderReports(forceRebuild){
       <div class="card-title">Report A</div>
       <div class="fw-bold mb-4">Complete Batch Tracking</div>
       <div class="text-sm text-muted">Full movement history per batch. Every box, every scan, current location, dispatch readiness.</div>
-      <button class="btn btn-primary btn-sm mt-12">Generate →</button>
+      <button class="btn btn-primary btn-sm mt-12" onclick="event.stopPropagation();renderReportA()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportB()" style="border-left:4px solid var(--accent2)">
       <div class="card-title">Report B</div>
       <div class="fw-bold mb-4">Department-wise WIP</div>
       <div class="text-sm text-muted">Per department: which batches are present, box count, time in department, red flags.</div>
-      <button class="btn btn-success btn-sm mt-12">Generate →</button>
+      <button class="btn btn-success btn-sm mt-12" onclick="event.stopPropagation();renderReportB()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportC()" style="border-left:4px solid var(--accent3)">
       <div class="card-title">Report C</div>
       <div class="fw-bold mb-4">Machine-wise WIP Status</div>
       <div class="text-sm text-muted">Per machine: Closed / Pending / In Progress status for each batch.</div>
-      <button class="btn btn-warning btn-sm mt-12">Generate →</button>
+      <button class="btn btn-warning btn-sm mt-12" onclick="event.stopPropagation();renderReportC()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportD()" style="border-left:4px solid var(--accent5)">
       <div class="card-title">Report D</div>
       <div class="fw-bold mb-4">Overall Summary</div>
       <div class="text-sm text-muted">Gross Production vs A-Grade vs Stage-wise WIP across all machines.</div>
-      <button class="btn btn-sm mt-12" style="background:var(--accent5);color:#fff">Generate →</button>
+      <button class="btn btn-sm mt-12" style="background:var(--accent5);color:#fff" onclick="event.stopPropagation();renderReportD()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportE()" style="border-left:4px solid #0891b2;grid-column:span 2">
       <div class="card-title">Report E</div>
       <div class="fw-bold mb-4">Machine-wise Production Tracking Sheet</div>
       <div class="text-sm text-muted">Replaces the current Excel tracking sheet. Per machine, per batch: production, AIM output (shift-wise), manual inspection, printing, packing, dispatch with floor subtotals (GF/FF/SF).</div>
-      <button class="btn btn-sm mt-12" style="background:#0891b2;color:#fff">Generate →</button>
+      <button class="btn btn-sm mt-12" style="background:#0891b2;color:#fff" onclick="event.stopPropagation();renderReportE()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportF()" style="border-left:4px solid #dc2626;grid-column:span 2">
       <div class="card-title" style="color:#dc2626">🚨 Report F — End-of-Day Production vs Scan Reconciliation</div>
@@ -3886,7 +3888,7 @@ function renderReportH(){
   </div>`;
 
   document.getElementById('report-output').innerHTML=html;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
 }
 
 function exportReportH(){
@@ -4043,7 +4045,7 @@ function renderReportG(){
   </div>`;
 
   document.getElementById('report-output').innerHTML = html;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
 }
 
 function exportReportG(){
@@ -4240,7 +4242,7 @@ function renderReportF(){
   </div>`;
 
   document.getElementById('report-output').innerHTML = html;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
 }
 
 function exportReportF(){
@@ -4267,10 +4269,6 @@ function exportReportF(){
 
 function renderReportB(){
   if(!document.getElementById('report-output')) renderReports();
-  if(!state.scans||!state.scans.length){
-    document.getElementById('report-output').innerHTML=`<div class="card"><div class="alert alert-warning mb-12">No scan data loaded yet.</div><button class="btn btn-primary btn-sm" onclick="pullFromServer().then(()=>renderReportB())">🔄 Sync & Retry</button></div>`;
-    return;
-  }
   const filterDept  = window._rptBDept  || '';
   const filterBatch = window._rptBBatch || '';
 
@@ -4349,7 +4347,7 @@ function renderReportB(){
   }
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportB()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
 }
 
 function renderReportC(){
@@ -4357,7 +4355,7 @@ function renderReportC(){
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
     reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Report C — Machine-wise WIP Status</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer().then(()=>renderReportC())">🔄 Sync & Retry</button></div>`;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
     return;
   }
 
@@ -4428,15 +4426,11 @@ function renderReportC(){
   }
   html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
   reportEl.innerHTML=html;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
 }
 
 function renderReportD(){
   if(!document.getElementById('report-output')) renderReports();
-  if(!state.batches||!state.batches.length){
-    document.getElementById('report-output').innerHTML=`<div class="card"><div class="alert alert-warning mb-12">No batch data loaded yet.</div><button class="btn btn-primary btn-sm" onclick="pullFromServer().then(()=>renderReportD())">🔄 Sync & Retry</button></div>`;
-    return;
-  }
   const totalGross=state.batches.reduce((s,b)=>s+(b.actualProd||0),0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageWIP={};
@@ -4471,15 +4465,11 @@ function renderReportD(){
   </table></div>
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
 }
 
 function renderReportA(){
   if(!document.getElementById('report-output')) renderReports();
-  if(!state.batches||!state.batches.length){
-    document.getElementById('report-output').innerHTML=`<div class="card"><div class="alert alert-warning mb-12">No batch data loaded yet.</div><button class="btn btn-primary btn-sm" onclick="pullFromServer().then(()=>renderReportA())">🔄 Sync & Retry</button></div>`;
-    return;
-  }
   // Date filter
   const filterBatch = window._rptABatch||'';
   const batches = state.batches.filter(b=>!b.deleted && (!filterBatch||b.batchNumber===filterBatch));
@@ -4557,7 +4547,7 @@ function renderReportA(){
   });
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportA()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
 }
 
 function renderBatchFlowSummary(batch){
@@ -4579,11 +4569,6 @@ function renderBatchFlowSummary(batch){
 function normMcId(id){ return (id||'').replace(/[.\s]/g,'').toUpperCase(); }
 
 function renderReportE(){
-  if(!document.getElementById('report-output')) renderReports();
-  if(!state.batches||!state.batches.length){
-    document.getElementById('report-output').innerHTML=`<div class="card"><div class="alert alert-warning mb-12">No batch data loaded yet.</div><button class="btn btn-primary btn-sm" onclick="pullFromServer().then(()=>renderReportE())">🔄 Sync & Retry</button></div>`;
-    return;
-  }
   // Build all data first (same computation as before)
   const filterDate = window._rptEDate || '';
   const allScanDates = [...new Set(state.scans.map(s=>s.ts?.slice(0,10)).filter(Boolean))].sort();
@@ -4796,7 +4781,7 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
       <div class="text-sm mt-8">${rows.length} rows ready · ${dateLabel}</div>
     </div>
   </div>`;
-/* scrollIntoView removed */
+const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
 
   // Store the HTML for the tab opener
   window._reportEHtml = fullHtml;
