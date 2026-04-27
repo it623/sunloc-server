@@ -976,6 +976,10 @@ function loadState() {
         if (r.ok) console.log('[PrintOrders] Migrated', assigned.length, 'assigned orders to dedicated table');
       }
     } catch(e) {}
+    // Also save full state to server to ensure dailyPrinting logs are persisted
+    if ((state.dailyPrinting||[]).length > 0) {
+      try { await saveState(); console.log('[DailyPrinting] Pushed', state.dailyPrinting.length, 'logs to server'); } catch(e) {}
+    }
   }, 3000);
   setTimeout(() => initMonthlyArchive(), 800);
   if (state.orders) {
