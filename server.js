@@ -724,6 +724,28 @@ async function ensurePostgresTables() {
         resolved_at TEXT,
         resolved_by TEXT,
         notes TEXT
+      );
+      CREATE TABLE IF NOT EXISTS print_orders (
+        id TEXT PRIMARY KEY,
+        machine_id TEXT,
+        customer TEXT,
+        batch_number TEXT,
+        pc_code TEXT,
+        size TEXT,
+        colour TEXT,
+        print_matter TEXT,
+        print_type TEXT,
+        qty_to_print REAL,
+        order_qty REAL,
+        printed_to_date REAL DEFAULT 0,
+        printed_to_date_manual BOOLEAN DEFAULT false,
+        start_date TEXT,
+        end_date TEXT,
+        status TEXT DEFAULT 'pending',
+        zone TEXT,
+        remarks TEXT,
+        production_order_id TEXT,
+        updated_at TEXT DEFAULT NOW()::TEXT
       )
     `);
 
@@ -899,6 +921,53 @@ app.delete('/api/pc-codes', async (req, res) => {
       db.prepare('DELETE FROM pc_codes WHERE size=? AND code=?').run(size, code);
     }
     res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+
+// ── Print Orders — dedicated table for permanent machine assignments ──────────
+// GET /api/print-orders
+app.get('/api/print-orders', async (req, res) => {
+  try {
+    if (!pgPool) return res.json({ ok: true, printOrders: [] });
+    const r = await pgPool.query('SELECT * FROM print_orders ORDER BY updated_at DESC');
+    res.json({ ok: true, printOrders: r.rows.map(row => ({
+      id: row.id, machineId: row.machine_id, customer: row.customer,
+      batchNumber: row.batch_number, pcCode: row.pc_code, size: row.size,
+      colour: row.colour, printMatter: row.print_matter, printType: row.print_type,
+      qtyToPrint: parseFloat(row.qty_to_print)||0, orderQty: parseFloat(row.order_qty)||0,
+      printedToDate: parseFloat(row.printed_to_date)||0,
+      printedToDateManual: row.printed_to_date_manual,
+      startDate: row.start_date, endDate: row.end_date, status: row.status,
+      zone: row.zone, remarks: row.remarks, productionOrderId: row.production_order_id,
+    })) });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/print-orders/bulk
+app.post('/api/print-orders/bulk', async (req, res) => {
+  try {
+    const { printOrders } = req.body;
+    if (!Array.isArray(printOrders)) return res.status(400).json({ ok: false, error: 'printOrders array required' });
+    if (!pgPool) return res.json({ ok: true, count: 0 });
+    for (const p of printOrders) {
+      if (!p.id) continue;
+      await pgPool.query(`
+        INSERT INTO print_orders (id,machine_id,customer,batch_number,pc_code,size,colour,
+          print_matter,print_type,qty_to_print,order_qty,printed_to_date,printed_to_date_manual,
+          start_date,end_date,status,zone,remarks,production_order_id,updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW()::TEXT)
+        ON CONFLICT(id) DO UPDATE SET machine_id=$2,customer=$3,batch_number=$4,pc_code=$5,
+          size=$6,colour=$7,print_matter=$8,print_type=$9,qty_to_print=$10,order_qty=$11,
+          printed_to_date=$12,printed_to_date_manual=$13,start_date=$14,end_date=$15,
+          status=$16,zone=$17,remarks=$18,production_order_id=$19,updated_at=NOW()::TEXT
+      `, [p.id,p.machineId||null,p.customer||null,p.batchNumber||null,p.pcCode||null,
+          p.size||null,p.colour||null,p.printMatter||null,p.printType||null,
+          p.qtyToPrint||null,p.orderQty||null,p.printedToDate||0,p.printedToDateManual||false,
+          p.startDate||null,p.endDate||null,p.status||'pending',p.zone||null,
+          p.remarks||null,p.productionOrderId||null]);
+    }
+    res.json({ ok: true, count: printOrders.length, savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
