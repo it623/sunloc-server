@@ -810,31 +810,6 @@ const SYNC = (() => {
         } else {
           state.printMachineMaster = JSON.parse(JSON.stringify(PRINT_MACHINES));
         }
-        // PERMANENT FIX: Merge machine assignments from dedicated print_orders table
-        // These are always authoritative — a machine assignment saved there NEVER gets overwritten
-        try {
-          const por = await fetch(_url + '/api/print-orders', { signal: AbortSignal.timeout(5000) });
-          if (por.ok) {
-            const poj = await por.json();
-            if (poj.ok && Array.isArray(poj.printOrders) && poj.printOrders.length > 0) {
-              const dbMap = {};
-              poj.printOrders.forEach(p => { dbMap[p.id] = p; });
-              state.printOrders = state.printOrders.map(p => {
-                const dbRow = dbMap[p.id];
-                if (!dbRow) return p;
-                // DB row wins for all fields — especially machineId
-                return { ...p, ...dbRow };
-              });
-              // Add any print orders in DB not yet in state
-              poj.printOrders.forEach(dbP => {
-                if (!state.printOrders.find(p => p.id === dbP.id)) {
-                  state.printOrders.push(dbP);
-                }
-              });
-              console.log('[PrintOrders] Merged', poj.printOrders.length, 'orders from dedicated table — machine assignments authoritative');
-            }
-          }
-        } catch(e) { console.warn('[PrintOrders] Could not merge from dedicated table:', e.message); }
         try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
         const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
         allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
@@ -843,7 +818,32 @@ const SYNC = (() => {
       }
     }
 
-    // STEP 3: Load tracking/DPR status in background — only render if user not typing
+    // ALWAYS runs — regardless of guard — dedicated table is authoritative for machineId
+    try {
+      const por = await fetch(_url + '/api/print-orders', { signal: AbortSignal.timeout(5000) });
+      if (por.ok) {
+        const poj = await por.json();
+        if (poj.ok && Array.isArray(poj.printOrders) && poj.printOrders.length > 0) {
+          const dbMap = {};
+          poj.printOrders.forEach(p => { dbMap[p.id] = p; });
+          let changed = false;
+          state.printOrders = (state.printOrders||[]).map(p => {
+            const dbRow = dbMap[p.id];
+            if (!dbRow) return p;
+            if (dbRow.machineId !== p.machineId) changed = true;
+            return { ...p, machineId: dbRow.machineId, status: dbRow.status || p.status };
+          });
+          poj.printOrders.forEach(dbP => {
+            if (!state.printOrders.find(p => p.id === dbP.id)) {
+              state.printOrders.push(dbP); changed = true;
+            }
+          });
+          if (changed && !_userIsActive() && !_userIsFocused()) render();
+        }
+      }
+    } catch(e) { console.warn('[PrintOrders] Merge failed:', e.message); }
+
+    // STEP 3: Load tracking/DPR status in background
     loadTrackingStatus().then(() => { if(!_userIsActive() && !_userIsFocused()) render(); }).catch(() => {});
   }
 
@@ -962,6 +962,21 @@ function loadState() {
   } catch(e) { localStorage.removeItem('sunloc_state'); }
   // Server sync in background — render() is called after login completes
   SYNC.loadFromServer();
+  // One-time migration: push all assigned print orders to dedicated table on every load
+  setTimeout(async () => {
+    try {
+      const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+      const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
+      if (_url && assigned.length > 0) {
+        const r = await fetch(_url + '/api/print-orders/bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ printOrders: assigned }),
+          signal: AbortSignal.timeout(15000)
+        });
+        if (r.ok) console.log('[PrintOrders] Migrated', assigned.length, 'assigned orders to dedicated table');
+      }
+    } catch(e) {}
+  }, 3000);
   setTimeout(() => initMonthlyArchive(), 800);
   if (state.orders) {
     state.orders.forEach(o => {
@@ -3158,12 +3173,23 @@ async function savePrintModal(existingId) {
   try {
     const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
     if (_url) {
-      fetch(_url + '/api/print-orders/bulk', {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ printOrders: [ord] }),
-        signal: AbortSignal.timeout(8000)
-      }).catch(e => console.warn('[PrintOrders] Dedicated save failed:', e.message));
+  // Save to dedicated print_orders table — retries 3 times if server slow
+  try {
+    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+    if (_url) {
+      const _savePrintToDB = async (attempt) => {
+        try {
+          const r = await fetch(_url + '/api/print-orders/bulk', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ printOrders: [ord] }),
+            signal: AbortSignal.timeout(8000)
+          });
+          if (!r.ok && attempt < 3) setTimeout(() => _savePrintToDB(attempt+1), 3000);
+        } catch(e) {
+          if (attempt < 3) setTimeout(() => _savePrintToDB(attempt+1), 3000);
+        }
+      };
+      _savePrintToDB(1);
     }
   } catch(e) {}
   await saveState(); closeModal(); render();
