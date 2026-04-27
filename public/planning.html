@@ -755,13 +755,28 @@ const SYNC = (() => {
       // Guard 2: pending unsaved local changes are newer than server — skip overwrite
       } else if (_pendingSave && localSavedAt > serverSavedAt) {
         console.log('[Sync] Skipping server data — local pending save is newer');
-      // Guard 3: saved to server within last 60s — local state is authoritative, skip overwrite
-      } else if (_lastServerSaveTime > 0 && (Date.now() - _lastServerSaveTime) < 60000) {
-        console.log('[Sync] Skipping server data — saved within last 60s');
       } else {
         Object.assign(state, serverState);
-        state.pcCodes = PC_CODES_RAW;
+        // Start with hardcoded codes, then merge DB-saved custom codes on top
+        state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
         state.zoneMap = ZONE_MAP_RAW;
+        // Load custom PC codes from server DB — these persist permanently
+        try {
+          const pcr = await fetch(SYNC._url + '/api/pc-codes', {signal: AbortSignal.timeout(5000)});
+          if (pcr.ok) {
+            const pcj = await pcr.json();
+            if (pcj.ok && pcj.codes) {
+              Object.entries(pcj.codes).forEach(([sz, codes]) => {
+                if (!state.pcCodes[sz]) state.pcCodes[sz] = [];
+                codes.forEach(nc => {
+                  if (!state.pcCodes[sz].find(e => e.c === nc.c))
+                    state.pcCodes[sz].push(nc);
+                });
+              });
+              console.log('[PC-Codes] Loaded', pcj.count, 'custom codes from server DB');
+            }
+          }
+        } catch(e) { console.warn('[PC-Codes] Could not load from server:', e.message); }
         if (state.printMachineMaster && state.printMachineMaster.length > 0) {
           state.printMachineMaster = state.printMachineMaster.map(pm => {
             const def = PRINT_MACHINES.find(m => m.id === pm.id);
@@ -889,7 +904,8 @@ function loadState() {
         localStorage.removeItem('sunloc_state');
       } else {
         Object.assign(state, parsed);
-        state.pcCodes = PC_CODES_RAW;
+        // Start with hardcoded codes — DB codes merged in loadFromServer()
+        state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
         state.zoneMap = ZONE_MAP_RAW;
       }
     }
@@ -915,7 +931,6 @@ function openTrackingApp() {
 // Retry queue — if server save fails, retry every 30 seconds until it succeeds
 let _pendingSave = null;
 let _retryTimer = null;
-let _lastServerSaveTime = 0; // timestamp of last confirmed server save
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
   if (_retryTimer) return;
@@ -949,13 +964,11 @@ async function saveState() {
     delete toSave.pcCodes;
     delete toSave.zoneMap;
     toSave._savedAt = Date.now();
-    state._savedAt = toSave._savedAt; // keep in sync so guard comparisons work
     // SERVER IS PRIMARY — save to server first
     const serverOk = await SYNC.push(toSave);
     if (serverOk) {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
-      _lastServerSaveTime = Date.now(); // mark confirmed server save
     } else {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _scheduleRetry(toSave);
@@ -5413,12 +5426,33 @@ function savePcModal() {
   }
   state.pcCodes[size].push({c:code, n:colour});
   saveState(); closeModal(); render();
+  // Save permanently to server DB — survives refresh, redeploy, all devices
+  const sv = localStorage.getItem('sunloc_server_url') || '';
+  if (sv) {
+    fetch(sv + '/api/pc-codes', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({size, code, colour, packSize: state.packSizes?.[size] || 100000})
+    }).then(r => r.json()).then(j => {
+      if (j.ok) console.log('[PC-Codes] Saved to server DB:', size, code);
+      else console.warn('[PC-Codes] Server save failed:', j.error);
+    }).catch(e => console.warn('[PC-Codes] Server save error:', e.message));
+  }
 }
 
 function deletePcCode(size, code) {
   if (!confirm('Delete this PC code?')) return;
   state.pcCodes[size] = (state.pcCodes[size]||[]).filter(p=>p.c!==code);
   saveState(); render();
+  // Delete permanently from server DB
+  const sv = localStorage.getItem('sunloc_server_url') || '';
+  if (sv) {
+    fetch(sv + '/api/pc-codes', {
+      method: 'DELETE',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({size, code})
+    }).catch(e => console.warn('[PC-Codes] Delete error:', e.message));
+  }
 }
 
 // =============================

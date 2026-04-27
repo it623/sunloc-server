@@ -264,6 +264,15 @@ const MIGRATIONS = [
         created_at TEXT NOT NULL DEFAULT (datetime('now')),
         UNIQUE(machine_id, date)
       );
+      CREATE TABLE IF NOT EXISTS pc_codes (
+        id SERIAL PRIMARY KEY,
+        size TEXT NOT NULL,
+        code TEXT NOT NULL,
+        colour TEXT NOT NULL,
+        pack_size INTEGER DEFAULT 100000,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(size, code)
+      );
       CREATE TABLE IF NOT EXISTS reconciliation_requests (
         id TEXT PRIMARY KEY,
         proposed_by TEXT NOT NULL,
@@ -695,6 +704,15 @@ async function ensurePostgresTables() {
 
     // reconciliation_requests
     await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS pc_codes (
+        id SERIAL PRIMARY KEY,
+        size TEXT NOT NULL,
+        code TEXT NOT NULL,
+        colour TEXT NOT NULL,
+        pack_size INTEGER DEFAULT 100000,
+        created_at TEXT DEFAULT CURRENT_TIMESTAMP,
+        UNIQUE(size, code)
+      );
       CREATE TABLE IF NOT EXISTS reconciliation_requests (
         id TEXT PRIMARY KEY,
         temp_batch_id TEXT NOT NULL,
@@ -828,6 +846,56 @@ function getOrderActuals(orderId, batchNumber) {
 // ═══════════════════════════════════════════════════════════════
 // PLANNING APP ROUTES
 // ═══════════════════════════════════════════════════════════════
+
+// GET /api/pc-codes — load all custom PC codes from DB permanently
+app.get('/api/pc-codes', async (req, res) => {
+  try {
+    let rows = [];
+    if (pgPool) {
+      const r = await pgPool.query('SELECT size, code, colour, pack_size FROM pc_codes ORDER BY size, code');
+      rows = r.rows;
+    } else {
+      rows = db.prepare('SELECT size, code, colour, pack_size FROM pc_codes ORDER BY size, code').all();
+    }
+    const bySize = {};
+    rows.forEach(r => {
+      if (!bySize[r.size]) bySize[r.size] = [];
+      bySize[r.size].push({ c: r.code, n: r.colour, packSize: r.pack_size });
+    });
+    res.json({ ok: true, codes: bySize, count: rows.length });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/pc-codes — save new PC code to DB permanently (survives refresh, redeploy, all devices)
+app.post('/api/pc-codes', async (req, res) => {
+  try {
+    const { size, code, colour, packSize } = req.body;
+    if (!size || !code || !colour) return res.status(400).json({ ok: false, error: 'size, code, colour required' });
+    if (pgPool) {
+      await pgPool.query(
+        'INSERT INTO pc_codes (size, code, colour, pack_size) VALUES ($1, $2, $3, $4) ON CONFLICT (size, code) DO UPDATE SET colour=$3, pack_size=$4',
+        [size, code, colour, packSize || 100000]
+      );
+    } else {
+      db.prepare('INSERT OR REPLACE INTO pc_codes (size, code, colour, pack_size) VALUES (?, ?, ?, ?)').run(size, code, colour, packSize || 100000);
+    }
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// DELETE /api/pc-codes — remove a PC code from DB
+app.delete('/api/pc-codes', async (req, res) => {
+  try {
+    const { size, code } = req.body;
+    if (!size || !code) return res.status(400).json({ ok: false, error: 'size, code required' });
+    if (pgPool) {
+      await pgPool.query('DELETE FROM pc_codes WHERE size=$1 AND code=$2', [size, code]);
+    } else {
+      db.prepare('DELETE FROM pc_codes WHERE size=? AND code=?').run(size, code);
+    }
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 
 // GET full planning state — uses direct pg pool for large JSON
 app.get('/api/planning/state', async (req, res) => {
@@ -1814,10 +1882,7 @@ app.get('/api/temp-batches/active', async (req, res) => {
       batches = db.prepare(`SELECT * FROM temp_batches WHERE status='active' ORDER BY machine_id, date DESC`).all();
     }
     const today = new Date().toISOString().split('T')[0];
-    const TEMP_CUTOFF = '2026-04-27';
-    // Ignore TEMP batches created before April 25 2026
-    const filtered = batches.filter(b => (b.created_at||b.date||'') >= TEMP_CUTOFF);
-    const enriched = filtered.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
+    const enriched = batches.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
     res.json({ ok:true, batches: enriched, count: enriched.length });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
@@ -2202,76 +2267,6 @@ app.get('/api/tracking/batch-summary/:batchNumber', async (req, res) => {
     const labelStats = { total: labels.length, printed: labels.filter(l=>l.printed).length, voided: labels.filter(l=>l.voided).length };
     const dispatched = dispatch.reduce((s,d) => s + d.boxes, 0);
     res.json({ ok: true, deptMap, labelStats, wastage, alerts, dispatched, batchNumber });
-  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-// GET /api/tracking/alerts — boxes stuck 48h+ grouped by batch+dept
-app.get('/api/tracking/alerts', async (req, res) => {
-  try {
-    const ALERT_HOURS = 48;
-    const ALERT_START = '2026-04-27T00:00:00';
-    let alerts = [];
-    if (pgPool) {
-      const r = await pgPool.query(`
-        SELECT s.batch_number as "batchNumber", s.dept,
-          COUNT(DISTINCT s.label_id) as "stuckBoxes",
-          MIN(s.ts) as "scanInTs",
-          EXTRACT(EPOCH FROM (NOW() - MIN(s.ts)::timestamptz))/3600 as "hoursStuck",
-          MAX(s.size) as "size"
-        FROM tracking_scans s
-        WHERE s.type = 'in' AND s.ts >= $2
-          AND EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 >= $1
-          AND NOT EXISTS (
-            SELECT 1 FROM tracking_scans o
-            WHERE o.label_id = s.label_id AND o.dept = s.dept
-              AND o.type = 'out' AND o.ts > s.ts
-          )
-        GROUP BY s.batch_number, s.dept
-        HAVING COUNT(DISTINCT s.label_id) > 0
-        ORDER BY MIN(s.ts) ASC LIMIT 100
-      `, [ALERT_HOURS, ALERT_START]);
-      alerts = r.rows.map(a => ({
-        id: a.batchNumber+'_'+a.dept, batchNumber: a.batchNumber,
-        stuckBoxes: parseInt(a.stuckBoxes), dept: a.dept,
-        scanInTs: a.scanInTs, hoursStuck: parseFloat(a.hoursStuck).toFixed(1),
-        size: a.size, resolved: 0
-      }));
-    }
-    res.json({ ok: true, alerts, count: alerts.length });
-  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-
-// GET /api/tracking/alerts/detail — individual box numbers for a batch+dept
-app.get('/api/tracking/alerts/detail', async (req, res) => {
-  try {
-    const { batchNumber, dept } = req.query;
-    if (!batchNumber || !dept) return res.status(400).json({ ok:false, error:'batchNumber and dept required' });
-    const ALERT_START = '2026-04-27T00:00:00';
-    let boxes = [];
-    if (pgPool) {
-      const r = await pgPool.query(`
-        SELECT s.label_id as "labelId", ABS(l.label_number) as "boxNo",
-          s.ts as "scanInTs",
-          EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 as "hoursStuck"
-        FROM tracking_scans s
-        LEFT JOIN tracking_labels l ON l.id = s.label_id
-        WHERE s.type='in' AND s.batch_number=$1 AND s.dept=$2 AND s.ts>=$4
-          AND EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 >= $3
-          AND NOT EXISTS (
-            SELECT 1 FROM tracking_scans o
-            WHERE o.label_id=s.label_id AND o.dept=s.dept
-              AND o.type='out' AND o.ts>s.ts
-          )
-        ORDER BY l.label_number ASC
-      `, [batchNumber, dept, 48, ALERT_START]);
-      boxes = r.rows.map(b => ({
-        labelId: b.labelId,
-        boxNo: b.boxNo != null ? b.boxNo : '?',
-        hoursStuck: parseFloat(b.hoursStuck).toFixed(1),
-        scanInTs: b.scanInTs
-      }));
-    }
-    res.json({ ok: true, batchNumber, dept, boxes });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
