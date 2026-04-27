@@ -3168,11 +3168,6 @@ async function savePrintModal(existingId) {
   } else {
     state.printOrders.push(ord);
   }
-  // PERMANENT FIX: Save this print order to its own dedicated DB table — atomic, never lost
-  // This save is independent of planning_state — machine assignments survive any state sync
-  try {
-    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
-    if (_url) {
   // Save to dedicated print_orders table — retries 3 times if server slow
   try {
     const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
