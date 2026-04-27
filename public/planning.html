@@ -3046,7 +3046,7 @@ function refreshOpmDropdown() {
     filtered.map(pm => `<option value="${pm.id}">${pm.id} (Size ${pm.size}, ${pm.cap}L/day)</option>`).join('');
 }
 
-function savePrintModal(existingId) {
+async function savePrintModal(existingId) {
   const machineId = document.getElementById('fp-machine')?.value;
   const pm = machineId ? getPrintMachine(machineId) : null;
   const qty = parseFloat(document.getElementById('fp-qty')?.value)||0;
@@ -3068,7 +3068,9 @@ function savePrintModal(existingId) {
     startDate,
     endDate,
     status: document.getElementById('fp-status')?.value,
+    zone: document.getElementById('fp-zone')?.value || '',
     printedToDate: existingId ? (state.printOrders.find(p=>p.id===existingId)?.printedToDate||0) : 0,
+    printedToDateManual: existingId ? (state.printOrders.find(p=>p.id===existingId)?.printedToDateManual||false) : false,
     remarks: document.getElementById('fp-remarks')?.value,
   };
   if (existingId) {
@@ -3077,7 +3079,7 @@ function savePrintModal(existingId) {
   } else {
     state.printOrders.push(ord);
   }
-  saveState(); closeModal(); render();
+  await saveState(); closeModal(); render();
 }
 
 function editPrintOrder(id) { showAddPrintModal(null, id); }
@@ -3333,7 +3335,7 @@ function updateSalvagePct() {
   if (el) { el.value = pct+'%'; el.style.color = pct>2?'var(--accent4)':'var(--accent3)'; }
 }
 
-function saveDailyLog() {
+async function saveDailyLog() {
   const output = parseFloat(document.getElementById('dl-output')?.value)||0;
   const salvage = parseFloat(document.getElementById('dl-salvage')?.value)||0;
   const shiftAqty = parseFloat(document.getElementById('dl-shiftA-qty')?.value)||0;
@@ -3374,7 +3376,7 @@ function saveDailyLog() {
     }
   }
 
-  saveState(); closeModal(); render();
+  await saveState(); closeModal(); render();
 }
 
 // =============================
