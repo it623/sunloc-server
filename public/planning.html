@@ -749,8 +749,10 @@ const SYNC = (() => {
       const localSavedAt = state._savedAt || 0;
       const serverSavedAt = serverState._savedAt || 0;
       // SIMPLE RULE: Server always wins on read — newest _savedAt wins
-      // If local has pending save, retry push AFTER taking server data
-      if (serverSavedAt >= localSavedAt || !_pendingSave) {
+      // Guard 3: if saved to server within last 60s, local is authoritative — skip overwrite
+      if (_lastServerSaveTime > 0 && (Date.now() - _lastServerSaveTime) < 60000) {
+        console.log('[Sync] Skipping server data — saved within last 60s');
+      } else if (serverSavedAt >= localSavedAt || !_pendingSave) {
         // Server is newer or equal — take server data
         Object.assign(state, serverState);
         // Start with hardcoded codes, then merge DB-saved custom codes on top
@@ -927,6 +929,7 @@ function openTrackingApp() {
 // Retry queue — if server save fails, retry every 30 seconds until it succeeds
 let _pendingSave = null;
 let _retryTimer = null;
+let _lastServerSaveTime = 0; // timestamp of last confirmed server save
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
   if (_retryTimer) return;
@@ -966,6 +969,7 @@ async function saveState() {
       state._savedAt = toSave._savedAt; // mark local state as synced with server
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
+      _lastServerSaveTime = Date.now(); // mark confirmed server save
     } else {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _scheduleRetry(toSave);
@@ -3044,11 +3048,16 @@ function refreshOpmDropdown() {
   const size = document.getElementById('fp-size')?.value;
   const sel = document.getElementById('fp-machine');
   if (!sel) return;
+  const currentVal = sel.value; // preserve current selection before rebuild
   const filtered = size
     ? state.printMachineMaster.filter(pm => String(pm.size) === String(size))
     : state.printMachineMaster;
   sel.innerHTML = '<option value="">Unassigned</option>' +
     filtered.map(pm => `<option value="${pm.id}">${pm.id} (Size ${pm.size}, ${pm.cap}L/day)</option>`).join('');
+  // Restore the previous selection if it still exists in the filtered list
+  if (currentVal && sel.querySelector(`option[value="${currentVal}"]`)) {
+    sel.value = currentVal;
+  }
 }
 
 async function savePrintModal(existingId) {
