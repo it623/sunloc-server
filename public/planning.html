@@ -3060,7 +3060,6 @@ function refreshOpmDropdown() {
 
 async function savePrintModal(existingId) {
   const machineId = document.getElementById('fp-machine')?.value;
-  console.log('[DEBUG savePrintModal] existingId:', existingId, 'machineId:', machineId, 'fp-machine element:', document.getElementById('fp-machine')?.value);
   const pm = machineId ? getPrintMachine(machineId) : null;
   const qty = parseFloat(document.getElementById('fp-qty')?.value)||0;
   const startDate = new Date(document.getElementById('fp-startdate')?.value||today());
@@ -3089,11 +3088,9 @@ async function savePrintModal(existingId) {
   if (existingId) {
     const idx = state.printOrders.findIndex(p=>p.id===existingId);
     if (idx>=0) state.printOrders[idx]=ord;
-    console.log('[DEBUG] After update - printOrder machineId:', state.printOrders[idx]?.machineId, 'ord.machineId:', ord.machineId);
   } else {
     state.printOrders.push(ord);
   }
-  console.log('[DEBUG] Calling saveState with printOrders:', state.printOrders.map(p=>({id:p.id,machineId:p.machineId})));
   await saveState(); closeModal(); render();
 }
 
