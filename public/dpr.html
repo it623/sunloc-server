@@ -1133,30 +1133,20 @@ function validateBeforeSave(){
 
 function saveDay(){
   const fl=curFloor, d=getDate();
-  // Validate: all runs with qty must have order selected
-  const errors=validateBeforeSave();
-  if(errors.length>0){
-    // Show alert with all missing orders
-    const msg='⚠️ Please select active order before saving:\n\n'+errors.join('\n');
-    alert(msg);
-    // Highlight the first problematic dropdown
-    const firstError=errors[0];
-    const shMatch=firstError.match(/Shift ([A-C])/);
-    const mcMatch=firstError.match(/(MC\d+)/);
-    if(shMatch&&mcMatch){
-      const sh=shMatch[1], mcId=mcMatch[1];
-      const sel=document.querySelector(`.run-row[data-sh="${sh}"][data-mc="${mcId}"] select`);
-      if(sel){ sel.style.border='2px solid var(--red)'; sel.focus(); setTimeout(()=>sel.style.border='',3000); }
-    }
-    return;
-  }
+  // ALWAYS save — no blocking
   const data=collectForm();
-  data._savedAt = Date.now(); // stamp for staleness comparison on sync
+  data._savedAt = Date.now();
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
-  pushToServer(fl,d,data);
+  pushToServer(fl,d,data); // goes to server regardless
   renderDayKpis();
-  toast('✓ Saved — '+fl+' '+d,'var(--green)');
+  // Show warning toast if any machine is missing order selection (no block)
+  const errors=validateBeforeSave();
+  if(errors.length>0){
+    toast('✓ Saved — ⚠️ '+errors.length+' run(s) missing order selection','var(--amber)',4000);
+  } else {
+    toast('✓ Saved — '+fl+' '+d,'var(--green)');
+  }
 }
 function collectForm(){
   const d=getDate(), fl=curFloor;
@@ -1269,6 +1259,14 @@ async function checkServer(){
 let _dprPendingSaves = new Map(); // keyed by "fl|d" — no save is ever overwritten
 let _dprRetryTimer = null;
 let _suppressRenderShifts = false;
+function _updatePendingBadge(){
+  const badge=document.getElementById('syncBadge');
+  if(!badge) return;
+  if(_dprPendingSaves.size>0){
+    badge.textContent='⚠️ '+_dprPendingSaves.size+' unsaved';
+    badge.style.background='var(--red)';badge.style.color='#fff';
+  }
+}
 // Legacy alias so old code still works
 Object.defineProperty(window,'_dprPendingSave',{
   get(){ const v=[..._dprPendingSaves.values()]; return v.length?v[v.length-1]:null; },
@@ -1283,7 +1281,9 @@ function _dprScheduleRetry(){
       if(ok) _dprPendingSaves.delete(key);
     }
     if(!_dprPendingSaves.size){ clearInterval(_dprRetryTimer); _dprRetryTimer=null; }
-  },15000);
+    _updatePendingBadge();
+    if(!_dprPendingSaves.size){ clearInterval(_dprRetryTimer); _dprRetryTimer=null; setSyncBadge('synced'); }
+  },10000); // retry every 10s until server confirms
 }
 async function _dprPushRaw(fl,d,data){
   const actuals=[];
@@ -1338,8 +1338,14 @@ async function pushToServer(fl,d,data){
   if(!serverUrl){ _dprPendingSaves.set(fl+'|'+d,{fl,d,data}); _dprScheduleRetry(); return; }
   setSyncBadge('syncing');
   const ok=await _dprPushRaw(fl,d,data);
-  if(!ok){ _dprPendingSaves.set(fl+'|'+d,{fl,d,data}); _dprScheduleRetry(); }
-  else { _dprPendingSaves.delete(fl+'|'+d); }
+  if(!ok){
+    _dprPendingSaves.set(fl+'|'+d,{fl,d,data});
+    _dprScheduleRetry();
+    _updatePendingBadge();
+  } else {
+    _dprPendingSaves.delete(fl+'|'+d);
+    _updatePendingBadge();
+  }
 }
 async function fetchDayFromServer(fl, d){
   if(!serverUrl) return null;
@@ -1350,18 +1356,12 @@ async function fetchDayFromServer(fl, d){
     if(!r.ok) return null;
     const j=await r.json();
     if(j.data){
-      // Only overwrite localStorage if server data is newer than what we saved locally
-      const localRaw = localStorage.getItem(skey(fl,d));
-      const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt||0) : 0;
-      const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
-      if(serverSavedAt >= localSavedAt){
-        j.data._savedAt = serverSavedAt || Date.now();
-        localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
-        return j.data;
-      } else {
-        console.log('[DPR] Skipping stale server data for',fl,d,'(local is newer)');
-        return null;
-      }
+      // Server is ALWAYS authoritative — always update localStorage
+      // (pending saves protected by _dprPendingSaves.has() guard above)
+      const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : Date.now();
+      j.data._savedAt = serverSavedAt;
+      localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+      return j.data;
     }
   }catch(e){ console.warn('fetchDayFromServer failed:', e?.message); }
   return null;
@@ -3446,10 +3446,27 @@ function go(page){
 }
 
 function setFloor(fl){
+  // Backup current floor to localStorage before switching (no server push)
+  if(unsaved && curFloor && dprUser){
+    try{
+      const data=collectForm();
+      localStorage.setItem(skey(curFloor,getDate()),JSON.stringify(data));
+    }catch(_){}
+  }
   curFloor=fl;
   document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
   document.getElementById('ftab-'+fl)?.classList.add('on');
-  renderEntry();
+  renderEntry(); // render immediately from localStorage
+  // Fetch fresh from server for this floor
+  if(serverUrl && dprUser){
+    (async()=>{
+      const d=getDate();
+      const serverData=await fetchDayFromServer(fl, d);
+      if(serverData && !unsaved){
+        renderDayKpis(); renderShifts(); renderRemarks(); renderResort();
+      }
+    })();
+  }
 }
 
 function onDateChange(){
@@ -3537,12 +3554,18 @@ function toggleCol(id){ const el=document.getElementById(id); if(el){el.classLis
 // UTILS
 // ═══════════════════════════════════════════════════════
 function esc(s){ return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;'); }
-function markUnsaved(){ unsaved=true; document.getElementById('unsavedDot').style.display='flex'; }
+function markUnsaved(){
+  unsaved=true;
+  document.getElementById('unsavedDot').style.display='flex';
+  // Backup to localStorage on every change — protects against browser crash
+  // No server push — user must press Save button for that
+  try{ const data=collectForm(); localStorage.setItem(skey(curFloor,getDate()),JSON.stringify(data)); }catch(_){}
+}
 function setUnsaved(v){ unsaved=v; document.getElementById('unsavedDot').style.display=v?'flex':'none'; }
-function toast(msg,col){
+function toast(msg,col,dur){
   const t=document.getElementById('toast');
-  t.textContent=msg;t.style.background=col||'var(--green)';t.style.color=col==='var(--amber)'?'#000':'#000';
-  t.style.opacity='1';clearTimeout(t._t);t._t=setTimeout(()=>t.style.opacity='0',2500);
+  t.textContent=msg;t.style.background=col||'var(--green)';t.style.color='#000';
+  t.style.opacity='1';clearTimeout(t._t);t._t=setTimeout(()=>t.style.opacity='0',dur||2500);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -3764,7 +3787,17 @@ function postAuthServerInit() {
   });
 }
 
-window.addEventListener('beforeunload',e=>{ if(unsaved){e.preventDefault();e.returnValue='';} });
+window.addEventListener('beforeunload', e => {
+  if(unsaved){
+    // Last chance — backup to localStorage before page closes
+    try{
+      const data=collectForm();
+      localStorage.setItem(skey(curFloor,getDate()),JSON.stringify(data));
+    }catch(_){}
+    e.preventDefault();
+    e.returnValue='You have unsaved data. Press Save before leaving.';
+  }
+});
 
 // ── Auto-sync: all devices get same data every 30s ───────────────────
 let _dprSyncTimer=null;
