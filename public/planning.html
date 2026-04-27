@@ -759,6 +759,11 @@ const SYNC = (() => {
         const _protectedPrintOrders = {};
         const _protectWindow = 90000; // 90 seconds
         const _now = Date.now();
+        // Check if machineMaster/pcCodes were recently changed locally
+        const _machineMasterProtected = _localOrderChanges['__machineMaster__'] && (_now - _localOrderChanges['__machineMaster__']) < _protectWindow;
+        const _printMachineMasterProtected = _localOrderChanges['__printMachineMaster__'] && (_now - _localOrderChanges['__printMachineMaster__']) < _protectWindow;
+        const _savedMachineMaster = _machineMasterProtected ? JSON.parse(JSON.stringify(state.machineMaster)) : null;
+        const _savedPrintMachineMaster = _printMachineMasterProtected ? JSON.parse(JSON.stringify(state.printMachineMaster)) : null;
         if (Object.keys(_localOrderChanges).length > 0) {
           (state.orders||[]).forEach(o => {
             const ts = _localOrderChanges[o.id];
@@ -782,6 +787,9 @@ const SYNC = (() => {
           state.printOrders = (state.printOrders||[]).map(p => _protectedPrintOrders[p.id] || p);
           console.log('[Sync] Protected', Object.keys(_protectedPrintOrders).length, 'locally changed print orders from server overwrite');
         }
+        // Restore locally changed machine masters
+        if (_savedMachineMaster) { state.machineMaster = _savedMachineMaster; console.log('[Sync] Protected machineMaster from server overwrite'); }
+        if (_savedPrintMachineMaster) { state.printMachineMaster = _savedPrintMachineMaster; console.log('[Sync] Protected printMachineMaster from server overwrite'); }
         // Start with hardcoded codes, then merge DB-saved custom codes on top
         state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
         state.zoneMap = ZONE_MAP_RAW;
@@ -1045,6 +1053,10 @@ async function saveState() {
     const _changeTs = Date.now();
     (state.orders||[]).forEach(o => { _localOrderChanges[o.id] = _changeTs; });
     (state.printOrders||[]).forEach(p => { _localPrintOrderChanges[p.id] = _changeTs; });
+    // Also stamp machine master changes so they survive 90s sync protection
+    _localOrderChanges['__machineMaster__'] = _changeTs;
+    _localOrderChanges['__printMachineMaster__'] = _changeTs;
+    _localOrderChanges['__pcCodes__'] = _changeTs;
     // SERVER IS PRIMARY — save to server first
     const serverOk = await SYNC.push(toSave);
     if (serverOk) {
@@ -3047,8 +3059,8 @@ function showAddPrintModal(machineId, existingId) {
   const existing = existingId ? state.printOrders.find(p=>p.id===existingId) : null;
   const selectedSize = existing?.size || '';
   const filteredMachines = selectedSize
-    ? state.printMachineMaster.filter(pm => String(pm.size) === String(selectedSize))
-    : state.printMachineMaster;
+    ? state.printMachineMaster.filter(pm => String(pm.size) === String(selectedSize) && pm.active !== false)
+    : state.printMachineMaster.filter(pm => pm.active !== false);
   openModal(existing?'Edit Print Order':'New Print Order', `
   
     <div class="form-grid">
@@ -3132,8 +3144,8 @@ function refreshOpmDropdown() {
   if (!sel) return;
   const currentVal = sel.value; // preserve current selection before rebuild
   const filtered = size
-    ? state.printMachineMaster.filter(pm => String(pm.size) === String(size))
-    : state.printMachineMaster;
+    ? state.printMachineMaster.filter(pm => String(pm.size) === String(size) && pm.active !== false)
+    : state.printMachineMaster.filter(pm => pm.active !== false);
   sel.innerHTML = '<option value="">Unassigned</option>' +
     filtered.map(pm => `<option value="${pm.id}">${pm.id} (Size ${pm.size}, ${pm.cap}L/day)</option>`).join('');
   if (currentVal && sel.querySelector(`option[value="${currentVal}"]`)) sel.value = currentVal;
@@ -5378,8 +5390,9 @@ function renderMachines() {
     <div class="card">
       <div class="card-title">Printing Machines</div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Machine</th><th>Size</th><th>Cap (L/day)</th><th>Preference</th><th>Actions</th></tr></thead>
-        <tbody>${state.printMachineMaster.map(pm=>`<tr>
+        <thead><tr><th>Active</th><th>Machine</th><th>Size</th><th>Cap (L/day)</th><th>Preference</th><th>Actions</th></tr></thead>
+        <tbody>${state.printMachineMaster.map(pm=>`<tr style="${pm.active===false?'opacity:0.5':''}">
+          <td><input type="checkbox" ${pm.active===false?'':'checked'} onchange="togglePrintMachineActive('${pm.id}',this.checked)" style="width:18px;height:18px;cursor:pointer;accent-color:var(--primary)"></td>
           <td class="text-mono text-accent fw-bold">${pm.id}</td>
           <td class="text-mono">${pm.size}</td>
           <td class="text-mono">${pm.cap}</td>
@@ -5414,7 +5427,7 @@ function saveMachine(existingId) {
     size: document.getElementById('mc-size')?.value,
     cap: parseFloat(document.getElementById('mc-cap')?.value)||20,
     aGrade: parseFloat(document.getElementById('mc-agrade')?.value)||93,
-    active: existing ? (existing.active !== false) : true, // preserve active state, default true
+    active: existing ? (existing.active !== false) : true,
   };
   if (existingId) { const idx=state.machineMaster.findIndex(m=>m.id===existingId); if(idx>=0) state.machineMaster[idx]=mc; }
   else state.machineMaster.push(mc);
@@ -5460,8 +5473,18 @@ function savePrintMachine(id) {
     pm.size = document.getElementById('pm-size')?.value||pm.size;
     pm.cap = parseFloat(document.getElementById('pm-cap')?.value)||pm.cap;
     pm.pref = document.getElementById('pm-pref')?.value||pm.pref;
+    // preserve active state — do not overwrite
   }
   saveState(); closeModal(); render();
+}
+
+function togglePrintMachineActive(id, active) {
+  const pm = state.printMachineMaster.find(m => m.id === id);
+  if (pm) {
+    pm.active = active;
+    saveState();
+    toast(active ? `✅ ${id} enabled` : `⛔ ${id} disabled`, 2000);
+  }
 }
 
 // =============================
