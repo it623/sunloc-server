@@ -745,7 +745,7 @@ async function ensurePostgresTables() {
         zone TEXT,
         remarks TEXT,
         production_order_id TEXT,
-        updated_at TEXT DEFAULT NOW()::TEXT
+        updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
     `);
 
