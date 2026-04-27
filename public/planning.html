@@ -755,6 +755,9 @@ const SYNC = (() => {
       // Guard 2: pending unsaved local changes are newer than server — skip overwrite
       } else if (_pendingSave && localSavedAt > serverSavedAt) {
         console.log('[Sync] Skipping server data — local pending save is newer');
+      // Guard 3: saved to server within last 60s — local state is authoritative, skip overwrite
+      } else if (_lastServerSaveTime > 0 && (Date.now() - _lastServerSaveTime) < 60000) {
+        console.log('[Sync] Skipping server data — saved within last 60s');
       } else {
         Object.assign(state, serverState);
         state.pcCodes = PC_CODES_RAW;
@@ -912,6 +915,7 @@ function openTrackingApp() {
 // Retry queue — if server save fails, retry every 30 seconds until it succeeds
 let _pendingSave = null;
 let _retryTimer = null;
+let _lastServerSaveTime = 0; // timestamp of last confirmed server save
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
   if (_retryTimer) return;
@@ -945,11 +949,13 @@ async function saveState() {
     delete toSave.pcCodes;
     delete toSave.zoneMap;
     toSave._savedAt = Date.now();
+    state._savedAt = toSave._savedAt; // keep in sync so guard comparisons work
     // SERVER IS PRIMARY — save to server first
     const serverOk = await SYNC.push(toSave);
     if (serverOk) {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
+      _lastServerSaveTime = Date.now(); // mark confirmed server save
     } else {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _scheduleRetry(toSave);
