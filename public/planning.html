@@ -748,14 +748,10 @@ const SYNC = (() => {
       const serverOrderCount = (serverState.orders || []).length;
       const localSavedAt = state._savedAt || 0;
       const serverSavedAt = serverState._savedAt || 0;
-      // Guard 1: local has more orders than server — local wins, push to fix server
-      if (serverOrderCount > 0 && serverOrderCount < currentOrderCount) {
-        console.warn(`[Sync] Server has ${serverOrderCount} orders, local has ${currentOrderCount} — pushing local to fix server`);
-        SYNC.push({...state, _savedAt: Date.now()});
-      // Guard 2: pending unsaved local changes are newer than server — skip overwrite
-      } else if (_pendingSave && localSavedAt > serverSavedAt) {
-        console.log('[Sync] Skipping server data — local pending save is newer');
-      } else {
+      // SIMPLE RULE: Server always wins on read — newest _savedAt wins
+      // If local has pending save, retry push AFTER taking server data
+      if (serverSavedAt >= localSavedAt || !_pendingSave) {
+        // Server is newer or equal — take server data
         Object.assign(state, serverState);
         // Start with hardcoded codes, then merge DB-saved custom codes on top
         state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
@@ -967,6 +963,7 @@ async function saveState() {
     // SERVER IS PRIMARY — save to server first
     const serverOk = await SYNC.push(toSave);
     if (serverOk) {
+      state._savedAt = toSave._savedAt; // mark local state as synced with server
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
     } else {
