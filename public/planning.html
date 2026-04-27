@@ -1681,7 +1681,7 @@ function renderProduction() {
   `;
 
   // Group by machine
-  const machines = state.machineMaster;
+  const machines = state.machineMaster.filter(m => m.active !== false);
   const sizes = [...new Set(machines.map(m=>m.size))].sort();
 
   let html = `
@@ -2049,7 +2049,7 @@ function showAddOrderModal(machineId, existingOrder) {
       <div class="form-group">
         <label>Machine</label>
         <select class="form-control" id="fo-machine" onchange="onMachineChange(this)">
-          ${state.machineMaster.map(m=>`<option value="${m.id}" ${(ord.machineId||machineId)===m.id?'selected':''}>${m.id} (Size ${m.size})</option>`).join('')}
+          ${state.machineMaster.filter(m=>m.active!==false).map(m=>`<option value="${m.id}" ${(ord.machineId||machineId)===m.id?'selected':''}>${m.id} (Size ${m.size})</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -5358,8 +5358,9 @@ function renderMachines() {
     <div class="card">
       <div class="card-title">Production Machines</div>
       <div class="table-wrap"><table>
-        <thead><tr><th>Machine</th><th>Default Size</th><th>Capacity (L/day)</th><th>A-Grade %</th><th>Actions</th></tr></thead>
-        <tbody>${state.machineMaster.map(mc=>`<tr>
+        <thead><tr><th>Active</th><th>Machine</th><th>Default Size</th><th>Capacity (L/day)</th><th>A-Grade %</th><th>Actions</th></tr></thead>
+        <tbody>${state.machineMaster.map(mc=>`<tr style="${mc.active===false?'opacity:0.5':''}">
+          <td><input type="checkbox" ${mc.active===false?'':'checked'} onchange="toggleMachineActive('${mc.id}',this.checked)" style="width:18px;height:18px;cursor:pointer;accent-color:var(--primary)"></td>
           <td class="text-mono text-accent fw-bold">${mc.id}</td>
           <td class="text-mono">${mc.size}</td>
           <td class="text-mono">${mc.cap}</td>
@@ -5407,15 +5408,33 @@ function showAddMachineModal(existingId) {
 }
 
 function saveMachine(existingId) {
+  const existing = existingId ? state.machineMaster.find(m=>m.id===existingId) : null;
   const mc = {
     id: document.getElementById('mc-id')?.value,
     size: document.getElementById('mc-size')?.value,
     cap: parseFloat(document.getElementById('mc-cap')?.value)||20,
     aGrade: parseFloat(document.getElementById('mc-agrade')?.value)||93,
+    active: existing ? (existing.active !== false) : true, // preserve active state, default true
   };
   if (existingId) { const idx=state.machineMaster.findIndex(m=>m.id===existingId); if(idx>=0) state.machineMaster[idx]=mc; }
   else state.machineMaster.push(mc);
   saveState(); closeModal(); render();
+}
+
+function toggleMachineActive(id, active) {
+  const mc = state.machineMaster.find(m => m.id === id);
+  if (mc) {
+    mc.active = active;
+    saveState();
+    // Re-render just the row opacity without full render
+    const rows = document.querySelectorAll('#content tbody tr');
+    rows.forEach(row => {
+      if (row.querySelector('td')?.nextElementSibling?.textContent === id) {
+        row.style.opacity = active ? '1' : '0.5';
+      }
+    });
+    toast(active ? `✅ ${id} enabled` : `⛔ ${id} disabled`, 2000);
+  }
 }
 
 function editMachine(id) { showAddMachineModal(id); }
