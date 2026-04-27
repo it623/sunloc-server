@@ -753,8 +753,35 @@ const SYNC = (() => {
       if (_lastServerSaveTime > 0 && (Date.now() - _lastServerSaveTime) < 60000) {
         console.log('[Sync] Skipping overwrite — saved within last 60s');
       } else if (serverSavedAt >= localSavedAt || !_pendingSave) {
-        // Server is newer or equal — take server data
+        // Server is newer or equal — take server data BUT protect locally changed orders
+        // Build local order map for protected IDs
+        const _protectedOrders = {};
+        const _protectedPrintOrders = {};
+        const _protectWindow = 90000; // 90 seconds
+        const _now = Date.now();
+        if (Object.keys(_localOrderChanges).length > 0) {
+          (state.orders||[]).forEach(o => {
+            const ts = _localOrderChanges[o.id];
+            if (ts && (_now - ts) < _protectWindow) _protectedOrders[o.id] = o;
+          });
+        }
+        if (Object.keys(_localPrintOrderChanges).length > 0) {
+          (state.printOrders||[]).forEach(p => {
+            const ts = _localPrintOrderChanges[p.id];
+            if (ts && (_now - ts) < _protectWindow) _protectedPrintOrders[p.id] = p;
+          });
+        }
+        // Take server state
         Object.assign(state, serverState);
+        // Restore locally changed orders — they win over server
+        if (Object.keys(_protectedOrders).length > 0) {
+          state.orders = (state.orders||[]).map(o => _protectedOrders[o.id] || o);
+          console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
+        }
+        if (Object.keys(_protectedPrintOrders).length > 0) {
+          state.printOrders = (state.printOrders||[]).map(p => _protectedPrintOrders[p.id] || p);
+          console.log('[Sync] Protected', Object.keys(_protectedPrintOrders).length, 'locally changed print orders from server overwrite');
+        }
         // Start with hardcoded codes, then merge DB-saved custom codes on top
         state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
         state.zoneMap = ZONE_MAP_RAW;
@@ -955,6 +982,11 @@ function openTrackingApp() {
 let _pendingSave = null;
 let _retryTimer = null;
 let _lastServerSaveTime = 0;
+// Registry of locally changed order IDs — these are NEVER overwritten by server sync
+// Key: order id, Value: timestamp of local change
+let _localOrderChanges = {};
+// Registry of locally changed print order IDs
+let _localPrintOrderChanges = {};
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
   if (_retryTimer) return;
@@ -989,6 +1021,11 @@ async function saveState() {
     delete toSave.zoneMap;
     toSave._savedAt = Date.now();
     state._savedAt = toSave._savedAt;
+    // Record all current order and printOrder IDs as locally changed
+    // These will be protected from server overwrite in loadFromServer
+    const _changeTs = Date.now();
+    (state.orders||[]).forEach(o => { _localOrderChanges[o.id] = _changeTs; });
+    (state.printOrders||[]).forEach(p => { _localPrintOrderChanges[p.id] = _changeTs; });
     // SERVER IS PRIMARY — save to server first
     const serverOk = await SYNC.push(toSave);
     if (serverOk) {
