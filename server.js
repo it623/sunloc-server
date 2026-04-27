@@ -2353,13 +2353,17 @@ app.get('/api/tracking/wip-summary', async (req, res) => {
   try {
     let summary, closures;
     if (pgPool) {
-      // PostgreSQL: use pgPool directly for reliable GROUP BY results
-      const [r1, r2] = await Promise.all([
-        pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type'),
-        pgPool.query("SELECT batch_number, dept, closed, closed_at FROM tracking_stage_closure WHERE closed = 1 OR closed = '1' OR closed = true")
-      ]);
+      const r1 = await pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type');
       summary = r1.rows;
-      closures = r2.rows;
+      try {
+        const r2 = await pgPool.query("SELECT batch_number, dept, closed, closed_at FROM tracking_stage_closure WHERE closed = 1 OR closed::text = '1'");
+        closures = r2.rows;
+      } catch(ce) {
+        try {
+          const r2 = await pgPool.query('SELECT batch_number, dept, closed, closed_at FROM tracking_stage_closure WHERE closed IS NOT NULL');
+          closures = r2.rows.filter(r => r.closed == 1 || r.closed === true);
+        } catch(ce2) { closures = []; }
+      }
     } else {
       summary = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type').all();
       closures = db.prepare("SELECT batch_number, dept, closed, closed_at FROM tracking_stage_closure WHERE closed = 1").all();
