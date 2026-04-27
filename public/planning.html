@@ -749,9 +749,9 @@ const SYNC = (() => {
       const localSavedAt = state._savedAt || 0;
       const serverSavedAt = serverState._savedAt || 0;
       // SIMPLE RULE: Server always wins on read — newest _savedAt wins
-      // Guard 3: if saved to server within last 60s, local is authoritative — skip overwrite
+      // Guard: saved within last 60s — local is authoritative, skip overwrite
       if (_lastServerSaveTime > 0 && (Date.now() - _lastServerSaveTime) < 60000) {
-        console.log('[Sync] Skipping server data — saved within last 60s');
+        console.log('[Sync] Skipping overwrite — saved within last 60s');
       } else if (serverSavedAt >= localSavedAt || !_pendingSave) {
         // Server is newer or equal — take server data
         Object.assign(state, serverState);
@@ -929,7 +929,7 @@ function openTrackingApp() {
 // Retry queue — if server save fails, retry every 30 seconds until it succeeds
 let _pendingSave = null;
 let _retryTimer = null;
-let _lastServerSaveTime = 0; // timestamp of last confirmed server save
+let _lastServerSaveTime = 0;
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
   if (_retryTimer) return;
@@ -963,13 +963,14 @@ async function saveState() {
     delete toSave.pcCodes;
     delete toSave.zoneMap;
     toSave._savedAt = Date.now();
+    state._savedAt = toSave._savedAt;
     // SERVER IS PRIMARY — save to server first
     const serverOk = await SYNC.push(toSave);
     if (serverOk) {
       state._savedAt = toSave._savedAt; // mark local state as synced with server
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
-      _lastServerSaveTime = Date.now(); // mark confirmed server save
+      _lastServerSaveTime = Date.now();
     } else {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _scheduleRetry(toSave);
@@ -1485,7 +1486,7 @@ function navigate(page) {
   // If server data is older than 60 seconds, refresh silently in background
   const staleMs = 60 * 1000;
   const lastSaved = state._savedAt || 0;
-  if (Date.now() - lastSaved > staleMs) {
+  if (Date.now() - lastSaved > staleMs && !(_lastServerSaveTime > 0 && (Date.now()-_lastServerSaveTime) < 60000)) {
     SYNC.loadFromServer().catch(()=>{});
   }
 }
@@ -3054,10 +3055,7 @@ function refreshOpmDropdown() {
     : state.printMachineMaster;
   sel.innerHTML = '<option value="">Unassigned</option>' +
     filtered.map(pm => `<option value="${pm.id}">${pm.id} (Size ${pm.size}, ${pm.cap}L/day)</option>`).join('');
-  // Restore the previous selection if it still exists in the filtered list
-  if (currentVal && sel.querySelector(`option[value="${currentVal}"]`)) {
-    sel.value = currentVal;
-  }
+  if (currentVal && sel.querySelector(`option[value="${currentVal}"]`)) sel.value = currentVal;
 }
 
 async function savePrintModal(existingId) {
@@ -6145,6 +6143,8 @@ setInterval(async()=>{try{await SYNC.loadTrackingStatus();if(!_userIsFocused())r
 // Auto-sync planning state every 30s — all devices stay in sync automatically
 let _planningAutoSyncTimer = null;
 async function _planningAutoSync(){
+  // Skip auto-sync if we saved within last 60s — prevents overwriting recent changes
+  if(_lastServerSaveTime > 0 && (Date.now()-_lastServerSaveTime) < 60000) return;
   if(!document.hidden && !_userIsActive()){ await SYNC.loadFromServer(); }
 }
 _planningAutoSyncTimer = setInterval(_planningAutoSync, 30000);
