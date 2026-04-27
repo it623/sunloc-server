@@ -2083,6 +2083,12 @@ function _userIsFocused(){
   if(!el||el===document.body||el===document.documentElement)return false;
   return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
 }
+let _userActiveUntil = 0;
+function _markUserActive(){ _userActiveUntil = Date.now() + 10000; }
+function _userIsActive(){ return Date.now() < _userActiveUntil; }
+document.addEventListener('mousedown', _markUserActive, true);
+document.addEventListener('keydown',   _markUserActive, true);
+document.addEventListener('touchstart',_markUserActive, true);
 function renderPage(page){
   const _f=_saveFocus();
   document.getElementById('tb-title').textContent = NAV_ITEMS.find(n=>n.id===page)?.label||page;
@@ -5416,7 +5422,7 @@ async function refreshScans(){
       // Never re-render reports page on background refresh — wipes open reports
       if(currentPage==='reports') return;
       // Only re-render other non-scan pages if user isn't typing
-      if(currentPage&&!_userIsFocused()) renderPage(currentPage);
+      if(currentPage&&!_userIsActive()&&!_userIsFocused()) renderPage(currentPage);
       return;
     }
     const tbody=document.getElementById(`recent-scans-${dept}`);

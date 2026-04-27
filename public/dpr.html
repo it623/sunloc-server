@@ -1795,10 +1795,16 @@ function _userIsFocused(){
   if(!el||el===document.body||el===document.documentElement)return false;
   return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
 }
+let _userActiveUntil = 0;
+function _markUserActive(){ _userActiveUntil = Date.now() + 10000; }
+function _userIsActive(){ return Date.now() < _userActiveUntil; }
+document.addEventListener('mousedown', _markUserActive, true);
+document.addEventListener('keydown',   _markUserActive, true);
+document.addEventListener('touchstart',_markUserActive, true);
 // Safe render: if user is typing, defer render until they leave the field
 let _deferredRender=null;
 function _safeRenderAll(){
-  if(_userIsFocused()){
+  if(_userIsActive()||_userIsFocused()){
     // Queue a render for when focus leaves current field
     clearTimeout(_deferredRender);
     _deferredRender=setTimeout(()=>{
