@@ -1114,7 +1114,7 @@ app.get('/api/planning/state', async (req, res) => {
       for (const ord of state.orders) {
         const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
         ord.actualProd = actual;
-        if (actual > 0 && ord.status === 'pending') ord.status = 'running';
+        // NOTE: Do NOT change ord.status here — status changes cause client recalc which changes dates
       }
     }
     const savedAt = pgPool
