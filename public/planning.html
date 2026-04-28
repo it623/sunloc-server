@@ -736,6 +736,11 @@ const SYNC = (() => {
 
   async function loadFromServer() {
     if (!_url) return;
+    // Block server load during Maintenance Mode — user is correcting dates/status manually
+    if (typeof isMaintenanceMode === 'function' && isMaintenanceMode()) {
+      console.log('[Sync] loadFromServer blocked — Maintenance Mode active');
+      return;
+    }
 
     // STEP 1: (render called after login — skipped here to avoid pre-login crash)
 
@@ -6463,6 +6468,8 @@ setInterval(async()=>{try{await SYNC.loadTrackingStatus();if(!_userIsFocused())r
 // Auto-sync planning state every 30s — all devices stay in sync automatically
 let _planningAutoSyncTimer = null;
 async function _planningAutoSync(){
+  // Block ALL auto-sync during Maintenance Mode — user is correcting dates/status
+  if (isMaintenanceMode()) return;
   // Skip auto-sync if we saved within last 60s — prevents overwriting recent changes
   if(_lastServerSaveTime > 0 && (Date.now()-_lastServerSaveTime) < 60000) return;
   if(!document.hidden && !_userIsActive()){ await SYNC.loadFromServer(); }
