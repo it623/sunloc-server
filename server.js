@@ -1513,18 +1513,24 @@ app.get('/api/auth/users', (req, res) => {
 // ─── TEMP Batch Colour/PC Code Update ────────────────────────
 
 // POST /api/temp-batches/update-details — save colour + PC Code (one-time per TEMP batch)
-app.post('/api/temp-batches/update-details', (req, res) => {
+app.post('/api/temp-batches/update-details', async (req, res) => {
   try {
     const { tempBatchId, colour, pcCode } = req.body;
     if (!tempBatchId) return res.status(400).json({ ok: false, error: 'Missing tempBatchId' });
-    const tb = db.prepare('SELECT * FROM temp_batches WHERE id = ?').get(tempBatchId);
-    if (!tb) return res.status(404).json({ ok: false, error: 'TEMP batch not found' });
-    db.prepare(`
-      UPDATE temp_batches SET colour = ?, pc_code = ?, colour_confirmed = 1 WHERE id = ?
-    `).run(colour || null, pcCode || null, tempBatchId);
-    logAudit('SYSTEM', 'system', 'dpr', 'TEMP_DETAILS_SET',
-      `TEMP batch ${tempBatchId} — Colour: ${colour}, PC Code: ${pcCode}`);
-    const updated = db.prepare('SELECT * FROM temp_batches WHERE id = ?').get(tempBatchId);
+    let updated;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM temp_batches WHERE id=$1', [tempBatchId]);
+      if (!r.rows[0]) return res.status(404).json({ ok: false, error: 'TEMP batch not found' });
+      await pgPool.query(`UPDATE temp_batches SET colour=$1, pc_code=$2, colour_confirmed=1 WHERE id=$3`, [colour||null, pcCode||null, tempBatchId]);
+      const r2 = await pgPool.query('SELECT * FROM temp_batches WHERE id=$1', [tempBatchId]);
+      updated = r2.rows[0];
+    } else {
+      const tb = db.prepare('SELECT * FROM temp_batches WHERE id = ?').get(tempBatchId);
+      if (!tb) return res.status(404).json({ ok: false, error: 'TEMP batch not found' });
+      db.prepare(`UPDATE temp_batches SET colour = ?, pc_code = ?, colour_confirmed = 1 WHERE id = ?`).run(colour||null, pcCode||null, tempBatchId);
+      updated = db.prepare('SELECT * FROM temp_batches WHERE id = ?').get(tempBatchId);
+    }
+    logAudit('SYSTEM', 'system', 'dpr', 'TEMP_DETAILS_SET', `TEMP batch ${tempBatchId} — Colour: ${colour}, PC Code: ${pcCode}`);
     res.json({ ok: true, batch: updated });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -1847,38 +1853,32 @@ function tempBatchId(machineId, date) {
 }
 
 // GET /api/temp-batches/check/:machineId — check if machine needs TEMP batch today
-app.get('/api/temp-batches/check/:machineId', (req, res) => {
+app.get('/api/temp-batches/check/:machineId', async (req, res) => {
   try {
     const { machineId } = req.params;
     const today = new Date().toISOString().split('T')[0];
     const planState = getPlanningState();
-
-    // Check if machine has any active (non-closed) planned orders
     const activeOrders = (planState.orders || []).filter(o =>
       o.machineId === machineId && o.status !== 'closed' && !o.deleted
     );
     const hasActiveOrder = activeOrders.length > 0;
-
-    // Check if TEMP batch already exists for today
-    const existing = db.prepare(
-      `SELECT * FROM temp_batches WHERE machine_id = ? AND date = ?`
-    ).get(machineId, today);
-
-    // Get machine info from planning state
+    let existing = null, allTemp = [];
+    if (pgPool) {
+      const r1 = await pgPool.query(`SELECT * FROM temp_batches WHERE machine_id=$1 AND date=$2`, [machineId, today]);
+      existing = r1.rows[0] || null;
+      const r2 = await pgPool.query(`SELECT * FROM temp_batches WHERE machine_id=$1 AND status='active' ORDER BY date DESC`, [machineId]);
+      allTemp = r2.rows;
+    } else {
+      existing = db.prepare(`SELECT * FROM temp_batches WHERE machine_id = ? AND date = ?`).get(machineId, today);
+      allTemp = db.prepare(`SELECT * FROM temp_batches WHERE machine_id = ? AND status = 'active' ORDER BY date DESC`).all(machineId);
+    }
     const mc = (planState.machineMaster || []).find(m => m.id === machineId);
     const packSizes = planState.packSizes || {};
     const packSizeLakhs = mc ? ((packSizes[mc.size] || 100000) / 100000) : 1;
     const capLakhs = mc ? (mc.cap || 8) : 8;
     const labelCount = mc ? calcTempLabelCount(capLakhs, packSizeLakhs) : 0;
-
-    // Get all active unreconciled TEMP batches for this machine
-    const allTemp = db.prepare(
-      `SELECT * FROM temp_batches WHERE machine_id = ? AND status = 'active' ORDER BY date DESC`
-    ).all(machineId);
-
     res.json({
-      ok: true, machineId,
-      hasActiveOrder,
+      ok: true, machineId, hasActiveOrder,
       activeOrders: activeOrders.map(o => ({ id:o.id, batchNumber:o.batchNumber, qty:o.qty, status:o.status })),
       todayTempBatch: existing || null,
       needsTemp: !hasActiveOrder,
@@ -1889,39 +1889,32 @@ app.get('/api/temp-batches/check/:machineId', (req, res) => {
 });
 
 // POST /api/temp-batches/create — create TEMP batch for a machine/date
-app.post('/api/temp-batches/create', (req, res) => {
+app.post('/api/temp-batches/create', async (req, res) => {
   try {
     const { machineId, date } = req.body;
     const batchDate = date || new Date().toISOString().split('T')[0];
     const id = tempBatchId(machineId, batchDate);
-
-    // Get machine info
     const planState = getPlanningState();
     const mc = (planState.machineMaster || []).find(m => m.id === machineId);
     if (!mc) return res.status(400).json({ ok:false, error:'Machine not found' });
-
     const packSizes = planState.packSizes || {};
     const packSizeLakhs = (packSizes[mc.size] || 100000) / 100000;
     const capLakhs = mc.cap || 8;
     const labelCount = calcTempLabelCount(capLakhs, packSizeLakhs);
-
-    db.prepare(`
-      INSERT OR IGNORE INTO temp_batches
-        (id, machine_id, machine_size, date, daily_cap_lakhs, label_count, pack_size_lakhs)
-      VALUES (?,?,?,?,?,?,?)
-    `).run(id, machineId, mc.size, batchDate, capLakhs, labelCount, packSizeLakhs);
-
-    const batch = db.prepare(`SELECT * FROM temp_batches WHERE id = ?`).get(id);
-
-    // Log alert for today
-    db.prepare(`
-      INSERT OR IGNORE INTO temp_batch_alerts (machine_id, temp_batch_id, alert_date)
-      VALUES (?,?,?)
-    `).run(machineId, id, batchDate);
-
-    logAudit('SYSTEM', 'system', 'dpr', 'TEMP_BATCH_CREATED',
-      `TEMP batch created: ${id} — ${capLakhs}L → ${labelCount} labels (Size ${mc.size})`);
-
+    let batch;
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO temp_batches (id,machine_id,machine_size,date,daily_cap_lakhs,label_count,pack_size_lakhs) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING`,
+        [id, machineId, mc.size, batchDate, capLakhs, labelCount, packSizeLakhs]);
+      await pgPool.query(`INSERT INTO temp_batch_alerts (machine_id,temp_batch_id,alert_date) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [machineId, id, batchDate]);
+      const r = await pgPool.query('SELECT * FROM temp_batches WHERE id=$1', [id]);
+      batch = r.rows[0];
+    } else {
+      db.prepare(`INSERT OR IGNORE INTO temp_batches (id,machine_id,machine_size,date,daily_cap_lakhs,label_count,pack_size_lakhs) VALUES (?,?,?,?,?,?,?)`).run(id, machineId, mc.size, batchDate, capLakhs, labelCount, packSizeLakhs);
+      db.prepare(`INSERT OR IGNORE INTO temp_batch_alerts (machine_id,temp_batch_id,alert_date) VALUES (?,?,?)`).run(machineId, id, batchDate);
+      batch = db.prepare(`SELECT * FROM temp_batches WHERE id = ?`).get(id);
+    }
+    logAudit('SYSTEM','system','dpr','TEMP_BATCH_CREATED',`TEMP batch created: ${id} — ${capLakhs}L → ${labelCount} labels (Size ${mc.size})`);
     res.json({ ok:true, batch });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
