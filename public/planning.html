@@ -1335,17 +1335,20 @@ function recalcMachineScheduleQuiet(machineId) {
       }
       continue;
     }
-    // If both startDate AND endDate are filled — never touch either, ever
-    const _hasBothDates = ord.startDate && ord.endDate;
+    // Orders before 29/04/2026 — never touch startDate or endDate (locked)
+    // Orders from 29/04/2026 onwards — full recalc logic applies
+    const _cutoff = '2026-04-29';
+    const _ordStart = ord.startDate ? (ord.startDate instanceof Date ? ord.startDate.toISOString().slice(0,10) : String(ord.startDate).slice(0,10)) : null;
+    const _isNewOrder = !_ordStart || _ordStart >= _cutoff;
     if (!cursor) cursor = new Date(ord.startDate || today());
-    else if (!_hasBothDates && !ord.startDate) ord.startDate = new Date(cursor);
+    else if (_isNewOrder) ord.startDate = new Date(cursor);
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty    = sc.grossQty;
     ord.aimOut      = sc.aimOut;
     ord.printOut    = sc.printOut;
     ord.piOut       = sc.piOut;
     ord.daysNeeded  = sc.daysNeeded;
-    if (!_hasBothDates && !ord.endDate) {
+    if (_isNewOrder || !ord.endDate) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
@@ -1378,11 +1381,14 @@ function recalcMachineSchedule(machineId) {
       }
       continue;
     }
-    // If both startDate AND endDate are filled — never touch either, ever
-    const _hasBothDates = ord.startDate && ord.endDate;
+    // Orders before 29/04/2026 — never touch startDate or endDate (locked)
+    // Orders from 29/04/2026 onwards — full recalc logic applies
+    const _cutoff = '2026-04-29';
+    const _ordStart = ord.startDate ? (ord.startDate instanceof Date ? ord.startDate.toISOString().slice(0,10) : String(ord.startDate).slice(0,10)) : null;
+    const _isNewOrder = !_ordStart || _ordStart >= _cutoff;
     if (!cursor) {
       cursor = new Date(ord.startDate || today());
-    } else if (!_hasBothDates) {
+    } else if (_isNewOrder) {
       ord.startDate = new Date(cursor);
     }
     const sc = calcOrderSchedule(ord, mc);
@@ -1391,8 +1397,7 @@ function recalcMachineSchedule(machineId) {
     ord.printOut   = sc.printOut;
     ord.piOut      = sc.piOut;
     ord.daysNeeded = sc.daysNeeded;
-    // Only recalculate endDate if order has no endDate set
-    if (!_hasBothDates) {
+    if (_isNewOrder || !ord.endDate) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
