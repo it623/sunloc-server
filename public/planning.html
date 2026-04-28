@@ -821,8 +821,7 @@ const SYNC = (() => {
           state.printMachineMaster = JSON.parse(JSON.stringify(PRINT_MACHINES));
         }
         try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
-        const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
-        allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
+        // Do NOT recalc dates on load — existing order dates are permanently locked
         // Don't re-render if user is actively typing (cursor fix)
         if(!_userIsActive() && !_userIsFocused()) render();
       }
@@ -957,7 +956,8 @@ const SYNC = (() => {
             window._liveAGrade[k] = v; // also keep original for fallback
           });
           const machineIds = [...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.machineId))];
-          machineIds.forEach(mid => { if (mid) recalcMachineScheduleQuiet(mid); });
+          // NOTE: Do NOT call recalcMachineScheduleQuiet here — it runs every 30s and changes dates
+          // grossQty/aimOut will be updated when user explicitly edits an order
           state.dispatchPlans.forEach(dp => {
             if (!dp.batchNumber) return;
             // Handle single or comma-separated batch numbers (consolidated exports)
