@@ -778,8 +778,18 @@ const SYNC = (() => {
             if (ts && (_now - ts) < _protectWindow) _protectedPrintOrders[p.id] = p;
           });
         }
-        // Take server state
+        // Take server state — but preserve order dates that are manually set
+        const _localOrdersMap = {};
+        (state.orders||[]).forEach(o => { if (o.manualStartDate || o.manualEndDate) _localOrdersMap[o.id] = o; });
         Object.assign(state, serverState);
+        // Restore manually dated orders — their dates must never be overwritten by server
+        if (Object.keys(_localOrdersMap).length > 0) {
+          state.orders = (state.orders||[]).map(o => {
+            const local = _localOrdersMap[o.id];
+            if (!local) return o;
+            return {...o, startDate: local.startDate, endDate: local.endDate, manualStartDate: true, manualEndDate: true};
+          });
+        }
         // Restore locally changed orders — they win over server
         if (Object.keys(_protectedOrders).length > 0) {
           state.orders = (state.orders||[]).map(o => _protectedOrders[o.id] || o);
