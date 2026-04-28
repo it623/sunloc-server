@@ -503,10 +503,8 @@ input[type="file"] { display:none; }
         <button id="plan-menu-btn" onclick="togglePlanSidebar()" style="display:none;background:none;border:none;color:var(--text);font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;flex-shrink:0">☰</button>
         <div class="topbar-title" id="page-title">Production Planning</div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <div class="topbar-actions" id="topbar-actions">
-          <span id="syncStatusBadge" style="margin-right:8px"></span>
-        </div>
+      <div class="topbar-actions" id="topbar-actions">
+        <span id="syncStatusBadge" style="margin-right:8px"></span>
       </div>
     </div>
     <div id="content"></div>
@@ -778,7 +776,7 @@ const SYNC = (() => {
             if (ts && (_now - ts) < _protectWindow) _protectedPrintOrders[p.id] = p;
           });
         }
-        // Take server state — server dates are always authoritative
+        // Take server state
         Object.assign(state, serverState);
         // Restore locally changed orders — they win over server
         if (Object.keys(_protectedOrders).length > 0) {
@@ -821,7 +819,8 @@ const SYNC = (() => {
           state.printMachineMaster = JSON.parse(JSON.stringify(PRINT_MACHINES));
         }
         try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
-        // Do NOT recalc dates on load — existing order dates are permanently locked
+        const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
+        allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
         // Don't re-render if user is actively typing (cursor fix)
         if(!_userIsActive() && !_userIsFocused()) render();
       }
@@ -852,7 +851,35 @@ const SYNC = (() => {
       }
     } catch(e) { console.warn('[PrintOrders] Merge failed:', e.message); }
 
-    // Orders loaded from planning_state only — dedicated table merge disabled
+    // ALWAYS: Merge production orders from dedicated table — each order is permanent
+    try {
+      const oor = await fetch(_url + '/api/orders/all', { signal: AbortSignal.timeout(8000) });
+      if (oor.ok) {
+        const ooj = await oor.json();
+        if (ooj.ok && Array.isArray(ooj.orders) && ooj.orders.length > 0) {
+          const dbOrderMap = {};
+          ooj.orders.forEach(o => { dbOrderMap[o.id] = o; });
+          let ordersChanged = false;
+          // Update existing orders with DB version (DB is authoritative)
+          state.orders = (state.orders||[]).map(o => {
+            const dbOrd = dbOrderMap[o.id];
+            if (!dbOrd) return o; // not in DB yet — keep local version
+            if (dbOrd.deleted) return null; // deleted in DB — remove
+            return dbOrd; // DB version always wins
+          }).filter(Boolean);
+          // Add any orders in DB not yet in local state
+          ooj.orders.forEach(dbO => {
+            if (dbO.deleted) return; // skip deleted
+            if (!state.orders.find(o => o.id === dbO.id)) {
+              state.orders.push(dbO);
+              ordersChanged = true;
+            }
+          });
+          if (ordersChanged && !_userIsActive() && !_userIsFocused()) render();
+          console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table');
+        }
+      }
+    } catch(e) { console.warn('[Orders] Merge failed:', e.message); }
 
     // ALWAYS: Merge machineMaster from dedicated table — never overwritten by sync
     try {
@@ -923,8 +950,7 @@ const SYNC = (() => {
             window._liveAGrade[k] = v; // also keep original for fallback
           });
           const machineIds = [...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.machineId))];
-          // NOTE: Do NOT call recalcMachineScheduleQuiet here — it runs every 30s and changes dates
-          // grossQty/aimOut will be updated when user explicitly edits an order
+          machineIds.forEach(mid => { if (mid) recalcMachineScheduleQuiet(mid); });
           state.dispatchPlans.forEach(dp => {
             if (!dp.batchNumber) return;
             // Handle single or comma-separated batch numbers (consolidated exports)
@@ -987,14 +1013,15 @@ function loadState() {
     const saved = localStorage.getItem('sunloc_state');
     if (saved) {
       const parsed = JSON.parse(saved);
+      // SAFETY: if localStorage has very few orders (likely stale/corrupted), wipe it
+      // Server will always provide the authoritative count
       const localOrderCount = (parsed.orders || []).length;
       if (localOrderCount > 0 && localOrderCount < 180) {
         console.warn(`[LoadState] localStorage has only ${localOrderCount} orders — likely stale. Wiping to force server load.`);
         localStorage.removeItem('sunloc_state');
       } else {
         Object.assign(state, parsed);
-        // Always clear orders from localStorage — server is authoritative for orders/dates
-        state.orders = [];
+        // Start with hardcoded codes — DB codes merged in loadFromServer()
         state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
         state.zoneMap = ZONE_MAP_RAW;
       }
@@ -1015,10 +1042,20 @@ function loadState() {
         });
         if (r.ok) console.log('[PrintOrders] Migrated', assigned.length, 'assigned orders to dedicated table');
       }
-      // Order migration to dedicated table disabled
+      // Migrate all production orders to dedicated table
+      const allOrders = (state.orders||[]).filter(o => !o.deleted);
+      if (_url && allOrders.length > 0) {
+        fetch(_url + '/api/orders/upsert-bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orders: allOrders }),
+          signal: AbortSignal.timeout(30000)
+        }).then(r => { if (r.ok) console.log('[Orders] Migrated', allOrders.length, 'orders to dedicated table'); }).catch(()=>{});
+      }
     } catch(e) {}
-    // NOTE: Do NOT call saveState() on page load — it overwrites correct DB dates with local state
-    // dailyPrinting logs are saved when user explicitly saves
+    // Also save full state to server to ensure dailyPrinting logs are persisted
+    if ((state.dailyPrinting||[]).length > 0) {
+      try { await saveState(); console.log('[DailyPrinting] Pushed', state.dailyPrinting.length, 'logs to server'); } catch(e) {}
+    }
     // Migrate machineMaster to dedicated table on every load
     try {
       await saveMachinesToDB();
@@ -1046,6 +1083,7 @@ let _pendingSave = null;
 let _retryTimer = null;
 let _lastServerSaveTime = 0;
 // Registry of locally changed order IDs — these are NEVER overwritten by server sync
+// Key: order id, Value: timestamp of local change
 let _localOrderChanges = {};
 // Registry of locally changed print order IDs
 let _localPrintOrderChanges = {};
@@ -1083,8 +1121,12 @@ async function saveState() {
     delete toSave.zoneMap;
     toSave._savedAt = Date.now();
     state._savedAt = toSave._savedAt;
-    // Only stamp machine master changes — NOT all orders (orders are stamped only on explicit user edits)
+    // Record all current order and printOrder IDs as locally changed
+    // These will be protected from server overwrite in loadFromServer
     const _changeTs = Date.now();
+    (state.orders||[]).forEach(o => { _localOrderChanges[o.id] = _changeTs; });
+    (state.printOrders||[]).forEach(p => { _localPrintOrderChanges[p.id] = _changeTs; });
+    // Also stamp machine master changes so they survive 90s sync protection
     _localOrderChanges['__machineMaster__'] = _changeTs;
     _localOrderChanges['__printMachineMaster__'] = _changeTs;
     _localOrderChanges['__pcCodes__'] = _changeTs;
@@ -1101,7 +1143,6 @@ async function saveState() {
       console.warn('[Sync] Server save failed — will retry in 30s');
     }
     auditLog('SAVE', `Saved planning state — page: ${state.currentPage}`);
-    
   } catch(e) {}
 }
 
@@ -1251,6 +1292,8 @@ function recalcMachineScheduleQuiet(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
+  const _rToday = new Date().toISOString().slice(0,10);
+  const _inWindow = _rToday >= '2026-04-20' && _rToday <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') {
@@ -1269,20 +1312,16 @@ function recalcMachineScheduleQuiet(machineId) {
       }
       continue;
     }
-    // Orders before 29/04/2026 — never touch startDate or endDate (locked)
-    // Orders from 29/04/2026 onwards — full recalc logic applies
-    const _cutoff = '2026-04-29';
-    const _ordStart = ord.startDate ? (ord.startDate instanceof Date ? ord.startDate.toISOString().slice(0,10) : String(ord.startDate).slice(0,10)) : null;
-    const _isNewOrder = !_ordStart || _ordStart >= _cutoff;
     if (!cursor) cursor = new Date(ord.startDate || today());
-    else if (_isNewOrder) ord.startDate = new Date(cursor);
+    else ord.startDate = new Date(cursor);
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty    = sc.grossQty;
     ord.aimOut      = sc.aimOut;
     ord.printOut    = sc.printOut;
     ord.piOut       = sc.piOut;
     ord.daysNeeded  = sc.daysNeeded;
-    if (_isNewOrder || !ord.endDate) {
+    // During 2-day window: if end date was manually set, do not overwrite it
+    if (!(_inWindow && ord.manualEndDate)) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
@@ -1297,6 +1336,8 @@ function recalcMachineSchedule(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
+  const _rToday2 = new Date().toISOString().slice(0,10);
+  const _inWindow2 = _rToday2 >= '2026-04-20' && _rToday2 <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') {
@@ -1315,14 +1356,9 @@ function recalcMachineSchedule(machineId) {
       }
       continue;
     }
-    // Orders before 29/04/2026 — never touch startDate or endDate (locked)
-    // Orders from 29/04/2026 onwards — full recalc logic applies
-    const _cutoff = '2026-04-29';
-    const _ordStart = ord.startDate ? (ord.startDate instanceof Date ? ord.startDate.toISOString().slice(0,10) : String(ord.startDate).slice(0,10)) : null;
-    const _isNewOrder = !_ordStart || _ordStart >= _cutoff;
     if (!cursor) {
       cursor = new Date(ord.startDate || today());
-    } else if (_isNewOrder) {
+    } else {
       ord.startDate = new Date(cursor);
     }
     const sc = calcOrderSchedule(ord, mc);
@@ -1331,7 +1367,8 @@ function recalcMachineSchedule(machineId) {
     ord.printOut   = sc.printOut;
     ord.piOut      = sc.piOut;
     ord.daysNeeded = sc.daysNeeded;
-    if (_isNewOrder || !ord.endDate) {
+    // During 2-day window: if end date was manually set, do not overwrite it
+    if (!(_inWindow2 && ord.manualEndDate)) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
@@ -1950,7 +1987,7 @@ function updateActualProd(ordId, val, machineId) {
 
 function updateOrderRemark(ordId, val) {
   const ord = state.orders.find(o=>o.id===ordId);
-  if (ord) { ord.remarks = val; _localOrderChanges[ordId] = Date.now(); saveState(); upsertOrderToDB(ord); }
+  if (ord) { ord.remarks = val; saveState(); upsertOrderToDB(ord); }
 }
 
 function changeOrderStatus(ordId, machineId, newStatus) {
@@ -1986,7 +2023,6 @@ function changeOrderStatus(ordId, machineId, newStatus) {
   } else {
     ord.closedDate = null;
   }
-  _localOrderChanges[ordId] = Date.now(); // stamp only this order
   recalcMachineSchedule(machineId);
   upsertOrderToDB(ord);
   saveState();
@@ -2038,7 +2074,7 @@ function deleteOrder(ordId, machineId) {
   if (!confirm('Delete this order?')) return;
   // Mark as deleted in dedicated table first
   const ord = state.orders.find(o=>o.id===ordId);
-  if (ord) { ord.deleted = true; _localOrderChanges[ordId] = Date.now(); upsertOrderToDB(ord); }
+  if (ord) { ord.deleted = true; upsertOrderToDB(ord); }
   state.orders = state.orders.filter(o=>o.id!==ordId);
   state.printOrders = state.printOrders.filter(p=>p.productionOrderId!==ordId);
   recalcMachineSchedule(machineId);
@@ -2361,6 +2397,7 @@ function saveOrderModal(existingId, defaultMachine) {
   daysNeeded = grossQty / mc.cap;
 
   // Fix 3: If actual DPR production exceeds planned gross qty, warn but allow save
+  // Planning should amend grossQty to reconcile — not be blocked from saving
   const existingOrd = existingId ? state.orders.find(o=>o.id===existingId) : null;
   const actualProdSoFar = existingOrd?.actualProd || existingOrd?.actualQty || 0;
   if (actualProdSoFar > 0 && actualProdSoFar > grossQty + 0.05) {
@@ -2380,7 +2417,7 @@ function saveOrderModal(existingId, defaultMachine) {
 
   // Fix 2: Validate start date sequencing — warn if this order starts before previous order ends
   const _dateCheckToday = new Date().toISOString().slice(0,10);
-  const _skipDateCheck = (_dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22');
+  const _skipDateCheck = _dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22';
   if (!_skipDateCheck) {
     const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
     if (machineOrders.length > 0) {
@@ -2564,8 +2601,9 @@ function saveOrderModal(existingId, defaultMachine) {
     }
   }
 
-  _localOrderChanges[ord.id] = Date.now(); // stamp only this order for 90s protection
   recalcMachineSchedule(machineId);
+  // PERMANENT FIX: Save this order to its own dedicated row in production_orders table
+  // This is atomic — no other device's save can ever overwrite this order
   upsertOrderToDB(ord);
   closeModal();
   render();
