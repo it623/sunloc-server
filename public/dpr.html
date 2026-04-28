@@ -1452,7 +1452,7 @@ async function closeBatchInDPR(orderId, batchNumber){
 async function checkAndCreateTempBatches(){
   if(!serverUrl) return;
   const fl = curFloor;
-  const machines = FLOORS[fl]?.machines || [];
+  const machines = getActiveMachines(fl) || [];
   for(const mc of machines){
     // Skip if machine already has at least one real running order
     const hasRealOrder = (activeOrders[mc.id]||[]).some(o => !o.isTemp && o.status === 'running');
