@@ -1335,16 +1335,17 @@ function recalcMachineScheduleQuiet(machineId) {
       }
       continue;
     }
-    // Never override startDate/endDate if already set
+    // If both startDate AND endDate are filled — never touch either, ever
+    const _hasBothDates = ord.startDate && ord.endDate;
     if (!cursor) cursor = new Date(ord.startDate || today());
-    else if (!ord.startDate) ord.startDate = new Date(cursor);
+    else if (!_hasBothDates && !ord.startDate) ord.startDate = new Date(cursor);
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty    = sc.grossQty;
     ord.aimOut      = sc.aimOut;
     ord.printOut    = sc.printOut;
     ord.piOut       = sc.piOut;
     ord.daysNeeded  = sc.daysNeeded;
-    if (!ord.endDate) {
+    if (!_hasBothDates && !ord.endDate) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
@@ -1377,9 +1378,11 @@ function recalcMachineSchedule(machineId) {
       }
       continue;
     }
+    // If both startDate AND endDate are filled — never touch either, ever
+    const _hasBothDates = ord.startDate && ord.endDate;
     if (!cursor) {
       cursor = new Date(ord.startDate || today());
-    } else if (!ord.manualStartDate) {
+    } else if (!_hasBothDates) {
       ord.startDate = new Date(cursor);
     }
     const sc = calcOrderSchedule(ord, mc);
@@ -1388,8 +1391,8 @@ function recalcMachineSchedule(machineId) {
     ord.printOut   = sc.printOut;
     ord.piOut      = sc.piOut;
     ord.daysNeeded = sc.daysNeeded;
-    // Always respect manually set dates — never auto-recalculate
-    if (!ord.manualEndDate) {
+    // Only recalculate endDate if order has no endDate set
+    if (!_hasBothDates) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
