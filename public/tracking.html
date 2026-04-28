@@ -1038,7 +1038,7 @@ function navigate(page){
   if(pageEl) pageEl.classList.add('active');
   const navEl = document.getElementById('nav-'+page);
   if(navEl) navEl.classList.add('active');
-  renderPage(page);
+  renderPageForce(page);
   focusScanInput();
 }
 
@@ -2093,6 +2093,36 @@ document.addEventListener('mousedown', _markUserActive, true);
 document.addEventListener('keydown',   _markUserActive, true);
 document.addEventListener('touchstart',_markUserActive, true);
 function renderPage(page){
+  // FIX 2: Never auto-rebuild reports — user is reading it, background refresh must not close it
+  if(page === 'reports' && currentPage === 'reports') return;
+  const _f=_saveFocus();
+  // FIX 1: Save scroll position before rebuild — prevents jumping to top
+  const _content = document.getElementById('content');
+  const _scrollTop = _content ? _content.scrollTop : 0;
+  document.getElementById('tb-title').textContent = NAV_ITEMS.find(n=>n.id===page)?.label||page;
+  document.getElementById('tb-subtitle').textContent = DEPT_INFO[currentDept]?.role||'';
+  document.getElementById('tb-actions').innerHTML='';
+  checkAlerts();
+  switch(page){
+    case 'dashboard': renderDashboard(); break;
+    case 'labels': renderLabels(); break;
+    case 'aim': renderDeptScan('aim'); break;
+    case 'printing': renderDeptScan('printing'); break;
+    case 'pi': renderDeptScan('pi'); break;
+    case 'packing': renderDeptScan('packing'); break;
+    case 'dispatch': renderDispatch(); break;
+    case 'batch-tracker': renderBatchTracker(); break;
+    case 'reports': renderReports(true); break;
+    case 'search': renderTrackingSearch(); break;
+    case 'settings': renderSettings(); break;
+  }
+  if(_f)setTimeout(()=>_restoreFocus(_f),0);
+  // FIX 1: Restore scroll after rebuild
+  if(_content && _scrollTop > 0) setTimeout(()=>{ _content.scrollTop = _scrollTop; }, 0);
+}
+
+// Force render — used when user explicitly clicks navigation (reports always rebuild)
+function renderPageForce(page){
   const _f=_saveFocus();
   document.getElementById('tb-title').textContent = NAV_ITEMS.find(n=>n.id===page)?.label||page;
   document.getElementById('tb-subtitle').textContent = DEPT_INFO[currentDept]?.role||'';
@@ -3088,7 +3118,8 @@ function processScanInput(dept,type){
     resultEl.innerHTML=`<div class="alert alert-success">${_msg2}</div>${warnHtml}${orangeHtml}`;
     setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (firstResult.warning||firstResult.newOrangeLabel) ? 8000 : 3500);
     renderDeptScan(dept);
-    el.focus();
+    // FIX 3: Re-focus scan input after DOM rebuild — continuous scanning without re-clicking
+    setTimeout(()=>{ document.getElementById(`scan-${type}-${dept}`)?.focus(); }, 50);
   } else if(firstResult.msg === 'Label not found' && serverUrl){
     zoneEl.className='scan-zone';
     resultEl.innerHTML=`<div class="alert" style="background:rgba(255,171,0,0.1);border:1px solid rgba(255,171,0,0.4);padding:8px 12px">🔄 Fetching label from server...</div>`;
@@ -3150,12 +3181,13 @@ function processScanInput(dept,type){
         resultEl.innerHTML=`<div class="alert alert-success">${_msg3}</div>${warnHtml}${orangeHtml}`;
         setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (retry.warning||retry.newOrangeLabel) ? 8000 : 3000);
         renderDeptScan(dept);
+        setTimeout(()=>{ document.getElementById(`scan-${type}-${dept}`)?.focus(); }, 50);
       } else {
         zoneEl.className='scan-zone error';
         resultEl.innerHTML=`<div class="alert alert-danger">❌ ${retry.msg}</div>`;
         setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; },4000);
+        setTimeout(()=>{ document.getElementById(`scan-${type}-${dept}`)?.focus(); }, 50);
       }
-      el.focus();
     })();
   } else {
     zoneEl.className='scan-zone error';
@@ -5375,9 +5407,9 @@ function loadDemoData(){
 // ═══════════════════════════════════════════════════════
 
 // Auto-focus scan input when dept page loads or clicked
-function focusScanInput(){
+function focusScanInput(forceFocus){
   const isMobile = window.matchMedia('(max-width:768px)').matches || ('ontouchstart' in window);
-  if(isMobile) return; // Skip auto-focus on mobile
+  if(isMobile && !forceFocus) return; // Skip auto-focus on mobile unless forced after scan
   const page=currentPage;
   if(['aim','printing','pi','packing','dispatch'].includes(page)){
     const scanIn=document.getElementById(`scan-in-${page}`);
