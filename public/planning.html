@@ -778,6 +778,13 @@ const SYNC = (() => {
         }
         // Take server state
         Object.assign(state, serverState);
+        // Stamp manualStartDate/manualEndDate on all orders that have both dates — prevents recalc from ever changing them
+        if (Array.isArray(state.orders)) {
+          state.orders = state.orders.map(o => {
+            if (o.startDate && o.endDate) return { ...o, manualStartDate: true, manualEndDate: true };
+            return o;
+          });
+        }
         // Restore locally changed orders — they win over server
         if (Object.keys(_protectedOrders).length > 0) {
           state.orders = (state.orders||[]).map(o => _protectedOrders[o.id] || o);
@@ -1292,8 +1299,6 @@ function recalcMachineScheduleQuiet(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
-  const _rToday = new Date().toISOString().slice(0,10);
-  const _inWindow = _rToday >= '2026-04-20' && _rToday <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') {
@@ -1312,6 +1317,18 @@ function recalcMachineScheduleQuiet(machineId) {
       }
       continue;
     }
+    // If order already has both startDate AND endDate — never touch dates, just recalc qty
+    if (ord.startDate && ord.endDate) {
+      const sc = calcOrderSchedule(ord, mc);
+      ord.grossQty   = sc.grossQty;
+      ord.aimOut     = sc.aimOut;
+      ord.printOut   = sc.printOut;
+      ord.piOut      = sc.piOut;
+      ord.daysNeeded = sc.daysNeeded;
+      const endD = new Date(ord.endDate);
+      if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
+      continue;
+    }
     if (!cursor) cursor = new Date(ord.startDate || today());
     else ord.startDate = new Date(cursor);
     const sc = calcOrderSchedule(ord, mc);
@@ -1320,10 +1337,7 @@ function recalcMachineScheduleQuiet(machineId) {
     ord.printOut    = sc.printOut;
     ord.piOut       = sc.piOut;
     ord.daysNeeded  = sc.daysNeeded;
-    // During 2-day window: if end date was manually set, do not overwrite it
-    if (!(_inWindow && ord.manualEndDate)) {
-      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
-    }
+    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
@@ -1336,8 +1350,6 @@ function recalcMachineSchedule(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
-  const _rToday2 = new Date().toISOString().slice(0,10);
-  const _inWindow2 = _rToday2 >= '2026-04-20' && _rToday2 <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') {
@@ -1354,6 +1366,18 @@ function recalcMachineSchedule(machineId) {
         const closedEnd = new Date(ord.endDate);
         if (!cursor || closedEnd > cursor) cursor = closedEnd;
       }
+      continue;
+    }
+    // If order already has both startDate AND endDate (or manual flags) — never touch dates, just recalc qty
+    if ((ord.startDate && ord.endDate) || ord.manualStartDate || ord.manualEndDate) {
+      const sc = calcOrderSchedule(ord, mc);
+      ord.grossQty   = sc.grossQty;
+      ord.aimOut     = sc.aimOut;
+      ord.printOut   = sc.printOut;
+      ord.piOut      = sc.piOut;
+      ord.daysNeeded = sc.daysNeeded;
+      const endD = new Date(ord.endDate);
+      if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
       continue;
     }
     if (!cursor) {
@@ -1367,10 +1391,7 @@ function recalcMachineSchedule(machineId) {
     ord.printOut   = sc.printOut;
     ord.piOut      = sc.piOut;
     ord.daysNeeded = sc.daysNeeded;
-    // During 2-day window: if end date was manually set, do not overwrite it
-    if (!(_inWindow2 && ord.manualEndDate)) {
-      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
-    }
+    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
