@@ -1017,10 +1017,8 @@ function loadState() {
       }
       // Order migration to dedicated table disabled
     } catch(e) {}
-    // Also save full state to server to ensure dailyPrinting logs are persisted
-    if ((state.dailyPrinting||[]).length > 0) {
-      try { await saveState(); console.log('[DailyPrinting] Pushed', state.dailyPrinting.length, 'logs to server'); } catch(e) {}
-    }
+    // NOTE: Do NOT call saveState() on page load — it overwrites correct DB dates with local state
+    // dailyPrinting logs are saved when user explicitly saves
     // Migrate machineMaster to dedicated table on every load
     try {
       await saveMachinesToDB();
@@ -1085,12 +1083,8 @@ async function saveState() {
     delete toSave.zoneMap;
     toSave._savedAt = Date.now();
     state._savedAt = toSave._savedAt;
-    // Record all current order and printOrder IDs as locally changed
-    // These will be protected from server overwrite in loadFromServer
+    // Only stamp machine master changes — NOT all orders (orders are stamped only on explicit user edits)
     const _changeTs = Date.now();
-    (state.orders||[]).forEach(o => { _localOrderChanges[o.id] = _changeTs; });
-    (state.printOrders||[]).forEach(p => { _localPrintOrderChanges[p.id] = _changeTs; });
-    // Also stamp machine master changes so they survive 90s sync protection
     _localOrderChanges['__machineMaster__'] = _changeTs;
     _localOrderChanges['__printMachineMaster__'] = _changeTs;
     _localOrderChanges['__pcCodes__'] = _changeTs;
@@ -1956,7 +1950,7 @@ function updateActualProd(ordId, val, machineId) {
 
 function updateOrderRemark(ordId, val) {
   const ord = state.orders.find(o=>o.id===ordId);
-  if (ord) { ord.remarks = val; saveState(); upsertOrderToDB(ord); }
+  if (ord) { ord.remarks = val; _localOrderChanges[ordId] = Date.now(); saveState(); upsertOrderToDB(ord); }
 }
 
 function changeOrderStatus(ordId, machineId, newStatus) {
@@ -1992,6 +1986,7 @@ function changeOrderStatus(ordId, machineId, newStatus) {
   } else {
     ord.closedDate = null;
   }
+  _localOrderChanges[ordId] = Date.now(); // stamp only this order
   recalcMachineSchedule(machineId);
   upsertOrderToDB(ord);
   saveState();
@@ -2043,7 +2038,7 @@ function deleteOrder(ordId, machineId) {
   if (!confirm('Delete this order?')) return;
   // Mark as deleted in dedicated table first
   const ord = state.orders.find(o=>o.id===ordId);
-  if (ord) { ord.deleted = true; upsertOrderToDB(ord); }
+  if (ord) { ord.deleted = true; _localOrderChanges[ordId] = Date.now(); upsertOrderToDB(ord); }
   state.orders = state.orders.filter(o=>o.id!==ordId);
   state.printOrders = state.printOrders.filter(p=>p.productionOrderId!==ordId);
   recalcMachineSchedule(machineId);
@@ -2569,9 +2564,8 @@ function saveOrderModal(existingId, defaultMachine) {
     }
   }
 
+  _localOrderChanges[ord.id] = Date.now(); // stamp only this order for 90s protection
   recalcMachineSchedule(machineId);
-  // PERMANENT FIX: Save this order to its own dedicated row in production_orders table
-  // This is atomic — no other device's save can ever overwrite this order
   upsertOrderToDB(ord);
   closeModal();
   render();
