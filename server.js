@@ -757,6 +757,18 @@ async function ensurePostgresTables() {
         updated_at TEXT DEFAULT CURRENT_TIMESTAMP
       )
     `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS machine_master (
+        id TEXT PRIMARY KEY,
+        type TEXT NOT NULL,
+        size TEXT,
+        cap REAL,
+        a_grade REAL,
+        preferred_customer TEXT,
+        active BOOLEAN DEFAULT true,
+        updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
 
     // wo_reconciliation_requests
     await pgPool.query(`
@@ -1052,6 +1064,42 @@ app.post('/api/print-orders/bulk', async (req, res) => {
           p.remarks||null,p.productionOrderId||null]);
     }
     res.json({ ok: true, count: printOrders.length, savedAt: new Date().toISOString() });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/machines/master — get all machines from dedicated table
+app.get('/api/machines/master', async (req, res) => {
+  try {
+    if (!pgPool) return res.json({ ok: true, production: [], print: [] });
+    const prod = await pgPool.query('SELECT * FROM machine_master WHERE type=$1 ORDER BY id', ['production']);
+    const print = await pgPool.query('SELECT * FROM machine_master WHERE type=$1 ORDER BY id', ['print']);
+    const toObj = rows => rows.map(r => ({
+      id: r.id, size: r.size, cap: r.cap, aGrade: r.a_grade,
+      preferredCustomer: r.preferred_customer, active: r.active
+    }));
+    res.json({ ok: true, production: toObj(prod.rows), print: toObj(print.rows) });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/machines/master — save all machines permanently
+app.post('/api/machines/master', async (req, res) => {
+  try {
+    const { production, print } = req.body;
+    if (!pgPool) return res.json({ ok: true });
+    const upsertMachines = async (machines, type) => {
+      for (const m of (machines || [])) {
+        if (!m.id) continue;
+        await pgPool.query(`
+          INSERT INTO machine_master (id, type, size, cap, a_grade, preferred_customer, active, updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,NOW())
+          ON CONFLICT(id) DO UPDATE SET type=$2,size=$3,cap=$4,a_grade=$5,
+            preferred_customer=$6,active=$7,updated_at=NOW()
+        `, [m.id, type, m.size||null, m.cap||null, m.aGrade||null, m.preferredCustomer||null, m.active !== false]);
+      }
+    };
+    await upsertMachines(production, 'production');
+    await upsertMachines(print, 'print');
+    res.json({ ok: true, savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 

@@ -881,6 +881,35 @@ const SYNC = (() => {
       }
     } catch(e) { console.warn('[Orders] Merge failed:', e.message); }
 
+    // ALWAYS: Merge machineMaster from dedicated table — never overwritten by sync
+    try {
+      const mr = await fetch(_url + '/api/machines/master', { signal: AbortSignal.timeout(5000) });
+      if (mr.ok) {
+        const mj = await mr.json();
+        if (mj.ok) {
+          if (mj.production && mj.production.length > 0) {
+            // DB wins for each machine — update existing, add new
+            const dbProdMap = {};
+            mj.production.forEach(m => { dbProdMap[m.id] = m; });
+            state.machineMaster = state.machineMaster.map(m => dbProdMap[m.id] ? { ...m, ...dbProdMap[m.id] } : m);
+            mj.production.forEach(dbM => {
+              if (!state.machineMaster.find(m => m.id === dbM.id)) state.machineMaster.push(dbM);
+            });
+            console.log('[Machines] Merged', mj.production.length, 'production machines from dedicated table');
+          }
+          if (mj.print && mj.print.length > 0) {
+            const dbPrintMap = {};
+            mj.print.forEach(m => { dbPrintMap[m.id] = m; });
+            state.printMachineMaster = state.printMachineMaster.map(m => dbPrintMap[m.id] ? { ...m, ...dbPrintMap[m.id] } : m);
+            mj.print.forEach(dbM => {
+              if (!state.printMachineMaster.find(m => m.id === dbM.id)) state.printMachineMaster.push(dbM);
+            });
+            console.log('[Machines] Merged', mj.print.length, 'print machines from dedicated table');
+          }
+        }
+      }
+    } catch(e) { console.warn('[Machines] Merge failed:', e.message); }
+
     // STEP 3: Load tracking/DPR status in background
     loadTrackingStatus().then(() => { if(!_userIsActive() && !_userIsFocused()) render(); }).catch(() => {});
   }
@@ -1027,6 +1056,11 @@ function loadState() {
     if ((state.dailyPrinting||[]).length > 0) {
       try { await saveState(); console.log('[DailyPrinting] Pushed', state.dailyPrinting.length, 'logs to server'); } catch(e) {}
     }
+    // Migrate machineMaster to dedicated table on every load
+    try {
+      await saveMachinesToDB();
+      console.log('[Machines] Migrated machineMaster to dedicated table');
+    } catch(e) {}
   }, 3000);
   setTimeout(() => initMonthlyArchive(), 800);
   if (state.orders) {
@@ -5489,6 +5523,23 @@ function showAddMachineModal(existingId) {
   ]);
 }
 
+// Save machineMaster + printMachineMaster to dedicated DB table — permanent, never lost
+async function saveMachinesToDB() {
+  try {
+    const resp = await fetch(`${SYNC._url}/api/machines/master`, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ production: state.machineMaster, print: state.printMachineMaster })
+    });
+    const data = await resp.json();
+    if (!data.ok) throw new Error(data.error);
+    console.log('[Machines] Saved to dedicated table');
+  } catch(e) {
+    console.warn('[Machines] Save failed, retrying in 3s:', e.message);
+    setTimeout(saveMachinesToDB, 3000);
+  }
+}
+
 function saveMachine(existingId) {
   const existing = existingId ? state.machineMaster.find(m=>m.id===existingId) : null;
   const mc = {
@@ -5500,14 +5551,14 @@ function saveMachine(existingId) {
   };
   if (existingId) { const idx=state.machineMaster.findIndex(m=>m.id===existingId); if(idx>=0) state.machineMaster[idx]=mc; }
   else state.machineMaster.push(mc);
-  saveState(); closeModal(); render();
+  saveState(); saveMachinesToDB(); closeModal(); render();
 }
 
 function toggleMachineActive(id, active) {
   const mc = state.machineMaster.find(m => m.id === id);
   if (mc) {
     mc.active = active;
-    saveState();
+    saveState(); saveMachinesToDB();
     // Re-render just the row opacity without full render
     const rows = document.querySelectorAll('#content tbody tr');
     rows.forEach(row => {
@@ -5544,14 +5595,14 @@ function savePrintMachine(id) {
     pm.pref = document.getElementById('pm-pref')?.value||pm.pref;
     // preserve active state — do not overwrite
   }
-  saveState(); closeModal(); render();
+  saveState(); saveMachinesToDB(); closeModal(); render();
 }
 
 function togglePrintMachineActive(id, active) {
   const pm = state.printMachineMaster.find(m => m.id === id);
   if (pm) {
     pm.active = active;
-    saveState();
+    saveState(); saveMachinesToDB();
     toast(active ? `✅ ${id} enabled` : `⛔ ${id} disabled`, 2000);
   }
 }
