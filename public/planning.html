@@ -503,8 +503,11 @@ input[type="file"] { display:none; }
         <button id="plan-menu-btn" onclick="togglePlanSidebar()" style="display:none;background:none;border:none;color:var(--text);font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;flex-shrink:0">☰</button>
         <div class="topbar-title" id="page-title">Production Planning</div>
       </div>
-      <div class="topbar-actions" id="topbar-actions">
-        <span id="syncStatusBadge" style="margin-right:8px"></span>
+      <div style="display:flex;align-items:center;gap:8px">
+        <button id="maintenance-mode-btn" onclick="toggleMaintenanceMode()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border2);padding:5px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0">🔧 Maintenance</button>
+        <div class="topbar-actions" id="topbar-actions">
+          <span id="syncStatusBadge" style="margin-right:8px"></span>
+        </div>
       </div>
     </div>
     <div id="content"></div>
@@ -1029,6 +1032,8 @@ function loadState() {
   } catch(e) { localStorage.removeItem('sunloc_state'); }
   // Server sync in background — render() is called after login completes
   SYNC.loadFromServer();
+  // Update maintenance mode button state on load
+  setTimeout(updateMaintenanceBtn, 200);
   // One-time migration: push all assigned print orders to dedicated table on every load
   setTimeout(async () => {
     try {
@@ -1083,10 +1088,50 @@ let _pendingSave = null;
 let _retryTimer = null;
 let _lastServerSaveTime = 0;
 // Registry of locally changed order IDs — these are NEVER overwritten by server sync
-// Key: order id, Value: timestamp of local change
 let _localOrderChanges = {};
 // Registry of locally changed print order IDs
 let _localPrintOrderChanges = {};
+// ── MAINTENANCE MODE — disables all date/mismatch/sequencing logic for 2 hours ──
+let _maintenanceModeStart = null;
+const _MAINTENANCE_DURATION = 2 * 60 * 60 * 1000; // 2 hours
+// Restore from localStorage (survives page refresh within 2hrs)
+try { const _ms = localStorage.getItem('sunloc_maintenance_start'); if (_ms) _maintenanceModeStart = parseInt(_ms); } catch(e) {}
+function isMaintenanceMode() {
+  if (!_maintenanceModeStart) return false;
+  if ((Date.now() - _maintenanceModeStart) >= _MAINTENANCE_DURATION) {
+    _maintenanceModeStart = null;
+    try { localStorage.removeItem('sunloc_maintenance_start'); } catch(e) {}
+    updateMaintenanceBtn();
+    toast('✅ Maintenance Mode ended — all planning logic resumed', 4000);
+    return false;
+  }
+  return true;
+}
+function toggleMaintenanceMode() {
+  if (isMaintenanceMode()) {
+    _maintenanceModeStart = null;
+    try { localStorage.removeItem('sunloc_maintenance_start'); } catch(e) {}
+    updateMaintenanceBtn();
+    toast('✅ Maintenance Mode OFF — all planning logic active', 3000);
+  } else {
+    _maintenanceModeStart = Date.now();
+    try { localStorage.setItem('sunloc_maintenance_start', _maintenanceModeStart); } catch(e) {}
+    updateMaintenanceBtn();
+    toast('🔧 Maintenance Mode ON — date/mismatch logic suspended for 2 hours', 4000);
+  }
+}
+function updateMaintenanceBtn() {
+  const btn = document.getElementById('maintenance-mode-btn');
+  if (!btn) return;
+  if (isMaintenanceMode()) {
+    const remaining = Math.ceil((_MAINTENANCE_DURATION - (Date.now() - _maintenanceModeStart)) / 60000);
+    btn.textContent = `🔧 ON (${remaining}m left)`;
+    btn.style.cssText = 'background:#e65100;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;flex-shrink:0';
+  } else {
+    btn.textContent = '🔧 Maintenance';
+    btn.style.cssText = 'background:var(--surface2);color:var(--text);border:1px solid var(--border2);padding:5px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0';
+  }
+}
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
   if (_retryTimer) return;
@@ -1142,9 +1187,9 @@ async function saveState() {
       _scheduleRetry(toSave);
       console.warn('[Sync] Server save failed — will retry in 30s');
     }
-    // PERMANENT: Also push ALL orders to dedicated production_orders table
-    // This ensures every change (qty, date, status, remarks) is permanently saved
-    // even if planning_state JSON blob is overwritten by another device
+    auditLog('SAVE', `Saved planning state — page: ${state.currentPage}`);
+    // PERMANENT: Push ALL orders to dedicated production_orders table on every save
+    // Ensures every change (qty, date, status, remarks) is permanently saved per order row
     const _allOrders = (state.orders||[]);
     if (_allOrders.length > 0 && SYNC._url) {
       fetch(SYNC._url + '/api/orders/upsert-bulk', {
@@ -1156,7 +1201,6 @@ async function saveState() {
         if (r.ok) console.log('[Orders] All', _allOrders.length, 'orders saved permanently to dedicated table');
       }).catch(e => console.warn('[Orders] Bulk save failed:', e.message));
     }
-    auditLog('SAVE', `Saved planning state — page: ${state.currentPage}`);
   } catch(e) {}
 }
 
@@ -1327,15 +1371,15 @@ function recalcMachineScheduleQuiet(machineId) {
       continue;
     }
     if (!cursor) cursor = new Date(ord.startDate || today());
-    else ord.startDate = new Date(cursor);
+    else if (!isMaintenanceMode()) ord.startDate = new Date(cursor);
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty    = sc.grossQty;
     ord.aimOut      = sc.aimOut;
     ord.printOut    = sc.printOut;
     ord.piOut       = sc.piOut;
     ord.daysNeeded  = sc.daysNeeded;
-    // During 2-day window: if end date was manually set, do not overwrite it
-    if (!(_inWindow && ord.manualEndDate)) {
+    // Respect manual end date OR maintenance mode
+    if (!isMaintenanceMode() && !(_inWindow && ord.manualEndDate)) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
@@ -1372,7 +1416,7 @@ function recalcMachineSchedule(machineId) {
     }
     if (!cursor) {
       cursor = new Date(ord.startDate || today());
-    } else {
+    } else if (!isMaintenanceMode()) {
       ord.startDate = new Date(cursor);
     }
     const sc = calcOrderSchedule(ord, mc);
@@ -1381,8 +1425,8 @@ function recalcMachineSchedule(machineId) {
     ord.printOut   = sc.printOut;
     ord.piOut      = sc.piOut;
     ord.daysNeeded = sc.daysNeeded;
-    // During 2-day window: if end date was manually set, do not overwrite it
-    if (!(_inWindow2 && ord.manualEndDate)) {
+    // Respect manual end date OR maintenance mode
+    if (!isMaintenanceMode() && !(_inWindow2 && ord.manualEndDate)) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
@@ -2411,10 +2455,10 @@ function saveOrderModal(existingId, defaultMachine) {
   daysNeeded = grossQty / mc.cap;
 
   // Fix 3: If actual DPR production exceeds planned gross qty, warn but allow save
-  // Planning should amend grossQty to reconcile — not be blocked from saving
+  // Skipped during Maintenance Mode
   const existingOrd = existingId ? state.orders.find(o=>o.id===existingId) : null;
   const actualProdSoFar = existingOrd?.actualProd || existingOrd?.actualQty || 0;
-  if (actualProdSoFar > 0 && actualProdSoFar > grossQty + 0.05) {
+  if (!isMaintenanceMode() && actualProdSoFar > 0 && actualProdSoFar > grossQty + 0.05) {
     const minOrderQty = isPrinted ? parseFloat((actualProdSoFar/(1.07*1.02)).toFixed(2)) : parseFloat((actualProdSoFar*(ag/100)).toFixed(2));
     alert(
       `⚠️ Quantity Mismatch Alert\n\n` +
@@ -2431,7 +2475,7 @@ function saveOrderModal(existingId, defaultMachine) {
 
   // Fix 2: Validate start date sequencing — warn if this order starts before previous order ends
   const _dateCheckToday = new Date().toISOString().slice(0,10);
-  const _skipDateCheck = _dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22';
+  const _skipDateCheck = isMaintenanceMode() || (_dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22');
   if (!_skipDateCheck) {
     const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
     if (machineOrders.length > 0) {
