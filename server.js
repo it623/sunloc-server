@@ -1151,6 +1151,17 @@ app.post('/api/planning/state', async (req, res) => {
   try {
     const { state } = req.body;
     if (!state) return res.status(400).json({ ok: false, error: 'No state provided' });
+    // PERMANENT: Lock all existing order dates — inject flags on every save
+    // If order has both startDate AND endDate filled, mark as manual — recalc never touches them
+    if (Array.isArray(state.orders)) {
+      state.orders = state.orders.map(o => {
+        if (o.startDate && o.endDate) {
+          o.manualStartDate = true;
+          o.manualEndDate = true;
+        }
+        return o;
+      });
+    }
     const json = JSON.stringify(state);
     if (pgPool) {
       const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
