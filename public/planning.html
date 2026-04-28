@@ -778,18 +778,8 @@ const SYNC = (() => {
             if (ts && (_now - ts) < _protectWindow) _protectedPrintOrders[p.id] = p;
           });
         }
-        // Take server state — but preserve order dates that are manually set
-        const _localOrdersMap = {};
-        (state.orders||[]).forEach(o => { if (o.manualStartDate || o.manualEndDate) _localOrdersMap[o.id] = o; });
+        // Take server state — server dates are always authoritative
         Object.assign(state, serverState);
-        // Restore manually dated orders — their dates must never be overwritten by server
-        if (Object.keys(_localOrdersMap).length > 0) {
-          state.orders = (state.orders||[]).map(o => {
-            const local = _localOrdersMap[o.id];
-            if (!local) return o;
-            return {...o, startDate: local.startDate, endDate: local.endDate, manualStartDate: true, manualEndDate: true};
-          });
-        }
         // Restore locally changed orders — they win over server
         if (Object.keys(_protectedOrders).length > 0) {
           state.orders = (state.orders||[]).map(o => _protectedOrders[o.id] || o);
@@ -997,15 +987,14 @@ function loadState() {
     const saved = localStorage.getItem('sunloc_state');
     if (saved) {
       const parsed = JSON.parse(saved);
-      // SAFETY: if localStorage has very few orders (likely stale/corrupted), wipe it
-      // Server will always provide the authoritative count
       const localOrderCount = (parsed.orders || []).length;
       if (localOrderCount > 0 && localOrderCount < 180) {
         console.warn(`[LoadState] localStorage has only ${localOrderCount} orders — likely stale. Wiping to force server load.`);
         localStorage.removeItem('sunloc_state');
       } else {
         Object.assign(state, parsed);
-        // Start with hardcoded codes — DB codes merged in loadFromServer()
+        // Always clear orders from localStorage — server is authoritative for orders/dates
+        state.orders = [];
         state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
         state.zoneMap = ZONE_MAP_RAW;
       }
