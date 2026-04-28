@@ -852,40 +852,7 @@ const SYNC = (() => {
       }
     } catch(e) { console.warn('[PrintOrders] Merge failed:', e.message); }
 
-    // ALWAYS: Merge production orders from dedicated table — each order is permanent
-    try {
-      const oor = await fetch(_url + '/api/orders/all', { signal: AbortSignal.timeout(8000) });
-      if (oor.ok) {
-        const ooj = await oor.json();
-        if (ooj.ok && Array.isArray(ooj.orders) && ooj.orders.length > 0) {
-          const dbOrderMap = {};
-          ooj.orders.forEach(o => {
-            // Mark ALL orders from DB — start and end dates are permanent, never recalculated
-            o.manualStartDate = true;
-            o.manualEndDate = true;
-            dbOrderMap[o.id] = o;
-          });
-          let ordersChanged = false;
-          // Update existing orders with DB version (DB is authoritative)
-          state.orders = (state.orders||[]).map(o => {
-            const dbOrd = dbOrderMap[o.id];
-            if (!dbOrd) return o; // not in DB yet — keep local version
-            if (dbOrd.deleted) return null; // deleted in DB — remove
-            return dbOrd; // DB version always wins
-          }).filter(Boolean);
-          // Add any orders in DB not yet in local state
-          ooj.orders.forEach(dbO => {
-            if (dbO.deleted) return; // skip deleted
-            if (!state.orders.find(o => o.id === dbO.id)) {
-              state.orders.push(dbO);
-              ordersChanged = true;
-            }
-          });
-          if (ordersChanged && !_userIsActive() && !_userIsFocused()) render();
-          console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table — dates protected');
-        }
-      }
-    } catch(e) { console.warn('[Orders] Merge failed:', e.message); }
+    // Orders loaded from planning_state only — dedicated table merge disabled
 
     // ALWAYS: Merge machineMaster from dedicated table — never overwritten by sync
     try {
@@ -1049,21 +1016,7 @@ function loadState() {
         });
         if (r.ok) console.log('[PrintOrders] Migrated', assigned.length, 'assigned orders to dedicated table');
       }
-      // Migrate all production orders to dedicated table — lock all dates permanently
-      const allOrders = (state.orders||[]).filter(o => !o.deleted).map(o => ({
-        ...o,
-        manualStartDate: true,  // dates are final — recalc must never change them
-        manualEndDate: true
-      }));
-      if (_url && allOrders.length > 0) {
-        fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ orders: allOrders }),
-          signal: AbortSignal.timeout(30000)
-        }).then(r => { if (r.ok) console.log('[Orders] Migrated', allOrders.length, 'orders — dates locked permanently'); }).catch(()=>{});
-        // Also update local state so flags are active immediately
-        state.orders = state.orders.map(o => o.deleted ? o : { ...o, manualStartDate: true, manualEndDate: true });
-      }
+      // Order migration to dedicated table disabled
     } catch(e) {}
     // Also save full state to server to ensure dailyPrinting logs are persisted
     if ((state.dailyPrinting||[]).length > 0) {
@@ -1155,19 +1108,7 @@ async function saveState() {
       console.warn('[Sync] Server save failed — will retry in 30s');
     }
     auditLog('SAVE', `Saved planning state — page: ${state.currentPage}`);
-    // PERMANENT: Push ALL orders to dedicated production_orders table on every save
-    // Dates are always locked — manualStartDate/manualEndDate flags included
-    const _allOrders = (state.orders||[]).map(o => ({...o, manualStartDate: true, manualEndDate: true}));
-    if (_allOrders.length > 0 && SYNC._url) {
-      fetch(SYNC._url + '/api/orders/upsert-bulk', {
-        method: 'POST',
-        headers: {'Content-Type':'application/json'},
-        body: JSON.stringify({ orders: _allOrders }),
-        signal: AbortSignal.timeout(30000)
-      }).then(r => {
-        if (r.ok) console.log('[Orders] All', _allOrders.length, 'orders saved permanently to dedicated table');
-      }).catch(e => console.warn('[Orders] Bulk save failed:', e.message));
-    }
+    
   } catch(e) {}
 }
 
