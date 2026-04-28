@@ -853,6 +853,7 @@ function getOrderActuals(orderId, batchNumber) {
   if (_actualsCache) {
     return _actualsCache[orderId] || _actualsCache[batchNumber] || 0;
   }
+  // Falls back to SQLite only — cache should always be warm when pgPool is available
   let rows;
   if (orderId) {
     rows = db.prepare('SELECT SUM(qty_lakhs) as total FROM production_actuals WHERE order_id = ?').get(orderId);
@@ -1247,14 +1248,19 @@ app.post('/api/dpr/save', async (req, res) => {
 
 // GET plant report data — all floors for a single date in one call
 // Returns { ok, date, floors: { GF: data|null, '1F': data|null, '2F': data|null } }
-app.get('/api/dpr/plant-report/:date', (req, res) => {
+app.get('/api/dpr/plant-report/:date', async (req, res) => {
   try {
     const { date } = req.params;
     const FLOOR_KEYS = ['GF', '1F', '2F'];
     const result = {};
     for (const fl of FLOOR_KEYS) {
-      const row = db.prepare('SELECT data_json FROM dpr_records WHERE floor = ? AND date = ?').get(fl, date);
-      result[fl] = row ? JSON.parse(row.data_json) : null;
+      if (pgPool) {
+        const r = await pgPool.query('SELECT data_json FROM dpr_records WHERE floor=$1 AND date=$2', [fl, date]);
+        result[fl] = r.rows[0] ? JSON.parse(r.rows[0].data_json) : null;
+      } else {
+        const row = db.prepare('SELECT data_json FROM dpr_records WHERE floor = ? AND date = ?').get(fl, date);
+        result[fl] = row ? JSON.parse(row.data_json) : null;
+      }
     }
     res.json({ ok: true, date, floors: result });
   } catch (err) {
@@ -1263,9 +1269,15 @@ app.get('/api/dpr/plant-report/:date', (req, res) => {
 });
 
 // GET all DPR dates (for history navigation)
-app.get('/api/dpr/dates/:floor', (req, res) => {
+app.get('/api/dpr/dates/:floor', async (req, res) => {
   try {
-    const rows = db.prepare('SELECT DISTINCT date FROM dpr_records WHERE floor = ? ORDER BY date DESC').all(req.params.floor);
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT DISTINCT date FROM dpr_records WHERE floor=$1 ORDER BY date DESC', [req.params.floor]);
+      rows = r.rows;
+    } else {
+      rows = db.prepare('SELECT DISTINCT date FROM dpr_records WHERE floor = ? ORDER BY date DESC').all(req.params.floor);
+    }
     res.json({ ok: true, dates: rows.map(r => r.date) });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -1357,14 +1369,15 @@ app.get('/api/actuals/machine/:machineId', async (req, res) => {
 });
 
 // GET actuals for a specific order
-app.get('/api/actuals/order/:orderId', (req, res) => {
+app.get('/api/actuals/order/:orderId', async (req, res) => {
   try {
-    const rows = db.prepare(`
-      SELECT date, shift, qty_lakhs, machine_id
-      FROM production_actuals
-      WHERE order_id = ? OR batch_number = ?
-      ORDER BY date, shift
-    `).all(req.params.orderId, req.params.orderId);
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT date,shift,qty_lakhs,machine_id FROM production_actuals WHERE order_id=$1 OR batch_number=$1 ORDER BY date,shift`, [req.params.orderId]);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT date,shift,qty_lakhs,machine_id FROM production_actuals WHERE order_id=? OR batch_number=? ORDER BY date,shift`).all(req.params.orderId, req.params.orderId);
+    }
     const total = rows.reduce((s, r) => s + r.qty_lakhs, 0);
     res.json({ ok: true, actuals: rows, total });
   } catch (err) {
@@ -1483,7 +1496,7 @@ app.post('/api/audit/log', (req, res) => {
 });
 
 // GET /api/audit/view — admin only
-app.get('/api/audit/view', (req, res) => {
+app.get('/api/audit/view', async (req, res) => {
   try {
     const token = req.headers['x-session-token'] || req.query.token;
     const session = verifyToken(token);
@@ -1491,21 +1504,30 @@ app.get('/api/audit/view', (req, res) => {
     if (session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
     const limit = parseInt(req.query.limit) || 200;
     const app = req.query.app || session.app;
-    const rows = db.prepare(`
-      SELECT * FROM audit_log WHERE app = ? ORDER BY ts DESC LIMIT ?
-    `).all(app, limit);
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT * FROM audit_log WHERE app=$1 ORDER BY ts DESC LIMIT $2`, [app, limit]);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT * FROM audit_log WHERE app = ? ORDER BY ts DESC LIMIT ?`).all(app, limit);
+    }
     res.json({ ok: true, logs: rows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // GET /api/auth/users — admin only, list users for an app
-app.get('/api/auth/users', (req, res) => {
+app.get('/api/auth/users', async (req, res) => {
   try {
     const token = req.headers['x-session-token'] || req.query.token;
     const session = verifyToken(token);
     if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
-    const users = db.prepare(`SELECT id, username, role, app, created_at, updated_at FROM app_users WHERE app = ?`)
-      .all(req.query.app || session.app);
+    let users;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT id,username,role,app,created_at,updated_at FROM app_users WHERE app=$1`, [req.query.app || session.app]);
+      users = r.rows;
+    } else {
+      users = db.prepare(`SELECT id,username,role,app,created_at,updated_at FROM app_users WHERE app=?`).all(req.query.app || session.app);
+    }
     res.json({ ok: true, users });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -1538,7 +1560,7 @@ app.post('/api/temp-batches/update-details', async (req, res) => {
 // ─── W/O (Without Order) Reconciliation ──────────────────────
 
 // POST /api/wo/assign-customer — Planning Manager assigns customer to W/O order
-app.post('/api/wo/assign-customer', (req, res) => {
+app.post('/api/wo/assign-customer', async (req, res) => {
   try {
     const { token, orderId, customer, poNumber, zone, qtyConfirmed } = req.body;
     const session = verifyToken(token);
@@ -1565,11 +1587,12 @@ app.post('/api/wo/assign-customer', (req, res) => {
         d.zone = zone || d.zone;
       }
     });
-    db.prepare(`
-      INSERT INTO planning_state (id, state_json)
-      VALUES (1, ?)
-      ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')
-    `).run(JSON.stringify(planState));
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
+    } else {
+      db.prepare(`INSERT INTO planning_state (id, state_json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')`).run(JSON.stringify(planState));
+    }
+    _planningStateCache = planState;
     logAudit(session.username, session.role, 'planning', 'WO_CUSTOMER_ASSIGNED',
       `W/O order ${orderId} assigned to customer: ${customer}`);
     res.json({ ok: true });
@@ -2324,11 +2347,22 @@ app.post('/api/tracking/state', async (req, res) => {
 app.get('/api/tracking/batch-summary/:batchNumber', async (req, res) => {
   try {
     const { batchNumber } = req.params;
-    const labels  = db.prepare('SELECT * FROM tracking_labels WHERE batch_number = ?').all(batchNumber);
-    const scans   = pgPool ? (await pgPool.query('SELECT * FROM tracking_scans WHERE batch_number=$1 ORDER BY ts',[batchNumber])).rows : db.prepare('SELECT * FROM tracking_scans WHERE batch_number=? ORDER BY ts').all(batchNumber);
-    const wastage = db.prepare('SELECT * FROM tracking_wastage WHERE batch_number = ?').all(batchNumber);
-    const dispatch= db.prepare('SELECT * FROM tracking_dispatch_records WHERE batch_number = ?').all(batchNumber);
-    const alerts  = db.prepare('SELECT * FROM tracking_alerts WHERE batch_number = ? AND resolved = 0').all(batchNumber);
+    let labels, scans, wastage, dispatch, alerts;
+    if (pgPool) {
+      [labels, scans, wastage, dispatch, alerts] = await Promise.all([
+        pgPool.query('SELECT * FROM tracking_labels WHERE batch_number=$1', [batchNumber]).then(r=>r.rows),
+        pgPool.query('SELECT * FROM tracking_scans WHERE batch_number=$1 ORDER BY ts', [batchNumber]).then(r=>r.rows),
+        pgPool.query('SELECT * FROM tracking_wastage WHERE batch_number=$1', [batchNumber]).then(r=>r.rows),
+        pgPool.query('SELECT * FROM tracking_dispatch_records WHERE batch_number=$1', [batchNumber]).then(r=>r.rows),
+        pgPool.query('SELECT * FROM tracking_alerts WHERE batch_number=$1 AND resolved=0', [batchNumber]).then(r=>r.rows),
+      ]);
+    } else {
+      labels   = db.prepare('SELECT * FROM tracking_labels WHERE batch_number = ?').all(batchNumber);
+      scans    = db.prepare('SELECT * FROM tracking_scans WHERE batch_number=? ORDER BY ts').all(batchNumber);
+      wastage  = db.prepare('SELECT * FROM tracking_wastage WHERE batch_number = ?').all(batchNumber);
+      dispatch = db.prepare('SELECT * FROM tracking_dispatch_records WHERE batch_number = ?').all(batchNumber);
+      alerts   = db.prepare('SELECT * FROM tracking_alerts WHERE batch_number = ? AND resolved = 0').all(batchNumber);
+    }
     const deptMap = {};
     scans.forEach(s => {
       if (!deptMap[s.dept]) deptMap[s.dept] = { in: 0, out: 0 };
