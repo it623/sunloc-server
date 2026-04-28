@@ -725,6 +725,15 @@ async function ensurePostgresTables() {
         resolved_by TEXT,
         notes TEXT
       );
+      CREATE TABLE IF NOT EXISTS production_orders (
+        id TEXT PRIMARY KEY,
+        data_json TEXT NOT NULL,
+        machine_id TEXT,
+        batch_number TEXT,
+        status TEXT DEFAULT 'pending',
+        deleted BOOLEAN DEFAULT false,
+        updated_at TEXT DEFAULT NOW()::TEXT
+      );
       CREATE TABLE IF NOT EXISTS print_orders (
         id TEXT PRIMARY KEY,
         machine_id TEXT,
@@ -927,6 +936,80 @@ app.delete('/api/pc-codes', async (req, res) => {
 
 
 // ── Print Orders — dedicated table for permanent machine assignments ──────────
+// ── Production Orders — dedicated table, each order is its own permanent row ──
+
+// POST /api/orders/upsert — save single order permanently (never lost)
+app.post('/api/orders/upsert', async (req, res) => {
+  try {
+    const ord = req.body;
+    if (!ord || !ord.id) return res.status(400).json({ ok: false, error: 'id required' });
+    const json = JSON.stringify(ord);
+    if (pgPool) {
+      await pgPool.query(`
+        INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
+        ON CONFLICT(id) DO UPDATE SET
+          data_json=$2, machine_id=$3, batch_number=$4,
+          status=$5, deleted=$6, updated_at=NOW()::TEXT
+      `, [ord.id, json, ord.machineId||null, ord.batchNumber||null,
+          ord.status||'pending', ord.deleted||false]);
+    } else {
+      db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+        VALUES (?,?,?,?,?,?,datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
+        machine_id=excluded.machine_id,batch_number=excluded.batch_number,
+        status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
+        .run(ord.id, json, ord.machineId||null, ord.batchNumber||null, ord.status||'pending', ord.deleted?1:0);
+    }
+    res.json({ ok: true, savedAt: new Date().toISOString() });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/orders/upsert-bulk — save multiple orders at once
+app.post('/api/orders/upsert-bulk', async (req, res) => {
+  try {
+    const { orders } = req.body;
+    if (!Array.isArray(orders)) return res.status(400).json({ ok: false, error: 'orders array required' });
+    for (const ord of orders) {
+      if (!ord.id) continue;
+      const json = JSON.stringify(ord);
+      if (pgPool) {
+        await pgPool.query(`
+          INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
+          ON CONFLICT(id) DO UPDATE SET
+            data_json=$2,machine_id=$3,batch_number=$4,
+            status=$5,deleted=$6,updated_at=NOW()::TEXT
+        `, [ord.id, json, ord.machineId||null, ord.batchNumber||null,
+            ord.status||'pending', ord.deleted||false]);
+      } else {
+        db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+          VALUES (?,?,?,?,?,?,datetime('now'))
+          ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
+          machine_id=excluded.machine_id,batch_number=excluded.batch_number,
+          status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
+          .run(ord.id, json, ord.machineId||null, ord.batchNumber||null, ord.status||'pending', ord.deleted?1:0);
+      }
+    }
+    res.json({ ok: true, count: orders.length, savedAt: new Date().toISOString() });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/orders/all — get all orders from dedicated table
+app.get('/api/orders/all', async (req, res) => {
+  try {
+    let rows = [];
+    if (pgPool) {
+      const r = await pgPool.query('SELECT data_json FROM production_orders ORDER BY updated_at DESC');
+      rows = r.rows.map(r => JSON.parse(r.data_json));
+    } else {
+      rows = db.prepare('SELECT data_json FROM production_orders ORDER BY updated_at DESC').all()
+               .map(r => JSON.parse(r.data_json));
+    }
+    res.json({ ok: true, orders: rows });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // GET /api/print-orders
 app.get('/api/print-orders', async (req, res) => {
   try {

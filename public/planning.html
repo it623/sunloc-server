@@ -851,6 +851,36 @@ const SYNC = (() => {
       }
     } catch(e) { console.warn('[PrintOrders] Merge failed:', e.message); }
 
+    // ALWAYS: Merge production orders from dedicated table — each order is permanent
+    try {
+      const oor = await fetch(_url + '/api/orders/all', { signal: AbortSignal.timeout(8000) });
+      if (oor.ok) {
+        const ooj = await oor.json();
+        if (ooj.ok && Array.isArray(ooj.orders) && ooj.orders.length > 0) {
+          const dbOrderMap = {};
+          ooj.orders.forEach(o => { dbOrderMap[o.id] = o; });
+          let ordersChanged = false;
+          // Update existing orders with DB version (DB is authoritative)
+          state.orders = (state.orders||[]).map(o => {
+            const dbOrd = dbOrderMap[o.id];
+            if (!dbOrd) return o; // not in DB yet — keep local version
+            if (dbOrd.deleted) return null; // deleted in DB — remove
+            return dbOrd; // DB version always wins
+          }).filter(Boolean);
+          // Add any orders in DB not yet in local state
+          ooj.orders.forEach(dbO => {
+            if (dbO.deleted) return; // skip deleted
+            if (!state.orders.find(o => o.id === dbO.id)) {
+              state.orders.push(dbO);
+              ordersChanged = true;
+            }
+          });
+          if (ordersChanged && !_userIsActive() && !_userIsFocused()) render();
+          console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table');
+        }
+      }
+    } catch(e) { console.warn('[Orders] Merge failed:', e.message); }
+
     // STEP 3: Load tracking/DPR status in background
     loadTrackingStatus().then(() => { if(!_userIsActive() && !_userIsFocused()) render(); }).catch(() => {});
   }
@@ -982,6 +1012,15 @@ function loadState() {
           signal: AbortSignal.timeout(15000)
         });
         if (r.ok) console.log('[PrintOrders] Migrated', assigned.length, 'assigned orders to dedicated table');
+      }
+      // Migrate all production orders to dedicated table
+      const allOrders = (state.orders||[]).filter(o => !o.deleted);
+      if (_url && allOrders.length > 0) {
+        fetch(_url + '/api/orders/upsert-bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orders: allOrders }),
+          signal: AbortSignal.timeout(30000)
+        }).then(r => { if (r.ok) console.log('[Orders] Migrated', allOrders.length, 'orders to dedicated table'); }).catch(()=>{});
       }
     } catch(e) {}
     // Also save full state to server to ensure dailyPrinting logs are persisted
@@ -1914,7 +1953,7 @@ function updateActualProd(ordId, val, machineId) {
 
 function updateOrderRemark(ordId, val) {
   const ord = state.orders.find(o=>o.id===ordId);
-  if (ord) { ord.remarks = val; saveState(); }
+  if (ord) { ord.remarks = val; saveState(); upsertOrderToDB(ord); }
 }
 
 function changeOrderStatus(ordId, machineId, newStatus) {
@@ -1951,6 +1990,7 @@ function changeOrderStatus(ordId, machineId, newStatus) {
     ord.closedDate = null;
   }
   recalcMachineSchedule(machineId);
+  upsertOrderToDB(ord);
   saveState();
   render();
 }
@@ -1998,6 +2038,9 @@ function closeOrder(ordId, machineId) {
 
 function deleteOrder(ordId, machineId) {
   if (!confirm('Delete this order?')) return;
+  // Mark as deleted in dedicated table first
+  const ord = state.orders.find(o=>o.id===ordId);
+  if (ord) { ord.deleted = true; upsertOrderToDB(ord); }
   state.orders = state.orders.filter(o=>o.id!==ordId);
   state.printOrders = state.printOrders.filter(p=>p.productionOrderId!==ordId);
   recalcMachineSchedule(machineId);
@@ -2525,8 +2568,34 @@ function saveOrderModal(existingId, defaultMachine) {
   }
 
   recalcMachineSchedule(machineId);
+  // PERMANENT FIX: Save this order to its own dedicated row in production_orders table
+  // This is atomic — no other device's save can ever overwrite this order
+  upsertOrderToDB(ord);
   closeModal();
   render();
+}
+
+// Save a single order to the dedicated production_orders table permanently
+async function upsertOrderToDB(ord) {
+  if (!ord || !ord.id) return;
+  try {
+    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+    if (!_url) return;
+    const _tryUpsert = async (attempt) => {
+      try {
+        const r = await fetch(_url + '/api/orders/upsert', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify(ord),
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!r.ok && attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
+      } catch(e) {
+        if (attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
+      }
+    };
+    _tryUpsert(1);
+  } catch(e) {}
 }
 
 // =============================
