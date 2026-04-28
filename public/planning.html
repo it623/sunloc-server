@@ -504,7 +504,6 @@ input[type="file"] { display:none; }
         <div class="topbar-title" id="page-title">Production Planning</div>
       </div>
       <div style="display:flex;align-items:center;gap:8px">
-        <button id="maintenance-mode-btn" onclick="toggleMaintenanceMode()" style="background:var(--surface2);color:var(--text);border:1px solid var(--border2);padding:5px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0">🔧 Maintenance</button>
         <div class="topbar-actions" id="topbar-actions">
           <span id="syncStatusBadge" style="margin-right:8px"></span>
         </div>
@@ -736,11 +735,6 @@ const SYNC = (() => {
 
   async function loadFromServer() {
     if (!_url) return;
-    // Block server load during Maintenance Mode — user is correcting dates/status manually
-    if (typeof isMaintenanceMode === 'function' && isMaintenanceMode()) {
-      console.log('[Sync] loadFromServer blocked — Maintenance Mode active');
-      return;
-    }
 
     // STEP 1: (render called after login — skipped here to avoid pre-login crash)
 
@@ -866,7 +860,12 @@ const SYNC = (() => {
         const ooj = await oor.json();
         if (ooj.ok && Array.isArray(ooj.orders) && ooj.orders.length > 0) {
           const dbOrderMap = {};
-          ooj.orders.forEach(o => { dbOrderMap[o.id] = o; });
+          ooj.orders.forEach(o => {
+            // Mark ALL orders from DB — start and end dates are permanent, never recalculated
+            o.manualStartDate = true;
+            o.manualEndDate = true;
+            dbOrderMap[o.id] = o;
+          });
           let ordersChanged = false;
           // Update existing orders with DB version (DB is authoritative)
           state.orders = (state.orders||[]).map(o => {
@@ -884,7 +883,7 @@ const SYNC = (() => {
             }
           });
           if (ordersChanged && !_userIsActive() && !_userIsFocused()) render();
-          console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table');
+          console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table — dates protected');
         }
       }
     } catch(e) { console.warn('[Orders] Merge failed:', e.message); }
@@ -1037,8 +1036,6 @@ function loadState() {
   } catch(e) { localStorage.removeItem('sunloc_state'); }
   // Server sync in background — render() is called after login completes
   SYNC.loadFromServer();
-  // Update maintenance mode button state on load
-  setTimeout(updateMaintenanceBtn, 200);
   // One-time migration: push all assigned print orders to dedicated table on every load
   setTimeout(async () => {
     try {
@@ -1096,47 +1093,6 @@ let _lastServerSaveTime = 0;
 let _localOrderChanges = {};
 // Registry of locally changed print order IDs
 let _localPrintOrderChanges = {};
-// ── MAINTENANCE MODE — disables all date/mismatch/sequencing logic for 2 hours ──
-let _maintenanceModeStart = null;
-const _MAINTENANCE_DURATION = 2 * 60 * 60 * 1000; // 2 hours
-// Restore from localStorage (survives page refresh within 2hrs)
-try { const _ms = localStorage.getItem('sunloc_maintenance_start'); if (_ms) _maintenanceModeStart = parseInt(_ms); } catch(e) {}
-function isMaintenanceMode() {
-  if (!_maintenanceModeStart) return false;
-  if ((Date.now() - _maintenanceModeStart) >= _MAINTENANCE_DURATION) {
-    _maintenanceModeStart = null;
-    try { localStorage.removeItem('sunloc_maintenance_start'); } catch(e) {}
-    updateMaintenanceBtn();
-    toast('✅ Maintenance Mode ended — all planning logic resumed', 4000);
-    return false;
-  }
-  return true;
-}
-function toggleMaintenanceMode() {
-  if (isMaintenanceMode()) {
-    _maintenanceModeStart = null;
-    try { localStorage.removeItem('sunloc_maintenance_start'); } catch(e) {}
-    updateMaintenanceBtn();
-    toast('✅ Maintenance Mode OFF — all planning logic active', 3000);
-  } else {
-    _maintenanceModeStart = Date.now();
-    try { localStorage.setItem('sunloc_maintenance_start', _maintenanceModeStart); } catch(e) {}
-    updateMaintenanceBtn();
-    toast('🔧 Maintenance Mode ON — date/mismatch logic suspended for 2 hours', 4000);
-  }
-}
-function updateMaintenanceBtn() {
-  const btn = document.getElementById('maintenance-mode-btn');
-  if (!btn) return;
-  if (isMaintenanceMode()) {
-    const remaining = Math.ceil((_MAINTENANCE_DURATION - (Date.now() - _maintenanceModeStart)) / 60000);
-    btn.textContent = `🔧 ON (${remaining}m left)`;
-    btn.style.cssText = 'background:#e65100;color:#fff;border:none;padding:5px 10px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;flex-shrink:0';
-  } else {
-    btn.textContent = '🔧 Maintenance';
-    btn.style.cssText = 'background:var(--surface2);color:var(--text);border:1px solid var(--border2);padding:5px 10px;border-radius:6px;font-size:12px;font-weight:600;cursor:pointer;flex-shrink:0';
-  }
-}
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
   if (_retryTimer) return;
@@ -1355,8 +1311,6 @@ function recalcMachineScheduleQuiet(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
-  const _rToday = new Date().toISOString().slice(0,10);
-  const _inWindow = _rToday >= '2026-04-20' && _rToday <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') {
@@ -1375,16 +1329,16 @@ function recalcMachineScheduleQuiet(machineId) {
       }
       continue;
     }
+    // Never override startDate/endDate if already set
     if (!cursor) cursor = new Date(ord.startDate || today());
-    else if (!isMaintenanceMode()) ord.startDate = new Date(cursor);
+    else if (!ord.startDate) ord.startDate = new Date(cursor);
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty    = sc.grossQty;
     ord.aimOut      = sc.aimOut;
     ord.printOut    = sc.printOut;
     ord.piOut       = sc.piOut;
     ord.daysNeeded  = sc.daysNeeded;
-    // Respect manual end date OR maintenance mode
-    if (!isMaintenanceMode() && !(_inWindow && ord.manualEndDate)) {
+    if (!ord.endDate) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
@@ -1399,8 +1353,6 @@ function recalcMachineSchedule(machineId) {
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
-  const _rToday2 = new Date().toISOString().slice(0,10);
-  const _inWindow2 = _rToday2 >= '2026-04-20' && _rToday2 <= '2026-04-22';
   let cursor = null;
   for (const ord of orders) {
     if (ord.status === 'closed') {
@@ -1421,7 +1373,7 @@ function recalcMachineSchedule(machineId) {
     }
     if (!cursor) {
       cursor = new Date(ord.startDate || today());
-    } else if (!isMaintenanceMode()) {
+    } else if (!ord.manualStartDate) {
       ord.startDate = new Date(cursor);
     }
     const sc = calcOrderSchedule(ord, mc);
@@ -1430,8 +1382,8 @@ function recalcMachineSchedule(machineId) {
     ord.printOut   = sc.printOut;
     ord.piOut      = sc.piOut;
     ord.daysNeeded = sc.daysNeeded;
-    // Respect manual end date OR maintenance mode
-    if (!isMaintenanceMode() && !(_inWindow2 && ord.manualEndDate)) {
+    // Always respect manually set dates — never auto-recalculate
+    if (!ord.manualEndDate) {
       ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
     }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
@@ -2460,10 +2412,9 @@ function saveOrderModal(existingId, defaultMachine) {
   daysNeeded = grossQty / mc.cap;
 
   // Fix 3: If actual DPR production exceeds planned gross qty, warn but allow save
-  // Skipped during Maintenance Mode
   const existingOrd = existingId ? state.orders.find(o=>o.id===existingId) : null;
   const actualProdSoFar = existingOrd?.actualProd || existingOrd?.actualQty || 0;
-  if (!isMaintenanceMode() && actualProdSoFar > 0 && actualProdSoFar > grossQty + 0.05) {
+  if (actualProdSoFar > 0 && actualProdSoFar > grossQty + 0.05) {
     const minOrderQty = isPrinted ? parseFloat((actualProdSoFar/(1.07*1.02)).toFixed(2)) : parseFloat((actualProdSoFar*(ag/100)).toFixed(2));
     alert(
       `⚠️ Quantity Mismatch Alert\n\n` +
@@ -2480,7 +2431,7 @@ function saveOrderModal(existingId, defaultMachine) {
 
   // Fix 2: Validate start date sequencing — warn if this order starts before previous order ends
   const _dateCheckToday = new Date().toISOString().slice(0,10);
-  const _skipDateCheck = isMaintenanceMode() || (_dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22');
+  const _skipDateCheck = (_dateCheckToday >= '2026-04-20' && _dateCheckToday <= '2026-04-22');
   if (!_skipDateCheck) {
     const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed' && o.id !== existingId);
     if (machineOrders.length > 0) {
@@ -6468,8 +6419,6 @@ setInterval(async()=>{try{await SYNC.loadTrackingStatus();if(!_userIsFocused())r
 // Auto-sync planning state every 30s — all devices stay in sync automatically
 let _planningAutoSyncTimer = null;
 async function _planningAutoSync(){
-  // Block ALL auto-sync during Maintenance Mode — user is correcting dates/status
-  if (isMaintenanceMode()) return;
   // Skip auto-sync if we saved within last 60s — prevents overwriting recent changes
   if(_lastServerSaveTime > 0 && (Date.now()-_lastServerSaveTime) < 60000) return;
   if(!document.hidden && !_userIsActive()){ await SYNC.loadFromServer(); }
