@@ -858,6 +858,9 @@ const SYNC = (() => {
       }
     } catch(e) { console.warn('[PrintOrders] Merge failed:', e.message); }
 
+    // Remove permanently blacklisted orders from state
+    state.orders = (state.orders||[]).filter(o => !(o.batchNumber==='26V049' && (o.customer||'').includes('SHYAM')));
+
     // ALWAYS: Merge production orders from dedicated table — each order is permanent
     try {
       const oor = await fetch(_url + '/api/orders/all', { signal: AbortSignal.timeout(8000) });
@@ -877,6 +880,8 @@ const SYNC = (() => {
           // Add any orders in DB not yet in local state — only if not recently deleted locally
           ooj.orders.forEach(dbO => {
             if (dbO.deleted) return; // skip deleted
+            // Skip permanently blacklisted orders
+            if (dbO.batchNumber==='26V049' && (dbO.customer||'').includes('SHYAM')) return;
             // Skip if this order is not in planning_state (was deleted from planning_state)
             const inPlanningState = state.orders.find(o=>o.id===dbO.id);
             if (!inPlanningState) return; // never re-add orders removed from planning_state
@@ -1048,7 +1053,15 @@ function loadState() {
         });
         if (r.ok) console.log('[PrintOrders] Migrated', assigned.length, 'assigned orders to dedicated table');
       }
-      // Order migration removed — was re-adding deleted orders on every load
+      // Migrate all production orders to dedicated table
+      const allOrders = (state.orders||[]).filter(o => !o.deleted);
+      if (_url && allOrders.length > 0) {
+        fetch(_url + '/api/orders/upsert-bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orders: allOrders }),
+          signal: AbortSignal.timeout(30000)
+        }).then(r => { if (r.ok) console.log('[Orders] Migrated', allOrders.length, 'orders to dedicated table'); }).catch(()=>{});
+      }
     } catch(e) {}
     // Also save full state to server to ensure dailyPrinting logs are persisted
     if ((state.dailyPrinting||[]).length > 0) {
@@ -1270,7 +1283,7 @@ function autoGenBatchNumber(machineId) {
 
 function getMachineOrders(machineId) {
   return state.orders
-    .filter(o=>o.machineId===machineId && !o.deleted)
+    .filter(o=>o.machineId===machineId && !o.deleted && !(o.batchNumber==='26V049' && (o.customer||'').includes('SHYAM')))
     .sort((a,b)=>{
       // Primary: sort by serial number in batch number (e.g. 26N50 → 50)
       const getSerial = o => {
