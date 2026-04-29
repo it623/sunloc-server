@@ -1149,12 +1149,8 @@ async function saveState() {
     delete toSave.zoneMap;
     toSave._savedAt = Date.now();
     state._savedAt = toSave._savedAt;
-    // Record all current order and printOrder IDs as locally changed
-    // These will be protected from server overwrite in loadFromServer
+    // Only stamp machine master — individual orders stamped at point of change
     const _changeTs = Date.now();
-    (state.orders||[]).forEach(o => { _localOrderChanges[o.id] = _changeTs; });
-    (state.printOrders||[]).forEach(p => { _localPrintOrderChanges[p.id] = _changeTs; });
-    // Also stamp machine master changes so they survive 90s sync protection
     _localOrderChanges['__machineMaster__'] = _changeTs;
     _localOrderChanges['__printMachineMaster__'] = _changeTs;
     _localOrderChanges['__pcCodes__'] = _changeTs;
@@ -2123,7 +2119,7 @@ function deleteOrder(ordId, machineId) {
       body: JSON.stringify({ batchNumber: ord.batchNumber, customerContains: ord.customer?.slice(0,8) })
     }).catch(()=>{});
     // Also mark deleted in upsert as fallback
-    ord.deleted = true; upsertOrderToDB(ord);
+    ord.deleted = true; _localOrderChanges[ordId] = Date.now(); upsertOrderToDB(ord);
   }
   state.orders = state.orders.filter(o=>o.id!==ordId);
   state.printOrders = state.printOrders.filter(p=>p.productionOrderId!==ordId);
@@ -2654,9 +2650,11 @@ function saveOrderModal(existingId, defaultMachine) {
   }
 
   recalcMachineSchedule(machineId);
+  // Stamp only this specific order as locally changed
+  _localOrderChanges[ord.id] = Date.now();
   // PERMANENT FIX: Save this order to its own dedicated row in production_orders table
-  // This is atomic — no other device's save can ever overwrite this order
   upsertOrderToDB(ord);
+  saveState();
   closeModal();
   render();
 }
