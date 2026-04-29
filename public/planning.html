@@ -704,7 +704,7 @@ const SYNC = (() => {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ state: stateObj }),
-        signal: AbortSignal.timeout(10000)
+        signal: AbortSignal.timeout(30000)
       });
       if (r.ok) { _online = true; _lastCheck = Date.now(); updateBadge(); return true; }
       return false;
