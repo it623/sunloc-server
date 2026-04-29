@@ -977,6 +977,27 @@ app.post('/api/orders/upsert', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// DELETE /api/orders/delete-by-batch — permanently delete order by batchNumber + customer match
+app.post('/api/orders/delete-by-batch', async (req, res) => {
+  try {
+    const { batchNumber, customerContains } = req.body;
+    if (!batchNumber) return res.status(400).json({ ok: false, error: 'batchNumber required' });
+    if (pgPool) {
+      if (customerContains) {
+        await pgPool.query(
+          `DELETE FROM production_orders WHERE batch_number = $1 AND data_json::jsonb->>'customer' LIKE $2`,
+          [batchNumber, '%' + customerContains + '%']
+        );
+      } else {
+        await pgPool.query(`DELETE FROM production_orders WHERE batch_number = $1`, [batchNumber]);
+      }
+    } else {
+      db.prepare(`DELETE FROM production_orders WHERE batch_number = ?`).run(batchNumber);
+    }
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // POST /api/orders/upsert-bulk — save multiple orders at once
 app.post('/api/orders/upsert-bulk', async (req, res) => {
   try {

@@ -874,9 +874,12 @@ const SYNC = (() => {
             if (dbOrd.deleted) return null; // deleted in DB — remove
             return dbOrd; // DB version always wins
           }).filter(Boolean);
-          // Add any orders in DB not yet in local state
+          // Add any orders in DB not yet in local state — only if not recently deleted locally
           ooj.orders.forEach(dbO => {
             if (dbO.deleted) return; // skip deleted
+            // Skip if this order was recently deleted locally (within 5 minutes)
+            const locallyDeleted = _localOrderChanges[dbO.id] && !state.orders.find(o=>o.id===dbO.id);
+            if (locallyDeleted) return;
             if (!state.orders.find(o => o.id === dbO.id)) {
               state.orders.push(dbO);
               ordersChanged = true;
@@ -2093,11 +2096,21 @@ function closeOrder(ordId, machineId) {
 
 function deleteOrder(ordId, machineId) {
   if (!confirm('Delete this order?')) return;
-  // Mark as deleted in dedicated table first
   const ord = state.orders.find(o=>o.id===ordId);
-  if (ord) { ord.deleted = true; upsertOrderToDB(ord); }
+  // Permanently delete from dedicated table (hard delete — never comes back)
+  if (ord) {
+    fetch(SYNC._url + '/api/orders/delete-by-batch', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ batchNumber: ord.batchNumber, customerContains: ord.customer?.slice(0,8) })
+    }).catch(()=>{});
+    // Also mark deleted in upsert as fallback
+    ord.deleted = true; upsertOrderToDB(ord);
+  }
   state.orders = state.orders.filter(o=>o.id!==ordId);
   state.printOrders = state.printOrders.filter(p=>p.productionOrderId!==ordId);
+  _localOrderChanges[ordId] = Date.now();
+  saveState();
   recalcMachineSchedule(machineId);
   render();
 }
