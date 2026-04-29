@@ -877,13 +877,9 @@ const SYNC = (() => {
           // Add any orders in DB not yet in local state — only if not recently deleted locally
           ooj.orders.forEach(dbO => {
             if (dbO.deleted) return; // skip deleted
-            // Skip if this order was recently deleted locally (within 5 minutes)
-            const locallyDeleted = _localOrderChanges[dbO.id] && !state.orders.find(o=>o.id===dbO.id);
-            if (locallyDeleted) return;
-            if (!state.orders.find(o => o.id === dbO.id)) {
-              state.orders.push(dbO);
-              ordersChanged = true;
-            }
+            // Skip if this order is not in planning_state (was deleted from planning_state)
+            const inPlanningState = state.orders.find(o=>o.id===dbO.id);
+            if (!inPlanningState) return; // never re-add orders removed from planning_state
           });
           if (ordersChanged && !_userIsActive() && !_userIsFocused()) render();
           console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table');

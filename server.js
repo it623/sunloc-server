@@ -2988,6 +2988,7 @@ app.post('/api/tracking/backfill-wastage', async (req, res) => {
     res.json({ ok: true, imported: count });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
+let jsqrCache = null;
 app.get('/jsqr.min.js', (req, res) => {
   if (jsqrCache) {
     res.setHeader('Content-Type', 'application/javascript');
