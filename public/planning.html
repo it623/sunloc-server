@@ -1998,24 +1998,19 @@ function updateActualProd(ordId, val, machineId) {
     ord.actualProd = parseFloat(val)||0;
     // Auto-promote pending → running only if within 2-order limit
     if (ord.actualProd > 0 && ord.status === 'pending') {
-      const LEGACY_CUTOFF_AP = '2026-04-19';
-      const ordStartStr = ord.startDate ? toDateInput(ord.startDate) : '';
-      const isNewOrd = ordStartStr > LEGACY_CUTOFF_AP;
-      if (isNewOrd) {
-        const newRunningCount = state.orders.filter(o =>
-          o.machineId === machineId &&
-          o.status === 'running' &&
-          o.id !== ordId &&
-          !o.deleted &&
-          o.startDate && toDateInput(o.startDate) > LEGACY_CUTOFF_AP
-        ).length;
-        if (newRunningCount >= 2) {
-          alert('⚠️ Maximum 2 orders can be In Production on this machine.\n\nPlease close one of the current running orders before starting a new one.');
-          ord.actualProd = 0;
-          const inp = document.querySelector(`input[onchange*="${ordId}"]`);
-          if (inp) inp.value = 0;
-          return;
-        }
+      const runningCount = state.orders.filter(o =>
+        o.machineId === machineId &&
+        o.status === 'running' &&
+        o.id !== ordId &&
+        !o.deleted
+      ).length;
+      if (runningCount >= 2) {
+        alert('⚠️ Maximum 2 orders can be In Production on this machine.\n\nPlease close one before starting a new one.');
+        ord.actualProd = 0;
+        const inp = document.querySelector(`input[onchange*="${ordId}"]`);
+        if (inp) inp.value = 0;
+        return;
+      }
       }
       ord.status = 'running';
     }
@@ -2031,27 +2026,19 @@ function updateOrderRemark(ordId, val) {
 function changeOrderStatus(ordId, machineId, newStatus) {
   const ord = state.orders.find(o=>o.id===ordId);
   if (!ord) return;
-  // Max 2 In Production per machine — applies ONLY to new orders (startDate > LEGACY_CUTOFF)
-  const LEGACY_CUTOFF = '2026-04-19';
+  // Max 2 In Production per machine — applies to ALL orders
   if (newStatus === 'running') {
-    const ordStartDate = ord.startDate ? toDateInput(ord.startDate) : '';
-    const isLegacyOrder = !ordStartDate || ordStartDate <= LEGACY_CUTOFF;
-    if (!isLegacyOrder) {
-      // Count only NEW (non-legacy) running orders on this machine
-      const newRunningCount = state.orders.filter(o =>
-        o.machineId === machineId &&
-        o.status === 'running' &&
-        o.id !== ordId &&
-        !o.deleted &&
-        o.startDate && toDateInput(o.startDate) > LEGACY_CUTOFF
-      ).length;
-      if (newRunningCount >= 2) {
-        alert('⚠️ Maximum 2 new orders can be In Production simultaneously on this machine.\n\nPlease close one of the current running orders before starting a new one.\n\n(Legacy orders from before 20 Apr 2026 are not counted in this limit.)');
-        // Reset the select back to previous value
-        const sel = document.querySelector(`select[onchange*="${ordId}"]`);
-        if (sel) sel.value = ord.status;
-        return;
-      }
+    const runningCount = state.orders.filter(o =>
+      o.machineId === machineId &&
+      o.status === 'running' &&
+      o.id !== ordId &&
+      !o.deleted
+    ).length;
+    if (runningCount >= 2) {
+      alert('⚠️ Maximum 2 orders can be In Production on this machine.\n\nPlease close one before starting a new one.');
+      const sel = document.querySelector(`select[onchange*="${ordId}"]`);
+      if (sel) sel.value = ord.status;
+      return;
     }
   }
   ord.status = newStatus;
@@ -2548,21 +2535,18 @@ function saveOrderModal(existingId, defaultMachine) {
       alert(`⚠️ Batch number "${ord.batchNumber}" already exists (Order for ${batchExists.customer||'unknown customer'}, Machine ${batchExists.machineId}, Status: ${batchExists.status}).\n\nPlease use a unique batch number.`);
       return;
     }
-    // ── 2-order limit check for NEW orders (startDate > LEGACY_CUTOFF) ──
-    const LEGACY_CUTOFF_SAVE = '2026-04-19';
-    const newOrdStartStr = ord.startDate ? toDateInput(ord.startDate) : '';
-    const isNewOrder = newOrdStartStr > LEGACY_CUTOFF_SAVE;
-    if (isNewOrder && ord.status === 'running') {
-      const newRunningOnMachine = state.orders.filter(o =>
+    // ── 2-order limit check — ALL orders, no cutoff ──
+    if (ord.status === 'running') {
+      const runningOnMachine = state.orders.filter(o =>
         o.machineId === ord.machineId &&
         o.status === 'running' &&
         o.id !== ord.id &&
-        !o.deleted &&
-        o.startDate && toDateInput(o.startDate) > LEGACY_CUTOFF_SAVE
+        !o.deleted
       ).length;
-      if (newRunningOnMachine >= 2) {
-        alert(`⚠️ Maximum 2 new orders can be In Production on ${ord.machineId} simultaneously.\n\nThis machine already has ${newRunningOnMachine} new running orders.\n\nPlease set Status to Pending, or close an existing running order first.`);
-        return;
+      if (runningOnMachine >= 2) {
+        // Force status to pending — cannot be In Production
+        ord.status = 'pending';
+        alert(`⚠️ Maximum 2 orders can be In Production on ${ord.machineId}.\n\nOrder saved as Pending. Please close a running order first to set it In Production.`);
       }
     }
     state.orders.push(ord);
