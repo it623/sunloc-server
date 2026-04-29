@@ -777,7 +777,18 @@ const SYNC = (() => {
           });
         }
         // Take server state
+        // Save local dailyPrinting before overwrite — merge after
+        const _localDailyPrinting = JSON.parse(JSON.stringify(state.dailyPrinting || []));
         Object.assign(state, serverState);
+        // Merge dailyPrinting — keep any local entries not yet on server
+        if (_localDailyPrinting.length > 0) {
+          const serverIds = new Set((state.dailyPrinting||[]).map(l=>l.id));
+          const missing = _localDailyPrinting.filter(l => l.id && !serverIds.has(l.id));
+          if (missing.length > 0) {
+            state.dailyPrinting = [...(state.dailyPrinting||[]), ...missing];
+            console.log('[DailyPrinting] Restored', missing.length, 'local entries not yet on server');
+          }
+        }
         // Stamp manualStartDate/manualEndDate on all orders that have both dates — prevents recalc from ever changing them
         if (Array.isArray(state.orders)) {
           state.orders = state.orders.map(o => {
@@ -786,8 +797,14 @@ const SYNC = (() => {
           });
         }
         // Restore locally changed orders — they win over server
+        // BUT always take actualProd and status from server (live DPR data)
         if (Object.keys(_protectedOrders).length > 0) {
-          state.orders = (state.orders||[]).map(o => _protectedOrders[o.id] || o);
+          state.orders = (state.orders||[]).map(o => {
+            const local = _protectedOrders[o.id];
+            if (!local) return o;
+            // Keep local order but update live fields from server
+            return { ...local, actualProd: o.actualProd || local.actualProd, stageStatus: o.stageStatus || local.stageStatus };
+          });
           console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
         }
         if (Object.keys(_protectedPrintOrders).length > 0) {
@@ -6744,9 +6761,10 @@ window.addEventListener('beforeunload', e => {
   if (currentUser) {
     auditLog('SESSION_CLOSE', 'Browser tab/window closed');
   }
-  // Always prompt if there's unsaved state
-  e.preventDefault();
-  e.returnValue = 'You may have unsaved changes. Are you sure you want to leave?';
+  if (_pendingSave) {
+    e.preventDefault();
+    e.returnValue = '⚠️ You have unsaved orders. Please wait for save to complete before refreshing.';
+  }
 });
 </script>
 </body>
