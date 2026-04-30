@@ -1267,6 +1267,8 @@ app.get('/api/orders/active', async (req, res) => {
         status: o.status || 'running',
         isPrinted: o.isPrinted || false,
         isLegacy: !o.startDate || getDateStr(o.startDate) <= LEGACY_CUTOFF,
+        printMatter: o.printMatter || '',
+        printingMatter: o.printMatter || o.printingMatter || '',
       };
     };
 

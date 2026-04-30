@@ -1267,7 +1267,8 @@ async function pullFromServer(){
       const pj=await pr.json();
       if(pj.ok && pj.state?.orders){
         const isAdminUser = currentDept==='admin';
-        const batches = pj.state.orders.filter(o=>!o.deleted && (isAdminUser || o.status==='running')).map(b=>({
+        // Allow running AND closed orders - closed batches still need physical scanning
+        const batches = pj.state.orders.filter(o=>!o.deleted && (isAdminUser || o.status==='running' || o.status==='closed')).map(b=>({
           ...b,
           actualQty: b.actualQty || b.actualProd || 0,
           actualProd: b.actualProd || b.actualQty || 0,
@@ -1544,7 +1545,7 @@ function autoGenerateOrangeLabel(label, batch){
   const orangeLabel = {
     id:uid(), batchNumber:batch.batchNumber, labelNumber:'OL-'+label.labelNumber,
     size:label.size, qty:label.qty, isOrange:true, parentLabelId:label.id,
-    printingMatter:batch.printingMatter||batch.pcCode||'', customer:batch.customer,
+    printingMatter:batch.printMatter||batch.printingMatter||'', customer:batch.customer,
     colour:batch.colour, generated:now(), printed:false, voided:false, qrData:''
   };
   orangeLabel.qrData = generateQRData(orangeLabel);
@@ -1593,6 +1594,16 @@ function generateQRData(label){
 function canGenerateLabels(batchNo, requestedBoxes){
   const batch = getBatch(batchNo);
   if(!batch) return {ok:false,msg:'Batch not found'};
+  // Block label generation if batch is closed AND more than 2 days since close date
+  if(batch.status === 'closed'){
+    const closedAt = batch.closedDate || batch.endDate;
+    if(closedAt){
+      const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
+      if(daysSinceClosed > 2){
+        return {ok:false, msg:`Batch ${batchNo} is closed. Labels can only be generated within 2 days of closing (closed: ${fmtDate(closedAt)}).`};
+      }
+    }
+  }
 
   const ps = PACK_SIZES[String(batch.size)];
   if(!ps) return {ok:false,msg:'Unknown pack size'};
@@ -2509,7 +2520,17 @@ function renderPrintQueue(selBatch){
 
 function renderLabels(){
   const el=document.getElementById('page-labels');
-  const activeBatches=getTrkMonthBatches().filter(b=>b.status==='running').sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  // Show running batches AND closed batches within 2 days of close date
+  const activeBatches=getTrkMonthBatches().filter(b=>{
+    if(b.status==='running') return true;
+    if(b.status==='closed'){
+      const closedAt = b.closedDate || b.endDate;
+      if(!closedAt) return false;
+      const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
+      return daysSinceClosed <= 2;
+    }
+    return false;
+  }).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const selBatch=window._labelSelBatch||activeBatches[0]?.batchNumber||'';
 
   document.getElementById('tb-actions').innerHTML=`
