@@ -5163,8 +5163,13 @@ function orderInMonth(ord, ym) {
   if (end   && end   >= mStart && end   <= mEnd) return true;
   if (start && end   && start < mStart && end > mEnd) return true; // spans
   if (closed && closed >= mStart && closed <= mEnd) return true;
-  // Unclosed with start before month end (carry-forward)
-  if (ord.status !== 'closed' && start && start <= mEnd) return true;
+  // Unclosed carry-forward: show if order is still running into or beyond this month
+  // Only carry forward if: no end date (open-ended), OR end date is within or after this month
+  if (ord.status !== 'closed' && start && start <= mEnd) {
+    // If order has an end date that is before this month started — do NOT carry forward
+    if (end && end < mStart) return false;
+    return true;
+  }
   return false;
 }
 
