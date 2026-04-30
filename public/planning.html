@@ -2157,6 +2157,25 @@ function editOrder(ordId) {
   if (ord) showAddOrderModal(ord.machineId, ord);
 }
 
+
+// ── PC Code / Colour lock check ───────────────────────────────
+// Returns true if PC Code and Colour are locked for this order
+// Locked when: order has actual production > 0 OR tracking has labels/scans
+// Admin can override
+function isPcColourLocked(ord) {
+  if (!ord) return false;
+  if (currentUser?.role === 'admin') return false; // admin always unlocked
+  // Lock if actual production recorded
+  if ((ord.actualProd || ord.actualQty || 0) > 0) return true;
+  // Lock if tracking has any stage data for this batch
+  if (ord.batchNumber) {
+    const bn = ord.batchNumber.trim().toUpperCase();
+    if (window._liveAGrade && (window._liveAGrade[bn] || window._liveAGrade[ord.batchNumber])) return true;
+    if (ord.stageStatus && Object.keys(ord.stageStatus).length > 0) return true;
+  }
+  return false;
+}
+
 // =============================
 // ADD ORDER MODAL
 // =============================
@@ -2219,15 +2238,17 @@ function showAddOrderModal(machineId, existingOrder) {
         </select>
       </div>
       <div class="form-group">
-        <label>PC Code</label>
-        <select class="form-control" id="fo-pccode" onchange="onPcChange(this)">
+        <label>PC Code ${isEdit && isPcColourLocked(ord) ? '<span style="color:#ff5252;font-size:10px;margin-left:4px">🔒 LOCKED</span>' : ''}</label>
+        <select class="form-control" id="fo-pccode" onchange="onPcChange(this)" ${isEdit && isPcColourLocked(ord) ? 'disabled style="opacity:0.6;cursor:not-allowed"' : ''}>
           <option value="">Select PC Code</option>
           ${pcList.map(p=>`<option value="${p.c}" ${ord.pcCode===p.c?'selected':''}>${p.c} — ${p.n}</option>`).join('')}
         </select>
+        ${isEdit && isPcColourLocked(ord) ? `<div style="font-size:10px;color:#ff5252;margin-top:3px">⚠️ PC Code locked — production has started. Only Admin can change.</div>` : ''}
       </div>
       <div class="form-group">
-        <label>Colour (Cap / Body)</label>
-        <input class="form-control" id="fo-colour" value="${ord.colour||''}" placeholder="e.g. Pink / White (auto-filled or type manually)">
+        <label>Colour (Cap / Body) ${isEdit && isPcColourLocked(ord) ? '<span style="color:#ff5252;font-size:10px;margin-left:4px">🔒 LOCKED</span>' : ''}</label>
+        <input class="form-control" id="fo-colour" value="${ord.colour||''}" placeholder="e.g. Pink / White (auto-filled or type manually)" ${isEdit && isPcColourLocked(ord) ? 'readonly style="opacity:0.6;cursor:not-allowed;background:var(--surface3)"' : ''}>
+        ${isEdit && isPcColourLocked(ord) ? `<div style="font-size:10px;color:#ff5252;margin-top:3px">⚠️ Colour locked — production has started. Only Admin can change.</div>` : ''}
       </div>
       <div class="form-group">
         <label>Printed / Unprinted</label>
@@ -2512,7 +2533,11 @@ function saveOrderModal(existingId, defaultMachine) {
   const endDate = manualEndDateVal ? new Date(manualEndDateVal) : calcEndDate(startDate, daysNeeded);
 
   const size = document.getElementById('fo-size')?.value;
-  const pcCode = document.getElementById('fo-pccode')?.value;
+  // If PC Code / Colour is locked — always keep original values, ignore any DOM value
+  const _pcLocked = isEdit && isPcColourLocked(state.orders.find(o=>o.id===existingId));
+  const pcCode = _pcLocked
+    ? (state.orders.find(o=>o.id===existingId)?.pcCode || document.getElementById('fo-pccode')?.value)
+    : document.getElementById('fo-pccode')?.value;
 
   const ord = {
     id: existingId || uid(),
@@ -2526,7 +2551,9 @@ function saveOrderModal(existingId, defaultMachine) {
     customer: document.getElementById('fo-customer')?.value,  // kept for backward compat
     size,
     pcCode,
-    colour: document.getElementById('fo-colour')?.value,
+    colour: _pcLocked
+      ? (state.orders.find(o=>o.id===existingId)?.colour || document.getElementById('fo-colour')?.value)
+      : document.getElementById('fo-colour')?.value,
     isPrinted,
     printMatter: document.getElementById('fo-ptdmatter')?.value,
     inkCap:  document.getElementById('fo-inkcap')?.value || '',
