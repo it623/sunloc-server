@@ -503,7 +503,7 @@ input[type="file"] { display:none; }
     <div class="nav-item" onclick="navigate('machines')"><span class="icon">🔧</span> Machine Master</div>
     <div class="nav-item" onclick="navigate('pc-codes')"><span class="icon">🎨</span> PC Codes</div>
     <div class="nav-item" onclick="navigate('archives')"><span class="icon">🗂️</span> Archives</div>
-    <div class="nav-item" onclick="navigate('search')"><span class="icon">🔍</span> Search</div>
+    <!-- Search button is in the Production Plan tab bar -->
     <div class="nav-item" id="nav-reconciliation" onclick="navigate('reconciliation')"><span class="icon">🔄</span> Reconciliation</div>
     <div class="nav-item" id="nav-audit-log" style="display:none" onclick="navigate('audit-log')"><span class="icon">📋</span> Audit Log</div>
     <div class="nav-item" onclick="navigate('settings')"><span class="icon">⚙️</span> Settings</div>
@@ -1844,9 +1844,12 @@ function renderProduction() {
 
   let html = `
     ${bannerHtml}
-    <div class="tabs" id="size-tabs">
-      <div class="tab active" onclick="switchSizeTab(this,'all')">All Machines</div>
-      ${sizes.map(s=>`<div class="tab" onclick="switchSizeTab(this,'${s}')">Size ${s}</div>`).join('')}
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
+      <div class="tabs" id="size-tabs" style="margin-bottom:0">
+        <div class="tab active" onclick="switchSizeTab(this,'all')">All Machines</div>
+        ${sizes.map(s=>`<div class="tab" onclick="switchSizeTab(this,'${s}')">Size ${s}</div>`).join('')}
+      </div>
+      <button onclick="navigate('search')" title="Search Orders" style="background:none;border:1px solid rgba(0,212,255,0.3);border-radius:6px;padding:6px 14px;cursor:pointer;color:var(--text);font-size:12px;font-weight:600;display:flex;align-items:center;gap:5px;white-space:nowrap;flex-shrink:0" onmouseover="this.style.background='rgba(0,212,255,0.08)'" onmouseout="this.style.background='none'">🔍 Search</button>
     </div>
     <div id="machine-panels">
   `;
@@ -2952,8 +2955,9 @@ function exportProdPlan() {
 // =============================
 function renderProdSummary() {
   const topActions = document.getElementById('topbar-actions');
-  topActions.innerHTML = '';
-  const orders = state.orders.filter(o=>!o.deleted);
+  topActions.innerHTML = `<span style="font-size:11px;color:var(--text3);padding:4px 8px">${monthLabel(_selectedPlanMonth)}</span>`;
+  // Filter by selected month — same as Production Plan view
+  const orders = getMonthOrders().filter(o=>!o.deleted);
 
   // Size wise totals
   const sizeStats = {};
@@ -4857,9 +4861,12 @@ function showDayDispatch(day, month, year) {
 // DISPATCH EXPORT PAGE
 // =============================
 function renderDispatchExport() {
-  document.getElementById('topbar-actions').innerHTML = '';
-  const zones = [...new Set(state.dispatchPlans.map(p=>p.zone).filter(Boolean))].sort();
-  const customers = [...new Set(state.dispatchPlans.map(p=>p.customer).filter(Boolean))].sort();
+  document.getElementById('topbar-actions').innerHTML = `<span style="font-size:11px;color:var(--text3);padding:4px 8px">${monthLabel(_selectedPlanMonth)}</span>`;
+  // Filter dispatch plans by selected month
+  const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
+  const monthPlans = state.dispatchPlans.filter(p => !p.productionOrderId || monthOrdIds.has(p.productionOrderId));
+  const zones = [...new Set(monthPlans.map(p=>p.zone).filter(Boolean))].sort();
+  const customers = [...new Set(monthPlans.map(p=>p.customer).filter(Boolean))].sort();
 
   document.getElementById('content').innerHTML = `
     <div class="grid-2">
@@ -4868,8 +4875,8 @@ function renderDispatchExport() {
         <div style="font-size:13px;color:var(--text3);margin-bottom:16px">One Excel sheet per zone, all orders in that zone.</div>
         <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
           ${zones.map(z => {
-            const cnt = state.dispatchPlans.filter(p=>p.zone===z).length;
-            const boxes = state.dispatchPlans.filter(p=>p.zone===z).reduce((s,p)=>s+(p.boxes||0),0);
+            const cnt = monthPlans.filter(p=>p.zone===z).length;
+            const boxes = monthPlans.filter(p=>p.zone===z).reduce((s,p)=>s+(p.boxes||0),0);
             return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface3);border-radius:6px">
               <div>
                 <span style="font-weight:600">${z}</span>
@@ -4886,8 +4893,8 @@ function renderDispatchExport() {
         <div style="font-size:13px;color:var(--text3);margin-bottom:16px">One Excel sheet per customer, all orders for that customer.</div>
         <div style="display:flex;flex-direction:column;gap:8px;margin-bottom:16px">
           ${customers.map(cust => {
-            const cnt = state.dispatchPlans.filter(p=>p.customer===cust).length;
-            const qty = state.dispatchPlans.filter(p=>p.customer===cust).reduce((s,p)=>s+p.qty,0);
+            const cnt = monthPlans.filter(p=>p.customer===cust).length;
+            const qty = monthPlans.filter(p=>p.customer===cust).reduce((s,p)=>s+p.qty,0);
             return `<div style="display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:var(--surface3);border-radius:6px">
               <div>
                 <span style="font-weight:600">${cust}</span>
@@ -4912,8 +4919,9 @@ function renderDispatchExport() {
 }
 
 function exportSingleZone(zone) {
+  const _monthOrdIds = new Set(getMonthOrders().map(o => o.id));
   const rows = state.dispatchPlans
-    .filter(p => p.zone === zone)
+    .filter(p => p.zone === zone && (!p.productionOrderId || _monthOrdIds.has(p.productionOrderId)))
     .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate))
     .map(p => dispatchRowObj(p));
   if (rows.length === 0) { alert('No data for ' + zone); return; }
@@ -4924,8 +4932,9 @@ function exportSingleZone(zone) {
 }
 
 function exportSingleCustomer(customer) {
+  const _monthOrdIds2 = new Set(getMonthOrders().map(o => o.id));
   const rows = state.dispatchPlans
-    .filter(p => p.customer === customer)
+    .filter(p => p.customer === customer && (!p.productionOrderId || _monthOrdIds2.has(p.productionOrderId)))
     .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate))
     .map(p => dispatchRowObj(p));
   if (rows.length === 0) { alert('No data for ' + customer); return; }
@@ -6339,6 +6348,7 @@ function _renderSearchResults(q, by) {
 }
 
 function renderSearch() {
+
   document.getElementById('topbar-actions').innerHTML = '';
   const q = window._searchQuery || '';
   const by = window._searchBy || 'all';
