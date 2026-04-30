@@ -379,6 +379,19 @@ const MIGRATIONS = [
     name: 'tracking_scans_label_number',
     sql: `ALTER TABLE tracking_scans ADD COLUMN label_number INTEGER;`
   },
+  {
+    version: 11,
+    name: 'month_archives',
+    sql: `CREATE TABLE IF NOT EXISTS month_archives (
+      id SERIAL PRIMARY KEY,
+      month TEXT NOT NULL UNIQUE,
+      archived_at TIMESTAMPTZ DEFAULT NOW(),
+      archived_by TEXT,
+      snapshot_json JSONB,
+      is_auto BOOLEAN DEFAULT TRUE
+    );
+    CREATE INDEX IF NOT EXISTS idx_month_archives_month ON month_archives(month);`
+  },
 ];
 
 function runMigrations() {
@@ -2881,8 +2894,10 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
 
       const grossProd = grossProdMap[batchNo.toUpperCase()] || 0;
       const packOutQty = pack.outQty || 0;
-      // WIP = everything produced but not yet packed out
-      const wipLakhs = Math.max(0, grossProd - packOutQty);
+      // WIP = (Gross − total wastage all depts) − Pack Out
+      // Gross − packOut alone overstates WIP by including scrapped material
+      const totalWastageForWIP = aimWaste + printWaste + piWaste;
+      const wipLakhs = Math.max(0, grossProd - totalWastageForWIP - packOutQty);
 
       result[batchNo.toUpperCase()] = { // normalize to uppercase for consistent lookup
         aim: {
@@ -3261,6 +3276,78 @@ app.post('/api/dpr/settings', async (req, res) => {
     }
     res.json({ ok: true, saved: Object.keys(settings).length });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Month Archives — dedicated PostgreSQL table ────────────────
+// POST /api/archives/save — idempotent: INSERT or UPDATE snapshot for a month
+app.post('/api/archives/save', async (req, res) => {
+  try {
+    const { month, snapshot, archivedBy, isAuto } = req.body;
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ ok: false, error: 'Invalid month format. Expected YYYY-MM' });
+    await pgPool.query(
+      `INSERT INTO month_archives (month, archived_at, archived_by, snapshot_json, is_auto)
+       VALUES ($1, NOW(), $2, $3, $4)
+       ON CONFLICT (month) DO UPDATE
+         SET archived_at  = EXCLUDED.archived_at,
+             archived_by  = EXCLUDED.archived_by,
+             snapshot_json = EXCLUDED.snapshot_json,
+             is_auto       = EXCLUDED.is_auto`,
+      [month, archivedBy || 'system', JSON.stringify(snapshot || {}), isAuto !== false]
+    );
+    res.json({ ok: true, month });
+  } catch (err) {
+    console.error('[Archives] save error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/archives/list — list all archived months (no snapshot — metadata only)
+app.get('/api/archives/list', async (req, res) => {
+  try {
+    const result = await pgPool.query(
+      `SELECT month, archived_at, archived_by, is_auto FROM month_archives ORDER BY month DESC`
+    );
+    res.json({ ok: true, archives: result.rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/archives/:month — fetch full snapshot for a specific month
+app.get('/api/archives/:month', async (req, res) => {
+  try {
+    const { month } = req.params;
+    const result = await pgPool.query(
+      `SELECT month, archived_at, archived_by, is_auto, snapshot_json FROM month_archives WHERE month = $1`,
+      [month]
+    );
+    if (result.rows.length === 0) return res.json({ ok: false, error: 'Not found' });
+    const row = result.rows[0];
+    res.json({ ok: true, month: row.month, archivedAt: row.archived_at, archivedBy: row.archived_by, isAuto: row.is_auto, snapshot: row.snapshot_json });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/archives/check/:month — check archive status + edit window
+app.get('/api/archives/check/:month', async (req, res) => {
+  try {
+    const { month } = req.params;
+    const now = new Date();
+    const currentYM = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    if (month === currentYM) return res.json({ ok: true, status: 'current', editable: true });
+    if (month > currentYM) return res.json({ ok: true, status: 'future', editable: true });
+    const result = await pgPool.query(
+      `SELECT archived_at FROM month_archives WHERE month = $1`, [month]
+    );
+    if (result.rows.length === 0) return res.json({ ok: true, status: 'unarchived', editable: true });
+    const archivedAt = new Date(result.rows[0].archived_at);
+    const daysSince = (now - archivedAt) / 86400000;
+    const inGrace = daysSince <= 7;
+    res.json({ ok: true, status: inGrace ? 'grace' : 'locked', editable: inGrace, daysSince: Math.floor(daysSince), archivedAt: result.rows[0].archived_at });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ── Catch-all: serve index.html for unknown routes (SPA fallback) ──

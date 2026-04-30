@@ -427,8 +427,21 @@ input[type="file"] { display:none; }
 .auth-form-group select,.auth-form-group input{width:100%;background:var(--surface3,rgba(255,255,255,0.04));border:1px solid var(--border,rgba(255,255,255,0.08));border-radius:6px;color:var(--text,#e8eaf0);padding:10px 14px;font-size:14px;outline:none;box-sizing:border-box}
 .auth-form-group input:focus{border-color:var(--accent,#00d4ff)}
 .auth-btn{width:100%;background:var(--accent,#00d4ff);color:#0a0f1e;border:none;border-radius:6px;padding:12px;font-size:14px;font-weight:700;cursor:pointer;letter-spacing:1px;margin-top:8px}
-.auth-btn:hover{opacity:0.9}
-.auth-error{color:#ff6b6b;font-size:12px;text-align:center;margin-top:8px;min-height:18px}
+/* ── MONTH PICKER ── */
+.month-picker-wrap{display:flex;align-items:center;gap:6px;padding:4px 8px;background:rgba(240,192,96,0.1);border:1px solid rgba(240,192,96,0.3);border-radius:6px;cursor:pointer}
+.month-picker-wrap select{background:transparent;border:none;color:#f0c060;font-family:var(--mono,monospace);font-size:12px;font-weight:700;cursor:pointer;outline:none;padding:0 2px;-webkit-appearance:none;appearance:none;min-width:110px}
+.month-picker-wrap select option{background:#1a2035;color:#fff}
+.month-picker-label{font-size:10px;color:rgba(240,192,96,0.7);font-weight:700;letter-spacing:.5px;white-space:nowrap}
+.month-edit-badge{font-size:9px;padding:2px 6px;border-radius:3px;font-weight:700;white-space:nowrap}
+.month-edit-badge.current{background:rgba(0,212,255,0.15);color:#00d4ff}
+.month-edit-badge.grace{background:rgba(255,171,0,0.15);color:#ffab00}
+.month-edit-badge.locked{background:rgba(255,82,82,0.15);color:#ff5252}
+.month-edit-badge.future{background:rgba(0,230,118,0.15);color:#00e676}
+@media(max-width:768px){
+  .month-picker-wrap{padding:3px 6px}
+  .month-picker-wrap select{font-size:11px;min-width:90px}
+  .month-picker-label{display:none}
+}
 .auth-user-badge{display:flex;align-items:center;gap:8px;background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.2);border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer}
 .auth-user-badge:hover{background:rgba(0,212,255,0.15)}
 /* ── AUDIT LOG TAB ── */
@@ -503,6 +516,17 @@ input[type="file"] { display:none; }
         <button id="plan-menu-btn" onclick="togglePlanSidebar()" style="display:none;background:none;border:none;color:var(--text);font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;flex-shrink:0">☰</button>
         <div class="topbar-title" id="page-title">Production Planning</div>
       </div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <!-- MONTH PICKER -->
+        <div class="month-picker-wrap" title="Select planning month">
+          <span class="month-picker-label">MONTH</span>
+          <select id="planning-month-select" onchange="onPlanningMonthChange(this.value)"></select>
+          <span id="planning-month-badge" class="month-edit-badge current">●</span>
+        </div>
+        <div id="topbar-actions"></div>
+        <div id="user-badge-wrap"></div>
+      </div>
+    </div>
       <div class="topbar-actions" id="topbar-actions">
         <span id="syncStatusBadge" style="margin-right:8px"></span>
       </div>
@@ -1796,18 +1820,33 @@ function render() {
 function renderProduction() {
   const content = document.getElementById('content');
   const topActions = document.getElementById('topbar-actions');
+  const editable = isMonthEditable(_selectedPlanMonth);
+  const status = getMonthEditStatus(_selectedPlanMonth);
 
   topActions.innerHTML = `
-    <button class="btn btn-ghost btn-sm" onclick="importSAP()">📥 Import SAP</button>
+    ${editable ? `<button class="btn btn-ghost btn-sm" onclick="importSAP()">📥 Import SAP</button>` : ''}
     <button class="btn btn-secondary btn-sm" onclick="exportProdPlan()">📤 Export</button>
-    <button class="btn btn-primary btn-sm" onclick="showAddOrderModal()">+ New Order</button>
+    ${editable ? `<button class="btn btn-primary btn-sm" onclick="showAddOrderModal()">+ New Order</button>` : ''}
   `;
 
-  // Group by machine
+  // Month read-only banner
+  const bannerHtml = status === 'locked' && currentUser?.role !== 'admin'
+    ? `<div style="background:rgba(255,82,82,0.1);border:1px solid rgba(255,82,82,0.3);border-radius:6px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:#ff5252;display:flex;align-items:center;gap:8px">
+        🔒 <strong>${monthLabel(_selectedPlanMonth)}</strong> is archived and read-only. Contact admin for corrections.
+      </div>`
+    : status === 'grace'
+    ? `<div style="background:rgba(255,171,0,0.08);border:1px solid rgba(255,171,0,0.3);border-radius:6px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:#ffab00;display:flex;align-items:center;gap:8px">
+        ✎ <strong>${monthLabel(_selectedPlanMonth)}</strong> — within 7-day edit window.
+      </div>`
+    : '';
+
+  // Group by machine — filter by selected month
+  const monthOrds = getMonthOrders();
   const machines = state.machineMaster.filter(m => m.active !== false);
   const sizes = [...new Set(machines.map(m=>m.size))].sort();
 
   let html = `
+    ${bannerHtml}
     <div class="tabs" id="size-tabs">
       <div class="tab active" onclick="switchSizeTab(this,'all')">All Machines</div>
       ${sizes.map(s=>`<div class="tab" onclick="switchSizeTab(this,'${s}')">Size ${s}</div>`).join('')}
@@ -1816,7 +1855,8 @@ function renderProduction() {
   `;
 
   for (const mc of machines) {
-    const orders = getMachineOrders(mc.id);
+    // Filter orders by selected month
+    const orders = getMachineOrders(mc.id).filter(o => orderInMonth(o, _selectedPlanMonth));
     const activeOrders = orders.filter(o=>o.status!=='closed');
 
     // Fix 4: Compute actual avg production and live A-Grade for this machine
@@ -1851,7 +1891,7 @@ function renderProduction() {
               ${avgProdHtml}
               <span class="text-dim text-sm">${activeOrders.length} active orders</span>
             </div>
-            <button class="btn btn-primary btn-sm" onclick="showAddOrderModal('${mc.id}')">+ Add Order</button>
+            <button class="btn btn-primary btn-sm" onclick="showAddOrderModal('${mc.id}')" ${!editable?'style="display:none"':''}>+ Add Order</button>
           </div>
           ${orders.length === 0 ? '<div class="empty-state" style="padding:20px"><p>No orders planned</p></div>' : `
           <div class="table-wrap">
@@ -3012,6 +3052,11 @@ function renderProdSummary() {
 // PRINTING PLANNING PAGE
 // =============================
 function renderPrinting() {
+  const editable = isMonthEditable(_selectedPlanMonth);
+  const status = getMonthEditStatus(_selectedPlanMonth);
+  const bannerHtml = status === 'locked' && currentUser?.role !== 'admin'
+    ? `<div style="background:rgba(255,82,82,0.1);border:1px solid rgba(255,82,82,0.3);border-radius:6px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:#ff5252">🔒 <strong>${monthLabel(_selectedPlanMonth)}</strong> — read-only.</div>` : '';
+
   // Sync printedToDate from daily printing log for all non-manually-overridden orders
   (state.printOrders || []).forEach(po => {
     if (!po.printedToDateManual) {
@@ -3027,12 +3072,15 @@ function renderPrinting() {
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `
     <button class="btn btn-secondary btn-sm" onclick="exportPrintPlan()">📤 Export</button>
-    <button class="btn btn-primary btn-sm" onclick="showAddPrintModal()">+ Add Print Order</button>
+    ${editable ? `<button class="btn btn-primary btn-sm" onclick="showAddPrintModal()">+ Add Print Order</button>` : ''}
   `;
 
-  const printOrders = state.printOrders;
+  // Filter print orders by selected month via linked production order
+  const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
+  const printOrders = (state.printOrders || []).filter(p => !p.productionOrderId || monthOrdIds.has(p.productionOrderId));
 
   let html = `
+    ${bannerHtml}
     <div class="kpi-grid">
       <div class="kpi" style="--kpi-color:var(--accent5)"><div class="kpi-label">Print Orders</div><div class="kpi-value">${printOrders.length}</div></div>
       <div class="kpi" style="--kpi-color:var(--accent3)"><div class="kpi-label">Completed</div><div class="kpi-value">${printOrders.filter(p=>p.status==='completed').length}</div></div>
@@ -3796,6 +3844,11 @@ function getAllTruckPlans() {
 // =============================
 // DISPATCH PLAN PAGE
 function renderDispatch() {
+  const editable = isMonthEditable(_selectedPlanMonth);
+  const status = getMonthEditStatus(_selectedPlanMonth);
+  const bannerHtml = status === 'locked' && currentUser?.role !== 'admin'
+    ? `<div style="background:rgba(255,82,82,0.1);border:1px solid rgba(255,82,82,0.3);border-radius:6px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:#ff5252">🔒 <strong>${monthLabel(_selectedPlanMonth)}</strong> — read-only.</div>` : '';
+
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `
     <div style="position:relative;display:inline-block" id="export-wrap">
@@ -3810,10 +3863,13 @@ function renderDispatch() {
         </div>
       </div>
     </div>
-    <button class="btn btn-primary btn-sm" onclick="showAddDispatchModal()">+ Add Dispatch</button>
+    ${editable ? `<button class="btn btn-primary btn-sm" onclick="showAddDispatchModal()">+ Add Dispatch</button>` : ''}
   `;
 
-  const plans = state.dispatchPlans.sort((a,b)=>new Date(a.plannedDate)-new Date(b.plannedDate));
+  // Filter dispatch plans by selected month via linked production order
+  const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
+  const allPlans = state.dispatchPlans.filter(p => !p.productionOrderId || monthOrdIds.has(p.productionOrderId));
+  const plans = allPlans.sort((a,b)=>new Date(a.plannedDate)-new Date(b.plannedDate));
   const zones = [...new Set(plans.map(p=>p.zone||'Unassigned'))].sort();
 
   // Box readiness analysis
@@ -3828,6 +3884,7 @@ function renderDispatch() {
   }
 
   let html = `
+    ${bannerHtml}
     <div class="alert alert-info mb-4">🚚 Truck dispatch is triggered when ≥ <strong>${getTruckCapacity()} boxes</strong> are ready for a zone/route.</div>
     <div class="card mb-4">
       <div class="card-title">Zone Readiness Dashboard</div>
@@ -4835,28 +4892,12 @@ function renderDispatchCustomer() {
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = '';
 
-  // Show all dispatch plans for current calendar month (non-deleted orders only)
-  // Includes closed orders — only excludes deleted ones and orders from past months
-  const now = new Date();
-  const monthStart = new Date(now.getFullYear(), now.getMonth(), 1).toISOString().slice(0,10);
-  const monthEnd   = new Date(now.getFullYear(), now.getMonth()+1, 0).toISOString().slice(0,10);
-  const currentMonthOrderIds = new Set(
-    state.orders
-      .filter(o => !o.deleted)
-      .filter(o => {
-        const s = o.startDate ? o.startDate.toString().slice(0,10) : '';
-        const e = o.endDate   ? o.endDate.toString().slice(0,10)   : '';
-        const c = o.closedDate? o.closedDate.toString().slice(0,10): '';
-        // Include if any of start/end/close date falls within current month
-        const dates = [s, e, c].filter(Boolean);
-        return dates.some(d => d >= monthStart && d <= monthEnd) || dates.length === 0;
-      })
-      .map(o => o.id)
-  );
+  // Use selected month filter (consistent with other dispatch views)
+  const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
 
   const activePlans = state.dispatchPlans.filter(p =>
     p.customer &&
-    (!p.productionOrderId || currentMonthOrderIds.has(p.productionOrderId))
+    (!p.productionOrderId || monthOrdIds.has(p.productionOrderId))
   );
   const customers = [...new Set(activePlans.map(p=>p.customer).filter(Boolean))].sort();
 
@@ -4882,7 +4923,7 @@ function renderDispatchCustomer() {
   for (const cust of customers) {
     // All plans for this customer in current month
     const cPlans = state.dispatchPlans
-      .filter(p => p.customer === cust && (!p.productionOrderId || currentMonthOrderIds.has(p.productionOrderId)))
+      .filter(p => p.customer === cust && (!p.productionOrderId || monthOrdIds.has(p.productionOrderId)))
       .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
     const totalQty   = cPlans.reduce((s,p)=>s+p.qty,0);
     const dispatched = cPlans.filter(p=>p.status==='dispatched').reduce((s,p)=>s+(p.actualDispatched||p.qty),0);
@@ -4973,28 +5014,170 @@ function currentYM() {
   return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
 }
 
-// ── On load: set activeMonth if not set, check for auto-prompt ─
-function initMonthlyArchive() {
-  if (!state.activeMonth) {
-    state.activeMonth = currentYM();
-    saveState();
-  }
-  checkMonthRollover();
+// ── Month filter state ────────────────────────────────────────
+let _selectedPlanMonth = currentYM(); // active month selection
+
+function getMonthEditStatus(ym) {
+  const now = currentYM();
+  if (ym === now) return 'current';
+  if (ym > now) return 'future';
+  // For past months, check against archive data cached locally
+  const cached = _monthArchiveCache[ym];
+  if (!cached) return 'grace'; // not yet archived = still editable
+  const daysSince = (Date.now() - new Date(cached.archived_at)) / 86400000;
+  return daysSince <= 7 ? 'grace' : 'locked';
 }
 
-// ── Check if it's the 1st of a new month and prompt planner ───
+function isMonthEditable(ym) {
+  const status = getMonthEditStatus(ym);
+  if (status === 'current' || status === 'future' || status === 'grace') return true;
+  if (status === 'locked') return currentUser?.role === 'admin';
+  return true;
+}
+
+let _monthArchiveCache = {}; // { 'YYYY-MM': { archived_at, ... } }
+
+async function loadArchiveList() {
+  if (!serverUrl) return;
+  try {
+    const r = await fetch(serverUrl + '/api/archives/list', { signal: AbortSignal.timeout(5000) });
+    const j = await r.json();
+    if (j.ok) {
+      _monthArchiveCache = {};
+      j.archives.forEach(a => { _monthArchiveCache[a.month] = a; });
+    }
+  } catch(e) {}
+}
+
+function buildMonthPicker() {
+  const sel = document.getElementById('planning-month-select');
+  if (!sel) return;
+  const now = currentYM();
+  const [ny, nm] = now.split('-').map(Number);
+  const options = [];
+  // Past 12 months + current + next 3 months
+  for (let i = -12; i <= 3; i++) {
+    let y = ny, m = nm + i;
+    while (m < 1) { m += 12; y--; }
+    while (m > 12) { m -= 12; y++; }
+    const ym = `${y}-${String(m).padStart(2,'0')}`;
+    options.push(`<option value="${ym}" ${ym===_selectedPlanMonth?'selected':''}>${monthLabel(ym)}</option>`);
+  }
+  sel.innerHTML = options.join('');
+  updateMonthBadge();
+}
+
+function updateMonthBadge() {
+  const badge = document.getElementById('planning-month-badge');
+  if (!badge) return;
+  const status = getMonthEditStatus(_selectedPlanMonth);
+  badge.className = `month-edit-badge ${status}`;
+  const labels = { current:'● Live', grace:'✎ Grace', locked:'🔒 Locked', future:'◆ Future' };
+  badge.textContent = labels[status] || '●';
+  badge.title = {
+    current: 'Current month — full edit access',
+    grace: 'Within 7-day edit window',
+    locked: 'Archived — admin edit only',
+    future: 'Future month — pre-planning'
+  }[status] || '';
+}
+
+function onPlanningMonthChange(ym) {
+  _selectedPlanMonth = ym;
+  updateMonthBadge();
+  render();
+}
+
+// ── Month filter for orders ───────────────────────────────────
+function orderInMonth(ord, ym) {
+  if (ord.deleted) return false;
+  const [y, m] = ym.split('-').map(Number);
+  const mStart = new Date(y, m-1, 1);
+  const mEnd   = new Date(y, m, 0, 23, 59, 59);
+  // Always show unclosed orders with no dates
+  if (!ord.startDate && !ord.endDate) return ord.status !== 'closed';
+  const start = ord.startDate ? new Date(ord.startDate) : null;
+  const end   = ord.endDate   ? new Date(ord.endDate)   : null;
+  const closed = ord.closedDate ? new Date(ord.closedDate) : null;
+  // Include if: start in month, OR end in month, OR spans across month, OR closed in month
+  if (start && start >= mStart && start <= mEnd) return true;
+  if (end   && end   >= mStart && end   <= mEnd) return true;
+  if (start && end   && start < mStart && end > mEnd) return true; // spans
+  if (closed && closed >= mStart && closed <= mEnd) return true;
+  // Unclosed with start before month end (carry-forward)
+  if (ord.status !== 'closed' && start && start <= mEnd) return true;
+  return false;
+}
+
+function getMonthOrders() {
+  return state.orders.filter(o => orderInMonth(o, _selectedPlanMonth));
+}
+
+// ── Auto-archive on load ─────────────────────────────────────
+async function autoArchiveIfNeeded() {
+  const now = currentYM();
+  if (!state.activeMonth || state.activeMonth === now) {
+    if (!state.activeMonth) { state.activeMonth = now; saveState(); }
+    return;
+  }
+  // Month has changed — archive the previous month(s)
+  const prev = state.activeMonth;
+  await doAutoArchive(prev);
+  state.activeMonth = now;
+  saveState();
+}
+
+async function doAutoArchive(ym) {
+  if (!serverUrl) return;
+  try {
+    // Build snapshot of orders active in that month
+    const [y, m] = ym.split('-').map(Number);
+    const mStart = new Date(y, m-1, 1).toISOString().slice(0,10);
+    const mEnd   = new Date(y, m, 0).toISOString().slice(0,10);
+    const monthOrders = state.orders.filter(o => orderInMonth(o, ym));
+    const monthPrintOrders = state.printOrders.filter(p =>
+      monthOrders.some(o => o.id === p.productionOrderId)
+    );
+    const monthDispatch = state.dispatchPlans.filter(p =>
+      monthOrders.some(o => o.id === p.productionOrderId)
+    );
+    const snapshot = {
+      orders: monthOrders,
+      printOrders: monthPrintOrders,
+      dispatchPlans: monthDispatch,
+      snapshotDate: new Date().toISOString()
+    };
+    await fetch(serverUrl + '/api/archives/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        month: ym,
+        snapshot,
+        archivedBy: currentUser?.username || 'auto',
+        isAuto: true
+      }),
+      signal: AbortSignal.timeout(8000)
+    });
+    console.log(`[Archive] Auto-archived ${ym}`);
+    // Refresh cache
+    await loadArchiveList();
+  } catch(e) {
+    console.warn('[Archive] Auto-archive failed:', e.message);
+  }
+}
+
+// ── On load: set activeMonth if not set, check for auto-prompt ─
+// ── On load: auto-archive if month changed, build picker ──────
+async function initMonthlyArchive() {
+  await loadArchiveList();
+  await autoArchiveIfNeeded();
+  buildMonthPicker();
+}
+
+// kept for manual trigger from Settings
 function checkMonthRollover() {
-  const now = new Date();
   const ym = currentYM();
-  if (ym === state.activeMonth) return; // same month — no action needed
-
-  // New month detected — check if already prompted today
-  const promptKey = `sunloc_archive_prompt_${ym}`;
-  if (localStorage.getItem(promptKey)) return; // already prompted this month
-  localStorage.setItem(promptKey, '1');
-
-  // Show prompt after slight delay so app renders first
-  setTimeout(() => showMonthRolloverPrompt(state.activeMonth, ym), 1200);
+  if (ym !== state.activeMonth) autoArchiveIfNeeded();
 }
 
 function showMonthRolloverPrompt(oldYM, newYM) {
@@ -5045,11 +5228,13 @@ function closeMonthAndArchive() {
     }
   };
 
-  // Add to archives (keep last 24 months)
+  // Save to PostgreSQL archive (primary store)
+  doAutoArchive(oldYM).catch(e => console.warn('[Archive] closeMonthAndArchive server save failed:', e));
+
+  // Keep lightweight local reference for backward compat (no bloat — server is source of truth)
   state.archives = state.archives || [];
-  state.archives = state.archives.filter(a => a.month !== oldYM); // replace if re-archiving
-  state.archives.unshift(snapshot);
-  if (state.archives.length > 24) state.archives = state.archives.slice(0, 24);
+  state.archives = state.archives.filter(a => a.month !== oldYM);
+  if (state.archives.length > 3) state.archives = state.archives.slice(0, 3); // keep only recent 3 locally
 
   // Carry-forward: keep orders/print/dispatch that span into new month OR are unclosed
   const newMonthStart = new Date(parseInt(newYM.split('-')[0]), parseInt(newYM.split('-')[1])-1, 1);
@@ -5100,210 +5285,89 @@ function isArchiveEditable(archive) {
 }
 
 // ── Render Archives page ──────────────────────────────────────
-function renderArchives() {
+async function renderArchives() {
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `
-    <button class="btn btn-secondary btn-sm" onclick="showMonthRolloverPrompt(state.activeMonth, currentYM())">
-      📅 Close ${monthLabel(state.activeMonth)} & Open New Month
+    <button class="btn btn-secondary btn-sm" onclick="doAutoArchive(currentYM()).then(()=>{buildMonthPicker();renderArchives();})">
+      📅 Archive Current Month Now
     </button>
   `;
 
-  const archives = state.archives || [];
+  const content = document.getElementById('content');
+  content.innerHTML = `<div style="padding:24px;color:var(--text3);font-size:13px">⏳ Loading archives…</div>`;
 
-  if (archives.length === 0) {
-    document.getElementById('content').innerHTML = `
-      <div class="empty-state">
-        <div class="icon">🗂️</div>
-        <p>No archived months yet.</p>
-        <p style="font-size:12px;color:var(--text-muted);margin-top:8px">
-          Archives are created when you close a month at month end.<br>
-          Current active month: <strong>${monthLabel(state.activeMonth)}</strong>
-        </p>
-      </div>`;
+  if (!serverUrl) {
+    content.innerHTML = `<div class="empty-state"><div class="icon">🗂️</div><p>Server required to view archives.</p></div>`;
     return;
   }
 
-  let html = `
-    <div class="alert alert-info" style="margin-bottom:16px">
-      Active planning month: <strong>${monthLabel(state.activeMonth)}</strong> &nbsp;|&nbsp;
-      ${archives.length} archived month(s) available
-    </div>
-    <div style="display:flex;flex-direction:column;gap:12px">
-  `;
+  try {
+    const r = await fetch(serverUrl + '/api/archives/list', { signal: AbortSignal.timeout(6000) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error);
+    const archives = j.archives;
 
-  for (const arch of archives) {
-    const editable = isArchiveEditable(arch);
-    const closedDate = new Date(arch.closedAt);
-    const orders = arch.data.orders || [];
-    const dispatch = arch.data.dispatchPlans || [];
-    const totalQty = orders.reduce((s,o)=>s+(o.qty||0),0);
-    const dispatched = dispatch.filter(d=>d.status==='dispatched').reduce((s,d)=>s+(d.qty||0),0);
-    const closed = orders.filter(o=>o.status==='closed').length;
+    if (archives.length === 0) {
+      content.innerHTML = `<div class="empty-state"><div class="icon">🗂️</div><p>No archived months yet.</p><p style="font-size:12px;color:var(--text3);margin-top:8px">Archives are created automatically at the start of each new month.</p></div>`;
+      return;
+    }
 
-    html += `
+    const isAdmin = currentUser?.role === 'admin';
+    const rows = archives.map(a => {
+      const archivedAt = new Date(a.archived_at);
+      const daysSince = (Date.now() - archivedAt) / 86400000;
+      const inGrace = daysSince <= 7;
+      const editable = inGrace || isAdmin;
+      const statusBadge = inGrace
+        ? `<span class="badge badge-amber" style="font-size:10px">✎ Grace Period</span>`
+        : `<span class="badge badge-pending" style="font-size:10px">🔒 Locked</span>`;
+      return `<tr>
+        <td class="text-mono fw-bold" style="color:var(--accent)">${monthLabel(a.month)}</td>
+        <td>${a.is_auto ? '<span class="badge badge-blue" style="font-size:10px">Auto</span>' : '<span class="badge" style="font-size:10px">Manual</span>'}</td>
+        <td style="font-size:12px;color:var(--text3)">${a.archived_by || '—'}</td>
+        <td style="font-size:12px">${archivedAt.toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'})}</td>
+        <td>${statusBadge}</td>
+        <td>
+          <button class="btn btn-ghost btn-sm" onclick="viewArchiveMonth('${a.month}')">👁 View</button>
+          ${editable ? `<button class="btn btn-ghost btn-sm" onclick="doAutoArchive('${a.month}').then(()=>renderArchives())" title="Re-archive with current data">↺ Re-archive</button>` : ''}
+        </td>
+      </tr>`;
+    }).join('');
+
+    content.innerHTML = `
       <div class="card">
-        <div style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">
-          <div style="flex:1;min-width:200px">
-            <div style="font-family:var(--font-mono);font-size:16px;font-weight:700;color:var(--accent)">${monthLabel(arch.month)}</div>
-            <div style="font-size:11px;color:var(--text-muted);margin-top:2px">
-              Archived ${closedDate.toLocaleDateString('en-IN', {day:'2-digit',month:'short',year:'numeric'})}
-              &nbsp;·&nbsp;
-              <span style="color:${editable?'var(--accent3)':'var(--text-muted)'}">
-                ${editable ? '✏️ Editable until ' + new Date(closedDate.getTime()+7*86400000).toLocaleDateString('en-IN',{day:'2-digit',month:'short'}) : '🔒 Read-only'}
-              </span>
-            </div>
-          </div>
-          <div style="display:flex;gap:16px;flex-wrap:wrap">
-            <div style="text-align:center">
-              <div style="font-size:18px;font-weight:700;color:var(--text)">${orders.length}</div>
-              <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Orders</div>
-            </div>
-            <div style="text-align:center">
-              <div style="font-size:18px;font-weight:700;color:var(--accent2)">${fmt(totalQty,0)}</div>
-              <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Total Qty (L)</div>
-            </div>
-            <div style="text-align:center">
-              <div style="font-size:18px;font-weight:700;color:var(--accent3)">${closed}</div>
-              <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Closed</div>
-            </div>
-            <div style="text-align:center">
-              <div style="font-size:18px;font-weight:700;color:var(--accent)">${fmt(dispatched,0)}</div>
-              <div style="font-size:10px;color:var(--text-muted);text-transform:uppercase;letter-spacing:.5px">Dispatched (L)</div>
-            </div>
-          </div>
-          <div style="display:flex;gap:8px;flex-shrink:0">
-            <button class="btn btn-secondary btn-sm" onclick="viewArchive('${arch.month}')">👁 View</button>
-            <button class="btn btn-secondary btn-sm" onclick="exportArchive('${arch.month}')">📥 Export</button>
-            ${editable ? `<button class="btn btn-secondary btn-sm" onclick="reArchiveMonth('${arch.month}')">🔄 Re-archive</button>` : ''}
-          </div>
+        <div class="card-title" style="margin-bottom:16px">🗂️ Monthly Archives</div>
+        <div style="overflow-x:auto">
+          <table style="width:100%;border-collapse:collapse;font-size:13px">
+            <thead>
+              <tr style="border-bottom:2px solid var(--border)">
+                <th style="padding:8px 12px;text-align:left">Month</th>
+                <th style="padding:8px 12px;text-align:left">Type</th>
+                <th style="padding:8px 12px;text-align:left">Archived By</th>
+                <th style="padding:8px 12px;text-align:left">Archived On</th>
+                <th style="padding:8px 12px;text-align:left">Status</th>
+                <th style="padding:8px 12px;text-align:left">Actions</th>
+              </tr>
+            </thead>
+            <tbody>${rows}</tbody>
+          </table>
         </div>
-      </div>
-    `;
+        <div style="margin-top:12px;font-size:11px;color:var(--text3)">
+          ✎ Grace period: all users can edit within 7 days of archiving. 🔒 Locked: admin only.
+        </div>
+      </div>`;
+  } catch(e) {
+    content.innerHTML = `<div class="empty-state"><div class="icon">⚠️</div><p>Failed to load archives: ${e.message}</p></div>`;
   }
-  html += '</div>';
-  document.getElementById('content').innerHTML = html;
 }
 
-// ── View an archived month ─────────────────────────────────────
-function viewArchive(ym) {
-  const arch = (state.archives||[]).find(a => a.month === ym);
-  if (!arch) return;
-  const editable = isArchiveEditable(arch);
-  const orders = arch.data.orders || [];
-  const dispatch = arch.data.dispatchPlans || [];
-
-  let rows = orders.map(ord => {
-    const dp = dispatch.find(d => d.productionOrderId === ord.id);
-    return `<tr>
-      <td class="text-mono text-accent">${ord.machineId||'-'}</td>
-      <td class="text-mono">${ord.batchNumber||'-'}</td>
-      <td style="font-size:12px;font-weight:500">${fmtCustomer(ord)}</td>
-      <td class="text-mono">${ord.pcCode||'-'}</td>
-      <td class="text-mono">${ord.size||'-'}</td>
-      <td>${ord.isPrinted?'<span class="badge badge-ptd">PTD</span>':'<span class="badge badge-up">UP</span>'}</td>
-      <td class="text-sm">${ord.zone||'-'}</td>
-      <td class="text-mono">${fmt(ord.qty)}</td>
-      <td class="text-mono" style="white-space:nowrap">${fmtDate(ord.startDate)}</td>
-      <td class="text-mono" style="white-space:nowrap">${fmtDate(ord.endDate)}</td>
-      <td class="text-mono">${fmt(ord.actualProd||0)}</td>
-      <td>${ord.status==='closed'?'<span class="badge badge-completed">Closed</span>':ord.status==='running'?'<span class="badge badge-running">Running</span>':'<span class="badge badge-pending">Pending</span>'}</td>
-      <td class="text-mono" style="white-space:nowrap">${dp&&dp.plannedDate?fmtDate(dp.plannedDate):'-'}</td>
-      <td>${dp&&dp.status==='dispatched'?'<span class="badge badge-completed">Dispatched</span>':dp?'<span class="badge badge-pending">Pending</span>':'-'}</td>
-      <td class="text-mono">${dp?fmt(dp.actualDispatched||0):'-'}</td>
-    </tr>`;
-  }).join('');
-
-  openModal(`🗂️ ${monthLabel(ym)} — Archive View`, `
-    <div style="margin-bottom:10px;display:flex;align-items:center;gap:8px">
-      <span style="font-size:12px;color:var(--text-muted)">${orders.length} orders</span>
-      ${editable ? '<span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);padding:2px 8px;border-radius:3px;font-size:11px">✏️ Editable</span>' : '<span style="background:rgba(255,64,96,0.1);color:#ff4060;border:1px solid rgba(255,64,96,0.2);padding:2px 8px;border-radius:3px;font-size:11px">🔒 Read-only</span>'}
-    </div>
-    <div style="overflow-x:auto;max-height:60vh;overflow-y:auto">
-      <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead style="position:sticky;top:0;background:var(--surface2)"><tr>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Machine</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Batch</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Customer</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">PC Code</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Size</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Type</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Zone</th>
-          <th style="padding:6px 10px;text-align:right;white-space:nowrap">Qty (L)</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Start</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">End</th>
-          <th style="padding:6px 10px;text-align:right;white-space:nowrap">Actual (L)</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Prod Status</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Dispatch Date</th>
-          <th style="padding:6px 10px;text-align:left;white-space:nowrap">Dispatch</th>
-          <th style="padding:6px 10px;text-align:right;white-space:nowrap">Dispatched (L)</th>
-        </tr></thead>
-        <tbody>${rows || '<tr><td colspan="15" style="padding:20px;text-align:center;color:var(--text-muted)">No orders in this archive</td></tr>'}</tbody>
-      </table>
-    </div>
-  `, [{label:'Export to Excel', cls:'btn-secondary', fn:`exportArchive('${ym}')`}, {label:'Close', cls:'btn-primary', fn:'closeModal()'}]);
+async function viewArchiveMonth(ym) {
+  // Switch month picker to this archived month and navigate to production
+  _selectedPlanMonth = ym;
+  buildMonthPicker();
+  navigate('production');
 }
 
-// ── Export an archived month to Excel ─────────────────────────
-function exportArchive(ym) {
-  const arch = (state.archives||[]).find(a => a.month === ym);
-  if (!arch) return;
-  const orders = arch.data.orders || [];
-  const dispatch = arch.data.dispatchPlans || [];
-  const printing = arch.data.printOrders || [];
-
-  const wb = XLSX.utils.book_new();
-
-  // Sheet 1: Orders
-  const orderRows = orders.map(ord => {
-    const dp = dispatch.find(d => d.productionOrderId === ord.id);
-    return {
-      'Machine': ord.machineId, 'Batch No': ord.batchNumber, 'Customer': ord.customer,
-      'PC Code': ord.pcCode, 'Size': ord.size, 'PTD/UP': ord.isPrinted?'PTD':'UP',
-      'Zone': ord.zone, 'Order Qty (L)': fmt(ord.qty),
-      'Start Date': fmtDate(ord.startDate), 'End Date': fmtDate(ord.endDate),
-      'Actual Prod (L)': fmt(ord.actualProd||0), 'Prod Status': ord.status,
-      'Planned Dispatch': dp&&dp.plannedDate?fmtDate(dp.plannedDate):'-',
-      'Dispatched (L)': dp?fmt(dp.actualDispatched||0):'-',
-      'Dispatch Status': dp?dp.status:'-'
-    };
-  });
-  const ws1 = XLSX.utils.json_to_sheet(orderRows.length ? orderRows : [{'Note':'No orders'}]);
-  ws1['!cols'] = [10,14,18,10,8,8,14,12,14,14,14,12,16,14,14].map(w=>({wch:w}));
-  XLSX.utils.book_append_sheet(wb, ws1, 'Production Plan');
-
-  // Sheet 2: Dispatch
-  const dispRows = dispatch.map(p => ({
-    'Customer': p.customer, 'Batch No': p.batchNumber, 'PC Code': p.pcCode,
-    'Size': p.size, 'Zone': p.zone, 'Qty (L)': fmt(p.qty), 'Boxes': p.boxes,
-    'Planned Date': p.plannedDate?fmtDate(p.plannedDate):'Pending',
-    'Dispatched (L)': fmt(p.actualDispatched||0), 'Status': p.status
-  }));
-  const ws2 = XLSX.utils.json_to_sheet(dispRows.length ? dispRows : [{'Note':'No dispatch records'}]);
-  XLSX.utils.book_append_sheet(wb, ws2, 'Dispatch Plan');
-
-  // Sheet 3: Print Plan
-  const printRows = printing.map(p => ({
-    'OPM': p.machineId, 'Batch No': p.batchNumber, 'PC Code': p.pcCode,
-    'Qty to Print (L)': fmt(p.qtyToPrint), 'Printed to Date (L)': fmt(p.printedToDate||0),
-    'Start': fmtDate(p.startDate), 'End': fmtDate(p.endDate), 'Status': p.status
-  }));
-  const ws3 = XLSX.utils.json_to_sheet(printRows.length ? printRows : [{'Note':'No print records'}]);
-  XLSX.utils.book_append_sheet(wb, ws3, 'Print Plan');
-
-  XLSX.writeFile(wb, `Sunloc_Archive_${ym}_${monthLabel(ym).replace(' ','_')}.xlsx`);
-  closeModal();
-}
-
-// ── Re-archive: planner can refresh archive within 7-day window
-function reArchiveMonth(ym) {
-  if (!confirm(`Re-archive ${monthLabel(ym)}? This will overwrite the existing archive with current data.`)) return;
-  // Temporarily swap state to re-trigger archive
-  const oldMonth = state.activeMonth;
-  state.activeMonth = ym;
-  closeMonthAndArchive();
-  state.activeMonth = oldMonth;
-  saveState();
-}
 
 // =============================
 // ORDER TRACKER VIEW
@@ -5325,28 +5389,28 @@ function renderOrderTracker() {
     </select>
     <select id="ot-filter-customer" class="form-control form-control-sm" onchange="renderOrderTracker()" style="width:150px">
       <option value="">All Customers</option>
-      ${[...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.customer).filter(Boolean))].sort().map(c=>`<option value="${c}" ${fCustomer===c?'selected':''}>${c}</option>`).join('')}
+      ${[...new Set(getMonthOrders().map(o=>o.customer).filter(Boolean))].sort().map(c=>`<option value="${c}" ${fCustomer===c?'selected':''}>${c}</option>`).join('')}
     </select>
     <select id="ot-filter-zone" class="form-control form-control-sm" onchange="renderOrderTracker()" style="width:130px">
       <option value="">All Zones</option>
-      ${[...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.zone).filter(Boolean))].sort().map(z=>`<option value="${z}" ${fZone===z?'selected':''}>${z}</option>`).join('')}
+      ${[...new Set(getMonthOrders().map(o=>o.zone).filter(Boolean))].sort().map(z=>`<option value="${z}" ${fZone===z?'selected':''}>${z}</option>`).join('')}
     </select>
     <button class="btn btn-secondary btn-sm" onclick="exportFullOrderTracker()">&#128228; Export</button>
   `;
 
-  let orders = state.orders
-    .filter(o => !o.deleted)
+  let orders = getMonthOrders()
     .filter(o => !fStatus   || o.status === fStatus)
     .filter(o => !fCustomer || o.customer === fCustomer)
     .filter(o => !fZone     || o.zone === fZone)
     .sort((a,b) => (a.batchNumber||'').localeCompare(b.batchNumber||''));
 
-  // KPI summary
-  const allOrders = state.orders.filter(o=>!o.deleted);
+  // KPI summary — scoped to selected month
+  const allOrders = getMonthOrders();
   const totalQty    = allOrders.reduce((s,o)=>s+(o.qty||0),0);
   const totalProd   = allOrders.reduce((s,o)=>s+(o.actualProd||0),0);
-  const totalDisp   = state.dispatchPlans.reduce((s,p)=>s+(p.actualDispatched||0),0);
-  const pendingDisp = state.dispatchPlans.filter(p=>p.status!=='dispatched').reduce((s,p)=>s+(p.qty||0),0);
+  const monthOrdIds = new Set(allOrders.map(o=>o.id));
+  const totalDisp   = state.dispatchPlans.filter(p=>monthOrdIds.has(p.productionOrderId)).reduce((s,p)=>s+(p.actualDispatched||0),0);
+  const pendingDisp = state.dispatchPlans.filter(p=>p.status!=='dispatched'&&monthOrdIds.has(p.productionOrderId)).reduce((s,p)=>s+(p.qty||0),0);
 
   let html = `
     <div class="kpi-grid mb-4" style="grid-template-columns:repeat(auto-fill,minmax(140px,1fr))">

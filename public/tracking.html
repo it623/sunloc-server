@@ -617,7 +617,16 @@ input[type=number]{font-family:var(--mono)}
           <div class="tb-subtitle" id="tb-subtitle">Sunloc Tracking Suite</div>
         </div>
       </div>
-      <div class="tb-actions" id="tb-actions"></div>
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+        <!-- MONTH PICKER -->
+        <div style="display:flex;align-items:center;gap:5px;padding:3px 8px;background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.2);border-radius:5px" title="Select tracking month">
+          <select id="trk-month-select" onchange="onTrkMonthChange(this.value)"
+            style="background:transparent;border:none;color:#00d4ff;font-size:11px;font-weight:700;cursor:pointer;outline:none;padding:0 2px;-webkit-appearance:none;appearance:none;min-width:100px">
+          </select>
+          <span id="trk-month-badge" style="font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700;background:rgba(0,212,255,0.15);color:#00d4ff">●</span>
+        </div>
+        <div class="tb-actions" id="tb-actions"></div>
+      </div>
     </div>
     <div id="content">
       <!-- Pages injected here -->
@@ -774,6 +783,117 @@ let state = {
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7) }
 function today(){ return new Date().toISOString().slice(0,10) }
 function now(){ return new Date().toISOString() }
+
+// ── Tracking Month filter ─────────────────────────────────────
+let _trkSelectedMonth = today().slice(0,7);
+let _trkMonthArchiveCache = {};
+
+function trkCurrentYM(){ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; }
+
+function trkGetMonthEditStatus(ym) {
+  const now = trkCurrentYM();
+  if (ym === now) return 'current';
+  if (ym > now) return 'future';
+  const cached = _trkMonthArchiveCache[ym];
+  if (!cached) return 'grace';
+  const daysSince = (Date.now() - new Date(cached.archived_at)) / 86400000;
+  return daysSince <= 7 ? 'grace' : 'locked';
+}
+
+function isTrkMonthEditable(ym) {
+  const status = trkGetMonthEditStatus(ym);
+  if (status === 'current' || status === 'grace') return true;
+  if (status === 'locked') return state.currentUser?.role === 'admin';
+  return false;
+}
+
+async function loadTrkArchiveList() {
+  const url = localStorage.getItem('sunloc_server_url');
+  if (!url) return;
+  try {
+    const r = await fetch(url + '/api/archives/list', { signal: AbortSignal.timeout(5000) });
+    const j = await r.json();
+    if (j.ok) {
+      _trkMonthArchiveCache = {};
+      j.archives.forEach(a => { _trkMonthArchiveCache[a.month] = a; });
+    }
+  } catch(e) {}
+}
+
+async function autoTrkArchiveIfNeeded() {
+  const url = localStorage.getItem('sunloc_server_url');
+  if (!url) return;
+  const now = trkCurrentYM();
+  const last = localStorage.getItem('trk_activeMonth');
+  if (!last) { localStorage.setItem('trk_activeMonth', now); return; }
+  if (last === now) return;
+  try {
+    await fetch(url + '/api/archives/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ month: last, archivedBy: 'trk-auto', isAuto: true, snapshot: {} }),
+      signal: AbortSignal.timeout(5000)
+    });
+  } catch(e) {}
+  localStorage.setItem('trk_activeMonth', now);
+  await loadTrkArchiveList();
+}
+
+function buildTrkMonthPicker() {
+  const sel = document.getElementById('trk-month-select');
+  if (!sel) return;
+  const now = trkCurrentYM();
+  const [ny, nm] = now.split('-').map(Number);
+  const opts = [];
+  for (let i = -12; i <= 0; i++) {
+    let y = ny, m = nm + i;
+    while (m < 1) { m += 12; y--; }
+    const ym = `${y}-${String(m).padStart(2,'0')}`;
+    const label = new Date(y, m-1, 1).toLocaleString('default',{month:'short',year:'numeric'});
+    opts.push(`<option value="${ym}" ${ym===_trkSelectedMonth?'selected':''}>${label}</option>`);
+  }
+  sel.innerHTML = opts.reverse().join('');
+  updateTrkMonthBadge();
+}
+
+function updateTrkMonthBadge() {
+  const badge = document.getElementById('trk-month-badge');
+  if (!badge) return;
+  const status = trkGetMonthEditStatus(_trkSelectedMonth);
+  const colors = { current:'rgba(0,212,255,0.15)', grace:'rgba(255,171,0,0.15)', locked:'rgba(255,82,82,0.15)', future:'rgba(0,230,118,0.15)' };
+  const textColors = { current:'#00d4ff', grace:'#ffab00', locked:'#ff5252', future:'#00e676' };
+  const icons = { current:'●', grace:'✎', locked:'🔒', future:'◆' };
+  badge.style.background = colors[status] || colors.current;
+  badge.style.color = textColors[status] || textColors.current;
+  badge.textContent = icons[status] || '●';
+}
+
+function onTrkMonthChange(ym) {
+  _trkSelectedMonth = ym;
+  updateTrkMonthBadge();
+  renderPage(state.currentPage || 'dashboard');
+}
+
+// Filter batches by selected month (production order active in that month)
+function getTrkMonthBatches() {
+  return state.batches.filter(b => {
+    if (b.deleted) return false;
+    // Use order start/end dates from batch metadata
+    const start = b.startDate || b.orderStartDate;
+    const end   = b.endDate   || b.orderEndDate;
+    const [y, m] = _trkSelectedMonth.split('-').map(Number);
+    const mStart = new Date(y, m-1, 1);
+    const mEnd   = new Date(y, m, 0, 23, 59, 59);
+    if (!start && !end) return true; // no dates = always show
+    const s = start ? new Date(start) : null;
+    const e = end   ? new Date(end)   : null;
+    if (s && s >= mStart && s <= mEnd) return true;
+    if (e && e >= mStart && e <= mEnd) return true;
+    if (s && e && s < mStart && e > mEnd) return true; // spans
+    if (!e && s && s <= mEnd) return true; // open-ended, started on or before month end
+    return false;
+  });
+}
 function fmt(n,d=2){ return n==null?'-':(+n).toFixed(d) }
 function fmtDate(d){ if(!d) return '-'; return new Date(d).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) }
 function fmtTime(d){ if(!d) return '-'; return new Date(d).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) }
@@ -987,6 +1107,9 @@ function doLogout(){
 }
 
 function initApp(){
+  loadTrkArchiveList().then(() => {
+    autoTrkArchiveIfNeeded().then(() => buildTrkMonthPicker());
+  });
   const info = DEPT_INFO[currentDept];
   document.getElementById('sb-username').textContent=info.label;
   document.getElementById('sb-userrole').textContent=info.role;
@@ -1589,13 +1712,11 @@ function getBatchWIPDays(batchNo){
   const machine = state.machineMaster.find(m=>m.id===batch.machineId||m.machineId===batch.machineId);
   const dailyTarget = machine?.dailyTarget||machine?.yTarget||machine?.cap||10;
 
-  // WIP Days = (Gross Production − Packed Out Qty) / Daily Target
-  // Consistent with Report C formula
-  const grossProd  = batch.actualProd || batch.actualQty || 0;
-  const packedOut  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
-  const packedQty  = boxToLakh(packedOut, batch.size);
-  const remaining  = Math.max(0, grossProd - packedQty);
-  const wipDays    = dailyTarget > 0 ? remaining / dailyTarget : 0;
+  // WIP Days = totalWIP / Daily Target
+  // totalWIP uses SSOT: (Gross − totalSalvage − totalRemelt) − packOut
+  const wip = getBatchWIPBreakdown(batchNo);
+  const totalWIP = wip ? wip.totalWIP : 0;
+  const wipDays = dailyTarget > 0 ? totalWIP / dailyTarget : 0;
   return Math.max(0, wipDays);
 }
 
@@ -1658,13 +1779,18 @@ function getBatchWIPBreakdown(batchNo){
   // Gross production from DPR
   const grossProd = batch.actualProd || batch.actualQty || 0;
 
-  // Stage WIPs
+  // Stage WIPs — kept for per-dept display (accountability proxies intact)
   const preAIM   = Math.max(0, grossProd - aimIn - wAIM.salvage - wAIM.remelt);
   const aimWIP   = Math.max(0, aimIn - aimOut - wAIM.salvage - wAIM.remelt);
   const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - wPrint.salvage - wPrint.remelt) : 0;
   const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt) : 0;
   const packWIP  = Math.max(0, packIn - packOut);
-  const totalWIP = preAIM + aimWIP + printWIP + piWIP + packWIP;
+
+  // Overall WIP = (Gross − total wastage all depts) − Pack Out
+  // Do NOT sum stage WIPs — AIM wastage would be double-counted
+  const totalSalvageWIP = wAIM.salvage + wPrint.salvage + wPI.salvage;
+  const totalRemeltWIP  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
+  const totalWIP = Math.max(0, grossProd - totalSalvageWIP - totalRemeltWIP - packOut);
 
   return {
     grossProd, aimIn, aimOut,
@@ -2147,7 +2273,7 @@ function renderPageForce(page){
 function renderDashboard(){
   const el=document.getElementById('page-dashboard');
   checkAlerts();
-  const totalBatches=state.batches.filter(b=>b.status!=='closed').length;
+  const totalBatches=getTrkMonthBatches().filter(b=>b.status!=='closed').length;
   const totalLabels=state.labels.filter(l=>!l.voided&&!l.isOrange).length;
   const totalAlerts=state.alerts.length;
   const packedBoxes=state.scans.filter(s=>s.dept==='packing'&&s.type==='out').length;
@@ -2202,7 +2328,7 @@ function renderDashboard(){
     <table>
       <thead><tr><th>Batch</th><th>Customer</th><th>Machine</th><th>Size</th><th>Printed</th><th>Stage</th><th>WIP Days</th><th>Dispatch Est.</th><th>Status</th></tr></thead>
       <tbody>
-      ${state.batches.filter(b=>b.status!=='closed')
+      ${getTrkMonthBatches().filter(b=>b.status!=='closed')
         .sort((a,b)=>{const mc=(a.machineId||'').localeCompare(b.machineId||'');return mc!==0?mc:(a.batchNumber||'').localeCompare(b.batchNumber||'');})
         .map(b=>{
         const wipDays=getBatchWIPDays(b.batchNumber);
@@ -2383,7 +2509,7 @@ function renderPrintQueue(selBatch){
 
 function renderLabels(){
   const el=document.getElementById('page-labels');
-  const activeBatches=state.batches.filter(b=>b.status==='running').sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const activeBatches=getTrkMonthBatches().filter(b=>b.status==='running').sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const selBatch=window._labelSelBatch||activeBatches[0]?.batchNumber||'';
 
   document.getElementById('tb-actions').innerHTML=`
@@ -2671,7 +2797,7 @@ function filterOrangeLabels(){
 }
 
 function openLabelGen(preselect){
-  const activeBatches=state.batches.filter(b=>b.status==='running').sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const activeBatches=getTrkMonthBatches().filter(b=>b.status==='running').sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   openModal('Generate Labels','Select batch and quantity to generate',`
     <div class="form-group">
       <label>Batch</label>
@@ -3489,8 +3615,9 @@ function renderBatchTracker(){
   document.getElementById('tb-actions').innerHTML=`
     <button class="btn btn-secondary btn-sm" onclick="exportTrackerReport()">📥 Export</button>`;
 
-  const allPcCodes = [...new Set(state.batches.map(b=>b.pcCode).filter(Boolean))].sort();
-  const allColours = [...new Set(state.batches.map(b=>b.colour).filter(Boolean))].sort();
+  const monthBatchesForFilter = getTrkMonthBatches();
+  const allPcCodes = [...new Set(monthBatchesForFilter.map(b=>b.pcCode).filter(Boolean))].sort();
+  const allColours = [...new Set(monthBatchesForFilter.map(b=>b.colour).filter(Boolean))].sort();
 
   el.innerHTML=`
   <div class="section-header">
@@ -3510,7 +3637,7 @@ function renderBatchTracker(){
     <div class="form-group"><label>Filter by Machine</label>
       <select id="bt-filter-machine" onchange="applyBatchFilter()">
         <option value="">All Machines</option>
-        ${[...new Set(state.batches.map(b=>b.machineId).filter(Boolean))].sort().map(m=>`<option value="${m}" ${prevMachine===m?'selected':''}>${m}</option>`).join('')}
+        ${[...new Set(monthBatchesForFilter.map(b=>b.machineId).filter(Boolean))].sort().map(m=>`<option value="${m}" ${prevMachine===m?'selected':''}>${m}</option>`).join('')}
       </select></div>
   </div>
   <div class="form-row cols-3 mb-16">
@@ -3538,7 +3665,7 @@ function applyBatchFilter(){
   const filterMachine=document.getElementById('bt-filter-machine')?.value||'';
   const filterPc=(document.getElementById('bt-filter-pc')?.value||'');
   const filterColour=(document.getElementById('bt-filter-colour')?.value||'');
-  let batches=state.batches.filter(b=>!b.deleted).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  let batches=getTrkMonthBatches().filter(b=>!b.deleted).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   if(filterBatch) batches=batches.filter(b=>b.batchNumber?.toLowerCase().includes(filterBatch)||b.customer?.toLowerCase().includes(filterBatch));
   if(filterMachine) batches=batches.filter(b=>b.machineId===filterMachine);
   if(filterPc) batches=batches.filter(b=>b.pcCode===filterPc);
@@ -3762,7 +3889,7 @@ function renderReports(forceRebuild){
 
 function renderReportH(){
   if(!document.getElementById('report-output')) renderReports();
-  const batches = state.batches.filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const batches = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions = (batch) => batch.isPrinted
     ? [['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
     : [['aim','packing'],['packing','dispatch']];
@@ -3933,7 +4060,7 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
 }
 
 function exportReportH(){
-  const batches=state.batches.filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const batches=getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions=(batch)=>batch.isPrinted
     ?[['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
     :[['aim','packing'],['packing','dispatch']];
@@ -3956,9 +4083,7 @@ function exportReportH(){
 
 function renderReportG(){
   if(!document.getElementById('report-output')) renderReports();
-  const batches = state.batches.filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
-
-  let totalGrossProd = 0;
+  const batches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   let totalAGradeQty = 0;
   let totalInspected = 0;
   let totalSalvage   = 0;
@@ -4090,7 +4215,7 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
 }
 
 function exportReportG(){
-  const batches = state.batches.filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const batches = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const rows = batches.map(b=>{
     const ag  = getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
     const wip = getBatchWIPBreakdown(b.batchNumber);
@@ -4133,10 +4258,12 @@ function renderReportF(){
   const filterMachine = window._rptFMachine || '';
   const filterBatch   = window._rptFBatch   || '';
 
-  // All batches with any DPR production entered (actualQty or actualProd)
+  const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
+
+  // All month batches with any DPR production entered
   let allRelevantBatches = [...new Set([
-    ...state.batches.filter(b=>( b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
-    ...state.scans.filter(s=>s.dept==='aim'&&s.type==='in').map(s=>s.batchNumber)
+    ...state.batches.filter(b=>monthBatchNos.has(b.batchNumber)&&(b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
+    ...state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber)
   ])].filter(Boolean);
 
   // Machine filter
@@ -4148,11 +4275,12 @@ function renderReportF(){
   // Batch filter
   if(filterBatch) allRelevantBatches = allRelevantBatches.filter(bn=>bn===filterBatch);
 
-  // Build dropdown options
-  const allMachinesF = [...new Set(state.batches.map(b=>b.machineId).filter(Boolean))].sort();
+  // Build dropdown options (month-scoped)
+  const monthBatchesArr = getTrkMonthBatches();
+  const allMachinesF = [...new Set(monthBatchesArr.map(b=>b.machineId).filter(Boolean))].sort();
   const allBatchesF  = [...new Set([
-    ...state.batches.filter(b=>(b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
-    ...state.scans.filter(s=>s.dept==='aim'&&s.type==='in').map(s=>s.batchNumber)
+    ...monthBatchesArr.filter(b=>(b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
+    ...state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber)
   ])].filter(Boolean).sort();
 
   let exceptions = 0;
@@ -4313,7 +4441,9 @@ function renderReportB(){
   const filterDept  = window._rptBDept  || '';
   const filterBatch = window._rptBBatch || '';
 
-  const allBatchNos = [...new Set(state.scans.filter(s=>['aim','printing','pi','packing'].includes(s.dept)).map(s=>s.batchNumber))].sort();
+  // Filter to month batches only
+  const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
+  const allBatchNos = [...new Set(state.scans.filter(s=>['aim','printing','pi','packing'].includes(s.dept)&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))].sort();
   const depts=['aim','printing','pi','packing'];
   const activeDepts = filterDept ? [filterDept] : depts;
 
@@ -4403,15 +4533,16 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
   const filterMachine = window._rptCMachine || '';
   const filterBatch   = window._rptCBatch   || '';
 
-  const allMachines = [...new Set(state.batches.map(b=>b.machineId).filter(Boolean))].sort();
-  const allBatchNos = [...new Set(state.batches.filter(b=>!b.deleted).map(b=>b.batchNumber))].sort();
+  const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted);
+  const allMachines = [...new Set(monthBatches.map(b=>b.machineId).filter(Boolean))].sort();
+  const allBatchNos = [...new Set(monthBatches.map(b=>b.batchNumber))].sort();
   const machineOpts = allMachines.map(m=>`<option value="${m}" ${filterMachine===m?'selected':''}>${m}</option>`).join('');
   const batchOpts   = allBatchNos.map(bn=>{
     const b=getBatch(bn);
     return `<option value="${bn}" ${filterBatch===bn?'selected':''}>${bn}${b?.customer?' — '+b.customer:''}</option>`;
   }).join('');
 
-  let batches = state.batches.filter(b=>!b.deleted).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  let batches = monthBatches.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   if(filterMachine) batches = batches.filter(b=>b.machineId===filterMachine);
   if(filterBatch)   batches = batches.filter(b=>b.batchNumber===filterBatch);
 
@@ -4472,15 +4603,17 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
 
 function renderReportD(){
   if(!document.getElementById('report-output')) renderReports();
-  const totalGross=state.batches.reduce((s,b)=>s+(b.actualProd||0),0);
+  const monthBatches = getTrkMonthBatches();
+  const monthBatchNos = new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
+  const totalGross=monthBatches.reduce((s,b)=>s+(b.actualProd||0),0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageWIP={};
   stages.forEach(dept=>{
-    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in').length;
-    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out').length;
+    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
+    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
     stageWIP[dept]=Math.max(0,inn-out);
   });
-  const totalAGrade=state.batches.reduce((s,b)=>{
+  const totalAGrade=monthBatches.reduce((s,b)=>{
     const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
     return s+ag.aGrade;
   },0);
@@ -4513,8 +4646,9 @@ function renderReportA(){
   if(!document.getElementById('report-output')) renderReports();
   // Date filter
   const filterBatch = window._rptABatch||'';
-  const batches = state.batches.filter(b=>!b.deleted && (!filterBatch||b.batchNumber===filterBatch));
-  const batchOptions = state.batches.filter(b=>!b.deleted)
+  const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted);
+  const batches = monthBatches.filter(b=>!filterBatch||b.batchNumber===filterBatch);
+  const batchOptions = monthBatches
     .map(b=>`<option value="${b.batchNumber}" ${filterBatch===b.batchNumber?'selected':''}>${b.batchNumber} — ${b.customer||''}</option>`).join('');
 
   let html=`<div class="card">
@@ -4617,8 +4751,8 @@ function renderReportE(){
   const rows=[];
   Object.entries(FLOORS).forEach(([floorKey,floor])=>{
     floor.machines.forEach(mc=>{
-      // Match batches by normalised machine ID (MC.20 == MC20)
-      const batches=state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc));
+      // Match batches by normalised machine ID (MC.20 == MC20) — month-filtered
+      const batches=getTrkMonthBatches().filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc));
       batches.forEach(b=>{
         const scansForBatch = filterDate
           ? state.scans.filter(s=>s.batchNumber===b.batchNumber && s.ts?.slice(0,10)===filterDate)
@@ -4848,11 +4982,7 @@ function exportToExcel(rows, filename, sheetName){
 }
 
 function exportReportA(){
-  const rows=state.batches.filter(b=>!b.deleted).map(b=>{
-    const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
-    const wipDays=getBatchWIPDays(b.batchNumber);
-    const dispatched=state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0);
-    const flow=getBatchFlow(b);
+  const rows=getTrkMonthBatches().filter(b=>!b.deleted).map(b=>{
     const scanTotals={};
     flow.forEach(dept=>{
       const inn=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='in').length;
@@ -4879,9 +5009,10 @@ function exportReportA(){
 function exportReportB(){
   const rows=[];
   const depts=['aim','printing','pi','packing'];
+  const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
   depts.forEach(dept=>{
     const hasWastage=dept==='aim'||dept==='printing'||dept==='pi';
-    [...new Set(state.scans.filter(s=>s.dept===dept).map(s=>s.batchNumber))].forEach(batchNo=>{
+    [...new Set(state.scans.filter(s=>s.dept===dept&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))].forEach(batchNo=>{
       const b=getBatch(batchNo);
       const inn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
       const out=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length;
@@ -4915,7 +5046,7 @@ function exportReportB(){
 }
 
 function exportReportC(){
-  const rows=state.batches.filter(b=>!b.deleted).map(b=>{
+  const rows=getTrkMonthBatches().filter(b=>!b.deleted).map(b=>{
     const wipDays=getBatchWIPDays(b.batchNumber);
     const std=b.isPrinted?3:2;
     const packedOut=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
@@ -4933,14 +5064,16 @@ function exportReportC(){
 }
 
 function exportReportD(){
-  const totalGross=state.batches.reduce((s,b)=>s+(b.actualProd||0),0);
-  const totalAGrade=state.batches.reduce((s,b)=>{const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.aGrade;},0);
+  const monthBatches=getTrkMonthBatches();
+  const monthBatchNos=new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
+  const totalGross=monthBatches.reduce((s,b)=>s+(b.actualProd||0),0);
+  const totalAGrade=monthBatches.reduce((s,b)=>{const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.aGrade;},0);
   const aGradePct=totalGross>0?(totalAGrade/totalGross*100):0;
   const totalDispatched=state.dispatchRecs.reduce((s,r)=>s+r.qty,0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageRows=stages.map(dept=>{
-    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in').length;
-    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out').length;
+    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
+    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
     const wip=Math.max(0,inn-out);
     const qty=wip*1.5;
     return {'Stage':DEPT_LABELS[dept]||dept,'Boxes IN':inn,'Boxes OUT':out,'WIP Boxes':wip,'Approx Qty (L)':fmt(qty),'% of Total Gross':totalGross>0?fmt(qty/totalGross*100,1):0};
@@ -4950,9 +5083,9 @@ function exportReportD(){
     {'Metric':'Total A-Grade (L)','Value':fmt(totalAGrade)},
     {'Metric':'A-Grade %','Value':fmt(aGradePct,1)+'%'},
     {'Metric':'Total Dispatched (L)','Value':fmt(totalDispatched)},
-    {'Metric':'Active Batches','Value':state.batches.filter(b=>b.status==='running').length},
+    {'Metric':'Active Batches','Value':monthBatches.filter(b=>b.status==='running').length},
   ];
-  const batchRows=state.batches.filter(b=>!b.deleted).map(b=>{
+  const batchRows=monthBatches.filter(b=>!b.deleted).map(b=>{
     const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
     return {'Batch':b.batchNumber,'Gross Prod (L)':fmt(b.actualProd||0),'A-Grade (L)':fmt(ag.aGrade),'A-Grade %':fmt(ag.pct,1),'Salvage (L)':fmt(ag.salvage),'Remelt (L)':fmt(ag.remelt)};
   });
@@ -4970,7 +5103,7 @@ function exportReportE(){
   const summaryRows=[];
   Object.entries(FLOORS).forEach(([floorKey,floor])=>{
     floor.machines.forEach(mc=>{
-      state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc)).forEach(b=>{
+      state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc) && getTrkMonthBatches().some(mb=>mb.batchNumber===b.batchNumber)).forEach(b=>{
         const grossProd=b.actualProd||0;
         const aimOut=boxToLakh(state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='out').length,b.size);
         const aimW=getTotalWastage(b.batchNumber,'aim');
@@ -5494,6 +5627,7 @@ setInterval(checkTrackingTempAlerts, 5*60*1000);
 setTimeout(checkTrackingTempAlerts, 3000);
 
 async function checkTrackingTempAlerts(){
+  return; // banner disabled
   if(!serverUrl) return;
   try{
     const r = await fetch(serverUrl+'/api/temp-batches/active',{signal:AbortSignal.timeout(4000)});

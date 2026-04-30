@@ -393,6 +393,15 @@ td.r,th.r{text-align:right}
 #toast{position:fixed;bottom:20px;right:20px;padding:10px 16px;border-radius:var(--r);font-family:var(--fc);font-weight:700;font-size:12px;letter-spacing:.5px;z-index:900;opacity:0;transition:.3s;pointer-events:none}
 /* SYNC STATUS */
 .sync-row{display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--s2);border-radius:var(--r);margin-bottom:12px;font-size:12px;color:var(--t2)}
+/* MONTH PICKER */
+.dpr-month-wrap{display:flex;align-items:center;gap:5px;padding:3px 8px;background:rgba(0,212,255,0.08);border:1px solid rgba(0,212,255,0.2);border-radius:5px}
+.dpr-month-wrap select{background:transparent;border:none;color:#00d4ff;font-size:11px;font-weight:700;cursor:pointer;outline:none;padding:0 2px;-webkit-appearance:none;appearance:none;min-width:100px}
+.dpr-month-wrap select option{background:#0d1117;color:#fff}
+.dpr-month-badge{font-size:9px;padding:1px 5px;border-radius:3px;font-weight:700}
+.dpr-month-badge.current{background:rgba(0,212,255,0.15);color:#00d4ff}
+.dpr-month-badge.grace{background:rgba(255,171,0,0.15);color:#ffab00}
+.dpr-month-badge.locked{background:rgba(255,82,82,0.15);color:#ff5252}
+@media(max-width:600px){.dpr-month-wrap select{min-width:80px;font-size:10px}}
 </style>
 <style>
 #auth-overlay{position:fixed;inset:0;background:#0b0d12;z-index:9999;display:flex;align-items:center;justify-content:center}
@@ -460,6 +469,11 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
   <div class="nright">
     <div id="unsavedDot"></div>
+    <!-- MONTH PICKER -->
+    <div class="dpr-month-wrap" title="Select DPR month">
+      <select id="dpr-month-select" onchange="onDprMonthChange(this.value)"></select>
+      <span id="dpr-month-badge" class="dpr-month-badge current">●</span>
+    </div>
     <span id="syncBadge" class="offline" onclick="configureServer()">⚙ Server</span>
     <input type="date" id="ndate" onchange="onDateChange()">
     <select id="recentDatesSelect" style="display:none" onchange="if(this.value){document.getElementById('ndate').value=this.value;onDateChange();this.value=''}">
@@ -561,13 +575,17 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
 <div id="page-trends" class="page">
   <div class="card" style="padding:12px 16px;margin-bottom:12px">
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
-      <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">RANGE</span>
-      <select id="trendRange" onchange="renderTrends()" style="width:120px">
-        <option value="7">Last 7 days</option><option value="14">Last 14 days</option><option value="30" selected>Last 30 days</option><option value="60">Last 60 days</option>
-      </select>
+      <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">FLOOR</span>
       <select id="trendFloor" onchange="renderTrends()" style="width:130px">
         <option value="ALL">All Floors</option><option value="GF">Ground Floor</option><option value="1F">First Floor</option><option value="2F">Second Floor</option>
       </select>
+      <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">SCOPE</span>
+      <div style="display:flex;border:1px solid var(--b2);border-radius:5px;overflow:hidden">
+        <button id="btn-scope-month" onclick="_dprCumulativeMode=false;document.getElementById('btn-scope-month').style.background='var(--cyan)';document.getElementById('btn-scope-cumul').style.background='';renderTrends()"
+          style="padding:4px 10px;font-size:11px;font-weight:700;border:none;background:var(--cyan);color:#000;cursor:pointer">This Month</button>
+        <button id="btn-scope-cumul" onclick="_dprCumulativeMode=true;document.getElementById('btn-scope-cumul').style.background='var(--cyan)';document.getElementById('btn-scope-month').style.background='';renderTrends()"
+          style="padding:4px 10px;font-size:11px;font-weight:700;border:none;background:transparent;color:var(--t1);cursor:pointer">Up To This Month</button>
+      </div>
     </div>
   </div>
   <div class="agrid">
@@ -620,6 +638,12 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       <div class="field-grp" style="margin:0;min-width:160px">
         <label>REPORT DATE</label>
         <input type="date" id="plant-date" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px;font-weight:700" oninput="renderPlantReport()">
+      </div>
+      <div style="display:flex;border:1px solid var(--b2);border-radius:5px;overflow:hidden;align-self:flex-end">
+        <button id="pr-scope-month" onclick="_dprCumulativeMode=false;document.getElementById('pr-scope-month').style.background='var(--cyan)';document.getElementById('pr-scope-cumul').style.background='';renderPlantReport()"
+          style="padding:5px 10px;font-size:11px;font-weight:700;border:none;background:var(--cyan);color:#000;cursor:pointer">This Month</button>
+        <button id="pr-scope-cumul" onclick="_dprCumulativeMode=true;document.getElementById('pr-scope-cumul').style.background='var(--cyan)';document.getElementById('pr-scope-month').style.background='';renderPlantReport()"
+          style="padding:5px 10px;font-size:11px;font-weight:700;border:none;background:transparent;color:var(--t1);cursor:pointer">Up To This Month</button>
       </div>
       <button class="btn-sm primary" onclick="exportPlantReport()">📥 Export Excel</button>
       <button class="btn-sm" onclick="document.getElementById('plant-date').value=today();renderPlantReport()">Today</button>
@@ -881,6 +905,132 @@ function today(){ const d=new Date(); return d.toISOString().split('T')[0]; }
 function getDate(){ return document.getElementById('ndate').value || today(); }
 function skey(fl,d){ return `dpr3_${fl}_${d}`; }
 function tgt(fl,mcId){ return parseFloat(targets[`${fl}_${mcId}`]||8); }
+
+// ── DPR Month filter ─────────────────────────────────────────
+let _dprSelectedMonth = today().slice(0,7); // 'YYYY-MM'
+let _dprMonthArchiveCache = {};
+let _dprCumulativeMode = false; // false = This Month, true = Up To This Month
+
+function dprCurrentYM(){ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; }
+
+function dprGetMonthEditStatus(ym) {
+  const now = dprCurrentYM();
+  if (ym === now) return 'current';
+  if (ym > now) return 'future';
+  const cached = _dprMonthArchiveCache[ym];
+  if (!cached) return 'grace';
+  const daysSince = (Date.now() - new Date(cached.archived_at)) / 86400000;
+  return daysSince <= 7 ? 'grace' : 'locked';
+}
+
+function isDprMonthEditable(ym) {
+  const status = dprGetMonthEditStatus(ym);
+  if (status === 'current' || status === 'grace') return true;
+  if (status === 'locked') return dprUser?.role === 'admin' || dprUser?.role === 'DPR_Admin';
+  if (status === 'future') return false; // can't enter future DPR
+  return true;
+}
+
+async function loadDprArchiveList() {
+  if (!serverUrl) return;
+  try {
+    const r = await fetch(serverUrl + '/api/archives/list', { signal: AbortSignal.timeout(5000) });
+    const j = await r.json();
+    if (j.ok) {
+      _dprMonthArchiveCache = {};
+      j.archives.forEach(a => { _dprMonthArchiveCache[a.month] = a; });
+    }
+  } catch(e) {}
+}
+
+async function autoDprArchiveIfNeeded() {
+  if (!serverUrl) return;
+  const now = dprCurrentYM();
+  const lastMonth = localStorage.getItem('dpr_activeMonth');
+  if (!lastMonth) { localStorage.setItem('dpr_activeMonth', now); return; }
+  if (lastMonth === now) return;
+  // Month changed — trigger archive via server (planning app owns the snapshot; DPR just signals)
+  try {
+    await fetch(serverUrl + '/api/archives/save', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ month: lastMonth, archivedBy: dprUser?.username || 'dpr-auto', isAuto: true, snapshot: {} }),
+      signal: AbortSignal.timeout(5000)
+    });
+  } catch(e) {}
+  localStorage.setItem('dpr_activeMonth', now);
+  await loadDprArchiveList();
+}
+
+function buildDprMonthPicker() {
+  const sel = document.getElementById('dpr-month-select');
+  if (!sel) return;
+  const now = dprCurrentYM();
+  const [ny, nm] = now.split('-').map(Number);
+  const opts = [];
+  for (let i = -12; i <= 0; i++) { // DPR: past 12 months + current only (no future)
+    let y = ny, m = nm + i;
+    while (m < 1) { m += 12; y--; }
+    const ym = `${y}-${String(m).padStart(2,'0')}`;
+    const label = new Date(y, m-1, 1).toLocaleString('default',{month:'short',year:'numeric'});
+    opts.push(`<option value="${ym}" ${ym===_dprSelectedMonth?'selected':''}>${label}</option>`);
+  }
+  sel.innerHTML = opts.reverse().join(''); // newest first
+  updateDprMonthBadge();
+  restrictDprDatePicker();
+}
+
+function updateDprMonthBadge() {
+  const badge = document.getElementById('dpr-month-badge');
+  if (!badge) return;
+  const status = dprGetMonthEditStatus(_dprSelectedMonth);
+  badge.className = `dpr-month-badge ${status}`;
+  badge.textContent = status === 'current' ? '●' : status === 'grace' ? '✎' : status === 'locked' ? '🔒' : '●';
+}
+
+function restrictDprDatePicker() {
+  const input = document.getElementById('ndate');
+  if (!input) return;
+  const [y, m] = _dprSelectedMonth.split('-').map(Number);
+  const minD = `${_dprSelectedMonth}-01`;
+  const maxD = new Date(y, m, 0).toISOString().slice(0,10); // last day of month
+  input.min = minD;
+  input.max = maxD;
+  // If current date value is outside month range, reset to first day of month
+  const cur = input.value;
+  if (cur < minD || cur > maxD) {
+    input.value = _dprSelectedMonth === dprCurrentYM() ? today() : minD;
+    onDateChange();
+  }
+}
+
+function onDprMonthChange(ym) {
+  _dprSelectedMonth = ym;
+  updateDprMonthBadge();
+  restrictDprDatePicker();
+  // Refresh current tab
+  const curTab = document.querySelector('.ntab.on');
+  if (curTab) curTab.click();
+}
+
+// Helper: get all DPR dates for selected month
+function getDprMonthDates(fl) {
+  const prefix = `dpr3_${fl}_${_dprSelectedMonth}`;
+  return Object.keys(localStorage)
+    .filter(k => k.startsWith(prefix))
+    .map(k => k.split('_')[2])
+    .filter(d => d && d.startsWith(_dprSelectedMonth))
+    .sort();
+}
+
+// Helper: get all DPR dates up to and including selected month
+function getDprCumulativeDates(fl) {
+  return Object.keys(localStorage)
+    .filter(k => k.startsWith(`dpr3_${fl}_`))
+    .map(k => k.split('_')[2])
+    .filter(d => d && d <= _dprSelectedMonth + '-31')
+    .sort();
+}
 
 // Each machine entry now has:
 //   runs: [{orderId, batchNumber, qty, note}]  — one per batch run in the shift
@@ -1166,6 +1316,10 @@ function validateBeforeSave(){
 }
 
 function saveDay(){
+  if (!isDprMonthEditable(_dprSelectedMonth)) {
+    toast('🔒 This month is archived and locked. Contact admin to make corrections.', 'var(--red)', 4000);
+    return;
+  }
   const fl=curFloor, d=getDate();
   // ALWAYS save — no blocking
   const data=collectForm();
@@ -2575,7 +2729,22 @@ let chartInstances={};
 function destroyChart(id){ if(chartInstances[id]){chartInstances[id].destroy();delete chartInstances[id];} }
 function newChart(id,cfg){ destroyChart(id); const c=document.getElementById(id); if(!c)return; chartInstances[id]=new Chart(c,cfg); }
 
+// Helper: restrict a date input to selected DPR month
+function restrictDateToMonth(inputId) {
+  const input = document.getElementById(inputId);
+  if (!input) return;
+  const [y, m] = _dprSelectedMonth.split('-').map(Number);
+  const minD = `${_dprSelectedMonth}-01`;
+  const maxD = new Date(y, m, 0).toISOString().slice(0,10);
+  input.min = minD;
+  input.max = maxD;
+  if (input.value < minD || input.value > maxD) {
+    input.value = _dprSelectedMonth === dprCurrentYM() ? today() : minD;
+  }
+}
+
 async function renderAnalytics(){
+  restrictDateToMonth('analyticsDate');
   // Sync floor selector to current floor when first opening, then use selector value
   const flSel = document.getElementById('analyticsFloor');
   if(flSel && !flSel.dataset.userSet) flSel.value = curFloor;
@@ -2721,11 +2890,30 @@ function chartOpts(){
 // TRENDS
 // ═══════════════════════════════════════════════════════
 function renderTrends(){
-  const days=parseInt(document.getElementById('trendRange').value||30);
-  const fl=document.getElementById('trendFloor').value;
-  const dates=[];
-  for(let i=days-1;i>=0;i--){const d=new Date();d.setDate(d.getDate()-i);dates.push(d.toISOString().split('T')[0]);}
+  const fl=document.getElementById('trendFloor')?.value || 'ALL';
   const floors=fl==='ALL'?Object.keys(FLOORS):[fl];
+
+  // Build date range based on selected month and cumulative mode
+  let dates;
+  if (_dprCumulativeMode) {
+    // All dates up to end of selected month
+    const allKeys = Object.keys(localStorage).filter(k=>k.startsWith('dpr3_'));
+    const maxDate = _dprSelectedMonth + '-31';
+    dates = [...new Set(allKeys.map(k=>k.split('_')[2]).filter(d=>d&&d<=maxDate))].sort();
+  } else {
+    // Only dates within selected month that have data
+    dates = getDprMonthDates(floors[0] === fl ? fl : 'GF');
+    // Actually collect all dates in selected month across all floors
+    const allMonthDates = new Set();
+    floors.forEach(f => getDprMonthDates(f).forEach(d => allMonthDates.add(d)));
+    dates = [...allMonthDates].sort();
+  }
+
+  if (dates.length === 0) {
+    ['ch-tprod','ch-tdt','ch-teff','ch-trs'].forEach(id => destroyChart(id));
+    return;
+  }
+
   const prods=[],dtPcts=[],effs=[],resorts=[];
   dates.forEach(d=>{
     let p=0,dt=0,tg=0,rs=0;
@@ -2959,7 +3147,7 @@ function renderShiftPersonnelPerf(){
 }
 
 async function renderPerf(){
-  const flSel  = document.getElementById('perfFloor');
+  restrictDateToMonth('perfDate');
   if(flSel && !flSel.dataset.userSet) flSel.value = curFloor;
   const fl = flSel ? flSel.value : curFloor;
   const dateSel = document.getElementById('perfDate');
@@ -3132,8 +3320,11 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
     const dayTotal  = parseFloat((dayA + dayB + dayC).toFixed(2));
     const vsTarget  = parseFloat((dayTotal - dailyTgt).toFixed(2));
 
-    // Cumulative: from allDatesMap for this floor
-    const flDates = (allDatesMap[fl] || []).filter(d => d <= selectedDate);
+    // Cumulative: scope based on _dprCumulativeMode
+    const flDates = (allDatesMap[fl] || []).filter(d => {
+      if (_dprCumulativeMode) return d <= selectedDate; // all history up to date
+      return d >= _dprSelectedMonth + '-01' && d <= selectedDate; // this month only
+    });
     let cumTotal=0, cumDays=0;
     flDates.forEach(d => {
       // Try server-cached data first (stored in localStorage by previous fetches), then localStorage
@@ -3190,6 +3381,7 @@ function getPlantReportData(selectedDate) {
 }
 
 async function renderPlantReport(){
+  restrictDateToMonth('plant-date');
   const selectedDate = document.getElementById('plant-date')?.value || today();
   const el = document.getElementById('plant-report-output');
   if(!el) return;
@@ -3336,6 +3528,7 @@ async function renderPlantReport(){
 }
 
 async function exportPlantReport(){
+  restrictDateToMonth('plant-date');
   const selectedDate = document.getElementById('plant-date')?.value || today();
 
   // Re-use same server fetch as renderPlantReport to ensure export matches display
@@ -3400,12 +3593,14 @@ function renderHistory(){
     return{key:k,floor:parts[1],date:parts[2]};
   }).sort((a,b)=>b.date.localeCompare(a.date));
 
-  // Date filter controls
+  // Date filter controls — default to selected month
   const filterDate=document.getElementById('hist-filter-date')?.value||'';
   const filterFloor=document.getElementById('hist-filter-floor')?.value||'';
   const filtered=entries.filter(e=>{
     if(filterDate && e.date!==filterDate) return false;
     if(filterFloor && e.floor!==filterFloor) return false;
+    // Default: scope to selected month unless a specific date filter is set
+    if(!filterDate && !e.date.startsWith(_dprSelectedMonth)) return false;
     return true;
   });
 
@@ -3800,6 +3995,11 @@ async function loadSettingsFromServer(){
 }
 
 function postAuthServerInit() {
+  loadDprArchiveList().then(() => {
+    autoDprArchiveIfNeeded().then(() => {
+      buildDprMonthPicker();
+    });
+  });
   checkServer().then(ok=>{
     if(ok){
       loadSettingsFromServer().then(async ()=>{
