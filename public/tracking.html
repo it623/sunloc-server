@@ -871,7 +871,15 @@ function updateTrkMonthBadge() {
 function onTrkMonthChange(ym) {
   _trkSelectedMonth = ym;
   updateTrkMonthBadge();
-  renderPage(state.currentPage || 'dashboard');
+  // Clear any cached report output so reports re-render fresh for new month
+  const rOut = document.getElementById('report-output');
+  if (rOut) rOut.innerHTML = '';
+  // Force rebuild if on reports page
+  if ((state.currentPage || 'dashboard') === 'reports') {
+    renderReports(true);
+  } else {
+    renderPage(state.currentPage || 'dashboard');
+  }
 }
 
 // Filter batches by selected month (production order active in that month)
@@ -3850,6 +3858,8 @@ function renderReports(forceRebuild){
   const savedReport = existingOutput ? existingOutput.innerHTML : '';
   // If called from auto-refresh (not user navigation) and a report is showing — skip rebuild
   if(!forceRebuild && savedReport.trim().length>0) return;
+  // On forceRebuild (month change or navigation) — clear saved report so fresh data loads
+  if(forceRebuild) window._savedReportHtml = '';
   el.innerHTML=`
   <div class="section-header">
     <div><div class="section-title">Reports</div><div class="section-sub">Generate and export operational reports</div></div>
@@ -3905,8 +3915,9 @@ function renderReports(forceRebuild){
     </div>
   </div>
   <div id="report-output" class="mt-20"></div>`;
-  // Restore previously generated report (user navigated back to Reports)
-  if(savedReport.trim().length>0){
+  // Restore previously generated report (user navigated back to Reports — same month)
+  // Do NOT restore if forceRebuild (month changed) — user must regenerate for new month
+  if(!forceRebuild && savedReport.trim().length>0){
     const newOutput=document.getElementById('report-output');
     if(newOutput) newOutput.innerHTML=savedReport;
   }
