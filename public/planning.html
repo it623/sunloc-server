@@ -2534,6 +2534,7 @@ function saveOrderModal(existingId, defaultMachine) {
 
   const size = document.getElementById('fo-size')?.value;
   // If PC Code / Colour is locked — always keep original values, ignore any DOM value
+  const isEdit = !!existingId; // true when editing existing order
   const _pcLocked = isEdit && isPcColourLocked(state.orders.find(o=>o.id===existingId));
   const pcCode = _pcLocked
     ? (state.orders.find(o=>o.id===existingId)?.pcCode || document.getElementById('fo-pccode')?.value)
