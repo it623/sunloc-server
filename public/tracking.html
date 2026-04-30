@@ -845,7 +845,7 @@ function buildTrkMonthPicker() {
   const now = trkCurrentYM();
   const [ny, nm] = now.split('-').map(Number);
   const opts = [];
-  for (let i = -12; i <= 0; i++) {
+  for (let i = -12; i <= 2; i++) {  // show up to 2 future months
     let y = ny, m = nm + i;
     while (m < 1) { m += 12; y--; }
     const ym = `${y}-${String(m).padStart(2,'0')}`;
