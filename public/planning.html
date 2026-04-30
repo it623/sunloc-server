@@ -516,19 +516,16 @@ input[type="file"] { display:none; }
         <button id="plan-menu-btn" onclick="togglePlanSidebar()" style="display:none;background:none;border:none;color:var(--text);font-size:22px;cursor:pointer;padding:4px 8px;line-height:1;flex-shrink:0">☰</button>
         <div class="topbar-title" id="page-title">Production Planning</div>
       </div>
-      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:nowrap">
         <!-- MONTH PICKER -->
         <div class="month-picker-wrap" title="Select planning month">
           <span class="month-picker-label">MONTH</span>
           <select id="planning-month-select" onchange="onPlanningMonthChange(this.value)"></select>
           <span id="planning-month-badge" class="month-edit-badge current">●</span>
         </div>
-        <div id="topbar-actions"></div>
+        <span id="syncStatusBadge" style="margin-right:4px"></span>
+        <div id="topbar-actions" class="topbar-actions"></div>
         <div id="user-badge-wrap"></div>
-      </div>
-    </div>
-      <div class="topbar-actions" id="topbar-actions">
-        <span id="syncStatusBadge" style="margin-right:8px"></span>
       </div>
     </div>
     <div id="content"></div>
@@ -2036,8 +2033,8 @@ function updateActualProd(ordId, val, machineId) {
   const ord = state.orders.find(o=>o.id===ordId);
   if (ord) {
     ord.actualProd = parseFloat(val)||0;
-    // Auto-promote pending → running only if within 2-order limit
-    if (ord.actualProd > 0 && ord.status === 'pending') {
+    // Auto-promote pending → running only if within 2-order limit and not a SAP-imported order
+    if (ord.actualProd > 0 && ord.status === 'pending' && !ord._noAutoPromote) {
       const runningCount = state.orders.filter(o =>
         o.machineId === machineId &&
         o.status === 'running' &&
@@ -2558,20 +2555,33 @@ function saveOrderModal(existingId, defaultMachine) {
       o.batchNumber.trim().toLowerCase() === (ord.batchNumber||'').trim().toLowerCase()
     );
     if (batchConflict) {
-      alert(`⚠️ Batch number "${ord.batchNumber}" is already used by another order (${batchConflict.customer||'unknown'}, Machine ${batchConflict.machineId}).\n\nPlease use a unique batch number.`);
+      const sameMC = batchConflict.machineId === ord.machineId;
+      alert(`⚠️ Batch number "${ord.batchNumber}" is already used by another order (${batchConflict.customer||'unknown'}, Machine ${batchConflict.machineId}${sameMC ? ' — SAME MACHINE' : ''}).\n\nDuplicate batch on same machine is not allowed. Please use a unique batch number.`);
       return;
     }
     const idx = state.orders.findIndex(o=>o.id===existingId);
     if (idx>=0) state.orders[idx] = ord;
   } else {
-    // Duplicate batch number check — block if same batch number already exists (non-deleted)
-    const batchExists = state.orders.find(o =>
+    // Duplicate batch number check — block if same batch on same machine (non-deleted)
+    const batchSameMC = state.orders.find(o =>
       !o.deleted &&
+      o.machineId === ord.machineId &&
       o.batchNumber &&
       o.batchNumber.trim().toLowerCase() === (ord.batchNumber||'').trim().toLowerCase()
     );
-    if (batchExists) {
-      alert(`⚠️ Batch number "${ord.batchNumber}" already exists (Order for ${batchExists.customer||'unknown customer'}, Machine ${batchExists.machineId}, Status: ${batchExists.status}).\n\nPlease use a unique batch number.`);
+    if (batchSameMC) {
+      alert(`⚠️ Batch number "${ord.batchNumber}" already exists on Machine ${ord.machineId} (Customer: ${batchSameMC.customer||'unknown'}, Status: ${batchSameMC.status}).\n\nDuplicate batch on same machine is not allowed.`);
+      return;
+    }
+    // Also block same batch on any other machine
+    const batchOtherMC = state.orders.find(o =>
+      !o.deleted &&
+      o.machineId !== ord.machineId &&
+      o.batchNumber &&
+      o.batchNumber.trim().toLowerCase() === (ord.batchNumber||'').trim().toLowerCase()
+    );
+    if (batchOtherMC) {
+      alert(`⚠️ Batch number "${ord.batchNumber}" is already used on Machine ${batchOtherMC.machineId} (Customer: ${batchOtherMC.customer||'unknown'}).\n\nPlease use a unique batch number.`);
       return;
     }
     // ── 2-order limit check — ALL orders, no cutoff ──
@@ -2790,6 +2800,18 @@ function confirmSAPImport(rows) {
     let batchNumber = String(row.Batch_Number || row['Batch Number'] || '').trim();
     if (!batchNumber) batchNumber = autoGenBatchNumber(machineId);
 
+    // Skip if duplicate batch already exists on same machine
+    const dupOnSameMC = state.orders.find(o =>
+      !o.deleted &&
+      o.machineId === machineId &&
+      o.batchNumber &&
+      o.batchNumber.trim().toLowerCase() === batchNumber.trim().toLowerCase()
+    );
+    if (dupOnSameMC) {
+      console.warn('[SAP Import] Skipped duplicate batch', batchNumber, 'on', machineId);
+      continue;
+    }
+
     const ord = {
       id: uid(),
       machineId,
@@ -2807,7 +2829,7 @@ function confirmSAPImport(rows) {
       zone: String(row.Zone || '').trim(),
       containerRef: String(row.Container_Ref || row['Container Ref'] || '').trim(),
       remarks: String(row.Remarks || '').trim(),
-      status: 'pending', actualProd: 0,
+      status: 'pending', actualProd: 0, _noAutoPromote: true,
     };
 
     state.orders.push(ord);

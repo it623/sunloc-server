@@ -1297,6 +1297,7 @@ function validateBeforeSave(){
   // Check all runs with qty entered have an order selected
   const fl=curFloor;
   const errors=[];
+  const pendingWarnings=[];
   SHIFTS.forEach(sh=>{
     getActiveMachines(fl).forEach(mc=>{
       const runEls=document.querySelectorAll(`.run-row[data-sh="${sh}"][data-mc="${mc.id}"]`);
@@ -1309,10 +1310,18 @@ function validateBeforeSave(){
         if(qty>0 && !orderId && !batchNo){
           errors.push(`Shift ${sh} → ${mc.id}: Please select active order`);
         }
+        // If qty entered and order is Pending — warn only, do not block save
+        if(qty>0 && orderId){
+          const allMcOrders = Object.values(activeOrders).flat();
+          const ord = allMcOrders.find(o=>o.id===orderId);
+          if(ord && ord.status === 'pending'){
+            pendingWarnings.push(`⚠️ Order ${ord.batchNumber||orderId} is not In Production. Please set it In Production in Planning first.`);
+          }
+        }
       });
     });
   });
-  return errors;
+  return { errors, pendingWarnings };
 }
 
 function saveDay(){
@@ -1328,9 +1337,12 @@ function saveDay(){
   setUnsaved(false);
   pushToServer(fl,d,data); // goes to server regardless
   renderDayKpis();
-  // Show warning toast if any machine is missing order selection (no block)
-  const errors=validateBeforeSave();
-  if(errors.length>0){
+  // Show warning toast — save always goes through
+  const {errors, pendingWarnings} = validateBeforeSave();
+  if(pendingWarnings.length>0){
+    // Show each pending order warning individually
+    pendingWarnings.forEach((msg,i)=>{ setTimeout(()=>toast(msg,'var(--amber)',6000), i*500); });
+  } else if(errors.length>0){
     toast('✓ Saved — ⚠️ '+errors.length+' run(s) missing order selection','var(--amber)',4000);
   } else {
     toast('✓ Saved — '+fl+' '+d,'var(--green)');

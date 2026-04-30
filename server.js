@@ -1148,7 +1148,17 @@ app.get('/api/planning/state', async (req, res) => {
       for (const ord of state.orders) {
         const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
         ord.actualProd = actual;
-        if (actual > 0 && ord.status === 'pending') ord.status = 'running';
+        // Auto-promote pending → running only if machine has fewer than 2 running orders
+        // Never auto-promote SAP-imported orders (_noAutoPromote flag)
+        if (actual > 0 && ord.status === 'pending' && !ord._noAutoPromote) {
+          const runningOnMachine = state.orders.filter(o =>
+            o.machineId === ord.machineId &&
+            o.status === 'running' &&
+            o.id !== ord.id &&
+            !o.deleted
+          ).length;
+          if (runningOnMachine < 2) ord.status = 'running';
+        }
       }
     }
     const savedAt = pgPool
