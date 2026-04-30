@@ -4841,8 +4841,11 @@ function renderReportE(){
   const dateOpts = allScanDates.map(d=>`<option value="${d}" ${filterDate===d?'selected':''}>${d}</option>`).join('');
 
   const tableRows = rows.map(r=>`<tr>
-    <td>${r.machine}</td><td>${r.floor}</td><td>${r.batchNo}</td>
-    <td>${r.customer||'—'}</td><td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td>
+    <td class="sticky-col" style="left:0;min-width:70px;border-right:1px solid #d4b896">${r.machine}</td>
+    <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
+    <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}</td>
+    <td class="sticky-col" style="left:210px;min-width:180px;border-right:2px solid #d4b896">${r.customer||'—'}</td>
+    <td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td>
     <td>${fmt(r.plannedQty)}</td><td>${r.grossProd}</td>
     <td>${r.aimRunTotal}</td><td>${r.aimSalvage}</td><td>${r.aimRemelt}</td>
     <td><b>${r.aimAGrade}</b></td><td>${r.aimAGradePct}%</td><td>${r.manInspect}</td>
@@ -4877,21 +4880,28 @@ function renderReportE(){
 <title>Report E — Machine-wise Production Tracking Sheet</title>
 <style>
   *{box-sizing:border-box;margin:0;padding:0}
-  body{font-family:'DM Sans',sans-serif;background:#faf6f0;color:#1a1208;font-size:13px;padding:16px;overflow-x:auto}
-  h1{font-size:18px;font-weight:800;color:#1a3a2e;margin-bottom:4px}
-  .sub{font-size:12px;color:#7a6548;margin-bottom:12px}
-  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;position:sticky;top:0;z-index:30;background:#faf6f0;padding:8px 0 10px 0;border-bottom:2px solid #d4b896;margin-bottom:0}
+  html,body{height:100%}
+  body{font-family:'DM Sans',sans-serif;background:#faf6f0;color:#1a1208;font-size:13px;padding:0;margin:0;display:flex;flex-direction:column;height:100vh;overflow:hidden}
+  h1{font-size:18px;font-weight:800;color:#1a3a2e;margin-bottom:4px;padding:16px 16px 0 16px}
+  .sub{font-size:12px;color:#7a6548;margin-bottom:0;padding:0 16px}
+  .controls{display:flex;gap:10px;align-items:center;flex-wrap:wrap;background:#faf6f0;padding:8px 16px 10px 16px;border-bottom:2px solid #d4b896;flex-shrink:0}
   select{border:2px solid #d4b896;border-radius:4px;padding:5px 10px;font-size:12px;font-weight:700;background:#fff;cursor:pointer;color:#1a1208}
   button{padding:6px 14px;border-radius:4px;border:2px solid #1a3a2e;background:#1a3a2e;color:#f0c060;font-weight:700;font-size:12px;cursor:pointer}
   button:hover{background:#0f2a20}
-  .wrap{overflow-x:auto;border:2px solid #d4b896;border-radius:6px;margin-top:14px}
+  .wrap{flex:1;overflow:auto;border:2px solid #d4b896;margin:10px 16px 16px 16px;border-radius:0}
   table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap;border-spacing:0}
-  thead{position:sticky;top:52px;z-index:20}
-  thead th{background:#1a3a2e;color:#f0c060;padding:8px 10px;text-align:left;font-weight:700;font-size:11px;letter-spacing:.5px;text-transform:uppercase;border-bottom:2px solid #0f2a20;box-shadow:0 2px 4px rgba(0,0,0,0.3)}
+  thead th{background:#1a3a2e;color:#f0c060;padding:8px 10px;text-align:left;font-weight:700;font-size:11px;letter-spacing:.5px;text-transform:uppercase;border-bottom:2px solid #0f2a20;position:sticky;top:0;z-index:3}
+  thead th.sticky-col{position:sticky;top:0;z-index:5}
+  tbody td.sticky-col{position:sticky;z-index:2;background:#faf6f0}
+  tbody tr:hover td{background:#fdf5e8}
+  tbody tr:hover td.sticky-col{background:#fdf5e8}
   tbody td{padding:7px 10px;border-bottom:1px solid #e8d9c4;color:#1a1208;font-family:'DM Mono',monospace;font-size:12px}
   tbody tr:hover td{background:#fdf5e8}
   tbody tr:nth-child(even) td{background:rgba(0,0,0,0.015)}
+  tbody tr:nth-child(even) td.sticky-col{background:#f5f0eb}
+  tbody tr:hover td.sticky-col{background:#fdf5e8 !important}
   .grp-hdr td{background:#e8d5b0;font-weight:800;font-family:sans-serif;font-size:11px;letter-spacing:.5px;text-transform:uppercase;color:#3d2e1a;padding:5px 10px}
+  .grp-hdr td.sticky-col{background:#e8d5b0}
   tfoot td{background:#1a3a2e;color:#f0c060;font-weight:800;padding:8px 10px;font-size:12px;font-family:'DM Mono',monospace;border-top:2px solid #0f2a20}
   @media print{button{display:none}.controls select{pointer-events:none}}
 </style>
@@ -4912,8 +4922,11 @@ function renderReportE(){
 <table id="rptTable">
   <thead>
     <tr>
-      <th>Machine</th><th>Floor</th><th>Batch</th>
-      <th>Customer</th><th>PC Code</th><th>Colour</th><th>Size</th>
+      <th class="sticky-col" style="left:0;min-width:70px">Machine</th>
+      <th class="sticky-col" style="left:70px;min-width:50px">Floor</th>
+      <th class="sticky-col" style="left:120px;min-width:90px">Batch</th>
+      <th class="sticky-col" style="left:210px;min-width:180px">Customer</th>
+      <th>PC Code</th><th>Colour</th><th>Size</th>
       <th>Planned (L)</th><th>Gross Prod (L)</th>
       <th>AIM Run (L)</th><th>AIM Salvage (L)</th><th>AIM Remelt (L)</th>
       <th>AIM A-Grade (L)</th><th>AIM %</th><th>Manual Insp (L)</th>
@@ -4928,17 +4941,6 @@ function renderReportE(){
 </table>
 </div>
 <script>
-// Dynamically set thead sticky top based on controls height
-function fixStickyHeader(){
-  const ctrl = document.querySelector('.controls');
-  const thead = document.querySelector('thead');
-  if(ctrl && thead){
-    thead.style.top = ctrl.offsetHeight + 'px';
-  }
-}
-window.addEventListener('load', fixStickyHeader);
-window.addEventListener('resize', fixStickyHeader);
-
 function applyFilter(date){
   // Reload the parent app with the date filter and re-open
   window.opener && (window.opener._rptEDate=date);
