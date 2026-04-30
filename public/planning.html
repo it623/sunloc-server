@@ -6338,9 +6338,9 @@ function _renderSearchResults(q, by) {
       <div class="table-wrap"><table class="summary-table">
         <thead><tr><th>Type</th><th>Batch No</th><th>Customer</th><th>PC Code</th><th>Size</th><th>Qty (L)</th><th>Status</th><th>Machine</th><th>Zone</th></tr></thead>
         <tbody>
-          ${results.map(r=>`<tr>
+          ${results.map(r=>`<tr style="cursor:pointer" title="Click to open in Production Plan" onclick="navigateToOrder('${r.id||''}','${r.machineId||''}','${r._type}')" onmouseover="this.style.background='rgba(0,212,255,0.06)'" onmouseout="this.style.background=''">
             <td><span class="badge ${r._type==='Print Order'?'badge-ptd':'badge-running'}" style="font-size:10px">${r._type}</span></td>
-            <td class="text-mono">${r.batchNumber||r.poNumber||'-'}</td>
+            <td class="text-mono" style="color:var(--accent);font-weight:700">${r.batchNumber||r.poNumber||'-'}</td>
             <td>${r.customer||'-'}</td>
             <td class="text-mono text-accent">${r.pcCode||'-'}</td>
             <td class="text-mono">${r.size||'-'}</td>
@@ -6355,6 +6355,43 @@ function _renderSearchResults(q, by) {
   } else {
     rc.innerHTML = '';
   }
+}
+
+function navigateToOrder(orderId, machineId, type) {
+  // Navigate to Production Plan and highlight the order
+  navigate('production');
+  // Wait for render then scroll to machine and highlight order
+  setTimeout(() => {
+    // Scroll to the machine panel
+    const mcEls = document.querySelectorAll('.text-mono.text-accent.fw-bold');
+    let targetEl = null;
+    mcEls.forEach(el => {
+      if (el.textContent.trim() === machineId) {
+        targetEl = el.closest('.card') || el;
+      }
+    });
+    if (targetEl) {
+      targetEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    }
+    // Highlight the specific order row
+    if (orderId) {
+      setTimeout(() => {
+        const rows = document.querySelectorAll('tbody tr');
+        rows.forEach(row => {
+          const html = row.innerHTML;
+          if (html.includes(orderId) || (row.dataset && row.dataset.id === orderId)) {
+            row.style.background = 'rgba(0,212,255,0.15)';
+            row.style.outline = '2px solid rgba(0,212,255,0.5)';
+            row.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            setTimeout(() => {
+              row.style.background = '';
+              row.style.outline = '';
+            }, 3000);
+          }
+        });
+      }, 300);
+    }
+  }, 400);
 }
 
 function renderSearch() {
