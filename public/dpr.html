@@ -3160,8 +3160,9 @@ function renderShiftPersonnelPerf(){
 
 async function renderPerf(){
   restrictDateToMonth('perfDate');
+  const flSel = document.getElementById('perfFloor');
   if(flSel && !flSel.dataset.userSet) flSel.value = curFloor;
-  const fl = flSel ? flSel.value : curFloor;
+  const fl = (flSel && flSel.value) ? flSel.value : curFloor;
   const dateSel = document.getElementById('perfDate');
   if(dateSel && !dateSel.value) dateSel.value = getDate();
   const d = (dateSel && dateSel.value) ? dateSel.value : getDate();
