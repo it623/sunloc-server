@@ -4869,13 +4869,13 @@ function renderReportE(){
   body{font-family:'DM Sans',sans-serif;background:#faf6f0;color:#1a1208;font-size:13px;padding:16px}
   h1{font-size:18px;font-weight:800;color:#1a3a2e;margin-bottom:4px}
   .sub{font-size:12px;color:#7a6548;margin-bottom:12px}
-  .controls{display:flex;gap:10px;align-items:center;margin-bottom:14px;flex-wrap:wrap;position:sticky;top:0;z-index:20;background:#faf6f0;padding:8px 0;border-bottom:1px solid #d4b896}
+  .controls{display:flex;gap:10px;align-items:center;margin-bottom:0;flex-wrap:wrap;position:sticky;top:0;z-index:20;background:#faf6f0;padding:8px 0 10px 0;border-bottom:2px solid #d4b896}
   select{border:2px solid #d4b896;border-radius:4px;padding:5px 10px;font-size:12px;font-weight:700;background:#fff;cursor:pointer;color:#1a1208}
   button{padding:6px 14px;border-radius:4px;border:2px solid #1a3a2e;background:#1a3a2e;color:#f0c060;font-weight:700;font-size:12px;cursor:pointer}
   button:hover{background:#0f2a20}
-  .wrap{overflow-x:auto;overflow-y:visible;border:2px solid #d4b896;border-radius:6px}
+  .wrap{overflow-x:auto;border:2px solid #d4b896;border-radius:6px;margin-top:14px}
   table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap}
-  thead th{background:#1a3a2e;color:#f0c060;padding:8px 10px;text-align:left;font-weight:700;font-size:11px;letter-spacing:.5px;text-transform:uppercase;border-bottom:2px solid #0f2a20;position:sticky;top:60px;z-index:10}
+  thead th{background:#1a3a2e;color:#f0c060;padding:8px 10px;text-align:left;font-weight:700;font-size:11px;letter-spacing:.5px;text-transform:uppercase;border-bottom:2px solid #0f2a20}
   tbody td{padding:7px 10px;border-bottom:1px solid #e8d9c4;color:#1a1208;font-family:'DM Mono',monospace;font-size:12px}
   tbody tr:hover td{background:#fdf5e8}
   tbody tr:nth-child(even) td{background:rgba(0,0,0,0.015)}
@@ -4916,6 +4916,29 @@ function renderReportE(){
 </table>
 </div>
 <script>
+// Sticky header fix — clone thead and pin it when scrolling past controls
+function initStickyHeader(){
+  const table = document.getElementById('rptTable');
+  if(!table) return;
+  const thead = table.querySelector('thead');
+  if(!thead) return;
+  const ctrl = document.querySelector('.controls');
+  window.addEventListener('scroll',()=>{
+    const ctrlBottom = ctrl ? ctrl.getBoundingClientRect().bottom : 0;
+    const theadTop = thead.getBoundingClientRect().top;
+    if(theadTop < ctrlBottom){
+      thead.style.position='sticky';
+      thead.style.top=(ctrl ? ctrl.offsetHeight : 0)+'px';
+      thead.style.zIndex='50';
+    } else {
+      thead.style.position='';
+      thead.style.top='';
+      thead.style.zIndex='';
+    }
+  });
+}
+window.addEventListener('load',initStickyHeader);
+
 function applyFilter(date){
   // Reload the parent app with the date filter and re-open
   window.opener && (window.opener._rptEDate=date);
