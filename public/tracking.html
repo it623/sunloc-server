@@ -2284,18 +2284,22 @@ function renderPageForce(page){
 function renderDashboard(){
   const el=document.getElementById('page-dashboard');
   checkAlerts();
-  const totalBatches=getTrkMonthBatches().filter(b=>b.status!=='closed').length;
-  const totalLabels=state.labels.filter(l=>!l.voided&&!l.isOrange).length;
-  const totalAlerts=state.alerts.length;
-  const packedBoxes=state.scans.filter(s=>s.dept==='packing'&&s.type==='out').length;
-  const dispBoxes=state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out').length;
+  // Filter everything by selected month
+  const monthBatches = getTrkMonthBatches();
+  const monthBatchNos = new Set(monthBatches.map(b=>b.batchNumber));
+  const totalBatches=monthBatches.filter(b=>b.status!=='closed').length;
+  const totalLabels=state.labels.filter(l=>!l.voided&&!l.isOrange&&monthBatchNos.has(l.batchNumber)).length;
+  const monthAlerts=state.alerts.filter(a=>monthBatchNos.has(a.batchNumber));
+  const totalAlerts=monthAlerts.length;
+  const packedBoxes=state.scans.filter(s=>s.dept==='packing'&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+  const dispBoxes=state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
 
-  // WIP by stage
+  // WIP by stage — filtered by month batches
   const stages=['aim','printing','pi','packing'];
   const stageBoxes={};
   stages.forEach(dept=>{
-    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in').length;
-    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out').length;
+    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
+    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
     stageBoxes[dept]=Math.max(0,inn-out);
   });
 
@@ -2321,10 +2325,10 @@ function renderDashboard(){
     <div class="card">
       <div class="card-title" style="display:flex;align-items:center;justify-content:space-between">
         <span>Recent Alerts 🚨</span>
-        ${state.alerts.length>0?'<button class="btn btn-sm btn-ghost" onclick="navigate(\'batch-tracker\');setTimeout(()=>{var s=document.getElementById(\'bt-filter-status\');if(s)s.value=\'alerts\';applyBatchFilter();},200)" style="font-size:11px">View All '+state.alerts.length+' →</button>':''}
+        ${monthAlerts.length>0?'<button class="btn btn-sm btn-ghost" onclick="navigate(\'batch-tracker\');setTimeout(()=>{var s=document.getElementById(\'bt-filter-status\');if(s)s.value=\'alerts\';applyBatchFilter();},200)" style="font-size:11px">View All '+monthAlerts.length+' →</button>':''}
       </div>
-      ${state.alerts.length===0?'<div class="text-muted text-sm text-center" style="padding:20px">✅ No active alerts</div>':
-        state.alerts.slice(0,6).map(a=>`
+      ${monthAlerts.length===0?'<div class="text-muted text-sm text-center" style="padding:20px">✅ No active alerts</div>':
+        monthAlerts.slice(0,6).map(a=>`
           <div class="flex items-center justify-between mb-8 p-8" style="background:var(--accent4-light);border-radius:6px;cursor:pointer" onclick="navigateToAlertBatch('${a.batchNumber}')">
             <div><div class="fw-bold text-sm" style="color:var(--accent4)">${a.batchNumber}</div>
             <div class="text-sm text-muted">Box in ${DEPT_LABELS[a.dept]} for ${parseFloat(a.hoursStuck).toFixed(0)}h</div></div>
