@@ -6514,6 +6514,8 @@ function closeModalOverlay(e) { if (e.target===document.getElementById('modal-ov
 loadState();
 // Render is deferred until after auth — called from doLogin() / initAuth()
 // render();
+// Populate month picker immediately so select is never empty on page load
+buildMonthPicker();
 // Start server sync check after render
 setTimeout(() => SYNC.online().then(() => SYNC.updateBadge()), 800);
 
