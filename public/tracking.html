@@ -899,6 +899,8 @@ function getTrkMonthBatches() {
     if (e && e >= mStart && e <= mEnd) return true;
     if (s && e && s < mStart && e > mEnd) return true; // spans
     if (!e && s && s <= mEnd) return true; // open-ended, started on or before month end
+    // Carry-forward: unclosed batch that started before month end — still show even if end date passed
+    if (b.status !== 'closed' && s && s <= mEnd) return true;
     return false;
   });
 }
