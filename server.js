@@ -1358,7 +1358,39 @@ app.post('/api/dpr/save', async (req, res) => {
     if (!floor || !date || !data) return res.status(400).json({ ok: false, error: 'Missing floor, date, or data' });
 
     if (pgPool) {
-      // Save full DPR record to PostgreSQL
+      // Merge incoming shifts with existing DB data to protect shifts filled by other users
+      const existingRow = await pgPool.query('SELECT data_json FROM dpr_records WHERE floor=$1 AND date=$2', [floor, date]);
+      if (existingRow.rows[0]) {
+        try {
+          const existing = JSON.parse(existingRow.rows[0].data_json);
+          const existingShifts = existing.shifts || {};
+          const incomingShifts = data.shifts || {};
+          // For each shift: if incoming shift has no machine qty data, keep existing shift data
+          for (const shiftKey of ['A', 'B', 'C']) {
+            const incomingShift = incomingShifts[shiftKey];
+            const existingShift = existingShifts[shiftKey];
+            if (!existingShift) continue; // nothing in DB to protect
+            if (!incomingShift || !incomingShift.machines) {
+              // Incoming has no data for this shift — keep existing
+              if (!data.shifts) data.shifts = {};
+              data.shifts[shiftKey] = existingShift;
+              continue;
+            }
+            // Check if incoming shift has any actual qty entered
+            let hasQty = false;
+            for (const mc of Object.values(incomingShift.machines || {})) {
+              const runs = mc.runs || [{ qty: mc.prod }];
+              if (runs.some(r => parseFloat(r.qty) > 0)) { hasQty = true; break; }
+            }
+            if (!hasQty) {
+              // Incoming shift is all empty — keep existing shift data
+              data.shifts[shiftKey] = existingShift;
+            }
+          }
+        } catch(e) { console.warn('[DPR merge] parse error:', e.message); }
+      }
+
+      // Save merged DPR record to PostgreSQL
       await pgPool.query(
         `INSERT INTO dpr_records (floor, date, data_json)
          VALUES ($1, $2, $3)

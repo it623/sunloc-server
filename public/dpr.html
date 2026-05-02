@@ -1719,7 +1719,10 @@ async function updateTempAlertBanner(){
       const realOrderMachines = new Set(Object.keys(activeOrders).filter(mid => {
         return (activeOrders[mid]||[]).some(o => !o.isTemp && o.status === 'running');
       }));
-      const trueTempBatches = j.batches.filter(b => !realOrderMachines.has(b.machine_id));
+      // Get all active machines across all floors from DPR settings
+      const activeMachineCfg = JSON.parse(localStorage.getItem('dpr_active_machines')||'{}');
+      const allActiveMcIds = new Set(Object.values(activeMachineCfg).flat());
+      const trueTempBatches = j.batches.filter(b => !realOrderMachines.has(b.machine_id) && allActiveMcIds.has(b.machine_id));
       if(trueTempBatches.length > 0){
         const machines = [...new Set(trueTempBatches.map(b=>b.machine_id))];
         banner.style.display = 'flex';
