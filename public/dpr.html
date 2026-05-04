@@ -1293,6 +1293,22 @@ function loadDay(fl,d){
     return p;
   }catch{return blankDay(fl);}
 }
+// Always load from server and update localStorage — server is ALWAYS source of truth
+async function syncFromServer(fl, d){
+  if(!serverUrl) return;
+  try{
+    const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
+    if(!r.ok) return;
+    const j=await r.json();
+    if(j.data){
+      const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : Date.now();
+      j.data._savedAt = serverSavedAt;
+      localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+      console.log('[DPR] Synced from server:', fl, d);
+    }
+  }catch(e){ console.warn('[DPR] syncFromServer failed:', e?.message); }
+}
+
 function validateBeforeSave(){
   // Check all runs with qty entered have an order selected
   const fl=curFloor;
@@ -1330,11 +1346,21 @@ function saveDay(){
     return;
   }
   const fl=curFloor, d=getDate();
-  // ALWAYS save — no blocking
+  // If localStorage empty (browser history cleared), fetch from server first
+  const localRaw = localStorage.getItem(skey(fl,d));
+  if (!localRaw) {
+    toast('⏳ Loading server data before save...', 'var(--amber)', 3000);
+    syncFromServer(fl, d).then(() => { _doSaveDay(fl, d); });
+    return;
+  }
+  _doSaveDay(fl, d);
+}
+function _doSaveDay(fl, d){
   const data=collectForm();
   data._savedAt = Date.now();
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
+  _dprLastSaveTime = Date.now(); // block fetch for 10s after save
   pushToServer(fl,d,data); // goes to server regardless
   renderDayKpis();
   // Show warning toast — save always goes through
@@ -1458,6 +1484,7 @@ async function checkServer(){
 // ── Pending save queue: retries every 15s until server confirms ─────
 let _dprPendingSaves = new Map(); // keyed by "fl|d" — no save is ever overwritten
 let _dprRetryTimer = null;
+let _dprLastSaveTime = 0; // timestamp of last save — blocks fetch for 10s after save
 let _suppressRenderShifts = false;
 function _updatePendingBadge(){
   const badge=document.getElementById('syncBadge');
@@ -1551,6 +1578,8 @@ async function fetchDayFromServer(fl, d){
   if(!serverUrl) return null;
   // Don't fetch if this floor/date has a pending (unsaved) save in the queue
   if(_dprPendingSaves.has(fl+'|'+d)) return null;
+  // Don't fetch for 10 seconds after user saved — prevents server returning stale data
+  if((Date.now() - _dprLastSaveTime) < 10000) return null;
   try{
     const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(6000)});
     if(!r.ok) return null;
@@ -3708,14 +3737,12 @@ function setFloor(fl){
   document.querySelectorAll('.ftab').forEach(t=>t.classList.remove('on'));
   document.getElementById('ftab-'+fl)?.classList.add('on');
   renderEntry(); // render immediately from localStorage
-  // Fetch fresh from server for this floor
+  // Always sync from server — server is source of truth
   if(serverUrl && dprUser){
     (async()=>{
       const d=getDate();
-      const serverData=await fetchDayFromServer(fl, d);
-      if(serverData && !unsaved){
-        renderDayKpis(); renderShifts(); renderRemarks(); renderResort();
-      }
+      await syncFromServer(fl, d);
+      if(!unsaved){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
     })();
   }
 }
@@ -3728,8 +3755,8 @@ function onDateChange(){
     (async ()=>{
       const fl=curFloor, d=getDate();
       if(!Object.keys(activeOrders).length) await fetchActiveOrders();
-      const serverData=await fetchDayFromServer(fl, d);
-      if(serverData){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
+      await syncFromServer(fl, d);
+      if(!unsaved){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
     })();
   }
   // C-shift date handling: if current time is 00:00–08:00 and today is selected, auto-switch to previous day
@@ -4027,7 +4054,7 @@ function postAuthServerInit() {
         // Must run AFTER fetchActiveOrders so activeOrders is populated when rendering
         const d=getDate();
         const allFloors=Object.keys(FLOORS);
-        await Promise.all(allFloors.map(fl=>fetchDayFromServer(fl, d)));
+        await Promise.all(allFloors.map(fl=>syncFromServer(fl, d)));
         // Step 3: both activeOrders AND day data ready — render once, correctly
         renderDayKpis();
         renderShifts();
@@ -4068,7 +4095,7 @@ async function _dprAutoSync(){
   }
   if(!unsaved && !_dprPendingSaves.size){
     const d=getDate();
-    await Promise.all(Object.keys(FLOORS).map(fl=>fetchDayFromServer(fl,d)));
+    await Promise.all(Object.keys(FLOORS).map(fl=>syncFromServer(fl,d)));
     _safeRenderAll(); // skips rebuild if user is actively typing
   }
   await fetchActiveOrders();
@@ -4089,7 +4116,7 @@ document.addEventListener('visibilitychange',async()=>{
     }
     if(!unsaved){
       const d=getDate();
-      await Promise.all(Object.keys(FLOORS).map(fl=>fetchDayFromServer(fl,d)));
+      await Promise.all(Object.keys(FLOORS).map(fl=>syncFromServer(fl,d)));
       _safeRenderAll();
     }
   }
