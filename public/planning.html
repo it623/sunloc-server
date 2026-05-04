@@ -915,15 +915,30 @@ const SYNC = (() => {
             if (dbOrd.deleted) return null; // deleted in DB — remove
             return dbOrd; // DB version always wins
           }).filter(Boolean);
-          // Add any orders in DB not yet in local state — only if not recently deleted locally
+          // Add any orders in DB not yet in local state — always add, never block
+          const existingIds = new Set(state.orders.map(o=>o.id));
           ooj.orders.forEach(dbO => {
             if (dbO.deleted) return; // skip deleted
             // Skip permanently blacklisted orders
             if (dbO.batchNumber==='26V049' && (dbO.customer||'').includes('SHYAM')) return;
-            // Skip if this order is not in planning_state (was deleted from planning_state)
-            const inPlanningState = state.orders.find(o=>o.id===dbO.id);
-            if (!inPlanningState) return; // never re-add orders removed from planning_state
+            // Add if not already present
+            if (!existingIds.has(dbO.id)) {
+              state.orders.push(dbO);
+              existingIds.add(dbO.id);
+              ordersChanged = true;
+              console.log('[Orders] Added missing order from DB:', dbO.batchNumber, dbO.machineId);
+            }
           });
+          // Deduplicate by batchNumber+machineId — keep order with most data
+          const batchMcMap = new Map();
+          state.orders.forEach(o => {
+            if (!o.batchNumber || !o.machineId) { batchMcMap.set(o.id, o); return; }
+            const key = `${o.batchNumber}__${o.machineId}`;
+            const existing = batchMcMap.get(key);
+            if (!existing) { batchMcMap.set(key, o); }
+            else if ((o.actualProd||0) >= (existing.actualProd||0)) { batchMcMap.set(key, o); }
+          });
+          state.orders = Array.from(batchMcMap.values());
           if (ordersChanged && !_userIsActive() && !_userIsFocused()) render();
           console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table');
         }

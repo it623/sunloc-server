@@ -1144,6 +1144,45 @@ app.get('/api/planning/state', async (req, res) => {
     // CRITICAL: deep clone before mutating — never modify the cached object directly
     // Direct mutation corrupts the cache and causes order count drops (194→175 bug)
     const state = JSON.parse(JSON.stringify(rawState));
+
+    // PERMANENT FIX: Always inject ALL orders from production_orders table
+    // This ensures every device always gets the complete order list
+    // regardless of what is stored in planning_state JSON blob
+    try {
+      let dbOrders = [];
+      if (pgPool) {
+        const r = await pgPool.query('SELECT data_json FROM production_orders WHERE deleted = false ORDER BY updated_at DESC');
+        dbOrders = r.rows.map(r => JSON.parse(r.data_json));
+      } else {
+        dbOrders = db.prepare('SELECT data_json FROM production_orders WHERE deleted = 0 ORDER BY updated_at DESC').all()
+                     .map(r => JSON.parse(r.data_json));
+      }
+      if (dbOrders.length > 0) {
+        // Build map of existing orders in state by ID
+        const stateOrderMap = new Map((state.orders||[]).map(o => [o.id, o]));
+        // Merge DB orders into state — DB wins for each order
+        dbOrders.forEach(dbOrd => {
+          if (!dbOrd || !dbOrd.id) return;
+          // Skip blacklisted orders
+          if (dbOrd.batchNumber === '26V049' && (dbOrd.customer||'').includes('SHYAM')) return;
+          stateOrderMap.set(dbOrd.id, dbOrd);
+        });
+        // Deduplicate by batchNumber+machineId — keep the one with most recent update
+        const batchMachineMap = new Map();
+        const allOrders = Array.from(stateOrderMap.values());
+        allOrders.forEach(o => {
+          if (!o.batchNumber || !o.machineId) { batchMachineMap.set(o.id, o); return; }
+          const key = `${o.batchNumber}__${o.machineId}`;
+          const existing = batchMachineMap.get(key);
+          if (!existing) { batchMachineMap.set(key, o); return; }
+          // Keep the one with more recent data (has actualProd or is running)
+          if ((o.actualProd||0) > (existing.actualProd||0)) batchMachineMap.set(key, o);
+        });
+        state.orders = Array.from(batchMachineMap.values());
+        console.log(`[State] Injected ${dbOrders.length} orders from production_orders table`);
+      }
+    } catch(e) { console.warn('[State] Order injection failed:', e.message); }
+
     if (state.orders && _actualsCache) {
       for (const ord of state.orders) {
         const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
@@ -1195,6 +1234,39 @@ app.post('/api/planning/state', async (req, res) => {
   try {
     const { state } = req.body;
     if (!state) return res.status(400).json({ ok: false, error: 'No state provided' });
+
+    // PERMANENT FIX: Before saving planning_state, merge incoming orders into
+    // production_orders table — this protects orders added by other devices
+    if (state.orders && state.orders.length > 0) {
+      try {
+        for (const ord of state.orders) {
+          if (!ord || !ord.id) continue;
+          // Skip blacklisted
+          if (ord.batchNumber === '26V049' && (ord.customer||'').includes('SHYAM')) continue;
+          const json = JSON.stringify(ord);
+          if (pgPool) {
+            await pgPool.query(`
+              INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
+              VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
+              ON CONFLICT(id) DO UPDATE SET
+                data_json=$2, machine_id=$3, batch_number=$4,
+                status=$5, deleted=$6, updated_at=NOW()::TEXT
+            `, [ord.id, json, ord.machineId||null, ord.batchNumber||null,
+                ord.status||'pending', ord.deleted||false]);
+          } else {
+            db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+              VALUES (?,?,?,?,?,?,datetime('now'))
+              ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
+              machine_id=excluded.machine_id,batch_number=excluded.batch_number,
+              status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
+              .run(ord.id, json, ord.machineId||null, ord.batchNumber||null,
+                   ord.status||'pending', ord.deleted?1:0);
+          }
+        }
+        console.log(`[State] Merged ${state.orders.length} orders into production_orders table`);
+      } catch(e) { console.warn('[State] Order merge failed:', e.message); }
+    }
+
     const json = JSON.stringify(state);
     if (pgPool) {
       const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
