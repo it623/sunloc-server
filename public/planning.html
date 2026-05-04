@@ -4742,6 +4742,12 @@ function exportFullOrderTracker() {
 // =============================
 function renderDispatchCalendar() {
   const topActions = document.getElementById('topbar-actions');
+  // Sync calendar to selected plan month if _calOffset not yet set by user
+  if (state._calOffset === undefined || state._calOffset === null) {
+    const [sy, sm] = _selectedPlanMonth.split('-').map(Number);
+    const now = new Date();
+    state._calOffset = (sy - now.getFullYear()) * 12 + (sm - 1 - now.getMonth());
+  }
   const calOffset = state._calOffset || 0;
   const baseDate = new Date();
   baseDate.setMonth(baseDate.getMonth() + calOffset);
@@ -4955,6 +4961,7 @@ function exportSingleCustomer(customer) {
 function renderDispatchCustomer() {
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = '';
+  const now = new Date();
 
   // Use selected month filter (consistent with other dispatch views)
   const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
