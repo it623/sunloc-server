@@ -1296,15 +1296,27 @@ function loadDay(fl,d){
 // Always load from server and update localStorage — server is ALWAYS source of truth
 async function syncFromServer(fl, d){
   if(!serverUrl) return;
+  // Never sync if user has unsaved data on screen for this floor/date
+  if(unsaved && fl === curFloor && d === getDate()) return;
+  // Never sync if a save is pending for this floor/date
+  if(_dprPendingSaves.has(fl+'|'+d)) return;
+  // Never sync within 60 seconds of any save — gives server time to process and protects fresh data
+  if((Date.now() - _dprLastSaveTime) < 60000) return;
   try{
     const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
     if(!r.ok) return;
     const j=await r.json();
     if(j.data){
-      const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : Date.now();
-      j.data._savedAt = serverSavedAt;
-      localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
-      console.log('[DPR] Synced from server:', fl, d);
+      // Only update localStorage if server savedAt is after our last save time
+      const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
+      const localRaw = localStorage.getItem(skey(fl,d));
+      const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt || 0) : 0;
+      // Server data must be significantly newer than local data (>5s gap)
+      if(serverSavedAt > localSavedAt + 5000){
+        j.data._savedAt = serverSavedAt;
+        localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+        console.log('[DPR] Synced from server:', fl, d);
+      }
     }
   }catch(e){ console.warn('[DPR] syncFromServer failed:', e?.message); }
 }
@@ -1571,6 +1583,7 @@ async function pushToServer(fl,d,data){
     _updatePendingBadge();
   } else {
     _dprPendingSaves.delete(fl+'|'+d);
+    _dprLastSaveTime = Date.now(); // refresh save time on server confirmation
     _updatePendingBadge();
   }
 }
@@ -2142,11 +2155,14 @@ function renderShifts(){
         const effectiveOrderId = matchedOrder?.id || run.orderId || '';
         // Keep run.orderId in sync with matched order id
         if(matchedOrder && run.orderId !== matchedOrder.id) run.orderId = matchedOrder.id;
-        // If saved batch is not in activeOrders (order closed, different device, timing)
-        // show a disabled placeholder so user always sees what was saved — never blank
+        // If saved batch is not in activeOrders — only refresh, never show pending orders
         const orphanOpt = (run.batchNumber && !matchedOrder)
           ? `<option value="${run.orderId||run.batchNumber}" selected disabled>[saved] ${run.batchNumber}</option>`
           : '';
+        // If orphan detected — refresh active orders from server (order may now be running)
+        if(run.batchNumber && !matchedOrder && serverUrl){
+          setTimeout(()=>{ fetchActiveOrders().then(()=>{ if(!unsaved&&!_userIsFocused()) renderShifts(); }); }, 500);
+        }
         const ordOpts=`<option value="">— Order —</option>`+orphanOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;

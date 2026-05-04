@@ -1450,14 +1450,24 @@ app.post('/api/dpr/save', async (req, res) => {
               data.shifts[shiftKey] = existingShift;
               continue;
             }
-            // Check if incoming shift has any actual qty entered
-            let hasQty = false;
+            // Check if incoming shift has any actual qty OR staff data entered
+            let hasData = false;
+            // Check qty in machine runs
             for (const mc of Object.values(incomingShift.machines || {})) {
               const runs = mc.runs || [{ qty: mc.prod }];
-              if (runs.some(r => parseFloat(r.qty) > 0)) { hasQty = true; break; }
+              if (runs.some(r => parseFloat(r.qty) > 0)) { hasData = true; break; }
             }
-            if (!hasQty) {
-              // Incoming shift is all empty — keep existing shift data
+            // Also check staff names (incharge, chemist, fitter etc.)
+            if (!hasData) {
+              const staffFields = ['incharge', 'chemist', 'fitter', 'electrical', 'utility', 'aim_staff', 'gpr_staff'];
+              for (const field of staffFields) {
+                const val = incomingShift[field];
+                if (Array.isArray(val) && val.some(v => v && v.trim())) { hasData = true; break; }
+                if (typeof val === 'string' && val.trim()) { hasData = true; break; }
+              }
+            }
+            if (!hasData) {
+              // Incoming shift is completely empty — keep existing shift data
               data.shifts[shiftKey] = existingShift;
             }
           }
