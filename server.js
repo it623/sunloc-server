@@ -1145,43 +1145,44 @@ app.get('/api/planning/state', async (req, res) => {
     // Direct mutation corrupts the cache and causes order count drops (194→175 bug)
     const state = JSON.parse(JSON.stringify(rawState));
 
-    // PERMANENT FIX: Always inject ALL orders from production_orders table
-    // This ensures every device always gets the complete order list
-    // regardless of what is stored in planning_state JSON blob
+    // PERMANENT FIX: Recover orders MISSING from planning_state using production_orders table
+    // planning_state is SOURCE OF TRUTH for status/dates/all fields
+    // production_orders is used ONLY to recover orders not present in planning_state
     try {
       let dbOrders = [];
       if (pgPool) {
-        const r = await pgPool.query('SELECT data_json FROM production_orders WHERE deleted = false ORDER BY updated_at DESC');
+        const r = await pgPool.query('SELECT data_json FROM production_orders WHERE deleted = false ORDER BY updated_at ASC');
         dbOrders = r.rows.map(r => JSON.parse(r.data_json));
       } else {
-        dbOrders = db.prepare('SELECT data_json FROM production_orders WHERE deleted = 0 ORDER BY updated_at DESC').all()
+        dbOrders = db.prepare('SELECT data_json FROM production_orders WHERE deleted = 0 ORDER BY updated_at ASC').all()
                      .map(r => JSON.parse(r.data_json));
       }
       if (dbOrders.length > 0) {
-        // Build map of existing orders in state by ID
-        const stateOrderMap = new Map((state.orders||[]).map(o => [o.id, o]));
-        // Merge DB orders into state — DB wins for each order
+        // Build lookup maps from planning_state orders
+        const stateOrderById = new Map((state.orders||[]).map(o => [o.id, o]));
+        const stateOrderByBatchMc = new Map();
+        (state.orders||[]).forEach(o => {
+          if (o.batchNumber && o.machineId) stateOrderByBatchMc.set(`${o.batchNumber}__${o.machineId}`, o);
+        });
+        // Only add orders from DB that are MISSING from planning_state
         dbOrders.forEach(dbOrd => {
           if (!dbOrd || !dbOrd.id) return;
-          // Skip blacklisted orders
+          if (dbOrd.deleted) return;
           if (dbOrd.batchNumber === '26V049' && (dbOrd.customer||'').includes('SHYAM')) return;
-          stateOrderMap.set(dbOrd.id, dbOrd);
+          // Already in planning_state by ID — planning_state wins, skip
+          if (stateOrderById.has(dbOrd.id)) return;
+          // Same batchNumber+machineId already in planning_state — skip, avoid duplicate
+          const bmKey = `${dbOrd.batchNumber}__${dbOrd.machineId}`;
+          if (dbOrd.batchNumber && dbOrd.machineId && stateOrderByBatchMc.has(bmKey)) return;
+          // Genuinely missing order — recover it
+          state.orders = state.orders || [];
+          state.orders.push(dbOrd);
+          stateOrderById.set(dbOrd.id, dbOrd);
+          if (dbOrd.batchNumber && dbOrd.machineId) stateOrderByBatchMc.set(bmKey, dbOrd);
+          console.log(`[State] Recovered missing order: ${dbOrd.batchNumber} on ${dbOrd.machineId}`);
         });
-        // Deduplicate by batchNumber+machineId — keep the one with most recent update
-        const batchMachineMap = new Map();
-        const allOrders = Array.from(stateOrderMap.values());
-        allOrders.forEach(o => {
-          if (!o.batchNumber || !o.machineId) { batchMachineMap.set(o.id, o); return; }
-          const key = `${o.batchNumber}__${o.machineId}`;
-          const existing = batchMachineMap.get(key);
-          if (!existing) { batchMachineMap.set(key, o); return; }
-          // Keep the one with more recent data (has actualProd or is running)
-          if ((o.actualProd||0) > (existing.actualProd||0)) batchMachineMap.set(key, o);
-        });
-        state.orders = Array.from(batchMachineMap.values());
-        console.log(`[State] Injected ${dbOrders.length} orders from production_orders table`);
       }
-    } catch(e) { console.warn('[State] Order injection failed:', e.message); }
+    } catch(e) { console.warn('[State] Order recovery failed:', e.message); }
 
     if (state.orders && _actualsCache) {
       for (const ord of state.orders) {
@@ -1208,6 +1209,7 @@ app.get('/api/planning/state', async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
 
 // POST save planning state — uses direct pg pool for large JSON
 // ── Emergency restore from backup file ─────────────────────────
