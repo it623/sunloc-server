@@ -1917,7 +1917,7 @@ function renderProduction() {
                   <th style="position:sticky;left:0;z-index:3;background:var(--thead-bg, #1a3a2e)">#</th>
                   <th style="position:sticky;left:28px;z-index:3;background:var(--thead-bg, #1a3a2e)">PO / Batch</th>
                   <th style="position:sticky;left:128px;z-index:3;background:var(--thead-bg, #1a3a2e)">Customer</th>
-                  <th style="position:sticky;left:328px;z-index:3;background:var(--thead-bg, #1a3a2e)">Size</th>
+                  <th>Size</th>
                   <th>PC Code</th><th>Colour</th>
                   <th>PTD/UP</th><th>Print Matter Cap</th><th>Print Matter Body</th><th>Ink Cap</th><th>Ink Body</th><th>Order Qty (L)</th><th>Gross Qty (L)</th><th>Start</th><th>End</th>
                   <th>Packing</th><th>Zone</th><th>Actual Prod</th><th>AIM Out ↗</th><th>Status</th><th>DPR Status</th><th>Remarks</th><th>Actions</th>
@@ -1993,7 +1993,7 @@ function renderOrderRow(ord, idx, mc) {
           ? '<br><span style="font-size:11px;color:var(--text3);font-weight:400">Bill To: ' + ord.billTo + '</span>'
           : '')
     }</td>
-    <td class="text-mono" style="position:sticky;left:328px;z-index:2;background:var(--surface2,#0f2a20);box-shadow:2px 0 4px rgba(0,0,0,0.1)">${ord.size||'-'}</td>
+    <td class="text-mono">${ord.size||'-'}</td>
     <td class="text-mono text-accent">${ord.pcCode||'-'}</td>
     <td style="white-space:nowrap">${fmtColour(ord.colour)}</td>
     <td>${ptdBadge}</td>
