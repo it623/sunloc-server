@@ -1289,14 +1289,14 @@ async function pullFromServer(){
         state.machineMaster = pj.state.machineMaster||[];
         saveLocal();
         setSyncBadge('synced');
-        if(currentPage) renderPage(currentPage); // show batches immediately
+        // State updated silently — no auto-render to prevent screen flipping
       }
     }
     // STEP 2: Load all labels fast
     try{
       flushPendingLabelPush();
       const lr=await fetch(serverUrl+'/api/tracking/labels-all',{signal:AbortSignal.timeout(30000)});
-      if(lr.ok){const lj=await lr.json();if(lj.ok&&lj.labels){const sl=lj.labels;const sids=new Set(sl.map(l=>l.id));const lo=state.labels.filter(l=>!sids.has(l.id));if(lo.length>0)pushLabelsToServer(lo);state.labels=sl;saveLocal();if(currentPage)renderPage(currentPage);}}
+      if(lr.ok){const lj=await lr.json();if(lj.ok&&lj.labels){const sl=lj.labels;const sids=new Set(sl.map(l=>l.id));const lo=state.labels.filter(l=>!sids.has(l.id));if(lo.length>0)pushLabelsToServer(lo);state.labels=sl;saveLocal();// State updated silently}}
     }catch(e2){}
     // STEP 3: Recent scans fast
     try{
@@ -1318,14 +1318,14 @@ async function pullFromServer(){
             if(ar.ok){const aj=await ar.json();if(aj.ok&&Array.isArray(aj.alerts))state.alerts=aj.alerts;else checkAlerts();}
             else checkAlerts();
           }catch(ae){ checkAlerts(); }
-          if(currentPage) renderPage(currentPage);
+          // State updated silently — no auto-render to prevent screen flipping
         }
       }
     }catch(e3){ console.warn('STEP 3 scans failed:',e3?.message||e3); }
     // STEP 3.5: Load wastage fast (dedicated endpoint)
     try{
       const wr=await fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)});
-      if(wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){state.wastage=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));saveLocal();if(currentPage)renderPage(currentPage);}}
+      if(wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){state.wastage=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));saveLocal();// State updated silently}}
     }catch(e35){}
     // STEP 4: Full state fallback (scans + alerts + stageClosure)
     try{
@@ -1351,7 +1351,7 @@ async function pullFromServer(){
           }
           checkAlerts();
           saveLocal();
-          if(currentPage) renderPage(currentPage);
+          // State updated silently — no auto-render to prevent screen flipping
         }
       }
     }catch(e4){}
@@ -2234,7 +2234,7 @@ function _userIsFocused(){
   return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
 }
 let _userActiveUntil = 0;
-function _markUserActive(){ _userActiveUntil = Date.now() + 10000; }
+function _markUserActive(){ _userActiveUntil = Date.now() + 60000; }
 function _userIsActive(){ return Date.now() < _userActiveUntil; }
 document.addEventListener('mousedown', _markUserActive, true);
 document.addEventListener('keydown',   _markUserActive, true);
@@ -5642,14 +5642,11 @@ async function refreshScans(){
     if(currentPage==='labels') setTimeout(_restoreOlSearch, 50);
     const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
     if(!dept){
-      // Never re-render reports page on background refresh — wipes open reports
-      if(currentPage==='reports') return;
-      // Only re-render other non-scan pages if user isn't typing
-      if(currentPage&&!_userIsActive()&&!_userIsFocused()) renderPage(currentPage);
+      // State updated silently — no auto-render to prevent screen flipping
       return;
     }
     const tbody=document.getElementById(`recent-scans-${dept}`);
-    if(!tbody){ if(!_userIsFocused()) renderPage(currentPage); return; }
+    if(!tbody) return; // State updated silently
     const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
     tbody.innerHTML=scans.map(s=>{
       const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
