@@ -3734,7 +3734,16 @@ function go(page){
   document.querySelectorAll('.ntab')[idx[page]]?.classList.add('on');
   if(page==='analytics') renderAnalytics();
   else if(page==='trends') renderTrends();
-  else if(page==='aim') renderAIM();
+  else if(page==='aim'){
+    renderAIM(); // render immediately from localStorage (fast)
+    if(serverUrl && dprUser){
+      (async()=>{
+        const d=getDate();
+        await Promise.all(Object.keys(FLOORS).map(f=>syncFromServer(f,d)));
+        renderAIM(); // re-render with fresh server data
+      })();
+    }
+  }
   else if(page==='perf') renderPerf();
   else if(page==='history') renderHistory();
   else if(page==='plant'){ document.getElementById('plant-date').value=document.getElementById('plant-date').value||today(); renderPlantReport(); }
@@ -3773,6 +3782,11 @@ function onDateChange(){
       if(!Object.keys(activeOrders).length) await fetchActiveOrders();
       await syncFromServer(fl, d);
       if(!unsaved){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
+      // If user is on AIM/Analytics/Trends page, re-render with fresh data for new date
+      const curPage = document.querySelector('.ntab.on')?.getAttribute('onclick')?.match(/go\('(\w+)'\)/)?.[1];
+      if(curPage==='aim') renderAIM();
+      else if(curPage==='analytics') renderAnalytics();
+      else if(curPage==='trends') renderTrends();
     })();
   }
   // C-shift date handling: if current time is 00:00–08:00 and today is selected, auto-switch to previous day
