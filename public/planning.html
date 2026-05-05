@@ -866,8 +866,7 @@ const SYNC = (() => {
         try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
         const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
         allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
-        // Don't re-render if user is actively typing (cursor fix)
-        if(!_userIsActive() && !_userIsFocused()) render();
+        // State updated silently — user must navigate or act to see changes (prevents screen flipping)
       }
     }
 
@@ -891,7 +890,7 @@ const SYNC = (() => {
               state.printOrders.push(dbP); changed = true;
             }
           });
-          if (changed && !_userIsActive() && !_userIsFocused()) render();
+          // State updated silently — no auto-render to prevent screen flipping
         }
       }
     } catch(e) { console.warn('[PrintOrders] Merge failed:', e.message); }
@@ -939,7 +938,7 @@ const SYNC = (() => {
             else if ((o.actualProd||0) >= (existing.actualProd||0)) { batchMcMap.set(key, o); }
           });
           state.orders = Array.from(batchMcMap.values());
-          if (ordersChanged && !_userIsActive() && !_userIsFocused()) render();
+          // State updated silently — no auto-render to prevent screen flipping
           console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table');
         }
       }
@@ -975,7 +974,7 @@ const SYNC = (() => {
     } catch(e) { console.warn('[Machines] Merge failed:', e.message); }
 
     // STEP 3: Load tracking/DPR status in background
-    loadTrackingStatus().then(() => { if(!_userIsActive() && !_userIsFocused()) render(); }).catch(() => {});
+    loadTrackingStatus().catch(() => {});
   }
 
   async function loadTrackingStatus() {
@@ -1751,9 +1750,9 @@ function _userIsFocused(){
   return['INPUT','TEXTAREA','SELECT'].includes(el.tagName);
 }
 
-// Track user activity — any click or keypress marks user as active for 10 seconds
+// Track user activity — any click or keypress marks user as active for 60 seconds
 let _userActiveUntil = 0;
-function _markUserActive(){ _userActiveUntil = Date.now() + 10000; }
+function _markUserActive(){ _userActiveUntil = Date.now() + 60000; }
 function _userIsActive(){ return Date.now() < _userActiveUntil; }
 document.addEventListener('mousedown', _markUserActive, true);
 document.addEventListener('keydown',   _markUserActive, true);
@@ -6666,9 +6665,9 @@ buildMonthPicker();
 // Start server sync check after render
 setTimeout(() => SYNC.online().then(() => SYNC.updateBadge()), 800);
 
-// Load tracking data immediately, then every 3 minutes
-(async()=>{try{await SYNC.loadTrackingStatus();if(!_userIsActive())render();}catch(e){}})();
-setInterval(async()=>{try{await SYNC.loadTrackingStatus();if(!_userIsFocused())render();}catch(e){}},60000); // every 60s — DPR actuals visible faster
+// Load tracking data immediately, then every 3 minutes — silent, no render
+(async()=>{try{await SYNC.loadTrackingStatus();}catch(e){}})();
+setInterval(async()=>{try{await SYNC.loadTrackingStatus();}catch(e){}},60000); // every 60s — silent background update
 
 // Auto-sync planning state every 30s — all devices stay in sync automatically
 let _planningAutoSyncTimer = null;
