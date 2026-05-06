@@ -1205,7 +1205,7 @@ function loadState() {
     } catch(e) {}
     // Also save full state to server to ensure dailyPrinting logs are persisted
     if ((state.dailyPrinting||[]).length > 0) {
-      try { await saveState(); console.log('[DailyPrinting] Pushed', state.dailyPrinting.length, 'logs to server'); } catch(e) {}
+      try { await saveState(); saveToKV('dailyPrinting', state.dailyPrinting); console.log('[DailyPrinting] Pushed', state.dailyPrinting.length, 'logs to server'); } catch(e) {}
     }
     // Migrate machineMaster to dedicated table on every load
     try {
@@ -1265,6 +1265,84 @@ document.addEventListener('visibilitychange', async () => {
   }
 });
 
+// Save specific data types to dedicated KV store on server
+async function saveToKV(key, value) {
+  try {
+    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+    if (!_url) return;
+    await fetch(_url + '/api/planning/kv/' + key, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ value }),
+      signal: AbortSignal.timeout(8000)
+    });
+  } catch(e) {}
+}
+
+// Load all data from dedicated server tables (called on page load)
+async function loadFromKV() {
+  try {
+    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+    if (!_url) return;
+
+    // Load from all dedicated tables in parallel
+    const [dpRes, dlRes, psRes, kvRes] = await Promise.allSettled([
+      fetch(_url + '/api/dispatch-plans',   { signal: AbortSignal.timeout(8000) }),
+      fetch(_url + '/api/daily-printing',   { signal: AbortSignal.timeout(8000) }),
+      fetch(_url + '/api/pack-sizes',       { signal: AbortSignal.timeout(8000) }),
+      fetch(_url + '/api/planning/all-kv',  { signal: AbortSignal.timeout(8000) }),
+    ]);
+
+    // Dispatch plans from dedicated table
+    if (dpRes.status==='fulfilled' && dpRes.value.ok) {
+      const j = await dpRes.value.json();
+      if (j.ok && Array.isArray(j.plans) && j.plans.length > 0) {
+        // Merge — server wins, keep local manual entries not on server
+        const serverIds = new Set(j.plans.map(p=>p.id));
+        const localOnly = (state.dispatchPlans||[]).filter(p=>p.id && !serverIds.has(p.id) && !p.isAuto);
+        state.dispatchPlans = [...j.plans, ...localOnly];
+        console.log('[DispatchPlans] Loaded', j.plans.length, 'plans from dedicated table');
+      }
+    }
+
+    // Daily printing from dedicated table
+    if (dlRes.status==='fulfilled' && dlRes.value.ok) {
+      const j = await dlRes.value.json();
+      if (j.ok && Array.isArray(j.logs) && j.logs.length > 0) {
+        const serverIds = new Set(j.logs.map(l=>l.id));
+        const localOnly = (state.dailyPrinting||[]).filter(l=>l.id && !serverIds.has(l.id));
+        state.dailyPrinting = [...j.logs, ...localOnly];
+        console.log('[DailyPrinting] Loaded', j.logs.length, 'logs from dedicated table');
+      }
+    }
+
+    // Pack sizes from dedicated table
+    if (psRes.status==='fulfilled' && psRes.value.ok) {
+      const j = await psRes.value.json();
+      if (j.ok && j.packSizes && Object.keys(j.packSizes).length > 0) {
+        state.packSizes = { ...(state.packSizes||{}), ...j.packSizes };
+        console.log('[PackSizes] Loaded from dedicated table');
+      }
+    }
+
+    // Also load from KV store as fallback for printMachineMaster
+    if (kvRes.status==='fulfilled' && kvRes.value.ok) {
+      const j = await kvRes.value.json();
+      if (j.ok && j.data) {
+        const d = j.data;
+        if (d.printMachineMaster && Array.isArray(d.printMachineMaster)) state.printMachineMaster = d.printMachineMaster;
+        if (d.machineCaps && typeof d.machineCaps === 'object') {
+          (state.machineMaster||[]).forEach(mc => {
+            if (d.machineCaps[mc.id]) mc.cap = d.machineCaps[mc.id];
+          });
+        }
+      }
+    }
+
+    console.log('[Server] All data loaded from dedicated tables');
+  } catch(e) { console.warn('[KV] Load failed:', e?.message); }
+}
+
 async function saveState() {
   try {
     const toSave = {...state};
@@ -1284,6 +1362,44 @@ async function saveState() {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
       _lastServerSaveTime = Date.now();
+      // Save to DEDICATED tables — permanent cross-device sync, never lost in JSON blob
+      const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+      if (_url) {
+        // Dispatch plans → dedicated table
+        if (state.dispatchPlans?.length) {
+          fetch(_url + '/api/dispatch-plans/bulk', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ plans: state.dispatchPlans }),
+            signal: AbortSignal.timeout(8000)
+          }).catch(()=>{});
+        }
+        // Daily printing → dedicated table
+        if (state.dailyPrinting?.length) {
+          fetch(_url + '/api/daily-printing/bulk', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ logs: state.dailyPrinting }),
+            signal: AbortSignal.timeout(8000)
+          }).catch(()=>{});
+        }
+        // Pack sizes → dedicated table
+        if (state.packSizes && Object.keys(state.packSizes).length) {
+          fetch(_url + '/api/pack-sizes', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ packSizes: state.packSizes }),
+            signal: AbortSignal.timeout(8000)
+          }).catch(()=>{});
+        }
+        // Print orders → dedicated table (already exists)
+        if (state.printOrders?.length) {
+          fetch(_url + '/api/print-orders/bulk', {
+            method:'POST', headers:{'Content-Type':'application/json'},
+            body: JSON.stringify({ printOrders: state.printOrders }),
+            signal: AbortSignal.timeout(8000)
+          }).catch(()=>{});
+        }
+      }
+      // Also save to KV store as backup
+      saveToKV('printMachineMaster', state.printMachineMaster).catch(()=>{});
     } else {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _scheduleRetry(toSave);
@@ -2887,6 +3003,30 @@ async function upsertOrderToDB(ord) {
 }
 
 // =============================
+// PRINT ORDER — immediate server save (dedicated table)
+async function upsertPrintOrderToDB(po) {
+  if (!po || !po.id) return;
+  try {
+    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+    if (!_url) return;
+    const _tryUpsert = async (attempt) => {
+      try {
+        const r = await fetch(_url + '/api/print-orders/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ printOrders: [po] }),
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!r.ok && attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
+      } catch(e) {
+        if (attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
+      }
+    };
+    _tryUpsert(1);
+  } catch(e) {}
+}
+
+// =============================
 // SAP IMPORT
 // =============================
 function importSAP() {
@@ -3428,6 +3568,7 @@ function updatePrintField(id, field, val) {
     else if (p.printedToDate > 0) p.status='running';
   }
   saveState();
+  upsertPrintOrderToDB(p); // save immediately to dedicated table
 }
 
 function closePrintOrder(id) {
@@ -3446,6 +3587,7 @@ function closePrintOrder(id) {
   }
   p.status = 'completed';
   saveState();
+  upsertPrintOrderToDB(p); // save immediately to dedicated table
   render();
 }
 
@@ -3826,7 +3968,17 @@ async function savePrintModal(existingId) {
 
   // Reset multi state
   _opmIsMulti = false; _opmRowCount = 2;
-  await saveState(); closeModal(); render();
+  await saveState();
+  // Save ALL print orders to dedicated table immediately
+  const _url2 = SYNC._url || localStorage.getItem('sunloc_server_url');
+  if (_url2 && state.printOrders?.length) {
+    fetch(_url2 + '/api/print-orders/bulk', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ printOrders: state.printOrders }),
+      signal: AbortSignal.timeout(8000)
+    }).catch(()=>{});
+  }
+  closeModal(); render();
 }
 
 function editPrintOrder(id) { showAddPrintModal(null, id); }
@@ -7365,6 +7517,8 @@ async function doLogin() {
     updateUserBadge();
     render();
     auditLog('LOGIN', 'Logged in to Planning Suite');
+    // Load persistent data from KV store after login
+    loadFromKV().then(() => render()).catch(()=>{});
   } catch(e) {
     errEl.textContent = 'Cannot reach server — check connection';
   }

@@ -84,6 +84,11 @@ db.exec(`
     name TEXT NOT NULL,
     applied_at TEXT NOT NULL DEFAULT (datetime('now'))
   );
+  CREATE TABLE IF NOT EXISTS planning_kv (
+    key TEXT PRIMARY KEY,
+    value_json TEXT NOT NULL,
+    updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+  );
 `);
 
 const MIGRATIONS = [
@@ -477,6 +482,14 @@ function getPlanningState() {
 async function ensurePostgresTables() {
   if (!pgPool) return;
   try {
+    // Generic key-value store for planning data (dispatch plans, pack sizes, settings etc.)
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS planning_kv (
+        key TEXT PRIMARY KEY,
+        value_json TEXT NOT NULL,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS tracking_labels (
         id TEXT PRIMARY KEY,
@@ -780,6 +793,44 @@ async function ensurePostgresTables() {
         preferred_customer TEXT,
         active BOOLEAN DEFAULT true,
         updated_at TIMESTAMP DEFAULT NOW()
+      )
+    `);
+
+
+    // dispatch_plans — dedicated table for all dispatch plans
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS dispatch_plans (
+        id TEXT PRIMARY KEY,
+        data_json JSONB NOT NULL,
+        production_order_id TEXT,
+        batch_number TEXT,
+        customer TEXT,
+        zone TEXT,
+        status TEXT DEFAULT 'pending',
+        is_auto BOOLEAN DEFAULT false,
+        deleted BOOLEAN DEFAULT false,
+        updated_at TEXT DEFAULT NOW()::TEXT
+      )
+    `);
+
+    // daily_printing — dedicated table for all daily printing logs
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS daily_printing (
+        id TEXT PRIMARY KEY,
+        data_json JSONB NOT NULL,
+        print_order_id TEXT,
+        machine_id TEXT,
+        date TEXT,
+        updated_at TEXT DEFAULT NOW()::TEXT
+      )
+    `);
+
+    // pack_sizes — dedicated table for pack size settings
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS pack_sizes (
+        size TEXT PRIMARY KEY,
+        value INTEGER NOT NULL,
+        updated_at TEXT DEFAULT NOW()::TEXT
       )
     `);
 
@@ -1720,6 +1771,148 @@ app.get('/api/actuals/machine-summary', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+
+// ═══════════════════════════════════════════════════════
+// DISPATCH PLANS — dedicated table
+// ═══════════════════════════════════════════════════════
+
+// GET /api/dispatch-plans
+app.get('/api/dispatch-plans', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT data_json FROM dispatch_plans WHERE deleted=false ORDER BY updated_at DESC');
+      rows = r.rows.map(r => typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json);
+    } else {
+      rows = db.prepare('SELECT data_json FROM dispatch_plans WHERE deleted=0 ORDER BY updated_at DESC').all()
+              .map(r => JSON.parse(r.data_json));
+    }
+    res.json({ ok: true, plans: rows });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/dispatch-plans/bulk — save all dispatch plans
+app.post('/api/dispatch-plans/bulk', async (req, res) => {
+  try {
+    const { plans } = req.body;
+    if (!Array.isArray(plans)) return res.status(400).json({ ok: false, error: 'plans array required' });
+    if (pgPool) {
+      for (const p of plans) {
+        if (!p || !p.id) continue;
+        await pgPool.query(`
+          INSERT INTO dispatch_plans (id, data_json, production_order_id, batch_number, customer, zone, status, is_auto, deleted, updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,NOW()::TEXT)
+          ON CONFLICT(id) DO UPDATE SET
+            data_json=$2, production_order_id=$3, batch_number=$4, customer=$5,
+            zone=$6, status=$7, is_auto=$8, deleted=$9, updated_at=NOW()::TEXT
+        `, [p.id, JSON.stringify(p), p.productionOrderId||null, p.batchNumber||null,
+            p.customer||null, p.zone||null, p.status||'pending', p.isAuto||false, p.deleted||false]);
+      }
+    } else {
+      const stmt = db.prepare(`INSERT INTO dispatch_plans (id,data_json,production_order_id,batch_number,customer,zone,status,is_auto,deleted,updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,production_order_id=excluded.production_order_id,
+        batch_number=excluded.batch_number,customer=excluded.customer,zone=excluded.zone,
+        status=excluded.status,is_auto=excluded.is_auto,deleted=excluded.deleted,updated_at=datetime('now')`);
+      for (const p of plans) {
+        if (!p || !p.id) continue;
+        stmt.run(p.id, JSON.stringify(p), p.productionOrderId||null, p.batchNumber||null,
+                 p.customer||null, p.zone||null, p.status||'pending', p.isAuto?1:0, p.deleted?1:0);
+      }
+    }
+    res.json({ ok: true, saved: plans.length });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════
+// DAILY PRINTING — dedicated table
+// ═══════════════════════════════════════════════════════
+
+// GET /api/daily-printing
+app.get('/api/daily-printing', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT data_json FROM daily_printing ORDER BY date DESC, updated_at DESC');
+      rows = r.rows.map(r => typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json);
+    } else {
+      rows = db.prepare('SELECT data_json FROM daily_printing ORDER BY date DESC, updated_at DESC').all()
+              .map(r => JSON.parse(r.data_json));
+    }
+    res.json({ ok: true, logs: rows });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/daily-printing/bulk — save all daily printing logs
+app.post('/api/daily-printing/bulk', async (req, res) => {
+  try {
+    const { logs } = req.body;
+    if (!Array.isArray(logs)) return res.status(400).json({ ok: false, error: 'logs array required' });
+    if (pgPool) {
+      for (const l of logs) {
+        if (!l || !l.id) continue;
+        await pgPool.query(`
+          INSERT INTO daily_printing (id, data_json, print_order_id, machine_id, date, updated_at)
+          VALUES ($1,$2,$3,$4,$5,NOW()::TEXT)
+          ON CONFLICT(id) DO UPDATE SET
+            data_json=$2, print_order_id=$3, machine_id=$4, date=$5, updated_at=NOW()::TEXT
+        `, [l.id, JSON.stringify(l), l.printOrderId||null, l.machineId||null, l.date||null]);
+      }
+    } else {
+      const stmt = db.prepare(`INSERT INTO daily_printing (id,data_json,print_order_id,machine_id,date,updated_at)
+        VALUES (?,?,?,?,?,datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,print_order_id=excluded.print_order_id,
+        machine_id=excluded.machine_id,date=excluded.date,updated_at=datetime('now')`);
+      for (const l of logs) {
+        if (!l || !l.id) continue;
+        stmt.run(l.id, JSON.stringify(l), l.printOrderId||null, l.machineId||null, l.date||null);
+      }
+    }
+    res.json({ ok: true, saved: logs.length });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ═══════════════════════════════════════════════════════
+// PACK SIZES — dedicated table
+// ═══════════════════════════════════════════════════════
+
+// GET /api/pack-sizes
+app.get('/api/pack-sizes', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT size, value FROM pack_sizes');
+      rows = r.rows;
+    } else {
+      rows = db.prepare('SELECT size, value FROM pack_sizes').all();
+    }
+    const packSizes = {};
+    rows.forEach(r => { packSizes[r.size] = r.value; });
+    res.json({ ok: true, packSizes });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/pack-sizes — save pack sizes
+app.post('/api/pack-sizes', async (req, res) => {
+  try {
+    const { packSizes } = req.body;
+    if (!packSizes || typeof packSizes !== 'object') return res.status(400).json({ ok: false, error: 'packSizes required' });
+    if (pgPool) {
+      for (const [size, value] of Object.entries(packSizes)) {
+        await pgPool.query(`
+          INSERT INTO pack_sizes (size, value, updated_at) VALUES ($1,$2,NOW()::TEXT)
+          ON CONFLICT(size) DO UPDATE SET value=$2, updated_at=NOW()::TEXT
+        `, [size, value]);
+      }
+    } else {
+      const stmt = db.prepare(`INSERT INTO pack_sizes (size,value,updated_at) VALUES (?,?,datetime('now'))
+        ON CONFLICT(size) DO UPDATE SET value=excluded.value,updated_at=datetime('now')`);
+      for (const [size, value] of Object.entries(packSizes)) { stmt.run(size, value); }
+    }
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // GET actuals summary for a machine (for DPR to show cumulative vs planned)
@@ -3559,6 +3752,94 @@ app.get('*', (req, res) => {
   const idx = path.join(__dirname, 'public', 'index.html');
   if (fs.existsSync(idx)) res.sendFile(idx);
   else res.json({ ok: false, error: 'No frontend found. Place Planning App and DPR App in /public folder.' });
+});
+
+
+// ══════════════════════════════════════════════════════════════════════
+// PLANNING KEY-VALUE STORE — permanent storage for all planning data
+// Covers: dispatch plans, pack sizes, print machine master, settings,
+//         zone map, daily printing logs — everything that was only in
+//         planning_state JSON blob before
+// ══════════════════════════════════════════════════════════════════════
+
+// Helper: save a key to planning_kv table
+async function kvSet(key, value) {
+  const json = JSON.stringify(value);
+  if (pgPool) {
+    await pgPool.query(
+      `INSERT INTO planning_kv (key, value_json, updated_at)
+       VALUES ($1, $2, NOW()::TEXT)
+       ON CONFLICT(key) DO UPDATE SET value_json=$2, updated_at=NOW()::TEXT`,
+      [key, json]
+    );
+  } else {
+    db.prepare(
+      `INSERT OR REPLACE INTO planning_kv (key, value_json, updated_at)
+       VALUES (?, ?, datetime('now'))`
+    ).run(key, json);
+  }
+}
+
+// Helper: get a key from planning_kv table
+async function kvGet(key) {
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT value_json FROM planning_kv WHERE key=$1`, [key]);
+      if (r.rows[0]) return JSON.parse(r.rows[0].value_json);
+    } else {
+      const row = db.prepare(`SELECT value_json FROM planning_kv WHERE key=?`).get(key);
+      if (row) return JSON.parse(row.value_json);
+    }
+  } catch(e) {}
+  return null;
+}
+
+// GET /api/planning/kv/:key — get a planning data value
+app.get('/api/planning/kv/:key', async (req, res) => {
+  try {
+    const value = await kvGet(req.params.key);
+    res.json({ ok: true, key: req.params.key, value });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/planning/kv/:key — save a planning data value permanently
+app.post('/api/planning/kv/:key', async (req, res) => {
+  try {
+    const { value } = req.body;
+    if (value === undefined) return res.status(400).json({ ok: false, error: 'value required' });
+    await kvSet(req.params.key, value);
+    res.json({ ok: true, key: req.params.key, savedAt: new Date().toISOString() });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/planning/kv-bulk — save multiple keys at once
+app.post('/api/planning/kv-bulk', async (req, res) => {
+  try {
+    const { data } = req.body; // { key1: value1, key2: value2, ... }
+    if (!data || typeof data !== 'object') return res.status(400).json({ ok: false, error: 'data object required' });
+    for (const [key, value] of Object.entries(data)) {
+      await kvSet(key, value);
+    }
+    res.json({ ok: true, count: Object.keys(data).length, savedAt: new Date().toISOString() });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/planning/all-kv — get ALL planning kv data in one request (for page load)
+app.get('/api/planning/all-kv', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT key, value_json FROM planning_kv`);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT key, value_json FROM planning_kv`).all();
+    }
+    const result = {};
+    rows.forEach(row => {
+      try { result[row.key] = JSON.parse(row.value_json); } catch(e) {}
+    });
+    res.json({ ok: true, data: result });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // ── Start server ──────────────────────────────────────────────
