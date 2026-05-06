@@ -1288,67 +1288,53 @@ app.post('/api/planning/state', async (req, res) => {
     const { state } = req.body;
     if (!state) return res.status(400).json({ ok: false, error: 'No state provided' });
 
-    // PERMANENT FIX: Before saving planning_state, merge incoming orders into
-    // production_orders table — this protects orders added by other devices
+    // Background order merge — runs AFTER response is sent so planning_state save is never blocked
+    // With 300+ orders, sequential queries timed out and prevented planning_state from saving
     if (state.orders && state.orders.length > 0) {
-      try {
-        for (const ord of state.orders) {
-          if (!ord || !ord.id) continue;
-          // Skip blacklisted
-          if (ord.batchNumber === '26V049' && (ord.customer||'').includes('SHYAM')) continue;
+      setImmediate(async () => {
+        try {
+          const orders = state.orders.filter(o => o && o.id &&
+            !(o.batchNumber === '26V049' && (o.customer||'').includes('SHYAM')));
+          if (!orders.length || !pgPool) return;
 
-          // SAFE MERGE: on conflict, read existing record first
-          // Never overwrite manually set startDate, endDate, manualEndDate, status
-          if (pgPool) {
-            const existing = await pgPool.query(
-              `SELECT data_json FROM production_orders WHERE id=$1`, [ord.id]
-            );
+          // Fetch ALL existing records in ONE query — no N+1
+          const ids = orders.map(o => o.id);
+          const existing = await pgPool.query(
+            `SELECT id, data_json FROM production_orders WHERE id = ANY($1)`, [ids]
+          );
+          const existingMap = {};
+          existing.rows.forEach(r => {
+            try { existingMap[r.id] = typeof r.data_json === 'string'
+              ? JSON.parse(r.data_json) : r.data_json; } catch(e) {}
+          });
+
+          // Merge preserving manual dates/status, then bulk upsert
+          await Promise.all(orders.map(async ord => {
+            const ex = existingMap[ord.id];
             let mergedOrd = ord;
-            if (existing.rows.length > 0) {
-              try {
-                const existingData = typeof existing.rows[0].data_json === 'string'
-                  ? JSON.parse(existing.rows[0].data_json)
-                  : existing.rows[0].data_json;
-                // Preserve manually set fields from existing DB record
-                const hasManualDate = existingData.manualEndDate || existingData.manualStartDate;
-                mergedOrd = {
-                  ...ord,
-                  // Keep existing dates if manually set
-                  startDate:       hasManualDate ? existingData.startDate   : ord.startDate,
-                  endDate:         hasManualDate ? existingData.endDate     : ord.endDate,
-                  manualEndDate:   existingData.manualEndDate   || ord.manualEndDate,
-                  manualStartDate: existingData.manualStartDate || ord.manualStartDate,
-                  // Keep existing status if set (never revert to pending)
-                  status: (existingData.status && existingData.status !== 'pending')
-                    ? existingData.status : (ord.status || 'pending'),
-                  // Always take actual production from incoming (live DPR data)
-                  actualProd: Math.max(ord.actualProd||0, existingData.actualProd||0),
-                };
-              } catch(e) { /* keep ord as-is if parse fails */ }
+            if (ex) {
+              const hasManualDate = ex.manualEndDate || ex.manualStartDate;
+              mergedOrd = {
+                ...ord,
+                startDate:       hasManualDate ? ex.startDate   : ord.startDate,
+                endDate:         hasManualDate ? ex.endDate     : ord.endDate,
+                manualEndDate:   ex.manualEndDate   || ord.manualEndDate,
+                manualStartDate: ex.manualStartDate || ord.manualStartDate,
+                status: (ex.status && ex.status !== 'pending') ? ex.status : (ord.status||'pending'),
+                actualProd: Math.max(ord.actualProd||0, ex.actualProd||0),
+              };
             }
-            const json = JSON.stringify(mergedOrd);
             await pgPool.query(`
-              INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
+              INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
               VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
-              ON CONFLICT(id) DO UPDATE SET
-                data_json=$2, machine_id=$3, batch_number=$4,
-                status=$5, deleted=$6, updated_at=NOW()::TEXT
-            `, [mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null,
-                mergedOrd.status||'pending', mergedOrd.deleted||false]);
-          } else {
-            // SQLite: simple upsert (no merge for SQLite fallback)
-            const json = JSON.stringify(ord);
-            db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
-              VALUES (?,?,?,?,?,?,datetime('now'))
-              ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
-              machine_id=excluded.machine_id,batch_number=excluded.batch_number,
-              status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
-              .run(ord.id, json, ord.machineId||null, ord.batchNumber||null,
-                   ord.status||'pending', ord.deleted?1:0);
-          }
-        }
-        console.log(`[State] Merged ${state.orders.length} orders into production_orders table`);
-      } catch(e) { console.warn('[State] Order merge failed:', e.message); }
+              ON CONFLICT(id) DO UPDATE SET data_json=$2,machine_id=$3,batch_number=$4,
+                status=$5,deleted=$6,updated_at=NOW()::TEXT
+            `, [mergedOrd.id, JSON.stringify(mergedOrd), mergedOrd.machineId||null,
+                mergedOrd.batchNumber||null, mergedOrd.status||'pending', mergedOrd.deleted||false]);
+          }));
+          console.log(`[State] Background merged ${orders.length} orders into production_orders`);
+        } catch(e) { console.warn('[State] Background order merge failed:', e.message); }
+      });
     }
 
     const json = JSON.stringify(state);
