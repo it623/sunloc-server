@@ -934,8 +934,11 @@ const SYNC = (() => {
             if (!o.batchNumber || !o.machineId) { batchMcMap.set(o.id, o); return; }
             const key = `${o.batchNumber}__${o.machineId}`;
             const existing = batchMcMap.get(key);
-            if (!existing) { batchMcMap.set(key, o); }
-            else if ((o.actualProd||0) >= (existing.actualProd||0)) { batchMcMap.set(key, o); }
+            if (!existing) { batchMcMap.set(key, o); return; }
+            // Score each version by how many key fields are filled
+            const score = x => (x.customer?1:0)+(x.pcCode?1:0)+(x.colour?1:0)+(x.printMatter?1:0)+(x.size?1:0)+((x.actualProd||0)>0?2:0)+((x.orderQty||x.qty||0)>0?1:0);
+            // Keep the version with higher score; on tie keep existing (don't overwrite)
+            if (score(o) > score(existing)) { batchMcMap.set(key, o); }
           });
           state.orders = Array.from(batchMcMap.values());
           // State updated silently — no auto-render to prevent screen flipping
@@ -1367,65 +1370,20 @@ function getMachineOrders(machineId) {
 
 // Recalculate all order dates on a machine after any change
 function recalcMachineScheduleQuiet(machineId) {
-  // Same as recalcMachineSchedule but doesn't save or re-render — used for live A-grade updates
+  // Background-only: recalculate qty/grossQty/aimOut ONLY — never touch dates
+  // Dates are only changed by recalcMachineSchedule (user-triggered saves)
   const mc = getMachine(machineId);
   if (!mc) return;
   const orders = getMachineOrders(machineId);
-  let cursor = null;
   for (const ord of orders) {
-    if (ord.status === 'closed') {
-      // Still calculate grossQty/aimOut for closed orders so they show in the table
-      if (!ord.grossQty) {
-        const scClosed = calcOrderSchedule(ord, mc);
-        ord.grossQty = scClosed.grossQty;
-        ord.aimOut   = scClosed.aimOut;
-        ord.printOut = scClosed.printOut;
-        ord.piOut    = scClosed.piOut;
-      }
-      // Advance cursor through closed orders so next order starts right after
-      if (ord.endDate && !isNaN(new Date(ord.endDate))) {
-        const closedEnd = new Date(ord.endDate);
-        if (!cursor || closedEnd > cursor) cursor = closedEnd;
-      }
-      continue;
-    }
-    // If order already has both startDate AND endDate — never touch dates, just recalc qty
-    if (ord.startDate && ord.endDate) {
-      const sc = calcOrderSchedule(ord, mc);
-      ord.grossQty   = sc.grossQty;
-      ord.aimOut     = sc.aimOut;
-      ord.printOut   = sc.printOut;
-      ord.piOut      = sc.piOut;
-      ord.daysNeeded = sc.daysNeeded;
-      const endD = new Date(ord.endDate);
-      if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
-      continue;
-    }
-    if (!cursor) {
-      // Seed cursor: only push to today if startDate is past + no production + no endDate saved
-      const savedStart = ord.startDate ? new Date(ord.startDate) : null;
-      const todayD = new Date(today());
-      const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
-      const hasEndDate = ord.endDate && !isNaN(new Date(ord.endDate));
-      if (savedStart && savedStart < todayD && !hasProduction && !hasEndDate) {
-        cursor = todayD;
-        ord.startDate = new Date(cursor);
-      } else {
-        cursor = savedStart || todayD;
-      }
-    } else {
-      ord.startDate = new Date(cursor);
-    }
     const sc = calcOrderSchedule(ord, mc);
-    ord.grossQty    = sc.grossQty;
-    ord.aimOut      = sc.aimOut;
-    ord.printOut    = sc.printOut;
-    ord.piOut       = sc.piOut;
-    ord.daysNeeded  = sc.daysNeeded;
-    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
-    if (ord.endDate && !isNaN(new Date(ord.endDate))) {
-      cursor = new Date(ord.endDate);
-    }
+    ord.grossQty   = sc.grossQty;
+    ord.aimOut     = sc.aimOut;
+    ord.printOut   = sc.printOut;
+    ord.piOut      = sc.piOut;
+    ord.daysNeeded = sc.daysNeeded;
+    // effectiveCap exposed for display
+    if (sc.effectiveCap) ord.effectiveCap = sc.effectiveCap;
   }
   // Cascade to print schedule — production end dates drive print start dates
   recalcPrintScheduleQuiet();
@@ -1453,23 +1411,28 @@ function recalcMachineSchedule(machineId) {
       }
       continue;
     }
-    // If order already has both startDate AND endDate (or manual flags) — never touch dates, just recalc qty
-    if ((ord.startDate && ord.endDate) || ord.manualStartDate || ord.manualEndDate) {
+    // If order already has startDate — never override it, always respect saved dates
+    // Only auto-assign dates for brand new orders with no startDate at all
+    if (ord.startDate || ord.manualStartDate || ord.manualEndDate) {
       const sc = calcOrderSchedule(ord, mc);
       ord.grossQty   = sc.grossQty;
       ord.aimOut     = sc.aimOut;
       ord.printOut   = sc.printOut;
       ord.piOut      = sc.piOut;
       ord.daysNeeded = sc.daysNeeded;
+      // Only calculate endDate if it is missing
+      if (!ord.endDate && sc.daysNeeded) {
+        ord.endDate = calcEndDate(new Date(ord.startDate), sc.daysNeeded);
+      }
       const endD = new Date(ord.endDate);
       if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
       continue;
     }
+    // Brand new order — no startDate saved at all — assign from cursor or today
     if (!cursor) {
-      cursor = new Date(ord.startDate || today());
-    } else {
-      ord.startDate = new Date(cursor);
+      cursor = new Date(today());
     }
+    ord.startDate = new Date(cursor);
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty   = sc.grossQty;
     ord.aimOut     = sc.aimOut;
