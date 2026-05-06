@@ -894,7 +894,9 @@ const SYNC = (() => {
         state.zoneMap = ZONE_MAP_RAW;
         // Load custom PC codes from server DB — these persist permanently
         try {
-          const pcr = await fetch(SYNC._url + '/api/pc-codes', {signal: AbortSignal.timeout(5000)});
+          const _pcUrl = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
+          if (!_pcUrl) throw new Error('No server URL');
+          const pcr = await fetch(_pcUrl + '/api/pc-codes', {signal: AbortSignal.timeout(5000)});
           if (pcr.ok) {
             const pcj = await pcr.json();
             if (pcj.ok && pcj.codes) {
@@ -1359,6 +1361,21 @@ async function loadFromKV() {
 
     console.log('[Server] All data loaded from dedicated tables');
   } catch(e) { console.warn('[KV] Load failed:', e?.message); }
+
+  // Load print orders separately — always runs even if KV store fails
+  try {
+    const _urlPO = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
+    if (_urlPO) {
+      const prResPO = await fetch(_urlPO + '/api/print-orders', { signal: AbortSignal.timeout(10000) });
+      if (prResPO.ok) {
+        const prjPO = await prResPO.json();
+        if (prjPO.ok && Array.isArray(prjPO.printOrders) && prjPO.printOrders.length > 0) {
+          state.printOrders = prjPO.printOrders;
+          console.log('[PrintOrders] Guaranteed load:', prjPO.printOrders.length);
+        }
+      }
+    }
+  } catch(e) { console.warn('[PrintOrders] Load failed:', e?.message); }
 }
 
 async function saveState() {
@@ -5938,6 +5955,7 @@ function isMonthEditable(ym) {
 let _monthArchiveCache = {}; // { 'YYYY-MM': { archived_at, ... } }
 
 async function loadArchiveList() {
+  const serverUrl = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
   if (!serverUrl) return;
   try {
     const r = await fetch(serverUrl + '/api/archives/list', { signal: AbortSignal.timeout(5000) });
@@ -6028,6 +6046,7 @@ async function autoArchiveIfNeeded() {
 }
 
 async function doAutoArchive(ym) {
+  const serverUrl = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
   if (!serverUrl) return;
   try {
     // Build snapshot of orders active in that month
@@ -6186,6 +6205,7 @@ function isArchiveEditable(archive) {
 
 // ── Render Archives page ──────────────────────────────────────
 async function renderArchives() {
+  const serverUrl = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `
     <button class="btn btn-secondary btn-sm" onclick="doAutoArchive(currentYM()).then(()=>{buildMonthPicker();renderArchives();})">
