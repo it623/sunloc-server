@@ -798,8 +798,11 @@ const SYNC = (() => {
           });
         }
         // Take server state
-        // Save local dailyPrinting before overwrite — merge after
+        // Save local orders, dailyPrinting before overwrite — merge after
         const _localDailyPrinting = JSON.parse(JSON.stringify(state.dailyPrinting || []));
+        const _localOrdersSnapshot = JSON.parse(JSON.stringify(state.orders || []));
+        const _localOrdersById = {};
+        _localOrdersSnapshot.forEach(o => { if (o.id) _localOrdersById[o.id] = o; });
         Object.assign(state, serverState);
         // Merge dailyPrinting — keep any local entries not yet on server
         if (_localDailyPrinting.length > 0) {
@@ -811,10 +814,28 @@ const SYNC = (() => {
           }
         }
         // Stamp manualStartDate/manualEndDate on all orders that have both dates — prevents recalc from ever changing them
+        // Also restore manually set dates and status from local snapshot — these never come from server
         if (Array.isArray(state.orders)) {
           state.orders = state.orders.map(o => {
-            if (o.startDate && o.endDate) return { ...o, manualStartDate: true, manualEndDate: true };
-            return o;
+            const local = _localOrdersById[o.id];
+            if (!local) {
+              // New order from server — stamp manual flags if has both dates
+              if (o.startDate && o.endDate) return { ...o, manualStartDate: true, manualEndDate: true };
+              return o;
+            }
+            // Has local version — preserve manual dates and status
+            const hasManualDate = local.manualEndDate || local.manualStartDate || (local.startDate && local.endDate);
+            return {
+              ...o,
+              startDate:       hasManualDate ? local.startDate   : o.startDate,
+              endDate:         hasManualDate ? local.endDate     : o.endDate,
+              manualEndDate:   local.manualEndDate   || o.manualEndDate   || hasManualDate,
+              manualStartDate: local.manualStartDate || o.manualStartDate || hasManualDate,
+              status:          local.status || o.status,
+              // Always take live data from server
+              actualProd:      o.actualProd  || local.actualProd,
+              stageStatus:     o.stageStatus || local.stageStatus,
+            };
           });
         }
         // Merge server orders with local state — local wins for dates/status, server wins for actualProd
@@ -942,11 +963,25 @@ const SYNC = (() => {
           ooj.orders.forEach(o => { dbOrderMap[o.id] = o; });
           let ordersChanged = false;
           // Update existing orders with DB version (DB is authoritative)
+          // BUT always preserve manually set dates and user-set status from local state
           state.orders = (state.orders||[]).map(o => {
             const dbOrd = dbOrderMap[o.id];
             if (!dbOrd) return o; // not in DB yet — keep local version
             if (dbOrd.deleted) return null; // deleted in DB — remove
-            return dbOrd; // DB version always wins
+            // DB wins for most fields — but local wins for manually set dates and status
+            return {
+              ...dbOrd,
+              // Preserve manual dates if set locally
+              startDate:       (o.manualEndDate || o.manualStartDate) ? o.startDate   : dbOrd.startDate,
+              endDate:         (o.manualEndDate || o.manualStartDate) ? o.endDate     : dbOrd.endDate,
+              manualEndDate:   o.manualEndDate   || dbOrd.manualEndDate,
+              manualStartDate: o.manualStartDate || dbOrd.manualStartDate,
+              // Preserve user-set status — never let server overwrite it
+              status:          o.status || dbOrd.status,
+              // Always take live data from DB
+              actualProd:      dbOrd.actualProd  || o.actualProd,
+              stageStatus:     dbOrd.stageStatus || o.stageStatus,
+            };
           }).filter(Boolean);
           // Add any orders in DB not yet in local state — always add, never block
           const existingIds = new Set(state.orders.map(o=>o.id));

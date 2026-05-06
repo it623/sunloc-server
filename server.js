@@ -1245,17 +1245,48 @@ app.post('/api/planning/state', async (req, res) => {
           if (!ord || !ord.id) continue;
           // Skip blacklisted
           if (ord.batchNumber === '26V049' && (ord.customer||'').includes('SHYAM')) continue;
-          const json = JSON.stringify(ord);
+
+          // SAFE MERGE: on conflict, read existing record first
+          // Never overwrite manually set startDate, endDate, manualEndDate, status
           if (pgPool) {
+            const existing = await pgPool.query(
+              `SELECT data_json FROM production_orders WHERE id=$1`, [ord.id]
+            );
+            let mergedOrd = ord;
+            if (existing.rows.length > 0) {
+              try {
+                const existingData = typeof existing.rows[0].data_json === 'string'
+                  ? JSON.parse(existing.rows[0].data_json)
+                  : existing.rows[0].data_json;
+                // Preserve manually set fields from existing DB record
+                const hasManualDate = existingData.manualEndDate || existingData.manualStartDate;
+                mergedOrd = {
+                  ...ord,
+                  // Keep existing dates if manually set
+                  startDate:       hasManualDate ? existingData.startDate   : ord.startDate,
+                  endDate:         hasManualDate ? existingData.endDate     : ord.endDate,
+                  manualEndDate:   existingData.manualEndDate   || ord.manualEndDate,
+                  manualStartDate: existingData.manualStartDate || ord.manualStartDate,
+                  // Keep existing status if set (never revert to pending)
+                  status: (existingData.status && existingData.status !== 'pending')
+                    ? existingData.status : (ord.status || 'pending'),
+                  // Always take actual production from incoming (live DPR data)
+                  actualProd: Math.max(ord.actualProd||0, existingData.actualProd||0),
+                };
+              } catch(e) { /* keep ord as-is if parse fails */ }
+            }
+            const json = JSON.stringify(mergedOrd);
             await pgPool.query(`
               INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
               VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
               ON CONFLICT(id) DO UPDATE SET
                 data_json=$2, machine_id=$3, batch_number=$4,
                 status=$5, deleted=$6, updated_at=NOW()::TEXT
-            `, [ord.id, json, ord.machineId||null, ord.batchNumber||null,
-                ord.status||'pending', ord.deleted||false]);
+            `, [mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null,
+                mergedOrd.status||'pending', mergedOrd.deleted||false]);
           } else {
+            // SQLite: simple upsert (no merge for SQLite fallback)
+            const json = JSON.stringify(ord);
             db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
               VALUES (?,?,?,?,?,?,datetime('now'))
               ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
