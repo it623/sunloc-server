@@ -402,6 +402,7 @@ td.r,th.r{text-align:right}
 .dpr-month-badge.grace{background:rgba(255,171,0,0.15);color:#ffab00}
 .dpr-month-badge.locked{background:rgba(255,82,82,0.15);color:#ff5252}
 @media(max-width:600px){.dpr-month-wrap select{min-width:80px;font-size:10px}}
+@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 <style>
 #auth-overlay{position:fixed;inset:0;background:#0b0d12;z-index:9999;display:flex;align-items:center;justify-content:center}
@@ -2841,10 +2842,10 @@ let _dprServerDatesFetched = {}; // { 'GF': timestamp }
 async function prefetchDprDates(fl) {
   // Only fetch if not fetched in last 2 minutes
   const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
-  for (const f of floors) {
+  await Promise.all(floors.map(async f => {
     const lastFetch = _dprServerDatesFetched[f] || 0;
-    if (Date.now() - lastFetch < 120000) continue; // cached
-    if (!serverUrl) continue;
+    if (Date.now() - lastFetch < 120000) return; // cached
+    if (!serverUrl) return;
     try {
       const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(f), {signal: AbortSignal.timeout(8000)});
       if (!r.ok) continue;
@@ -2852,23 +2853,24 @@ async function prefetchDprDates(fl) {
       if (j.dates) {
         _dprServerDatesCache[f] = j.dates;
         _dprServerDatesFetched[f] = Date.now();
-        // Also pre-populate localStorage for calcDayStats to work
-        for (const d of j.dates) {
-          const key = skey(f, d);
-          if (!localStorage.getItem(key)) {
-            // Fetch and cache this date's data
+        // Fetch missing dates in PARALLEL (max 10 at a time) for speed
+        const missingDates = j.dates.filter(d => !localStorage.getItem(skey(f, d)));
+        const CHUNK = 10;
+        for (let i = 0; i < missingDates.length; i += CHUNK) {
+          const chunk = missingDates.slice(i, i + CHUNK);
+          await Promise.all(chunk.map(async d => {
             try {
-              const r2 = await fetch(serverUrl + '/api/dpr/' + encodeURIComponent(f) + '/' + d, {signal: AbortSignal.timeout(5000)});
+              const r2 = await fetch(serverUrl + '/api/dpr/' + encodeURIComponent(f) + '/' + d, {signal: AbortSignal.timeout(8000)});
               if (r2.ok) {
                 const j2 = await r2.json();
-                if (j2.data) localStorage.setItem(key, JSON.stringify(j2.data));
+                if (j2.data) localStorage.setItem(skey(f, d), JSON.stringify(j2.data));
               }
             } catch(e) {}
-          }
+          }));
         }
       }
     } catch(e) { console.warn('[DPR] prefetchDprDates failed:', f, e?.message); }
-  }
+  }));
 }
 
 function getDprDateRange(fl, mode) {
@@ -3093,6 +3095,16 @@ function chartOpts(){
 // ═══════════════════════════════════════════════════════
 // TRENDS
 // ═══════════════════════════════════════════════════════
+
+// Show loading spinner in a container
+function _showDprLoading(containerId, msg) {
+  const el = document.getElementById(containerId);
+  if (el) el.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;color:var(--t3)">
+    <div style="width:36px;height:36px;border:3px solid var(--b2);border-top-color:var(--cyan);border-radius:50%;animation:spin 0.8s linear infinite;margin-bottom:16px"></div>
+    <div style="font-size:13px;font-weight:600">${msg||'Loading data from server...'}</div>
+  </div>`;
+}
+
 function renderTrends(){
   const fl  = document.getElementById('trendFloor')?.value || 'ALL';
   const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
@@ -3941,20 +3953,26 @@ function go(page){
     prefetchDprDates('GF').then(()=>renderTrends());
   }
   else if(page==='aim'){
-    renderAIM(); // render immediately from localStorage (fast)
+    _showDprLoading('aimTable', 'Loading AIM data...');
+    renderAIM(); // render from localStorage first
     if(serverUrl && dprUser){
       (async()=>{
         const d=getDate();
         await Promise.all(Object.keys(FLOORS).map(f=>syncFromServer(f,d)));
         await prefetchDprDates('GF');
-        renderAIM(); // re-render with fresh server data
+        renderAIM();
       })();
     }
   }
   else if(page==='perf'){
+    // Show spinner in perf containers
+    ['ch-perf-incharge','ch-perf-op'].forEach(id => _showDprLoading(id, 'Loading performance data...'));
+    renderPerf(); // render from localStorage first
     prefetchDprDates(curFloor||'GF').then(()=>renderPerf());
   }
   else if(page==='history'){
+    _showDprLoading('hist-table-body', 'Loading history...');
+    renderHistory(); // render from localStorage first
     prefetchDprDates('GF').then(()=>renderHistory());
   }
   else if(page==='plant'){ document.getElementById('plant-date').value=document.getElementById('plant-date').value||today(); renderPlantReport(); }
