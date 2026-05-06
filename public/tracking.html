@@ -1160,6 +1160,7 @@ function buildSidebar(){
 }
 
 function navigate(page){
+  if(page !== 'reports') window._activeReport = null; // clear report tracker when leaving reports
   currentPage=page;
   // Persist page in URL hash so browser refresh restores position
   history.replaceState(null,'','#'+page);
@@ -3925,7 +3926,7 @@ function renderReports(forceRebuild){
   }
 }
 
-function renderReportH(){
+function renderReportH(){ window._activeReport = renderReportH;
   if(!document.getElementById('report-output')) renderReports();
   const batches = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions = (batch) => batch.isPrinted
@@ -4095,6 +4096,9 @@ function renderReportH(){
 
   document.getElementById('report-output').innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+  // Restore focus to search box if it was active
+  const _srchBox = document.getElementById('rptA-search');
+  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function exportReportH(){
@@ -4119,7 +4123,7 @@ function exportReportH(){
   }
 }
 
-function renderReportG(){
+function renderReportG(){ window._activeReport = renderReportG;
   if(!document.getElementById('report-output')) renderReports();
   const batches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   let totalGrossProd = 0;
@@ -4251,6 +4255,9 @@ function renderReportG(){
 
   document.getElementById('report-output').innerHTML = html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+  // Restore focus to search box if it was active
+  const _srchBox = document.getElementById('rptA-search');
+  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function exportReportG(){
@@ -4289,7 +4296,7 @@ function exportReportG(){
   XLSX.writeFile(wb, 'AGrade_Report_'+today()+'.xlsx');
 }
 
-function renderReportF(){
+function renderReportF(){ window._activeReport = renderReportF;
   if(!document.getElementById('report-output')) renderReports();
   // End-of-day production vs scan reconciliation
   const todayStr = today();
@@ -4451,6 +4458,9 @@ function renderReportF(){
 
   document.getElementById('report-output').innerHTML = html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+  // Restore focus to search box if it was active
+  const _srchBox = document.getElementById('rptA-search');
+  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function exportReportF(){
@@ -4475,7 +4485,7 @@ function exportReportF(){
 }
 
 
-function renderReportB(){
+function renderReportB(){ window._activeReport = renderReportB;
   if(!document.getElementById('report-output')) renderReports();
   const filterDept  = window._rptBDept  || '';
   const filterBatch = window._rptBBatch || '';
@@ -4558,9 +4568,12 @@ function renderReportB(){
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportB()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+  // Restore focus to search box if it was active
+  const _srchBox = document.getElementById('rptA-search');
+  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
-function renderReportC(){
+function renderReportC(){ window._activeReport = renderReportC;
   if(!document.getElementById('report-output')) renderReports();
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
@@ -4638,9 +4651,12 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
   html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
   reportEl.innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+  // Restore focus to search box if it was active
+  const _srchBox = document.getElementById('rptA-search');
+  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
-function renderReportD(){
+function renderReportD(){ window._activeReport = renderReportD;
   if(!document.getElementById('report-output')) renderReports();
   const monthBatches = getTrkMonthBatches();
   const monthBatchNos = new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
@@ -4679,21 +4695,40 @@ function renderReportD(){
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+  // Restore focus to search box if it was active
+  const _srchBox = document.getElementById('rptA-search');
+  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
-function renderReportA(){
+function renderReportA(){ window._activeReport = renderReportA;
   if(!document.getElementById('report-output')) renderReports();
   // Date filter
   const filterBatch = window._rptABatch||'';
   const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted);
-  const batches = monthBatches.filter(b=>!filterBatch||b.batchNumber===filterBatch);
+  const _searchTerm = (window._rptASearch||'').toLowerCase().trim();
+  const batches = monthBatches.filter(b=>{
+    if(filterBatch) return b.batchNumber===filterBatch;
+    if(_searchTerm) return (b.batchNumber||'').toLowerCase().includes(_searchTerm)||(b.customer||'').toLowerCase().includes(_searchTerm);
+    return true;
+  });
   const batchOptions = monthBatches
     .map(b=>`<option value="${b.batchNumber}" ${filterBatch===b.batchNumber?'selected':''}>${b.batchNumber} — ${b.customer||''}</option>`).join('');
 
   let html=`<div class="card">
-    <div class="section-title mb-16">Report A — Complete Batch Tracking (Full Duration)</div>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
+      <div class="section-title" style="margin-bottom:0">Report A — Complete Batch Tracking (Full Duration)</div>
+      <div style="display:flex;align-items:center;gap:8px">
+        <input type="text" id="rptA-search" class="form-control" placeholder="🔍 Search batch / customer..." 
+          style="width:240px;font-size:12px" 
+          value="${window._rptASearch||''}"
+          oninput="window._rptASearch=this.value;window._rptABatch='';renderReportA()"
+          onkeydown="if(event.key==='Escape'){window._rptASearch='';window._rptABatch='';renderReportA()}"
+        >
+        ${(window._rptASearch||filterBatch)?`<button class="btn btn-ghost btn-sm" onclick="window._rptASearch='';window._rptABatch='';renderReportA()">✕</button>`:''}
+      </div>
+    </div>
     <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
-      <select class="form-control" style="max-width:280px" onchange="window._rptABatch=this.value;renderReportA()">
+      <select class="form-control" style="max-width:280px" onchange="window._rptABatch=this.value;window._rptASearch='';renderReportA()">
         <option value="">All Batches</option>${batchOptions}
       </select>
       ${filterBatch?`<button class="btn btn-ghost btn-sm" onclick="window._rptABatch='';renderReportA()">✕ Clear</button>`:''}
@@ -4722,6 +4757,13 @@ function renderReportA(){
             return `<tr style="border-bottom:1px solid var(--border)">
               <td style="padding:5px 10px;font-family:var(--mono);font-size:11px">${date}</td>
               ${getBatchFlow(b).map(dept=>{
+                if(dept==='production'){
+                  // Production: show labels generated on this date
+                  const dayLabels = getLabelsByBatch(b.batchNumber).filter(l=>(l.createdAt||l.ts||'').slice(0,10)===date).length;
+                  return `<td style="padding:5px 10px;text-align:center;font-family:var(--mono);font-size:11px;${dayLabels>0?'color:var(--accent)':'color:var(--text3)'}">
+                    ${dayLabels>0?dayLabels+' boxes':'—'}
+                  </td>`;
+                }
                 const inn=dayScans.filter(s=>s.dept===dept&&s.type==='in').length;
                 const out=dayScans.filter(s=>s.dept===dept&&s.type==='out').length;
                 const hasActivity=inn>0||out>0;
@@ -4735,6 +4777,10 @@ function renderReportA(){
           <tfoot><tr style="background:var(--surface3);font-weight:600">
             <td style="padding:6px 10px;font-size:11px">TOTAL</td>
             ${getBatchFlow(b).map(dept=>{
+              if(dept==='production'){
+                const totalLbls = getLabelsByBatch(b.batchNumber).length;
+                return `<td style="padding:6px 10px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--accent)">${totalLbls} boxes</td>`;
+              }
               const inn=batchScans.filter(s=>s.dept===dept&&s.type==='in').length;
               const out=batchScans.filter(s=>s.dept===dept&&s.type==='out').length;
               return `<td style="padding:6px 10px;text-align:center;font-family:var(--mono);font-size:11px">IN:${inn} / OUT:${out}</td>`;
@@ -4762,15 +4808,28 @@ function renderReportA(){
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportA()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+  // Restore focus to search box if it was active
+  const _srchBox = document.getElementById('rptA-search');
+  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function renderBatchFlowSummary(batch){
   const flow=getBatchFlow(batch);
+  // Total boxes = number of labels generated for this batch
+  const totalBoxes = getLabelsByBatch(batch.batchNumber).length || 0;
   return `<div class="flex gap-8 flex-wrap">
   ${flow.map(dept=>{
     const inn=state.scans.filter(s=>s.batchNumber===batch.batchNumber&&s.dept===dept&&s.type==='in').length;
     const out=state.scans.filter(s=>s.batchNumber===batch.batchNumber&&s.dept===dept&&s.type==='out').length;
     const closed=isStageComplete(batch.batchNumber,dept);
+    // Production box: show total box count for this batch (from labels)
+    if(dept==='production'){
+      return `<div style="background:var(--surface2);border:2px solid var(--accent);border-radius:6px;padding:6px 10px;text-align:center;min-width:80px">
+        <div class="text-sm fw-bold">${DEPT_LABELS[dept]}</div>
+        <div class="mono text-sm" style="color:var(--accent);font-weight:700">${totalBoxes} Boxes</div>
+        <div class="text-sm ${totalBoxes>0?'green':''}">${totalBoxes>0?'✅ Done':'⏳ Open'}</div>
+      </div>`;
+    }
     return `<div style="background:${closed?'var(--accent2-light)':'var(--surface2)'};border:1px solid ${closed?'var(--accent2)':'var(--border)'};border-radius:6px;padding:6px 10px;text-align:center">
       <div class="text-sm fw-bold">${DEPT_LABELS[dept]}</div>
       <div class="mono text-sm">IN:${inn} OUT:${out}</div>
@@ -4782,7 +4841,7 @@ function renderBatchFlowSummary(batch){
 
 function normMcId(id){ return (id||'').replace(/[.\s]/g,'').toUpperCase(); }
 
-function renderReportE(){
+function renderReportE(){ window._activeReport = renderReportE;
   // Build all data first (same computation as before)
   const filterDate = window._rptEDate || '';
   const allScanDates = [...new Set(state.scans.map(s=>s.ts?.slice(0,10)).filter(Boolean))].sort();
@@ -5682,6 +5741,13 @@ async function refreshScans(){
     if(currentPage==='labels') setTimeout(_restoreOlSearch, 50);
     const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
     if(!dept){
+      // If on reports page — re-render the active report silently for real-time updates
+      if(currentPage==='reports'){
+        const reportOut = document.getElementById('report-output');
+        if(reportOut && reportOut.innerHTML && window._activeReport){
+          try{ window._activeReport(); } catch(e){}
+        }
+      }
       // State updated silently — no auto-render to prevent screen flipping
       return;
     }
