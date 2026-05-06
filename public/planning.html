@@ -778,7 +778,7 @@ const SYNC = (() => {
         // Build local order map for protected IDs
         const _protectedOrders = {};
         const _protectedPrintOrders = {};
-        const _protectWindow = 90000; // 90 seconds
+        const _protectWindow = 86400000; // 24 hours — manual changes always protected
         const _now = Date.now();
         // Check if machineMaster/pcCodes were recently changed locally
         const _machineMasterProtected = _localOrderChanges['__machineMaster__'] && (_now - _localOrderChanges['__machineMaster__']) < _protectWindow;
@@ -817,14 +817,23 @@ const SYNC = (() => {
             return o;
           });
         }
+        // Merge server orders with local state — local wins for dates/status, server wins for actualProd
+        // Build a map of local orders for fast lookup
+        const _localOrderMap = {};
+        (state.orders||[]).forEach(o => { _localOrderMap[o.id] = o; });
+
         // Restore locally changed orders — they win over server
         // BUT always take actualProd and status from server (live DPR data)
         if (Object.keys(_protectedOrders).length > 0) {
           state.orders = (state.orders||[]).map(o => {
             const local = _protectedOrders[o.id];
             if (!local) return o;
-            // Keep local order but update live fields from server
-            return { ...local, actualProd: o.actualProd || local.actualProd, stageStatus: o.stageStatus || local.stageStatus };
+            // Keep local order — always preserve manualEndDate, endDate, status
+            return {
+              ...local,
+              actualProd: o.actualProd || local.actualProd,
+              stageStatus: o.stageStatus || local.stageStatus
+            };
           });
           console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
         }
@@ -835,6 +844,31 @@ const SYNC = (() => {
         // Restore locally changed machine masters
         if (_savedMachineMaster) { state.machineMaster = _savedMachineMaster; console.log('[Sync] Protected machineMaster from server overwrite'); }
         if (_savedPrintMachineMaster) { state.printMachineMaster = _savedPrintMachineMaster; console.log('[Sync] Protected printMachineMaster from server overwrite'); }
+        // Final pass: restore manual end dates and user-set status from local state
+        // These must NEVER be overwritten by server sync
+        if (Array.isArray(state.orders) && _localOrderMap) {
+          state.orders = state.orders.map(serverOrd => {
+            const localOrd = _localOrderMap[serverOrd.id];
+            if (!localOrd) return serverOrd;
+            // If local order has a manually set end date — always keep it
+            const keepEndDate = localOrd.manualEndDate || localOrd.manualStartDate;
+            // If local order has a user-set status (not auto-promoted) — keep it
+            // Status is only taken from server if local has no record of it
+            return {
+              ...serverOrd,
+              // Always preserve these from local:
+              endDate:         keepEndDate ? localOrd.endDate   : serverOrd.endDate,
+              startDate:       keepEndDate ? localOrd.startDate : serverOrd.startDate,
+              manualEndDate:   localOrd.manualEndDate,
+              manualStartDate: localOrd.manualStartDate,
+              status:          localOrd.status || serverOrd.status,
+              // Always take these from server (live data):
+              actualProd:      serverOrd.actualProd || localOrd.actualProd,
+              stageStatus:     serverOrd.stageStatus || localOrd.stageStatus,
+            };
+          });
+        }
+
         // Start with hardcoded codes, then merge DB-saved custom codes on top
         state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
         state.zoneMap = ZONE_MAP_RAW;
@@ -2228,7 +2262,19 @@ function isPcColourLocked(ord) {
 // =============================
 function showAddOrderModal(machineId, existingOrder) {
   const isEdit = !!existingOrder;
-  const ord = existingOrder || {machineId, isPrinted:false, poType:'po', size:'', status:'pending'};
+  // For new orders: default start date = end date of last order on this machine
+  let defaultStartDate = null;
+  if (!existingOrder && machineId) {
+    const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed');
+    if (machineOrders.length > 0) {
+      const lastEnd = machineOrders.reduce((max, o) => {
+        const d = o.endDate ? new Date(o.endDate) : null;
+        return (d && (!max || d > max)) ? d : max;
+      }, null);
+      if (lastEnd) defaultStartDate = lastEnd;
+    }
+  }
+  const ord = existingOrder || {machineId, isPrinted:false, poType:'po', size:'', status:'pending', startDate: defaultStartDate};
 
   // Get PC codes for size
   const pcList = ord.size ? (state.pcCodes[ord.size] || []) : [];
