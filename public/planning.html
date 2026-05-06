@@ -4512,8 +4512,9 @@ function buildTruckPlans(zone) {
 }
 
 function autoGenerateMissingPrintOrders() {
-  // Auto-create print orders for PTD production orders that don't have one yet
-  // Covers orders added via SAP import or before auto-create logic existed
+  // DISABLED — causes duplicate print orders
+  // Print orders are managed manually and loaded from dedicated server table only
+  return;
   const ptdOrders = (state.orders || []).filter(o =>
     o.isPrinted && !o.deleted && o.status !== 'closed'
   );
