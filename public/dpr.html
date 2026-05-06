@@ -2848,7 +2848,7 @@ async function prefetchDprDates(fl) {
     if (!serverUrl) return;
     try {
       const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(f), {signal: AbortSignal.timeout(8000)});
-      if (!r.ok) continue;
+      if (!r.ok) return;
       const j = await r.json();
       if (j.dates) {
         _dprServerDatesCache[f] = j.dates;
