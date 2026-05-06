@@ -2834,9 +2834,45 @@ function restrictDateToMonth(inputId) {
 
 // ── DPR shared date range helper ─────────────────────────────
 // Returns array of dates to aggregate based on selected range mode
+// Cache of dates with server data per floor
+let _dprServerDatesCache = {}; // { 'GF': ['2026-05-01', ...], 'FF': [...] }
+let _dprServerDatesFetched = {}; // { 'GF': timestamp }
+
+async function prefetchDprDates(fl) {
+  // Only fetch if not fetched in last 2 minutes
+  const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
+  for (const f of floors) {
+    const lastFetch = _dprServerDatesFetched[f] || 0;
+    if (Date.now() - lastFetch < 120000) continue; // cached
+    if (!serverUrl) continue;
+    try {
+      const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(f), {signal: AbortSignal.timeout(8000)});
+      if (!r.ok) continue;
+      const j = await r.json();
+      if (j.dates) {
+        _dprServerDatesCache[f] = j.dates;
+        _dprServerDatesFetched[f] = Date.now();
+        // Also pre-populate localStorage for calcDayStats to work
+        for (const d of j.dates) {
+          const key = skey(f, d);
+          if (!localStorage.getItem(key)) {
+            // Fetch and cache this date's data
+            try {
+              const r2 = await fetch(serverUrl + '/api/dpr/' + encodeURIComponent(f) + '/' + d, {signal: AbortSignal.timeout(5000)});
+              if (r2.ok) {
+                const j2 = await r2.json();
+                if (j2.data) localStorage.setItem(key, JSON.stringify(j2.data));
+              }
+            } catch(e) {}
+          }
+        }
+      }
+    } catch(e) { console.warn('[DPR] prefetchDprDates failed:', f, e?.message); }
+  }
+}
+
 function getDprDateRange(fl, mode) {
   const t = today();
-  const [ty, tm] = t.split('-').map(Number);
   let fromDate;
   switch(mode) {
     case 'month':   fromDate = `${_dprSelectedMonth}-01`; break;
@@ -2846,14 +2882,18 @@ function getDprDateRange(fl, mode) {
     case '365d':    fromDate = addDaysStr(t, -365); break;
     default:        return [t]; // 'today'
   }
-  // Collect all localStorage keys for this floor within range
   const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
   const dates = new Set();
   floors.forEach(f => {
+    // Check localStorage (includes server-synced data)
     Object.keys(localStorage)
       .filter(k => k.startsWith(`dpr3_${f}_`))
-      .map(k => k.split('_')[2])
+      .map(k => k.replace(`dpr3_${f}_`, ''))
       .filter(d => d && d >= fromDate && d <= t)
+      .forEach(d => dates.add(d));
+    // Also check server dates cache
+    (_dprServerDatesCache[f] || [])
+      .filter(d => d >= fromDate && d <= t)
       .forEach(d => dates.add(d));
   });
   return [...dates].sort();
@@ -3066,6 +3106,13 @@ function renderTrends(){
 
   if (dates.length === 0) {
     ['ch-tprod','ch-tdt','ch-teff','ch-trs'].forEach(id => destroyChart(id));
+    // Prefetch from server and re-render
+    if (serverUrl && rangeMode !== 'today') {
+      prefetchDprDates(fl === 'ALL' ? 'GF' : fl).then(() => {
+        const newDates = getDprDateRange(fl === 'ALL' ? 'GF' : fl, rangeMode);
+        if (newDates.length > 0) renderTrends();
+      });
+    }
     return;
   }
 
@@ -3890,19 +3937,26 @@ function go(page){
   const idx={entry:0,analytics:1,trends:2,aim:3,perf:4,history:5,plant:6,search:7,settings:8};
   document.querySelectorAll('.ntab')[idx[page]]?.classList.add('on');
   if(page==='analytics') renderAnalytics();
-  else if(page==='trends') renderTrends();
+  else if(page==='trends'){
+    prefetchDprDates('GF').then(()=>renderTrends());
+  }
   else if(page==='aim'){
     renderAIM(); // render immediately from localStorage (fast)
     if(serverUrl && dprUser){
       (async()=>{
         const d=getDate();
         await Promise.all(Object.keys(FLOORS).map(f=>syncFromServer(f,d)));
+        await prefetchDprDates('GF');
         renderAIM(); // re-render with fresh server data
       })();
     }
   }
-  else if(page==='perf') renderPerf();
-  else if(page==='history') renderHistory();
+  else if(page==='perf'){
+    prefetchDprDates(curFloor||'GF').then(()=>renderPerf());
+  }
+  else if(page==='history'){
+    prefetchDprDates('GF').then(()=>renderHistory());
+  }
   else if(page==='plant'){ document.getElementById('plant-date').value=document.getElementById('plant-date').value||today(); renderPlantReport(); }
   else if(page==='settings') renderSettings();
 }
