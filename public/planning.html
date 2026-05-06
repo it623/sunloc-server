@@ -979,12 +979,13 @@ const SYNC = (() => {
 
   async function loadTrackingStatus() {
     if (!_url) return;
-    // Run all 4 fetches in PARALLEL — ~5s max instead of ~20s sequential
-    const [wipRes, agRes, daRes, dcRes] = await Promise.allSettled([
+    // Run all fetches in PARALLEL
+    const [wipRes, agRes, daRes, dcRes, mcActRes] = await Promise.allSettled([
       fetch(_url + '/api/tracking/wip-summary',      { signal: AbortSignal.timeout(5000) }),
       fetch(_url + '/api/tracking/agrade-summary',   { signal: AbortSignal.timeout(5000) }),
       fetch(_url + '/api/tracking/dispatch-actuals', { signal: AbortSignal.timeout(5000) }),
-      fetch(_url + '/api/dpr/batch-closed',          { signal: AbortSignal.timeout(5000) })
+      fetch(_url + '/api/dpr/batch-closed',          { signal: AbortSignal.timeout(5000) }),
+      fetch(_url + '/api/actuals/machine-summary',   { signal: AbortSignal.timeout(5000) })
     ]);
     try {
       if (wipRes.status==='fulfilled' && wipRes.value.ok) {
@@ -1064,6 +1065,19 @@ const SYNC = (() => {
         if (dcj.ok && dcj.closed) {
           window._dprClosedBatches = {};
           dcj.closed.forEach(c => { window._dprClosedBatches[c.order_id] = { closedAt: c.closed_at, closedBy: c.closed_by }; });
+        }
+      }
+    } catch(e) {}
+    try {
+      if (mcActRes.status==='fulfilled' && mcActRes.value.ok) {
+        const mj = await mcActRes.value.json();
+        if (mj.ok && mj.machines) {
+          // _mcActualRate[machineId] = { totalQty, distinctDays, avgPerDay }
+          // avgPerDay = total DPR Lakhs / number of distinct calendar days with production
+          window._mcActualRate = mj.machines;
+          // Re-run schedule with actual rates now available
+          const machineIds = [...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.machineId))];
+          machineIds.forEach(mid => { if (mid) recalcMachineScheduleQuiet(mid); });
         }
       }
     } catch(e) {}
@@ -1279,15 +1293,19 @@ function calcOrderSchedule(order, mc) {
     piOut    = null;
   }
   // Remaining gross = total gross minus what's already been produced (from DPR actuals)
-  // actualProd is the server-enriched field from _actualsCache; actualQty is fallback
   const alreadyProduced = Math.min((order.actualProd || order.actualQty || 0), grossQty);
   const remainingGross  = Math.max(0, grossQty - alreadyProduced);
-  // Guard: if machine cap is 0 or missing, return null daysNeeded (not Infinity)
-  const safeCap = (mc.cap > 0) ? mc.cap : null;
-  const daysNeeded = safeCap ? (remainingGross / safeCap) : null;
+
+  // Use actual DPR daily rate if available (from production_actuals via /api/actuals/machine-summary)
+  // Falls back to machine configured cap if no DPR data yet
+  const mcId = mc.id || mc.machineId;
+  const dprRate = window._mcActualRate?.[mcId]?.avgPerDay;
+  const effectiveCap = (dprRate && dprRate > 0) ? dprRate : ((mc.cap > 0) ? mc.cap : null);
+
+  const daysNeeded = effectiveCap ? (remainingGross / effectiveCap) : null;
   const aGradePct  = 1 / aimFactor * 100;
   return { grossQty, aimOut, printOut, piOut, daysNeeded, aGradePct,
-           aimFactor, printFactor, piFactor };
+           aimFactor, printFactor, piFactor, effectiveCap };
 }
 
 // Recalculate end date for an order given start date and machine
@@ -1382,8 +1400,21 @@ function recalcMachineScheduleQuiet(machineId) {
       if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
       continue;
     }
-    if (!cursor) cursor = new Date(ord.startDate || today());
-    else ord.startDate = new Date(cursor);
+    if (!cursor) {
+      // Seed cursor: use today if the saved startDate is in the past with no production yet
+      const savedStart = ord.startDate ? new Date(ord.startDate) : null;
+      const todayD = new Date(today());
+      const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
+      // If startDate is in past and no actual production — order hasn't started, use today
+      if (savedStart && savedStart < todayD && !hasProduction) {
+        cursor = todayD;
+        ord.startDate = new Date(cursor);
+      } else {
+        cursor = savedStart || todayD;
+      }
+    } else {
+      ord.startDate = new Date(cursor);
+    }
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty    = sc.grossQty;
     ord.aimOut      = sc.aimOut;
@@ -1874,21 +1905,51 @@ function renderProduction() {
     const orders = getMachineOrders(mc.id).filter(o => orderInMonth(o, _selectedPlanMonth));
     const activeOrders = orders.filter(o=>o.status!=='closed');
 
-    // Fix 4: Compute actual avg production and live A-Grade for this machine
-    const closedOrders = orders.filter(o=>o.status==='closed' && (o.actualProd||o.actualQty));
-    const avgActualProd = closedOrders.length > 0
-      ? closedOrders.reduce((s,o)=>s+(o.actualProd||o.actualQty||0),0) / closedOrders.length
+    // Live A-Grade — same formula as Report E machine subtotal:
+    // sum(AIM Out Lakhs) / sum(AIM Inspected Lakhs) × 100
+    // Only batches with at least one AIM scan (aimInspected > 0) are included
+    // Data comes from server agrade-summary which uses identical formula to getBatchAGrade()
+    let totalAimOut = 0, totalAimInspected = 0;
+    orders.forEach(o => {
+      if (!o.batchNumber) return;
+      const key = o.batchNumber.trim().toUpperCase();
+      const la = window._liveAGrade?.[key] || window._liveAGrade?.[o.batchNumber];
+      if (!la) return;
+      const inspected = la.aim?.inspected || 0;
+      if (inspected <= 0) return; // no AIM scans — exclude entirely
+      totalAimOut      += la.aim?.outQty    || 0;
+      totalAimInspected += inspected;
+    });
+    const liveAGPct = totalAimInspected > 0
+      ? (totalAimOut / totalAimInspected * 100)
       : null;
-    // Live A-Grade: average across all batches on this machine from _liveAGrade
-    const liveAGBatches = orders.filter(o=>o.batchNumber && window._liveAGrade?.[o.batchNumber]);
-    const liveAGPct = liveAGBatches.length > 0
-      ? liveAGBatches.reduce((s,o)=>s+(window._liveAGrade[o.batchNumber]?.aim?.aGradePct||0),0) / liveAGBatches.length
-      : null;
+
+    // Avg Actual = from DPR production_actuals via server:
+    // total Lakhs produced on this machine / distinct calendar days with production
+    // Falls back to calculating from closed order data if server data not yet loaded
+    const mcId = mc.id || mc.machineId;
+    const dprActualRate = window._mcActualRate?.[mcId];
+    let avgActualProd = null;
+    if (dprActualRate && dprActualRate.distinctDays > 0) {
+      avgActualProd = dprActualRate.avgPerDay; // authoritative — direct from DPR
+    } else {
+      // Fallback: closed orders actualProd / daysNeeded
+      const closedOrders = orders.filter(o => o.status === 'closed' && (o.actualProd || o.actualQty));
+      if (closedOrders.length > 0) {
+        const totalActual = closedOrders.reduce((s,o) => s + (o.actualProd||o.actualQty||0), 0);
+        const totalDays   = closedOrders.reduce((s,o) => s + (o.daysNeeded||1), 0);
+        avgActualProd = totalDays > 0 ? totalActual / totalDays : null;
+      }
+    }
+    const avgProdTooltip = dprActualRate
+      ? `title="DPR total: ${fmt(dprActualRate.totalQty)}L across ${dprActualRate.distinctDays} days"`
+      : 'title="Estimated from closed orders (no DPR data yet)"';
+
     const liveAGHtml = liveAGPct != null
       ? `<span class="text-sm" style="color:${liveAGPct>=93?'var(--accent3)':'var(--accent4)'}">Live A-Grade: <strong>${fmt(liveAGPct,1)}%</strong></span>`
       : '';
     const avgProdHtml = avgActualProd != null
-      ? `<span class="text-dim text-sm">Avg Actual: <strong style="color:var(--accent2)">${fmt(avgActualProd,1)}L/batch</strong></span>`
+      ? `<span class="text-dim text-sm" ${avgProdTooltip}>Avg Actual: <strong style="color:var(--accent2)">${fmt(avgActualProd,1)}L/day</strong>${dprActualRate?'<span style="font-size:9px;color:var(--accent);margin-left:3px">DPR</span>':'<span style="font-size:9px;color:var(--text3);margin-left:3px">est</span>'}</span>`
       : '';
     html += `
       <div class="mc-panel mb-4" data-size="${mc.size}">
@@ -2412,7 +2473,22 @@ function onPcChange(sel) {
   const pc = getPcByCode(size, code);
   if (pc) {
     const colEl = document.getElementById('fo-colour');
-    if (colEl) colEl.value = pc.n;
+    if (!colEl) return;
+    const currentColour = colEl.value.trim();
+    // Always update if field is empty
+    if (!currentColour) {
+      colEl.value = pc.n;
+      return;
+    }
+    // Check if the current colour matches any PC Code colour in the master list for this size
+    // If it does, it means the colour was set by a previous PC Code selection — safe to update
+    // If it doesn't match any PC Code colour, the user typed a custom colour — do NOT overwrite
+    const allPcColours = (state.pcCodes[size] || []).map(p => (p.n||'').trim().toLowerCase());
+    const isFromMaster = allPcColours.includes(currentColour.toLowerCase());
+    if (isFromMaster) {
+      colEl.value = pc.n; // update to new PC Code's colour
+    }
+    // else: user has a custom colour — leave it alone
   }
 }
 
@@ -3227,6 +3303,12 @@ function renderPrintRow(p, pm) {
   const statusBadge = p.status==='completed'?'<span class="badge badge-completed">Completed</span>':
     p.status==='running'?'<span class="badge badge-running">Running</span>':
     '<span class="badge badge-pending">Pending</span>';
+  // Multi-OPM badge
+  const multiGroup = p.multiOpmGroupId ? state.printOrders.filter(o=>o.multiOpmGroupId===p.multiOpmGroupId) : [];
+  const multiOpmBadge = multiGroup.length > 1
+    ? `<span style="background:rgba(0,212,255,0.12);color:#00d4ff;border:1px solid rgba(0,212,255,0.25);padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;margin-left:4px" title="Multi-OPM: ${multiGroup.map(o=>o.machineId+'('+fmt(o.qtyToPrint)+'L)').join(', ')}">
+        OPM ${(p.opmIndex||0)+1}/${multiGroup.length} · ${fmt(p.totalGroupQty||p.qtyToPrint)}L total
+      </span>` : '';
   // Get live scan data from tracking for this batch
   const live = window._liveAGrade && p.batchNumber ? (window._liveAGrade[p.batchNumber]||{}) : {};
   const liveAimOut   = live.aim?.outQty  || 0;
@@ -3237,7 +3319,7 @@ function renderPrintRow(p, pm) {
 
   return `<tr>
     <td style="font-weight:500">${p.customer||'-'}</td>
-    <td class="text-mono">${p.batchNumber||'-'}</td>
+    <td class="text-mono">${p.batchNumber||'-'}${multiOpmBadge}</td>
     <td class="text-mono text-accent">${p.pcCode||'-'}</td>
     <td class="text-mono">${p.size||'-'}</td>
     <td>${fmtColour(p.colour)}</td>
@@ -3315,27 +3397,105 @@ function closePrintOrder(id) {
 
 function showAddPrintModal(machineId, existingId) {
   const existing = existingId ? state.printOrders.find(p=>p.id===existingId) : null;
+  // Detect if this is part of a multi-OPM group — edit the group together
+  const isMultiGroup = existing?.multiOpmGroupId &&
+    state.printOrders.filter(p=>p.multiOpmGroupId===existing.multiOpmGroupId).length > 1;
+
   const selectedSize = existing?.size || '';
+  const allPms = state.printMachineMaster.filter(pm => pm.active !== false);
   const filteredMachines = selectedSize
-    ? state.printMachineMaster.filter(pm => String(pm.size) === String(selectedSize) && pm.active !== false)
-    : state.printMachineMaster.filter(pm => pm.active !== false);
+    ? allPms.filter(pm => String(pm.size) === String(selectedSize))
+    : allPms;
+
+  const opmOptions = (selId='') =>
+    `<option value="">-- OPM --</option>` +
+    filteredMachines.map(pm=>`<option value="${pm.id}" ${selId===pm.id?'selected':''}>${pm.id} (${pm.cap}L/d)</option>`).join('');
+
+  // If editing a multi-OPM group, load all group members
+  let groupMembers = [];
+  if (isMultiGroup) {
+    groupMembers = state.printOrders.filter(p=>p.multiOpmGroupId===existing.multiOpmGroupId);
+  }
+
+  const isMulti = isMultiGroup || false;
+  const totalQty = existing?.qtyToPrint || (isMultiGroup ? groupMembers.reduce((s,p)=>s+(p.qtyToPrint||0),0) : '');
+
+  // Build OPM rows for multi mode
+  const multiRows = [0,1,2,3].map(i => {
+    const m = groupMembers[i];
+    return `<div class="fp-opm-row" id="fp-opm-row-${i}" style="${i>=2 && !m?'display:none':''}">
+      <div style="display:flex;gap:8px;align-items:center;margin-bottom:6px;padding:8px;background:var(--surface3);border-radius:6px">
+        <span style="font-size:11px;font-weight:700;color:var(--accent);min-width:40px">OPM ${i+1}</span>
+        <select class="form-control" id="fp-opm-mc-${i}" style="flex:1" onchange="recalcOpmBalance()">
+          ${opmOptions(m?.machineId||'')}
+        </select>
+        <input type="number" class="form-control" id="fp-opm-qty-${i}"
+          value="${m?.qtyToPrint||''}"
+          placeholder="${i===3?'Balance (auto)':'Qty (L)'}"
+          ${i===3?'readonly style="background:var(--surface2);color:var(--accent2)"':''}
+          style="width:100px" oninput="recalcOpmBalance()">
+        <span style="font-size:11px;color:var(--text3);min-width:30px" id="fp-opm-pct-${i}"></span>
+      </div>
+    </div>`;
+  }).join('');
+
   openModal(existing?'Edit Print Order':'New Print Order', `
-  
-    <div class="form-grid">
+    <div class="form-group" style="margin-bottom:12px">
+      <label>OPM Assignment</label>
+      <div style="display:flex;border:1px solid var(--border);border-radius:6px;overflow:hidden;width:fit-content">
+        <button id="fp-single-btn" onclick="_setOpmMode(false)"
+          style="padding:6px 16px;font-size:12px;font-weight:700;border:none;cursor:pointer;background:${!isMulti?'var(--accent)':'var(--surface3)'};color:${!isMulti?'#000':'var(--text)'}">
+          Single OPM
+        </button>
+        <button id="fp-multi-btn" onclick="_setOpmMode(true)"
+          style="padding:6px 16px;font-size:12px;font-weight:700;border:none;cursor:pointer;background:${isMulti?'var(--accent)':'var(--surface3)'};color:${isMulti?'#000':'var(--text)'}">
+          Multiple OPM (up to 4)
+        </button>
+      </div>
+    </div>
+
+    <!-- SINGLE OPM SECTION -->
+    <div id="fp-single-section" style="${isMulti?'display:none':''}">
+      <div class="form-grid">
+        <div class="form-group">
+          <label>Size</label>
+          <select class="form-control" id="fp-size" onchange="refreshOpmDropdown()">
+            <option value="">-- Select Size --</option>
+            ${SIZES.map(s=>`<option value="${s}" ${existing?.size===s?'selected':''}>${s}</option>`).join('')}
+          </select>
+        </div>
+        <div class="form-group">
+          <label>OPM Machine</label>
+          <select class="form-control" id="fp-machine">
+            <option value="">Unassigned</option>
+            ${filteredMachines.map(pm=>`<option value="${pm.id}" ${(machineId||existing?.machineId)===pm.id?'selected':''}>${pm.id} (${pm.cap}L/day)</option>`).join('')}
+          </select>
+        </div>
+      </div>
+    </div>
+
+    <!-- MULTI OPM SECTION -->
+    <div id="fp-multi-section" style="${isMulti?'':'display:none'}">
       <div class="form-group">
-        <label>Size <span style="color:var(--text3);font-size:11px">(select size first to filter OPM machines)</span></label>
-        <select class="form-control" id="fp-size" onchange="refreshOpmDropdown()">
+        <label>Size <span style="font-size:11px;color:var(--text3)">(applies to all OPMs)</span></label>
+        <select class="form-control" id="fp-size-multi" onchange="refreshOpmDropdownMulti()" style="max-width:200px">
           <option value="">-- Select Size --</option>
           ${SIZES.map(s=>`<option value="${s}" ${existing?.size===s?'selected':''}>${s}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
-        <label>OPM Machine</label>
-        <select class="form-control" id="fp-machine">
-          <option value="">Unassigned</option>
-          ${filteredMachines.map(pm=>`<option value="${pm.id}" ${(machineId||existing?.machineId)===pm.id?'selected':''}>${pm.id} (Size ${pm.size}, ${pm.cap}L/day)</option>`).join('')}
-        </select>
+        <label>Total Qty to Print (Lakhs) <span style="font-size:11px;color:var(--text3)">— split across OPMs below</span></label>
+        <input class="form-control" id="fp-qty-total" type="number" value="${totalQty}" placeholder="e.g. 51" oninput="recalcOpmBalance()" style="max-width:200px">
       </div>
+      <div id="fp-opm-rows" style="margin-top:8px">${multiRows}</div>
+      <div style="margin-top:4px">
+        <button class="btn btn-ghost btn-sm" onclick="_addOpmRow()" id="fp-add-opm-btn">+ Add OPM</button>
+        <span id="fp-balance-warning" style="font-size:11px;color:var(--red);margin-left:8px"></span>
+      </div>
+    </div>
+
+    <!-- COMMON FIELDS -->
+    <div class="form-grid" style="margin-top:12px">
       <div class="form-group">
         <label>Customer</label>
         <input class="form-control" id="fp-customer" value="${existing?.customer||''}" placeholder="Customer name">
@@ -3363,9 +3523,9 @@ function showAddPrintModal(machineId, existingId) {
           <option value="L" ${existing?.printType==='L'?'selected':''}>Linear</option>
         </select>
       </div>
-      <div class="form-group">
+      <div class="form-group" id="fp-qty-single-grp" style="${isMulti?'display:none':''}">
         <label>Qty to Print (Lakhs)</label>
-        <input class="form-control" id="fp-qty" type="number" value="${existing?.qtyToPrint||''}" placeholder="e.g. 51">
+        <input class="form-control" id="fp-qty" type="number" value="${!isMultiGroup?existing?.qtyToPrint||'':''}" placeholder="e.g. 51">
       </div>
       <div class="form-group">
         <label>Printing Start Date</label>
@@ -3394,13 +3554,75 @@ function showAddPrintModal(machineId, existingId) {
     {label:'Save', cls:'btn-primary', fn:`savePrintModal('${existingId||''}')`},
     {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'}
   ]);
+
+  // Init balance calculation
+  setTimeout(() => { recalcOpmBalance(); }, 50);
+}
+
+// Toggle single/multi OPM mode
+let _opmIsMulti = false;
+function _setOpmMode(multi) {
+  _opmIsMulti = multi;
+  document.getElementById('fp-single-section').style.display = multi ? 'none' : '';
+  document.getElementById('fp-multi-section').style.display  = multi ? '' : 'none';
+  document.getElementById('fp-qty-single-grp').style.display = multi ? 'none' : '';
+  document.getElementById('fp-single-btn').style.background  = multi ? 'var(--surface3)' : 'var(--accent)';
+  document.getElementById('fp-single-btn').style.color       = multi ? 'var(--text)' : '#000';
+  document.getElementById('fp-multi-btn').style.background   = multi ? 'var(--accent)' : 'var(--surface3)';
+  document.getElementById('fp-multi-btn').style.color        = multi ? '#000' : 'var(--text)';
+  recalcOpmBalance();
+}
+
+// Track how many OPM rows are visible
+let _opmRowCount = 2;
+function _addOpmRow() {
+  if (_opmRowCount >= 4) return;
+  _opmRowCount++;
+  const row = document.getElementById(`fp-opm-row-${_opmRowCount-1}`);
+  if (row) row.style.display = '';
+  if (_opmRowCount >= 4) {
+    const btn = document.getElementById('fp-add-opm-btn');
+    if (btn) btn.style.display = 'none';
+  }
+  recalcOpmBalance();
+}
+
+function recalcOpmBalance() {
+  const totalEl = document.getElementById('fp-qty-total');
+  if (!totalEl) return;
+  const total = parseFloat(totalEl.value) || 0;
+
+  // Sum all OPM qtys except the last visible one (which is the balance)
+  let assigned = 0;
+  const lastVisible = _opmRowCount - 1;
+  for (let i = 0; i < lastVisible; i++) {
+    const row = document.getElementById(`fp-opm-row-${i}`);
+    if (!row || row.style.display === 'none') continue;
+    const qtyEl = document.getElementById(`fp-opm-qty-${i}`);
+    const v = parseFloat(qtyEl?.value) || 0;
+    assigned += v;
+    // Show pct
+    const pctEl = document.getElementById(`fp-opm-pct-${i}`);
+    if (pctEl) pctEl.textContent = total > 0 ? `${(v/total*100).toFixed(0)}%` : '';
+  }
+
+  // Balance = total - assigned
+  const balance = Math.max(0, parseFloat((total - assigned).toFixed(3)));
+  const balQty = document.getElementById(`fp-opm-qty-${lastVisible}`);
+  const balPct = document.getElementById(`fp-opm-pct-${lastVisible}`);
+  if (balQty) balQty.value = balance > 0 ? balance : '';
+  if (balPct) balPct.textContent = total > 0 && balance > 0 ? `${(balance/total*100).toFixed(0)}%` : '';
+
+  // Warn if over-allocated
+  const warn = document.getElementById('fp-balance-warning');
+  if (warn) warn.textContent = assigned > total ? `⚠️ Over-allocated by ${fmt(assigned-total)}L` : '';
 }
 
 function refreshOpmDropdown() {
   const size = document.getElementById('fp-size')?.value;
   const sel = document.getElementById('fp-machine');
   if (!sel) return;
-  const currentVal = sel.value; // preserve current selection before rebuild
+  const currentVal = sel.value;
   const filtered = size
     ? state.printMachineMaster.filter(pm => String(pm.size) === String(size) && pm.active !== false)
     : state.printMachineMaster.filter(pm => pm.active !== false);
@@ -3409,58 +3631,147 @@ function refreshOpmDropdown() {
   if (currentVal && sel.querySelector(`option[value="${currentVal}"]`)) sel.value = currentVal;
 }
 
-async function savePrintModal(existingId) {
-  const machineId = document.getElementById('fp-machine')?.value;
-  const pm = machineId ? getPrintMachine(machineId) : null;
-  const qty = parseFloat(document.getElementById('fp-qty')?.value)||0;
-  const startDate = new Date(document.getElementById('fp-startdate')?.value||today());
-  const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
-  const ord = {
-    id: existingId||uid(),
-    productionOrderId: existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null,
-    machineId: machineId||null,
-    customer: document.getElementById('fp-customer')?.value,
-    batchNumber: document.getElementById('fp-batch')?.value,
-    pcCode: document.getElementById('fp-pccode')?.value,
-    size: document.getElementById('fp-size')?.value,
-    colour: document.getElementById('fp-colour')?.value,
-    printMatter: document.getElementById('fp-ptdmatter')?.value,
-    printType: document.getElementById('fp-printtype')?.value,
-    qtyToPrint: qty,
-    orderQty: qty,
-    startDate,
-    endDate,
-    status: document.getElementById('fp-status')?.value,
-    zone: document.getElementById('fp-zone')?.value || '',
-    printedToDate: existingId ? (state.printOrders.find(p=>p.id===existingId)?.printedToDate||0) : 0,
-    printedToDateManual: existingId ? (state.printOrders.find(p=>p.id===existingId)?.printedToDateManual||false) : false,
-    remarks: document.getElementById('fp-remarks')?.value,
-  };
-  if (existingId) {
-    const idx = state.printOrders.findIndex(p=>p.id===existingId);
-    if (idx>=0) state.printOrders[idx]=ord;
-  } else {
-    state.printOrders.push(ord);
+function refreshOpmDropdownMulti() {
+  const size = document.getElementById('fp-size-multi')?.value;
+  const filtered = size
+    ? state.printMachineMaster.filter(pm => String(pm.size) === String(size) && pm.active !== false)
+    : state.printMachineMaster.filter(pm => pm.active !== false);
+  const opts = `<option value="">-- OPM --</option>` +
+    filtered.map(pm=>`<option value="${pm.id}">${pm.id} (${pm.cap}L/d)</option>`).join('');
+  for (let i = 0; i < 4; i++) {
+    const sel = document.getElementById(`fp-opm-mc-${i}`);
+    if (sel) { const v = sel.value; sel.innerHTML = opts; if (v) sel.value = v; }
   }
-  // Save to dedicated print_orders table — retries 3 times if server slow
-  try {
-    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
-    if (_url) {
-      const _savePrintToDB = async (attempt) => {
-        try {
-          const r = await fetch(_url + '/api/print-orders/bulk', {
-            method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ printOrders: [ord] }),
-            signal: AbortSignal.timeout(8000)
-          });
-          if (!r.ok && attempt < 3) setTimeout(() => _savePrintToDB(attempt+1), 3000);
-        } catch(e) {
-          if (attempt < 3) setTimeout(() => _savePrintToDB(attempt+1), 3000);
-        }
-      };
-      _savePrintToDB(1);
+}
+
+async function savePrintModal(existingId) {
+  const multi = _opmIsMulti || document.getElementById('fp-multi-section')?.style.display !== 'none';
+
+  if (multi) {
+    // Save multiple print orders — one per OPM
+    const groupId = uid();
+    const customer     = document.getElementById('fp-customer')?.value || '';
+    const batchNumber  = document.getElementById('fp-batch')?.value || '';
+    const pcCode       = document.getElementById('fp-pccode')?.value || '';
+    const size         = document.getElementById('fp-size-multi')?.value || '';
+    const colour       = document.getElementById('fp-colour')?.value || '';
+    const printMatter  = document.getElementById('fp-ptdmatter')?.value || '';
+    const printType    = document.getElementById('fp-printtype')?.value || 'L';
+    const startDate    = new Date(document.getElementById('fp-startdate')?.value || today());
+    const zone         = document.getElementById('fp-zone')?.value || '';
+    const status       = document.getElementById('fp-status')?.value || 'pending';
+    const remarks      = document.getElementById('fp-remarks')?.value || '';
+    const totalQty     = parseFloat(document.getElementById('fp-qty-total')?.value) || 0;
+
+    // Remove old group members if editing
+    if (existingId) {
+      const old = state.printOrders.find(p=>p.id===existingId);
+      if (old?.multiOpmGroupId) {
+        state.printOrders = state.printOrders.filter(p=>p.multiOpmGroupId!==old.multiOpmGroupId);
+      }
     }
-  } catch(e) {}
+
+    const newOrders = [];
+    for (let i = 0; i < 4; i++) {
+      const row = document.getElementById(`fp-opm-row-${i}`);
+      if (!row || row.style.display === 'none') continue;
+      const mcId = document.getElementById(`fp-opm-mc-${i}`)?.value;
+      const qty  = parseFloat(document.getElementById(`fp-opm-qty-${i}`)?.value) || 0;
+      if (!mcId || qty <= 0) continue;
+      const pm = getPrintMachine(mcId);
+      const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
+      const ord = {
+        id: uid(),
+        multiOpmGroupId: groupId,
+        opmIndex: i,
+        totalGroupQty: totalQty,
+        productionOrderId: existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null,
+        machineId: mcId,
+        customer, batchNumber, pcCode, size, colour,
+        printMatter, printType,
+        qtyToPrint: qty, orderQty: qty,
+        startDate, endDate, status, zone,
+        printedToDate: 0, printedToDateManual: false,
+        remarks,
+      };
+      newOrders.push(ord);
+    }
+
+    if (newOrders.length === 0) { toast('Add at least one OPM with quantity', 'var(--red)'); return; }
+
+    const totalAssigned = newOrders.reduce((s,o)=>s+o.qtyToPrint, 0);
+    if (Math.abs(totalAssigned - totalQty) > 0.01) {
+      toast(`Warning: OPM total ${fmt(totalAssigned)}L ≠ planned ${fmt(totalQty)}L`, 'var(--amber)', 3000);
+    }
+
+    newOrders.forEach(o => state.printOrders.push(o));
+
+    // Save to server
+    try {
+      const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+      if (_url) {
+        fetch(_url + '/api/print-orders/bulk', {
+          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ printOrders: newOrders }),
+          signal: AbortSignal.timeout(8000)
+        });
+      }
+    } catch(e) {}
+
+  } else {
+    // Single OPM — original save logic
+    const machineId = document.getElementById('fp-machine')?.value;
+    const pm = machineId ? getPrintMachine(machineId) : null;
+    const qty = parseFloat(document.getElementById('fp-qty')?.value) || 0;
+    const startDate = new Date(document.getElementById('fp-startdate')?.value || today());
+    const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
+    const ord = {
+      id: existingId || uid(),
+      productionOrderId: existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null,
+      machineId: machineId || null,
+      customer: document.getElementById('fp-customer')?.value,
+      batchNumber: document.getElementById('fp-batch')?.value,
+      pcCode: document.getElementById('fp-pccode')?.value,
+      size: document.getElementById('fp-size')?.value,
+      colour: document.getElementById('fp-colour')?.value,
+      printMatter: document.getElementById('fp-ptdmatter')?.value,
+      printType: document.getElementById('fp-printtype')?.value,
+      qtyToPrint: qty, orderQty: qty,
+      startDate, endDate,
+      status: document.getElementById('fp-status')?.value,
+      zone: document.getElementById('fp-zone')?.value || '',
+      printedToDate: existingId ? (state.printOrders.find(p=>p.id===existingId)?.printedToDate||0) : 0,
+      printedToDateManual: existingId ? (state.printOrders.find(p=>p.id===existingId)?.printedToDateManual||false) : false,
+      remarks: document.getElementById('fp-remarks')?.value,
+    };
+    if (existingId) {
+      const idx = state.printOrders.findIndex(p=>p.id===existingId);
+      if (idx>=0) state.printOrders[idx]=ord; else state.printOrders.push(ord);
+    } else {
+      state.printOrders.push(ord);
+    }
+    try {
+      const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+      if (_url) {
+        const _savePrintToDB = async (attempt) => {
+          try {
+            const r = await fetch(_url + '/api/print-orders/bulk', {
+              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({ printOrders: [ord] }),
+              signal: AbortSignal.timeout(8000)
+            });
+            if (!r.ok && attempt < 3) setTimeout(() => _savePrintToDB(attempt+1), 3000);
+          } catch(e) {
+            if (attempt < 3) setTimeout(() => _savePrintToDB(attempt+1), 3000);
+          }
+        };
+        _savePrintToDB(1);
+      }
+    } catch(e) {}
+  }
+
+  // Reset multi state
+  _opmIsMulti = false; _opmRowCount = 2;
   await saveState(); closeModal(); render();
 }
 
@@ -3489,10 +3800,36 @@ function renderDailyPrinting() {
 
   const allLogs = state.dailyPrinting.sort((a,b)=>new Date(b.date)-new Date(a.date));
 
-  // Build unique date list for filter
-  const uniqueDates = [...new Set(allLogs.map(l => toDateInput(new Date(l.date))))].sort((a,b)=>b.localeCompare(a));
-  const selectedDate = window._dlFilterDate || '';
-  const logs = selectedDate ? allLogs.filter(l => toDateInput(new Date(l.date)) === selectedDate) : allLogs;
+  // Collect unique filter values
+  const uniqueDates   = [...new Set(allLogs.map(l => toDateInput(new Date(l.date))))].sort((a,b)=>b.localeCompare(a));
+  const uniqueBatches = [...new Set(allLogs.map(l => l.printOrderId ? (state.printOrders.find(p=>p.id===l.printOrderId)?.batchNumber||l.pcCode||'') : (l.pcCode||'')).filter(Boolean))].sort();
+  const uniqueMatters = [...new Set(allLogs.map(l => l.printMatter||l.pcCode||'').filter(Boolean))].sort();
+  const uniqueSizes   = [...new Set(allLogs.map(l => l.size||'').filter(Boolean))].sort();
+  const uniqueCusts   = [...new Set(allLogs.map(l => {
+    const po = l.printOrderId ? state.printOrders.find(p=>p.id===l.printOrderId) : null;
+    return po?.customer || l.customer || '';
+  }).filter(Boolean))].sort();
+
+  // Active filters
+  const selDate   = window._dlFilterDate   || '';
+  const selBatch  = window._dlFilterBatch  || '';
+  const selMatter = window._dlFilterMatter || '';
+  const selSize   = window._dlFilterSize   || '';
+  const selCust   = window._dlFilterCust   || '';
+
+  const logs = allLogs.filter(l => {
+    if (selDate && toDateInput(new Date(l.date)) !== selDate) return false;
+    const po = l.printOrderId ? state.printOrders.find(p=>p.id===l.printOrderId) : null;
+    const batchLabel = po ? (po.batchNumber||po.pcCode||l.pcCode||'') : (l.pcCode||'');
+    const matter = l.printMatter||l.pcCode||'';
+    const cust = po?.customer || l.customer || '';
+    if (selBatch  && batchLabel !== selBatch)  return false;
+    if (selMatter && matter     !== selMatter) return false;
+    if (selSize   && (l.size||'') !== selSize) return false;
+    if (selCust   && cust        !== selCust)  return false;
+    return true;
+  });
+
   const content = document.getElementById('content');
 
   // Aggregate salvage stats
@@ -3513,18 +3850,47 @@ function renderDailyPrinting() {
     </div>
     ${salvagePct>2?'<div class="alert alert-warn">⚠️ Cumulative salvage is above 2% threshold. Review printing operations.</div>':''}
     <div class="card">
-      <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-        Daily Printing Logs
-        <div style="display:flex;align-items:center;gap:8px">
-          <label style="font-size:12px;color:var(--text3)">Filter by date:</label>
+      <div class="card-title">Daily Printing Logs</div>
+      <div style="display:flex;flex-wrap:wrap;gap:8px;margin-bottom:12px;align-items:flex-end">
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">BATCH</label>
+          <select style="background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px;min-width:120px" onchange="window._dlFilterBatch=this.value;renderDailyPrinting()">
+            <option value="">All Batches</option>
+            ${uniqueBatches.map(b=>`<option value="${b}" ${selBatch===b?'selected':''}>${b}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">PRINT MATTER</label>
+          <select style="background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px;min-width:110px" onchange="window._dlFilterMatter=this.value;renderDailyPrinting()">
+            <option value="">All</option>
+            ${uniqueMatters.map(m=>`<option value="${m}" ${selMatter===m?'selected':''}>${m}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">SIZE</label>
+          <select style="background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px;min-width:70px" onchange="window._dlFilterSize=this.value;renderDailyPrinting()">
+            <option value="">All</option>
+            ${uniqueSizes.map(s=>`<option value="${s}" ${selSize===s?'selected':''}>${s}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">CUSTOMER</label>
+          <select style="background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px;min-width:130px" onchange="window._dlFilterCust=this.value;renderDailyPrinting()">
+            <option value="">All Customers</option>
+            ${uniqueCusts.map(c=>`<option value="${c}" ${selCust===c?'selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">DATE</label>
           <select style="background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px" onchange="window._dlFilterDate=this.value;renderDailyPrinting()">
             <option value="">All Dates</option>
-            ${uniqueDates.map(d=>`<option value="${d}" ${selectedDate===d?'selected':''}>${d}</option>`).join('')}
+            ${uniqueDates.map(d=>`<option value="${d}" ${selDate===d?'selected':''}>${d}</option>`).join('')}
           </select>
-          ${selectedDate?`<button class="btn btn-ghost btn-sm" onclick="window._dlFilterDate='';renderDailyPrinting()">✕ Clear</button>`:''}
         </div>
+        ${(selDate||selBatch||selMatter||selSize||selCust)?`<button class="btn btn-ghost btn-sm" onclick="window._dlFilterDate='';window._dlFilterBatch='';window._dlFilterMatter='';window._dlFilterSize='';window._dlFilterCust='';renderDailyPrinting()" style="align-self:flex-end">✕ Clear All</button>`:''}
+        <span style="font-size:12px;color:var(--text3);align-self:flex-end">${logs.length} of ${allLogs.length} records</span>
       </div>
-      ${logs.length===0?'<div class="empty-state"><p>No daily logs yet</p></div>':`
+      ${logs.length===0?'<div class="empty-state"><p>No logs match the selected filters</p></div>':`
       <div class="table-wrap">
         <table>
           <thead><tr>
@@ -3581,6 +3947,22 @@ function renderDailyPrinting() {
               </tr>`;
             }).join('')}
           </tbody>
+          <tfoot>
+            <tr style="background:var(--surface2);font-weight:700;font-size:12px">
+              <td colspan="6" style="padding:7px 10px;color:var(--accent)">TOTAL (${logs.length} entries)</td>
+              <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.shiftAqty||0),0),2)}</td>
+              <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.shiftBqty||0),0),2)}</td>
+              <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.shiftCqty||0),0),2)}</td>
+              <td class="text-mono fw-bold text-green">${fmt(logs.reduce((s,l)=>s+(l.totalQtyLakhs||0),0),2)}</td>
+              <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.shiftA||0),0),1)}</td>
+              <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.shiftB||0),0),1)}</td>
+              <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.shiftC||0),0),1)}</td>
+              <td class="text-mono fw-bold">${fmt(logs.reduce((s,l)=>s+(l.shiftA||0)+(l.shiftB||0)+(l.shiftC||0),0),1)}</td>
+              <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.salvage||0),0),2)}</td>
+              <td class="text-mono">${(()=>{const to=logs.reduce((s,l)=>s+(l.totalOutput||0),0);const ts=logs.reduce((s,l)=>s+(l.salvage||0),0);return to>0?(ts/to*100).toFixed(2):0})()}%</td>
+              <td colspan="5">—</td>
+            </tr>
+          </tfoot>
         </table>
       </div>`}
     </div>
@@ -3907,40 +4289,154 @@ function buildTruckPlans(zone) {
 
 function autoGenerateDispatchPlans() {
   // AUTO-GENERATE dispatch plans for running/closed orders that don't have one yet
-  // Manual entries always win — only add if no existing dispatch plan for this order
-  const existingDPOrderIds = new Set(state.dispatchPlans.map(p => p.productionOrderId).filter(Boolean));
+  // Rules:
+  //   Domestic ≤30L: one dispatch plan for entire batch
+  //   Domestic >30L (up to 50L): split into two — first lot 30L, second lot = balance
+  //   Export: single dispatch plan, date shows only when entire indent qty complete
+  const existingDPOrderIds = new Set(
+    state.dispatchPlans.filter(p => !p.isAuto).map(p => p.productionOrderId).filter(Boolean)
+  );
+  // Also collect auto plans to avoid duplicating them
+  const existingAutoIds = new Set(
+    state.dispatchPlans.filter(p => p.isAuto).map(p => p.productionOrderId).filter(Boolean)
+  );
+
   const monthOrders = getMonthOrders().filter(o => !o.deleted && (o.status === 'running' || o.status === 'closed'));
+
   monthOrders.forEach(ord => {
     if (existingDPOrderIds.has(ord.id)) return; // manual entry exists — skip
+    if (existingAutoIds.has(ord.id)) return; // auto plan already exists — skip
+
     const packSize = (state.packSizes && state.packSizes[ord.size]) ? state.packSizes[ord.size] : 100000;
-    const orderQty = parseFloat(ord.orderQty || ord.grossQty || 0);
-    const autoBoxes = orderQty > 0 ? Math.ceil(orderQty * 100000 / packSize) : 1;
-    const autoDP = {
-      id: 'auto_' + ord.id,
-      productionOrderId: ord.id,
-      customer: ord.customer || '',
-      batchNumber: ord.batchNumber || '',
-      zone: ord.zone || '',
-      size: ord.size || '',
-      colour: ord.colour || '',
-      ptdUp: ord.ptdUp || 'UP',
-      pcCode: ord.pcCode || '',
-      qty: orderQty,
-      boxes: autoBoxes,
-      plannedDate: ord.endDate || ord.manualEndDate || '',
-      actualDispatched: 0,
-      status: 'pending',
-      isAuto: true
-    };
-    state.dispatchPlans.push(autoDP);
-    existingDPOrderIds.add(ord.id);
+    const orderQty = parseFloat(ord.qty || ord.grossQty || 0);
+    const isExport = isExportZone(ord.zone);
+
+    if (isExport) {
+      // Export: single plan, date only when all orders in container/indent are complete
+      const autoDP = {
+        id: 'auto_' + ord.id,
+        productionOrderId: ord.id,
+        customer: ord.customer || '',
+        batchNumber: ord.batchNumber || '',
+        zone: ord.zone || '',
+        size: ord.size || '',
+        colour: ord.colour || '',
+        ptdUp: ord.isPrinted ? 'PTD' : 'UP',
+        pcCode: ord.pcCode || '',
+        qty: orderQty,
+        boxes: orderQty > 0 ? Math.ceil(orderQty * 100000 / packSize) : 1,
+        plannedDate: null, // set only when all indent orders complete
+        exportPending: true,
+        actualDispatched: 0,
+        status: 'pending',
+        isAuto: true,
+        lotNo: 1, lotTotal: 1
+      };
+      state.dispatchPlans.push(autoDP);
+
+    } else if (orderQty <= 30) {
+      // Domestic small: single dispatch plan
+      state.dispatchPlans.push({
+        id: 'auto_' + ord.id,
+        productionOrderId: ord.id,
+        customer: ord.customer || '',
+        batchNumber: ord.batchNumber || '',
+        zone: ord.zone || '',
+        size: ord.size || '',
+        colour: ord.colour || '',
+        ptdUp: ord.isPrinted ? 'PTD' : 'UP',
+        pcCode: ord.pcCode || '',
+        qty: orderQty,
+        boxes: orderQty > 0 ? Math.ceil(orderQty * 100000 / packSize) : 1,
+        plannedDate: ord.endDate || '',
+        actualDispatched: 0,
+        status: 'pending',
+        isAuto: true,
+        lotNo: 1, lotTotal: 1
+      });
+
+    } else {
+      // Domestic large (>30L): split into two lots — 30L first, balance second
+      const lot1Qty = 30;
+      const lot2Qty = parseFloat((orderQty - 30).toFixed(3));
+      const endDate1 = ord.endDate || '';
+      const endDate2 = endDate1 ? fmtDate(addDays(new Date(endDate1), 1)) : '';
+
+      state.dispatchPlans.push({
+        id: 'auto_' + ord.id + '_L1',
+        productionOrderId: ord.id,
+        customer: ord.customer || '',
+        batchNumber: ord.batchNumber || '',
+        zone: ord.zone || '',
+        size: ord.size || '',
+        colour: ord.colour || '',
+        ptdUp: ord.isPrinted ? 'PTD' : 'UP',
+        pcCode: ord.pcCode || '',
+        qty: lot1Qty,
+        boxes: Math.ceil(lot1Qty * 100000 / packSize),
+        plannedDate: endDate1,
+        actualDispatched: 0,
+        status: 'pending',
+        isAuto: true,
+        lotNo: 1, lotTotal: 2
+      });
+
+      if (lot2Qty > 0) {
+        state.dispatchPlans.push({
+          id: 'auto_' + ord.id + '_L2',
+          productionOrderId: ord.id,
+          customer: ord.customer || '',
+          batchNumber: ord.batchNumber || '',
+          zone: ord.zone || '',
+          size: ord.size || '',
+          colour: ord.colour || '',
+          ptdUp: ord.isPrinted ? 'PTD' : 'UP',
+          pcCode: ord.pcCode || '',
+          qty: lot2Qty,
+          boxes: Math.ceil(lot2Qty * 100000 / packSize),
+          plannedDate: endDate2,
+          actualDispatched: 0,
+          status: 'pending',
+          isAuto: true,
+          lotNo: 2, lotTotal: 2
+        });
+      }
+    }
+
+    existingAutoIds.add(ord.id);
   });
+
   // Remove stale auto plans for orders no longer in month
   const validOrderIds = new Set(monthOrders.map(o => o.id));
   state.dispatchPlans = state.dispatchPlans.filter(p => {
     if (!p.isAuto) return true; // never remove manual entries
     return p.productionOrderId && validOrderIds.has(p.productionOrderId);
   });
+
+  // Update export dispatch dates: show date only when all orders in same container/PO are complete
+  state.dispatchPlans
+    .filter(p => p.exportPending && p.isAuto)
+    .forEach(dp => {
+      const ord = state.orders.find(o => o.id === dp.productionOrderId);
+      if (!ord) return;
+      const poRef = ord.containerRef || ord.poNumber;
+      if (!poRef) return;
+      const containerOrds = state.orders.filter(o =>
+        !o.deleted && isExportZone(o.zone) &&
+        (o.containerRef || o.poNumber) === poRef
+      );
+      const allComplete = containerOrds.every(o => o.status === 'closed' || (o.actualProd||0) >= (o.qty||0) * 0.99);
+      if (allComplete) {
+        const latestEnd = containerOrds.reduce((max, o) => {
+          const d = o.endDate ? new Date(o.endDate) : null;
+          return (d && (!max || d > max)) ? d : max;
+        }, null);
+        if (latestEnd) {
+          dp.plannedDate = addDays(latestEnd, getContainerOffset(ord) || 3);
+          dp.exportPending = false;
+        }
+      }
+    });
 }
 
 function getAllTruckPlans() {
@@ -4048,7 +4544,7 @@ function renderDispatch() {
               <thead><tr>
                 <th>Customer</th><th>Batch No</th><th>PC Code</th><th>Month</th><th>Colour</th>
                 <th>Size</th><th>PTD/UP</th><th>Zone</th><th>Qty (L)</th><th>Boxes</th>
-                <th>Planned Date</th><th>Dispatched (L)</th><th>Pending (L)</th><th>Status</th><th>Remarks</th><th>Actions</th>
+                <th>Packed</th><th>Planned Date</th><th>Dispatched (L)</th><th>Pending (L)</th><th>Status</th><th>Remarks</th><th>Actions</th>
               </tr></thead>
               <tbody>
                 ${zPlans.map(p=>renderDispatchRow(p)).join('')}
@@ -4056,6 +4552,7 @@ function renderDispatch() {
                   <td colspan="8">TOTAL</td>
                   <td class="text-mono text-accent">${fmt(totalQty)}</td>
                   <td class="text-mono">${zPlans.reduce((s,p)=>s+(p.boxes||0),0)}</td>
+                  <td class="text-mono text-accent3">${fmt(zPlans.reduce((s,p)=>s+(p.packedQty||0),0))}L</td>
                   <td>-</td>
                   <td class="text-mono text-green">${fmt(dispatched)}</td>
                   <td class="text-mono text-accent">${fmt(Math.max(0, totalQty - dispatched))}</td>
@@ -4091,9 +4588,19 @@ function renderDispatchRow(p) {
   const month = p.plannedDate ? new Date(p.plannedDate).toLocaleString('en-IN',{month:'short',year:'2-digit'}) : '—';
   const containerInfo = p.isConsolidatedExport
     ? `<div style="font-size:10px;color:var(--accent5);font-family:var(--mono);margin-top:2px">📦 Container: ${p.containerRef||'—'} (${(p.allProductionOrderIds||[]).length} orders)</div>` : '';
+  // Lot badge for split dispatches
+  const lotBadge = (p.lotTotal > 1)
+    ? `<span style="background:rgba(255,171,0,0.12);color:#ffab00;border:1px solid rgba(255,171,0,0.25);padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;margin-left:4px">Lot ${p.lotNo}/${p.lotTotal}</span>` : '';
+  // Packing data from tracking (packed out qty)
+  const packedOut = p.packedQty || 0;
+  const packPct = p.qty > 0 ? Math.min(100, (packedOut/p.qty*100)).toFixed(0) : 0;
+  const packCell = packedOut > 0
+    ? `<span style="color:${packedOut>=p.qty*0.99?'var(--accent3)':'var(--accent2)'};">${fmt(packedOut)}L</span><span style="color:var(--text3);font-size:10px"> (${packPct}%)</span>`
+    : '<span style="color:var(--text3);font-size:11px">—</span>';
+
   return `<tr>
     <td style="font-weight:500">${p.customer||'-'}${containerInfo}</td>
-    <td class="text-mono">${p.batchNumber||'-'}</td>
+    <td class="text-mono">${p.batchNumber||'-'}${lotBadge}</td>
     <td class="text-mono text-accent">${p.pcCode||'-'}</td>
     <td class="text-mono text-dim">${month}</td>
     <td>${fmtColour(p.colour)}</td>
@@ -4102,7 +4609,8 @@ function renderDispatchRow(p) {
     <td class="text-sm">${p.zone||'-'}</td>
     <td class="text-mono fw-bold">${fmt(p.qty)}</td>
     <td class="text-mono">${p.boxes||'-'}</td>
-    <td class="text-mono" style="white-space:nowrap">${p.plannedDate ? fmtDate(p.plannedDate) + (p.tentative ? ' <span style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:10px;font-family:var(--font-mono)">Tentative</span>' : (p.dateManuallySet ? ' <span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);padding:1px 5px;border-radius:3px;font-size:10px">Manual</span>' : '')) : '<span style="color:var(--accent5);font-size:11px">Pending container</span>'}</td>
+    <td class="text-mono">${packCell}</td>
+    <td class="text-mono" style="white-space:nowrap">${p.plannedDate ? fmtDate(p.plannedDate) + (p.tentative ? ' <span style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:10px;font-family:var(--font-mono)">Tentative</span>' : (p.dateManuallySet ? ' <span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);padding:1px 5px;border-radius:3px;font-size:10px">Manual</span>' : '')) : (isExportPend ? '<span style="color:var(--accent5);font-size:11px">Pending container</span>' : '<span style="color:var(--text3);font-size:11px">TBD</span>')}</td>
     <td><input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
       style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
       onchange="updateDispatchActual('${p.id}',this.value)"></td>

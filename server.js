@@ -1647,6 +1647,50 @@ app.get('/api/dpr/:floor/:date', async (req, res) => {
   }
 });
 
+// GET /api/actuals/machine-summary — total qty and distinct days per machine (for Planning avg daily rate)
+app.get('/api/actuals/machine-summary', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`
+        SELECT machine_id,
+               SUM(qty_lakhs)       AS total_qty,
+               COUNT(DISTINCT date) AS distinct_days,
+               MIN(date)            AS first_date,
+               MAX(date)            AS last_date
+        FROM production_actuals
+        WHERE qty_lakhs > 0
+        GROUP BY machine_id`);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`
+        SELECT machine_id,
+               SUM(qty_lakhs)       AS total_qty,
+               COUNT(DISTINCT date) AS distinct_days,
+               MIN(date)            AS first_date,
+               MAX(date)            AS last_date
+        FROM production_actuals
+        WHERE qty_lakhs > 0
+        GROUP BY machine_id`).all();
+    }
+    const machines = {};
+    rows.forEach(r => {
+      const totalQty     = parseFloat(r.total_qty    || 0);
+      const distinctDays = parseInt(r.distinct_days  || 0);
+      machines[r.machine_id] = {
+        totalQty,
+        distinctDays,
+        avgPerDay: distinctDays > 0 ? parseFloat((totalQty / distinctDays).toFixed(3)) : 0,
+        firstDate: r.first_date,
+        lastDate:  r.last_date
+      };
+    });
+    res.json({ ok: true, machines });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET actuals summary for a machine (for DPR to show cumulative vs planned)
 app.get('/api/actuals/machine/:machineId', async (req, res) => {
   try {
