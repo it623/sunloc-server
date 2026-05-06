@@ -798,12 +798,14 @@ const SYNC = (() => {
           });
         }
         // Take server state
-        // Save local orders, dailyPrinting before overwrite — merge after
+        // Save local orders, printOrders, dailyPrinting before overwrite — merge after
         const _localDailyPrinting = JSON.parse(JSON.stringify(state.dailyPrinting || []));
         const _localOrdersSnapshot = JSON.parse(JSON.stringify(state.orders || []));
         const _localOrdersById = {};
         _localOrdersSnapshot.forEach(o => { if (o.id) _localOrdersById[o.id] = o; });
         Object.assign(state, serverState);
+        // printOrders/dispatchPlans/dailyPrinting are NOT in planning_state blob
+        // They are loaded from dedicated tables in loadFromKV() — never overwritten here
         // Merge dailyPrinting — keep any local entries not yet on server
         if (_localDailyPrinting.length > 0) {
           const serverIds = new Set((state.dailyPrinting||[]).map(l=>l.id));
@@ -858,10 +860,7 @@ const SYNC = (() => {
           });
           console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
         }
-        if (Object.keys(_protectedPrintOrders).length > 0) {
-          state.printOrders = (state.printOrders||[]).map(p => _protectedPrintOrders[p.id] || p);
-          console.log('[Sync] Protected', Object.keys(_protectedPrintOrders).length, 'locally changed print orders from server overwrite');
-        }
+        // Print orders protected by dedicated table — no local override needed
         // Restore locally changed machine masters
         if (_savedMachineMaster) { state.machineMaster = _savedMachineMaster; console.log('[Sync] Protected machineMaster from server overwrite'); }
         if (_savedPrintMachineMaster) { state.printMachineMaster = _savedPrintMachineMaster; console.log('[Sync] Protected printMachineMaster from server overwrite'); }
@@ -1047,6 +1046,9 @@ const SYNC = (() => {
 
     // STEP 3: Load tracking/DPR status in background
     loadTrackingStatus().catch(() => {});
+    // STEP 4: Load dedicated tables (printOrders, dispatchPlans, dailyPrinting, packSizes)
+    // These are the authoritative sources — not the planning_state blob
+    loadFromKV().catch(() => {});
   }
 
   async function loadTrackingStatus() {
@@ -1325,6 +1327,19 @@ async function loadFromKV() {
       }
     }
 
+    // Print orders from dedicated table — authoritative source, replaces planning_state blob
+    try {
+      const prRes = await fetch(_url + '/api/print-orders', { signal: AbortSignal.timeout(8000) });
+      if (prRes.ok) {
+        const prj = await prRes.json();
+        if (prj.ok && Array.isArray(prj.printOrders) && prj.printOrders.length > 0) {
+          // Server is always authoritative for print orders — full replace
+          state.printOrders = prj.printOrders;
+          console.log('[PrintOrders] Loaded', prj.printOrders.length, 'from dedicated table');
+        }
+      }
+    } catch(e) { console.warn('[PrintOrders] Load failed:', e?.message); }
+
     // Also load from KV store as fallback for printMachineMaster
     if (kvRes.status==='fulfilled' && kvRes.value.ok) {
       const j = await kvRes.value.json();
@@ -1348,6 +1363,9 @@ async function saveState() {
     const toSave = {...state};
     delete toSave.pcCodes;
     delete toSave.zoneMap;
+    delete toSave.printOrders;      // print orders live in dedicated print_orders table only
+    delete toSave.dispatchPlans;    // dispatch plans live in dedicated dispatch_plans table only
+    delete toSave.dailyPrinting;    // daily printing lives in dedicated daily_printing table only
     toSave._savedAt = Date.now();
     state._savedAt = toSave._savedAt;
     // Only stamp machine master — individual orders stamped at point of change
