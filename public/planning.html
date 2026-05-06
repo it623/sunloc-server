@@ -1401,12 +1401,15 @@ function recalcMachineScheduleQuiet(machineId) {
       continue;
     }
     if (!cursor) {
-      // Seed cursor: use today if the saved startDate is in the past with no production yet
+      // Seed cursor from saved startDate — only push to today if:
+      // 1. startDate is in the past AND
+      // 2. No production has happened yet AND
+      // 3. No endDate is saved (meaning dates were never manually confirmed)
       const savedStart = ord.startDate ? new Date(ord.startDate) : null;
       const todayD = new Date(today());
       const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
-      // If startDate is in past and no actual production — order hasn't started, use today
-      if (savedStart && savedStart < todayD && !hasProduction) {
+      const hasEndDate = ord.endDate && !isNaN(new Date(ord.endDate));
+      if (savedStart && savedStart < todayD && !hasProduction && !hasEndDate) {
         cursor = todayD;
         ord.startDate = new Date(cursor);
       } else {
@@ -1465,7 +1468,17 @@ function recalcMachineSchedule(machineId) {
       continue;
     }
     if (!cursor) {
-      cursor = new Date(ord.startDate || today());
+      // Only push startDate to today if: past date + no production + no endDate saved
+      const savedStart = ord.startDate ? new Date(ord.startDate) : null;
+      const todayD = new Date(today());
+      const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
+      const hasEndDate = ord.endDate && !isNaN(new Date(ord.endDate));
+      if (savedStart && savedStart < todayD && !hasProduction && !hasEndDate) {
+        cursor = todayD;
+        ord.startDate = new Date(cursor);
+      } else {
+        cursor = savedStart || todayD;
+      }
     } else {
       ord.startDate = new Date(cursor);
     }
