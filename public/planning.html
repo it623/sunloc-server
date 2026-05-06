@@ -1048,7 +1048,10 @@ const SYNC = (() => {
     loadTrackingStatus().catch(() => {});
     // STEP 4: Load dedicated tables (printOrders, dispatchPlans, dailyPrinting, packSizes)
     // These are the authoritative sources — not the planning_state blob
-    loadFromKV().catch(() => {});
+    loadFromKV().then(() => {
+      // Re-render after dedicated tables load so print orders / dispatch plans show immediately
+      render();
+    }).catch(() => {});
   }
 
   async function loadTrackingStatus() {
