@@ -1300,11 +1300,10 @@ function calcOrderSchedule(order, mc) {
   const alreadyProduced = Math.min((order.actualProd || order.actualQty || 0), grossQty);
   const remainingGross  = Math.max(0, grossQty - alreadyProduced);
 
-  // Use actual DPR daily rate if available (from production_actuals via /api/actuals/machine-summary)
-  // Falls back to machine configured cap if no DPR data yet
+  // Always use machine configured capacity for scheduling — never DPR actual rate
+  // DPR actual rate is only used for display (Avg Actual label) not for date calculation
   const mcId = mc.id || mc.machineId;
-  const dprRate = window._mcActualRate?.[mcId]?.avgPerDay;
-  const effectiveCap = (dprRate && dprRate > 0) ? dprRate : ((mc.cap > 0) ? mc.cap : null);
+  const effectiveCap = (mc.cap > 0) ? mc.cap : null;
 
   const daysNeeded = effectiveCap ? (remainingGross / effectiveCap) : null;
   const aGradePct  = 1 / aimFactor * 100;
