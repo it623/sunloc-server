@@ -1401,10 +1401,7 @@ function recalcMachineScheduleQuiet(machineId) {
       continue;
     }
     if (!cursor) {
-      // Seed cursor from saved startDate — only push to today if:
-      // 1. startDate is in the past AND
-      // 2. No production has happened yet AND
-      // 3. No endDate is saved (meaning dates were never manually confirmed)
+      // Seed cursor: only push to today if startDate is past + no production + no endDate saved
       const savedStart = ord.startDate ? new Date(ord.startDate) : null;
       const todayD = new Date(today());
       const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
@@ -1468,17 +1465,7 @@ function recalcMachineSchedule(machineId) {
       continue;
     }
     if (!cursor) {
-      // Only push startDate to today if: past date + no production + no endDate saved
-      const savedStart = ord.startDate ? new Date(ord.startDate) : null;
-      const todayD = new Date(today());
-      const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
-      const hasEndDate = ord.endDate && !isNaN(new Date(ord.endDate));
-      if (savedStart && savedStart < todayD && !hasProduction && !hasEndDate) {
-        cursor = todayD;
-        ord.startDate = new Date(cursor);
-      } else {
-        cursor = savedStart || todayD;
-      }
+      cursor = new Date(ord.startDate || today());
     } else {
       ord.startDate = new Date(cursor);
     }
@@ -3239,8 +3226,16 @@ function renderPrinting() {
   `;
 
   // Filter print orders by selected month via linked production order
+  // Also include print orders whose production order is active (not closed) — PTD orders always show
   const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
-  const printOrders = (state.printOrders || []).filter(p => !p.productionOrderId || monthOrdIds.has(p.productionOrderId));
+  const activeOrdIds = new Set(
+    (state.orders || []).filter(o => !o.deleted && o.status !== 'closed').map(o => o.id)
+  );
+  const printOrders = (state.printOrders || []).filter(p =>
+    !p.productionOrderId ||
+    monthOrdIds.has(p.productionOrderId) ||
+    activeOrdIds.has(p.productionOrderId)
+  );
 
   let html = `
     ${bannerHtml}
