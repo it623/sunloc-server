@@ -4672,7 +4672,11 @@ function renderReportD(){ window._activeReport = renderReportD;
     const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
     return s+ag.aGrade;
   },0);
-  const aGradePct=totalGross>0?(totalAGrade/totalGross*100):0;
+  const totalInspectedD=monthBatches.reduce((s,b)=>{
+    const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
+    return s+ag.inspected;
+  },0);
+  const aGradePct=totalInspectedD>0?(totalAGrade/totalInspectedD*100):0;
   const html=`<div class="card"><div class="section-title mb-16">Report D — Overall Summary</div>
   <div class="kpi-grid">
     <div class="kpi"><div class="kpi-label">Gross Production</div><div class="kpi-val">${fmt(totalGross)}L</div></div>
@@ -4906,14 +4910,20 @@ function renderReportE(){ window._activeReport = renderReportE;
   const sumRows = (arr, k) => arr.reduce((a,r)=>a+(r['_'+k]||0),0);
 
   function buildSubtotalRow(arr, label, style='background:#e8f5e9;color:#1a3a2e;font-weight:800') {
-    const g = sumRows(arr,'grossProd'), ag = sumRows(arr,'totalAGrade');
+    const g       = sumRows(arr,'grossProd');
+    const aimInsp = sumRows(arr,'aimRunTotal');   // AIM Out + Salvage + Remelt = total inspected
+    const aimOut  = sumRows(arr,'aimAGrade');      // AIM Out Lakhs
+    const ag      = sumRows(arr,'totalAGrade');    // Final A-Grade qty
+    // Correct denominator = total inspected, NOT grossProd
+    const aimPct   = aimInsp>0 ? (aimOut/aimInsp*100).toFixed(1)+'%' : '—';
+    const totalPct = aimInsp>0 ? (ag/aimInsp*100).toFixed(1)+'%'     : '—';
     return `<tr style="${style};font-size:12px">
       <td colspan="4" style="padding:5px 10px;font-family:sans-serif;font-size:11px;letter-spacing:.5px;text-transform:uppercase">${label}</td>
       <td colspan="3"></td>
       <td>${fmtN(sumRows(arr,'plannedQty'))}</td><td><b>${fmtN(g)}</b></td>
-      <td>${fmtN(sumRows(arr,'aimRunTotal'))}</td><td>${fmtN(sumRows(arr,'aimSalvage'))}</td><td>${fmtN(sumRows(arr,'aimRemelt'))}</td>
-      <td><b>${fmtN(sumRows(arr,'aimAGrade'))}</b></td><td>${g>0?(sumRows(arr,'aimAGrade')/g*100).toFixed(1)+'%':'—'}</td><td>${fmtN(sumRows(arr,'manInspect'))}</td>
-      <td><b>${fmtN(ag)}</b></td><td><b>${g>0?(ag/g*100).toFixed(1)+'%':'—'}</b></td>
+      <td>${fmtN(aimInsp)}</td><td>${fmtN(sumRows(arr,'aimSalvage'))}</td><td>${fmtN(sumRows(arr,'aimRemelt'))}</td>
+      <td><b>${fmtN(aimOut)}</b></td><td>${aimPct}</td><td>${fmtN(sumRows(arr,'manInspect'))}</td>
+      <td><b>${fmtN(ag)}</b></td><td><b>${totalPct}</b></td>
       <td>${fmtN(sumRows(arr,'wip'))}</td><td>${fmtN(sumRows(arr,'availUnptd'))}</td><td>${fmtN(sumRows(arr,'availPrint'))}</td>
       <td>${fmtN(sumRows(arr,'printingTD'))}</td><td>${fmtN(sumRows(arr,'printRej'))}</td><td>${fmtN(sumRows(arr,'piInspect'))}</td>
       <td>${fmtN(sumRows(arr,'piSalRem'))}</td><td>${fmtN(sumRows(arr,'packingUP'))}</td><td>${fmtN(sumRows(arr,'packingPTD'))}</td>
@@ -4965,8 +4975,8 @@ function renderReportE(){ window._activeReport = renderReportE;
     <td colspan="7" style="text-align:right;padding-right:8px">GRAND TOTAL (${allFloorRows.length} batches)</td>
     <td>${fmtN(sum('plannedQty'))}</td><td>${fmtN(totalGross)}</td>
     <td>${fmtN(sum('aimRunTotal'))}</td><td>${fmtN(sum('aimSalvage'))}</td><td>${fmtN(sum('aimRemelt'))}</td>
-    <td>${fmtN(sum('aimAGrade'))}</td><td>${totalGross>0?(sum('aimAGrade')/totalGross*100).toFixed(1)+'%':'—'}</td><td>${fmtN(sum('manInspect'))}</td>
-    <td>${fmtN(totalAG)}</td><td>${totalGross>0?(totalAG/totalGross*100).toFixed(1)+'%':'—'}</td>
+    <td>${fmtN(sum('aimAGrade'))}</td><td>${sum('aimRunTotal')>0?(sum('aimAGrade')/sum('aimRunTotal')*100).toFixed(1)+'%':'—'}</td><td>${fmtN(sum('manInspect'))}</td>
+    <td>${fmtN(totalAG)}</td><td>${sum('aimRunTotal')>0?(totalAG/sum('aimRunTotal')*100).toFixed(1)+'%':'—'}</td>
     <td>${fmtN(sum('wip'))}</td><td>${fmtN(sum('availUnptd'))}</td><td>${fmtN(sum('availPrint'))}</td>
     <td>${fmtN(sum('printingTD'))}</td><td>${fmtN(sum('printRej'))}</td><td>${fmtN(sum('piInspect'))}</td>
     <td>${fmtN(sum('piSalRem'))}</td><td>${fmtN(sum('packingUP'))}</td><td>${fmtN(sum('packingPTD'))}</td>
@@ -5220,7 +5230,8 @@ function exportReportD(){
   const monthBatchNos=new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
   const totalGross=monthBatches.reduce((s,b)=>s+(b.actualProd||0),0);
   const totalAGrade=monthBatches.reduce((s,b)=>{const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.aGrade;},0);
-  const aGradePct=totalGross>0?(totalAGrade/totalGross*100):0;
+  const totalInspectedExp=monthBatches.reduce((s,b)=>{const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.inspected;},0);
+  const aGradePct=totalInspectedExp>0?(totalAGrade/totalInspectedExp*100):0;
   const totalDispatched=state.dispatchRecs.reduce((s,r)=>s+r.qty,0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageRows=stages.map(dept=>{
