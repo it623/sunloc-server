@@ -402,7 +402,6 @@ td.r,th.r{text-align:right}
 .dpr-month-badge.grace{background:rgba(255,171,0,0.15);color:#ffab00}
 .dpr-month-badge.locked{background:rgba(255,82,82,0.15);color:#ff5252}
 @media(max-width:600px){.dpr-month-wrap select{min-width:80px;font-size:10px}}
-@keyframes spin{to{transform:rotate(360deg)}}
 </style>
 <style>
 #auth-overlay{position:fixed;inset:0;background:#0b0d12;z-index:9999;display:flex;align-items:center;justify-content:center}
@@ -550,7 +549,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
 <!-- ═══ ANALYTICS ════════════════════════════════════════ -->
 <div id="page-analytics" class="page">
   <div class="card" style="padding:10px 14px;margin-bottom:12px">
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">FLOOR</span>
       <select id="analyticsFloor" onchange="this.dataset.userSet='1';renderAnalytics()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
         <option value="GF">Ground Floor</option>
@@ -558,10 +557,9 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
         <option value="2F">Second Floor (SF)</option>
       </select>
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px;margin-left:8px">DATE</span>
-      <input type="date" id="analyticsDate" onchange="window._analyticsRangeMode='today';renderAnalytics()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
-      <button class="btn-sm" onclick="document.getElementById('analyticsDate').value=today();window._analyticsRangeMode='today';renderAnalytics()">Today</button>
+      <input type="date" id="analyticsDate" onchange="renderAnalytics()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
+      <button class="btn-sm" onclick="document.getElementById('analyticsDate').value=today();renderAnalytics()">Today</button>
     </div>
-    <div id="analytics-range-bar"></div>
   </div>
   <div class="agrid">
     <div class="card"><div class="card-title">Production vs Target</div><div class="chart-wrap"><canvas id="ch-pvt"></canvas></div></div>
@@ -576,14 +574,11 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
 <!-- ═══ TRENDS ═══════════════════════════════════════════ -->
 <div id="page-trends" class="page">
   <div class="card" style="padding:12px 16px;margin-bottom:12px">
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">FLOOR</span>
       <select id="trendFloor" onchange="renderTrends()" style="width:130px">
         <option value="ALL">All Floors</option><option value="GF">Ground Floor</option><option value="1F">First Floor</option><option value="2F">Second Floor</option>
       </select>
-    </div>
-    <div id="trends-range-bar"></div>
-  </div>
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">SCOPE</span>
       <div style="display:flex;border:1px solid var(--b2);border-radius:5px;overflow:hidden">
         <button id="btn-scope-month" onclick="_dprCumulativeMode=false;document.getElementById('btn-scope-month').style.background='var(--cyan)';document.getElementById('btn-scope-cumul').style.background='';renderTrends()"
@@ -603,17 +598,14 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
 
 <!-- ═══ AIM STATUS ═══════════════════════════════════════ -->
 <div id="page-aim" class="page">
-  <div class="card" style="padding:10px 14px;margin-bottom:12px">
-    <div id="aim-range-bar"></div>
-  </div>
-  <div class="card"><div class="card-title">AIM vs Backlog (Produced − AIM = Backlog)</div><div id="aimTable"></div></div>
-  <div class="card"><div class="card-title">AIM vs Production — Machine Wise</div><div class="chart-wrap-lg"><canvas id="ch-aim"></canvas></div></div>
+  <div class="card"><div class="card-title">AIM vs Backlog — Machine Wise</div><div id="aimTable"></div></div>
+  <div class="card"><div class="card-title">Cumulative AIM Progress</div><div class="chart-wrap-lg"><canvas id="ch-aim"></canvas></div></div>
 </div>
 
 <!-- ═══ SHIFT PERFORMANCE ════════════════════════════════ -->
 <div id="page-perf" class="page">
   <div class="card" style="padding:10px 14px;margin-bottom:12px">
-    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:8px">
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap">
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">FLOOR</span>
       <select id="perfFloor" onchange="this.dataset.userSet='1';renderPerf()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
         <option value="GF">Ground Floor</option>
@@ -621,13 +613,19 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
         <option value="2F">Second Floor (SF)</option>
       </select>
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px;margin-left:8px">DATE</span>
-      <input type="date" id="perfDate" onchange="window._perfRangeMode='today';renderPerf()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
-      <button class="btn-sm" onclick="document.getElementById('perfDate').value=today();window._perfRangeMode='today';renderPerf()">Today</button>
+      <input type="date" id="perfDate" onchange="renderPerf()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
+      <button class="btn-sm" onclick="document.getElementById('perfDate').value=today();renderPerf()">Today</button>
+      <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px;margin-left:8px">OPERATOR RANGE</span>
+      <select id="perfOpRange" onchange="renderPerf()" style="background:var(--s2);border:2px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 10px;font-size:12px;font-weight:700">
+        <option value="ALL">All Time (Cumulative)</option>
+        <option value="30">Last 30 days</option>
+        <option value="14">Last 14 days</option>
+        <option value="7">Last 7 days</option>
+      </select>
     </div>
-    <div id="perf-range-bar"></div>
   </div>
   <div class="card"><div class="card-title">Shift Incharge Scorecard</div><div id="perfTable"></div></div>
-  <div class="card"><div class="card-title">Incharge vs Efficiency</div><div class="chart-wrap-lg"><canvas id="ch-perf"></canvas></div></div>
+  <div class="card"><div class="card-title">Incharge vs Efficiency (last 30 days)</div><div class="chart-wrap-lg"><canvas id="ch-perf"></canvas></div></div>
   <div class="card"><div class="card-title">👤 Operator-wise Performance</div><div id="operatorPerfSection"><p style="color:var(--t3);font-size:12px">Loading...</p></div></div>
   <div class="card"><div class="card-title">🏭 Shift Personnel Performance</div><div id="shiftPersonnelSection"><p style="color:var(--t3);font-size:12px">Loading...</p></div></div>
 </div>
@@ -908,35 +906,7 @@ function getDate(){ return document.getElementById('ndate').value || today(); }
 function skey(fl,d){ return `dpr3_${fl}_${d}`; }
 function tgt(fl,mcId){ return parseFloat(targets[`${fl}_${mcId}`]||8); }
 
-// ── DPR range setter functions ────────────────────────────────
-function _setAnalyticsRange(mode) {
-  window._analyticsRangeMode = mode;
-  renderAnalytics();
-}
-function _setTrendsRange(mode) {
-  window._trendsRangeMode = mode;
-  renderTrends();
-}
-function _setPerfRange(mode) {
-  window._perfRangeMode = mode;
-  renderPerf();
-}
-function _setAimRange(mode) {
-  window._aimDateMode = mode;
-  renderAIM();
-}
-
-// Wire AIM range bar on tab open
-const _origGo = go;
-function go(page) {
-  _origGo(page);
-  if (page === 'aim') {
-    setTimeout(() => {
-      const rangeEl = document.getElementById('aim-range-bar');
-      if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(window._aimDateMode||'today', '_setAimRange');
-    }, 50);
-  }
-}
+// ── DPR Month filter ─────────────────────────────────────────
 let _dprSelectedMonth = today().slice(0,7); // 'YYYY-MM'
 let _dprMonthArchiveCache = {};
 let _dprCumulativeMode = false; // false = This Month, true = Up To This Month
@@ -2833,136 +2803,20 @@ function restrictDateToMonth(inputId) {
   }
 }
 
-// ── DPR shared date range helper ─────────────────────────────
-// Returns array of dates to aggregate based on selected range mode
-// Cache of dates with server data per floor
-let _dprServerDatesCache = {}; // { 'GF': ['2026-05-01', ...], 'FF': [...] }
-let _dprServerDatesFetched = {}; // { 'GF': timestamp }
-
-async function prefetchDprDates(fl) {
-  // Only fetch if not fetched in last 2 minutes
-  const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
-  await Promise.all(floors.map(async f => {
-    const lastFetch = _dprServerDatesFetched[f] || 0;
-    if (Date.now() - lastFetch < 120000) return; // cached
-    if (!serverUrl) return;
-    try {
-      const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(f), {signal: AbortSignal.timeout(8000)});
-      if (!r.ok) return;
-      const j = await r.json();
-      if (j.dates) {
-        _dprServerDatesCache[f] = j.dates;
-        _dprServerDatesFetched[f] = Date.now();
-        // Fetch missing dates in PARALLEL (max 10 at a time) for speed
-        const missingDates = j.dates.filter(d => !localStorage.getItem(skey(f, d)));
-        const CHUNK = 10;
-        for (let i = 0; i < missingDates.length; i += CHUNK) {
-          const chunk = missingDates.slice(i, i + CHUNK);
-          await Promise.all(chunk.map(async d => {
-            try {
-              const r2 = await fetch(serverUrl + '/api/dpr/' + encodeURIComponent(f) + '/' + d, {signal: AbortSignal.timeout(8000)});
-              if (r2.ok) {
-                const j2 = await r2.json();
-                if (j2.data) localStorage.setItem(skey(f, d), JSON.stringify(j2.data));
-              }
-            } catch(e) {}
-          }));
-        }
-      }
-    } catch(e) { console.warn('[DPR] prefetchDprDates failed:', f, e?.message); }
-  }));
-}
-
-function getDprDateRange(fl, mode) {
-  const t = today();
-  let fromDate;
-  switch(mode) {
-    case 'month':   fromDate = `${_dprSelectedMonth}-01`; break;
-    case '30d':     fromDate = addDaysStr(t, -30); break;
-    case '90d':     fromDate = addDaysStr(t, -90); break;
-    case '180d':    fromDate = addDaysStr(t, -180); break;
-    case '365d':    fromDate = addDaysStr(t, -365); break;
-    default:        return [t]; // 'today'
-  }
-  const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
-  const dates = new Set();
-  floors.forEach(f => {
-    // Check localStorage (includes server-synced data)
-    Object.keys(localStorage)
-      .filter(k => k.startsWith(`dpr3_${f}_`))
-      .map(k => k.replace(`dpr3_${f}_`, ''))
-      .filter(d => d && d >= fromDate && d <= t)
-      .forEach(d => dates.add(d));
-    // Also check server dates cache
-    (_dprServerDatesCache[f] || [])
-      .filter(d => d >= fromDate && d <= t)
-      .forEach(d => dates.add(d));
-  });
-  return [...dates].sort();
-}
-
-function addDaysStr(dateStr, n) {
-  const d = new Date(dateStr);
-  d.setDate(d.getDate() + n);
-  return d.toISOString().slice(0, 10);
-}
-
-// Renders a date range selector bar — returns HTML string
-function _dprRangeSelectorHtml(currentMode, onchange='') {
-  const modes = [
-    ['today','Today'], ['month','This Month'], ['30d','30 Days'],
-    ['90d','90 Days'], ['180d','6 Months'], ['365d','1 Year']
-  ];
-  return `<div style="display:flex;gap:6px;flex-wrap:wrap;align-items:center">
-    <span style="font-size:11px;color:var(--t3);font-weight:700;letter-spacing:.5px">RANGE:</span>
-    ${modes.map(([m,l]) =>
-      `<button onclick="${onchange}('${m}')" style="padding:3px 10px;border:1px solid var(--b2);border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;background:${currentMode===m?'var(--cyan)':'var(--s2)'};color:${currentMode===m?'#000':'var(--t1)'}">${l}</button>`
-    ).join('')}
-  </div>`;
-}
-
 async function renderAnalytics(){
   restrictDateToMonth('analyticsDate');
+  // Sync floor selector to current floor when first opening, then use selector value
   const flSel = document.getElementById('analyticsFloor');
   if(flSel && !flSel.dataset.userSet) flSel.value = curFloor;
   const fl = flSel ? flSel.value : curFloor;
   const dateSel = document.getElementById('analyticsDate');
   if(dateSel && !dateSel.value) dateSel.value = getDate();
   const d = (dateSel && dateSel.value) ? dateSel.value : getDate();
-
-  // Date range selector
-  const rangeMode = window._analyticsRangeMode || 'today';
-  const rangeEl = document.getElementById('analytics-range-bar');
-  if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setAnalyticsRange');
-
-  // For range modes other than 'today', aggregate across date range
-  const dates = getDprDateRange(fl, rangeMode);
-
-  // For today mode: fetch from server; for range: use local data
-  if (rangeMode === 'today') {
-    const serverData = await fetchDayFromServer(fl, d);
-    if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
-  }
-
-  // Build aggregated stats across all dates in range
+  // Fetch from server for selected floor/date (may differ from current floor)
+  const serverData = await fetchDayFromServer(fl, d);
+  if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
+  const day = loadDay(fl, d);
   const mcs = getActiveMachines(fl);
-  const mcStats = {};
-  mcs.forEach(mc => { mcStats[mc.id] = {prod:0, tgt:0, dt:0, resort:0}; });
-
-  dates.forEach(date => {
-    const day = loadDay(fl, date);
-    mcs.forEach(mc => {
-      SHIFTS.forEach(sh => {
-        const m = migrateMachineData(day.shifts[sh].machines[mc.id] || blankMachine());
-        mcStats[mc.id].prod += mcTotalProd(m);
-        mcStats[mc.id].tgt  += tgt(fl, mc.id);
-        mcStats[mc.id].dt   += (m.dtEntries||[]).reduce((s,e)=>s+(e.mins||0),0);
-        mcStats[mc.id].resort += parseFloat(m.resort||0);
-      });
-    });
-  });
-
-  const day = loadDay(fl, d); // for single-date charts fall back
 
   // P vs T
   const pvtData=mcs.map(mc=>{
@@ -3095,36 +2949,28 @@ function chartOpts(){
 // ═══════════════════════════════════════════════════════
 // TRENDS
 // ═══════════════════════════════════════════════════════
-
-// Show loading spinner in a container
-function _showDprLoading(containerId, msg) {
-  const el = document.getElementById(containerId);
-  if (el) el.innerHTML = `<div style="display:flex;flex-direction:column;align-items:center;justify-content:center;padding:60px 20px;color:var(--t3)">
-    <div style="width:36px;height:36px;border:3px solid var(--b2);border-top-color:var(--cyan);border-radius:50%;animation:spin 0.8s linear infinite;margin-bottom:16px"></div>
-    <div style="font-size:13px;font-weight:600">${msg||'Loading data from server...'}</div>
-  </div>`;
-}
-
 function renderTrends(){
-  const fl  = document.getElementById('trendFloor')?.value || 'ALL';
-  const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
-  const rangeMode = window._trendsRangeMode || 'month';
+  const fl=document.getElementById('trendFloor')?.value || 'ALL';
+  const floors=fl==='ALL'?Object.keys(FLOORS):[fl];
 
-  // Update range bar
-  const rangeEl = document.getElementById('trends-range-bar');
-  if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setTrendsRange');
-
-  const dates = getDprDateRange(fl === 'ALL' ? 'GF' : fl, rangeMode);
+  // Build date range based on selected month and cumulative mode
+  let dates;
+  if (_dprCumulativeMode) {
+    // All dates up to end of selected month
+    const allKeys = Object.keys(localStorage).filter(k=>k.startsWith('dpr3_'));
+    const maxDate = _dprSelectedMonth + '-31';
+    dates = [...new Set(allKeys.map(k=>k.split('_')[2]).filter(d=>d&&d<=maxDate))].sort();
+  } else {
+    // Only dates within selected month that have data
+    dates = getDprMonthDates(floors[0] === fl ? fl : 'GF');
+    // Actually collect all dates in selected month across all floors
+    const allMonthDates = new Set();
+    floors.forEach(f => getDprMonthDates(f).forEach(d => allMonthDates.add(d)));
+    dates = [...allMonthDates].sort();
+  }
 
   if (dates.length === 0) {
     ['ch-tprod','ch-tdt','ch-teff','ch-trs'].forEach(id => destroyChart(id));
-    // Prefetch from server and re-render
-    if (serverUrl && rangeMode !== 'today') {
-      prefetchDprDates(fl === 'ALL' ? 'GF' : fl).then(() => {
-        const newDates = getDprDateRange(fl === 'ALL' ? 'GF' : fl, rangeMode);
-        if (newDates.length > 0) renderTrends();
-      });
-    }
     return;
   }
 
@@ -3142,10 +2988,10 @@ function renderTrends(){
     resorts.push(rs||null);
   });
   const labels=dates.map(d=>{const[y,m,dy]=d.split('-');return `${dy}/${m}`;});
-  const lineOpts={...chartOpts(),elements:{line:{tension:.3},point:{radius:2,hoverRadius:4}}};
-  newChart('ch-tprod',{type:'line',data:{labels,datasets:[{label:'Production',data:prods,borderColor:'#00d4ff',backgroundColor:'rgba(0,212,255,.06)',fill:true,borderWidth:2}]},options:lineOpts});
-  newChart('ch-tdt',{type:'line',data:{labels,datasets:[{label:'DT%',data:dtPcts,borderColor:'#ff4060',backgroundColor:'rgba(255,64,96,.06)',fill:true,borderWidth:2}]},options:lineOpts});
-  newChart('ch-teff',{type:'line',data:{labels,datasets:[{label:'Efficiency%',data:effs,borderColor:'#00e676',backgroundColor:'rgba(0,230,118,.06)',fill:true,borderWidth:2},{label:'Target 90%',data:dates.map(()=>90),borderColor:'rgba(255,171,0,.4)',borderDash:[4,4],borderWidth:1,pointRadius:0}]},options:{...lineOpts,plugins:{...lineOpts.plugins,legend:{display:true,labels:{color:'#7a8ba8',font:{size:10}}}}}});
+  const lineOpts={...chartOpts(),elements:{line:{tension:.3},point:{radius:3,hoverRadius:5}}};
+  newChart('ch-tprod',{type:'line',data:{labels,datasets:[{label:'Production',data:prods,borderColor:'#00d4ff',backgroundColor:'rgba(0,212,255,.08)',fill:true,borderWidth:2}]},options:lineOpts});
+  newChart('ch-tdt',{type:'line',data:{labels,datasets:[{label:'DT%',data:dtPcts,borderColor:'#ff4060',backgroundColor:'rgba(255,64,96,.08)',fill:true,borderWidth:2}]},options:lineOpts});
+  newChart('ch-teff',{type:'line',data:{labels,datasets:[{label:'Efficiency%',data:effs,borderColor:'#00e676',backgroundColor:'rgba(0,230,118,.08)',fill:true,borderWidth:2},{label:'Target 90%',data:dates.map(()=>90),borderColor:'rgba(255,171,0,.4)',borderDash:[4,4],borderWidth:1,pointRadius:0}]},options:{...lineOpts,plugins:{...lineOpts.plugins,legend:{display:true,labels:{color:'#7a8ba8',font:{size:10}}}}}});
   newChart('ch-trs',{type:'bar',data:{labels,datasets:[{label:'Re-Sort',data:resorts,backgroundColor:'rgba(255,171,0,.5)',borderRadius:2}]},options:chartOpts()});
 }
 
@@ -3153,99 +2999,53 @@ function renderTrends(){
 // AIM STATUS
 // ═══════════════════════════════════════════════════════
 function renderAIM(){
-  // Floor selector — default to curFloor but allow override via _aimFloor
-  const fl = window._aimFloor || curFloor;
-  const d  = getDate();
-
-  // Date range — default to today; if cumulative mode use all dates in selected month
-  const dateMode = window._aimDateMode || 'today'; // 'today' | 'month' | 'custom'
-  let datesToSum = [d];
-  if (dateMode === 'month') {
-    datesToSum = Object.keys(localStorage)
-      .filter(k => k.startsWith(`dpr3_${fl}_${_dprSelectedMonth}`))
-      .map(k => k.split('_')[2]).filter(Boolean).sort();
-    if (!datesToSum.length) datesToSum = [d];
-  }
-
-  const allFloors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
-  const mcs = allFloors.flatMap(f => getActiveMachines(f));
-
-  // Floor selector HTML
-  const floorTabs = ['ALL', ...Object.keys(FLOORS)].map(f =>
-    `<button onclick="window._aimFloor='${f}';renderAIM()" style="padding:4px 12px;border:1px solid var(--b2);border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;background:${fl===f?'var(--cyan)':'var(--s2)'};color:${fl===f?'#000':'var(--t1)'}">${f}</button>`
-  ).join('');
-
-  // Date mode selector
-  const modeBtns = [
-    ['today','Today'], ['month','This Month']
-  ].map(([m,l]) =>
-    `<button onclick="window._aimDateMode='${m}';renderAIM()" style="padding:4px 10px;border:1px solid var(--b2);border-radius:4px;cursor:pointer;font-size:11px;font-weight:700;background:${dateMode===m?'var(--amber)':'var(--s2)'};color:${dateMode===m?'#000':'var(--t1)'}">${l}</button>`
-  ).join('');
-
-  let html = `<div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
-    <span style="font-size:11px;color:var(--t3);font-weight:700">FLOOR:</span>${floorTabs}
-    <span style="font-size:11px;color:var(--t3);font-weight:700;margin-left:8px">PERIOD:</span>${modeBtns}
-  </div>`;
-
-  html += `<table class="data-table"><thead><tr><th>Machine</th><th>Floor</th><th>Sz</th><th>AIM Run</th><th>Produced</th><th>Backlog</th><th>Status</th></tr></thead><tbody>`;
-  let totAIM=0, totProd=0;
-
-  mcs.forEach(mc => {
-    let prod=0, aim=0;
-    const mcFloor = allFloors.find(f => getActiveMachines(f).some(m => m.id === mc.id)) || fl;
-    datesToSum.forEach(date => {
-      const day = loadDay(mcFloor, date);
-      SHIFTS.forEach(sh => {
-        const m = migrateMachineData(day.shifts[sh].machines[mc.id] || blankMachine());
-        prod += mcTotalProd(m);
-        aim  += parseFloat(m.aim || 0);
-      });
+  const fl=curFloor, d=getDate(), day=loadDay(fl,d);
+  const mcs=getActiveMachines(fl);
+  let html=`<table class="data-table"><thead><tr><th>Machine</th><th>Sz</th><th>AIM</th><th>Produced</th><th>Backlog</th><th>Status</th></tr></thead><tbody>`;
+  let totAIM=0,totProdAIM=0,totBlAIM=0;
+  mcs.forEach(mc=>{
+    let prod=0,aim=0;
+    SHIFTS.forEach(sh=>{
+      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+      prod+=mcTotalProd(m);
+      aim+=parseFloat(m.aim||0);
     });
-    prod = parseFloat(prod.toFixed(2));
-    aim  = parseFloat(aim.toFixed(2));
-    // CORRECTED: Backlog = Produced − AIM (positive = capsules awaiting AIM; if AIM > produced = ahead)
-    const bl = prod > 0 ? parseFloat((prod - aim).toFixed(2)) : null;
-    const st = aim === 0
-      ? '<span class="pill" style="background:rgba(58,70,90,.5);color:var(--t3)">No AIM</span>'
-      : bl === null ? '—'
-      : bl <= 0 ? '<span class="pill g">AIM Clear</span>'
-      : `<span class="pill a">Backlog: ${bl.toFixed(2)}L</span>`;
-    totAIM += aim; totProd += prod;
-    html += `<tr><td class="mono">${mc.id}</td><td style="color:var(--t3);font-size:11px">${mcFloor}</td><td style="color:var(--t3)">${mc.sz}</td><td class="mono">${aim||'—'}</td><td class="mono">${prod||'—'}</td><td class="mono ${bl>0?'style="color:var(--amber)"':''}">${bl===null?'—':bl.toFixed(2)}</td><td>${st}</td></tr>`;
+    prod=parseFloat(prod.toFixed(2));
+    aim=parseFloat(aim.toFixed(2));
+    const bl=aim>0?parseFloat(Math.max(0,aim-prod).toFixed(2)):null;
+    const st=aim===0?'<span class="pill" style="background:rgba(58,70,90,.5);color:var(--t3)">No AIM</span>':
+      bl===0?'<span class="pill g">On Track</span>':
+      bl>0?`<span class="pill a">Behind by ${bl.toFixed(2)}</span>`:
+      '<span class="pill g">Ahead</span>';
+    totAIM+=aim; totProdAIM+=prod; if(bl!==null) totBlAIM+=bl;
+    html+=`<tr><td class="mono">${mc.id}</td><td style="color:var(--t3)">${mc.sz}</td><td class="mono">${aim||'—'}</td><td class="mono">${prod||'—'}</td><td class="mono">${bl===null?'—':bl.toFixed(2)}</td><td>${st}</td></tr>`;
   });
-
-  const totBl = parseFloat((totProd - totAIM).toFixed(2));
-  html += `</tbody><tfoot><tr style="font-weight:700;background:rgba(100,100,100,0.1);border-top:2px solid var(--b2)">
-    <td colspan="3" style="font-size:11px;color:var(--t3);padding:6px 8px">TOTAL</td>
-    <td class="mono">${totAIM.toFixed(2)}</td>
-    <td class="mono">${totProd.toFixed(2)}</td>
-    <td class="mono">${totBl.toFixed(2)}</td>
-    <td>${totBl<=0?'<span class="pill g">AIM Clear</span>':`<span class="pill a">Backlog: ${totBl.toFixed(2)}L</span>`}</td>
+  // Totals row
+  const totBlFmt=parseFloat(totBlAIM.toFixed(2));
+  html+=`</tbody><tfoot><tr style="font-weight:700;background:rgba(100,100,100,0.1);border-top:2px solid var(--b2)">
+    <td colspan="2" style="font-size:11px;color:var(--t3);padding:6px 8px">TOTAL</td>
+    <td class="mono">${totAIM.toFixed(2)||'—'}</td>
+    <td class="mono">${totProdAIM.toFixed(2)||'—'}</td>
+    <td class="mono">${totBlFmt.toFixed(2)}</td>
+    <td>${totBlFmt===0?'<span class="pill g">On Track</span>':totBlFmt>0?`<span class="pill a">Behind by ${totBlFmt.toFixed(2)}</span>`:'<span class="pill g">Ahead</span>'}</td>
   </tr></tfoot></table>`;
+  document.getElementById('aimTable').innerHTML=html;
 
-  document.getElementById('aimTable').innerHTML = html;
-
-  // Chart
-  const chartMcs = mcs.slice(0, 20); // cap chart at 20 machines
-  const labels = chartMcs.map(m => m.id.replace('MC',''));
-  const aims=[], prods=[];
-  chartMcs.forEach(mc => {
-    let p=0, a=0;
-    const mcFloor = allFloors.find(f => getActiveMachines(f).some(m => m.id === mc.id)) || fl;
-    datesToSum.forEach(date => {
-      const day = loadDay(mcFloor, date);
-      SHIFTS.forEach(sh => {
-        const m = migrateMachineData(day.shifts[sh].machines[mc.id] || blankMachine());
-        p += mcTotalProd(m); a += parseFloat(m.aim || 0);
-      });
+  // AIM chart
+  const labels=mcs.map(m=>m.id.replace('MC',''));
+  const aims=[],prods=[];
+  mcs.forEach(mc=>{
+    let prod=0,aim=0;
+    SHIFTS.forEach(sh=>{
+      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+      prod+=mcTotalProd(m); aim+=parseFloat(m.aim||0);
     });
-    aims.push(parseFloat(a.toFixed(2)));
-    prods.push(parseFloat(p.toFixed(2)));
+    aims.push(aim);prods.push(prod);
   });
-  newChart('ch-aim', {type:'bar', data:{labels, datasets:[
-    {label:'AIM', data:aims, backgroundColor:'rgba(0,212,255,.3)', borderRadius:3},
-    {label:'Produced', data:prods, backgroundColor:'rgba(0,230,118,.6)', borderRadius:3}
-  ]}, options:{...chartOpts(), plugins:{...chartOpts().plugins, legend:{display:true, labels:{color:'#7a8ba8', font:{size:10}}}}}});
+  newChart('ch-aim',{type:'bar',data:{labels,datasets:[
+    {label:'AIM',data:aims,backgroundColor:'rgba(0,212,255,.3)',borderRadius:3},
+    {label:'Produced',data:prods,backgroundColor:'rgba(0,230,118,.6)',borderRadius:3}
+  ]},options:{...chartOpts(),plugins:{...chartOpts().plugins,legend:{display:true,labels:{color:'#7a8ba8',font:{size:10}}}}}});
 }
 
 // ═══════════════════════════════════════════════════════
@@ -3414,23 +3214,7 @@ async function renderPerf(){
   const dateSel = document.getElementById('perfDate');
   if(dateSel && !dateSel.value) dateSel.value = getDate();
   const d = (dateSel && dateSel.value) ? dateSel.value : getDate();
-
-  const rangeMode = window._perfRangeMode || 'today';
-  const rangeEl = document.getElementById('perf-range-bar');
-  if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setPerfRange');
-
-  const dates = getDprDateRange(fl, rangeMode);
-
-  // Fetch from server for today's data
-  if (rangeMode === 'today') {
-    const serverData = await fetchDayFromServer(fl, d);
-    if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
-  } else {
-    // Fetch all dates in range from server
-    for (const date of dates.slice(-7)) { // fetch last 7 days from server
-      try { const sd = await fetchDayFromServer(fl, date); if(sd) localStorage.setItem(skey(fl,date), JSON.stringify(sd)); } catch(e) {}
-    }
-  }
+  // Fetch from server for selected floor/date (may differ from current floor)
   const serverData = await fetchDayFromServer(fl, d);
   if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
   const day = loadDay(fl, d);
@@ -3539,9 +3323,9 @@ async function renderPerf(){
   renderShiftPersonnelPerf();
 
   // Trend chart — last 30 days for selected floor
-  const perfTrendDates=[];
-  for(let i=29;i>=0;i--){const d2=new Date();d2.setDate(d2.getDate()-i);perfTrendDates.push(d2.toISOString().split('T')[0]);}
-  const scores=perfTrendDates.map(date=>{
+  const dates=[];
+  for(let i=29;i>=0;i--){const d2=new Date();d2.setDate(d2.getDate()-i);dates.push(d2.toISOString().split('T')[0]);}
+  const scores=dates.map(date=>{
     const dy=loadDay(fl,date);
     let totalScore=0,cnt=0;
     SHIFTS.forEach(sh=>{
@@ -3555,7 +3339,7 @@ async function renderPerf(){
     });
     return cnt>0?parseFloat((totalScore/cnt).toFixed(1)):null;
   });
-  newChart('ch-perf',{type:'line',data:{labels:perfTrendDates.map(d=>{const[,m,dy]=d.split('-');return`${dy}/${m}`;}),datasets:[{label:'Avg Score',data:scores,borderColor:'#b388ff',backgroundColor:'rgba(179,136,255,.08)',fill:true,borderWidth:2,tension:.3,pointRadius:3,spanGaps:true}]},options:chartOpts()});
+  newChart('ch-perf',{type:'line',data:{labels:dates.map(d=>{const[,m,dy]=d.split('-');return`${dy}/${m}`;}),datasets:[{label:'Avg Score',data:scores,borderColor:'#b388ff',backgroundColor:'rgba(179,136,255,.08)',fill:true,borderWidth:2,tension:.3,pointRadius:3,spanGaps:true}]},options:chartOpts()});
 }
 
 // ═══════════════════════════════════════════════════════
@@ -3949,32 +3733,19 @@ function go(page){
   const idx={entry:0,analytics:1,trends:2,aim:3,perf:4,history:5,plant:6,search:7,settings:8};
   document.querySelectorAll('.ntab')[idx[page]]?.classList.add('on');
   if(page==='analytics') renderAnalytics();
-  else if(page==='trends'){
-    prefetchDprDates('GF').then(()=>renderTrends());
-  }
+  else if(page==='trends') renderTrends();
   else if(page==='aim'){
-    _showDprLoading('aimTable', 'Loading AIM data...');
-    renderAIM(); // render from localStorage first
+    renderAIM(); // render immediately from localStorage (fast)
     if(serverUrl && dprUser){
       (async()=>{
         const d=getDate();
         await Promise.all(Object.keys(FLOORS).map(f=>syncFromServer(f,d)));
-        await prefetchDprDates('GF');
-        renderAIM();
+        renderAIM(); // re-render with fresh server data
       })();
     }
   }
-  else if(page==='perf'){
-    // Show spinner in perf containers
-    ['ch-perf-incharge','ch-perf-op'].forEach(id => _showDprLoading(id, 'Loading performance data...'));
-    renderPerf(); // render from localStorage first
-    prefetchDprDates(curFloor||'GF').then(()=>renderPerf());
-  }
-  else if(page==='history'){
-    _showDprLoading('hist-table-body', 'Loading history...');
-    renderHistory(); // render from localStorage first
-    prefetchDprDates('GF').then(()=>renderHistory());
-  }
+  else if(page==='perf') renderPerf();
+  else if(page==='history') renderHistory();
   else if(page==='plant'){ document.getElementById('plant-date').value=document.getElementById('plant-date').value||today(); renderPlantReport(); }
   else if(page==='settings') renderSettings();
 }
@@ -4003,27 +3774,20 @@ function setFloor(fl){
 
 function onDateChange(){
   refreshRecentDates();
-  // Always fetch from server first when date changes — never rely on stale localStorage
+  renderEntry();
+  // Fetch day data from server when date changes
   if(serverUrl){
     (async ()=>{
       const fl=curFloor, d=getDate();
-      // Show "loading" state immediately so user knows date changed
-      renderEntry(); // render from localStorage first (may be blank/stale — that's ok)
       if(!Object.keys(activeOrders).length) await fetchActiveOrders();
-      // Force sync from server — bypass 60s cooldown for date changes
-      const _savedBackup = _dprLastSaveTime;
-      _dprLastSaveTime = 0; // temporarily clear so syncFromServer doesn't skip
       await syncFromServer(fl, d);
-      _dprLastSaveTime = _savedBackup; // restore
-      // Now render with correct server data
-      if(!unsaved){ renderEntry(); renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
+      if(!unsaved){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
+      // If user is on AIM/Analytics/Trends page, re-render with fresh data for new date
       const curPage = document.querySelector('.ntab.on')?.getAttribute('onclick')?.match(/go\('(\w+)'\)/)?.[1];
       if(curPage==='aim') renderAIM();
       else if(curPage==='analytics') renderAnalytics();
       else if(curPage==='trends') renderTrends();
     })();
-  } else {
-    renderEntry();
   }
   // C-shift date handling: if current time is 00:00–08:00 and today is selected, auto-switch to previous day
   const now=new Date(), h=now.getHours();
