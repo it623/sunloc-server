@@ -4003,20 +4003,27 @@ function setFloor(fl){
 
 function onDateChange(){
   refreshRecentDates();
-  renderEntry();
-  // Fetch day data from server when date changes
+  // Always fetch from server first when date changes — never rely on stale localStorage
   if(serverUrl){
     (async ()=>{
       const fl=curFloor, d=getDate();
+      // Show "loading" state immediately so user knows date changed
+      renderEntry(); // render from localStorage first (may be blank/stale — that's ok)
       if(!Object.keys(activeOrders).length) await fetchActiveOrders();
+      // Force sync from server — bypass 60s cooldown for date changes
+      const _savedBackup = _dprLastSaveTime;
+      _dprLastSaveTime = 0; // temporarily clear so syncFromServer doesn't skip
       await syncFromServer(fl, d);
-      if(!unsaved){ renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
-      // If user is on AIM/Analytics/Trends page, re-render with fresh data for new date
+      _dprLastSaveTime = _savedBackup; // restore
+      // Now render with correct server data
+      if(!unsaved){ renderEntry(); renderDayKpis(); renderShifts(); renderRemarks(); renderResort(); }
       const curPage = document.querySelector('.ntab.on')?.getAttribute('onclick')?.match(/go\('(\w+)'\)/)?.[1];
       if(curPage==='aim') renderAIM();
       else if(curPage==='analytics') renderAnalytics();
       else if(curPage==='trends') renderTrends();
     })();
+  } else {
+    renderEntry();
   }
   // C-shift date handling: if current time is 00:00–08:00 and today is selected, auto-switch to previous day
   const now=new Date(), h=now.getHours();
