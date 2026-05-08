@@ -938,8 +938,12 @@ const SYNC = (() => {
           state.printOrders = (state.printOrders||[]).map(p => {
             const dbRow = dbMap[p.id];
             if (!dbRow) return p;
-            if (dbRow.machineId !== p.machineId) changed = true;
-            return { ...p, machineId: dbRow.machineId, status: dbRow.status || p.status };
+            // Only overwrite machineId if DB has a real value — never let DB null erase local assignment
+            const resolvedMachineId = (dbRow.machineId && dbRow.machineId !== 'null' && dbRow.machineId !== '')
+              ? dbRow.machineId
+              : (p.machineId && p.machineId !== 'null' && p.machineId !== '' ? p.machineId : null);
+            if (resolvedMachineId !== p.machineId) changed = true;
+            return { ...p, machineId: resolvedMachineId, status: dbRow.status || p.status };
           });
           poj.printOrders.forEach(dbP => {
             if (!state.printOrders.find(p => p.id === dbP.id)) {
@@ -3506,8 +3510,9 @@ function renderPrinting() {
       </div>`;
   }
 
-  // Unassigned print orders
-  const unassigned = printOrders.filter(p=>!p.machineId);
+  // Unassigned print orders — guard against string 'null' or '' machineIds from DB
+  const isReallyUnassigned = p => !p.machineId || p.machineId === 'null' || p.machineId === '';
+  const unassigned = printOrders.filter(isReallyUnassigned);
   if (unassigned.length>0) {
     html += `<div class="card mb-4">
       <div class="card-title text-accent">⚠️ Unassigned Print Orders (${unassigned.length})</div>
