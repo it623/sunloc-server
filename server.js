@@ -2992,6 +2992,56 @@ app.get('/api/tracking/alerts/detail', async (req, res) => {
 });
 
 // GET /api/tracking/wip-summary — scan counts + stage closures for Planning
+// GET /api/tracking/scan-summary — ALL scan counts aggregated by batch+dept+type (no LIMIT)
+// This is the correct data source for all reports — replaces raw scan fetching
+app.get('/api/tracking/scan-summary', async (req, res) => {
+  try {
+    let scanRows, wastageRows, dispatchRows;
+    if (pgPool) {
+      const [r1, r2, r3] = await Promise.all([
+        pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type'),
+        pgPool.query('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type'),
+        pgPool.query('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_recs GROUP BY batch_number')
+      ]);
+      scanRows     = r1.rows;
+      wastageRows  = r2.rows;
+      dispatchRows = r3.rows;
+    } else {
+      scanRows     = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type').all();
+      wastageRows  = db.prepare('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type').all();
+      try { dispatchRows = db.prepare('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_recs GROUP BY batch_number').all(); }
+      catch(e) { dispatchRows = []; }
+    }
+
+    const summary = {};
+    const ensure = (bn, dept) => {
+      if (!summary[bn]) summary[bn] = {};
+      if (!summary[bn][dept]) summary[bn][dept] = { in:0, out:0, inQty:0, outQty:0 };
+    };
+    scanRows.forEach(r => {
+      const bn = r.batch_number; if (!bn) return;
+      ensure(bn, r.dept);
+      if (r.type === 'in')  { summary[bn][r.dept].in  += parseInt(r.cnt||0); summary[bn][r.dept].inQty  += parseFloat(r.total_qty||0); }
+      if (r.type === 'out') { summary[bn][r.dept].out += parseInt(r.cnt||0); summary[bn][r.dept].outQty += parseFloat(r.total_qty||0); }
+    });
+    const wastage = {};
+    wastageRows.forEach(r => {
+      const bn = r.batch_number; if (!bn) return;
+      if (!wastage[bn]) wastage[bn] = {};
+      if (!wastage[bn][r.dept]) wastage[bn][r.dept] = { salvage:0, remelt:0 };
+      if (r.type === 'salvage') wastage[bn][r.dept].salvage += parseFloat(r.total_qty||0);
+      if (r.type === 'remelt')  wastage[bn][r.dept].remelt  += parseFloat(r.total_qty||0);
+    });
+    const dispatched = {};
+    dispatchRows.forEach(r => { if (r.batch_number) dispatched[r.batch_number] = parseFloat(r.total_qty||0); });
+
+    res.json({ ok: true, summary, wastage, dispatched });
+  } catch(err) {
+    console.error('[scan-summary]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/api/tracking/wip-summary', async (req, res) => {
   try {
     let summary, closures;

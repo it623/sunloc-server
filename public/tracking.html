@@ -950,6 +950,34 @@ function getBatchFlow(batch){ return batch?.isPrinted ? WIP_FLOW.printed : WIP_F
 function getScansForBox(labelId){ return state.scans.filter(s=>s.labelId===labelId).sort((a,b)=>new Date(a.ts)-new Date(b.ts)) }
 function getScansForBatch(batchNo){ return state.scans.filter(s=>s.batchNumber===batchNo) }
 
+// ── Scan Summary Helpers — use aggregated server data (no LIMIT, full history) ──
+// These are the authoritative source for all report calculations.
+// state.scans is only used for the scanning UI (recent boxes for operators).
+
+function _ss(batchNo, dept) {
+  // Returns { in, out, inQty, outQty } from scanSummary (full history, no limit)
+  const s = state.scanSummary?.[batchNo]?.[dept];
+  return s || { in:0, out:0, inQty:0, outQty:0 };
+}
+
+function _sw(batchNo, dept) {
+  // Returns { salvage, remelt } from wastageSummary (full history)
+  const w = state.wastageSummary?.[batchNo]?.[dept];
+  return w || { salvage:0, remelt:0 };
+}
+
+function getScanCount(batchNo, dept, type) {
+  // Box count from full scan history
+  const s = _ss(batchNo, dept);
+  // Also add any local scans not yet in summary (just scanned on this device)
+  const local = state.scans.filter(sc => sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && sc._local).length;
+  return (type==='in' ? s.in : s.out) + local;
+}
+
+function hasScanSummary() {
+  return state.scanSummary && Object.keys(state.scanSummary).length > 0;
+}
+
 function getBoxCurrentStage(labelId){
   const scans = getScansForBox(labelId);
   if(!scans.length) return 'production';
@@ -980,9 +1008,21 @@ function getWastageForStage(batchNo, dept){
 }
 
 function getTotalWastage(batchNo, dept){
+  // Use wastageSummary (full history, no limit) when available
+  if (hasScanSummary() && state.wastageSummary) {
+    const w = _sw(batchNo, dept);
+    // Add any local pending wastage entries
+    const localEntries = state.wastage.filter(e=>e.batchNumber===batchNo&&e.dept===dept&&e._local);
+    const localSalvage = localEntries.filter(e=>e.type==='salvage').reduce((s,e)=>s+e.qty,0);
+    const localRemelt  = localEntries.filter(e=>e.type==='remelt').reduce((s,e)=>s+e.qty,0);
+    const salvage = w.salvage + localSalvage;
+    const remelt  = w.remelt  + localRemelt;
+    return { salvage, remelt, total: salvage + remelt };
+  }
+  // Fallback to state.wastage (full — wastage endpoint has no LIMIT)
   const entries = getWastageForStage(batchNo, dept);
   const salvage = entries.filter(e=>e.type==='salvage').reduce((s,e)=>s+e.qty,0);
-  const remelt = entries.filter(e=>e.type==='remelt').reduce((s,e)=>s+e.qty,0);
+  const remelt  = entries.filter(e=>e.type==='remelt').reduce((s,e)=>s+e.qty,0);
   return {salvage, remelt, total:salvage+remelt};
 }
 
@@ -1299,27 +1339,22 @@ async function pullFromServer(){
       const lr=await fetch(serverUrl+'/api/tracking/labels-all',{signal:AbortSignal.timeout(30000)});
       if(lr.ok){const lj=await lr.json();if(lj.ok&&lj.labels){const sl=lj.labels;const sids=new Set(sl.map(l=>l.id));const lo=state.labels.filter(l=>!sids.has(l.id));if(lo.length>0)pushLabelsToServer(lo);state.labels=sl;saveLocal();}}
     }catch(e2){}
-    // STEP 3: Recent scans fast
+    // STEP 3: Recent scans fast (for scan UI only — limited to last 500)
     try{
       const sr=await fetch(serverUrl+'/api/tracking/scans-recent',{signal:AbortSignal.timeout(20000)});
       if(sr.ok){
         const sj=await sr.json();
-        if(!sj.ok){ console.warn('scans-recent returned error:',sj.error); }
         if(sj.ok&&sj.scans){
           const ns=sj.scans.map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number,labelNumber:s.labelNumber||s.label_number}));
           const serverIds=new Set(ns.map(s=>s.id));
-          // Always keep local scans not yet confirmed on server
           const localOnly=state.scans.filter(s=>!serverIds.has(s.id));
-          // Remove _local flag from scans now confirmed on server
           ns.forEach(s=>{ delete s._local; });
           state.scans=[...ns,...localOnly];
-          // Load server-computed alerts (ALL scans, Apr 27+ only)
           try{
             const ar=await fetch(serverUrl+'/api/tracking/alerts',{signal:AbortSignal.timeout(8000)});
             if(ar.ok){const aj=await ar.json();if(aj.ok&&Array.isArray(aj.alerts))state.alerts=aj.alerts;else checkAlerts();}
             else checkAlerts();
           }catch(ae){ checkAlerts(); }
-          // State updated silently — no auto-render to prevent screen flipping
         }
       }
     }catch(e3){ console.warn('STEP 3 scans failed:',e3?.message||e3); }
@@ -1328,6 +1363,19 @@ async function pullFromServer(){
       const wr=await fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)});
       if(wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){state.wastage=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));saveLocal();}}
     }catch(e35){}
+    // STEP 3.6: Full scan summary (aggregated — NO LIMIT — correct source for all reports)
+    try{
+      const ss=await fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)});
+      if(ss.ok){
+        const sj=await ss.json();
+        if(sj.ok){
+          state.scanSummary  = sj.summary   || {};
+          state.wastageSummary = sj.wastage  || {};
+          state.dispatchedSummary = sj.dispatched || {};
+          saveLocal();
+        }
+      }
+    }catch(e36){ console.warn('STEP 3.6 scan-summary failed:',e36?.message||e36); }
     // STEP 4: Full state fallback (scans + alerts + stageClosure)
     try{
       const r=await fetch(serverUrl+'/api/tracking/state',{signal:AbortSignal.timeout(30000)});
@@ -1765,7 +1813,10 @@ function calcDispatchDate(batch){
 }
 
 // ── WIP Breakdown — stage-wise per batch ──────────────────────────────────
-// Pre-AIM : Gross (DPR) − AIM Scan In − AIM Salvage − AIM Remelt  → "Unsorted WIP"
+// Convention: AIM salvage/remelt happens AFTER scan-in (everything is scanned,
+// then sorted). Therefore wastage subtractions apply at AIM stage and beyond,
+// NOT at pre-AIM stage.
+// Pre-AIM : Gross (DPR) − AIM Scan In                                          → "Unsorted WIP"
 // AIM     : AIM Scan In − AIM Scan Out − AIM Salvage − AIM Remelt
 // Printing: Print Scan In (=AIM Out) − Print Scan Out − Print Salvage − Print Remelt  (PTD only)
 // PI      : PI Scan In (=Print Out) − PI Scan Out − PI Salvage − PI Remelt            (PTD only)
@@ -1774,16 +1825,27 @@ function getBatchWIPBreakdown(batchNo){
   const batch = getBatch(batchNo);
   if(!batch) return null;
   const sz = batch.size;
+  const useSummary = hasScanSummary();
 
-  // Raw scan counts
-  const aimInBoxes   = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
-  const aimOutBoxes  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='out').length;
-  const printInBoxes = aimOutBoxes; // AIM Out feeds Printing
-  const printOutBoxes= state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='printing'&&s.type==='out').length;
-  const piInBoxes    = printOutBoxes; // Print Out feeds PI
-  const piOutBoxes   = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='pi'&&s.type==='out').length;
-  const packInBoxes  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='in').length;
-  const packOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+  // Raw scan counts — use full history from scanSummary when available
+  let aimInBoxes, aimOutBoxes, printOutBoxes, piOutBoxes, packInBoxes, packOutBoxes;
+  if (useSummary) {
+    const localExtra = (dept, type) =>
+      state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type===type&&sc._local).length;
+    aimInBoxes   = _ss(batchNo,'aim').in         + localExtra('aim','in');
+    aimOutBoxes  = _ss(batchNo,'aim').out        + localExtra('aim','out');
+    printOutBoxes= _ss(batchNo,'printing').out   + localExtra('printing','out');
+    piOutBoxes   = _ss(batchNo,'pi').out          + localExtra('pi','out');
+    packInBoxes  = _ss(batchNo,'packing').in      + localExtra('packing','in');
+    packOutBoxes = _ss(batchNo,'packing').out     + localExtra('packing','out');
+  } else {
+    aimInBoxes   = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
+    aimOutBoxes  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='out').length;
+    printOutBoxes= state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='printing'&&s.type==='out').length;
+    piOutBoxes   = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='pi'&&s.type==='out').length;
+    packInBoxes  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='in').length;
+    packOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+  }
 
   // Convert to Lakhs
   const aimIn    = boxToLakh(aimInBoxes,   sz);
@@ -1793,23 +1855,17 @@ function getBatchWIPBreakdown(batchNo){
   const packIn   = boxToLakh(packInBoxes,  sz);
   const packOut  = boxToLakh(packOutBoxes, sz);
 
-  // Wastage per stage
   const wAIM   = getTotalWastage(batchNo,'aim');
   const wPrint = getTotalWastage(batchNo,'printing');
   const wPI    = getTotalWastage(batchNo,'pi');
-
-  // Gross production from DPR
   const grossProd = batch.actualProd || batch.actualQty || 0;
 
-  // Stage WIPs — kept for per-dept display (accountability proxies intact)
-  const preAIM   = Math.max(0, grossProd - aimIn - wAIM.salvage - wAIM.remelt);
+  const preAIM   = Math.max(0, grossProd - aimIn);
   const aimWIP   = Math.max(0, aimIn - aimOut - wAIM.salvage - wAIM.remelt);
   const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - wPrint.salvage - wPrint.remelt) : 0;
   const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt) : 0;
   const packWIP  = Math.max(0, packIn - packOut);
 
-  // Overall WIP = (Gross − total wastage all depts) − Pack Out
-  // Do NOT sum stage WIPs — AIM wastage would be double-counted
   const totalSalvageWIP = wAIM.salvage + wPrint.salvage + wPI.salvage;
   const totalRemeltWIP  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
   const totalWIP = Math.max(0, grossProd - totalSalvageWIP - totalRemeltWIP - packOut);
@@ -1823,58 +1879,62 @@ function getBatchWIPBreakdown(batchNo){
 
 function getBatchAGrade(batchNo, stage){
   // A-Grade formula: OUT / (OUT + Salvage + Remelt) * 100
-  // WIP = IN - OUT - Salvage - Remelt is excluded from denominator
+  // Uses scanSummary (full history, no LIMIT) when available
+  // Falls back to state.scans (recent only) if scanSummary not yet loaded
   const batch = getBatch(batchNo);
   if(!batch) return {inspected:0,aGrade:0,pct:0,salvage:0,remelt:0,wip:0};
 
+  const useSummary = hasScanSummary();
+
   if(stage==='unprinted'){
-    const aimInBoxes  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
-    const aimOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='out').length;
+    let aimInBoxes, aimOutBoxes;
+    if (useSummary) {
+      const s = _ss(batchNo,'aim');
+      aimInBoxes  = s.in  + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length;
+      aimOutBoxes = s.out + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='out'&&sc._local).length;
+    } else {
+      aimInBoxes  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
+      aimOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='out').length;
+    }
     const w = getTotalWastage(batchNo,'aim');
     const aimIn  = boxToLakh(aimInBoxes,  batch.size);
     const aGrade = boxToLakh(aimOutBoxes, batch.size);
-    const inspected = aGrade + w.total; // OUT + wastage = what was actually processed
-    const wip = Math.max(0, aimIn - inspected); // still pending
+    const inspected = aGrade + w.total;
+    const wip = Math.max(0, aimIn - inspected);
     return { aimIn, inspected, aGrade, salvage:w.salvage, remelt:w.remelt, wip,
              pct: inspected>0 ? (aGrade/inspected*100) : 0 };
   }
 
   if(stage==='printed'){
-    // AIM stage
-    const aimOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='out').length;
-    const aimOut = boxToLakh(aimOutBoxes, batch.size);
-    const wAIM = getTotalWastage(batchNo,'aim');
-    const aimInspected = aimOut + wAIM.total; // denominator: AIM Out + AIM Sal + AIM Rem
-
-    // Printing stage
-    const printOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='printing'&&s.type==='out').length;
+    let aimOutBoxes, printOutBoxes, piOutBoxes;
+    if (useSummary) {
+      aimOutBoxes   = _ss(batchNo,'aim').out       + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='out'&&sc._local).length;
+      printOutBoxes = _ss(batchNo,'printing').out  + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='printing'&&sc.type==='out'&&sc._local).length;
+      piOutBoxes    = _ss(batchNo,'pi').out         + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='pi'&&sc.type==='out'&&sc._local).length;
+    } else {
+      aimOutBoxes   = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='out').length;
+      printOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='printing'&&s.type==='out').length;
+      piOutBoxes    = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='pi'&&s.type==='out').length;
+    }
+    const aimOut   = boxToLakh(aimOutBoxes,   batch.size);
     const printOut = boxToLakh(printOutBoxes, batch.size);
+    const piOut    = boxToLakh(piOutBoxes,    batch.size);
+    const wAIM   = getTotalWastage(batchNo,'aim');
     const wPrint = getTotalWastage(batchNo,'printing');
+    const wPI    = getTotalWastage(batchNo,'pi');
+    const aimInspected   = aimOut   + wAIM.total;
     const printInspected = printOut + wPrint.total;
-
-    // PI stage — final A-Grade
-    const piOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='pi'&&s.type==='out').length;
-    const piOut = boxToLakh(piOutBoxes, batch.size);
-    const wPI = getTotalWastage(batchNo,'pi');
-    const piInspected = piOut + wPI.total;
-
-    // WIP at each stage
+    const piInspected    = piOut    + wPI.total;
     const printWIP = Math.max(0, aimOut - printInspected);
     const piWIP    = Math.max(0, printOut - piInspected);
-
-    // Overall PTD A-Grade:
-    // Numerator   = AIM Out − Print Salvage − Print Remelt − PI Salvage − PI Remelt
-    // Denominator = AIM Out + AIM Salvage + AIM Remelt
     const downstreamWastage = wPrint.salvage + wPrint.remelt + wPI.salvage + wPI.remelt;
     const netAGrade = Math.max(0, aimOut - downstreamWastage);
     const totalSalvage = wAIM.salvage + wPrint.salvage + wPI.salvage;
     const totalRemelt  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
-
     return {
       aimIn: aimOut, inspected: aimInspected, aGrade: netAGrade, wip: printWIP + piWIP,
       salvage: totalSalvage, remelt: totalRemelt,
       pct: aimInspected>0 ? (netAGrade/aimInspected*100) : 0,
-      // Stage-wise breakdown for display
       stages: {
         aim:   { out:aimOut,   wastage:wAIM.total,   inspected:aimInspected,   pct:aimInspected>0?(aimOut/aimInspected*100):0 },
         print: { out:printOut, wastage:wPrint.total,  inspected:printInspected, pct:printInspected>0?(printOut/printInspected*100):0 },
@@ -2302,15 +2362,32 @@ function renderDashboard(){
   const totalLabels=state.labels.filter(l=>!l.voided&&!l.isOrange&&monthBatchNos.has(l.batchNumber)).length;
   const monthAlerts=state.alerts.filter(a=>monthBatchNos.has(a.batchNumber));
   const totalAlerts=monthAlerts.length;
-  const packedBoxes=state.scans.filter(s=>s.dept==='packing'&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
-  const dispBoxes=state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+  // Use _ss() for full history counts — fixes LIMIT 2000 gap on dashboard KPIs
+  let packedBoxes=0, dispBoxes=0;
+  if (hasScanSummary()) {
+    monthBatchNos.forEach(bn => {
+      packedBoxes += _ss(bn,'packing').out  + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
+      dispBoxes   += _ss(bn,'dispatch').out + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='dispatch'&&sc.type==='out'&&sc._local).length;
+    });
+  } else {
+    packedBoxes = state.scans.filter(s=>s.dept==='packing'&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+    dispBoxes   = state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+  }
 
   // WIP by stage — filtered by month batches
   const stages=['aim','printing','pi','packing'];
   const stageBoxes={};
   stages.forEach(dept=>{
-    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
-    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+    let inn=0, out=0;
+    if (hasScanSummary()) {
+      monthBatchNos.forEach(bn => {
+        inn += _ss(bn,dept).in  + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+        out += _ss(bn,dept).out + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+      });
+    } else {
+      inn = state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
+      out = state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+    }
     stageBoxes[dept]=Math.max(0,inn-out);
   });
 
@@ -3938,8 +4015,13 @@ function renderReportH(){ window._activeReport = renderReportH;
 
   batches.forEach(b=>{
     getTransitions(b).forEach(([from,to])=>{
-      const fromOut = state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===from&&s.type==='out').length;
-      const toIn    = state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===to  &&s.type==='in' ).length;
+      // Use scanSummary (full history) when available — fixes LIMIT 2000 gap issue
+      const fromOut = hasScanSummary()
+        ? (_ss(b.batchNumber,from).out + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===from&&sc.type==='out'&&sc._local).length)
+        : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===from&&s.type==='out').length;
+      const toIn = hasScanSummary()
+        ? (_ss(b.batchNumber,to).in + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===to&&sc.type==='in'&&sc._local).length)
+        : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===to&&s.type==='in').length;
       const gap     = fromOut - toIn;
       if(gap > 0){
         totalGaps++;
@@ -4096,9 +4178,6 @@ function renderReportH(){ window._activeReport = renderReportH;
 
   document.getElementById('report-output').innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
-  // Restore focus to search box if it was active
-  const _srchBox = document.getElementById('rptA-search');
-  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function exportReportH(){
@@ -4109,8 +4188,12 @@ function exportReportH(){
   const rows=[['Batch','Customer','Machine','Size','From Dept','To Dept','Scanned OUT','Scanned IN','Gap (Boxes)','Gap (L)']];
   batches.forEach(b=>{
     getTransitions(b).forEach(([from,to])=>{
-      const fromOut=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===from&&s.type==='out').length;
-      const toIn=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===to&&s.type==='in').length;
+      const fromOut = hasScanSummary()
+        ? (_ss(b.batchNumber,from).out + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===from&&sc.type==='out'&&sc._local).length)
+        : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===from&&s.type==='out').length;
+      const toIn = hasScanSummary()
+        ? (_ss(b.batchNumber,to).in + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===to&&sc.type==='in'&&sc._local).length)
+        : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===to&&s.type==='in').length;
       const gap=fromOut-toIn;
       if(gap>0) rows.push([b.batchNumber,b.customer||'',b.machineId||'',b.size,DEPT_LABELS[from]||from,DEPT_LABELS[to]||to,fromOut,toIn,gap,parseFloat(fmt(boxToLakh(gap,b.size)))]);
     });
@@ -4255,9 +4338,6 @@ function renderReportG(){ window._activeReport = renderReportG;
 
   document.getElementById('report-output').innerHTML = html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
-  // Restore focus to search box if it was active
-  const _srchBox = document.getElementById('rptA-search');
-  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function exportReportG(){
@@ -4306,10 +4386,12 @@ function renderReportF(){ window._activeReport = renderReportF;
 
   const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
 
-  // All month batches with any DPR production entered
+  // All month batches with any DPR production entered — use scanSummary for batch discovery
   let allRelevantBatches = [...new Set([
     ...state.batches.filter(b=>monthBatchNos.has(b.batchNumber)&&(b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
-    ...state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber)
+    ...(hasScanSummary()
+      ? [...monthBatchNos].filter(bn => _ss(bn,'aim').in > 0)
+      : state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))
   ])].filter(Boolean);
 
   // Machine filter
@@ -4326,21 +4408,28 @@ function renderReportF(){ window._activeReport = renderReportF;
   const allMachinesF = [...new Set(monthBatchesArr.map(b=>b.machineId).filter(Boolean))].sort();
   const allBatchesF  = [...new Set([
     ...monthBatchesArr.filter(b=>(b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
-    ...state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber)
+    ...(hasScanSummary()
+      ? [...monthBatchNos].filter(bn => _ss(bn,'aim').in > 0)
+      : state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))
   ])].filter(Boolean).sort();
 
   let exceptions = 0;
   let rows = '';
-  const statusMap = {};   // batchNo -> exception type, for status filter
+  const statusMap = {};
+
+  const _getAimIn  = bn => hasScanSummary() ? (_ss(bn,'aim').in      + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)      : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length;
+  const _getPackOut= bn => hasScanSummary() ? (_ss(bn,'packing').out + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='out').length;
+  // aimInToday still from state.scans (timestamp needed, not just count)
+  const _getAimInToday = bn => state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in'&&s.ts?.slice(0,10)===todayStr).length;
 
   allRelevantBatches.forEach(batchNo => {
     const batch = getBatch(batchNo);
     if(!batch) return;
     const dprQtyL   = batch.actualProd || batch.actualQty || 0;
     const dprBoxes  = dprQtyL > 0 ? Math.round(lakhToBox(dprQtyL, batch.size)) : 0;
-    const aimInTotal  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
-    const aimInToday  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in'&&s.ts?.slice(0,10)===todayStr).length;
-    const packOutTotal = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+    const aimInTotal   = _getAimIn(batchNo);
+    const aimInToday   = _getAimInToday(batchNo);
+    const packOutTotal = _getPackOut(batchNo);
     const diff = aimInTotal - dprBoxes;
     const hasException = dprBoxes===0 && aimInTotal>0 ? 'NO_DPR'
                        : aimInTotal > dprBoxes         ? 'OVER_SCAN'
@@ -4362,9 +4451,9 @@ function renderReportF(){ window._activeReport = renderReportF;
     const batch = getBatch(batchNo); if(!batch) return;
     const dprQtyL   = batch.actualProd || batch.actualQty || 0;
     const dprBoxes  = dprQtyL > 0 ? Math.round(lakhToBox(dprQtyL, batch.size)) : 0;
-    const aimInTotal  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
-    const aimInToday  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in'&&s.ts?.slice(0,10)===todayStr).length;
-    const packOutTotal = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+    const aimInTotal   = _getAimIn(batchNo);
+    const aimInToday   = _getAimInToday(batchNo);
+    const packOutTotal = _getPackOut(batchNo);
     const diff = aimInTotal - dprBoxes;
     const hasException = statusMap[batchNo];
     const statusBadge = hasException==='OK'
@@ -4458,9 +4547,6 @@ function renderReportF(){ window._activeReport = renderReportF;
 
   document.getElementById('report-output').innerHTML = html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
-  // Restore focus to search box if it was active
-  const _srchBox = document.getElementById('rptA-search');
-  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function exportReportF(){
@@ -4472,8 +4558,8 @@ function exportReportF(){
     const b = getBatch(batchNo); if(!b) return;
     const dprL = b.actualQty||0, dprBox = dprL>0?lakhToBox(dprL,b.size):0;
     const aimToday = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in'&&s.ts?.slice(0,10)===todayStr).length;
-    const aimTotal = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
-    const packOut  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out'&&s.ts?.slice(0,10)===todayStr).length;
+    const aimTotal = hasScanSummary() ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
+    const packOut  = hasScanSummary() ? (_ss(batchNo,'packing').out + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
     const status   = dprBox===0&&aimToday>0?'No DPR Entry':aimToday>dprBox?'Over-scan':aimToday<dprBox&&dprBox>0?'Under-scan':'Matched';
     rows.push([batchNo,b.customer||'',b.size,dprL,dprBox,aimToday,aimTotal,packOut,status]);
   });
@@ -4492,7 +4578,15 @@ function renderReportB(){ window._activeReport = renderReportB;
 
   // Filter to month batches only
   const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
-  const allBatchNos = [...new Set(state.scans.filter(s=>['aim','printing','pi','packing'].includes(s.dept)&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))].sort();
+  // Build batch list from scanSummary (full history) when available
+  let allBatchNos;
+  if (hasScanSummary()) {
+    allBatchNos = [...monthBatchNos].filter(bn =>
+      ['aim','printing','pi','packing'].some(d => (_ss(bn,d).in > 0 || _ss(bn,d).out > 0))
+    ).sort();
+  } else {
+    allBatchNos = [...new Set(state.scans.filter(s=>['aim','printing','pi','packing'].includes(s.dept)&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))].sort();
+  }
   const depts=['aim','printing','pi','packing'];
   const activeDepts = filterDept ? [filterDept] : depts;
 
@@ -4521,9 +4615,14 @@ function renderReportB(){ window._activeReport = renderReportB;
 
   let anyData = false;
   activeDepts.forEach(dept=>{
-    const inScans=state.scans.filter(s=>s.dept===dept&&s.type==='in');
-    const outScans=state.scans.filter(s=>s.dept===dept&&s.type==='out');
-    let batchSet=[...new Set(inScans.map(s=>s.batchNumber))];
+    // Build batch set from scanSummary (full) or fall back to state.scans
+    let batchSet;
+    if (hasScanSummary()) {
+      batchSet = [...monthBatchNos].filter(bn => _ss(bn,dept).in > 0 || _ss(bn,dept).out > 0);
+    } else {
+      const inScansAll = state.scans.filter(s=>s.dept===dept&&s.type==='in');
+      batchSet = [...new Set(inScansAll.map(s=>s.batchNumber))];
+    }
     if(filterBatch) batchSet = batchSet.filter(bn=>bn===filterBatch);
     if(!batchSet.length) return;
     anyData = true;
@@ -4533,18 +4632,24 @@ function renderReportB(){ window._activeReport = renderReportB;
       <thead><tr><th>Batch</th><th>Customer</th><th>Prod WIP (L)</th><th>Boxes IN</th><th>Boxes OUT</th>${hasWastage?'<th>Wastage (L)</th>':''}<th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead><tbody>`;
     batchSet.forEach(batchNo=>{
       const batch=getBatch(batchNo);
-      const inn=inScans.filter(s=>s.batchNumber===batchNo).length;
-      const out=outScans.filter(s=>s.batchNumber===batchNo).length;
+      // Use _ss() for accurate counts from full history
+      const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+      const localOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+      const inn = hasScanSummary() ? (_ss(batchNo,dept).in  + localIn)  : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
+      const out = hasScanSummary() ? (_ss(batchNo,dept).out + localOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length;
       const w = hasWastage ? getTotalWastage(batchNo, dept) : {total:0, salvage:0, remelt:0};
       const ps = PACK_SIZES[String(batch?.size||'0')]||1;
       const wastageBoxes = hasWastage ? Math.round(w.total/ps) : 0;
       const wip=Math.max(0, inn - out - wastageBoxes);
       const wipQty=boxToLakh(wip,batch?.size||'0');
       const grossProd=batch?.actualProd||0;
-      const aimInBoxes=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
+      const aimInBoxes = hasScanSummary()
+        ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
+        : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
       const aimInQty=boxToLakh(aimInBoxes,batch?.size||'0');
       const prodWip=Math.max(0,grossProd-aimInQty);
-      const firstIn=inScans.filter(s=>s.batchNumber===batchNo).sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
+      // firstIn uses state.scans for timestamp (acceptable — only for display, not calculation)
+      const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
       const hrs=firstIn?hoursAgo(firstIn.ts):0;
       const alerts=state.alerts.filter(a=>a.batchNumber===batchNo&&a.dept===dept).length;
       html+=`<tr>
@@ -4568,9 +4673,6 @@ function renderReportB(){ window._activeReport = renderReportB;
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportB()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
-  // Restore focus to search box if it was active
-  const _srchBox = document.getElementById('rptA-search');
-  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function renderReportC(){ window._activeReport = renderReportC;
@@ -4626,7 +4728,8 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
     batches.forEach(b=>{
       const machine = state.machineMaster.find(m=>m.id===b.machineId||m.machineId===b.machineId);
       const dailyCap = machine?.dailyTarget || machine?.yTarget || machine?.cap || 10;
-      const packedOut=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+      const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
+      const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
       const packedQty=boxToLakh(packedOut,b.size);
       const grossProd=b.actualProd||b.actualQty||0;
       const remainingWIP = Math.max(0, grossProd - packedQty);
@@ -4651,9 +4754,6 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
   html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
   reportEl.innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
-  // Restore focus to search box if it was active
-  const _srchBox = document.getElementById('rptA-search');
-  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function renderReportD(){ window._activeReport = renderReportD;
@@ -4664,8 +4764,19 @@ function renderReportD(){ window._activeReport = renderReportD;
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageWIP={};
   stages.forEach(dept=>{
-    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
-    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+    // Use _ss() for full history — sum across all month batches
+    let inn=0, out=0;
+    if (hasScanSummary()) {
+      monthBatchNos.forEach(bn => {
+        const localIn  = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+        const localOut = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+        inn += _ss(bn,dept).in  + localIn;
+        out += _ss(bn,dept).out + localOut;
+      });
+    } else {
+      inn = state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
+      out = state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+    }
     stageWIP[dept]=Math.max(0,inn-out);
   });
   const totalAGrade=monthBatches.reduce((s,b)=>{
@@ -4699,9 +4810,6 @@ function renderReportD(){ window._activeReport = renderReportD;
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
-  // Restore focus to search box if it was active
-  const _srchBox = document.getElementById('rptA-search');
-  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function renderReportA(){ window._activeReport = renderReportA;
@@ -4722,8 +4830,8 @@ function renderReportA(){ window._activeReport = renderReportA;
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
       <div class="section-title" style="margin-bottom:0">Report A — Complete Batch Tracking (Full Duration)</div>
       <div style="display:flex;align-items:center;gap:8px">
-        <input type="text" id="rptA-search" class="form-control" placeholder="🔍 Search batch / customer..." 
-          style="width:240px;font-size:12px" 
+        <input type="text" id="rptA-search" class="form-control" placeholder="🔍 Search batch / customer..."
+          style="width:240px;font-size:12px"
           value="${window._rptASearch||''}"
           oninput="window._rptASearch=this.value;window._rptABatch='';renderReportA()"
           onkeydown="if(event.key==='Escape'){window._rptASearch='';window._rptABatch='';renderReportA()}"
@@ -4743,6 +4851,8 @@ function renderReportA(){ window._activeReport = renderReportA;
     const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
     const labels=getLabelsByBatch(b.batchNumber);
     const dispatched=state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0);
+    // batchScans from state.scans — used ONLY for day-wise timestamps (limited but acceptable for date grouping)
+    // Totals use _ss() (full history, no LIMIT)
     const batchScans=state.scans.filter(s=>s.batchNumber===b.batchNumber);
 
     // Build day-wise scan history
@@ -4761,13 +4871,6 @@ function renderReportA(){ window._activeReport = renderReportA;
             return `<tr style="border-bottom:1px solid var(--border)">
               <td style="padding:5px 10px;font-family:var(--mono);font-size:11px">${date}</td>
               ${getBatchFlow(b).map(dept=>{
-                if(dept==='production'){
-                  // Production: show labels generated on this date
-                  const dayLabels = getLabelsByBatch(b.batchNumber).filter(l=>(l.createdAt||l.ts||'').slice(0,10)===date).length;
-                  return `<td style="padding:5px 10px;text-align:center;font-family:var(--mono);font-size:11px;${dayLabels>0?'color:var(--accent)':'color:var(--text3)'}">
-                    ${dayLabels>0?dayLabels+' boxes':'—'}
-                  </td>`;
-                }
                 const inn=dayScans.filter(s=>s.dept===dept&&s.type==='in').length;
                 const out=dayScans.filter(s=>s.dept===dept&&s.type==='out').length;
                 const hasActivity=inn>0||out>0;
@@ -4781,12 +4884,11 @@ function renderReportA(){ window._activeReport = renderReportA;
           <tfoot><tr style="background:var(--surface3);font-weight:600">
             <td style="padding:6px 10px;font-size:11px">TOTAL</td>
             ${getBatchFlow(b).map(dept=>{
-              if(dept==='production'){
-                const totalLbls = getLabelsByBatch(b.batchNumber).length;
-                return `<td style="padding:6px 10px;text-align:center;font-family:var(--mono);font-size:11px;color:var(--accent)">${totalLbls} boxes</td>`;
-              }
-              const inn=batchScans.filter(s=>s.dept===dept&&s.type==='in').length;
-              const out=batchScans.filter(s=>s.dept===dept&&s.type==='out').length;
+              // Use _ss() for totals — full history, no LIMIT
+              const localIn  = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+              const localOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+              const inn = hasScanSummary() ? (_ss(b.batchNumber,dept).in  + localIn)  : batchScans.filter(s=>s.dept===dept&&s.type==='in').length;
+              const out = hasScanSummary() ? (_ss(b.batchNumber,dept).out + localOut) : batchScans.filter(s=>s.dept===dept&&s.type==='out').length;
               return `<td style="padding:6px 10px;text-align:center;font-family:var(--mono);font-size:11px">IN:${inn} / OUT:${out}</td>`;
             }).join('')}
           </tr></tfoot>
@@ -4812,28 +4914,17 @@ function renderReportA(){ window._activeReport = renderReportA;
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportA()">📥 Export Excel</button></div>`;
   document.getElementById('report-output').innerHTML=html;
 const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
-  // Restore focus to search box if it was active
-  const _srchBox = document.getElementById('rptA-search');
-  if(_srchBox && window._rptASearch) { _srchBox.focus(); _srchBox.setSelectionRange(_srchBox.value.length,_srchBox.value.length); }
 }
 
 function renderBatchFlowSummary(batch){
   const flow=getBatchFlow(batch);
-  // Total boxes = number of labels generated for this batch
-  const totalBoxes = getLabelsByBatch(batch.batchNumber).length || 0;
   return `<div class="flex gap-8 flex-wrap">
   ${flow.map(dept=>{
-    const inn=state.scans.filter(s=>s.batchNumber===batch.batchNumber&&s.dept===dept&&s.type==='in').length;
-    const out=state.scans.filter(s=>s.batchNumber===batch.batchNumber&&s.dept===dept&&s.type==='out').length;
+    const localIn  = state.scans.filter(sc=>sc.batchNumber===batch.batchNumber&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+    const localOut = state.scans.filter(sc=>sc.batchNumber===batch.batchNumber&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+    const inn = hasScanSummary() ? (_ss(batch.batchNumber,dept).in  + localIn)  : state.scans.filter(s=>s.batchNumber===batch.batchNumber&&s.dept===dept&&s.type==='in').length;
+    const out = hasScanSummary() ? (_ss(batch.batchNumber,dept).out + localOut) : state.scans.filter(s=>s.batchNumber===batch.batchNumber&&s.dept===dept&&s.type==='out').length;
     const closed=isStageComplete(batch.batchNumber,dept);
-    // Production box: show total box count for this batch (from labels)
-    if(dept==='production'){
-      return `<div style="background:var(--surface2);border:2px solid var(--accent);border-radius:6px;padding:6px 10px;text-align:center;min-width:80px">
-        <div class="text-sm fw-bold">${DEPT_LABELS[dept]}</div>
-        <div class="mono text-sm" style="color:var(--accent);font-weight:700">${totalBoxes} Boxes</div>
-        <div class="text-sm ${totalBoxes>0?'green':''}">${totalBoxes>0?'✅ Done':'⏳ Open'}</div>
-      </div>`;
-    }
     return `<div style="background:${closed?'var(--accent2-light)':'var(--surface2)'};border:1px solid ${closed?'var(--accent2)':'var(--border)'};border-radius:6px;padding:6px 10px;text-align:center">
       <div class="text-sm fw-bold">${DEPT_LABELS[dept]}</div>
       <div class="mono text-sm">IN:${inn} OUT:${out}</div>
@@ -4848,6 +4939,9 @@ function normMcId(id){ return (id||'').replace(/[.\s]/g,'').toUpperCase(); }
 function renderReportE(){ window._activeReport = renderReportE;
   // Build all data first (same computation as before)
   const filterDate = window._rptEDate || '';
+  // Build date list for filter — use state.scans timestamps (date grouping is display only)
+  // Note: when filterDate is set, _ss() still returns full totals (not per-date)
+  // filterDate in Report E is therefore a display aid only — underlying totals always use _ss()
   const allScanDates = [...new Set(state.scans.map(s=>s.ts?.slice(0,10)).filter(Boolean))].sort();
 
   const rows=[];
@@ -4856,12 +4950,18 @@ function renderReportE(){ window._activeReport = renderReportE;
       // Match batches by normalised machine ID (MC.20 == MC20) — month-filtered
       const batches=getTrkMonthBatches().filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc));
       batches.forEach(b=>{
-        const scansForBatch = filterDate
-          ? state.scans.filter(s=>s.batchNumber===b.batchNumber && s.ts?.slice(0,10)===filterDate)
-          : state.scans.filter(s=>s.batchNumber===b.batchNumber);
         const grossProd=b.actualProd||0;
-        const aimOut=scansForBatch.filter(s=>s.dept==='aim'&&s.type==='out').length;
+        const useSS = hasScanSummary();
+        // Fallback dataset used when scan-summary API hasn't loaded — covers all 5 fallback ternaries below
+        const scansForBatch = state.scans.filter(s=>s.batchNumber===b.batchNumber);
+        // localExtra: only counts scans just done on this device, not yet in server summary
+        const localExtra = (dept, type) =>
+          state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===dept&&sc.type===type&&sc._local).length;
+        const aimOut  = useSS ? (_ss(b.batchNumber,'aim').out        + localExtra('aim','out'))
+                               : scansForBatch.filter(s=>s.dept==='aim'&&s.type==='out').length;
         const aimOutQty=boxToLakh(aimOut,b.size);
+        const aimIn_c = useSS ? (_ss(b.batchNumber,'aim').in         + localExtra('aim','in'))
+                               : scansForBatch.filter(s=>s.dept==='aim'&&s.type==='in').length;
         const aimW=getTotalWastage(b.batchNumber,'aim');
         const aimIn=aimOutQty+aimW.total;
         const manW=getTotalWastage(b.batchNumber,'manual');
@@ -4869,15 +4969,21 @@ function renderReportE(){ window._activeReport = renderReportE;
         const totalAG=ag.aGrade;
         const aGradePct=ag.pct;
         const wip=Math.max(0,grossProd-aimIn);
-        const printingTD=b.isPrinted?boxToLakh(scansForBatch.filter(s=>s.dept==='printing'&&s.type==='out').length,b.size):0;
-        const piOut=b.isPrinted?boxToLakh(scansForBatch.filter(s=>s.dept==='pi'&&s.type==='out').length,b.size):0;
+        const printingTD_c = useSS ? (_ss(b.batchNumber,'printing').out + localExtra('printing','out'))
+                                    : scansForBatch.filter(s=>s.dept==='printing'&&s.type==='out').length;
+        const printingTD=b.isPrinted?boxToLakh(printingTD_c,b.size):0;
+        const piOut_c   = useSS ? (_ss(b.batchNumber,'pi').out           + localExtra('pi','out'))
+                                 : scansForBatch.filter(s=>s.dept==='pi'&&s.type==='out').length;
+        const piOut=b.isPrinted?boxToLakh(piOut_c,b.size):0;
         const printW=getTotalWastage(b.batchNumber,'printing');
         const piW=getTotalWastage(b.batchNumber,'pi');
-        const packUnptd=!b.isPrinted?boxToLakh(scansForBatch.filter(s=>s.dept==='packing'&&s.type==='out').length,b.size):0;
-        const packPtd=b.isPrinted?boxToLakh(scansForBatch.filter(s=>s.dept==='packing'&&s.type==='out').length,b.size):0;
+        const packUnptd_c = useSS ? (_ss(b.batchNumber,'packing').out + localExtra('packing','out'))
+                                   : scansForBatch.filter(s=>s.dept==='packing'&&s.type==='out').length;
+        const packUnptd=!b.isPrinted?boxToLakh(packUnptd_c,b.size):0;
+        const packPtd=b.isPrinted?boxToLakh(packUnptd_c,b.size):0;
         const disp=state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber&&(!filterDate||r.ts?.slice(0,10)===filterDate)).reduce((s,r)=>s+r.qty,0);
         rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,
-          plannedQty:b.qty||0,
+          plannedQty:b.qty||0, _plannedQty:b.qty||0,
           grossProd:fmt(grossProd),_grossProd:grossProd,
           aimRunTotal:fmt(aimIn),_aimRunTotal:aimIn,
           aimSalvage:fmt(aimW.salvage),_aimSalvage:aimW.salvage,
@@ -4910,13 +5016,14 @@ function renderReportE(){ window._activeReport = renderReportE;
   const sumRows = (arr, k) => arr.reduce((a,r)=>a+(r['_'+k]||0),0);
 
   function buildSubtotalRow(arr, label, style='background:#e8f5e9;color:#1a3a2e;font-weight:800') {
-    const g       = sumRows(arr,'grossProd');
-    const aimInsp = sumRows(arr,'aimRunTotal');   // AIM Out + Salvage + Remelt = total inspected
-    const aimOut  = sumRows(arr,'aimAGrade');      // AIM Out Lakhs
-    const ag      = sumRows(arr,'totalAGrade');    // Final A-Grade qty
-    // Correct denominator = total inspected, NOT grossProd
-    const aimPct   = aimInsp>0 ? (aimOut/aimInsp*100).toFixed(1)+'%' : '—';
-    const totalPct = aimInsp>0 ? (ag/aimInsp*100).toFixed(1)+'%'     : '—';
+    const g         = sumRows(arr,'grossProd');
+    const aimInsp   = sumRows(arr,'aimRunTotal');   // = AIM Out + Salvage + Remelt = total through AIM
+    const aimOut    = sumRows(arr,'aimAGrade');      // = AIM Out Lakhs
+    const ag        = sumRows(arr,'totalAGrade');    // = final A-Grade qty (from getBatchAGrade)
+    // A-Grade % denominator = total inspected (aimRunTotal), NOT grossProd
+    // This matches Report G plant formula: cumPct = totalAGradeQty / totalInspected * 100
+    const aimPct    = aimInsp>0 ? (aimOut/aimInsp*100).toFixed(1)+'%' : '—';
+    const totalPct  = aimInsp>0 ? (ag/aimInsp*100).toFixed(1)+'%'     : '—';
     return `<tr style="${style};font-size:12px">
       <td colspan="4" style="padding:5px 10px;font-family:sans-serif;font-size:11px;letter-spacing:.5px;text-transform:uppercase">${label}</td>
       <td colspan="3"></td>
@@ -4945,20 +5052,20 @@ function renderReportE(){ window._activeReport = renderReportE;
       const mcRows = flRows.filter(r=>r.machine===mc);
       // Machine header
       tableRows += `<tr class="grp-hdr"><td colspan="27" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
-      tableRows += mcRows.map(r=>`<tr>
+      tableRows += mcRows.map(r=>`<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}">
         <td class="sticky-col" style="left:0;min-width:70px;border-right:1px solid #d4b896">${r.machine}</td>
         <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
         <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}</td>
         <td class="sticky-col" style="left:210px;min-width:180px;border-right:2px solid #d4b896">${r.customer||'—'}</td>
         <td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td>
-        <td>${fmt(r.plannedQty)}</td><td>${r.grossProd}</td>
-        <td>${r.aimRunTotal}</td><td>${r.aimSalvage}</td><td>${r.aimRemelt}</td>
-        <td><b>${r.aimAGrade}</b></td><td>${r.aimAGradePct}%</td><td>${r.manInspect}</td>
-        <td><b>${r.totalAGrade}</b></td><td><b>${r.aGradePctUnptd}%</b></td>
-        <td>${r.wip}</td><td>${r.availUnptd}</td><td>${r.availPrint}</td>
-        <td>${r.printingTD}</td><td>${r.printRej}</td><td>${r.piInspect}</td>
-        <td>${r.piSalRem}</td><td>${r.packingUP}</td><td>${r.packingPTD}</td>
-        <td><b>${r.dispatch}</b></td>
+        <td>${fmtN(r._plannedQty)}</td><td>${fmtN(r._grossProd)}</td>
+        <td>${fmtN(r._aimRunTotal)}</td><td>${fmtN(r._aimSalvage)}</td><td>${fmtN(r._aimRemelt)}</td>
+        <td><b>${fmtN(r._aimAGrade)}</b></td><td>${r.aimAGradePct}%</td><td>${fmtN(r._manInspect)}</td>
+        <td><b>${fmtN(r._totalAGrade)}</b></td><td><b>${r.aGradePctUnptd}%</b></td>
+        <td>${fmtN(r._wip)}</td><td>${fmtN(r._availUnptd)}</td><td>${fmtN(r._availPrint)}</td>
+        <td>${fmtN(r._printingTD)}</td><td>${fmtN(r._printRej)}</td><td>${fmtN(r._piInspect)}</td>
+        <td>${fmtN(r._piSalRem)}</td><td>${fmtN(r._packingUP)}</td><td>${fmtN(r._packingPTD)}</td>
+        <td><b>${fmtN(r._dispatch)}</b></td>
       </tr>`).join('');
       // Machine subtotal row
       tableRows += buildSubtotalRow(mcRows, `${mc} SUBTOTAL`, 'background:#f0f8f0;color:#1a3a2e;font-weight:800');
@@ -4968,19 +5075,21 @@ function renderReportE(){ window._activeReport = renderReportE;
   });
   if (!tableRows) tableRows = '<tr><td colspan="27" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
 
-  // Build grand totals row
+  // Build grand totals row — white text explicitly on every cell
   const sum = k => allFloorRows.reduce((a,r)=>a+(r['_'+k]||0),0);
-  const totalAG = sum('totalAGrade'), totalGross = sum('grossProd');
-  const totalsRow = allFloorRows.length ? `<tr style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
-    <td colspan="7" style="text-align:right;padding-right:8px">GRAND TOTAL (${allFloorRows.length} batches)</td>
-    <td>${fmtN(sum('plannedQty'))}</td><td>${fmtN(totalGross)}</td>
-    <td>${fmtN(sum('aimRunTotal'))}</td><td>${fmtN(sum('aimSalvage'))}</td><td>${fmtN(sum('aimRemelt'))}</td>
-    <td>${fmtN(sum('aimAGrade'))}</td><td>${sum('aimRunTotal')>0?(sum('aimAGrade')/sum('aimRunTotal')*100).toFixed(1)+'%':'—'}</td><td>${fmtN(sum('manInspect'))}</td>
-    <td>${fmtN(totalAG)}</td><td>${sum('aimRunTotal')>0?(totalAG/sum('aimRunTotal')*100).toFixed(1)+'%':'—'}</td>
-    <td>${fmtN(sum('wip'))}</td><td>${fmtN(sum('availUnptd'))}</td><td>${fmtN(sum('availPrint'))}</td>
-    <td>${fmtN(sum('printingTD'))}</td><td>${fmtN(sum('printRej'))}</td><td>${fmtN(sum('piInspect'))}</td>
-    <td>${fmtN(sum('piSalRem'))}</td><td>${fmtN(sum('packingUP'))}</td><td>${fmtN(sum('packingPTD'))}</td>
-    <td>${fmtN(sum('dispatch'))}</td>
+  const totalAG      = sum('totalAGrade');
+  const totalGross   = sum('grossProd');
+  const totalAimInsp = sum('aimRunTotal');
+  const totalsRow = allFloorRows.length ? `<tr id="grand-total-row" style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
+    <td colspan="7" style="text-align:right;padding-right:8px;color:#f0c060;letter-spacing:.5px">GRAND TOTAL (${allFloorRows.length} batches)</td>
+    <td style="color:#fff">${fmtN(sum('plannedQty'))}</td><td style="color:#fff"><b>${fmtN(totalGross)}</b></td>
+    <td style="color:#fff">${fmtN(totalAimInsp)}</td><td style="color:#fff">${fmtN(sum('aimSalvage'))}</td><td style="color:#fff">${fmtN(sum('aimRemelt'))}</td>
+    <td style="color:#fff"><b>${fmtN(sum('aimAGrade'))}</b></td><td style="color:#f0c060">${totalAimInsp>0?(sum('aimAGrade')/totalAimInsp*100).toFixed(1)+'%':'—'}</td><td style="color:#fff">${fmtN(sum('manInspect'))}</td>
+    <td style="color:#fff"><b>${fmtN(totalAG)}</b></td><td style="color:#f0c060"><b>${totalAimInsp>0?(totalAG/totalAimInsp*100).toFixed(1)+'%':'—'}</b></td>
+    <td style="color:#fff">${fmtN(sum('wip'))}</td><td style="color:#fff">${fmtN(sum('availUnptd'))}</td><td style="color:#fff">${fmtN(sum('availPrint'))}</td>
+    <td style="color:#fff">${fmtN(sum('printingTD'))}</td><td style="color:#fff">${fmtN(sum('printRej'))}</td><td style="color:#fff">${fmtN(sum('piInspect'))}</td>
+    <td style="color:#fff">${fmtN(sum('piSalRem'))}</td><td style="color:#fff">${fmtN(sum('packingUP'))}</td><td style="color:#fff">${fmtN(sum('packingPTD'))}</td>
+    <td style="color:#fff"><b>${fmtN(sum('dispatch'))}</b></td>
   </tr>` : '';
 
   const fullHtml = `<!DOCTYPE html>
@@ -5068,11 +5177,87 @@ function applySearch(q){
   const term=(q||'').toLowerCase().trim();
   const tbody=document.querySelector('#rptTable tbody');
   if(!tbody) return;
-  [...tbody.querySelectorAll('tr')].forEach(row=>{
-    if(!term){ row.style.display=''; return; }
+
+  // Show/hide rows based on search term
+  // Never hide subtotal/total/header rows (they have no data-batch attr or are grp-hdr)
+  const dataRows = [...tbody.querySelectorAll('tr[data-batch]')];
+  const nonDataRows = [...tbody.querySelectorAll('tr:not([data-batch])')];
+
+  if(!term){
+    // Show everything, remove filtered total row
+    [...tbody.querySelectorAll('tr')].forEach(r=>r.style.display='');
+    const ft=document.getElementById('filtered-total-row');
+    if(ft) ft.remove();
+    return;
+  }
+
+  // Filter data rows
+  dataRows.forEach(row=>{
     const text=row.textContent.toLowerCase();
     row.style.display=text.includes(term)?'':'none';
   });
+
+  // Hide machine/floor group headers and subtotals if their section is entirely hidden
+  // (simple approach: always hide non-data rows when filtering; grand total stays)
+  nonDataRows.forEach(r=>{
+    if(r.id==='grand-total-row') return; // keep grand total
+    r.style.display='none';
+  });
+
+  // Compute filtered totals from visible data rows
+  const visibleRows=[...tbody.querySelectorAll('tr[data-batch]')].filter(r=>r.style.display!=='none');
+  const nCols=27; // total columns in table
+  const numCols=[7,8,9,10,11,12,14,15,17,18,19,20,21,22,23,24,25,26]; // 0-indexed numeric columns
+
+  // Sum numeric columns across visible rows
+  const totals={};
+  numCols.forEach(ci=>{ totals[ci]=0; });
+  visibleRows.forEach(row=>{
+    numCols.forEach(ci=>{
+      const cell=row.cells[ci];
+      const v=parseFloat(cell?.textContent?.replace('%','').replace('—',''))||0;
+      totals[ci]=(totals[ci]||0)+v;
+    });
+  });
+
+  // Remove old filtered total row if exists
+  const oldFT=document.getElementById('filtered-total-row');
+  if(oldFT) oldFT.remove();
+
+  if(visibleRows.length===0) return;
+
+  // Build filtered total row
+  const tr=document.createElement('tr');
+  tr.id='filtered-total-row';
+  tr.style.cssText='background:#2e5c8a;color:#fff;font-weight:700;font-size:12px;position:sticky;bottom:0;z-index:4';
+
+  const labelCell=document.createElement('td');
+  labelCell.colSpan=7;
+  labelCell.style.cssText='text-align:right;padding-right:8px;color:#f0d060;letter-spacing:.5px';
+  labelCell.textContent='FILTERED TOTAL (' + visibleRows.length + ' batch' + (visibleRows.length!==1?'es':'') + ') \u2014 "' + q + '"';
+  tr.appendChild(labelCell);
+
+  // Compute A-Grade % from totals (col 9=aimRun, col 12=aimAGrade, col 15=totalAGrade)
+  const aimInsp=totals[9]||0, aimOut=totals[12]||0, totalAGr=totals[15]||0;
+
+  for(let ci=7;ci<nCols;ci++){
+    const td=document.createElement('td');
+    td.style.color='#fff';
+    if(ci===13){ // AIM %
+      td.style.color='#f0d060';
+      td.textContent=aimInsp>0?(aimOut/aimInsp*100).toFixed(1)+'%':'—';
+    } else if(ci===16){ // A-Grade %
+      td.style.color='#f0d060'; td.style.fontWeight='900';
+      td.textContent=aimInsp>0?(totalAGr/aimInsp*100).toFixed(1)+'%':'—';
+    } else if(numCols.includes(ci)){
+      td.textContent=totals[ci]>0?totals[ci].toFixed(2):'—';
+    } else {
+      td.textContent='';
+    }
+    tr.appendChild(td);
+  }
+
+  tbody.appendChild(tr);
 }
 // Make table sortable by clicking headers
 document.querySelectorAll('thead th').forEach((th,col)=>{
@@ -5145,10 +5330,16 @@ function exportToExcel(rows, filename, sheetName){
 
 function exportReportA(){
   const rows=getTrkMonthBatches().filter(b=>!b.deleted).map(b=>{
+    const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
+    const wipDays=getBatchWIPDays(b.batchNumber);
+    const dispatched=state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0);
+    const flow=getBatchFlow(b);
     const scanTotals={};
     flow.forEach(dept=>{
-      const inn=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='in').length;
-      const out=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='out').length;
+      const localIn  = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+      const localOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+      const inn = hasScanSummary() ? (_ss(b.batchNumber,dept).in  + localIn)  : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='in').length;
+      const out = hasScanSummary() ? (_ss(b.batchNumber,dept).out + localOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='out').length;
       scanTotals['Scan IN - '+(DEPT_LABELS[dept]||dept)]=inn;
       scanTotals['Scan OUT - '+(DEPT_LABELS[dept]||dept)]=out;
     });
@@ -5174,10 +5365,19 @@ function exportReportB(){
   const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
   depts.forEach(dept=>{
     const hasWastage=dept==='aim'||dept==='printing'||dept==='pi';
-    [...new Set(state.scans.filter(s=>s.dept===dept&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))].forEach(batchNo=>{
+    // Build batch list from scanSummary (full) when available
+    let batchNos;
+    if (hasScanSummary()) {
+      batchNos = [...monthBatchNos].filter(bn => _ss(bn,dept).in > 0 || _ss(bn,dept).out > 0);
+    } else {
+      batchNos = [...new Set(state.scans.filter(s=>s.dept===dept&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))];
+    }
+    batchNos.forEach(batchNo=>{
       const b=getBatch(batchNo);
-      const inn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
-      const out=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length;
+      const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+      const localOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+      const inn = hasScanSummary() ? (_ss(batchNo,dept).in  + localIn)  : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
+      const out = hasScanSummary() ? (_ss(batchNo,dept).out + localOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length;
       const w=hasWastage?getTotalWastage(batchNo,dept):{total:0,salvage:0,remelt:0};
       const ps=PACK_SIZES[String(b?.size||'0')]||1;
       const wastageBoxes=hasWastage?Math.round(w.total/ps):0;
@@ -5188,7 +5388,9 @@ function exportReportB(){
       const alerts=state.alerts.filter(a=>a.batchNumber===batchNo&&a.dept===dept).length;
       const stageStatus=isStageComplete(batchNo,dept)?'Closed':wip>0?'In Dept':'—';
       const grossProdEx=b?.actualProd||0;
-      const aimInBoxesEx=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
+      const aimInBoxesEx = hasScanSummary()
+        ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
+        : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
       const aimInQtyEx=boxToLakh(aimInBoxesEx,b?.size||'0');
       const prodWipEx=Math.max(0,grossProdEx-aimInQtyEx);
       rows.push({
@@ -5211,7 +5413,8 @@ function exportReportC(){
   const rows=getTrkMonthBatches().filter(b=>!b.deleted).map(b=>{
     const wipDays=getBatchWIPDays(b.batchNumber);
     const std=b.isPrinted?3:2;
-    const packedOut=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+    const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
+    const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
     const packedQty=boxToLakh(packedOut,b.size);
     const grossProd=b.actualProd||0;
     const status=wipDays===0&&packedOut>0?'Closed':wipDays<=std?'In Progress':'Pending';
@@ -5235,8 +5438,16 @@ function exportReportD(){
   const totalDispatched=state.dispatchRecs.reduce((s,r)=>s+r.qty,0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageRows=stages.map(dept=>{
-    const inn=state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
-    const out=state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+    let inn=0, out=0;
+    if (hasScanSummary()) {
+      monthBatchNos.forEach(bn => {
+        inn += _ss(bn,dept).in  + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+        out += _ss(bn,dept).out + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+      });
+    } else {
+      inn=state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
+      out=state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+    }
     const wip=Math.max(0,inn-out);
     const qty=wip*1.5;
     return {'Stage':DEPT_LABELS[dept]||dept,'Boxes IN':inn,'Boxes OUT':out,'WIP Boxes':wip,'Approx Qty (L)':fmt(qty),'% of Total Gross':totalGross>0?fmt(qty/totalGross*100,1):0};
@@ -5260,38 +5471,50 @@ function exportReportD(){
 }
 
 function exportReportE(){
-  // Full Excel export matching existing format
   const wb=XLSX.utils.book_new();
-  // Summary sheet
   const summaryRows=[];
+  const monthBatchSet = new Set(getTrkMonthBatches().map(b=>b.batchNumber));
   Object.entries(FLOORS).forEach(([floorKey,floor])=>{
     floor.machines.forEach(mc=>{
-      state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc) && getTrkMonthBatches().some(mb=>mb.batchNumber===b.batchNumber)).forEach(b=>{
+      state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc) && monthBatchSet.has(b.batchNumber)).forEach(b=>{
         const grossProd=b.actualProd||0;
-        const aimOut=boxToLakh(state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='out').length,b.size);
+        const localAimOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='aim'&&sc.type==='out'&&sc._local).length;
+        const aimOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'aim').out + localAimOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='out').length;
+        const aimOut=boxToLakh(aimOutBoxes,b.size);
         const aimW=getTotalWastage(b.batchNumber,'aim');
         const aimIn=aimOut+aimW.total;
-        // Use getBatchAGrade for consistent formula across all reports
         const ag=getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
-        const aGradePct=ag.pct;
-        const netAGrade=ag.aGrade;
+        const aGradePct=ag.pct, netAGrade=ag.aGrade;
         const wip=Math.max(0,grossProd-aimIn);
-        summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,'PLANNED QUANTITY (lac)':fmt(b.qty),'TOTAL PRODUCTION (lac)':fmt(grossProd),'AIM TOTAL RUN (lac)':fmt(aimIn),'SALVAGE':fmt(aimW.salvage),'REMELT':fmt(aimW.remelt),'A GRADE QTY (lac)':fmt(netAGrade),'AIM A GRADE %':fmt(aGradePct,2),'TOTAL A GRADE QTY (lac)':fmt(netAGrade),'A GRADE % (UNPTD)':fmt(aGradePct,2),'WIP (lac)':fmt(wip),'PACKING UNPTD (lac)':fmt(!b.isPrinted?boxToLakh(state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length,b.size):0),'PACKING PTD (lac)':fmt(b.isPrinted?boxToLakh(state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length,b.size):0),'DISPATCH (lac)':fmt(state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0))});
+        const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
+        const packOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+        const packQty = boxToLakh(packOutBoxes, b.size);
+        summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,
+          'PLANNED QUANTITY (lac)':fmt(b.qty),'TOTAL PRODUCTION (lac)':fmt(grossProd),
+          'AIM TOTAL RUN (lac)':fmt(aimIn),'SALVAGE':fmt(aimW.salvage),'REMELT':fmt(aimW.remelt),
+          'A GRADE QTY (lac)':fmt(netAGrade),'AIM A GRADE %':fmt(aGradePct,2),
+          'TOTAL A GRADE QTY (lac)':fmt(netAGrade),'A GRADE % (UNPTD)':fmt(aGradePct,2),
+          'WIP (lac)':fmt(wip),
+          'PACKING UNPTD (lac)':fmt(!b.isPrinted?packQty:0),
+          'PACKING PTD (lac)':fmt(b.isPrinted?packQty:0),
+          'DISPATCH (lac)':fmt(state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0))});
       });
     });
   });
-  const wsSummary=XLSX.utils.json_to_sheet(summaryRows);
-  XLSX.utils.book_append_sheet(wb,wsSummary,'Summary');
-  // Per machine sheets
+  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summaryRows),'Summary');
   Object.entries(FLOORS).forEach(([floorKey,floor])=>{
     floor.machines.forEach(mc=>{
-      const batches=state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc));
+      const batches=state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc) && monthBatchSet.has(b.batchNumber));
       if(!batches.length) return;
-      const mcRows=batches.map(b=>({
-        'DATE':today(),'BATCH NO':b.batchNumber,'COLOR CODE':b.colour||'','CUSTOMER NAME':b.customer||'','PLANT QUANTITY (lac)':fmt(b.qty),'PRODUCT CODE':b.pcCode||'','PRODUCTION (lac)':fmt(b.actualProd||0),'AIM A GRADE (lac)':fmt(boxToLakh(state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='out').length,b.size)),'DISPATCH (lac)':fmt(state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0))
-      }));
-      const wsName=mc.replace('.','');
-      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(mcRows),wsName.slice(0,31));
+      const mcRows=batches.map(b=>{
+        const localAimOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='aim'&&sc.type==='out'&&sc._local).length;
+        const aimOutEx = hasScanSummary() ? (_ss(b.batchNumber,'aim').out + localAimOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='out').length;
+        return {'DATE':today(),'BATCH NO':b.batchNumber,'COLOR CODE':b.colour||'','CUSTOMER NAME':b.customer||'',
+          'PLANT QUANTITY (lac)':fmt(b.qty),'PRODUCT CODE':b.pcCode||'','PRODUCTION (lac)':fmt(b.actualProd||0),
+          'AIM A GRADE (lac)':fmt(boxToLakh(aimOutEx,b.size)),
+          'DISPATCH (lac)':fmt(state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0))};
+      });
+      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(mcRows),mc.replace('.','').slice(0,31));
     });
   });
   XLSX.writeFile(wb,`Sunloc_WIP_Report_${today()}.xlsx`);
@@ -5323,7 +5546,8 @@ function renderTrackingSearch(){
     results=matchedBatches.map(b=>{
       const labels=getLabelsByBatch(b.batchNumber);
       const scans=state.scans.filter(s=>s.batchNumber===b.batchNumber);
-      const packed=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+      const localPacked = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
+      const packed = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPacked) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
       return {...b, _labelCount:labels.length, _scanCount:scans.length, _packed:packed};
     });
   }
