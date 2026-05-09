@@ -1541,8 +1541,6 @@ function getPcByCode(size, code) {
 // Stage wastage factors (standard defaults, overridden by live tracking actuals)
 const STD_AIM_WASTE    = 0.07;  // 7% AIM wastage
 const STD_PRINT_WASTE  = 0.01;  // 1% printing machine wastage
-const STD_PI_WASTE     = 0.01;  // 1% print inspection wastage
-
 function calcOrderSchedule(order, mc) {
   // Use live A-grade from tracking if available, else use order/machine default
   const _bn867 = order.batchNumber ? order.batchNumber.trim().toUpperCase() : null;
