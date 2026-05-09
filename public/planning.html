@@ -1164,20 +1164,6 @@ const SYNC = (() => {
               // v37E packIn-WIP fix: expose FG-vs-WIP split for dispatch scheduling
               dp.fgAwaitingDispatch = totalFGReady;
               dp.packInQty          = totalPackInQty;
-
-            batchNums.forEach(bn => {
-              const bd = agj.batches[bn];
-              if (!bd) return;
-              totalPackedQty   += parseFloat(bd.packing?.outQty || 0);
-              totalPackedBoxes += parseInt(bd.packing?.out    || 0, 10); // scan OUT count = box count (force int)
-              totalWip         += bd.wipLakhs || 0;
-              totalGross       += bd.grossProd || 0;
-            });
-            if (totalPackedQty > 0 || totalPackedBoxes > 0) {
-              dp.packedQty   = totalPackedQty;
-              dp.packedBoxes = totalPackedBoxes;
-              dp.wipLakhs    = totalWip;
-              dp.grossProd   = totalGross;
             }
           });
           recalcDispatch();
