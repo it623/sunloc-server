@@ -2080,7 +2080,7 @@ function renderDayKpis(){
     <div class="kpi"><div class="kpi-label">Production</div><div class="kpi-val ${s.totProd>0?'green':'t2'}">${s.totProd>0?parseFloat(s.totProd).toFixed(2):'—'}</div><div class="kpi-sub">units today</div></div>
     <div class="kpi"><div class="kpi-label">VS Target</div><div class="kpi-val ${effCls}">${s.totTgt>0?(s.totProd-s.totTgt>=0?'+':'')+parseFloat((s.totProd-s.totTgt).toFixed(2)):'—'}</div><div class="kpi-sub">${s.totTgt>0?s.eff.toFixed(1)+'%':''}</div></div>
     <div class="kpi"><div class="kpi-label">AIM Output</div><div class="kpi-val cyan">${s.totAim>0?parseFloat(s.totAim).toFixed(2):'—'}</div><div class="kpi-sub">planned today</div></div>
-    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog===null?'':s.backlog>=0?'green':'red'}">${s.backlog===null?'—':(s.backlog>=0?'+':'')+s.backlog.toFixed(2)}</div><div class="kpi-sub">${s.backlog===null?'':'vs AIM'}</div></div>
+    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog===null?'':s.backlog>0?'red':'green'}">${s.backlog===null?'—':(s.backlog>=0?'+':'')+s.backlog.toFixed(2)}</div><div class="kpi-sub">${s.backlog===null?'':'vs AIM'}</div></div>
     <div class="kpi"><div class="kpi-label">Re-Sort</div><div class="kpi-val ${s.totResort>0?'red':'green'}">${s.totResort>0?parseFloat(s.totResort).toFixed(2):'0'}</div><div class="kpi-sub">units</div></div>
     <div class="kpi"><div class="kpi-label">Downtime</div><div class="kpi-val ${dtCls}">${s.totDT>0?parseFloat(s.totDT).toFixed(0):'—'}</div><div class="kpi-sub">${s.totDT>0?s.dtPct.toFixed(1)+'% DT':''}</div></div>
   `;
@@ -3012,11 +3012,11 @@ function renderAIM(){
     });
     prod=parseFloat(prod.toFixed(2));
     aim=parseFloat(aim.toFixed(2));
-    const bl=aim>0?parseFloat(Math.max(0,aim-prod).toFixed(2)):null;
+    const bl=prod>0?parseFloat((prod-aim).toFixed(2)):null;
     const st=aim===0?'<span class="pill" style="background:rgba(58,70,90,.5);color:var(--t3)">No AIM</span>':
-      bl===0?'<span class="pill g">On Track</span>':
-      bl>0?`<span class="pill a">Behind by ${bl.toFixed(2)}</span>`:
-      '<span class="pill g">Ahead</span>';
+      bl===null?'—':
+      bl<=0?'<span class="pill g">AIM Clear</span>':
+      `<span class="pill a">Backlog: ${bl.toFixed(2)}L</span>`;
     totAIM+=aim; totProdAIM+=prod; if(bl!==null) totBlAIM+=bl;
     html+=`<tr><td class="mono">${mc.id}</td><td style="color:var(--t3)">${mc.sz}</td><td class="mono">${aim||'—'}</td><td class="mono">${prod||'—'}</td><td class="mono">${bl===null?'—':bl.toFixed(2)}</td><td>${st}</td></tr>`;
   });
@@ -3027,7 +3027,7 @@ function renderAIM(){
     <td class="mono">${totAIM.toFixed(2)||'—'}</td>
     <td class="mono">${totProdAIM.toFixed(2)||'—'}</td>
     <td class="mono">${totBlFmt.toFixed(2)}</td>
-    <td>${totBlFmt===0?'<span class="pill g">On Track</span>':totBlFmt>0?`<span class="pill a">Behind by ${totBlFmt.toFixed(2)}</span>`:'<span class="pill g">Ahead</span>'}</td>
+    <td>${totBl<=0?'<span class="pill g">AIM Clear</span>':`<span class="pill a">Backlog: ${totBl.toFixed(2)}L</span>`}</td>
   </tr></tfoot></table>`;
   document.getElementById('aimTable').innerHTML=html;
 
