@@ -480,7 +480,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0</p>
+      <p>Planning Suite v3.0 · build v37E</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -800,6 +800,46 @@ const SYNC = (() => {
         // Take server state
         // Save local orders, printOrders, dailyPrinting before overwrite — merge after
         const _localDailyPrinting = JSON.parse(JSON.stringify(state.dailyPrinting || []));
+
+        // v37E PL2: snapshot any locally-added PC codes before reset so we can re-merge them
+        const _pcCodesProtected = _localOrderChanges['__pcCodes__'] &&
+          (Date.now() - _localOrderChanges['__pcCodes__']) < 90000;
+        const _localPcCodesSnapshot = _pcCodesProtected
+          ? JSON.parse(JSON.stringify(state.pcCodes || {}))
+          : null;
+        state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
+        state.zoneMap = ZONE_MAP_RAW;
+        // Load custom PC codes from server DB — these persist permanently
+        try {
+          const pcr = await fetch(SYNC._url + '/api/pc-codes', {signal: AbortSignal.timeout(5000)});
+          if (pcr.ok) {
+            const pcj = await pcr.json();
+            if (pcj.ok && pcj.codes) {
+              Object.entries(pcj.codes).forEach(([sz, codes]) => {
+                if (!state.pcCodes[sz]) state.pcCodes[sz] = [];
+                codes.forEach(nc => {
+                  if (!state.pcCodes[sz].find(e => e.c === nc.c))
+                    state.pcCodes[sz].push(nc);
+                });
+              });
+              console.log('[PC-Codes] Loaded', pcj.count, 'custom codes from server DB');
+            }
+          }
+        } catch(e) { console.warn('[PC-Codes] Could not load from server:', e.message); }
+        // v37E PL2: re-merge any locally-added codes that may not yet be in DB
+        if (_localPcCodesSnapshot) {
+          let restoredCount = 0;
+          Object.entries(_localPcCodesSnapshot).forEach(([sz, codes]) => {
+            if (!state.pcCodes[sz]) state.pcCodes[sz] = [];
+            codes.forEach(lc => {
+              if (!state.pcCodes[sz].find(e => e.c === lc.c)) {
+                state.pcCodes[sz].push(lc);
+                restoredCount++;
+              }
+            });
+          });
+          if (restoredCount > 0) console.log('[PC-Codes] Restored', restoredCount, 'locally-added codes during protection window');
+        }
         const _localOrdersSnapshot = JSON.parse(JSON.stringify(state.orders || []));
         const _localOrdersById = {};
         _localOrdersSnapshot.forEach(o => { if (o.id) _localOrdersById[o.id] = o; });
@@ -1104,7 +1144,27 @@ const SYNC = (() => {
           state.dispatchPlans.forEach(dp => {
             // Handle single or comma-separated batch numbers (consolidated exports)
             const batchNums = dp.batchNumber.split(',').map(b=>b.trim()).filter(Boolean);
-            let totalPackedQty=0, totalPackedBoxes=0, totalWip=0, totalGross=0;
+            let totalPackedQty=0, totalPackedBoxes=0, totalWip=0, totalGross=0, totalFGReady=0, totalPackInQty=0;
+            batchNums.forEach(bn => {
+              const bd = agj.batches[bn];
+              if (!bd) return;
+              totalPackedQty   += parseFloat(bd.packing?.outQty || 0);
+              totalPackedBoxes += parseInt(bd.packing?.out    || 0, 10); // scan OUT count = box count (force int)
+              totalWip         += bd.wipLakhs || 0;
+              totalGross       += bd.grossProd || 0;
+              // v37E packIn-WIP fix: bd.fgAwaitingDispatch = packIn − packOut = FG ready, awaiting vehicle
+              totalFGReady     += bd.fgAwaitingDispatch || 0;
+              totalPackInQty   += parseFloat(bd.packing?.inQty || 0);
+            });
+            if (totalPackedQty > 0 || totalPackedBoxes > 0 || totalPackInQty > 0) {
+              dp.packedQty          = totalPackedQty;
+              dp.packedBoxes        = totalPackedBoxes;
+              dp.wipLakhs           = totalWip;
+              dp.grossProd          = totalGross;
+              // v37E packIn-WIP fix: expose FG-vs-WIP split for dispatch scheduling
+              dp.fgAwaitingDispatch = totalFGReady;
+              dp.packInQty          = totalPackInQty;
+
             batchNums.forEach(bn => {
               const bd = agj.batches[bn];
               if (!bd) return;
@@ -1689,6 +1749,356 @@ function recalcMachineSchedule(machineId) {
 // ── Print schedule helpers ────────────────────────────────────────────────
 // Calculates how much qty remains to be printed for a PTD order, using live
 // tracking data when available, falling back to the planned formula.
+// v37E Logic 1: Compute per-machine cumulative A-Grade % from all orders' batch-level scan data.
+// Must run AFTER window._liveAGrade is populated and BEFORE any scheduling recalc — so that
+// new batches without their own scan data inherit the machine's recent observed performance
+// instead of falling through to the configured default.
+//
+// Cumulative formula (matches Report E machine subtotal): sum(stageOut) / sum(stageInspected) × 100.
+// Filters by the currently-selected planning month, same as Report E and the in-page display.
+function _populateMachineAGrade() {
+  window._machineAGrade = {};
+  // Build per-machine accumulators
+  const acc = {};  // mcId → {aimOut, aimInsp, printOut, printInsp, piOut, piInsp}
+  (state.orders || []).forEach(o => {
+    if (o.deleted || !o.batchNumber || !o.machineId) return;
+    if (!orderInMonth(o, _selectedPlanMonth)) return;
+    const key = o.batchNumber.trim().toUpperCase();
+    const la = window._liveAGrade?.[key] || window._liveAGrade?.[o.batchNumber];
+    if (!la) return;
+    const mcId = o.machineId;
+    if (!acc[mcId]) acc[mcId] = { aimOut:0, aimInsp:0, printOut:0, printInsp:0, piOut:0, piInsp:0 };
+    if ((la.aim?.inspected || 0) > 0) {
+      acc[mcId].aimOut  += la.aim.outQty || 0;
+      acc[mcId].aimInsp += la.aim.inspected;
+    }
+    if ((la.printing?.inspected || 0) > 0) {
+      acc[mcId].printOut  += la.printing.outQty || 0;
+      acc[mcId].printInsp += la.printing.inspected;
+    }
+    if ((la.pi?.inspected || 0) > 0) {
+      acc[mcId].piOut  += la.pi.outQty || 0;
+      acc[mcId].piInsp += la.pi.inspected;
+    }
+  });
+  Object.entries(acc).forEach(([mcId, a]) => {
+    window._machineAGrade[mcId] = {
+      aimPct:   a.aimInsp   > 0 ? (a.aimOut   / a.aimInsp   * 100) : null,
+      printPct: a.printInsp > 0 ? (a.printOut / a.printInsp * 100) : null,
+      piPct:    a.piInsp    > 0 ? (a.piOut    / a.piInsp    * 100) : null,
+    };
+  });
+}
+
+// v37E: Compute OPM-cumulative Print and PI A-Grade % for adaptive print qty planning.
+// Per user spec: "If actual salvage and Remelt increases or decreases, then quantity to print
+// auto adjusts for all subsequent planned printed orders on that OPM."
+//
+// Formula: for each OPM, sum (printOut, printInspected, piOut, piInspected) across all print
+// orders previously assigned to that OPM. Cumulative A-Grade = sum(out) / sum(inspected) × 100.
+// Print factor used in planning: 100 / printPct (so 96% A-Grade → factor 1.0417 → 4.17% wastage).
+//
+// New print orders or planned orders on an OPM use this OPM-level cumulative as the better
+// planning estimate, falling back to the global default 1.01 when OPM has no scan history.
+function _populateOpmAGrade() {
+  window._opmAGrade = {};
+  const acc = {};  // opmId → { printOut, printInsp, piOut, piInsp }
+  (state.printOrders || []).forEach(po => {
+    if (po.deleted || !po.machineId || !po.batchNumber) return;
+    const key = po.batchNumber.trim().toUpperCase();
+    const la = window._liveAGrade?.[key] || window._liveAGrade?.[po.batchNumber];
+    if (!la) return;
+    const opmId = po.machineId;
+    if (!acc[opmId]) acc[opmId] = { printOut: 0, printInsp: 0, piOut: 0, piInsp: 0 };
+    if ((la.printing?.inspected || 0) > 0) {
+      acc[opmId].printOut  += la.printing.outQty || 0;
+      acc[opmId].printInsp += la.printing.inspected;
+    }
+    if ((la.pi?.inspected || 0) > 0) {
+      acc[opmId].piOut  += la.pi.outQty || 0;
+      acc[opmId].piInsp += la.pi.inspected;
+    }
+  });
+  Object.entries(acc).forEach(([opmId, a]) => {
+    window._opmAGrade[opmId] = {
+      printPct: a.printInsp > 0 ? (a.printOut / a.printInsp * 100) : null,
+      piPct:    a.piInsp    > 0 ? (a.piOut    / a.piInsp    * 100) : null,
+      printOut: a.printOut, printInsp: a.printInsp,
+      piOut:    a.piOut,    piInsp:    a.piInsp,
+    };
+  });
+}
+
+const STD_PI_WASTE     = 0.01;  // 1% print inspection wastage
+
+function calcOrderSchedule(order, mc) {
+  // v37E Logic 1: A-Grade fallback chain for scheduling estimates:
+  //   1. Batch-specific live A-Grade (from this batch's AIM/Print/PI scans)
+  //   2. Machine cumulative A-Grade (from all batches on this machine within the selected month)
+  //   3. Order/machine configured A-Grade default
+  // This makes a new batch on a machine inherit that machine's recent observed performance,
+  // rather than always using the manual default — so dates better reflect actual capability.
+  const _bn867 = order.batchNumber ? order.batchNumber.trim().toUpperCase() : null;
+  const liveAG = window._liveAGrade && _bn867 ? (window._liveAGrade[_bn867] || window._liveAGrade[order.batchNumber] || null) : null;
+  const mcId = mc.id || mc.machineId;
+  const mcCum = window._machineAGrade?.[mcId] || {};
+  // Guard: clamp aGradePct to minimum 1 to prevent division-by-zero → Infinity
+  const rawAimPct = (liveAG?.aim?.aGradePct != null && liveAG.aim.aGradePct > 0)
+    ? liveAG.aim.aGradePct
+    : (mcCum.aimPct != null && mcCum.aimPct > 0)
+      ? mcCum.aimPct
+      : (order.aGrade || mc.aGrade || 0);
+  const aimFactor = rawAimPct > 0 ? (100 / rawAimPct) : (1 / (1 - STD_AIM_WASTE));
+  // Print A-Grade fallback chain
+  const livePrintPct = liveAG?.printing?.aGradePct;
+  const printPct = (livePrintPct != null && livePrintPct > 0)
+    ? livePrintPct
+    : (mcCum.printPct != null && mcCum.printPct > 0)
+      ? mcCum.printPct
+      : null;
+  const printFactor = printPct != null ? (100 / Math.max(1, printPct)) : (1 + STD_PRINT_WASTE);
+  // PI A-Grade fallback chain
+  const livePiPct = liveAG?.pi?.aGradePct;
+  const piPct = (livePiPct != null && livePiPct > 0)
+    ? livePiPct
+    : (mcCum.piPct != null && mcCum.piPct > 0)
+      ? mcCum.piPct
+      : null;
+  const piFactor = piPct != null ? (100 / Math.max(1, piPct)) : (1 + STD_PI_WASTE);
+
+  let grossQty, aimOut, printOut, piOut;
+  if (order.isPrinted) {
+    // Gross → AIM → Printing → PI → Order Qty
+    piOut    = order.qty;
+    printOut = piOut    * piFactor;
+    aimOut   = printOut * printFactor;
+    grossQty = aimOut   * aimFactor;
+  } else {
+    // Gross → AIM → Order Qty (packing direct)
+    aimOut   = order.qty;
+    grossQty = aimOut * aimFactor;
+    printOut = null;
+    piOut    = null;
+  }
+  // Remaining gross = total gross minus what's already been produced (from DPR actuals)
+  const alreadyProduced = Math.min((order.actualProd || order.actualQty || 0), grossQty);
+  const remainingGross  = Math.max(0, grossQty - alreadyProduced);
+
+  // Use actual DPR daily rate if available (from production_actuals via /api/actuals/machine-summary)
+  // Falls back to machine configured cap if no DPR data yet
+  // (mcId already declared above in A-Grade fallback chain)
+  const dprRate = window._mcActualRate?.[mcId]?.avgPerDay;
+  const effectiveCap = (dprRate && dprRate > 0) ? dprRate : ((mc.cap > 0) ? mc.cap : null);
+
+  const daysNeeded = effectiveCap ? (remainingGross / effectiveCap) : null;
+  const aGradePct  = 1 / aimFactor * 100;
+  return { grossQty, aimOut, printOut, piOut, daysNeeded, aGradePct,
+           aimFactor, printFactor, piFactor, effectiveCap };
+}
+
+// Recalculate end date for an order given start date and machine
+function calcEndDate(startDate, daysNeeded) {
+  if (daysNeeded == null || !isFinite(daysNeeded) || isNaN(daysNeeded) || daysNeeded < 0) return null;
+  const start = new Date(startDate);
+  if (isNaN(start)) return null;
+  const end = new Date(start);
+  end.setDate(end.getDate() + Math.ceil(daysNeeded));
+  return end;
+}
+
+// Get machine orders sorted by start date
+// Auto batch number generation: YY + MachineAlpha + SerialNo
+// MC14 → N (14th letter), MC32 → AF (32nd: Z=26, AF=27+5=32? No: A=1..Z=26, AA=27..AZ=52)
+// Per spec example: 26N50 = year 26, machine 14 (N=14th letter), serial 50
+function machineToAlpha(mcId) {
+  const num = parseInt(mcId.replace(/[^0-9]/g,''))||1;
+  let result = '';
+  let n = num;
+  while (n > 0) {
+    n--;
+    result = String.fromCharCode(65 + (n % 26)) + result;
+    n = Math.floor(n / 26);
+  }
+  return result;
+}
+
+function autoGenBatchNumber(machineId) {
+  const yy = new Date().getFullYear().toString().slice(2);
+  const alpha = machineToAlpha(machineId);
+  // Find highest serial already used on this machine
+  const existing = state.orders
+    .filter(o => o.machineId === machineId && o.batchNumber && !o.deleted)
+    .map(o => {
+      const m = o.batchNumber.match(/^\d{2}[A-Z]+([0-9]+)$/);
+      return m ? parseInt(m[1]) : 0;
+    });
+  const nextSerial = existing.length > 0 ? Math.max(...existing) + 1 : 1;
+  return yy + alpha + nextSerial;
+}
+
+function getMachineOrders(machineId) {
+  return state.orders
+    .filter(o=>o.machineId===machineId && !o.deleted && !(o.batchNumber==='26V049' && (o.customer||'').includes('SHYAM')))
+    .sort((a,b)=>{
+      // Primary: sort by serial number in batch number (e.g. 26N50 → 50)
+      const getSerial = o => {
+        const m = (o.batchNumber||'').match(/^(\d{2}[A-Z]+)(\d+)$/);
+        return m ? parseInt(m[2]) : 99999;
+      };
+      const diff = getSerial(a) - getSerial(b);
+      if (diff !== 0) return diff;
+      // Secondary: sort by startDate
+      return new Date(a.startDate) - new Date(b.startDate);
+    });
+}
+
+// Recalculate all order dates on a machine after any change
+function recalcMachineScheduleQuiet(machineId) {
+  // Same as recalcMachineSchedule but doesn't save or re-render — used for live A-grade updates
+  const mc = getMachine(machineId);
+  if (!mc) return;
+  const orders = getMachineOrders(machineId);
+  let cursor = null;
+  for (const ord of orders) {
+    if (ord.status === 'closed') {
+      // Still calculate grossQty/aimOut for closed orders so they show in the table
+      if (!ord.grossQty) {
+        const scClosed = calcOrderSchedule(ord, mc);
+        ord.grossQty = scClosed.grossQty;
+        ord.aimOut   = scClosed.aimOut;
+        ord.printOut = scClosed.printOut;
+        ord.piOut    = scClosed.piOut;
+      }
+      // Advance cursor through closed orders so next order starts right after
+      if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+        const closedEnd = new Date(ord.endDate);
+        if (!cursor || closedEnd > cursor) cursor = closedEnd;
+      }
+      continue;
+    }
+    // If order already has both startDate AND endDate — never touch dates, just recalc qty
+    if (ord.startDate && ord.endDate) {
+      const sc = calcOrderSchedule(ord, mc);
+      ord.grossQty   = sc.grossQty;
+      ord.aimOut     = sc.aimOut;
+      ord.printOut   = sc.printOut;
+      ord.piOut      = sc.piOut;
+      ord.daysNeeded = sc.daysNeeded;
+      const endD = new Date(ord.endDate);
+      if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
+      continue;
+    }
+    if (!cursor) {
+      // Seed cursor: use today if the saved startDate is in the past with no production yet
+      const savedStart = ord.startDate ? new Date(ord.startDate) : null;
+      const todayD = new Date(today());
+      const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
+      // If startDate is in past and no actual production — order hasn't started, use today
+      if (savedStart && savedStart < todayD && !hasProduction) {
+        cursor = todayD;
+        ord.startDate = new Date(cursor);
+      } else {
+        cursor = savedStart || todayD;
+      }
+    } else {
+      ord.startDate = new Date(cursor);
+    }
+    const sc = calcOrderSchedule(ord, mc);
+    ord.grossQty    = sc.grossQty;
+    ord.aimOut      = sc.aimOut;
+    ord.printOut    = sc.printOut;
+    ord.piOut       = sc.piOut;
+    ord.daysNeeded  = sc.daysNeeded;
+    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+      cursor = new Date(ord.endDate);
+    }
+  }
+  // Cascade to print schedule — production end dates drive print start dates
+  recalcPrintScheduleQuiet();
+}
+
+function recalcMachineSchedule(machineId) {
+  const mc = getMachine(machineId);
+  if (!mc) return;
+  const orders = getMachineOrders(machineId);
+  let cursor = null;
+  for (const ord of orders) {
+    if (ord.status === 'closed') {
+      // Still calculate grossQty/aimOut for closed orders so they show in the table
+      if (!ord.grossQty) {
+        const scClosed = calcOrderSchedule(ord, mc);
+        ord.grossQty = scClosed.grossQty;
+        ord.aimOut   = scClosed.aimOut;
+        ord.printOut = scClosed.printOut;
+        ord.piOut    = scClosed.piOut;
+      }
+      // Advance cursor through closed orders so next order starts right after
+      if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+        const closedEnd = new Date(ord.endDate);
+        if (!cursor || closedEnd > cursor) cursor = closedEnd;
+      }
+      continue;
+    }
+    // If order already has both startDate AND endDate (or manual flags) — never touch dates, just recalc qty
+    if ((ord.startDate && ord.endDate) || ord.manualStartDate || ord.manualEndDate) {
+      const sc = calcOrderSchedule(ord, mc);
+      ord.grossQty   = sc.grossQty;
+      ord.aimOut     = sc.aimOut;
+      ord.printOut   = sc.printOut;
+      ord.piOut      = sc.piOut;
+      ord.daysNeeded = sc.daysNeeded;
+      const endD = new Date(ord.endDate);
+      if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
+      continue;
+    }
+    if (!cursor) {
+      cursor = new Date(ord.startDate || today());
+    } else {
+      ord.startDate = new Date(cursor);
+    }
+    const sc = calcOrderSchedule(ord, mc);
+    ord.grossQty   = sc.grossQty;
+    ord.aimOut     = sc.aimOut;
+    ord.printOut   = sc.printOut;
+    ord.piOut      = sc.piOut;
+    ord.daysNeeded = sc.daysNeeded;
+    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+      cursor = new Date(ord.endDate);
+    }
+  }
+  // Sync batchNumber changes to linked printOrders and dispatchPlans
+  for (const ord of state.orders.filter(o=>o.machineId===machineId&&!o.deleted)) {
+    const po = state.printOrders.find(p=>p.productionOrderId===ord.id);
+    if (po && ord.batchNumber) po.batchNumber = ord.batchNumber;
+    const dp = state.dispatchPlans.find(d=>d.productionOrderId===ord.id);
+    if (dp && ord.batchNumber) dp.batchNumber = ord.batchNumber;
+    if (dp && !dp.dateManuallySet && !dp.exportPending) {
+      const offset = ord.isPrinted ? 3 : 2;
+      if (ord.endDate) dp.plannedDate = addDays(new Date(ord.endDate), offset);
+    }
+  }
+  // Also update print orders for affected production orders
+  recalcPrintSchedule();
+  saveState();
+}
+
+// ── Print schedule helpers ────────────────────────────────────────────────
+// Calculates how much qty remains to be printed for a PTD order, using live
+// v37E: "Quantity to Print" derived from order qty (indent) with adaptive Print + PI wastage.
+// Wastage factor priority for each stage:
+//   1. OPM-cumulative A-Grade observed on the assigned print machine (best — actual recent performance)
+//   2. Default 1% (Print) / 1% (PI) — used when OPM has no scan history yet
+//
+// Per user spec: "If actual salvage and Remelt increases or decreases, then quantity to print
+// auto adjusts for all subsequent planned printed orders on that OPM." So the same 50L order
+// would plan as 51L on a "well-behaved" OPM (96%+ A-Grade for both Print and PI, ≈ 4% combined
+// wastage capped by the 1+1 default), but as 53L+ on an OPM observed running at lower A-Grade.
+//
+// The factor only applies to NEW print qty calculations — existing committed values aren't disturbed.
+// Print start date still incorporates live AIM/Print progress (stage timing — fine to be dynamic).
+
 function calcPrintQtyAndStart(ord) {
   const live = window._liveAGrade && ord.batchNumber ? (window._liveAGrade[ord.batchNumber.trim().toUpperCase()] || window._liveAGrade[ord.batchNumber] || {}) : {};
 
@@ -2945,7 +3355,7 @@ function saveOrderModal(existingId, defaultMachine) {
       printMatter: ord.printMatter,
       zone: ord.zone,
       orderQty: qty,
-      qtyToPrint: qty * 1.02,
+      qtyToPrint: qty * (1 + STD_PRINT_WASTE) * (1 + STD_PI_WASTE), // v37E Q5
       startDate: printStart,
       endDate: null,
       machineId: null,
@@ -3203,7 +3613,7 @@ function confirmSAPImport(rows) {
         printMatter: ord.printMatter,
         zone: ord.zone,
         orderQty: qty,
-        qtyToPrint: qty * 1.02,
+        qtyToPrint: qty * (1 + STD_PRINT_WASTE) * (1 + STD_PI_WASTE), // v37E Q5
         startDate: printStart,
         endDate: null,
         machineId: null,
@@ -3884,7 +4294,9 @@ function refreshOpmDropdownMulti() {
 }
 
 async function savePrintModal(existingId) {
-  const multi = _opmIsMulti || document.getElementById('fp-multi-section')?.style.display !== 'none';
+  // v37E P1: tighten multi-mode — require BOTH explicit toggle AND visible section
+  const multiSection = document.getElementById('fp-multi-section');
+  const multi = _opmIsMulti && multiSection && multiSection.style.display !== 'none';
 
   if (multi) {
     // Save multiple print orders — one per OPM
@@ -3895,28 +4307,36 @@ async function savePrintModal(existingId) {
     const size         = document.getElementById('fp-size-multi')?.value || '';
     const colour       = document.getElementById('fp-colour')?.value || '';
     const printMatter  = document.getElementById('fp-ptdmatter')?.value || '';
-    const printType    = document.getElementById('fp-printtype')?.value || 'L';
+    const printType    = document.getElementById('fp-printtype')?.value || 'C'; // v37E P3: default Circular
     const startDate    = new Date(document.getElementById('fp-startdate')?.value || today());
     const zone         = document.getElementById('fp-zone')?.value || '';
     const status       = document.getElementById('fp-status')?.value || 'pending';
     const remarks      = document.getElementById('fp-remarks')?.value || '';
     const totalQty     = parseFloat(document.getElementById('fp-qty-total')?.value) || 0;
 
-    // Remove old group members if editing
+    // v37E P1: Remove old print order(s) when editing — handles BOTH multi-group AND single->multi
     if (existingId) {
       const old = state.printOrders.find(p=>p.id===existingId);
       if (old?.multiOpmGroupId) {
         state.printOrders = state.printOrders.filter(p=>p.multiOpmGroupId!==old.multiOpmGroupId);
+      } else if (old) {
+        // Editing single-OPM order being converted to multi — remove just this one
+        state.printOrders = state.printOrders.filter(p=>p.id!==existingId);
       }
     }
 
     const newOrders = [];
+    // v37E Q4: Validate distinct OPMs — same batch cannot be on same OPM twice
+    const seenMachines = new Set();
+    const duplicateMachines = [];
     for (let i = 0; i < 4; i++) {
       const row = document.getElementById(`fp-opm-row-${i}`);
       if (!row || row.style.display === 'none') continue;
       const mcId = document.getElementById(`fp-opm-mc-${i}`)?.value;
       const qty  = parseFloat(document.getElementById(`fp-opm-qty-${i}`)?.value) || 0;
       if (!mcId || qty <= 0) continue;
+      // v37E Q4: track duplicate machines
+      if (seenMachines.has(mcId)) { duplicateMachines.push(mcId); } else { seenMachines.add(mcId); }
       const pm = getPrintMachine(mcId);
       const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
       const ord = {
@@ -3936,6 +4356,11 @@ async function savePrintModal(existingId) {
       newOrders.push(ord);
     }
 
+    // v37E Q4: reject if same OPM selected twice
+    if (duplicateMachines.length > 0) {
+      alert(`⚠️ Cannot save — the same OPM (${[...new Set(duplicateMachines)].join(', ')}) is selected in multiple rows.\n\nEach row in a multi-OPM split must use a different OPM.`);
+      return;
+    }
     if (newOrders.length === 0) { toast('Add at least one OPM with quantity', 'var(--red)'); return; }
 
     const totalAssigned = newOrders.reduce((s,o)=>s+o.qtyToPrint, 0);
@@ -4525,7 +4950,7 @@ function buildTruckPlans(zone) {
     truck.isFull = truck.totalBoxes >= cap;
     truck.cap = cap;
     truck.packedBoxes = truck.orders.reduce((s, p) => s + (parseInt(p.packedBoxes||0, 10)), 0);
-    truck.pendingBoxes = truck.totalBoxes - truck.packedBoxes;
+    truck.pendingBoxes = Math.max(0, truck.totalBoxes - truck.packedBoxes); // never negative
     // Identify the bottleneck order (the one driving ETD)
     truck.bottleneckOrderId = truck.orders.reduce((worst, p) => {
       const d = getOrderReadyDate(p);
@@ -5087,7 +5512,7 @@ async function showBatchTrackingModal(batchNumber) {
 
     // Wastage
     const wastageHtml = j.wastage.length > 0
-      ? `<table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px">
+      ? `<div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px">
           <thead><tr style="color:var(--text3)"><th style="text-align:left;padding:4px 8px">Dept</th><th style="padding:4px 8px;text-align:right">Wastage (L)</th><th style="padding:4px 8px;text-align:right">Salvage (L)</th><th style="padding:4px 8px;text-align:right">Remelt (L)</th></tr></thead>
           <tbody>${j.wastage.map(w=>`<tr style="border-top:1px solid var(--surface3)">
             <td style="padding:4px 8px">${DEPT_NAMES[w.dept]||w.dept}</td>
@@ -5095,7 +5520,7 @@ async function showBatchTrackingModal(batchNumber) {
             <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${fmt(w.salvage||0,2)}</td>
             <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${fmt(w.remelt||0,2)}</td>
           </tr>`).join('')}</tbody>
-        </table>`
+        </table></div>`
       : '<div style="font-size:12px;color:var(--text3)">No wastage recorded</div>';
 
     const ls = j.labelStats || {};
@@ -6724,7 +7149,7 @@ function showAddPcModal() {
   });
 }
 
-function savePcModal() {
+async function savePcModal() {
   let size = document.getElementById('pc-size')?.value;
   if (size==='new') size = document.getElementById('pc-newsize')?.value;
   if (!size) return alert('Please select or enter a size');
@@ -6739,19 +7164,31 @@ function savePcModal() {
     state.packSizes[size] = packSize;
   }
   state.pcCodes[size].push({c:code, n:colour});
-  saveState(); closeModal(); render();
-  // Save permanently to server DB — survives refresh, redeploy, all devices
+  // v37E PL2: Mark pcCodes as locally changed — protects from server merge wipeout for 90s
+  _localOrderChanges['__pcCodes__'] = Date.now();
+  saveState(); closeModal();
+  // v37E PL2: AWAIT server save so subsequent /api/pc-codes GET sees the new code
   const sv = localStorage.getItem('sunloc_server_url') || '';
   if (sv) {
-    fetch(sv + '/api/pc-codes', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({size, code, colour, packSize: state.packSizes?.[size] || 100000})
-    }).then(r => r.json()).then(j => {
-      if (j.ok) console.log('[PC-Codes] Saved to server DB:', size, code);
-      else console.warn('[PC-Codes] Server save failed:', j.error);
-    }).catch(e => console.warn('[PC-Codes] Server save error:', e.message));
+    try {
+      const r = await fetch(sv + '/api/pc-codes', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({size, code, colour, packSize: state.packSizes?.[size] || 100000})
+      });
+      if (r.ok) {
+        const j = await r.json();
+        if (j.ok) console.log('[PC-Codes] Saved to server DB:', size, code);
+        else console.warn('[PC-Codes] Server save returned not-ok:', j.error);
+      } else {
+        console.warn('[PC-Codes] Server save HTTP error:', r.status);
+        toast('PC saved locally — server sync pending', 'var(--amber)', 3000);
+      }
+    } catch(e) {
+      console.warn('[PC-Codes] Server save error:', e.message);
+    }
   }
+  render();
 }
 
 function deletePcCode(size, code) {

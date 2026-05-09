@@ -1718,28 +1718,91 @@ app.get('/api/dpr/:floor/:date', async (req, res) => {
 // GET /api/actuals/machine-summary — total qty and distinct days per machine (for Planning avg daily rate)
 app.get('/api/actuals/machine-summary', async (req, res) => {
   try {
+    // v37E: Per user spec — average production per day must only include FULLY-ENTERED calendar days
+    // (all 3 shifts A/B/C present in the saved DPR). Today's partial entry (e.g., only A-shift) is
+    // excluded so the average doesn't drop spuriously. The average locks at end of day and updates
+    // once all shifts are entered.
+    //
+    // Completeness signal: a shift is "entered" when its `incharge` field is non-empty.
+    // The DPR UI initializes incharge as '' (empty string) on a blank day, and operators fill it
+    // when they record the shift. This is a reliable signal that someone actively entered shift
+    // data (more reliable than checking shift keys exist — those exist by default in the skeleton).
+    // incharge can be a string OR an array of names; both forms count as "filled" if non-empty.
     let rows;
     if (pgPool) {
       const r = await pgPool.query(`
+        WITH complete_floor_days AS (
+          -- A day's DPR is complete when all 3 shifts have non-empty incharge
+          SELECT floor, date FROM dpr_records
+          WHERE COALESCE(jsonb_typeof(data_json::jsonb -> 'shifts' -> 'A' -> 'incharge'), 'null') != 'null'
+            AND COALESCE(jsonb_typeof(data_json::jsonb -> 'shifts' -> 'B' -> 'incharge'), 'null') != 'null'
+            AND COALESCE(jsonb_typeof(data_json::jsonb -> 'shifts' -> 'C' -> 'incharge'), 'null') != 'null'
+            AND (
+              -- A: array with length > 0  OR  non-empty string
+              (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'A' -> 'incharge') = 'array'
+                AND jsonb_array_length(data_json::jsonb -> 'shifts' -> 'A' -> 'incharge') > 0)
+              OR (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'A' -> 'incharge') = 'string'
+                AND length(data_json::jsonb -> 'shifts' -> 'A' ->> 'incharge') > 0)
+            )
+            AND (
+              (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'B' -> 'incharge') = 'array'
+                AND jsonb_array_length(data_json::jsonb -> 'shifts' -> 'B' -> 'incharge') > 0)
+              OR (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'B' -> 'incharge') = 'string'
+                AND length(data_json::jsonb -> 'shifts' -> 'B' ->> 'incharge') > 0)
+            )
+            AND (
+              (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'C' -> 'incharge') = 'array'
+                AND jsonb_array_length(data_json::jsonb -> 'shifts' -> 'C' -> 'incharge') > 0)
+              OR (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'C' -> 'incharge') = 'string'
+                AND length(data_json::jsonb -> 'shifts' -> 'C' ->> 'incharge') > 0)
+            )
+        ),
+        machine_complete_days AS (
+          SELECT pa.machine_id, pa.date, SUM(pa.qty_lakhs) AS day_qty
+          FROM production_actuals pa
+          JOIN complete_floor_days cfd ON cfd.floor = pa.floor AND cfd.date = pa.date
+          GROUP BY pa.machine_id, pa.date
+        )
         SELECT machine_id,
-               SUM(qty_lakhs)       AS total_qty,
-               COUNT(DISTINCT date) AS distinct_days,
-               MIN(date)            AS first_date,
-               MAX(date)            AS last_date
-        FROM production_actuals
-        WHERE qty_lakhs > 0
+               SUM(day_qty)        AS total_qty,
+               COUNT(*)            AS distinct_days,
+               MIN(date)           AS first_date,
+               MAX(date)           AS last_date
+        FROM machine_complete_days
         GROUP BY machine_id`);
       rows = r.rows;
     } else {
-      rows = db.prepare(`
-        SELECT machine_id,
-               SUM(qty_lakhs)       AS total_qty,
-               COUNT(DISTINCT date) AS distinct_days,
-               MIN(date)            AS first_date,
-               MAX(date)            AS last_date
-        FROM production_actuals
-        WHERE qty_lakhs > 0
-        GROUP BY machine_id`).all();
+      // SQLite fallback — use json_extract to peek at incharge values.
+      // For SQLite we fetch all dpr_records and filter in JS (simpler and SQLite has no jsonb_typeof).
+      const allDprRecs = db.prepare('SELECT floor, date, data_json FROM dpr_records').all();
+      const completeFloorDays = new Set();
+      for (const rec of allDprRecs) {
+        try {
+          const j = JSON.parse(rec.data_json);
+          const shifts = j?.shifts || {};
+          const isFilled = (sh) => {
+            const inc = shifts[sh]?.incharge;
+            if (Array.isArray(inc)) return inc.length > 0;
+            if (typeof inc === 'string') return inc.length > 0;
+            return false;
+          };
+          if (isFilled('A') && isFilled('B') && isFilled('C')) {
+            completeFloorDays.add(`${rec.floor}|${rec.date}`);
+          }
+        } catch(e) {}
+      }
+      // Now sum production_actuals only for those (floor, date) combos
+      const allActuals = db.prepare(`SELECT machine_id, floor, date, SUM(qty_lakhs) AS day_qty FROM production_actuals GROUP BY machine_id, floor, date`).all();
+      const machineAcc = {};
+      allActuals.forEach(a => {
+        if (!completeFloorDays.has(`${a.floor}|${a.date}`)) return;
+        if (!machineAcc[a.machine_id]) machineAcc[a.machine_id] = { total_qty: 0, distinct_days: 0, first_date: a.date, last_date: a.date };
+        machineAcc[a.machine_id].total_qty += parseFloat(a.day_qty || 0);
+        machineAcc[a.machine_id].distinct_days += 1;
+        if (a.date < machineAcc[a.machine_id].first_date) machineAcc[a.machine_id].first_date = a.date;
+        if (a.date > machineAcc[a.machine_id].last_date)  machineAcc[a.machine_id].last_date  = a.date;
+      });
+      rows = Object.entries(machineAcc).map(([machine_id, v]) => ({ machine_id, ...v }));
     }
     const machines = {};
     rows.forEach(r => {
@@ -1750,7 +1813,8 @@ app.get('/api/actuals/machine-summary', async (req, res) => {
         distinctDays,
         avgPerDay: distinctDays > 0 ? parseFloat((totalQty / distinctDays).toFixed(3)) : 0,
         firstDate: r.first_date,
-        lastDate:  r.last_date
+        lastDate:  r.last_date,
+        note: 'Only days with all 3 shifts (A/B/C) fully entered (incharge filled) count toward this average.'
       };
     });
     res.json({ ok: true, machines });
@@ -1758,6 +1822,961 @@ app.get('/api/actuals/machine-summary', async (req, res) => {
     res.status(500).json({ ok: false, error: err.message });
   }
 });
+
+// GET actuals summary for a machine (for DPR to show cumulative vs planned)
+app.get('/api/actuals/machine/:machineId', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT date,shift,qty_lakhs,order_id,batch_number FROM production_actuals WHERE machine_id=$1 ORDER BY date DESC, shift LIMIT 90`, [req.params.machineId]);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT date,shift,qty_lakhs,order_id,batch_number FROM production_actuals WHERE machine_id=? ORDER BY date DESC, shift LIMIT 90`).all(req.params.machineId);
+    }
+    res.json({ ok: true, actuals: rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET actuals for a specific order
+app.get('/api/actuals/order/:orderId', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT date,shift,qty_lakhs,machine_id FROM production_actuals WHERE order_id=$1 OR batch_number=$1 ORDER BY date,shift`, [req.params.orderId]);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT date,shift,qty_lakhs,machine_id FROM production_actuals WHERE order_id=? OR batch_number=? ORDER BY date,shift`).all(req.params.orderId, req.params.orderId);
+    }
+    const total = rows.reduce((s, r) => s + r.qty_lakhs, 0);
+    res.json({ ok: true, actuals: rows, total });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ═══════════════════════════════════════════════════════════════
+// HEALTH CHECK + INFO
+// ═══════════════════════════════════════════════════════════════
+
+// ─── Auth helper ──────────────────────────────────────────────
+function generateToken() { return crypto.randomBytes(32).toString('hex'); }
+
+function verifyToken(token) {
+  if (!token) return null;
+  try {
+    // db wrapper reads from PostgreSQL when pgPool is active
+    // Using simple token lookup (datetime comparison handled by expiry logic below)
+    const session = db.prepare(`SELECT * FROM app_sessions WHERE token = ?`).get(token);
+    if (!session) return null;
+    // Check expiry in JS (works for both SQLite and PostgreSQL datetime formats)
+    if (session.expires_at && new Date(session.expires_at) < new Date()) return null;
+    return session;
+  } catch(e) { return null; }
+}
+
+function logAudit(username, role, app, action, details, ip) {
+  try {
+    if (pgPool) {
+      pgPool.query(`INSERT INTO audit_log (username,role,app,action,details,ip) VALUES ($1,$2,$3,$4,$5,$6)`,
+        [username, role, app, action, details||null, ip||null]).catch(e=>console.error('Audit log error:',e.message));
+    } else {
+      db.prepare(`INSERT INTO audit_log (username,role,app,action,details,ip) VALUES (?,?,?,?,?,?)`).run(username,role,app,action,details||null,ip||null);
+    }
+  } catch(e) { console.error('Audit log error:', e.message); }
+}
+
+// POST /api/auth/login
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, pin, app: appName } = req.body;
+    if (!username || !pin || !appName) return res.status(400).json({ ok: false, error: 'Missing credentials' });
+    let user;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM app_users WHERE username=$1 AND app=$2', [username, appName]);
+      user = r.rows[0];
+    } else {
+      user = db.prepare('SELECT * FROM app_users WHERE username=? AND app=?').get(username, appName);
+    }
+    if (!user) return res.status(401).json({ ok: false, error: 'User not found' });
+    if (user.pin_hash !== hashPin(pin)) return res.status(401).json({ ok: false, error: 'Invalid PIN' });
+    const token = generateToken();
+    const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T',' ').slice(0,19);
+    if (pgPool) {
+      await pgPool.query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING',
+        [token, user.id, user.username, user.role, appName, expires]);
+    } else {
+      db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
+    }
+    logAudit(user.username, user.role, appName, 'LOGIN', 'Successful login', req.ip);
+    res.json({ ok: true, token, username: user.username, role: user.role });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/auth/verify
+app.post('/api/auth/verify', (req, res) => {
+  const { token } = req.body;
+  const session = verifyToken(token);
+  if (!session) return res.status(401).json({ ok: false, error: 'Invalid or expired session' });
+  res.json({ ok: true, username: session.username, role: session.role, app: session.app });
+});
+
+// POST /api/auth/logout
+app.post('/api/auth/logout', async (req, res) => {
+  const { token } = req.body;
+  if (token) {
+    const session = verifyToken(token);
+    if (session) {
+      logAudit(session.username, session.role, session.app, 'LOGOUT', null, req.ip);
+      if (pgPool) await pgPool.query('DELETE FROM app_sessions WHERE token=$1', [token]);
+      else db.prepare('DELETE FROM app_sessions WHERE token=?').run(token);
+    }
+  }
+  res.json({ ok: true });
+});
+
+// POST /api/auth/change-pin
+app.post('/api/auth/change-pin', async (req, res) => {
+  try {
+    const { token, username, newPin } = req.body;
+    const session = verifyToken(token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (session.role !== 'admin' && session.username !== username) {
+      return res.status(403).json({ ok: false, error: 'Only admin can change other users PINs' });
+    }
+    if (pgPool) {
+      await pgPool.query('UPDATE app_users SET pin_hash=$1, updated_at=NOW() WHERE username=$2 AND app=$3', [hashPin(newPin), username, session.app]);
+    } else {
+      db.prepare(`UPDATE app_users SET pin_hash=?, updated_at=datetime('now') WHERE username=? AND app=?`).run(hashPin(newPin), username, session.app);
+    }
+    logAudit(session.username, session.role, session.app, 'CHANGE_PIN', `Changed PIN for ${username}`, req.ip);
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/audit/log
+app.post('/api/audit/log', (req, res) => {
+  try {
+    const { token, action, details } = req.body;
+    const session = verifyToken(token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    logAudit(session.username, session.role, session.app, action, details, req.ip);
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/audit/view — admin only
+app.get('/api/audit/view', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'] || req.query.token;
+    const session = verifyToken(token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
+    const limit = parseInt(req.query.limit) || 200;
+    const app = req.query.app || session.app;
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT * FROM audit_log WHERE app=$1 ORDER BY ts DESC LIMIT $2`, [app, limit]);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT * FROM audit_log WHERE app = ? ORDER BY ts DESC LIMIT ?`).all(app, limit);
+    }
+    res.json({ ok: true, logs: rows });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/auth/users — admin only, list users for an app
+app.get('/api/auth/users', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'] || req.query.token;
+    const session = verifyToken(token);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
+    let users;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT id,username,role,app,created_at,updated_at FROM app_users WHERE app=$1`, [req.query.app || session.app]);
+      users = r.rows;
+    } else {
+      users = db.prepare(`SELECT id,username,role,app,created_at,updated_at FROM app_users WHERE app=?`).all(req.query.app || session.app);
+    }
+    res.json({ ok: true, users });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── TEMP Batch Colour/PC Code Update ────────────────────────
+
+// POST /api/temp-batches/update-details — save colour + PC Code (one-time per TEMP batch)
+app.post('/api/temp-batches/update-details', async (req, res) => {
+  try {
+    const { tempBatchId, colour, pcCode } = req.body;
+    if (!tempBatchId) return res.status(400).json({ ok: false, error: 'Missing tempBatchId' });
+    let updated;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM temp_batches WHERE id=$1', [tempBatchId]);
+      if (!r.rows[0]) return res.status(404).json({ ok: false, error: 'TEMP batch not found' });
+      await pgPool.query(`UPDATE temp_batches SET colour=$1, pc_code=$2, colour_confirmed=1 WHERE id=$3`, [colour||null, pcCode||null, tempBatchId]);
+      const r2 = await pgPool.query('SELECT * FROM temp_batches WHERE id=$1', [tempBatchId]);
+      updated = r2.rows[0];
+    } else {
+      const tb = db.prepare('SELECT * FROM temp_batches WHERE id = ?').get(tempBatchId);
+      if (!tb) return res.status(404).json({ ok: false, error: 'TEMP batch not found' });
+      db.prepare(`UPDATE temp_batches SET colour = ?, pc_code = ?, colour_confirmed = 1 WHERE id = ?`).run(colour||null, pcCode||null, tempBatchId);
+      updated = db.prepare('SELECT * FROM temp_batches WHERE id = ?').get(tempBatchId);
+    }
+    logAudit('SYSTEM', 'system', 'dpr', 'TEMP_DETAILS_SET', `TEMP batch ${tempBatchId} — Colour: ${colour}, PC Code: ${pcCode}`);
+    res.json({ ok: true, batch: updated });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── W/O (Without Order) Reconciliation ──────────────────────
+
+// POST /api/wo/assign-customer — Planning Manager assigns customer to W/O order
+app.post('/api/wo/assign-customer', async (req, res) => {
+  try {
+    const { token, orderId, customer, poNumber, zone, qtyConfirmed } = req.body;
+    const session = verifyToken(token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!['planning_manager','admin'].includes(session.role)) {
+      return res.status(403).json({ ok: false, error: 'Planning Manager or Admin required' });
+    }
+    // Update the planning state order
+    const planState = getPlanningState();
+    const ord = (planState.orders || []).find(o => o.id === orderId);
+    if (!ord) return res.status(404).json({ ok: false, error: 'Order not found' });
+    if (ord.woStatus !== 'wo') return res.status(400).json({ ok: false, error: 'Order is not a W/O order' });
+    ord.customer = customer;
+    ord.poNumber = poNumber || ord.poNumber;
+    ord.zone = zone || ord.zone;
+    if (qtyConfirmed) ord.qty = qtyConfirmed;
+    ord.woCustomerAssignedAt = new Date().toISOString();
+    ord.woCustomerAssignedBy = session.username;
+    // Update dispatch plan customer too
+    (planState.dispatchPlans || []).forEach(d => {
+      if (d.productionOrderId === orderId) {
+        d.customer = customer;
+        d.poNumber = poNumber || d.poNumber;
+        d.zone = zone || d.zone;
+      }
+    });
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
+    } else {
+      db.prepare(`INSERT INTO planning_state (id, state_json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')`).run(JSON.stringify(planState));
+    }
+    _planningStateCache = planState;
+    logAudit(session.username, session.role, 'planning', 'WO_CUSTOMER_ASSIGNED',
+      `W/O order ${orderId} assigned to customer: ${customer}`);
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/wo/propose-reconciliation — Planning Manager proposes W/O → real order
+app.post('/api/wo/propose-reconciliation', async (req, res) => {
+  try {
+    const { token, orderId, customer, poNumber, zone, qtyConfirmed } = req.body;
+    const session = verifyToken(token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!['planning_manager','admin'].includes(session.role)) {
+      return res.status(403).json({ ok: false, error: 'Planning Manager or Admin required' });
+    }
+    if (!customer) return res.status(400).json({ ok: false, error: 'Customer name required' });
+    const id = `WORECON-${Date.now()}`;
+    const billTo = req.body.billTo || '';
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO wo_reconciliation_requests (id,proposed_by,status,order_id,customer,po_number,zone,qty_confirmed) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, session.username, 'pending', orderId, customer, poNumber||null, zone||null, qtyConfirmed||null]);
+      if (billTo && billTo !== customer) await pgPool.query('UPDATE wo_reconciliation_requests SET customer=$1 WHERE id=$2', [customer+'|||'+billTo, id]);
+    } else {
+      db.prepare(`INSERT INTO wo_reconciliation_requests (id,proposed_by,status,order_id,customer,po_number,zone,qty_confirmed) VALUES (?,?,?,?,?,?,?,?)`).run(id, session.username, 'pending', orderId, customer, poNumber||null, zone||null, qtyConfirmed||null);
+      if (billTo && billTo !== customer) db.prepare('UPDATE wo_reconciliation_requests SET customer=? WHERE id=?').run(customer+'|||'+billTo, id);
+    }
+    logAudit(session.username, session.role, 'planning', 'WO_RECON_PROPOSED',
+      `W/O reconciliation proposed: ${id} for order ${orderId} → customer ${customer}`);
+    res.json({ ok: true, requestId: id, status: 'pending' });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/wo/pending — Admin views pending W/O reconciliation requests
+app.get('/api/wo/pending', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const session = verifyToken(token);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
+    let woRows;
+    if (pgPool) { const r = await pgPool.query(`SELECT * FROM wo_reconciliation_requests WHERE status='pending' ORDER BY proposed_at DESC`); woRows=r.rows; }
+    else { woRows = db.prepare(`SELECT * FROM wo_reconciliation_requests WHERE status='pending' ORDER BY proposed_at DESC`).all(); }
+    const planState = getPlanningState();
+    const enriched = woRows.map(r => ({...r, orderDetails:(planState.orders||[]).find(o=>o.id===r.order_id)||{}}));
+    res.json({ ok: true, requests: enriched });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/wo/approve/:id — Admin approves W/O reconciliation
+app.post('/api/wo/approve/:id', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const session = verifyToken(token);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
+    const request = pgPool ? (await pgPool.query('SELECT * FROM wo_reconciliation_requests WHERE id=$1',[req.params.id])).rows[0] : db.prepare('SELECT * FROM wo_reconciliation_requests WHERE id=?').get(req.params.id);
+    if (!request) return res.status(404).json({ ok: false, error: 'Request not found' });
+    if (request.status !== 'pending') return res.status(400).json({ ok: false, error: 'Already processed' });
+
+    const approveWO = async () => {
+      const now = new Date().toISOString();
+      // 1. Update planning state: change woStatus to 'active', add customer
+      const planState = getPlanningState();
+      const ord = (planState.orders || []).find(o => o.id === request.order_id);
+      if (ord) {
+        const custParts = (request.customer||'').split('|||');
+        ord.customer = custParts[0];
+        ord.shipTo   = custParts[0];
+        ord.billTo   = custParts[1] || '';
+        ord.poNumber = request.po_number || ord.poNumber;
+        ord.zone = request.zone || ord.zone;
+        if (request.qty_confirmed) ord.qty = request.qty_confirmed;
+        ord.woStatus = 'wo-reconciled';
+        ord.woReconciledAt = now;
+        ord.woReconciledBy = session.username;
+        // Update dispatch plans
+        (planState.dispatchPlans || []).forEach(d => {
+          if (d.productionOrderId === request.order_id) {
+            d.customer = request.customer;
+            d.poNumber = request.po_number || d.poNumber;
+            d.zone = request.zone || d.zone;
+          }
+        });
+        if(pgPool){ await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`,[JSON.stringify(planState)]); _planningStateCache=planState; _planningStateCacheTime=Date.now(); }
+        else { db.prepare(`INSERT INTO planning_state (id,state_json) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json,updated_at=datetime('now')`).run(JSON.stringify(planState)); }
+      }
+      // 2. Update all tracking labels for this order's batch
+      if (ord) {
+        if(pgPool) await pgPool.query(`UPDATE tracking_labels SET customer=$1,wo_status='wo-reconciled' WHERE batch_number=$2`,[request.customer,ord.batchNumber]);
+        else db.prepare(`UPDATE tracking_labels SET customer=?,wo_status='wo-reconciled' WHERE batch_number=?`).run(request.customer,ord.batchNumber);
+      }
+      // 3. Mark request approved
+      if(pgPool) await pgPool.query(`UPDATE wo_reconciliation_requests SET status='approved',approved_by=$1,approved_at=$2 WHERE id=$3`,[session.username,now,request.id]);
+      else db.prepare(`UPDATE wo_reconciliation_requests SET status='approved',approved_by=?,approved_at=? WHERE id=?`).run(session.username,now,request.id);
+      return { orderId: request.order_id, customer: request.customer };
+    };
+
+    const result = await approveWO();
+    logAudit(session.username, session.role, 'planning', 'WO_RECON_APPROVED',
+      `W/O reconciliation ${req.params.id} approved — order ${result.orderId} → ${result.customer}`);
+    res.json({ ok: true, result, message: 'W/O reconciliation complete. Replacement labels ready for printing.' });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/wo/reject/:id
+app.post('/api/wo/reject/:id', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const session = verifyToken(token);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
+    const { reason } = req.body;
+    if (pgPool) {
+      await pgPool.query(`UPDATE wo_reconciliation_requests SET status='rejected',approved_by=$1,approved_at=NOW(),rejection_reason=$2 WHERE id=$3`,
+        [session.username, reason||'No reason given', req.params.id]);
+    } else {
+      db.prepare(`UPDATE wo_reconciliation_requests SET status='rejected',approved_by=?,approved_at=datetime('now'),rejection_reason=? WHERE id=?`).run(session.username, reason||'No reason given', req.params.id);
+    }
+    logAudit(session.username, session.role, 'planning', 'WO_RECON_REJECTED', `Rejected ${req.params.id}: ${reason}`);
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/wo/history
+app.get('/api/wo/history', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const session = verifyToken(token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    let woHistRows;
+    if (pgPool) { const r = await pgPool.query('SELECT * FROM wo_reconciliation_requests ORDER BY proposed_at DESC LIMIT 50'); woHistRows=r.rows; }
+    else { woHistRows = db.prepare('SELECT * FROM wo_reconciliation_requests ORDER BY proposed_at DESC LIMIT 50').all(); }
+    res.json({ ok: true, requests: woHistRows });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── Data Export / Import (Admin — for safe migrations) ────────
+
+// v37E P2: Cleanup orphan/duplicate print orders
+// POST /api/admin/cleanup-print-orders
+// Removes:
+//  (1) print_orders attached to UP (unprinted) production orders — should not exist
+//  (2) duplicate print_orders WITHIN the same production_order_id+machine_id pair —
+//      keeps the most recently updated one. Legitimate multi-OPM groups (same
+//      production_order_id but DIFFERENT machine_ids) are preserved.
+//      Also handles: multiple rows with NULL machine_id for the same production_order_id
+//      (bug-created skeletons) — keeps the most recent, deletes the rest.
+// Call once after deployment to clean legacy data. Safe to re-run.
+app.post('/api/admin/cleanup-print-orders', async (req, res) => {
+  if (!pgPool) return res.json({ ok: false, error: 'Postgres-only operation' });
+  try {
+    let deletedOrphans = 0;
+    let dedupedCount = 0;
+
+    // (1) Find print orders whose production order is UP — delete them
+    const orphans = await pgPool.query(`
+      SELECT po.id, po.batch_number, po.production_order_id
+      FROM print_orders po
+      JOIN production_orders prod ON prod.id = po.production_order_id
+      WHERE COALESCE((prod.data_json::jsonb->>'isPrinted')::boolean, false) = false
+        AND COALESCE(prod.deleted, false) = false
+    `);
+    for (const o of orphans.rows) {
+      await pgPool.query('DELETE FROM print_orders WHERE id=$1', [o.id]);
+      deletedOrphans++;
+    }
+
+    // (2) Find duplicate rows that share BOTH production_order_id AND machine_id.
+    //     This preserves legitimate multi-OPM groups (same prod ID, different machine IDs).
+    //     For NULL machine_id rows: also collapse multiples (these are bug-created skeletons).
+    const dupGroups = await pgPool.query(`
+      SELECT production_order_id,
+             COALESCE(machine_id, '__NULL__') AS machine_key
+      FROM print_orders
+      WHERE production_order_id IS NOT NULL
+      GROUP BY production_order_id, COALESCE(machine_id, '__NULL__')
+      HAVING COUNT(*) > 1
+    `);
+    for (const grp of dupGroups.rows) {
+      const machineFilter = grp.machine_key === '__NULL__'
+        ? 'machine_id IS NULL'
+        : 'machine_id = $2';
+      const params = grp.machine_key === '__NULL__'
+        ? [grp.production_order_id]
+        : [grp.production_order_id, grp.machine_key];
+      const dups = await pgPool.query(
+        `SELECT id, machine_id, updated_at
+         FROM print_orders
+         WHERE production_order_id = $1 AND ${machineFilter}
+         ORDER BY updated_at DESC NULLS LAST`,
+        params
+      );
+      // Keep first row (most recently updated), delete the rest
+      for (let i = 1; i < dups.rows.length; i++) {
+        await pgPool.query('DELETE FROM print_orders WHERE id=$1', [dups.rows[i].id]);
+        dedupedCount++;
+      }
+    }
+
+    // (3) Remove orphan NULL-machine rows when a same-productionOrder row WITH a machineId exists
+    //     This catches: a "skeleton" auto-created row that never got cleaned up after the user
+    //     successfully assigned a machine on a separate code path.
+    const skeletons = await pgPool.query(`
+      SELECT po1.id
+      FROM print_orders po1
+      WHERE po1.machine_id IS NULL
+        AND po1.production_order_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM print_orders po2
+          WHERE po2.production_order_id = po1.production_order_id
+            AND po2.machine_id IS NOT NULL
+            AND po2.id <> po1.id
+        )
+    `);
+    for (const s of skeletons.rows) {
+      await pgPool.query('DELETE FROM print_orders WHERE id=$1', [s.id]);
+      dedupedCount++;
+    }
+
+    res.json({ ok: true, deletedOrphans, dedupedCount });
+  } catch (err) {
+    console.error('[Admin cleanup-print-orders] failed:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/admin/export — full database export as JSON
+app.get('/api/admin/export', (req, res) => {
+  try {
+    const token = req.headers['x-session-token'] || req.query.token;
+    // Allow export with admin token OR with a special export key env var
+    const exportKey = process.env.EXPORT_KEY || 'sunloc-export-2024';
+    const isKeyAuth = req.query.key === exportKey;
+    if (!isKeyAuth) {
+      const session = verifyToken(token);
+      if (!session || session.role !== 'admin') {
+        return res.status(403).json({ ok: false, error: 'Admin access required' });
+      }
+    }
+
+    const tables = [
+      'planning_state', 'dpr_records', 'production_actuals',
+      'tracking_labels', 'tracking_scans', 'tracking_stage_closure',
+      'tracking_wastage', 'tracking_dispatch_records', 'tracking_alerts',
+      'app_users', 'audit_log', 'schema_migrations'
+    ];
+
+    const exportData = {
+      exported_at: new Date().toISOString(),
+      db_path: DB_PATH,
+      version: 'sunloc-v9',
+      tables: {}
+    };
+
+    for (const table of tables) {
+      try {
+        exportData.tables[table] = db.prepare(`SELECT * FROM ${table}`).all();
+      } catch (e) {
+        exportData.tables[table] = []; // table may not exist yet
+      }
+    }
+
+    const json = JSON.stringify(exportData, null, 2);
+    res.setHeader('Content-Type', 'application/json');
+    res.setHeader('Content-Disposition', `attachment; filename="sunloc-backup-${new Date().toISOString().slice(0,10)}.json"`);
+    res.send(json);
+    console.log(`[Export] Full database exported — ${Object.values(exportData.tables).reduce((s,t)=>s+t.length,0)} total rows`);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/admin/import — restore database from JSON export
+app.post('/api/admin/import', (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const exportKey = process.env.EXPORT_KEY || 'sunloc-export-2024';
+    const isKeyAuth = req.query.key === exportKey;
+    if (!isKeyAuth) {
+      const session = verifyToken(token);
+      if (!session || session.role !== 'admin') {
+        return res.status(403).json({ ok: false, error: 'Admin access required' });
+      }
+    }
+
+    const { tables, confirm } = req.body;
+    if (confirm !== 'IMPORT_CONFIRMED') {
+      return res.status(400).json({ ok: false, error: 'Must include confirm: "IMPORT_CONFIRMED"' });
+    }
+    if (!tables) return res.status(400).json({ ok: false, error: 'No tables data provided' });
+
+    // Run migrations first to ensure schema is up to date
+    runMigrations();
+
+    const results = {};
+    const importTransaction = db.transaction(() => {
+      // Only import data tables — not sessions or migrations
+      const importableTables = [
+        'planning_state', 'dpr_records', 'production_actuals',
+        'tracking_labels', 'tracking_scans', 'tracking_stage_closure',
+        'tracking_wastage', 'tracking_dispatch_records', 'tracking_alerts'
+      ];
+
+      for (const table of importableTables) {
+        const rows = tables[table];
+        if (!rows || rows.length === 0) { results[table] = 0; continue; }
+        try {
+          // Get column names from first row
+          const cols = Object.keys(rows[0]);
+          const placeholders = cols.map(() => '?').join(',');
+          const stmt = db.prepare(
+            `INSERT OR REPLACE INTO ${table} (${cols.join(',')}) VALUES (${placeholders})`
+          );
+          let count = 0;
+          for (const row of rows) {
+            stmt.run(cols.map(c => row[c]));
+            count++;
+          }
+          results[table] = count;
+        } catch (e) {
+          results[table] = `ERROR: ${e.message}`;
+        }
+      }
+    });
+    importTransaction();
+
+    const totalRows = Object.values(results).reduce((s,v)=>typeof v==='number'?s+v:s, 0);
+    console.log(`[Import] Restored ${totalRows} rows across ${Object.keys(results).length} tables`);
+    res.json({ ok: true, results, totalRows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/admin/db-status — show DB path, size, migration status
+app.get('/api/admin/db-status', (req, res) => {
+  try {
+    const migrations = db.prepare('SELECT * FROM schema_migrations ORDER BY version').all();
+    const tableRowCounts = {};
+    const tables = ['planning_state','dpr_records','production_actuals','tracking_labels',
+      'tracking_scans','tracking_stage_closure','tracking_wastage','tracking_dispatch_records',
+      'tracking_alerts','app_users','audit_log'];
+    for (const t of tables) {
+      try { tableRowCounts[t] = db.prepare(`SELECT COUNT(*) as c FROM ${t}`).get().c; }
+      catch(e) { tableRowCounts[t] = 'N/A'; }
+    }
+    let dbSizeBytes = 0;
+    try { dbSizeBytes = fs.statSync(DB_PATH).size; } catch(e){}
+    res.json({
+      ok: true,
+      db_path: DB_PATH,
+      db_size_mb: (dbSizeBytes / 1024 / 1024).toFixed(2),
+      migrations_applied: migrations.length,
+      migrations,
+      table_row_counts: tableRowCounts
+    });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── TEMP Batch System ─────────────────────────────────────────
+
+// Helper: calculate label count from daily cap and pack size
+function calcTempLabelCount(capLakhs, packSizeLakhs) {
+  return Math.ceil(capLakhs / packSizeLakhs);
+}
+
+// Helper: generate TEMP batch ID
+function tempBatchId(machineId, date) {
+  return `TEMP-${machineId}-${date.replace(/-/g,'')}`;
+}
+
+// GET /api/temp-batches/check/:machineId — check if machine needs TEMP batch today
+app.get('/api/temp-batches/check/:machineId', async (req, res) => {
+  try {
+    const { machineId } = req.params;
+    const today = new Date().toISOString().split('T')[0];
+    const planState = getPlanningState();
+    const activeOrders = (planState.orders || []).filter(o =>
+      o.machineId === machineId && o.status !== 'closed' && !o.deleted
+    );
+    const hasActiveOrder = activeOrders.length > 0;
+    let existing = null, allTemp = [];
+    if (pgPool) {
+      const r1 = await pgPool.query(`SELECT * FROM temp_batches WHERE machine_id=$1 AND date=$2`, [machineId, today]);
+      existing = r1.rows[0] || null;
+      const r2 = await pgPool.query(`SELECT * FROM temp_batches WHERE machine_id=$1 AND status='active' ORDER BY date DESC`, [machineId]);
+      allTemp = r2.rows;
+    } else {
+      existing = db.prepare(`SELECT * FROM temp_batches WHERE machine_id = ? AND date = ?`).get(machineId, today);
+      allTemp = db.prepare(`SELECT * FROM temp_batches WHERE machine_id = ? AND status = 'active' ORDER BY date DESC`).all(machineId);
+    }
+    const mc = (planState.machineMaster || []).find(m => m.id === machineId);
+    const packSizes = planState.packSizes || {};
+    const packSizeLakhs = mc ? ((packSizes[mc.size] || 100000) / 100000) : 1;
+    const capLakhs = mc ? (mc.cap || 8) : 8;
+    const labelCount = mc ? calcTempLabelCount(capLakhs, packSizeLakhs) : 0;
+    res.json({
+      ok: true, machineId, hasActiveOrder,
+      activeOrders: activeOrders.map(o => ({ id:o.id, batchNumber:o.batchNumber, qty:o.qty, status:o.status })),
+      todayTempBatch: existing || null,
+      needsTemp: !hasActiveOrder,
+      machineInfo: mc ? { size: mc.size, capLakhs, packSizeLakhs, labelCount } : null,
+      activeTempBatches: allTemp
+    });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// POST /api/temp-batches/create — create TEMP batch for a machine/date
+app.post('/api/temp-batches/create', async (req, res) => {
+  try {
+    const { machineId, date } = req.body;
+    const batchDate = date || new Date().toISOString().split('T')[0];
+    const id = tempBatchId(machineId, batchDate);
+    const planState = getPlanningState();
+    const mc = (planState.machineMaster || []).find(m => m.id === machineId);
+    if (!mc) return res.status(400).json({ ok:false, error:'Machine not found' });
+    const packSizes = planState.packSizes || {};
+    const packSizeLakhs = (packSizes[mc.size] || 100000) / 100000;
+    const capLakhs = mc.cap || 8;
+    const labelCount = calcTempLabelCount(capLakhs, packSizeLakhs);
+    let batch;
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO temp_batches (id,machine_id,machine_size,date,daily_cap_lakhs,label_count,pack_size_lakhs) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING`,
+        [id, machineId, mc.size, batchDate, capLakhs, labelCount, packSizeLakhs]);
+      await pgPool.query(`INSERT INTO temp_batch_alerts (machine_id,temp_batch_id,alert_date) VALUES ($1,$2,$3) ON CONFLICT DO NOTHING`,
+        [machineId, id, batchDate]);
+      const r = await pgPool.query('SELECT * FROM temp_batches WHERE id=$1', [id]);
+      batch = r.rows[0];
+    } else {
+      db.prepare(`INSERT OR IGNORE INTO temp_batches (id,machine_id,machine_size,date,daily_cap_lakhs,label_count,pack_size_lakhs) VALUES (?,?,?,?,?,?,?)`).run(id, machineId, mc.size, batchDate, capLakhs, labelCount, packSizeLakhs);
+      db.prepare(`INSERT OR IGNORE INTO temp_batch_alerts (machine_id,temp_batch_id,alert_date) VALUES (?,?,?)`).run(machineId, id, batchDate);
+      batch = db.prepare(`SELECT * FROM temp_batches WHERE id = ?`).get(id);
+    }
+    logAudit('SYSTEM','system','dpr','TEMP_BATCH_CREATED',`TEMP batch created: ${id} — ${capLakhs}L → ${labelCount} labels (Size ${mc.size})`);
+    res.json({ ok:true, batch });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// GET /api/temp-batches/active — all active TEMP batches (for alerts)
+// ── Delete TEMP batches for a specific date ─────────────────
+app.delete('/api/temp-batches/by-date', async (req, res) => {
+  try {
+    const { date } = req.query; // date = YYYY-MM-DD
+    if (!date) return res.status(400).json({ ok: false, error: 'date required' });
+    let deleted = 0;
+    if (pgPool) {
+      const r = await pgPool.query(
+        `DELETE FROM temp_batches WHERE date = $1 AND status != 'reconciled'`, [date]
+      );
+      deleted = r.rowCount;
+    } else {
+      const r = db.prepare(`DELETE FROM temp_batches WHERE date = ? AND status != 'reconciled'`).run(date);
+      deleted = r.changes;
+    }
+    res.json({ ok: true, deleted, date });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/temp-batches/active', async (req, res) => {
+  try {
+    let batches;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT * FROM temp_batches WHERE status='active' ORDER BY machine_id, date DESC`);
+      batches = r.rows;
+    } else {
+      batches = db.prepare(`SELECT * FROM temp_batches WHERE status='active' ORDER BY machine_id, date DESC`).all();
+    }
+    const today = new Date().toISOString().split('T')[0];
+    const TEMP_CUTOFF = '2026-04-27';
+    // Ignore TEMP batches created before April 25 2026
+    const filtered = batches.filter(b => (b.created_at||b.date||'') >= TEMP_CUTOFF);
+    const enriched = filtered.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
+    res.json({ ok:true, batches: enriched, count: enriched.length });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// POST /api/reconciliation/propose — Planning Manager proposes reconciliation
+app.post('/api/reconciliation/propose', async (req, res) => {
+  try {
+    const { token, orderDetails, backDate, tempBatchMappings } = req.body;
+    const session = verifyToken(token);
+    if (!session) return res.status(401).json({ ok:false, error:'Not authenticated' });
+    if (!['planning_manager','admin'].includes(session.role)) {
+      return res.status(403).json({ ok:false, error:'Planning Manager or Admin required' });
+    }
+
+    // Validate back-date: cannot be before earliest TEMP batch date
+    const earliestTempDate = tempBatchMappings.reduce((min, m) => {
+      return m.tempDate < min ? m.tempDate : min;
+    }, '9999-12-31');
+
+    if (backDate < earliestTempDate) {
+      return res.status(400).json({
+        ok:false,
+        error: `Back-date (${backDate}) cannot be before earliest TEMP batch date (${earliestTempDate})`
+      });
+    }
+
+    // Validate all TEMP batches exist and are active
+    for (const mapping of tempBatchMappings) {
+      let tb;
+      if (pgPool) { const r = await pgPool.query('SELECT * FROM temp_batches WHERE id=$1',[mapping.tempBatchId]); tb=r.rows[0]; }
+      else { tb = db.prepare('SELECT * FROM temp_batches WHERE id=?').get(mapping.tempBatchId); }
+      if (!tb) return res.status(400).json({ ok:false, error:`TEMP batch ${mapping.tempBatchId} not found` });
+      if (tb.status !== 'active') return res.status(400).json({ ok:false, error:`TEMP batch ${mapping.tempBatchId} is not active` });
+    }
+
+    const totalBoxes = tempBatchMappings.reduce((s,m) => s + (m.boxes || 0), 0);
+    const id = `RECON-${Date.now()}`;
+
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO reconciliation_requests (id,proposed_by,status,order_id,order_details,back_date,temp_batch_mappings,total_boxes) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)`,
+        [id, session.username, 'pending', orderDetails.id||`ORDER-${Date.now()}`, JSON.stringify(orderDetails), backDate, JSON.stringify(tempBatchMappings), totalBoxes]);
+    } else {
+      db.prepare(`INSERT INTO reconciliation_requests (id,proposed_by,status,order_id,order_details,back_date,temp_batch_mappings,total_boxes) VALUES (?,?,?,?,?,?,?,?)`).run(
+        id, session.username, 'pending', orderDetails.id||`ORDER-${Date.now()}`, JSON.stringify(orderDetails), backDate, JSON.stringify(tempBatchMappings), totalBoxes);
+    }
+
+    logAudit(session.username, session.role, 'planning', 'RECON_PROPOSED',
+      `Reconciliation proposed: ${id} — ${tempBatchMappings.length} TEMP batches → Order, ${totalBoxes} boxes`);
+
+    res.json({ ok:true, requestId: id, status:'pending', message:'Awaiting Admin approval' });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// GET /api/reconciliation/pending — Admin views pending requests
+app.get('/api/reconciliation/pending', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const session = verifyToken(token);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin only' });
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT * FROM reconciliation_requests WHERE status='pending' ORDER BY proposed_at DESC`);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT * FROM reconciliation_requests WHERE status='pending' ORDER BY proposed_at DESC`).all();
+    }
+    const requests = rows.map(r => ({...r, order_details:JSON.parse(r.order_details||'{}'), temp_batch_mappings:JSON.parse(r.temp_batch_mappings||'[]')}));
+    res.json({ ok:true, requests });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// POST /api/reconciliation/approve/:id — Admin approves and executes reconciliation
+app.post('/api/reconciliation/approve/:id', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const session = verifyToken(token);
+    if (!session || session.role !== 'admin') {
+      return res.status(403).json({ ok:false, error:'Admin only' });
+    }
+
+    const request = pgPool ? (await pgPool.query('SELECT * FROM reconciliation_requests WHERE id=$1',[req.params.id])).rows[0] : db.prepare('SELECT * FROM reconciliation_requests WHERE id=?').get(req.params.id);
+    if (!request) return res.status(404).json({ ok:false, error:'Request not found' });
+    if (request.status !== 'pending') return res.status(400).json({ ok:false, error:'Request is not pending' });
+
+    const orderDetails = JSON.parse(request.order_details);
+    const mappings = JSON.parse(request.temp_batch_mappings);
+    const orderId = request.order_id;
+
+    // Execute reconciliation atomically
+    const reconcileAsync = async () => {
+      const now = new Date().toISOString();
+      const results = { migratedScans:0, migratedLabels:0, migratedWastage:0, tempBatchesReconciled:0 };
+
+      for (const mapping of mappings) {
+        const { tempBatchId: tbId, boxes, startLabelNumber, endLabelNumber } = mapping;
+        const tb = pgPool ? (await pgPool.query('SELECT * FROM temp_batches WHERE id=$1',[tbId])).rows[0] : db.prepare('SELECT * FROM temp_batches WHERE id=?').get(tbId);
+        if (!tb) continue;
+
+        // Determine production month from TEMP batch date (never changes)
+        const prodMonth = tb.date.slice(0,7); // YYYY-MM
+
+        // 1. Migrate tracking labels for this TEMP batch (within box range if partial)
+        const labelFilter = (startLabelNumber && endLabelNumber)
+          ? `batch_number = ? AND label_number >= ? AND label_number <= ?`
+          : `batch_number = ?`;
+        const labelArgs = (startLabelNumber && endLabelNumber)
+          ? [tbId, startLabelNumber, endLabelNumber]
+          : [tbId];
+
+        const labelsToMigrate = pgPool ? (await pgPool.query(`SELECT * FROM tracking_labels WHERE ${labelFilter.replace('?','$1').replace('?','$2').replace('?','$3')}`, labelArgs)).rows : db.prepare(`SELECT * FROM tracking_labels WHERE ${labelFilter}`).all(...labelArgs);
+
+        for (const label of labelsToMigrate) {
+          const newLabelId = label.id.replace(tbId, orderId);
+          if(pgPool){ await pgPool.query(`INSERT INTO tracking_labels SELECT replace(id,$1,$2) as id,$2 as batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data FROM tracking_labels WHERE id=$3 ON CONFLICT(id) DO NOTHING`,[tbId,orderId,label.id]); } else { db.prepare(`INSERT OR REPLACE INTO tracking_labels SELECT replace(id,?,?) as id,? as batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data FROM tracking_labels WHERE id=?`).run(tbId,orderId,orderId,label.id); }
+
+          // Migrate scans for this label
+          if(pgPool){ const sm=await pgPool.query(`UPDATE tracking_scans SET label_id=replace(label_id,$1,$2),batch_number=$2 WHERE label_id=$3`,[tbId,orderId,label.id]); results.migratedScans+=sm.rowCount||0; } else { const scanMigrated=db.prepare(`UPDATE tracking_scans SET label_id=replace(label_id,?,?),batch_number=? WHERE label_id=?`).run(tbId,orderId,orderId,label.id); results.migratedScans+=scanMigrated.changes; }
+          results.migratedLabels++;
+
+          // Remove old TEMP label if new one created
+          if (newLabelId !== label.id) {
+            if(pgPool) await pgPool.query('DELETE FROM tracking_labels WHERE id=$1 AND id!=$2',[label.id,newLabelId]); else db.prepare('DELETE FROM tracking_labels WHERE id=? AND id!=?').run(label.id,newLabelId);
+          }
+        }
+
+        // 2. Migrate wastage records
+        if(pgPool){ const wm=await pgPool.query('UPDATE tracking_wastage SET batch_number=$1 WHERE batch_number=$2',[orderId,tbId]); results.migratedWastage+=wm.rowCount||0; } else { const wastage=db.prepare('UPDATE tracking_wastage SET batch_number=? WHERE batch_number=?').run(orderId,tbId); results.migratedWastage+=wastage.changes; }
+
+        // 3. Migrate stage closures
+        if(pgPool) await pgPool.query('UPDATE tracking_stage_closure SET batch_number=$1 WHERE batch_number=$2',[orderId,tbId]); else db.prepare('UPDATE tracking_stage_closure SET batch_number=? WHERE batch_number=?').run(orderId,tbId);
+
+        // 4. Migrate DPR production actuals
+        if(pgPool) await pgPool.query('UPDATE production_actuals SET order_id=$1,batch_number=$2 WHERE batch_number=$3',[orderId,orderDetails.batchNumber||orderId,tbId]); else db.prepare('UPDATE production_actuals SET order_id=?,batch_number=? WHERE batch_number=?').run(orderId,orderDetails.batchNumber||orderId,tbId);
+
+        // 5. Update dispatch records
+        if(pgPool) await pgPool.query('UPDATE tracking_dispatch_records SET batch_number=$1 WHERE batch_number=$2',[orderId,tbId]); else db.prepare('UPDATE tracking_dispatch_records SET batch_number=? WHERE batch_number=?').run(orderId,tbId);
+
+        // 6. Mark TEMP batch as reconciled (or partially reconciled)
+        const isFullReconcile = !startLabelNumber; // full batch
+        if(pgPool) await pgPool.query('UPDATE temp_batches SET status=$1,reconciled_order_id=$2,reconciled_at=$3,reconciled_by=$4 WHERE id=$5',[isFullReconcile?'reconciled':'partial',orderId,now,session.username,tbId]); else db.prepare('UPDATE temp_batches SET status=?,reconciled_order_id=?,reconciled_at=?,reconciled_by=? WHERE id=?').run(isFullReconcile?'reconciled':'partial',orderId,now,session.username,tbId);
+        results.tempBatchesReconciled++;
+      }
+
+      // 7. Update planning state - add/update order with back-date and correct actualQty
+      const planState = getPlanningState();
+      if (planState.orders) {
+        // Check if order already exists (Planning Manager may have pre-entered it)
+        const existingIdx = planState.orders.findIndex(o => o.id === orderId);
+        const orderToSave = {
+          ...orderDetails,
+          id: orderId,
+          startDate: request.back_date,
+          actualQty: mappings.reduce((s,m) => s + (m.actualLakhs || 0), 0),
+          status: 'running'
+        };
+        if (existingIdx >= 0) {
+          planState.orders[existingIdx] = { ...planState.orders[existingIdx], ...orderToSave };
+        } else {
+          planState.orders.push(orderToSave);
+        }
+        await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json, saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
+        _planningStateCache = planState; _planningStateCacheTime = Date.now();
+      }
+
+      // 8. Mark reconciliation request as approved
+      await pgPool.query(`UPDATE reconciliation_requests SET status='approved',approved_by=$1,approved_at=$2 WHERE id=$3`,
+        [session.username, now, request.id]);
+
+      return results;
+    };
+
+    const results = await reconcileAsync();
+
+    logAudit(session.username, session.role, 'planning', 'RECON_APPROVED',
+      `Reconciliation ${req.params.id} approved — ${results.migratedLabels} labels, ${results.migratedScans} scans migrated`);
+
+    res.json({ ok:true, results, message:'Reconciliation complete. Replacement labels ready for printing.' });
+  } catch(err) {
+    res.status(500).json({ ok:false, error:err.message });
+  }
+});
+
+// POST /api/reconciliation/reject/:id — Admin rejects
+app.post('/api/reconciliation/reject/:id', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const session = verifyToken(token);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin only' });
+    const { reason } = req.body;
+    if (pgPool) {
+      await pgPool.query(`UPDATE reconciliation_requests SET status='rejected',approved_by=$1,approved_at=NOW(),rejection_reason=$2 WHERE id=$3`,
+        [session.username, reason||'No reason given', req.params.id]);
+    } else {
+      db.prepare(`UPDATE reconciliation_requests SET status='rejected',approved_by=?,approved_at=datetime('now'),rejection_reason=? WHERE id=?`).run(session.username, reason||'No reason given', req.params.id);
+    }
+    logAudit(session.username, session.role, 'planning', 'RECON_REJECTED', `Rejected: ${req.params.id} — ${reason}`);
+    res.json({ ok:true });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// GET /api/reconciliation/history — all reconciliation requests
+app.get('/api/reconciliation/history', async (req, res) => {
+  try {
+    const token = req.headers['x-session-token'];
+    const session = verifyToken(token);
+    if (!session) return res.status(401).json({ ok:false, error:'Not authenticated' });
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT * FROM reconciliation_requests ORDER BY proposed_at DESC LIMIT 100`);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT * FROM reconciliation_requests ORDER BY proposed_at DESC LIMIT 100`).all();
+    }
+    const requests = rows.map(r => ({...r, order_details:JSON.parse(r.order_details||'{}'), temp_batch_mappings:JSON.parse(r.temp_batch_mappings||'[]')}));
+    res.json({ ok:true, requests });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+app.get('/api/health', (req, res) => {
+  try {
+    const planningRow  = db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get();
+    const dprCount     = db.prepare('SELECT COUNT(*) as c FROM dpr_records').get();
+    const actualsCount = db.prepare('SELECT COUNT(*) as c FROM production_actuals').get();
+    res.json({
+      ok: true,
+      server: 'Sunloc Integrated Server v1.0',
+      db: DB_PATH,
+      planningSavedAt: planningRow?.saved_at || null,
+      dprRecords: dprCount?.c || 0,
+      actualsEntries: actualsCount?.c || 0,
+      uptime: Math.floor(process.uptime()) + 's',
+    });
+  } catch(err) {
+    // Server is alive even if DB query fails (e.g. still warming up)
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+  }
+});
+
+// NOTE: catch-all SPA fallback moved to END of file (after all API routes)
+// so that /api/tracking/* routes are not intercepted by the wildcard.
+
+// ═══════════════════════════════════════════════════════
+// TRACKING APP SCHEMA (add to existing server.js)
+// ═══════════════════════════════════════════════════════
 
 
 // ═══════════════════════════════════════════════════════
@@ -2274,6 +3293,64 @@ app.get('/api/wo/history', async (req, res) => {
 });
 
 // ─── Data Export / Import (Admin — for safe migrations) ────────
+
+// POST /api/admin/cleanup-print-orders
+// Removes duplicate/orphan print_orders. Safe to re-run.
+app.post('/api/admin/cleanup-print-orders', async (req, res) => {
+  if (!pgPool) return res.json({ ok: false, error: 'Postgres-only operation' });
+  try {
+    let deletedOrphans = 0;
+    let dedupedCount = 0;
+
+    // (1) Delete print orders whose production order is UP (unprinted)
+    const orphans = await pgPool.query(`
+      SELECT po.id FROM print_orders po
+      JOIN production_orders prod ON prod.id = po.production_order_id
+      WHERE COALESCE((prod.data_json::jsonb->>'isPrinted')::boolean, false) = false
+        AND COALESCE(prod.deleted, false) = false
+    `);
+    for (const o of orphans.rows) {
+      await pgPool.query('DELETE FROM print_orders WHERE id=$1', [o.id]);
+      deletedOrphans++;
+    }
+
+    // (2) Deduplicate: same production_order_id + machine_id — keep most recently updated
+    const dupGroups = await pgPool.query(`
+      SELECT production_order_id, COALESCE(machine_id, '__NULL__') AS machine_key
+      FROM print_orders WHERE production_order_id IS NOT NULL
+      GROUP BY production_order_id, COALESCE(machine_id, '__NULL__') HAVING COUNT(*) > 1
+    `);
+    for (const grp of dupGroups.rows) {
+      const machineFilter = grp.machine_key === '__NULL__' ? 'machine_id IS NULL' : 'machine_id = $2';
+      const params = grp.machine_key === '__NULL__' ? [grp.production_order_id] : [grp.production_order_id, grp.machine_key];
+      const dups = await pgPool.query(
+        `SELECT id FROM print_orders WHERE production_order_id = $1 AND ${machineFilter} ORDER BY updated_at DESC NULLS LAST`, params
+      );
+      for (let i = 1; i < dups.rows.length; i++) {
+        await pgPool.query('DELETE FROM print_orders WHERE id=$1', [dups.rows[i].id]);
+        dedupedCount++;
+      }
+    }
+
+    // (3) Remove NULL-machine skeleton rows when assigned row exists for same order
+    const skeletons = await pgPool.query(`
+      SELECT po1.id FROM print_orders po1
+      WHERE po1.machine_id IS NULL AND po1.production_order_id IS NOT NULL
+        AND EXISTS (SELECT 1 FROM print_orders po2
+          WHERE po2.production_order_id = po1.production_order_id
+            AND po2.machine_id IS NOT NULL AND po2.id <> po1.id)
+    `);
+    for (const s of skeletons.rows) {
+      await pgPool.query('DELETE FROM print_orders WHERE id=$1', [s.id]);
+      dedupedCount++;
+    }
+
+    res.json({ ok: true, deletedOrphans, dedupedCount });
+  } catch (err) {
+    console.error('[Admin cleanup-print-orders] failed:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
 
 // GET /api/admin/export — full database export as JSON
 app.get('/api/admin/export', (req, res) => {
@@ -3325,11 +4402,12 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       const piInspected = piOut + piWaste;
 
       const grossProd = grossProdMap[batchNo.toUpperCase()] || 0;
+      const packInQty  = pack.inQty || 0;
       const packOutQty = pack.outQty || 0;
-      // WIP = (Gross − total wastage all depts) − Pack Out
-      // Gross − packOut alone overstates WIP by including scrapped material
+      // v37E WIP-fix: use packIn — material at packing is FG, not WIP
       const totalWastageForWIP = aimWaste + printWaste + piWaste;
-      const wipLakhs = Math.max(0, grossProd - totalWastageForWIP - packOutQty);
+      const wipLakhs = Math.max(0, grossProd - totalWastageForWIP - packInQty);
+      const fgAwaitingDispatch = Math.max(0, packInQty - packOutQty);
 
       result[batchNo.toUpperCase()] = { // normalize to uppercase for consistent lookup
         aim: {
@@ -3347,9 +4425,10 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
           wastage: piWaste, inspected: piInspected,
           aGradePct: piInspected>0 ? (piOut/piInspected*100) : null
         },
-        packing: { inQty: pack.inQty||0, outQty: packOutQty, in: pack.in||0, out: pack.out||0 }, // .out = box count (scan count)
+        packing: { inQty: packInQty, outQty: packOutQty, in: pack.in||0, out: pack.out||0 },
         grossProd,
-        wipLakhs  // Lakhs still in pipeline (not yet packed out)
+        wipLakhs,          // Lakhs still in production (not yet at packing)
+        fgAwaitingDispatch // Lakhs at packing waiting for vehicle
       };
     });
 
