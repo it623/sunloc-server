@@ -1318,7 +1318,7 @@ async function pullFromServer(){
       const pj=await pr.json();
       if(pj.ok && pj.state?.orders){
         // v37F: All tracking users see all non-deleted batches (running, closed, pending)
-        const batches = pj.state.orders.filter(o=>!o.deleted).map(b=>(
+        const batches = pj.state.orders.filter(o=>!o.deleted).map(b=>({
           ...b,
           actualQty: b.actualQty || b.actualProd || 0,
           actualProd: b.actualProd || b.actualQty || 0,
