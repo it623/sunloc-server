@@ -480,7 +480,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v37E</p>
+      <p>Planning Suite v3.0 · build v37F</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -798,7 +798,7 @@ const SYNC = (() => {
           });
         }
         // Take server state
-        // Save local orders, printOrders, dailyPrinting before overwrite — merge after
+        // Save local dailyPrinting before overwrite — merge after
         const _localDailyPrinting = JSON.parse(JSON.stringify(state.dailyPrinting || []));
 
         // v37E PL2: snapshot any locally-added PC codes before reset so we can re-merge them
@@ -975,9 +975,18 @@ const SYNC = (() => {
           const dbMap = {};
           poj.printOrders.forEach(p => { dbMap[p.id] = p; });
           let changed = false;
+          // v37F P1: Honor recently-changed local print orders — protect machineId/printType
+          // for 90s after a local mutation so auto-sync doesn't revert a fresh assignment
+          const _now3 = Date.now();
+          const _protectWindowPO = 90000;
           state.printOrders = (state.printOrders||[]).map(p => {
             const dbRow = dbMap[p.id];
             if (!dbRow) return p;
+            const localTs = _localPrintOrderChanges[p.id];
+            if (localTs && (_now3 - localTs) < _protectWindowPO) {
+              // Recent local change — keep local version (being POSTed if not already)
+              return p;
+            }
             // Only overwrite machineId if DB has a real value — never let DB null erase local assignment
             const resolvedMachineId = (dbRow.machineId && dbRow.machineId !== 'null' && dbRow.machineId !== '')
               ? dbRow.machineId
