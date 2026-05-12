@@ -1658,8 +1658,6 @@ function getPcByCode(size, code) {
 
 // Calculate order schedule
 // Stage wastage factors (standard defaults, overridden by live tracking actuals)
-const STD_AIM_WASTE    = 0.07;  // 7% AIM wastage
-const STD_PRINT_WASTE  = 0.01;  // 1% printing machine wastage
 function calcOrderSchedule(order, mc) {
   // v37E Logic 1: A-Grade fallback chain for scheduling estimates:
   //   1. Batch-specific live A-Grade (from this batch's AIM/Print/PI scans)
