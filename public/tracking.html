@@ -3993,7 +3993,16 @@ function applyBatchFilter(){
 
   const container=document.getElementById('bt-list');
   if(!container) return;
-  if(!batches.length){ container.innerHTML='<div class="card text-center text-muted" style="padding:40px">No batches found</div>'; return; }
+  if(!batches.length){
+    if(state.batches.length === 0) {
+      // Batches not loaded yet — trigger reload from planning state
+      container.innerHTML='<div class="card text-center text-muted" style="padding:40px"><div style="font-size:24px;margin-bottom:8px">⏳</div><div style="font-weight:600;margin-bottom:4px">Loading batch data...</div><div class="text-sm">Fetching from planning server</div></div>';
+      setTimeout(() => { loadFromServer().then(() => applyBatchFilter()); }, 500);
+    } else {
+      container.innerHTML='<div class="card text-center text-muted" style="padding:40px">No batches found for selected filters</div>';
+    }
+    return;
+  }
 
   container.innerHTML=batches.map(b=>renderBatchCard(b)).join('');
 }
@@ -4032,6 +4041,11 @@ function renderBatchCard(batch){
     : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='dispatch'&&s.type==='out').length;
   const dispatchPct=totalBoxes>0?(dispatched/totalBoxes*100):0;
 
+  // v37E WIP-fix: use scanSummary for packed count
+  const localPackOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
+  const packedOut = hasScanSummary()
+    ? (_ss(batchNo,'packing').out + localPackOut)
+    : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
   const flowSteps=flow.map((dept,i)=>{
     const closed=isStageComplete(batchNo,dept)||dept==='production';
     // v37E WIP-fix: use scanSummary for stage activity indicator so old batches still show correct flow state
