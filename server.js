@@ -394,7 +394,8 @@ const MIGRATIONS = [
       archived_by TEXT,
       snapshot_json JSONB,
       is_auto BOOLEAN DEFAULT TRUE
-    );    CREATE INDEX IF NOT EXISTS idx_month_archives_month ON month_archives(month);`
+    );
+    CREATE INDEX IF NOT EXISTS idx_month_archives_month ON month_archives(month);`
   },
 ];
 
@@ -864,33 +865,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_prod_actuals_date ON production_actuals(date, machine_id)`).catch(()=>{});
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_records_date ON dpr_records(date)`).catch(()=>{});
 
-
-    // v37H: idempotent ALTER for tracking_labels to bring any prod table up to spec
-    const labelColumns = [
-      'wo_status TEXT', 'ship_to TEXT', 'bill_to TEXT',
-      'is_excess INTEGER DEFAULT 0', 'excess_num INTEGER',
-      'excess_total INTEGER', 'normal_total INTEGER', 'qr_data TEXT', 'voided_by TEXT'
-    ];
-    for (const col of labelColumns) {
-      const colName = col.split(' ')[0];
-      try {
-        await pgPool.query(`ALTER TABLE tracking_labels ADD COLUMN IF NOT EXISTS ${col}`);
-      } catch(e) {
-        console.warn(`[v37H migration] could not add column ${colName} to tracking_labels:`, e.message);
-      }
-    }
-    // v37H: ensure all columns exist on previously-created tables
-    const tempBatchColumns = ['colour TEXT', 'pc_code TEXT', 'colour_confirmed INTEGER DEFAULT 0'];
-    for (const col of tempBatchColumns) {
-      const colName = col.split(' ')[0];
-      try {
-        await pgPool.query(`ALTER TABLE temp_batches ADD COLUMN IF NOT EXISTS ${col}`);
-      } catch(e) {
-        console.warn(`[v37H migration] could not add column ${colName} to temp_batches:`, e.message);
-      }
-    }
-
-        console.log('[DB] PostgreSQL tables verified/created');
+    console.log('[DB] PostgreSQL tables verified/created');
   } catch(e) {
     console.error('[DB] ensurePostgresTables error:', e.message);
   }
@@ -4111,7 +4086,7 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
     } else {
       scanRows     = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type').all();
       wastageRows  = db.prepare('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type').all();
-      try { dispatchRows = db.prepare('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records GROUP BY batch_number').all(); }
+      try { dispatchRows = db.prepare('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_recs GROUP BY batch_number').all(); }
       catch(e) { dispatchRows = []; }
     }
 

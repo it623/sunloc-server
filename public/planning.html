@@ -96,39 +96,6 @@ tbody tr:hover td { background:#fdf5e8; }
 tbody tr.closed td { opacity:0.5; }
 tbody tr.closed td:first-child { text-decoration:line-through; }
 
-/* v37G: Dispatch Order View — sticky header + frozen left columns (Customer through Zone, 1-8) */
-.dispatch-order-view-wrap { position:relative; }
-.dispatch-order-view-table thead th { position:sticky; top:0; z-index:5; }
-.dispatch-order-view-table .freeze-col-1 { position:sticky; left:0; z-index:3; background:var(--surface); }
-.dispatch-order-view-table thead .freeze-col-1 { background:#1a3a2e; z-index:6; }
-.dispatch-order-view-table tbody tr:hover .freeze-col-1,
-.dispatch-order-view-table tbody tr:hover .freeze-col-2,
-.dispatch-order-view-table tbody tr:hover .freeze-col-3,
-.dispatch-order-view-table tbody tr:hover .freeze-col-4,
-.dispatch-order-view-table tbody tr:hover .freeze-col-5,
-.dispatch-order-view-table tbody tr:hover .freeze-col-6,
-.dispatch-order-view-table tbody tr:hover .freeze-col-7,
-.dispatch-order-view-table tbody tr:hover .freeze-col-8 { background:#fdf5e8; }
-/* Freeze-col-N: each subsequent column needs an increasing left offset.
-   These are approximate widths; the browser auto-renders correctly because
-   col-N's `left` is the cumulative width of cols 1..N-1. We use min-width
-   on each freeze cell so the visual stays consistent. */
-.dispatch-order-view-table .freeze-col-1 { min-width:140px; max-width:200px; }
-.dispatch-order-view-table .freeze-col-2 { position:sticky; left:140px; z-index:3; background:var(--surface); min-width:100px; }
-.dispatch-order-view-table thead .freeze-col-2 { background:#1a3a2e; z-index:6; }
-.dispatch-order-view-table .freeze-col-3 { position:sticky; left:240px; z-index:3; background:var(--surface); min-width:80px; }
-.dispatch-order-view-table thead .freeze-col-3 { background:#1a3a2e; z-index:6; }
-.dispatch-order-view-table .freeze-col-4 { position:sticky; left:320px; z-index:3; background:var(--surface); min-width:70px; }
-.dispatch-order-view-table thead .freeze-col-4 { background:#1a3a2e; z-index:6; }
-.dispatch-order-view-table .freeze-col-5 { position:sticky; left:390px; z-index:3; background:var(--surface); min-width:90px; }
-.dispatch-order-view-table thead .freeze-col-5 { background:#1a3a2e; z-index:6; }
-.dispatch-order-view-table .freeze-col-6 { position:sticky; left:480px; z-index:3; background:var(--surface); min-width:60px; }
-.dispatch-order-view-table thead .freeze-col-6 { background:#1a3a2e; z-index:6; }
-.dispatch-order-view-table .freeze-col-7 { position:sticky; left:540px; z-index:3; background:var(--surface); min-width:60px; }
-.dispatch-order-view-table thead .freeze-col-7 { background:#1a3a2e; z-index:6; }
-.dispatch-order-view-table .freeze-col-8 { position:sticky; left:600px; z-index:3; background:var(--surface); min-width:80px; box-shadow:2px 0 4px rgba(0,0,0,0.05); }
-.dispatch-order-view-table thead .freeze-col-8 { background:#1a3a2e; z-index:6; }
-
 /* STATUS BADGES */
 .badge { padding:3px 9px; border-radius:20px; font-size:11px; font-family:var(--mono); font-weight:700; display:inline-block; }
 .badge-running { background:#dbeafe; color:#1e3a8a; border:1.5px solid #93c5fd; }
@@ -513,7 +480,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v37H</p>
+      <p>Planning Suite v3.0 · build v37F</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -833,42 +800,7 @@ const SYNC = (() => {
         // Take server state
         // Save local dailyPrinting before overwrite — merge after
         const _localDailyPrinting = JSON.parse(JSON.stringify(state.dailyPrinting || []));
-        Object.assign(state, serverState);
-        // Merge dailyPrinting — keep any local entries not yet on server
-        if (_localDailyPrinting.length > 0) {
-          const serverIds = new Set((state.dailyPrinting||[]).map(l=>l.id));
-          const missing = _localDailyPrinting.filter(l => l.id && !serverIds.has(l.id));
-          if (missing.length > 0) {
-            state.dailyPrinting = [...(state.dailyPrinting||[]), ...missing];
-            console.log('[DailyPrinting] Restored', missing.length, 'local entries not yet on server');
-          }
-        }
-        // Stamp manualStartDate/manualEndDate on all orders that have both dates — prevents recalc from ever changing them
-        if (Array.isArray(state.orders)) {
-          state.orders = state.orders.map(o => {
-            if (o.startDate && o.endDate) return { ...o, manualStartDate: true, manualEndDate: true };
-            return o;
-          });
-        }
-        // Restore locally changed orders — they win over server
-        // BUT always take actualProd and status from server (live DPR data)
-        if (Object.keys(_protectedOrders).length > 0) {
-          state.orders = (state.orders||[]).map(o => {
-            const local = _protectedOrders[o.id];
-            if (!local) return o;
-            // Keep local order but update live fields from server
-            return { ...local, actualProd: o.actualProd || local.actualProd, stageStatus: o.stageStatus || local.stageStatus };
-          });
-          console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
-        }
-        if (Object.keys(_protectedPrintOrders).length > 0) {
-          state.printOrders = (state.printOrders||[]).map(p => _protectedPrintOrders[p.id] || p);
-          console.log('[Sync] Protected', Object.keys(_protectedPrintOrders).length, 'locally changed print orders from server overwrite');
-        }
-        // Restore locally changed machine masters
-        if (_savedMachineMaster) { state.machineMaster = _savedMachineMaster; console.log('[Sync] Protected machineMaster from server overwrite'); }
-        if (_savedPrintMachineMaster) { state.printMachineMaster = _savedPrintMachineMaster; console.log('[Sync] Protected printMachineMaster from server overwrite'); }
-        // Start with hardcoded codes, then merge DB-saved custom codes on top
+
         // v37E PL2: snapshot any locally-added PC codes before reset so we can re-merge them
         const _pcCodesProtected = _localOrderChanges['__pcCodes__'] &&
           (Date.now() - _localOrderChanges['__pcCodes__']) < 90000;
@@ -908,6 +840,117 @@ const SYNC = (() => {
           });
           if (restoredCount > 0) console.log('[PC-Codes] Restored', restoredCount, 'locally-added codes during protection window');
         }
+        const _localOrdersSnapshot = JSON.parse(JSON.stringify(state.orders || []));
+        const _localOrdersById = {};
+        _localOrdersSnapshot.forEach(o => { if (o.id) _localOrdersById[o.id] = o; });
+        Object.assign(state, serverState);
+        // printOrders/dispatchPlans/dailyPrinting are NOT in planning_state blob
+        // They are loaded from dedicated tables in loadFromKV() — never overwritten here
+        // Merge dailyPrinting — keep any local entries not yet on server
+        if (_localDailyPrinting.length > 0) {
+          const serverIds = new Set((state.dailyPrinting||[]).map(l=>l.id));
+          const missing = _localDailyPrinting.filter(l => l.id && !serverIds.has(l.id));
+          if (missing.length > 0) {
+            state.dailyPrinting = [...(state.dailyPrinting||[]), ...missing];
+            console.log('[DailyPrinting] Restored', missing.length, 'local entries not yet on server');
+          }
+        }
+        // Stamp manualStartDate/manualEndDate on all orders that have both dates — prevents recalc from ever changing them
+        // Also restore manually set dates and status from local snapshot — these never come from server
+        if (Array.isArray(state.orders)) {
+          state.orders = state.orders.map(o => {
+            const local = _localOrdersById[o.id];
+            if (!local) {
+              // New order from server — stamp manual flags if has both dates
+              if (o.startDate && o.endDate) return { ...o, manualStartDate: true, manualEndDate: true };
+              return o;
+            }
+            // Has local version — preserve manual dates and status
+            const hasManualDate = local.manualEndDate || local.manualStartDate || (local.startDate && local.endDate);
+            return {
+              ...o,
+              startDate:       hasManualDate ? local.startDate   : o.startDate,
+              endDate:         hasManualDate ? local.endDate     : o.endDate,
+              manualEndDate:   local.manualEndDate   || o.manualEndDate   || hasManualDate,
+              manualStartDate: local.manualStartDate || o.manualStartDate || hasManualDate,
+              status:          local.status || o.status,
+              // Always take live data from server
+              actualProd:      o.actualProd  || local.actualProd,
+              stageStatus:     o.stageStatus || local.stageStatus,
+            };
+          });
+        }
+        // Merge server orders with local state — local wins for dates/status, server wins for actualProd
+        // Build a map of local orders for fast lookup
+        const _localOrderMap = {};
+        (state.orders||[]).forEach(o => { _localOrderMap[o.id] = o; });
+
+        // Restore locally changed orders — they win over server
+        // BUT always take actualProd and status from server (live DPR data)
+        if (Object.keys(_protectedOrders).length > 0) {
+          state.orders = (state.orders||[]).map(o => {
+            const local = _protectedOrders[o.id];
+            if (!local) return o;
+            // Keep local order — always preserve manualEndDate, endDate, status
+            return {
+              ...local,
+              actualProd: o.actualProd || local.actualProd,
+              stageStatus: o.stageStatus || local.stageStatus
+            };
+          });
+          console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
+        }
+        // Print orders protected by dedicated table — no local override needed
+        // Restore locally changed machine masters
+        if (_savedMachineMaster) { state.machineMaster = _savedMachineMaster; console.log('[Sync] Protected machineMaster from server overwrite'); }
+        if (_savedPrintMachineMaster) { state.printMachineMaster = _savedPrintMachineMaster; console.log('[Sync] Protected printMachineMaster from server overwrite'); }
+        // Final pass: restore manual end dates and user-set status from local state
+        // These must NEVER be overwritten by server sync
+        if (Array.isArray(state.orders) && _localOrderMap) {
+          state.orders = state.orders.map(serverOrd => {
+            const localOrd = _localOrderMap[serverOrd.id];
+            if (!localOrd) return serverOrd;
+            // If local order has a manually set end date — always keep it
+            const keepEndDate = localOrd.manualEndDate || localOrd.manualStartDate;
+            // If local order has a user-set status (not auto-promoted) — keep it
+            // Status is only taken from server if local has no record of it
+            return {
+              ...serverOrd,
+              // Always preserve these from local:
+              endDate:         keepEndDate ? localOrd.endDate   : serverOrd.endDate,
+              startDate:       keepEndDate ? localOrd.startDate : serverOrd.startDate,
+              manualEndDate:   localOrd.manualEndDate,
+              manualStartDate: localOrd.manualStartDate,
+              status:          localOrd.status || serverOrd.status,
+              // Always take these from server (live data):
+              actualProd:      serverOrd.actualProd || localOrd.actualProd,
+              stageStatus:     serverOrd.stageStatus || localOrd.stageStatus,
+            };
+          });
+        }
+
+        // Start with hardcoded codes, then merge DB-saved custom codes on top
+        state.pcCodes = JSON.parse(JSON.stringify(PC_CODES_RAW));
+        state.zoneMap = ZONE_MAP_RAW;
+        // Load custom PC codes from server DB — these persist permanently
+        try {
+          const _pcUrl = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
+          if (!_pcUrl) throw new Error('No server URL');
+          const pcr = await fetch(_pcUrl + '/api/pc-codes', {signal: AbortSignal.timeout(5000)});
+          if (pcr.ok) {
+            const pcj = await pcr.json();
+            if (pcj.ok && pcj.codes) {
+              Object.entries(pcj.codes).forEach(([sz, codes]) => {
+                if (!state.pcCodes[sz]) state.pcCodes[sz] = [];
+                codes.forEach(nc => {
+                  if (!state.pcCodes[sz].find(e => e.c === nc.c))
+                    state.pcCodes[sz].push(nc);
+                });
+              });
+              console.log('[PC-Codes] Loaded', pcj.count, 'custom codes from server DB');
+            }
+          }
+        } catch(e) { console.warn('[PC-Codes] Could not load from server:', e.message); }
         if (state.printMachineMaster && state.printMachineMaster.length > 0) {
           state.printMachineMaster = state.printMachineMaster.map(pm => {
             const def = PRINT_MACHINES.find(m => m.id === pm.id);
@@ -932,23 +975,22 @@ const SYNC = (() => {
           const dbMap = {};
           poj.printOrders.forEach(p => { dbMap[p.id] = p; });
           let changed = false;
-          // v37E P1 follow-up: Honor recently-changed local print orders.
-          // Without this, freshly assigned machineIds/printTypes get reverted by stale DB data
-          // when auto-sync runs faster than the bulk POST completes.
+          // v37F P1: Honor recently-changed local print orders — protect machineId/printType
+          // for 90s after a local mutation so auto-sync doesn't revert a fresh assignment
           const _now3 = Date.now();
-          const _protectWindowPO = 90000; // 90s
+          const _protectWindowPO = 90000;
           state.printOrders = (state.printOrders||[]).map(p => {
             const dbRow = dbMap[p.id];
             if (!dbRow) return p;
             const localTs = _localPrintOrderChanges[p.id];
             if (localTs && (_now3 - localTs) < _protectWindowPO) {
-              // Recent local change — keep local version entirely (it's about to be POSTed if not already)
+              // Recent local change — keep local version (being POSTed if not already)
               return p;
             }
-            // Never let DB null erase local machineId assignment
-            const resolvedMachineId = (dbRow.machineId && dbRow.machineId !== "null" && dbRow.machineId !== "")
+            // Only overwrite machineId if DB has a real value — never let DB null erase local assignment
+            const resolvedMachineId = (dbRow.machineId && dbRow.machineId !== 'null' && dbRow.machineId !== '')
               ? dbRow.machineId
-              : (p.machineId && p.machineId !== "null" && p.machineId !== "" ? p.machineId : null);
+              : (p.machineId && p.machineId !== 'null' && p.machineId !== '' ? p.machineId : null);
             if (resolvedMachineId !== p.machineId) changed = true;
             return { ...p, machineId: resolvedMachineId, status: dbRow.status || p.status };
           });
@@ -974,26 +1016,26 @@ const SYNC = (() => {
           const dbOrderMap = {};
           ooj.orders.forEach(o => { dbOrderMap[o.id] = o; });
           let ordersChanged = false;
-          // v37E PL1: Honor recently-changed local orders — protect status/actualProd/closedDate/mismatchFlag
-          // for 90 seconds after a local mutation, otherwise DB version wins.
-          const _now2 = Date.now();
-          const _protectWindow2 = 90000; // 90s — same as planning_state merge
+          // Update existing orders with DB version (DB is authoritative)
+          // BUT always preserve manually set dates and user-set status from local state
           state.orders = (state.orders||[]).map(o => {
             const dbOrd = dbOrderMap[o.id];
             if (!dbOrd) return o; // not in DB yet — keep local version
-            const localTs = _localOrderChanges[o.id];
-            if (localTs && (_now2 - localTs) < _protectWindow2) {
-              // Recent local change — preserve user-mutated fields, take rest from DB
-              return { ...dbOrd,
-                status: o.status,
-                actualProd: o.actualProd,
-                closedDate: o.closedDate,
-                mismatchFlag: o.mismatchFlag,
-                remarks: o.remarks
-              };
-            }
             if (dbOrd.deleted) return null; // deleted in DB — remove
-            return dbOrd; // DB version wins (no recent local change)
+            // DB wins for most fields — but local wins for manually set dates and status
+            return {
+              ...dbOrd,
+              // Preserve manual dates if set locally
+              startDate:       (o.manualEndDate || o.manualStartDate) ? o.startDate   : dbOrd.startDate,
+              endDate:         (o.manualEndDate || o.manualStartDate) ? o.endDate     : dbOrd.endDate,
+              manualEndDate:   o.manualEndDate   || dbOrd.manualEndDate,
+              manualStartDate: o.manualStartDate || dbOrd.manualStartDate,
+              // Preserve user-set status — never let server overwrite it
+              status:          o.status || dbOrd.status,
+              // Always take live data from DB
+              actualProd:      dbOrd.actualProd  || o.actualProd,
+              stageStatus:     dbOrd.stageStatus || o.stageStatus,
+            };
           }).filter(Boolean);
           // Add any orders in DB not yet in local state — always add, never block
           const existingIds = new Set(state.orders.map(o=>o.id));
@@ -1015,8 +1057,11 @@ const SYNC = (() => {
             if (!o.batchNumber || !o.machineId) { batchMcMap.set(o.id, o); return; }
             const key = `${o.batchNumber}__${o.machineId}`;
             const existing = batchMcMap.get(key);
-            if (!existing) { batchMcMap.set(key, o); }
-            else if ((o.actualProd||0) >= (existing.actualProd||0)) { batchMcMap.set(key, o); }
+            if (!existing) { batchMcMap.set(key, o); return; }
+            // Score each version by how many key fields are filled
+            const score = x => (x.customer?1:0)+(x.pcCode?1:0)+(x.colour?1:0)+(x.printMatter?1:0)+(x.size?1:0)+((x.actualProd||0)>0?2:0)+((x.orderQty||x.qty||0)>0?1:0);
+            // Keep the version with higher score; on tie keep existing (don't overwrite)
+            if (score(o) > score(existing)) { batchMcMap.set(key, o); }
           });
           state.orders = Array.from(batchMcMap.values());
           // State updated silently — no auto-render to prevent screen flipping
@@ -1056,6 +1101,12 @@ const SYNC = (() => {
 
     // STEP 3: Load tracking/DPR status in background
     loadTrackingStatus().catch(() => {});
+    // STEP 4: Load dedicated tables (printOrders, dispatchPlans, dailyPrinting, packSizes)
+    // These are the authoritative sources — not the planning_state blob
+    loadFromKV().then(() => {
+      // Re-render after dedicated tables load so print orders / dispatch plans show immediately
+      render();
+    }).catch(() => {});
   }
 
   async function loadTrackingStatus() {
@@ -1094,16 +1145,10 @@ const SYNC = (() => {
             window._liveAGrade[k.trim().toUpperCase()] = v;
             window._liveAGrade[k] = v; // also keep original for fallback
           });
-          // v37E Logic 1: Pre-compute machine-cumulative A-Grade % BEFORE recalcMachineScheduleQuiet
-          // runs. Scheduling falls back to machine cumulative when batch-specific data is absent
-          // (e.g., for new orders not yet started). Must run before the recalc below.
-          _populateMachineAGrade();
-          // v37E: Same idea for printing — OPM-cumulative Print/PI A-Grade % so subsequent
-          // planned print orders on an OPM use that OPM's actual recent performance, not just default.
-          _populateOpmAGrade();
           const machineIds = [...new Set(state.orders.filter(o=>!o.deleted).map(o=>o.machineId))];
           machineIds.forEach(mid => { if (mid) recalcMachineScheduleQuiet(mid); });
           // Ensure auto-generated dispatch plans exist before syncing packed data
+          autoGenerateMissingPrintOrders();
           autoGenerateDispatchPlans();
           state.dispatchPlans.forEach(dp => {
             // Handle single or comma-separated batch numbers (consolidated exports)
@@ -1226,7 +1271,7 @@ function loadState() {
     } catch(e) {}
     // Also save full state to server to ensure dailyPrinting logs are persisted
     if ((state.dailyPrinting||[]).length > 0) {
-      try { await saveState(); console.log('[DailyPrinting] Pushed', state.dailyPrinting.length, 'logs to server'); } catch(e) {}
+      try { await saveState(); saveToKV('dailyPrinting', state.dailyPrinting); console.log('[DailyPrinting] Pushed', state.dailyPrinting.length, 'logs to server'); } catch(e) {}
     }
     // Migrate machineMaster to dedicated table on every load
     try {
@@ -1285,161 +1330,6 @@ document.addEventListener('visibilitychange', async () => {
     SYNC.loadFromServer().catch(()=>{});
   }
 });
-
-async function saveState() {
-  try {
-    const toSave = {...state};
-    delete toSave.pcCodes;
-    delete toSave.zoneMap;
-    toSave._savedAt = Date.now();
-    state._savedAt = toSave._savedAt;
-    // Only stamp machine master — individual orders stamped at point of change
-    const _changeTs = Date.now();
-    _localOrderChanges['__machineMaster__'] = _changeTs;
-    _localOrderChanges['__printMachineMaster__'] = _changeTs;
-    _localOrderChanges['__pcCodes__'] = _changeTs;
-    // SERVER IS PRIMARY — save to server first
-    const serverOk = await SYNC.push(toSave);
-    if (serverOk) {
-      state._savedAt = toSave._savedAt; // mark local state as synced with server
-      try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
-      _pendingSave = null;
-      _lastServerSaveTime = Date.now();
-    } else {
-      try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
-      _scheduleRetry(toSave);
-      console.warn('[Sync] Server save failed — will retry in 30s');
-    }
-    auditLog('SAVE', `Saved planning state — page: ${state.currentPage}`);
-  } catch(e) {}
-}
-
-// =============================
-// HELPERS
-// =============================
-function fmt(n, dec=2) { if (n==null) return '-'; const v=+n; if (!isFinite(v) || isNaN(v)) return '-'; return v.toFixed(dec); }
-function fmtColour(colour){
-  if(!colour) return '-';
-  const parts = colour.split('/');
-  if(parts.length>=2){
-    const cap=(parts[0]||'').trim(), body=(parts[1]||'').trim();
-    return `<span style="font-size:10px;font-weight:600;color:var(--accent)">${cap}</span><span style="color:var(--text3);margin:0 2px">/</span><span style="font-size:10px;font-weight:600;color:var(--accent2)">${body}</span>`;
-  }
-  return `<span style="font-size:12px">${colour}</span>`;
-}
-function fmtDate(d) {
-  if (!d) return '-';
-  const dt = d instanceof Date ? d : new Date(d);
-  if (isNaN(dt)) return '-';
-  return dt.toLocaleDateString('en-IN', {day:'2-digit', month:'short', year:'numeric'});
-}
-function addDays(d, n) {
-  const dt = new Date(d);
-  dt.setDate(dt.getDate() + n);
-  return dt;
-}
-function toDateInput(d) {
-  if (!d) return '';
-  const dt = d instanceof Date ? d : new Date(d);
-  if (isNaN(dt)) return '';
-  return dt.toISOString().slice(0,10);
-}
-function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
-function today() { return new Date(new Date().toDateString()); }
-
-function getMachine(id) { return state.machineMaster.find(m=>m.id===id); }
-function getPrintMachine(id) { return state.printMachineMaster.find(m=>m.id===id); }
-function getPcByCode(size, code) {
-  const list = state.pcCodes[size] || [];
-  return list.find(p=>p.c===String(code));
-}
-
-// Calculate order schedule
-// Stage wastage factors (standard defaults, overridden by live tracking actuals)
-const STD_AIM_WASTE    = 0.07;  // 7% AIM wastage
-const STD_PRINT_WASTE  = 0.01;  // 1% printing machine wastage
-
-// v37E Logic 1: Compute per-machine cumulative A-Grade % from all orders' batch-level scan data.
-// Must run AFTER window._liveAGrade is populated and BEFORE any scheduling recalc — so that
-// new batches without their own scan data inherit the machine's recent observed performance
-// instead of falling through to the configured default.
-//
-// Cumulative formula (matches Report E machine subtotal): sum(stageOut) / sum(stageInspected) × 100.
-// Filters by the currently-selected planning month, same as Report E and the in-page display.
-function _populateMachineAGrade() {
-  window._machineAGrade = {};
-  // Build per-machine accumulators
-  const acc = {};  // mcId → {aimOut, aimInsp, printOut, printInsp, piOut, piInsp}
-  (state.orders || []).forEach(o => {
-    if (o.deleted || !o.batchNumber || !o.machineId) return;
-    if (!orderInMonth(o, _selectedPlanMonth)) return;
-    const key = o.batchNumber.trim().toUpperCase();
-    const la = window._liveAGrade?.[key] || window._liveAGrade?.[o.batchNumber];
-    if (!la) return;
-    const mcId = o.machineId;
-    if (!acc[mcId]) acc[mcId] = { aimOut:0, aimInsp:0, printOut:0, printInsp:0, piOut:0, piInsp:0 };
-    if ((la.aim?.inspected || 0) > 0) {
-      acc[mcId].aimOut  += la.aim.outQty || 0;
-      acc[mcId].aimInsp += la.aim.inspected;
-    }
-    if ((la.printing?.inspected || 0) > 0) {
-      acc[mcId].printOut  += la.printing.outQty || 0;
-      acc[mcId].printInsp += la.printing.inspected;
-    }
-    if ((la.pi?.inspected || 0) > 0) {
-      acc[mcId].piOut  += la.pi.outQty || 0;
-      acc[mcId].piInsp += la.pi.inspected;
-    }
-  });
-  Object.entries(acc).forEach(([mcId, a]) => {
-    window._machineAGrade[mcId] = {
-      aimPct:   a.aimInsp   > 0 ? (a.aimOut   / a.aimInsp   * 100) : null,
-      printPct: a.printInsp > 0 ? (a.printOut / a.printInsp * 100) : null,
-      piPct:    a.piInsp    > 0 ? (a.piOut    / a.piInsp    * 100) : null,
-    };
-  });
-}
-
-// v37E: Compute OPM-cumulative Print and PI A-Grade % for adaptive print qty planning.
-// Per user spec: "If actual salvage and Remelt increases or decreases, then quantity to print
-// auto adjusts for all subsequent planned printed orders on that OPM."
-//
-// Formula: for each OPM, sum (printOut, printInspected, piOut, piInspected) across all print
-// orders previously assigned to that OPM. Cumulative A-Grade = sum(out) / sum(inspected) × 100.
-// Print factor used in planning: 100 / printPct (so 96% A-Grade → factor 1.0417 → 4.17% wastage).
-//
-// New print orders or planned orders on an OPM use this OPM-level cumulative as the better
-// planning estimate, falling back to the global default 1.01 when OPM has no scan history.
-function _populateOpmAGrade() {
-  window._opmAGrade = {};
-  const acc = {};  // opmId → { printOut, printInsp, piOut, piInsp }
-  (state.printOrders || []).forEach(po => {
-    if (po.deleted || !po.machineId || !po.batchNumber) return;
-    const key = po.batchNumber.trim().toUpperCase();
-    const la = window._liveAGrade?.[key] || window._liveAGrade?.[po.batchNumber];
-    if (!la) return;
-    const opmId = po.machineId;
-    if (!acc[opmId]) acc[opmId] = { printOut: 0, printInsp: 0, piOut: 0, piInsp: 0 };
-    if ((la.printing?.inspected || 0) > 0) {
-      acc[opmId].printOut  += la.printing.outQty || 0;
-      acc[opmId].printInsp += la.printing.inspected;
-    }
-    if ((la.pi?.inspected || 0) > 0) {
-      acc[opmId].piOut  += la.pi.outQty || 0;
-      acc[opmId].piInsp += la.pi.inspected;
-    }
-  });
-  Object.entries(acc).forEach(([opmId, a]) => {
-    window._opmAGrade[opmId] = {
-      printPct: a.printInsp > 0 ? (a.printOut / a.printInsp * 100) : null,
-      piPct:    a.piInsp    > 0 ? (a.piOut    / a.piInsp    * 100) : null,
-      printOut: a.printOut, printInsp: a.printInsp,
-      piOut:    a.piOut,    piInsp:    a.piInsp,
-    };
-  });
-}
-
-const STD_PI_WASTE     = 0.01;  // 1% print inspection wastage
 
 // Save specific data types to dedicated KV store on server
 async function saveToKV(key, value) {
@@ -1660,6 +1550,280 @@ function getPcByCode(size, code) {
 // Stage wastage factors (standard defaults, overridden by live tracking actuals)
 const STD_AIM_WASTE    = 0.07;  // 7% AIM wastage
 const STD_PRINT_WASTE  = 0.01;  // 1% printing machine wastage
+function calcOrderSchedule(order, mc) {
+  // Use live A-grade from tracking if available, else use order/machine default
+  const _bn867 = order.batchNumber ? order.batchNumber.trim().toUpperCase() : null;
+  const liveAG   = window._liveAGrade && _bn867 ? (window._liveAGrade[_bn867] || window._liveAGrade[order.batchNumber] || null) : null;
+  // Guard: clamp aGradePct to minimum 1 to prevent division-by-zero → Infinity
+  const rawAimPct = (liveAG?.aim?.aGradePct != null) ? liveAG.aim.aGradePct : (order.aGrade || mc.aGrade || 0);
+  const aimFactor = rawAimPct > 0 ? (100 / rawAimPct) : (1 / (1 - STD_AIM_WASTE));
+  const printFactor = (liveAG?.printing?.aGradePct != null)
+    ? (100 / Math.max(1, liveAG.printing.aGradePct)) : (1 + STD_PRINT_WASTE);
+  const piFactor    = (liveAG?.pi?.aGradePct != null)
+    ? (100 / Math.max(1, liveAG.pi.aGradePct)) : (1 + STD_PI_WASTE);
+
+  let grossQty, aimOut, printOut, piOut;
+  if (order.isPrinted) {
+    // Gross → AIM → Printing → PI → Order Qty
+    piOut    = order.qty;
+    printOut = piOut    * piFactor;
+    aimOut   = printOut * printFactor;
+    grossQty = aimOut   * aimFactor;
+  } else {
+    // Gross → AIM → Order Qty (packing direct)
+    aimOut   = order.qty;
+    grossQty = aimOut * aimFactor;
+    printOut = null;
+    piOut    = null;
+  }
+  // Remaining gross = total gross minus what's already been produced (from DPR actuals)
+  const alreadyProduced = Math.min((order.actualProd || order.actualQty || 0), grossQty);
+  const remainingGross  = Math.max(0, grossQty - alreadyProduced);
+
+  // Always use machine configured capacity for scheduling — never DPR actual rate
+  // DPR actual rate is only used for display (Avg Actual label) not for date calculation
+  const mcId = mc.id || mc.machineId;
+  const effectiveCap = (mc.cap > 0) ? mc.cap : null;
+
+  const daysNeeded = effectiveCap ? (remainingGross / effectiveCap) : null;
+  const aGradePct  = 1 / aimFactor * 100;
+  return { grossQty, aimOut, printOut, piOut, daysNeeded, aGradePct,
+           aimFactor, printFactor, piFactor, effectiveCap };
+}
+
+// Recalculate end date for an order given start date and machine
+function calcEndDate(startDate, daysNeeded) {
+  if (daysNeeded == null || !isFinite(daysNeeded) || isNaN(daysNeeded) || daysNeeded < 0) return null;
+  const start = new Date(startDate);
+  if (isNaN(start)) return null;
+  const end = new Date(start);
+  end.setDate(end.getDate() + Math.ceil(daysNeeded));
+  return end;
+}
+
+// Get machine orders sorted by start date
+// Auto batch number generation: YY + MachineAlpha + SerialNo
+// MC14 → N (14th letter), MC32 → AF (32nd: Z=26, AF=27+5=32? No: A=1..Z=26, AA=27..AZ=52)
+// Per spec example: 26N50 = year 26, machine 14 (N=14th letter), serial 50
+function machineToAlpha(mcId) {
+  const num = parseInt(mcId.replace(/[^0-9]/g,''))||1;
+  let result = '';
+  let n = num;
+  while (n > 0) {
+    n--;
+    result = String.fromCharCode(65 + (n % 26)) + result;
+    n = Math.floor(n / 26);
+  }
+  return result;
+}
+
+function autoGenBatchNumber(machineId) {
+  const yy = new Date().getFullYear().toString().slice(2);
+  const alpha = machineToAlpha(machineId);
+  // Find highest serial already used on this machine
+  const existing = state.orders
+    .filter(o => o.machineId === machineId && o.batchNumber && !o.deleted)
+    .map(o => {
+      const m = o.batchNumber.match(/^\d{2}[A-Z]+([0-9]+)$/);
+      return m ? parseInt(m[1]) : 0;
+    });
+  const nextSerial = existing.length > 0 ? Math.max(...existing) + 1 : 1;
+  return yy + alpha + nextSerial;
+}
+
+function getMachineOrders(machineId) {
+  return state.orders
+    .filter(o=>o.machineId===machineId && !o.deleted && !(o.batchNumber==='26V049' && (o.customer||'').includes('SHYAM')))
+    .sort((a,b)=>{
+      // Primary: sort by serial number in batch number (e.g. 26N50 → 50)
+      const getSerial = o => {
+        const m = (o.batchNumber||'').match(/^(\d{2}[A-Z]+)(\d+)$/);
+        return m ? parseInt(m[2]) : 99999;
+      };
+      const diff = getSerial(a) - getSerial(b);
+      if (diff !== 0) return diff;
+      // Secondary: sort by startDate
+      return new Date(a.startDate) - new Date(b.startDate);
+    });
+}
+
+// Recalculate all order dates on a machine after any change
+function recalcMachineScheduleQuiet(machineId) {
+  // Background-only: recalculate qty/grossQty/aimOut ONLY — never touch dates
+  // Dates are only changed by recalcMachineSchedule (user-triggered saves)
+  const mc = getMachine(machineId);
+  if (!mc) return;
+  const orders = getMachineOrders(machineId);
+  for (const ord of orders) {
+    const sc = calcOrderSchedule(ord, mc);
+    ord.grossQty   = sc.grossQty;
+    ord.aimOut     = sc.aimOut;
+    ord.printOut   = sc.printOut;
+    ord.piOut      = sc.piOut;
+    ord.daysNeeded = sc.daysNeeded;
+    // effectiveCap exposed for display
+    if (sc.effectiveCap) ord.effectiveCap = sc.effectiveCap;
+  }
+  // Cascade to print schedule — production end dates drive print start dates
+  recalcPrintScheduleQuiet();
+}
+
+function recalcMachineSchedule(machineId) {
+  const mc = getMachine(machineId);
+  if (!mc) return;
+  const orders = getMachineOrders(machineId);
+  let cursor = null;
+  for (const ord of orders) {
+    if (ord.status === 'closed') {
+      // Still calculate grossQty/aimOut for closed orders so they show in the table
+      if (!ord.grossQty) {
+        const scClosed = calcOrderSchedule(ord, mc);
+        ord.grossQty = scClosed.grossQty;
+        ord.aimOut   = scClosed.aimOut;
+        ord.printOut = scClosed.printOut;
+        ord.piOut    = scClosed.piOut;
+      }
+      // Advance cursor through closed orders so next order starts right after
+      if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+        const closedEnd = new Date(ord.endDate);
+        if (!cursor || closedEnd > cursor) cursor = closedEnd;
+      }
+      continue;
+    }
+    // If order already has startDate — never override it, always respect saved dates
+    // Only auto-assign dates for brand new orders with no startDate at all
+    if (ord.startDate || ord.manualStartDate || ord.manualEndDate) {
+      const sc = calcOrderSchedule(ord, mc);
+      ord.grossQty   = sc.grossQty;
+      ord.aimOut     = sc.aimOut;
+      ord.printOut   = sc.printOut;
+      ord.piOut      = sc.piOut;
+      ord.daysNeeded = sc.daysNeeded;
+      // Only calculate endDate if it is missing
+      if (!ord.endDate && sc.daysNeeded) {
+        ord.endDate = calcEndDate(new Date(ord.startDate), sc.daysNeeded);
+      }
+      const endD = new Date(ord.endDate);
+      if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
+      continue;
+    }
+    // Brand new order — no startDate saved at all — assign from cursor or today
+    if (!cursor) {
+      cursor = new Date(today());
+    }
+    ord.startDate = new Date(cursor);
+    const sc = calcOrderSchedule(ord, mc);
+    ord.grossQty   = sc.grossQty;
+    ord.aimOut     = sc.aimOut;
+    ord.printOut   = sc.printOut;
+    ord.piOut      = sc.piOut;
+    ord.daysNeeded = sc.daysNeeded;
+    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    if (ord.endDate && !isNaN(new Date(ord.endDate))) {
+      cursor = new Date(ord.endDate);
+    }
+  }
+  // Sync batchNumber changes to linked printOrders and dispatchPlans
+  for (const ord of state.orders.filter(o=>o.machineId===machineId&&!o.deleted)) {
+    const po = state.printOrders.find(p=>p.productionOrderId===ord.id);
+    if (po && ord.batchNumber) po.batchNumber = ord.batchNumber;
+    const dp = state.dispatchPlans.find(d=>d.productionOrderId===ord.id);
+    if (dp && ord.batchNumber) dp.batchNumber = ord.batchNumber;
+    if (dp && !dp.dateManuallySet && !dp.exportPending) {
+      const offset = ord.isPrinted ? 3 : 2;
+      if (ord.endDate) dp.plannedDate = addDays(new Date(ord.endDate), offset);
+    }
+  }
+  // Also update print orders for affected production orders
+  recalcPrintSchedule();
+  saveState();
+}
+
+// ── Print schedule helpers ────────────────────────────────────────────────
+// Calculates how much qty remains to be printed for a PTD order, using live
+// tracking data when available, falling back to the planned formula.
+// v37E Logic 1: Compute per-machine cumulative A-Grade % from all orders' batch-level scan data.
+// Must run AFTER window._liveAGrade is populated and BEFORE any scheduling recalc — so that
+// new batches without their own scan data inherit the machine's recent observed performance
+// instead of falling through to the configured default.
+//
+// Cumulative formula (matches Report E machine subtotal): sum(stageOut) / sum(stageInspected) × 100.
+// Filters by the currently-selected planning month, same as Report E and the in-page display.
+function _populateMachineAGrade() {
+  window._machineAGrade = {};
+  // Build per-machine accumulators
+  const acc = {};  // mcId → {aimOut, aimInsp, printOut, printInsp, piOut, piInsp}
+  (state.orders || []).forEach(o => {
+    if (o.deleted || !o.batchNumber || !o.machineId) return;
+    if (!orderInMonth(o, _selectedPlanMonth)) return;
+    const key = o.batchNumber.trim().toUpperCase();
+    const la = window._liveAGrade?.[key] || window._liveAGrade?.[o.batchNumber];
+    if (!la) return;
+    const mcId = o.machineId;
+    if (!acc[mcId]) acc[mcId] = { aimOut:0, aimInsp:0, printOut:0, printInsp:0, piOut:0, piInsp:0 };
+    if ((la.aim?.inspected || 0) > 0) {
+      acc[mcId].aimOut  += la.aim.outQty || 0;
+      acc[mcId].aimInsp += la.aim.inspected;
+    }
+    if ((la.printing?.inspected || 0) > 0) {
+      acc[mcId].printOut  += la.printing.outQty || 0;
+      acc[mcId].printInsp += la.printing.inspected;
+    }
+    if ((la.pi?.inspected || 0) > 0) {
+      acc[mcId].piOut  += la.pi.outQty || 0;
+      acc[mcId].piInsp += la.pi.inspected;
+    }
+  });
+  Object.entries(acc).forEach(([mcId, a]) => {
+    window._machineAGrade[mcId] = {
+      aimPct:   a.aimInsp   > 0 ? (a.aimOut   / a.aimInsp   * 100) : null,
+      printPct: a.printInsp > 0 ? (a.printOut / a.printInsp * 100) : null,
+      piPct:    a.piInsp    > 0 ? (a.piOut    / a.piInsp    * 100) : null,
+    };
+  });
+}
+
+// v37E: Compute OPM-cumulative Print and PI A-Grade % for adaptive print qty planning.
+// Per user spec: "If actual salvage and Remelt increases or decreases, then quantity to print
+// auto adjusts for all subsequent planned printed orders on that OPM."
+//
+// Formula: for each OPM, sum (printOut, printInspected, piOut, piInspected) across all print
+// orders previously assigned to that OPM. Cumulative A-Grade = sum(out) / sum(inspected) × 100.
+// Print factor used in planning: 100 / printPct (so 96% A-Grade → factor 1.0417 → 4.17% wastage).
+//
+// New print orders or planned orders on an OPM use this OPM-level cumulative as the better
+// planning estimate, falling back to the global default 1.01 when OPM has no scan history.
+function _populateOpmAGrade() {
+  window._opmAGrade = {};
+  const acc = {};  // opmId → { printOut, printInsp, piOut, piInsp }
+  (state.printOrders || []).forEach(po => {
+    if (po.deleted || !po.machineId || !po.batchNumber) return;
+    const key = po.batchNumber.trim().toUpperCase();
+    const la = window._liveAGrade?.[key] || window._liveAGrade?.[po.batchNumber];
+    if (!la) return;
+    const opmId = po.machineId;
+    if (!acc[opmId]) acc[opmId] = { printOut: 0, printInsp: 0, piOut: 0, piInsp: 0 };
+    if ((la.printing?.inspected || 0) > 0) {
+      acc[opmId].printOut  += la.printing.outQty || 0;
+      acc[opmId].printInsp += la.printing.inspected;
+    }
+    if ((la.pi?.inspected || 0) > 0) {
+      acc[opmId].piOut  += la.pi.outQty || 0;
+      acc[opmId].piInsp += la.pi.inspected;
+    }
+  });
+  Object.entries(acc).forEach(([opmId, a]) => {
+    window._opmAGrade[opmId] = {
+      printPct: a.printInsp > 0 ? (a.printOut / a.printInsp * 100) : null,
+      piPct:    a.piInsp    > 0 ? (a.piOut    / a.piInsp    * 100) : null,
+      printOut: a.printOut, printInsp: a.printInsp,
+      piOut:    a.piOut,    piInsp:    a.piInsp,
+    };
+  });
+}
+
+const STD_PI_WASTE     = 0.01;  // 1% print inspection wastage
+
 function calcOrderSchedule(order, mc) {
   // v37E Logic 1: A-Grade fallback chain for scheduling estimates:
   //   1. Batch-specific live A-Grade (from this batch's AIM/Print/PI scans)
@@ -1927,32 +2091,27 @@ function recalcMachineSchedule(machineId) {
 //
 // The factor only applies to NEW print qty calculations — existing committed values aren't disturbed.
 // Print start date still incorporates live AIM/Print progress (stage timing — fine to be dynamic).
-function calcPrintQtyAndStart(ord, opmMachineId) {
+
+function calcPrintQtyAndStart(ord) {
   const live = window._liveAGrade && ord.batchNumber ? (window._liveAGrade[ord.batchNumber.trim().toUpperCase()] || window._liveAGrade[ord.batchNumber] || {}) : {};
-  // Adaptive Print and PI factors: derive from OPM cumulative A-Grade % when available,
-  // else fall back to default 1% wastage at each stage.
-  const opmCum = (opmMachineId && window._opmAGrade) ? window._opmAGrade[opmMachineId] : null;
-  // Print factor: 100 / printPct gives multiplier (e.g., 96% → 1.0417 = 4.17% wastage)
-  // Clamp to >= (1 + STD_PRINT_WASTE) so an unusually-good OPM doesn't underplan; only widen, not narrow.
-  // Actually the user wants TRUE adaptive — both directions. So no clamp; if observed is 99%, use 1.0101.
-  const printFactor = (opmCum?.printPct != null && opmCum.printPct > 0)
-    ? (100 / opmCum.printPct)
-    : (1 + STD_PRINT_WASTE);
-  const piFactor    = (opmCum?.piPct    != null && opmCum.piPct    > 0)
-    ? (100 / opmCum.piPct)
-    : (1 + STD_PI_WASTE);
 
   // --- Qty to print ---
-  // Order qty × Print factor × PI factor.
-  // Default 1.01 × 1.01 ≈ 1.0201 → 50L order plans as 51L (matches user's example).
-  // OPM with observed 96%/96%: 1.0417 × 1.0417 ≈ 1.085 → 50L plans as 54.25L.
-  const qtyToPrint = (ord.qty || 0) * printFactor * piFactor;
-
-  // --- Print start date ---
-  // If AIM has started outpacing Print, scheduling can pull the print start to today.
-  // Otherwise use the order's planned start date.
+  // If AIM has started, use actual AIM Out (material available for printing)
+  // minus what's already been printed (Print Out from tracking)
   const liveAimOut   = live.aim?.outQty   || 0;
   const livePrintOut = live.printing?.outQty || 0;
+  let qtyToPrint;
+  if (liveAimOut > 0) {
+    qtyToPrint = Math.max(0, liveAimOut - livePrintOut);
+  } else {
+    const printFactor = (live.printing?.aGradePct != null)
+      ? (100 / live.printing.aGradePct) : (1 + STD_PRINT_WASTE);
+    const piFactor = (live.pi?.aGradePct != null)
+      ? (100 / live.pi.aGradePct) : (1 + STD_PI_WASTE);
+    qtyToPrint = ord.qty * piFactor * printFactor;
+  }
+
+  // --- Print start date ---
   let printStart;
   if (liveAimOut > livePrintOut && livePrintOut >= 0) {
     const t = today();
@@ -1961,7 +2120,7 @@ function calcPrintQtyAndStart(ord, opmMachineId) {
     printStart = new Date(ord.startDate || today());
   }
 
-  return { qtyToPrint, printStart, printFactor, piFactor };
+  return { qtyToPrint, printStart };
 }
 
 // Quiet version: updates print schedule from live data without saving or rendering
@@ -1972,20 +2131,10 @@ function recalcPrintScheduleQuiet() {
     if (!existing) continue;
     const pm = getPrintMachine(existing.machineId);
     if (!pm) continue;
-    // v37E: Pass OPM machineId so the adaptive Print/PI factor uses THIS OPM's cumulative
-    // A-Grade history, not just the global default.
-    const { qtyToPrint, printStart } = calcPrintQtyAndStart(ord, existing.machineId);
-    existing.startDate = printStart;
-    // v37E: Only adjust qtyToPrint for orders that have NOT started printing yet
-    // (printedToDate === 0). Running/in-progress orders keep their committed plan to avoid
-    // disrupting active production. Per user spec: "auto adjusts for all subsequent
-    // planned printed orders on that OPM" — subsequent planned, not already running.
-    const alreadyStarted = (existing.printedToDate || 0) > 0;
-    if (!alreadyStarted && !existing.printedToDateManual) {
-      existing.qtyToPrint = parseFloat(qtyToPrint.toFixed(3));
-    }
-    // End date always recomputed from latest qty/start for scheduling visibility
-    existing.endDate = calcEndDate(printStart, (existing.qtyToPrint || qtyToPrint) / pm.cap);
+    const { qtyToPrint, printStart } = calcPrintQtyAndStart(ord);
+    existing.startDate   = printStart;
+    existing.qtyToPrint  = parseFloat(qtyToPrint.toFixed(3));
+    existing.endDate     = calcEndDate(printStart, qtyToPrint / pm.cap);
   }
   recalcPrintMachineSequence();
 }
@@ -2023,15 +2172,20 @@ function recalcPrintSchedule() {
     if (!existing) continue;
     const pm = getPrintMachine(existing.machineId);
     if (!pm) continue;
-    const { qtyToPrint, printStart } = calcPrintQtyAndStart(ord, existing.machineId);
-    existing.startDate = printStart;
-    // v37E: Only adjust qtyToPrint for orders that have NOT started printing yet — see note in
-    // recalcPrintScheduleQuiet. "auto adjusts for all subsequent planned printed orders on that OPM"
-    const alreadyStarted = (existing.printedToDate || 0) > 0;
-    if (!alreadyStarted && !existing.printedToDateManual) {
-      existing.qtyToPrint = parseFloat(qtyToPrint.toFixed(3));
+    const { qtyToPrint, printStart } = calcPrintQtyAndStart(ord);
+    existing.startDate  = printStart;
+    existing.qtyToPrint = parseFloat(qtyToPrint.toFixed(3));
+    existing.endDate    = calcEndDate(printStart, qtyToPrint / pm.cap);
+    printStart.setHours(printStart.getHours() + 16);
+    if (existing) {
+      existing.startDate = printStart;
+      // Recalc end
+      const pm = getPrintMachine(existing.machineId);
+      if (pm) {
+        const daysNeeded = (ord.qty * 1.02) / pm.cap;
+        existing.endDate = calcEndDate(printStart, daysNeeded);
+      }
     }
-    existing.endDate = calcEndDate(printStart, (existing.qtyToPrint || qtyToPrint) / pm.cap);
   }
   // Recalc dispatch
   recalcDispatch();
@@ -2055,25 +2209,11 @@ function recalcDispatch() {
     // ── Packing-based override (domestic only) ───────────────────
     // If Tracking has packing data, use it to reschedule more accurately
     const packOut = dp.packedQty || 0;
-    const fgReady = dp.fgAwaitingDispatch || 0;     // packIn − packOut: FG queued for vehicle
-    const packInQty = dp.packInQty || 0;             // total at packing dept (packIn)
-    const productionComplete = (dp.wipLakhs != null && dp.wipLakhs < (dp.qty * 0.01)); // wipLakhs ≈ 0
-    const packingDone = packOut > 0 && packOut >= (dp.qty * 0.99); // 99% threshold (legacy: nearly all shipped)
+    const packingDone = packOut > 0 && packOut >= (dp.qty * 0.99); // 99% threshold
     const packingStarted = packOut > 0 && !packingDone;
 
     if (!isExportZone(ord.zone) && packingDone) {
-      // Already mostly shipped — dispatch effectively done (T+1 from today)
-      dp.plannedDate = addDays(todayDate, 1);
-      dp.exportPending = false;
-      dp.tentative = false;
-      continue;
-    }
-
-    // v37E packIn-WIP fix: when production is complete AND FG is at packing waiting for vehicle,
-    // dispatch is purely a scheduling problem — next available vehicle (T+1), not T+2/T+3 offset.
-    // Earlier convention waited for packOut ≥ 99% before showing T+1, which masked FG that was
-    // ready to ship but stuck waiting for trucks.
-    if (!isExportZone(ord.zone) && productionComplete && fgReady > (dp.qty * 0.5)) {
+      // Packing complete — dispatch can happen very soon (T+1 from today)
       dp.plannedDate = addDays(todayDate, 1);
       dp.exportPending = false;
       dp.tentative = false;
@@ -2081,8 +2221,7 @@ function recalcDispatch() {
     }
 
     if (!isExportZone(ord.zone) && (dp.wipLakhs != null && dp.wipLakhs > 0)) {
-      // WIP-based: use actual production-stage WIP (excludes FG) ÷ machine cap = days remaining
-      // Formula: WIP = Gross − Wastage − PackIn (FG at packing is NOT in WIP — handled above)
+      // WIP-based: use actual Tracking WIP ÷ machine cap = days remaining
       const mc = state.machineMaster.find(m => m.id === ord.machineId);
       const dailyCap = mc ? (mc.cap || 8) : 8;
       const wipDays = Math.ceil(dp.wipLakhs / dailyCap);
@@ -2359,10 +2498,24 @@ function renderProduction() {
     const orders = getMachineOrders(mc.id).filter(o => orderInMonth(o, _selectedPlanMonth));
     const activeOrders = orders.filter(o=>o.status!=='closed');
 
-    // Live A-Grade for header display — uses precomputed window._machineAGrade (populated centrally
-    // by _populateMachineAGrade so scheduling and display agree on the same numbers).
-    const mcCumAG = window._machineAGrade?.[mc.id] || {};
-    const liveAGPct = mcCumAG.aimPct;
+    // Live A-Grade — same formula as Report E machine subtotal:
+    // sum(AIM Out Lakhs) / sum(AIM Inspected Lakhs) × 100
+    // Only batches with at least one AIM scan (aimInspected > 0) are included
+    // Data comes from server agrade-summary which uses identical formula to getBatchAGrade()
+    let totalAimOut = 0, totalAimInspected = 0;
+    orders.forEach(o => {
+      if (!o.batchNumber) return;
+      const key = o.batchNumber.trim().toUpperCase();
+      const la = window._liveAGrade?.[key] || window._liveAGrade?.[o.batchNumber];
+      if (!la) return;
+      const inspected = la.aim?.inspected || 0;
+      if (inspected <= 0) return; // no AIM scans — exclude entirely
+      totalAimOut      += la.aim?.outQty    || 0;
+      totalAimInspected += inspected;
+    });
+    const liveAGPct = totalAimInspected > 0
+      ? (totalAimOut / totalAimInspected * 100)
+      : null;
 
     // Avg Actual = from DPR production_actuals via server:
     // total Lakhs produced on this machine / distinct calendar days with production
@@ -2574,21 +2727,13 @@ function updateActualProd(ordId, val, machineId) {
       }
       ord.status = 'running';
     }
-    // v37E PL1: protect this local change from being overwritten by next server sync
-    _localOrderChanges[ordId] = Date.now();
     recalcMachineSchedule(machineId);
   }
 }
 
 function updateOrderRemark(ordId, val) {
   const ord = state.orders.find(o=>o.id===ordId);
-  if (ord) {
-    ord.remarks = val;
-    // v37E PL1: protect this local change from being overwritten by next server sync
-    _localOrderChanges[ordId] = Date.now();
-    saveState();
-    upsertOrderToDB(ord);
-  }
+  if (ord) { ord.remarks = val; saveState(); upsertOrderToDB(ord); }
 }
 
 function changeOrderStatus(ordId, machineId, newStatus) {
@@ -2616,8 +2761,6 @@ function changeOrderStatus(ordId, machineId, newStatus) {
   } else {
     ord.closedDate = null;
   }
-  // v37E PL1: protect this local change from being overwritten by next server sync
-  _localOrderChanges[ordId] = Date.now();
   recalcMachineSchedule(machineId);
   upsertOrderToDB(ord);
   saveState();
@@ -2628,7 +2771,7 @@ function closeOrder(ordId, machineId) {
   const ord = state.orders.find(o=>o.id===ordId);
   if (!ord) return;
   const grossPlanned = ord.grossQty || 0;
-  const actual = ord.actualQty || ord.actualProd || 0;
+  const actual = ord.actualQty || 0;
 
   if (actual === 0) {
     alert('⚠️ Cannot close order — no actual production has been recorded in DPR.\n\nPlease enter production data in DPR first, then close this order.');
@@ -2658,8 +2801,6 @@ function closeOrder(ordId, machineId) {
   }
   ord.status = 'closed';
   ord.closedDate = new Date();
-  // v37E PL1: protect this local change from being overwritten by next server sync
-  _localOrderChanges[ordId] = Date.now();
   saveState();
   if (isExportZone(ord.zone)) {
     checkAndConsolidateExportContainer(ord);
@@ -2717,7 +2858,19 @@ function isPcColourLocked(ord) {
 // =============================
 function showAddOrderModal(machineId, existingOrder) {
   const isEdit = !!existingOrder;
-  const ord = existingOrder || {machineId, isPrinted:false, poType:'po', size:'', status:'pending'};
+  // For new orders: default start date = end date of last order on this machine
+  let defaultStartDate = null;
+  if (!existingOrder && machineId) {
+    const machineOrders = getMachineOrders(machineId).filter(o => !o.deleted && o.status !== 'closed');
+    if (machineOrders.length > 0) {
+      const lastEnd = machineOrders.reduce((max, o) => {
+        const d = o.endDate ? new Date(o.endDate) : null;
+        return (d && (!max || d > max)) ? d : max;
+      }, null);
+      if (lastEnd) defaultStartDate = lastEnd;
+    }
+  }
+  const ord = existingOrder || {machineId, isPrinted:false, poType:'po', size:'', status:'pending', startDate: defaultStartDate};
 
   // Get PC codes for size
   const pcList = ord.size ? (state.pcCodes[ord.size] || []) : [];
@@ -3193,10 +3346,9 @@ function saveOrderModal(existingId, defaultMachine) {
       pcCode,
       colour: ord.colour,
       printMatter: ord.printMatter,
-      printType: 'C', // v37E P3: explicit default to Circular
       zone: ord.zone,
       orderQty: qty,
-      qtyToPrint: qty * (1 + STD_PRINT_WASTE) * (1 + STD_PI_WASTE), // v37E Q5: same formula as calcPrintQtyAndStart
+      qtyToPrint: qty * (1 + STD_PRINT_WASTE) * (1 + STD_PI_WASTE), // v37E Q5
       startDate: printStart,
       endDate: null,
       machineId: null,
@@ -3284,6 +3436,30 @@ async function upsertOrderToDB(ord) {
           method: 'POST',
           headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify(ord),
+          signal: AbortSignal.timeout(8000)
+        });
+        if (!r.ok && attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
+      } catch(e) {
+        if (attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
+      }
+    };
+    _tryUpsert(1);
+  } catch(e) {}
+}
+
+// =============================
+// PRINT ORDER — immediate server save (dedicated table)
+async function upsertPrintOrderToDB(po) {
+  if (!po || !po.id) return;
+  try {
+    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+    if (!_url) return;
+    const _tryUpsert = async (attempt) => {
+      try {
+        const r = await fetch(_url + '/api/print-orders/bulk', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
         if (!r.ok && attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
@@ -3428,10 +3604,9 @@ function confirmSAPImport(rows) {
         pcCode: ord.pcCode,
         colour: ord.colour,
         printMatter: ord.printMatter,
-        printType: 'C', // v37E P3: explicit default to Circular
         zone: ord.zone,
         orderQty: qty,
-        qtyToPrint: qty * (1 + STD_PRINT_WASTE) * (1 + STD_PI_WASTE), // v37E Q5: same formula as calcPrintQtyAndStart
+        qtyToPrint: qty * (1 + STD_PRINT_WASTE) * (1 + STD_PI_WASTE), // v37E Q5
         startDate: printStart,
         endDate: null,
         machineId: null,
@@ -3546,7 +3721,6 @@ function renderProdSummary() {
     <div class="grid-2 mb-4">
       <div class="card">
         <div class="card-title">Size-wise Capacity vs Planned</div>
-        <div class="tbl-wrap">
         <table class="summary-table">
           <thead><tr><th>Size</th><th>Capacity/Month (L)</th><th>Planned (L)</th><th>Status</th></tr></thead>
           <tbody>
@@ -3565,11 +3739,9 @@ function renderProdSummary() {
             }).join('')}
           </tbody>
         </table>
-        </div>
       </div>
       <div class="card">
         <div class="card-title">Zone-wise Summary</div>
-        <div class="tbl-wrap">
         <table class="summary-table">
           <thead><tr><th>Zone</th><th>Orders</th><th>Qty (L)</th></tr></thead>
           <tbody>
@@ -3579,7 +3751,6 @@ function renderProdSummary() {
             }).join('')}
           </tbody>
         </table>
-        </div>
       </div>
     </div>
 
@@ -3683,9 +3854,19 @@ function renderPrinting() {
     ${editable ? `<button class="btn btn-primary btn-sm" onclick="showAddPrintModal()">+ Add Print Order</button>` : ''}
   `;
 
+  // Auto-create any missing print orders for PTD production orders
+  autoGenerateMissingPrintOrders();
   // Filter print orders by selected month via linked production order
+  // Also include print orders whose production order is active (not closed) — PTD orders always show
   const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
-  const printOrders = (state.printOrders || []).filter(p => !p.productionOrderId || monthOrdIds.has(p.productionOrderId));
+  const activeOrdIds = new Set(
+    (state.orders || []).filter(o => !o.deleted && o.status !== 'closed').map(o => o.id)
+  );
+  const printOrders = (state.printOrders || []).filter(p =>
+    !p.productionOrderId ||
+    monthOrdIds.has(p.productionOrderId) ||
+    activeOrdIds.has(p.productionOrderId)
+  );
 
   let html = `
     ${bannerHtml}
@@ -3732,9 +3913,8 @@ function renderPrinting() {
       </div>`;
   }
 
-  // Unassigned print orders
-  // Guard against string "null" or "" machineIds from DB
-  const isReallyUnassigned = p => !p.machineId || p.machineId === "null" || p.machineId === "";
+  // Unassigned print orders — guard against string 'null' or '' machineIds from DB
+  const isReallyUnassigned = p => !p.machineId || p.machineId === 'null' || p.machineId === '';
   const unassigned = printOrders.filter(isReallyUnassigned);
   if (unassigned.length>0) {
     html += `<div class="card mb-4">
@@ -3834,6 +4014,7 @@ function updatePrintField(id, field, val) {
     else if (p.printedToDate > 0) p.status='running';
   }
   saveState();
+  upsertPrintOrderToDB(p); // save immediately to dedicated table
 }
 
 function closePrintOrder(id) {
@@ -3852,6 +4033,7 @@ function closePrintOrder(id) {
   }
   p.status = 'completed';
   saveState();
+  upsertPrintOrderToDB(p); // save immediately to dedicated table
   render();
 }
 
@@ -4105,9 +4287,7 @@ function refreshOpmDropdownMulti() {
 }
 
 async function savePrintModal(existingId) {
-  // v37E P1: tighten multi-mode detection — require BOTH explicit toggle AND visible multi-section.
-  // Previous code's `style.display !== 'none'` returned true for the initial empty-string state,
-  // causing single-OPM saves to incorrectly enter multi-mode and create duplicate orders.
+  // v37E P1: tighten multi-mode — require BOTH explicit toggle AND visible section
   const multiSection = document.getElementById('fp-multi-section');
   const multi = _opmIsMulti && multiSection && multiSection.style.display !== 'none';
 
@@ -4120,21 +4300,17 @@ async function savePrintModal(existingId) {
     const size         = document.getElementById('fp-size-multi')?.value || '';
     const colour       = document.getElementById('fp-colour')?.value || '';
     const printMatter  = document.getElementById('fp-ptdmatter')?.value || '';
-    // v37E P3: default to Circular (matches user's stated intent — was incorrectly defaulting to Linear)
-    const printType    = document.getElementById('fp-printtype')?.value || 'C';
+    const printType    = document.getElementById('fp-printtype')?.value || 'C'; // v37E P3: default Circular
     const startDate    = new Date(document.getElementById('fp-startdate')?.value || today());
     const zone         = document.getElementById('fp-zone')?.value || '';
     const status       = document.getElementById('fp-status')?.value || 'pending';
     const remarks      = document.getElementById('fp-remarks')?.value || '';
     const totalQty     = parseFloat(document.getElementById('fp-qty-total')?.value) || 0;
 
-    // v37E P1: Remove old print order(s) when editing — handles BOTH multi-group editing
-    // AND single-OPM-to-multi-OPM conversion. Previous code only handled the multiOpmGroupId
-    // case, leaving the original single-OPM order in place → duplicates in unassigned section.
+    // v37E P1: Remove old print order(s) when editing — handles BOTH multi-group AND single->multi
     if (existingId) {
       const old = state.printOrders.find(p=>p.id===existingId);
       if (old?.multiOpmGroupId) {
-        // Editing existing multi-OPM group — remove all group members
         state.printOrders = state.printOrders.filter(p=>p.multiOpmGroupId!==old.multiOpmGroupId);
       } else if (old) {
         // Editing single-OPM order being converted to multi — remove just this one
@@ -4143,8 +4319,7 @@ async function savePrintModal(existingId) {
     }
 
     const newOrders = [];
-    // v37E Q4: Validate that selected OPMs are distinct — same batch cannot be assigned
-    // to the same OPM twice in a multi-OPM split.
+    // v37E Q4: Validate distinct OPMs — same batch cannot be on same OPM twice
     const seenMachines = new Set();
     const duplicateMachines = [];
     for (let i = 0; i < 4; i++) {
@@ -4153,11 +4328,8 @@ async function savePrintModal(existingId) {
       const mcId = document.getElementById(`fp-opm-mc-${i}`)?.value;
       const qty  = parseFloat(document.getElementById(`fp-opm-qty-${i}`)?.value) || 0;
       if (!mcId || qty <= 0) continue;
-      if (seenMachines.has(mcId)) {
-        duplicateMachines.push(mcId);
-      } else {
-        seenMachines.add(mcId);
-      }
+      // v37E Q4: track duplicate machines
+      if (seenMachines.has(mcId)) { duplicateMachines.push(mcId); } else { seenMachines.add(mcId); }
       const pm = getPrintMachine(mcId);
       const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
       const ord = {
@@ -4176,15 +4348,12 @@ async function savePrintModal(existingId) {
       };
       newOrders.push(ord);
     }
+
+    // v37E Q4: reject if same OPM selected twice
     if (duplicateMachines.length > 0) {
       alert(`⚠️ Cannot save — the same OPM (${[...new Set(duplicateMachines)].join(', ')}) is selected in multiple rows.\n\nEach row in a multi-OPM split must use a different OPM.`);
       return;
     }
-    if (newOrders.length === 0) {
-      alert('Please fill at least one OPM row with a machine and quantity.');
-      return;
-    }
-
     if (newOrders.length === 0) { toast('Add at least one OPM with quantity', 'var(--red)'); return; }
 
     const totalAssigned = newOrders.reduce((s,o)=>s+o.qtyToPrint, 0);
@@ -4193,9 +4362,6 @@ async function savePrintModal(existingId) {
     }
 
     newOrders.forEach(o => state.printOrders.push(o));
-    // v37E P1 follow-up: protect newly-created print orders from server-side merge wiping
-    // the freshly-set machineId (race between local save and async POST below).
-    newOrders.forEach(o => { _localPrintOrderChanges[o.id] = Date.now(); });
 
     // Save to server
     try {
@@ -4241,9 +4407,6 @@ async function savePrintModal(existingId) {
     } else {
       state.printOrders.push(ord);
     }
-    // v37E P1 follow-up: protect this print order from server-side merge wiping the
-    // freshly-set machineId/printType/etc. (race between local save and async POST below).
-    _localPrintOrderChanges[ord.id] = Date.now();
     try {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
@@ -4266,7 +4429,17 @@ async function savePrintModal(existingId) {
 
   // Reset multi state
   _opmIsMulti = false; _opmRowCount = 2;
-  await saveState(); closeModal(); render();
+  await saveState();
+  // Save ALL print orders to dedicated table immediately
+  const _url2 = SYNC._url || localStorage.getItem('sunloc_server_url');
+  if (_url2 && state.printOrders?.length) {
+    fetch(_url2 + '/api/print-orders/bulk', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ printOrders: state.printOrders }),
+      signal: AbortSignal.timeout(8000)
+    }).catch(()=>{});
+  }
+  closeModal(); render();
 }
 
 function editPrintOrder(id) { showAddPrintModal(null, id); }
@@ -4284,30 +4457,6 @@ function exportPrintPlan() {
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(rows),'Print Plan');
   XLSX.writeFile(wb,`Sunloc_Print_Plan_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
-
-// PRINT ORDER — immediate server save (dedicated table)
-async function upsertPrintOrderToDB(po) {
-  if (!po || !po.id) return;
-  try {
-    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
-    if (!_url) return;
-    const _tryUpsert = async (attempt) => {
-      try {
-        const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify({ printOrders: [po] }),
-          signal: AbortSignal.timeout(8000)
-        });
-        if (!r.ok && attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
-      } catch(e) {
-        if (attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
-      }
-    };
-    _tryUpsert(1);
-  } catch(e) {}
-}
-
 
 // =============================
 // DAILY PRINTING LOG
@@ -4805,6 +4954,41 @@ function buildTruckPlans(zone) {
   return trucks;
 }
 
+function autoGenerateMissingPrintOrders() {
+  // DISABLED — causes duplicate print orders
+  // Print orders are managed manually and loaded from dedicated server table only
+  return;
+  const ptdOrders = (state.orders || []).filter(o =>
+    o.isPrinted && !o.deleted && o.status !== 'closed'
+  );
+  ptdOrders.forEach(ord => {
+    const existing = state.printOrders.find(p => p.productionOrderId === ord.id);
+    if (existing) return; // already has a print order
+    // Auto-create with machineId null (goes to Unassigned)
+    state.printOrders.push({
+      id: uid(),
+      productionOrderId: ord.id,
+      batchNumber: ord.batchNumber || '',
+      customer: ord.customer || '',
+      size: ord.size || '',
+      pcCode: ord.pcCode || '',
+      colour: ord.colour || '',
+      printMatter: ord.printMatter || '',
+      printType: ord.printType || 'L',
+      zone: ord.zone || '',
+      orderQty: ord.orderQty || ord.qty || 0,
+      qtyToPrint: parseFloat(((ord.orderQty || ord.qty || 0) * 1.02).toFixed(3)),
+      startDate: ord.endDate ? new Date(ord.endDate) : new Date(today()),
+      endDate: null,
+      machineId: null,
+      status: 'pending',
+      printedToDate: 0,
+      printedToDateManual: false,
+      remarks: '',
+    });
+  });
+}
+
 function autoGenerateDispatchPlans() {
   // AUTO-GENERATE dispatch plans for running/closed orders that don't have one yet
   // Rules:
@@ -4924,12 +5108,8 @@ function autoGenerateDispatchPlans() {
     existingAutoIds.add(ord.id);
   });
 
-  // Remove stale auto plans for orders no longer in month
-  const validOrderIds = new Set(monthOrders.map(o => o.id));
-  state.dispatchPlans = state.dispatchPlans.filter(p => {
-    if (!p.isAuto) return true; // never remove manual entries
-    return p.productionOrderId && validOrderIds.has(p.productionOrderId);
-  });
+  // NOTE: Do NOT remove auto plans for old months — Truck Calendar needs them for history
+  // Auto plans are only removed when production order is explicitly deleted
 
   // Update export dispatch dates: show date only when all orders in same container/PO are complete
   state.dispatchPlans
@@ -4958,7 +5138,8 @@ function autoGenerateDispatchPlans() {
 }
 
 function getAllTruckPlans() {
-  autoGenerateDispatchPlans(); // ensure auto plans are up to date
+  // Do NOT call autoGenerateDispatchPlans here — it removes plans for other months
+  // Truck Calendar needs ALL plans including past months
   const zones = [...new Set(state.dispatchPlans.map(p=>p.zone||'Unassigned'))].sort();
   const all = [];
   for (const z of zones) {
@@ -4970,42 +5151,6 @@ function getAllTruckPlans() {
 
 // =============================
 // DISPATCH PLAN PAGE
-function autoGenerateMissingPrintOrders() {
-  // DISABLED — causes duplicate print orders
-  // Print orders are managed manually and loaded from dedicated server table only
-  return;
-  const ptdOrders = (state.orders || []).filter(o =>
-    o.isPrinted && !o.deleted && o.status !== 'closed'
-  );
-  ptdOrders.forEach(ord => {
-    const existing = state.printOrders.find(p => p.productionOrderId === ord.id);
-    if (existing) return; // already has a print order
-    // Auto-create with machineId null (goes to Unassigned)
-    state.printOrders.push({
-      id: uid(),
-      productionOrderId: ord.id,
-      batchNumber: ord.batchNumber || '',
-      customer: ord.customer || '',
-      size: ord.size || '',
-      pcCode: ord.pcCode || '',
-      colour: ord.colour || '',
-      printMatter: ord.printMatter || '',
-      printType: ord.printType || 'L',
-      zone: ord.zone || '',
-      orderQty: ord.orderQty || ord.qty || 0,
-      qtyToPrint: parseFloat(((ord.orderQty || ord.qty || 0) * 1.02).toFixed(3)),
-      startDate: ord.endDate ? new Date(ord.endDate) : new Date(today()),
-      endDate: null,
-      machineId: null,
-      status: 'pending',
-      printedToDate: 0,
-      printedToDateManual: false,
-      remarks: '',
-    });
-  });
-}
-
-
 function getActiveDispatchOrderIds() {
   const [_y, _m] = _selectedPlanMonth.split("-").map(Number);
   const mStart = new Date(_y, _m-1, 1);
@@ -5022,7 +5167,6 @@ function getActiveDispatchOrderIds() {
     return false;
   }).map(o => o.id));
 }
-
 
 function renderDispatch() {
   const editable = isMonthEditable(_selectedPlanMonth);
@@ -5049,7 +5193,6 @@ function renderDispatch() {
 
   autoGenerateDispatchPlans(); // ensure auto plans are up to date
 
-  // Filter dispatch plans by selected month via linked production order
   // Filter dispatch plans — only active orders (running/pending) + closed this month
   const activeDispatchOrdIds = getActiveDispatchOrderIds();
   const allPlans = state.dispatchPlans.filter(p =>
@@ -5114,17 +5257,17 @@ function renderDispatch() {
       <div class="dispatch-zone-panel ${z!=='all'?'dispatch-zone-panel-zone':''}" data-zone="${z}" ${z!=='all'?'style="display:none"':''}>
         <div class="card mb-4">
           <div class="card-title">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
-          <div class="table-wrap dispatch-order-view-wrap" style="max-height:70vh;overflow:auto">
-            <table class="dispatch-order-view-table">
+          <div class="table-wrap">
+            <table>
               <thead><tr>
-                <th class="freeze-col-1">Customer</th><th class="freeze-col-2">Batch No</th><th class="freeze-col-3">PC Code</th><th class="freeze-col-4">Month</th><th class="freeze-col-5">Colour</th>
-                <th class="freeze-col-6">Size</th><th class="freeze-col-7">PTD/UP</th><th class="freeze-col-8">Zone</th><th>Qty (L)</th><th>Boxes</th>
+                <th>Customer</th><th>Batch No</th><th>PC Code</th><th>Month</th><th>Colour</th>
+                <th>Size</th><th>PTD/UP</th><th>Zone</th><th>Qty (L)</th><th>Boxes</th>
                 <th>Packed</th><th>Planned Date</th><th>Dispatched (L)</th><th>Pending (L)</th><th>Status</th><th>Remarks</th><th>Actions</th>
               </tr></thead>
               <tbody>
                 ${zPlans.map(p=>renderDispatchRow(p)).join('')}
                 <tr style="background:var(--surface2);font-weight:600">
-                  <td class="freeze-col-1" colspan="8">TOTAL</td>
+                  <td colspan="8">TOTAL</td>
                   <td class="text-mono text-accent">${fmt(totalQty)}</td>
                   <td class="text-mono">${zPlans.reduce((s,p)=>s+(p.boxes||0),0)}</td>
                   <td class="text-mono text-accent3">${fmt(zPlans.reduce((s,p)=>s+(p.packedQty||0),0))}L</td>
@@ -5174,14 +5317,14 @@ function renderDispatchRow(p) {
     : '<span style="color:var(--text3);font-size:11px">—</span>';
 
   return `<tr>
-    <td class="freeze-col-1" style="font-weight:500">${p.customer||'-'}${containerInfo}</td>
-    <td class="freeze-col-2 text-mono">${p.batchNumber||'-'}${lotBadge}</td>
-    <td class="freeze-col-3 text-mono text-accent">${p.pcCode||'-'}</td>
-    <td class="freeze-col-4 text-mono text-dim">${month}</td>
-    <td class="freeze-col-5">${fmtColour(p.colour)}</td>
-    <td class="freeze-col-6 text-mono">${p.size||'-'}</td>
-    <td class="freeze-col-7">${p.packing==='PTD'?'<span class="badge badge-ptd">PTD</span>':'<span class="badge badge-up">UP</span>'}</td>
-    <td class="freeze-col-8 text-sm">${p.zone||'-'}</td>
+    <td style="font-weight:500">${p.customer||'-'}${containerInfo}</td>
+    <td class="text-mono">${p.batchNumber||'-'}${lotBadge}</td>
+    <td class="text-mono text-accent">${p.pcCode||'-'}</td>
+    <td class="text-mono text-dim">${month}</td>
+    <td>${fmtColour(p.colour)}</td>
+    <td class="text-mono">${p.size||'-'}</td>
+    <td>${p.packing==='PTD'?'<span class="badge badge-ptd">PTD</span>':'<span class="badge badge-up">UP</span>'}</td>
+    <td class="text-sm">${p.zone||'-'}</td>
     <td class="text-mono fw-bold">${fmt(p.qty)}</td>
     <td class="text-mono">${p.boxes||'-'}</td>
     <td class="text-mono">${packCell}</td>
@@ -5411,7 +5554,7 @@ async function showBatchTrackingModal(batchNumber) {
 
 function renderTruckOrdersTable(truck) {
   return `
-    <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px">
+    <table style="width:100%;border-collapse:collapse;font-size:12px">
       <thead><tr style="color:var(--text3);font-size:11px">
         <th style="padding:4px 8px;text-align:left">Customer</th>
         <th style="padding:4px 8px;text-align:left">Batch</th>
@@ -5463,7 +5606,7 @@ function renderTruckOrdersTable(truck) {
           </tr>`;
         }).join('')}
       </tbody>
-    </table></div>`;
+    </table>`;
 }
 
 function toggleTruckDetail(id) {
@@ -5938,11 +6081,10 @@ function renderDispatchCalendar() {
           const hasTrucks = trucks.length>0;
           return `<div class="cal-day ${isToday?'today':''} ${hasTrucks?'has-trucks':''}" onclick="showDayDispatch(${day},${month},${year})">
             <div class="cal-day-num">${day}</div>
-            ${zoneGroups.slice(0,3).map(z=>{
+            ${zoneGroups.slice(0,2).map(z=>{
               const zoneTrucks = trucks.filter(t=>t.zone===z);
               return `<div class="cal-chip blue" title="${z}: ${zoneTrucks.length} truck(s)">${z.slice(0,5)} ×${zoneTrucks.length}</div>`;
             }).join('')}
-            ${zoneGroups.length > 3 ? `<div class="cal-chip" style="background:rgba(148,163,184,0.18);color:var(--text3);font-size:10px" title="${zoneGroups.slice(3).map(z=>`${z}: ${trucks.filter(t=>t.zone===z).length}`).join(', ')}">+${zoneGroups.length-3} more</div>` : ''}
             ${hasTrucks?`<div class="cal-chip green">🚚 ${trucks.length} truck${trucks.length>1?'s':''}</div>`:''}
           </div>`;
         }).join('')}
@@ -6017,7 +6159,7 @@ function showDayDispatch(day, month, year) {
 function renderDispatchExport() {
   document.getElementById('topbar-actions').innerHTML = `<span style="font-size:11px;color:var(--text3);padding:4px 8px">${monthLabel(_selectedPlanMonth)}</span>`;
   // Filter dispatch plans by selected month
-  const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
+  const monthOrdIds = getActiveDispatchOrderIds();
   const monthPlans = state.dispatchPlans.filter(p => !p.productionOrderId || monthOrdIds.has(p.productionOrderId));
   const zones = [...new Set(monthPlans.map(p=>p.zone).filter(Boolean))].sort();
   const customers = [...new Set(monthPlans.map(p=>p.customer).filter(Boolean))].sort();
@@ -6073,7 +6215,7 @@ function renderDispatchExport() {
 }
 
 function exportSingleZone(zone) {
-  const _monthOrdIds = new Set(getMonthOrders().map(o => o.id));
+  const _monthOrdIds = getActiveDispatchOrderIds();
   const rows = state.dispatchPlans
     .filter(p => p.zone === zone && (!p.productionOrderId || _monthOrdIds.has(p.productionOrderId)))
     .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate))
@@ -6086,7 +6228,7 @@ function exportSingleZone(zone) {
 }
 
 function exportSingleCustomer(customer) {
-  const _monthOrdIds2 = new Set(getMonthOrders().map(o => o.id));
+  const _monthOrdIds2 = getActiveDispatchOrderIds();
   const rows = state.dispatchPlans
     .filter(p => p.customer === customer && (!p.productionOrderId || _monthOrdIds2.has(p.productionOrderId)))
     .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate))
@@ -6107,7 +6249,7 @@ function renderDispatchCustomer() {
   const now = new Date();
 
   // Use selected month filter (consistent with other dispatch views)
-  const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
+  const monthOrdIds = getActiveDispatchOrderIds();
 
   const activePlans = state.dispatchPlans.filter(p =>
     p.customer &&
@@ -6252,6 +6394,7 @@ function isMonthEditable(ym) {
 let _monthArchiveCache = {}; // { 'YYYY-MM': { archived_at, ... } }
 
 async function loadArchiveList() {
+  const serverUrl = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
   if (!serverUrl) return;
   try {
     const r = await fetch(serverUrl + '/api/archives/list', { signal: AbortSignal.timeout(5000) });
@@ -6342,6 +6485,7 @@ async function autoArchiveIfNeeded() {
 }
 
 async function doAutoArchive(ym) {
+  const serverUrl = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
   if (!serverUrl) return;
   try {
     // Build snapshot of orders active in that month
@@ -6500,6 +6644,7 @@ function isArchiveEditable(archive) {
 
 // ── Render Archives page ──────────────────────────────────────
 async function renderArchives() {
+  const serverUrl = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `
     <button class="btn btn-secondary btn-sm" onclick="doAutoArchive(currentYM()).then(()=>{buildMonthPicker();renderArchives();})">
@@ -6580,7 +6725,6 @@ async function viewArchiveMonth(ym) {
   _selectedPlanMonth = ym;
   buildMonthPicker();
   navigate('production');
-    loadFromKV().then(() => render()).catch(()=>{});
 }
 
 
@@ -7015,9 +7159,8 @@ async function savePcModal() {
   state.pcCodes[size].push({c:code, n:colour});
   // v37E PL2: Mark pcCodes as locally changed — protects from server merge wipeout for 90s
   _localOrderChanges['__pcCodes__'] = Date.now();
-  saveState();
-  closeModal();
-  // v37E PL2: AWAIT server save so any subsequent /api/pc-codes GET sees the new code
+  saveState(); closeModal();
+  // v37E PL2: AWAIT server save so subsequent /api/pc-codes GET sees the new code
   const sv = localStorage.getItem('sunloc_server_url') || '';
   if (sv) {
     try {
@@ -7036,7 +7179,6 @@ async function savePcModal() {
       }
     } catch(e) {
       console.warn('[PC-Codes] Server save error:', e.message);
-      toast('PC saved locally — server sync pending', 'var(--amber)', 3000);
     }
   }
   render();
@@ -7868,6 +8010,8 @@ async function doLogin() {
     updateUserBadge();
     render();
     auditLog('LOGIN', 'Logged in to Planning Suite');
+    // Load persistent data from KV store after login
+    loadFromKV().then(() => render()).catch(()=>{});
   } catch(e) {
     errEl.textContent = 'Cannot reach server — check connection';
   }
