@@ -3936,7 +3936,7 @@ function renderBatchTracker(){
   </div>
   <div class="form-row cols-3 mb-8">
     <div class="form-group"><label>Filter by Batch</label>
-      <input type="text" id="bt-filter-batch" placeholder="Batch number..." value="${prevBatch}" oninput="applyBatchFilter()"></div>
+      <input type="text" id="bt-filter-batch" placeholder="Batch number..." value="${prevBatch}" oninput="clearTimeout(window._btTimer);window._btTimer=setTimeout(applyBatchFilter,300)"></div>
     <div class="form-group"><label>Filter by Status</label>
       <select id="bt-filter-status" onchange="applyBatchFilter()">
         <option value="" ${prevStatus===''?'selected':''}>All</option>
@@ -4002,7 +4002,10 @@ function applyBatchFilter(){
     return;
   }
 
-  container.innerHTML=batches.map(b=>renderBatchCard(b)).join('');
+  // Limit to 50 for performance — show count if more
+  const display = batches.slice(0, 50);
+  const more = batches.length > 50 ? `<div class="card text-center text-muted" style="padding:16px">Showing 50 of ${batches.length} batches — type a batch number to filter</div>` : '';
+  container.innerHTML = display.map(b=>renderBatchCard(b)).join('') + more;
 }
 
 function clearBatchTrackerFilters(){
