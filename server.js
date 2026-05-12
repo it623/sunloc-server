@@ -4518,6 +4518,27 @@ app.get('/api/tracking/alerts/detail', async (req, res) => {
 });
 
 // GET /api/tracking/wip-summary — scan counts + stage closures for Planning
+
+// PUT /api/tracking/dispatch-record/:id — edit vehicle/invoice/date on existing record
+app.put('/api/tracking/dispatch-record/:id', async (req, res) => {
+  try {
+    const { id } = req.params;
+    const { vehicleNo, invoiceNo, customer, ts } = req.body;
+    if (pgPool) {
+      await pgPool.query(
+        `UPDATE tracking_dispatch_records SET vehicle_no=$1, invoice_no=$2, customer=$3, ts=$4 WHERE id=$5`,
+        [vehicleNo||null, invoiceNo||null, customer||null, ts||null, id]
+      );
+    } else {
+      db.prepare(`UPDATE tracking_dispatch_records SET vehicle_no=?, invoice_no=?, customer=?, ts=? WHERE id=?`)
+        .run(vehicleNo||null, invoiceNo||null, customer||null, ts||null, id);
+    }
+    res.json({ ok: true });
+  } catch(err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /api/tracking/scan-summary — ALL scan counts aggregated by batch+dept+type (no LIMIT)
 // This is the correct data source for all reports — replaces raw scan fetching
 app.get('/api/tracking/scan-summary', async (req, res) => {

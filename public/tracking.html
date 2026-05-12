@@ -3804,7 +3804,7 @@ function renderDispatch(){
       <button class="btn btn-secondary btn-sm" onclick="exportDispatch()">📥 Export Excel</button>
     </div>
     <div class="tbl-wrap"><table id="dispatch-records-table">
-      <thead><tr><th>Date</th><th>Batch</th><th>Customer</th><th>PC Code</th><th>Colour</th><th>Qty (L)</th><th>Boxes</th><th>Vehicle</th><th>Invoice</th><th>Status</th></tr></thead>
+      <thead><tr><th>Date</th><th>Batch</th><th>Customer</th><th>PC Code</th><th>Colour</th><th>Qty (L)</th><th>Boxes</th><th>Vehicle</th><th>Invoice</th><th>Status</th><th>Edit</th></tr></thead>
       <tbody>
       ${state.dispatchRecs.sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,20).map(r=>{
         // v37F: Pull colour/PC from batch master since dispatch records don't store them directly
@@ -3812,7 +3812,8 @@ function renderDispatch(){
         const dColour = dBatch?.colour || '-';
         const dPcCode = dBatch?.pcCode || '-';
         const searchKey = [r.batchNumber, r.customer||'', dPcCode, dColour, r.vehicleNo||'', r.invoiceNo||''].join(' ').toLowerCase();
-        return `<tr data-search="${searchKey}">
+        const rDate = r.ts ? r.ts.slice(0,10) : '';
+        return `<tr data-search="${searchKey}" id="disprec-${r.id}">
           <td class="td-mono text-sm">${fmtDate(r.ts)}</td>
           <td class="td-bold td-mono">${r.batchNumber}</td>
           <td class="text-sm">${r.customer||'-'}</td>
@@ -3823,6 +3824,7 @@ function renderDispatch(){
           <td class="td-mono">${r.vehicleNo||'<span class="text-muted">—</span>'}</td>
           <td class="td-mono">${r.invoiceNo||'<span class="text-muted">—</span>'}</td>
           <td><span class="badge badge-green">Dispatched</span></td>
+          <td><button class="btn btn-sm btn-ghost" onclick="editDispatchRecord('${r.id}')" style="font-size:11px">✏️ Edit</button></td>
         </tr>`;
       }).join('')||'<tr><td colspan="10" class="text-center text-muted">No dispatch records yet</td></tr>'}
       </tbody>
@@ -3830,7 +3832,7 @@ function renderDispatch(){
         <td colspan="5" class="text-right">TOTAL DISPATCHED (last ${Math.min(20, state.dispatchRecs.length)} records)</td>
         <td class="td-mono"><b>${fmt(state.dispatchRecs.slice(0,20).reduce((s,r)=>s+(r.qty||0),0))}L</b></td>
         <td class="td-mono">${state.dispatchRecs.slice(0,20).reduce((s,r)=>s+(r.boxes||0),0)}</td>
-        <td colspan="3"></td>
+        <td colspan="4"></td>
       </tr></tfoot>` : ''}
     </table></div>
     <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Showing last 20 dispatch records. Total inward/outward at top reflects all-time scan-based counts (boxes only). Dispatch records totals here reflect the records visible in this view.</div>
@@ -5754,6 +5756,76 @@ function filterDispatchTables(q) {
       row.style.display = (!term || text.includes(term)) ? '' : 'none';
     });
   });
+}
+
+
+// Edit dispatch record — vehicle, invoice, date
+function editDispatchRecord(id) {
+  const rec = state.dispatchRecs.find(r => r.id === id);
+  if (!rec) return;
+  const modal = document.getElementById('modal-container');
+  if (!modal) return;
+  modal.style.display = 'flex';
+  modal.innerHTML = `
+    <div class="modal" style="max-width:420px;width:100%">
+      <div class="modal-header">
+        <div class="modal-title">✏️ Edit Dispatch Record — ${rec.batchNumber}</div>
+        <button class="btn btn-ghost btn-sm" onclick="closeModal()">✕</button>
+      </div>
+      <div class="modal-body">
+        <div class="form-group">
+          <label>Date</label>
+          <input type="date" id="edit-disp-date" class="form-control" value="${rec.ts ? rec.ts.slice(0,10) : ''}">
+        </div>
+        <div class="form-group">
+          <label>Vehicle No.</label>
+          <input type="text" id="edit-disp-vehicle" class="form-control" placeholder="Vehicle number" value="${rec.vehicleNo||''}">
+        </div>
+        <div class="form-group">
+          <label>Invoice No.</label>
+          <input type="text" id="edit-disp-invoice" class="form-control" placeholder="Invoice number" value="${rec.invoiceNo||''}">
+        </div>
+        <div class="form-group">
+          <label>Customer</label>
+          <input type="text" id="edit-disp-customer" class="form-control" placeholder="Customer name" value="${rec.customer||''}">
+        </div>
+      </div>
+      <div class="modal-footer">
+        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
+        <button class="btn btn-primary" onclick="saveDispatchRecordEdit('${id}')">💾 Save</button>
+      </div>
+    </div>`;
+}
+
+async function saveDispatchRecordEdit(id) {
+  const rec = state.dispatchRecs.find(r => r.id === id);
+  if (!rec) return;
+  const date = document.getElementById('edit-disp-date')?.value;
+  const vehicle = document.getElementById('edit-disp-vehicle')?.value.trim();
+  const invoice = document.getElementById('edit-disp-invoice')?.value.trim();
+  const customer = document.getElementById('edit-disp-customer')?.value.trim();
+
+  if (date) rec.ts = date + 'T00:00:00.000Z';
+  rec.vehicleNo = vehicle;
+  rec.invoiceNo = invoice;
+  rec.customer = customer;
+
+  // Save to server
+  try {
+    const _url = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
+    if (_url) {
+      await fetch(_url + '/api/tracking/dispatch-record/' + id, {
+        method: 'PUT',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ vehicleNo: vehicle, invoiceNo: invoice, customer, ts: rec.ts }),
+        signal: AbortSignal.timeout(8000)
+      }).catch(()=>{});
+    }
+  } catch(e) {}
+
+  closeModal();
+  renderDispatch();
+  toast('Dispatch record updated ✅', 'var(--green)', 2000);
 }
 
 // ═══════════════════════════════════════════════════════
