@@ -850,6 +850,14 @@ const SYNC = (() => {
             return o;
           });
         }
+        // FIX 1: Permanently deleted orders must NEVER return from server
+        // If DB has the order as deleted, keep it deleted regardless of server state
+        const _deletedByServer = new Set((serverState.orders||[]).filter(o=>o.deleted).map(o=>o.id));
+        // Also track any locally deleted orders (in production_orders DB)
+        state.orders = (state.orders||[]).map(o => {
+          if (_deletedByServer.has(o.id)) return { ...o, deleted: true };
+          return o;
+        });
         // Restore locally changed orders — they win over server
         // BUT always take actualProd and status from server (live DPR data)
         if (Object.keys(_protectedOrders).length > 0) {
@@ -857,7 +865,13 @@ const SYNC = (() => {
             const local = _protectedOrders[o.id];
             if (!local) return o;
             // Keep local order but update live fields from server
-            return { ...local, actualProd: o.actualProd || local.actualProd, stageStatus: o.stageStatus || local.stageStatus };
+            // FIX 2: Always preserve local status/deleted — never let server overwrite
+            return { ...local,
+              actualProd: o.actualProd || local.actualProd,
+              stageStatus: o.stageStatus || local.stageStatus,
+              status: local.status || o.status,
+              deleted: local.deleted !== undefined ? local.deleted : o.deleted,
+            };
           });
           console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
         }
@@ -974,26 +988,30 @@ const SYNC = (() => {
           const dbOrderMap = {};
           ooj.orders.forEach(o => { dbOrderMap[o.id] = o; });
           let ordersChanged = false;
-          // v37E PL1: Honor recently-changed local orders — protect status/actualProd/closedDate/mismatchFlag
-          // for 90 seconds after a local mutation, otherwise DB version wins.
-          const _now2 = Date.now();
-          const _protectWindow2 = 90000; // 90s — same as planning_state merge
+          // FIX 2: DB (production_orders) is authoritative for status/deleted
+          // Status set by user is saved to DB via upsertOrderToDB and must NEVER be
+          // overwritten by planning_state blob on any reload or sync
           state.orders = (state.orders||[]).map(o => {
             const dbOrd = dbOrderMap[o.id];
             if (!dbOrd) return o; // not in DB yet — keep local version
-            const localTs = _localOrderChanges[o.id];
-            if (localTs && (_now2 - localTs) < _protectWindow2) {
-              // Recent local change — preserve user-mutated fields, take rest from DB
-              return { ...dbOrd,
-                status: o.status,
-                actualProd: o.actualProd,
-                closedDate: o.closedDate,
-                mismatchFlag: o.mismatchFlag,
-                remarks: o.remarks
-              };
-            }
-            if (dbOrd.deleted) return null; // deleted in DB — remove
-            return dbOrd; // DB version wins (no recent local change)
+            // FIX 1: If deleted in DB — permanently remove
+            if (dbOrd.deleted) return null;
+            // FIX 2: DB status always wins — user set it explicitly
+            return {
+              ...dbOrd,
+              // DB is authoritative for these user-set fields:
+              status:       dbOrd.status      || o.status,
+              deleted:      dbOrd.deleted,
+              closedDate:   dbOrd.closedDate  || o.closedDate,
+              remarks:      dbOrd.remarks     || o.remarks,
+              actualProd:   dbOrd.actualProd  || o.actualProd,
+              mismatchFlag: dbOrd.mismatchFlag !== undefined ? dbOrd.mismatchFlag : o.mismatchFlag,
+              // Keep manual dates from either source
+              startDate:       (o.manualStartDate || o.manualEndDate) ? o.startDate   : dbOrd.startDate,
+              endDate:         (o.manualStartDate || o.manualEndDate) ? o.endDate     : dbOrd.endDate,
+              manualStartDate: o.manualStartDate || dbOrd.manualStartDate,
+              manualEndDate:   o.manualEndDate   || dbOrd.manualEndDate,
+            };
           }).filter(Boolean);
           // Add any orders in DB not yet in local state — always add, never block
           const existingIds = new Set(state.orders.map(o=>o.id));
@@ -7817,8 +7835,7 @@ async function checkPlanningTempAlerts(){
       }catch(e){}
     }
   }catch(e){}
-}
-
+}}
 // ══════════════════════════════════════════════════════
 // AUTH SYSTEM — Planning Suite
 // ══════════════════════════════════════════════════════
