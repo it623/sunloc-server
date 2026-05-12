@@ -7814,7 +7814,6 @@ async function checkPlanningTempAlerts(){
     if(j.ok && j.count > 0){
       const machines = [...new Set(j.batches.map(b=>b.machine_id))];
       const maxDays = Math.max(...j.batches.map(b=>b.daysActive));
-      // Also count W/O orders
       const woCount = (state.orders||[]).filter(o=>o.woStatus==='wo'&&o.status!=='closed').length;
       const woText = woCount > 0 ? ` · ${woCount} W/O order${woCount>1?'s':''} awaiting customer` : '';
       banner.style.display = 'flex';
@@ -7835,7 +7834,7 @@ async function checkPlanningTempAlerts(){
       }catch(e){}
     }
   }catch(e){}
-}}
+}
 // ══════════════════════════════════════════════════════
 // AUTH SYSTEM — Planning Suite
 // ══════════════════════════════════════════════════════
