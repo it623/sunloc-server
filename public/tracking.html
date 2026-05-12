@@ -5763,38 +5763,32 @@ function filterDispatchTables(q) {
 function editDispatchRecord(id) {
   const rec = state.dispatchRecs.find(r => r.id === id);
   if (!rec) return;
-  const modal = document.getElementById('modal-container');
-  if (!modal) return;
-  modal.style.display = 'flex';
-  modal.innerHTML = `
-    <div class="modal" style="max-width:420px;width:100%">
-      <div class="modal-header">
-        <div class="modal-title">✏️ Edit Dispatch Record — ${rec.batchNumber}</div>
-        <button class="btn btn-ghost btn-sm" onclick="closeModal()">✕</button>
-      </div>
-      <div class="modal-body">
-        <div class="form-group">
-          <label>Date</label>
-          <input type="date" id="edit-disp-date" class="form-control" value="${rec.ts ? rec.ts.slice(0,10) : ''}">
-        </div>
-        <div class="form-group">
-          <label>Vehicle No.</label>
-          <input type="text" id="edit-disp-vehicle" class="form-control" placeholder="Vehicle number" value="${rec.vehicleNo||''}">
-        </div>
-        <div class="form-group">
-          <label>Invoice No.</label>
-          <input type="text" id="edit-disp-invoice" class="form-control" placeholder="Invoice number" value="${rec.invoiceNo||''}">
-        </div>
-        <div class="form-group">
-          <label>Customer</label>
-          <input type="text" id="edit-disp-customer" class="form-control" placeholder="Customer name" value="${rec.customer||''}">
-        </div>
-      </div>
-      <div class="modal-footer">
-        <button class="btn btn-ghost" onclick="closeModal()">Cancel</button>
-        <button class="btn btn-primary" onclick="saveDispatchRecordEdit('${id}')">💾 Save</button>
-      </div>
+  const body = `
+    <div class="form-group">
+      <label>Date</label>
+      <input type="date" id="edit-disp-date" class="form-control" value="${rec.ts ? rec.ts.slice(0,10) : ''}">
+    </div>
+    <div class="form-group">
+      <label>Vehicle No.</label>
+      <input type="text" id="edit-disp-vehicle" class="form-control" placeholder="Vehicle number" value="${rec.vehicleNo||''}">
+    </div>
+    <div class="form-group">
+      <label>Invoice No.</label>
+      <input type="text" id="edit-disp-invoice" class="form-control" placeholder="Invoice number" value="${rec.invoiceNo||''}">
+    </div>
+    <div class="form-group">
+      <label>Customer</label>
+      <input type="text" id="edit-disp-customer" class="form-control" placeholder="Customer name" value="${rec.customer||''}">
     </div>`;
+  openModal(
+    '✏️ Edit Dispatch — ' + rec.batchNumber,
+    rec.customer || '',
+    body,
+    [
+      { label: 'Cancel', cls: 'btn-ghost', fn: 'closeModal()' },
+      { label: '💾 Save', cls: 'btn-primary', fn: 'saveDispatchRecordEdit("' + id + '")' }
+    ]
+  );
 }
 
 async function saveDispatchRecordEdit(id) {
