@@ -3976,11 +3976,9 @@ function applyBatchFilter(){
   const filterMachine=document.getElementById('bt-filter-machine')?.value||'';
   const filterPc=(document.getElementById('bt-filter-pc')?.value||'');
   const filterColour=(document.getElementById('bt-filter-colour')?.value||'');
-  // v37G: If user typed a batch search, broaden to ALL batches (not just current month picker)
-  // so older batches can be retrieved by typing their number. Other filters stay scoped to month.
-  let batches = filterBatch
-    ? state.batches.filter(b=>!b.deleted)
-    : getTrkMonthBatches().filter(b=>!b.deleted);
+  // v37H: Show ALL non-deleted batches by default in Batch Tracker
+  // User can filter by typing batch number, status, machine, PC code or colour
+  let batches = state.batches.filter(b=>!b.deleted);
   batches = batches.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}));
   if(filterBatch) batches=batches.filter(b=>b.batchNumber?.toLowerCase().includes(filterBatch)||b.customer?.toLowerCase().includes(filterBatch));
   if(filterMachine) batches=batches.filter(b=>b.machineId===filterMachine);
