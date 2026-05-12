@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v37F</title>
+<title>Sunloc Tracking Suite v1.0 · build v37H</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v37F</p>
+      <p>Tracking Suite v1.0 · build v37H</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v37F</p>
+      <p>Tracking Suite v1.0 · build v37H</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -702,6 +702,8 @@ const DEPT_LABELS = {
 const DEPT_INFO = {
   admin:    { label:'Admin',             role:'Administrator',     color:'#2563eb', pages:['dashboard','labels','aim','printing','pi','packing','dispatch','batch-tracker','reports','settings'] },
   planning: { label:'Planning',          role:'Planning Manager',  color:'#7c3aed', pages:['dashboard','labels','aim','printing','pi','packing','dispatch','batch-tracker','reports','settings'] },
+  // v37F: Reports access extended to all tracking + production users for operational
+  // monitoring and verification (per post-deployment user request).
   labels:   { label:'Label Generation',  role:'Label Supervisor',  color:'#2563eb', pages:['labels','aim','batch-tracker','reports'] },
   aim:      { label:'AIM',               role:'AIM Operator',      color:'#3b82f6', pages:['aim','batch-tracker','reports'] },
   printing: { label:'Printing',          role:'Print Operator',    color:'#8b5cf6', pages:['printing','pi','batch-tracker','reports'] },
@@ -770,6 +772,7 @@ let state = {
   scans: [],         // all scan events
   stageClosure: [],  // per batch per dept closure
   wastage: [],       // manual wastage entries
+  dispatchPlans: [], // v37F: planned dispatch dates from planning app (for Dispatch Summary report) // v37F: dispatch plans from planning
   dispatchRecs: [],  // dispatch records
   alerts: [],        // 48hr alerts
   users: {},         // dept pins
@@ -1384,6 +1387,20 @@ async function pullFromServer(){
           state.wastageSummary = sj.wastage  || {};
           state.dispatchedSummary = sj.dispatched || {};
           saveLocal();
+          // v37F: Now that scan-summary has loaded, clear _local from scans summary now reflects
+          state.scans.forEach(s => {
+            if (!s._local || !s._pendingSummary) return;
+            const summaryEntry = state.scanSummary?.[s.batchNumber]?.[s.dept];
+            if (!summaryEntry) return;
+            const summaryCount = s.type === 'in' ? (summaryEntry.in || 0) : (summaryEntry.out || 0);
+            const localSameKindCount = state.scans.filter(ls =>
+              ls.batchNumber === s.batchNumber && ls.dept === s.dept && ls.type === s.type
+            ).length;
+            if (summaryCount >= localSameKindCount) {
+              delete s._local;
+              delete s._pendingSummary;
+            }
+          });
         }
       }
     }catch(e36){ console.warn('STEP 3.6 scan-summary failed:',e36?.message||e36); }
@@ -1880,6 +1897,9 @@ function getBatchWIPBreakdown(batchNo){
   const toPackTransit = Math.max(0, lastProdOut - packIn);
   const packWIP       = Math.max(0, packIn - packOut); // FG queue (NOT in totalWIP)
 
+  // totalWIP formula: Gross Production − All Wastage (salvage+remelt across all stages) − Pack-In Quantity
+  // ("Pack-In Quantity" = boxes that have arrived at packing dept = cleared all production stages).
+  // FG awaiting dispatch (packIn − packOut) is NOT in WIP — handled by next-vehicle scheduling.
   const totalSalvageWIP = wAIM.salvage + wPrint.salvage + wPI.salvage;
   const totalRemeltWIP  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
   // v37E WIP-fix: use packIn — material at packing is FG, not WIP
@@ -2412,7 +2432,7 @@ function renderDashboard(){
     <div class="kpi"><div class="kpi-label">Labels Generated</div><div class="kpi-val">${totalLabels}</div><div class="kpi-sub">Total active labels</div></div>
     <div class="kpi"><div class="kpi-label">Packed Boxes</div><div class="kpi-val green">${packedBoxes}</div><div class="kpi-sub">Ready for dispatch</div></div>
     <div class="kpi"><div class="kpi-label">Dispatched Boxes</div><div class="kpi-val purple">${dispBoxes}</div><div class="kpi-sub">This month</div></div>
-    <div class="kpi"><div class="kpi-label">🚨 Alerts</div><div class="kpi-val ${totalAlerts>0?'red':'green'}">${totalAlerts}</div><div class="kpi-sub">Boxes stuck 48h+</div></div>
+    <div class="kpi"><div class="kpi-label">🚨 Alerts</div><div class="kpi-val ${totalAlerts>0?'red':'green'}">${totalAlerts}</div><div class="kpi-sub">Stuck 48h+ (this month)</div></div>
   </div>
   <div class="grid-2">
     <div class="card">
@@ -2535,7 +2555,7 @@ function renderOrangePrintQueue(selBatch,selLabels,unprintedSel){
     </div>
     ${unprintedSel.length>0?`<button class="btn btn-sm" style="background:var(--orange);color:#fff;font-size:11px;white-space:nowrap" onclick="unprintedOrangeBatch('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
   </div>
-  <table style="width:100%;border-collapse:collapse;font-size:11px">
+  <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:11px">
     <thead><tr style="border-bottom:2px solid var(--border)">
       <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">#</th>
       <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">QTY(L)</th>
@@ -2553,7 +2573,7 @@ function renderOrangePrintQueue(selBatch,selLabels,unprintedSel){
         <td style="padding:5px 6px">${!l.printed?`<button style="background:var(--orange);color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer" onclick="printLabel('${l.id}');selectOrangeBatch('${window._olSelBatch||l.batchNumber}')">🖨️ Print</button>`:`<button style="border:1px solid var(--border);background:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;color:var(--text2)" onclick="reprintOrangeLabel('${l.id}')">🔁 Reprint</button>`}</td>
       </tr>`).join('')}
     </tbody>
-  </table>`;
+  </table></div>`;
 }
 
 // ── Filter wastage history rows — cursor stays ──
@@ -2598,7 +2618,7 @@ function renderPrintQueue(selBatch){
     </div>
     ${unprintedCount>0?`<button class="btn btn-sm btn-success" style="white-space:nowrap;flex-shrink:0;font-size:11px" onclick="printBatchLabels('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
   </div>
-  <table style="width:100%;border-collapse:collapse;font-size:11px">
+  <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:11px">
     <thead><tr style="border-bottom:2px solid var(--border)">
       <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">#</th>
       <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">QTY</th>
@@ -2622,7 +2642,7 @@ function renderPrintQueue(selBatch){
         </div></td>
       </tr>`).join('')||'<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text3)">No labels generated yet</td></tr>'}
     </tbody>
-  </table>`;
+  </table></div>`;
 }
 
 function renderLabels(){
@@ -2727,7 +2747,7 @@ function renderLabels(){
         </div>
         ${unprintedCount>0?`<button class="btn btn-sm btn-success" style="white-space:nowrap;flex-shrink:0;font-size:11px" onclick="printBatchLabels('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
       </div>
-      <table style="width:100%;border-collapse:collapse;font-size:11px">
+      <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:11px">
         <thead>
           <tr style="border-bottom:2px solid var(--border)">
             <th style="padding:4px 6px;text-align:left;color:var(--text3);font-weight:600">#</th>
@@ -2765,7 +2785,7 @@ function renderLabels(){
             </td>
           </tr>`).join('')||'<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text3)">No labels generated yet</td></tr>'}
         </tbody>
-      </table>`;
+      </table></div>`;
     })()}
   </div></div>
 
@@ -2797,7 +2817,7 @@ function renderLabels(){
     <div style="display:flex;gap:0;align-items:stretch">
       <!-- Left panel: batch list 50% -->
       <div style="width:52%;flex-shrink:0;border-right:1px solid rgba(234,88,12,0.2);max-height:calc(100vh - 260px);overflow-y:auto">
-        <table style="width:100%;border-collapse:collapse;font-size:11px">
+        <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:11px">
           <thead><tr style="border-bottom:2px solid rgba(234,88,12,0.2);background:rgba(234,88,12,0.05)">
             <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600;white-space:nowrap">BATCH</th>
             <th style="padding:5px 6px;text-align:left;color:var(--text3);font-weight:600">CUSTOMER</th>
@@ -2828,7 +2848,7 @@ function renderLabels(){
             </tr>`;
           }).join('') : `<tr><td colspan="7" style="padding:20px;text-align:center;color:var(--text3)">No orange labels yet</td></tr>`}
           </tbody>
-        </table>
+        </table></div>
       </div>
       <!-- Right panel: print queue -->
       <div id="ol-print-queue" style="flex:1;min-width:0;max-height:calc(100vh - 260px);overflow-y:auto;padding:12px">
@@ -3451,10 +3471,20 @@ function processScanInput(dept,type){
   }
 }
 
+// v37E Fix #16: Per-dept locks prevent double-click from creating duplicate wastage entries
 const _wastageSaving = {};
 
 function saveWastage(dept){
-  if (_wastageSaving[dept]) { console.warn("[Wastage] Save in progress"); return; }
+  // Idempotency guard — ignore re-entrancy within 2s of a save in progress
+  // Idempotency guard — ignore re-entrancy within 2s of a save in progress
+  if (_wastageSaving[dept]) {
+    console.warn('[Wastage] Save already in progress for', dept, '— ignoring duplicate click');
+    return;
+  }
+  // Lock — release after 2s (covers server roundtrip + state stabilization)
+  _wastageSaving[dept] = true;
+  setTimeout(() => { _wastageSaving[dept] = false; }, 2000);
+  // Lock — release after 2s (covers server roundtrip + state stabilization)
   _wastageSaving[dept] = true;
   setTimeout(() => { _wastageSaving[dept] = false; }, 2000);
 
@@ -3567,22 +3597,85 @@ function renderDispatch(){
   const dispatchedIn=state.scans.filter(s=>s.dept==='dispatch'&&s.type==='in');
   const dispatchedOut=state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out');
 
-  // Group by batch
+  // Group by batch — also capture colour from batch master for colour-wise rollups
   const batchSummary={};
   packedOut.forEach(s=>{
-    if(!batchSummary[s.batchNumber]) batchSummary[s.batchNumber]={packed:0,dispIn:0,dispOut:0,size:'0'};
+    if(!batchSummary[s.batchNumber]) batchSummary[s.batchNumber]={packed:0,dispIn:0,dispOut:0,size:'0',colour:'-'};
     batchSummary[s.batchNumber].packed++;
     const b=getBatch(s.batchNumber);
-    if(b) batchSummary[s.batchNumber].size=b.size;
+    if(b){
+      batchSummary[s.batchNumber].size=b.size;
+      batchSummary[s.batchNumber].colour=b.colour||'-';
+    }
   });
   dispatchedIn.forEach(s=>{ if(batchSummary[s.batchNumber]) batchSummary[s.batchNumber].dispIn++; });
   dispatchedOut.forEach(s=>{ if(batchSummary[s.batchNumber]) batchSummary[s.batchNumber].dispOut++; });
+
+  // v37F: Compute totals (packed, inward, outward, pending) — boxes AND lakhs.
+  // Per user post-deployment request: "Dispatch reporting visibility requires enhancement
+  // for easier operational reconciliation" — totals at top help quick verification.
+  let totalPackedBoxes=0, totalInwardBoxes=0, totalOutwardBoxes=0, totalPendingBoxes=0;
+  let totalPackedQty=0,   totalInwardQty=0,   totalOutwardQty=0,   totalPendingQty=0;
+  Object.values(batchSummary).forEach(s=>{
+    const pending = Math.max(0, s.packed - s.dispOut);
+    totalPackedBoxes  += s.packed;
+    totalInwardBoxes  += s.dispIn;
+    totalOutwardBoxes += s.dispOut;
+    totalPendingBoxes += pending;
+    totalPackedQty    += boxToLakh(s.packed,  s.size);
+    totalInwardQty    += boxToLakh(s.dispIn,  s.size);
+    totalOutwardQty   += boxToLakh(s.dispOut, s.size);
+    totalPendingQty   += boxToLakh(pending,   s.size);
+  });
+
+  // v37F: Colour-wise rollup for both ledger AND dispatch records
+  // Aggregate packed/inward/outward/pending by colour
+  const colourRollup = {};
+  Object.values(batchSummary).forEach(s=>{
+    const c = s.colour || '-';
+    if (!colourRollup[c]) colourRollup[c] = { packedBoxes:0, inwardBoxes:0, outwardBoxes:0, pendingBoxes:0,
+                                               packedQty:0, inwardQty:0, outwardQty:0, pendingQty:0 };
+    const pending = Math.max(0, s.packed - s.dispOut);
+    colourRollup[c].packedBoxes  += s.packed;
+    colourRollup[c].inwardBoxes  += s.dispIn;
+    colourRollup[c].outwardBoxes += s.dispOut;
+    colourRollup[c].pendingBoxes += pending;
+    colourRollup[c].packedQty    += boxToLakh(s.packed,  s.size);
+    colourRollup[c].inwardQty    += boxToLakh(s.dispIn,  s.size);
+    colourRollup[c].outwardQty   += boxToLakh(s.dispOut, s.size);
+    colourRollup[c].pendingQty   += boxToLakh(pending,   s.size);
+  });
+  const colourKeys = Object.keys(colourRollup).sort();
 
   el.innerHTML=`
   <div class="card mb-16" style="border-top:4px solid var(--accent3)">
     <div class="dept-strip dispatch"></div>
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">Dispatch Management</div><div class="section-sub">Packed quantity ledger & dispatch recording</div></div>
+    </div>
+
+    <!-- v37F: TOTALS SUMMARY (top of page for quick reconciliation) -->
+    <div class="grid-4 mb-12" style="gap:8px">
+      <div class="kpi" style="background:var(--surface2);padding:10px;border-radius:6px;border-left:3px solid var(--accent2)">
+        <div class="kpi-label" style="font-size:10px;color:var(--text3);letter-spacing:.5px">📦 TOTAL PACKED</div>
+        <div class="kpi-val" style="font-size:18px;font-weight:700;color:var(--accent2)">${totalPackedBoxes} <span style="font-size:11px;color:var(--text3)">boxes</span></div>
+        <div class="kpi-sub" style="font-size:11px;color:var(--text2)">${fmt(totalPackedQty)} L</div>
+      </div>
+      <div class="kpi" style="background:var(--surface2);padding:10px;border-radius:6px;border-left:3px solid var(--accent5)">
+        <div class="kpi-label" style="font-size:10px;color:var(--text3);letter-spacing:.5px">📥 TOTAL INWARD</div>
+        <div class="kpi-val" style="font-size:18px;font-weight:700;color:var(--accent5)">${totalInwardBoxes} <span style="font-size:11px;color:var(--text3)">boxes</span></div>
+        <div class="kpi-sub" style="font-size:11px;color:var(--text2)">${fmt(totalInwardQty)} L</div>
+      </div>
+      <div class="kpi" style="background:var(--surface2);padding:10px;border-radius:6px;border-left:3px solid var(--green)">
+        <div class="kpi-label" style="font-size:10px;color:var(--text3);letter-spacing:.5px">🚚 TOTAL OUTWARD</div>
+        <div class="kpi-val" style="font-size:18px;font-weight:700;color:var(--green)">${totalOutwardBoxes} <span style="font-size:11px;color:var(--text3)">boxes</span></div>
+        <div class="kpi-sub" style="font-size:11px;color:var(--text2)">${fmt(totalOutwardQty)} L</div>
+      </div>
+      <div class="kpi" style="background:var(--surface2);padding:10px;border-radius:6px;border-left:3px solid var(--accent3)">
+        <div class="kpi-label" style="font-size:10px;color:var(--text3);letter-spacing:.5px">⏳ PENDING DISPATCH</div>
+        <div class="kpi-val" style="font-size:18px;font-weight:700;color:var(--accent3)">${totalPendingBoxes} <span style="font-size:11px;color:var(--text3)">boxes</span></div>
+        <div class="kpi-sub" style="font-size:11px;color:var(--text2)">${fmt(totalPendingQty)} L</div>
+      </div>
     </div>
 
     <!-- SCAN PANEL -->
@@ -3616,11 +3709,47 @@ function renderDispatch(){
     </div>
   </div>
 
+  <!-- v37F: COLOUR-WISE ROLLUP -->
+  ${colourKeys.length > 0 ? `<div class="card mb-16">
+    <div class="card-title">🎨 Colour-wise Summary</div>
+    <div class="tbl-wrap"><table>
+      <thead><tr>
+        <th>Colour</th>
+        <th class="text-right">Packed (Boxes / L)</th>
+        <th class="text-right">Inward (Boxes / L)</th>
+        <th class="text-right">Outward (Boxes / L)</th>
+        <th class="text-right">Pending (Boxes / L)</th>
+      </tr></thead>
+      <tbody>
+        ${colourKeys.map(c=>{
+          const r = colourRollup[c];
+          return `<tr>
+            <td class="td-bold">${c}</td>
+            <td class="td-mono text-right">${r.packedBoxes} / <b>${fmt(r.packedQty)}L</b></td>
+            <td class="td-mono text-right">${r.inwardBoxes} / ${fmt(r.inwardQty)}L</td>
+            <td class="td-mono text-right green">${r.outwardBoxes} / <b>${fmt(r.outwardQty)}L</b></td>
+            <td class="td-mono text-right ${r.pendingBoxes>0?'amber fw-bold':''}">${r.pendingBoxes} / ${fmt(r.pendingQty)}L</td>
+          </tr>`;
+        }).join('')}
+      </tbody>
+      <tfoot><tr style="background:var(--surface2);font-weight:700">
+        <td>TOTAL</td>
+        <td class="td-mono text-right">${totalPackedBoxes} / <b>${fmt(totalPackedQty)}L</b></td>
+        <td class="td-mono text-right">${totalInwardBoxes} / ${fmt(totalInwardQty)}L</td>
+        <td class="td-mono text-right green">${totalOutwardBoxes} / <b>${fmt(totalOutwardQty)}L</b></td>
+        <td class="td-mono text-right amber">${totalPendingBoxes} / ${fmt(totalPendingQty)}L</td>
+      </tr></tfoot>
+    </table></div>
+  </div>` : ''}
+
   <!-- PACKED LEDGER -->
   <div class="card mb-16">
-    <div class="card-title">📦 Packed Quantity Ledger — Ready for Dispatch</div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Batch</th><th>Customer</th><th>Size</th><th>Packed Boxes</th><th>Packed Qty (L)</th><th>Received</th><th>Dispatched</th><th>Pending</th><th>Action</th></tr></thead>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
+      <div class="card-title" style="margin-bottom:0">📦 Packed Quantity Ledger — Ready for Dispatch</div>
+      <input id="dispatch-search" type="text" placeholder="🔍 Search batch / customer / PC / colour…" oninput="filterDispatchTables(this.value)" style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;background:var(--surface);color:var(--text);min-width:240px">
+    </div>
+    <div class="tbl-wrap"><table id="dispatch-ledger-table">
+      <thead><tr><th>Batch</th><th>Customer</th><th>PC Code</th><th>Colour</th><th>Size</th><th>Packed Boxes</th><th>Packed Qty (L)</th><th>Received</th><th>Dispatched</th><th>Pending</th><th>Action</th></tr></thead>
       <tbody>
       ${Object.entries(batchSummary).map(([batchNo,s])=>{
         const batch=getBatch(batchNo);
@@ -3628,10 +3757,12 @@ function renderDispatch(){
         const dispQty=boxToLakh(s.dispOut,s.size);
         const pending=Math.max(0,s.packed-s.dispOut);
         const pendingQty=boxToLakh(pending,s.size);
-        const rec=state.dispatchRecs.filter(r=>r.batchNumber===batchNo);
-        return `<tr>
+        const searchKey = [batchNo, batch?.customer||'', batch?.pcCode||'', s.colour||''].join(' ').toLowerCase();
+        return `<tr data-search="${searchKey}">
           <td class="td-bold td-mono">${batchNo}</td>
           <td>${batch?.customer||'-'}</td>
+          <td class="td-mono">${batch?.pcCode||'-'}</td>
+          <td class="td-mono">${s.colour||'-'}</td>
           <td class="td-mono">${s.size}</td>
           <td class="td-mono">${s.packed}</td>
           <td class="td-mono fw-bold">${fmt(packedQty)}L</td>
@@ -3640,30 +3771,64 @@ function renderDispatch(){
           <td class="td-mono ${pending>0?'fw-bold':''}">${pending} (${fmt(pendingQty)}L)</td>
           <td>${pending>0?`<button class="btn btn-sm btn-primary" onclick="openDispatchRecord('${batchNo}',${s.dispOut},${s.packed})">🚚 Dispatch</button>`:'<span class="badge badge-green">All Out</span>'}</td>
         </tr>`;
-      }).join('')||'<tr><td colspan="9" class="text-center text-muted">No packed boxes yet</td></tr>'}
+      }).join('')||'<tr><td colspan="11" class="text-center text-muted">No packed boxes yet</td></tr>'}
       </tbody>
+      ${Object.keys(batchSummary).length > 0 ? `<tfoot><tr style="background:var(--surface2);font-weight:700">
+        <td colspan="5" class="text-right">TOTAL</td>
+        <td class="td-mono">${totalPackedBoxes}</td>
+        <td class="td-mono"><b>${fmt(totalPackedQty)}L</b></td>
+        <td class="td-mono">${totalInwardBoxes}</td>
+        <td class="td-mono green">${totalOutwardBoxes} (<b>${fmt(totalOutwardQty)}L</b>)</td>
+        <td class="td-mono amber">${totalPendingBoxes} (${fmt(totalPendingQty)}L)</td>
+        <td></td>
+      </tr></tfoot>` : ''}
     </table></div>
   </div>
 
   <!-- DISPATCH RECORDS -->
   <div class="card">
-    <div class="card-title">📋 Dispatch Records</div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Date</th><th>Batch</th><th>Customer</th><th>Qty (L)</th><th>Boxes</th><th>Vehicle</th><th>Invoice</th><th>Status</th></tr></thead>
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+      <div class="card-title" style="margin-bottom:0">📋 Dispatch Records</div>
+      <button class="btn btn-secondary btn-sm" onclick="exportDispatch()">📥 Export Excel</button>
+    </div>
+    <div class="tbl-wrap"><table id="dispatch-records-table">
+      <thead><tr><th>Date</th><th>Batch</th><th>Customer</th><th>PC Code</th><th>Colour</th><th>Qty (L)</th><th>Boxes</th><th>Vehicle</th><th>Invoice</th><th>Status</th></tr></thead>
       <tbody>
-      ${state.dispatchRecs.sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,20).map(r=>`<tr>
-        <td class="td-mono text-sm">${fmtDate(r.ts)}</td>
-        <td class="td-bold td-mono">${r.batchNumber}</td>
-        <td class="text-sm">${r.customer||'-'}</td>
-        <td class="td-mono fw-bold">${fmt(r.qty)}L</td>
-        <td class="td-mono">${r.boxes}</td>
-        <td class="td-mono">${r.vehicleNo||'<span class="text-muted">—</span>'}</td>
-        <td class="td-mono">${r.invoiceNo||'<span class="text-muted">—</span>'}</td>
-        <td><span class="badge badge-green">Dispatched</span></td>
-      </tr>`).join('')||'<tr><td colspan="8" class="text-center text-muted">No dispatch records yet</td></tr>'}
+      ${state.dispatchRecs.sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,20).map(r=>{
+        // v37F: Pull colour/PC from batch master since dispatch records don't store them directly
+        const dBatch = getBatch(r.batchNumber);
+        const dColour = dBatch?.colour || '-';
+        const dPcCode = dBatch?.pcCode || '-';
+        const searchKey = [r.batchNumber, r.customer||'', dPcCode, dColour, r.vehicleNo||'', r.invoiceNo||''].join(' ').toLowerCase();
+        return `<tr data-search="${searchKey}">
+          <td class="td-mono text-sm">${fmtDate(r.ts)}</td>
+          <td class="td-bold td-mono">${r.batchNumber}</td>
+          <td class="text-sm">${r.customer||'-'}</td>
+          <td class="td-mono">${dPcCode}</td>
+          <td class="td-mono">${dColour}</td>
+          <td class="td-mono fw-bold">${fmt(r.qty)}L</td>
+          <td class="td-mono">${r.boxes}</td>
+          <td class="td-mono">${r.vehicleNo||'<span class="text-muted">—</span>'}</td>
+          <td class="td-mono">${r.invoiceNo||'<span class="text-muted">—</span>'}</td>
+          <td><span class="badge badge-green">Dispatched</span></td>
+        </tr>`;
+      }).join('')||'<tr><td colspan="10" class="text-center text-muted">No dispatch records yet</td></tr>'}
       </tbody>
+      ${state.dispatchRecs.length > 0 ? `<tfoot><tr style="background:var(--surface2);font-weight:700">
+        <td colspan="5" class="text-right">TOTAL DISPATCHED (last ${Math.min(20, state.dispatchRecs.length)} records)</td>
+        <td class="td-mono"><b>${fmt(state.dispatchRecs.slice(0,20).reduce((s,r)=>s+(r.qty||0),0))}L</b></td>
+        <td class="td-mono">${state.dispatchRecs.slice(0,20).reduce((s,r)=>s+(r.boxes||0),0)}</td>
+        <td colspan="3"></td>
+      </tr></tfoot>` : ''}
     </table></div>
-  </div>`;
+    <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Showing last 20 dispatch records. Total inward/outward at top reflects all-time scan-based counts (boxes only). Dispatch records totals here reflect the records visible in this view.</div>
+  </div>
+
+  <!-- v37F: Dispatch Summary (planned vs actual) — restricted to Dispatch / Admin / Planning roles via page access -->
+  <div id="dispatch-summary-container"></div>`;
+
+  // Render the planned-vs-actual summary into the container above
+  renderReportI('dispatch-summary-container');
 }
 
 function openDispatchRecord(batchNo, alreadyDispatched, totalPacked){
@@ -3799,7 +3964,12 @@ function applyBatchFilter(){
   const filterMachine=document.getElementById('bt-filter-machine')?.value||'';
   const filterPc=(document.getElementById('bt-filter-pc')?.value||'');
   const filterColour=(document.getElementById('bt-filter-colour')?.value||'');
-  let batches=getTrkMonthBatches().filter(b=>!b.deleted).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  // v37G: If user typed a batch search, broaden to ALL batches (not just current month picker)
+  // so older batches can be retrieved by typing their number. Other filters stay scoped to month.
+  let batches = filterBatch
+    ? state.batches.filter(b=>!b.deleted)
+    : getTrkMonthBatches().filter(b=>!b.deleted);
+  batches = batches.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}));
   if(filterBatch) batches=batches.filter(b=>b.batchNumber?.toLowerCase().includes(filterBatch)||b.customer?.toLowerCase().includes(filterBatch));
   if(filterMachine) batches=batches.filter(b=>b.machineId===filterMachine);
   if(filterPc) batches=batches.filter(b=>b.pcCode===filterPc);
@@ -3826,19 +3996,24 @@ function renderBatchCard(batch){
   const batchNo=batch.batchNumber;
   const flow=getBatchFlow(batch);
   const alerts=state.alerts.filter(a=>a.batchNumber===batchNo);
-  // WIP Days — consistent with Report C: (Gross − Packed) / machine daily cap
+  // v37E WIP-fix: Use canonical totalWIP from getBatchWIPBreakdown — same source as Report C export
+  // and getBatchWIPDays. Prior code used `Gross − packedQty` which incorrectly included salvage and
+  // remelt as "WIP" (they're scrapped, not WIP) AND used unguarded state.scans.filter for packing
+  // which misses scans beyond the LIMIT-2000 cap on /api/tracking/scans-recent.
   const machine = state.machineMaster.find(m=>m.id===batch.machineId||m.machineId===batch.machineId);
   const dailyCap = machine?.dailyTarget || machine?.yTarget || machine?.cap || 10;
   const wipBreakdown = getBatchWIPBreakdown(batchNo);
   const remainingWIP = wipBreakdown ? wipBreakdown.totalWIP : 0;
   const grossProd = wipBreakdown ? wipBreakdown.grossProd : (batch.actualProd || batch.actualQty || 0);
-  const packedQty = wipBreakdown ? wipBreakdown.packIn : 0;
+  // packedQty for display only — pulled from canonical breakdown so it sees full history
+  const packedQty = wipBreakdown ? Math.max(0, grossProd - remainingWIP - (wipBreakdown.wAIM.salvage+wipBreakdown.wAIM.remelt+wipBreakdown.wPrint.salvage+wipBreakdown.wPrint.remelt+wipBreakdown.wPI.salvage+wipBreakdown.wPI.remelt)) : 0;
   const wipDays = dailyCap > 0 ? remainingWIP / dailyCap : 0;
   const std=batch.isPrinted?3:2;
   const dispDate=calcDispatchDate(batch);
   const ag=getBatchAGrade(batchNo,batch.isPrinted?'printed':'unprinted');
   const labels=getLabelsByBatch(batchNo);
   const totalBoxes=labels.length;
+  // v37E WIP-fix: gate dispatch count by scanSummary so old dispatches aren't dropped beyond LIMIT 2000
   const localDispatchOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='dispatch'&&sc.type==='out'&&sc._local).length;
   const dispatched = hasScanSummary()
     ? (_ss(batchNo,'dispatch').out + localDispatchOut)
@@ -3847,6 +4022,7 @@ function renderBatchCard(batch){
 
   const flowSteps=flow.map((dept,i)=>{
     const closed=isStageComplete(batchNo,dept)||dept==='production';
+    // v37E WIP-fix: use scanSummary for stage activity indicator so old batches still show correct flow state
     const localInCount = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
     const inCount = hasScanSummary()
       ? (_ss(batchNo,dept).in + localInCount)
@@ -3958,7 +4134,37 @@ function renderBatchDetail(batch){
   </table></div>`;
 }
 
+// v37E T3: Replaces the previous unconditional scrollIntoView in every report render.
+// Behavior:
+//   - First render of a report kind (or different kind than was previously showing): scroll into view.
+//   - Re-render of the SAME report (filter change, background data refresh): preserve scroll position.
+// This stops the screen from jumping back to the top when the user is reading a report
+// and the data quietly refreshes. Each report calls _scrollIntoReportIfFirstView('A'|'G'|...)
+// at the end of its render, identifying itself.
+let _lastReportShown = null;
+let _reportScrollY = 0;
+function _captureReportScroll() {
+  // Capture the document/window scroll position before report HTML is replaced.
+  _reportScrollY = window.scrollY || document.documentElement.scrollTop || 0;
+}
+function _scrollIntoReportIfFirstView(reportKey) {
+  const _rOut = document.getElementById('report-output');
+  if (!_rOut) return;
+  if (_lastReportShown === reportKey) {
+    // Re-render of same report — preserve scroll position
+    setTimeout(() => window.scrollTo(0, _reportScrollY), 0);
+  } else {
+    // First view of this report — scroll into view
+    _lastReportShown = reportKey;
+    setTimeout(() => _rOut.scrollIntoView({ behavior: 'smooth', block: 'start' }), 50);
+  }
+}
+
 function renderReports(forceRebuild){
+  // v37E T3: forceRebuild means user navigated to /reports anew — reset last-shown report tracker
+  if (forceRebuild) _lastReportShown = null;
+  // v37F: Reset Report I active container so any direct call from this page goes to report-output
+  window._rptIContainer = 'report-output';
   const el=document.getElementById('page-reports');
   // Preserve existing report output across rebuilds
   const existingOutput=document.getElementById('report-output');
@@ -4031,6 +4237,7 @@ function renderReports(forceRebuild){
 }
 
 function renderReportH(){ window._activeReport = renderReportH;
+  _captureReportScroll();
   if(!document.getElementById('report-output')) renderReports();
   const batches = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions = (batch) => batch.isPrinted
@@ -4203,8 +4410,9 @@ function renderReportH(){ window._activeReport = renderReportH;
     </div>
   </div>`;
 
+  _captureReportScroll();
   document.getElementById('report-output').innerHTML=html;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('H');
 }
 
 function exportReportH(){
@@ -4241,6 +4449,9 @@ function renderReportG(){ window._activeReport = renderReportG;
   let totalInspected = 0;
   let totalSalvage   = 0;
   let totalRemelt    = 0;
+  // v37E WIP-fix: Track plant-level WIP using canonical per-batch totalWIP (NOT Gross−Inspected,
+  // which only captures pre-AIM WIP and contradicts the per-batch breakdown shown in the same report).
+  let plantTotalWIP  = 0;
   const alerts = [];
 
   const rows = batches.map(b=>{
@@ -4252,6 +4463,7 @@ function renderReportG(){ window._activeReport = renderReportG;
     totalInspected += ag.inspected;
     totalSalvage   += ag.salvage || 0;
     totalRemelt    += ag.remelt  || 0;
+    if (wip) plantTotalWIP += wip.totalWIP || 0;
 
     // Alert: inspected > gross production (DPR entry is less than scans)
     const overInspected = ag.inspected > 0 && grossProd > 0 && ag.inspected > grossProd;
@@ -4274,15 +4486,19 @@ function renderReportG(){ window._activeReport = renderReportG;
     }
 
     let wipBreakdown = '—';
-    if(wip && wip.totalWIP > 0){
+    if(wip && (wip.totalWIP > 0 || wip.packWIP > 0)){
       const rows2 = [];
-      if(wip.preAIM  > 0) rows2.push(`<span style="color:var(--red)">🔴 ${b.isPrinted?'Unsorted PTD':'Unsorted UP'}: ${fmt(wip.preAIM)}L</span>`);
-      if(wip.aimWIP  > 0) rows2.push(`<span style="color:var(--amber)">🟡 AIM: ${fmt(wip.aimWIP)}L</span>`);
-      if(wip.printWIP> 0) rows2.push(`<span style="color:#8b5cf6">🟣 Printing: ${fmt(wip.printWIP)}L</span>`);
-      if(wip.piWIP   > 0) rows2.push(`<span style="color:var(--orange)">🟠 PI: ${fmt(wip.piWIP)}L</span>`);
-      if(wip.packWIP > 0) rows2.push(`<span style="color:var(--green)">🟢 Packing: ${fmt(wip.packWIP)}L</span>`);
+      if(wip.preAIM         > 0) rows2.push(`<span style="color:var(--red)">🔴 ${b.isPrinted?'Unsorted PTD':'Unsorted UP'}: ${fmt(wip.preAIM)}L</span>`);
+      if(wip.aimWIP         > 0) rows2.push(`<span style="color:var(--amber)">🟡 AIM: ${fmt(wip.aimWIP)}L</span>`);
+      if(wip.printWIP       > 0) rows2.push(`<span style="color:#8b5cf6">🟣 Printing: ${fmt(wip.printWIP)}L</span>`);
+      if(wip.piWIP          > 0) rows2.push(`<span style="color:var(--orange)">🟠 PI: ${fmt(wip.piWIP)}L</span>`);
+      if(wip.toPackTransit  > 0) rows2.push(`<span style="color:#0ea5e9">🔵 Transit→Pack: ${fmt(wip.toPackTransit)}L</span>`);
+      // Packing WIP is FG awaiting dispatch — shown separately, NOT in totalWIP
+      const fgRow = wip.packWIP > 0
+        ? `<div style="font-size:10px;color:var(--green);margin-top:4px;border-top:1px dashed var(--b1);padding-top:3px">📦 FG awaiting dispatch: ${fmt(wip.packWIP)}L</div>`
+        : '';
       wipBreakdown = `<div style="font-weight:700;color:var(--text);margin-bottom:3px">${fmt(wip.totalWIP)}L</div>
-        <div style="font-size:10px;display:flex;flex-direction:column;gap:2px">${rows2.join('')}</div>`;
+        <div style="font-size:10px;display:flex;flex-direction:column;gap:2px">${rows2.join('')}</div>${fgRow}`;
     }
 
     const alertFlag = (overInspected||noGross) ? `<span title="${overInspected?'Inspected > Gross Production — check DPR':'No DPR entry'}" style="color:var(--accent4);cursor:help;margin-left:4px">⚠️</span>` : '';
@@ -4308,8 +4524,13 @@ function renderReportG(){ window._activeReport = renderReportG;
   const cumPct = totalInspected>0 ? (totalAGradeQty/totalInspected*100) : 0;
   const cumCls = cumPct>=95?'green':cumPct>=90?'var(--amber)':'var(--red)';
 
-  // Total WIP = Gross Production − Total Inspected (correct formula per requirement)
-  const totalWIP = Math.max(0, totalGrossProd - totalInspected);
+  // v37E WIP-fix: "Total WIP" now uses canonical formula consistently across the report.
+  // - plantTotalWIP = Σ batch totalWIP = Σ (Gross − totalSalvage − totalRemelt − packOut)
+  //   This is "everything not yet packed out" — matches per-batch totalWIP shown in the table.
+  // - preAIMOnly = Gross − Inspected (legacy formula; what hasn't been inspected yet at AIM)
+  //   Shown in subtitle for context.
+  const totalWIP = plantTotalWIP;
+  const preAIMOnly = Math.max(0, totalGrossProd - totalInspected);
 
   const alertsHtml = alerts.length > 0 ? `
     <div class="alert" style="background:rgba(220,38,38,0.08);border:1px solid rgba(220,38,38,0.3);border-left:4px solid #dc2626;padding:10px 14px;margin-bottom:16px">
@@ -4324,11 +4545,11 @@ function renderReportG(){ window._activeReport = renderReportG;
 
     <div class="kpi-grid mb-16">
       <div class="kpi"><div class="kpi-label">Total Gross Production</div><div class="kpi-val cyan">${fmt(totalGrossProd)}L</div></div>
-      <div class="kpi"><div class="kpi-label">Total Inspected</div><div class="kpi-val">${fmt(totalInspected)}L</div><div class="kpi-sub" style="color:var(--text3)">Excl. ${fmt(totalWIP)}L WIP</div></div>
+      <div class="kpi"><div class="kpi-label">Total Inspected</div><div class="kpi-val">${fmt(totalInspected)}L</div><div class="kpi-sub" style="color:var(--text3)">Excl. ${fmt(preAIMOnly)}L pre-AIM</div></div>
       <div class="kpi"><div class="kpi-label">Total A-Grade Qty</div><div class="kpi-val green">${fmt(totalAGradeQty)}L</div></div>
       <div class="kpi"><div class="kpi-label">Total Salvage</div><div class="kpi-val amber">${fmt(totalSalvage)}L</div><div class="kpi-sub">Inspected = A-Grade + Salvage + Remelt</div></div>
       <div class="kpi"><div class="kpi-label">Total Remelt</div><div class="kpi-val red">${fmt(totalRemelt)}L</div></div>
-      <div class="kpi"><div class="kpi-label">Total WIP (All Stages)</div><div class="kpi-val amber">${fmt(totalWIP)}L</div><div class="kpi-sub">= Gross − Inspected</div></div>
+      <div class="kpi"><div class="kpi-label">Total WIP (All Stages)</div><div class="kpi-val amber">${fmt(totalWIP)}L</div><div class="kpi-sub">= Gross − Wastage − Pack In (FG excluded)</div></div>
       <div class="kpi"><div class="kpi-label">Cumulative A-Grade %</div><div class="kpi-val" style="color:${cumCls};font-size:28px">${fmt(cumPct,2)}%</div><div class="kpi-sub">= ${fmt(totalAGradeQty)}L ÷ ${fmt(totalInspected)}L inspected</div></div>
     </div>
 
@@ -4363,8 +4584,9 @@ function renderReportG(){ window._activeReport = renderReportG;
     <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportG()">📥 Export Excel</button>
   </div>`;
 
+  _captureReportScroll();
   document.getElementById('report-output').innerHTML = html;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('G');
 }
 
 function exportReportG(){
@@ -4388,7 +4610,8 @@ function exportReportG(){
       'AIM WIP (L)': wip ? fmt(wip.aimWIP) : '0',
       'Printing WIP (L)': wip && b.isPrinted ? fmt(wip.printWIP) : 'N/A',
       'PI WIP (L)': wip && b.isPrinted ? fmt(wip.piWIP) : 'N/A',
-      'Packing WIP (L)': wip ? fmt(wip.packWIP) : '0',
+      'Transit to Packing (L)': wip ? fmt(wip.toPackTransit) : '0',
+      'FG Awaiting Dispatch (L)': wip ? fmt(wip.packWIP) : '0',
     };
     if(b.isPrinted && ag.stages){
       row['AIM Stage %'] = ag.stages.aim.inspected>0?fmt(ag.stages.aim.pct,2)+'%':'—';
@@ -4572,8 +4795,9 @@ function renderReportF(){ window._activeReport = renderReportF;
     </div>
   </div>`;
 
+  _captureReportScroll();
   document.getElementById('report-output').innerHTML = html;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('F');
 }
 
 function exportReportF(){
@@ -4698,16 +4922,18 @@ function renderReportB(){ window._activeReport = renderReportB;
     html+=`<div class="alert alert-info">No scan data found${filterDept?' for '+DEPT_CONFIG[filterDept]?.label:''}${filterBatch?' for batch '+filterBatch:''}. Make sure boxes have been scanned in at the relevant departments.</div>`;
   }
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportB()">📥 Export Excel</button></div>`;
+  _captureReportScroll();
   document.getElementById('report-output').innerHTML=html;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('B');
 }
 
 function renderReportC(){ window._activeReport = renderReportC;
   if(!document.getElementById('report-output')) renderReports();
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
+    _captureReportScroll();
     reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Report C — Machine-wise WIP Status</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer().then(()=>renderReportC())">🔄 Sync & Retry</button></div>`;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('C');
     return;
   }
 
@@ -4753,13 +4979,17 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
     html+=`<tr><td colspan="8" class="text-center text-muted" style="padding:20px">No batches found with current filters.</td></tr>`;
   } else {
     batches.forEach(b=>{
+      // v37E WIP-fix: Use canonical getBatchWIPDays (same as Report C export, dashboard, dispatch).
+      // Prior code did `Gross − packedQty` which incorrectly counted salvage and remelt as WIP.
       const machine = state.machineMaster.find(m=>m.id===b.machineId||m.machineId===b.machineId);
       const dailyCap = machine?.dailyTarget || machine?.yTarget || machine?.cap || 10;
+      const wipBreakdown = getBatchWIPBreakdown(b.batchNumber);
+      const remainingWIP = wipBreakdown ? wipBreakdown.totalWIP : 0;
+      const grossProd = wipBreakdown ? wipBreakdown.grossProd : (b.actualProd||b.actualQty||0);
+      // packedQty derived from the same canonical breakdown — uses scanSummary internally
       const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
       const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
       const packedQty=boxToLakh(packedOut,b.size);
-      const grossProd=b.actualProd||b.actualQty||0;
-      const remainingWIP = Math.max(0, grossProd - packedQty);
       const wipDays = dailyCap > 0 ? remainingWIP / dailyCap : 0;
       const std=b.isPrinted?3:2;
       let statusBadge='';
@@ -4779,8 +5009,9 @@ const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rO
     });
   }
   html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
+  _captureReportScroll();
   reportEl.innerHTML=html;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('C');
 }
 
 function renderReportD(){ window._activeReport = renderReportD;
@@ -4810,10 +5041,7 @@ function renderReportD(){ window._activeReport = renderReportD;
     const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
     return s+ag.aGrade;
   },0);
-  const totalInspectedD=monthBatches.reduce((s,b)=>{
-    const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');
-    return s+ag.inspected;
-  },0);
+  const totalInspectedD=monthBatches.reduce((s,b)=>{const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.inspected;},0);
   const aGradePct=totalInspectedD>0?(totalAGrade/totalInspectedD*100):0;
   const html=`<div class="card"><div class="section-title mb-16">Report D — Overall Summary</div>
   <div class="kpi-grid">
@@ -4835,8 +5063,9 @@ function renderReportD(){ window._activeReport = renderReportD;
     </tbody>
   </table></div>
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
+  _captureReportScroll();
   document.getElementById('report-output').innerHTML=html;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('D');
 }
 
 function renderReportA(){ window._activeReport = renderReportA;
@@ -4844,30 +5073,16 @@ function renderReportA(){ window._activeReport = renderReportA;
   // Date filter
   const filterBatch = window._rptABatch||'';
   const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted);
-  const _searchTerm = (window._rptASearch||'').toLowerCase().trim();
-  const batches = monthBatches.filter(b=>{
-    if(filterBatch) return b.batchNumber===filterBatch;
-    if(_searchTerm) return (b.batchNumber||'').toLowerCase().includes(_searchTerm)||(b.customer||'').toLowerCase().includes(_searchTerm);
-    return true;
-  });
-  const batchOptions = monthBatches
+  const batches = monthBatches.filter(b=>!filterBatch||b.batchNumber===filterBatch);
+  // v37F: Sort batch dropdown ascending by batch number for easier scanning
+  const batchOptions = [...monthBatches]
+    .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}))
     .map(b=>`<option value="${b.batchNumber}" ${filterBatch===b.batchNumber?'selected':''}>${b.batchNumber} — ${b.customer||''}</option>`).join('');
 
   let html=`<div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px;flex-wrap:wrap;gap:10px">
-      <div class="section-title" style="margin-bottom:0">Report A — Complete Batch Tracking (Full Duration)</div>
-      <div style="display:flex;align-items:center;gap:8px">
-        <input type="text" id="rptA-search" class="form-control" placeholder="🔍 Search batch / customer..."
-          style="width:240px;font-size:12px"
-          value="${window._rptASearch||''}"
-          oninput="window._rptASearch=this.value;window._rptABatch='';renderReportA()"
-          onkeydown="if(event.key==='Escape'){window._rptASearch='';window._rptABatch='';renderReportA()}"
-        >
-        ${(window._rptASearch||filterBatch)?`<button class="btn btn-ghost btn-sm" onclick="window._rptASearch='';window._rptABatch='';renderReportA()">✕</button>`:''}
-      </div>
-    </div>
-    <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center">
-      <select class="form-control" style="max-width:280px" onchange="window._rptABatch=this.value;window._rptASearch='';renderReportA()">
+    <div class="section-title mb-16">Report A — Complete Batch Tracking (Full Duration)</div>
+    <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center;position:sticky;top:0;background:var(--surface);z-index:10;padding:8px 0;border-bottom:1px solid var(--border)">
+      <select class="form-control" style="max-width:280px" onchange="window._rptABatch=this.value;renderReportA()">
         <option value="">All Batches</option>${batchOptions}
       </select>
       ${filterBatch?`<button class="btn btn-ghost btn-sm" onclick="window._rptABatch='';renderReportA()">✕ Clear</button>`:''}
@@ -4939,8 +5154,9 @@ function renderReportA(){ window._activeReport = renderReportA;
     </div>`;
   });
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportA()">📥 Export Excel</button></div>`;
+  _captureReportScroll();
   document.getElementById('report-output').innerHTML=html;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('A');
 }
 
 function renderBatchFlowSummary(batch){
@@ -5008,19 +5224,32 @@ function renderReportE(){ window._activeReport = renderReportE;
     const piOut=b.isPrinted?boxToLakh(piOut_c,b.size):0;
     const printW=getTotalWastage(b.batchNumber,'printing');
     const piW=getTotalWastage(b.batchNumber,'pi');
-    // v37E T2: Per-stage A-Grade % at Print and PI stages (post-printing performance)
-    // Formula: stageOut / (stageOut + stageSalvage + stageRemelt) × 100
-    // Only meaningful for PTD batches.
-    const printDenom = printingTD + printW.salvage + printW.remelt;
-    const printAGradePct = (b.isPrinted && printDenom > 0) ? (printingTD / printDenom * 100) : 0;
-    const piDenom = piOut + piW.salvage + piW.remelt;
-    const piAGradePct = (b.isPrinted && piDenom > 0) ? (piOut / piDenom * 100) : 0;
+    // Frozen formulas (per Ishan, confirmed):
+    //   Post-Printing A-Grade % =
+    //     (AIM Out − Printing Salvage − Printing Remelt)
+    //     ÷ (AIM Out + AIM Salvage + AIM Remelt) × 100
+    //   Post-PI A-Grade % =
+    //     (AIM Out − Printing Salvage − Printing Remelt − PI Salvage − PI Remelt)
+    //     ÷ (AIM Out + AIM Salvage + AIM Remelt) × 100
+    // Denominator (total AIM input) is constant across both stages.
+    // Numerator deducts subsequent wastage from AIM Out cumulatively.
+    // Applies only to PTD batches (UP batches show '—').
+    const aimInputTotal = aimOutQty + aimW.salvage + aimW.remelt;
+    const postPrintNumerator = aimOutQty - printW.salvage - printW.remelt;
+    const postPiNumerator    = aimOutQty - printW.salvage - printW.remelt - piW.salvage - piW.remelt;
+    const printAGradePct = (b.isPrinted && aimInputTotal > 0)
+      ? Math.max(0, (postPrintNumerator / aimInputTotal) * 100)
+      : 0;
+    const piAGradePct = (b.isPrinted && aimInputTotal > 0)
+      ? Math.max(0, (postPiNumerator / aimInputTotal) * 100)
+      : 0;
     const packUnptd_c = useSS ? (_ss(b.batchNumber,'packing').out + localExtra('packing','out'))
                                : scansForBatch.filter(s=>s.dept==='packing'&&s.type==='out').length;
     const packUnptd=!b.isPrinted?boxToLakh(packUnptd_c,b.size):0;
     const packPtd=b.isPrinted?boxToLakh(packUnptd_c,b.size):0;
     const disp=state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber&&(!filterDate||r.ts?.slice(0,10)===filterDate)).reduce((s,r)=>s+r.qty,0);
     rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,
+      isPrinted: b.isPrinted,  // v37H: used by table render to distinguish PTD vs UP for column display
       plannedQty:b.qty||0, _plannedQty:b.qty||0,
       grossProd:fmt(grossProd),_grossProd:grossProd,
       aimRunTotal:fmt(aimIn),_aimRunTotal:aimIn,
@@ -5036,10 +5265,12 @@ function renderReportE(){ window._activeReport = renderReportE;
       availPrint:fmt(b.isPrinted?totalAG:0),_availPrint:b.isPrinted?totalAG:0,
       printingTD:fmt(printingTD),_printingTD:printingTD,
       printRej:fmt(printW.salvage),_printRej:printW.salvage,
-      printAGradePct: b.isPrinted ? fmt(printAGradePct,1) : '—', _printAGradePct: printAGradePct, _printDenom: printDenom,
+      _printSalvage: printW.salvage, _printRemelt: printW.remelt,
+      printAGradePct: b.isPrinted ? fmt(printAGradePct,1) : '—', _printAGradePct: printAGradePct, _aimInputTotal: aimInputTotal,
       piInspect:fmt(piOut),_piInspect:piOut,
       piSalRem:fmt(piW.salvage),_piSalRem:piW.salvage,
-      piAGradePct: b.isPrinted ? fmt(piAGradePct,1) : '—', _piAGradePct: piAGradePct, _piDenom: piDenom,
+      _piSalvage: piW.salvage, _piRemelt: piW.remelt,
+      piAGradePct: b.isPrinted ? fmt(piAGradePct,1) : '—', _piAGradePct: piAGradePct,
       packingUP:fmt(packUnptd),_packingUP:packUnptd,
       packingPTD:fmt(packPtd),_packingPTD:packPtd,
       dispatch:fmt(disp),_dispatch:disp});
@@ -5081,13 +5312,23 @@ function renderReportE(){ window._activeReport = renderReportE;
     // This matches Report G plant formula: cumPct = totalAGradeQty / totalInspected * 100
     const aimPct    = aimInsp>0 ? (aimOut/aimInsp*100).toFixed(1)+'%' : '—';
     const totalPct  = aimInsp>0 ? (ag/aimInsp*100).toFixed(1)+'%'     : '—';
-    // v37E T2: Aggregate Print and PI A-Grade % from per-batch numerators/denominators
-    const printOutSum   = sumRows(arr,'printingTD');
-    const printDenomSum = sumRows(arr,'printDenom');
-    const printPct      = printDenomSum > 0 ? (printOutSum/printDenomSum*100).toFixed(1)+'%' : '—';
-    const piOutSum      = sumRows(arr,'piInspect');
-    const piDenomSum    = sumRows(arr,'piDenom');
-    const piPct         = piDenomSum > 0 ? (piOutSum/piDenomSum*100).toFixed(1)+'%' : '—';
+    // Frozen formula (per Ishan):
+    //   Post-Printing A-Grade % = (AIM Out − Print Sal − Print Rem) / (AIM Out + AIM Sal + AIM Rem) × 100
+    //   Post-PI A-Grade %       = (AIM Out − Print Sal − Print Rem − PI Sal − PI Rem) / (AIM Out + AIM Sal + AIM Rem) × 100
+    // Aggregation: sum numerators and denominator (aimInsp) across PTD batches only.
+    const ptdRows = arr.filter(r=>r.isPrinted);
+    const ptdAimInsp  = sumRows(ptdRows,'aimRunTotal');
+    const ptdAimOut   = sumRows(ptdRows,'aimAGrade');
+    const printSalSum = sumRows(ptdRows,'printSalvage');
+    const printRemSum = sumRows(ptdRows,'printRemelt');
+    const piSalSum    = sumRows(ptdRows,'piSalvage');
+    const piRemSum    = sumRows(ptdRows,'piRemelt');
+    const postPrintNumSum = ptdAimOut - printSalSum - printRemSum;
+    const postPiNumSum    = ptdAimOut - printSalSum - printRemSum - piSalSum - piRemSum;
+    const printPct = ptdAimInsp > 0 ? Math.max(0, postPrintNumSum / ptdAimInsp * 100).toFixed(1) + '%' : '—';
+    const piPct    = ptdAimInsp > 0 ? Math.max(0, postPiNumSum    / ptdAimInsp * 100).toFixed(1) + '%' : '—';
+    const printOutSum = sumRows(arr,'printingTD');
+    const piOutSum    = sumRows(arr,'piInspect');
     return `<tr style="${style};font-size:12px">
       <td colspan="4" style="padding:5px 10px;font-family:sans-serif;font-size:11px;letter-spacing:.5px;text-transform:uppercase">${label}</td>
       <td colspan="3"></td>
@@ -5117,7 +5358,11 @@ function renderReportE(){ window._activeReport = renderReportE;
       const mcRows = flRows.filter(r=>r.machine===mc);
       // Machine header
       tableRows += `<tr class="grp-hdr"><td colspan="29" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
-      tableRows += mcRows.map(r=>`<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}" data-print-out="${r._printingTD||0}" data-print-denom="${r._printDenom||0}" data-pi-out="${r._piInspect||0}" data-pi-denom="${r._piDenom||0}">
+      tableRows += mcRows.map(r=>{
+        // v37H: For PTD batches, show 0.00 (not '—') so print columns are visibly populated
+        // even before scans accumulate. UP batches keep '—' since printing doesn't apply.
+        const fmtPrint = v => r.isPrinted ? parseFloat(v||0).toFixed(2) : '—';
+        return `<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}" data-print-out="${r._printingTD||0}" data-pi-out="${r._piInspect||0}" data-aim-input="${r._aimInputTotal||0}">
         <td class="sticky-col" style="left:0;min-width:70px;border-right:1px solid #d4b896">${r.machine}</td>
         <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
         <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}</td>
@@ -5128,11 +5373,11 @@ function renderReportE(){ window._activeReport = renderReportE;
         <td><b>${fmtN(r._aimAGrade)}</b></td><td>${r.aimAGradePct}%</td><td>${fmtN(r._manInspect)}</td>
         <td><b>${fmtN(r._totalAGrade)}</b></td><td><b>${r.aGradePctUnptd}%</b></td>
         <td>${fmtN(r._wip)}</td><td>${fmtN(r._availUnptd)}</td><td>${fmtN(r._availPrint)}</td>
-        <td>${fmtN(r._printingTD)}</td><td>${fmtN(r._printRej)}</td><td><b>${r.printAGradePct==='—'?'—':r.printAGradePct+'%'}</b></td>
-        <td>${fmtN(r._piInspect)}</td><td>${fmtN(r._piSalRem)}</td><td><b>${r.piAGradePct==='—'?'—':r.piAGradePct+'%'}</b></td>
+        <td>${fmtPrint(r._printingTD)}</td><td>${fmtPrint(r._printRej)}</td><td><b>${r.printAGradePct==='—'?'—':r.printAGradePct+'%'}</b></td>
+        <td>${fmtPrint(r._piInspect)}</td><td>${fmtPrint(r._piSalRem)}</td><td><b>${r.piAGradePct==='—'?'—':r.piAGradePct+'%'}</b></td>
         <td>${fmtN(r._packingUP)}</td><td>${fmtN(r._packingPTD)}</td>
         <td><b>${fmtN(r._dispatch)}</b></td>
-      </tr>`).join('');
+      </tr>`;}).join('');
       // Machine subtotal row
       tableRows += buildSubtotalRow(mcRows, `${mc} SUBTOTAL`, 'background:#f0f8f0;color:#1a3a2e;font-weight:800');
     });
@@ -5250,10 +5495,6 @@ function renderReportE(){ window._activeReport = renderReportE;
 </table>
 </div>
 <script>
-  _captureReportScroll();
-  _scrollIntoReportIfFirstView('E');
-}
-
 function applyFilter(date){
   // Reload the parent app with the date filter and re-open
   window.opener && (window.opener._rptEDate=date);
@@ -5291,17 +5532,19 @@ function applySearch(q){
   });
 
   // Hide machine/floor group headers and subtotals if their section is entirely hidden
-  // (simple approach: always hide non-data rows when filtering; grand total stays)
+  // v37E T1: Hide GRAND TOTAL row when filter is active — user only wants the FILTERED TOTAL
+  // (previous behavior kept grand total visible mid-table, which was confusing)
   nonDataRows.forEach(r=>{
-    if(r.id==='grand-total-row') return; // keep grand total
     r.style.display='none';
   });
 
   // Compute filtered totals from visible data rows
-  const grandRow=document.getElementById("grand-total-row");if(grandRow)grandRow.style.display=q?"none":"";
   const visibleRows=[...tbody.querySelectorAll('tr[data-batch]')].filter(r=>r.style.display!=='none');
-  const nCols=29; // v37E T2: 29 columns
+  // v37E T2: Layout now 29 columns (added Print A-Grade % at col 22, PI A-Grade % at col 25).
+  // Numeric columns include the L-quantity cells but EXCLUDE the % cells (they need numerator/denom recomputation)
+  const nCols=29;
   const numCols=[7,8,9,10,11,12,14,15,17,18,19,20,21,23,24,26,27,28]; // 0-indexed numeric L columns
+  // % columns are: 13 (AIM %), 16 (Total A-Grade %), 22 (Print A-Grade %), 25 (PI A-Grade %) — recomputed below
 
   // Sum numeric columns across visible rows
   const totals={};
@@ -5333,6 +5576,14 @@ function applySearch(q){
 
   // Compute A-Grade % from totals (col 9=aimRun, col 12=aimAGrade, col 15=totalAGrade)
   const aimInsp=totals[9]||0, aimOut=totals[12]||0, totalAGr=totals[15]||0;
+  // v37E T2: Print and PI A-Grade % require numerator/denominator pulled from row data attributes
+  let printOutSum=0, printDenomSum=0, piOutSum=0, piDenomSum=0;
+  visibleRows.forEach(row=>{
+    printOutSum   += parseFloat(row.dataset.printOut)   || 0;
+    printDenomSum += parseFloat(row.dataset.printDenom) || 0;
+    piOutSum      += parseFloat(row.dataset.piOut)      || 0;
+    piDenomSum    += parseFloat(row.dataset.piDenom)    || 0;
+  });
 
   for(let ci=7;ci<nCols;ci++){
     const td=document.createElement('td');
@@ -5343,6 +5594,12 @@ function applySearch(q){
     } else if(ci===16){ // A-Grade %
       td.style.color='#f0d060'; td.style.fontWeight='900';
       td.textContent=aimInsp>0?(totalAGr/aimInsp*100).toFixed(1)+'%':'—';
+    } else if(ci===22){ // v37E T2: Print A-Grade %
+      td.style.color='#f0d060'; td.style.fontWeight='900';
+      td.textContent=printDenomSum>0?(printOutSum/printDenomSum*100).toFixed(1)+'%':'—';
+    } else if(ci===25){ // v37E T2: PI A-Grade %
+      td.style.color='#f0d060'; td.style.fontWeight='900';
+      td.textContent=piDenomSum>0?(piOutSum/piDenomSum*100).toFixed(1)+'%':'—';
     } else if(numCols.includes(ci)){
       td.textContent=totals[ci]>0?totals[ci].toFixed(2):'—';
     } else {
@@ -5382,25 +5639,488 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
     ${allScanDates.map(d=>`<option value="${d}" ${filterDate===d?'selected':''}>${d}</option>`).join('')}
   </select>`;
 
+  _captureReportScroll();
+  // v37F: Render full Report E table inline in main app (not just popup) so search/filter
+  // works even if popup is blocked or user is on mobile. Search input + sticky headers added.
   document.getElementById('report-output').innerHTML = `<div class="card">
     <div class="section-title mb-8">Report E — Machine-wise Production Tracking Sheet</div>
     <div class="text-sm text-muted mb-12">${dateLabel} · ${rows.length} batch rows</div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
       ${dateSelectHtml}
-      <button class="btn btn-primary" onclick="openReportETab()">🔗 Open Full Report in New Tab</button>
+      <input id="rptE-inline-search" type="text" placeholder="Search batch / customer / PC / colour..." style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;background:var(--surface);color:var(--text);min-width:240px;flex:1" oninput="applyReportEInlineSearch(this.value)">
+      <button class="btn btn-primary btn-sm" onclick="openReportETab()">🔗 Open Full View in New Tab</button>
       <button class="btn btn-secondary btn-sm" onclick="exportReportE()">📥 Export Excel</button>
     </div>
-    <div style="padding:24px;background:var(--surface2);border-radius:8px;border:2px dashed var(--border2);text-align:center;color:var(--text3)">
-      <div style="font-size:32px;margin-bottom:8px">📋</div>
-      <div style="font-weight:700;color:var(--text2);margin-bottom:4px">Report E opens in a new browser tab</div>
-      <div class="text-sm">Full-width view with all 24 columns, sortable headers, and print support.</div>
-      <div class="text-sm mt-8">${rows.length} rows ready · ${dateLabel}</div>
+    <div class="tbl-wrap" style="max-height:65vh;overflow:auto;border:1px solid var(--border);border-radius:6px">
+      <table id="rptE-inline-table" style="width:100%;border-collapse:collapse;font-size:11px;background:#fff;color:#1a1208">
+        <thead style="position:sticky;top:0;z-index:3;background:#1a3a2e;color:#f0c060">
+          <tr>
+            <th style="padding:6px 8px;text-align:left;border-right:1px solid #0f2a20">Machine</th>
+            <th style="padding:6px 8px;text-align:left;border-right:1px solid #0f2a20">Floor</th>
+            <th style="padding:6px 8px;text-align:left;border-right:1px solid #0f2a20">Batch</th>
+            <th style="padding:6px 8px;text-align:left;border-right:1px solid #0f2a20">Customer</th>
+            <th style="padding:6px 4px">PC</th><th style="padding:6px 4px">Color</th><th style="padding:6px 4px">Sz</th>
+            <th style="padding:6px 4px">Plan</th><th style="padding:6px 4px">Gross</th>
+            <th style="padding:6px 4px">AIM Run</th><th style="padding:6px 4px">Salv</th><th style="padding:6px 4px">Rem</th>
+            <th style="padding:6px 4px">A-Gr</th><th style="padding:6px 4px">A-Gr %</th>
+            <th style="padding:6px 4px">Print TD</th><th style="padding:6px 4px">Print Rej</th><th style="padding:6px 4px">Print %</th>
+            <th style="padding:6px 4px">PI Out</th><th style="padding:6px 4px">PI %</th>
+            <th style="padding:6px 4px">Pack UP</th><th style="padding:6px 4px">Pack PTD</th><th style="padding:6px 4px">Disp</th>
+          </tr>
+        </thead>
+        <tbody>${rows.map(r=>{
+          // v37H: same display logic as popup — PTD shows 0.00, UP shows '—' for print/PI cols
+          const fmtPrintInline = v => r.isPrinted ? parseFloat(v||0).toFixed(2) : '—';
+          return `<tr data-search="${[r.batchNo,r.customer,r.pcCode,r.colour,r.machine].filter(Boolean).join(' ').toLowerCase()}" style="border-bottom:1px solid #f0e6d6">
+          <td style="padding:5px 6px;font-weight:600;color:#0891b2">${r.machine}</td>
+          <td style="padding:5px 6px">${r.floor}</td>
+          <td style="padding:5px 6px;font-weight:600">${r.batchNo}</td>
+          <td style="padding:5px 6px">${r.customer||'—'}</td>
+          <td style="padding:5px 4px">${r.pcCode||'—'}</td>
+          <td style="padding:5px 4px">${r.colour||'—'}</td>
+          <td style="padding:5px 4px">${r.size}</td>
+          <td style="padding:5px 4px;text-align:right">${fmtN(r._plannedQty)}</td>
+          <td style="padding:5px 4px;text-align:right;font-weight:600">${fmtN(r._grossProd)}</td>
+          <td style="padding:5px 4px;text-align:right">${fmtN(r._aimRunTotal)}</td>
+          <td style="padding:5px 4px;text-align:right">${fmtN(r._aimSalvage)}</td>
+          <td style="padding:5px 4px;text-align:right">${fmtN(r._aimRemelt)}</td>
+          <td style="padding:5px 4px;text-align:right;font-weight:600">${fmtN(r._totalAGrade)}</td>
+          <td style="padding:5px 4px;text-align:right;font-weight:700;color:#1a3a2e">${r.aGradePctUnptd}%</td>
+          <td style="padding:5px 4px;text-align:right">${fmtPrintInline(r._printingTD)}</td>
+          <td style="padding:5px 4px;text-align:right">${fmtPrintInline(r._printRej)}</td>
+          <td style="padding:5px 4px;text-align:right;font-weight:600">${r.printAGradePct==='—'?'—':r.printAGradePct+'%'}</td>
+          <td style="padding:5px 4px;text-align:right">${fmtPrintInline(r._piInspect)}</td>
+          <td style="padding:5px 4px;text-align:right;font-weight:600">${r.piAGradePct==='—'?'—':r.piAGradePct+'%'}</td>
+          <td style="padding:5px 4px;text-align:right">${fmtN(r._packingUP)}</td>
+          <td style="padding:5px 4px;text-align:right">${fmtN(r._packingPTD)}</td>
+          <td style="padding:5px 4px;text-align:right;font-weight:600">${fmtN(r._dispatch)}</td>
+        </tr>`;}).join('')}</tbody>
+      </table>
     </div>
+    <div class="text-sm text-muted mt-8">💡 Tip: Use the Search box to filter rows. Click "Open Full View" for a new-tab view with all 29 columns and sticky headers.</div>
   </div>`;
-const _rOut=document.getElementById('report-output');if(_rOut)setTimeout(()=>_rOut.scrollIntoView({behavior:'smooth',block:'start'}),50);
+_scrollIntoReportIfFirstView('E');
 
   // Store the HTML for the tab opener
   window._reportEHtml = fullHtml;
+}
+
+// v37F: Inline search filter for the in-app Report E table
+function applyReportEInlineSearch(q) {
+  const term = (q||'').toLowerCase().trim();
+  const tbody = document.querySelector('#rptE-inline-table tbody');
+  if (!tbody) return;
+  [...tbody.querySelectorAll('tr')].forEach(row => {
+    const text = row.dataset.search || row.textContent.toLowerCase();
+    row.style.display = (!term || text.includes(term)) ? '' : 'none';
+  });
+}
+
+// v37G: Search filter for both Dispatch page tables (Packed Ledger + Dispatch Records)
+function filterDispatchTables(q) {
+  const term = (q||'').toLowerCase().trim();
+  ['dispatch-ledger-table', 'dispatch-records-table'].forEach(tableId => {
+    const tbody = document.querySelector(`#${tableId} tbody`);
+    if (!tbody) return;
+    [...tbody.querySelectorAll('tr')].forEach(row => {
+      const text = row.dataset.search || row.textContent.toLowerCase();
+      row.style.display = (!term || text.includes(term)) ? '' : 'none';
+    });
+  });
+}
+
+// ═══════════════════════════════════════════════════════
+// REPORT I — DISPATCH SUMMARY (v37F)
+// ═══════════════════════════════════════════════════════
+// Planned vs Actual dispatch dates with variance, filtered by zone/customer/size/colour/vehicle.
+// Brings the v38 Dispatch Summary design forward into v37F's manual-entry flow (no SAP yet).
+// Each dispatch record is keyed to its source batch so we can pull customer/zone/size/colour
+// and the planned date from the dispatch plan.
+//
+// Access model (v37F): rendered as part of the Dispatch Management page (renderDispatch),
+// which is restricted to admin / planning / dispatch roles via DEPT_INFO.pages. Other
+// operator roles (AIM/Printing/PI/Packing/Labels) cannot reach this report.
+//
+// targetId (optional): DOM id of the container to render into. Defaults to 'report-output'
+// so legacy direct calls still work; the Dispatch page passes 'dispatch-summary-container'.
+
+function renderReportI(targetId) {
+  const containerId = targetId || window._rptIContainer || 'report-output';
+  // Remember the active container so filter onchange handlers re-render into the same place
+  window._rptIContainer = containerId;
+  // If target doesn't exist (e.g. direct call without dispatch page), fall back to Reports landing
+  if (!document.getElementById(containerId)) {
+    if (containerId === 'report-output') renderReports();
+    else return; // dispatch container missing — not on dispatch page, skip
+  }
+  // Filter state
+  const fZone     = window._rptIZone     || '';
+  const fCustomer = window._rptICustomer || '';
+  const fSize     = window._rptISize     || '';
+  const fColour   = window._rptIColour   || '';
+  const fVehicle  = window._rptIVehicle  || '';
+  const fFrom     = window._rptIFrom     || '';   // YYYY-MM-DD
+  const fTo       = window._rptITo       || '';   // YYYY-MM-DD
+
+  // Build dispatch plan lookup by batch number for planned-date matching.
+  // Variance is computed as date-only days (both planned and actual are normalized to midnight)
+  // so a same-day dispatch reads as 0d, regardless of time-of-day in the timestamps.
+  const dateOnlyTs = (val) => {
+    if (!val) return null;
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  };
+
+  const planByBatch = {};
+  (state.dispatchPlans||[]).forEach(dp => {
+    if (!dp || dp.deleted) return;
+    // dispatch plan may carry a single batch or comma-separated batches (consolidated)
+    const batchList = (dp.batchNumber || '').split(',').map(b=>b.trim()).filter(Boolean);
+    batchList.forEach(bn => {
+      // Keep the EARLIEST planned date if multiple plans match (most conservative)
+      const planTs = dateOnlyTs(dp.plannedDate);
+      if (!planByBatch[bn] || (planTs && planTs < planByBatch[bn].planTs)) {
+        planByBatch[bn] = { plannedDate: dp.plannedDate, planTs, dpId: dp.id };
+      }
+    });
+  });
+
+  // Build enriched dispatch records — pull customer/zone/size/colour from batch master
+  const records = (state.dispatchRecs||[]).map(r => {
+    const b = getBatch(r.batchNumber) || {};
+    const plan = planByBatch[r.batchNumber] || {};
+    const actualTs = dateOnlyTs(r.ts);
+    const planTs = plan.planTs;
+    const varianceDays = (planTs && actualTs)
+      ? Math.round((actualTs - planTs) / 86400000)
+      : null;
+    return {
+      id: r.id,
+      ts: r.ts,
+      actualDate: r.ts ? r.ts.slice(0,10) : '',
+      batchNumber: r.batchNumber,
+      customer: r.customer || b.customer || '',
+      zone: b.zone || '',
+      size: b.size || '',
+      colour: b.colour || '',
+      pcCode: b.pcCode || '',
+      qty: r.qty || 0,
+      boxes: r.boxes || 0,
+      vehicleNo: r.vehicleNo || '',
+      invoiceNo: r.invoiceNo || '',
+      remarks: r.remarks || '',
+      plannedDate: plan.plannedDate ? plan.plannedDate.slice(0,10) : '',
+      varianceDays,  // negative = early, positive = late, null = no plan to compare
+    };
+  });
+
+  // Apply filters
+  let filtered = records;
+  if (fZone)     filtered = filtered.filter(r => r.zone === fZone);
+  if (fCustomer) filtered = filtered.filter(r => (r.customer||'').toLowerCase().includes(fCustomer.toLowerCase()));
+  if (fSize)     filtered = filtered.filter(r => r.size === fSize);
+  if (fColour)   filtered = filtered.filter(r => r.colour === fColour);
+  if (fVehicle)  filtered = filtered.filter(r => (r.vehicleNo||'').toLowerCase().includes(fVehicle.toLowerCase()));
+  if (fFrom)     filtered = filtered.filter(r => r.actualDate >= fFrom);
+  if (fTo)       filtered = filtered.filter(r => r.actualDate <= fTo);
+
+  // KPI computations
+  const totalQty    = filtered.reduce((s,r)=>s+(r.qty||0), 0);
+  const totalBoxes  = filtered.reduce((s,r)=>s+(r.boxes||0), 0);
+  // Trucks = unique vehicle+date combinations (one truck per vehicle per day)
+  const truckKeys   = new Set(filtered.filter(r=>r.vehicleNo).map(r => `${r.vehicleNo}|${r.actualDate}`));
+  const totalTrucks = truckKeys.size;
+  // On-time stats — only consider records with both planned and actual dates
+  const datedRecs   = filtered.filter(r => r.varianceDays !== null);
+  const onTime      = datedRecs.filter(r => r.varianceDays <= 0).length;
+  const late        = datedRecs.filter(r => r.varianceDays > 0).length;
+  const onTimePct   = datedRecs.length > 0 ? (onTime / datedRecs.length * 100) : null;
+  const avgDelay    = datedRecs.length > 0
+    ? (datedRecs.reduce((s,r)=>s+r.varianceDays, 0) / datedRecs.length)
+    : null;
+  const noPlanCount = filtered.filter(r => r.varianceDays === null).length;
+
+  // Filter dropdown option lists
+  const allZones     = [...new Set(records.map(r=>r.zone).filter(Boolean))].sort();
+  const allSizes     = [...new Set(records.map(r=>r.size).filter(Boolean))].sort();
+  const allColours   = [...new Set(records.map(r=>r.colour).filter(Boolean))].sort();
+  const anyFilter    = fZone||fCustomer||fSize||fColour||fVehicle||fFrom||fTo;
+
+  // Sort filtered records by actual date desc
+  filtered.sort((a,b) => (b.ts||'').localeCompare(a.ts||''));
+
+  const fmtVar = v => {
+    if (v === null) return '<span style="color:var(--text3)">—</span>';
+    if (v === 0)    return '<span style="color:var(--green);font-weight:600">On time</span>';
+    if (v < 0)      return `<span style="color:var(--accent2);font-weight:600">${Math.abs(v)}d early</span>`;
+    return `<span style="color:var(--accent4);font-weight:600">${v}d late</span>`;
+  };
+
+  const html = `<div class="card">
+    <div class="section-title mb-8">Report I — Dispatch Summary</div>
+    <div class="text-sm text-muted mb-12">Planned vs actual dispatch dates with variance · ${filtered.length} of ${records.length} dispatch records${anyFilter?' (filtered)':''}</div>
+
+    <!-- KPI strip -->
+    <div class="grid-4 mb-16" style="gap:8px">
+      <div class="kpi" style="background:var(--surface2);padding:10px;border-radius:6px;border-left:3px solid var(--accent2)">
+        <div class="kpi-label" style="font-size:10px;color:var(--text3);letter-spacing:.5px">📦 TOTAL DISPATCHED</div>
+        <div class="kpi-val" style="font-size:18px;font-weight:700;color:var(--accent2)">${fmt(totalQty)}<span style="font-size:11px;color:var(--text3)"> L</span></div>
+        <div class="kpi-sub" style="font-size:11px;color:var(--text2)">${totalBoxes} boxes</div>
+      </div>
+      <div class="kpi" style="background:var(--surface2);padding:10px;border-radius:6px;border-left:3px solid var(--accent5)">
+        <div class="kpi-label" style="font-size:10px;color:var(--text3);letter-spacing:.5px">🚛 TRUCKS DISPATCHED</div>
+        <div class="kpi-val" style="font-size:18px;font-weight:700;color:var(--accent5)">${totalTrucks}</div>
+        <div class="kpi-sub" style="font-size:11px;color:var(--text2)">unique vehicle × day</div>
+      </div>
+      <div class="kpi" style="background:var(--surface2);padding:10px;border-radius:6px;border-left:3px solid var(--green)">
+        <div class="kpi-label" style="font-size:10px;color:var(--text3);letter-spacing:.5px">✅ ON-TIME %</div>
+        <div class="kpi-val" style="font-size:18px;font-weight:700;color:var(--green)">${onTimePct === null ? '—' : fmt(onTimePct,1)+'%'}</div>
+        <div class="kpi-sub" style="font-size:11px;color:var(--text2)">${onTime}/${datedRecs.length} planned dispatches</div>
+      </div>
+      <div class="kpi" style="background:var(--surface2);padding:10px;border-radius:6px;border-left:3px solid var(--accent3)">
+        <div class="kpi-label" style="font-size:10px;color:var(--text3);letter-spacing:.5px">⏱ AVG VARIANCE</div>
+        <div class="kpi-val" style="font-size:18px;font-weight:700;color:${avgDelay !== null && avgDelay > 0 ? 'var(--accent4)' : 'var(--accent3)'}">
+          ${avgDelay === null ? '—' : (avgDelay > 0 ? '+' : '') + fmt(avgDelay,1) + 'd'}
+        </div>
+        <div class="kpi-sub" style="font-size:11px;color:var(--text2)">${late} late · ${noPlanCount} unplanned</div>
+      </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="form-row cols-4 mb-8" style="gap:8px">
+      <div class="form-group">
+        <label style="font-size:10px;letter-spacing:.5px;color:var(--text3)">Zone</label>
+        <select onchange="window._rptIZone=this.value;renderReportI()" class="form-control">
+          <option value="">All Zones</option>
+          ${allZones.map(z=>`<option value="${z}" ${fZone===z?'selected':''}>${z}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label style="font-size:10px;letter-spacing:.5px;color:var(--text3)">Customer</label>
+        <input type="text" placeholder="Customer name…" value="${fCustomer.replace(/"/g,'&quot;')}" oninput="window._rptICustomer=this.value;clearTimeout(window._rptITimer);window._rptITimer=setTimeout(renderReportI,400)" class="form-control">
+      </div>
+      <div class="form-group">
+        <label style="font-size:10px;letter-spacing:.5px;color:var(--text3)">Size</label>
+        <select onchange="window._rptISize=this.value;renderReportI()" class="form-control">
+          <option value="">All Sizes</option>
+          ${allSizes.map(s=>`<option value="${s}" ${fSize===s?'selected':''}>${s}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label style="font-size:10px;letter-spacing:.5px;color:var(--text3)">Colour</label>
+        <select onchange="window._rptIColour=this.value;renderReportI()" class="form-control">
+          <option value="">All Colours</option>
+          ${allColours.map(c=>`<option value="${c}" ${fColour===c?'selected':''}>${c}</option>`).join('')}
+        </select>
+      </div>
+    </div>
+    <div class="form-row cols-4 mb-12" style="gap:8px">
+      <div class="form-group">
+        <label style="font-size:10px;letter-spacing:.5px;color:var(--text3)">Vehicle No.</label>
+        <input type="text" placeholder="Vehicle…" value="${fVehicle.replace(/"/g,'&quot;')}" oninput="window._rptIVehicle=this.value;clearTimeout(window._rptITimer);window._rptITimer=setTimeout(renderReportI,400)" class="form-control">
+      </div>
+      <div class="form-group">
+        <label style="font-size:10px;letter-spacing:.5px;color:var(--text3)">Actual Date From</label>
+        <input type="date" value="${fFrom}" onchange="window._rptIFrom=this.value;renderReportI()" class="form-control">
+      </div>
+      <div class="form-group">
+        <label style="font-size:10px;letter-spacing:.5px;color:var(--text3)">Actual Date To</label>
+        <input type="date" value="${fTo}" onchange="window._rptITo=this.value;renderReportI()" class="form-control">
+      </div>
+      <div class="form-group" style="display:flex;align-items:flex-end;gap:6px">
+        ${anyFilter ? `<button class="btn btn-ghost btn-sm" onclick="window._rptIZone='';window._rptICustomer='';window._rptISize='';window._rptIColour='';window._rptIVehicle='';window._rptIFrom='';window._rptITo='';renderReportI()">✕ Clear All</button>` : ''}
+        <button class="btn btn-secondary btn-sm" onclick="exportReportI()">📥 Export Excel</button>
+      </div>
+    </div>
+
+    <!-- Records table -->
+    <div class="tbl-wrap tbl-sticky" style="max-height:60vh"><table>
+      <thead><tr>
+        <th>Actual Date</th>
+        <th>Planned Date</th>
+        <th>Variance</th>
+        <th>Batch</th>
+        <th>Customer</th>
+        <th>Zone</th>
+        <th>Size</th>
+        <th>Colour</th>
+        <th class="text-right">Qty (L)</th>
+        <th class="text-right">Boxes</th>
+        <th>Vehicle</th>
+        <th>Invoice</th>
+      </tr></thead>
+      <tbody>
+        ${filtered.length === 0
+          ? '<tr><td colspan="12" class="text-center text-muted">No dispatch records match the filters</td></tr>'
+          : filtered.map(r => `<tr>
+            <td class="td-mono text-sm">${fmtDate(r.ts)}</td>
+            <td class="td-mono text-sm">${r.plannedDate || '<span style="color:var(--text3)">—</span>'}</td>
+            <td class="text-sm">${fmtVar(r.varianceDays)}</td>
+            <td class="td-bold td-mono">${r.batchNumber}</td>
+            <td>${r.customer || '-'}</td>
+            <td class="td-mono text-sm">${r.zone || '-'}</td>
+            <td class="td-mono">${r.size || '-'}</td>
+            <td class="td-mono">${r.colour || '-'}</td>
+            <td class="td-mono text-right fw-bold">${fmt(r.qty)}</td>
+            <td class="td-mono text-right">${r.boxes}</td>
+            <td class="td-mono text-sm">${r.vehicleNo || '<span style="color:var(--text3)">—</span>'}</td>
+            <td class="td-mono text-sm">${r.invoiceNo || '<span style="color:var(--text3)">—</span>'}</td>
+          </tr>`).join('')
+        }
+      </tbody>
+      ${filtered.length > 0 ? `<tfoot><tr style="background:var(--surface2);font-weight:700">
+        <td colspan="8" class="text-right">TOTAL (${filtered.length} dispatches)</td>
+        <td class="td-mono text-right"><b>${fmt(totalQty)}L</b></td>
+        <td class="td-mono text-right">${totalBoxes}</td>
+        <td colspan="2" class="td-mono text-sm">${totalTrucks} truck${totalTrucks!==1?'s':''}</td>
+      </tr></tfoot>` : ''}
+    </table></div>
+
+    <div class="text-sm text-muted mt-12" style="font-size:11px;line-height:1.6">
+      💡 <b>Variance</b>: actual − planned (negative = early, positive = late). "—" means dispatch plan not found for that batch.<br>
+      <b>Trucks</b>: counted as unique vehicle × actual-date combinations.<br>
+      <b>On-time %</b>: planned dispatches where actual ≤ planned date.
+    </div>
+  </div>`;
+
+  _captureReportScroll();
+  document.getElementById(containerId).innerHTML = html;
+  _scrollIntoReportIfFirstView('I');
+}
+
+// v37F: Excel export for Dispatch Summary — applies the same filters as the on-screen view
+function exportReportI() {
+  const fZone     = window._rptIZone     || '';
+  const fCustomer = window._rptICustomer || '';
+  const fSize     = window._rptISize     || '';
+  const fColour   = window._rptIColour   || '';
+  const fVehicle  = window._rptIVehicle  || '';
+  const fFrom     = window._rptIFrom     || '';
+  const fTo       = window._rptITo       || '';
+
+  const dateOnlyTs = (val) => {
+    if (!val) return null;
+    const d = new Date(val);
+    if (isNaN(d.getTime())) return null;
+    return new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  };
+  const planByBatch = {};
+  (state.dispatchPlans||[]).forEach(dp => {
+    if (!dp || dp.deleted) return;
+    const batchList = (dp.batchNumber || '').split(',').map(b=>b.trim()).filter(Boolean);
+    batchList.forEach(bn => {
+      const planTs = dateOnlyTs(dp.plannedDate);
+      if (!planByBatch[bn] || (planTs && planTs < planByBatch[bn].planTs)) {
+        planByBatch[bn] = { plannedDate: dp.plannedDate, planTs };
+      }
+    });
+  });
+
+  const records = (state.dispatchRecs||[]).map(r => {
+    const b = getBatch(r.batchNumber) || {};
+    const plan = planByBatch[r.batchNumber] || {};
+    const actualTs = dateOnlyTs(r.ts);
+    const varianceDays = (plan.planTs && actualTs)
+      ? Math.round((actualTs - plan.planTs) / 86400000) : null;
+    return { ts:r.ts, actualDate: r.ts?r.ts.slice(0,10):'', batchNumber:r.batchNumber,
+      customer: r.customer || b.customer || '', zone:b.zone||'', size:b.size||'',
+      colour:b.colour||'', pcCode:b.pcCode||'', qty:r.qty||0, boxes:r.boxes||0,
+      vehicleNo:r.vehicleNo||'', invoiceNo:r.invoiceNo||'', remarks:r.remarks||'',
+      plannedDate: plan.plannedDate ? plan.plannedDate.slice(0,10) : '', varianceDays };
+  });
+
+  let filtered = records;
+  if (fZone)     filtered = filtered.filter(r => r.zone === fZone);
+  if (fCustomer) filtered = filtered.filter(r => (r.customer||'').toLowerCase().includes(fCustomer.toLowerCase()));
+  if (fSize)     filtered = filtered.filter(r => r.size === fSize);
+  if (fColour)   filtered = filtered.filter(r => r.colour === fColour);
+  if (fVehicle)  filtered = filtered.filter(r => (r.vehicleNo||'').toLowerCase().includes(fVehicle.toLowerCase()));
+  if (fFrom)     filtered = filtered.filter(r => r.actualDate >= fFrom);
+  if (fTo)       filtered = filtered.filter(r => r.actualDate <= fTo);
+  filtered.sort((a,b) => (b.ts||'').localeCompare(a.ts||''));
+
+  const wb = XLSX.utils.book_new();
+
+  // Sheet 1: Dispatch Summary (per record with planned vs actual)
+  const recRows = filtered.map(r => ({
+    'Actual Date': r.actualDate,
+    'Planned Date': r.plannedDate || '',
+    'Variance (days)': r.varianceDays === null ? '' : r.varianceDays,
+    'On Time': r.varianceDays === null ? '' : (r.varianceDays <= 0 ? 'Yes' : 'No'),
+    'Batch': r.batchNumber,
+    'Customer': r.customer,
+    'Zone': r.zone,
+    'Size': r.size,
+    'Colour': r.colour,
+    'PC Code': r.pcCode,
+    'Qty (Lakhs)': fmt(r.qty),
+    'Boxes': r.boxes,
+    'Vehicle No': r.vehicleNo,
+    'Invoice No': r.invoiceNo,
+    'Remarks': r.remarks
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recRows), 'Dispatch Summary');
+
+  // Sheet 2: Zone-wise rollup
+  const zoneAgg = {};
+  filtered.forEach(r => {
+    const z = r.zone || '(none)';
+    if (!zoneAgg[z]) zoneAgg[z] = { qty:0, boxes:0, count:0, trucks:new Set(), onTime:0, late:0, noPlan:0 };
+    zoneAgg[z].qty   += r.qty;
+    zoneAgg[z].boxes += r.boxes;
+    zoneAgg[z].count += 1;
+    if (r.vehicleNo) zoneAgg[z].trucks.add(`${r.vehicleNo}|${r.actualDate}`);
+    if (r.varianceDays === null) zoneAgg[z].noPlan++;
+    else if (r.varianceDays <= 0) zoneAgg[z].onTime++;
+    else zoneAgg[z].late++;
+  });
+  const zoneRows = Object.entries(zoneAgg).sort().map(([z, a]) => ({
+    'Zone': z,
+    'Dispatches': a.count,
+    'Qty (Lakhs)': fmt(a.qty),
+    'Boxes': a.boxes,
+    'Trucks': a.trucks.size,
+    'On Time': a.onTime,
+    'Late': a.late,
+    'No Plan': a.noPlan,
+    'On-Time %': (a.onTime + a.late) > 0 ? fmt(a.onTime / (a.onTime + a.late) * 100, 1) + '%' : '—'
+  }));
+  if (zoneRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(zoneRows), 'By Zone');
+
+  // Sheet 3: Customer rollup
+  const custAgg = {};
+  filtered.forEach(r => {
+    const c = r.customer || '(none)';
+    if (!custAgg[c]) custAgg[c] = { qty:0, boxes:0, count:0, onTime:0, late:0, noPlan:0 };
+    custAgg[c].qty += r.qty; custAgg[c].boxes += r.boxes; custAgg[c].count += 1;
+    if (r.varianceDays === null) custAgg[c].noPlan++;
+    else if (r.varianceDays <= 0) custAgg[c].onTime++;
+    else custAgg[c].late++;
+  });
+  const custRows = Object.entries(custAgg).sort().map(([c, a]) => ({
+    'Customer': c,
+    'Dispatches': a.count,
+    'Qty (Lakhs)': fmt(a.qty),
+    'Boxes': a.boxes,
+    'On Time': a.onTime, 'Late': a.late, 'No Plan': a.noPlan,
+    'On-Time %': (a.onTime + a.late) > 0 ? fmt(a.onTime / (a.onTime + a.late) * 100, 1) + '%' : '—'
+  }));
+  if (custRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(custRows), 'By Customer');
+
+  // Sheet 4: Colour rollup
+  const colAgg = {};
+  filtered.forEach(r => {
+    const c = r.colour || '(none)';
+    if (!colAgg[c]) colAgg[c] = { qty:0, boxes:0, count:0 };
+    colAgg[c].qty += r.qty; colAgg[c].boxes += r.boxes; colAgg[c].count += 1;
+  });
+  const colRows = Object.entries(colAgg).sort().map(([c, a]) => ({
+    'Colour': c, 'Dispatches': a.count, 'Qty (Lakhs)': fmt(a.qty), 'Boxes': a.boxes
+  }));
+  if (colRows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(colRows), 'By Colour');
+
+  XLSX.writeFile(wb, `Sunloc_Dispatch_Summary_${today()}.xlsx`);
 }
 
 function openReportETab(){
@@ -5420,6 +6140,91 @@ function exportToExcel(rows, filename, sheetName){
   const ws=XLSX.utils.json_to_sheet(rows);
   XLSX.utils.book_append_sheet(wb,ws,sheetName||'Report');
   XLSX.writeFile(wb,filename);
+}
+
+// v37F: Dispatch Excel export — includes colour, customer, totals.
+// Provides 3 sheets: Records, Packed Ledger, Colour Summary.
+function exportDispatch() {
+  const wb = XLSX.utils.book_new();
+  // Sheet 1: Dispatch Records
+  const recRows = [...state.dispatchRecs].sort((a,b)=>new Date(b.ts)-new Date(a.ts)).map(r=>{
+    const dBatch = getBatch(r.batchNumber);
+    return {
+      'Date': fmtDate(r.ts),
+      'Batch': r.batchNumber,
+      'Customer': r.customer || '',
+      'Colour': dBatch?.colour || '',
+      'Size': dBatch?.size || '',
+      'PC Code': dBatch?.pcCode || '',
+      'Qty (Lakhs)': fmt(r.qty),
+      'Boxes': r.boxes,
+      'Vehicle No': r.vehicleNo || '',
+      'Invoice No': r.invoiceNo || '',
+      'Remarks': r.remarks || ''
+    };
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recRows), 'Dispatch Records');
+
+  // Sheet 2: Packed Ledger (current state)
+  const packedOut = state.scans.filter(s=>s.dept==='packing'&&s.type==='out');
+  const dispatchedIn = state.scans.filter(s=>s.dept==='dispatch'&&s.type==='in');
+  const dispatchedOut = state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out');
+  const ledger = {};
+  packedOut.forEach(s=>{
+    if(!ledger[s.batchNumber]) ledger[s.batchNumber] = { packed:0, dispIn:0, dispOut:0, size:'0', colour:'-' };
+    ledger[s.batchNumber].packed++;
+    const b = getBatch(s.batchNumber);
+    if (b) { ledger[s.batchNumber].size = b.size; ledger[s.batchNumber].colour = b.colour||'-'; }
+  });
+  dispatchedIn.forEach(s=>{ if(ledger[s.batchNumber]) ledger[s.batchNumber].dispIn++; });
+  dispatchedOut.forEach(s=>{ if(ledger[s.batchNumber]) ledger[s.batchNumber].dispOut++; });
+  const ledgerRows = Object.entries(ledger).map(([batchNo, s])=>{
+    const b = getBatch(batchNo);
+    const pending = Math.max(0, s.packed - s.dispOut);
+    return {
+      'Batch': batchNo,
+      'Customer': b?.customer || '',
+      'Colour': s.colour,
+      'Size': s.size,
+      'PC Code': b?.pcCode || '',
+      'Packed Boxes': s.packed,
+      'Packed Qty (L)': fmt(boxToLakh(s.packed, s.size)),
+      'Inward Boxes': s.dispIn,
+      'Inward Qty (L)': fmt(boxToLakh(s.dispIn, s.size)),
+      'Outward Boxes': s.dispOut,
+      'Outward Qty (L)': fmt(boxToLakh(s.dispOut, s.size)),
+      'Pending Boxes': pending,
+      'Pending Qty (L)': fmt(boxToLakh(pending, s.size))
+    };
+  });
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ledgerRows), 'Packed Ledger');
+
+  // Sheet 3: Colour-wise summary
+  const colourSum = {};
+  Object.values(ledger).forEach(s=>{
+    const c = s.colour || '-';
+    if (!colourSum[c]) colourSum[c] = { packedBoxes:0, inwardBoxes:0, outwardBoxes:0, pendingBoxes:0,
+                                         packedQty:0, inwardQty:0, outwardQty:0, pendingQty:0 };
+    const pending = Math.max(0, s.packed - s.dispOut);
+    colourSum[c].packedBoxes  += s.packed;
+    colourSum[c].inwardBoxes  += s.dispIn;
+    colourSum[c].outwardBoxes += s.dispOut;
+    colourSum[c].pendingBoxes += pending;
+    colourSum[c].packedQty    += boxToLakh(s.packed, s.size);
+    colourSum[c].inwardQty    += boxToLakh(s.dispIn, s.size);
+    colourSum[c].outwardQty   += boxToLakh(s.dispOut, s.size);
+    colourSum[c].pendingQty   += boxToLakh(pending, s.size);
+  });
+  const colourRows = Object.entries(colourSum).sort().map(([c, r])=>({
+    'Colour': c,
+    'Packed Boxes': r.packedBoxes,    'Packed Qty (L)': fmt(r.packedQty),
+    'Inward Boxes': r.inwardBoxes,    'Inward Qty (L)': fmt(r.inwardQty),
+    'Outward Boxes': r.outwardBoxes,  'Outward Qty (L)': fmt(r.outwardQty),
+    'Pending Boxes': r.pendingBoxes,  'Pending Qty (L)': fmt(r.pendingQty)
+  }));
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(colourRows), 'Colour Summary');
+
+  XLSX.writeFile(wb, `Sunloc_Dispatch_${today()}.xlsx`);
 }
 
 function exportReportA(){
@@ -5527,8 +6332,7 @@ function exportReportD(){
   const monthBatchNos=new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
   const totalGross=monthBatches.reduce((s,b)=>s+(b.actualProd||0),0);
   const totalAGrade=monthBatches.reduce((s,b)=>{const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.aGrade;},0);
-  const totalInspectedExp=monthBatches.reduce((s,b)=>{const ag=getBatchAGrade(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.inspected;},0);
-  const aGradePct=totalInspectedExp>0?(totalAGrade/totalInspectedExp*100):0;
+  const aGradePct=totalGross>0?(totalAGrade/totalGross*100):0;
   const totalDispatched=state.dispatchRecs.reduce((s,r)=>s+r.qty,0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageRows=stages.map(dept=>{
@@ -5588,19 +6392,24 @@ function exportReportE(){
         const printOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'printing').out + localPrintOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='printing'&&s.type==='out').length;
         const printOut = b.isPrinted ? boxToLakh(printOutBoxes, b.size) : 0;
         const printW = getTotalWastage(b.batchNumber,'printing');
-        const printDenom = printOut + printW.salvage + printW.remelt;
-        const printAGradePctEx = (b.isPrinted && printDenom > 0) ? (printOut / printDenom * 100) : 0;
         const localPiOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='pi'&&sc.type==='out'&&sc._local).length;
         const piOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'pi').out + localPiOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='pi'&&s.type==='out').length;
         const piOut = b.isPrinted ? boxToLakh(piOutBoxes, b.size) : 0;
         const piW = getTotalWastage(b.batchNumber,'pi');
-        const piDenom = piOut + piW.salvage + piW.remelt;
-        const piAGradePctEx = (b.isPrinted && piDenom > 0) ? (piOut / piDenom * 100) : 0;
+        // Frozen formula (per Ishan):
+        //   Post-Printing A-Grade % = (AIM Out − Print Sal − Print Rem) / (AIM Out + AIM Sal + AIM Rem) × 100
+        //   Post-PI A-Grade %       = (AIM Out − Print Sal − Print Rem − PI Sal − PI Rem) / (AIM Out + AIM Sal + AIM Rem) × 100
+        const aimInputTotalEx     = aimOut + aimW.salvage + aimW.remelt;
+        const postPrintNumEx      = aimOut - printW.salvage - printW.remelt;
+        const postPiNumEx         = aimOut - printW.salvage - printW.remelt - piW.salvage - piW.remelt;
+        const printAGradePctEx = (b.isPrinted && aimInputTotalEx > 0)
+          ? Math.max(0, (postPrintNumEx / aimInputTotalEx) * 100) : 0;
+        const piAGradePctEx    = (b.isPrinted && aimInputTotalEx > 0)
+          ? Math.max(0, (postPiNumEx    / aimInputTotalEx) * 100) : 0;
         summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,
           'PLANNED QUANTITY (lac)':fmt(b.qty),'TOTAL PRODUCTION (lac)':fmt(grossProd),
           'AIM TOTAL RUN (lac)':fmt(aimIn),'SALVAGE':fmt(aimW.salvage),'REMELT':fmt(aimW.remelt),
-          'A GRADE QTY (lac)':fmt(netAGrade),'AIM A GRADE %':fmt(aGradePct,2),
-          'TOTAL A GRADE QTY (lac)':fmt(netAGrade),'A GRADE % (UNPTD)':fmt(aGradePct,2),
+          'A GRADE QTY (lac)':fmt(netAGrade),'A GRADE %':fmt(aGradePct,2),
           'WIP (lac)':fmt(wip),
           'PRINT TD (lac)':fmt(printOut),'PRINT REJ (lac)':fmt(printW.salvage),
           'PRINT A-GRADE %': b.isPrinted ? fmt(printAGradePctEx,2) : '—',
@@ -5628,14 +6437,18 @@ function exportReportE(){
         const printOutEx = hasScanSummary() ? (_ss(b.batchNumber,'printing').out + localPrintOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='printing'&&s.type==='out').length;
         const printOutLac = b.isPrinted ? boxToLakh(printOutEx, b.size) : 0;
         const printW = getTotalWastage(b.batchNumber,'printing');
-        const printDenom = printOutLac + printW.salvage + printW.remelt;
-        const printAGradePctEx = (b.isPrinted && printDenom > 0) ? (printOutLac / printDenom * 100) : null;
         const localPiOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='pi'&&sc.type==='out'&&sc._local).length;
         const piOutEx = hasScanSummary() ? (_ss(b.batchNumber,'pi').out + localPiOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='pi'&&s.type==='out').length;
         const piOutLac = b.isPrinted ? boxToLakh(piOutEx, b.size) : 0;
         const piW = getTotalWastage(b.batchNumber,'pi');
-        const piDenom = piOutLac + piW.salvage + piW.remelt;
-        const piAGradePctEx = (b.isPrinted && piDenom > 0) ? (piOutLac / piDenom * 100) : null;
+        // Frozen formula (per Ishan): cumulative-from-AIM with constant denominator
+        const aimInputTotalMc = aimOutLac + aimW.salvage + aimW.remelt;
+        const postPrintNumMc  = aimOutLac - printW.salvage - printW.remelt;
+        const postPiNumMc     = aimOutLac - printW.salvage - printW.remelt - piW.salvage - piW.remelt;
+        const printAGradePctEx = (b.isPrinted && aimInputTotalMc > 0)
+          ? Math.max(0, (postPrintNumMc / aimInputTotalMc) * 100) : null;
+        const piAGradePctEx    = (b.isPrinted && aimInputTotalMc > 0)
+          ? Math.max(0, (postPiNumMc    / aimInputTotalMc) * 100) : null;
         const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
         const packOutEx = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
         const packOutLac = boxToLakh(packOutEx, b.size);
@@ -5808,7 +6621,7 @@ function renderSettings(){
           <label>Batch Number</label>
           <select id="bf-batch">
             <option value="">-- Select Batch --</option>
-            ${state.batches.filter(b=>!b.deleted).map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''} | ${b.isPrinted?'PTD':'UP'}</option>`).join('')}
+            ${[...state.batches.filter(b=>!b.deleted)].sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true})).map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''} | ${b.isPrinted?'PTD':'UP'}</option>`).join('')}
           </select>
         </div>
         <div class="form-group">
@@ -5850,7 +6663,7 @@ function renderSettings(){
           <label>Batch</label>
           <select id="bfw-batch">
             <option value="">-- Select Batch --</option>
-            ${state.batches.filter(b=>!b.deleted).map(b=>`<option value="${b.batchNumber}">${b.batchNumber}</option>`).join('')}
+            ${[...state.batches.filter(b=>!b.deleted)].sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true})).map(b=>`<option value="${b.batchNumber}">${b.batchNumber}</option>`).join('')}
           </select>
         </div>
         <div class="form-group">
@@ -6116,13 +6929,6 @@ async function refreshScans(){
     if(currentPage==='labels') setTimeout(_restoreOlSearch, 50);
     const dept=['aim','printing','pi','packing','dispatch'].find(d=>currentPage===d);
     if(!dept){
-      // If on reports page — re-render the active report silently for real-time updates
-      if(currentPage==='reports'){
-        const reportOut = document.getElementById('report-output');
-        if(reportOut && reportOut.innerHTML && window._activeReport){
-          try{ window._activeReport(); } catch(e){}
-        }
-      }
       // State updated silently — no auto-render to prevent screen flipping
       return;
     }
@@ -6310,3 +7116,4 @@ function autoFocusScanInput(dept, type) {
 </script>
 </body>
 </html>
+    if(currentPage==='reports'&&typeof window._activeReport==='function'){try{window._activeReport();}catch(e){}}
