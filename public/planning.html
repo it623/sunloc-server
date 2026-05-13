@@ -4409,16 +4409,10 @@ function renderDailyPrinting() {
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `<button class="btn btn-primary btn-sm" onclick="showDailyPrintingModal()">+ Log Today's Printing</button>`;
 
-  // Dedup by id first, then by natural key (date+machine+printOrderId) — keeps one entry per day per machine
+  // Dedup by id only — prevent exact duplicate IDs, but allow multiple logs per day per machine
   const _dlById = new Map();
   (state.dailyPrinting||[]).forEach(l => { if (l.id && !_dlById.has(l.id)) _dlById.set(l.id, l); });
-  const _dlByKey = new Map();
-  _dlById.forEach(l => {
-    const _dk = `${l.date?new Date(l.date).toDateString():'nd'}__${l.machineId||''}__${l.printOrderId||l.pcCode||''}`;
-    const _ex = _dlByKey.get(_dk);
-    if (!_ex || String(l.id) > String(_ex.id)) _dlByKey.set(_dk, l);
-  });
-  const allLogs = [..._dlByKey.values()].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const allLogs = [..._dlById.values()].sort((a,b)=>new Date(b.date)-new Date(a.date));
 
   // Collect unique filter values
   const uniqueDates   = [...new Set(allLogs.map(l => toDateInput(new Date(l.date))))].sort((a,b)=>b.localeCompare(a));
