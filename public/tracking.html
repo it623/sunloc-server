@@ -2055,59 +2055,64 @@ function generateZPL(label, batch){
   const ruleY = tBot + 48;
   const qrY   = ruleY + 10;
   const qrSize = 7;
+  // Landscape 6"x4": PW=812 (4"), LL=1218 (6"), rotate all fields 90deg (^FWR)
+  // X axis = across 4" (0-812), Y axis = along 6" (0-1218)
+  // After ^FWR: field origin FO(x,y) → x goes top-to-bottom, y goes right-to-left
+  // Map: label_x (0-1200) → FO y=(1200-label_x), label_y (0-800) → FO x=label_y
   return `^XA
 ^CI28
-^PW1200
-^LL800
+^PW812
+^LL1218
 ^MMT
 ^PON
 ^LH0,0
+^FWR
 
 ^CF0,56
-^FO10,20^FDSUNIL HEALTHCARE LIMITED^FS
+^FO20,1190^FDSUNIL HEALTHCARE LIMITED^FS
 ^CF0,32
-^FO10,84^FB1180,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
-^FO10,128^GB1180,2,2^FS
+^FO84,1190^FB800,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
+^FO128,10^GB2,1190,2^FS
 ${hBand}
 ^CF0,30
-^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
-^FO10,${tTop-4}^GB1180,2,2^FS
+^FO${custY},1190^FDCUSTOMER NAME :  ${customerText}^FS
+^FO${tTop-4},10^GB2,1190,2^FS
 
-^FO10,${tTop}^GB590,${RH*5+2},2^FS
-^FO604,${tTop}^GB586,${RH*5+2},2^FS
-^FO10,${tTop+RH}^GB590,2,2^FS
-^FO10,${tTop+RH*2}^GB590,2,2^FS
-^FO10,${tTop+RH*3}^GB590,2,2^FS
-^FO10,${tTop+RH*4}^GB590,2,2^FS
-^FO604,${tTop+RH}^GB586,2,2^FS
-^FO604,${tTop+RH*2}^GB586,2,2^FS
-^FO604,${tTop+RH*3}^GB586,2,2^FS
-^FO604,${tTop+RH*4}^GB586,2,2^FS
+^FO${tTop},10^GB${RH*5+2},595,2^FS
+^FO${tTop},609^GB${RH*5+2},591,2^FS
+^FO${tTop+RH},10^GB2,595,2^FS
+^FO${tTop+RH*2},10^GB2,595,2^FS
+^FO${tTop+RH*3},10^GB2,595,2^FS
+^FO${tTop+RH*4},10^GB2,595,2^FS
+^FO${tTop+RH},609^GB2,591,2^FS
+^FO${tTop+RH*2},609^GB2,591,2^FS
+^FO${tTop+RH*3},609^GB2,591,2^FS
+^FO${tTop+RH*4},609^GB2,591,2^FS
 
 ^CF0,30
-^FO20,${tTop+12}^FDQUANTITY      :  ${pieces}^FS
-^FO20,${tTop+RH+12}^FDSIZE               :  ${label.size}^FS
-^FO20,${tTop+RH*2+12}^FDCOLOUR CAP  :  ${colourCap}^FS
-^FO20,${tTop+RH*3+12}^FDCOLOUR BODY :  ${colourBody}^FS
-^FO20,${tTop+RH*4+12}^FDPRINTED        :^FS
+^FO${tTop+12},580^FDQUANTITY      :  ${pieces}^FS
+^FO${tTop+RH+12},580^FDSIZE               :  ${label.size}^FS
+^FO${tTop+RH*2+12},580^FDCOLOUR CAP  :  ${colourCap}^FS
+^FO${tTop+RH*3+12},580^FDCOLOUR BODY :  ${colourBody}^FS
+^FO${tTop+RH*4+12},580^FDPRINTED        :^FS
 
-^FO614,${tTop+12}^FDBATCH NO.       :  ${batchNo}^FS
-^FO614,${tTop+RH+12}^FDCONTAINER NO. :  ${containerNo}^FS
-^FO614,${tTop+RH*2+12}^FDGROSS WT.     :^FS
-^FO614,${tTop+RH*3+12}^FDNETT WT.       :^FS
-^FO614,${tTop+RH*4+12}^FDMFG DATE      :  ${mfgDate}^FS
+^FO${tTop+12},1190^FDBATCH NO.       :  ${batchNo}^FS
+^FO${tTop+RH+12},1190^FDCONTAINER NO. :  ${containerNo}^FS
+^FO${tTop+RH*2+12},1190^FDGROSS WT.     :^FS
+^FO${tTop+RH*3+12},1190^FDNETT WT.       :^FS
+^FO${tTop+RH*4+12},1190^FDMFG DATE      :  ${mfgDate}^FS
 
-^FO10,${tBot}^GB1180,2,2^FS
+^FO${tBot},10^GB2,1190,2^FS
 ^CF0,22
-^FO10,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
-^FO10,${ruleY}^GB1180,2,2^FS
+^FO${expY},1190^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
+^FO${ruleY},10^GB2,1190,2^FS
 
-^FO10,${qrY}^BQN,2,${qrSize}^FDLA,${label.qrData}^FS
+^FO${qrY},10^BQN,2,${qrSize}^FDLA,${label.qrData}^FS
 ^CF0,40
-^FO320,${qrY+30}^FB400,1,0,C^FDQ RELEASED^FS
+^FO${qrY+30},500^FB400,1,0,C^FDQ RELEASED^FS
 ^CF0,28
-^FO850,${qrY+50}^FB300,1,0,C^FDSIGNATURE^FS
-^FO10,790^GB1180,3,3^FS
+^FO${qrY+50},1150^FB300,1,0,C^FDSIGNATURE^FS
+^FO790,10^GB2,1190,3^FS
 ^XZ`;
 
   return `^XA
