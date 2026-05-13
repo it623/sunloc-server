@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v37H</title>
+<title>Sunloc Tracking Suite v1.0 · build v37I</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v37H</p>
+      <p>Tracking Suite v1.0 · build v37I</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v37H</p>
+      <p>Tracking Suite v1.0 · build v37I</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2433,6 +2433,16 @@ function renderDashboard(){
     <div class="kpi"><div class="kpi-label">Packed Boxes</div><div class="kpi-val green">${packedBoxes}</div><div class="kpi-sub">Ready for dispatch</div></div>
     <div class="kpi"><div class="kpi-label">Dispatched Boxes</div><div class="kpi-val purple">${dispBoxes}</div><div class="kpi-sub">This month</div></div>
     <div class="kpi"><div class="kpi-label">🚨 Alerts</div><div class="kpi-val ${totalAlerts>0?'red':'green'}">${totalAlerts}</div><div class="kpi-sub">Stuck 48h+ (this month)</div></div>
+    <div class="kpi cursor-pointer" onclick="window._reportJTab='A';navigate('reports');setTimeout(()=>renderReportJ(),200)" title="Click to open Report J — Flow A">
+      <div class="kpi-label">📦 Pack→Disp Gap</div>
+      <div class="kpi-val" id="kpi-dra-a-val">—</div>
+      <div class="kpi-sub">Unreceived &gt; threshold</div>
+    </div>
+    <div class="kpi cursor-pointer" onclick="window._reportJTab='B';navigate('reports');setTimeout(()=>renderReportJ(),200)" title="Click to open Report J — Flow B">
+      <div class="kpi-label">🚚 Scan-out Pending Record</div>
+      <div class="kpi-val" id="kpi-dra-b-val">—</div>
+      <div class="kpi-sub">Unrecorded &gt; threshold</div>
+    </div>
   </div>
   <div class="grid-2">
     <div class="card">
@@ -2489,7 +2499,35 @@ function renderDashboard(){
       </tbody>
     </table></div>
   </div>`;
+
+  // v37I Part A: Populate dispatch reconciliation KPI tiles (Flow A + Flow B counts)
+  _refreshDashboardReconcileKpis();
 }
+
+// v37I Part A: Fetch active reconcile alerts and update KPI tiles colour + value.
+// Green if 0, amber if 1-5, red if 6+. Silent fail if endpoint unavailable.
+async function _refreshDashboardReconcileKpis() {
+  if (!serverUrl) return;
+  try {
+    const r = await fetch(serverUrl + '/api/tracking/reconcile-alerts', {signal: AbortSignal.timeout(6000)});
+    if (!r.ok) return;
+    const j = await r.json();
+    if (!j.ok || !Array.isArray(j.alerts)) return;
+    const now = Date.now();
+    const active = j.alerts.filter(a => !a.acknowledged_at || new Date(a.ack_expires_at||0).getTime() < now);
+    const countA = active.filter(a => a.alert_type === 'A').length;
+    const countB = active.filter(a => a.alert_type === 'B').length;
+    const colorFor = n => n === 0 ? 'green' : (n <= 5 ? 'amber' : 'red');
+    const elA = document.getElementById('kpi-dra-a-val');
+    const elB = document.getElementById('kpi-dra-b-val');
+    if (elA) { elA.textContent = countA; elA.className = 'kpi-val ' + colorFor(countA); }
+    if (elB) { elB.textContent = countB; elB.className = 'kpi-val ' + colorFor(countB); }
+  } catch(e) { /* silent fail — KPI shows '—' if endpoint unreachable */ }
+}
+// Auto-refresh every 60s when dashboard is visible
+setInterval(() => {
+  if (document.getElementById('kpi-dra-a-val')) _refreshDashboardReconcileKpis();
+}, 60000);
 
 function getBoxCurrentStageForBatch(batchNo){
   const batch=getBatch(batchNo);
@@ -3643,7 +3681,9 @@ function renderDispatch(){
   // v37F: Colour-wise rollup for both ledger AND dispatch records
   // Aggregate packed/inward/outward/pending by colour
   const colourRollup = {};
-  Object.values(batchSummary).forEach(s=>{
+  // v37I B1: Also build per (batch, PC, colour) detail rows for expanded summary
+  const colourDetailRows = [];
+  Object.entries(batchSummary).forEach(([batchNo, s])=>{
     const c = s.colour || '-';
     if (!colourRollup[c]) colourRollup[c] = { packedBoxes:0, inwardBoxes:0, outwardBoxes:0, pendingBoxes:0,
                                                packedQty:0, inwardQty:0, outwardQty:0, pendingQty:0 };
@@ -3656,8 +3696,31 @@ function renderDispatch(){
     colourRollup[c].inwardQty    += boxToLakh(s.dispIn,  s.size);
     colourRollup[c].outwardQty   += boxToLakh(s.dispOut, s.size);
     colourRollup[c].pendingQty   += boxToLakh(pending,   s.size);
+    // v37I B1: per-batch detail row
+    const b = getBatch(batchNo);
+    colourDetailRows.push({
+      colour: c,
+      batchNo: batchNo,
+      customer: b?.customer || '-',
+      pcCode: b?.pcCode || '-',
+      size: s.size,
+      packedBoxes: s.packed,
+      packedQty: boxToLakh(s.packed, s.size),
+      inwardBoxes: s.dispIn,
+      inwardQty: boxToLakh(s.dispIn, s.size),
+      outwardBoxes: s.dispOut,
+      outwardQty: boxToLakh(s.dispOut, s.size),
+      pendingBoxes: pending,
+      pendingQty: boxToLakh(pending, s.size)
+    });
   });
   const colourKeys = Object.keys(colourRollup).sort();
+  // Sort detail rows by colour then batch
+  colourDetailRows.sort((a,b)=>{
+    if (a.colour < b.colour) return -1;
+    if (a.colour > b.colour) return 1;
+    return (a.batchNo||'').localeCompare(b.batchNo||'', undefined, {numeric:true});
+  });
 
   el.innerHTML=`
   <div class="card mb-16" style="border-top:4px solid var(--accent3)">
@@ -3721,22 +3784,33 @@ function renderDispatch(){
     </div>
   </div>
 
-  <!-- v37F: COLOUR-WISE ROLLUP -->
+  <!-- v37F + v37I B1: COLOUR-WISE SUMMARY (with batch detail + search) -->
   ${colourKeys.length > 0 ? `<div class="card mb-16">
-    <div class="card-title">🎨 Colour-wise Summary</div>
-    <div class="tbl-wrap" style="max-height:300px;overflow-y:auto"><table>
+    <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+      <div class="card-title" style="margin-bottom:0">🎨 Colour-wise Summary</div>
+      <input id="colour-summary-search" type="text" placeholder="🔍 Search colour / batch / PC / customer…" oninput="filterColourSummary(this.value)" style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;background:var(--surface);color:var(--text);min-width:240px">
+    </div>
+    <div class="tbl-wrap" style="max-height:400px;overflow-y:auto"><table id="colour-summary-table">
       <thead><tr>
         <th>Colour</th>
+        <th>Batch</th>
+        <th>Customer</th>
+        <th>PC Code</th>
+        <th>Size</th>
         <th class="text-right">Packed (Boxes / L)</th>
         <th class="text-right">Inward (Boxes / L)</th>
         <th class="text-right">Outward (Boxes / L)</th>
         <th class="text-right">Pending (Boxes / L)</th>
       </tr></thead>
       <tbody>
-        ${colourKeys.map(c=>{
-          const r = colourRollup[c];
-          return `<tr>
-            <td class="td-bold">${c}</td>
+        ${colourDetailRows.map(r=>{
+          const searchKey = [r.colour, r.batchNo, r.customer, r.pcCode].join(' ').toLowerCase();
+          return `<tr data-search="${searchKey}">
+            <td class="td-bold">${r.colour}</td>
+            <td class="td-mono">${r.batchNo}</td>
+            <td class="text-sm">${r.customer}</td>
+            <td class="td-mono">${r.pcCode}</td>
+            <td class="td-mono">${r.size}</td>
             <td class="td-mono text-right">${r.packedBoxes} / <b>${fmt(r.packedQty)}L</b></td>
             <td class="td-mono text-right">${r.inwardBoxes} / ${fmt(r.inwardQty)}L</td>
             <td class="td-mono text-right green">${r.outwardBoxes} / <b>${fmt(r.outwardQty)}L</b></td>
@@ -3745,7 +3819,7 @@ function renderDispatch(){
         }).join('')}
       </tbody>
       <tfoot><tr style="background:var(--surface2);font-weight:700">
-        <td>TOTAL</td>
+        <td colspan="5">TOTAL</td>
         <td class="td-mono text-right">${totalPackedBoxes} / <b>${fmt(totalPackedQty)}L</b></td>
         <td class="td-mono text-right">${totalInwardBoxes} / ${fmt(totalInwardQty)}L</td>
         <td class="td-mono text-right green">${totalOutwardBoxes} / <b>${fmt(totalOutwardQty)}L</b></td>
@@ -3781,7 +3855,7 @@ function renderDispatch(){
           <td class="td-mono">${s.dispIn}</td>
           <td class="td-mono green">${s.dispOut} (${fmt(dispQty)}L)</td>
           <td class="td-mono ${pending>0?'fw-bold':''}">${pending} (${fmt(pendingQty)}L)</td>
-          <td>${pending>0?`<button class="btn btn-sm btn-primary" onclick="openDispatchRecord('${batchNo}',${s.dispOut},${s.packed})">🚚 Dispatch</button>`:'<span class="badge badge-green">All Out</span>'}</td>
+          <td>${pending>0?`<button class="btn btn-sm btn-primary" onclick="openDispatchRecord('${batchNo}')">🚚 Dispatch</button>`:'<span class="badge badge-green">All Out</span>'}</td>
         </tr>`;
       }).join('')||'<tr><td colspan="11" class="text-center text-muted">No packed boxes yet</td></tr>'}
       </tbody>
@@ -3799,20 +3873,23 @@ function renderDispatch(){
 
   <!-- DISPATCH RECORDS -->
   <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
       <div class="card-title" style="margin-bottom:0">📋 Dispatch Records</div>
-      <button class="btn btn-secondary btn-sm" onclick="exportDispatch()">📥 Export Excel</button>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <input id="dispatch-records-search" type="text" placeholder="🔍 Search records (batch / vehicle / invoice / remarks)…" oninput="filterDispatchRecords(this.value)" style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;background:var(--surface);color:var(--text);min-width:280px">
+        <button class="btn btn-secondary btn-sm" onclick="exportDispatch()">📥 Export Excel</button>
+      </div>
     </div>
     <div class="tbl-wrap"><table id="dispatch-records-table">
-      <thead><tr><th>Date</th><th>Batch</th><th>Customer</th><th>PC Code</th><th>Colour</th><th>Qty (L)</th><th>Boxes</th><th>Vehicle</th><th>Invoice</th><th>Status</th><th>Edit</th></tr></thead>
+      <thead><tr><th>Date</th><th>Batch</th><th>Customer</th><th>PC Code</th><th>Colour</th><th>Qty (L)</th><th>Boxes</th><th>Vehicle</th><th>Invoice</th><th>Remarks</th><th>Status</th><th>Edit</th></tr></thead>
       <tbody>
       ${state.dispatchRecs.sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,20).map(r=>{
         // v37F: Pull colour/PC from batch master since dispatch records don't store them directly
         const dBatch = getBatch(r.batchNumber);
         const dColour = dBatch?.colour || '-';
         const dPcCode = dBatch?.pcCode || '-';
-        const searchKey = [r.batchNumber, r.customer||'', dPcCode, dColour, r.vehicleNo||'', r.invoiceNo||''].join(' ').toLowerCase();
-        const rDate = r.ts ? r.ts.slice(0,10) : '';
+        // v37I B2: Include remarks in search key
+        const searchKey = [r.batchNumber, r.customer||'', dPcCode, dColour, r.vehicleNo||'', r.invoiceNo||'', r.remarks||''].join(' ').toLowerCase();
         return `<tr data-search="${searchKey}" id="disprec-${r.id}">
           <td class="td-mono text-sm">${fmtDate(r.ts)}</td>
           <td class="td-bold td-mono">${r.batchNumber}</td>
@@ -3823,41 +3900,74 @@ function renderDispatch(){
           <td class="td-mono">${r.boxes}</td>
           <td class="td-mono">${r.vehicleNo||'<span class="text-muted">—</span>'}</td>
           <td class="td-mono">${r.invoiceNo||'<span class="text-muted">—</span>'}</td>
+          <td class="text-sm" title="${(r.remarks||'').replace(/"/g,'&quot;')}">${r.remarks ? (r.remarks.length>30?r.remarks.slice(0,30)+'…':r.remarks) : '<span class="text-muted">—</span>'}</td>
           <td><span class="badge badge-green">Dispatched</span></td>
           <td><button class="btn btn-sm btn-ghost" onclick="editDispatchRecord('${r.id}')" style="font-size:11px">✏️ Edit</button></td>
         </tr>`;
-      }).join('')||'<tr><td colspan="10" class="text-center text-muted">No dispatch records yet</td></tr>'}
+      }).join('')||'<tr><td colspan="12" class="text-center text-muted">No dispatch records yet</td></tr>'}
       </tbody>
       ${state.dispatchRecs.length > 0 ? `<tfoot><tr style="background:var(--surface2);font-weight:700">
         <td colspan="5" class="text-right">TOTAL DISPATCHED (last ${Math.min(20, state.dispatchRecs.length)} records)</td>
         <td class="td-mono"><b>${fmt(state.dispatchRecs.slice(0,20).reduce((s,r)=>s+(r.qty||0),0))}L</b></td>
         <td class="td-mono">${state.dispatchRecs.slice(0,20).reduce((s,r)=>s+(r.boxes||0),0)}</td>
-        <td colspan="4"></td>
+        <td colspan="5"></td>
       </tr></tfoot>` : ''}
     </table></div>
-    <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Showing last 20 dispatch records. Total inward/outward at top reflects all-time scan-based counts (boxes only). Dispatch records totals here reflect the records visible in this view.</div>
+    <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Showing last 20 dispatch records. Total inward/outward at top reflects all-time scan-based counts (boxes only). Hover over remarks cell to see full text.</div>
   </div>
 
   <!-- v37F: Dispatch Summary (planned vs actual) — restricted to Dispatch / Admin / Planning roles via page access -->
-  <div id="dispatch-summary-container"></div>`;
+  <div id="dispatch-summary-container"></div>
+
+  <!-- v37I B4: Report K — Per-day Scan In/Out Movement, restricted via dispatch page access -->
+  <div id="report-k-container"></div>`;
 
   // Render the planned-vs-actual summary into the container above
   renderReportI('dispatch-summary-container');
+  // v37I B4: Render Report K daily movement report
+  renderReportK('report-k-container');
 }
 
-function openDispatchRecord(batchNo, alreadyDispatched, totalPacked){
+// v37I Part A: Dispatch modal — scan-based auto-fill, soft lock on quantities
+// availableToRecord = total scan-out boxes - sum of already-recorded boxes
+// Upward edit blocked (cannot exceed scan-out count)
+// Downward edit allowed with mandatory remark
+function openDispatchRecord(batchNo){
   const batch=getBatch(batchNo);
-  const pending=totalPacked-alreadyDispatched;
-  const pendingQty=boxToLakh(pending,batch?.size||'0');
-  openModal('Record Dispatch',`Batch ${batchNo} — ${fmt(pendingQty)}L available to dispatch`,`
+  if(!batch){ alert('Batch not found.'); return; }
+  // Compute scan-out boxes for this batch (uses _ss summary if available, falls back to state.scans)
+  const localScanOut = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
+  const scanOutBoxes = hasScanSummary() ? (_ss(batchNo,'dispatch').out + localScanOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='dispatch'&&s.type==='out').length;
+  // Sum of already-recorded boxes from existing dispatchRecs
+  const existingRecs = state.dispatchRecs.filter(r=>r.batchNumber===batchNo);
+  const recordedBoxes = existingRecs.reduce((s,r)=>s+(parseInt(r.boxes)||0),0);
+  const availableToRecord = Math.max(0, scanOutBoxes - recordedBoxes);
+  const availableQty = boxToLakh(availableToRecord, batch.size||'0');
+
+  // Build summary of existing records for display
+  const existingSummary = existingRecs.length > 0
+    ? `<div class="alert alert-info" style="font-size:11px;margin-bottom:8px"><b>${existingRecs.length} dispatch record(s) already exist for this batch</b><br>${existingRecs.slice(-3).map(r=>`• ${r.boxes} boxes / ${fmt(r.qty)}L on ${fmtDate(r.ts)}${r.vehicleNo?' · vehicle '+r.vehicleNo:''}${r.invoiceNo?' · invoice '+r.invoiceNo:''}`).join('<br>')}${existingRecs.length>3?`<br><i>(showing last 3 of ${existingRecs.length})</i>`:''}</div>`
+    : '';
+
+  // Note if scan-out exceeds recorded (Flow B condition)
+  const flowBNote = (availableToRecord > 0)
+    ? `<div class="alert alert-warning" style="font-size:11px;margin-bottom:8px">⚠️ <b>${availableToRecord} boxes (${fmt(availableQty)}L)</b> were scanned out but not yet recorded. The fields below are pre-filled with this remaining count.</div>`
+    : `<div class="alert alert-info" style="font-size:11px;margin-bottom:8px">✓ All scan-out activity is already recorded. Editing not required unless documenting new dispatch.</div>`;
+
+  openModal('Record Dispatch',`Batch ${batchNo} — Scan-based reconciliation`,`
+    ${existingSummary}
+    ${flowBNote}
     <div class="form-row cols-2">
       <div class="form-group">
-        <label>Qty to Dispatch (Lakhs)</label>
-        <input type="number" id="dr-qty" value="${fmt(pendingQty)}" step="0.01" max="${fmt(pendingQty)}">
+        <label>Number of Boxes</label>
+        <input type="number" id="dr-boxes" value="${availableToRecord}" min="0" max="${availableToRecord}"
+               oninput="window._drMaxBoxes=${availableToRecord};_drValidate()">
+        <small style="color:var(--text-muted);font-size:10px">Max allowed: ${availableToRecord} (cannot exceed scan-out)</small>
       </div>
       <div class="form-group">
-        <label>Number of Boxes</label>
-        <input type="number" id="dr-boxes" value="${pending}" min="1" max="${pending}">
+        <label>Qty (Lakhs) — auto-calculated</label>
+        <input type="number" id="dr-qty" value="${fmt(availableQty)}" step="0.01" readonly style="background:var(--surface2);cursor:not-allowed">
+        <small style="color:var(--text-muted);font-size:10px">Derived from box count × size</small>
       </div>
     </div>
     <div class="form-row cols-2">
@@ -3871,24 +3981,71 @@ function openDispatchRecord(batchNo, alreadyDispatched, totalPacked){
       </div>
     </div>
     <div class="form-group">
-      <label>Remarks</label>
-      <input type="text" id="dr-remarks" placeholder="Optional remarks">
+      <label>Remarks <span id="dr-remarks-required" style="color:var(--red);display:none">* required when boxes &lt; available</span></label>
+      <input type="text" id="dr-remarks" placeholder="Optional remarks (mandatory if reducing box count)">
     </div>
-    <div class="alert alert-info">Once invoice app is live, Invoice Number will auto-populate here.</div>
+    <div id="dr-validation-msg" style="color:var(--red);font-size:11px;font-weight:600"></div>
+    <div class="alert alert-info" style="font-size:10px">Quantity is derived from scan-out box count to keep all entries scan-based. Once invoice app is live, Invoice Number will auto-populate.</div>
   `,[
     {label:'Cancel',cls:'btn-secondary',fn:'closeModal()'},
-    {label:'🚚 Confirm Dispatch',cls:'btn-primary',fn:`confirmDispatch('${batchNo}')`}
+    {label:'🚚 Confirm Dispatch',cls:'btn-primary',fn:`confirmDispatch('${batchNo}',${availableToRecord},'${(batch.size||'0').replace(/'/g,"")}')`}
   ]);
+  // Initialize validation state
+  window._drMaxBoxes = availableToRecord;
+  window._drBatchSize = batch.size||'0';
+  setTimeout(()=>{ if(typeof _drValidate==='function') _drValidate(); }, 100);
 }
 
-function confirmDispatch(batchNo){
-  const qty=parseFloat(document.getElementById('dr-qty')?.value)||0;
+// v37I: Live validation for dispatch modal — recalculates Qty from boxes,
+// shows required-remarks hint when downward edit happens, blocks upward edits.
+function _drValidate(){
+  const boxesInput = document.getElementById('dr-boxes');
+  const qtyInput = document.getElementById('dr-qty');
+  const remarksInput = document.getElementById('dr-remarks');
+  const requiredHint = document.getElementById('dr-remarks-required');
+  const msg = document.getElementById('dr-validation-msg');
+  if (!boxesInput) return;
+  const max = window._drMaxBoxes || 0;
+  let boxes = parseInt(boxesInput.value)||0;
+  if (boxes < 0) { boxes = 0; boxesInput.value = 0; }
+  // Hard block: cannot exceed max
+  if (boxes > max) {
+    msg.textContent = `Cannot exceed scan-out count of ${max} boxes`;
+    boxesInput.style.borderColor = 'var(--red)';
+  } else {
+    msg.textContent = '';
+    boxesInput.style.borderColor = '';
+  }
+  // Recompute qty from boxes
+  if (qtyInput) qtyInput.value = fmt(boxToLakh(boxes, window._drBatchSize||'0'));
+  // Downward edit triggers required-remarks
+  if (boxes < max) {
+    if (requiredHint) requiredHint.style.display = 'inline';
+    if (remarksInput) remarksInput.style.borderColor = remarksInput.value.trim() ? '' : 'var(--red)';
+  } else {
+    if (requiredHint) requiredHint.style.display = 'none';
+    if (remarksInput) remarksInput.style.borderColor = '';
+  }
+}
+
+function confirmDispatch(batchNo, maxBoxes, batchSize){
   const boxes=parseInt(document.getElementById('dr-boxes')?.value)||0;
   const vehicleNo=document.getElementById('dr-vehicle')?.value||'';
   const invoiceNo=document.getElementById('dr-invoice')?.value||'';
   const remarks=document.getElementById('dr-remarks')?.value||'';
   const batch=getBatch(batchNo);
-  if(qty<=0||boxes<=0){alert('Please enter valid qty and boxes.');return;}
+  // Hard validation: upward edit blocked
+  if(boxes > maxBoxes){
+    alert(`Cannot record ${boxes} boxes — only ${maxBoxes} are available (based on scan-out count).`);
+    return;
+  }
+  if(boxes <= 0){alert('Please enter a valid box count.');return;}
+  // Soft lock: downward edit requires remarks
+  if(boxes < maxBoxes && !remarks.trim()){
+    alert(`When recording fewer boxes than available (${boxes} < ${maxBoxes}), the Remarks field is mandatory. Please explain the reason.`);
+    return;
+  }
+  const qty = boxToLakh(boxes, batchSize);
   const rec={id:uid(),batchNumber:batchNo,customer:batch?.customer||'',qty,boxes,vehicleNo,invoiceNo,remarks,ts:now(),by:currentDept};
   state.dispatchRecs.push(rec);
   saveLocal();
@@ -3896,7 +4053,7 @@ function confirmDispatch(batchNo){
   // Update planning app
   pushToServer('/api/tracking/dispatch-update',{batchNumber:batchNo,dispatchedQty:qty,vehicleNo,invoiceNo});
   closeModal();
-  alert(`✅ Dispatch recorded — ${fmt(qty)}L dispatched`);
+  alert(`✅ Dispatch recorded — ${boxes} boxes / ${fmt(qty)}L dispatched`);
   renderDispatch();
 }
 
@@ -4254,6 +4411,12 @@ function renderReports(forceRebuild){
       <div class="fw-bold mb-4">Boxes Exited Dept — Not Yet Entered Next</div>
       <div class="text-sm text-muted">Identifies batches where boxes were scanned OUT of a department but not yet scanned IN to the next. Shows cumulative gap count and qty per batch per department transition.</div>
       <button class="btn btn-sm mt-12" style="background:#7c3aed;color:#fff">Generate Gap Report →</button>
+    </div>
+    <div class="card cursor-pointer" onclick="renderReportJ()" style="border-left:4px solid #d97706;grid-column:span 2">
+      <div class="card-title" style="color:#d97706">⏱️ Report J — Pending Dispatch Reconciliations</div>
+      <div class="fw-bold mb-4">Time-Based Alerts: Packing→Dispatch Gap & Scan-out Without Record</div>
+      <div class="text-sm text-muted">Two-tab view of dispatch reconciliation alerts past the configured threshold (default 60 min). Flow A: labels packed-out but not yet received by dispatch. Flow B: dispatch-out scans without matching manual records. Acknowledge with reason (4h auto-expiry).</div>
+      <button class="btn btn-sm mt-12" style="background:#d97706;color:#fff">Generate Reconciliation Alerts →</button>
     </div>
   </div>
   <div id="report-output" class="mt-20"></div>`;
@@ -5104,17 +5267,24 @@ function renderReportA(){ window._activeReport = renderReportA;
   const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted);
   const batches = monthBatches.filter(b=>!filterBatch||b.batchNumber===filterBatch);
   // v37F: Sort batch dropdown ascending by batch number for easier scanning
-  const batchOptions = [...monthBatches]
-    .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}))
-    .map(b=>`<option value="${b.batchNumber}" ${filterBatch===b.batchNumber?'selected':''}>${b.batchNumber} — ${b.customer||''}</option>`).join('');
+  const sortedBatches = [...monthBatches].sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}));
+  // v37I B5: Type-to-filter autocomplete via HTML5 datalist. Native browser feature, works on mobile + desktop.
+  const datalistOptions = sortedBatches.map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''}</option>`).join('');
 
   let html=`<div class="card">
     <div class="section-title mb-16">Report A — Complete Batch Tracking (Full Duration)</div>
     <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center;position:sticky;top:0;background:var(--surface);z-index:10;padding:8px 0;border-bottom:1px solid var(--border)">
-      <select class="form-control" style="max-width:280px" onchange="window._rptABatch=this.value;renderReportA()">
-        <option value="">All Batches</option>${batchOptions}
-      </select>
+      <div style="position:relative;min-width:280px;max-width:340px">
+        <input type="text" id="rptA-batch-search" list="rptA-batch-list" placeholder="🔍 Type to search batches or pick from list…"
+               value="${filterBatch}"
+               onchange="window._rptABatch=this.value;renderReportA()"
+               style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;background:var(--surface);color:var(--text)">
+        <datalist id="rptA-batch-list">
+          ${datalistOptions}
+        </datalist>
+      </div>
       ${filterBatch?`<button class="btn btn-ghost btn-sm" onclick="window._rptABatch='';renderReportA()">✕ Clear</button>`:''}
+      <span style="font-size:11px;color:var(--text-muted);align-self:center">${filterBatch ? `Showing: ${filterBatch}` : `All ${sortedBatches.length} batches`}</span>
     </div>`;
 
   batches.forEach(b=>{
@@ -5746,15 +5916,36 @@ function applyReportEInlineSearch(q) {
 }
 
 // v37G: Search filter for both Dispatch page tables (Packed Ledger + Dispatch Records)
+// v37G + v37I B3: Filter Packed Ledger only (Dispatch Records has its own separate search now)
 function filterDispatchTables(q) {
   const term = (q||'').toLowerCase().trim();
-  ['dispatch-ledger-table', 'dispatch-records-table'].forEach(tableId => {
-    const tbody = document.querySelector(`#${tableId} tbody`);
-    if (!tbody) return;
-    [...tbody.querySelectorAll('tr')].forEach(row => {
-      const text = row.dataset.search || row.textContent.toLowerCase();
-      row.style.display = (!term || text.includes(term)) ? '' : 'none';
-    });
+  const tbody = document.querySelector(`#dispatch-ledger-table tbody`);
+  if (!tbody) return;
+  [...tbody.querySelectorAll('tr')].forEach(row => {
+    const text = row.dataset.search || row.textContent.toLowerCase();
+    row.style.display = (!term || text.includes(term)) ? '' : 'none';
+  });
+}
+
+// v37I B3: Independent search for Dispatch Records table
+function filterDispatchRecords(q) {
+  const term = (q||'').toLowerCase().trim();
+  const tbody = document.querySelector(`#dispatch-records-table tbody`);
+  if (!tbody) return;
+  [...tbody.querySelectorAll('tr')].forEach(row => {
+    const text = row.dataset.search || row.textContent.toLowerCase();
+    row.style.display = (!term || text.includes(term)) ? '' : 'none';
+  });
+}
+
+// v37I B1: Filter Colour-wise Summary (search across colour/batch/PC/customer)
+function filterColourSummary(q) {
+  const term = (q||'').toLowerCase().trim();
+  const tbody = document.querySelector(`#colour-summary-table tbody`);
+  if (!tbody) return;
+  [...tbody.querySelectorAll('tr')].forEach(row => {
+    const text = row.dataset.search || row.textContent.toLowerCase();
+    row.style.display = (!term || text.includes(term)) ? '' : 'none';
   });
 }
 
@@ -6216,6 +6407,486 @@ function exportReportI() {
   XLSX.writeFile(wb, `Sunloc_Dispatch_Summary_${today()}.xlsx`);
 }
 
+// ═══════════════════════════════════════════════════════════════════
+// v37I PART A: REPORT J — PENDING DISPATCH RECONCILIATIONS
+// ═══════════════════════════════════════════════════════════════════
+// Two-tab view of reconciliation alerts:
+//   Tab A: Packing→Dispatch handover gap (per label)
+//   Tab B: Dispatch-out scans without manual record (per batch)
+// Auto-refresh every 60 sec while open.
+
+let _reportJTimer = null;
+window._reportJTab = window._reportJTab || 'A';
+window._reportJFilters = window._reportJFilters || {batch:'', customer:'', vehicle:'', agedOnly:true};
+
+async function _fetchReconcileAlerts() {
+  try {
+    const r = await fetch(serverUrl+'/api/tracking/reconcile-alerts', {signal:AbortSignal.timeout(8000)});
+    if (!r.ok) return [];
+    const j = await r.json();
+    return Array.isArray(j.alerts) ? j.alerts : [];
+  } catch(e) { console.warn('[Report J] fetch failed:', e?.message); return []; }
+}
+
+function _ageString(triggeredAtIso) {
+  const ms = Date.now() - new Date(triggeredAtIso).getTime();
+  if (ms < 0) return '—';
+  const mins = Math.floor(ms / 60000);
+  if (mins < 60) return `${mins}m`;
+  const hrs = Math.floor(mins / 60);
+  const rm = mins - hrs * 60;
+  if (hrs < 24) return `${hrs}h ${rm}m`;
+  const days = Math.floor(hrs / 24);
+  return `${days}d ${hrs - days*24}h`;
+}
+
+function renderReportJ() {
+  window._activeReport = renderReportJ;
+  _captureReportScroll();
+  if(!document.getElementById('report-output')) renderReports();
+  const targetId = 'report-output';
+  // Start with loading state
+  const el = document.getElementById(targetId);
+  if (!el) return;
+  el.innerHTML = `<div class="card"><div class="section-title">Report J — Pending Dispatch Reconciliations</div><div class="text-center text-muted" style="padding:40px">Loading alerts…</div></div>`;
+
+  _fetchReconcileAlerts().then(alerts => {
+    _renderReportJContent(alerts);
+    _scrollIntoReportIfFirstView('J');
+    // Auto-refresh every 60 sec
+    if (_reportJTimer) clearInterval(_reportJTimer);
+    _reportJTimer = setInterval(() => {
+      if (window._activeReport === renderReportJ) {
+        _fetchReconcileAlerts().then(_renderReportJContent);
+      } else {
+        clearInterval(_reportJTimer); _reportJTimer = null;
+      }
+    }, 60000);
+  });
+}
+
+function _renderReportJContent(alerts) {
+  const tab = window._reportJTab;
+  const f = window._reportJFilters;
+  // Filter alerts by tab type
+  let filtered = alerts.filter(a => a.alert_type === tab);
+  // Apply filters
+  if (f.batch) filtered = filtered.filter(a => (a.batch_number||'').toLowerCase().includes(f.batch.toLowerCase()));
+  if (f.customer) {
+    filtered = filtered.filter(a => {
+      const b = getBatch(a.batch_number);
+      return (b?.customer||'').toLowerCase().includes(f.customer.toLowerCase());
+    });
+  }
+  // Vehicle filter: only relevant for Tab B (records with vehicles)
+  // Aged>60min: triggered_at older than threshold (already handled server-side via background job
+  // — alerts only INSERTed once aged past threshold, so this is mostly a UX confirmation)
+  // For acknowledged-but-not-yet-resolved alerts that have a future ack_expires_at, exclude them
+  // (server already does this in the SELECT, but safeguard here)
+  const now = Date.now();
+  filtered = filtered.filter(a => {
+    if (!a.acknowledged_at) return true;
+    if (!a.ack_expires_at) return true;
+    return new Date(a.ack_expires_at).getTime() < now;
+  });
+
+  // Counts for tab badges
+  const countA = alerts.filter(a => a.alert_type === 'A' && (!a.acknowledged_at || new Date(a.ack_expires_at||0).getTime() < now)).length;
+  const countB = alerts.filter(a => a.alert_type === 'B' && (!a.acknowledged_at || new Date(a.ack_expires_at||0).getTime() < now)).length;
+
+  const role = currentDept;
+  const canAck = ['admin','planning','dispatch'].includes(role);
+  const canSeeB = ['admin','planning','dispatch'].includes(role);
+
+  // Tab buttons
+  const tabsHtml = `
+    <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 16px">
+      <button onclick="window._reportJTab='A';_fetchReconcileAlerts().then(_renderReportJContent)"
+        class="btn btn-sm" style="background:${tab==='A'?'#d97706':'var(--surface2)'};color:${tab==='A'?'#fff':'var(--text)'};font-weight:600">
+        Packing→Dispatch Gap <span class="badge" style="background:rgba(255,255,255,0.25);color:inherit;margin-left:6px">${countA}</span>
+      </button>
+      ${canSeeB ? `<button onclick="window._reportJTab='B';_fetchReconcileAlerts().then(_renderReportJContent)"
+        class="btn btn-sm" style="background:${tab==='B'?'#d97706':'var(--surface2)'};color:${tab==='B'?'#fff':'var(--text)'};font-weight:600">
+        Scan-out Awaiting Record <span class="badge" style="background:rgba(255,255,255,0.25);color:inherit;margin-left:6px">${countB}</span>
+      </button>` : ''}
+    </div>`;
+
+  // Filter bar
+  const filtersHtml = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;padding:8px;background:var(--surface2);border-radius:4px;position:sticky;top:0;z-index:10">
+      <input type="text" placeholder="🔍 Batch" value="${f.batch||''}"
+             oninput="window._reportJFilters.batch=this.value;_fetchReconcileAlerts().then(_renderReportJContent)"
+             style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
+      <input type="text" placeholder="🔍 Customer" value="${f.customer||''}"
+             oninput="window._reportJFilters.customer=this.value;_fetchReconcileAlerts().then(_renderReportJContent)"
+             style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
+      <button class="btn btn-ghost btn-sm" onclick="window._reportJFilters={batch:'',customer:'',vehicle:'',agedOnly:true};_fetchReconcileAlerts().then(_renderReportJContent)">✕ Clear</button>
+      <button class="btn btn-secondary btn-sm" onclick="exportReportJ()">📥 Export Excel</button>
+      <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">Auto-refresh every 60 sec · ${filtered.length} alerts</span>
+    </div>`;
+
+  // Table — different columns per tab
+  let tableHtml;
+  if (tab === 'A') {
+    tableHtml = `
+      <div class="tbl-wrap"><table>
+        <thead><tr>
+          <th>Batch</th><th>Customer</th><th>Label ID</th><th>Packing-out Time</th><th>Age</th>
+          ${canAck ? '<th>Action</th>' : ''}
+        </tr></thead>
+        <tbody>
+          ${filtered.length === 0
+            ? `<tr><td colspan="${canAck?6:5}" class="text-center text-muted" style="padding:30px">No pending Flow A alerts ✓</td></tr>`
+            : filtered.map(a => {
+              const b = getBatch(a.batch_number);
+              return `<tr>
+                <td class="td-bold td-mono">${a.batch_number||'—'}</td>
+                <td class="text-sm">${b?.customer||'—'}</td>
+                <td class="td-mono text-sm">${a.label_id||'—'}</td>
+                <td class="td-mono text-sm">${a.triggered_at?fmtDateTime(a.triggered_at):'—'}</td>
+                <td class="td-mono"><span class="badge" style="background:rgba(239,68,68,0.15);color:#dc2626;font-weight:700">${_ageString(a.triggered_at)}</span></td>
+                ${canAck ? `<td><button class="btn btn-sm btn-ghost" onclick="_openAckDialog('${a.id}','${(a.batch_number||'').replace(/'/g,"")}')">Ack</button></td>` : ''}
+              </tr>`;
+            }).join('')}
+        </tbody>
+      </table></div>`;
+  } else {
+    // Tab B — group by batch to show summary
+    tableHtml = `
+      <div class="tbl-wrap"><table>
+        <thead><tr>
+          <th>Batch</th><th>Customer</th><th>Scan-out Boxes</th><th>Recorded</th><th>Uncovered</th><th>Earliest Scan-out</th><th>Age</th>
+          ${canAck ? '<th>Action</th>' : ''}
+        </tr></thead>
+        <tbody>
+          ${filtered.length === 0
+            ? `<tr><td colspan="${canAck?8:7}" class="text-center text-muted" style="padding:30px">No pending Flow B alerts ✓</td></tr>`
+            : filtered.map(a => {
+              const b = getBatch(a.batch_number);
+              const localScanOut = state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
+              const scanOutBoxes = hasScanSummary() ? (_ss(a.batch_number,'dispatch').out + localScanOut) : state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
+              const recordedBoxes = state.dispatchRecs.filter(r=>r.batchNumber===a.batch_number).reduce((s,r)=>s+(parseInt(r.boxes)||0),0);
+              const uncovered = Math.max(0, scanOutBoxes - recordedBoxes);
+              return `<tr>
+                <td class="td-bold td-mono">${a.batch_number||'—'}</td>
+                <td class="text-sm">${b?.customer||'—'}</td>
+                <td class="td-mono">${scanOutBoxes}</td>
+                <td class="td-mono">${recordedBoxes}</td>
+                <td class="td-mono fw-bold ${uncovered>0?'amber':''}">${uncovered}</td>
+                <td class="td-mono text-sm">${a.triggered_at?fmtDateTime(a.triggered_at):'—'}</td>
+                <td class="td-mono"><span class="badge" style="background:rgba(239,68,68,0.15);color:#dc2626;font-weight:700">${_ageString(a.triggered_at)}</span></td>
+                ${canAck ? `<td>
+                  <button class="btn btn-sm btn-primary" onclick="navigate('dispatch');setTimeout(()=>openDispatchRecord('${(a.batch_number||'').replace(/'/g,"")}'),300)">Open Modal</button>
+                  <button class="btn btn-sm btn-ghost" onclick="_openAckDialog('${a.id}','${(a.batch_number||'').replace(/'/g,"")}')">Ack</button>
+                </td>` : ''}
+              </tr>`;
+            }).join('')}
+        </tbody>
+      </table></div>`;
+  }
+
+  const html = `
+    <div class="card">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
+        <div class="section-title" style="margin:0">Report J — Pending Dispatch Reconciliations</div>
+        <div class="text-sm text-muted">${(countA+countB)} active · Threshold-based 60 min default</div>
+      </div>
+      ${tabsHtml}
+      ${filtersHtml}
+      ${tableHtml}
+      <div class="text-sm text-muted" style="font-size:11px;margin-top:8px">
+        ${tab==='A' ? 'Flow A: Labels scanned packing-out but not yet scanned dispatch-in within the configured threshold. Resolves automatically when dispatch-in scan happens.'
+                    : 'Flow B: Batches with dispatch-out scans not yet covered by a manual dispatch record. Click "Open Modal" to record, or "Ack" to suppress for 4 hours.'}
+      </div>
+    </div>`;
+
+  const el = document.getElementById('report-output');
+  if (el) el.innerHTML = html;
+}
+
+function _openAckDialog(alertId, batchNo) {
+  openModal('Acknowledge Alert', `Suppress alert for batch ${batchNo} for 4 hours`, `
+    <div class="form-group">
+      <label>Reason for acknowledgment <span style="color:var(--red)">*</span></label>
+      <textarea id="ack-reason" rows="3" placeholder="Brief explanation (e.g. 'shift change at 6pm, will be processed tomorrow morning')"
+                style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;font-family:inherit"></textarea>
+    </div>
+    <div class="alert alert-info" style="font-size:11px">Alert will be hidden for 4 hours. If still unresolved after that, it will resurface in Report J.</div>
+  `, [
+    {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'},
+    {label:'Confirm Acknowledge', cls:'btn-primary', fn:`_submitAck('${alertId}')`}
+  ]);
+}
+
+async function _submitAck(alertId) {
+  const reason = document.getElementById('ack-reason')?.value || '';
+  if (!reason.trim()) { alert('Reason is required.'); return; }
+  try {
+    const r = await fetch(serverUrl+'/api/tracking/reconcile-alerts/ack', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({id: alertId, reason, ack_by: currentDept})
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error||'Unknown error');
+    closeModal();
+    alert('✅ Alert acknowledged for 4 hours');
+    _fetchReconcileAlerts().then(_renderReportJContent);
+  } catch(e) {
+    alert('Failed to acknowledge: ' + e.message);
+  }
+}
+
+function exportReportJ() {
+  _fetchReconcileAlerts().then(alerts => {
+    const wb = XLSX.utils.book_new();
+    const now = Date.now();
+    const activeA = alerts.filter(a => a.alert_type==='A' && (!a.acknowledged_at || new Date(a.ack_expires_at||0).getTime() < now));
+    const activeB = alerts.filter(a => a.alert_type==='B' && (!a.acknowledged_at || new Date(a.ack_expires_at||0).getTime() < now));
+    const rowsA = activeA.map(a => {
+      const b = getBatch(a.batch_number);
+      return {
+        'Batch': a.batch_number||'',
+        'Customer': b?.customer||'',
+        'Label ID': a.label_id||'',
+        'Packing-out Time': a.triggered_at||'',
+        'Age': _ageString(a.triggered_at)
+      };
+    });
+    const rowsB = activeB.map(a => {
+      const b = getBatch(a.batch_number);
+      const localScanOut = state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
+      const scanOutBoxes = hasScanSummary() ? (_ss(a.batch_number,'dispatch').out + localScanOut) : state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
+      const recordedBoxes = state.dispatchRecs.filter(r=>r.batchNumber===a.batch_number).reduce((s,r)=>s+(parseInt(r.boxes)||0),0);
+      return {
+        'Batch': a.batch_number||'',
+        'Customer': b?.customer||'',
+        'Scan-out Boxes': scanOutBoxes,
+        'Recorded Boxes': recordedBoxes,
+        'Uncovered Boxes': Math.max(0, scanOutBoxes - recordedBoxes),
+        'Earliest Scan-out': a.triggered_at||'',
+        'Age': _ageString(a.triggered_at)
+      };
+    });
+    if (rowsA.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rowsA), 'Packing-Dispatch Gap');
+    if (rowsB.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rowsB), 'Scan-out Awaiting Record');
+    if (!rowsA.length && !rowsB.length) {
+      XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['No pending reconciliation alerts']]), 'Empty');
+    }
+    XLSX.writeFile(wb, `Sunloc_Report_J_Reconciliation_${today()}.xlsx`);
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// v37I PART B4: REPORT K — DAILY DISPATCH MOVEMENT (PER-DAY SCAN IN/OUT)
+// ═══════════════════════════════════════════════════════════════════
+// Per-batch scan-in/scan-out activity on a selected date.
+// Lives INSIDE Dispatch Management page (not Reports landing) — restricted via page access.
+// Date selector: single date with quick filters (Today / Last 7 / 15 / 30 days).
+// Balance column = Scan-In − Scan-Out (positive = batch is held in dispatch holding).
+//
+// targetId: DOM container to render into (passed from renderDispatch); defaults to creating its own.
+
+window._reportKDate = window._reportKDate || today();
+window._reportKDateRangeMode = window._reportKDateRangeMode || 'single'; // 'single' | '7d' | '15d' | '30d'
+window._reportKFilters = window._reportKFilters || {customer:'', batch:'', pcCode:''};
+
+function renderReportK(targetId) {
+  const containerId = targetId || 'report-k-container';
+  const el = document.getElementById(containerId);
+  if (!el) return;
+
+  const filters = window._reportKFilters;
+  const dateMode = window._reportKDateRangeMode;
+  const selectedDate = window._reportKDate;
+
+  // Determine date range
+  let fromDate, toDate;
+  if (dateMode === 'single') {
+    fromDate = toDate = selectedDate;
+  } else {
+    const daysBack = dateMode === '7d' ? 7 : (dateMode === '15d' ? 15 : 30);
+    toDate = today();
+    const d = new Date();
+    d.setDate(d.getDate() - daysBack + 1);
+    fromDate = d.toISOString().slice(0,10);
+  }
+
+  // Aggregate per (date, batch) from dispatch scans
+  // Note: state.scans is limited; for accurate counts on prior dates we'd need scan-summary,
+  // but scan-summary aggregates without date dimension. So we use state.scans for "recent"
+  // dates (recent 2000) AND warn user if showing older data may be incomplete.
+  const aggregated = {}; // key = `${date}|${batch}`
+  state.scans.filter(s => s.dept === 'dispatch' && (s.type === 'in' || s.type === 'out')).forEach(s => {
+    if (!s.ts) return;
+    const d = s.ts.slice(0,10);
+    if (d < fromDate || d > toDate) return;
+    const key = `${d}|${s.batchNumber}`;
+    if (!aggregated[key]) aggregated[key] = { date: d, batchNo: s.batchNumber, inBoxes: 0, outBoxes: 0 };
+    if (s.type === 'in') aggregated[key].inBoxes++;
+    else aggregated[key].outBoxes++;
+  });
+
+  // Build row data
+  let rows = Object.values(aggregated).map(a => {
+    const b = getBatch(a.batchNo);
+    const size = b?.size || '0';
+    const inQty = boxToLakh(a.inBoxes, size);
+    const outQty = boxToLakh(a.outBoxes, size);
+    return {
+      date: a.date,
+      batchNo: a.batchNo,
+      customer: b?.customer || '-',
+      pcCode: b?.pcCode || '-',
+      size: size,
+      colour: b?.colour || '-',
+      inBoxes: a.inBoxes,
+      inQty: inQty,
+      outBoxes: a.outBoxes,
+      outQty: outQty,
+      balanceQty: inQty - outQty  // positive = held in dispatch (received more than sent out)
+    };
+  });
+
+  // Apply filters
+  if (filters.customer) rows = rows.filter(r => (r.customer||'').toLowerCase().includes(filters.customer.toLowerCase()));
+  if (filters.batch) rows = rows.filter(r => (r.batchNo||'').toLowerCase().includes(filters.batch.toLowerCase()));
+  if (filters.pcCode) rows = rows.filter(r => (r.pcCode||'').toLowerCase().includes(filters.pcCode.toLowerCase()));
+
+  // Sort by date desc, then batch
+  rows.sort((a,b) => {
+    if (a.date !== b.date) return a.date < b.date ? 1 : -1;
+    return (a.batchNo||'').localeCompare(b.batchNo||'', undefined, {numeric:true});
+  });
+
+  // Totals
+  let totalInBoxes = 0, totalInQty = 0, totalOutBoxes = 0, totalOutQty = 0;
+  rows.forEach(r => {
+    totalInBoxes += r.inBoxes; totalInQty += r.inQty;
+    totalOutBoxes += r.outBoxes; totalOutQty += r.outQty;
+  });
+  const totalBalance = totalInQty - totalOutQty;
+
+  // Date selector + quick filters
+  const quickBtn = (mode, label) =>
+    `<button class="btn btn-sm" style="background:${dateMode===mode?'#0891b2':'var(--surface2)'};color:${dateMode===mode?'#fff':'var(--text)'};font-weight:600;font-size:11px;padding:4px 10px" onclick="window._reportKDateRangeMode='${mode}';renderReportK('${containerId}')">${label}</button>`;
+
+  el.innerHTML = `
+    <div class="card mb-16" style="border-top:4px solid #0891b2">
+      <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+        <div class="card-title" style="margin-bottom:0">📅 Report K — Daily Dispatch Movement (Per-day Scan In/Out)</div>
+        <button class="btn btn-secondary btn-sm" onclick="exportReportK()">📥 Export Excel</button>
+      </div>
+      <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
+        ${quickBtn('single', 'Specific Date')}
+        ${quickBtn('7d', 'Last 7 Days')}
+        ${quickBtn('15d', 'Last 15 Days')}
+        ${quickBtn('30d', 'Last 30 Days')}
+        ${dateMode === 'single' ? `<input type="date" value="${selectedDate}" max="${today()}" onchange="window._reportKDate=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;margin-left:8px">` : `<span style="font-size:11px;color:var(--text-muted);margin-left:8px">Range: ${fromDate} → ${toDate}</span>`}
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:4px">
+        <input type="text" placeholder="🔍 Customer" value="${filters.customer||''}"
+               oninput="window._reportKFilters.customer=this.value;renderReportK('${containerId}')"
+               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
+        <input type="text" placeholder="🔍 Batch" value="${filters.batch||''}"
+               oninput="window._reportKFilters.batch=this.value;renderReportK('${containerId}')"
+               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
+        <input type="text" placeholder="🔍 PC Code" value="${filters.pcCode||''}"
+               oninput="window._reportKFilters.pcCode=this.value;renderReportK('${containerId}')"
+               style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:120px;font-size:12px">
+        <button class="btn btn-ghost btn-sm" onclick="window._reportKFilters={customer:'',batch:'',pcCode:''};renderReportK('${containerId}')">✕ Clear</button>
+        <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">${rows.length} row(s)</span>
+      </div>
+      <div class="tbl-wrap" style="max-height:500px;overflow-y:auto"><table>
+        <thead><tr>
+          <th>Date</th><th>Customer</th><th>Batch</th><th>PC Code</th><th>Size</th><th>Colour</th>
+          <th class="text-right">Scan-In (Boxes)</th><th class="text-right">Scan-In (L)</th>
+          <th class="text-right">Scan-Out (Boxes)</th><th class="text-right">Scan-Out (L)</th>
+          <th class="text-right">Balance (L)</th>
+        </tr></thead>
+        <tbody>
+          ${rows.length === 0
+            ? `<tr><td colspan="11" class="text-center text-muted" style="padding:30px">No dispatch activity in the selected period</td></tr>`
+            : rows.map(r => `<tr>
+                <td class="td-mono text-sm">${r.date}</td>
+                <td class="text-sm">${r.customer}</td>
+                <td class="td-bold td-mono">${r.batchNo}</td>
+                <td class="td-mono">${r.pcCode}</td>
+                <td class="td-mono">${r.size}</td>
+                <td class="td-mono">${r.colour}</td>
+                <td class="td-mono text-right">${r.inBoxes}</td>
+                <td class="td-mono text-right">${fmt(r.inQty)}</td>
+                <td class="td-mono text-right green">${r.outBoxes}</td>
+                <td class="td-mono text-right green">${fmt(r.outQty)}</td>
+                <td class="td-mono text-right fw-bold ${r.balanceQty>0?'amber':(r.balanceQty<0?'red':'')}">${fmt(r.balanceQty)}</td>
+              </tr>`).join('')}
+        </tbody>
+        ${rows.length > 0 ? `<tfoot><tr style="background:var(--surface2);font-weight:700">
+          <td colspan="6" class="text-right">TOTAL</td>
+          <td class="td-mono text-right">${totalInBoxes}</td>
+          <td class="td-mono text-right"><b>${fmt(totalInQty)}</b></td>
+          <td class="td-mono text-right green">${totalOutBoxes}</td>
+          <td class="td-mono text-right green"><b>${fmt(totalOutQty)}</b></td>
+          <td class="td-mono text-right ${totalBalance>0?'amber':(totalBalance<0?'red':'')}"><b>${fmt(totalBalance)}</b></td>
+        </tr></tfoot>` : ''}
+      </table></div>
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Balance = Scan-In − Scan-Out (positive value indicates boxes held in dispatch holding; negative is a data anomaly worth investigating). For dates older than the in-app scan buffer, totals may be partial — use Excel export from server data for historical full audits.</div>
+    </div>`;
+}
+
+function exportReportK() {
+  const filters = window._reportKFilters;
+  const dateMode = window._reportKDateRangeMode;
+  const selectedDate = window._reportKDate;
+  let fromDate, toDate;
+  if (dateMode === 'single') { fromDate = toDate = selectedDate; }
+  else {
+    const daysBack = dateMode === '7d' ? 7 : (dateMode === '15d' ? 15 : 30);
+    toDate = today();
+    const d = new Date(); d.setDate(d.getDate() - daysBack + 1);
+    fromDate = d.toISOString().slice(0,10);
+  }
+  const aggregated = {};
+  state.scans.filter(s => s.dept === 'dispatch' && (s.type === 'in' || s.type === 'out')).forEach(s => {
+    if (!s.ts) return;
+    const d = s.ts.slice(0,10);
+    if (d < fromDate || d > toDate) return;
+    const key = `${d}|${s.batchNumber}`;
+    if (!aggregated[key]) aggregated[key] = { date: d, batchNo: s.batchNumber, inBoxes: 0, outBoxes: 0 };
+    if (s.type === 'in') aggregated[key].inBoxes++;
+    else aggregated[key].outBoxes++;
+  });
+  let rows = Object.values(aggregated).map(a => {
+    const b = getBatch(a.batchNo);
+    const size = b?.size || '0';
+    const inQty = boxToLakh(a.inBoxes, size);
+    const outQty = boxToLakh(a.outBoxes, size);
+    return {
+      'Date': a.date,
+      'Customer': b?.customer || '',
+      'Batch': a.batchNo,
+      'PC Code': b?.pcCode || '',
+      'Size': size,
+      'Colour': b?.colour || '',
+      'Scan-In Boxes': a.inBoxes,
+      'Scan-In (L)': fmt(inQty),
+      'Scan-Out Boxes': a.outBoxes,
+      'Scan-Out (L)': fmt(outQty),
+      'Balance (L)': fmt(inQty - outQty)
+    };
+  });
+  if (filters.customer) rows = rows.filter(r => (r.Customer||'').toLowerCase().includes(filters.customer.toLowerCase()));
+  if (filters.batch) rows = rows.filter(r => (r.Batch||'').toLowerCase().includes(filters.batch.toLowerCase()));
+  if (filters.pcCode) rows = rows.filter(r => (r['PC Code']||'').toLowerCase().includes(filters.pcCode.toLowerCase()));
+  rows.sort((a,b) => {
+    if (a.Date !== b.Date) return a.Date < b.Date ? 1 : -1;
+    return (a.Batch||'').localeCompare(b.Batch||'', undefined, {numeric:true});
+  });
+  const wb = XLSX.utils.book_new();
+  if (rows.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Daily Movement');
+  else XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['No dispatch activity in selected period']]), 'Empty');
+  XLSX.writeFile(wb, `Sunloc_Report_K_Daily_Movement_${fromDate}_to_${toDate}.xlsx`);
+}
+
 function openReportETab(){
   const html = window._reportEHtml;
   if(!html){ renderReportE(); setTimeout(openReportETab,300); return; }
@@ -6650,6 +7321,8 @@ function renderSettings(){
   const isAdmin=currentDept==='admin';
   // After rendering, append audit log for admin
   setTimeout(()=>{ if(isAdmin) renderTrackingAuditLog(); }, 100);
+  // v37I: Load saved threshold for the reconciliation alerts input
+  setTimeout(_loadDraThreshold, 150);
   el.innerHTML=`
   <div class="section-header">
     <div><div class="section-title">Settings</div></div>
@@ -6682,6 +7355,17 @@ function renderSettings(){
         </tbody>
       </table></div>
     </div>
+    ${isAdmin?`
+    <div class="card">
+      <div class="card-title">⏱️ Dispatch Reconciliation Alerts</div>
+      <div class="form-group">
+        <label>Alert threshold (minutes)</label>
+        <input type="number" id="s-dra-threshold" min="15" max="240" step="5" placeholder="60" value="${window._draThresholdCache||60}">
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">Range 15–240 minutes. Default 60. Controls when Flow A (packing→dispatch gap) and Flow B (scan-out without record) alerts trigger.</div>
+      </div>
+      <button class="btn btn-primary btn-sm" onclick="saveDraThreshold()">Save Threshold</button>
+      <div id="dra-threshold-msg" style="margin-top:8px;font-size:11px"></div>
+    </div>`:''}
     ${isAdmin?`
     <div class="card">
       <div class="card-title">🔐 Admin Tools</div>
@@ -6871,6 +7555,52 @@ function savePrinterUrl(){
   const url=document.getElementById('s-printer')?.value.trim()||'';
   localStorage.setItem('sunloc_printer_url',url);
   alert(url?'✅ Printer URL saved.':'✅ ZPL download mode activated.');
+}
+
+// v37I Part A: Settings persistence for Dispatch Reconciliation threshold.
+// Stored in system_settings table via /api/settings endpoint. Validates 15-240 range.
+async function saveDraThreshold(){
+  const v = parseInt(document.getElementById('s-dra-threshold')?.value);
+  const msg = document.getElementById('dra-threshold-msg');
+  if (!Number.isFinite(v) || v < 15 || v > 240) {
+    if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ Value must be between 15 and 240 minutes.'; }
+    return;
+  }
+  if (!serverUrl) { if (msg) msg.textContent='✗ Server not configured'; return; }
+  try {
+    const r = await fetch(serverUrl + '/api/settings/dispatchReconcileThresholdMin', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({value: String(v)})
+    });
+    const j = await r.json();
+    if (j.ok) {
+      window._draThresholdCache = v;
+      if (msg) { msg.style.color='var(--green)'; msg.textContent='✅ Threshold updated to '+v+' minutes. New alerts use this value from the next scan cycle.'; }
+    } else {
+      if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ '+(j.error||'Save failed'); }
+    }
+  } catch(e) {
+    if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ Network error: '+e.message; }
+  }
+}
+
+// v37I Part A: Load threshold on Settings render so the input shows current value
+async function _loadDraThreshold() {
+  if (!serverUrl) return;
+  try {
+    const r = await fetch(serverUrl + '/api/settings/dispatchReconcileThresholdMin', {signal:AbortSignal.timeout(5000)});
+    if (!r.ok) return;
+    const j = await r.json();
+    if (j.ok && j.value) {
+      const v = parseInt(j.value);
+      if (v >= 15 && v <= 240) {
+        window._draThresholdCache = v;
+        const el = document.getElementById('s-dra-threshold');
+        if (el) el.value = v;
+      }
+    }
+  } catch(e) { /* silent */ }
 }
 
 function clearAllScans(){

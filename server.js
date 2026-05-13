@@ -397,6 +397,36 @@ const MIGRATIONS = [
     );
     CREATE INDEX IF NOT EXISTS idx_month_archives_month ON month_archives(month);`
   },
+  {
+    // v37I: Migration #12 — dispatch reconciliation alerts
+    // Two flow types:
+    //   'A' = Flow A: packing-out scan without matching dispatch-in within threshold
+    //   'B' = Flow B: dispatch-out scan without manual dispatch record covering it
+    // Acknowledge fields support 4-hour expiry so alerts resurface if still unresolved.
+    version: 12,
+    name: 'dispatch_reconcile_alerts',
+    sql: `CREATE TABLE IF NOT EXISTS dispatch_reconcile_alerts (
+      id TEXT PRIMARY KEY,
+      batch_number TEXT NOT NULL,
+      label_id TEXT,
+      alert_type TEXT NOT NULL CHECK(alert_type IN ('A','B')),
+      triggered_at TEXT NOT NULL DEFAULT (datetime('now')),
+      acknowledged_at TEXT,
+      acknowledged_by TEXT,
+      ack_reason TEXT,
+      ack_expires_at TEXT,
+      resolved_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_dra_batch ON dispatch_reconcile_alerts(batch_number);
+    CREATE INDEX IF NOT EXISTS idx_dra_type_resolved ON dispatch_reconcile_alerts(alert_type, resolved_at);
+    CREATE INDEX IF NOT EXISTS idx_dra_label ON dispatch_reconcile_alerts(label_id);
+    CREATE TABLE IF NOT EXISTS system_settings (
+      key TEXT PRIMARY KEY,
+      value TEXT,
+      updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_by TEXT
+    );`
+  },
 ];
 
 function runMigrations() {
@@ -1164,6 +1194,34 @@ async function ensurePostgresTables() {
         console.warn(`[v37G migration] could not add column ${colName} to tracking_dispatch_actuals:`, e.message);
       }
     }
+
+    // v37I: dispatch_reconcile_alerts — Flow A and Flow B 60-min reconciliation alerts
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS dispatch_reconcile_alerts (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        label_id TEXT,
+        alert_type TEXT NOT NULL CHECK(alert_type IN ('A','B')),
+        triggered_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        acknowledged_at TEXT,
+        acknowledged_by TEXT,
+        ack_reason TEXT,
+        ack_expires_at TEXT,
+        resolved_at TEXT
+      )
+    `);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dra_batch ON dispatch_reconcile_alerts(batch_number)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dra_type_resolved ON dispatch_reconcile_alerts(alert_type, resolved_at)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dra_label ON dispatch_reconcile_alerts(label_id)`);
+    // v37I: system_settings — generic key/value config (used for dispatchReconcileThresholdMin and future settings)
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS system_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        updated_by TEXT
+      )
+    `);
 
     // reconciliation_requests
     await pgPool.query(`
@@ -4569,20 +4627,317 @@ app.put('/api/tracking/dispatch-record/:id', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════════
+// v37I PART A: DISPATCH RECONCILIATION ALERTS
+// ═══════════════════════════════════════════════════════════════════
+// Two flow types tracked:
+//   Flow A: packing-out scan without matching dispatch-in scan within threshold
+//   Flow B: dispatch-out scan without manual dispatch record covering it
+//
+// Default threshold: 60 minutes (configurable in system_settings as 'dispatchReconcileThresholdMin')
+// Acknowledged alerts auto-expire after 4 hours; resurface if still unresolved.
+// Background job runs every 60 seconds to detect new triggers idempotently.
+
+const DRA_ACK_EXPIRY_MS = 4 * 60 * 60 * 1000; // 4 hours
+
+async function _getDraThresholdMin() {
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT value FROM system_settings WHERE key='dispatchReconcileThresholdMin' LIMIT 1`);
+      if (r.rows[0]?.value) { const n = parseInt(r.rows[0].value); if (n >= 15 && n <= 240) return n; }
+    } else {
+      const r = db.prepare(`SELECT value FROM system_settings WHERE key='dispatchReconcileThresholdMin' LIMIT 1`).get();
+      if (r?.value) { const n = parseInt(r.value); if (n >= 15 && n <= 240) return n; }
+    }
+  } catch(e) { /* fall through to default */ }
+  return 60;
+}
+
+// v37I: Generic system_settings GET/POST — key/value config store
+app.get('/api/settings/:key', async (req, res) => {
+  try {
+    const key = req.params.key;
+    let row;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT value FROM system_settings WHERE key=$1 LIMIT 1`, [key]);
+      row = r.rows[0];
+    } else {
+      row = db.prepare(`SELECT value FROM system_settings WHERE key=? LIMIT 1`).get(key);
+    }
+    res.json({ ok: true, value: row?.value || null });
+  } catch(err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.post('/api/settings/:key', async (req, res) => {
+  try {
+    const key = req.params.key;
+    const value = req.body?.value;
+    if (typeof value !== 'string' && typeof value !== 'number') {
+      return res.status(400).json({ ok: false, error: 'value must be string or number' });
+    }
+    const valStr = String(value).slice(0, 1000);
+    const ts = new Date().toISOString();
+    if (pgPool) {
+      await pgPool.query(`
+        INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES ($1, $2, $3, $4)
+        ON CONFLICT (key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at, updated_by = EXCLUDED.updated_by
+      `, [key, valStr, ts, req.body?.updated_by || 'admin']);
+    } else {
+      db.prepare(`
+        INSERT INTO system_settings (key, value, updated_at, updated_by) VALUES (?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at, updated_by = excluded.updated_by
+      `).run(key, valStr, ts, req.body?.updated_by || 'admin');
+    }
+    res.json({ ok: true, value: valStr });
+  } catch(err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/tracking/reconcile-alerts — active alerts for Report J
+// Filters out resolved AND not-yet-expired acknowledged ones.
+app.get('/api/tracking/reconcile-alerts', async (req, res) => {
+  try {
+    const now = new Date().toISOString();
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`
+        SELECT * FROM dispatch_reconcile_alerts
+        WHERE resolved_at IS NULL
+          AND (acknowledged_at IS NULL OR ack_expires_at IS NULL OR ack_expires_at < $1)
+        ORDER BY triggered_at ASC`, [now]);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`
+        SELECT * FROM dispatch_reconcile_alerts
+        WHERE resolved_at IS NULL
+          AND (acknowledged_at IS NULL OR ack_expires_at IS NULL OR ack_expires_at < ?)
+        ORDER BY triggered_at ASC`).all(now);
+    }
+    res.json({ ok: true, alerts: rows });
+  } catch(err) {
+    console.error('[reconcile-alerts]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/tracking/reconcile-alerts/ack — acknowledge an alert with reason
+// Body: { id, reason, ack_by? }
+// Sets ack_expires_at = now + 4h. Alert resurfaces after expiry if still unresolved.
+app.post('/api/tracking/reconcile-alerts/ack', async (req, res) => {
+  try {
+    const { id, reason, ack_by } = req.body || {};
+    if (!id || !reason || !reason.trim()) {
+      return res.status(400).json({ ok: false, error: 'id and reason required' });
+    }
+    const now = new Date();
+    const ackAt = now.toISOString();
+    const expiresAt = new Date(now.getTime() + DRA_ACK_EXPIRY_MS).toISOString();
+    const ackByVal = (ack_by || 'unknown').toString().slice(0, 100);
+    if (pgPool) {
+      await pgPool.query(`
+        UPDATE dispatch_reconcile_alerts
+        SET acknowledged_at=$1, acknowledged_by=$2, ack_reason=$3, ack_expires_at=$4
+        WHERE id=$5`, [ackAt, ackByVal, reason.toString().slice(0,500), expiresAt, id]);
+    } else {
+      db.prepare(`
+        UPDATE dispatch_reconcile_alerts
+        SET acknowledged_at=?, acknowledged_by=?, ack_reason=?, ack_expires_at=?
+        WHERE id=?`).run(ackAt, ackByVal, reason.toString().slice(0,500), expiresAt, id);
+    }
+    res.json({ ok: true });
+  } catch(err) {
+    console.error('[reconcile-alerts/ack]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// Background scan: every 60 seconds, identify new alert conditions and INSERT idempotently.
+// Idempotent because we check for an EXISTING active alert (resolved_at IS NULL) for the same
+// (label_id+type) for Flow A or (batch+type) for Flow B before inserting.
+async function _draScanAndInsert() {
+  try {
+    const thresholdMin = await _getDraThresholdMin();
+    const cutoffIso = new Date(Date.now() - thresholdMin * 60 * 1000).toISOString();
+    const now = new Date().toISOString();
+    const uid = () => 'dra_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,10);
+
+    // ── Flow A: packing-out scans older than threshold with no dispatch-in for same label ──
+    // Need: every label_id that has a packing-out scan ts <= cutoffIso AND has no dispatch-in scan
+    let candidatesA = [];
+    if (pgPool) {
+      const r = await pgPool.query(`
+        SELECT p.label_id, p.batch_number, p.ts
+        FROM tracking_scans p
+        WHERE p.dept='packing' AND p.type='out' AND p.ts <= $1
+          AND NOT EXISTS (
+            SELECT 1 FROM tracking_scans di
+            WHERE di.label_id = p.label_id AND di.dept='dispatch' AND di.type='in'
+          )
+      `, [cutoffIso]);
+      candidatesA = r.rows;
+    } else {
+      candidatesA = db.prepare(`
+        SELECT p.label_id, p.batch_number, p.ts
+        FROM tracking_scans p
+        WHERE p.dept='packing' AND p.type='out' AND p.ts <= ?
+          AND NOT EXISTS (
+            SELECT 1 FROM tracking_scans di
+            WHERE di.label_id = p.label_id AND di.dept='dispatch' AND di.type='in'
+          )
+      `).all(cutoffIso);
+    }
+    // Resolve auto-closed alerts: any Flow A active alert whose label_id now has dispatch-in
+    if (pgPool) {
+      await pgPool.query(`
+        UPDATE dispatch_reconcile_alerts SET resolved_at=$1
+        WHERE alert_type='A' AND resolved_at IS NULL
+          AND label_id IN (SELECT label_id FROM tracking_scans WHERE dept='dispatch' AND type='in')
+      `, [now]);
+    } else {
+      db.prepare(`
+        UPDATE dispatch_reconcile_alerts SET resolved_at=?
+        WHERE alert_type='A' AND resolved_at IS NULL
+          AND label_id IN (SELECT label_id FROM tracking_scans WHERE dept='dispatch' AND type='in')
+      `).run(now);
+    }
+    // Insert new candidates
+    for (const c of candidatesA) {
+      if (!c.label_id) continue;
+      let existing;
+      if (pgPool) {
+        const r = await pgPool.query(
+          `SELECT id FROM dispatch_reconcile_alerts WHERE alert_type='A' AND label_id=$1 AND resolved_at IS NULL LIMIT 1`,
+          [c.label_id]);
+        existing = r.rows[0];
+      } else {
+        existing = db.prepare(
+          `SELECT id FROM dispatch_reconcile_alerts WHERE alert_type='A' AND label_id=? AND resolved_at IS NULL LIMIT 1`)
+          .get(c.label_id);
+      }
+      if (existing) continue;
+      const newId = uid();
+      if (pgPool) {
+        await pgPool.query(
+          `INSERT INTO dispatch_reconcile_alerts (id,batch_number,label_id,alert_type,triggered_at) VALUES ($1,$2,$3,'A',$4)`,
+          [newId, c.batch_number, c.label_id, c.ts]);
+      } else {
+        db.prepare(
+          `INSERT INTO dispatch_reconcile_alerts (id,batch_number,label_id,alert_type,triggered_at) VALUES (?,?,?,'A',?)`)
+          .run(newId, c.batch_number, c.label_id, c.ts);
+      }
+    }
+
+    // ── Flow B: dispatch-out scans where batch has uncovered box count > 0 past threshold ──
+    // Aggregate per batch — alert keyed to batch_number (label_id null)
+    let candidatesB = [];
+    if (pgPool) {
+      const r = await pgPool.query(`
+        SELECT s.batch_number,
+               MIN(s.ts) AS earliest_ts,
+               COUNT(*) AS scan_out_boxes,
+               COALESCE((SELECT SUM(boxes) FROM tracking_dispatch_records dr WHERE dr.batch_number = s.batch_number), 0) AS recorded_boxes
+        FROM tracking_scans s
+        WHERE s.dept='dispatch' AND s.type='out'
+        GROUP BY s.batch_number
+        HAVING MIN(s.ts) <= $1
+           AND COUNT(*) > COALESCE((SELECT SUM(boxes) FROM tracking_dispatch_records dr WHERE dr.batch_number = s.batch_number), 0)
+      `, [cutoffIso]);
+      candidatesB = r.rows;
+    } else {
+      candidatesB = db.prepare(`
+        SELECT s.batch_number,
+               MIN(s.ts) AS earliest_ts,
+               COUNT(*) AS scan_out_boxes,
+               COALESCE((SELECT SUM(boxes) FROM tracking_dispatch_records dr WHERE dr.batch_number = s.batch_number), 0) AS recorded_boxes
+        FROM tracking_scans s
+        WHERE s.dept='dispatch' AND s.type='out'
+        GROUP BY s.batch_number
+        HAVING MIN(s.ts) <= ?
+           AND COUNT(*) > COALESCE((SELECT SUM(boxes) FROM tracking_dispatch_records dr WHERE dr.batch_number = s.batch_number), 0)
+      `).all(cutoffIso);
+    }
+    // Resolve auto-closed Flow B alerts: batches where recorded boxes >= scan-out boxes
+    if (pgPool) {
+      await pgPool.query(`
+        UPDATE dispatch_reconcile_alerts SET resolved_at=$1
+        WHERE alert_type='B' AND resolved_at IS NULL
+          AND batch_number IN (
+            SELECT s.batch_number FROM tracking_scans s
+            WHERE s.dept='dispatch' AND s.type='out'
+            GROUP BY s.batch_number
+            HAVING COUNT(*) <= COALESCE((SELECT SUM(boxes) FROM tracking_dispatch_records dr WHERE dr.batch_number = s.batch_number), 0)
+          )
+      `, [now]);
+    } else {
+      db.prepare(`
+        UPDATE dispatch_reconcile_alerts SET resolved_at=?
+        WHERE alert_type='B' AND resolved_at IS NULL
+          AND batch_number IN (
+            SELECT s.batch_number FROM tracking_scans s
+            WHERE s.dept='dispatch' AND s.type='out'
+            GROUP BY s.batch_number
+            HAVING COUNT(*) <= COALESCE((SELECT SUM(boxes) FROM tracking_dispatch_records dr WHERE dr.batch_number = s.batch_number), 0)
+          )
+      `).run(now);
+    }
+    // Insert new Flow B candidates
+    for (const c of candidatesB) {
+      if (!c.batch_number) continue;
+      let existing;
+      if (pgPool) {
+        const r = await pgPool.query(
+          `SELECT id FROM dispatch_reconcile_alerts WHERE alert_type='B' AND batch_number=$1 AND resolved_at IS NULL LIMIT 1`,
+          [c.batch_number]);
+        existing = r.rows[0];
+      } else {
+        existing = db.prepare(
+          `SELECT id FROM dispatch_reconcile_alerts WHERE alert_type='B' AND batch_number=? AND resolved_at IS NULL LIMIT 1`)
+          .get(c.batch_number);
+      }
+      if (existing) continue;
+      const newId = uid();
+      if (pgPool) {
+        await pgPool.query(
+          `INSERT INTO dispatch_reconcile_alerts (id,batch_number,label_id,alert_type,triggered_at) VALUES ($1,$2,NULL,'B',$3)`,
+          [newId, c.batch_number, c.earliest_ts]);
+      } else {
+        db.prepare(
+          `INSERT INTO dispatch_reconcile_alerts (id,batch_number,label_id,alert_type,triggered_at) VALUES (?,?,NULL,'B',?)`)
+          .run(newId, c.batch_number, c.earliest_ts);
+      }
+    }
+  } catch(e) {
+    console.warn('[dra-scan] failed:', e?.message);
+  }
+}
+
+// Start background scan loop (60s interval). Won't run during tests if global flag set.
+if (typeof process !== 'undefined' && !process.env.SUNLOC_DISABLE_BG_JOBS) {
+  setInterval(_draScanAndInsert, 60 * 1000);
+  // Run once after startup to populate immediately (delayed so DB migrations complete first)
+  setTimeout(_draScanAndInsert, 15 * 1000);
+}
+
 // GET /api/tracking/scan-summary — ALL scan counts aggregated by batch+dept+type (no LIMIT)
 // This is the correct data source for all reports — replaces raw scan fetching
+// v37I (restoring v37G): each query is individually guarded so one bad table never takes
+// down the whole endpoint. Without this, a schema gap on any one table would 500 all reports.
 app.get('/api/tracking/scan-summary', async (req, res) => {
   try {
     let scanRows, wastageRows, dispatchRows;
     if (pgPool) {
-      const [r1, r2, r3] = await Promise.all([
-        pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type'),
-        pgPool.query('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type'),
-        pgPool.query('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records GROUP BY batch_number')
+      const safeQuery = async (sql) => {
+        try { return (await pgPool.query(sql)).rows; }
+        catch(e) { console.warn('[scan-summary] query failed:', e.message); return []; }
+      };
+      [scanRows, wastageRows, dispatchRows] = await Promise.all([
+        safeQuery('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type'),
+        safeQuery('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type'),
+        safeQuery('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records GROUP BY batch_number')
       ]);
-      scanRows     = r1.rows;
-      wastageRows  = r2.rows;
-      dispatchRows = r3.rows;
     } else {
       scanRows     = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type').all();
       wastageRows  = db.prepare('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type').all();
