@@ -8171,6 +8171,22 @@ function closePlanSidebar() {
       applyRoleRestrictions();
       updateUserBadge();
       render();
+      // Fallback: if daily printing is empty after page refresh, reload from server
+      setTimeout(async () => {
+        if ((state.dailyPrinting||[]).length === 0) {
+          try {
+            let _su = ''; try { _su = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+            if (!_su && window.location.hostname !== 'localhost') _su = window.location.origin;
+            const _dlr = await fetch(_su + '/api/daily-printing', { signal: AbortSignal.timeout(8000) });
+            const _dlj = await _dlr.json();
+            if (_dlj.ok && Array.isArray(_dlj.logs) && _dlj.logs.length > 0) {
+              state.dailyPrinting = _dlj.logs;
+              console.log('[DailyPrinting] Fallback loaded', _dlj.logs.length, 'logs after refresh');
+              if (state.currentPage === 'daily-printing') render();
+            }
+          } catch(e) { console.warn('[DailyPrinting] Fallback load failed:', e?.message); }
+        }
+      }, 2000);
       return;
     } catch(e) {}
   }
