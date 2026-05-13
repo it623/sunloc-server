@@ -460,7 +460,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v37I</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v37H</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1641,44 +1641,6 @@ async function fetchDayFromServer(fl, d){
     }
   }catch(e){ console.warn('fetchDayFromServer failed:', e?.message); }
   return null;
-}
-
-// v37I: Sync a date range of DPR data from server into localStorage
-async function syncDateRangeFromServer(floors, fromDate, toDate) {
-  if (!serverUrl || !floors || !floors.length) return;
-  const targets = [];
-  for (const fl of floors) {
-    try {
-      const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(fl), {signal: AbortSignal.timeout(6000)});
-      if (!r.ok) continue;
-      const j = await r.json();
-      if (!j.ok || !Array.isArray(j.dates)) continue;
-      for (const d of j.dates) {
-        if (d < fromDate || d > toDate) continue;
-        if (localStorage.getItem(skey(fl, d))) continue;
-        targets.push({fl, d});
-      }
-    } catch (e) { console.warn('[DPR sync] dates list failed for', fl, e?.message); }
-  }
-  if (!targets.length) return;
-  const BATCH = 6;
-  for (let i = 0; i < targets.length; i += BATCH) {
-    const slice = targets.slice(i, i + BATCH);
-    await Promise.all(slice.map(t => fetchDayFromServer(t.fl, t.d)));
-  }
-}
-
-// v37I: Resolve from-date for a range mode
-function _dprFromDateForMode(mode) {
-  const t = today();
-  switch (mode) {
-    case 'month':  return `${_dprSelectedMonth}-01`;
-    case '30d':    return addDaysStr(t, -30);
-    case '90d':    return addDaysStr(t, -90);
-    case '180d':   return addDaysStr(t, -180);
-    case '365d':   return addDaysStr(t, -365);
-    default:       return t;
-  }
 }
 
 async function fetchActiveOrders(){
@@ -2936,15 +2898,14 @@ async function renderAnalytics(){
   const rangeEl = document.getElementById('analytics-range-bar');
   if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setAnalyticsRange');
 
-  // v37I: For ALL range modes, sync server data before computing.
+  // For range modes other than 'today', aggregate across date range
+  const dates = getDprDateRange(fl, rangeMode);
+
+  // For today mode: fetch from server; for range: use local data
   if (rangeMode === 'today') {
     const serverData = await fetchDayFromServer(fl, d);
     if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
-  } else {
-    await syncDateRangeFromServer([fl], _dprFromDateForMode(rangeMode), today());
   }
-  // For range modes other than 'today', aggregate across date range
-  const dates = getDprDateRange(fl, rangeMode);
 
   // Build aggregated stats across all dates in range
   const mcs = getActiveMachines(fl);
@@ -3097,7 +3058,7 @@ function chartOpts(){
 // ═══════════════════════════════════════════════════════
 // TRENDS
 // ═══════════════════════════════════════════════════════
-async function renderTrends(){
+function renderTrends(){
   const fl  = document.getElementById('trendFloor')?.value || 'ALL';
   const floors = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
   const rangeMode = window._trendsRangeMode || 'month';
@@ -3106,9 +3067,7 @@ async function renderTrends(){
   const rangeEl = document.getElementById('trends-range-bar');
   if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setTrendsRange');
 
-  // v37I: Sync server data BEFORE reading localStorage
-  await syncDateRangeFromServer(floors, _dprFromDateForMode(rangeMode), today());
-  const dates = getDprDateRange(fl, rangeMode);
+  const dates = getDprDateRange(fl === 'ALL' ? 'GF' : fl, rangeMode);
 
   if (dates.length === 0) {
     ['ch-tprod','ch-tdt','ch-teff','ch-trs'].forEach(id => destroyChart(id));
@@ -3139,7 +3098,7 @@ async function renderTrends(){
 // ═══════════════════════════════════════════════════════
 // AIM STATUS
 // ═══════════════════════════════════════════════════════
-async function renderAIM(){
+function renderAIM(){
   // Floor selector — default to curFloor but allow override via _aimFloor
   const fl = window._aimFloor || curFloor;
   const d  = getDate();
@@ -3413,7 +3372,10 @@ async function renderPerf(){
     const serverData = await fetchDayFromServer(fl, d);
     if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
   } else {
-    await syncDateRangeFromServer([fl], _dprFromDateForMode(rangeMode), today());
+    // Fetch all dates in range from server
+    for (const date of dates.slice(-7)) { // fetch last 7 days from server
+      try { const sd = await fetchDayFromServer(fl, date); if(sd) localStorage.setItem(skey(fl,date), JSON.stringify(sd)); } catch(e) {}
+    }
   }
   const serverData = await fetchDayFromServer(fl, d);
   if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
