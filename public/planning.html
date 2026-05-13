@@ -834,7 +834,26 @@ const SYNC = (() => {
         // Save local dailyPrinting before overwrite — merge after
         const _localDailyPrinting = JSON.parse(JSON.stringify(state.dailyPrinting || []));
         Object.assign(state, serverState);
-        // Merge dailyPrinting — keep any local entries not yet on server
+        // IMPORTANT: serverState blob never contains dailyPrinting (excluded from save)
+        // so Object.assign just wiped state.dailyPrinting — restore from dedicated table immediately
+        try {
+          const _dlResp = await fetch(_url + '/api/daily-printing', { signal: AbortSignal.timeout(8000) });
+          const _dlJson = await _dlResp.json();
+          if (_dlJson.ok && Array.isArray(_dlJson.logs)) {
+            const _dlMap = new Map();
+            [..._dlJson.logs, ..._localDailyPrinting].forEach(l => { if (l.id && !_dlMap.has(l.id)) _dlMap.set(l.id, l); });
+            state.dailyPrinting = [..._dlMap.values()];
+            console.log('[DailyPrinting] Reloaded', _dlJson.logs.length, 'logs from dedicated table after server sync');
+          } else {
+            // Fallback: restore local if server fetch failed
+            state.dailyPrinting = _localDailyPrinting;
+          }
+        } catch(e) {
+          // Fallback: restore local on error
+          state.dailyPrinting = _localDailyPrinting;
+          console.warn('[DailyPrinting] Reload failed, using local:', e?.message);
+        }
+        // Merge dailyPrinting — keep any local entries not yet on server (legacy path)
         if (_localDailyPrinting.length > 0) {
           const serverIds = new Set((state.dailyPrinting||[]).map(l=>l.id));
           const missing = _localDailyPrinting.filter(l => l.id && !serverIds.has(l.id));
