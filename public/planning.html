@@ -971,6 +971,22 @@ const SYNC = (() => {
               state.printOrders.push(dbP); changed = true;
             }
           });
+          // After merge, dedup local state and delete losers from DB
+          const _syncPoMap = new Map();
+          for (const p of state.printOrders) {
+            const _k = `${p.productionOrderId||p.batchNumber||p.id}__${p.machineId||''}__${p.printType||''}`;
+            const _e = _syncPoMap.get(_k);
+            const _hM = p.machineId && p.machineId !== 'null' && p.machineId !== '';
+            const _eHM = _e && _e.machineId && _e.machineId !== 'null' && _e.machineId !== '';
+            if (!_e || (!_eHM && _hM)) _syncPoMap.set(_k, p);
+          }
+          if (_syncPoMap.size < state.printOrders.length) {
+            const _kept = new Set([..._syncPoMap.values()].map(p=>p.id));
+            const _lost = state.printOrders.filter(p=>!_kept.has(p.id)).map(p=>p.id);
+            _lost.forEach(id => fetch(_url+'/api/print-orders/'+id, {method:'DELETE'}).catch(()=>{}));
+            state.printOrders = [..._syncPoMap.values()];
+            changed = true;
+          }
           // State updated silently — no auto-render to prevent screen flipping
         }
       }
@@ -1538,6 +1554,13 @@ async function loadFromKV() {
             if (!_ex || (!_exHasM && _hasM)) _poMap.set(_key, p);
           }
           state.printOrders = [..._poMap.values()];
+          // Delete loser duplicate IDs from DB immediately so they never come back
+          const keptIds = new Set(state.printOrders.map(p=>p.id));
+          const lostIds = prj.printOrders.filter(p=>!keptIds.has(p.id)).map(p=>p.id);
+          if (lostIds.length > 0) {
+            console.log('[PrintOrders] Deleting', lostIds.length, 'duplicate IDs from DB:', lostIds);
+            lostIds.forEach(id => fetch(_url+'/api/print-orders/'+id, {method:'DELETE'}).catch(()=>{}));
+          }
           console.log('[PrintOrders] Loaded', prj.printOrders.length, '→ deduped to', state.printOrders.length);
         }
       }
@@ -1577,8 +1600,14 @@ async function loadFromKV() {
             if (!_ex || (!_exHasM && _hasM)) _poMap2.set(_key, p);
           }
           state.printOrders = [..._poMap2.values()];
+          // Delete loser duplicate IDs from DB immediately
+          const _keptIds2 = new Set(state.printOrders.map(p=>p.id));
+          const _lostIds2 = prjPO.printOrders.filter(p=>!_keptIds2.has(p.id)).map(p=>p.id);
+          if (_lostIds2.length > 0) {
+            console.log('[PrintOrders] Deleting', _lostIds2.length, 'duplicate IDs from DB:', _lostIds2);
+            _lostIds2.forEach(id => fetch(_urlPO+'/api/print-orders/'+id, {method:'DELETE'}).catch(()=>{}));
+          }
           console.log('[PrintOrders] Guaranteed load:', prjPO.printOrders.length, '→ deduped to', state.printOrders.length);
-          console.log('[PrintOrders] Guaranteed load:', prjPO.printOrders.length);
         }
       }
     }
