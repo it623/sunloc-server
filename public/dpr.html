@@ -2937,16 +2937,14 @@ async function renderAnalytics(){
   if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setAnalyticsRange');
 
   // v37I: For ALL range modes, sync server data before computing.
+  if (rangeMode === 'today') {
+    const serverData = await fetchDayFromServer(fl, d);
+    if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
   } else {
     await syncDateRangeFromServer([fl], _dprFromDateForMode(rangeMode), today());
   }
   // For range modes other than 'today', aggregate across date range
   const dates = getDprDateRange(fl, rangeMode);
-  // Previously only 'today' fetched from server; range modes used localStorage.
-  if (rangeMode === 'today') {
-    const serverData = await fetchDayFromServer(fl, d);
-    if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
-  }
 
   // Build aggregated stats across all dates in range
   const mcs = getActiveMachines(fl);
