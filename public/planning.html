@@ -1525,9 +1525,20 @@ async function loadFromKV() {
       if (prRes.ok) {
         const prj = await prRes.json();
         if (prj.ok && Array.isArray(prj.printOrders) && prj.printOrders.length > 0) {
-          // Server is always authoritative for print orders — full replace
-          state.printOrders = prj.printOrders;
-          console.log('[PrintOrders] Loaded', prj.printOrders.length, 'from dedicated table');
+          // Dedup: same batch+machine combo (or same productionOrderId+machine) — keep assigned over null
+          const poDedup = new Map();
+          for (const p of prj.printOrders) {
+            const key = p.productionOrderId
+              ? `${p.productionOrderId}__${p.machineId||''}__${p.printType||''}`
+              : `${p.batchNumber||p.pcCode}__${p.machineId||''}__${p.printType||''}`;
+            const existing = poDedup.get(key);
+            // Keep the one with a real machineId; on tie keep most-recently-updated
+            if (!existing || (!existing.machineId && p.machineId) ) {
+              poDedup.set(key, p);
+            }
+          }
+          state.printOrders = [...poDedup.values()];
+          console.log('[PrintOrders] Loaded', prj.printOrders.length, '→ deduped to', state.printOrders.length, 'from dedicated table');
         }
       }
     } catch(e) { console.warn('[PrintOrders] Load failed:', e?.message); }
@@ -1557,8 +1568,16 @@ async function loadFromKV() {
       if (prResPO.ok) {
         const prjPO = await prResPO.json();
         if (prjPO.ok && Array.isArray(prjPO.printOrders) && prjPO.printOrders.length > 0) {
-          state.printOrders = prjPO.printOrders;
-          console.log('[PrintOrders] Guaranteed load:', prjPO.printOrders.length);
+          const poDedup2 = new Map();
+          for (const p of prjPO.printOrders) {
+            const key = p.productionOrderId
+              ? `${p.productionOrderId}__${p.machineId||''}__${p.printType||''}`
+              : `${p.batchNumber||p.pcCode}__${p.machineId||''}__${p.printType||''}`;
+            const existing = poDedup2.get(key);
+            if (!existing || (!existing.machineId && p.machineId)) poDedup2.set(key, p);
+          }
+          state.printOrders = [...poDedup2.values()];
+          console.log('[PrintOrders] Guaranteed load:', prjPO.printOrders.length, '→ deduped to', state.printOrders.length);
         }
       }
     }
@@ -4332,7 +4351,22 @@ function renderDailyPrinting() {
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `<button class="btn btn-primary btn-sm" onclick="showDailyPrintingModal()">+ Log Today's Printing</button>`;
 
-  const allLogs = state.dailyPrinting.sort((a,b)=>new Date(b.date)-new Date(a.date));
+  // Dedup by id (in case DB returned duplicates), then by date+machine+printOrderId (keep latest)
+  const seenLogIds = new Map();
+  for (const l of state.dailyPrinting) {
+    if (!l.id) continue;
+    const existing = seenLogIds.get(l.id);
+    if (!existing) seenLogIds.set(l.id, l);
+  }
+  // Also dedup by natural key: same date + machineId + printOrderId → keep one
+  const seenLogKeys = new Map();
+  for (const l of seenLogIds.values()) {
+    const dateStr = l.date ? new Date(l.date).toDateString() : 'nodate';
+    const natKey = `${dateStr}__${l.machineId||''}__${l.printOrderId||l.pcCode||''}`;
+    const existing = seenLogKeys.get(natKey);
+    if (!existing || (l.id > existing.id)) seenLogKeys.set(natKey, l); // keep latest id
+  }
+  const allLogs = [...seenLogKeys.values()].sort((a,b)=>new Date(b.date)-new Date(a.date));
 
   // Collect unique filter values
   const uniqueDates   = [...new Set(allLogs.map(l => toDateInput(new Date(l.date))))].sort((a,b)=>b.localeCompare(a));

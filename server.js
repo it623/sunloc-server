@@ -1560,7 +1560,18 @@ app.get('/api/orders/all', async (req, res) => {
 app.get('/api/print-orders', async (req, res) => {
   try {
     if (!pgPool) return res.json({ ok: true, printOrders: [] });
-    const r = await pgPool.query('SELECT * FROM print_orders ORDER BY updated_at DESC');
+    const r = await pgPool.query(`
+      SELECT DISTINCT ON (
+        COALESCE(production_order_id, batch_number),
+        COALESCE(machine_id,''),
+        COALESCE(print_type,'')
+      ) * FROM print_orders
+      ORDER BY
+        COALESCE(production_order_id, batch_number),
+        COALESCE(machine_id,''),
+        COALESCE(print_type,''),
+        updated_at DESC NULLS LAST
+    `);
     res.json({ ok: true, printOrders: r.rows.map(row => ({
       id: row.id, machineId: row.machine_id, customer: row.customer,
       batchNumber: row.batch_number, pcCode: row.pc_code, size: row.size,
@@ -3289,7 +3300,11 @@ app.get('/api/daily-printing', async (req, res) => {
   try {
     let rows;
     if (pgPool) {
-      const r = await pgPool.query('SELECT data_json FROM daily_printing ORDER BY date DESC, updated_at DESC');
+      const r = await pgPool.query(`
+        SELECT DISTINCT ON (date, machine_id, COALESCE(print_order_id,''), COALESCE(data_json->>'pcCode',''))
+          data_json FROM daily_printing
+        ORDER BY date DESC, machine_id, COALESCE(print_order_id,''), COALESCE(data_json->>'pcCode',''), updated_at DESC
+      `);
       rows = r.rows.map(r => typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json);
     } else {
       rows = db.prepare('SELECT data_json FROM daily_printing ORDER BY date DESC, updated_at DESC').all()
