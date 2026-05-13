@@ -1037,7 +1037,9 @@ const SYNC = (() => {
             if (dbO.batchNumber==='26V049' && (dbO.customer||'').includes('SHYAM')) return;
             // Add if not already present
             if (!existingIds.has(dbO.id)) {
-              state.orders.push(dbO);
+              // Mark as coming from DB — these already have print orders in dedicated table
+              // so auto-create should NOT run for them
+              state.orders.push({...dbO, _skipAutoPrintOrder: true});
               existingIds.add(dbO.id);
               ordersChanged = true;
               console.log('[Orders] Added missing order from DB:', dbO.batchNumber, dbO.machineId);
@@ -3260,8 +3262,13 @@ function saveOrderModal(existingId, defaultMachine) {
     state.orders.push(ord);
   }
 
-  // Auto-create print order if PTD
-  if (isPrinted && !state.printOrders.find(p=>p.productionOrderId===ord.id)) {
+  // Auto-create print order if PTD — only if truly no print order exists for this production order
+  // Check both by productionOrderId AND by batchNumber to avoid re-creating deleted null-machineId duplicates
+  const _existingPO = state.printOrders.find(p =>
+    p.productionOrderId === ord.id ||
+    (p.batchNumber && ord.batchNumber && p.batchNumber === ord.batchNumber)
+  );
+  if (isPrinted && !_existingPO && !ord._skipAutoPrintOrder) {
     const printStart = new Date(startDate);
     printStart.setHours(printStart.getHours() + 16);
     state.printOrders.push({
@@ -3495,29 +3502,35 @@ function confirmSAPImport(rows) {
     state.orders.push(ord);
     machinesAffected.add(machineId);
 
-    // Auto-create print order if PTD
+    // Auto-create print order if PTD — only if no print order exists for this batch/production order
     if (isPrinted) {
-      const printStart = new Date(startDate);
-      printStart.setHours(printStart.getHours() + 16);
-      state.printOrders.push({
-        id: uid(),
-        productionOrderId: ord.id,
-        batchNumber: ord.batchNumber,
-        customer: ord.customer,
-        size,
-        pcCode: ord.pcCode,
-        colour: ord.colour,
-        printMatter: ord.printMatter,
-        printType: 'C', // v37E P3: explicit default to Circular
-        zone: ord.zone,
-        orderQty: qty,
-        qtyToPrint: qty * (1 + STD_PRINT_WASTE) * (1 + STD_PI_WASTE), // v37E Q5: same formula as calcPrintQtyAndStart
-        startDate: printStart,
-        endDate: null,
-        machineId: null,
-        status: 'pending',
-        remarks: '',
-      });
+      const _existingPO2 = state.printOrders.find(p =>
+        p.productionOrderId === ord.id ||
+        (p.batchNumber && ord.batchNumber && p.batchNumber === ord.batchNumber)
+      );
+      if (!_existingPO2 && !ord._skipAutoPrintOrder) {
+        const printStart = new Date(startDate);
+        printStart.setHours(printStart.getHours() + 16);
+        state.printOrders.push({
+          id: uid(),
+          productionOrderId: ord.id,
+          batchNumber: ord.batchNumber,
+          customer: ord.customer,
+          size,
+          pcCode: ord.pcCode,
+          colour: ord.colour,
+          printMatter: ord.printMatter,
+          printType: 'C', // v37E P3: explicit default to Circular
+          zone: ord.zone,
+          orderQty: qty,
+          qtyToPrint: qty * (1 + STD_PRINT_WASTE) * (1 + STD_PI_WASTE), // v37E Q5: same formula as calcPrintQtyAndStart
+          startDate: printStart,
+          endDate: null,
+          machineId: null,
+          status: 'pending',
+          remarks: '',
+        });
+      }
     }
 
     // Auto-create dispatch plan (T+2 UP / T+3 PTD)
