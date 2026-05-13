@@ -513,7 +513,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v37I</p>
+      <p>Planning Suite v3.0 · build v37H</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1517,10 +1517,10 @@ async function loadFromKV() {
       }
     }
 
-    // Daily printing from dedicated table
+    // Daily printing from dedicated table — always load from server (authoritative)
     if (dlRes.status==='fulfilled' && dlRes.value.ok) {
       const j = await dlRes.value.json();
-      if (j.ok && Array.isArray(j.logs) && j.logs.length > 0) {
+      if (j.ok && Array.isArray(j.logs)) {
         const serverIds = new Set(j.logs.map(l=>l.id));
         const localOnly = (state.dailyPrinting||[]).filter(l=>l.id && !serverIds.has(l.id));
         // Dedup merged list by id — prevent duplicates entering state
@@ -4812,21 +4812,8 @@ function getOrderReadyDate(p) {
   return p.plannedDate ? new Date(p.plannedDate) : new Date('9999-12-31');
 }
 
-// v37I B7 + B8: getTruckMinCapacity — minimum boxes for a truck to be dispatchable.
-// Below this, the truck is "partial" and is held to next dispatch date UNLESS it's the last
-// planned date for any order in the truck. Configurable in state.zoneMinCapacities, default 50% of max.
-function getTruckMinCapacity(zone) {
-  if (zone && state.zoneMinCapacities && state.zoneMinCapacities[zone]) {
-    return state.zoneMinCapacities[zone];
-  }
-  // Default: half of max capacity (sensible safe default; admin can override per zone in Settings)
-  return Math.floor(getTruckCapacity(zone) * 0.5);
-}
-
 function buildTruckPlans(zone) {
   const cap = getTruckCapacity(zone);
-  const minCap = getTruckMinCapacity(zone);
-  const isExport = isExportZone(zone);
 
   // Get all non-dispatched plans for this zone
   const plans = state.dispatchPlans
@@ -4842,104 +4829,59 @@ function buildTruckPlans(zone) {
     return da.getTime() - db.getTime();
   });
 
-  // v37I B7: For EXPORT zones, group orders by indent (poNumber || containerRef) and build
-  // one truck per indent regardless of size. Different indents NEVER combine into the same truck.
-  // Within an indent, fill greedily across multiple trucks if the indent exceeds capacity.
+  // Fill trucks greedily in date order using zone-specific capacity
+  // Orders larger than cap are SPLIT across trucks
   const trucks = [];
+  let currentTruck = { truckNumber: 1, zone, orders: [], totalBoxes: 0 };
 
-  if (isExport) {
-    // Group plans by indent identifier
-    const indentGroups = new Map();
-    for (const p of sorted) {
-      const indentKey = p.containerRef || p.poNumber || `order-${p.productionOrderId || p.id}`;
-      if (!indentGroups.has(indentKey)) indentGroups.set(indentKey, []);
-      indentGroups.get(indentKey).push(p);
+  const finalizeTruck = () => {
+    if (currentTruck.orders.length > 0) {
+      trucks.push(currentTruck);
+      currentTruck = { truckNumber: trucks.length + 1, zone, orders: [], totalBoxes: 0 };
     }
-    // Build trucks per indent — separate trucks for separate indents, never mixed
-    for (const [indentKey, indentOrders] of indentGroups) {
-      let truck = { truckNumber: trucks.length + 1, zone, orders: [], totalBoxes: 0, indentKey, isExportIndent: true };
-      for (const p of indentOrders) {
-        let remainingBoxes = p.boxes || 0;
-        let splitIndex = 0;
-        while (remainingBoxes > 0) {
-          const spaceInTruck = cap - truck.totalBoxes;
-          if (spaceInTruck <= 0) {
-            // Finalise current truck and start a new one FOR THIS SAME INDENT
-            if (truck.orders.length > 0) trucks.push(truck);
-            truck = { truckNumber: trucks.length + 1, zone, orders: [], totalBoxes: 0, indentKey, isExportIndent: true };
-            continue;
-          }
-          const boxesThisTruck = Math.min(remainingBoxes, spaceInTruck);
-          const isSplit = remainingBoxes > boxesThisTruck || splitIndex > 0;
-          const splitRatio = (p.boxes && p.boxes > 0) ? boxesThisTruck / p.boxes : 1;
-          truck.orders.push({
-            ...p,
-            boxes: boxesThisTruck,
-            _originalBoxes: p.boxes || 0,
-            _isSplit: isSplit,
-            _splitPart: splitIndex + 1,
-            qty: p.qty && p.boxes ? (p.qty / p.boxes) * boxesThisTruck : p.qty,
-            packedBoxes: Math.round(parseInt(p.packedBoxes||0, 10) * splitRatio)
-          });
-          truck.totalBoxes += boxesThisTruck;
-          remainingBoxes -= boxesThisTruck;
-          splitIndex++;
-        }
+  };
+
+  for (const p of sorted) {
+    let remainingBoxes = p.boxes || 0;
+    let splitIndex = 0;
+
+    while (remainingBoxes > 0) {
+      const spaceInTruck = cap - currentTruck.totalBoxes;
+
+      if (spaceInTruck <= 0) {
+        finalizeTruck();
+        continue;
       }
-      // Push the final truck for this indent (could be partial — that's OK for export, per-indent rule)
-      if (truck.orders.length > 0) trucks.push(truck);
-    }
-  } else {
-    // Non-export zones: original greedy fill across orders
-    let currentTruck = { truckNumber: 1, zone, orders: [], totalBoxes: 0 };
-    const finalizeTruck = () => {
-      if (currentTruck.orders.length > 0) {
-        trucks.push(currentTruck);
-        currentTruck = { truckNumber: trucks.length + 1, zone, orders: [], totalBoxes: 0 };
-      }
-    };
 
-    for (const p of sorted) {
-      let remainingBoxes = p.boxes || 0;
-      let splitIndex = 0;
+      const boxesThisTruck = Math.min(remainingBoxes, spaceInTruck);
+      const isSplit = remainingBoxes > boxesThisTruck || splitIndex > 0;
 
-      while (remainingBoxes > 0) {
-        const spaceInTruck = cap - currentTruck.totalBoxes;
+      // Create a (possibly partial) order entry for this truck
+      // Scale qty and packedBoxes proportionally when order is split across trucks
+      const splitRatio = (p.boxes && p.boxes > 0) ? boxesThisTruck / p.boxes : 1;
+      const orderEntry = {
+        ...p,
+        boxes: boxesThisTruck,
+        _originalBoxes: p.boxes || 0,
+        _isSplit: isSplit,
+        _splitPart: splitIndex + 1,
+        qty: p.qty && p.boxes ? (p.qty / p.boxes) * boxesThisTruck : p.qty,
+        // Scale packedBoxes proportionally — prevents double-counting when split
+        packedBoxes: Math.round(parseInt(p.packedBoxes||0, 10) * splitRatio),
+      };
 
-        if (spaceInTruck <= 0) {
-          finalizeTruck();
-          continue;
-        }
+      currentTruck.orders.push(orderEntry);
+      currentTruck.totalBoxes += boxesThisTruck;
+      remainingBoxes -= boxesThisTruck;
+      splitIndex++;
 
-        const boxesThisTruck = Math.min(remainingBoxes, spaceInTruck);
-        const isSplit = remainingBoxes > boxesThisTruck || splitIndex > 0;
-
-        // Create a (possibly partial) order entry for this truck
-        // Scale qty and packedBoxes proportionally when order is split across trucks
-        const splitRatio = (p.boxes && p.boxes > 0) ? boxesThisTruck / p.boxes : 1;
-        const orderEntry = {
-          ...p,
-          boxes: boxesThisTruck,
-          _originalBoxes: p.boxes || 0,
-          _isSplit: isSplit,
-          _splitPart: splitIndex + 1,
-          qty: p.qty && p.boxes ? (p.qty / p.boxes) * boxesThisTruck : p.qty,
-          packedBoxes: Math.round(parseInt(p.packedBoxes||0, 10) * splitRatio),
-        };
-
-        currentTruck.orders.push(orderEntry);
-        currentTruck.totalBoxes += boxesThisTruck;
-        remainingBoxes -= boxesThisTruck;
-        splitIndex++;
-
-        // If truck is now full, close it
-        if (currentTruck.totalBoxes >= cap) {
-          finalizeTruck();
-        }
+      // If truck is now full, close it
+      if (currentTruck.totalBoxes >= cap) {
+        finalizeTruck();
       }
     }
-    if (currentTruck.orders.length > 0) trucks.push(currentTruck);
   }
+  if (currentTruck.orders.length > 0) trucks.push(currentTruck);
 
   // ETD for each truck = latest ready date among its orders (the bottleneck order)
   trucks.forEach(truck => {
@@ -4955,43 +4897,6 @@ function buildTruckPlans(zone) {
       return !worst || d > getOrderReadyDate(worst) ? p : worst;
     }, null)?.id || null;
   });
-
-  // v37I B8: Partial-truck Option (ii) — defer trucks below min capacity to next dispatch date,
-  // UNLESS one or more orders in the truck have their LAST planned dispatch date in this truck
-  // (i.e. their final lot — there's no "next" date to defer to, so ship as partial).
-  // Export trucks are exempt: B7 already mandates one-truck-per-indent regardless of size.
-  if (!isExport) {
-    trucks.forEach(truck => {
-      truck.belowMin = truck.totalBoxes < minCap;
-      if (!truck.belowMin) {
-        truck.held = false;
-        return;
-      }
-      // Check if any order in the truck has THIS truck containing its last planned dispatch lot.
-      // An order is "ending here" if either:
-      //   (a) it has a lotNo === lotTotal (split dispatch on final lot), OR
-      //   (b) there's no future dispatch plan for the same productionOrderId or batchNumber
-      const anyOrderEndsHere = truck.orders.some(o => {
-        if (o.lotTotal && o.lotNo && o.lotNo >= o.lotTotal) return true;
-        // No future plans for same prod order ID after this truck's etd
-        const futurePlansForOrder = state.dispatchPlans.filter(dp =>
-          dp.status !== 'dispatched' &&
-          (dp.zone||'Unassigned') === zone &&
-          (dp.productionOrderId === o.productionOrderId || dp.batchNumber === o.batchNumber) &&
-          dp.id !== o.id &&
-          dp.plannedDate && truck.etd && new Date(dp.plannedDate).getTime() > truck.etd.getTime()
-        );
-        return futurePlansForOrder.length === 0;
-      });
-      // Held only if below min AND no order in the truck is on its final dispatch date
-      truck.held = !anyOrderEndsHere;
-      if (truck.held) {
-        truck._heldReason = `Partial truck (${truck.totalBoxes}/${minCap} min) — deferred to next dispatch date`;
-      }
-    });
-  } else {
-    trucks.forEach(truck => { truck.belowMin = truck.totalBoxes < minCap; truck.held = false; });
-  }
 
   return trucks;
 }
@@ -5301,74 +5206,10 @@ function renderDispatch() {
     const zPlans = z==='all' ? plans : plans.filter(p=>(p.zone||'Unassigned')===z);
     const totalQty = zPlans.reduce((s,p)=>s+p.qty,0);
     const dispatched = zPlans.reduce((s,p)=>s+(p.actualDispatched||0),0);
-    // v37I B6: build distinct dropdown values from this zone's plans
-    const distinctCustomers = [...new Set(zPlans.map(p=>p.customer).filter(Boolean))].sort();
-    const distinctPCs = [...new Set(zPlans.map(p=>p.pcCode).filter(Boolean))].sort();
-    const distinctColours = [...new Set(zPlans.map(p=>p.colour).filter(Boolean))].sort();
-    const distinctSizes = [...new Set(zPlans.map(p=>p.size).filter(Boolean))].sort();
-    const distinctZones = [...new Set(zPlans.map(p=>p.zone || 'Unassigned'))].sort();
-    const distinctMonths = [...new Set(zPlans.map(p=>p.month).filter(Boolean))].sort();
-    const distinctStatuses = [...new Set(zPlans.map(p=>p.status||'pending').filter(Boolean))].sort();
     html += `
       <div class="dispatch-zone-panel ${z!=='all'?'dispatch-zone-panel-zone':''}" data-zone="${z}" ${z!=='all'?'style="display:none"':''}>
         <div class="card mb-4">
           <div class="card-title">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
-          <!-- v37I B6: Sticky filter bar above the order view table. AND-logic. Persists in session. -->
-          <div class="pov-filter-bar" data-zone="${z}" style="display:flex;gap:6px;flex-wrap:wrap;padding:8px;background:var(--surface2);border-radius:4px;margin-bottom:6px;position:sticky;top:0;z-index:11;border:1px solid var(--border)">
-            <input type="text" placeholder="Customer" value="${(window._planningOrderViewFilters||{}).customer||''}"
-                   oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.customer=this.value;filterPlanningOrderView('${z}')"
-                   list="pov-customers-${z}"
-                   style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;min-width:120px">
-            <datalist id="pov-customers-${z}">${distinctCustomers.map(c=>`<option value="${c.replace(/"/g,'&quot;')}">`).join('')}</datalist>
-            <input type="text" placeholder="Batch" value="${(window._planningOrderViewFilters||{}).batch||''}"
-                   oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.batch=this.value;filterPlanningOrderView('${z}')"
-                   style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;min-width:100px">
-            <input type="text" placeholder="PC Code" value="${(window._planningOrderViewFilters||{}).pcCode||''}"
-                   oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.pcCode=this.value;filterPlanningOrderView('${z}')"
-                   list="pov-pcs-${z}"
-                   style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;min-width:100px">
-            <datalist id="pov-pcs-${z}">${distinctPCs.map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}">`).join('')}</datalist>
-            <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.month=this.value;filterPlanningOrderView('${z}')"
-                    style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
-              <option value="">All Months</option>
-              ${distinctMonths.map(m=>`<option value="${m}" ${((window._planningOrderViewFilters||{}).month===m)?'selected':''}>${m}</option>`).join('')}
-            </select>
-            <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.colour=this.value;filterPlanningOrderView('${z}')"
-                    style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
-              <option value="">All Colours</option>
-              ${distinctColours.map(c=>`<option value="${c}" ${((window._planningOrderViewFilters||{}).colour===c)?'selected':''}>${c}</option>`).join('')}
-            </select>
-            <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.size=this.value;filterPlanningOrderView('${z}')"
-                    style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
-              <option value="">All Sizes</option>
-              ${distinctSizes.map(s=>`<option value="${s}" ${((window._planningOrderViewFilters||{}).size===s)?'selected':''}>${s}</option>`).join('')}
-            </select>
-            <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.ptdUp=this.value;filterPlanningOrderView('${z}')"
-                    style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
-              <option value="">PTD/UP All</option>
-              <option value="PTD" ${((window._planningOrderViewFilters||{}).ptdUp==='PTD')?'selected':''}>PTD</option>
-              <option value="UP" ${((window._planningOrderViewFilters||{}).ptdUp==='UP')?'selected':''}>UP</option>
-            </select>
-            <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.zone=this.value;filterPlanningOrderView('${z}')"
-                    style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
-              <option value="">All Zones</option>
-              ${distinctZones.map(zn=>`<option value="${zn}" ${((window._planningOrderViewFilters||{}).zone===zn)?'selected':''}>${zn}</option>`).join('')}
-            </select>
-            <input type="date" placeholder="From" value="${(window._planningOrderViewFilters||{}).plannedDateFrom||''}"
-                   onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.plannedDateFrom=this.value;filterPlanningOrderView('${z}')"
-                   style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px" title="Planned Date From">
-            <input type="date" placeholder="To" value="${(window._planningOrderViewFilters||{}).plannedDateTo||''}"
-                   onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.plannedDateTo=this.value;filterPlanningOrderView('${z}')"
-                   style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px" title="Planned Date To">
-            <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.status=this.value;filterPlanningOrderView('${z}')"
-                    style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
-              <option value="">All Status</option>
-              ${distinctStatuses.map(st=>`<option value="${st}" ${((window._planningOrderViewFilters||{}).status===st)?'selected':''}>${st}</option>`).join('')}
-            </select>
-            <button class="btn btn-ghost btn-sm" style="padding:4px 10px;font-size:11px"
-                    onclick="window._planningOrderViewFilters={};document.querySelectorAll('.pov-filter-bar input, .pov-filter-bar select').forEach(i=>{if(i.tagName==='SELECT')i.selectedIndex=0;else i.value='';});filterPlanningOrderView('${z}')">✕ Clear</button>
-            <span class="pov-filter-count" data-zone="${z}" style="margin-left:auto;align-self:center;font-size:10px;color:var(--text-muted)"></span>
-          </div>
           <div class="table-wrap dispatch-order-view-wrap" style="max-height:70vh;overflow:auto">
             <table class="dispatch-order-view-table">
               <thead><tr>
@@ -5378,7 +5219,7 @@ function renderDispatch() {
               </tr></thead>
               <tbody>
                 ${zPlans.map(p=>renderDispatchRow(p)).join('')}
-                <tr class="pov-total-row" style="background:var(--surface2);font-weight:600">
+                <tr style="background:var(--surface2);font-weight:600">
                   <td class="freeze-col-1" colspan="8">TOTAL</td>
                   <td class="text-mono text-accent">${fmt(totalQty)}</td>
                   <td class="text-mono">${zPlans.reduce((s,p)=>s+(p.boxes||0),0)}</td>
@@ -5400,14 +5241,6 @@ function renderDispatch() {
   html += '<div id="dispatch-view-trucks" style="display:none">' + renderTruckViewHTML(zones) + '</div>';
 
   document.getElementById('content').innerHTML = html;
-
-  // v37I B6: Reapply persisted filters (after render) so user returning to the page sees their last filter state
-  const persistedFilters = window._planningOrderViewFilters;
-  if (persistedFilters && Object.values(persistedFilters).some(v => v && v !== '')) {
-    setTimeout(() => {
-      ['all', ...zones].forEach(z => filterPlanningOrderView(z));
-    }, 100);
-  }
 }
 
 function renderDispatchRow(p) {
@@ -5436,21 +5269,7 @@ function renderDispatchRow(p) {
     ? `<span style="color:${packedOut>=p.qty*0.99?'var(--accent3)':'var(--accent2)'};">${fmt(packedOut)}L</span><span style="color:var(--text3);font-size:10px"> (${packPct}%)</span>`
     : '<span style="color:var(--text3);font-size:11px">—</span>';
 
-  // v37I B6: data-attrs for sticky filter bar (filterPlanningOrderView matches against these)
-  const dataAttrs = [
-    `data-customer="${(p.customer||'').replace(/"/g,'&quot;').toLowerCase()}"`,
-    `data-batch="${(p.batchNumber||'').toLowerCase()}"`,
-    `data-pccode="${(p.pcCode||'').toLowerCase()}"`,
-    `data-month="${month}"`,
-    `data-colour="${(p.colour||'').toLowerCase()}"`,
-    `data-size="${(p.size||'').toLowerCase()}"`,
-    `data-ptdup="${p.packing==='PTD'?'PTD':'UP'}"`,
-    `data-zone="${(p.zone||'').replace(/"/g,'&quot;')}"`,
-    `data-planneddate="${p.plannedDate||''}"`,
-    `data-status="${p.status||'pending'}"`
-  ].join(' ');
-
-  return `<tr ${dataAttrs}>
+  return `<tr>
     <td class="freeze-col-1" style="font-weight:500">${p.customer||'-'}${containerInfo}</td>
     <td class="freeze-col-2 text-mono">${p.batchNumber||'-'}${lotBadge}</td>
     <td class="freeze-col-3 text-mono text-accent">${p.pcCode||'-'}</td>
@@ -5497,44 +5316,6 @@ function switchDispatchViewTab(el, view) {
   if (trucksEl) trucksEl.style.display = view==='trucks' ? '' : 'none';
 }
 
-// v37I B6: Apply AND-logic filters to Planning Order View table rows in-place using data-attributes.
-// Filter state persists across navigations within session via window._planningOrderViewFilters.
-// Hides total row when filters are active (recomputing partial total would be expensive).
-function filterPlanningOrderView(zone) {
-  const f = window._planningOrderViewFilters || {};
-  const panel = document.querySelector(`.dispatch-zone-panel[data-zone="${zone}"]`);
-  if (!panel) return;
-  const tbody = panel.querySelector('.dispatch-order-view-table tbody');
-  if (!tbody) return;
-  let visibleCount = 0, totalCount = 0;
-  [...tbody.querySelectorAll('tr')].forEach(row => {
-    if (row.classList.contains('pov-total-row')) return; // handle separately
-    totalCount++;
-    const ds = row.dataset;
-    let visible = true;
-    if (f.customer && !ds.customer.includes(f.customer.toLowerCase())) visible = false;
-    if (f.batch && !ds.batch.includes(f.batch.toLowerCase())) visible = false;
-    if (f.pcCode && !ds.pccode.includes(f.pcCode.toLowerCase())) visible = false;
-    if (f.month && ds.month !== f.month) visible = false;
-    if (f.colour && ds.colour !== f.colour.toLowerCase()) visible = false;
-    if (f.size && ds.size !== f.size.toLowerCase()) visible = false;
-    if (f.ptdUp && ds.ptdup !== f.ptdUp) visible = false;
-    if (f.zone && ds.zone !== f.zone) visible = false;
-    if (f.plannedDateFrom && ds.planneddate && ds.planneddate < f.plannedDateFrom) visible = false;
-    if (f.plannedDateTo && ds.planneddate && ds.planneddate > f.plannedDateTo) visible = false;
-    if (f.status && ds.status !== f.status) visible = false;
-    row.style.display = visible ? '' : 'none';
-    if (visible) visibleCount++;
-  });
-  // Hide TOTAL row when any filter is active (totals would not match filtered rows)
-  const hasActiveFilter = Object.values(f).some(v => v && v !== '');
-  const totalRow = tbody.querySelector('.pov-total-row');
-  if (totalRow) totalRow.style.display = hasActiveFilter ? 'none' : '';
-  // Update count display
-  const countEl = panel.querySelector('.pov-filter-count');
-  if (countEl) countEl.textContent = hasActiveFilter ? `${visibleCount} of ${totalCount} shown` : '';
-}
-
 function renderTruckViewHTML(zones) {
   const cap = getTruckCapacity();
   const allZones = zones.length > 0 ? zones : [...new Set(state.dispatchPlans.map(p=>p.zone||'Unassigned'))].sort();
@@ -5574,28 +5355,16 @@ function renderTruckCard(truck, cap) {
   const isFull = truck.totalBoxes >= truckCap;
   const etdStr = truck.etd ? fmtDate(truck.etd) : '—';
   const packedPct = truck.totalBoxes > 0 ? Math.min(100,(truck.packedBoxes/truck.totalBoxes*100)).toFixed(0) : 0;
-  // v37I B7 + B8: Status badges for export-indent and held-partial trucks
-  let extraBadges = '';
-  if (truck.isExportIndent) {
-    const indentLabel = truck.indentKey ? `Indent: ${truck.indentKey.length>20?truck.indentKey.slice(0,20)+'…':truck.indentKey}` : 'Export Indent';
-    extraBadges += `<span class="badge" style="background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.25);margin-left:6px;font-size:10px">🚢 ${indentLabel}</span>`;
-  }
-  if (truck.held) {
-    extraBadges += `<span class="badge" style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);margin-left:6px;font-size:10px" title="${(truck._heldReason||'').replace(/"/g,'&quot;')}">⏸ Held (partial)</span>`;
-  } else if (truck.belowMin && !truck.isExportIndent) {
-    extraBadges += `<span class="badge" style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);margin-left:6px;font-size:10px" title="Partial truck on final dispatch date — shipping as is">📅 Final Lot (partial OK)</span>`;
-  }
 
   return `
-    <div style="background:var(--surface2);border:1px solid ${truck.held?'rgba(255,171,0,0.4)':(isFull?'var(--accent3)':'var(--border)')};border-radius:8px;padding:14px;cursor:pointer;${truck.held?'opacity:0.85':''}"
+    <div style="background:var(--surface2);border:1px solid ${isFull?'var(--accent3)':'var(--border)'};border-radius:8px;padding:14px;cursor:pointer"
          onclick="toggleTruckDetail('truck-${truck.zone.replace(/\s/g,'-')}-${truck.truckNumber}')">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:4px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px">
         <div style="font-weight:700;font-size:14px;font-family:var(--mono);color:var(--accent)">
           Truck ${truck.truckNumber}
-          ${truck.held?'<span class="badge" style="background:rgba(255,171,0,0.18);color:#ffab00;margin-left:6px">⏸ Held</span>':(isFull?'<span class="badge badge-completed" style="margin-left:6px">Full</span>':'<span class="badge badge-pending" style="margin-left:6px">Filling</span>')}
-          ${extraBadges}
+          ${isFull?'<span class="badge badge-completed" style="margin-left:6px">Full</span>':'<span class="badge badge-pending" style="margin-left:6px">Filling</span>'}
         </div>
-        <div style="font-size:12px;color:var(--text3)">ETD: <span style="color:${truck.held?'var(--accent4)':(isFull?'var(--accent3)':'var(--text)')};font-family:var(--mono);font-weight:600">${truck.held?'Deferred':etdStr}</span></div>
+        <div style="font-size:12px;color:var(--text3)">ETD: <span style="color:${isFull?'var(--accent3)':'var(--text)'};font-family:var(--mono);font-weight:600">${etdStr}</span></div>
       </div>
       <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px;font-size:12px">
         <div style="text-align:center;background:var(--surface3);border-radius:4px;padding:6px">
@@ -8193,6 +7962,20 @@ async function doLogin() {
     updateUserBadge();
     render();
     auditLog('LOGIN', 'Logged in to Planning Suite');
+    // Fallback: if daily printing is empty after login, reload from server
+    setTimeout(async () => {
+      if ((state.dailyPrinting||[]).length === 0) {
+        try {
+          const _dlr = await fetch(serverUrl + '/api/daily-printing', { signal: AbortSignal.timeout(8000) });
+          const _dlj = await _dlr.json();
+          if (_dlj.ok && Array.isArray(_dlj.logs) && _dlj.logs.length > 0) {
+            state.dailyPrinting = _dlj.logs;
+            console.log('[DailyPrinting] Fallback loaded', _dlj.logs.length, 'logs after login');
+            if (state.currentPage === 'daily-printing') render();
+          }
+        } catch(e) { console.warn('[DailyPrinting] Fallback load failed:', e?.message); }
+      }
+    }, 2000);
   } catch(e) {
     errEl.textContent = 'Cannot reach server — check connection';
   }
