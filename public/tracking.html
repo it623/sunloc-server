@@ -2037,31 +2037,78 @@ function generateZPL(label, batch){
 ^XZ`;
   }
 
-  // ── MAIN WHITE LABEL ──────────────────────────────────────────
-  // PW=800 (100mm), LL=1200 (150mm) — matches label stock
-  // Content fills Y=50 to Y=1180 (full label height)
-  // 5 data rows x 116 dots (14.5mm each) — large, clear text
+  // ── MAIN WHITE LABEL — LANDSCAPE 4x6 (6"W x 4"H = 1200x800 dots at 203dpi) ──
+  // Matches sample: large bold title left-aligned, 2-col table, expiry, bottom QR row
 
-  const D  = isTemp||isWO ? 42 : 0;
+  const D  = isTemp||isWO ? 40 : 0;
   const hBand = isTemp
-    ? `^FO10,${136+D}^GB780,42,42^FS\n^CF0,24\n^FR^FO10,${146+D}^FB780,1,0,C^FD** TEMP BATCH - REPLACEMENT REQUIRED **^FS`
+    ? `^FO10,${160+D}^GB1180,40,40^FS\n^CF0,24\n^FR^FO10,${168+D}^FB1180,1,0,C^FD** TEMP BATCH - REPLACEMENT REQUIRED **^FS`
     : isWO
-    ? `^FO10,${136+D}^GB780,42,42^FS\n^CF0,24\n^FR^FO10,${146+D}^FB780,1,0,C^FDWITHOUT ORDER - CUSTOMER TO BE ASSIGNED^FS`
+    ? `^FO10,${160+D}^GB1180,40,40^FS\n^CF0,24\n^FR^FO10,${168+D}^FB1180,1,0,C^FDWITHOUT ORDER - CUSTOMER TO BE ASSIGNED^FS`
     : '';
-  const oBorder = isTemp
-    ? `^FO4,4^GB792,1192,5^FS\n^FO9,9^GB782,1182,2^FS\n`
-    : isWO ? `^FO4,4^GB792,1192,4^FS\n` : '';
 
-  const custY = 140 + D;
-  const tTop  = 180 + D;
-  const RH    = 90;             // compact rows to give QR maximum space
-  const tBot  = tTop + RH*5;   // 180+450=630 normal, 672 special
-  const expY  = tBot + 8;
-  const ruleY = tBot + 46;
-  const qrY   = ruleY + 10;    // QR starts here
-  const qRelY = qrY + 180;     // Q RELEASED text Y (centred beside large QR)
-  const sigY  = qrY + 60;      // SIGNATURE line Y
-  const botY  = 1180;          // fixed bottom rule
+  const custY = 148 + D;
+  const tTop  = 200 + D;
+  const RH    = 90;
+  const tBot  = tTop + RH*5;
+  const expY  = tBot + 10;
+  const ruleY = tBot + 48;
+  const qrY   = ruleY + 10;
+  const qrSize = 7;
+  return `^XA
+^CI28
+^PW1200
+^LL800
+^MMT
+^PON
+^LH0,0
+
+^CF0,56
+^FO10,20^FDSUNIL HEALTHCARE LIMITED^FS
+^CF0,32
+^FO10,84^FB1180,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
+^FO10,128^GB1180,2,2^FS
+${hBand}
+^CF0,30
+^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
+^FO10,${tTop-4}^GB1180,2,2^FS
+
+^FO10,${tTop}^GB590,${RH*5+2},2^FS
+^FO604,${tTop}^GB586,${RH*5+2},2^FS
+^FO10,${tTop+RH}^GB590,2,2^FS
+^FO10,${tTop+RH*2}^GB590,2,2^FS
+^FO10,${tTop+RH*3}^GB590,2,2^FS
+^FO10,${tTop+RH*4}^GB590,2,2^FS
+^FO604,${tTop+RH}^GB586,2,2^FS
+^FO604,${tTop+RH*2}^GB586,2,2^FS
+^FO604,${tTop+RH*3}^GB586,2,2^FS
+^FO604,${tTop+RH*4}^GB586,2,2^FS
+
+^CF0,30
+^FO20,${tTop+12}^FDQUANTITY      :  ${pieces}^FS
+^FO20,${tTop+RH+12}^FDSIZE               :  ${label.size}^FS
+^FO20,${tTop+RH*2+12}^FDCOLOUR CAP  :  ${colourCap}^FS
+^FO20,${tTop+RH*3+12}^FDCOLOUR BODY :  ${colourBody}^FS
+^FO20,${tTop+RH*4+12}^FDPRINTED        :^FS
+
+^FO614,${tTop+12}^FDBATCH NO.       :  ${batchNo}^FS
+^FO614,${tTop+RH+12}^FDCONTAINER NO. :  ${containerNo}^FS
+^FO614,${tTop+RH*2+12}^FDGROSS WT.     :^FS
+^FO614,${tTop+RH*3+12}^FDNETT WT.       :^FS
+^FO614,${tTop+RH*4+12}^FDMFG DATE      :  ${mfgDate}^FS
+
+^FO10,${tBot}^GB1180,2,2^FS
+^CF0,22
+^FO10,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
+^FO10,${ruleY}^GB1180,2,2^FS
+
+^FO10,${qrY}^BQN,2,${qrSize}^FDLA,${label.qrData}^FS
+^CF0,40
+^FO320,${qrY+30}^FB400,1,0,C^FDQ RELEASED^FS
+^CF0,28
+^FO850,${qrY+50}^FB300,1,0,C^FDSIGNATURE^FS
+^FO10,790^GB1180,3,3^FS
+^XZ`;
 
   return `^XA
 ^CI28
