@@ -1560,16 +1560,20 @@ app.get('/api/orders/all', async (req, res) => {
 app.get('/api/print-orders', async (req, res) => {
   try {
     if (!pgPool) return res.json({ ok: true, printOrders: [] });
+    // DISTINCT ON: one row per (productionOrderId,machineId,printType) — most-recently-updated wins
+    // This removes DB duplicates where same batch was saved twice (once assigned, once null)
     const r = await pgPool.query(`
       SELECT DISTINCT ON (
-        COALESCE(production_order_id, batch_number),
-        COALESCE(machine_id,''),
-        COALESCE(print_type,'')
-      ) * FROM print_orders
+        COALESCE(production_order_id, batch_number, id),
+        COALESCE(machine_id, ''),
+        COALESCE(print_type, '')
+      ) *
+      FROM print_orders
       ORDER BY
-        COALESCE(production_order_id, batch_number),
-        COALESCE(machine_id,''),
-        COALESCE(print_type,''),
+        COALESCE(production_order_id, batch_number, id),
+        COALESCE(machine_id, ''),
+        COALESCE(print_type, ''),
+        CASE WHEN machine_id IS NOT NULL AND machine_id != '' AND machine_id != 'null' THEN 0 ELSE 1 END,
         updated_at DESC NULLS LAST
     `);
     res.json({ ok: true, printOrders: r.rows.map(row => ({
@@ -1612,6 +1616,21 @@ app.post('/api/print-orders/bulk', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+
+// DELETE /api/print-orders/:id — permanently delete a single print order by ID
+app.delete("/api/print-orders/:id", async (req, res) => {
+  try {
+    const { id } = req.params;
+    if (!id) return res.status(400).json({ ok: false, error: "id required" });
+    if (pgPool) {
+      await pgPool.query("DELETE FROM print_orders WHERE id=$1", [id]);
+    } else {
+      db.prepare("DELETE FROM print_orders WHERE id=?").run(id);
+    }
+    console.log("[PrintOrders] Deleted:", id);
+    res.json({ ok: true, deleted: id });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 // GET /api/machines/master — get all machines from dedicated table
 app.get('/api/machines/master', async (req, res) => {
   try {
@@ -3300,11 +3319,7 @@ app.get('/api/daily-printing', async (req, res) => {
   try {
     let rows;
     if (pgPool) {
-      const r = await pgPool.query(`
-        SELECT DISTINCT ON (date, machine_id, COALESCE(print_order_id,''), COALESCE(data_json->>'pcCode',''))
-          data_json FROM daily_printing
-        ORDER BY date DESC, machine_id, COALESCE(print_order_id,''), COALESCE(data_json->>'pcCode',''), updated_at DESC
-      `);
+      const r = await pgPool.query('SELECT data_json FROM daily_printing ORDER BY date DESC, updated_at DESC');
       rows = r.rows.map(r => typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json);
     } else {
       rows = db.prepare('SELECT data_json FROM daily_printing ORDER BY date DESC, updated_at DESC').all()
