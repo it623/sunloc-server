@@ -1643,20 +1643,10 @@ async function fetchDayFromServer(fl, d){
   return null;
 }
 
-// v37I (restoring v37H): Sync a date range of DPR data from server into localStorage for one
-// or all floors. Required by Trends / Analytics / Shift Performance pages, which read from
-// localStorage but never previously hydrated it from the server. On a fresh browser session
-// (or after cache clear), localStorage is empty and these pages render blank charts even
-// though the server has the data. This helper fetches the dates list from
-// /api/dpr/dates/:floor, filters to the requested range, and pulls each missing day in
-// parallel.
-//
-// Concurrency: up to 6 parallel fetches per batch to avoid hammering the server.
-// Skip already-present dates (localStorage has them) to keep refresh-after-data-load fast.
-// fromDate / toDate are YYYY-MM-DD inclusive bounds.
+// v37I: Sync a date range of DPR data from server into localStorage
 async function syncDateRangeFromServer(floors, fromDate, toDate) {
   if (!serverUrl || !floors || !floors.length) return;
-  const targets = []; // {fl, d}
+  const targets = [];
   for (const fl of floors) {
     try {
       const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(fl), {signal: AbortSignal.timeout(6000)});
@@ -1678,8 +1668,7 @@ async function syncDateRangeFromServer(floors, fromDate, toDate) {
   }
 }
 
-// v37I (restoring v37H): Resolve from-date for a range mode (mirrors getDprDateRange's logic
-// but returns just the from-bound for the server sync call).
+// v37I: Resolve from-date for a range mode
 function _dprFromDateForMode(mode) {
   const t = today();
   switch (mode) {
@@ -1688,7 +1677,7 @@ function _dprFromDateForMode(mode) {
     case '90d':    return addDaysStr(t, -90);
     case '180d':   return addDaysStr(t, -180);
     case '365d':   return addDaysStr(t, -365);
-    default:       return t; // 'today'
+    default:       return t;
   }
 }
 
@@ -2947,18 +2936,17 @@ async function renderAnalytics(){
   const rangeEl = document.getElementById('analytics-range-bar');
   if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setAnalyticsRange');
 
-  // v37I (restoring v37H): For ALL range modes, sync server data before computing.
-  // Previously only 'today' fetched from server; range modes used localStorage which was
-  // empty on fresh browser sessions, causing blank charts and missing values.
-  if (rangeMode === 'today') {
-    const serverData = await fetchDayFromServer(fl, d);
-    if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
+  // v37I: For ALL range modes, sync server data before computing.
   } else {
     await syncDateRangeFromServer([fl], _dprFromDateForMode(rangeMode), today());
   }
-
   // For range modes other than 'today', aggregate across date range
   const dates = getDprDateRange(fl, rangeMode);
+  // Previously only 'today' fetched from server; range modes used localStorage.
+  if (rangeMode === 'today') {
+    const serverData = await fetchDayFromServer(fl, d);
+    if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
+  }
 
   // Build aggregated stats across all dates in range
   const mcs = getActiveMachines(fl);
@@ -3120,10 +3108,8 @@ async function renderTrends(){
   const rangeEl = document.getElementById('trends-range-bar');
   if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setTrendsRange');
 
-  // v37I (restoring v37H): Sync server data for the date range BEFORE reading localStorage.
-  // Previously this only used localStorage — fresh browser sessions saw blank charts.
+  // v37I: Sync server data BEFORE reading localStorage
   await syncDateRangeFromServer(floors, _dprFromDateForMode(rangeMode), today());
-
   const dates = getDprDateRange(fl, rangeMode);
 
   if (dates.length === 0) {
@@ -3162,15 +3148,6 @@ async function renderAIM(){
 
   // Date range — default to today; if cumulative mode use all dates in selected month
   const dateMode = window._aimDateMode || 'today'; // 'today' | 'month' | 'custom'
-
-  // v37I (restoring v37H): When in month mode, sync the entire month from server so
-  // localStorage is populated before we filter it. Without this, switching to 'This Month'
-  // on a fresh browser session only showed today.
-  if (dateMode === 'month') {
-    const aimAllFl = fl === 'ALL' ? Object.keys(FLOORS) : [fl];
-    await syncDateRangeFromServer(aimAllFl, `${_dprSelectedMonth}-01`, today());
-  }
-
   let datesToSum = [d];
   if (dateMode === 'month') {
     datesToSum = Object.keys(localStorage)
@@ -3431,21 +3408,17 @@ async function renderPerf(){
   const rangeEl = document.getElementById('perf-range-bar');
   if (rangeEl) rangeEl.innerHTML = _dprRangeSelectorHtml(rangeMode, '_setPerfRange');
 
-  // v37I (restoring v37H): For range modes, sync FULL range from server (was limited to
-  // last 7 days). Without this, charts for 30d / 90d / 6 months / 1 year had blank data
-  // on fresh sessions.
+  const dates = getDprDateRange(fl, rangeMode);
+
+  // Fetch from server for today's data
   if (rangeMode === 'today') {
     const serverData = await fetchDayFromServer(fl, d);
     if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
   } else {
     await syncDateRangeFromServer([fl], _dprFromDateForMode(rangeMode), today());
   }
-  // Always ensure selected date itself is fresh
   const serverData = await fetchDayFromServer(fl, d);
   if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
-
-  // v37I: Compute dates AFTER sync so newly-fetched data is reflected
-  const dates = getDprDateRange(fl, rangeMode);
   const day = loadDay(fl, d);
 
   // Scorecard for selected date
