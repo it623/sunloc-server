@@ -2037,28 +2037,24 @@ function generateZPL(label, batch){
 ^XZ`;
   }
 
-  // ── MAIN WHITE LABEL — LANDSCAPE 4x6 (6"W x 4"H = 1200x800 dots at 203dpi) ──
-  // Matches sample: large bold title left-aligned, 2-col table, expiry, bottom QR row
+  // ── MAIN WHITE LABEL — PORTRAIT 4"x6" (812x1218 dots at 203dpi) ──
+  // Sample layout: large title, 2-col table, expiry, bottom QR row
 
-  const D  = isTemp||isWO ? 40 : 0;
+  const D   = isTemp||isWO ? 42 : 0;
   const hBand = isTemp
-    ? `^FO10,${160+D}^GB1180,40,40^FS\n^CF0,24\n^FR^FO10,${168+D}^FB1180,1,0,C^FD** TEMP BATCH - REPLACEMENT REQUIRED **^FS`
+    ? `^FO10,${136+D}^GB792,42,42^FS\n^CF0,24\n^FR^FO10,${146+D}^FB780,1,0,C^FD** TEMP BATCH - REPLACEMENT REQUIRED **^FS`
     : isWO
-    ? `^FO10,${160+D}^GB1180,40,40^FS\n^CF0,24\n^FR^FO10,${168+D}^FB1180,1,0,C^FDWITHOUT ORDER - CUSTOMER TO BE ASSIGNED^FS`
+    ? `^FO10,${136+D}^GB792,42,42^FS\n^CF0,24\n^FR^FO10,${146+D}^FB780,1,0,C^FDWITHOUT ORDER - CUSTOMER TO BE ASSIGNED^FS`
     : '';
 
-  const custY = 148 + D;
-  const tTop  = 200 + D;
-  const RH    = 90;
+  const custY = 140 + D;
+  const tTop  = 185 + D;
+  const RH    = 116;
   const tBot  = tTop + RH*5;
   const expY  = tBot + 10;
-  const ruleY = tBot + 48;
+  const ruleY = tBot + 50;
   const qrY   = ruleY + 10;
-  const qrSize = 7;
-  // Landscape 6"x4": PW=812 (4"), LL=1218 (6"), rotate all fields 90deg (^FWR)
-  // X axis = across 4" (0-812), Y axis = along 6" (0-1218)
-  // After ^FWR: field origin FO(x,y) → x goes top-to-bottom, y goes right-to-left
-  // Map: label_x (0-1200) → FO y=(1200-label_x), label_y (0-800) → FO x=label_y
+
   return `^XA
 ^CI28
 ^PW812
@@ -2066,113 +2062,53 @@ function generateZPL(label, batch){
 ^MMT
 ^PON
 ^LH0,0
-^FWR
 
 ^CF0,56
-^FO20,1190^FDSUNIL HEALTHCARE LIMITED^FS
+^FO10,20^FDSUNIL HEALTHCARE LIMITED^FS
 ^CF0,32
-^FO84,1190^FB800,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
-^FO128,10^GB2,1190,2^FS
+^FO10,86^FB792,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
+^FO10,130^GB792,2,2^FS
 ${hBand}
-^CF0,30
-^FO${custY},1190^FDCUSTOMER NAME :  ${customerText}^FS
-^FO${tTop-4},10^GB2,1190,2^FS
-
-^FO${tTop},10^GB${RH*5+2},595,2^FS
-^FO${tTop},609^GB${RH*5+2},591,2^FS
-^FO${tTop+RH},10^GB2,595,2^FS
-^FO${tTop+RH*2},10^GB2,595,2^FS
-^FO${tTop+RH*3},10^GB2,595,2^FS
-^FO${tTop+RH*4},10^GB2,595,2^FS
-^FO${tTop+RH},609^GB2,591,2^FS
-^FO${tTop+RH*2},609^GB2,591,2^FS
-^FO${tTop+RH*3},609^GB2,591,2^FS
-^FO${tTop+RH*4},609^GB2,591,2^FS
-
-^CF0,30
-^FO${tTop+12},580^FDQUANTITY      :  ${pieces}^FS
-^FO${tTop+RH+12},580^FDSIZE               :  ${label.size}^FS
-^FO${tTop+RH*2+12},580^FDCOLOUR CAP  :  ${colourCap}^FS
-^FO${tTop+RH*3+12},580^FDCOLOUR BODY :  ${colourBody}^FS
-^FO${tTop+RH*4+12},580^FDPRINTED        :^FS
-
-^FO${tTop+12},1190^FDBATCH NO.       :  ${batchNo}^FS
-^FO${tTop+RH+12},1190^FDCONTAINER NO. :  ${containerNo}^FS
-^FO${tTop+RH*2+12},1190^FDGROSS WT.     :^FS
-^FO${tTop+RH*3+12},1190^FDNETT WT.       :^FS
-^FO${tTop+RH*4+12},1190^FDMFG DATE      :  ${mfgDate}^FS
-
-^FO${tBot},10^GB2,1190,2^FS
-^CF0,22
-^FO${expY},1190^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
-^FO${ruleY},10^GB2,1190,2^FS
-
-^FO${qrY},10^BQN,2,${qrSize}^FDLA,${label.qrData}^FS
-^CF0,40
-^FO${qrY+30},500^FB400,1,0,C^FDQ RELEASED^FS
 ^CF0,28
-^FO${qrY+50},1150^FB300,1,0,C^FDSIGNATURE^FS
-^FO790,10^GB2,1190,3^FS
-^XZ`;
-
-  return `^XA
-^CI28
-^PW800
-^LL1200
-^MMT
-^PON
-^LH0,0
-${oBorder}
-^CF0,46
-^FO10,50^FB780,1,0,C^FDSUNIL HEALTHCARE LIMITED^FS
-^CF0,30
-^FO10,102^FB780,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
-^FO10,${136+D}^GB780,2,2^FS
-${hBand}
-^CF0,26
 ^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
-^FO10,${tTop-4}^GB780,2,2^FS
+^FO10,${tTop-4}^GB792,2,2^FS
 
-^FO10,${tTop}^GB390,${RH*5+2},2^FS
-^FO404,${tTop}^GB386,${RH*5+2},2^FS
-^FO10,${tTop+RH}^GB390,2,2^FS
-^FO10,${tTop+RH*2}^GB390,2,2^FS
-^FO10,${tTop+RH*3}^GB390,2,2^FS
-^FO10,${tTop+RH*4}^GB390,2,2^FS
-^FO404,${tTop+RH}^GB386,2,2^FS
-^FO404,${tTop+RH*2}^GB386,2,2^FS
-^FO404,${tTop+RH*3}^GB386,2,2^FS
-^FO404,${tTop+RH*4}^GB386,2,2^FS
+^FO10,${tTop}^GB396,${RH*5+2},2^FS
+^FO408,${tTop}^GB394,${RH*5+2},2^FS
+^FO10,${tTop+RH}^GB396,2,2^FS
+^FO10,${tTop+RH*2}^GB396,2,2^FS
+^FO10,${tTop+RH*3}^GB396,2,2^FS
+^FO10,${tTop+RH*4}^GB396,2,2^FS
+^FO408,${tTop+RH}^GB394,2,2^FS
+^FO408,${tTop+RH*2}^GB394,2,2^FS
+^FO408,${tTop+RH*3}^GB394,2,2^FS
+^FO408,${tTop+RH*4}^GB394,2,2^FS
 
-^CF0,26
-^FO18,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
-^FO18,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
-^FO18,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
-^FO18,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
-^FO18,${tTop+RH*4+10}^FDPRINTED       :^FS
+^CF0,28
+^FO20,${tTop+10}^FDQUANTITY      :  ${pieces}^FS
+^FO20,${tTop+RH+10}^FDSIZE               :  ${label.size}^FS
+^FO20,${tTop+RH*2+10}^FDCOLOUR CAP  :  ${colourCap}^FS
+^FO20,${tTop+RH*3+10}^FDCOLOUR BODY :  ${colourBody}^FS
+^FO20,${tTop+RH*4+10}^FDPRINTED        :^FS
 
-^FO412,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
-^FO412,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
-^FO412,${tTop+RH*2+10}^FDGROSS WT.:^FS
-^FO412,${tTop+RH*3+10}^FDNETT WT.  :^FS
-^FO412,${tTop+RH*4+10}^FDMFG DATE:  ${mfgDate}^FS
+^FO418,${tTop+10}^FDBATCH NO.       :  ${batchNo}^FS
+^FO418,${tTop+RH+10}^FDCONTAINER NO. :  ${containerNo}^FS
+^FO418,${tTop+RH*2+10}^FDGROSS WT.     :^FS
+^FO418,${tTop+RH*3+10}^FDNETT WT.       :^FS
+^FO418,${tTop+RH*4+10}^FDMFG DATE      :  ${mfgDate}^FS
 
-^FO10,${tBot}^GB780,2,2^FS
+^FO10,${tBot}^GB792,2,2^FS
 ^CF0,20
 ^FO10,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
-^FO10,${ruleY}^GB780,2,2^FS
+^FO10,${ruleY}^GB792,2,2^FS
 
-^FO10,${qrY}^BQN,2,9^FDLA,${label.qrData}^FS
-^CF0,28
-^FO260,${qRelY}^FB300,1,0,C^FDQ RELEASED^FS
-^FO580,${sigY}^GB200,2,2^FS
-^CF0,22
-^FO580,${sigY+10}^FB200,1,0,C^FDSIGNATURE^FS
-
-^FO10,${botY}^GB780,3,3^FS
+^FO14,${qrY}^BQN,2,8^FDLA,${label.qrData}^FS
+^CF0,40
+^FO260,${qrY+60}^FB280,1,0,C^FDQ RELEASED^FS
+^CF0,26
+^FO580,${qrY+100}^FB200,1,0,C^FDSIGNATURE^FS
+^FO10,1208^GB792,3,3^FS
 ^XZ`;
-}
-
 
 function printLabel(labelId){
   const label = state.labels.find(l=>l.id===labelId);
