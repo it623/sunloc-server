@@ -916,6 +916,7 @@ const SYNC = (() => {
           if (pcr.ok) {
             const pcj = await pcr.json();
             if (pcj.ok && pcj.codes) {
+              // Always merge server codes into local — never overwrite (local may have newly added codes)
               Object.entries(pcj.codes).forEach(([sz, codes]) => {
                 if (!state.pcCodes[sz]) state.pcCodes[sz] = [];
                 codes.forEach(nc => {
@@ -923,6 +924,16 @@ const SYNC = (() => {
                     state.pcCodes[sz].push(nc);
                 });
               });
+              // Also re-add any locally saved PC codes that server might not have yet
+              if (_localPcCodesSnapshot) {
+                Object.entries(_localPcCodesSnapshot).forEach(([sz, codes]) => {
+                  if (!state.pcCodes[sz]) state.pcCodes[sz] = [];
+                  (codes||[]).forEach(nc => {
+                    if (!state.pcCodes[sz].find(e => e.c === nc.c))
+                      state.pcCodes[sz].push(nc);
+                  });
+                });
+              }
               console.log('[PC-Codes] Loaded', pcj.count, 'custom codes from server DB');
             }
           }
@@ -1201,6 +1212,7 @@ const SYNC = (() => {
               const trackingActual = actualsMap[dp.batchNumber];
               // v37I bugfix: Server is authoritative — always sync to server's SUM-based total.
               dp.actualDispatched = trackingActual;
+              dp._trackingDispatched = trackingActual; // mark as coming from tracking
               if (dp.actualDispatched >= dp.qty) dp.status = 'dispatched';
               else if (dp.actualDispatched > 0) dp.status = 'partial';
               else if (dp.status === 'partial' || dp.status === 'dispatched') dp.status = 'pending';
@@ -5332,7 +5344,12 @@ function renderDispatch() {
     html += `
       <div class="dispatch-zone-panel ${z!=='all'?'dispatch-zone-panel-zone':''}" data-zone="${z}" ${z!=='all'?'style="display:none"':''}>
         <div class="card mb-4">
-          <div class="card-title">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
+            <div class="card-title">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
+            <input type="text" placeholder="🔍 Search orders..." id="pov-quick-search-${z}"
+              oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.customer=this.value;window._planningOrderViewFilters.batch=this.value;window._planningOrderViewFilters._quickSearch=this.value;filterPlanningOrderView('${z}')"
+              style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:220px;background:var(--surface)">
+          </div>
           <!-- v37I B6: Sticky filter bar above the order view table. AND-logic. Persists in session. -->
           <div class="pov-filter-bar" data-zone="${z}" style="display:flex;gap:6px;flex-wrap:wrap;padding:8px;background:var(--surface2);border-radius:4px;margin-bottom:6px;position:sticky;top:0;z-index:11;border:1px solid var(--border)">
             <input type="text" placeholder="Customer" value="${(window._planningOrderViewFilters||{}).customer||''}"
@@ -5483,9 +5500,14 @@ function renderDispatchRow(p) {
     <td class="text-mono">${p.boxes||'-'}</td>
     <td class="text-mono">${packCell}</td>
     <td class="text-mono" style="white-space:nowrap">${p.plannedDate ? fmtDate(p.plannedDate) + (p.tentative ? ' <span style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:10px;font-family:var(--font-mono)">Tentative</span>' : (p.dateManuallySet ? ' <span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);padding:1px 5px;border-radius:3px;font-size:10px">Manual</span>' : '')) : (isExportPend ? '<span style="color:var(--accent5);font-size:11px">Pending container</span>' : '<span style="color:var(--text3);font-size:11px">TBD</span>')}</td>
-    <td><input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
-      style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
-      onchange="updateDispatchActual('${p.id}',this.value)"></td>
+    <td>
+      ${p._trackingDispatched > 0
+        ? `<span class="text-mono fw-bold" style="color:var(--accent3)" title="From tracking records">${fmt(p._trackingDispatched)}</span><span style="font-size:10px;color:var(--text3);margin-left:2px">📦</span>`
+        : `<input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
+          style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
+          onchange="updateDispatchActual('${p.id}',this.value)">`
+      }
+    </td>
     <td class="text-mono ${(p.qty-(p.actualDispatched||0))>0?'text-accent':''}">${isDispatched?'<span style="color:var(--accent3)">—</span>':fmt(Math.max(0,p.qty-(p.actualDispatched||0)))}</td>
     <td>${statusBadge}</td>
     <td><input type="text" value="${p.remarks||''}" placeholder="Remarks..."
@@ -5522,6 +5544,7 @@ function switchDispatchViewTab(el, view) {
 // Hides total row when filters are active (recomputing partial total would be expensive).
 function filterPlanningOrderView(zone) {
   const f = window._planningOrderViewFilters || {};
+  const qs = (f._quickSearch||'').toLowerCase().trim();
   const panel = document.querySelector(`.dispatch-zone-panel[data-zone="${zone}"]`);
   if (!panel) return;
   const tbody = panel.querySelector('.dispatch-order-view-table tbody');
@@ -6144,9 +6167,14 @@ function renderDispatchRow(p) {
     <td class="text-mono">${p.boxes||'-'}</td>
     <td class="text-mono">${packCell}</td>
     <td class="text-mono" style="white-space:nowrap">${p.plannedDate ? fmtDate(p.plannedDate) + (p.tentative ? ' <span style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:10px;font-family:var(--font-mono)">Tentative</span>' : (p.dateManuallySet ? ' <span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);padding:1px 5px;border-radius:3px;font-size:10px">Manual</span>' : '')) : (isExportPend ? '<span style="color:var(--accent5);font-size:11px">Pending container</span>' : '<span style="color:var(--text3);font-size:11px">TBD</span>')}</td>
-    <td><input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
-      style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
-      onchange="updateDispatchActual('${p.id}',this.value)"></td>
+    <td>
+      ${p._trackingDispatched > 0
+        ? `<span class="text-mono fw-bold" style="color:var(--accent3)" title="From tracking records">${fmt(p._trackingDispatched)}</span><span style="font-size:10px;color:var(--text3);margin-left:2px">📦</span>`
+        : `<input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
+          style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
+          onchange="updateDispatchActual('${p.id}',this.value)">`
+      }
+    </td>
     <td class="text-mono ${(p.qty-(p.actualDispatched||0))>0?'text-accent':''}">${isDispatched?'<span style="color:var(--accent3)">—</span>':fmt(Math.max(0,p.qty-(p.actualDispatched||0)))}</td>
     <td>${statusBadge}</td>
     <td><input type="text" value="${p.remarks||''}" placeholder="Remarks..."
@@ -7983,8 +8011,9 @@ async function savePcModal() {
     state.packSizes[size] = packSize;
   }
   state.pcCodes[size].push({c:code, n:colour});
-  // v37E PL2: Mark pcCodes as locally changed — protects from server merge wipeout for 90s
-  _localOrderChanges['__pcCodes__'] = Date.now();
+  // PL2: Mark pcCodes as locally changed — protect from server merge wipeout for 24hr
+  _localPcCodesSnapshot = JSON.parse(JSON.stringify(state.pcCodes));
+  _localOrderChanges['__pcCodes__'] = Date.now() + (24*60*60*1000 - 90000); // extend to 24hr
   saveState();
   closeModal();
   // v37E PL2: AWAIT server save so any subsequent /api/pc-codes GET sees the new code
