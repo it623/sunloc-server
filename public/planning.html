@@ -513,7 +513,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v37I.1</p>
+      <p>Planning Suite v3.0 · build v37J</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -699,6 +699,7 @@ let state = {
   pcCodes: PC_CODES_RAW,
   zoneMap: ZONE_MAP_RAW,
   packSizes: {...PACK_SIZES},
+  customerMaster: [],      // v37J: list of customer names for Ship-to/Bill-to autocomplete (loaded from /api/customers)
   truckCapacity: 130,      // boxes per truck load — global default, configurable in Settings
   zoneCapacities: {},      // { zoneName: boxes } — per-zone override, falls back to truckCapacity
   activeMonth: null,       // 'YYYY-MM' — current active planning month
@@ -916,7 +917,6 @@ const SYNC = (() => {
           if (pcr.ok) {
             const pcj = await pcr.json();
             if (pcj.ok && pcj.codes) {
-              // Always merge server codes into local — never overwrite (local may have newly added codes)
               Object.entries(pcj.codes).forEach(([sz, codes]) => {
                 if (!state.pcCodes[sz]) state.pcCodes[sz] = [];
                 codes.forEach(nc => {
@@ -924,6 +924,7 @@ const SYNC = (() => {
                     state.pcCodes[sz].push(nc);
                 });
               });
+              console.log('[PC-Codes] Loaded', pcj.count, 'custom codes from server DB');
               // Also re-add any locally saved PC codes that server might not have yet
               if (_localPcCodesSnapshot) {
                 Object.entries(_localPcCodesSnapshot).forEach(([sz, codes]) => {
@@ -934,10 +935,20 @@ const SYNC = (() => {
                   });
                 });
               }
-              console.log('[PC-Codes] Loaded', pcj.count, 'custom codes from server DB');
             }
           }
         } catch(e) { console.warn('[PC-Codes] Could not load from server:', e.message); }
+        // v37J Sub-issue 1.1: Fetch customer master for autocomplete
+        try {
+          const cr = await fetch(SYNC._url + '/api/customers', {signal: AbortSignal.timeout(5000)});
+          if (cr.ok) {
+            const cj = await cr.json();
+            if (cj.ok && Array.isArray(cj.customers)) {
+              state.customerMaster = cj.customers;
+              console.log('[CustomerMaster] Loaded', cj.count, 'customer names');
+            }
+          }
+        } catch(e) { console.warn('[CustomerMaster] Could not load from server:', e.message); }
         // v37E PL2: re-merge any locally-added codes that may not yet be in DB
         if (_localPcCodesSnapshot) {
           let restoredCount = 0;
@@ -1178,12 +1189,15 @@ const SYNC = (() => {
             batchNums.forEach(bn => {
               const bd = agj.batches[bn];
               if (!bd) return;
-              // v37I.1 (Pack-Out removed): "packed" now = packing.in
+              // v37I.1 (Pack-Out removed): "packed" now = packing.in (boxes received at packing = FG ready)
+              // Was: bd.packing?.outQty / bd.packing?.out (pack-out scans)
               totalPackedQty   += parseFloat(bd.packing?.inQty || 0);
               totalPackedBoxes += parseInt(bd.packing?.in    || 0, 10); // scan IN count = box count
               totalWip         += bd.wipLakhs || 0;
               totalGross       += bd.grossProd || 0;
               // v37I.1: fgAwaitingDispatch redefined as packing.in - dispatch.in
+              // (boxes at packing, not yet received by dispatch). Server may already compute this
+              // under the new flow; if not, fall back to client-side calc.
               totalFGReady     += bd.fgAwaitingDispatch || 0;
               totalPackInQty   += parseFloat(bd.packing?.inQty || 0);
             });
@@ -1192,7 +1206,6 @@ const SYNC = (() => {
               dp.packedBoxes        = totalPackedBoxes;
               dp.wipLakhs           = totalWip;
               dp.grossProd          = totalGross;
-              // v37E packIn-WIP fix: expose FG-vs-WIP split for dispatch scheduling
               dp.fgAwaitingDispatch = totalFGReady;
               dp.packInQty          = totalPackInQty;
             }
@@ -1211,6 +1224,9 @@ const SYNC = (() => {
             if (dp.batchNumber && actualsMap[dp.batchNumber] !== undefined) {
               const trackingActual = actualsMap[dp.batchNumber];
               // v37I bugfix: Server is authoritative — always sync to server's SUM-based total.
+              // Previously was "upward only" (if trackingActual > local), which masked the
+              // overwrite bug on the server side. Now server uses SUM(qty) from records, so
+              // any direction of change (corrections, deletions, edits) propagates correctly.
               dp.actualDispatched = trackingActual;
               dp._trackingDispatched = trackingActual; // mark as coming from tracking
               if (dp.actualDispatched >= dp.qty) dp.status = 'dispatched';
@@ -1549,7 +1565,7 @@ async function loadFromKV() {
       }
     }
 
-    // Daily printing from dedicated table — always load from server (authoritative)
+    // Daily printing from dedicated table
     if (dlRes.status==='fulfilled' && dlRes.value.ok) {
       const j = await dlRes.value.json();
       if (j.ok && Array.isArray(j.logs) && j.logs.length > 0) {
@@ -2451,6 +2467,36 @@ function renderProduction() {
       </div>`
     : '';
 
+  // v37J: Surface any machines that exceed the 2-running limit (historical data
+  // from before the validation was added). New status changes are hard-blocked at the
+  // input layer; this banner alerts admins to the residue.
+  const _overLimitMachines = {};
+  state.orders.forEach(o => {
+    if (o.status === 'running' && !o.deleted && o.machineId) {
+      _overLimitMachines[o.machineId] = (_overLimitMachines[o.machineId] || 0) + 1;
+    }
+  });
+  const _overLimitList = Object.entries(_overLimitMachines).filter(([,n]) => n > 2);
+  const overLimitBanner = (_overLimitList.length > 0 && currentUser?.role === 'admin')
+    ? `<div style="background:rgba(239,68,68,0.10);border:1px solid rgba(239,68,68,0.40);border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#dc2626;display:flex;align-items:flex-start;gap:10px">
+        <span style="font-size:16px;line-height:1">⚠️</span>
+        <div>
+          <strong>Max 2 In-Production limit exceeded.</strong>
+          ${_overLimitList.map(([m,n]) => `<div style="margin-top:4px">• Machine <b>${m}</b>: ${n} orders In Production</div>`).join('')}
+          <div style="margin-top:6px;font-size:11px;color:#7c2d2d">New orders are now hard-blocked at the limit. Please close existing orders manually to bring counts to ≤2 per machine.</div>
+        </div>
+      </div>`
+    : '';
+
+  // v37J Sub-issue 1.3: Customer-mismatch banner placeholder. Filled async via _fetchCustomerMismatches.
+  // Detects batches where Planning's customer doesn't match the most recent label customer
+  // (typical case: batch reassigned to a different customer; labels regenerated but order not updated).
+  const mismatchPlaceholder = (currentUser?.role === 'admin' && editable)
+    ? `<div id="customer-mismatch-banner" style="display:none"></div>`
+    : '';
+
+
+
   // Group by machine — filter by selected month
   const monthOrds = getMonthOrders();
   const machines = state.machineMaster.filter(m => m.active !== false);
@@ -2458,6 +2504,8 @@ function renderProduction() {
 
   let html = `
     ${bannerHtml}
+    ${overLimitBanner}
+    ${mismatchPlaceholder}
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
       <div class="tabs" id="size-tabs" style="margin-bottom:0">
         <div class="tab active" onclick="switchSizeTab(this,'all')">All Machines</div>
@@ -2547,6 +2595,101 @@ function renderProduction() {
   }
   html += '</div>';
   content.innerHTML = html;
+
+  // v37J Sub-issue 1.3: Fetch customer-mismatches async (non-blocking) and fill banner
+  if (currentUser?.role === 'admin' && editable) {
+    setTimeout(_fetchCustomerMismatches, 100);
+  }
+}
+
+// v37J Sub-issue 1.3: Detect batches where Planning's customer differs from Tracking's
+// most recent label customer. Common cause: batch reassigned to a new customer (labels
+// regenerated) but the Planning order wasn't manually updated. Per Ishan's option (iii):
+// reconcile in-place — update the production order's customer to match the label customer.
+async function _fetchCustomerMismatches() {
+  const banner = document.getElementById('customer-mismatch-banner');
+  if (!banner) return;
+  const sv = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
+  if (!sv) return;
+  try {
+    const r = await fetch(sv + '/api/planning/customer-mismatch', {signal: AbortSignal.timeout(8000)});
+    if (!r.ok) return;
+    const j = await r.json();
+    if (!j.ok || !j.mismatches || j.mismatches.length === 0) {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+      return;
+    }
+    // Cross-reference with state.orders so we only show mismatches for orders the user can see
+    const visibleMismatches = j.mismatches.filter(m => {
+      const ord = state.orders.find(o => o.id === m.productionOrderId && !o.deleted);
+      return !!ord;
+    });
+    if (visibleMismatches.length === 0) {
+      banner.style.display = 'none';
+      banner.innerHTML = '';
+      return;
+    }
+    window._customerMismatchCache = visibleMismatches;
+    banner.style.display = '';
+    banner.innerHTML = `
+      <div style="background:rgba(245,158,11,0.08);border:1px solid rgba(245,158,11,0.40);border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#92400e">
+        <div style="display:flex;align-items:flex-start;gap:10px">
+          <span style="font-size:16px;line-height:1">🔄</span>
+          <div style="flex:1">
+            <strong>${visibleMismatches.length} batch${visibleMismatches.length>1?'es have':' has a'} customer mismatch between Planning and Tracking labels.</strong>
+            <div style="margin-top:6px;font-size:11px;color:#78350f">This typically happens when a batch is reassigned to a different customer and labels are regenerated, but the Planning order is not updated. Click <b>Use ___</b> to reconcile.</div>
+            <div style="margin-top:10px;max-height:280px;overflow-y:auto">
+              <table style="width:100%;font-size:11px;border-collapse:collapse">
+                <thead><tr style="border-bottom:1px solid rgba(245,158,11,0.30)">
+                  <th style="text-align:left;padding:4px 8px">Batch</th>
+                  <th style="text-align:left;padding:4px 8px">Planning Customer</th>
+                  <th style="text-align:left;padding:4px 8px">Labels Customer (latest)</th>
+                  <th style="text-align:left;padding:4px 8px">Action</th>
+                </tr></thead>
+                <tbody>
+                  ${visibleMismatches.map((m,i)=>`
+                    <tr style="border-bottom:1px solid rgba(245,158,11,0.15)">
+                      <td style="padding:4px 8px;font-family:monospace;font-weight:600">${m.batchNumber}</td>
+                      <td style="padding:4px 8px;color:#dc2626">${(m.planningCustomer||'').replace(/</g,'&lt;')}</td>
+                      <td style="padding:4px 8px;color:#059669">${(m.labelCustomer||'').replace(/</g,'&lt;')}</td>
+                      <td style="padding:4px 8px">
+                        <button class="btn btn-sm" style="background:#059669;color:#fff;font-size:10px;padding:3px 8px" onclick="_reconcileCustomerMismatch(${i})">Use "${(m.labelCustomer||'').replace(/"/g,'&quot;').substring(0,20)}"</button>
+                      </td>
+                    </tr>
+                  `).join('')}
+                </tbody>
+              </table>
+            </div>
+          </div>
+          <button class="btn btn-ghost btn-sm" onclick="document.getElementById('customer-mismatch-banner').style.display='none'" title="Dismiss for this session" style="font-size:10px">✕</button>
+        </div>
+      </div>`;
+  } catch(e) {
+    console.warn('[CustomerMismatch] Fetch failed:', e?.message);
+  }
+}
+
+// v37J Sub-issue 1.3: Reconcile a single mismatch — copy label customer to the production order
+async function _reconcileCustomerMismatch(idx) {
+  const m = (window._customerMismatchCache || [])[idx];
+  if (!m) return;
+  const ord = state.orders.find(o => o.id === m.productionOrderId);
+  if (!ord) { alert('Order no longer in state. Refresh and try again.'); return; }
+  if (!confirm(`Update batch ${m.batchNumber}:\n\nFrom: ${ord.customer || ord.shipTo}\nTo:   ${m.labelCustomer}\n\nThis will update the Production Planning record to match the labels.\nProceed?`)) return;
+  ord.customer = m.labelCustomer;
+  ord.shipTo   = m.labelCustomer;
+  // billTo stays as-is unless user manually re-edits
+  _localOrderChanges[ord.id] = Date.now();
+  saveState();
+  try {
+    await upsertOrderToDB(ord);
+  } catch(e) {
+    console.warn('[Reconcile] upsert failed:', e?.message);
+  }
+  // Re-render Planning and re-check
+  render();
+  setTimeout(_fetchCustomerMismatches, 500);
 }
 
 // ── Customer display helper ───────────────────────────────────
@@ -2869,12 +3012,15 @@ function showAddOrderModal(machineId, existingOrder) {
       </div>
       <div class="form-group">
         <label>Ship To (Customer Name) ${ord.woStatus==='wo'?'<span style="color:var(--accent3);font-size:10px;margin-left:4px">LOCKED — W/O</span>':''}</label>
-        <input class="form-control" id="fo-customer" value="${ord.shipTo||ord.customer||''}" placeholder="${ord.woStatus==='wo'?'Will be assigned via Reconciliation':'e.g. M/S ACME LIFETECH LLP'}" ${ord.woStatus==='wo'?'disabled style="opacity:0.5"':''}>
+        <input class="form-control" id="fo-customer" list="fo-customer-list" autocomplete="off" value="${ord.shipTo||ord.customer||''}" placeholder="${ord.woStatus==='wo'?'Will be assigned via Reconciliation':'e.g. M/S ACME LIFETECH LLP'}" ${ord.woStatus==='wo'?'disabled style="opacity:0.5"':''}>
       </div>
       <div class="form-group">
         <label>Bill To <span style="font-size:11px;color:var(--text3);font-weight:400">(if different from Ship To)</span> ${ord.woStatus==='wo'?'<span style="color:var(--accent3);font-size:10px;margin-left:4px">LOCKED — W/O</span>':''}</label>
-        <input class="form-control" id="fo-billto" value="${ord.billTo||''}" placeholder="e.g. M/S ACME PHARMA PVT LTD — leave blank if same as Ship To" ${ord.woStatus==='wo'?'disabled style="opacity:0.5"':''}>
+        <input class="form-control" id="fo-billto" list="fo-customer-list" autocomplete="off" value="${ord.billTo||''}" placeholder="e.g. M/S ACME PHARMA PVT LTD — leave blank if same as Ship To" ${ord.woStatus==='wo'?'disabled style="opacity:0.5"':''}>
       </div>
+      <datalist id="fo-customer-list">
+        ${(state.customerMaster||[]).map(c=>`<option value="${c.replace(/"/g,'&quot;').replace(/</g,'&lt;')}">`).join('')}
+      </datalist>
       <div class="form-group">
         <label>Machine</label>
         <select class="form-control" id="fo-machine" onchange="onMachineChange(this)">
@@ -3252,6 +3398,21 @@ function saveOrderModal(existingId, defaultMachine) {
       alert(`⚠️ Batch number "${ord.batchNumber}" is already used by another order (${batchConflict.customer||'unknown'}, Machine ${batchConflict.machineId}${sameMC ? ' — SAME MACHINE' : ''}).\n\nDuplicate batch on same machine is not allowed. Please use a unique batch number.`);
       return;
     }
+    // v37J: Max-2-running hard block on EDIT path. Previously only checked on new-order
+    // path, allowing edits to bypass the limit by changing status pending→running while
+    // editing other fields.
+    if (ord.status === 'running') {
+      const runningOnMachine = state.orders.filter(o =>
+        o.machineId === ord.machineId &&
+        o.status === 'running' &&
+        o.id !== ord.id &&
+        !o.deleted
+      ).length;
+      if (runningOnMachine >= 2) {
+        alert(`⚠️ Cannot save order as In Production.\n\nMachine ${ord.machineId} already has 2 orders In Production. Maximum is 2.\n\nPlease either:\n  • Close one existing running order first, OR\n  • Save this order as Pending.`);
+        return;
+      }
+    }
     const idx = state.orders.findIndex(o=>o.id===existingId);
     if (idx>=0) state.orders[idx] = ord;
   } else {
@@ -3277,7 +3438,9 @@ function saveOrderModal(existingId, defaultMachine) {
       alert(`⚠️ Batch number "${ord.batchNumber}" is already used on Machine ${batchOtherMC.machineId} (Customer: ${batchOtherMC.customer||'unknown'}).\n\nPlease use a unique batch number.`);
       return;
     }
-    // ── 2-order limit check — ALL orders, no cutoff ──
+    // ── 2-order limit check — HARD BLOCK (v37J: was soft-demote to pending, now refuses to save).
+    // Per spec: max 2 orders In Production per machine at any time. Manual override exists at
+    // the discretion of the planning manager via closing one of the existing running orders.
     if (ord.status === 'running') {
       const runningOnMachine = state.orders.filter(o =>
         o.machineId === ord.machineId &&
@@ -3286,9 +3449,8 @@ function saveOrderModal(existingId, defaultMachine) {
         !o.deleted
       ).length;
       if (runningOnMachine >= 2) {
-        // Force status to pending — cannot be In Production
-        ord.status = 'pending';
-        alert(`⚠️ Maximum 2 orders can be In Production on ${ord.machineId}.\n\nOrder saved as Pending. Please close a running order first to set it In Production.`);
+        alert(`⚠️ Cannot save order as In Production.\n\nMachine ${ord.machineId} already has 2 orders In Production. Maximum is 2.\n\nPlease either:\n  • Close one existing running order first, OR\n  • Save this order as Pending and promote later.`);
+        return; // ← v37J hard block — abort save entirely
       }
     }
     state.orders.push(ord);
@@ -3386,6 +3548,25 @@ function saveOrderModal(existingId, defaultMachine) {
   _localOrderChanges[ord.id] = Date.now();
   // PERMANENT FIX: Save this order to its own dedicated row in production_orders table
   upsertOrderToDB(ord);
+  // v37J Sub-issue 1.1: Push any new Ship-to/Bill-to customer names to the customer master.
+  // Both fields contribute so Bill-to-only names are also remembered. Non-blocking.
+  const _customerNamesToRegister = [ord.shipTo, ord.billTo].filter(n => n && n.trim());
+  for (const _cn of _customerNamesToRegister) {
+    const _trimmed = _cn.trim();
+    // Optimistically update local autocomplete cache so this name is available immediately
+    if (!(state.customerMaster||[]).some(c => c.toLowerCase() === _trimmed.toLowerCase())) {
+      state.customerMaster = [_trimmed, ...(state.customerMaster||[])];
+    }
+    // Fire-and-forget POST to server
+    const _svc = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
+    if (_svc) {
+      fetch(_svc + '/api/customers', {
+        method: 'POST',
+        headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({name: _trimmed, addedBy: currentUser?.username || 'planning'})
+      }).catch(e => console.warn('[CustomerMaster] Save error:', e.message));
+    }
+  }
   saveState();
   closeModal();
   render();
@@ -5350,7 +5531,7 @@ function renderDispatch() {
               oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;filterPlanningOrderView('${z}')"
               style="padding:6px 12px;border:1.5px solid var(--accent3);border-radius:6px;font-size:12px;width:250px;background:var(--surface2);color:var(--text)">
           </div>
-          <!-- v37I B6: Sticky filter bar above the order view table. AND-logic. Persists in session. -->
+          <!-- v37I B6: Filter bar — hidden by default, toggled via ⚙ Filters button -->
           <div class="pov-filter-bar" data-zone="${z}" style="display:none;gap:6px;flex-wrap:wrap;padding:8px;background:var(--surface2);border-radius:4px;margin-bottom:6px;border:1px solid var(--border)">
             <input type="text" placeholder="Customer" value="${(window._planningOrderViewFilters||{}).customer||''}"
                    oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.customer=this.value;filterPlanningOrderView('${z}')"
@@ -5500,14 +5681,9 @@ function renderDispatchRow(p) {
     <td class="text-mono">${p.boxes||'-'}</td>
     <td class="text-mono">${packCell}</td>
     <td class="text-mono" style="white-space:nowrap">${p.plannedDate ? fmtDate(p.plannedDate) + (p.tentative ? ' <span style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:10px;font-family:var(--font-mono)">Tentative</span>' : (p.dateManuallySet ? ' <span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);padding:1px 5px;border-radius:3px;font-size:10px">Manual</span>' : '')) : (isExportPend ? '<span style="color:var(--accent5);font-size:11px">Pending container</span>' : '<span style="color:var(--text3);font-size:11px">TBD</span>')}</td>
-    <td>
-      ${p._trackingDispatched > 0
-        ? `<span class="text-mono fw-bold" style="color:var(--accent3)" title="From tracking records">${fmt(p._trackingDispatched)}</span><span style="font-size:10px;color:var(--text3);margin-left:2px">📦</span>`
-        : `<input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
-          style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
-          onchange="updateDispatchActual('${p.id}',this.value)">`
-      }
-    </td>
+    <td><input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
+      style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
+      onchange="updateDispatchActual('${p.id}',this.value)"></td>
     <td class="text-mono ${(p.qty-(p.actualDispatched||0))>0?'text-accent':''}">${isDispatched?'<span style="color:var(--accent3)">—</span>':fmt(Math.max(0,p.qty-(p.actualDispatched||0)))}</td>
     <td>${statusBadge}</td>
     <td><input type="text" value="${p.remarks||''}" placeholder="Remarks..."
@@ -5544,20 +5720,21 @@ function switchDispatchViewTab(el, view) {
 // Hides total row when filters are active (recomputing partial total would be expensive).
 function filterPlanningOrderView(zone) {
   const f = window._planningOrderViewFilters || {};
-  const qs = (f._quickSearch||'').toLowerCase().trim();
-  // Sync quick search input value
-  const qsEl = document.getElementById('pov-quick-search-' + zone);
-  if (qsEl && document.activeElement !== qsEl) qsEl.value = qs;
   const panel = document.querySelector(`.dispatch-zone-panel[data-zone="${zone}"]`);
   if (!panel) return;
   const tbody = panel.querySelector('.dispatch-order-view-table tbody');
   if (!tbody) return;
+  const qs = (f._quickSearch||'').toLowerCase().trim();
+  // Sync quick search input value
+  const qsEl = document.getElementById('pov-quick-search-' + zone);
+  if (qsEl && document.activeElement !== qsEl) qsEl.value = qs;
   let visibleCount = 0, totalCount = 0;
   [...tbody.querySelectorAll('tr')].forEach(row => {
     if (row.classList.contains('pov-total-row')) return; // handle separately
     totalCount++;
     const ds = row.dataset;
     let visible = true;
+    if (qs && !((ds.customer||'').includes(qs)||(ds.batch||'').includes(qs)||(ds.pccode||'').includes(qs))) visible = false;
     if (f.customer && !ds.customer.includes(f.customer.toLowerCase())) visible = false;
     if (f.batch && !ds.batch.includes(f.batch.toLowerCase())) visible = false;
     if (f.pcCode && !ds.pccode.includes(f.pcCode.toLowerCase())) visible = false;
@@ -5579,634 +5756,6 @@ function filterPlanningOrderView(zone) {
   // Update count display
   const countEl = panel.querySelector('.pov-filter-count');
   if (countEl) countEl.textContent = hasActiveFilter ? `${visibleCount} of ${totalCount} shown` : '';
-}
-
-function renderTruckViewHTML(zones) {
-  const cap = getTruckCapacity();
-  const allZones = zones.length > 0 ? zones : [...new Set(state.dispatchPlans.map(p=>p.zone||'Unassigned'))].sort();
-
-  if (allZones.length === 0) {
-    return '<div class="empty-state"><div class="icon">🚚</div><p>No dispatch plans to build truck view from</p></div>';
-  }
-
-  let html = `<div class="alert alert-info mb-4" style="margin-top:12px">🚚 Trucks are built automatically by filling up to <strong>${cap} boxes</strong> per truck per zone. ETD = date when the last box in the truck is expected to be packed.</div>`;
-
-  for (const zone of allZones) {
-    const trucks = buildTruckPlans(zone);
-    if (trucks.length === 0) continue;
-
-    const totalBoxes = trucks.reduce((s,t)=>s+t.totalBoxes,0);
-    const totalDispatched = state.dispatchPlans
-      .filter(p=>(p.zone||'Unassigned')===zone && p.status==='dispatched')
-      .reduce((s,p)=>s+(p.boxes||0),0);
-
-    html += `
-      <div class="card mb-4">
-        <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
-          <span>🗺️ ${zone} — ${trucks.length} truck${trucks.length!==1?'s':''} planned</span>
-          <span class="text-dim text-sm">${totalBoxes} boxes total · ${cap} boxes/truck</span>
-        </div>
-        <div style="display:flex;flex-direction:column;gap:12px">
-          ${trucks.map(truck => renderTruckCard(truck, cap)).join('')}
-        </div>
-      </div>`;
-  }
-  return html;
-}
-
-function renderTruckCard(truck, cap) {
-  const truckCap = truck.cap || cap;
-  const fillPct = Math.min(100, (truck.totalBoxes / truckCap * 100)).toFixed(0);
-  const isFull = truck.totalBoxes >= truckCap;
-  const etdStr = truck.etd ? fmtDate(truck.etd) : '—';
-  const packedPct = truck.totalBoxes > 0 ? Math.min(100,(truck.packedBoxes/truck.totalBoxes*100)).toFixed(0) : 0;
-  // v37I B7 + B8: Status badges for export-indent and held-partial trucks
-  let extraBadges = '';
-  if (truck.isExportIndent) {
-    const indentLabel = truck.indentKey ? `Indent: ${truck.indentKey.length>20?truck.indentKey.slice(0,20)+'…':truck.indentKey}` : 'Export Indent';
-    extraBadges += `<span class="badge" style="background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.25);margin-left:6px;font-size:10px">🚢 ${indentLabel}</span>`;
-  }
-  if (truck.held) {
-    extraBadges += `<span class="badge" style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);margin-left:6px;font-size:10px" title="${(truck._heldReason||'').replace(/"/g,'&quot;')}">⏸ Held (partial)</span>`;
-  } else if (truck.belowMin && !truck.isExportIndent) {
-    extraBadges += `<span class="badge" style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);margin-left:6px;font-size:10px" title="Partial truck on final dispatch date — shipping as is">📅 Final Lot (partial OK)</span>`;
-  }
-
-  return `
-    <div style="background:var(--surface2);border:1px solid ${truck.held?'rgba(255,171,0,0.4)':(isFull?'var(--accent3)':'var(--border)')};border-radius:8px;padding:14px;cursor:pointer;${truck.held?'opacity:0.85':''}"
-         onclick="toggleTruckDetail('truck-${truck.zone.replace(/\s/g,'-')}-${truck.truckNumber}')">
-      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;flex-wrap:wrap;gap:4px">
-        <div style="font-weight:700;font-size:14px;font-family:var(--mono);color:var(--accent)">
-          Truck ${truck.truckNumber}
-          ${truck.held?'<span class="badge" style="background:rgba(255,171,0,0.18);color:#ffab00;margin-left:6px">⏸ Held</span>':(isFull?'<span class="badge badge-completed" style="margin-left:6px">Full</span>':'<span class="badge badge-pending" style="margin-left:6px">Filling</span>')}
-          ${extraBadges}
-        </div>
-        <div style="font-size:12px;color:var(--text3)">ETD: <span style="color:${truck.held?'var(--accent4)':(isFull?'var(--accent3)':'var(--text)')};font-family:var(--mono);font-weight:600">${truck.held?'Deferred':etdStr}</span></div>
-      </div>
-      <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:8px;margin-bottom:10px;font-size:12px">
-        <div style="text-align:center;background:var(--surface3);border-radius:4px;padding:6px">
-          <div style="color:var(--text3)">Boxes</div>
-          <div style="font-family:var(--mono);font-weight:700;color:var(--text)">${truck.totalBoxes}<span style="color:var(--text3);font-size:10px">/${truckCap}</span></div>
-        </div>
-        <div style="text-align:center;background:var(--surface3);border-radius:4px;padding:6px">
-          <div style="color:var(--text3)">Packed</div>
-          <div style="font-family:var(--mono);font-weight:700;color:var(--accent2)">${truck.packedBoxes}</div>
-        </div>
-        <div style="text-align:center;background:var(--surface3);border-radius:4px;padding:6px">
-          <div style="color:var(--text3)">Pending</div>
-          <div style="font-family:var(--mono);font-weight:700;color:${truck.pendingBoxes>0?'var(--accent4)':'var(--accent3)'}">${truck.pendingBoxes}</div>
-        </div>
-      </div>
-      <div style="margin-bottom:8px">
-        <div style="display:flex;justify-content:space-between;font-size:11px;color:var(--text3);margin-bottom:3px">
-          <span>Load: ${fillPct}%</span><span>Packed: ${packedPct}%</span>
-        </div>
-        <div style="background:var(--surface3);border-radius:3px;height:6px;width:100%;position:relative">
-          <div style="height:100%;width:${fillPct}%;background:${isFull?'var(--accent3)':'var(--accent)'};border-radius:3px;transition:width .3s"></div>
-        </div>
-        <div style="background:transparent;border-radius:3px;height:4px;width:100%;margin-top:3px">
-          <div style="height:100%;width:${packedPct}%;background:var(--accent2);border-radius:3px;transition:width .3s"></div>
-        </div>
-      </div>
-      ${truck.bottleneckOrderId ? (() => {
-        const bo = truck.orders.find(o=>o.id===truck.bottleneckOrderId);
-        return bo ? `<div style="font-size:11px;background:rgba(255,171,0,0.08);border:1px solid rgba(255,171,0,0.25);border-radius:4px;padding:4px 8px;margin-bottom:6px">
-          ⏳ Bottleneck: <span style="font-family:var(--mono);color:var(--accent)">${bo.batchNumber||bo.customer||'Order'}</span>
-          — ready ${fmtDate(getOrderReadyDate(bo))}
-        </div>` : '';
-      })() : ''}
-      <div style="font-size:11px;color:var(--text3)">${truck.orders.length} order${truck.orders.length!==1?'s':''} · click to expand</div>
-    </div>
-    <div id="truck-${truck.zone.replace(/\s/g,'-')}-${truck.truckNumber}" style="display:none;margin-top:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px">
-      ${renderTruckOrdersTable(truck)}
-    </div>`;
-}
-
-async function showBatchTrackingModal(batchNumber) {
-  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
-  openModal(`📦 Batch Tracker — ${batchNumber}`, `
-    <div id="btm-loading" style="text-align:center;padding:24px;color:var(--text3)">
-      <div style="font-size:24px;margin-bottom:8px">⏳</div>
-      Loading tracking data...
-    </div>
-    <div id="btm-content" style="display:none"></div>
-  `, [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);
-
-  if (!serverUrl) {
-    document.getElementById('btm-loading').innerHTML = '<div style="color:var(--accent4)">⚠️ No server configured. Connect to server in Settings to view tracking data.</div>';
-    return;
-  }
-
-  try {
-    const r = await fetch(serverUrl + '/api/tracking/batch-summary/' + encodeURIComponent(batchNumber), {
-      signal: AbortSignal.timeout(6000)
-    });
-    const j = await r.json();
-    if (!j.ok) throw new Error(j.error || 'Failed to load');
-
-    const DEPT_ORDER = ['production','aim','printing','pi','packing','dispatch'];
-    const DEPT_NAMES = {production:'Production',aim:'AIM',printing:'Printing',pi:'Print Insp.',packing:'Packing',dispatch:'Dispatch'};
-
-    // Build flow row
-    const flowHtml = DEPT_ORDER.map(dept => {
-      const d = j.deptMap[dept];
-      if (!d) return `<div style="text-align:center;padding:8px 12px;background:var(--surface3);border-radius:6px;opacity:0.4">
-        <div style="font-size:11px;color:var(--text3)">${DEPT_NAMES[dept]}</div>
-        <div style="font-size:12px;color:var(--text3)">—</div>
-      </div>`;
-      const done = d.out > 0 && d.out >= d.in;
-      const active = d.in > 0 && d.out < d.in;
-      const bg = done ? 'rgba(0,230,118,0.1)' : active ? 'rgba(0,212,255,0.08)' : 'var(--surface3)';
-      const borderColor = done ? 'rgba(0,230,118,0.4)' : active ? 'rgba(0,212,255,0.3)' : 'var(--border)';
-      return `<div style="text-align:center;padding:8px 12px;background:${bg};border:1px solid ${borderColor};border-radius:6px">
-        <div style="font-size:11px;color:var(--text3);margin-bottom:4px">${DEPT_NAMES[dept]}</div>
-        <div style="font-size:12px;font-family:var(--mono)">${done?'✅':''}IN:${d.in||0}</div>
-        <div style="font-size:12px;font-family:var(--mono)">OUT:${d.out||0}</div>
-        ${active ? `<div style="font-size:10px;color:var(--accent)">▲ ${d.in-d.out} pending</div>` : ''}
-      </div>`;
-    }).join('<div style="display:flex;align-items:center;padding:0 4px;color:var(--text3)">›</div>');
-
-    // Alerts
-    const alertsHtml = j.alerts.length > 0
-      ? j.alerts.map(a => `<div style="background:rgba(255,171,0,0.08);border:1px solid rgba(255,171,0,0.3);border-radius:4px;padding:6px 10px;font-size:12px;margin-bottom:4px">
-          🚩 <strong>${DEPT_NAMES[a.dept]||a.dept}</strong> — ${a.msg||`Label stuck for ${a.hours_stuck?.toFixed(1)||'?'}h`}
-        </div>`).join('')
-      : '<div style="font-size:12px;color:var(--accent2)">✅ No active alerts</div>';
-
-    // Wastage
-    const wastageHtml = j.wastage.length > 0
-      ? `<div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px;margin-top:8px">
-          <thead><tr style="color:var(--text3)"><th style="text-align:left;padding:4px 8px">Dept</th><th style="padding:4px 8px;text-align:right">Wastage (L)</th><th style="padding:4px 8px;text-align:right">Salvage (L)</th><th style="padding:4px 8px;text-align:right">Remelt (L)</th></tr></thead>
-          <tbody>${j.wastage.map(w=>`<tr style="border-top:1px solid var(--surface3)">
-            <td style="padding:4px 8px">${DEPT_NAMES[w.dept]||w.dept}</td>
-            <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${fmt(w.total_qty||0,2)}</td>
-            <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${fmt(w.salvage||0,2)}</td>
-            <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${fmt(w.remelt||0,2)}</td>
-          </tr>`).join('')}</tbody>
-        </table></div>`
-      : '<div style="font-size:12px;color:var(--text3)">No wastage recorded</div>';
-
-    const ls = j.labelStats || {};
-    const dispatched = j.dispatched?.total_qty || 0;
-
-    document.getElementById('btm-loading').style.display = 'none';
-    document.getElementById('btm-content').style.display = '';
-    document.getElementById('btm-content').innerHTML = `
-      <div style="display:grid;grid-template-columns:repeat(4,1fr);gap:8px;margin-bottom:16px">
-        <div style="background:var(--surface3);border-radius:6px;padding:10px;text-align:center">
-          <div style="font-size:11px;color:var(--text3)">Labels Generated</div>
-          <div style="font-family:var(--mono);font-size:18px;font-weight:700">${ls.total||0}</div>
-        </div>
-        <div style="background:var(--surface3);border-radius:6px;padding:10px;text-align:center">
-          <div style="font-size:11px;color:var(--text3)">Printed</div>
-          <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--accent2)">${ls.printed||0}</div>
-        </div>
-        <div style="background:var(--surface3);border-radius:6px;padding:10px;text-align:center">
-          <div style="font-size:11px;color:var(--text3)">Voided</div>
-          <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:${ls.voided>0?'var(--accent4)':'var(--text3)'}">${ls.voided||0}</div>
-        </div>
-        <div style="background:var(--surface3);border-radius:6px;padding:10px;text-align:center">
-          <div style="font-size:11px;color:var(--text3)">Dispatched (L)</div>
-          <div style="font-family:var(--mono);font-size:18px;font-weight:700;color:var(--accent3)">${fmt(dispatched)}</div>
-        </div>
-      </div>
-      <div style="font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.8px;margin-bottom:8px">WIP FLOW</div>
-      <div style="display:flex;align-items:stretch;flex-wrap:wrap;gap:4px;margin-bottom:16px">${flowHtml}</div>
-      <div style="font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.8px;margin-bottom:6px">ALERTS</div>
-      <div style="margin-bottom:16px">${alertsHtml}</div>
-      <div style="font-size:11px;font-weight:600;color:var(--text3);letter-spacing:.8px;margin-bottom:6px">WASTAGE</div>
-      ${wastageHtml}
-    `;
-  } catch (err) {
-    document.getElementById('btm-loading').innerHTML = `<div style="color:var(--accent4)">⚠️ Could not load tracking data: ${err.message}</div>`;
-  }
-}
-
-function renderTruckOrdersTable(truck) {
-  return `
-    <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:12px">
-      <thead><tr style="color:var(--text3);font-size:11px">
-        <th style="padding:4px 8px;text-align:left">Customer</th>
-        <th style="padding:4px 8px;text-align:left">Batch</th>
-        <th style="padding:4px 8px;text-align:left">PC Code</th>
-        <th style="padding:4px 8px;text-align:right">Boxes</th>
-        <th style="padding:4px 8px;text-align:right">Packed</th>
-        <th style="padding:4px 8px;text-align:left">Est. Ready</th>
-        <th style="padding:4px 8px;text-align:left">Source</th>
-        <th style="padding:4px 8px;text-align:left">Status</th>
-      </tr></thead>
-      <tbody>
-        ${truck.orders.map(p => {
-          const packed = p.packedBoxes || 0;
-          const pending = Math.max(0,(p.boxes||0) - packed);
-          const isBottleneck = p.id === truck.bottleneckOrderId;
-          // Determine ready date and its source
-          let readyDate, readySource;
-          if (p.packingReadyDate) {
-            readyDate = fmtDate(new Date(p.packingReadyDate));
-            readySource = '<span style="color:var(--accent2);font-size:10px">✓ Tracking</span>';
-          } else {
-            const prodOrder = state.orders.find(o => o.id === p.productionOrderId);
-            if (prodOrder && prodOrder.actualQty > 0 && prodOrder.qty > 0 && prodOrder.actualQty < prodOrder.qty) {
-              readyDate = fmtDate(getOrderReadyDate(p));
-              readySource = '<span style="color:var(--accent);font-size:10px">~ DPR Est.</span>';
-            } else {
-              readyDate = fmtDate(p.plannedDate) || '—';
-              readySource = '<span style="color:var(--text3);font-size:10px">Planned</span>';
-            }
-          }
-          const statusBadge = p.status==='dispatched'
-            ? '<span class="badge badge-completed" style="font-size:10px">Dispatched</span>'
-            : packed >= (p.boxes||0) && p.boxes > 0
-            ? '<span class="badge badge-running" style="font-size:10px">Packed ✓</span>'
-            : '<span class="badge badge-pending" style="font-size:10px">Pending</span>';
-          return `<tr style="border-top:1px solid var(--surface3);${isBottleneck?'background:rgba(255,171,0,0.05)':''}">
-            <td style="padding:5px 8px">${p.customer||'-'}${isBottleneck?' <span title="Bottleneck order — driving this truck ETD" style="color:var(--accent3);font-size:11px">⏳</span>':''}</td>
-            <td style="padding:5px 8px;font-family:var(--mono);font-size:11px">
-              <span onclick="showBatchTrackingModal('${p.batchNumber||''}')" 
-                style="color:var(--accent);cursor:pointer;text-decoration:underline;text-decoration-color:rgba(0,212,255,0.4)"
-                title="Click to view batch tracking summary">${p.batchNumber||'-'}</span>
-            </td>
-            <td style="padding:5px 8px;font-family:var(--mono);font-size:11px;color:var(--accent)">${p.pcCode||'-'}</td>
-            <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${p.boxes||0}</td>
-            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:var(--accent2)">${packed}</td>
-            <td style="padding:5px 8px;font-family:var(--mono);font-size:11px">${readyDate}</td>
-            <td style="padding:5px 8px">${readySource}</td>
-            <td style="padding:5px 8px">${statusBadge}</td>
-          </tr>`;
-        }).join('')}
-      </tbody>
-    </table></div>`;
-}
-
-function toggleTruckDetail(id) {
-  const el = document.getElementById(id);
-  if (!el) return;
-  const isOpen = el.style.display !== 'none';
-  el.style.display = isOpen ? 'none' : '';
-  if (!isOpen) {
-/* scrollIntoView removed */
-  }
-}
-
-function updateDispatchActual(id, val) {
-  const dp = state.dispatchPlans.find(d=>d.id===id);
-  if (!dp) return;
-  const entered = parseFloat(val)||0;
-  // Check against packed qty from tracking (packedQty stored on dispatch plan when synced)
-  const packedQty = dp.packedQty || dp.qty; // fallback to planned qty if tracking not synced
-  if (entered > packedQty) {
-    alert(`Cannot dispatch ${fmt(entered)}L — only ${fmt(packedQty)}L has been packed.\n\nActual dispatched has been capped at ${fmt(packedQty)}L.`);
-    // Reset the input field
-    const inputs = document.querySelectorAll(`[onchange*="${id}"]`);
-    inputs.forEach(el => { if (el.tagName === 'INPUT') el.value = packedQty; });
-    dp.actualDispatched = packedQty;
-  } else {
-    dp.actualDispatched = entered;
-  }
-  if (dp.actualDispatched >= dp.qty) dp.status='dispatched';
-  else if (dp.actualDispatched > 0) dp.status='partial';
-  // Carry forward if partial
-  if (dp.status==='partial') {
-    const remaining = dp.qty - dp.actualDispatched;
-    const existingCF = state.dispatchPlans.find(d=>d.carryForwardFrom===id);
-    if (!existingCF && remaining > 0) {
-      state.dispatchPlans.push({...dp, id:uid(), qty:remaining, boxes:Math.ceil(remaining*100000/(state.packSizes[dp.size]||100000)), actualDispatched:0, status:'pending', carryForwardFrom:id, plannedDate:addDays(dp.plannedDate,7)});
-    }
-  }
-  saveState();
-}
-
-function markDispatched(id) {
-  const dp = state.dispatchPlans.find(d=>d.id===id);
-  if (dp) { dp.status='dispatched'; dp.actualDispatched=dp.qty; saveState(); render(); }
-}
-
-function updateDispatchRemark(id, val) {
-  const dp = state.dispatchPlans.find(d=>d.id===id);
-  if (dp) { dp.remarks=val; saveState(); }
-}
-
-function showAddDispatchModal(existingId) {
-  const ex = existingId ? state.dispatchPlans.find(d=>d.id===existingId) : null;
-  openModal(ex?'Edit Dispatch':'New Dispatch Entry', `
-    <div class="form-grid">
-      <div class="form-group">
-        <label>Customer</label>
-        <input class="form-control" id="fd-customer" value="${ex?.customer||''}" placeholder="Customer">
-      </div>
-      <div class="form-group">
-        <label>Batch Number</label>
-        <input class="form-control" id="fd-batch" value="${ex?.batchNumber||''}" placeholder="Batch No">
-      </div>
-      <div class="form-group">
-        <label>PC Code</label>
-        <input class="form-control" id="fd-pccode" value="${ex?.pcCode||''}" placeholder="PC Code">
-      </div>
-      <div class="form-group">
-        <label>Size</label>
-        <select class="form-control" id="fd-size" onchange="updateBoxCalc()">
-          ${SIZES.map(s=>`<option value="${s}" ${ex?.size===s?'selected':''}>${s}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Colour</label>
-        <input class="form-control" id="fd-colour" value="${ex?.colour||''}" placeholder="Colour">
-      </div>
-      <div class="form-group">
-        <label>PTD / UP</label>
-        <select class="form-control" id="fd-packing">
-          <option value="UP" ${ex?.packing==='UP'?'selected':''}>Unprinted (UP)</option>
-          <option value="PTD" ${ex?.packing==='PTD'?'selected':''}>Printed (PTD)</option>
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Zone</label>
-        <select class="form-control" id="fd-zone">
-          ${ZONES.map(z=>`<option value="${z}" ${ex?.zone===z?'selected':''}>${z}</option>`).join('')}
-        </select>
-      </div>
-      <div class="form-group">
-        <label>Qty (Lakhs)</label>
-        <input class="form-control" id="fd-qty" type="number" value="${ex?.qty||''}" oninput="updateBoxCalc()">
-      </div>
-      <div class="form-group">
-        <label>Boxes (auto)</label>
-        <input class="form-control" id="fd-boxes" readonly value="${ex?.boxes||''}">
-      </div>
-      <div class="form-group">
-        <label>Planned Dispatch Date</label>
-        <input class="form-control" id="fd-date" type="date" value="${toDateInput(ex?.plannedDate||today())}">
-      </div>
-      <div class="form-group" style="grid-column:1/-1">
-        <label>Remarks</label>
-        <input class="form-control" id="fd-remarks" value="${ex?.remarks||''}" placeholder="Remarks...">
-      </div>
-    </div>
-  `, [
-    {label:'Save', cls:'btn-primary', fn:`saveDispatchModal('${existingId||''}')`},
-    {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'}
-  ]);
-}
-
-function updateBoxCalc() {
-  const size = document.getElementById('fd-size')?.value;
-  const qty = parseFloat(document.getElementById('fd-qty')?.value)||0;
-  const packSize = state.packSizes[size]||100000;
-  const boxes = Math.ceil(qty*100000/packSize);
-  const el = document.getElementById('fd-boxes');
-  if (el) el.value = boxes||'';
-}
-
-function saveDispatchModal(existingId) {
-  const size = document.getElementById('fd-size')?.value;
-  const qty = parseFloat(document.getElementById('fd-qty')?.value)||0;
-  const packSize = state.packSizes[size]||100000;
-  const boxes = Math.ceil(qty*100000/packSize);
-  const existing = existingId ? state.dispatchPlans.find(d=>d.id===existingId) : null;
-  const newDate = document.getElementById('fd-date')?.value;
-  const oldDate = existing?.plannedDate ? toDateInput(existing.plannedDate) : null;
-  const dateChanged = existingId && oldDate && newDate && newDate !== oldDate;
-  const dp = {
-    id: existingId||uid(),
-    productionOrderId: existingId ? existing?.productionOrderId : null,
-    customer: document.getElementById('fd-customer')?.value,
-    batchNumber: document.getElementById('fd-batch')?.value,
-    pcCode: document.getElementById('fd-pccode')?.value,
-    size, colour: document.getElementById('fd-colour')?.value,
-    packing: document.getElementById('fd-packing')?.value,
-    zone: document.getElementById('fd-zone')?.value,
-    qty, boxes,
-    plannedDate: new Date(newDate||today()),
-    actualDispatched: existingId?(existing?.actualDispatched||0):0,
-    status: existingId?(existing?.status||'pending'):'pending',
-    remarks: document.getElementById('fd-remarks')?.value,
-    tentative: existingId ? (dateChanged ? false : (existing?.tentative||false)) : false,
-    dateManuallySet: existingId ? (dateChanged ? true : (existing?.dateManuallySet||false)) : false,
-  };
-  if (existingId) { const idx=state.dispatchPlans.findIndex(d=>d.id===existingId); if(idx>=0) state.dispatchPlans[idx]=dp; }
-  else state.dispatchPlans.push(dp);
-  saveState(); closeModal(); render();
-}
-
-
-function getActiveDispatchOrderIds() {
-  const [_y, _m] = _selectedPlanMonth.split("-").map(Number);
-  const mStart = new Date(_y, _m-1, 1);
-  const mEnd   = new Date(_y, _m, 0, 23, 59, 59);
-  return new Set(state.orders.filter(o => {
-    if (o.deleted) return false;
-    if (o.status === "running" || o.status === "pending") return true;
-    if (o.status === "closed") {
-      const closed = o.closedDate ? new Date(o.closedDate) : null;
-      const end    = o.endDate    ? new Date(o.endDate)    : null;
-      if (closed && closed >= mStart && closed <= mEnd) return true;
-      if (end    && end    >= mStart && end    <= mEnd)  return true;
-    }
-    return false;
-  }).map(o => o.id));
-}
-
-
-function renderDispatch() {
-  const editable = isMonthEditable(_selectedPlanMonth);
-  const status = getMonthEditStatus(_selectedPlanMonth);
-  const bannerHtml = status === 'locked' && currentUser?.role !== 'admin'
-    ? `<div style="background:rgba(255,82,82,0.1);border:1px solid rgba(255,82,82,0.3);border-radius:6px;padding:8px 14px;margin-bottom:12px;font-size:12px;color:#ff5252">🔒 <strong>${monthLabel(_selectedPlanMonth)}</strong> — read-only.</div>` : '';
-
-  const topActions = document.getElementById('topbar-actions');
-  topActions.innerHTML = `
-    <div style="position:relative;display:inline-block" id="export-wrap">
-      <button class="btn btn-secondary btn-sm" onclick="toggleExportMenu()">📤 Export ▾</button>
-      <div id="export-menu" style="display:none;position:absolute;right:0;top:34px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;min-width:250px;z-index:300;box-shadow:0 4px 16px rgba(0,0,0,.5)">
-        <div style="padding:6px 0">
-          <div onclick="exportDispatchPlan()" style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--text)" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">📋 Full Dispatch Plan (All Zones)</div>
-          <div onclick="exportCustomerWise()" style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--text)" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">👤 Customer-wise Reports (Separate Files)</div>
-          <div onclick="exportZoneWise()" style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--text)" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">🗺️ Zone-wise Report (Multi-sheet)</div>
-          <div onclick="exportPendingDispatch()" style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--text)" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">⏳ Pending Dispatch Summary</div>
-          <div onclick="exportFullOrderTracker()" style="padding:8px 16px;cursor:pointer;font-size:13px;color:var(--text)" onmouseover="this.style.background='var(--surface3)'" onmouseout="this.style.background=''">📊 Full Order Tracker (Prod + Dispatch)</div>
-        </div>
-      </div>
-    </div>
-    ${editable ? `<button class="btn btn-primary btn-sm" onclick="showAddDispatchModal()">+ Add Dispatch</button>` : ''}
-  `;
-
-  autoGenerateDispatchPlans(); // ensure auto plans are up to date
-
-  // Filter dispatch plans by selected month via linked production order
-  // Filter dispatch plans — only active orders (running/pending) + closed this month
-  const activeDispatchOrdIds = getActiveDispatchOrderIds();
-  const allPlans = state.dispatchPlans.filter(p =>
-    !p.productionOrderId || activeDispatchOrdIds.has(p.productionOrderId)
-  );
-  const plans = allPlans.sort((a,b)=>new Date(a.plannedDate)-new Date(b.plannedDate));
-  const zones = [...new Set(plans.map(p=>p.zone||'Unassigned'))].sort();
-
-  // Box readiness analysis
-  const readyByZone = {};
-  for (const z of ZONES) {
-    const zPlans = plans.filter(p=>p.zone===z && p.status!=='dispatched');
-    const readyBoxes = zPlans.filter(p=>{
-      const ord = state.orders.find(o=>o.id===p.productionOrderId);
-      return !ord || ord.status==='closed';
-    }).reduce((s,p)=>s+(p.boxes||0),0);
-    readyByZone[z] = {ready:readyBoxes, total:zPlans.reduce((s,p)=>s+(p.boxes||0),0), count:zPlans.length};
-  }
-
-  let html = `
-    ${bannerHtml}
-    <div class="alert alert-info mb-4">🚚 Truck dispatch is triggered when ≥ <strong>${getTruckCapacity()} boxes</strong> are ready for a zone/route.</div>
-    <div class="card mb-4">
-      <div class="card-title">Zone Readiness Dashboard</div>
-      <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:10px">
-        ${ZONES.map(z=>{
-          const zd = readyByZone[z];
-          if (!zd || zd.total===0) return '';
-          const zoneCap = getTruckCapacity(z);
-          const plannedBoxes = zd.total;
-          const pct = Math.min(100,(zd.ready/plannedBoxes*100)).toFixed(0);
-          const isReady = zd.ready >= plannedBoxes;
-          const truckCount = Math.ceil(plannedBoxes / zoneCap);
-          return `<div class="mc-card" style="${isReady?'border-color:var(--accent3)':''}">
-            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
-              <span class="text-mono text-sm fw-bold ${isReady?'text-green':''}">${z}</span>
-              ${isReady?'<span class="badge badge-completed">Ready</span>':'<span class="badge badge-pending">Filling</span>'}
-            </div>
-            <div class="text-mono" style="font-size:20px;font-weight:700;color:var(--text)">${zd.ready}<span class="text-dim text-sm">/${plannedBoxes} boxes</span></div>
-            <div class="progress-bar mt-4"><div class="progress-fill ${isReady?'green':'blue'}" style="width:${pct}%"></div></div>
-            <div class="text-dim text-sm mt-4">${zd.count} orders · ${truckCount} truck${truckCount!==1?'s':''} @ ${zoneCap} boxes</div>
-          </div>`;
-        }).join('')}
-      </div>
-    </div>
-    <div class="tabs" id="dispatch-view-tabs" style="margin-bottom:0">
-      <div class="tab active" onclick="switchDispatchViewTab(this,'orders')">📋 Order View</div>
-      <div class="tab" onclick="switchDispatchViewTab(this,'trucks')">🚚 Truck View</div>
-    </div>
-    <div id="dispatch-view-orders">
-    <div class="tabs" id="dispatch-zone-tabs" style="border-top:none;border-radius:0 0 0 0">
-      <div class="tab active" onclick="switchDispatchTab(this,'all')">All Zones</div>
-      ${zones.map(z=>`<div class="tab" onclick="switchDispatchTab(this,'${z}')">${z}</div>`).join('')}
-    </div>
-  `;
-
-  for (const z of ['all', ...zones]) {
-    const zPlans = z==='all' ? plans : plans.filter(p=>(p.zone||'Unassigned')===z);
-    const totalQty = zPlans.reduce((s,p)=>s+p.qty,0);
-    const dispatched = zPlans.reduce((s,p)=>s+(p.actualDispatched||0),0);
-    html += `
-      <div class="dispatch-zone-panel ${z!=='all'?'dispatch-zone-panel-zone':''}" data-zone="${z}" ${z!=='all'?'style="display:none"':''}>
-        <div class="card mb-4">
-          <div class="card-title">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
-          <div class="table-wrap dispatch-order-view-wrap" style="max-height:70vh;overflow:auto">
-            <table class="dispatch-order-view-table">
-              <thead><tr>
-                <th class="freeze-col-1">Customer</th><th class="freeze-col-2">Batch No</th><th class="freeze-col-3">PC Code</th><th class="freeze-col-4">Month</th><th class="freeze-col-5">Colour</th>
-                <th class="freeze-col-6">Size</th><th class="freeze-col-7">PTD/UP</th><th class="freeze-col-8">Zone</th><th>Qty (L)</th><th>Boxes</th>
-                <th>Packed</th><th>Planned Date</th><th>Dispatched (L)</th><th>Pending (L)</th><th>Status</th><th>Remarks</th><th>Actions</th>
-              </tr></thead>
-              <tbody>
-                ${zPlans.map(p=>renderDispatchRow(p)).join('')}
-                <tr style="background:var(--surface2);font-weight:600">
-                  <td class="freeze-col-1" colspan="8">TOTAL</td>
-                  <td class="text-mono text-accent">${fmt(totalQty)}</td>
-                  <td class="text-mono">${zPlans.reduce((s,p)=>s+(p.boxes||0),0)}</td>
-                  <td class="text-mono text-accent3">${fmt(zPlans.reduce((s,p)=>s+(p.packedQty||0),0))}L</td>
-                  <td>-</td>
-                  <td class="text-mono text-green">${fmt(dispatched)}</td>
-                  <td class="text-mono text-accent">${fmt(Math.max(0, totalQty - dispatched))}</td>
-                  <td colspan="2"></td>
-                </tr>
-              </tbody>
-            </table>
-          </div>
-        </div>
-      </div>`;
-  }
-
-  // Close order view wrapper + add truck view panel
-  html += '</div>'; // close dispatch-view-orders
-  html += '<div id="dispatch-view-trucks" style="display:none">' + renderTruckViewHTML(zones) + '</div>';
-
-  document.getElementById('content').innerHTML = html;
-}
-
-function renderDispatchRow(p) {
-  const isDispatched = p.status==='dispatched';
-  const isExportPend = p.exportPending || p.status==='export-pending';
-  const ord = state.orders.find(o=>o.id===p.productionOrderId);
-  const isReady = !ord || ord.status==='closed';
-  const canDispatch = isReady && !isDispatched && !isExportPend;
-  const statusBadge = isDispatched
-    ? '<span class="badge badge-completed">Dispatched</span>'
-    : isExportPend
-    ? '<span class="badge" style="background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.2)">🚢 Awaiting Container</span>'
-    : canDispatch
-    ? '<span class="badge badge-running">Ready</span>'
-    : '<span class="badge badge-pending">Pending</span>';
-  const month = p.plannedDate ? new Date(p.plannedDate).toLocaleString('en-IN',{month:'short',year:'2-digit'}) : '—';
-  const containerInfo = p.isConsolidatedExport
-    ? `<div style="font-size:10px;color:var(--accent5);font-family:var(--mono);margin-top:2px">📦 Container: ${p.containerRef||'—'} (${(p.allProductionOrderIds||[]).length} orders)</div>` : '';
-  // Lot badge for split dispatches
-  const lotBadge = (p.lotTotal > 1)
-    ? `<span style="background:rgba(255,171,0,0.12);color:#ffab00;border:1px solid rgba(255,171,0,0.25);padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700;margin-left:4px">Lot ${p.lotNo}/${p.lotTotal}</span>` : '';
-  // Packing data from tracking (packed out qty)
-  const packedOut = p.packedQty || 0;
-  const packPct = p.qty > 0 ? Math.min(100, (packedOut/p.qty*100)).toFixed(0) : 0;
-  const packCell = packedOut > 0
-    ? `<span style="color:${packedOut>=p.qty*0.99?'var(--accent3)':'var(--accent2)'};">${fmt(packedOut)}L</span><span style="color:var(--text3);font-size:10px"> (${packPct}%)</span>`
-    : '<span style="color:var(--text3);font-size:11px">—</span>';
-
-  return `<tr>
-    <td class="freeze-col-1" style="font-weight:500">${p.customer||'-'}${containerInfo}</td>
-    <td class="freeze-col-2 text-mono">${p.batchNumber||'-'}${lotBadge}</td>
-    <td class="freeze-col-3 text-mono text-accent">${p.pcCode||'-'}</td>
-    <td class="freeze-col-4 text-mono text-dim">${month}</td>
-    <td class="freeze-col-5">${fmtColour(p.colour)}</td>
-    <td class="freeze-col-6 text-mono">${p.size||'-'}</td>
-    <td class="freeze-col-7">${p.packing==='PTD'?'<span class="badge badge-ptd">PTD</span>':'<span class="badge badge-up">UP</span>'}</td>
-    <td class="freeze-col-8 text-sm">${p.zone||'-'}</td>
-    <td class="text-mono fw-bold">${fmt(p.qty)}</td>
-    <td class="text-mono">${p.boxes||'-'}</td>
-    <td class="text-mono">${packCell}</td>
-    <td class="text-mono" style="white-space:nowrap">${p.plannedDate ? fmtDate(p.plannedDate) + (p.tentative ? ' <span style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:10px;font-family:var(--font-mono)">Tentative</span>' : (p.dateManuallySet ? ' <span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);padding:1px 5px;border-radius:3px;font-size:10px">Manual</span>' : '')) : (isExportPend ? '<span style="color:var(--accent5);font-size:11px">Pending container</span>' : '<span style="color:var(--text3);font-size:11px">TBD</span>')}</td>
-    <td>
-      ${p._trackingDispatched > 0
-        ? `<span class="text-mono fw-bold" style="color:var(--accent3)" title="From tracking records">${fmt(p._trackingDispatched)}</span><span style="font-size:10px;color:var(--text3);margin-left:2px">📦</span>`
-        : `<input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
-          style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
-          onchange="updateDispatchActual('${p.id}',this.value)">`
-      }
-    </td>
-    <td class="text-mono ${(p.qty-(p.actualDispatched||0))>0?'text-accent':''}">${isDispatched?'<span style="color:var(--accent3)">—</span>':fmt(Math.max(0,p.qty-(p.actualDispatched||0)))}</td>
-    <td>${statusBadge}</td>
-    <td><input type="text" value="${p.remarks||''}" placeholder="Remarks..."
-      style="width:120px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px"
-      onchange="updateDispatchRemark('${p.id}',this.value)"></td>
-    <td style="white-space:nowrap">
-      ${canDispatch?`<button class="btn btn-success btn-sm" onclick="markDispatched('${p.id}')">✓ Dispatch</button>`:''}
-      <button class="btn btn-ghost btn-sm" onclick="editDispatch('${p.id}')">✏️</button>
-    </td>
-  </tr>`;
-}
-
-function switchDispatchTab(el, zone) {
-  document.querySelectorAll('#dispatch-zone-tabs .tab').forEach(t=>t.classList.remove('active'));
-  el.classList.add('active');
-  if (zone==='all') {
-    document.querySelectorAll('[data-zone]').forEach(p=>{ if(p.dataset.zone==='all') p.style.display=''; else p.style.display='none'; });
-  } else {
-    document.querySelectorAll('[data-zone]').forEach(p=>{ p.style.display = p.dataset.zone===zone?'':'none'; });
-  }
-}
-
-function switchDispatchViewTab(el, view) {
-  document.querySelectorAll('#dispatch-view-tabs .tab').forEach(t=>t.classList.remove('active'));
-  el.classList.add('active');
-  const ordersEl = document.getElementById('dispatch-view-orders');
-  const trucksEl = document.getElementById('dispatch-view-trucks');
-  if (ordersEl) ordersEl.style.display = view==='orders' ? '' : 'none';
-  if (trucksEl) trucksEl.style.display = view==='trucks' ? '' : 'none';
 }
 
 function renderTruckViewHTML(zones) {
@@ -8014,13 +7563,15 @@ async function savePcModal() {
     state.packSizes[size] = packSize;
   }
   state.pcCodes[size].push({c:code, n:colour});
-  // PL2: Mark pcCodes as locally changed — protect from server merge wipeout for 24hr
-  _localPcCodesSnapshot = JSON.parse(JSON.stringify(state.pcCodes));
-  _localOrderChanges['__pcCodes__'] = Date.now() + (24*60*60*1000 - 90000); // extend to 24hr
+  // v37E PL2: Mark pcCodes as locally changed — protects from server merge wipeout for 90s
+  _localOrderChanges['__pcCodes__'] = Date.now();
   saveState();
   closeModal();
-  // v37E PL2: AWAIT server save so any subsequent /api/pc-codes GET sees the new code
-  const sv = localStorage.getItem('sunloc_server_url') || '';
+  // v37J Sub-issue 1.2 FIX: was `localStorage.getItem(...) || ''` which silently failed when
+  // localStorage was unset (PWA / private mode / first-load). Use SYNC._url fallback so
+  // server save actually runs. Without server persistence, the new code only lived in local
+  // state for the 90s protection window and then disappeared on next sync.
+  const sv = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
   if (sv) {
     try {
       const r = await fetch(sv + '/api/pc-codes', {
@@ -8030,16 +7581,24 @@ async function savePcModal() {
       });
       if (r.ok) {
         const j = await r.json();
-        if (j.ok) console.log('[PC-Codes] Saved to server DB:', size, code);
-        else console.warn('[PC-Codes] Server save returned not-ok:', j.error);
+        if (j.ok) {
+          console.log('[PC-Codes] Saved to server DB:', size, code);
+          toast(`✓ PC code ${code} saved (Size ${size})`, 'var(--green)', 2500);
+        } else {
+          console.warn('[PC-Codes] Server save returned not-ok:', j.error);
+          toast('⚠️ PC save failed: ' + (j.error||'unknown'), 'var(--red)', 4000);
+        }
       } else {
         console.warn('[PC-Codes] Server save HTTP error:', r.status);
-        toast('PC saved locally — server sync pending', 'var(--amber)', 3000);
+        toast('⚠️ PC save HTTP ' + r.status + ' — may not persist', 'var(--red)', 4000);
       }
     } catch(e) {
       console.warn('[PC-Codes] Server save error:', e.message);
       toast('PC saved locally — server sync pending', 'var(--amber)', 3000);
     }
+  } else {
+    console.warn('[PC-Codes] No server URL configured — PC code saved locally only and will not persist past 90 seconds.');
+    toast('⚠️ No server connection — PC code may not persist', 'var(--red)', 4000);
   }
   render();
 }
@@ -8047,9 +7606,12 @@ async function savePcModal() {
 function deletePcCode(size, code) {
   if (!confirm('Delete this PC code?')) return;
   state.pcCodes[size] = (state.pcCodes[size]||[]).filter(p=>p.c!==code);
+  // v37J Sub-issue 1.2 FIX: also protect deletes for 90s — without this, next sync re-merges
+  // server's still-present code back into state if the DELETE failed to reach the server.
+  _localOrderChanges['__pcCodes__'] = Date.now();
   saveState(); render();
-  // Delete permanently from server DB
-  const sv = localStorage.getItem('sunloc_server_url') || '';
+  // v37J Sub-issue 1.2 FIX: same URL bug as savePcModal — use SYNC._url fallback
+  const sv = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
   if (sv) {
     fetch(sv + '/api/pc-codes', {
       method: 'DELETE',

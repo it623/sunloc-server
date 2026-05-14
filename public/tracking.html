@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v37I.1</title>
+<title>Sunloc Tracking Suite v1.0 · build v37J</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v37I.1</p>
+      <p>Tracking Suite v1.0 · build v37J</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v37I.1</p>
+      <p>Tracking Suite v1.0 · build v37J</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2039,87 +2039,95 @@ function generateZPL(label, batch){
 ^XZ`;
   }
 
-  // ── MAIN WHITE LABEL ──────────────────────────────────────────
-  // PW=800 (100mm), LL=1200 (150mm) — matches label stock
-  // Content fills Y=50 to Y=1180 (full label height)
-  // 5 data rows x 116 dots (14.5mm each) — large, clear text
+  // ── MAIN WHITE LABEL — LANDSCAPE 6"×4" (v37J) ─────────────────
+  // PW=1200 (~6" / 150mm), LL=800 (~4" / 100mm) — matches landscape label stock
+  // Designed to fill the full 6" width of the green carton box; vertical 2" gap
+  // expected since green box is 6"×6" and label is 6"×4" (acknowledged by Ishan).
+  // Layout: header (2 title lines + customer name) → 5×2 grid → expiry → QR/sig footer.
 
-  const D  = isTemp||isWO ? 42 : 0;
+  const D  = isTemp||isWO ? 36 : 0;   // TEMP/WO band offset — slim band so we don't overflow 800 LL
   const hBand = isTemp
-    ? `^FO10,${136+D}^GB780,42,42^FS\n^CF0,24\n^FR^FO10,${146+D}^FB780,1,0,C^FD** TEMP BATCH - REPLACEMENT REQUIRED **^FS`
+    ? `^FO10,${118+D-36}^GB1180,36,36^FS\n^CF0,22\n^FR^FO10,${125+D-36}^FB1180,1,0,C^FD** TEMP BATCH - REPLACEMENT REQUIRED **^FS`
     : isWO
-    ? `^FO10,${136+D}^GB780,42,42^FS\n^CF0,24\n^FR^FO10,${146+D}^FB780,1,0,C^FDWITHOUT ORDER - CUSTOMER TO BE ASSIGNED^FS`
+    ? `^FO10,${118+D-36}^GB1180,36,36^FS\n^CF0,22\n^FR^FO10,${125+D-36}^FB1180,1,0,C^FDWITHOUT ORDER - CUSTOMER TO BE ASSIGNED^FS`
     : '';
   const oBorder = isTemp
-    ? `^FO4,4^GB792,1192,5^FS\n^FO9,9^GB782,1182,2^FS\n`
-    : isWO ? `^FO4,4^GB792,1192,4^FS\n` : '';
+    ? `^FO4,4^GB1192,792,5^FS\n^FO9,9^GB1182,782,2^FS\n`
+    : isWO ? `^FO4,4^GB1192,792,4^FS\n` : '';
 
-  const custY = 140 + D;
-  const tTop  = 180 + D;
-  const RH    = 90;             // compact rows to give QR maximum space
-  const tBot  = tTop + RH*5;   // 180+450=630 normal, 672 special
-  const expY  = tBot + 8;
-  const ruleY = tBot + 46;
-  const qrY   = ruleY + 10;    // QR starts here
-  const qRelY = qrY + 180;     // Q RELEASED text Y (centred beside large QR)
-  const sigY  = qrY + 60;      // SIGNATURE line Y
-  const botY  = 1180;          // fixed bottom rule
+  // Vertical pacing (Y coordinates):
+  const titleY1 = 15;                      // SUNIL HEALTHCARE LIMITED
+  const titleY2 = 70;                      // HARD GELATIN CAPSULE SHELLS I.P.
+  const titleRuleY = 110;                  // separator under title block
+  const custY  = 158 + D;                  // CUSTOMER NAME row
+  const tTop   = 195 + D;                  // top of 5×2 data grid
+  const RH     = 75;                       // row height (5 rows × 75 = 375 tall)
+  const tBot   = tTop + RH*5;              // ≈ 570 + D
+  const expY   = tBot + 8;                 // EXPIRY footer text
+  const ruleY  = tBot + 38;                // rule below expiry
+  const qrY    = ruleY + 8;                // QR top — anchored to bottom strip
+  const qRelY  = qrY + 70;                 // Q RELEASED text Y
+  const sigY   = qrY + 50;                 // SIGNATURE underline Y
+  const botY   = 790;                      // bottom rule (just inside LL=800)
+
+  // Horizontal split for data grid: two equal columns
+  // Left column: x=10..600 (590 wide), Right column: x=605..1195 (590 wide)
 
   return `^XA
 ^CI28
-^PW800
-^LL1200
+^PW1200
+^LL800
 ^MMT
 ^PON
 ^LH0,0
 ${oBorder}
-^CF0,46
-^FO10,50^FB780,1,0,C^FDSUNIL HEALTHCARE LIMITED^FS
-^CF0,30
-^FO10,102^FB780,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
-^FO10,${136+D}^GB780,2,2^FS
-${hBand}
-^CF0,26
-^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
-^FO10,${tTop-4}^GB780,2,2^FS
-
-^FO10,${tTop}^GB390,${RH*5+2},2^FS
-^FO404,${tTop}^GB386,${RH*5+2},2^FS
-^FO10,${tTop+RH}^GB390,2,2^FS
-^FO10,${tTop+RH*2}^GB390,2,2^FS
-^FO10,${tTop+RH*3}^GB390,2,2^FS
-^FO10,${tTop+RH*4}^GB390,2,2^FS
-^FO404,${tTop+RH}^GB386,2,2^FS
-^FO404,${tTop+RH*2}^GB386,2,2^FS
-^FO404,${tTop+RH*3}^GB386,2,2^FS
-^FO404,${tTop+RH*4}^GB386,2,2^FS
-
-^CF0,26
-^FO18,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
-^FO18,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
-^FO18,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
-^FO18,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
-^FO18,${tTop+RH*4+10}^FDPRINTED       :^FS
-
-^FO412,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
-^FO412,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
-^FO412,${tTop+RH*2+10}^FDGROSS WT.:^FS
-^FO412,${tTop+RH*3+10}^FDNETT WT.  :^FS
-^FO412,${tTop+RH*4+10}^FDMFG DATE:  ${mfgDate}^FS
-
-^FO10,${tBot}^GB780,2,2^FS
-^CF0,20
-^FO10,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
-^FO10,${ruleY}^GB780,2,2^FS
-
-^FO10,${qrY}^BQN,2,9^FDLA,${label.qrData}^FS
+^CF0,42
+^FO10,${titleY1}^FB1180,1,0,C^FDSUNIL HEALTHCARE LIMITED^FS
 ^CF0,28
-^FO260,${qRelY}^FB300,1,0,C^FDQ RELEASED^FS
-^FO580,${sigY}^GB200,2,2^FS
-^CF0,22
-^FO580,${sigY+10}^FB200,1,0,C^FDSIGNATURE^FS
+^FO10,${titleY2}^FB1180,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
+^FO10,${titleRuleY}^GB1180,2,2^FS
+${hBand}
+^CF0,24
+^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
+^FO10,${tTop-4}^GB1180,2,2^FS
 
-^FO10,${botY}^GB780,3,3^FS
+^FO10,${tTop}^GB590,${RH*5+2},2^FS
+^FO604,${tTop}^GB586,${RH*5+2},2^FS
+^FO10,${tTop+RH}^GB590,2,2^FS
+^FO10,${tTop+RH*2}^GB590,2,2^FS
+^FO10,${tTop+RH*3}^GB590,2,2^FS
+^FO10,${tTop+RH*4}^GB590,2,2^FS
+^FO604,${tTop+RH}^GB586,2,2^FS
+^FO604,${tTop+RH*2}^GB586,2,2^FS
+^FO604,${tTop+RH*3}^GB586,2,2^FS
+^FO604,${tTop+RH*4}^GB586,2,2^FS
+
+^CF0,24
+^FO20,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
+^FO20,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
+^FO20,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
+^FO20,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
+^FO20,${tTop+RH*4+10}^FDPRINTED       :^FS
+
+^FO614,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
+^FO614,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
+^FO614,${tTop+RH*2+10}^FDGROSS WT.:^FS
+^FO614,${tTop+RH*3+10}^FDNETT WT.  :^FS
+^FO614,${tTop+RH*4+10}^FDMFG DATE:  ${mfgDate}^FS
+
+^FO10,${tBot}^GB1180,2,2^FS
+^CF0,18
+^FO10,${expY}^FB1180,1,0,C^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
+^FO10,${ruleY}^GB1180,2,2^FS
+
+^FO20,${qrY}^BQN,2,4^FDLA,${label.qrData}^FS
+^CF0,26
+^FO250,${qRelY}^FB500,1,0,C^FDQ RELEASED^FS
+^FO830,${sigY+30}^GB350,2,2^FS
+^CF0,20
+^FO830,${sigY+38}^FB350,1,0,C^FDSIGNATURE^FS
+
+^FO10,${botY}^GB1180,3,3^FS
 ^XZ`;
 }
 
