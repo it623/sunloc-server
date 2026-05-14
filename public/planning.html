@@ -5344,14 +5344,11 @@ function renderDispatch() {
     html += `
       <div class="dispatch-zone-panel ${z!=='all'?'dispatch-zone-panel-zone':''}" data-zone="${z}" ${z!=='all'?'style="display:none"':''}>
         <div class="card mb-4">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;position:sticky;top:0;z-index:12;background:var(--surface);padding:8px 0;border-bottom:1px solid var(--border)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
             <div class="card-title" style="margin:0">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
-            <div style="display:flex;gap:8px;align-items:center">
-              <input type="text" placeholder="🔍 Search customer / batch / PC..." id="pov-quick-search-${z}"
-                oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;filterPlanningOrderView('${z}')"
-                style="padding:6px 12px;border:1.5px solid var(--accent3);border-radius:6px;font-size:12px;width:260px;background:var(--surface2);color:var(--text)">
-              <button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="this.closest('.card').querySelector('.pov-filter-bar').style.display=this.closest('.card').querySelector('.pov-filter-bar').style.display==='none'?'flex':'none'">⚙ Filters</button>
-            </div>
+            <input type="text" placeholder="🔍 Search customer / batch / PC..." id="pov-quick-search-${z}"
+              oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;filterPlanningOrderView('${z}')"
+              style="padding:6px 12px;border:1.5px solid var(--accent3);border-radius:6px;font-size:12px;width:250px;background:var(--surface2);color:var(--text)">
           </div>
           <!-- v37I B6: Sticky filter bar above the order view table. AND-logic. Persists in session. -->
           <div class="pov-filter-bar" data-zone="${z}" style="display:none;gap:6px;flex-wrap:wrap;padding:8px;background:var(--surface2);border-radius:4px;margin-bottom:6px;border:1px solid var(--border)">
