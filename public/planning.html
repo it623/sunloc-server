@@ -513,7 +513,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v37J</p>
+      <p>Planning Suite v3.0 · build v37K</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -846,11 +846,9 @@ const SYNC = (() => {
             state.dailyPrinting = [..._dlMap.values()];
             console.log('[DailyPrinting] Reloaded', _dlJson.logs.length, 'logs from dedicated table after server sync');
           } else {
-            // Fallback: restore local if server fetch failed
             state.dailyPrinting = _localDailyPrinting;
           }
         } catch(e) {
-          // Fallback: restore local on error
           state.dailyPrinting = _localDailyPrinting;
           console.warn('[DailyPrinting] Reload failed, using local:', e?.message);
         }
@@ -2467,7 +2465,7 @@ function renderProduction() {
       </div>`
     : '';
 
-  const overLimitBanner = ''; // v37J banner removed per user request
+  const overLimitBanner = ''; // banner removed per user request
 
   // v37J Sub-issue 1.3: Customer-mismatch banner placeholder. Filled async via _fetchCustomerMismatches.
   // Detects batches where Planning's customer doesn't match the most recent label customer
@@ -2485,6 +2483,7 @@ function renderProduction() {
 
   let html = `
     ${bannerHtml}
+    ${overLimitBanner}
     ${mismatchPlaceholder}
     <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:20px">
       <div class="tabs" id="size-tabs" style="margin-bottom:0">
@@ -5041,16 +5040,41 @@ function buildTruckPlans(zone) {
   const trucks = [];
 
   if (isExport) {
-    // Group plans by indent identifier
+    // v37J.1 Issue 2: Three-level indent key per spec.
+    // "Indent" = a common document number that pulls multiple batches/colours/sizes
+    // into one shipment. Per Ishan: precedence is (1) containerRef, (2) poNumber,
+    // (3) customer+zone fallback — when no document number is set, club all same-
+    // customer same-zone batches into one truck. Previously the no-document
+    // fallback was per-order ID, which incorrectly split same-customer multi-batch
+    // shipments (Eskay had 26W038 and 26X059 in separate partial trucks).
+    //
+    // Key is normalised (trim + uppercase) so trivial entry differences don't
+    // split same-indent orders into different trucks.
+    const norm = (s) => (s || '').toString().trim().toUpperCase();
     const indentGroups = new Map();
     for (const p of sorted) {
-      const indentKey = p.containerRef || p.poNumber || `order-${p.productionOrderId || p.id}`;
-      if (!indentGroups.has(indentKey)) indentGroups.set(indentKey, []);
-      indentGroups.get(indentKey).push(p);
+      const cr = norm(p.containerRef);
+      const po = norm(p.poNumber);
+      const cust = norm(p.customer);
+      let indentKey, indentSource;
+      if (cr) {
+        indentKey = `CR:${cr}`; indentSource = 'containerRef';
+      } else if (po) {
+        indentKey = `PO:${po}`; indentSource = 'poNumber';
+      } else if (cust) {
+        // No document number — club by customer within this zone (per Ishan's spec)
+        indentKey = `CUST:${cust}|${zone}`; indentSource = 'customer';
+      } else {
+        // Truly orphan plan — no customer, no document; isolate to its own truck
+        indentKey = `ORD:${p.productionOrderId || p.id}`; indentSource = 'order-id-fallback';
+      }
+      if (!indentGroups.has(indentKey)) indentGroups.set(indentKey, { plans: [], source: indentSource });
+      indentGroups.get(indentKey).plans.push(p);
     }
     // Build trucks per indent — separate trucks for separate indents, never mixed
-    for (const [indentKey, indentOrders] of indentGroups) {
-      let truck = { truckNumber: trucks.length + 1, zone, orders: [], totalBoxes: 0, indentKey, isExportIndent: true };
+    for (const [indentKey, group] of indentGroups) {
+      const indentOrders = group.plans;
+      let truck = { truckNumber: trucks.length + 1, zone, orders: [], totalBoxes: 0, indentKey, indentSource: group.source, isExportIndent: true };
       for (const p of indentOrders) {
         let remainingBoxes = p.boxes || 0;
         let splitIndex = 0;
@@ -5059,7 +5083,7 @@ function buildTruckPlans(zone) {
           if (spaceInTruck <= 0) {
             // Finalise current truck and start a new one FOR THIS SAME INDENT
             if (truck.orders.length > 0) trucks.push(truck);
-            truck = { truckNumber: trucks.length + 1, zone, orders: [], totalBoxes: 0, indentKey, isExportIndent: true };
+            truck = { truckNumber: trucks.length + 1, zone, orders: [], totalBoxes: 0, indentKey, indentSource: group.source, isExportIndent: true };
             continue;
           }
           const boxesThisTruck = Math.min(remainingBoxes, spaceInTruck);
@@ -5511,7 +5535,7 @@ function renderDispatch() {
               oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;filterPlanningOrderView('${z}')"
               style="padding:6px 12px;border:1.5px solid var(--accent3);border-radius:6px;font-size:12px;width:250px;background:var(--surface2);color:var(--text)">
           </div>
-          <!-- v37I B6: Filter bar — hidden by default, toggled via ⚙ Filters button -->
+          <!-- v37I B6: Filter bar — hidden by default -->
           <div class="pov-filter-bar" data-zone="${z}" style="display:none;gap:6px;flex-wrap:wrap;padding:8px;background:var(--surface2);border-radius:4px;margin-bottom:6px;border:1px solid var(--border)">
             <input type="text" placeholder="Customer" value="${(window._planningOrderViewFilters||{}).customer||''}"
                    oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.customer=this.value;filterPlanningOrderView('${z}')"
@@ -5705,7 +5729,6 @@ function filterPlanningOrderView(zone) {
   const tbody = panel.querySelector('.dispatch-order-view-table tbody');
   if (!tbody) return;
   const qs = (f._quickSearch||'').toLowerCase().trim();
-  // Sync quick search input value
   const qsEl = document.getElementById('pov-quick-search-' + zone);
   if (qsEl && document.activeElement !== qsEl) qsEl.value = qs;
   let visibleCount = 0, totalCount = 0;
@@ -5780,8 +5803,22 @@ function renderTruckCard(truck, cap) {
   // v37I B7 + B8: Status badges for export-indent and held-partial trucks
   let extraBadges = '';
   if (truck.isExportIndent) {
-    const indentLabel = truck.indentKey ? `Indent: ${truck.indentKey.length>20?truck.indentKey.slice(0,20)+'…':truck.indentKey}` : 'Export Indent';
-    extraBadges += `<span class="badge" style="background:rgba(139,92,246,0.12);color:#a78bfa;border:1px solid rgba(139,92,246,0.25);margin-left:6px;font-size:10px">🚢 ${indentLabel}</span>`;
+    // v37J.1 Issue 2: indent source diagnostic. Per Ishan's spec, customer-fallback
+    // is now a normal valid grouping (when no document number exists). Only the
+    // truly orphan order-id case is flagged in amber.
+    const srcLabel = truck.indentSource === 'containerRef' ? 'Container Ref'
+                   : truck.indentSource === 'poNumber'     ? 'PO No.'
+                   : truck.indentSource === 'customer'     ? 'Customer'
+                   : 'no doc ref';
+    const srcColour = truck.indentSource === 'order-id-fallback' ? '#f59e0b' : '#a78bfa';
+    const keyDisplay = truck.indentKey
+      ? truck.indentKey.replace(/^(CR:|PO:|CUST:|ORD:)/, '')
+      : '';
+    const keyShort = keyDisplay.length > 20 ? keyDisplay.slice(0, 20) + '…' : keyDisplay;
+    const indentLabel = truck.indentSource === 'order-id-fallback'
+      ? 'Indent: (orphan)'
+      : `Indent: ${keyShort} (${srcLabel})`;
+    extraBadges += `<span class="badge" style="background:rgba(139,92,246,0.12);color:${srcColour};border:1px solid rgba(139,92,246,0.25);margin-left:6px;font-size:10px" title="Group source: ${truck.indentSource||'unknown'}\nKey: ${(truck.indentKey||'').replace(/"/g,'&quot;')}">🚢 ${indentLabel}</span>`;
   }
   if (truck.held) {
     extraBadges += `<span class="badge" style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);margin-left:6px;font-size:10px" title="${(truck._heldReason||'').replace(/"/g,'&quot;')}">⏸ Held (partial)</span>`;
