@@ -5944,50 +5944,6 @@ app.get('/api/planning/all-kv', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// ── Start server ──────────────────────────────────────────────
-app.listen(PORT, () => {
-  console.log(`[Sunloc] Server running on port ${PORT}`);
-  console.log(`[Sunloc] DB: ${DB_PATH}`);
-  // Ensure PostgreSQL tables exist (handles cases where PgDatabase migrations didn't create them)
-  ensurePostgresTables().then(()=>{
-    warmPlanningCache();
-    warmActualsCache();
-    // v37I bugfix: one-time backfill — recompute dispatched_qty for ALL batches that have
-    // manual records. Fixes data from before the SUM-based recompute was introduced where
-    // multiple records overwrote each other and only the last per-record qty was saved.
-    // Runs once per server boot, idempotent (running again is a no-op since values would match).
-    async function _backfillDispatchActuals() {
-  try {
-    let batches;
-    if (pgPool) {
-      const r = await pgPool.query(`SELECT DISTINCT batch_number FROM tracking_dispatch_records WHERE batch_number IS NOT NULL`);
-      batches = r.rows.map(x => x.batch_number);
-    } else {
-      batches = db.prepare(`SELECT DISTINCT batch_number FROM tracking_dispatch_records WHERE batch_number IS NOT NULL`).all().map(x => x.batch_number);
-    }
-    if (!batches.length) return;
-    let updated = 0;
-    for (const b of batches) {
-      try {
-        // Look up latest vehicle/invoice from the most recent record (to preserve metadata)
-        let latest;
-        if (pgPool) {
-          const r = await pgPool.query(`SELECT vehicle_no, invoice_no FROM tracking_dispatch_records WHERE batch_number=$1 ORDER BY ts DESC LIMIT 1`, [b]);
-          latest = r.rows[0];
-        } else {
-          latest = db.prepare(`SELECT vehicle_no, invoice_no FROM tracking_dispatch_records WHERE batch_number=? ORDER BY ts DESC LIMIT 1`).get(b);
-        }
-        await _recomputeDispatchActuals(b, latest?.vehicle_no || null, latest?.invoice_no || null);
-        updated++;
-      } catch(e) { console.warn(`[v37I backfill] batch ${b}:`, e?.message); }
-    }
-    console.log(`[v37I backfill] Recomputed dispatch_actuals for ${updated} batch(es)`);
-  } catch(e) { console.warn('[v37I backfill] outer failure:', e?.message); }
-}
-_backfillDispatchActuals().catch(e => console.warn('[v37I backfill] failed:', e?.message));
-  });
-});
-
 // v37I bugfix: backfill dispatch_actuals from records on startup
 
 app.get('/jsqr.min.js', (req, res) => {
