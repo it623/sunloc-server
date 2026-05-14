@@ -5344,14 +5344,17 @@ function renderDispatch() {
     html += `
       <div class="dispatch-zone-panel ${z!=='all'?'dispatch-zone-panel-zone':''}" data-zone="${z}" ${z!=='all'?'style="display:none"':''}>
         <div class="card mb-4">
-          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:4px">
-            <div class="card-title">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
-            <input type="text" placeholder="🔍 Search orders..." id="pov-quick-search-${z}"
-              oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.customer=this.value;window._planningOrderViewFilters.batch=this.value;window._planningOrderViewFilters._quickSearch=this.value;filterPlanningOrderView('${z}')"
-              style="padding:5px 10px;border:1px solid var(--border);border-radius:6px;font-size:12px;width:220px;background:var(--surface)">
+          <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:6px;position:sticky;top:0;z-index:12;background:var(--surface);padding:8px 0;border-bottom:1px solid var(--border)">
+            <div class="card-title" style="margin:0">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
+            <div style="display:flex;gap:8px;align-items:center">
+              <input type="text" placeholder="🔍 Search customer / batch / PC..." id="pov-quick-search-${z}"
+                oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;filterPlanningOrderView('${z}')"
+                style="padding:6px 12px;border:1.5px solid var(--accent3);border-radius:6px;font-size:12px;width:260px;background:var(--surface2);color:var(--text)">
+              <button class="btn btn-ghost btn-sm" style="font-size:11px" onclick="this.closest('.card').querySelector('.pov-filter-bar').style.display=this.closest('.card').querySelector('.pov-filter-bar').style.display==='none'?'flex':'none'">⚙ Filters</button>
+            </div>
           </div>
           <!-- v37I B6: Sticky filter bar above the order view table. AND-logic. Persists in session. -->
-          <div class="pov-filter-bar" data-zone="${z}" style="display:flex;gap:6px;flex-wrap:wrap;padding:8px;background:var(--surface2);border-radius:4px;margin-bottom:6px;position:sticky;top:0;z-index:11;border:1px solid var(--border)">
+          <div class="pov-filter-bar" data-zone="${z}" style="display:none;gap:6px;flex-wrap:wrap;padding:8px;background:var(--surface2);border-radius:4px;margin-bottom:6px;border:1px solid var(--border)">
             <input type="text" placeholder="Customer" value="${(window._planningOrderViewFilters||{}).customer||''}"
                    oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.customer=this.value;filterPlanningOrderView('${z}')"
                    list="pov-customers-${z}"
@@ -5545,6 +5548,9 @@ function switchDispatchViewTab(el, view) {
 function filterPlanningOrderView(zone) {
   const f = window._planningOrderViewFilters || {};
   const qs = (f._quickSearch||'').toLowerCase().trim();
+  // Sync quick search input value
+  const qsEl = document.getElementById('pov-quick-search-' + zone);
+  if (qsEl && document.activeElement !== qsEl) qsEl.value = qs;
   const panel = document.querySelector(`.dispatch-zone-panel[data-zone="${zone}"]`);
   if (!panel) return;
   const tbody = panel.querySelector('.dispatch-order-view-table tbody');
