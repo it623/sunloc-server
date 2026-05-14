@@ -2056,14 +2056,16 @@ function generateZPL(label, batch){
 
   const custY = 140 + D;
   const tTop  = 180 + D;
-  const RH    = 90;             // compact rows to give QR maximum space
-  const tBot  = tTop + RH*5;   // 180+450=630 normal, 672 special
+  const RH    = 78;             // 6 rows × 78 = 468 — fits with QR space below
+  const tBot  = tTop + RH*6;   // 6 rows
   const expY  = tBot + 8;
   const ruleY = tBot + 46;
   const qrY   = ruleY + 10;    // QR starts here
-  const qRelY = qrY + 180;     // Q RELEASED text Y (centred beside large QR)
+  const qRelY = qrY + 180;     // Q RELEASED text Y
   const sigY  = qrY + 60;      // SIGNATURE line Y
   const botY  = 1180;          // fixed bottom rule
+  // PC Code: prefer label.pcCode, fall back to batch pcCode
+  const pcCode = (label.pcCode || batch?.pcCode || '').toString();
 
   return `^XA
 ^CI28
@@ -2083,16 +2085,18 @@ ${hBand}
 ^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
 ^FO10,${tTop-4}^GB780,2,2^FS
 
-^FO10,${tTop}^GB390,${RH*5+2},2^FS
-^FO404,${tTop}^GB386,${RH*5+2},2^FS
+^FO10,${tTop}^GB390,${RH*6+2},2^FS
+^FO404,${tTop}^GB386,${RH*6+2},2^FS
 ^FO10,${tTop+RH}^GB390,2,2^FS
 ^FO10,${tTop+RH*2}^GB390,2,2^FS
 ^FO10,${tTop+RH*3}^GB390,2,2^FS
 ^FO10,${tTop+RH*4}^GB390,2,2^FS
+^FO10,${tTop+RH*5}^GB390,2,2^FS
 ^FO404,${tTop+RH}^GB386,2,2^FS
 ^FO404,${tTop+RH*2}^GB386,2,2^FS
 ^FO404,${tTop+RH*3}^GB386,2,2^FS
 ^FO404,${tTop+RH*4}^GB386,2,2^FS
+^FO404,${tTop+RH*5}^GB386,2,2^FS
 
 ^CF0,26
 ^FO18,${tTop+10}^FDQUANTITY    :  ${pieces}^FS
@@ -2100,6 +2104,7 @@ ${hBand}
 ^FO18,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
 ^FO18,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
 ^FO18,${tTop+RH*4+10}^FDPRINTED       :^FS
+^FO18,${tTop+RH*5+10}^FDPC CODE    :  ${pcCode}^FS
 
 ^FO412,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
 ^FO412,${tTop+RH+10}^FDCONTAINER:  ${containerNo}^FS
