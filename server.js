@@ -1213,7 +1213,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dra_batch ON dispatch_reconcile_alerts(batch_number)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dra_type_resolved ON dispatch_reconcile_alerts(alert_type, resolved_at)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dra_label ON dispatch_reconcile_alerts(label_id)`);
-    // v37I: system_settings — generic key/value config (used for dispatchReconcileThresholdMin and future settings)
+    // v37I.1: system_settings — generic key/value config (used for fgAgingDaysNonExport, fgAgingDaysExport)
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS system_settings (
         key TEXT PRIMARY KEY,
@@ -4621,6 +4621,16 @@ app.put('/api/tracking/dispatch-record/:id', async (req, res) => {
       db.prepare(`UPDATE tracking_dispatch_records SET vehicle_no=?, invoice_no=?, customer=?, ts=? WHERE id=?`)
         .run(vehicleNo||null, invoiceNo||null, customer||null, ts||null, id);
     }
+    // v37I bugfix: recompute actuals so planning sees the latest vehicle/invoice metadata.
+    let batchNumber = null;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT batch_number FROM tracking_dispatch_records WHERE id=$1`, [id]);
+      batchNumber = r.rows[0]?.batch_number;
+    } else {
+      const r = db.prepare(`SELECT batch_number FROM tracking_dispatch_records WHERE id=?`).get(id);
+      batchNumber = r?.batch_number;
+    }
+    if (batchNumber) await _recomputeDispatchActuals(batchNumber, vehicleNo, invoiceNo);
     res.json({ ok: true });
   } catch(err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -4638,19 +4648,69 @@ app.put('/api/tracking/dispatch-record/:id', async (req, res) => {
 // Acknowledged alerts auto-expire after 4 hours; resurface if still unresolved.
 // Background job runs every 60 seconds to detect new triggers idempotently.
 
-const DRA_ACK_EXPIRY_MS = 4 * 60 * 60 * 1000; // 4 hours
+const DRA_ACK_EXPIRY_MS = 24 * 60 * 60 * 1000; // 24 hours
 
-async function _getDraThresholdMin() {
+async function _getFgAgingDaysNonExport() {
   try {
     if (pgPool) {
-      const r = await pgPool.query(`SELECT value FROM system_settings WHERE key='dispatchReconcileThresholdMin' LIMIT 1`);
-      if (r.rows[0]?.value) { const n = parseInt(r.rows[0].value); if (n >= 15 && n <= 240) return n; }
+      const r = await pgPool.query(`SELECT value FROM system_settings WHERE key='fgAgingDaysNonExport' LIMIT 1`);
+      if (r.rows[0]?.value) { const n = parseInt(r.rows[0].value); if (n >= 3 && n <= 30) return n; }
     } else {
-      const r = db.prepare(`SELECT value FROM system_settings WHERE key='dispatchReconcileThresholdMin' LIMIT 1`).get();
-      if (r?.value) { const n = parseInt(r.value); if (n >= 15 && n <= 240) return n; }
+      const r = db.prepare(`SELECT value FROM system_settings WHERE key='fgAgingDaysNonExport' LIMIT 1`).get();
+      if (r?.value) { const n = parseInt(r.value); if (n >= 3 && n <= 30) return n; }
     }
-  } catch(e) { /* fall through to default */ }
-  return 60;
+  } catch(e) {}
+  return 7;
+}
+async function _getFgAgingDaysExport() {
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT value FROM system_settings WHERE key='fgAgingDaysExport' LIMIT 1`);
+      if (r.rows[0]?.value) { const n = parseInt(r.rows[0].value); if (n >= 7 && n <= 60) return n; }
+    } else {
+      const r = db.prepare(`SELECT value FROM system_settings WHERE key='fgAgingDaysExport' LIMIT 1`).get();
+      if (r?.value) { const n = parseInt(r.value); if (n >= 7 && n <= 60) return n; }
+    }
+  } catch(e) {}
+  return 15;
+}
+
+// v37I.1: Detect which batches have any order routed to an export zone.
+// Conservative rule: if ANY production_order for a batch is in an EXPORT zone, the entire
+// batch's labels use the 15-day threshold. Returns Set<batch_number_uppercase>.
+const EXPORT_ZONE_KEYWORDS = ['EXPORT','BANGLADESH','NEPAL','MUMBAI'];
+async function _getExportBatchSet() {
+  const exportBatches = new Set();
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT DISTINCT UPPER(batch_number) AS bn FROM production_orders WHERE batch_number IS NOT NULL AND data_json IS NOT NULL`);
+      for (const row of r.rows) {
+        // Look up zone via data_json (orders store zone there)
+        try {
+          const z = await pgPool.query(`SELECT data_json FROM production_orders WHERE UPPER(batch_number)=$1 LIMIT 50`, [row.bn]);
+          for (const o of z.rows) {
+            const data = typeof o.data_json === 'string' ? JSON.parse(o.data_json) : o.data_json;
+            const zone = (data?.zone||'').toUpperCase();
+            if (EXPORT_ZONE_KEYWORDS.some(ez => zone.includes(ez))) {
+              exportBatches.add(row.bn); break;
+            }
+          }
+        } catch(e) {}
+      }
+    } else {
+      const rows = db.prepare(`SELECT batch_number, data_json FROM production_orders WHERE batch_number IS NOT NULL AND data_json IS NOT NULL`).all();
+      for (const row of rows) {
+        try {
+          const data = JSON.parse(row.data_json);
+          const zone = (data?.zone||'').toUpperCase();
+          if (EXPORT_ZONE_KEYWORDS.some(ez => zone.includes(ez))) {
+            exportBatches.add((row.batch_number||'').toUpperCase());
+          }
+        } catch(e) {}
+      }
+    }
+  } catch(e) { console.warn('[dra] export batch detection:', e?.message); }
+  return exportBatches;
 }
 
 // v37I: Generic system_settings GET/POST — key/value config store
@@ -4754,42 +4814,58 @@ app.post('/api/tracking/reconcile-alerts/ack', async (req, res) => {
   }
 });
 
-// Background scan: every 60 seconds, identify new alert conditions and INSERT idempotently.
-// Idempotent because we check for an EXISTING active alert (resolved_at IS NULL) for the same
-// (label_id+type) for Flow A or (batch+type) for Flow B before inserting.
+// v37I.1: Background scan rewrite — Flow A is now FG STOCK AGING (pack-in without
+// dispatch-in past 7d non-export / 15d export). Flow B unchanged.
+// Frequency reduced from 60s to 5 min since thresholds are day-scale.
 async function _draScanAndInsert() {
   try {
-    const thresholdMin = await _getDraThresholdMin();
-    const cutoffIso = new Date(Date.now() - thresholdMin * 60 * 1000).toISOString();
+    const daysNonExport = await _getFgAgingDaysNonExport();
+    const daysExport = await _getFgAgingDaysExport();
+    const cutoffNonExportIso = new Date(Date.now() - daysNonExport * 24 * 60 * 60 * 1000).toISOString();
+    const cutoffExportIso    = new Date(Date.now() - daysExport    * 24 * 60 * 60 * 1000).toISOString();
     const now = new Date().toISOString();
     const uid = () => 'dra_' + Date.now().toString(36) + '_' + Math.random().toString(36).slice(2,10);
+    const exportBatches = await _getExportBatchSet();
 
-    // ── Flow A: packing-out scans older than threshold with no dispatch-in for same label ──
-    // Need: every label_id that has a packing-out scan ts <= cutoffIso AND has no dispatch-in scan
+    // ── Flow A: pack-IN scans older than per-batch threshold with no dispatch-in for same label ──
+    // We do two queries: one for export-batch labels (15d threshold) and one for non-export
+    // (7d threshold). Combine results.
+    // NOTE: SQLite IN with placeholders for arbitrary-length set is awkward; we do per-batch
+    // filtering in JS after the query. Query selects all pack-in scans without dispatch-in.
     let candidatesA = [];
     if (pgPool) {
       const r = await pgPool.query(`
         SELECT p.label_id, p.batch_number, p.ts
         FROM tracking_scans p
-        WHERE p.dept='packing' AND p.type='out' AND p.ts <= $1
+        WHERE p.dept='packing' AND p.type='in'
+          AND p.ts <= $1
           AND NOT EXISTS (
             SELECT 1 FROM tracking_scans di
             WHERE di.label_id = p.label_id AND di.dept='dispatch' AND di.type='in'
           )
-      `, [cutoffIso]);
+      `, [cutoffExportIso]); // Use export cutoff to get widest set; filter per-batch below
       candidatesA = r.rows;
     } else {
       candidatesA = db.prepare(`
         SELECT p.label_id, p.batch_number, p.ts
         FROM tracking_scans p
-        WHERE p.dept='packing' AND p.type='out' AND p.ts <= ?
+        WHERE p.dept='packing' AND p.type='in'
+          AND p.ts <= ?
           AND NOT EXISTS (
             SELECT 1 FROM tracking_scans di
             WHERE di.label_id = p.label_id AND di.dept='dispatch' AND di.type='in'
           )
-      `).all(cutoffIso);
+      `).all(cutoffExportIso);
     }
-    // Resolve auto-closed alerts: any Flow A active alert whose label_id now has dispatch-in
+    // Filter per-batch using per-batch threshold
+    candidatesA = candidatesA.filter(c => {
+      if (!c.label_id || !c.ts) return false;
+      const isExport = exportBatches.has((c.batch_number||'').toUpperCase());
+      const cutoff = isExport ? cutoffExportIso : cutoffNonExportIso;
+      return c.ts <= cutoff;
+    });
+
+    // Auto-resolve: any Flow A active alert whose label_id now has dispatch-in
     if (pgPool) {
       await pgPool.query(`
         UPDATE dispatch_reconcile_alerts SET resolved_at=$1
@@ -4803,9 +4879,8 @@ async function _draScanAndInsert() {
           AND label_id IN (SELECT label_id FROM tracking_scans WHERE dept='dispatch' AND type='in')
       `).run(now);
     }
-    // Insert new candidates
+    // Insert new candidates (idempotent: only if no active alert exists for same label_id)
     for (const c of candidatesA) {
-      if (!c.label_id) continue;
       let existing;
       if (pgPool) {
         const r = await pgPool.query(
@@ -4831,7 +4906,10 @@ async function _draScanAndInsert() {
     }
 
     // ── Flow B: dispatch-out scans where batch has uncovered box count > 0 past threshold ──
-    // Aggregate per batch — alert keyed to batch_number (label_id null)
+    // Uses non-export threshold (60 min equivalent isn't relevant anymore — using 1 day
+    // since manual records should be created within the working day at minimum).
+    // Per spec: keep Flow B as-is — 60 minutes still makes sense for paperwork-after-scanout.
+    const flowBCutoffIso = new Date(Date.now() - 60 * 60 * 1000).toISOString(); // 60 min (preserved)
     let candidatesB = [];
     if (pgPool) {
       const r = await pgPool.query(`
@@ -4844,7 +4922,7 @@ async function _draScanAndInsert() {
         GROUP BY s.batch_number
         HAVING MIN(s.ts) <= $1
            AND COUNT(*) > COALESCE((SELECT SUM(boxes) FROM tracking_dispatch_records dr WHERE dr.batch_number = s.batch_number), 0)
-      `, [cutoffIso]);
+      `, [flowBCutoffIso]);
       candidatesB = r.rows;
     } else {
       candidatesB = db.prepare(`
@@ -4857,9 +4935,9 @@ async function _draScanAndInsert() {
         GROUP BY s.batch_number
         HAVING MIN(s.ts) <= ?
            AND COUNT(*) > COALESCE((SELECT SUM(boxes) FROM tracking_dispatch_records dr WHERE dr.batch_number = s.batch_number), 0)
-      `).all(cutoffIso);
+      `).all(flowBCutoffIso);
     }
-    // Resolve auto-closed Flow B alerts: batches where recorded boxes >= scan-out boxes
+    // Auto-resolve Flow B alerts where recorded >= scan-out
     if (pgPool) {
       await pgPool.query(`
         UPDATE dispatch_reconcile_alerts SET resolved_at=$1
@@ -4883,7 +4961,7 @@ async function _draScanAndInsert() {
           )
       `).run(now);
     }
-    // Insert new Flow B candidates
+    // Insert Flow B candidates
     for (const c of candidatesB) {
       if (!c.batch_number) continue;
       let existing;
@@ -4914,11 +4992,12 @@ async function _draScanAndInsert() {
   }
 }
 
-// Start background scan loop (60s interval). Won't run during tests if global flag set.
+// v37I.1: Reduced from 60s to 5 minutes — Flow A thresholds are now day-scale (7d/15d),
+// so polling every 60 seconds was overkill. Flow B threshold (60 min) is still well within
+// the 5-min scan window.
 if (typeof process !== 'undefined' && !process.env.SUNLOC_DISABLE_BG_JOBS) {
-  setInterval(_draScanAndInsert, 60 * 1000);
-  // Run once after startup to populate immediately (delayed so DB migrations complete first)
-  setTimeout(_draScanAndInsert, 15 * 1000);
+  setInterval(_draScanAndInsert, 5 * 60 * 1000);
+  setTimeout(_draScanAndInsert, 15 * 1000); // initial run after startup
 }
 
 // GET /api/tracking/scan-summary — ALL scan counts aggregated by batch+dept+type (no LIMIT)
@@ -5244,6 +5323,7 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       const print = depts['printing'] || {};
       const pi = depts['pi'] || {};
       const pack = depts['packing'] || {};
+      const dispatch = depts['dispatch'] || {};
 
       const aimWaste = (aim.wastage?.salvage||0) + (aim.wastage?.remelt||0);
       const printWaste = (print.wastage?.salvage||0) + (print.wastage?.remelt||0);
@@ -5259,10 +5339,15 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       const grossProd = grossProdMap[batchNo.toUpperCase()] || 0;
       const packInQty  = pack.inQty || 0;
       const packOutQty = pack.outQty || 0;
-      // v37E WIP-fix: use packIn — material at packing is FG, not WIP
+      const dispatchInQty = dispatch.inQty || 0;
+      // v37E WIP-fix: material at packing is FG, not WIP (uses packIn)
       const totalWastageForWIP = aimWaste + printWaste + piWaste;
       const wipLakhs = Math.max(0, grossProd - totalWastageForWIP - packInQty);
-      const fgAwaitingDispatch = Math.max(0, packInQty - packOutQty);
+      // v37I.1: Pack-Out stage removed. FG = boxes pack-in'd but not yet received by dispatch.
+      // Old: packing.in - packing.out (boxes inside packing dept, packed but not yet shipped).
+      // New: packing.in - dispatch.in (boxes packed and pending dispatch receipt — same concept,
+      // since pack-out no longer exists as an intermediate stage).
+      const fgAwaitingDispatch = Math.max(0, packInQty - dispatchInQty);
 
       result[batchNo.toUpperCase()] = { // normalize to uppercase for consistent lookup
         aim: {
@@ -5280,10 +5365,12 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
           wastage: piWaste, inspected: piInspected,
           aGradePct: piInspected>0 ? (piOut/piInspected*100) : null
         },
+        // v37I.1: packing.outQty/out preserved for legacy/historical reads but no longer
+        // authoritative; consumers should use packing.in/.inQty for FG count.
         packing: { inQty: packInQty, outQty: packOutQty, in: pack.in||0, out: pack.out||0 },
         grossProd,
         wipLakhs,          // Lakhs still in production (not yet at packing)
-        fgAwaitingDispatch // Lakhs at packing waiting for vehicle
+        fgAwaitingDispatch // Lakhs packed at packing dept, awaiting dispatch receipt
       };
     });
 
@@ -5292,32 +5379,77 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
 });
 
 // ── Dispatch record from Tracking app ──────────────────────────
+// v37I bugfix: Recompute tracking_dispatch_actuals.dispatched_qty for one batch as SUM(qty)
+// from tracking_dispatch_records. Called from: dispatch-record POST (new manual record),
+// dispatch-record PUT (edit/correction), dispatch-update (legacy entry point), and startup
+// backfill. Single source of truth, prevents the v37I-pre-bugfix overwrite drift.
+async function _recomputeDispatchActuals(batchNumber, vehicleNo, invoiceNo) {
+  if (!batchNumber) return 0;
+  let totalQty = 0;
+  if (pgPool) {
+    const r = await pgPool.query(
+      `SELECT COALESCE(SUM(qty),0) AS total FROM tracking_dispatch_records WHERE batch_number=$1`,
+      [batchNumber]
+    );
+    totalQty = parseFloat(r.rows[0]?.total || 0);
+    await pgPool.query(`
+      INSERT INTO tracking_dispatch_actuals (batch_number,dispatched_qty,vehicle_no,invoice_no,updated_at)
+      VALUES ($1,$2,$3,$4,NOW())
+      ON CONFLICT(batch_number) DO UPDATE SET
+        dispatched_qty=EXCLUDED.dispatched_qty,
+        vehicle_no=COALESCE(EXCLUDED.vehicle_no, tracking_dispatch_actuals.vehicle_no),
+        invoice_no=COALESCE(EXCLUDED.invoice_no, tracking_dispatch_actuals.invoice_no),
+        updated_at=NOW()
+    `, [batchNumber, totalQty, vehicleNo||null, invoiceNo||null]);
+  } else {
+    const r = db.prepare(`SELECT COALESCE(SUM(qty),0) AS total FROM tracking_dispatch_records WHERE batch_number=?`).get(batchNumber);
+    totalQty = parseFloat(r?.total || 0);
+    db.prepare(`
+      INSERT INTO tracking_dispatch_actuals (batch_number,dispatched_qty,vehicle_no,invoice_no,updated_at)
+      VALUES (?,?,?,?,datetime('now'))
+      ON CONFLICT(batch_number) DO UPDATE SET
+        dispatched_qty=excluded.dispatched_qty,
+        vehicle_no=COALESCE(excluded.vehicle_no, tracking_dispatch_actuals.vehicle_no),
+        invoice_no=COALESCE(excluded.invoice_no, tracking_dispatch_actuals.invoice_no),
+        updated_at=excluded.updated_at
+    `).run(batchNumber, totalQty, vehicleNo||null, invoiceNo||null);
+  }
+  return totalQty;
+}
+
 app.post('/api/tracking/dispatch-record', async (req, res) => {
   try {
     const { record } = req.body;
     if(!record || !record.id) return res.status(400).json({ok:false,error:'Missing record'});
+    const batchNumber = record.batchNumber||record.batch_number;
+    const vehicleNo = record.vehicleNo||record.vehicle_no||null;
+    const invoiceNo = record.invoiceNo||record.invoice_no||null;
     if (pgPool) {
       await pgPool.query(`INSERT INTO tracking_dispatch_records (id,batch_number,customer,qty,boxes,vehicle_no,invoice_no,remarks,ts,"by") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
-        [record.id, record.batchNumber||record.batch_number, record.customer||null, record.qty, record.boxes, record.vehicleNo||record.vehicle_no||null, record.invoiceNo||record.invoice_no||null, record.remarks||null, record.ts, record.by||null]);
+        [record.id, batchNumber, record.customer||null, record.qty, record.boxes, vehicleNo, invoiceNo, record.remarks||null, record.ts, record.by||null]);
     } else {
-      db.prepare(`INSERT OR IGNORE INTO tracking_dispatch_records (id,batch_number,customer,qty,boxes,vehicle_no,invoice_no,remarks,ts,by) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(record.id, record.batchNumber||record.batch_number, record.customer||null, record.qty, record.boxes, record.vehicleNo||record.vehicle_no||null, record.invoiceNo||record.invoice_no||null, record.remarks||null, record.ts, record.by||null);
+      db.prepare(`INSERT OR IGNORE INTO tracking_dispatch_records (id,batch_number,customer,qty,boxes,vehicle_no,invoice_no,remarks,ts,by) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(record.id, batchNumber, record.customer||null, record.qty, record.boxes, vehicleNo, invoiceNo, record.remarks||null, record.ts, record.by||null);
     }
-    res.json({ok:true});
+    // v37I bugfix: auto-recompute dispatched_qty so planning sees the new total even if client
+    // forgets / fails to also call dispatch-update. Single source of truth principle.
+    const totalQty = await _recomputeDispatchActuals(batchNumber, vehicleNo, invoiceNo);
+    res.json({ok:true, totalQty});
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });
 
 // ── Dispatch actual update — syncs Tracking qty back to Planning ──
+// v37I bugfix: dispatched_qty is now recomputed as SUM(qty) FROM tracking_dispatch_records
+// for the batch, NOT overwritten with the incoming per-record qty. Previously each call
+// overwrote the previous total — a batch with two 5L records would show only the most
+// recent one. New behaviour: dispatched_qty = sum of ALL manual records for that batch.
+// vehicleNo/invoiceNo are still the latest values (last record wins) since they describe
+// the most recent dispatch event.
 app.post('/api/tracking/dispatch-update', async (req, res) => {
   try {
-    const { batchNumber, dispatchedQty, vehicleNo, invoiceNo } = req.body;
+    const { batchNumber, vehicleNo, invoiceNo } = req.body;
     if(!batchNumber) return res.status(400).json({ok:false,error:'Missing batchNumber'});
-    if (pgPool) {
-      await pgPool.query(`INSERT INTO tracking_dispatch_actuals (batch_number,dispatched_qty,vehicle_no,invoice_no,updated_at) VALUES ($1,$2,$3,$4,NOW()) ON CONFLICT(batch_number) DO UPDATE SET dispatched_qty=EXCLUDED.dispatched_qty, vehicle_no=EXCLUDED.vehicle_no, invoice_no=EXCLUDED.invoice_no, updated_at=NOW()`,
-        [batchNumber, dispatchedQty||0, vehicleNo||null, invoiceNo||null]);
-    } else {
-      db.prepare(`INSERT OR REPLACE INTO tracking_dispatch_actuals (batch_number,dispatched_qty,vehicle_no,invoice_no,updated_at) VALUES (?,?,?,?,datetime('now'))`).run(batchNumber, dispatchedQty||0, vehicleNo||null, invoiceNo||null);
-    }
-    res.json({ok:true});
+    const totalQty = await _recomputeDispatchActuals(batchNumber, vehicleNo, invoiceNo);
+    res.json({ok:true, totalQty});
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });
 
@@ -5820,5 +5952,494 @@ app.listen(PORT, () => {
   ensurePostgresTables().then(()=>{
     warmPlanningCache();
     warmActualsCache();
+    // v37I bugfix: one-time backfill — recompute dispatched_qty for ALL batches that have
+    // manual records. Fixes data from before the SUM-based recompute was introduced where
+    // multiple records overwrote each other and only the last per-record qty was saved.
+    // Runs once per server boot, idempotent (running again is a no-op since values would match).
+    async function _backfillDispatchActuals() {
+  try {
+    let batches;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT DISTINCT batch_number FROM tracking_dispatch_records WHERE batch_number IS NOT NULL`);
+      batches = r.rows.map(x => x.batch_number);
+    } else {
+      batches = db.prepare(`SELECT DISTINCT batch_number FROM tracking_dispatch_records WHERE batch_number IS NOT NULL`).all().map(x => x.batch_number);
+    }
+    if (!batches.length) return;
+    let updated = 0;
+    for (const b of batches) {
+      try {
+        // Look up latest vehicle/invoice from the most recent record (to preserve metadata)
+        let latest;
+        if (pgPool) {
+          const r = await pgPool.query(`SELECT vehicle_no, invoice_no FROM tracking_dispatch_records WHERE batch_number=$1 ORDER BY ts DESC LIMIT 1`, [b]);
+          latest = r.rows[0];
+        } else {
+          latest = db.prepare(`SELECT vehicle_no, invoice_no FROM tracking_dispatch_records WHERE batch_number=? ORDER BY ts DESC LIMIT 1`).get(b);
+        }
+        await _recomputeDispatchActuals(b, latest?.vehicle_no || null, latest?.invoice_no || null);
+        updated++;
+      } catch(e) { console.warn(`[v37I backfill] batch ${b}:`, e?.message); }
+    }
+    console.log(`[v37I backfill] Recomputed dispatch_actuals for ${updated} batch(es)`);
+  } catch(e) { console.warn('[v37I backfill] outer failure:', e?.message); }
+}
+_backfillDispatchActuals().catch(e => console.warn('[v37I backfill] failed:', e?.message));
   });
 });
+
+// v37I bugfix: backfill dispatch_actuals from records on startup
+
+app.get('/jsqr.min.js', (req, res) => {
+  if (jsqrCache) {
+    res.setHeader('Content-Type', 'application/javascript');
+    res.setHeader('Cache-Control', 'public, max-age=86400');
+    return res.send(jsqrCache);
+  }
+  const https = require('https');
+  https.get('https://cdnjs.cloudflare.com/ajax/libs/jsQR/1.4.0/jsQR.min.js', r => {
+    let data = '';
+    r.on('data', c => data += c);
+    r.on('end', () => {
+      jsqrCache = data;
+      res.setHeader('Content-Type', 'application/javascript');
+      res.setHeader('Cache-Control', 'public, max-age=86400');
+      res.send(data);
+    });
+  }).on('error', () => res.status(503).send('// jsQR fetch failed'));
+});
+
+// ── Label void — mark label voided in DB ──────────────────────
+app.post('/api/tracking/label-void', async (req, res) => {
+  try {
+    const { labelId, reason, voidedBy } = req.body;
+    if (!labelId) return res.status(400).json({ ok: false, error: 'labelId required' });
+    const ts = new Date().toISOString();
+    if (pgPool) {
+      await pgPool.query(`UPDATE tracking_labels SET voided=1, void_reason=$1, voided_at=$2, voided_by=$3 WHERE id=$4`, [reason||'', ts, voidedBy||'', labelId]);
+    } else {
+      db.prepare(`UPDATE tracking_labels SET voided=1, void_reason=?, voided_at=?, voided_by=? WHERE id=?`).run(reason||'', ts, voidedBy||'', labelId);
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST update label qty (edit)
+// ── Recent scans — lightweight endpoint (last 200 scans per dept) ─
+app.get('/api/tracking/scans', async (req, res) => {
+  try {
+    // Return deduplicated scans — keep earliest scan per (label_id, dept, type, minute)
+    const dedupeSQL = `
+      SELECT DISTINCT ON (label_id, dept, type, date_trunc('minute', ts::timestamp))
+        id, label_id, batch_number, dept, type, ts, operator, size, qty
+      FROM tracking_scans
+      ORDER BY label_id, dept, type, date_trunc('minute', ts::timestamp), ts ASC
+      LIMIT 1000
+    `;
+    if (pgPool) {
+      const r = await pgPool.query(dedupeSQL);
+      res.json({ ok: true, scans: r.rows });
+    } else {
+      const scans = db.prepare('SELECT * FROM tracking_scans ORDER BY ts DESC LIMIT 500').all();
+      res.json({ ok: true, scans });
+    }
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/tracking/label-update', async (req, res) => {
+  try {
+    const { labelId, qty, printed, printedAt } = req.body;
+    if (!labelId) return res.status(400).json({ ok: false, error: 'labelId required' });
+    if (printed !== undefined && qty === undefined) {
+      // Update printed status only
+      const pVal = printed ? 1 : 0;
+      const pAt  = printedAt || new Date().toISOString();
+      if (pgPool) {
+        await pgPool.query('UPDATE tracking_labels SET printed = $1, printed_at = $2 WHERE id = $3', [pVal, pAt, labelId]);
+      } else {
+        db.prepare('UPDATE tracking_labels SET printed = ?, printed_at = ? WHERE id = ?').run(pVal, pAt, labelId);
+      }
+    } else if (qty) {
+      // Update qty and mark for reprint
+      if (pgPool) {
+        await pgPool.query('UPDATE tracking_labels SET qty = $1, printed = 0 WHERE id = $2', [qty, labelId]);
+      } else {
+        db.prepare('UPDATE tracking_labels SET qty = ?, printed = 0 WHERE id = ?').run(qty, labelId);
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Clean duplicate scans from DB ─────────────────────────────
+app.post('/api/tracking/cleanup-scans', async (req, res) => {
+  try {
+    if (!pgPool) return res.json({ ok: false, error: 'PostgreSQL only' });
+    // Delete duplicate scans — keep only the earliest per (label_id, dept, type, minute)
+    const result = await pgPool.query(`
+      DELETE FROM tracking_scans
+      WHERE id NOT IN (
+        SELECT DISTINCT ON (label_id, dept, type, date_trunc('minute', ts::timestamp))
+          id
+        FROM tracking_scans
+        ORDER BY label_id, dept, type, date_trunc('minute', ts::timestamp), ts ASC
+      )
+    `);
+    res.json({ ok: true, deleted: result.rowCount });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Clean duplicate scans — keep only first scan per label+dept+type ─
+app.post('/api/admin/clean-duplicate-scans', async (req, res) => {
+  try {
+    if (!pgPool) return res.status(400).json({ ok: false, error: 'PostgreSQL only' });
+    // Delete duplicates: keep the earliest scan per label_id+dept+type combination
+    const result = await pgPool.query(`
+      DELETE FROM tracking_scans
+      WHERE id NOT IN (
+        SELECT DISTINCT ON (label_id, dept, type) id
+        FROM tracking_scans
+        ORDER BY label_id, dept, type, ts ASC
+      )
+    `);
+    res.json({ ok: true, deleted: result.rowCount });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Stage status — record which departments are closed per batch ─
+app.post('/api/tracking/stage-status', async (req, res) => {
+  try {
+    const { batchNumber, statusMap } = req.body;
+    if (!batchNumber || !statusMap) return res.status(400).json({ ok: false, error: 'batchNumber and statusMap required' });
+    const ts = new Date().toISOString();
+    for (const [dept, status] of Object.entries(statusMap)) {
+      const closed = status === 'closed' ? 1 : 0;
+      if (pgPool) {
+        await pgPool.query(`INSERT INTO tracking_stage_closure (id,batch_number,dept,closed,closed_at) VALUES ($1,$2,$3,$4,$5) ON CONFLICT(batch_number,dept) DO UPDATE SET closed=EXCLUDED.closed, closed_at=EXCLUDED.closed_at`, [`${batchNumber}-${dept}`, batchNumber, dept, closed, ts]);
+      } else {
+        db.prepare(`INSERT INTO tracking_stage_closure (id,batch_number,dept,closed,closed_at) VALUES (?,?,?,?,?) ON CONFLICT(batch_number,dept) DO UPDATE SET closed=excluded.closed, closed_at=excluded.closed_at`).run(`${batchNumber}-${dept}`, batchNumber, dept, closed, ts);
+      }
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Stage Close — mark a dept stage as closed for a batch ──────
+app.post('/api/tracking/stage-close', async (req, res) => {
+  try {
+    const { batchNumber, dept, closedBy } = req.body;
+    if (!batchNumber || !dept) return res.status(400).json({ ok: false, error: 'Missing batchNumber or dept' });
+    const id = `${batchNumber}-${dept}`;
+    const ts = new Date().toISOString();
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO tracking_stage_closure (id, batch_number, dept, closed, closed_at, closed_by)
+         VALUES ($1,$2,$3,1,$4,$5)
+         ON CONFLICT(batch_number, dept) DO UPDATE SET closed=1, closed_at=EXCLUDED.closed_at, closed_by=EXCLUDED.closed_by`,
+        [id, batchNumber, dept, ts, closedBy||null]
+      );
+    } else {
+      db.prepare(`INSERT INTO tracking_stage_closure (id,batch_number,dept,closed,closed_at,closed_by)
+        VALUES (?,?,?,1,?,?) ON CONFLICT(batch_number,dept) DO UPDATE SET closed=1,closed_at=excluded.closed_at,closed_by=excluded.closed_by`)
+        .run(id, batchNumber, dept, ts, closedBy||null);
+    }
+    res.json({ ok: true });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Wastage — save salvage/remelt records ─────────────────────
+app.post('/api/tracking/wastage', async (req, res) => {
+  try {
+    const { batchNumber, dept, salvage, remelt } = req.body;
+    if (!batchNumber || !dept) return res.status(400).json({ ok: false, error: 'batchNumber and dept required' });
+    const ts = new Date().toISOString();
+    const genId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
+    if (pgPool) {
+      if (parseFloat(salvage) > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts]);
+      if (parseFloat(remelt)  > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts]);
+    } else {
+      const insert = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES (?,?,?,?,?,?)`);
+      if (parseFloat(salvage) > 0) insert.run(genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts);
+      if (parseFloat(remelt)  > 0) insert.run(genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts);
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Wastage edit — admin/planning correction ──────────────────
+app.post('/api/tracking/wastage-edit', async (req, res) => {
+  try {
+    const { id, qty, editedBy } = req.body;
+    if (!id || qty === undefined) return res.status(400).json({ ok: false, error: 'id and qty required' });
+    if (pgPool) {
+      const r = await pgPool.query(`UPDATE tracking_wastage SET qty=$1, "by"=COALESCE("by",'') || ' [edited by ' || $2 || ']' WHERE id=$3`, [parseFloat(qty), editedBy||'admin', id]);
+      if (r.rowCount === 0) return res.status(404).json({ ok: false, error: 'Wastage entry not found' });
+    } else {
+      const result = db.prepare(`UPDATE tracking_wastage SET qty=?, by=COALESCE(by,'')||' [edited by '||?||']' WHERE id=?`).run(parseFloat(qty), editedBy||'admin', id);
+      if (result.changes === 0) return res.status(404).json({ ok: false, error: 'Wastage entry not found' });
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Wastage delete — admin/planning correction ─────────────────
+app.post('/api/tracking/wastage-delete', async (req, res) => {
+  try {
+    const { id, deletedBy } = req.body;
+    if (!id) return res.status(400).json({ ok: false, error: 'id required' });
+    if (pgPool) {
+      const r = await pgPool.query('SELECT * FROM tracking_wastage WHERE id=$1', [id]);
+      if (!r.rows[0]) return res.status(404).json({ ok: false, error: 'Not found' });
+      const entry = r.rows[0];
+      await pgPool.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','WASTAGE_DELETE',$2)`, [deletedBy||'admin', JSON.stringify({id,batch_number:entry.batch_number,dept:entry.dept,type:entry.type,qty:entry.qty})]);
+      await pgPool.query('DELETE FROM tracking_wastage WHERE id=$1', [id]);
+    } else {
+      const entry = db.prepare('SELECT * FROM tracking_wastage WHERE id=?').get(id);
+      if (!entry) return res.status(404).json({ ok: false, error: 'Not found' });
+      db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','WASTAGE_DELETE',?)`).run(deletedBy||'admin', JSON.stringify({id,batch_number:entry.batch_number,dept:entry.dept,type:entry.type,qty:entry.qty}));
+      db.prepare('DELETE FROM tracking_wastage WHERE id=?').run(id);
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Reprint log — audit trail for damaged label replacements ──
+app.post('/api/tracking/reprint-log', async (req, res) => {
+  try {
+    const { log } = req.body;
+    if (!log) return res.status(400).json({ ok: false, error: 'log required' });
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,$2,$3,$4,$5)`,
+        [log.requestedBy||'tracking', 'tracking', 'tracking', 'LABEL_REPRINT', JSON.stringify(log)]);
+    } else {
+      db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,?,?,?,?)`).run(log.requestedBy||'tracking', 'tracking', 'tracking', 'LABEL_REPRINT', JSON.stringify(log));
+    }
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── DPR Settings — GET all settings ──────────────────────────
+app.get('/api/dpr/settings', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT key, value_json FROM dpr_settings');
+      rows = r.rows;
+    } else {
+      rows = db.prepare('SELECT key, value_json FROM dpr_settings').all();
+    }
+    const settings = {};
+    rows.forEach(r => {
+      try { settings[r.key] = JSON.parse(r.value_json); } catch { settings[r.key] = r.value_json; }
+    });
+    res.json({ ok: true, settings });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── DPR Settings — POST save/update one or more settings ─────
+app.post('/api/dpr/settings', async (req, res) => {
+  try {
+    const { settings } = req.body;
+    if (!settings || typeof settings !== 'object') return res.status(400).json({ ok: false, error: 'settings object required' });
+    if (pgPool) {
+      for (const [key, value] of Object.entries(settings)) {
+        await pgPool.query(
+          `INSERT INTO dpr_settings (key, value_json, updated_at)
+           VALUES ($1, $2, NOW())
+           ON CONFLICT(key) DO UPDATE SET value_json = EXCLUDED.value_json, updated_at = NOW()`,
+          [key, JSON.stringify(value)]
+        );
+      }
+    } else {
+      const upsert = db.prepare(`
+        INSERT INTO dpr_settings (key, value_json, updated_at)
+        VALUES (?, ?, datetime('now'))
+        ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at
+      `);
+      for (const [key, value] of Object.entries(settings)) {
+        upsert.run(key, JSON.stringify(value));
+      }
+    }
+    res.json({ ok: true, saved: Object.keys(settings).length });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Month Archives — dedicated PostgreSQL table ────────────────
+// POST /api/archives/save — idempotent: INSERT or UPDATE snapshot for a month
+app.post('/api/archives/save', async (req, res) => {
+  try {
+    const { month, snapshot, archivedBy, isAuto } = req.body;
+    if (!month || !/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ ok: false, error: 'Invalid month format. Expected YYYY-MM' });
+    await pgPool.query(
+      `INSERT INTO month_archives (month, archived_at, archived_by, snapshot_json, is_auto)
+       VALUES ($1, NOW(), $2, $3, $4)
+       ON CONFLICT (month) DO UPDATE
+         SET archived_at  = EXCLUDED.archived_at,
+             archived_by  = EXCLUDED.archived_by,
+             snapshot_json = EXCLUDED.snapshot_json,
+             is_auto       = EXCLUDED.is_auto`,
+      [month, archivedBy || 'system', JSON.stringify(snapshot || {}), isAuto !== false]
+    );
+    res.json({ ok: true, month });
+  } catch (err) {
+    console.error('[Archives] save error:', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/archives/list — list all archived months (no snapshot — metadata only)
+app.get('/api/archives/list', async (req, res) => {
+  try {
+    const result = await pgPool.query(
+      `SELECT month, archived_at, archived_by, is_auto FROM month_archives ORDER BY month DESC`
+    );
+    res.json({ ok: true, archives: result.rows });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/archives/:month — fetch full snapshot for a specific month
+app.get('/api/archives/:month', async (req, res) => {
+  try {
+    const { month } = req.params;
+    const result = await pgPool.query(
+      `SELECT month, archived_at, archived_by, is_auto, snapshot_json FROM month_archives WHERE month = $1`,
+      [month]
+    );
+    if (result.rows.length === 0) return res.json({ ok: false, error: 'Not found' });
+    const row = result.rows[0];
+    res.json({ ok: true, month: row.month, archivedAt: row.archived_at, archivedBy: row.archived_by, isAuto: row.is_auto, snapshot: row.snapshot_json });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/archives/check/:month — check archive status + edit window
+app.get('/api/archives/check/:month', async (req, res) => {
+  try {
+    const { month } = req.params;
+    const now = new Date();
+    const currentYM = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    if (month === currentYM) return res.json({ ok: true, status: 'current', editable: true });
+    if (month > currentYM) return res.json({ ok: true, status: 'future', editable: true });
+    const result = await pgPool.query(
+      `SELECT archived_at FROM month_archives WHERE month = $1`, [month]
+    );
+    if (result.rows.length === 0) return res.json({ ok: true, status: 'unarchived', editable: true });
+    const archivedAt = new Date(result.rows[0].archived_at);
+    const daysSince = (now - archivedAt) / 86400000;
+    const inGrace = daysSince <= 7;
+    res.json({ ok: true, status: inGrace ? 'grace' : 'locked', editable: inGrace, daysSince: Math.floor(daysSince), archivedAt: result.rows[0].archived_at });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ── Catch-all: serve index.html for unknown routes (SPA fallback) ──
+// MUST be last — after all /api/* routes so they are not intercepted
+app.get('*', (req, res) => {
+  const idx = path.join(__dirname, 'public', 'index.html');
+  if (fs.existsSync(idx)) res.sendFile(idx);
+  else res.json({ ok: false, error: 'No frontend found. Place Planning App and DPR App in /public folder.' });
+});
+
+
+// ══════════════════════════════════════════════════════════════════════
+// PLANNING KEY-VALUE STORE — permanent storage for all planning data
+// Covers: dispatch plans, pack sizes, print machine master, settings,
+//         zone map, daily printing logs — everything that was only in
+//         planning_state JSON blob before
+// ══════════════════════════════════════════════════════════════════════
+
+// Helper: save a key to planning_kv table
+async function kvSet(key, value) {
+  const json = JSON.stringify(value);
+  if (pgPool) {
+    await pgPool.query(
+      `INSERT INTO planning_kv (key, value_json, updated_at)
+       VALUES ($1, $2, NOW()::TEXT)
+       ON CONFLICT(key) DO UPDATE SET value_json=$2, updated_at=NOW()::TEXT`,
+      [key, json]
+    );
+  } else {
+    db.prepare(
+      `INSERT OR REPLACE INTO planning_kv (key, value_json, updated_at)
+       VALUES (?, ?, datetime('now'))`
+    ).run(key, json);
+  }
+}
+
+// Helper: get a key from planning_kv table
+async function kvGet(key) {
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT value_json FROM planning_kv WHERE key=$1`, [key]);
+      if (r.rows[0]) return JSON.parse(r.rows[0].value_json);
+    } else {
+      const row = db.prepare(`SELECT value_json FROM planning_kv WHERE key=?`).get(key);
+      if (row) return JSON.parse(row.value_json);
+    }
+  } catch(e) {}
+  return null;
+}
+
+// GET /api/planning/kv/:key — get a planning data value
+app.get('/api/planning/kv/:key', async (req, res) => {
+  try {
+    const value = await kvGet(req.params.key);
+    res.json({ ok: true, key: req.params.key, value });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/planning/kv/:key — save a planning data value permanently
+app.post('/api/planning/kv/:key', async (req, res) => {
+  try {
+    const { value } = req.body;
+    if (value === undefined) return res.status(400).json({ ok: false, error: 'value required' });
+    await kvSet(req.params.key, value);
+    res.json({ ok: true, key: req.params.key, savedAt: new Date().toISOString() });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/planning/kv-bulk — save multiple keys at once
+app.post('/api/planning/kv-bulk', async (req, res) => {
+  try {
+    const { data } = req.body; // { key1: value1, key2: value2, ... }
+    if (!data || typeof data !== 'object') return res.status(400).json({ ok: false, error: 'data object required' });
+    for (const [key, value] of Object.entries(data)) {
+      await kvSet(key, value);
+    }
+    res.json({ ok: true, count: Object.keys(data).length, savedAt: new Date().toISOString() });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/planning/all-kv — get ALL planning kv data in one request (for page load)
+app.get('/api/planning/all-kv', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT key, value_json FROM planning_kv`);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT key, value_json FROM planning_kv`).all();
+    }
+    const result = {};
+    rows.forEach(row => {
+      try { result[row.key] = JSON.parse(row.value_json); } catch(e) {}
+    });
+    res.json({ ok: true, data: result });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── Start server ──────────────────────────────────────────────
+app.listen(PORT, () => {
+  console.log(`[Sunloc] Server running on port ${PORT}`);
+  console.log(`[Sunloc] DB: ${DB_PATH}`);
+  // Ensure PostgreSQL tables exist (handles cases where PgDatabase migrations didn't create them)
+  ensurePostgresTables().then(()=>{
+    warmPlanningCache();
+    warmActualsCache();
+  });
+});
+

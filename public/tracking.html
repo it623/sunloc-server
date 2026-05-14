@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v37I</title>
+<title>Sunloc Tracking Suite v1.0 · build v37I.1</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v37I</p>
+      <p>Tracking Suite v1.0 · build v37I.1</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v37I</p>
+      <p>Tracking Suite v1.0 · build v37I.1</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1811,7 +1811,9 @@ function getBatchWIPDays(batchNo){
   const dailyTarget = machine?.dailyTarget||machine?.yTarget||machine?.cap||10;
 
   // WIP Days = totalWIP / Daily Target
-  // totalWIP uses SSOT: (Gross − totalSalvage − totalRemelt) − packOut
+  // totalWIP uses SSOT: (Gross − totalSalvage − totalRemelt) − packIn
+  // (v37E established packIn as the FG cutoff — material at packing is FG, not WIP.
+  //  v37I.1 confirmed this when Pack-Out stage was removed.)
   const wip = getBatchWIPBreakdown(batchNo);
   const totalWIP = wip ? wip.totalWIP : 0;
   const wipDays = dailyTarget > 0 ? totalWIP / dailyTarget : 0;
@@ -1865,14 +1867,14 @@ function getBatchWIPBreakdown(batchNo){
     printOutBoxes= _ss(batchNo,'printing').out   + localExtra('printing','out');
     piOutBoxes   = _ss(batchNo,'pi').out          + localExtra('pi','out');
     packInBoxes  = _ss(batchNo,'packing').in      + localExtra('packing','in');
-    packOutBoxes = _ss(batchNo,'packing').out     + localExtra('packing','out');
+    packOutBoxes = _ss(batchNo,'packing').in     + localExtra('packing','out');
   } else {
     aimInBoxes   = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
     aimOutBoxes  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='out').length;
     printOutBoxes= state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='printing'&&s.type==='out').length;
     piOutBoxes   = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='pi'&&s.type==='out').length;
     packInBoxes  = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='in').length;
-    packOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+    packOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='in').length;
   }
 
   // Convert to Lakhs
@@ -2401,11 +2403,11 @@ function renderDashboard(){
   let packedBoxes=0, dispBoxes=0;
   if (hasScanSummary()) {
     monthBatchNos.forEach(bn => {
-      packedBoxes += _ss(bn,'packing').out  + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
+      packedBoxes += _ss(bn,'packing').in  + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
       dispBoxes   += _ss(bn,'dispatch').out + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='dispatch'&&sc.type==='out'&&sc._local).length;
     });
   } else {
-    packedBoxes = state.scans.filter(s=>s.dept==='packing'&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
+    packedBoxes = state.scans.filter(s=>s.dept==='packing'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
     dispBoxes   = state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
   }
 
@@ -2430,18 +2432,18 @@ function renderDashboard(){
   <div class="kpi-grid">
     <div class="kpi"><div class="kpi-label">Active Batches</div><div class="kpi-val blue">${totalBatches}</div><div class="kpi-sub">In production/WIP</div></div>
     <div class="kpi"><div class="kpi-label">Labels Generated</div><div class="kpi-val">${totalLabels}</div><div class="kpi-sub">Total active labels</div></div>
-    <div class="kpi"><div class="kpi-label">Packed Boxes</div><div class="kpi-val green">${packedBoxes}</div><div class="kpi-sub">Ready for dispatch</div></div>
+    <div class="kpi"><div class="kpi-label">Packed Boxes</div><div class="kpi-val green">${packedBoxes}</div><div class="kpi-sub">FG ready (Pack-In)</div></div>
     <div class="kpi"><div class="kpi-label">Dispatched Boxes</div><div class="kpi-val purple">${dispBoxes}</div><div class="kpi-sub">This month</div></div>
     <div class="kpi"><div class="kpi-label">🚨 Alerts</div><div class="kpi-val ${totalAlerts>0?'red':'green'}">${totalAlerts}</div><div class="kpi-sub">Stuck 48h+ (this month)</div></div>
-    <div class="kpi cursor-pointer" onclick="window._reportJTab='A';navigate('reports');setTimeout(()=>renderReportJ(),200)" title="Click to open Report J — Flow A">
-      <div class="kpi-label">📦 Pack→Disp Gap</div>
+    <div class="kpi cursor-pointer" onclick="window._reportJTab='A';navigate('reports');setTimeout(()=>renderReportJ(),200)" title="Click to open Report J — FG Stock Aging">
+      <div class="kpi-label">⏳ FG Aged</div>
       <div class="kpi-val" id="kpi-dra-a-val">—</div>
-      <div class="kpi-sub">Unreceived &gt; threshold</div>
+      <div class="kpi-sub">&gt;7d (15d export)</div>
     </div>
     <div class="kpi cursor-pointer" onclick="window._reportJTab='B';navigate('reports');setTimeout(()=>renderReportJ(),200)" title="Click to open Report J — Flow B">
       <div class="kpi-label">🚚 Scan-out Pending Record</div>
       <div class="kpi-val" id="kpi-dra-b-val">—</div>
-      <div class="kpi-sub">Unrecorded &gt; threshold</div>
+      <div class="kpi-sub">Unrecorded &gt; 60 min</div>
     </div>
   </div>
   <div class="grid-2">
@@ -3208,12 +3210,15 @@ function renderDeptScan(dept){
     </div>
     ${myAlerts.length>0?`<div class="alert alert-danger">🚨 ${myAlerts.length} box(es) stuck in this department for 48h+: ${myAlerts.map(a=>{const lbl=state.labels.find(l=>l.id===a.labelId);const box=lbl?Math.abs(lbl.labelNumber||0):(a.boxNo&&a.boxNo!=='?'&&a.boxNo!==0?a.boxNo:'?');return (a.batchNumber||'')+'/'+box;}).join(', ')}</div>`:''}
     <!-- SCAN PANEL -->
-    <div class="grid-2 scan-panels-grid">
+    <!-- v37I.1: For packing dept, only IN panel is shown — Pack-Out stage removed.
+         Boxes scanned-in are immediately considered FG ready for dispatch.
+         (Pack-Out scans still accepted via direct API for backward compatibility.) -->
+    <div class="${dept==='packing'?'':'grid-2'} scan-panels-grid">
       <div>
-        <div class="card-title">📥 Scan IN</div>
+        <div class="card-title">📥 Scan IN${dept==='packing'?' <span style="font-size:10px;color:var(--text-muted);font-weight:400;margin-left:6px">(boxes scanned-in are FG ready for dispatch)</span>':''}</div>
         <div class="scan-zone" id="scan-zone-in-${dept}">
           <div style="font-size:28px;margin-bottom:6px;text-align:center">📥</div>
-          <div class="fw-bold mb-8" style="text-align:center">Scan box to check IN</div>
+          <div class="fw-bold mb-8" style="text-align:center">Scan box to check IN${dept==='packing'?' &amp; mark as FG':''}</div>
           <button class="btn btn-camera-mobile mobile-show" onclick="startCamera(v=>fillScanInput('${dept}','in',v))">📷 Open Camera to Scan</button>
           <input class="scan-input" id="scan-in-${dept}" placeholder="Scan or type label ID" 
             onkeydown="if(event.key==='Enter')processScanInput('${dept}','in')"
@@ -3225,7 +3230,7 @@ function renderDeptScan(dept){
         </div>
         <div id="scan-result-in-${dept}" class="mt-8"></div>
       </div>
-      <div>
+      ${dept==='packing'?'':`<div>
         <div class="card-title">📤 Scan OUT</div>
         <div class="scan-zone" id="scan-zone-out-${dept}">
           <div style="font-size:28px;margin-bottom:6px;text-align:center">📤</div>
@@ -3241,7 +3246,7 @@ function renderDeptScan(dept){
           </div>
         </div>
         <div id="scan-result-out-${dept}" class="mt-8"></div>
-      </div>
+      </div>`}
     </div>
   </div>
 
@@ -3648,7 +3653,7 @@ function renderDispatch(){
     });
   } else {
     // Fallback: use state.scans (limited to last 2000)
-    const packedOut=state.scans.filter(s=>s.dept==='packing'&&s.type==='out');
+    const packedOut=state.scans.filter(s=>s.dept==='packing'&&s.type==='in');
     const dispatchedIn=state.scans.filter(s=>s.dept==='dispatch'&&s.type==='in');
     const dispatchedOut=state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out');
     packedOut.forEach(s=>{
@@ -4202,10 +4207,10 @@ function renderBatchCard(batch){
   const dispatchPct=totalBoxes>0?(dispatched/totalBoxes*100):0;
 
   // v37E WIP-fix: use scanSummary for packed count
-  const localPackOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
+  const localPackOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
   const packedOut = hasScanSummary()
-    ? (_ss(batchNo,'packing').out + localPackOut)
-    : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+    ? (_ss(batchNo,'packing').in + localPackOut)
+    : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='in').length;
   const flowSteps=flow.map((dept,i)=>{
     const closed=isStageComplete(batchNo,dept)||dept==='production';
     // v37E WIP-fix: use scanSummary for stage activity indicator so old batches still show correct flow state
@@ -4413,9 +4418,9 @@ function renderReports(forceRebuild){
       <button class="btn btn-sm mt-12" style="background:#7c3aed;color:#fff">Generate Gap Report →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportJ()" style="border-left:4px solid #d97706;grid-column:span 2">
-      <div class="card-title" style="color:#d97706">⏱️ Report J — Pending Dispatch Reconciliations</div>
-      <div class="fw-bold mb-4">Time-Based Alerts: Packing→Dispatch Gap & Scan-out Without Record</div>
-      <div class="text-sm text-muted">Two-tab view of dispatch reconciliation alerts past the configured threshold (default 60 min). Flow A: labels packed-out but not yet received by dispatch. Flow B: dispatch-out scans without matching manual records. Acknowledge with reason (4h auto-expiry).</div>
+      <div class="card-title" style="color:#d97706">⏱️ Report J — Dispatch Reconciliation Alerts</div>
+      <div class="fw-bold mb-4">FG Stock Aging &amp; Scan-out Without Record</div>
+      <div class="text-sm text-muted">Two-tab view. <b>Flow A — FG Stock Aging:</b> labels packed (scan-IN to packing) but not yet received by dispatch within 7 days (15 days for export batches). <b>Flow B — Scan-out Awaiting Record:</b> dispatch-out scans without matching manual records past 60 min. Acknowledge with reason (24h auto-expiry).</div>
       <button class="btn btn-sm mt-12" style="background:#d97706;color:#fff">Generate Reconciliation Alerts →</button>
     </div>
   </div>
@@ -4716,9 +4721,11 @@ function renderReportG(){ window._activeReport = renderReportG;
   const cumPct = totalInspected>0 ? (totalAGradeQty/totalInspected*100) : 0;
   const cumCls = cumPct>=95?'green':cumPct>=90?'var(--amber)':'var(--red)';
 
-  // v37E WIP-fix: "Total WIP" now uses canonical formula consistently across the report.
-  // - plantTotalWIP = Σ batch totalWIP = Σ (Gross − totalSalvage − totalRemelt − packOut)
-  //   This is "everything not yet packed out" — matches per-batch totalWIP shown in the table.
+  // v37E WIP-fix + v37I.1: "Total WIP" uses canonical formula consistently across the report.
+  // - plantTotalWIP = Σ batch totalWIP = Σ (Gross − totalSalvage − totalRemelt − packIn)
+  //   This is "everything not yet at packing dept" — matches per-batch totalWIP in the table.
+  //   FG sitting at packing (boxes scanned-in to packing) is excluded since they're ready
+  //   for dispatch (v37I.1 removed pack-out stage; pack-in IS the FG cutoff).
   // - preAIMOnly = Gross − Inspected (legacy formula; what hasn't been inspected yet at AIM)
   //   Shown in subtitle for context.
   const totalWIP = plantTotalWIP;
@@ -4860,7 +4867,7 @@ function renderReportF(){ window._activeReport = renderReportF;
   const statusMap = {};
 
   const _getAimIn  = bn => hasScanSummary() ? (_ss(bn,'aim').in      + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)      : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length;
-  const _getPackOut= bn => hasScanSummary() ? (_ss(bn,'packing').out + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='out').length;
+  const _getPackOut= bn => hasScanSummary() ? (_ss(bn,'packing').in + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in').length;
   // aimInToday still from state.scans (timestamp needed, not just count)
   const _getAimInToday = bn => state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in'&&s.ts?.slice(0,10)===todayStr).length;
 
@@ -5002,7 +5009,7 @@ function exportReportF(){
     const dprL = b.actualQty||0, dprBox = dprL>0?lakhToBox(dprL,b.size):0;
     const aimToday = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in'&&s.ts?.slice(0,10)===todayStr).length;
     const aimTotal = hasScanSummary() ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
-    const packOut  = hasScanSummary() ? (_ss(batchNo,'packing').out + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='out').length;
+    const packOut  = hasScanSummary() ? (_ss(batchNo,'packing').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='in').length;
     const status   = dprBox===0&&aimToday>0?'No DPR Entry':aimToday>dprBox?'Over-scan':aimToday<dprBox&&dprBox>0?'Under-scan':'Matched';
     rows.push([batchNo,b.customer||'',b.size,dprL,dprBox,aimToday,aimTotal,packOut,status]);
   });
@@ -5179,8 +5186,8 @@ _scrollIntoReportIfFirstView('C');
       const remainingWIP = wipBreakdown ? wipBreakdown.totalWIP : 0;
       const grossProd = wipBreakdown ? wipBreakdown.grossProd : (b.actualProd||b.actualQty||0);
       // packedQty derived from the same canonical breakdown — uses scanSummary internally
-      const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
-      const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+      const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
+      const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
       const packedQty=boxToLakh(packedOut,b.size);
       const wipDays = dailyCap > 0 ? remainingWIP / dailyCap : 0;
       const std=b.isPrinted?3:2;
@@ -5442,8 +5449,8 @@ function renderReportE(){ window._activeReport = renderReportE;
     const piAGradePct = (b.isPrinted && aimInputTotal > 0)
       ? Math.max(0, (postPiNumerator / aimInputTotal) * 100)
       : 0;
-    const packUnptd_c = useSS ? (_ss(b.batchNumber,'packing').out + localExtra('packing','out'))
-                               : scansForBatch.filter(s=>s.dept==='packing'&&s.type==='out').length;
+    const packUnptd_c = useSS ? (_ss(b.batchNumber,'packing').in + localExtra('packing','out'))
+                               : scansForBatch.filter(s=>s.dept==='packing'&&s.type==='in').length;
     const packUnptd=!b.isPrinted?boxToLakh(packUnptd_c,b.size):0;
     const packPtd=b.isPrinted?boxToLakh(packUnptd_c,b.size):0;
     const disp=state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber&&(!filterDate||r.ts?.slice(0,10)===filterDate)).reduce((s,r)=>s+r.qty,0);
@@ -6413,7 +6420,7 @@ function exportReportI() {
 // Two-tab view of reconciliation alerts:
 //   Tab A: Packing→Dispatch handover gap (per label)
 //   Tab B: Dispatch-out scans without manual record (per batch)
-// Auto-refresh every 60 sec while open.
+// Auto-refresh every 5 min while open.
 
 let _reportJTimer = null;
 window._reportJTab = window._reportJTab || 'A';
@@ -6440,6 +6447,24 @@ function _ageString(triggeredAtIso) {
   return `${days}d ${hrs - days*24}h`;
 }
 
+// v37I.1: Client-side export batch detection — best-effort heuristic.
+// Tries multiple signals: batch.zone, batch.exportFlag, batch metadata, customer name patterns.
+// Returns true if ANY signal suggests export. Server is authoritative for alert generation;
+// this is only used for display purposes (which threshold to mention in the row).
+const _EXPORT_ZONE_KEYWORDS_CLIENT = ['EXPORT','BANGLADESH','NEPAL','MUMBAI'];
+function _isExportBatchClient(batchNo) {
+  if (!batchNo) return false;
+  const b = getBatch(batchNo);
+  if (!b) return false;
+  // Direct flag on batch
+  if (b.exportFlag === true || b.isExport === true) return true;
+  if (b.zone && _EXPORT_ZONE_KEYWORDS_CLIENT.some(k => (b.zone||'').toUpperCase().includes(k))) return true;
+  // Some deployments tag customer with EXP/EXPORT prefix
+  const cust = (b.customer||'').toUpperCase();
+  if (cust.startsWith('EXP ') || cust.startsWith('EXPORT')) return true;
+  return false;
+}
+
 function renderReportJ() {
   window._activeReport = renderReportJ;
   _captureReportScroll();
@@ -6453,7 +6478,7 @@ function renderReportJ() {
   _fetchReconcileAlerts().then(alerts => {
     _renderReportJContent(alerts);
     _scrollIntoReportIfFirstView('J');
-    // Auto-refresh every 60 sec
+    // v37I.1: Auto-refresh every 5 min — matches server-side scan cadence (day-scale thresholds)
     if (_reportJTimer) clearInterval(_reportJTimer);
     _reportJTimer = setInterval(() => {
       if (window._activeReport === renderReportJ) {
@@ -6461,7 +6486,7 @@ function renderReportJ() {
       } else {
         clearInterval(_reportJTimer); _reportJTimer = null;
       }
-    }, 60000);
+    }, 5 * 60 * 1000);
   });
 }
 
@@ -6503,7 +6528,7 @@ function _renderReportJContent(alerts) {
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 16px">
       <button onclick="window._reportJTab='A';_fetchReconcileAlerts().then(_renderReportJContent)"
         class="btn btn-sm" style="background:${tab==='A'?'#d97706':'var(--surface2)'};color:${tab==='A'?'#fff':'var(--text)'};font-weight:600">
-        Packing→Dispatch Gap <span class="badge" style="background:rgba(255,255,255,0.25);color:inherit;margin-left:6px">${countA}</span>
+        FG Stock Aging <span class="badge" style="background:rgba(255,255,255,0.25);color:inherit;margin-left:6px">${countA}</span>
       </button>
       ${canSeeB ? `<button onclick="window._reportJTab='B';_fetchReconcileAlerts().then(_renderReportJContent)"
         class="btn btn-sm" style="background:${tab==='B'?'#d97706':'var(--surface2)'};color:${tab==='B'?'#fff':'var(--text)'};font-weight:600">
@@ -6522,29 +6547,36 @@ function _renderReportJContent(alerts) {
              style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
       <button class="btn btn-ghost btn-sm" onclick="window._reportJFilters={batch:'',customer:'',vehicle:'',agedOnly:true};_fetchReconcileAlerts().then(_renderReportJContent)">✕ Clear</button>
       <button class="btn btn-secondary btn-sm" onclick="exportReportJ()">📥 Export Excel</button>
-      <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">Auto-refresh every 60 sec · ${filtered.length} alerts</span>
+      <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">Auto-refresh every 5 min · ${filtered.length} alerts</span>
     </div>`;
 
   // Table — different columns per tab
   let tableHtml;
   if (tab === 'A') {
+    // v37I.1: FG Stock Aging — packed but not dispatched. Show zone (Export vs Local) since
+    // they have different thresholds (15d export, 7d non-export).
     tableHtml = `
       <div class="tbl-wrap"><table>
         <thead><tr>
-          <th>Batch</th><th>Customer</th><th>Label ID</th><th>Packing-out Time</th><th>Age</th>
+          <th>Batch</th><th>Customer</th><th>Zone</th><th>Label ID</th><th>Pack-In Time</th><th>Days Aged</th>
           ${canAck ? '<th>Action</th>' : ''}
         </tr></thead>
         <tbody>
           ${filtered.length === 0
-            ? `<tr><td colspan="${canAck?6:5}" class="text-center text-muted" style="padding:30px">No pending Flow A alerts ✓</td></tr>`
+            ? `<tr><td colspan="${canAck?7:6}" class="text-center text-muted" style="padding:30px">No FG stock aged beyond threshold ✓</td></tr>`
             : filtered.map(a => {
               const b = getBatch(a.batch_number);
+              // Detect export via planning state if available — fall back to non-export
+              const isExport = _isExportBatchClient(a.batch_number);
+              const zoneLabel = isExport ? '🚢 Export' : '📦 Domestic';
+              const ageDays = Math.floor((Date.now() - new Date(a.triggered_at).getTime()) / (24 * 60 * 60 * 1000));
               return `<tr>
                 <td class="td-bold td-mono">${a.batch_number||'—'}</td>
                 <td class="text-sm">${b?.customer||'—'}</td>
+                <td class="text-sm">${zoneLabel}</td>
                 <td class="td-mono text-sm">${a.label_id||'—'}</td>
                 <td class="td-mono text-sm">${a.triggered_at?fmtDateTime(a.triggered_at):'—'}</td>
-                <td class="td-mono"><span class="badge" style="background:rgba(239,68,68,0.15);color:#dc2626;font-weight:700">${_ageString(a.triggered_at)}</span></td>
+                <td class="td-mono"><span class="badge" style="background:rgba(239,68,68,0.15);color:#dc2626;font-weight:700">${ageDays}d</span></td>
                 ${canAck ? `<td><button class="btn btn-sm btn-ghost" onclick="_openAckDialog('${a.id}','${(a.batch_number||'').replace(/'/g,"")}')">Ack</button></td>` : ''}
               </tr>`;
             }).join('')}
@@ -6588,15 +6620,15 @@ function _renderReportJContent(alerts) {
   const html = `
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div class="section-title" style="margin:0">Report J — Pending Dispatch Reconciliations</div>
-        <div class="text-sm text-muted">${(countA+countB)} active · Threshold-based 60 min default</div>
+        <div class="section-title" style="margin:0">Report J — Dispatch Reconciliation Alerts</div>
+        <div class="text-sm text-muted">${(countA+countB)} active · Flow A: 7d/15d aging · Flow B: 60 min</div>
       </div>
       ${tabsHtml}
       ${filtersHtml}
       ${tableHtml}
       <div class="text-sm text-muted" style="font-size:11px;margin-top:8px">
-        ${tab==='A' ? 'Flow A: Labels scanned packing-out but not yet scanned dispatch-in within the configured threshold. Resolves automatically when dispatch-in scan happens.'
-                    : 'Flow B: Batches with dispatch-out scans not yet covered by a manual dispatch record. Click "Open Modal" to record, or "Ack" to suppress for 4 hours.'}
+        ${tab==='A' ? 'Flow A — FG Stock Aging: Boxes scanned-IN to packing (= FG ready for dispatch) but not yet received by dispatch within 7 days (15 days for export batches). Resolves automatically when dispatch-IN scan happens. Acknowledge with reason suppresses for 24h.'
+                    : 'Flow B — Scan-out Awaiting Record: Batches with dispatch-out scans not yet covered by a manual dispatch record past 60 minutes. Click "Open Modal" to record, or "Ack" to suppress for 24 hours.'}
       </div>
     </div>`;
 
@@ -6605,13 +6637,13 @@ function _renderReportJContent(alerts) {
 }
 
 function _openAckDialog(alertId, batchNo) {
-  openModal('Acknowledge Alert', `Suppress alert for batch ${batchNo} for 4 hours`, `
+  openModal('Acknowledge Alert', `Suppress alert for batch ${batchNo} for 24 hours`, `
     <div class="form-group">
       <label>Reason for acknowledgment <span style="color:var(--red)">*</span></label>
       <textarea id="ack-reason" rows="3" placeholder="Brief explanation (e.g. 'shift change at 6pm, will be processed tomorrow morning')"
                 style="width:100%;padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;font-family:inherit"></textarea>
     </div>
-    <div class="alert alert-info" style="font-size:11px">Alert will be hidden for 4 hours. If still unresolved after that, it will resurface in Report J.</div>
+    <div class="alert alert-info" style="font-size:11px">Alert will be hidden for 24 hours. If still unresolved after that, it will resurface in Report J.</div>
   `, [
     {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'},
     {label:'Confirm Acknowledge', cls:'btn-primary', fn:`_submitAck('${alertId}')`}
@@ -6629,7 +6661,7 @@ async function _submitAck(alertId) {
     const j = await r.json();
     if (!j.ok) throw new Error(j.error||'Unknown error');
     closeModal();
-    alert('✅ Alert acknowledged for 4 hours');
+    alert('✅ Alert acknowledged for 24 hours');
     _fetchReconcileAlerts().then(_renderReportJContent);
   } catch(e) {
     alert('Failed to acknowledge: ' + e.message);
@@ -6644,12 +6676,16 @@ function exportReportJ() {
     const activeB = alerts.filter(a => a.alert_type==='B' && (!a.acknowledged_at || new Date(a.ack_expires_at||0).getTime() < now));
     const rowsA = activeA.map(a => {
       const b = getBatch(a.batch_number);
+      const isExport = _isExportBatchClient(a.batch_number);
+      const ageDays = Math.floor((Date.now() - new Date(a.triggered_at).getTime()) / (24 * 60 * 60 * 1000));
       return {
         'Batch': a.batch_number||'',
         'Customer': b?.customer||'',
+        'Zone': isExport ? 'Export' : 'Domestic',
+        'Threshold': isExport ? '15 days' : '7 days',
         'Label ID': a.label_id||'',
-        'Packing-out Time': a.triggered_at||'',
-        'Age': _ageString(a.triggered_at)
+        'Pack-In Time': a.triggered_at||'',
+        'Days Aged': ageDays
       };
     });
     const rowsB = activeB.map(a => {
@@ -6667,7 +6703,7 @@ function exportReportJ() {
         'Age': _ageString(a.triggered_at)
       };
     });
-    if (rowsA.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rowsA), 'Packing-Dispatch Gap');
+    if (rowsA.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rowsA), 'FG Stock Aging');
     if (rowsB.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rowsB), 'Scan-out Awaiting Record');
     if (!rowsA.length && !rowsB.length) {
       XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['No pending reconciliation alerts']]), 'Empty');
@@ -6930,7 +6966,7 @@ function exportDispatch() {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(recRows), 'Dispatch Records');
 
   // Sheet 2: Packed Ledger (current state)
-  const packedOut = state.scans.filter(s=>s.dept==='packing'&&s.type==='out');
+  const packedOut = state.scans.filter(s=>s.dept==='packing'&&s.type==='in');
   const dispatchedIn = state.scans.filter(s=>s.dept==='dispatch'&&s.type==='in');
   const dispatchedOut = state.scans.filter(s=>s.dept==='dispatch'&&s.type==='out');
   const ledger = {};
@@ -7076,8 +7112,8 @@ function exportReportC(){
   const rows=getTrkMonthBatches().filter(b=>!b.deleted).map(b=>{
     const wipDays=getBatchWIPDays(b.batchNumber);
     const std=b.isPrinted?3:2;
-    const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
-    const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+    const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
+    const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
     const packedQty=boxToLakh(packedOut,b.size);
     const grossProd=b.actualProd||0;
     const status=wipDays===0&&packedOut>0?'Closed':wipDays<=std?'In Progress':'Pending';
@@ -7148,8 +7184,8 @@ function exportReportE(){
         const ag=getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
         const aGradePct=ag.pct, netAGrade=ag.aGrade;
         const wip=Math.max(0,grossProd-aimIn);
-        const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
-        const packOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+        const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
+        const packOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
         const packQty = boxToLakh(packOutBoxes, b.size);
         // v37E T2: Per-stage Print and PI A-Grade % for printed batches
         const localPrintOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='printing'&&sc.type==='out'&&sc._local).length;
@@ -7213,8 +7249,8 @@ function exportReportE(){
           ? Math.max(0, (postPrintNumMc / aimInputTotalMc) * 100) : null;
         const piAGradePctEx    = (b.isPrinted && aimInputTotalMc > 0)
           ? Math.max(0, (postPiNumMc    / aimInputTotalMc) * 100) : null;
-        const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
-        const packOutEx = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+        const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
+        const packOutEx = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
         const packOutLac = boxToLakh(packOutEx, b.size);
         return {'DATE':today(),'BATCH NO':b.batchNumber,'COLOR CODE':b.colour||'','CUSTOMER NAME':b.customer||'',
           'PRINT TYPE':b.isPrinted?'PTD':'UP',
@@ -7263,8 +7299,8 @@ function renderTrackingSearch(){
     results=matchedBatches.map(b=>{
       const labels=getLabelsByBatch(b.batchNumber);
       const scans=state.scans.filter(s=>s.batchNumber===b.batchNumber);
-      const localPacked = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='out'&&sc._local).length;
-      const packed = hasScanSummary() ? (_ss(b.batchNumber,'packing').out + localPacked) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='out').length;
+      const localPacked = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
+      const packed = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPacked) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
       return {...b, _labelCount:labels.length, _scanCount:scans.length, _packed:packed};
     });
   }
@@ -7357,14 +7393,22 @@ function renderSettings(){
     </div>
     ${isAdmin?`
     <div class="card">
-      <div class="card-title">⏱️ Dispatch Reconciliation Alerts</div>
-      <div class="form-group">
-        <label>Alert threshold (minutes)</label>
-        <input type="number" id="s-dra-threshold" min="15" max="240" step="5" placeholder="60" value="${window._draThresholdCache||60}">
-        <div style="font-size:11px;color:var(--text3);margin-top:4px">Range 15–240 minutes. Default 60. Controls when Flow A (packing→dispatch gap) and Flow B (scan-out without record) alerts trigger.</div>
+      <div class="card-title">⏱️ FG Stock Aging Alerts (Report J Flow A)</div>
+      <div class="form-row cols-2">
+        <div class="form-group">
+          <label>Domestic threshold (days)</label>
+          <input type="number" id="s-dra-days-nonexport" min="3" max="30" step="1" placeholder="7" value="${window._draDaysNonExportCache||7}">
+          <div style="font-size:11px;color:var(--text3);margin-top:4px">Range 3–30 days. Default 7. Triggers when domestic batches have FG packed but not dispatched for this many days.</div>
+        </div>
+        <div class="form-group">
+          <label>Export threshold (days)</label>
+          <input type="number" id="s-dra-days-export" min="7" max="60" step="1" placeholder="15" value="${window._draDaysExportCache||15}">
+          <div style="font-size:11px;color:var(--text3);margin-top:4px">Range 7–60 days. Default 15. Export batches use this longer threshold since container loads accumulate over multiple production cycles.</div>
+        </div>
       </div>
-      <button class="btn btn-primary btn-sm" onclick="saveDraThreshold()">Save Threshold</button>
+      <button class="btn btn-primary btn-sm" onclick="saveDraThresholds()">Save Thresholds</button>
       <div id="dra-threshold-msg" style="margin-top:8px;font-size:11px"></div>
+      <div class="alert alert-info" style="font-size:11px;margin-top:8px">Flow B (Scan-out Awaiting Record) uses a fixed 60-min threshold — paperwork should follow scan within the working hour.</div>
     </div>`:''}
     ${isAdmin?`
     <div class="card">
@@ -7557,50 +7601,83 @@ function savePrinterUrl(){
   alert(url?'✅ Printer URL saved.':'✅ ZPL download mode activated.');
 }
 
-// v37I Part A: Settings persistence for Dispatch Reconciliation threshold.
-// Stored in system_settings table via /api/settings endpoint. Validates 15-240 range.
-async function saveDraThreshold(){
-  const v = parseInt(document.getElementById('s-dra-threshold')?.value);
+// v37I.1: Settings persistence for FG Stock Aging thresholds.
+// Two day-scale thresholds replacing the v37I minute-scale threshold:
+//   - fgAgingDaysNonExport (3-30 days, default 7)
+//   - fgAgingDaysExport    (7-60 days, default 15)
+// Posts to /api/settings/<key>. Validates locally before sending.
+async function saveDraThresholds(){
+  const vNon = parseInt(document.getElementById('s-dra-days-nonexport')?.value);
+  const vExp = parseInt(document.getElementById('s-dra-days-export')?.value);
   const msg = document.getElementById('dra-threshold-msg');
-  if (!Number.isFinite(v) || v < 15 || v > 240) {
-    if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ Value must be between 15 and 240 minutes.'; }
+  if (!Number.isFinite(vNon) || vNon < 3 || vNon > 30) {
+    if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ Domestic threshold must be 3–30 days.'; }
+    return;
+  }
+  if (!Number.isFinite(vExp) || vExp < 7 || vExp > 60) {
+    if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ Export threshold must be 7–60 days.'; }
+    return;
+  }
+  if (vExp <= vNon) {
+    if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ Export threshold must be greater than domestic threshold.'; }
     return;
   }
   if (!serverUrl) { if (msg) msg.textContent='✗ Server not configured'; return; }
   try {
-    const r = await fetch(serverUrl + '/api/settings/dispatchReconcileThresholdMin', {
-      method: 'POST',
-      headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({value: String(v)})
-    });
-    const j = await r.json();
-    if (j.ok) {
-      window._draThresholdCache = v;
-      if (msg) { msg.style.color='var(--green)'; msg.textContent='✅ Threshold updated to '+v+' minutes. New alerts use this value from the next scan cycle.'; }
+    const [r1, r2] = await Promise.all([
+      fetch(serverUrl + '/api/settings/fgAgingDaysNonExport', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({value: String(vNon)})
+      }),
+      fetch(serverUrl + '/api/settings/fgAgingDaysExport', {
+        method: 'POST', headers: {'Content-Type':'application/json'},
+        body: JSON.stringify({value: String(vExp)})
+      })
+    ]);
+    const [j1, j2] = await Promise.all([r1.json(), r2.json()]);
+    if (j1.ok && j2.ok) {
+      window._draDaysNonExportCache = vNon;
+      window._draDaysExportCache    = vExp;
+      if (msg) { msg.style.color='var(--green)'; msg.textContent='✅ Thresholds saved: '+vNon+'d domestic, '+vExp+'d export. Effective from next scan cycle (within 5 min).'; }
     } else {
-      if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ '+(j.error||'Save failed'); }
+      if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ '+(j1.error||j2.error||'Save failed'); }
     }
   } catch(e) {
     if (msg) { msg.style.color='var(--red)'; msg.textContent='✗ Network error: '+e.message; }
   }
 }
 
-// v37I Part A: Load threshold on Settings render so the input shows current value
+// v37I.1: Load both thresholds on Settings render so inputs show current values.
 async function _loadDraThreshold() {
   if (!serverUrl) return;
   try {
-    const r = await fetch(serverUrl + '/api/settings/dispatchReconcileThresholdMin', {signal:AbortSignal.timeout(5000)});
-    if (!r.ok) return;
-    const j = await r.json();
-    if (j.ok && j.value) {
-      const v = parseInt(j.value);
-      if (v >= 15 && v <= 240) {
-        window._draThresholdCache = v;
-        const el = document.getElementById('s-dra-threshold');
-        if (el) el.value = v;
+    const [r1, r2] = await Promise.all([
+      fetch(serverUrl + '/api/settings/fgAgingDaysNonExport', {signal:AbortSignal.timeout(5000)}),
+      fetch(serverUrl + '/api/settings/fgAgingDaysExport',    {signal:AbortSignal.timeout(5000)})
+    ]);
+    if (r1.ok) {
+      const j = await r1.json();
+      if (j.ok && j.value) {
+        const v = parseInt(j.value);
+        if (v >= 3 && v <= 30) {
+          window._draDaysNonExportCache = v;
+          const el = document.getElementById('s-dra-days-nonexport');
+          if (el) el.value = v;
+        }
       }
     }
-  } catch(e) { /* silent */ }
+    if (r2.ok) {
+      const j = await r2.json();
+      if (j.ok && j.value) {
+        const v = parseInt(j.value);
+        if (v >= 7 && v <= 60) {
+          window._draDaysExportCache = v;
+          const el = document.getElementById('s-dra-days-export');
+          if (el) el.value = v;
+        }
+      }
+    }
+  } catch(e) { /* silent — defaults remain in placeholder */ }
 }
 
 function clearAllScans(){
