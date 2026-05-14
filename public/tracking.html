@@ -2064,8 +2064,8 @@ function generateZPL(label, batch){
   const qRelY = qrY + 180;     // Q RELEASED text Y
   const sigY  = qrY + 60;      // SIGNATURE line Y
   const botY  = 1180;          // fixed bottom rule
-  // PC Code: prefer label.pcCode, fall back to batch pcCode
-  const pcCode = (label.pcCode || batch?.pcCode || '').toString();
+  // PC Code: check label, passed batch, and fresh getBatch lookup (_b already resolved above)
+  const pcCode = (label.pcCode || batch?.pcCode || _b?.pcCode || '').toString();
 
   return `^XA
 ^CI28
