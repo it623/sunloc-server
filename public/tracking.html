@@ -4451,6 +4451,16 @@ function renderReports(forceRebuild){
 function renderReportH(){ window._activeReport = renderReportH;
   _captureReportScroll();
   if(!document.getElementById('report-output')) renderReports();
+  // If scanSummary not loaded yet, fetch it first then re-render
+  if(!hasScanSummary() && serverUrl){
+    fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)})
+      .then(r=>r.json()).then(sj=>{
+        if(sj.ok){ state.scanSummary=sj.summary||{}; state.wastageSummary=sj.wastage||{}; }
+        renderReportH();
+      }).catch(()=>{});
+    document.getElementById('report-output').innerHTML='<div style="padding:40px;text-align:center;color:var(--text3)">Loading scan history…</div>';
+    return;
+  }
   const batches = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions = (batch) => batch.isPrinted
     ? [['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
@@ -4461,13 +4471,16 @@ function renderReportH(){ window._activeReport = renderReportH;
 
   batches.forEach(b=>{
     getTransitions(b).forEach(([from,to])=>{
-      // Use scanSummary (full history) when available — fixes LIMIT 2000 gap issue
+      // Always use scanSummary (full history, no limit) + local scans on top
+      // Falls back to state.scans only if scanSummary not yet loaded
+      const localFromOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===from&&sc.type==='out'&&sc._local).length;
+      const localToIn    = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===to&&sc.type==='in'&&sc._local).length;
       const fromOut = hasScanSummary()
-        ? (_ss(b.batchNumber,from).out + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===from&&sc.type==='out'&&sc._local).length)
-        : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===from&&s.type==='out').length;
+        ? (_ss(b.batchNumber,from).out + localFromOut)
+        : (state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===from&&s.type==='out').length);
       const toIn = hasScanSummary()
-        ? (_ss(b.batchNumber,to).in + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===to&&sc.type==='in'&&sc._local).length)
-        : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===to&&s.type==='in').length;
+        ? (_ss(b.batchNumber,to).in + localToIn)
+        : (state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===to&&s.type==='in').length);
       const gap     = fromOut - toIn;
       if(gap > 0){
         totalGaps++;
