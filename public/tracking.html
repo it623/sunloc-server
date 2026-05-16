@@ -4305,7 +4305,17 @@ function renderBatchDetail(batch){
     ${labels.map(l=>{
       const stage=getBoxCurrentStage(l.id);
       const scans=getScansForBox(l.id);
-      const getStamp=(dept,type)=>{const s=scans.find(sc=>sc.dept===dept&&sc.type===type);return s?fmtDateTime(s.ts):null;};
+      const _bss=state.scanSummary?.[batchNo]||{};
+      const getStamp=(dept,type)=>{
+        const s=scans.find(sc=>sc.dept===dept&&sc.type===type);
+        if(s) return fmtDateTime(s.ts);
+        // fallback: use scanSummary counts when individual scans not in memory
+        const ss=_bss[dept];if(!ss)return null;
+        const idx=labels.indexOf(l);
+        if(type==='out'&&ss.out&&idx<ss.out)return '✓';
+        if(type==='in'&&ss.in&&idx<ss.in)return '✓';
+        return null;
+      };
       const boxAlerts=state.alerts.filter(a=>a.labelId===l.id);
       const isVoided=l.voided;
       const statusBadge=isVoided?'<span class="badge badge-red">Voided</span>':
