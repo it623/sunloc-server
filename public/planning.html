@@ -819,12 +819,12 @@ const SYNC = (() => {
         const _printMachineMasterProtected = _localOrderChanges['__printMachineMaster__'] && (_now - _localOrderChanges['__printMachineMaster__']) < _protectWindow;
         const _savedMachineMaster = _machineMasterProtected ? JSON.parse(JSON.stringify(state.machineMaster)) : null;
         const _savedPrintMachineMaster = _printMachineMasterProtected ? JSON.parse(JSON.stringify(state.printMachineMaster)) : null;
-        if (Object.keys(_localOrderChanges).length > 0) {
-          (state.orders||[]).forEach(o => {
-            const ts = _localOrderChanges[o.id];
-            if (ts && (_now - ts) < _protectWindow) _protectedOrders[o.id] = o;
-          });
-        }
+        // Always protect closed orders (regardless of how long ago closed) AND recently-changed orders
+        // This prevents server sync from ever resurrecting a closed order back to In Production
+        (state.orders||[]).forEach(o => {
+          const ts = _localOrderChanges[o.id];
+          if (o.status === 'closed' || (ts && (_now - ts) < _protectWindow)) _protectedOrders[o.id] = o;
+        });
         if (Object.keys(_localPrintOrderChanges).length > 0) {
           (state.printOrders||[]).forEach(p => {
             const ts = _localPrintOrderChanges[p.id];
@@ -884,10 +884,12 @@ const SYNC = (() => {
             if (!local) return o;
             // Keep local order but update live fields from server
             // FIX 2: Always preserve local status/deleted — never let server overwrite
+            // FIX 3: If local or server says closed — ALWAYS keep closed (never let actualProd sync re-open it)
+            const _protStatus = (local.status === 'closed' || o.status === 'closed') ? 'closed' : (local.status || o.status);
             return { ...local,
               actualProd: o.actualProd || local.actualProd,
               stageStatus: o.stageStatus || local.stageStatus,
-              status: local.status || o.status,
+              status: _protStatus,
               deleted: local.deleted !== undefined ? local.deleted : o.deleted,
             };
           });
@@ -1052,10 +1054,12 @@ const SYNC = (() => {
             // FIX 1: If deleted in DB — permanently remove
             if (dbOrd.deleted) return null;
             // FIX 2: DB status always wins — user set it explicitly
+            // FIX 3: NEVER downgrade a closed order — closed is final
+            const mergedStatus = (o.status === 'closed' || dbOrd.status === 'closed') ? 'closed' : (dbOrd.status || o.status);
             return {
               ...dbOrd,
               // DB is authoritative for these user-set fields:
-              status:       dbOrd.status      || o.status,
+              status:       mergedStatus,
               deleted:      dbOrd.deleted,
               closedDate:   dbOrd.closedDate  || o.closedDate,
               remarks:      dbOrd.remarks     || o.remarks,
@@ -2794,7 +2798,8 @@ function updateActualProd(ordId, val, machineId) {
   if (ord) {
     ord.actualProd = parseFloat(val)||0;
     // Auto-promote pending → running only if within 2-order limit and not a SAP-imported order
-    if (ord.actualProd > 0 && ord.status === 'pending' && !ord._noAutoPromote) {
+    // NEVER auto-promote closed orders — closed status is final and must be preserved
+    if (ord.actualProd > 0 && ord.status === 'pending' && !ord._noAutoPromote && ord.status !== 'closed') {
       const runningCount = state.orders.filter(o =>
         o.machineId === machineId &&
         o.status === 'running' &&

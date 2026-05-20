@@ -1648,16 +1648,12 @@ app.post('/api/orders/upsert', async (req, res) => {
         VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
         ON CONFLICT(id) DO UPDATE SET
           data_json=$2, machine_id=$3, batch_number=$4,
-          status=$5, deleted=$6, updated_at=NOW()::TEXT
+          status=CASE WHEN production_orders.status='closed' THEN 'closed' ELSE $5 END,
+          deleted=$6, updated_at=NOW()::TEXT
       `, [ord.id, json, ord.machineId||null, ord.batchNumber||null,
           ord.status||'pending', ord.deleted||false]);
     } else {
-      db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
-        VALUES (?,?,?,?,?,?,datetime('now'))
-        ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
-        machine_id=excluded.machine_id,batch_number=excluded.batch_number,
-        status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
-        .run(ord.id, json, ord.machineId||null, ord.batchNumber||null, ord.status||'pending', ord.deleted?1:0);
+      return res.status(500).json({ ok: false, error: 'PostgreSQL not available — order not saved' });
     }
     res.json({ ok: true, savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -1678,7 +1674,7 @@ app.post('/api/orders/delete-by-batch', async (req, res) => {
         await pgPool.query(`DELETE FROM production_orders WHERE batch_number = $1`, [batchNumber]);
       }
     } else {
-      db.prepare(`DELETE FROM production_orders WHERE batch_number = ?`).run(batchNumber);
+      return res.status(500).json({ ok: false, error: 'PostgreSQL not available — order not deleted' });
     }
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -1742,6 +1738,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
   try {
     const { orders } = req.body;
     if (!Array.isArray(orders)) return res.status(400).json({ ok: false, error: 'orders array required' });
+    if (!pgPool) return res.status(500).json({ ok: false, error: 'PostgreSQL not available — orders not saved' });
     for (const ord of orders) {
       if (!ord.id) continue;
       const json = JSON.stringify(ord);
@@ -1751,16 +1748,10 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
           ON CONFLICT(id) DO UPDATE SET
             data_json=$2,machine_id=$3,batch_number=$4,
-            status=$5,deleted=$6,updated_at=NOW()::TEXT
+            status=CASE WHEN production_orders.status='closed' THEN 'closed' ELSE $5 END,
+            deleted=$6,updated_at=NOW()::TEXT
         `, [ord.id, json, ord.machineId||null, ord.batchNumber||null,
             ord.status||'pending', ord.deleted||false]);
-      } else {
-        db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
-          VALUES (?,?,?,?,?,?,datetime('now'))
-          ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
-          machine_id=excluded.machine_id,batch_number=excluded.batch_number,
-          status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
-          .run(ord.id, json, ord.machineId||null, ord.batchNumber||null, ord.status||'pending', ord.deleted?1:0);
       }
     }
     res.json({ ok: true, count: orders.length, savedAt: new Date().toISOString() });
@@ -1946,7 +1937,8 @@ app.get('/api/planning/state', async (req, res) => {
         ord.actualProd = actual;
         // Auto-promote pending → running only if machine has fewer than 2 running orders
         // Never auto-promote SAP-imported orders (_noAutoPromote flag)
-        if (actual > 0 && ord.status === 'pending' && !ord._noAutoPromote) {
+        // Never touch closed orders — closed is final
+        if (actual > 0 && ord.status === 'pending' && !ord._noAutoPromote && ord.status !== 'closed') {
           const runningOnMachine = state.orders.filter(o =>
             o.machineId === ord.machineId &&
             o.status === 'running' &&
@@ -2025,7 +2017,8 @@ app.post('/api/planning/state', async (req, res) => {
                 endDate:         hasManualDate ? ex.endDate     : ord.endDate,
                 manualEndDate:   ex.manualEndDate   || ord.manualEndDate,
                 manualStartDate: ex.manualStartDate || ord.manualStartDate,
-                status: (ex.status && ex.status !== 'pending') ? ex.status : (ord.status||'pending'),
+                // Never downgrade a closed order — closed is final
+                status: (ex.status === 'closed' || ord.status === 'closed') ? 'closed' : ((ex.status && ex.status !== 'pending') ? ex.status : (ord.status||'pending')),
                 actualProd: Math.max(ord.actualProd||0, ex.actualProd||0),
               };
             }
@@ -6131,8 +6124,39 @@ app.listen(PORT, () => {
     // multiple records overwrote each other and only the last per-record qty was saved.
     // Runs once per server boot, idempotent (running again is a no-op since values would match).
     _backfillDispatchActuals().catch(e => console.warn('[v37I backfill] failed:', e?.message));
+    // Safety migration: push every order from planning_state blob into production_orders table.
+    // Idempotent — ON CONFLICT DO NOTHING means already-saved orders are never touched.
+    // Runs on every boot so no order is ever lost if it only existed in the JSON blob.
+    _migrateStateOrdersToPg().catch(e => console.warn('[Migration] state->pg failed:', e?.message));
   });
 });
+
+// Safety migration: ensure every order in planning_state JSON blob exists in production_orders table.
+// Uses ON CONFLICT DO NOTHING — never overwrites, never changes existing rows.
+async function _migrateStateOrdersToPg() {
+  if (!pgPool) return;
+  try {
+    const r = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1');
+    if (!r.rows[0]) return;
+    const state = JSON.parse(r.rows[0].state_json);
+    const orders = (state.orders || []).filter(o => o.id && !o.deleted);
+    if (!orders.length) return;
+    let inserted = 0;
+    for (const ord of orders) {
+      try {
+        const result = await pgPool.query(
+          `INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
+           VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
+           ON CONFLICT(id) DO NOTHING`,
+          [ord.id, JSON.stringify(ord), ord.machineId||null, ord.batchNumber||null,
+           ord.status||'pending', ord.deleted||false]
+        );
+        if (result.rowCount > 0) inserted++;
+      } catch(e) { console.warn('[Migration] order', ord.id, e?.message); }
+    }
+    console.log('[Migration] state->pg: checked ' + orders.length + ' orders, inserted ' + inserted + ' missing into production_orders');
+  } catch(e) { console.warn('[Migration] state->pg outer:', e?.message); }
+}
 
 // v37I bugfix: backfill dispatch_actuals from records on startup
 async function _backfillDispatchActuals() {
