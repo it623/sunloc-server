@@ -1628,6 +1628,7 @@ async function pushToServer(fl,d,data){
     _dprPendingSaves.delete(fl+'|'+d);
     _dprLastSaveTime = Date.now(); // refresh save time on server confirmation
     _updatePendingBadge();
+    setSyncBadge('synced'); // always reset badge after push completes
   }
 }
 async function fetchDayFromServer(fl, d){
