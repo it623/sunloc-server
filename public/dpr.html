@@ -4229,6 +4229,21 @@ function renderDprSearch(){
 // ═══════════════════════════════════════════════════════
 document.getElementById('ndate').value=today();
 refreshRecentDates();
+// On load: always remove today's localStorage so server data is fetched fresh
+// This ensures all devices always show the latest saved data, not stale local cache
+(function(){
+  try{
+    const todayKey_GF = skey('GF', today());
+    const todayKey_FF = skey('FF', today());
+    const todayKey_SF = skey('SF', today());
+    // Only clear if not currently unsaved (don't clear mid-edit data)
+    if(!unsaved){
+      localStorage.removeItem(todayKey_GF);
+      localStorage.removeItem(todayKey_FF);
+      localStorage.removeItem(todayKey_SF);
+    }
+  }catch(_){}
+})();
 // C-shift warning on load
 setTimeout(()=>onDateChange&&onDateChange(),200);
 // ─── DPR Settings Sync ────────────────────────────────────────
