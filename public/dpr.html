@@ -1330,27 +1330,20 @@ function loadDay(fl,d){
 // Always load from server and update localStorage — server is ALWAYS source of truth
 async function syncFromServer(fl, d){
   if(!serverUrl) return;
-  // Never sync if user has unsaved data on screen for this floor/date
+  // Never sync if user has unsaved data on screen — protects data being entered right now
   if(unsaved && fl === curFloor && d === getDate()) return;
   // Never sync if a save is pending for this floor/date
   if(_dprPendingSaves.has(fl+'|'+d)) return;
-  // Never sync within 60 seconds of any save — gives server time to process and protects fresh data
-  if((Date.now() - _dprLastSaveTime) < 60000) return;
   try{
     const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
     if(!r.ok) return;
     const j=await r.json();
     if(j.data){
-      // Only update localStorage if server savedAt is after our last save time
+      // Server is always truth after save — all devices get same data
       const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
-      const localRaw = localStorage.getItem(skey(fl,d));
-      const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt || 0) : 0;
-      // Server data must be significantly newer than local data (>5s gap)
-      if(serverSavedAt > localSavedAt + 5000){
-        j.data._savedAt = serverSavedAt;
-        localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
-        console.log('[DPR] Synced from server:', fl, d);
-      }
+      j.data._savedAt = serverSavedAt;
+      localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+      console.log('[DPR] Synced from server:', fl, d);
     }
   }catch(e){ console.warn('[DPR] syncFromServer failed:', e?.message); }
 }
@@ -1406,7 +1399,9 @@ function _doSaveDay(fl, d){
   data._savedAt = Date.now();
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
-  _dprLastSaveTime = Date.now(); // block fetch for 10s after save
+  _dprLastSaveTime = Date.now(); // block fetch for 60s after save
+  // Persist save time so page crash/refresh doesn't reset the block
+  try{ localStorage.setItem('_dprLastSaveTime', String(_dprLastSaveTime)); }catch(_){}
   pushToServer(fl,d,data); // goes to server regardless
   renderDayKpis();
   // Show warning toast — save always goes through
@@ -1530,7 +1525,7 @@ async function checkServer(){
 // ── Pending save queue: retries every 15s until server confirms ─────
 let _dprPendingSaves = new Map(); // keyed by "fl|d" — no save is ever overwritten
 let _dprRetryTimer = null;
-let _dprLastSaveTime = 0; // timestamp of last save — blocks fetch for 10s after save
+let _dprLastSaveTime = (()=>{ try{ const t=parseInt(localStorage.getItem('_dprLastSaveTime')||'0'); return isNaN(t)?0:t; }catch{return 0;} })(); // restored from localStorage so page crash doesn't reset the 60s block
 let _suppressRenderShifts = false;
 function _updatePendingBadge(){
   const badge=document.getElementById('syncBadge');
@@ -1702,7 +1697,12 @@ function _dprFromDateForMode(mode) {
   }
 }
 
+let _lastFetchActiveOrders=0;
 async function fetchActiveOrders(){
+  // Rate limit: never fetch more than once per 20 seconds — prevents server overload and UI freeze
+  const now=Date.now();
+  if(now-_lastFetchActiveOrders < 20000) return;
+  _lastFetchActiveOrders=now;
   if(!serverUrl){
     const cached=localStorage.getItem('dpr_active_orders');
     if(cached) try{activeOrders=JSON.parse(cached);}catch{}
@@ -2179,7 +2179,11 @@ function renderDayKpis(){
   `;
 }
 
+let _renderShiftsTimer=null;
 function renderShifts(){
+  // Debounce: skip if already queued within 300ms — prevents UI freeze from rapid consecutive calls
+  if(_renderShiftsTimer) return;
+  _renderShiftsTimer=setTimeout(()=>{ _renderShiftsTimer=null; },300);
   const fl=curFloor, d=getDate();
   const day=loadDay(fl,d);
   const mcs=getActiveMachines(fl);
@@ -4230,21 +4234,6 @@ function renderDprSearch(){
 // ═══════════════════════════════════════════════════════
 document.getElementById('ndate').value=today();
 refreshRecentDates();
-// On load: always remove today's localStorage so server data is fetched fresh
-// This ensures all devices always show the latest saved data, not stale local cache
-(function(){
-  try{
-    const todayKey_GF = skey('GF', today());
-    const todayKey_FF = skey('FF', today());
-    const todayKey_SF = skey('SF', today());
-    // Only clear if not currently unsaved (don't clear mid-edit data)
-    if(!unsaved){
-      localStorage.removeItem(todayKey_GF);
-      localStorage.removeItem(todayKey_FF);
-      localStorage.removeItem(todayKey_SF);
-    }
-  }catch(_){}
-})();
 // C-shift warning on load
 setTimeout(()=>onDateChange&&onDateChange(),200);
 // ─── DPR Settings Sync ────────────────────────────────────────
