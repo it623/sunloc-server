@@ -2198,46 +2198,51 @@ app.post('/api/dpr/save', async (req, res) => {
     if (!floor || !date || !data) return res.status(400).json({ ok: false, error: 'Missing floor, date, or data' });
 
     if (pgPool) {
-      // Merge incoming shifts with existing DB data to protect shifts filled by other users
-      const existingRow = await pgPool.query('SELECT data_json FROM dpr_records WHERE floor=$1 AND date=$2', [floor, date]);
-      if (existingRow.rows[0]) {
-        try {
-          const existing = JSON.parse(existingRow.rows[0].data_json);
-          const existingShifts = existing.shifts || {};
-          const incomingShifts = data.shifts || {};
-          // For each shift: if incoming shift has no machine qty data, keep existing shift data
-          for (const shiftKey of ['A', 'B', 'C']) {
-            const incomingShift = incomingShifts[shiftKey];
-            const existingShift = existingShifts[shiftKey];
-            if (!existingShift) continue; // nothing in DB to protect
-            if (!incomingShift || !incomingShift.machines) {
-              // Incoming has no data for this shift — keep existing
-              if (!data.shifts) data.shifts = {};
-              data.shifts[shiftKey] = existingShift;
-              continue;
-            }
-            // Check if incoming shift has any actual qty OR staff data entered
-            let hasData = false;
-            // Check qty in machine runs
-            for (const mc of Object.values(incomingShift.machines || {})) {
-              const runs = mc.runs || [{ qty: mc.prod }];
-              if (runs.some(r => parseFloat(r.qty) > 0)) { hasData = true; break; }
-            }
-            // Also check staff names (incharge, chemist, fitter etc.)
-            if (!hasData) {
-              const staffFields = ['incharge', 'chemist', 'fitter', 'electrical', 'utility', 'aim_staff', 'gpr_staff'];
-              for (const field of staffFields) {
-                const val = incomingShift[field];
-                if (Array.isArray(val) && val.some(v => v && v.trim())) { hasData = true; break; }
-                if (typeof val === 'string' && val.trim()) { hasData = true; break; }
+      // Only merge shifts if the request is NOT a full save (i.e. not from admin correction)
+      // Admin saves always win — save exactly what was sent, no merging
+      const isFullSave = data._fullSave === true;
+      if (!isFullSave) {
+        // Merge incoming shifts with existing DB data to protect shifts filled by other users
+        const existingRow = await pgPool.query('SELECT data_json FROM dpr_records WHERE floor=$1 AND date=$2', [floor, date]);
+        if (existingRow.rows[0]) {
+          try {
+            const existing = JSON.parse(existingRow.rows[0].data_json);
+            const existingShifts = existing.shifts || {};
+            const incomingShifts = data.shifts || {};
+            // For each shift: if incoming shift has no machine qty data, keep existing shift data
+            for (const shiftKey of ['A', 'B', 'C']) {
+              const incomingShift = incomingShifts[shiftKey];
+              const existingShift = existingShifts[shiftKey];
+              if (!existingShift) continue; // nothing in DB to protect
+              if (!incomingShift || !incomingShift.machines) {
+                // Incoming has no data for this shift — keep existing
+                if (!data.shifts) data.shifts = {};
+                data.shifts[shiftKey] = existingShift;
+                continue;
+              }
+              // Check if incoming shift has any actual qty OR staff data entered
+              let hasData = false;
+              // Check qty in machine runs
+              for (const mc of Object.values(incomingShift.machines || {})) {
+                const runs = mc.runs || [{ qty: mc.prod }];
+                if (runs.some(r => parseFloat(r.qty) > 0)) { hasData = true; break; }
+              }
+              // Also check staff names (incharge, chemist, fitter etc.)
+              if (!hasData) {
+                const staffFields = ['incharge', 'chemist', 'fitter', 'electrical', 'utility', 'aim_staff', 'gpr_staff'];
+                for (const field of staffFields) {
+                  const val = incomingShift[field];
+                  if (Array.isArray(val) && val.some(v => v && v.trim())) { hasData = true; break; }
+                  if (typeof val === 'string' && val.trim()) { hasData = true; break; }
+                }
+              }
+              if (!hasData) {
+                // Incoming shift is completely empty — keep existing shift data
+                data.shifts[shiftKey] = existingShift;
               }
             }
-            if (!hasData) {
-              // Incoming shift is completely empty — keep existing shift data
-              data.shifts[shiftKey] = existingShift;
-            }
-          }
-        } catch(e) { console.warn('[DPR merge] parse error:', e.message); }
+          } catch(e) { console.warn('[DPR merge] parse error:', e.message); }
+        }
       }
 
       // Save merged DPR record to PostgreSQL

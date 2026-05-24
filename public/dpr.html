@@ -1397,10 +1397,10 @@ function saveDay(){
 function _doSaveDay(fl, d){
   const data=collectForm();
   data._savedAt = Date.now();
+  data._fullSave = true; // tells server to skip shift merge — save exactly what user entered
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
-  _dprLastSaveTime = Date.now(); // block fetch for 60s after save
-  // Persist save time so page crash/refresh doesn't reset the block
+  _dprLastSaveTime = Date.now();
   try{ localStorage.setItem('_dprLastSaveTime', String(_dprLastSaveTime)); }catch(_){}
   pushToServer(fl,d,data); // goes to server regardless
   renderDayKpis();
