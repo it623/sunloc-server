@@ -1334,6 +1334,8 @@ async function syncFromServer(fl, d){
   if(unsaved && fl === curFloor && d === getDate()) return;
   // Never sync if a save is pending for this floor/date
   if(_dprPendingSaves.has(fl+'|'+d)) return;
+  // Never sync within 90 seconds of a save on this device — prevents old server cache overwriting fresh save
+  if((Date.now() - _dprLastSaveTime) < 90000) return;
   try{
     const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
     if(!r.ok) return;
@@ -1558,8 +1560,10 @@ async function _dprPushRaw(fl,d,data){
   // This prevents stale overnight pending saves from corrupting a new day's blank DPR
   if(data._savedAt){
     const savedDate = new Date(data._savedAt).toISOString().split('T')[0];
-    if(savedDate !== d){
-      console.warn('[DPR] Blocked stale push: data._savedAt date', savedDate, '!= target date', d);
+    // Only block if _savedAt is from a PREVIOUS date (stale overnight data)
+    // Never block if _savedAt is today or newer — that means user is actively saving
+    if(savedDate < d){
+      console.warn('[DPR] Blocked stale push: data._savedAt date', savedDate, '< target date', d);
       return true; // treat as success so it gets removed from pending queue
     }
   }
