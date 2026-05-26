@@ -1837,7 +1837,7 @@ async function ensurePostgresTables() {
         endpoint TEXT,
         status_code INTEGER,
         duration_ms INTEGER,
-        success BOOLEAN NOT NULL DEFAULT FALSE,
+        success INTEGER NOT NULL DEFAULT 0,
         error_message TEXT,
         request_summary TEXT,
         response_summary TEXT
@@ -2568,7 +2568,10 @@ async function _doRefreshSapInvoices() {
         }
       }
     } catch (e) { console.warn('[SAP] invoice match error:', e.message); }
-    const totalBoxes = (inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0);
+    // v41 fix: total_boxes is an INTEGER column. SAP DocumentLines.Quantity can be decimal
+    // (e.g. 31.35 Lakhs), which PostgreSQL rejects for an integer column ("invalid input syntax
+    // for type integer: 31.35"). Round to nearest whole unit for the box-count column.
+    const totalBoxes = Math.round((inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0));
     const docTotal = parseFloat(inv.DocTotal) || 0;
     const vatSum = parseFloat(inv.VatSum) || 0;
     const taxable = docTotal - vatSum;
@@ -4721,26 +4724,25 @@ app.post('/api/planning/state', async (req, res) => {
           // Safety net: if the DB row's updated_at is NEWER than the incoming client's
           // _localEditedAt (which the client now stamps), the DB wins — protects against
           // stale tabs overwriting a fresh decision from another device.
-          // Audit log when client status differs from DB status so we can trace state churn.
-          await Promise.all(orders.map(async ord => {
+
+          // v41 PERF FIX: previously this issued one INSERT per order via Promise.all — with
+          // 479 orders that fired 479 concurrent queries against a 5-connection pool EVERY 30s
+          // (Planning auto-sync cadence), saturating the pool and starving all other endpoints
+          // (Tracking tabs slowed to a crawl). Now: a single batched multi-row upsert per save.
+          // Chunked to stay well under PostgreSQL's 65535-parameter limit (6 params/row → ~10000 rows/chunk).
+          const mergedList = await Promise.all(orders.map(async ord => {
             const ex = existingMap[ord.id];
             let mergedOrd = ord;
             if (ex) {
               const hasManualDate = ex.manualEndDate || ex.manualStartDate;
               const clientEdit = parseInt(ord._localEditedAt || 0);
               const dbUpdated  = ex.updated_at ? new Date(ex.updated_at).getTime() : 0;
-              // Determine status: incoming wins unless the DB is demonstrably fresher.
               let finalStatus;
               if (ex.status && ord.status && ex.status !== ord.status) {
-                // Status differs between client and DB
                 if (clientEdit && dbUpdated && dbUpdated > clientEdit + 5000) {
-                  // DB was updated AFTER client's edit + 5s grace → client is stale, keep DB
                   finalStatus = ex.status;
-                  console.warn(`[v40 P18.14i] Status merge: keeping DB status '${ex.status}' over stale client '${ord.status}' for order ${ord.id} (db.updated_at=${ex.updated_at}, client.editedAt=${new Date(clientEdit).toISOString()})`);
                 } else {
-                  // Client is fresh OR no timestamp → client wins
                   finalStatus = ord.status;
-                  console.log(`[v40 P18.14i] Status merge: client status '${ord.status}' replaces DB '${ex.status}' for order ${ord.id}`);
                 }
               } else {
                 finalStatus = ord.status || ex.status || 'pending';
@@ -4755,15 +4757,29 @@ app.post('/api/planning/state', async (req, res) => {
                 actualProd: Math.max(ord.actualProd||0, ex.actualProd||0),
               };
             }
+            return mergedOrd;
+          }));
+
+          const CHUNK = 500;
+          for (let i = 0; i < mergedList.length; i += CHUNK) {
+            const chunk = mergedList.slice(i, i + CHUNK);
+            const vals = [];
+            const params = [];
+            chunk.forEach((m, idx) => {
+              const b = idx * 6;
+              vals.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},NOW()::TEXT)`);
+              params.push(m.id, JSON.stringify(m), m.machineId||null,
+                          m.batchNumber||null, m.status||'pending', m.deleted||false);
+            });
             await pgPool.query(`
               INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
-              VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
-              ON CONFLICT(id) DO UPDATE SET data_json=$2,machine_id=$3,batch_number=$4,
-                status=$5,deleted=$6,updated_at=NOW()::TEXT
-            `, [mergedOrd.id, JSON.stringify(mergedOrd), mergedOrd.machineId||null,
-                mergedOrd.batchNumber||null, mergedOrd.status||'pending', mergedOrd.deleted||false]);
-          }));
-          console.log(`[State] Background merged ${orders.length} orders into production_orders`);
+              VALUES ${vals.join(',')}
+              ON CONFLICT(id) DO UPDATE SET data_json=EXCLUDED.data_json,machine_id=EXCLUDED.machine_id,
+                batch_number=EXCLUDED.batch_number,status=EXCLUDED.status,deleted=EXCLUDED.deleted,
+                updated_at=NOW()::TEXT
+            `, params);
+          }
+          console.log(`[State] Background merged ${orders.length} orders into production_orders (batched)`);
         } catch(e) { console.warn('[State] Background order merge failed:', e.message); }
       });
     }
@@ -8834,7 +8850,28 @@ app.get('/api/tracking/label', async (req, res) => {
 
 app.get('/api/tracking/state', async (req, res) => {
   try {
+    // v41 PERF: ?light=1 omits the heavy scans + labels arrays (SELECT * over ~29.5k scan rows).
+    // The client requests light mode once it has already loaded scans (STEP 3) and labels (STEP 2)
+    // via their own endpoints — it only needs stageClosure/dispatchRecs/wastage/alerts from here.
+    // This removes a large per-sync payload that was a primary cause of Tracking slowness.
+    const light = req.query.light === '1' || req.query.light === 'true';
     if (pgPool) {
+      const mapClosure = r => ({ ...r, batchNumber: r.batch_number, closedAt: r.closed_at, closedBy: r.closed_by });
+      const mapWastage = r => ({ ...r, batchNumber: r.batch_number });
+      const mapDispatch = r => ({ ...r, batchNumber: r.batch_number, vehicleNo: r.vehicle_no, invoiceNo: r.invoice_no });
+      const mapAlert = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, scanInTs: r.scan_in_ts, hoursStuck: r.hours_stuck });
+      if (light) {
+        const [closure, wastage, dispatch, alerts] = await Promise.all([
+          pgPool.query('SELECT * FROM tracking_stage_closure'),
+          pgPool.query('SELECT * FROM tracking_wastage ORDER BY ts ASC'),
+          pgPool.query('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC'),
+          pgPool.query('SELECT * FROM tracking_alerts WHERE resolved = 0'),
+        ]);
+        return res.json({ ok: true, light: true, state: {
+          stageClosure: closure.rows.map(mapClosure), wastage: wastage.rows.map(mapWastage),
+          dispatchRecs: dispatch.rows.map(mapDispatch), alerts: alerts.rows.map(mapAlert)
+        }});
+      }
       const [labels, scans, closure, wastage, dispatch, alerts] = await Promise.all([
         pgPool.query('SELECT * FROM tracking_labels ORDER BY generated DESC'),
         pgPool.query('SELECT * FROM tracking_scans ORDER BY ts ASC'),
@@ -8845,22 +8882,21 @@ app.get('/api/tracking/state', async (req, res) => {
       ]);
       const mapLabel = r => ({ ...r, batchNumber: r.batch_number, labelNumber: r.label_number, isPartial: r.is_partial, isOrange: r.is_orange, parentLabelId: r.parent_label_id, pcCode: r.pc_code, poNumber: r.po_number, machineId: r.machine_id, printingMatter: r.printing_matter, printedAt: r.printed_at, voidReason: r.void_reason, voidedAt: r.voided_at, voidedBy: r.voided_by, qrData: r.qr_data, woStatus: r.wo_status, shipTo: r.ship_to, billTo: r.bill_to, isExcess: r.is_excess, excessNum: r.excess_num, excessTotal: r.excess_total, normalTotal: r.normal_total });
       const mapScan = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, labelNumber: r.label_number });
-      const mapClosure = r => ({ ...r, batchNumber: r.batch_number, closedAt: r.closed_at, closedBy: r.closed_by });
-      const mapWastage = r => ({ ...r, batchNumber: r.batch_number });
-      const mapDispatch = r => ({ ...r, batchNumber: r.batch_number, vehicleNo: r.vehicle_no, invoiceNo: r.invoice_no });
-      const mapAlert = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, scanInTs: r.scan_in_ts, hoursStuck: r.hours_stuck });
       res.json({ ok: true, state: {
         labels: labels.rows.map(mapLabel), scans: scans.rows.map(mapScan),
         stageClosure: closure.rows.map(mapClosure), wastage: wastage.rows.map(mapWastage),
         dispatchRecs: dispatch.rows.map(mapDispatch), alerts: alerts.rows.map(mapAlert)
       }});
     } else {
-      const labels  = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
-      const scans   = db.prepare('SELECT * FROM tracking_scans ORDER BY ts ASC').all();
       const closure = db.prepare('SELECT * FROM tracking_stage_closure').all();
       const wastage = db.prepare('SELECT * FROM tracking_wastage ORDER BY ts ASC').all();
       const dispatch= db.prepare('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC').all();
       const alerts  = db.prepare('SELECT * FROM tracking_alerts WHERE resolved = 0').all();
+      if (light) {
+        return res.json({ ok: true, light: true, state: { stageClosure: closure, wastage, dispatchRecs: dispatch, alerts } });
+      }
+      const labels  = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
+      const scans   = db.prepare('SELECT * FROM tracking_scans ORDER BY ts ASC').all();
       res.json({ ok: true, state: { labels, scans, stageClosure: closure, wastage, dispatchRecs: dispatch, alerts } });
     }
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
