@@ -460,7 +460,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v37K</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -480,6 +480,10 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       <span id="dpr-month-badge" class="dpr-month-badge current">●</span>
     </div>
     <span id="syncBadge" class="offline" onclick="configureServer()">⚙ Server</span>
+    <!-- v39 Phase 15: SAP Status badge -->
+    <span id="v39-sap-status-badge" class="v39-sap-badge" title="SAP status — checking..." onclick="_v39_sapStatusBadgeShowDetail()" style="display:inline-flex;align-items:center;gap:4px;padding:3px 8px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer;background:#e5e7eb;color:#6b7280;border:1px solid #d1d5db;user-select:none">
+      <span class="v39-sap-dot" style="display:inline-block;width:8px;height:8px;border-radius:50%;background:#9ca3af"></span>SAP
+    </span>
     <input type="date" id="ndate" onchange="onDateChange()">
     <select id="recentDatesSelect" style="display:none" onchange="if(this.value){document.getElementById('ndate').value=this.value;onDateChange();this.value=''}">
       <option value="">📅 History</option>
@@ -488,6 +492,17 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
     <button class="nbtn" onclick="document.getElementById('imp').click()" title="Import data" style="padding:5px 7px">↑</button>
     <input type="file" id="imp" accept=".json" style="display:none" onchange="importData(this)">
     <button class="nbtn primary" id="saveBtn" onclick="saveDay()" style="padding:5px 14px;font-size:12px">💾 Save</button>
+  </div>
+</div>
+
+<!-- v40 P18.17: Operator task banner — hidden by default, populated by _v40_taskBannerTick() -->
+<div id="v40-task-banner" style="display:none;background:linear-gradient(90deg,rgba(245,158,11,0.18),rgba(245,158,11,0.08));border-bottom:2px solid rgba(245,158,11,0.5);padding:8px 16px;font-size:13px;color:#92400e;align-items:center;justify-content:space-between;gap:8px">
+  <div style="display:flex;align-items:center;gap:10px">
+    <span style="font-size:18px">🩺</span>
+    <span id="v40-task-banner-text"><strong>0 tasks</strong> assigned to you</span>
+  </div>
+  <div style="display:flex;gap:6px">
+    <button style="padding:3px 12px;font-size:11px;background:rgba(245,158,11,0.25);color:#92400e;border:1px solid rgba(245,158,11,0.5);border-radius:4px;cursor:pointer" onclick="_v40_showMyTasks()">Show details</button>
   </div>
 </div>
 
@@ -587,7 +602,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       </select>
     </div>
     <div id="trends-range-bar"></div>
-  </div>
+    <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-top:8px">
       <span style="font-family:var(--fc);font-size:10px;color:var(--t3);letter-spacing:1px">SCOPE</span>
       <div style="display:flex;border:1px solid var(--b2);border-radius:5px;overflow:hidden">
         <button id="btn-scope-month" onclick="_dprCumulativeMode=false;document.getElementById('btn-scope-month').style.background='var(--cyan)';document.getElementById('btn-scope-cumul').style.background='';renderTrends()"
@@ -1330,22 +1345,27 @@ function loadDay(fl,d){
 // Always load from server and update localStorage — server is ALWAYS source of truth
 async function syncFromServer(fl, d){
   if(!serverUrl) return;
-  // Never sync if user has unsaved data on screen — protects data being entered right now
+  // Never sync if user has unsaved data on screen for this floor/date
   if(unsaved && fl === curFloor && d === getDate()) return;
   // Never sync if a save is pending for this floor/date
   if(_dprPendingSaves.has(fl+'|'+d)) return;
-  // Never sync within 90 seconds of a save on this device — prevents old server cache overwriting fresh save
-  if((Date.now() - _dprLastSaveTime) < 90000) return;
+  // Never sync within 60 seconds of any save — gives server time to process and protects fresh data
+  if((Date.now() - _dprLastSaveTime) < 60000) return;
   try{
     const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
     if(!r.ok) return;
     const j=await r.json();
     if(j.data){
-      // Server is always truth after save — all devices get same data
+      // Only update localStorage if server savedAt is after our last save time
       const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
-      j.data._savedAt = serverSavedAt;
-      localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
-      console.log('[DPR] Synced from server:', fl, d);
+      const localRaw = localStorage.getItem(skey(fl,d));
+      const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt || 0) : 0;
+      // Server data must be significantly newer than local data (>5s gap)
+      if(serverSavedAt > localSavedAt + 5000){
+        j.data._savedAt = serverSavedAt;
+        localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+        console.log('[DPR] Synced from server:', fl, d);
+      }
     }
   }catch(e){ console.warn('[DPR] syncFromServer failed:', e?.message); }
 }
@@ -1399,11 +1419,9 @@ function saveDay(){
 function _doSaveDay(fl, d){
   const data=collectForm();
   data._savedAt = Date.now();
-  data._fullSave = true; // tells server to skip shift merge — save exactly what user entered
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
-  _dprLastSaveTime = Date.now();
-  try{ localStorage.setItem('_dprLastSaveTime', String(_dprLastSaveTime)); }catch(_){}
+  _dprLastSaveTime = Date.now(); // block fetch for 10s after save
   pushToServer(fl,d,data); // goes to server regardless
   renderDayKpis();
   // Show warning toast — save always goes through
@@ -1527,7 +1545,7 @@ async function checkServer(){
 // ── Pending save queue: retries every 15s until server confirms ─────
 let _dprPendingSaves = new Map(); // keyed by "fl|d" — no save is ever overwritten
 let _dprRetryTimer = null;
-let _dprLastSaveTime = (()=>{ try{ const t=parseInt(localStorage.getItem('_dprLastSaveTime')||'0'); return isNaN(t)?0:t; }catch{return 0;} })(); // restored from localStorage so page crash doesn't reset the 60s block
+let _dprLastSaveTime = 0; // timestamp of last save — blocks fetch for 10s after save
 let _suppressRenderShifts = false;
 function _updatePendingBadge(){
   const badge=document.getElementById('syncBadge');
@@ -1556,17 +1574,6 @@ function _dprScheduleRetry(){
   },10000); // retry every 10s until server confirms
 }
 async function _dprPushRaw(fl,d,data){
-  // Safety check: never push data if the data's _savedAt timestamp is from a different date
-  // This prevents stale overnight pending saves from corrupting a new day's blank DPR
-  if(data._savedAt){
-    const savedDate = new Date(data._savedAt).toISOString().split('T')[0];
-    // Only block if _savedAt is from a PREVIOUS date (stale overnight data)
-    // Never block if _savedAt is today or newer — that means user is actively saving
-    if(savedDate < d){
-      console.warn('[DPR] Blocked stale push: data._savedAt date', savedDate, '< target date', d);
-      return true; // treat as success so it gets removed from pending queue
-    }
-  }
   const actuals=[];
   Object.keys(FLOORS).forEach(f=>{
     if(!data.shifts) return;
@@ -1583,10 +1590,21 @@ async function _dprPushRaw(fl,d,data){
     });
   });
   try{
+    // v40 P18.14i Fix 2c: Detect any admin force-entry flag set on dropdowns this session,
+    // so server gate allows writing to non-running orders. Audit log records each row.
+    const _forceEntryAny = (dprUser?.role === 'admin') &&
+      Array.from(document.querySelectorAll('select[id^="run-ord-"]'))
+        .some(s => s.dataset.forceEntry === '1');
     const r=await fetch(serverUrl+'/api/dpr/save',{
       method:'POST',
-      headers:{'Content-Type':'application/json'},
-      body:JSON.stringify({floor:fl,date:d,data,actuals}),
+      headers:{'Content-Type':'application/json','X-User-Role':(dprUser?.role||'')},
+      body:JSON.stringify({
+        floor:fl,date:d,data,actuals,
+        // v40 P18.14i Fix 2: send user context for gate check + audit log
+        userRole: dprUser?.role || '',
+        userName: dprUser?.username || dprUser?.name || '',
+        forceEntry: _forceEntryAny,
+      }),
       signal:AbortSignal.timeout(15000)
     });
     if(r.ok){
@@ -1601,6 +1619,18 @@ async function _dprPushRaw(fl,d,data){
             saved._savedAt=new Date(j.savedAt).getTime();
             localStorage.setItem(skey(fl,d),JSON.stringify(saved));
           }
+        }
+        // v40 P18.14i Fix 2: Surface gate rejections to the operator. Server returns
+        // the list of rows it refused to write (typically because the target order
+        // was no longer In Production). Without this, the operator would think their
+        // entry saved but the cache would silently drop it.
+        if (j.rejectedCount > 0 && Array.isArray(j.rejected)) {
+          const reasons = j.rejected.slice(0, 5).map(rr =>
+            `• ${rr.batchNumber||rr.orderId||'(no batch)'} on ${rr.machineId} ${rr.shift} — ${rr.reason}`
+          ).join('\n');
+          const more = j.rejected.length > 5 ? `\n…and ${j.rejected.length - 5} more` : '';
+          // Use alert so the user has to acknowledge — these are silent data loss otherwise
+          alert(`⚠️ ${j.rejectedCount} DPR ${j.rejectedCount===1?'entry was':'entries were'} not saved:\n\n${reasons}${more}\n\nThese batches are not currently In Production. Ask Planning to set them to "In Production" before re-entering.`);
         }
       }catch(_){}
       setSyncBadge('synced'); return true;
@@ -1627,7 +1657,6 @@ async function pushToServer(fl,d,data){
     _dprPendingSaves.delete(fl+'|'+d);
     _dprLastSaveTime = Date.now(); // refresh save time on server confirmation
     _updatePendingBadge();
-    setSyncBadge('synced'); // always reset badge after push completes
   }
 }
 async function fetchDayFromServer(fl, d){
@@ -1701,25 +1730,28 @@ function _dprFromDateForMode(mode) {
   }
 }
 
-let _lastFetchActiveOrders=0;
 async function fetchActiveOrders(){
-  // Rate limit: never fetch more than once per 20 seconds — prevents server overload and UI freeze
-  const now=Date.now();
-  if(now-_lastFetchActiveOrders < 20000) return;
-  _lastFetchActiveOrders=now;
   if(!serverUrl){
     const cached=localStorage.getItem('dpr_active_orders');
     if(cached) try{activeOrders=JSON.parse(cached);}catch{}
     return;
   }
   try{
-    const r=await fetch(serverUrl+'/api/orders/active',{signal:AbortSignal.timeout(5000)});
+    // v40 P18.14i Fix 2c: admins request includeAll=1 so they see pending/closed orders too
+    // (visually marked + force-entry confirmation in dropdown handler). Non-admins still
+    // get only In Production orders capped at 2 per machine, server-enforced.
+    const isDprAdmin = dprUser?.role === 'admin';
+    const url = serverUrl + '/api/orders/active' + (isDprAdmin ? '?includeAll=1' : '');
+    const r=await fetch(url,{
+      headers: isDprAdmin ? {'X-User-Role':'admin'} : {},
+      signal:AbortSignal.timeout(5000)
+    });
     if(!r.ok) return;
     const j=await r.json();
     if(j.ok && j.orders){
-      // Build map by machineId — admin sees all orders, others only see In Production
+      // Build map by machineId — admin sees all orders (status preserved for UI marking),
+      // non-admins only see In Production (already filtered by server).
       activeOrders={};
-      const isDprAdmin = dprUser?.role === 'admin';
       j.orders.filter(o => o.machineId && (isDprAdmin || o.status === 'running')).forEach(o=>{
         if(!activeOrders[o.machineId]) activeOrders[o.machineId]=[];
         activeOrders[o.machineId].push(o);
@@ -2183,11 +2215,54 @@ function renderDayKpis(){
   `;
 }
 
-let _renderShiftsTimer=null;
+// ═══ v41 P19.5 Fix #4: Auto-populate running batch across shifts ═══
+// When a shift's machine has no batch entered yet, carry forward the still-open
+// run(s) from the most recent prior shift. A run is "still open" while its order's
+// cumulative gross production < planned gross qty (Order×1.07×1.01×1.01 = grossQty).
+// Timing = option A: a batch that crosses planned mid-shift KEEPS showing in that
+// shift; only the FOLLOWING shift stops auto-populating it.
+// Multi-run aware: carries forward EACH still-open run.
+// Non-destructive: returns seed runs only when the current shift-machine is empty;
+// never writes to storage and never auto-saves (operator entering qty does that).
+function _v41_carryForwardRuns(fl, d, day, sh, mcId){
+  // Only seed shifts B and C (A is the first shift of the day — nothing to carry from)
+  const shIdx = SHIFTS.indexOf(sh);
+  if (shIdx <= 0) return null;
+  // Current shift-machine must be empty (no batchNumber AND no qty on any run)
+  const curM = migrateMachineData((day.shifts[sh]?.machines?.[mcId]) || blankMachine());
+  const curHasReal = (curM.runs||[]).some(r => (r.batchNumber && String(r.batchNumber).trim()) || (parseFloat(r.qty||0) > 0));
+  if (curHasReal) return null;
+  // Walk backwards through prior shifts to find the most recent one with batch runs
+  for (let i = shIdx - 1; i >= 0; i--){
+    const prevSh = SHIFTS[i];
+    const prevM = migrateMachineData((day.shifts[prevSh]?.machines?.[mcId]) || blankMachine());
+    const prevRuns = (prevM.runs||[]).filter(r => r.batchNumber && String(r.batchNumber).trim());
+    if (!prevRuns.length) continue;
+    // Found the most recent shift with runs — carry forward each still-open run
+    const orders = activeOrders[mcId] || [];
+    const seed = [];
+    prevRuns.forEach(r => {
+      const ord = orders.find(o => o.id === r.orderId) || orders.find(o => o.batchNumber === r.batchNumber);
+      // Never carry forward a batch that was explicitly closed in DPR
+      const _oid = (ord?.id) || r.orderId;
+      if (_oid && typeof dprClosedBatches !== 'undefined' && dprClosedBatches[_oid]) return;
+      // If we can't resolve the order, conservatively carry it forward (don't lose continuity)
+      if (ord){
+        const planned = ord.grossQty || ord.qty || 0;
+        const cumulativeGross = ord.actualProd || ord.actualQty || 0;
+        // Stop carrying once cumulative gross has met/exceeded planned gross
+        if (planned > 0 && cumulativeGross >= planned) return;
+        // Also stop if the order is explicitly closed
+        if (ord.status === 'closed') return;
+      }
+      seed.push({ orderId: r.orderId || (ord?.id||''), batchNumber: r.batchNumber, qty: '', note: '', _carried: true });
+    });
+    return seed.length ? seed : null;
+  }
+  return null;
+}
+
 function renderShifts(){
-  // Debounce: skip if already queued within 300ms — prevents UI freeze from rapid consecutive calls
-  if(_renderShiftsTimer) return;
-  _renderShiftsTimer=setTimeout(()=>{ _renderShiftsTimer=null; },300);
   const fl=curFloor, d=getDate();
   const day=loadDay(fl,d);
   const mcs=getActiveMachines(fl);
@@ -2247,7 +2322,12 @@ function renderShifts(){
       shResort+=mcResort;
 
       // Build runs HTML — each run is an inline mini-row
-      const runs=m.runs&&m.runs.length>0?m.runs:[blankRun()];
+      // v41 P19.5 Fix #4: if this shift-machine is empty, seed from prior shift's still-open runs
+      let runs=m.runs&&m.runs.length>0?m.runs:[blankRun()];
+      const _seedRuns = _v41_carryForwardRuns(fl, d, day, sh, mc.id);
+      if (_seedRuns && _seedRuns.length){
+        runs = _seedRuns;
+      }
       let runsHtml='';
       runs.forEach((run,ri)=>{
         const orders=activeOrders[mc.id]||[];
@@ -2264,7 +2344,16 @@ function renderShifts(){
         if(run.batchNumber && !matchedOrder && serverUrl){
           setTimeout(()=>{ fetchActiveOrders().then(()=>{ if(!unsaved&&!_userIsFocused()) renderShifts(); }); }, 500);
         }
-        const ordOpts=`<option value="">— Order —</option>`+orphanOpt+orders.map(o=>`<option value="${esc(o.id)}" ${effectiveOrderId===o.id?'selected':''}>${o.isTemp?'⚠️ TEMP: ':''}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
+        // v40 P18.14i Fix 2c: Visually mark non-running orders in admin DPR dropdowns
+        // so admin can see which ones will trigger a force-entry confirmation.
+        // TEMP batches show ⚠️ (existing behavior). Pending shows ⏸, Closed shows ✓.
+        const _statusMark = (o) => {
+          if (o.isTemp) return '⚠️ TEMP: ';
+          if (o.status === 'pending') return '⏸ [PENDING] ';
+          if (o.status === 'closed')  return '✓ [CLOSED] ';
+          return '';
+        };
+        const ordOpts=`<option value="">— Order —</option>`+orphanOpt+orders.map(o=>`<option value="${esc(o.id)}" data-status="${esc(o.status||'')}" ${effectiveOrderId===o.id?'selected':''}>${_statusMark(o)}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
         runsHtml+=`
@@ -2288,7 +2377,9 @@ function renderShifts(){
               const rem2     = Math.max(0, gross2 - actual2);
               const over2    = actual2 > gross2;
               const col2     = over2 ? 'var(--red)' : rem2 <= 0 ? 'var(--green)' : 'var(--t3)';
-              return `<span class="run-ord-info" style="font-size:9px;color:${col2};font-family:var(--mono);white-space:nowrap;flex-shrink:0">Gross:${parseFloat(gross2).toFixed(2)}L Prod:${parseFloat(actual2).toFixed(2)}L Rem:${parseFloat(rem2).toFixed(2)}L</span>`;
+              const pack2    = ord2.packing || '';
+              const packBadge = pack2 ? ` <span style="background:rgba(30,200,255,0.12);color:var(--cyan);border-radius:3px;padding:1px 5px;font-weight:700">📦 ${esc(pack2)}</span>` : '';
+              return `<span class="run-ord-info" style="font-size:9px;color:${col2};font-family:var(--mono);white-space:nowrap;flex-shrink:0">Gross:${parseFloat(gross2).toFixed(2)}L Prod:${parseFloat(actual2).toFixed(2)}L Rem:${parseFloat(rem2).toFixed(2)}L${packBadge}</span>`;
             })()}
           </div>`;
       });
@@ -2426,6 +2517,32 @@ function onRunOrderChange(sh, mcId, ri){
   const batchInp=document.getElementById(`run-batch-${sh}-${mcId}-${ri}`);
   const colourEl=document.getElementById(`run-colour-${sh}-${mcId}-${ri}`);
   const ordId=sel?.value;
+  // v40 P18.14i Fix 2c: Admin force-entry confirmation. When admin selects a non-running
+  // order, prompt before allowing data entry. Without confirmation, revert dropdown.
+  const isDprAdmin = dprUser?.role === 'admin';
+  if (isDprAdmin && ordId && activeOrders[mcId]) {
+    const ord = activeOrders[mcId].find(o => o.id === ordId);
+    if (ord && ord.status && ord.status !== 'running' && !ord.isTemp) {
+      const proceed = confirm(
+        `⚠️ Force-entry warning\n\n` +
+        `Order "${ord.batchNumber||ord.poNumber||'(no batch)'}" is "${ord.status}" — not In Production.\n` +
+        `Customer: ${ord.customer || '?'}\n\n` +
+        `Operationally, DPR entries should only be made against orders that Planning has set to "In Production".\n\n` +
+        `If you proceed, this entry will be AUDITED as an admin force-entry.\n\n` +
+        `OK to continue, Cancel to pick a different order.`
+      );
+      if (!proceed) {
+        // Revert dropdown to previous value
+        sel.value = sel.dataset.orderid || '';
+        if (batchInp) batchInp.value = sel.dataset.batchnumber || '';
+        return;
+      }
+      // Mark this run as a force-entry; collectForm() picks this up to send forceEntry=true on save
+      sel.dataset.forceEntry = '1';
+    } else if (sel) {
+      sel.dataset.forceEntry = '';
+    }
+  }
   if(ordId && activeOrders[mcId]){
     const ord=activeOrders[mcId].find(o=>o.id===ordId);
     if(ord){
@@ -4454,7 +4571,102 @@ async function doDprLogin() {
     go('entry');
     postAuthServerInit();
     dprAuditLog('LOGIN', 'Logged in to DPR');
+    // v40 P18.17: Start polling for assigned integrity tasks (non-admin only)
+    if (typeof _v40_startTaskBannerPolling === 'function') _v40_startTaskBannerPolling();
   }
+}
+
+// ═══════════════════════════════════════════════════════════════
+// v40 Phase 18.17: OPERATOR TASK BANNER (DPR app)
+// ═══════════════════════════════════════════════════════════════
+
+let _v40_myTasks = [];
+let _v40_myTasksTimer = null;
+
+function _v40_esc(s) {
+  if (s === null || s === undefined) return '';
+  return String(s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+
+async function _v40_taskBannerTick() {
+  if (!dprUser) return;
+  if (dprUser.role === 'admin') {
+    const banner = document.getElementById('v40-task-banner');
+    if (banner) banner.style.display = 'none';
+    return;
+  }
+  if (!serverUrl) return;
+  try {
+    const r = await fetch(serverUrl + '/api/integrity/my-tasks', {
+      headers:{'x-session-token': dprUser?.token||''},
+      signal: AbortSignal.timeout(5000)
+    });
+    const j = await r.json();
+    if (!j.ok) return;
+    _v40_myTasks = j.tasks || [];
+    const banner = document.getElementById('v40-task-banner');
+    const textEl = document.getElementById('v40-task-banner-text');
+    if (!banner || !textEl) return;
+    if (_v40_myTasks.length === 0) { banner.style.display = 'none'; return; }
+    const critCount = _v40_myTasks.filter(t => t.severity === 'critical').length;
+    textEl.innerHTML = critCount > 0
+      ? `<strong>${_v40_myTasks.length} task(s)</strong> assigned to you — including <strong style="color:#dc2626">${critCount} critical</strong>`
+      : `<strong>${_v40_myTasks.length} task(s)</strong> assigned to you by Admin`;
+    banner.style.display = 'flex';
+  } catch(e) {}
+}
+
+function _v40_showMyTasks() {
+  if (_v40_myTasks.length === 0) { alert('No tasks pending.'); return; }
+  const rowsHtml = _v40_myTasks.map(t => {
+    const sevBadge = ({
+      critical: '<span style="background:rgba(239,68,68,0.15);color:#dc2626;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🔴 CRITICAL</span>',
+      warning:  '<span style="background:rgba(245,158,11,0.15);color:#b45309;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🟡 WARNING</span>',
+      info:     '<span style="background:rgba(59,130,246,0.15);color:#1d4ed8;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🔵 INFO</span>',
+    })[t.severity] || '';
+    const desc = _v40_esc(t.description || '(No finding details — free-form task)');
+    const action = t.suggested_action ? `<div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:4px;padding:8px 12px;margin-top:8px;font-size:12px;line-height:1.5"><strong style="color:#15803d">What to do:</strong> ${_v40_esc(t.suggested_action)}${t.suggested_app ? `<div style="font-size:11px;color:var(--t3);margin-top:4px">Where: <strong>${_v40_esc(t.suggested_app)}</strong> app → <strong>${_v40_esc(t.suggested_page||'?')}</strong> page</div>` : ''}</div>` : '';
+    const noteHtml = t.note ? `<div style="font-size:11px;color:var(--t2);margin-top:6px;font-style:italic">Note from ${_v40_esc(t.assigned_by)}: ${_v40_esc(t.note)}</div>` : '';
+    const seenBtn = t.status === 'seen'
+      ? '<span style="font-size:11px;color:var(--t3);font-style:italic">✓ Marked seen</span>'
+      : `<button style="padding:3px 12px;font-size:11px;background:rgba(8,145,178,0.15);color:#0e7490;border:1px solid rgba(8,145,178,0.3);border-radius:3px;cursor:pointer" onclick="_v40_markTaskSeen('${_v40_esc(t.id)}')">Mark seen</button>`;
+    return `<div style="border:1px solid var(--b);border-radius:6px;padding:12px;margin-bottom:10px;background:var(--s2)">
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+        <div style="display:flex;align-items:center;gap:8px">${sevBadge}${t.batch_number ? `<span style="font-family:var(--fm);font-size:11px;color:var(--ac2)">${_v40_esc(t.batch_number)}</span>` : ''}${t.machine_id ? `<span style="font-family:var(--fm);font-size:11px;color:var(--t3)">${_v40_esc(t.machine_id)}</span>` : ''}</div>
+        ${seenBtn}
+      </div>
+      <div style="font-size:12px;line-height:1.5">${desc}</div>
+      ${action}${noteHtml}
+    </div>`;
+  }).join('');
+  openModal('🩺 Your Integrity Tasks',
+    `<div style="padding:8px 0">
+      <div style="font-size:11px;color:var(--t3);margin-bottom:12px;line-height:1.5">Admin has flagged the following data integrity issues that need your attention. Fix them via the suggested app/page; the next scan (within 60 min) will auto-clear tasks whose underlying issue is resolved.</div>
+      ${rowsHtml}
+    </div>`,
+    [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);
+}
+
+async function _v40_markTaskSeen(taskId) {
+  if (!serverUrl) return;
+  try {
+    const r = await fetch(serverUrl + '/api/integrity/task/' + encodeURIComponent(taskId) + '/seen', {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-session-token': dprUser?.token||''},
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(5000)
+    });
+    const j = await r.json();
+    if (j.ok) { closeModal(); _v40_taskBannerTick(); }
+  } catch(e) {}
+}
+
+function _v40_startTaskBannerPolling() {
+  if (_v40_myTasksTimer) clearInterval(_v40_myTasksTimer);
+  setTimeout(_v40_taskBannerTick, 5000);
+  _v40_myTasksTimer = setInterval(_v40_taskBannerTick, 60000);
 }
 
 function applyDprRoleRestrictions() {
@@ -4662,6 +4874,8 @@ function showDprAuditPage() {
       renderEntry();
       go('entry');
       postAuthServerInit();
+      // v40 P18.17: Start polling for assigned integrity tasks (non-admin only)
+      if (typeof _v40_startTaskBannerPolling === 'function') _v40_startTaskBannerPolling();
       return;
     } catch(e) {}
   }
@@ -4732,6 +4946,115 @@ async function saveTempBatchDetails(tempBatchId){
     } else alert('Error saving: '+j.error);
   }catch(e){ alert('Server error: '+e.message); }
 }
+
+// =============================
+// v39 Phase 15 — SAP STATUS BADGE
+// =============================
+// Topbar badge showing live SAP connection health. Polls /api/sap/status
+// every 60s. Click → popover with details + manual refresh button.
+// Identical implementation lives in planning.html and tracking.html; keep
+// the three copies in sync if changed.
+
+window._v39_sapStatusState = window._v39_sapStatusState || { status: 'loading', message: 'Checking...', lastCallAt: null, configured: null };
+window._v39_sapStatusTimer = window._v39_sapStatusTimer || null;
+
+const _V39_SAP_BADGE_COLORS = {
+  online:         { dot: '#10b981', bg: 'rgba(16,185,129,0.10)',  border: 'rgba(16,185,129,0.35)',  text: '#047857' },
+  degraded:       { dot: '#f59e0b', bg: 'rgba(245,158,11,0.10)',  border: 'rgba(245,158,11,0.35)',  text: '#92400e' },
+  stale:          { dot: '#f97316', bg: 'rgba(249,115,22,0.10)',  border: 'rgba(249,115,22,0.35)',  text: '#9a3412' },
+  offline:        { dot: '#dc2626', bg: 'rgba(220,38,38,0.10)',   border: 'rgba(220,38,38,0.35)',   text: '#991b1b' },
+  not_configured: { dot: '#9ca3af', bg: 'rgba(156,163,175,0.10)', border: 'rgba(156,163,175,0.35)', text: '#4b5563' },
+  unknown:        { dot: '#9ca3af', bg: 'rgba(156,163,175,0.10)', border: 'rgba(156,163,175,0.35)', text: '#4b5563' },
+  loading:        { dot: '#9ca3af', bg: '#e5e7eb',                 border: '#d1d5db',                 text: '#6b7280' },
+};
+
+function _v39_sapStatusResolveServerUrl() {
+  let u = '';
+  try { u = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  if (!u && typeof window !== 'undefined' && window.location.hostname !== 'localhost') u = window.location.origin;
+  return u;
+}
+
+async function _v39_sapStatusBadgeTick() {
+  const badgeEl = document.getElementById('v39-sap-status-badge');
+  if (!badgeEl) return;
+  const serverUrlVal = _v39_sapStatusResolveServerUrl();
+  if (!serverUrlVal) {
+    window._v39_sapStatusState = { status: 'unknown', message: 'Server not connected', lastCallAt: null, configured: null };
+    _v39_sapStatusBadgePaint();
+    return;
+  }
+  try {
+    const r = await fetch(serverUrlVal + '/api/sap/status', { signal: AbortSignal.timeout(6000) });
+    const j = await r.json();
+    if (j.ok && j.status) {
+      window._v39_sapStatusState = {
+        status: j.status.status || 'unknown',
+        message: j.status.message || '',
+        lastCallAt: j.status.lastCallAt || null,
+        configured: j.status.configured,
+      };
+    } else if (j.ok) {
+      window._v39_sapStatusState = {
+        status: j.status || 'unknown',
+        message: j.message || '',
+        lastCallAt: j.lastCallAt || null,
+        configured: j.configured,
+      };
+    } else {
+      window._v39_sapStatusState = { status: 'unknown', message: j.error || 'Status check failed', lastCallAt: null, configured: null };
+    }
+  } catch (e) {
+    window._v39_sapStatusState = { status: 'unknown', message: 'Could not reach server', lastCallAt: null, configured: null };
+  }
+  _v39_sapStatusBadgePaint();
+}
+
+function _v39_sapStatusBadgePaint() {
+  const badgeEl = document.getElementById('v39-sap-status-badge');
+  if (!badgeEl) return;
+  const st = window._v39_sapStatusState || { status: 'unknown', message: '' };
+  const colors = _V39_SAP_BADGE_COLORS[st.status] || _V39_SAP_BADGE_COLORS.unknown;
+  badgeEl.style.background = colors.bg;
+  badgeEl.style.borderColor = colors.border;
+  badgeEl.style.color = colors.text;
+  const dot = badgeEl.querySelector('.v39-sap-dot');
+  if (dot) dot.style.background = colors.dot;
+  const lastAt = st.lastCallAt ? new Date(st.lastCallAt).toLocaleTimeString() : 'never';
+  badgeEl.title = `SAP: ${st.status} — ${st.message || ''}\nLast call: ${lastAt}\nClick for details`;
+}
+
+function _v39_sapStatusBadgeShowDetail() {
+  const st = window._v39_sapStatusState || { status: 'unknown', message: '', lastCallAt: null, configured: null };
+  const lastAt = st.lastCallAt ? new Date(st.lastCallAt).toLocaleString() : 'never';
+  const labels = {
+    online: '🟢 Online — SAP responding normally',
+    degraded: '🟡 Degraded — no successful call in last 5+ minutes',
+    stale: '🟠 Stale — no successful call in last 15+ minutes',
+    offline: '🔴 Offline — last SAP call failed',
+    not_configured: '⚪ Not Configured — SAP credentials not set',
+    unknown: '⚪ Unknown — status unavailable',
+    loading: '⏳ Checking...',
+  };
+  const friendly = labels[st.status] || st.status;
+  // DPR doesn't have openModal — use alert
+  alert(`SAP Status: ${friendly}\n${st.message ? '\n' + st.message : ''}\nConfigured: ${st.configured ? 'Yes' : st.configured === false ? 'No' : '—'}\nLast call: ${lastAt}`);
+}
+
+function _v39_sapStatusBadgeInit() {
+  if (window._v39_sapStatusTimer) clearInterval(window._v39_sapStatusTimer);
+  _v39_sapStatusBadgeTick();
+  window._v39_sapStatusTimer = setInterval(_v39_sapStatusBadgeTick, 60000);
+}
+
+if (typeof document !== 'undefined') {
+  if (document.readyState === 'complete' || document.readyState === 'interactive') {
+    setTimeout(_v39_sapStatusBadgeInit, 1000);
+  } else {
+    document.addEventListener('DOMContentLoaded', () => setTimeout(_v39_sapStatusBadgeInit, 1000));
+  }
+}
+
 </script>
 </body>
 </html>
