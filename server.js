@@ -2568,7 +2568,10 @@ async function _doRefreshSapInvoices() {
         }
       }
     } catch (e) { console.warn('[SAP] invoice match error:', e.message); }
-    const totalBoxes = (inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0);
+    // v41 fix: total_boxes is an INTEGER column. SAP DocumentLines.Quantity can be decimal
+    // (e.g. 31.35 Lakhs), which PostgreSQL rejects for an integer column ("invalid input syntax
+    // for type integer: 31.35"). Round to nearest whole unit for the box-count column.
+    const totalBoxes = Math.round((inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0));
     const docTotal = parseFloat(inv.DocTotal) || 0;
     const vatSum = parseFloat(inv.VatSum) || 0;
     const taxable = docTotal - vatSum;
@@ -4721,8 +4724,12 @@ app.post('/api/planning/state', async (req, res) => {
           // Safety net: if the DB row's updated_at is NEWER than the incoming client's
           // _localEditedAt (which the client now stamps), the DB wins — protects against
           // stale tabs overwriting a fresh decision from another device.
-          // Audit log when client status differs from DB status so we can trace state churn.
-          await Promise.all(orders.map(async ord => {
+          // v41 PERF FIX: previously this issued one INSERT per order via Promise.all — with
+          // 479 orders that fired 479 concurrent queries against a 5-connection pool EVERY 30s
+          // (Planning auto-sync cadence), saturating the pool and starving all other endpoints
+          // (Tracking tabs slowed to a crawl). Now: a single batched multi-row upsert per save.
+          // Chunked to stay well under PostgreSQL's 65535-parameter limit (6 params/row → ~10000 rows/chunk).
+          const mergedList = await Promise.all(orders.map(async ord => {
             const ex = existingMap[ord.id];
             let mergedOrd = ord;
             if (ex) {
@@ -4755,15 +4762,29 @@ app.post('/api/planning/state', async (req, res) => {
                 actualProd: Math.max(ord.actualProd||0, ex.actualProd||0),
               };
             }
+            return mergedOrd;
+          }));
+
+          const CHUNK = 500;
+          for (let i = 0; i < mergedList.length; i += CHUNK) {
+            const chunk = mergedList.slice(i, i + CHUNK);
+            const vals = [];
+            const params = [];
+            chunk.forEach((m, idx) => {
+              const b = idx * 6;
+              vals.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},NOW()::TEXT)`);
+              params.push(m.id, JSON.stringify(m), m.machineId||null,
+                          m.batchNumber||null, m.status||'pending', m.deleted||false);
+            });
             await pgPool.query(`
               INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
-              VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
-              ON CONFLICT(id) DO UPDATE SET data_json=$2,machine_id=$3,batch_number=$4,
-                status=$5,deleted=$6,updated_at=NOW()::TEXT
-            `, [mergedOrd.id, JSON.stringify(mergedOrd), mergedOrd.machineId||null,
-                mergedOrd.batchNumber||null, mergedOrd.status||'pending', mergedOrd.deleted||false]);
-          }));
-          console.log(`[State] Background merged ${orders.length} orders into production_orders`);
+              VALUES ${vals.join(',')}
+              ON CONFLICT(id) DO UPDATE SET data_json=EXCLUDED.data_json,machine_id=EXCLUDED.machine_id,
+                batch_number=EXCLUDED.batch_number,status=EXCLUDED.status,deleted=EXCLUDED.deleted,
+                updated_at=NOW()::TEXT
+            `, params);
+          }
+          console.log(`[State] Background merged ${orders.length} orders into production_orders (batched)`);
         } catch(e) { console.warn('[State] Background order merge failed:', e.message); }
       });
     }
@@ -4806,7 +4827,7 @@ app.get('/api/orders/machine/:machineId', (req, res) => {
 app.get('/api/orders/active', async (req, res) => {
   try {
     // Refresh actuals in background — throttled to 60s, non-blocking
-    warmActualsCache().catch(()=>{});
+    if (Date.now() - _actualsCacheTime >= 60000) warmActualsCache().catch(()=>{});
     const state = await getPlanningStateAsync();
     // v40 P18.14i Fix 2c: admins can request all orders (not just running) so the DPR UI
     // can mark non-running orders visually + warn before entering data against them.
