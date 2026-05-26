@@ -1140,25 +1140,50 @@ function checkAlerts(){
   // Server alerts are authoritative — loaded from /api/tracking/alerts (ALL scans).
   const ALERT_START = new Date('2026-04-27T00:00:00');
   state.alerts = state.alerts.filter(a=>!a.scanInTs||new Date(a.scanInTs)>=ALERT_START);
+
+  // v41 PERF FIX: this function runs on EVERY tab open (called from renderPage). The prior
+  // implementation was O(n²): for each 'in' scan it did state.scans.some(...) over the ENTIRE
+  // scans array, plus repeated `new Date()` parsing. With the unbounded scan history that
+  // accumulated since April, this made every tab switch progressively slower ("never seen before").
+  // Now: index all 'out' scans once by labelId+dept (O(n)), then each lookup is O(1).
+  // Output is identical to the prior logic.
+  const outIndex = new Map();   // key: labelId|dept → array of out-scan timestamps (ms)
+  for (const s of state.scans) {
+    if (s.type !== 'out') continue;
+    const key = s.labelId + '|' + s.dept;
+    let arr = outIndex.get(key);
+    if (!arr) { arr = []; outIndex.set(key, arr); }
+    arr.push(new Date(s.ts).getTime());
+  }
+  const hasOutAfter = (labelId, dept, afterMs) => {
+    const arr = outIndex.get(labelId + '|' + dept);
+    if (!arr) return false;
+    for (const t of arr) if (t > afterMs) return true;
+    return false;
+  };
+
   const resolvedIds = new Set();
   state.alerts.forEach(a=>{
-    const hasOut = state.scans.some(s=>s.labelId===a.labelId&&s.dept===a.dept&&s.type==='out'&&(!a.scanInTs||new Date(s.ts)>new Date(a.scanInTs)));
-    if(hasOut) resolvedIds.add(a.id||a.labelId+a.dept);
+    const afterMs = a.scanInTs ? new Date(a.scanInTs).getTime() : -Infinity;
+    if(hasOutAfter(a.labelId, a.dept, afterMs)) resolvedIds.add(a.id||a.labelId+a.dept);
   });
   state.alerts = state.alerts.filter(a=>!resolvedIds.has(a.id||a.labelId+a.dept));
-  state.scans.forEach(scan=>{
-    if(scan.type!=='in') return;
-    if(new Date(scan.ts) < ALERT_START) return;
-    const hasOut = state.scans.some(s=>s.labelId===scan.labelId&&s.dept===scan.dept&&s.type==='out'&&new Date(s.ts)>new Date(scan.ts));
-    if(!hasOut && hoursAgo(scan.ts)>=ALERT_HOURS){
-      const existing = state.alerts.find(a=>a.labelId===scan.labelId&&a.dept===scan.dept);
-      if(!existing){
-        const lbl = state.labels.find(l=>l.id===scan.labelId);
-        const boxNo = lbl ? Math.abs(lbl.labelNumber||0) : (scan.labelNumber ? Math.abs(scan.labelNumber) : '?');
-        state.alerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, boxNo, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1), resolved:0 });
-      }
-    }
-  });
+
+  // Index existing alerts for O(1) duplicate check (was state.alerts.find per scan)
+  const alertKey = new Set(state.alerts.map(a=>a.labelId+'|'+a.dept));
+
+  for (const scan of state.scans) {
+    if(scan.type!=='in') continue;
+    const scanMs = new Date(scan.ts).getTime();
+    if(scanMs < ALERT_START.getTime()) continue;
+    if(hasOutAfter(scan.labelId, scan.dept, scanMs)) continue;
+    if(hoursAgo(scan.ts) < ALERT_HOURS) continue;
+    if(alertKey.has(scan.labelId+'|'+scan.dept)) continue;
+    const lbl = state.labels.find(l=>l.id===scan.labelId);
+    const boxNo = lbl ? Math.abs(lbl.labelNumber||0) : (scan.labelNumber ? Math.abs(scan.labelNumber) : '?');
+    state.alerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, boxNo, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1), resolved:0 });
+    alertKey.add(scan.labelId+'|'+scan.dept);
+  }
   state.alerts.forEach(a=>{ if(a.scanInTs) a.hoursStuck = hoursAgo(a.scanInTs).toFixed(1); });
   return state.alerts;
 }
@@ -1539,7 +1564,29 @@ async function pullFromServer(){
     try{
       flushPendingLabelPush();
       const lr=await fetch(serverUrl+'/api/tracking/labels-all',{signal:AbortSignal.timeout(30000)});
-      if(lr.ok){const lj=await lr.json();if(lj.ok&&lj.labels){const sl=lj.labels;const sids=new Set(sl.map(l=>l.id));const lo=state.labels.filter(l=>!sids.has(l.id));if(lo.length>0)pushLabelsToServer(lo);state.labels=sl;saveLocal();}}
+      if(lr.ok){
+        const lj=await lr.json();
+        if(lj.ok&&lj.labels){
+          const sl=lj.labels;
+          // v41 DATA-INTEGRITY GUARD: never let an empty/short server response wipe a non-empty
+          // local labels cache. On the last deploy the count dropped to 0 because a transient
+          // empty fetch (server restart / PG not ready) was written to state.labels AND persisted
+          // via saveLocal(), poisoning the local cache. Now: if the server returns ZERO labels but
+          // we currently hold labels locally, treat it as suspect — do NOT overwrite; instead push
+          // our local labels back up so the server recovers. Only overwrite when the server actually
+          // returns data.
+          if(sl.length===0 && state.labels.length>0){
+            console.warn('[labels-all] server returned 0 labels but local has '+state.labels.length+' — NOT overwriting; re-pushing local to server');
+            pushLabelsToServer(state.labels);
+          } else {
+            const sids=new Set(sl.map(l=>l.id));
+            const lo=state.labels.filter(l=>!sids.has(l.id));
+            if(lo.length>0)pushLabelsToServer(lo);
+            state.labels=sl;
+            saveLocal();
+          }
+        }
+      }
     }catch(e2){}
     // STEP 3: Recent scans fast (for scan UI only — limited to last 500)
     try{
@@ -1573,7 +1620,17 @@ async function pullFromServer(){
     // STEP 3.5: Load wastage fast (dedicated endpoint)
     try{
       const wr=await fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)});
-      if(wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){state.wastage=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));saveLocal();}}
+      if(wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){
+        const sw=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));
+        // v41 DATA-INTEGRITY GUARD (same class as labels): don't let a transient empty response
+        // wipe + persist non-empty local wastage. Empty server wastage while we hold local entries
+        // is treated as suspect (deploy restart / DB-not-ready) — keep local, don't saveLocal emptiness.
+        if(sw.length===0 && (state.wastage&&state.wastage.length>0)){
+          console.warn('[wastage] server returned 0 but local has '+state.wastage.length+' — NOT overwriting');
+        } else {
+          state.wastage=sw;saveLocal();
+        }
+      }}
     }catch(e35){}
     // STEP 3.6: Full scan summary (aggregated — NO LIMIT — correct source for all reports)
     try{
@@ -1634,8 +1691,11 @@ async function pullFromServer(){
             const ns=(j.state.scans||[]).map(s=>({...s,labelId:s.labelId||s.label_id,batchNumber:s.batchNumber||s.batch_number,labelNumber:s.labelNumber||s.label_number}));
             state.scans=ns;
           }
-          if(j.state.stageClosure) state.stageClosure=j.state.stageClosure;
-          if(j.state.dispatchRecs) state.dispatchRecs=j.state.dispatchRecs;
+          // v41 DATA-INTEGRITY GUARD (same class as labels): only overwrite when the server
+          // actually returns entries. An empty array passes the truthiness check and would wipe +
+          // persist non-empty local data on a transient empty fetch (deploy restart). Guard it.
+          if(Array.isArray(j.state.stageClosure) && !(j.state.stageClosure.length===0 && state.stageClosure&&state.stageClosure.length>0)) state.stageClosure=j.state.stageClosure;
+          if(Array.isArray(j.state.dispatchRecs) && !(j.state.dispatchRecs.length===0 && state.dispatchRecs&&state.dispatchRecs.length>0)) state.dispatchRecs=j.state.dispatchRecs;
           if(j.state.alerts){
             state.alerts=j.state.alerts.map(a=>({
               ...a,
