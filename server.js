@@ -892,6 +892,19 @@ const MIGRATIONS = [
     sql: `ALTER TABLE invoices_received ADD COLUMN soc_applied INTEGER NOT NULL DEFAULT 0;
           CREATE INDEX IF NOT EXISTS idx_inv_recv_soc_applied ON invoices_received(soc_applied);`
   },
+  {
+    // v41 PERF FIX (tracking slowness root cause): tracking_scans has grown to ~29.5k rows.
+    // The scans-recent endpoint runs `ORDER BY ts DESC` (and the initial load filters
+    // `WHERE ts >= ...`), but SQLite had NO index on `ts` — only idx_scans_batch(batch_number,dept).
+    // Every scan query therefore did a full-table scan + sort of all 29.5k rows, exceeding the
+    // client fetch timeout and ABORTING ("refreshScans error / STEP 3 scans failed: aborted"),
+    // which in turn starved the labels load (label count showed 0). A plain ts index turns the
+    // ORDER BY ts DESC / WHERE ts >= into an index range scan. (The PG path already had
+    // idx_scans_dept_ts; this brings SQLite to parity. CREATE INDEX IF NOT EXISTS is a no-op on PG.)
+    version: 31,
+    name: 'tracking_scans_ts_index',
+    sql: `CREATE INDEX IF NOT EXISTS idx_scans_ts ON tracking_scans(ts);`
+  },
 ];
 
 function runMigrations() {
@@ -9760,7 +9773,15 @@ app.get('/api/tracking/labels-all', async (req, res) => {
 // were older than the last 2000 scans system-wide.
 app.get('/api/tracking/scans-recent', async (req, res) => {
   try {
-    const since = req.query.since || null;   // optional: 'YYYY-MM-DD'
+    const since = req.query.since || null;   // optional: 'YYYY-MM-DD' window start
+    // v41 PERF FIX: optional ?limit=N caps the number of most-recent rows returned.
+    // The 5-second operator-UI refresh only needs the latest handful of scans + recent
+    // alerts; it does NOT need full history (reports use scan-summary, per-box uses
+    // box-stages). Capping it keeps the frequent poll tiny so it never aborts/starves
+    // the rest of the sync. When neither since nor limit is supplied behaviour is
+    // unchanged (returns all) for backward compatibility with any other caller.
+    let limit = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(limit) || limit <= 0) limit = 0; // 0 = no cap
     const mapScan = r => ({
       id: r.id,
       labelId: r.label_id,
@@ -9774,18 +9795,19 @@ app.get('/api/tracking/scans-recent', async (req, res) => {
       labelNumber: r.label_number || null
     });
     const whereClause = since ? `WHERE ts >= '${since.replace(/'/g,'')}'` : '';
+    const limitClause = limit > 0 ? ` LIMIT ${limit}` : '';
     if (pgPool) {
       // Try with label_number column first (after migration v10)
       let rows;
       try {
         const r = await pgPool.query(
-          `SELECT * FROM tracking_scans ${whereClause} ORDER BY ts DESC`
+          `SELECT * FROM tracking_scans ${whereClause} ORDER BY ts DESC${limitClause}`
         );
         rows = r.rows;
       } catch(e) {
         // Fallback if column issues — select without label_number
         const r = await pgPool.query(
-          `SELECT id,label_id,batch_number,dept,type,ts,operator,size,qty FROM tracking_scans ${whereClause} ORDER BY ts DESC`
+          `SELECT id,label_id,batch_number,dept,type,ts,operator,size,qty FROM tracking_scans ${whereClause} ORDER BY ts DESC${limitClause}`
         );
         rows = r.rows;
       }
@@ -9793,9 +9815,9 @@ app.get('/api/tracking/scans-recent', async (req, res) => {
     } else {
       let scans;
       try {
-        scans = db.prepare(`SELECT * FROM tracking_scans ${whereClause} ORDER BY ts DESC`).all();
+        scans = db.prepare(`SELECT * FROM tracking_scans ${whereClause} ORDER BY ts DESC${limitClause}`).all();
       } catch(e) {
-        scans = db.prepare(`SELECT id,label_id,batch_number,dept,type,ts,operator,size,qty FROM tracking_scans ${whereClause} ORDER BY ts DESC`).all();
+        scans = db.prepare(`SELECT id,label_id,batch_number,dept,type,ts,operator,size,qty FROM tracking_scans ${whereClause} ORDER BY ts DESC${limitClause}`).all();
       }
       res.json({ ok: true, scans: scans.map(mapScan), count: scans.length });
     }
