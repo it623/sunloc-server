@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41g</p>
+      <p>Planning Suite v3.0 · build v41i</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1895,6 +1895,13 @@ function calcOrderSchedule(order, mc) {
     grossQty = aimOut * aimFactor;
     printOut = null;
     piOut    = null;
+  }
+  // v41h FIX (issue 3): if the planner set a manual gross override (excess production), it wins
+  // over the formula gross — so it is NOT reverted by recalc on refresh, and extra labels become
+  // available. The intermediate aimOut/printOut/piOut stay formula-derived (they drive A-Grade%),
+  // only the headline grossQty (which gates labels) is overridden.
+  if (Number.isFinite(order.grossOverride) && order.grossOverride > 0) {
+    grossQty = order.grossOverride;
   }
   // Remaining gross = total gross minus what's already been produced (from DPR actuals)
   const alreadyProduced = Math.min((order.actualProd || order.actualQty || 0), grossQty);
@@ -3578,6 +3585,11 @@ function showAddOrderModal(machineId, existingOrder) {
         <input class="form-control" id="fo-agrade" type="number" value="${ord.aGrade||getMachine(ord.machineId||machineId)?.aGrade||93}" oninput="updateGrossCalc()">
       </div>
       <div class="form-group">
+        <label>Gross Override (Lakhs) <span style="color:var(--text3);font-size:10px">— for excess production only</span></label>
+        <input class="form-control" id="fo-gross-override" type="number" step="0.001" value="${ord.grossOverride||''}" placeholder="leave blank = auto-calc" oninput="updateGrossCalc()">
+        <div style="font-size:10px;color:var(--text3);margin-top:3px">Blank → gross auto-calculates (Order × 1.07 × 1.01 × 1.01). Set a higher value to allow EXCESS production / extra labels; it will not be overwritten on refresh.</div>
+      </div>
+      <div class="form-group">
         <label>Start Date</label>
         <input class="form-control" id="fo-startdate" type="date" value="${toDateInput(ord.startDate)||toDateInput(today())}">
       </div>
@@ -3801,12 +3813,17 @@ function saveOrderModal(existingId, defaultMachine) {
 
   const isPrinted = document.getElementById('fo-printed')?.value === '1';
   const ag = parseFloat(document.getElementById('fo-agrade')?.value)||mc.aGrade;
+  // v41h FIX (issue 3): manual gross override for excess production. When set (>0), it becomes the
+  // order's gross and is preserved across refresh/recalc (recalcMachineSchedule respects it).
+  const grossOverrideVal = parseFloat(document.getElementById('fo-gross-override')?.value);
+  const hasGrossOverride = Number.isFinite(grossOverrideVal) && grossOverrideVal > 0;
   let grossQty, daysNeeded;
   if (isPrinted) {
     grossQty = qty * 1.07 * 1.02;
   } else {
     grossQty = qty / (ag/100);
   }
+  if (hasGrossOverride) grossQty = grossOverrideVal;
   daysNeeded = grossQty / mc.cap;
 
   // Fix 3: If actual DPR production exceeds planned gross qty, warn but allow save
@@ -3892,6 +3909,7 @@ function saveOrderModal(existingId, defaultMachine) {
     qty,
     aGrade: ag,
     grossQty,
+    grossOverride: hasGrossOverride ? grossOverrideVal : null,
     daysNeeded,
     startDate,
     endDate,
