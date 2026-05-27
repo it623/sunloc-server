@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41i</title>
+<title>Sunloc Tracking Suite v1.0 · build v41g</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41i</p>
+      <p>Tracking Suite v1.0 · build v41g</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41i</p>
+      <p>Tracking Suite v1.0 · build v41g</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1627,8 +1627,8 @@ async function pullFromServer(){
     let _step3ScansOk = false;
     try{
       const _now=new Date();
-      const _since=new Date(_now.getFullYear(), _now.getMonth()-1, 1); // 1st of previous month
-      const _sinceStr=`${_since.getFullYear()}-${String(_since.getMonth()+1).padStart(2,'0')}-01`;
+      const _since=new Date(_now.getTime() - 7*24*60*60*1000); // last 7 days
+      const _sinceStr=`${_since.getFullYear()}-${String(_since.getMonth()+1).padStart(2,'0')}-${String(_since.getDate()).padStart(2,'0')}`;
       const sr=await fetch(serverUrl+'/api/tracking/scans-recent?since='+_sinceStr,{signal:AbortSignal.timeout(30000)});
       if(sr.ok){
         const sj=await sr.json();
@@ -1716,7 +1716,7 @@ async function pullFromServer(){
           window._v40_boxStagesLoadedAt = Date.now();
           window._v40_dispatchedByBatch = bj.dispatchedByBatch || {};
           window._v40_boxCountsByBatch = bj.boxCounts || {};
-          console.log(`[v41i PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
+          console.log(`[v41g PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
@@ -2370,7 +2370,7 @@ async function _v41_fetchAgradeMonth(ym){
     if (!r.ok) throw new Error('HTTP '+r.status);
     const j = await r.json();
     if (!j.ok) throw new Error(j.error||'failed');
-    _v41_agradeMonthCache[ym] = { summary: j.summary||{}, wastage: j.wastage||{}, crossMonth: j.crossMonth||{}, monthGross: j.monthGross||{}, window: j.window };
+    _v41_agradeMonthCache[ym] = { summary: j.summary||{}, wastage: j.wastage||{}, crossMonth: j.crossMonth||{}, window: j.window };
     return _v41_agradeMonthCache[ym];
   } catch(e){
     console.warn('[agrade-by-month] fetch failed:', e.message);
@@ -7354,13 +7354,7 @@ function _v41_renderReportGInner(){
     }
     if (!ag) ag = getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
     const wip = getBatchWIPBreakdown(b.batchNumber);
-    // v41i FIX (issue 4): month-sliced gross in month mode (reconciles with DPR); see Report E note.
-    let grossProd = b.actualProd || b.actualQty || 0;
-    if (_v41_useMonthAttributed) {
-      const _mg = _v41_agradeMonthCache[_trkSelectedMonth]?.monthGross;
-      if (_mg && Object.prototype.hasOwnProperty.call(_mg, b.batchNumber)) grossProd = _mg[b.batchNumber];
-      else if (_mg) grossProd = 0;
-    }
+    const grossProd = b.actualProd || b.actualQty || 0;
     totalGrossProd += grossProd;
     totalAGradeQty += ag.aGrade;
     totalInspected += ag.inspected;
@@ -8355,19 +8349,7 @@ function _v41_renderReportEInner(){
   function _addBatchRowToReport(b, mc, floorKey){
     includedBatchNos.add(b.batchNumber);
     // v37E T4: align with Report G — fall back to actualQty (legacy field) when actualProd absent
-    // v41i FIX (issue 4): in "Month of Production" mode, use the month-sliced gross (sum of this
-    // batch's DPR entries dated within the selected month) so Report E gross reconciles with the
-    // DPR per-machine "Produced" total. In cumulative mode (or if month data hasn't loaded), fall
-    // back to the batch's all-time actualProd as before.
-    let grossProd = b.actualProd||b.actualQty||0;
-    if (_v41_useMonthAttributed) {
-      const _mg = _v41_agradeMonthCache[_trkSelectedMonth]?.monthGross;
-      if (_mg && Object.prototype.hasOwnProperty.call(_mg, b.batchNumber)) {
-        grossProd = _mg[b.batchNumber];
-      } else if (_mg) {
-        grossProd = 0; // month data loaded but this batch had no production this month
-      }
-    }
+    const grossProd=b.actualProd||b.actualQty||0;
     const useSS = hasScanSummary();
     // Fallback dataset used when scan-summary API hasn't loaded — covers all 5 fallback ternaries below
     const scansForBatch = state.scans.filter(s=>s.batchNumber===b.batchNumber);
