@@ -7630,6 +7630,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
+      build: 'v41j',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -7638,7 +7639,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41j', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -8916,6 +8917,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
+      build: 'v41j',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -8924,7 +8926,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41j', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -9890,17 +9892,10 @@ app.get('/api/tracking/labels', async (req, res) => {
 // label list / dashboard / print queue need.
 app.get('/api/tracking/labels-all', async (req, res) => {
   try {
-    // v41h PERF FIX: limit labels to last 60 days to prevent timeout
-    const sinceParam = req.query.since || null;
-    const since = sinceParam || (() => {
-      const d = new Date(); d.setDate(d.getDate() - 60);
-      return d.toISOString().slice(0, 10);
-    })();
-    const whereClause = `WHERE generated >= '${since.replace(/'/g,'')}'`;
     const COLS = `id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total`;
     const m=r=>({id:r.id,batchNumber:r.batch_number,labelNumber:r.label_number,size:r.size,qty:r.qty,isPartial:!!r.is_partial,isOrange:!!r.is_orange,parentLabelId:r.parent_label_id||null,customer:r.customer||'',colour:r.colour||'',pcCode:r.pc_code||'',poNumber:r.po_number||'',machineId:r.machine_id||'',printingMatter:r.printing_matter||'',generated:r.generated,printed:!!r.printed,printedAt:r.printed_at||null,voided:!!r.voided,voidReason:r.void_reason||'',voidedAt:r.voided_at||null,voidedBy:r.voided_by||null,woStatus:r.wo_status||null,shipTo:r.ship_to||'',billTo:r.bill_to||'',isExcess:!!r.is_excess,excessNum:r.excess_num||null,excessTotal:r.excess_total||null,normalTotal:r.normal_total||null});
-    if(pgPool){const r=await pgPool.query(`SELECT ${COLS} FROM tracking_labels ${whereClause} ORDER BY generated DESC`);res.json({ok:true,labels:r.rows.map(m)});}
-    else{const labels=db.prepare(`SELECT ${COLS} FROM tracking_labels ${whereClause} ORDER BY generated DESC`).all();res.json({ok:true,labels:labels.map(m)});}
+    if(pgPool){const r=await pgPool.query(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`);res.json({ok:true,labels:r.rows.map(m)});}
+    else{const labels=db.prepare(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`).all();res.json({ok:true,labels:labels.map(m)});}
   }catch(err){res.status(500).json({ok:false,error:err.message});}
 });
 // ── All scans endpoint (formerly "scans-recent", LIMIT removed in v40 P18.14) ──
