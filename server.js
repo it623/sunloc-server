@@ -905,6 +905,19 @@ const MIGRATIONS = [
     name: 'tracking_scans_ts_index',
     sql: `CREATE INDEX IF NOT EXISTS idx_scans_ts ON tracking_scans(ts);`
   },
+  {
+    // v41b LABEL-LOAD FIX: tracking_labels has grown to ~10.2k rows. The labels-all endpoint
+    // runs `SELECT * FROM tracking_labels ORDER BY generated DESC` on every page load. There was
+    // an index on batch_number but NONE on `generated`, so the ORDER BY did a full-table sort of
+    // all 10.2k rows every load. Combined with the heavy SELECT * (pulling the big qr_data string
+    // per row), the fetch was timing out under the shared pool, leaving the client's label cache
+    // empty → "Labels Generated: 0", empty label table, empty print queue, no orange labels.
+    // This index makes the ORDER BY generated DESC an index scan. (qr_data is also dropped from the
+    // bulk response in code — fetched on demand when actually printing a label.)
+    version: 32,
+    name: 'tracking_labels_generated_index',
+    sql: `CREATE INDEX IF NOT EXISTS idx_labels_generated ON tracking_labels(generated);`
+  },
 ];
 
 function runMigrations() {
@@ -2480,7 +2493,13 @@ app.post('/api/customers', async (req, res) => {
 // ════════════════════════════════════════════════════════════════════
 
 function _requireAdmin(req, res) {
-  const role = (req.headers['x-sunloc-role'] || req.body?._role || '').toString().toLowerCase();
+  // v41e FIX (issue 4): the client authenticates with the session token (x-session-token), NOT an
+  // x-sunloc-role header — so the old header/body role read was always empty and every admin got
+  // a false "Admin role required" 403. Resolve the role from the verified session instead, with a
+  // legacy fallback to the explicit role header/body for any old caller that still sends it.
+  const session = verifyToken(req.headers['x-session-token'] || req.body?.token || req.query?.token);
+  let role = (session?.role || '').toString().toLowerCase();
+  if (!role) role = (req.headers['x-sunloc-role'] || req.body?._role || '').toString().toLowerCase();
   if (role !== 'admin') {
     res.status(403).json({ ok: false, error: 'Admin role required' });
     return false;
@@ -2948,6 +2967,48 @@ app.post('/api/sap/refresh-invoices', async (req, res) => {
 // Backed by sap_indent_cache; no SAP roundtrip. The poller keeps this fresh
 // every N min (default 5). Used by Planning App's Unplanned Orders page.
 // Any logged-in role can read (planners need this).
+// v41f (issue 1 diagnostic): dump the raw field names + sample values from cached SAP indent
+// lines so we can identify exactly which field holds the printing matter. Admin only. Returns,
+// per cached indent, the full set of keys present on its first DocumentLine and the U_* (UDF)
+// fields with their values — without exposing the entire payload. Use: GET /api/sap/indent-fields
+app.get('/api/sap/indent-fields', async (req, res) => {
+  if (!_requireAdmin(req, res)) return;
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT sap_doc_num, payload_json FROM sap_indent_cache ORDER BY fetched_at DESC LIMIT 20`);
+      rows = r.rows;
+    } else {
+      rows = db.prepare(`SELECT sap_doc_num, payload_json FROM sap_indent_cache ORDER BY fetched_at DESC LIMIT 20`).all();
+    }
+    const out = [];
+    for (const row of rows) {
+      let payload = null;
+      try { payload = JSON.parse(row.payload_json); } catch { continue; }
+      const line = (payload?.DocumentLines || [])[0];
+      if (!line) continue;
+      const allKeys = Object.keys(line);
+      const udfFields = {};
+      for (const k of allKeys) {
+        if (k.startsWith('U_')) udfFields[k] = line[k];
+      }
+      out.push({
+        docNum: row.sap_doc_num,
+        docCurrency: payload?.DocCurrency || null,
+        lineKeys: allKeys,                                   // every field SAP returned on the line
+        udfFields,                                           // all U_* UDFs with values
+        itemCode: line.ItemCode || null,
+        itemDescription: line.ItemDescription || null,       // print matter may live here
+        freeText: line.FreeText || null,                     // ...or here
+        text: line.Text || null,                             // ...or here
+      });
+    }
+    res.json({ ok: true, count: out.length, lines: out });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.get('/api/sap/indents', async (req, res) => {
   try {
     const filter = (req.query.status || 'unprocessed').toString();
@@ -2981,6 +3042,7 @@ app.get('/api/sap/indents', async (req, res) => {
         processed_at: r.processed_at,
         processed_by: r.processed_by,
         processed_order_id: r.processed_order_id,
+        DocCurrency: payload?.DocCurrency || null, // v41e: authoritative export signal (non-INR = export)
         DocumentLines: payload?.DocumentLines || [],
       };
     });
@@ -9758,11 +9820,18 @@ app.get('/api/tracking/labels', async (req, res) => {
 });
 
 // ── All labels fast endpoint ──
+// v41b PAYLOAD SLIM: qr_data (the full QR string per label) is intentionally EXCLUDED here.
+// It is only needed when actually printing a label, and the client rebuilds it deterministically
+// from batchNumber|labelNumber|size|qty|id via generateQRData() (identical to what was stored).
+// Excluding it roughly halves the ~10.2k-row bulk response, removing the remaining timeout risk
+// on the label load. Explicit column list (no SELECT *) keeps the payload to exactly what the
+// label list / dashboard / print queue need.
 app.get('/api/tracking/labels-all', async (req, res) => {
   try {
-    const m=r=>({id:r.id,batchNumber:r.batch_number,labelNumber:r.label_number,size:r.size,qty:r.qty,isPartial:!!r.is_partial,isOrange:!!r.is_orange,parentLabelId:r.parent_label_id||null,customer:r.customer||'',colour:r.colour||'',pcCode:r.pc_code||'',poNumber:r.po_number||'',machineId:r.machine_id||'',printingMatter:r.printing_matter||'',generated:r.generated,printed:!!r.printed,printedAt:r.printed_at||null,voided:!!r.voided,voidReason:r.void_reason||'',voidedAt:r.voided_at||null,voidedBy:r.voided_by||null,qrData:r.qr_data||'',woStatus:r.wo_status||null,shipTo:r.ship_to||'',billTo:r.bill_to||'',isExcess:!!r.is_excess,excessNum:r.excess_num||null,excessTotal:r.excess_total||null,normalTotal:r.normal_total||null});
-    if(pgPool){const r=await pgPool.query('SELECT * FROM tracking_labels ORDER BY generated DESC');res.json({ok:true,labels:r.rows.map(m)});}
-    else{const labels=db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();res.json({ok:true,labels:labels.map(m)});}
+    const COLS = `id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total`;
+    const m=r=>({id:r.id,batchNumber:r.batch_number,labelNumber:r.label_number,size:r.size,qty:r.qty,isPartial:!!r.is_partial,isOrange:!!r.is_orange,parentLabelId:r.parent_label_id||null,customer:r.customer||'',colour:r.colour||'',pcCode:r.pc_code||'',poNumber:r.po_number||'',machineId:r.machine_id||'',printingMatter:r.printing_matter||'',generated:r.generated,printed:!!r.printed,printedAt:r.printed_at||null,voided:!!r.voided,voidReason:r.void_reason||'',voidedAt:r.voided_at||null,voidedBy:r.voided_by||null,woStatus:r.wo_status||null,shipTo:r.ship_to||'',billTo:r.bill_to||'',isExcess:!!r.is_excess,excessNum:r.excess_num||null,excessTotal:r.excess_total||null,normalTotal:r.normal_total||null});
+    if(pgPool){const r=await pgPool.query(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`);res.json({ok:true,labels:r.rows.map(m)});}
+    else{const labels=db.prepare(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`).all();res.json({ok:true,labels:labels.map(m)});}
   }catch(err){res.status(500).json({ok:false,error:err.message});}
 });
 // ── All scans endpoint (formerly "scans-recent", LIMIT removed in v40 P18.14) ──

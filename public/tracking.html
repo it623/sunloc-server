@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41a</title>
+<title>Sunloc Tracking Suite v1.0 · build v41g</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41a</p>
+      <p>Tracking Suite v1.0 · build v41g</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41a</p>
+      <p>Tracking Suite v1.0 · build v41g</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1501,7 +1501,7 @@ function configureServer(){
 // Normalise DB snake_case → camelCase for labels loaded from server
 function normLabel(l){
   if(l.batchNumber) return l; // already camelCase (local label)
-  return {
+  const out = {
     id:            l.id,
     batchNumber:   l.batch_number,
     labelNumber:   l.label_number,
@@ -1525,7 +1525,7 @@ function normLabel(l){
     voidReason:    l.void_reason || '',
     voidedAt:      l.voided_at || null,
     voidedBy:      l.voided_by || null,
-    qrData:        l.qr_data || '',
+    qrData:        l.qr_data || l.qrData || '',
     woStatus:      l.wo_status || null,
     // Excess fields (may be null for older labels)
     isExcess:      !!l.is_excess,
@@ -1533,6 +1533,10 @@ function normLabel(l){
     excessTotal:   l.excess_total || null,
     normalTotal:   l.normal_total || null,
   };
+  // v41b: if the source row carried no qr_data (e.g. labels-all slim payload), rebuild it
+  // deterministically from the label's own fields so printing/RFID always have a valid QR.
+  if (!out.qrData) out.qrData = generateQRData(out);
+  return out;
 }
 
 async function pullFromServer(){
@@ -1560,34 +1564,58 @@ async function pullFromServer(){
         // State updated silently — no auto-render to prevent screen flipping
       }
     }
-    // STEP 2: Load all labels fast
-    try{
-      flushPendingLabelPush();
-      const lr=await fetch(serverUrl+'/api/tracking/labels-all',{signal:AbortSignal.timeout(30000)});
-      if(lr.ok){
-        const lj=await lr.json();
-        if(lj.ok&&lj.labels){
-          const sl=lj.labels;
-          // v41 DATA-INTEGRITY GUARD: never let an empty/short server response wipe a non-empty
-          // local labels cache. On the last deploy the count dropped to 0 because a transient
-          // empty fetch (server restart / PG not ready) was written to state.labels AND persisted
-          // via saveLocal(), poisoning the local cache. Now: if the server returns ZERO labels but
-          // we currently hold labels locally, treat it as suspect — do NOT overwrite; instead push
-          // our local labels back up so the server recovers. Only overwrite when the server actually
-          // returns data.
-          if(sl.length===0 && state.labels.length>0){
-            console.warn('[labels-all] server returned 0 labels but local has '+state.labels.length+' — NOT overwriting; re-pushing local to server');
-            pushLabelsToServer(state.labels);
-          } else {
-            const sids=new Set(sl.map(l=>l.id));
-            const lo=state.labels.filter(l=>!sids.has(l.id));
-            if(lo.length>0)pushLabelsToServer(lo);
-            state.labels=sl;
-            saveLocal();
+    // STEP 2: Load all labels — with retry so a single slow/timed-out fetch never leaves the
+    // client label cache empty (which showed as "Labels Generated: 0", empty label table, empty
+    // print queue, no orange labels). v41b: the labels-all query (~10.2k rows) was timing out on
+    // the shared pool; the new idx_labels_generated index fixes the speed, and this retry loop is
+    // the safety net so a transient slow response self-heals instead of silently giving up.
+    flushPendingLabelPush();
+    let _labelsLoaded = false;
+    for (let _attempt = 1; _attempt <= 3 && !_labelsLoaded; _attempt++) {
+      try {
+        const lr = await fetch(serverUrl+'/api/tracking/labels-all', { signal: AbortSignal.timeout(30000) });
+        if (lr.ok) {
+          const lj = await lr.json();
+          if (lj.ok && lj.labels) {
+            const sl = lj.labels;
+            // v41 DATA-INTEGRITY GUARD: never let an empty/short server response wipe a non-empty
+            // local labels cache. Only overwrite when the server actually returns data.
+            if (sl.length === 0 && state.labels.length > 0) {
+              console.warn('[labels-all] server returned 0 labels but local has '+state.labels.length+' — NOT overwriting; re-pushing local to server');
+              pushLabelsToServer(state.labels);
+              _labelsLoaded = true; // local cache is intact; nothing more to do
+            } else {
+              const sids = new Set(sl.map(l=>l.id));
+              const lo = state.labels.filter(l=>!sids.has(l.id));
+              if (lo.length>0) pushLabelsToServer(lo);
+              state.labels = sl;
+              // v41b: labels-all no longer ships qr_data (payload slim). Rebuild it locally from
+              // the label's own fields so every consumer (printing at the ZPL ^BQN sites, future
+              // RFID) always has a populated, correct QR string. Format is deterministic and
+              // identical to what was originally stored: SUNLOC|batch|box|size|qty|id.
+              state.labels.forEach(l => { if (!l.qrData) l.qrData = generateQRData(l); });
+              saveLocal();
+              _labelsLoaded = true;
+              console.log('[labels-all] loaded '+sl.length+' labels (attempt '+_attempt+')');
+              // Re-render the current label-dependent view now that labels are in — fixes the
+              // case where the page rendered with 0 labels before this fetch completed.
+              try {
+                if (currentPage === 'labels') renderLabels();
+                else if (currentPage === 'dashboard') renderDashboard();
+              } catch(_re) {}
+            }
           }
         }
+      } catch(e2) {
+        console.warn('[labels-all] attempt '+_attempt+' failed:', e2?.message||e2);
       }
-    }catch(e2){}
+      if (!_labelsLoaded && _attempt < 3) {
+        await new Promise(r => setTimeout(r, 1500 * _attempt)); // backoff 1.5s, 3s
+      }
+    }
+    if (!_labelsLoaded) {
+      console.warn('[labels-all] all 3 attempts failed — keeping any cached labels ('+state.labels.length+')');
+    }
     // STEP 3: Recent scans for the operator scan UI + alerts.
     // v41 PERF ROOT-CAUSE FIX: the endpoint previously returned ALL scans (LIMIT removed in v40).
     // With ~29.5k scans accumulated, the fetch+parse exceeded the 20s timeout and ABORTED every
@@ -1688,7 +1716,7 @@ async function pullFromServer(){
           window._v40_boxStagesLoadedAt = Date.now();
           window._v40_dispatchedByBatch = bj.dispatchedByBatch || {};
           window._v40_boxCountsByBatch = bj.boxCounts || {};
-          console.log(`[v41a PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
+          console.log(`[v41g PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
@@ -2459,6 +2487,9 @@ function updatePlanningStageStatus(batchNo){
 // ═══════════════════════════════════════════════════════
 
 function generateZPL(label, batch){
+  // v41b: labels-all no longer ships qr_data; guarantee a valid QR string here as a final
+  // safety net before it is embedded in the ZPL (^BQN). generateQRData is the canonical format.
+  if (!label.qrData) label.qrData = generateQRData(label);
   const cp = (label.colour||'').split('/');
   const colourCap  = (cp[0]||'').trim() || (label.colour||'');
   const colourBody = (cp[1]||'').trim() || '';
