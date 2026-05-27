@@ -5389,13 +5389,35 @@ app.post('/api/dpr/save', async (req, res) => {
       // Delete old actuals for this floor+date, then re-insert
       await pgPool.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2', [floor, date]);
 
-      // v40 P18.14i Fix 2: build planning order status map for gate check
+      // v41h FIX (issues 1 & 2): build the gate status map from the AUTHORITATIVE production_orders
+      // table — that is where changeOrderStatus → upsertOrderToDB writes the planner's "In Production"
+      // status. The planning_state JSON blob lags (only rewritten on full saveState), so reading
+      // status from the blob alone made freshly-promoted "running" orders still look "pending",
+      // wrongly rejecting their DPR entries. We seed from the blob, then OVERLAY production_orders
+      // (newest wins) so the latest planner-set status is always honoured.
       const _planForGate = await getPlanningStateAsync();
       const _orderStatusById = {};
       const _orderStatusByBatch = {};
       for (const o of (_planForGate.orders || [])) {
         if (o.id) _orderStatusById[o.id] = { status: o.status, deleted: o.deleted };
         if (o.batchNumber) _orderStatusByBatch[o.batchNumber] = { status: o.status, deleted: o.deleted };
+      }
+      // Overlay authoritative production_orders rows (status column is the source of truth).
+      try {
+        let _poRows;
+        if (pgPool) {
+          const _r = await pgPool.query(`SELECT id, batch_number, status, deleted FROM production_orders`);
+          _poRows = _r.rows;
+        } else {
+          _poRows = db.prepare(`SELECT id, batch_number, status, deleted FROM production_orders`).all();
+        }
+        for (const r of (_poRows || [])) {
+          const meta = { status: r.status, deleted: (r.deleted === true || r.deleted === 1) };
+          if (r.id) _orderStatusById[r.id] = meta;
+          if (r.batch_number) _orderStatusByBatch[r.batch_number] = meta;
+        }
+      } catch (e) {
+        console.warn('[v41h DPR gate] production_orders overlay failed, using blob status:', e.message);
       }
       const _isAdminCaller = (req.body.userRole === 'admin') || (req.headers['x-user-role'] === 'admin');
       const _forceEntry    = !!req.body.forceEntry;
@@ -5473,6 +5495,23 @@ app.post('/api/dpr/save', async (req, res) => {
       for (const o of (_planForGateSq.orders || [])) {
         if (o.id) _orderStatusByIdSq[o.id] = { status: o.status, deleted: o.deleted };
         if (o.batchNumber) _orderStatusByBatchSq[o.batchNumber] = { status: o.status, deleted: o.deleted };
+      }
+      // v41h FIX (issues 1 & 2): overlay authoritative production_orders status (see PG-path note).
+      try {
+        let _poRowsSq;
+        if (pgPool) {
+          const _r = await pgPool.query(`SELECT id, batch_number, status, deleted FROM production_orders`);
+          _poRowsSq = _r.rows;
+        } else {
+          _poRowsSq = db.prepare(`SELECT id, batch_number, status, deleted FROM production_orders`).all();
+        }
+        for (const r of (_poRowsSq || [])) {
+          const meta = { status: r.status, deleted: (r.deleted === true || r.deleted === 1) };
+          if (r.id) _orderStatusByIdSq[r.id] = meta;
+          if (r.batch_number) _orderStatusByBatchSq[r.batch_number] = meta;
+        }
+      } catch (e) {
+        console.warn('[v41h DPR gate Sq] production_orders overlay failed, using blob status:', e.message);
       }
       const _isAdminCallerSq = (req.body.userRole === 'admin') || (req.headers['x-user-role'] === 'admin');
       const _forceEntrySq    = !!req.body.forceEntry;
@@ -9708,7 +9747,30 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
       if (straddlesEnd || straddlesStart) crossMonth[bn] = true;
     });
 
-    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth });
+    // v41i FIX (issue 4): month-sliced GROSS production per batch, summed from production_actuals
+    // by CALENDAR month of the entry date — exactly the basis the DPR "Produced" report uses
+    // (DPR sums daily shift entries whose date is in the selected YYYY-MM). Report E previously used
+    // the batch's ALL-TIME actualProd attributed to one month, so batches spanning April→May didn't
+    // reconcile with DPR. With this, Report E gross (month mode) = sum of that batch's DPR entries
+    // dated within YYYY-MM, matching DPR per-machine totals.
+    const monthGross = {};
+    try {
+      let grossRows;
+      if (pgPool) {
+        grossRows = (await pgPool.query(
+          `SELECT batch_number, COALESCE(SUM(qty_lakhs),0) AS g
+             FROM production_actuals WHERE date LIKE $1 GROUP BY batch_number`, [ym + '%'])).rows;
+      } else {
+        grossRows = db.prepare(
+          `SELECT batch_number, COALESCE(SUM(qty_lakhs),0) AS g
+             FROM production_actuals WHERE date LIKE ? GROUP BY batch_number`).all(ym + '%');
+      }
+      for (const r of (grossRows||[])) {
+        if (r.batch_number) monthGross[r.batch_number] = parseFloat(r.g) || 0;
+      }
+    } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
+
+    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross });
   } catch(err) {
     console.error('[agrade-by-month]', err.message);
     res.status(500).json({ ok:false, error: err.message });
@@ -9828,8 +9890,7 @@ app.get('/api/tracking/labels', async (req, res) => {
 // label list / dashboard / print queue need.
 app.get('/api/tracking/labels-all', async (req, res) => {
   try {
-    // v41h PERF FIX: optional ?since=YYYY-MM-DD to limit labels returned.
-    // Default: last 60 days to keep payload manageable (~3-4k labels instead of 10k+).
+    // v41h PERF FIX: limit labels to last 60 days to prevent timeout
     const sinceParam = req.query.since || null;
     const since = sinceParam || (() => {
       const d = new Date(); d.setDate(d.getDate() - 60);
