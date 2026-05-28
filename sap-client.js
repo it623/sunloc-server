@@ -491,7 +491,7 @@ class SapClient {
     // printing-matter field. With $select=DocumentLines, the Service Layer does not reliably return
     // line-level UDFs, which is why print matter came back blank even when the SO was printed.
     // Header fields stay in $select; the line collection comes via $expand.
-    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,DocCurrency&$expand=DocumentLines`;
+    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,DocCurrency,DocumentLines`;
     // v41m FIX (issue 3 — REAL cause): SAP B1 Service Layer paginates at ~20 records per page and
     // does NOT honour a large $top — it returns one page plus an @odata.nextLink. The old code read
     // only r.data.value (first page), so any open order beyond the first page never reached the
@@ -605,7 +605,7 @@ class SapClient {
     // Replaces previously-planned PDF download with structured Sales Register data.
     // Header: DocNum, Customer, BillTo Address, ShipTo Address, Sales Order ref, Date, Total
     // Lines: ItemCode (=PC Code), ItemDescription, Quantity, UnitPrice, LineTotal, VAT%, VAT amount
-    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,U_SunlocBatch,U_SunlocPO,U_IRN,Comments,DocumentLines`;
+    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,Comments`;
     const r = await this.call({ method: 'GET', path: 'Invoices', query: `${filter}&${select}&$top=500&$orderby=DocEntry desc` });
     if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded };
     return { ok: true, invoices: r.data?.value || [] };
