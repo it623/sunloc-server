@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41o</p>
+      <p>Planning Suite v3.0 · build v41p</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -4521,12 +4521,15 @@ function _v39_reconcileSapIndents(indents) {
     // and match THOUSAND robustly (value text or code). Anything not clearly THOUSAND = domestic (×1),
     // which is the safe default. _uomScaleForLine returns the multiplier for one line.
     const _uomScaleForLine = (line) => {
-      const u = String(
-        line.UoMCode || line.UnitsOfMeasurement || line.MeasureUnit || line.InventoryUoM || ''
-      ).toUpperCase().trim();
-      // THOUSAND in any spelling/code → export (÷100). LAC/LAKH/blank/anything else → domestic (×1).
-      if (/THOUSAND|THOU|^THO$|^000$|^M$|^K$/.test(u)) return 0.01;
-      return 1;
+      // Check EVERY UoM-ish field, not just the first non-empty one — SAP B1 may put a numeric
+      // UoMEntry in one field while the human name ("THOUSAND") sits in another. If ANY of them
+      // indicates thousands, treat the line as export (÷100). Otherwise domestic (×1, safe default).
+      const candidates = [
+        line.UoMCode, line.UnitsOfMeasurement, line.MeasureUnit, line.InventoryUoM,
+        line.UoMName, line.UnitOfMeasure
+      ].map(v => String(v == null ? '' : v).toUpperCase().trim());
+      const isThousand = candidates.some(u => /THOUSAND|THOUSND|THOUS|THOU|\bTHO\b|^000$|^'000$|PER\s*THOUSAND/.test(u));
+      return isThousand ? 0.01 : 1;
     };
 
     for (let li = 0; li < lines.length; li++) {
@@ -5465,7 +5468,7 @@ function _v39_openTruckInvoiceModal(truckIdx, zone) {
     </div>
     <table style="width:100%;font-size:12px;border-collapse:collapse;margin-bottom:12px">
       <thead style="background:var(--surface2)">
-        <tr><th style="padding:6px 8px;text-align:center">Send?</th><th style="padding:6px 8px;text-align:left">Batch</th><th style="padding:6px 8px;text-align:left">Customer</th><th style="padding:6px 8px;text-align:left">Sales Order ID</th><th style="padding:6px 8px;text-align:right">Boxes</th><th style="padding:6px 8px;text-align:right">Qty</th></tr>
+        <tr><th style="padding:6px 8px;text-align:center">Log?</th><th style="padding:6px 8px;text-align:left">Batch</th><th style="padding:6px 8px;text-align:left">Customer</th><th style="padding:6px 8px;text-align:left">Sales Order ID</th><th style="padding:6px 8px;text-align:right">Boxes</th><th style="padding:6px 8px;text-align:right">Qty</th></tr>
       </thead>
       <tbody>${rows}</tbody>
     </table>
@@ -5624,19 +5627,19 @@ function _v40_renderConsolidatedApprovalModalBody() {
     const failCount = results.length - okCount;
     footerHtml = `
       <div style="background:${failCount===0?'rgba(16,185,129,0.08)':(okCount===0?'rgba(220,38,38,0.08)':'rgba(245,158,11,0.08)')};border:1px solid ${failCount===0?'rgba(16,185,129,0.3)':(okCount===0?'rgba(220,38,38,0.3)':'rgba(245,158,11,0.3)')};border-radius:6px;padding:10px 14px;margin-top:12px;font-size:12px;line-height:1.6">
-        <strong>${failCount===0?'✅ All Deliveries created':okCount===0?'❌ All Deliveries failed':'⚠️ Partial: '+okCount+' succeeded, '+failCount+' failed'}</strong><br>
+        <strong>${failCount===0?'✅ All invoice requests logged':okCount===0?'❌ All requests failed':'⚠️ Partial: '+okCount+' succeeded, '+failCount+' failed'}</strong><br>
         ${okCount > 0 ? `<span style="color:#047857">${okCount} invoice request${okCount!==1?'s':''} logged to Pending Reconciliation. SAP user creates each invoice in SAP manually; Sunloc's 5-min poller will reconcile them automatically.</span><br>` : ''}
         ${failCount > 0 ? `<span style="color:#7c2d2d">Failures preserved as 'failed' in invoice_requests for audit.</span>` : ''}
       </div>`;
   } else {
     footerHtml = `
       <div style="background:rgba(8,145,178,0.06);border:1px solid rgba(8,145,178,0.3);border-radius:6px;padding:10px 14px;margin-top:12px;font-size:11px;line-height:1.6;color:#0e7490">
-        <strong>📋 Sunloc will create ${items.length} Deliveries in SAP (one per Sales Order).</strong><br>
-        SAP user creates each invoice in SAP manually. Sunloc's 5-min poller reconciles them by Sales Order reference and routes them to the Tracking → Invoice Queue for Scan Out.
+        <strong>📋 ${items.length} invoice request${items.length!==1?'s':''} will be logged to Pending Reconciliation.</strong><br>
+        Nothing is pushed to SAP. The SAP user creates each invoice in SAP manually; Sunloc's 5-min poller reconciles them by Sales Order reference and routes them to the Tracking → Invoice Queue for Scan Out.
       </div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
         <label style="font-size:11px;color:var(--text3);font-weight:600;white-space:nowrap">Remarks (optional, applied to all):</label>
-        <input type="text" id="v40-conf-remarks" placeholder="Optional notes for all Deliveries..." style="flex:1;font-size:11px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface3);color:var(--text)">
+        <input type="text" id="v40-conf-remarks" placeholder="Optional notes for all invoice requests..." style="flex:1;font-size:11px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface3);color:var(--text)">
       </div>`;
   }
   const body = `
@@ -5669,10 +5672,14 @@ function _v40_renderConsolidatedApprovalModalBody() {
   const buttons = results ? [
     { label: '✅ Done', cls: 'btn-primary', fn: 'closeModal();window._v40_invoiceSelections.clear();_v40_renderInvoiceFloatingBar();render();' },
   ] : [
-    { label: '🚀 Approve and Send ' + items.length + ' Deliveries to SAP', cls: 'btn-primary', fn: '_v40_submitConsolidated()' },
+    { label: '🚀 Approve & Log ' + items.length + ' Invoice Request' + (items.length!==1?'s':''), cls: 'btn-primary', fn: '_v40_submitConsolidated()' },
     { label: 'Cancel', cls: 'btn-secondary', fn: 'closeModal()' },
   ];
-  openModal('🧾 Generate Invoices — Review & Approve', `${items.length} batches selected`, body, buttons);
+  // v41o FIX: openModal signature is (title, body, buttons). This was called with a stray 4th
+  // argument (a "N batches selected" subtitle), which shifted `body` into the `buttons` parameter;
+  // openModal then ran (buttons||[]).map() on an HTML STRING → "(intermediate value).map is not a
+  // function", crashing Generate Invoices. The count is now folded into the body instead.
+  openModal('🧾 Generate Invoices — Review & Approve', body, buttons);
 }
 
 async function _v40_submitConsolidated() {
