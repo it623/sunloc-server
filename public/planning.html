@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41j</p>
+      <p>Planning Suite v3.0 · build v41o</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -543,7 +543,7 @@ input[type="file"] { display:none; }
     <div class="nav-item" onclick="navigate('pc-codes')"><span class="icon">🎨</span> PC Codes</div>
     <div class="nav-item" onclick="navigate('archives')"><span class="icon">🗂️</span> Archives</div>
     <!-- Search button is in the Production Plan tab bar -->
-    <div class="nav-item" id="nav-reconciliation" onclick="navigate('reconciliation')"><span class="icon">🔄</span> Reconciliation</div>
+    <div class="nav-item" id="nav-reconciliation" onclick="navigate('reconciliation')"><span class="icon">🔄</span> TEMP / W/O Reconciliation</div>
     <div class="nav-item" id="nav-sap-config" style="display:none" onclick="navigate('sap-config')"><span class="icon">🔌</span> SAP Configuration</div>
     <div class="nav-item" id="nav-audit-log" style="display:none" onclick="navigate('audit-log')"><span class="icon">📋</span> Audit Log</div>
     <div class="nav-item" id="nav-admin-users" style="display:none" onclick="navigate('admin-users')"><span class="icon">👥</span> Admin · Users</div>
@@ -653,6 +653,17 @@ const PRINT_MACHINES = [
 ];
 
 const PACK_SIZES = {'00':75000,'0':100000,'1':125000,'2':175000,'3':225000,'0EL':100000,'0SEL':100000,'4':175000,'5':175000};
+
+// v41o FIX (added by IT, adopted into baseline): toast() was referenced in several places
+// (e.g. batch close/reopen feedback) but never defined in planning.html — a ReferenceError at
+// call time. Lightweight non-blocking toast notification.
+function toast(msg, col, duration) {
+  const t = document.createElement('div');
+  t.textContent = msg;
+  t.style.cssText = 'position:fixed;bottom:20px;left:50%;transform:translateX(-50%);background:' + (col||'#333') + ';color:#fff;padding:10px 20px;border-radius:8px;font-size:13px;z-index:9999;box-shadow:0 4px 12px rgba(0,0,0,.3);pointer-events:none;transition:opacity .4s';
+  document.body.appendChild(t);
+  setTimeout(() => { t.style.opacity='0'; setTimeout(() => t.remove(), 400); }, duration||2500);
+}
 const CAPSULE_COLOURS = ['White/White','White/Yellow','White/Clear','Yellow/Yellow','Clear/Clear','Orange/White','Orange/Orange','Blue/White','Blue/Blue','Green/White','Green/Green','Pink/White','Pink/Pink','Red/White','Red/Red','Purple/White','Purple/Purple','Brown/White','Black/White','Maroon/White'];
 const SIZES = ['00','0','0EL','0SEL','1','2','3','4','5'];
 const ZONES = ['BADDI','BADDI + JAMMU','BADDI+JAMMU','NORTH','SOUTH','EAST','WEST','DELHI','MUMBAI','RAJASTHAN','ALWAR','NEPAL','BANGLADESH','LOCAL','EXPORT'];
@@ -1107,14 +1118,31 @@ const SYNC = (() => {
               console.log('[Orders] Added missing order from DB:', dbO.batchNumber, dbO.machineId);
             }
           });
-          // Deduplicate by batchNumber+machineId — keep order with most data
+          // Deduplicate by batchNumber+machineId. v41n FIX: the old tie-break kept whichever
+          // duplicate appeared LAST in iteration order when actualProd was equal (e.g. both 0 for
+          // pending orders). Iteration order varies per refresh with blob/table merge timing, so a
+          // batch that existed in both stores with DIFFERENT statuses would flip In Production↔Pending
+          // at random, and the count of "running" machines changed between refreshes. The tie-break
+          // is now FULLY DETERMINISTIC and status-coherent, so the same record always wins.
+          const _dbIds = new Set((ooj.orders||[]).map(o=>o.id)); // ids that came from production_orders (authoritative)
+          const _better = (cand, cur) => {
+            if (!cur) return true;
+            // 1. Prefer the record whose id is in the authoritative production_orders table.
+            const candDb = _dbIds.has(cand.id), curDb = _dbIds.has(cur.id);
+            if (candDb !== curDb) return candDb;
+            // 2. Prefer higher actualProd (more production data).
+            if ((cand.actualProd||0) !== (cur.actualProd||0)) return (cand.actualProd||0) > (cur.actualProd||0);
+            // 3. Prefer the more recently edited record (latest user intent).
+            if ((cand._localEditedAt||0) !== (cur._localEditedAt||0)) return (cand._localEditedAt||0) > (cur._localEditedAt||0);
+            // 4. Stable final tie-break by id so the result never changes between refreshes.
+            return String(cand.id||'') < String(cur.id||'');
+          };
           const batchMcMap = new Map();
           state.orders.forEach(o => {
             if (!o.batchNumber || !o.machineId) { batchMcMap.set(o.id, o); return; }
             const key = `${o.batchNumber}__${o.machineId}`;
             const existing = batchMcMap.get(key);
-            if (!existing) { batchMcMap.set(key, o); }
-            else if ((o.actualProd||0) >= (existing.actualProd||0)) { batchMcMap.set(key, o); }
+            if (_better(o, existing)) batchMcMap.set(key, o);
           });
           state.orders = Array.from(batchMcMap.values());
           // State updated silently — no auto-render to prevent screen flipping
@@ -1283,7 +1311,12 @@ const SYNC = (() => {
               // any direction of change (corrections, deletions, edits) propagates correctly.
               dp.actualDispatched = trackingActual;
               dp._trackingDispatched = trackingActual; // mark as coming from tracking
-              if (dp.actualDispatched >= dp.qty) dp.status = 'dispatched';
+              // v41m FIX: a MANUAL dispatch (planner clicked ✓ Dispatch) must NOT be downgraded by a
+              // lagging/zero tracking scan-out total. Tracking may still UPGRADE status (e.g. confirm
+              // full dispatch), but it cannot revert a manually-dispatched lot back to pending/ready.
+              if (dp.manuallyDispatched) {
+                dp.status = 'dispatched';
+              } else if (dp.actualDispatched >= dp.qty) dp.status = 'dispatched';
               else if (dp.actualDispatched > 0) dp.status = 'partial';
               else if (dp.status === 'partial' || dp.status === 'dispatched') dp.status = 'pending';
             }
@@ -2626,7 +2659,7 @@ function _renderImmediate() {
     'machines':'Machine Master',
     'pc-codes':'Product Code Master',
     'search':'Search',
-    'reconciliation':'TEMP Batch Reconciliation',
+    'reconciliation':'TEMP / Work-Order Batch Reconciliation',
     'sap-config':'SAP Configuration (Admin)',
     'admin-users':'Admin · User Management',
     'data-integrity':'Data Integrity Dashboard',
@@ -4480,18 +4513,25 @@ function _v39_reconcileSapIndents(indents) {
     // next SAP poll), fall back to a CONSERVATIVE foreign-suffix test that deliberately EXCLUDES the
     // generic LTD/LIMITED — it only matches unambiguously-foreign forms (LTDA, GMBH, SRL, S.A.,
     // S.p.A, B.V., PTY, country names). Indian "PVT LTD"/"LIMITED" therefore stay domestic.
-    const docCurrency = String(ind.DocCurrency || '').toUpperCase().trim();
-    let isExportIndent;
-    if (docCurrency) {
-      isExportIndent = docCurrency !== 'INR';            // authoritative
-    } else {
-      // currency unavailable — conservative foreign-suffix fallback (NOT generic LTD/LIMITED)
-      isExportIndent = /\b(LTDA|GMBH|S\.?R\.?L|S\.?P\.?A|PTY|SDN\.?\s?BHD|N\.?V|B\.?V)\b|\b(BRAZIL|GERMANY|NEPAL|BANGLADESH|VIETNAM|INDONESIA|PHILIPPINES|MEXICO|EGYPT|KENYA|NIGERIA|FARMACEUTICOS|PHARMACEUTICA)\b/i.test(cardName);
-    }
-    const uomScale = isExportIndent ? 0.01 : 1; // export thousands → lakhs; domestic unchanged
+    // v41o FIX (issue 2 — REAL signal, from live diagnostic): export vs domestic is determined by
+    // the LINE's Unit of Measure, NOT currency (SAP returned DocCurrency=null) and NOT company name
+    // (unreliable — removed). Diagnostic + SAP screens show export lines use UoM "THOUSAND" and
+    // domestic use "LAC". Export qty is in thousands → ×0.01 to lakhs; domestic is already lakhs →×1.
+    // We read the UoM per line (it can differ line-to-line) from whichever UoM field SAP populates,
+    // and match THOUSAND robustly (value text or code). Anything not clearly THOUSAND = domestic (×1),
+    // which is the safe default. _uomScaleForLine returns the multiplier for one line.
+    const _uomScaleForLine = (line) => {
+      const u = String(
+        line.UoMCode || line.UnitsOfMeasurement || line.MeasureUnit || line.InventoryUoM || ''
+      ).toUpperCase().trim();
+      // THOUSAND in any spelling/code → export (÷100). LAC/LAKH/blank/anything else → domestic (×1).
+      if (/THOUSAND|THOU|^THO$|^000$|^M$|^K$/.test(u)) return 0.01;
+      return 1;
+    };
 
     for (let li = 0; li < lines.length; li++) {
       const line = lines[li];
+      const uomScale = _uomScaleForLine(line); // v41o: per-line, UoM-based
       // v41 P19.2 Fix 6A: use RemainingOpenQuantity (open qty after partial dispatches).
       // SAP returns this per line for partially-delivered Sales Orders.
       // Fallback to Quantity if RemainingOpenQuantity is null/undefined (e.g. brand new SO with no delivery yet).
@@ -4500,6 +4540,11 @@ function _v39_reconcileSapIndents(indents) {
         : parseFloat(line.Quantity) || 0;
       const lineQty = rawOpenQty * uomScale;
       if (lineQty <= 0) continue;
+      // v41o FIX (regression caught on test by IT): when export detection moved to per-line UoM,
+      // the old `isExportIndent` variable was removed but is still referenced below (isExport flag,
+      // line ~4584) — a ReferenceError that crashed the reconcile loop and rendered zero indents.
+      // Derive it from the per-line scale: any line scaled down (<1) is an export (THOUSAND) line.
+      const isExportIndent = uomScale < 1;
       // v40 Phase 18.2: Lookup ItemCode against Sunloc's PC Code master to derive
       // Size + Colour. SAP UDFs (U_Size, U_Colour, U_PCCode) are NOT populated in
       // Sunil Healthcare's SAP — ItemCode IS the PC Code. Search all size buckets
@@ -4526,17 +4571,13 @@ function _v39_reconcileSapIndents(indents) {
       if (!size) size = line.U_Size || line.ItemDescription?.match(/\bSize\s+([0-4]|00)\b/i)?.[1] || '';
       if (!colour) colour = line.U_Colour || '';
       if (!pcCode) pcCode = line.U_PCCode || itemCode || '';
-      // v41f (issue 1): print matter comes from SAP, not from the PC master and not from manual
-      // entry. We don't assume a single UDF name — different SAP B1 setups store it differently —
-      // so check the common candidates in priority order. Whatever is found is the print matter;
-      // if any is non-empty, the order is PRINTED (PTD). Only if ALL are empty is it unprinted.
+      // v41o FIX (issue 1 — CONFIRMED field): the live diagnostic shows the SAP print-matter UDF is
+      // named U_PRNT_MATTR (e.g. "SEMPLX + SEMP"). Earlier guesses (U_PrintMatter etc.) never matched,
+      // which is why it was always blank. Read U_PRNT_MATTR per line, with light fallbacks. If present
+      // on this line, the line is printed (PTD); a few legacy field names kept only as fallback.
       printMatter = (
-        line.U_PrintMatter || line.U_PrintingMatter || line.U_Print_Matter ||
-        line.U_PrintMater || line.U_Matter || line.U_Print || line.U_PrintText ||
-        line.U_Printing || line.FreeText || line.Text || ''
+        line.U_PRNT_MATTR || line.U_PrintMatter || line.U_PrintingMatter || ''
       ).toString().trim();
-      // Note: ItemDescription is NOT used as print matter — it's the item name/colour text and would
-      // produce false "printed" flags. Print matter must come from a dedicated SAP field above.
       // Find matching planned orders
       const planned = (state.orders || []).filter(o =>
         !o.deleted &&
@@ -5256,7 +5297,7 @@ function _v39_openGenerateInvoiceModal(planId, mode) {
   openModal(`🧾 Generate Invoice — ${ctx.batchNumber}`, `
     <div style="background:rgba(8,145,178,0.08);border:1px solid rgba(8,145,178,0.3);border-radius:6px;padding:12px;margin-bottom:14px;font-size:12px;line-height:1.5;color:#0e7490">
       <strong>📋 Sunloc will create a Delivery in SAP (not the Invoice itself).</strong><br>
-      A Delivery referencing this Sales Order will be created in SAP. The SAP user then opens the Delivery in SAP and converts it to an A/R Invoice via Copy-To. Sunloc's 5-min poller picks up the resulting Invoice and routes it to the Tracking → Invoice Queue.
+      This logs an invoice request to the Pending Reconciliation ledger (Tracking → Dispatch → ⏳ Pending Reconciliation). No document is pushed to SAP. The SAP user creates the invoice in SAP manually; Sunloc's 5-min poller then matches it by Sales Order reference and reconciles it, after which it appears in the Tracking → Invoice Queue for Scan Out.
     </div>
     <div style="background:var(--surface2);border-radius:6px;padding:14px;margin-bottom:14px;font-size:12px;line-height:1.7">
       <div style="font-weight:700;color:var(--text);margin-bottom:8px;font-size:13px">Invoice details</div>
@@ -5420,7 +5461,7 @@ function _v39_openTruckInvoiceModal(truckIdx, zone) {
   window._v39_truckInvoiceContext = { truckIdx, zone, eligible };
   openModal(`🧾 Generate Invoices for Truck #${truck.truckNumber || truckIdx+1}`, `
     <div style="background:rgba(8,145,178,0.08);border:1px solid rgba(8,145,178,0.3);border-radius:6px;padding:10px 12px;margin-bottom:12px;font-size:12px;line-height:1.5;color:#0e7490">
-      <strong>One Delivery per Sales Order.</strong> Each batch in this truck will be sent as a separate Delivery to SAP, referencing its own Sales Order. SAP user will then convert each Delivery → Invoice in SAP via Copy-To.
+      <strong>Each checked batch is logged to the Pending Reconciliation ledger.</strong> Nothing is pushed to SAP. The SAP user creates each invoice in SAP manually; Sunloc's 5-min poller reconciles them by Sales Order reference, after which they move to the Invoice Queue for Scan Out.
     </div>
     <table style="width:100%;font-size:12px;border-collapse:collapse;margin-bottom:12px">
       <thead style="background:var(--surface2)">
@@ -5432,7 +5473,7 @@ function _v39_openTruckInvoiceModal(truckIdx, zone) {
       💡 Uncheck any batch you don't want to invoice now. Each checked batch fires one SAP API call.
     </div>
   `, [
-    { label: '🧾 Create Deliveries for Checked Batches', cls: 'btn-primary', fn: '_v39_submitTruckInvoices()' },
+    { label: '🧾 Log Invoice Requests for Checked Batches', cls: 'btn-primary', fn: '_v39_submitTruckInvoices()' },
     { label: 'Cancel', cls: 'btn-secondary', fn: 'closeModal()' },
   ]);
 }
@@ -5584,14 +5625,14 @@ function _v40_renderConsolidatedApprovalModalBody() {
     footerHtml = `
       <div style="background:${failCount===0?'rgba(16,185,129,0.08)':(okCount===0?'rgba(220,38,38,0.08)':'rgba(245,158,11,0.08)')};border:1px solid ${failCount===0?'rgba(16,185,129,0.3)':(okCount===0?'rgba(220,38,38,0.3)':'rgba(245,158,11,0.3)')};border-radius:6px;padding:10px 14px;margin-top:12px;font-size:12px;line-height:1.6">
         <strong>${failCount===0?'✅ All Deliveries created':okCount===0?'❌ All Deliveries failed':'⚠️ Partial: '+okCount+' succeeded, '+failCount+' failed'}</strong><br>
-        ${okCount > 0 ? `<span style="color:#047857">${okCount} Delivery document${okCount!==1?'s':''} created in SAP. SAP user will convert each Delivery → Invoice via Copy-To. Sunloc's 5-min poller will pick up the resulting Invoices.</span><br>` : ''}
+        ${okCount > 0 ? `<span style="color:#047857">${okCount} invoice request${okCount!==1?'s':''} logged to Pending Reconciliation. SAP user creates each invoice in SAP manually; Sunloc's 5-min poller will reconcile them automatically.</span><br>` : ''}
         ${failCount > 0 ? `<span style="color:#7c2d2d">Failures preserved as 'failed' in invoice_requests for audit.</span>` : ''}
       </div>`;
   } else {
     footerHtml = `
       <div style="background:rgba(8,145,178,0.06);border:1px solid rgba(8,145,178,0.3);border-radius:6px;padding:10px 14px;margin-top:12px;font-size:11px;line-height:1.6;color:#0e7490">
         <strong>📋 Sunloc will create ${items.length} Deliveries in SAP (one per Sales Order).</strong><br>
-        SAP user converts each Delivery → A/R Invoice via Copy-To in SAP. Sunloc's 5-min poller picks up the resulting Invoices and routes them to the Tracking → Invoice Queue.
+        SAP user creates each invoice in SAP manually. Sunloc's 5-min poller reconciles them by Sales Order reference and routes them to the Tracking → Invoice Queue for Scan Out.
       </div>
       <div style="display:flex;align-items:center;gap:8px;margin-top:10px">
         <label style="font-size:11px;color:var(--text3);font-weight:600;white-space:nowrap">Remarks (optional, applied to all):</label>
@@ -8499,7 +8540,7 @@ function updateDispatchActual(id, val) {
 
 function markDispatched(id) {
   const dp = state.dispatchPlans.find(d=>d.id===id);
-  if (dp) { dp.status='dispatched'; dp.actualDispatched=dp.qty; saveState(); render(); }
+  if (dp) { dp.status='dispatched'; dp.actualDispatched=dp.qty; dp.manuallyDispatched=true; saveState(); render(); }
 }
 
 function updateDispatchRemark(id, val) {
