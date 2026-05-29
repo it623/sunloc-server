@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41p</title>
+<title>Sunloc Tracking Suite v1.0 · build v41s</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41p</p>
+      <p>Tracking Suite v1.0 · build v41s</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41p</p>
+      <p>Tracking Suite v1.0 · build v41s</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1716,7 +1716,7 @@ async function pullFromServer(){
           window._v40_boxStagesLoadedAt = Date.now();
           window._v40_dispatchedByBatch = bj.dispatchedByBatch || {};
           window._v40_boxCountsByBatch = bj.boxCounts || {};
-          console.log(`[v41p PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
+          console.log(`[v41s PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
@@ -4226,9 +4226,10 @@ function getActiveBatchesForDept(dept){
 
 function renderDispatch(){
   const el=document.getElementById('page-dispatch');
-  // v39 Phase 10b: Load Invoice Queue async (non-blocking) — refreshes every 30s while page active.
-  // Function declared below; safe to call even if API unreachable (graceful empty state).
-  try { _v39_loadAndRenderInvoiceQueue({ silent: true }); } catch (e) { /* no-op if not yet defined */ }
+  // v41q FIX: the Invoice Queue load was called HERE, before el.innerHTML built the
+  // <div id="v39-invoice-queue"> placeholder, so _v39_loadAndRenderInvoiceQueue silently bailed
+  // at its early-return (`if (!panel) return`) — the Invoice Queue panel and its ⏳ Pending
+  // Reconciliation button never appeared on the Dispatch page. Moved AFTER innerHTML below.
   // Use scanSummary (full history) when available, else fall back to state.scans
   // v40 P18.14: Dispatch counts now combine legacy scan dispatch.out + Phase 18 truck dispatches
   const batchSummary={};
@@ -4547,6 +4548,10 @@ function renderDispatch(){
   renderReportI('dispatch-summary-container');
   // v37I B4: Render Report K daily movement report
   renderReportK('report-k-container');
+  // v41q: Load Invoice Queue panel + Pending Reconciliation button NOW (after el.innerHTML built
+  // the v39-invoice-queue container above). Previously this ran at the top of renderDispatch
+  // before the container existed, so the queue silently never rendered.
+  try { _v39_loadAndRenderInvoiceQueue({ silent: true }); } catch (e) { console.warn('[v41q] invoice queue load:', e?.message); }
 }
 
 // v37I Part A: Dispatch modal — scan-based auto-fill, soft lock on quantities
@@ -6067,6 +6072,24 @@ async function renderGeneratedInvoices() {
           <input type="date" id="v39-gi-to" class="form-control" style="padding:6px 8px;font-size:12px" onchange="_v39_applyInvoiceFilters()">
         </div>
       </div>
+      <!-- v41s Q2: line-detail filters (PC / Size / Colour) — match ANY line of the invoice -->
+      <div class="form-row cols-3" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px">
+        <div class="form-group">
+          <label style="font-size:11px;color:var(--text3)">PC Code (partial)</label>
+          <input type="text" id="v39-gi-pc" placeholder="e.g. 01184" class="form-control" style="padding:6px 8px;font-size:12px;font-family:var(--mono)"
+                 oninput="clearTimeout(window._giTimer);window._giTimer=setTimeout(_v39_applyInvoiceFilters,300)">
+        </div>
+        <div class="form-group">
+          <label style="font-size:11px;color:var(--text3)">Size</label>
+          <input type="text" id="v39-gi-size" placeholder="e.g. 0, 1, 2, 3" class="form-control" style="padding:6px 8px;font-size:12px"
+                 oninput="clearTimeout(window._giTimer);window._giTimer=setTimeout(_v39_applyInvoiceFilters,300)">
+        </div>
+        <div class="form-group">
+          <label style="font-size:11px;color:var(--text3)">Colour (partial)</label>
+          <input type="text" id="v39-gi-colour" placeholder="e.g. blue, clear" class="form-control" style="padding:6px 8px;font-size:12px"
+                 oninput="clearTimeout(window._giTimer);window._giTimer=setTimeout(_v39_applyInvoiceFilters,300)">
+        </div>
+      </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-sm btn-secondary" onclick="_v39_applyInvoiceFilters()">↻ Refresh</button>
         <button class="btn btn-sm btn-secondary" onclick="_v39_clearInvoiceFilters()">✕ Clear filters</button>
@@ -6091,13 +6114,20 @@ async function _v39_applyInvoiceFilters() {
   const customer = document.getElementById('v39-gi-customer')?.value?.trim() || '';
   const fromDate = document.getElementById('v39-gi-from')?.value || '';
   const toDate   = document.getElementById('v39-gi-to')?.value || '';
-  _v39_invoiceListLastFilters = { status, batch, customer, fromDate, toDate };
+  // v41s Q2: line-detail filters
+  const pcCode = document.getElementById('v39-gi-pc')?.value?.trim() || '';
+  const size   = document.getElementById('v39-gi-size')?.value?.trim() || '';
+  const colour = document.getElementById('v39-gi-colour')?.value?.trim() || '';
+  _v39_invoiceListLastFilters = { status, batch, customer, fromDate, toDate, pcCode, size, colour };
   const params = new URLSearchParams();
   if (status)   params.set('status', status);
   if (batch)    params.set('batch', batch);
   if (customer) params.set('customer', customer);
   if (fromDate) params.set('from_date', fromDate);
   if (toDate)   params.set('to_date', toDate);
+  if (pcCode)   params.set('pc_code', pcCode);
+  if (size)     params.set('size', size);
+  if (colour)   params.set('colour', colour);
   params.set('limit', '500');
   const statusText = document.getElementById('v39-gi-status-text');
   if (statusText) statusText.textContent = 'Loading...';
@@ -6119,7 +6149,8 @@ async function _v39_applyInvoiceFilters() {
 }
 
 function _v39_clearInvoiceFilters() {
-  ['v39-gi-status','v39-gi-batch','v39-gi-customer','v39-gi-from','v39-gi-to'].forEach(id => {
+  ['v39-gi-status','v39-gi-batch','v39-gi-customer','v39-gi-from','v39-gi-to',
+   'v39-gi-pc','v39-gi-size','v39-gi-colour'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -6157,6 +6188,13 @@ function _v39_renderInvoiceTable() {
       : '';
     const invDate = inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString() : '—';
     const qtyLakhs = parseFloat(inv.total_qty_lakhs) || (parseInt(inv.total_boxes)||0)/100;
+    // v41s Q2: parse line count for the "+N more" indicator on multi-line invoices
+    let lineCount = 0;
+    try {
+      const p = typeof inv.payload_json === 'string' ? JSON.parse(inv.payload_json) : (inv.payload_json || {});
+      lineCount = (p.DocumentLines || []).length;
+    } catch {}
+    const linesHint = lineCount > 1 ? `<span style="color:var(--text3);font-size:10px" title="${lineCount} lines on this invoice — click row for per-line detail">+${lineCount-1}</span>` : '';
     return `
       <tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="_v39_showInvoiceDetail('${inv.id}')">
         <td style="padding:6px 8px;font-family:var(--mono);font-weight:700;color:#0891b2">${inv.sap_doc_num || '—'}${sourceBadge}${adminBadge}</td>
@@ -6164,9 +6202,13 @@ function _v39_renderInvoiceTable() {
         <td style="padding:6px 8px;font-size:11px">${invDate}</td>
         <td style="padding:6px 8px;font-size:12px">${(inv.customer||'—').substring(0,32)}</td>
         <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.batch_number || '—'}</td>
+        <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.pc_code || '—'} ${linesHint}</td>
+        <td style="padding:6px 8px;font-size:11px">${inv.size || '—'}</td>
+        <td style="padding:6px 8px;font-size:11px">${(inv.colour||'—').substring(0,18)}</td>
         <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${inv.total_boxes || 0}</td>
         <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${qtyLakhs.toFixed(2)} L</td>
         <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">₹${(parseFloat(inv.total_amount)||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+        <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.vehicle_no || '—'}</td>
         <td style="padding:6px 8px;text-align:center"><span style="color:${statusColor};font-size:11px;font-weight:600">${statusLabel}</span></td>
       </tr>`;
   }).join('');
@@ -6203,9 +6245,13 @@ function _v39_renderInvoiceTable() {
             <th style="padding:8px;text-align:left;font-weight:700;font-size:11px">Date</th>
             <th style="padding:8px;text-align:left;font-weight:700;font-size:11px">Customer</th>
             <th style="padding:8px;text-align:left;font-weight:700;font-size:11px">Batch</th>
+            <th style="padding:8px;text-align:left;font-weight:700;font-size:11px">PC Code</th>
+            <th style="padding:8px;text-align:left;font-weight:700;font-size:11px">Size</th>
+            <th style="padding:8px;text-align:left;font-weight:700;font-size:11px">Colour</th>
             <th style="padding:8px;text-align:right;font-weight:700;font-size:11px">Boxes</th>
             <th style="padding:8px;text-align:right;font-weight:700;font-size:11px">Qty</th>
             <th style="padding:8px;text-align:right;font-weight:700;font-size:11px">Amount</th>
+            <th style="padding:8px;text-align:left;font-weight:700;font-size:11px">Truck</th>
             <th style="padding:8px;text-align:center;font-weight:700;font-size:11px">Status</th>
           </tr>
         </thead>
@@ -6250,6 +6296,45 @@ function _v39_showInvoiceDetail(invoiceId) {
         <div style="color:var(--text3)">PC Code:</div><div style="font-family:var(--mono)">${inv.pc_code || '—'}</div>
         <div style="color:var(--text3)">Size / Colour:</div><div>${inv.size || '—'} / ${inv.colour || '—'}</div>
       </div>
+      ${(() => {
+        // v41s Q2: per-line breakdown table from payload_json.DocumentLines.
+        // Each row shows ItemCode (=PC), ItemDescription, Quantity, line total, plus UDF
+        // print matter where present. Helps the user inspect multi-line invoices.
+        let lines = [];
+        try {
+          const p = typeof inv.payload_json === 'string' ? JSON.parse(inv.payload_json) : (inv.payload_json || {});
+          lines = p.DocumentLines || [];
+        } catch {}
+        if (lines.length <= 1) return '';
+        const linesHtml = lines.map((L, i) => `
+          <tr style="border-bottom:1px solid var(--border)">
+            <td style="padding:5px 8px;text-align:center;color:var(--text3);font-size:11px">${i+1}</td>
+            <td style="padding:5px 8px;font-family:var(--mono);font-size:11px">${L.ItemCode || '—'}</td>
+            <td style="padding:5px 8px;font-size:11px">${(L.ItemDescription||'—').substring(0,40)}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:11px">${parseFloat(L.Quantity)||0}</td>
+            <td style="padding:5px 8px;font-size:11px">${L.UoMCode || L.UnitsOfMeasurement || L.MeasureUnit || '—'}</td>
+            <td style="padding:5px 8px;font-size:11px">${(L.U_PRNT_MATTR || '').substring(0,30) || '—'}</td>
+            <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:11px">₹${(parseFloat(L.LineTotal)||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+          </tr>`).join('');
+        return `
+          <div style="font-weight:700;color:#0e7490;margin-bottom:8px;font-size:13px">Per-Line Detail (${lines.length} lines)</div>
+          <div style="background:var(--surface2);border-radius:6px;padding:6px;margin-bottom:14px;overflow-x:auto">
+            <table style="width:100%;border-collapse:collapse;font-size:11px">
+              <thead style="background:var(--surface3)">
+                <tr>
+                  <th style="padding:5px 8px;text-align:center">#</th>
+                  <th style="padding:5px 8px;text-align:left">ItemCode</th>
+                  <th style="padding:5px 8px;text-align:left">Description</th>
+                  <th style="padding:5px 8px;text-align:right">Qty</th>
+                  <th style="padding:5px 8px;text-align:left">UoM</th>
+                  <th style="padding:5px 8px;text-align:left">Print Matter</th>
+                  <th style="padding:5px 8px;text-align:right">Line Total</th>
+                </tr>
+              </thead>
+              <tbody>${linesHtml}</tbody>
+            </table>
+          </div>`;
+      })()}
       <div style="font-weight:700;color:#0e7490;margin-bottom:8px;font-size:13px">Quantities & Amount</div>
       <div style="background:var(--surface2);border-radius:6px;padding:10px 14px;margin-bottom:14px;display:grid;grid-template-columns:140px 1fr;gap:4px 12px">
         <div style="color:var(--text3)">Total Boxes:</div><div style="font-family:var(--mono);font-weight:700">${inv.total_boxes || 0}</div>
@@ -10340,6 +10425,9 @@ function _v39_renderReportLTable() {
         <td style="padding:4px 6px;font-size:11px">${invDate}</td>
         <td style="padding:4px 6px;font-size:11px">${(inv.customer||'—').substring(0,28)}</td>
         <td style="padding:4px 6px;font-family:var(--mono);font-size:11px">${inv.batch_number || '—'}</td>
+        <td style="padding:4px 6px;font-family:var(--mono);font-size:11px">${inv.pc_code || '—'}</td>
+        <td style="padding:4px 6px;font-size:11px">${inv.size || '—'}</td>
+        <td style="padding:4px 6px;font-size:11px">${(inv.colour||'—').substring(0,18)}</td>
         <td style="padding:4px 6px;text-align:right;font-family:var(--mono);font-size:11px">${inv.total_boxes || 0}</td>
         <td style="padding:4px 6px;text-align:right;font-family:var(--mono);font-size:11px">${qtyLakhs.toFixed(2)}</td>
         <td style="padding:4px 6px;text-align:right;font-family:var(--mono);font-size:11px">${(parseFloat(inv.taxable_amount)||0).toLocaleString('en-IN',{maximumFractionDigits:2})}</td>
@@ -10398,6 +10486,9 @@ function _v39_renderReportLTable() {
               <th style="padding:6px;text-align:left;font-weight:700;font-size:10px">Date</th>
               <th style="padding:6px;text-align:left;font-weight:700;font-size:10px">Customer</th>
               <th style="padding:6px;text-align:left;font-weight:700;font-size:10px">Batch</th>
+              <th style="padding:6px;text-align:left;font-weight:700;font-size:10px">PC Code</th>
+              <th style="padding:6px;text-align:left;font-weight:700;font-size:10px">Size</th>
+              <th style="padding:6px;text-align:left;font-weight:700;font-size:10px">Colour</th>
               <th style="padding:6px;text-align:right;font-weight:700;font-size:10px">Boxes</th>
               <th style="padding:6px;text-align:right;font-weight:700;font-size:10px">Qty</th>
               <th style="padding:6px;text-align:right;font-weight:700;font-size:10px">Taxable</th>
@@ -10412,7 +10503,7 @@ function _v39_renderReportLTable() {
           <tbody>${rows}</tbody>
           <tfoot>
             <tr style="background:var(--surface2);font-weight:700;border-top:2px solid var(--border)">
-              <td colspan="6" style="padding:8px;text-align:right">TOTALS</td>
+              <td colspan="9" style="padding:8px;text-align:right">TOTALS</td>
               <td style="padding:8px;text-align:right;font-family:var(--mono)">${totBoxes.toLocaleString()}</td>
               <td style="padding:8px;text-align:right;font-family:var(--mono)">${totQty.toFixed(2)}</td>
               <td style="padding:8px;text-align:right;font-family:var(--mono)">${totTaxable.toLocaleString('en-IN',{maximumFractionDigits:2})}</td>

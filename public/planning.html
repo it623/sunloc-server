@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41p</p>
+      <p>Planning Suite v3.0 · build v41s</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -5229,7 +5229,14 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
       for (const r of (reqJ.requests || [])) {
         if (!r.batch_number) continue;
         const e = state[r.batch_number] = state[r.batch_number] || {};
-        if (r.status === 'pending' || r.status === 'sent_to_sap') e.hasPending = true;
+        // v41r FIX (Q1): the v41 ledger-only flow uses 'pending_reconciliation' and 'reconciled'
+        // as the in-flight statuses; legacy 'pending'/'sent_to_sap' kept for transition. Without
+        // this, requests landed but the Planning batch row never flipped to "⏳ Sent to SAP" —
+        // user had no visual confirmation that Generate Invoice did anything.
+        if (r.status === 'pending' || r.status === 'sent_to_sap' ||
+            r.status === 'pending_reconciliation' || r.status === 'reconciled') {
+          e.hasPending = true;
+        }
         if (r.status === 'failed') e.hasFailed = true;
         e.lastRequestStatus = r.status;
       }
@@ -5327,7 +5334,7 @@ function _v39_openGenerateInvoiceModal(planId, mode) {
       After SAP responds with the DocNum/IRN, this batch's status updates to "Sent to SAP".
     </div>
   `, [
-    { label: '🧾 Create Delivery in SAP', cls: 'btn-primary', fn: '_v39_submitInvoiceRequest()' },
+    { label: '🧾 Log Invoice Request', cls: 'btn-primary', fn: '_v39_submitInvoiceRequest()' },
     { label: 'Cancel', cls: 'btn-secondary', fn: 'closeModal()' },
   ]);
 }
@@ -5367,17 +5374,22 @@ async function _v39_submitInvoiceRequest() {
     const j = await r.json();
     closeModal();
     if (j.ok) {
-      toast(`✅ Delivery created in SAP — Delivery DocNum: ${j.sap_response?.docNum || j.request_id}`, 'var(--accent3)');
+      // v41r: distinct toast for pre-link vs newly-logged
+      if (j.preLinked) {
+        toast(`🔗 Linked to existing SAP invoice #${j.preLinkedInvoice?.sap_doc_num || ''} — batch is now in the Invoice Queue for Scan Out.`, 'var(--accent3)', 4500);
+      } else {
+        toast(`✅ Invoice request logged to Pending Reconciliation (req ${j.request_id}). SAP user creates the invoice in SAP; poller reconciles within ~5 min.`, 'var(--accent3)', 4500);
+      }
     } else if (j.degraded) {
       toast(`⚠️ Request saved but SAP unreachable. Will retry once SAP is online. Request ID: ${j.request_id}`, '#f59e0b');
     } else {
-      alert(`❌ SAP rejected the invoice request.\n\nError: ${j.error || 'unknown'}\n\nRequest ID: ${j.request_id || '(not saved)'}\n\nPlease check SAP logs or contact the SAP admin.`);
+      alert(`❌ Invoice request failed.\n\nError: ${j.error || 'unknown'}\n\nRequest ID: ${j.request_id || '(not saved)'}\n\nPlease check server logs or contact the admin.`);
     }
     // Refresh invoice state cache and re-render
     await _v39_loadInvoiceState();
     render();
   } catch (e) {
-    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '🧾 Create Delivery in SAP'; }
+    if (submitBtn) { submitBtn.disabled = false; submitBtn.textContent = '🧾 Log Invoice Request'; }
     alert('Network error: ' + e.message);
   }
 }
@@ -5591,7 +5603,13 @@ function _v40_renderConsolidatedApprovalModalBody() {
     if (results) {
       const r = results.find(x => x.batchNumber === it.batchNumber);
       if (r?.ok) {
-        statusCell = `<td style="padding:5px 8px;text-align:center;color:#10b981;font-weight:700">✅ Delivery #${r.delivery_doc_num || r.delivery_doc_entry || '✓'}</td>`;
+        // v41r: show distinct status when SAP invoice was pre-linked (immediate reconciliation)
+        if (r.preLinked) {
+          const dn = r.preLinkedInvoice?.sap_doc_num || '';
+          statusCell = `<td style="padding:5px 8px;text-align:center;color:#0e7490;font-weight:700;font-size:11px" title="SAP invoice already existed — auto-linked at generate time. Batch is now in Invoice Queue.">🔗 Linked #${dn}</td>`;
+        } else {
+          statusCell = `<td style="padding:5px 8px;text-align:center;color:#10b981;font-weight:700;font-size:11px" title="Logged to Pending Reconciliation — SAP user creates the invoice in SAP; poller will reconcile.">✅ Logged</td>`;
+        }
       } else if (r) {
         statusCell = `<td style="padding:5px 8px;text-align:center;color:#dc2626;font-size:11px" title="${r.error||''}">❌ Failed</td>`;
       } else {
@@ -5625,10 +5643,14 @@ function _v40_renderConsolidatedApprovalModalBody() {
   if (results) {
     const okCount = results.filter(r => r.ok).length;
     const failCount = results.length - okCount;
+    // v41r: distinguish pre-linked (instant queue entry) from newly-logged (awaiting SAP user)
+    const preLinkedCount = results.filter(r => r.ok && r.preLinked).length;
+    const loggedCount = okCount - preLinkedCount;
     footerHtml = `
       <div style="background:${failCount===0?'rgba(16,185,129,0.08)':(okCount===0?'rgba(220,38,38,0.08)':'rgba(245,158,11,0.08)')};border:1px solid ${failCount===0?'rgba(16,185,129,0.3)':(okCount===0?'rgba(220,38,38,0.3)':'rgba(245,158,11,0.3)')};border-radius:6px;padding:10px 14px;margin-top:12px;font-size:12px;line-height:1.6">
-        <strong>${failCount===0?'✅ All invoice requests logged':okCount===0?'❌ All requests failed':'⚠️ Partial: '+okCount+' succeeded, '+failCount+' failed'}</strong><br>
-        ${okCount > 0 ? `<span style="color:#047857">${okCount} invoice request${okCount!==1?'s':''} logged to Pending Reconciliation. SAP user creates each invoice in SAP manually; Sunloc's 5-min poller will reconcile them automatically.</span><br>` : ''}
+        <strong>${failCount===0?'✅ All invoice requests processed':okCount===0?'❌ All requests failed':'⚠️ Partial: '+okCount+' succeeded, '+failCount+' failed'}</strong><br>
+        ${preLinkedCount > 0 ? `<span style="color:#0e7490"><strong>🔗 ${preLinkedCount}</strong> pre-linked to existing SAP invoice${preLinkedCount!==1?'s':''} — these batches are already in the Invoice Queue for Scan Out.</span><br>` : ''}
+        ${loggedCount > 0 ? `<span style="color:#047857"><strong>✅ ${loggedCount}</strong> logged to Pending Reconciliation — SAP user creates each invoice in SAP manually; Sunloc's 5-min poller reconciles automatically.</span><br>` : ''}
         ${failCount > 0 ? `<span style="color:#7c2d2d">Failures preserved as 'failed' in invoice_requests for audit.</span>` : ''}
       </div>`;
   } else {
@@ -5720,7 +5742,7 @@ async function _v40_submitConsolidated() {
     await _v39_loadInvoiceState();
   } catch (e) {
     alert('Network error: ' + e.message);
-    if (btn) { btn.disabled = false; btn.textContent = '🚀 Approve and Send to SAP'; }
+    if (btn) { btn.disabled = false; btn.textContent = '🚀 Approve & Log Invoice Requests'; }
   }
 }
 
@@ -8007,9 +8029,9 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
       color = '#0891b2';  // cyan
       tooltip = `Invoice received from SAP (DocNum: ${invState.docNum || '—'}) — awaiting Scan Out`;
     } else {
-      status = '⏳ Sent to SAP';
+      status = '⏳ Awaiting SAP Invoice';
       color = '#10b981';  // mint
-      tooltip = 'Delivery created in SAP — awaiting Invoice conversion by SAP user';
+      tooltip = 'Invoice request logged to Pending Reconciliation — SAP user creates the invoice in SAP; Sunloc poller reconciles automatically (~5 min)';
     }
     return `<button class="btn btn-ghost btn-sm" title="${tooltip}" onclick="_v39_showInvoiceState('${batch}')" style="color:${color}">${status}</button>`;
   }

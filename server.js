@@ -2626,39 +2626,96 @@ async function _doRefreshSapInvoices() {
     const taxable = docTotal - vatSum;
     const recId = `inv_${inv.DocEntry}`;
     const payload = JSON.stringify(inv);
+
+    // v41s Q2: derive pc_code/size/colour for the header row (= first line's values).
+    // Per-line details are still available in payload_json for the detail modal and filtering.
+    // Priority: (1) linked Sunloc invoice_request (definitive — dispatch manager entered these);
+    // (2) PC Code master lookup via first line's ItemCode (covers direct_sap and Sunloc both,
+    // since SAP carries the item but not always our Sunloc UDFs).
+    let pcCode = '', size = '', colour = '';
+    try {
+      if (invReqId) {
+        // Use the linked request's values — most reliable.
+        let reqRow;
+        if (pgPool) {
+          const rr = await pgPool.query(`SELECT pc_code, size, colour FROM invoice_requests WHERE id=$1`, [invReqId]);
+          reqRow = rr.rows[0];
+        } else {
+          reqRow = db.prepare(`SELECT pc_code, size, colour FROM invoice_requests WHERE id=?`).get(invReqId);
+        }
+        if (reqRow) {
+          pcCode = reqRow.pc_code || '';
+          size   = reqRow.size   || '';
+          colour = reqRow.colour || '';
+        }
+      }
+      // Fallback: PC master lookup on first line's ItemCode (works for direct_sap and as backup).
+      if ((!pcCode || !size || !colour)) {
+        const firstLine = (inv.DocumentLines || [])[0];
+        const itemCode = firstLine ? (firstLine.ItemCode || '') : '';
+        if (itemCode) {
+          let pcRow;
+          if (pgPool) {
+            const r = await pgPool.query(`SELECT size, code, colour FROM pc_codes WHERE code=$1 LIMIT 1`, [itemCode]);
+            pcRow = r.rows[0];
+          } else {
+            pcRow = db.prepare(`SELECT size, code, colour FROM pc_codes WHERE code=? LIMIT 1`).get(itemCode);
+          }
+          if (pcRow) {
+            if (!pcCode) pcCode = pcRow.code || itemCode;
+            if (!size)   size   = pcRow.size || '';
+            if (!colour) colour = pcRow.colour || '';
+          } else if (!pcCode) {
+            // No PC master match — at least record the ItemCode so the column isn't blank.
+            pcCode = itemCode;
+          }
+        }
+      }
+    } catch (e) { console.warn('[v41s] pc/size/colour derivation failed:', e.message); }
+
     try {
       if (pgPool) {
         await pgPool.query(`
           INSERT INTO invoices_received (id, sap_doc_entry, sap_doc_num, sap_invoice_no,
-            invoice_date, customer, card_code, po_number, batch_number, total_boxes,
-            taxable_amount, igst_amount, total_amount, irn, source, invoice_request_id,
+            invoice_date, customer, card_code, po_number, batch_number, pc_code, size, colour,
+            total_boxes, taxable_amount, igst_amount, total_amount, irn, source, invoice_request_id,
             fetched_at, payload_json)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,NOW()::TEXT,$17)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW()::TEXT,$20)
           ON CONFLICT (sap_doc_entry) DO UPDATE SET
             sap_doc_num=$3, sap_invoice_no=$4, invoice_date=$5, customer=$6,
-            card_code=$7, po_number=$8, batch_number=$9, total_boxes=$10,
-            taxable_amount=$11, igst_amount=$12, total_amount=$13, irn=$14,
-            payload_json=$17, fetched_at=NOW()::TEXT
+            card_code=$7, po_number=$8, batch_number=$9,
+            pc_code=COALESCE(NULLIF(EXCLUDED.pc_code,''), invoices_received.pc_code),
+            size=COALESCE(NULLIF(EXCLUDED.size,''), invoices_received.size),
+            colour=COALESCE(NULLIF(EXCLUDED.colour,''), invoices_received.colour),
+            total_boxes=$13,
+            taxable_amount=$14, igst_amount=$15, total_amount=$16, irn=$17,
+            payload_json=$20, fetched_at=NOW()::TEXT
         `, [recId, inv.DocEntry, String(inv.DocNum || ''), String(inv.DocNum || ''),
             inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchUdf,
+            pcCode, size, colour,
             totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload]);
       } else {
         db.prepare(`
           INSERT INTO invoices_received (id, sap_doc_entry, sap_doc_num, sap_invoice_no,
-            invoice_date, customer, card_code, po_number, batch_number, total_boxes,
-            taxable_amount, igst_amount, total_amount, irn, source, invoice_request_id,
+            invoice_date, customer, card_code, po_number, batch_number, pc_code, size, colour,
+            total_boxes, taxable_amount, igst_amount, total_amount, irn, source, invoice_request_id,
             fetched_at, payload_json)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)
           ON CONFLICT(sap_doc_entry) DO UPDATE SET
             sap_doc_num=excluded.sap_doc_num, sap_invoice_no=excluded.sap_invoice_no,
             invoice_date=excluded.invoice_date, customer=excluded.customer,
             card_code=excluded.card_code, po_number=excluded.po_number,
-            batch_number=excluded.batch_number, total_boxes=excluded.total_boxes,
+            batch_number=excluded.batch_number,
+            pc_code=COALESCE(NULLIF(excluded.pc_code,''), invoices_received.pc_code),
+            size=COALESCE(NULLIF(excluded.size,''), invoices_received.size),
+            colour=COALESCE(NULLIF(excluded.colour,''), invoices_received.colour),
+            total_boxes=excluded.total_boxes,
             taxable_amount=excluded.taxable_amount, igst_amount=excluded.igst_amount,
             total_amount=excluded.total_amount, irn=excluded.irn,
             payload_json=excluded.payload_json, fetched_at=datetime('now')
         `).run(recId, inv.DocEntry, String(inv.DocNum || ''), String(inv.DocNum || ''),
             inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchUdf,
+            pcCode, size, colour,
             totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload);
       }
       if (invReqId) {
@@ -2692,30 +2749,53 @@ async function _doRefreshSapInvoices() {
 
             // Reconcile any still-pending invoice_requests for this SO (where not already matched by batch UDF)
             try {
-              let pendingReqs;
+              // v41r FIX (race fix #1): when a pending_reconciliation request matches an invoice via
+              // SO BaseEntry, the request gets reconciled — but historically the invoices_received row
+              // stayed at source='direct_sap', invoice_request_id=null, so it was hidden from the
+              // Invoice Queue (which gates on source='sunloc' OR admin-approved). Promote the invoice
+              // here too so it appears in the queue immediately. Also copy batch_number from the
+              // request if the invoice's batch_number is blank (common when SAP user didn't fill the
+              // U_SunlocBatch UDF).
+              let pendingReqsFull;
               if (pgPool) {
-                const r2 = await pgPool.query(
-                  `SELECT id, qty_lakhs FROM invoice_requests WHERE sap_doc_entry=$1 AND status='pending_reconciliation' ORDER BY created_at ASC`,
+                const r3 = await pgPool.query(
+                  `SELECT id, qty_lakhs, batch_number FROM invoice_requests WHERE sap_doc_entry=$1 AND status='pending_reconciliation' ORDER BY created_at ASC`,
                   [soDocEntry]
                 );
-                pendingReqs = r2.rows;
+                pendingReqsFull = r3.rows;
               } else {
-                pendingReqs = db.prepare(`SELECT id, qty_lakhs FROM invoice_requests WHERE sap_doc_entry=? AND status='pending_reconciliation' ORDER BY created_at ASC`).all(soDocEntry);
+                pendingReqsFull = db.prepare(`SELECT id, qty_lakhs, batch_number FROM invoice_requests WHERE sap_doc_entry=? AND status='pending_reconciliation' ORDER BY created_at ASC`).all(soDocEntry);
               }
               // Mark all matching pending_reconciliation rows as reconciled (first-come-first-served).
               // Note: in practice these should already have been matched via batchUdf, but this is the safety net.
-              for (const pr of pendingReqs) {
+              for (const pr of pendingReqsFull) {
                 if (pgPool) {
                   await pgPool.query(
                     `UPDATE invoice_requests SET status='reconciled', sap_response_doc_num=$1, sap_response_doc_entry=$2, reconciled_at=NOW()::TEXT, reconciled_with_invoice_id=$3, updated_at=NOW()::TEXT WHERE id=$4 AND status='pending_reconciliation'`,
                     [String(inv.DocNum || ''), inv.DocEntry, recId, pr.id]
                   );
+                  // v41r: promote the invoice row so it surfaces in Invoice Queue
+                  await pgPool.query(
+                    `UPDATE invoices_received
+                       SET source='sunloc',
+                           invoice_request_id=$1,
+                           batch_number=COALESCE(NULLIF(batch_number,''), $2)
+                     WHERE id=$3 AND source='direct_sap'`,
+                    [pr.id, pr.batch_number || null, recId]
+                  );
                 } else {
                   db.prepare(
                     `UPDATE invoice_requests SET status='reconciled', sap_response_doc_num=?, sap_response_doc_entry=?, reconciled_at=datetime('now'), reconciled_with_invoice_id=?, updated_at=datetime('now') WHERE id=? AND status='pending_reconciliation'`
                   ).run(String(inv.DocNum || ''), inv.DocEntry, recId, pr.id);
+                  db.prepare(
+                    `UPDATE invoices_received
+                       SET source='sunloc',
+                           invoice_request_id=?,
+                           batch_number=COALESCE(NULLIF(batch_number,''), ?)
+                     WHERE id=? AND source='direct_sap'`
+                  ).run(pr.id, pr.batch_number || null, recId);
                 }
-                console.log(`[v41 P19.3] Reconciled invoice_request ${pr.id} via SO BaseEntry=${soDocEntry}`);
+                console.log(`[v41r] Reconciled invoice_request ${pr.id} via SO BaseEntry=${soDocEntry} + promoted invoice ${recId} direct_sap→sunloc`);
               }
             } catch (e) { console.warn('[v41 P19.3] SO reconciliation error:', e.message); }
 
@@ -3311,37 +3391,125 @@ app.post('/api/invoice/request', async (req, res) => {
 
     const id = 'invreq_' + crypto.randomBytes(8).toString('hex');
     const selectedLabelsJson = JSON.stringify(body.selectedLabels || []);
+
+    // v41r FIX #2: SAP-first / Sunloc-late race. If the SAP user already created the invoice for
+    // this Sales Order BEFORE the dispatch manager clicked Generate Invoice, the poller has
+    // already pulled it as source='direct_sap' (because no matching pending request existed at
+    // poll time). Without this block, we'd create a fresh pending_reconciliation row that may
+    // never auto-link, and the direct_sap invoice would stay hidden from the Invoice Queue.
+    // Look ahead: if a direct_sap invoice exists for this SO (not yet dispatched, not legacy-
+    // closed, not already linked), promote it now AND write our request as already reconciled.
+    // The dispatch manager's batch immediately appears in the Invoice Queue for Scan Out.
+    let preLinkedInvoiceRow = null;
+    try {
+      const soDocEntry = parseInt(body.sapDocEntry, 10);
+      if (soDocEntry) {
+        const findSql = `SELECT id, sap_doc_num, sap_doc_entry, batch_number FROM invoices_received
+          WHERE source='direct_sap' AND invoice_request_id IS NULL
+            AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
+            AND id IN (
+              SELECT DISTINCT ir.id FROM invoices_received ir
+              WHERE ir.source='direct_sap' AND ir.invoice_request_id IS NULL
+            )`;
+        // We need to match by Sales Order BaseEntry inside DocumentLines (payload_json).
+        // Postgres + SQLite both support JSON extraction; to keep this portable, fetch
+        // candidate direct_sap invoices and inspect their payloads in JS.
+        let candidates;
+        if (pgPool) {
+          const r = await pgPool.query(
+            `SELECT id, sap_doc_num, sap_doc_entry, batch_number, payload_json
+               FROM invoices_received
+              WHERE source='direct_sap' AND invoice_request_id IS NULL
+                AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
+              ORDER BY fetched_at DESC LIMIT 200`
+          );
+          candidates = r.rows;
+        } else {
+          candidates = db.prepare(
+            `SELECT id, sap_doc_num, sap_doc_entry, batch_number, payload_json
+               FROM invoices_received
+              WHERE source='direct_sap' AND invoice_request_id IS NULL
+                AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
+              ORDER BY fetched_at DESC LIMIT 200`
+          ).all();
+        }
+        for (const cand of (candidates || [])) {
+          try {
+            const payload = JSON.parse(cand.payload_json || '{}');
+            const lines = payload.DocumentLines || [];
+            const matches = lines.some(L => L.BaseType === 17 && parseInt(L.BaseEntry, 10) === soDocEntry);
+            if (matches) { preLinkedInvoiceRow = cand; break; }
+          } catch {} // skip un-parseable rows
+        }
+      }
+    } catch (e) { console.warn('[v41r pre-link lookback] failed:', e.message); }
+
+    const initialStatus = preLinkedInvoiceRow ? 'reconciled' : 'pending_reconciliation';
     try {
       if (pgPool) {
         await pgPool.query(`
           INSERT INTO invoice_requests (id, batch_number, customer, card_code, po_number,
             sap_doc_entry, size, colour, pc_code, boxes, qty_lakhs, rate_per_lakh,
             selected_labels, selection_mode, truck_number, status, created_by,
-            is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending_reconciliation',$16,$17,$18,$19)
+            is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at,
+            sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
         `, [id, body.batchNumber, body.customer, body.cardCode || '', body.poNumber || '',
             body.sapDocEntry, body.size || '', body.colour || '', body.pcCode || '',
             parseInt(body.boxes) || 0, parseFloat(body.qtyLakhs) || 0, parseFloat(body.ratePerLakh) || 0,
             selectedLabelsJson, body.selectionMode || 'batch', body.truckNumber || null,
-            body.createdBy || 'unknown',
+            initialStatus, body.createdBy || 'unknown',
             overdispatchReason ? 1 : 0,
             overdispatchReason ? (body.createdBy || 'admin') : null,
-            overdispatchReason ? new Date().toISOString() : null]);
+            overdispatchReason ? new Date().toISOString() : null,
+            preLinkedInvoiceRow ? (preLinkedInvoiceRow.sap_doc_num || '') : null,
+            preLinkedInvoiceRow ? preLinkedInvoiceRow.sap_doc_entry : null,
+            preLinkedInvoiceRow ? new Date().toISOString() : null,
+            preLinkedInvoiceRow ? preLinkedInvoiceRow.id : null]);
       } else {
         db.prepare(`
           INSERT INTO invoice_requests (id, batch_number, customer, card_code, po_number,
             sap_doc_entry, size, colour, pc_code, boxes, qty_lakhs, rate_per_lakh,
             selected_labels, selection_mode, truck_number, status, created_by,
-            is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending_reconciliation',?,?,?,?)
+            is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at,
+            sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).run(id, body.batchNumber, body.customer, body.cardCode || '', body.poNumber || '',
             body.sapDocEntry, body.size || '', body.colour || '', body.pcCode || '',
             parseInt(body.boxes) || 0, parseFloat(body.qtyLakhs) || 0, parseFloat(body.ratePerLakh) || 0,
             selectedLabelsJson, body.selectionMode || 'batch', body.truckNumber || null,
-            body.createdBy || 'unknown',
+            initialStatus, body.createdBy || 'unknown',
             overdispatchReason ? 1 : 0,
             overdispatchReason ? (body.createdBy || 'admin') : null,
-            overdispatchReason ? new Date().toISOString() : null);
+            overdispatchReason ? new Date().toISOString() : null,
+            preLinkedInvoiceRow ? (preLinkedInvoiceRow.sap_doc_num || '') : null,
+            preLinkedInvoiceRow ? preLinkedInvoiceRow.sap_doc_entry : null,
+            preLinkedInvoiceRow ? new Date().toISOString() : null,
+            preLinkedInvoiceRow ? preLinkedInvoiceRow.id : null);
+      }
+      // v41r: if we pre-linked, promote the invoice row in the same logical operation.
+      if (preLinkedInvoiceRow) {
+        try {
+          if (pgPool) {
+            await pgPool.query(
+              `UPDATE invoices_received
+                  SET source='sunloc', invoice_request_id=$1,
+                      batch_number=COALESCE(NULLIF(batch_number,''), $2)
+                WHERE id=$3 AND source='direct_sap' AND invoice_request_id IS NULL`,
+              [id, body.batchNumber || null, preLinkedInvoiceRow.id]
+            );
+          } else {
+            db.prepare(
+              `UPDATE invoices_received
+                  SET source='sunloc', invoice_request_id=?,
+                      batch_number=COALESCE(NULLIF(batch_number,''), ?)
+                WHERE id=? AND source='direct_sap' AND invoice_request_id IS NULL`
+            ).run(id, body.batchNumber || null, preLinkedInvoiceRow.id);
+          }
+          try { logAudit(body.createdBy || 'unknown', 'planning', 'invoice', 'INVOICE_PRE_LINK',
+            `Pre-linked existing SAP invoice ${preLinkedInvoiceRow.sap_doc_num} (id ${preLinkedInvoiceRow.id}) to new request ${id} for batch ${body.batchNumber} — SAP-first race resolved at generate time`); } catch {}
+          console.log(`[v41r] Pre-linked direct_sap invoice ${preLinkedInvoiceRow.id} to new request ${id} (batch ${body.batchNumber})`);
+        } catch (e) { console.warn('[v41r] pre-link invoice promote failed:', e.message); }
       }
     } catch (e) {
       return res.status(500).json({ ok: false, error: 'Failed to write invoice_requests row: ' + e.message });
@@ -3349,8 +3517,16 @@ app.post('/api/invoice/request', async (req, res) => {
     return res.json({
       ok: true,
       request_id: id,
-      status: 'pending_reconciliation',
-      message: `Invoice request registered. SAP user should create the corresponding invoice in SAP; Sunloc will reconcile when the invoice is pulled by the next poll cycle (every ~5 min).`,
+      status: initialStatus,
+      preLinked: !!preLinkedInvoiceRow,
+      preLinkedInvoice: preLinkedInvoiceRow ? {
+        id: preLinkedInvoiceRow.id,
+        sap_doc_num: preLinkedInvoiceRow.sap_doc_num,
+        sap_doc_entry: preLinkedInvoiceRow.sap_doc_entry
+      } : null,
+      message: preLinkedInvoiceRow
+        ? `SAP invoice #${preLinkedInvoiceRow.sap_doc_num} already exists for this Sales Order — linked immediately. Batch now appears in the Invoice Queue for Scan Out.`
+        : `Invoice request registered. SAP user should create the corresponding invoice in SAP; Sunloc will reconcile when the invoice is pulled by the next poll cycle (every ~5 min).`,
       overdispatchApproved: !!overdispatchReason
     });
   } catch (err) {
@@ -3438,44 +3614,121 @@ app.post('/api/invoice/request-batch', async (req, res) => {
         // v41 P19.3: Insert pending_reconciliation row — NO SAP push.
         // SAP user creates the invoice manually in SAP; Sunloc poller reconciles.
         const id = 'invreq_' + crypto.randomBytes(8).toString('hex');
+        // v41r FIX #2 (consolidated path): same SAP-first race handling as /api/invoice/request.
+        // Look for an existing direct_sap invoice matching this batch's Sales Order; if found,
+        // insert the request as already-reconciled and promote the invoice in one step.
+        let preLinkedInv = null;
+        try {
+          const soDocEntry = parseInt(b.sapDocEntry, 10);
+          if (soDocEntry) {
+            let cands;
+            if (pgPool) {
+              const r = await pgPool.query(
+                `SELECT id, sap_doc_num, sap_doc_entry, batch_number, payload_json
+                   FROM invoices_received
+                  WHERE source='direct_sap' AND invoice_request_id IS NULL
+                    AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
+                  ORDER BY fetched_at DESC LIMIT 200`
+              );
+              cands = r.rows;
+            } else {
+              cands = db.prepare(
+                `SELECT id, sap_doc_num, sap_doc_entry, batch_number, payload_json
+                   FROM invoices_received
+                  WHERE source='direct_sap' AND invoice_request_id IS NULL
+                    AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
+                  ORDER BY fetched_at DESC LIMIT 200`
+              ).all();
+            }
+            for (const c of (cands || [])) {
+              try {
+                const p = JSON.parse(c.payload_json || '{}');
+                const ll = p.DocumentLines || [];
+                if (ll.some(L => L.BaseType === 17 && parseInt(L.BaseEntry, 10) === soDocEntry)) {
+                  preLinkedInv = c; break;
+                }
+              } catch {}
+            }
+          }
+        } catch (e) { console.warn('[v41r batch pre-link] failed:', e.message); }
+
+        const initStatusB = preLinkedInv ? 'reconciled' : 'pending_reconciliation';
         const selectedLabelsJson = JSON.stringify(b.selectedLabels || []);
         if (pgPool) {
           await pgPool.query(`
             INSERT INTO invoice_requests (id, batch_number, customer, card_code, po_number,
               sap_doc_entry, size, colour, pc_code, boxes, qty_lakhs, rate_per_lakh,
               selected_labels, selection_mode, truck_number, status, created_by,
-              is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'pending_reconciliation',$16,$17,$18,$19)
+              is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at,
+              sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
           `, [id, b.batchNumber, b.customer, b.cardCode || '', b.poNumber || '',
               b.sapDocEntry, b.size || '', b.colour || '', b.pcCode || '',
               parseInt(b.boxes) || 0, parseFloat(b.qtyLakhs) || 0, parseFloat(b.ratePerLakh) || 0,
               selectedLabelsJson, 'consolidated', b.truckNumber || null,
-              body.createdBy || 'unknown',
+              initStatusB, body.createdBy || 'unknown',
               overdispatchReason ? 1 : 0,
               overdispatchReason ? (body.createdBy || 'admin') : null,
-              overdispatchReason ? new Date().toISOString() : null]);
+              overdispatchReason ? new Date().toISOString() : null,
+              preLinkedInv ? (preLinkedInv.sap_doc_num || '') : null,
+              preLinkedInv ? preLinkedInv.sap_doc_entry : null,
+              preLinkedInv ? new Date().toISOString() : null,
+              preLinkedInv ? preLinkedInv.id : null]);
         } else {
           db.prepare(`
             INSERT INTO invoice_requests (id, batch_number, customer, card_code, po_number,
               sap_doc_entry, size, colour, pc_code, boxes, qty_lakhs, rate_per_lakh,
               selected_labels, selection_mode, truck_number, status, created_by,
-              is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,'pending_reconciliation',?,?,?,?)
+              is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at,
+              sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           `).run(id, b.batchNumber, b.customer, b.cardCode || '', b.poNumber || '',
               b.sapDocEntry, b.size || '', b.colour || '', b.pcCode || '',
               parseInt(b.boxes) || 0, parseFloat(b.qtyLakhs) || 0, parseFloat(b.ratePerLakh) || 0,
               selectedLabelsJson, 'consolidated', b.truckNumber || null,
-              body.createdBy || 'unknown',
+              initStatusB, body.createdBy || 'unknown',
               overdispatchReason ? 1 : 0,
               overdispatchReason ? (body.createdBy || 'admin') : null,
-              overdispatchReason ? new Date().toISOString() : null);
+              overdispatchReason ? new Date().toISOString() : null,
+              preLinkedInv ? (preLinkedInv.sap_doc_num || '') : null,
+              preLinkedInv ? preLinkedInv.sap_doc_entry : null,
+              preLinkedInv ? new Date().toISOString() : null,
+              preLinkedInv ? preLinkedInv.id : null);
+        }
+        // v41r: promote the invoice if we pre-linked.
+        if (preLinkedInv) {
+          try {
+            if (pgPool) {
+              await pgPool.query(
+                `UPDATE invoices_received
+                    SET source='sunloc', invoice_request_id=$1,
+                        batch_number=COALESCE(NULLIF(batch_number,''), $2)
+                  WHERE id=$3 AND source='direct_sap' AND invoice_request_id IS NULL`,
+                [id, b.batchNumber || null, preLinkedInv.id]
+              );
+            } else {
+              db.prepare(
+                `UPDATE invoices_received
+                    SET source='sunloc', invoice_request_id=?,
+                        batch_number=COALESCE(NULLIF(batch_number,''), ?)
+                  WHERE id=? AND source='direct_sap' AND invoice_request_id IS NULL`
+              ).run(id, b.batchNumber || null, preLinkedInv.id);
+            }
+            try { logAudit(body.createdBy || 'unknown', 'planning', 'invoice', 'INVOICE_PRE_LINK',
+              `[consolidated] Pre-linked existing SAP invoice ${preLinkedInv.sap_doc_num} to request ${id} for batch ${b.batchNumber}`); } catch {}
+          } catch (e) { console.warn('[v41r batch pre-link promote] failed:', e.message); }
         }
         batchRes.ok = true;
         batchRes.request_id = id;
-        batchRes.status = 'pending_reconciliation';
+        batchRes.status = initStatusB;
+        batchRes.preLinked = !!preLinkedInv;
+        if (preLinkedInv) {
+          batchRes.preLinkedInvoice = { id: preLinkedInv.id, sap_doc_num: preLinkedInv.sap_doc_num, sap_doc_entry: preLinkedInv.sap_doc_entry };
+          batchRes.note = `Pre-linked existing SAP invoice #${preLinkedInv.sap_doc_num}`;
+        }
         if (overdispatchReason) {
           batchRes.overdispatchApproved = true;
-          batchRes.note = overdispatchReason + ' (admin override applied)';
+          batchRes.note = (batchRes.note ? batchRes.note + ' · ' : '') + overdispatchReason + ' (admin override applied)';
         }
       } catch (e) {
         batchRes.error = 'server error: ' + e.message;
@@ -3522,6 +3775,10 @@ app.get('/api/invoice/received', async (req, res) => {
     const customer = (req.query.customer || '').toString();
     const fromDate = (req.query.from_date || '').toString();
     const toDate = (req.query.to_date || '').toString();
+    // v41s Q2: line-detail filters
+    const pcCode = (req.query.pc_code || '').toString().trim();
+    const size = (req.query.size || '').toString().trim();
+    const colour = (req.query.colour || '').toString().trim();
     const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
     const wheres = [];
     const args = [];
@@ -3537,6 +3794,30 @@ app.get('/api/invoice/received', async (req, res) => {
       rows = r.rows;
     } else {
       rows = db.prepare(`SELECT * FROM invoices_received ${whereSql} ORDER BY invoice_date DESC, fetched_at DESC LIMIT ${limit}`).all(...args);
+    }
+    // v41s Q2: post-filter by pc_code/size/colour. Match ANY line of the invoice
+    // (header column OR any DocumentLine in payload_json). Case-insensitive substring match.
+    if (pcCode || size || colour) {
+      const lc = (s) => String(s || '').toLowerCase();
+      const needPc = lc(pcCode), needSz = lc(size), needCol = lc(colour);
+      rows = rows.filter(inv => {
+        // Header-row match
+        const headerOk =
+          (!needPc  || lc(inv.pc_code).includes(needPc)) &&
+          (!needSz  || lc(inv.size).includes(needSz)) &&
+          (!needCol || lc(inv.colour).includes(needCol));
+        if (headerOk) return true;
+        // Per-line match (payload_json.DocumentLines)
+        try {
+          const payload = typeof inv.payload_json === 'string' ? JSON.parse(inv.payload_json) : (inv.payload_json || {});
+          const lines = payload.DocumentLines || [];
+          return lines.some(L => {
+            return (!needPc  || lc(L.ItemCode).includes(needPc)) &&
+                   (!needSz  || lc(L.U_SIZE_CAPSULE || L.U_SIZE || '').includes(needSz)) &&
+                   (!needCol || lc(L.U_ITEM_DES || L.U_COLOUR || '').includes(needCol));
+          });
+        } catch { return false; }
+      });
     }
     res.json({ ok: true, count: rows.length, invoices: rows });
   } catch (err) {
@@ -7768,7 +8049,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41p',
+      build: 'v41s',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -7777,7 +8058,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41p', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41s', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -9055,7 +9336,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41p',
+      build: 'v41s',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -9064,7 +9345,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41p', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41s', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
