@@ -5205,7 +5205,7 @@ app.post('/api/planning/state', async (req, res) => {
 
 // GET active orders for a machine (used by DPR dropdown)
 // ── Clear all TEMP batches from planning state and production_orders ──
-app.post('/api/planning/clear-temp-batches', requireAuth, async (req, res) => {
+app.post('/api/planning/clear-temp-batches', async (req, res) => {
   try {
     if (pgPool) {
       await pgPool.query(`
