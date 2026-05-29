@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41v</title>
+<title>Sunloc Tracking Suite v1.0 · build v41w</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41v</p>
+      <p>Tracking Suite v1.0 · build v41w</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41v</p>
+      <p>Tracking Suite v1.0 · build v41w</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -761,6 +761,14 @@ const ALERT_HOURS = 48;
 // ═══════════════════════════════════════════════════════
 
 let currentDept = null;
+// v41w FIX (Item 4): declare currentUser so optional-chaining usages (currentUser?.token,
+// currentUser?.username, currentUser?.role) don't throw ReferenceError. Optional chaining
+// protects against undefined PROPERTIES on a defined variable; it does NOT protect against
+// an undeclared identifier — that's a hard ReferenceError. Tracking uses currentDept for
+// role gating (v41t); currentUser holds session-token info passed to a few endpoints. The
+// affected calls were SO Ledger ("Failed to load: currentUser is not defined") and the
+// silent background fetch behind the Pending Reconciliation badge count.
+let currentUser = null;
 let currentPage = null;
 // Sanitize server URL — strip any file path and trailing slashes
 function sanitizeServerUrl(url) {
@@ -1716,7 +1724,7 @@ async function pullFromServer(){
           window._v40_boxStagesLoadedAt = Date.now();
           window._v40_dispatchedByBatch = bj.dispatchedByBatch || {};
           window._v40_boxCountsByBatch = bj.boxCounts || {};
-          console.log(`[v41v PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
+          console.log(`[v41w PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
@@ -5016,7 +5024,11 @@ async function _v41_closeInvoiceAsLegacy(invoiceId) {
 // Shim for the modal — fallback to a generic open-modal if a tracking-specific one isn't defined
 function openTrackingModal(title, html) {
   if (typeof openModal === 'function') {
-    return openModal(title, html);
+    // v41w FIX (Item 3): tracking's openModal signature is (title, sub, body, footer).
+    // The previous 2-arg call placed the HTML string into 'sub', which is rendered via
+    // textContent (escaping HTML) — that's why the Pending Reconciliation modal showed
+    // raw <div ...> text. Pass empty sub, html as body.
+    return openModal(title, '', html);
   }
   // Tracking has its own simple modal pattern
   const modalEl = document.getElementById('v40-modal');

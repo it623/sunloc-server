@@ -4845,28 +4845,119 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
   try {
     const { orders } = req.body;
     if (!Array.isArray(orders)) return res.status(400).json({ ok: false, error: 'orders array required' });
+
+    // v41w FIX: this endpoint is called on every page load (loadState migration push) AND
+    // whenever a client wants to sync. Previously it unconditionally overwrote DB.status with
+    // the client's payload, which caused a critical regression: if any tab/device had stale
+    // localStorage state with order X='running' (from before someone else closed it), the
+    // page-load bulk push would resurrect X to 'running' on the server — violating the Max-2
+    // hard block by retroactively un-closing orders. Now: per-order conflict resolution
+    // identical to the background merge in POST /api/planning/state — client wins UNLESS the
+    // DB's updated_at is meaningfully newer (>5s) than the client's _localEditedAt timestamp.
+    // v41w PERF: batch SELECT all existing rows in ONE query (was N sequential round-trips
+    // at 500+ orders, the previous bulk-push was the slowest path on the server).
+    let preservedCount = 0;
+    const mergedList = [];
+    const existingMap = {};
+    try {
+      const ids = orders.map(o => o && o.id).filter(Boolean);
+      if (ids.length > 0) {
+        if (pgPool) {
+          const r = await pgPool.query(
+            `SELECT id, data_json, status, deleted, updated_at FROM production_orders WHERE id = ANY($1)`,
+            [ids]
+          );
+          r.rows.forEach(row => { existingMap[row.id] = row; });
+        } else {
+          const stmt = db.prepare(`SELECT id, data_json, status, deleted, updated_at FROM production_orders WHERE id IN (${ids.map(()=>'?').join(',')})`);
+          stmt.all(...ids).forEach(row => { existingMap[row.id] = row; });
+        }
+      }
+    } catch(e) {
+      console.warn('[v41w upsert-bulk] Existing-row preload failed (falling back to client status):', e.message);
+    }
     for (const ord of orders) {
       if (!ord.id) continue;
-      const json = JSON.stringify(ord);
-      if (pgPool) {
+      let finalStatus = ord.status || 'pending';
+      let finalDeleted = ord.deleted || false;
+      let finalActualProd = ord.actualProd || 0;
+      let mergedOrd = ord;
+      const existing = existingMap[ord.id];
+      if (existing) {
+        let exData = {};
+        try { exData = typeof existing.data_json === 'string' ? JSON.parse(existing.data_json) : (existing.data_json || {}); } catch(e) {}
+        const clientEdit = parseInt(ord._localEditedAt || 0);
+        const dbUpdated  = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
+        // Status conflict resolution
+        if (existing.status && ord.status && existing.status !== ord.status) {
+          if (dbUpdated > clientEdit + 5000) {
+            // DB is meaningfully newer — DB wins
+            finalStatus = existing.status;
+            preservedCount++;
+          }
+          // else: client wins (most recent user action)
+        }
+        // Deleted is sticky once true — never resurrect a deleted order
+        if (exData.deleted || existing.deleted) finalDeleted = true;
+        // Take max of actualProd (DPR can write higher value independently)
+        finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
+        // Preserve manual date flags from DB if set
+        const hasManualDate = exData.manualEndDate || exData.manualStartDate;
+        mergedOrd = {
+          ...ord,
+          status: finalStatus,
+          deleted: finalDeleted,
+          actualProd: finalActualProd,
+          startDate:       hasManualDate ? exData.startDate   : ord.startDate,
+          endDate:         hasManualDate ? exData.endDate     : ord.endDate,
+          manualStartDate: exData.manualStartDate || ord.manualStartDate,
+          manualEndDate:   exData.manualEndDate   || ord.manualEndDate,
+        };
+      }
+      const json = JSON.stringify(mergedOrd);
+      mergedList.push({ row: mergedOrd, json, finalStatus, finalDeleted });
+    }
+    // v41w PERF: batch the INSERTs into chunked multi-row upserts (same pattern as background
+    // merge in POST /api/planning/state). At 500+ orders, sequential INSERTs starved the pool.
+    if (pgPool) {
+      const CHUNK = 500;
+      for (let i = 0; i < mergedList.length; i += CHUNK) {
+        const chunk = mergedList.slice(i, i + CHUNK);
+        const vals = [];
+        const params = [];
+        chunk.forEach((m, idx) => {
+          const b = idx * 6;
+          vals.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},NOW()::TEXT)`);
+          params.push(m.row.id, m.json, m.row.machineId||null, m.row.batchNumber||null,
+                      m.finalStatus, m.finalDeleted);
+        });
         await pgPool.query(`
           INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
-          VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
-          ON CONFLICT(id) DO UPDATE SET
-            data_json=$2,machine_id=$3,batch_number=$4,
-            status=$5,deleted=$6,updated_at=NOW()::TEXT
-        `, [ord.id, json, ord.machineId||null, ord.batchNumber||null,
-            ord.status||'pending', ord.deleted||false]);
-      } else {
-        db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+          VALUES ${vals.join(',')}
+          ON CONFLICT(id) DO UPDATE SET data_json=EXCLUDED.data_json,machine_id=EXCLUDED.machine_id,
+            batch_number=EXCLUDED.batch_number,status=EXCLUDED.status,deleted=EXCLUDED.deleted,
+            updated_at=NOW()::TEXT
+        `, params);
+      }
+    } else {
+      // SQLite: better-sqlite3 transactions are synchronous and fast — wrap all inserts
+      const stmt = db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
           VALUES (?,?,?,?,?,?,datetime('now'))
           ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
           machine_id=excluded.machine_id,batch_number=excluded.batch_number,
-          status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
-          .run(ord.id, json, ord.machineId||null, ord.batchNumber||null, ord.status||'pending', ord.deleted?1:0);
-      }
+          status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`);
+      const tx = db.transaction((rows) => {
+        for (const m of rows) {
+          stmt.run(m.row.id, m.json, m.row.machineId||null, m.row.batchNumber||null,
+                   m.finalStatus, m.finalDeleted?1:0);
+        }
+      });
+      tx(mergedList);
     }
-    res.json({ ok: true, count: orders.length, savedAt: new Date().toISOString() });
+    if (preservedCount > 0) {
+      console.log(`[v41w upsert-bulk] Preserved DB status on ${preservedCount}/${orders.length} orders (stale client write blocked)`);
+    }
+    res.json({ ok: true, count: orders.length, preservedCount, savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -5177,6 +5268,48 @@ app.post('/api/planning/state', async (req, res) => {
           console.log(`[State] Background merged ${orders.length} orders into production_orders (batched)`);
         } catch(e) { console.warn('[State] Background order merge failed:', e.message); }
       });
+    }
+
+    // v41w CRITICAL FIX (Item 6): the blob is the GET source-of-truth for order status. If a
+    // stale client posts the blob with old statuses, the corrupted blob is returned on next GET
+    // and orders that were correctly closed flip back to running. Apply the SAME per-order
+    // conflict resolution that the background merge uses BEFORE writing the blob — read each
+    // order's current DB row, and if DB.updated_at > client._localEditedAt + 5s, preserve DB
+    // status in the blob. This protects against stale-tab regressions.
+    let blobPreservedCount = 0;
+    if (state.orders && state.orders.length > 0 && pgPool) {
+      try {
+        const ids = state.orders.map(o => o.id).filter(Boolean);
+        if (ids.length > 0) {
+          const dbRes = await pgPool.query(
+            `SELECT id, status, deleted, updated_at FROM production_orders WHERE id = ANY($1)`, [ids]
+          );
+          const dbMap = {};
+          dbRes.rows.forEach(r => { dbMap[r.id] = r; });
+          state.orders = state.orders.map(ord => {
+            const dbRow = dbMap[ord.id];
+            if (!dbRow) return ord;
+            const clientEdit = parseInt(ord._localEditedAt || 0);
+            const dbUpdated  = dbRow.updated_at ? new Date(dbRow.updated_at).getTime() : 0;
+            let result = ord;
+            // Status: DB wins if meaningfully newer
+            if (dbRow.status && ord.status && dbRow.status !== ord.status && dbUpdated > clientEdit + 5000) {
+              result = { ...result, status: dbRow.status };
+              blobPreservedCount++;
+            }
+            // Deleted is sticky
+            if (dbRow.deleted && !result.deleted) {
+              result = { ...result, deleted: true };
+            }
+            return result;
+          });
+          if (blobPreservedCount > 0) {
+            console.log(`[v41w blob-save] Preserved DB status on ${blobPreservedCount}/${state.orders.length} orders before blob write`);
+          }
+        }
+      } catch (e) {
+        console.warn('[v41w blob-save] Pre-save conflict check failed (saving as-is):', e.message);
+      }
     }
 
     const json = JSON.stringify(state);
@@ -8049,7 +8182,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41v',
+      build: 'v41w',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -8058,7 +8191,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41v', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41w', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -9336,7 +9469,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41v',
+      build: 'v41w',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -9345,7 +9478,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41v', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41w', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

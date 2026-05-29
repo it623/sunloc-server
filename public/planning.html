@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41v</p>
+      <p>Planning Suite v3.0 · build v41w</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -11938,7 +11938,12 @@ async function checkPlanningTempAlerts(){
     if(!banner){
       banner = document.createElement('div');
       banner.id = 'plan-temp-banner';
-      banner.style.cssText = 'position:fixed;top:0;left:260px;right:0;z-index:450;background:rgba(255,171,0,0.12);border-bottom:2px solid var(--accent3);padding:8px 16px;display:flex;align-items:center;gap:10px;font-size:12px;cursor:pointer';
+      // v41w FIX (Item 5): banner was positioned at top:0, which overlapped the #topbar
+      // (height 56px) on every page — text became unreadable. Push the banner below the
+      // topbar so it sits in a clean strip beneath the page header. Mobile #topbar is 48px
+      // (CSS at line 419) — banner at 56px still leaves it just below the mobile topbar
+      // with a small visual gap, acceptable on both desktop and mobile.
+      banner.style.cssText = 'position:fixed;top:56px;left:260px;right:0;z-index:450;background:rgba(255,171,0,0.12);border-bottom:2px solid var(--accent3);padding:8px 16px;display:flex;align-items:center;gap:10px;font-size:12px;cursor:pointer';
       banner.onclick = () => navigate('reconciliation');
       document.body.appendChild(banner);
     }
