@@ -5167,15 +5167,47 @@ app.get('/api/planning/state', async (req, res) => {
     // PERMANENT FIX: Recover orders MISSING from planning_state using production_orders table
     // planning_state is SOURCE OF TRUTH for status/dates/all fields
     // production_orders is used ONLY to recover orders not present in planning_state
+    //
+    // v41z STRUCTURAL FIX (Max-2 regression root cause): the GET path was treating the blob
+    // as authoritative for STATUS, but the close action writes status to BOTH the production_orders
+    // table (via /api/orders/upsert) AND the blob (via /api/planning/state). If the blob write
+    // fails (network timeout, abort, server pool exhaustion) but the table write succeeds, the
+    // blob keeps the stale status forever and every subsequent GET returns the stale value —
+    // the user sees their close "revert" on every refresh because the blob never caught up to
+    // the table. v41z fixes this by reconciling per-order: if production_orders.updated_at is
+    // newer than the blob's last save AND the statuses differ, the DB status wins on read.
+    // This is the inverse of the v41w/v41y write-side guard (which protected DB against stale
+    // client writes) — symmetric reads now protect the user's view against stale blob entries.
     try {
       let dbOrders = [];
+      let dbOrderRows = [];  // v41z: also need updated_at per order
       if (pgPool) {
-        const r = await pgPool.query('SELECT data_json FROM production_orders WHERE deleted = false ORDER BY updated_at ASC');
-        dbOrders = r.rows.map(r => JSON.parse(r.data_json));
+        const r = await pgPool.query('SELECT data_json, status as db_status, updated_at as db_updated_at FROM production_orders WHERE deleted = false ORDER BY updated_at ASC');
+        dbOrderRows = r.rows;
+        dbOrders = r.rows.map(r => {
+          const o = JSON.parse(r.data_json);
+          o._dbStatus = r.db_status;
+          o._dbUpdatedAt = r.db_updated_at;
+          return o;
+        });
       } else {
-        dbOrders = db.prepare('SELECT data_json FROM production_orders WHERE deleted = 0 ORDER BY updated_at ASC').all()
-                     .map(r => JSON.parse(r.data_json));
+        const rows = db.prepare('SELECT data_json, status as db_status, updated_at as db_updated_at FROM production_orders WHERE deleted = 0 ORDER BY updated_at ASC').all();
+        dbOrderRows = rows;
+        dbOrders = rows.map(r => {
+          const o = JSON.parse(r.data_json);
+          o._dbStatus = r.db_status;
+          o._dbUpdatedAt = r.db_updated_at;
+          return o;
+        });
       }
+      // v41z: get blob's saved_at to compare against each order's DB updated_at
+      let blobSavedAt = 0;
+      try {
+        const r2 = pgPool
+          ? (await pgPool.query('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1')).rows[0]
+          : db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get();
+        blobSavedAt = r2?.saved_at ? new Date(r2.saved_at).getTime() : 0;
+      } catch(e) {}
       if (dbOrders.length > 0) {
         // Build lookup maps from planning_state orders
         const stateOrderById = new Map((state.orders||[]).map(o => [o.id, o]));
@@ -5183,6 +5215,54 @@ app.get('/api/planning/state', async (req, res) => {
         (state.orders||[]).forEach(o => {
           if (o.batchNumber && o.machineId) stateOrderByBatchMc.set(`${o.batchNumber}__${o.machineId}`, o);
         });
+        // v41z STRUCTURAL FIX: reconcile status/deleted of EXISTING orders. If production_orders
+        // has a newer updated_at (>30s past blob's saved_at — generous grace for clock skew and
+        // background-merge timing) AND the status differs, prefer the DB status. This catches
+        // the "close succeeded in table but blob save failed" stale-blob case.
+        let reconciledCount = 0;
+        const dbById = new Map();
+        dbOrders.forEach(o => dbById.set(o.id, o));
+        (state.orders||[]).forEach(o => {
+          const dbO = dbById.get(o.id);
+          if (!dbO) return;
+          // If DB says deleted, propagate (deleted is sticky)
+          if (dbO._dbStatus !== undefined && dbO.deleted && !o.deleted) {
+            o.deleted = true;
+            reconciledCount++;
+            return;
+          }
+          const dbUpd = dbO._dbUpdatedAt ? new Date(dbO._dbUpdatedAt).getTime() : 0;
+          // Only override if DB is meaningfully newer than blob's last save (30s grace) AND statuses differ.
+          // Without the grace, normal sync timing where DB is written just after blob would always win.
+          if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && dbUpd > blobSavedAt + 30000) {
+            o.status = dbO._dbStatus;
+            reconciledCount++;
+          }
+        });
+        if (reconciledCount > 0) {
+          console.log(`[v41z GET reconcile] Updated ${reconciledCount} blob order(s) with newer DB status (stale-blob recovery)`);
+          // v41z: kick off a deferred background blob update to make the fix permanent.
+          // Without this, every GET re-does the same reconciliation forever. The setImmediate
+          // ensures the response goes out first; the rewrite uses the already-reconciled state.
+          if (pgPool) {
+            const stateForBlobWrite = state;
+            setImmediate(async () => {
+              try {
+                const json = JSON.stringify(stateForBlobWrite);
+                const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
+                if (existing.rows[0]) {
+                  await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
+                  // Update cache so subsequent reads see the corrected state
+                  _planningStateCache = stateForBlobWrite;
+                  _planningStateCacheTime = Date.now();
+                  console.log(`[v41z GET reconcile] Persisted ${reconciledCount} status correction(s) back to blob — won't re-reconcile`);
+                }
+              } catch(e) {
+                console.warn('[v41z GET reconcile] Deferred blob write failed:', e.message);
+              }
+            });
+          }
+        }
         // Only add orders from DB that are MISSING from planning_state
         dbOrders.forEach(dbOrd => {
           if (!dbOrd || !dbOrd.id) return;
@@ -5195,9 +5275,11 @@ app.get('/api/planning/state', async (req, res) => {
           if (dbOrd.batchNumber && dbOrd.machineId && stateOrderByBatchMc.has(bmKey)) return;
           // Genuinely missing order — recover it
           state.orders = state.orders || [];
-          state.orders.push(dbOrd);
-          stateOrderById.set(dbOrd.id, dbOrd);
-          if (dbOrd.batchNumber && dbOrd.machineId) stateOrderByBatchMc.set(bmKey, dbOrd);
+          // Strip the v41z internal fields before adding (they're metadata, not the order payload)
+          const { _dbStatus, _dbUpdatedAt, ...cleanOrd } = dbOrd;
+          state.orders.push(cleanOrd);
+          stateOrderById.set(dbOrd.id, cleanOrd);
+          if (dbOrd.batchNumber && dbOrd.machineId) stateOrderByBatchMc.set(bmKey, cleanOrd);
           console.log(`[State] Recovered missing order: ${dbOrd.batchNumber} on ${dbOrd.machineId}`);
         });
       }
@@ -5537,10 +5619,48 @@ app.get('/api/planning/overlimit-machines', async (req, res) => {
   try {
     const state = await getPlanningStateAsync();
     if (!state.orders) return res.json({ ok: true, machines: [] });
-    // Group running orders by machine
+
+    // v41z STRUCTURAL FIX: same reconciliation as GET /api/planning/state — if production_orders
+    // has a newer updated_at than the blob saved_at AND statuses differ, DB wins. The blob can
+    // get stuck with stale 'running' status if a saveState fails after a successful upsertOrderToDB.
+    // Reconciling here ensures the banner only fires for ACTUAL over-limit conditions, not stale
+    // blob entries.
+    let blobSavedAt = 0;
+    try {
+      const r2 = pgPool
+        ? (await pgPool.query('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1')).rows[0]
+        : db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get();
+      blobSavedAt = r2?.saved_at ? new Date(r2.saved_at).getTime() : 0;
+    } catch(e) {}
+    let dbStatusMap = {};
+    try {
+      if (pgPool) {
+        const r = await pgPool.query('SELECT id, status, deleted, updated_at FROM production_orders');
+        r.rows.forEach(row => { dbStatusMap[row.id] = row; });
+      } else {
+        db.prepare('SELECT id, status, deleted, updated_at FROM production_orders').all()
+          .forEach(row => { dbStatusMap[row.id] = row; });
+      }
+    } catch(e) {}
+    // Reconcile each order's effective status before counting
+    const effectiveStatus = (o) => {
+      const dbRow = dbStatusMap[o.id];
+      if (!dbRow) return o.status;
+      // Deleted is sticky
+      if (dbRow.deleted) return 'deleted';
+      const dbUpd = dbRow.updated_at ? new Date(dbRow.updated_at).getTime() : 0;
+      if (dbRow.status && o.status && dbRow.status !== o.status && dbUpd > blobSavedAt + 30000) {
+        return dbRow.status;
+      }
+      return o.status;
+    };
+
+    // Group running orders by machine (using reconciled effective status)
     const byMc = {};
     for (const o of state.orders) {
-      if (o.status !== 'running' || o.deleted) continue;
+      if (o.deleted) continue;
+      const eff = effectiveStatus(o);
+      if (eff !== 'running') continue;
       const mc = o.machineId || '(unassigned)';
       if (!byMc[mc]) byMc[mc] = [];
       byMc[mc].push(o);
@@ -8277,7 +8397,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41y',
+      build: 'v41z',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -8286,7 +8406,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -9564,7 +9684,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41y',
+      build: 'v41z',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -9573,7 +9693,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
