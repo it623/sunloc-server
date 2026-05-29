@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41x</p>
+      <p>Planning Suite v3.0 · build v41y</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -787,7 +787,7 @@ const SYNC = (() => {
   }
 
   async function push(stateObj) {
-    if (!_url || !stateObj) return false;
+    if (!_url || !stateObj) return { ok: false };
     try {
       const r = await fetch(_url + '/api/planning/state', {
         method: 'POST',
@@ -795,9 +795,14 @@ const SYNC = (() => {
         body: JSON.stringify({ state: stateObj }),
         signal: AbortSignal.timeout(30000)
       });
-      if (r.ok) { _online = true; _lastCheck = Date.now(); updateBadge(); return true; }
-      return false;
-    } catch { _online = false; updateBadge(); return false; }
+      if (r.ok) {
+        _online = true; _lastCheck = Date.now(); updateBadge();
+        // v41y: parse response to get preservedOrders (server-side corrections)
+        try { const j = await r.json(); return { ok: true, ...j }; }
+        catch { return { ok: true }; }
+      }
+      return { ok: false };
+    } catch { _online = false; updateBadge(); return { ok: false }; }
   }
 
   async function pull() {
@@ -1392,7 +1397,45 @@ function loadState() {
           method: 'POST', headers: { 'Content-Type': 'application/json' },
           body: JSON.stringify({ orders: allOrders }),
           signal: AbortSignal.timeout(30000)
-        }).then(r => { if (r.ok) console.log('[Orders] Migrated', allOrders.length, 'orders to dedicated table'); }).catch(()=>{});
+        }).then(async r => {
+          if (!r.ok) return;
+          console.log('[Orders] Migrated', allOrders.length, 'orders to dedicated table');
+          // v41y CRITICAL FIX: if the bulk-upsert preserved any DB statuses (because our
+          // localStorage was stale), apply those corrections to in-memory state.orders so
+          // the page reflects the DB-correct status immediately. Without this, the tab's
+          // _lastServerSaveTime gets set to now and the 60s skip-overwrite window then
+          // blocks the GET from reconciling — user keeps seeing the stale state.
+          try {
+            const j = await r.json();
+            const preserved = (j && j.preservedOrders) || [];
+            if (preserved.length === 0) return;
+            const map = {};
+            preserved.forEach(p => { map[p.id] = p; });
+            let corrected = 0, deleted = 0;
+            state.orders = (state.orders || []).map(o => {
+              const c = map[o.id];
+              if (!c) return o;
+              let patched = o;
+              if (c.deleted) { patched = { ...patched, deleted: true }; deleted++; }
+              else if (c.dbStatus && c.dbStatus !== o.status) {
+                patched = { ...patched, status: c.dbStatus };
+                corrected++;
+              }
+              return patched;
+            });
+            if (corrected > 0 || deleted > 0) {
+              console.log('[v41y bulk-sync] Server corrected ' + corrected + ' status(es), ' + deleted + ' deletion(s) — reconciling localStorage + re-render');
+              // Rewrite localStorage with the corrected state to prevent re-hydration of stale
+              try {
+                const toSave = {...state};
+                delete toSave.pcCodes; delete toSave.zoneMap;
+                delete toSave.printOrders; delete toSave.dispatchPlans; delete toSave.dailyPrinting;
+                localStorage.setItem('sunloc_state', JSON.stringify(toSave));
+              } catch(e) {}
+              try { if (typeof render === 'function') render(); } catch(e) {}
+            }
+          } catch(e) {}
+        }).catch(()=>{});
       }
     } catch(e) {}
     // Also save full state to server to ensure dailyPrinting logs are persisted
@@ -1435,8 +1478,8 @@ function _scheduleRetry(toSave) {
   if (_retryTimer) return;
   _retryTimer = setInterval(async () => {
     if (!_pendingSave) { clearInterval(_retryTimer); _retryTimer = null; return; }
-    const ok = await SYNC.push(_pendingSave);
-    if (ok) {
+    const r = await SYNC.push(_pendingSave);
+    if (r && r.ok) {
       _pendingSave = null;
       clearInterval(_retryTimer);
       _retryTimer = null;
@@ -1449,8 +1492,8 @@ document.addEventListener('visibilitychange', async () => {
   if (document.visibilityState === 'visible') {
     // Flush pending save first
     if (_pendingSave) {
-      const ok = await SYNC.push(_pendingSave);
-      if (ok) { _pendingSave = null; if (_retryTimer) { clearInterval(_retryTimer); _retryTimer = null; } }
+      const r = await SYNC.push(_pendingSave);
+      if (r && r.ok) { _pendingSave = null; if (_retryTimer) { clearInterval(_retryTimer); _retryTimer = null; } }
     }
     // Pull latest planning state — catches changes made on other devices while tab was hidden
     SYNC.loadFromServer().catch(()=>{});
@@ -1470,7 +1513,8 @@ async function saveState() {
     _localOrderChanges['__printMachineMaster__'] = _changeTs;
     _localOrderChanges['__pcCodes__'] = _changeTs;
     // SERVER IS PRIMARY — save to server first
-    const serverOk = await SYNC.push(toSave);
+    const pushResult = await SYNC.push(toSave);
+    const serverOk = pushResult && pushResult.ok;
     if (serverOk) {
       state._savedAt = toSave._savedAt; // mark local state as synced with server
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
@@ -1770,9 +1814,42 @@ async function saveState() {
     _localOrderChanges['__printMachineMaster__'] = _changeTs;
     _localOrderChanges['__pcCodes__'] = _changeTs;
     // SERVER IS PRIMARY — save to server first
-    const serverOk = await SYNC.push(toSave);
+    const pushResult = await SYNC.push(toSave);
+    const serverOk = pushResult && pushResult.ok;
     if (serverOk) {
       state._savedAt = toSave._savedAt; // mark local state as synced with server
+      // v41y CRITICAL FIX: if server preserved any order statuses (because our local state
+      // was stale relative to the DB), apply those corrections to in-memory state.orders
+      // BEFORE writing localStorage. Without this, localStorage gets persisted with the
+      // stale values we just tried to push — and on next page refresh we hydrate stale
+      // again, perpetually causing the Max-2 regression (closures don't stick).
+      const preserved = (pushResult.preservedOrders) || [];
+      if (preserved.length > 0) {
+        const preservedMap = {};
+        preserved.forEach(p => { preservedMap[p.id] = p; });
+        let correctedCount = 0;
+        let deletedCount = 0;
+        state.orders = (state.orders || []).map(o => {
+          const c = preservedMap[o.id];
+          if (!c) return o;
+          let patched = o;
+          if (c.deleted) {
+            patched = { ...patched, deleted: true };
+            deletedCount++;
+          } else if (c.dbStatus && c.dbStatus !== o.status) {
+            patched = { ...patched, status: c.dbStatus };
+            correctedCount++;
+          }
+          return patched;
+        });
+        // Also patch toSave so localStorage gets corrected state (not stale push payload)
+        toSave.orders = state.orders;
+        if (correctedCount > 0 || deletedCount > 0) {
+          console.log('[v41y sync] Server corrected ' + correctedCount + ' status(es), ' + deletedCount + ' deletion(s) — local state reconciled');
+          // Force a re-render so the user sees the correction immediately
+          try { if (typeof render === 'function') render(); } catch(e) {}
+        }
+      }
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
       _lastServerSaveTime = Date.now();
@@ -7729,6 +7806,10 @@ function renderDispatch() {
     const distinctSizes = [...new Set(zPlans.map(p=>p.size).filter(Boolean))].sort();
     const distinctZones = [...new Set(zPlans.map(p=>p.zone || 'Unassigned'))].sort();
     const distinctMonths = [...new Set(zPlans.map(p=>p.month).filter(Boolean))].sort();
+    // v41y FIX Item 3: production-month filter — collect distinct YYYY-MM values derived from
+    // each plan's linked production order startDate (via getPlanProdMonth). This complements
+    // the existing "Month" filter which uses the dispatch month (p.month).
+    const distinctProdMonths = [...new Set(zPlans.map(p=>getPlanProdMonth(p)).filter(Boolean))].sort();
     const distinctStatuses = [...new Set(zPlans.map(p=>p.status||'pending').filter(Boolean))].sort();
     html += `
       <div class="dispatch-zone-panel ${z!=='all'?'dispatch-zone-panel-zone':''}" data-zone="${z}" ${z!=='all'?'style="display:none"':''}>
@@ -7758,6 +7839,12 @@ function renderDispatch() {
                     style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
               <option value="">All Months</option>
               ${distinctMonths.map(m=>`<option value="${m}" ${((window._planningOrderViewFilters||{}).month===m)?'selected':''}>${m}</option>`).join('')}
+            </select>
+            <!-- v41y Item 3: Production Month filter — uses prodMonth derived from linked production order startDate -->
+            <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.prodMonth=this.value;filterPlanningOrderView('${z}')"
+                    style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px" title="Filter by Month of Production">
+              <option value="">All Prod Months</option>
+              ${distinctProdMonths.map(m=>`<option value="${m}" ${((window._planningOrderViewFilters||{}).prodMonth===m)?'selected':''}>${prodMonthLabel(m)}</option>`).join('')}
             </select>
             <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.colour=this.value;filterPlanningOrderView('${z}')"
                     style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
@@ -7874,6 +7961,7 @@ function renderDispatchRow(p) {
     `data-batch="${(p.batchNumber||'').toLowerCase()}"`,
     `data-pccode="${(p.pcCode||'').toLowerCase()}"`,
     `data-month="${month}"`,
+    `data-prodmonth="${prodMonthYm||''}"`,
     `data-colour="${(p.colour||'').toLowerCase()}"`,
     `data-size="${(p.size||'').toLowerCase()}"`,
     `data-ptdup="${p.packing==='PTD'?'PTD':'UP'}"`,
@@ -8114,6 +8202,8 @@ function filterPlanningOrderView(zone) {
     if (f.batch && !ds.batch.includes(f.batch.toLowerCase())) visible = false;
     if (f.pcCode && !ds.pccode.includes(f.pcCode.toLowerCase())) visible = false;
     if (f.month && ds.month !== f.month) visible = false;
+    // v41y Item 3: production month filter (separate from dispatch month above)
+    if (f.prodMonth && ds.prodmonth !== f.prodMonth) visible = false;
     if (f.colour && ds.colour !== f.colour.toLowerCase()) visible = false;
     if (f.size && ds.size !== f.size.toLowerCase()) visible = false;
     if (f.ptdUp && ds.ptdup !== f.ptdUp) visible = false;

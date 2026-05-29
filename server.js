@@ -4906,6 +4906,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
     // v41w PERF: batch SELECT all existing rows in ONE query (was N sequential round-trips
     // at 500+ orders, the previous bulk-push was the slowest path on the server).
     let preservedCount = 0;
+    const preservedOrders = [];  // v41y: track preserved orders to return to client
     const mergedList = [];
     const existingMap = {};
     try {
@@ -4943,11 +4944,30 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
             // DB is meaningfully newer — DB wins
             finalStatus = existing.status;
             preservedCount++;
+            preservedOrders.push({
+              id: ord.id,
+              batchNumber: ord.batchNumber || null,
+              machineId: ord.machineId || null,
+              clientStatus: ord.status,
+              dbStatus: existing.status,
+            });
           }
           // else: client wins (most recent user action)
         }
         // Deleted is sticky once true — never resurrect a deleted order
-        if (exData.deleted || existing.deleted) finalDeleted = true;
+        if ((exData.deleted || existing.deleted) && !ord.deleted) {
+          finalDeleted = true;
+          preservedOrders.push({
+            id: ord.id,
+            batchNumber: ord.batchNumber || null,
+            machineId: ord.machineId || null,
+            clientStatus: ord.status || null,
+            dbStatus: ord.status || null,
+            deleted: true,
+          });
+        } else if (exData.deleted || existing.deleted) {
+          finalDeleted = true;
+        }
         // Take max of actualProd (DPR can write higher value independently)
         finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
         // Preserve manual date flags from DB if set
@@ -5006,7 +5026,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
     if (preservedCount > 0) {
       console.log(`[v41w upsert-bulk] Preserved DB status on ${preservedCount}/${orders.length} orders (stale client write blocked)`);
     }
-    res.json({ ok: true, count: orders.length, preservedCount, savedAt: new Date().toISOString() });
+    res.json({ ok: true, count: orders.length, preservedCount, preservedOrders, savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -5325,7 +5345,17 @@ app.post('/api/planning/state', async (req, res) => {
     // conflict resolution that the background merge uses BEFORE writing the blob — read each
     // order's current DB row, and if DB.updated_at > client._localEditedAt + 5s, preserve DB
     // status in the blob. This protects against stale-tab regressions.
+    //
+    // v41y CRITICAL FIX: the v41w guard silently corrected stale writes server-side BUT did not
+    // tell the client. The client kept its own (stale) in-memory state and on next save replayed
+    // the same stale values — guard fires again, count grows, loop continues forever until the
+    // client's 60s skip-overwrite window expires. Even worse, line 1776 of planning.html writes
+    // the stale `toSave` to localStorage immediately after save success, so on page refresh the
+    // user's localStorage still had the stale state. NOW: we return the list of preserved
+    // {id, status} corrections in the response so the client can patch its in-memory state and
+    // rewrite localStorage immediately.
     let blobPreservedCount = 0;
+    const preservedOrders = [];
     if (state.orders && state.orders.length > 0 && pgPool) {
       try {
         const ids = state.orders.map(o => o.id).filter(Boolean);
@@ -5345,10 +5375,26 @@ app.post('/api/planning/state', async (req, res) => {
             if (dbRow.status && ord.status && dbRow.status !== ord.status && dbUpdated > clientEdit + 5000) {
               result = { ...result, status: dbRow.status };
               blobPreservedCount++;
+              preservedOrders.push({
+                id: ord.id,
+                batchNumber: ord.batchNumber || null,
+                machineId: ord.machineId || null,
+                clientStatus: ord.status,
+                dbStatus: dbRow.status,
+              });
             }
             // Deleted is sticky
             if (dbRow.deleted && !result.deleted) {
               result = { ...result, deleted: true };
+              // Record deletion too so client can drop the order from state
+              preservedOrders.push({
+                id: ord.id,
+                batchNumber: ord.batchNumber || null,
+                machineId: ord.machineId || null,
+                clientStatus: ord.status || null,
+                dbStatus: ord.status || null,
+                deleted: true,
+              });
             }
             return result;
           });
@@ -5379,7 +5425,7 @@ app.post('/api/planning/state', async (req, res) => {
         db.prepare('INSERT INTO planning_state (state_json) VALUES (?)').run(json);
       }
     }
-    res.json({ ok: true, savedAt: new Date().toISOString() });
+    res.json({ ok: true, savedAt: new Date().toISOString(), preservedOrders });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -8231,7 +8277,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41x',
+      build: 'v41y',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -8240,7 +8286,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41x', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -9518,7 +9564,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41x',
+      build: 'v41y',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -9527,7 +9573,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41x', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -10410,8 +10456,63 @@ app.post('/api/tracking/labels', async (req, res) => {
   try {
     const { labels } = req.body;
     if (!labels || !labels.length) return res.status(400).json({ ok: false, error: 'No labels' });
+
+    // v41y FIX Item 1 (defense in depth): refuse to insert a NEW label whose
+    // (batch_number, label_number, is_orange, is_excess) collides with an existing
+    // non-voided row that has a different id. Catches the rare case where two devices
+    // (or two rapid clicks bypassing the client _v41y_labelGenInFlight flag) try to
+    // create labels with the same number for the same batch. Updates to an existing id
+    // (reprint state, void, etc.) still pass through.
+    const parseLabelNum = n => { if (n == null) return null; const s = String(n).replace(/^OL-/i, ''); const p = parseInt(s); return isNaN(p) ? null : p; };
+    const skipped = [];
+    const accepted = [];
     if (pgPool) {
       for (const l of labels) {
+        const lnum = parseLabelNum(l.labelNumber || l.label_number);
+        const bn = l.batchNumber || l.batch_number;
+        if (!bn || lnum == null) { accepted.push(l); continue; }
+        const r = await pgPool.query(
+          `SELECT id FROM tracking_labels
+             WHERE batch_number=$1 AND label_number=$2
+               AND is_orange=$3 AND is_excess=$4
+               AND COALESCE(voided,0)=0 AND id <> $5
+             LIMIT 1`,
+          [bn, lnum, l.isOrange ? 1 : 0, l.isExcess ? 1 : 0, l.id]
+        );
+        if (r.rows.length > 0) {
+          skipped.push({ id: l.id, batchNumber: bn, labelNumber: lnum, reason: 'duplicate', existingId: r.rows[0].id });
+        } else {
+          accepted.push(l);
+        }
+      }
+    } else {
+      for (const l of labels) {
+        const lnum = parseLabelNum(l.labelNumber || l.label_number);
+        const bn = l.batchNumber || l.batch_number;
+        if (!bn || lnum == null) { accepted.push(l); continue; }
+        const ex = db.prepare(
+          `SELECT id FROM tracking_labels
+             WHERE batch_number=? AND label_number=?
+               AND is_orange=? AND is_excess=?
+               AND COALESCE(voided,0)=0 AND id <> ?
+             LIMIT 1`
+        ).get(bn, lnum, l.isOrange ? 1 : 0, l.isExcess ? 1 : 0, l.id);
+        if (ex) {
+          skipped.push({ id: l.id, batchNumber: bn, labelNumber: lnum, reason: 'duplicate', existingId: ex.id });
+        } else {
+          accepted.push(l);
+        }
+      }
+    }
+    if (skipped.length > 0) {
+      console.warn(`[v41y label-dup] Skipped ${skipped.length} duplicate label(s):`, skipped.slice(0, 5).map(s => `${s.batchNumber}#${s.labelNumber}`).join(', '));
+    }
+    if (accepted.length === 0) {
+      return res.json({ ok: true, count: 0, skipped: skipped.length, duplicates: skipped });
+    }
+    const labelsToWrite = accepted;
+    if (pgPool) {
+      for (const l of labelsToWrite) {
         await pgPool.query(`
           INSERT INTO tracking_labels
             (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,
@@ -10447,8 +10548,7 @@ app.post('/api/tracking/labels', async (req, res) => {
          printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,
          is_excess,excess_num,excess_total,normal_total)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
-      const parseLabelNum = n => { if(n==null) return null; const s=String(n).replace(/^OL-/i,''); return parseInt(s)||null; };
-      labels.forEach(l => stmt.run(
+      labelsToWrite.forEach(l => stmt.run(
         l.id, l.batchNumber||l.batch_number, parseLabelNum(l.labelNumber||l.label_number),
         l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
         l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
@@ -10459,7 +10559,7 @@ app.post('/api/tracking/labels', async (req, res) => {
         l.isExcess?1:0, l.excessNum||null, l.excessTotal||null, l.normalTotal||null
       ));
     }
-    res.json({ ok: true, saved: labels.length });
+    res.json({ ok: true, saved: labelsToWrite.length, skipped: skipped.length, duplicates: skipped });
   } catch (err) {
     console.error('[LABEL ERROR]', err.message, '| first label:', JSON.stringify(req.body?.labels?.[0]||{}).substring(0,300));
     res.status(500).json({ ok: false, error: err.message });

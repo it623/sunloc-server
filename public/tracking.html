@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41x</title>
+<title>Sunloc Tracking Suite v1.0 · build v41y</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41x</p>
+      <p>Tracking Suite v1.0 · build v41y</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41x</p>
+      <p>Tracking Suite v1.0 · build v41y</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1724,7 +1724,7 @@ async function pullFromServer(){
           window._v40_boxStagesLoadedAt = Date.now();
           window._v40_dispatchedByBatch = bj.dispatchedByBatch || {};
           window._v40_boxCountsByBatch = bj.boxCounts || {};
-          console.log(`[v41x PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
+          console.log(`[v41y PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
@@ -3643,17 +3643,31 @@ function updateLabelGenInfo(){
   else { infoEl.classList.add('alert-success'); infoEl.textContent=`✅ OK — ${check.remainingAllowed} labels remaining`; }
 }
 
+// v41y FIX Item 1: guard against double-click / rapid duplicate submission of the label
+// generation modal. Without this, two clicks in quick succession both pass canGenerateLabels
+// against the same existingNormal count, so both compute the same startNum, both push
+// labels with the same labelNumber. Result is image 6: row #23 appearing twice with
+// identical timestamps. The flag is cleared in a try/finally so a failure doesn't lock
+// the UI permanently.
+let _v41y_labelGenInFlight = false;
 function confirmLabelGen(){
-  const batchNo=document.getElementById('lg-batch')?.value;
-  const count=parseInt(document.getElementById('lg-count')?.value)||0;
-  const isPartial=document.getElementById('lg-partial')?.checked;
-  const partialQty=parseFloat(document.getElementById('lg-partial-qty')?.value)||0;
-  if(!batchNo||count<1){alert('Please select a batch and enter quantity.');return;}
-  const labels=generateLabels(batchNo,count,isPartial,partialQty);
-  if(labels.length){
-    closeModal();
-    alert(`✅ ${labels.length} label(s) generated for batch ${batchNo}.`);
-    renderLabels();
+  if (_v41y_labelGenInFlight) { return; }
+  _v41y_labelGenInFlight = true;
+  try {
+    const batchNo=document.getElementById('lg-batch')?.value;
+    const count=parseInt(document.getElementById('lg-count')?.value)||0;
+    const isPartial=document.getElementById('lg-partial')?.checked;
+    const partialQty=parseFloat(document.getElementById('lg-partial-qty')?.value)||0;
+    if(!batchNo||count<1){alert('Please select a batch and enter quantity.');return;}
+    const labels=generateLabels(batchNo,count,isPartial,partialQty);
+    if(labels.length){
+      closeModal();
+      alert(`✅ ${labels.length} label(s) generated for batch ${batchNo}.`);
+      renderLabels();
+    }
+  } finally {
+    // Small delay before re-enabling so a slow click doesn't immediately re-fire.
+    setTimeout(() => { _v41y_labelGenInFlight = false; }, 800);
   }
 }
 
@@ -4460,100 +4474,18 @@ function renderDispatch(){
     </table></div>
   </div>` : ''}
 
-  <!-- PACKED LEDGER -->
-  <div class="card mb-16">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
-      <div class="card-title" style="margin-bottom:0">📦 Packed Quantity Ledger — Ready for Dispatch</div>
-      <input id="dispatch-search" type="text" placeholder="🔍 Search batch / customer / PC / colour…" oninput="filterDispatchTables(this.value)" style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;background:var(--surface);color:var(--text);min-width:240px">
-    </div>
-    <div class="tbl-wrap"><table id="dispatch-ledger-table">
-      <thead><tr><th>Batch</th><th>Customer</th><th>PC Code</th><th>Colour</th><th>Size</th><th>Packed Boxes</th><th>Packed Qty (L)</th><th>Dispatched</th><th>Pending</th><th>Action</th></tr></thead>
-      <tbody>
-      ${Object.entries(batchSummary).map(([batchNo,s])=>{
-        const batch=getBatch(batchNo);
-        const packedQty=boxToLakh(s.packed,s.size);
-        const dispQty=boxToLakh(s.dispOut,s.size);
-        const pending=Math.max(0,s.packed-s.dispOut);
-        const pendingQty=boxToLakh(pending,s.size);
-        const searchKey = [batchNo, batch?.customer||'', batch?.pcCode||'', s.colour||''].join(' ').toLowerCase();
-        return `<tr data-search="${searchKey}">
-          <td class="td-bold td-mono">${batchNo}</td>
-          <td>${batch?.customer||'-'}</td>
-          <td class="td-mono">${batch?.pcCode||'-'}</td>
-          <td class="td-mono">${s.colour||'-'}</td>
-          <td class="td-mono">${s.size}</td>
-          <td class="td-mono">${s.packed}</td>
-          <td class="td-mono fw-bold">${fmt(packedQty)}L</td>
-          <td class="td-mono green">${s.dispOut} (${fmt(dispQty)}L)</td>
-          <td class="td-mono ${pending>0?'fw-bold':''}">${pending} (${fmt(pendingQty)}L)</td>
-          <td>${pending>0?`<button class="btn btn-sm btn-primary" onclick="openDispatchRecord('${batchNo}')">🚚 Dispatch</button>`:'<span class="badge badge-green">All Out</span>'}</td>
-        </tr>`;
-      }).join('')||'<tr><td colspan="10" class="text-center text-muted">No packed boxes yet</td></tr>'}
-      </tbody>
-      ${Object.keys(batchSummary).length > 0 ? `<tfoot><tr style="background:var(--surface2);font-weight:700">
-        <td colspan="5" class="text-right">TOTAL</td>
-        <td class="td-mono">${totalPackedBoxes}</td>
-        <td class="td-mono"><b>${fmt(totalPackedQty)}L</b></td>
-        <td class="td-mono green">${totalOutwardBoxes} (<b>${fmt(totalOutwardQty)}L</b>)</td>
-        <td class="td-mono amber">${totalPendingBoxes} (${fmt(totalPendingQty)}L)</td>
-        <td></td>
-      </tr></tfoot>` : ''}
-    </table></div>
-  </div>
-
-  <!-- DISPATCH RECORDS -->
-  <div class="card">
-    <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;flex-wrap:wrap;gap:8px">
-      <div class="card-title" style="margin-bottom:0">📋 Dispatch Records</div>
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
-        <input id="dispatch-records-search" type="text" placeholder="🔍 Search records (batch / vehicle / invoice / remarks)…" oninput="filterDispatchRecords(this.value)" style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;background:var(--surface);color:var(--text);min-width:280px">
-        <button class="btn btn-secondary btn-sm" onclick="exportDispatch()">📥 Export Excel</button>
-      </div>
-    </div>
-    <div class="tbl-wrap"><table id="dispatch-records-table">
-      <thead><tr><th>Date</th><th>Batch</th><th>Customer</th><th>PC Code</th><th>Colour</th><th>Qty (L)</th><th>Boxes</th><th>Vehicle</th><th>Invoice</th><th>Remarks</th><th>Status</th><th>Edit</th></tr></thead>
-      <tbody>
-      ${state.dispatchRecs.sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,20).map(r=>{
-        // v37F: Pull colour/PC from batch master since dispatch records don't store them directly
-        const dBatch = getBatch(r.batchNumber);
-        const dColour = dBatch?.colour || '-';
-        const dPcCode = dBatch?.pcCode || '-';
-        // v37I B2: Include remarks in search key
-        const searchKey = [r.batchNumber, r.customer||'', dPcCode, dColour, r.vehicleNo||'', r.invoiceNo||'', r.remarks||''].join(' ').toLowerCase();
-        return `<tr data-search="${searchKey}" id="disprec-${r.id}">
-          <td class="td-mono text-sm">${fmtDate(r.ts)}</td>
-          <td class="td-bold td-mono">${r.batchNumber}</td>
-          <td class="text-sm">${r.customer||'-'}</td>
-          <td class="td-mono">${dPcCode}</td>
-          <td class="td-mono">${dColour}</td>
-          <td class="td-mono fw-bold">${fmt(r.qty)}L</td>
-          <td class="td-mono">${r.boxes}</td>
-          <td class="td-mono">${r.vehicleNo||'<span class="text-muted">—</span>'}</td>
-          <td class="td-mono">${r.invoiceNo||'<span class="text-muted">—</span>'}</td>
-          <td class="text-sm" title="${(r.remarks||'').replace(/"/g,'&quot;')}">${r.remarks ? (r.remarks.length>30?r.remarks.slice(0,30)+'…':r.remarks) : '<span class="text-muted">—</span>'}</td>
-          <td><span class="badge badge-green">Dispatched</span></td>
-          <td><button class="btn btn-sm btn-ghost" onclick="editDispatchRecord('${r.id}')" style="font-size:11px">✏️ Edit</button></td>
-        </tr>`;
-      }).join('')||'<tr><td colspan="12" class="text-center text-muted">No dispatch records yet</td></tr>'}
-      </tbody>
-      ${state.dispatchRecs.length > 0 ? `<tfoot><tr style="background:var(--surface2);font-weight:700">
-        <td colspan="5" class="text-right">TOTAL DISPATCHED (last ${Math.min(20, state.dispatchRecs.length)} records)</td>
-        <td class="td-mono"><b>${fmt(state.dispatchRecs.slice(0,20).reduce((s,r)=>s+(r.qty||0),0))}L</b></td>
-        <td class="td-mono">${state.dispatchRecs.slice(0,20).reduce((s,r)=>s+(r.boxes||0),0)}</td>
-        <td colspan="5"></td>
-      </tr></tfoot>` : ''}
-    </table></div>
-    <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Showing last 20 dispatch records. Total inward/outward at top reflects all-time scan-based counts (boxes only). Hover over remarks cell to see full text.</div>
-  </div>
-
-  <!-- v37F: Dispatch Summary (planned vs actual) — restricted to Dispatch / Admin / Planning roles via page access -->
-  <div id="dispatch-summary-container"></div>
+  <!-- v41y: PACKED LEDGER, DISPATCH RECORDS, and Report I were removed here.
+       These three blocks predate the v39 invoice-queue dispatch flow and Reports J/K/L
+       which now provide the same and richer information. The legacy "Dispatch" buttons
+       on the packed ledger and the manual dispatch-record table were tied to pre-v39
+       scan-out workflow; the invoice queue at the top of this page and the Box-Stages
+       drill-downs (Report K) are now authoritative. -->
 
   <!-- v37I B4: Report K — Per-day Scan In/Out Movement, restricted via dispatch page access -->
   <div id="report-k-container"></div>`;
 
-  // Render the planned-vs-actual summary into the container above
-  renderReportI('dispatch-summary-container');
+  // v41y: renderReportI('dispatch-summary-container') removed — the dispatch-summary-container
+  // div was removed above. Report J/K/L below now cover dispatch reporting.
   // v37I B4: Render Report K daily movement report
   renderReportK('report-k-container');
   // v41q: Load Invoice Queue panel + Pending Reconciliation button NOW (after el.innerHTML built
