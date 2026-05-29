@@ -11929,7 +11929,7 @@ async function checkPlanningTempAlerts(){
     if(!banner){
       banner = document.createElement('div');
       banner.id = 'plan-temp-banner';
-      banner.style.cssText = 'position:fixed;top:0;left:260px;right:0;z-index:450;background:rgba(255,171,0,0.12);border-bottom:2px solid var(--accent3);padding:8px 16px;display:flex;align-items:center;gap:10px;font-size:12px;cursor:pointer';
+      banner.style.cssText = 'position:fixed;top:48px;left:220px;right:0;z-index:450;background:rgba(255,171,0,0.95);border-bottom:2px solid var(--accent3);padding:6px 16px;display:flex;align-items:center;gap:10px;font-size:12px;cursor:pointer;box-shadow:0 2px 8px rgba(0,0,0,0.15)';
       banner.onclick = () => navigate('reconciliation');
       document.body.appendChild(banner);
     }
@@ -11939,9 +11939,10 @@ async function checkPlanningTempAlerts(){
       const woCount = (state.orders||[]).filter(o=>o.woStatus==='wo'&&o.status!=='closed').length;
       const woText = woCount > 0 ? ` · ${woCount} W/O order${woCount>1?'s':''} awaiting customer` : '';
       banner.style.display = 'flex';
-      banner.innerHTML = `⚠️ <strong style="color:var(--accent3)">${j.count} TEMP batch${j.count>1?'es':''} unreconciled</strong>
+      banner.innerHTML = `⚠️ <strong style="color:#92400e">${j.count} TEMP batch${j.count>1?'es':''} unreconciled</strong>
         — Machines: ${machines.join(', ')} — Up to ${maxDays} day${maxDays>1?'s':''} without planned orders.${woText}
-        <span style="color:var(--accent);margin-left:6px;text-decoration:underline">→ Go to Reconciliation</span>`;
+        <span style="color:#1d4ed8;margin-left:6px;text-decoration:underline;cursor:pointer" onclick="navigate('reconciliation');event.stopPropagation()">→ Go to Reconciliation</span>
+        <button onclick="event.stopPropagation();_clearAllTempBatches()" style="margin-left:auto;background:#dc2626;color:#fff;border:none;padding:3px 10px;border-radius:4px;font-size:11px;cursor:pointer;font-weight:600">🗑 Delete All TEMP</button>`;
     } else {
       if(banner) banner.style.display = 'none';
     }

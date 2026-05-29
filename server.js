@@ -5204,6 +5204,41 @@ app.post('/api/planning/state', async (req, res) => {
 });
 
 // GET active orders for a machine (used by DPR dropdown)
+// ── Clear all TEMP batches from planning state and production_orders ──
+app.post('/api/planning/clear-temp-batches', requireAuth, async (req, res) => {
+  try {
+    if (pgPool) {
+      await pgPool.query(`
+        UPDATE planning_state
+        SET state_json = (
+          jsonb_set(
+            state_json::jsonb,
+            '{orders}',
+            COALESCE(
+              (SELECT jsonb_agg(o)
+               FROM jsonb_array_elements(state_json::jsonb->'orders') o
+               WHERE (o->>'id') NOT LIKE 'TEMP-%'
+               AND (o->>'batchNumber') NOT LIKE 'TEMP-%'),
+              '[]'::jsonb
+            )
+          )
+        )::text
+        WHERE id = (SELECT MAX(id) FROM planning_state)
+      `);
+      const del = await pgPool.query("DELETE FROM production_orders WHERE id LIKE 'TEMP-%' OR batch_number LIKE 'TEMP-%'");
+      if (planningCache && planningCache.orders) {
+        planningCache.orders = planningCache.orders.filter(o => !o.id?.startsWith('TEMP-') && !o.batchNumber?.startsWith('TEMP-'));
+      }
+      return res.json({ ok: true, deleted: del.rowCount });
+    }
+    res.json({ ok: false, error: 'PostgreSQL not available' });
+  } catch (err) {
+    console.error('[clear-temp-batches]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+
 app.get('/api/orders/machine/:machineId', (req, res) => {
   try {
     const orders = getActiveOrdersForMachine(req.params.machineId);
@@ -10313,8 +10348,11 @@ app.get('/api/tracking/labels-all', async (req, res) => {
   try {
     const COLS = `id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total`;
     const m=r=>({id:r.id,batchNumber:r.batch_number,labelNumber:r.label_number,size:r.size,qty:r.qty,isPartial:!!r.is_partial,isOrange:!!r.is_orange,parentLabelId:r.parent_label_id||null,customer:r.customer||'',colour:r.colour||'',pcCode:r.pc_code||'',poNumber:r.po_number||'',machineId:r.machine_id||'',printingMatter:r.printing_matter||'',generated:r.generated,printed:!!r.printed,printedAt:r.printed_at||null,voided:!!r.voided,voidReason:r.void_reason||'',voidedAt:r.voided_at||null,voidedBy:r.voided_by||null,woStatus:r.wo_status||null,shipTo:r.ship_to||'',billTo:r.bill_to||'',isExcess:!!r.is_excess,excessNum:r.excess_num||null,excessTotal:r.excess_total||null,normalTotal:r.normal_total||null});
-    if(pgPool){const r=await pgPool.query(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`);res.json({ok:true,labels:r.rows.map(m)});}
-    else{const labels=db.prepare(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`).all();res.json({ok:true,labels:labels.map(m)});}
+    const sinceParam = req.query.since || null;
+    const sinceDate = sinceParam || (() => { const d = new Date(); d.setDate(1); d.setMonth(d.getMonth() - 1); return d.toISOString().slice(0, 7) + '-01'; })();
+    const whereClause = `WHERE generated >= '${sinceDate.replace(/'/g,'')}'`;
+    if(pgPool){const r=await pgPool.query(`SELECT ${COLS} FROM tracking_labels ${whereClause} ORDER BY generated DESC LIMIT 4000`);res.json({ok:true,labels:r.rows.map(m)});}
+    else{const labels=db.prepare(`SELECT ${COLS} FROM tracking_labels ${whereClause} ORDER BY generated DESC LIMIT 4000`).all();res.json({ok:true,labels:labels.map(m)});}
   }catch(err){res.status(500).json({ok:false,error:err.message});}
 });
 // ── All scans endpoint (formerly "scans-recent", LIMIT removed in v40 P18.14) ──
