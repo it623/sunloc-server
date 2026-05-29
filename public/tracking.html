@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41s</title>
+<title>Sunloc Tracking Suite v1.0 · build v41v</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41s</p>
+      <p>Tracking Suite v1.0 · build v41v</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41s</p>
+      <p>Tracking Suite v1.0 · build v41v</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1716,7 +1716,7 @@ async function pullFromServer(){
           window._v40_boxStagesLoadedAt = Date.now();
           window._v40_dispatchedByBatch = bj.dispatchedByBatch || {};
           window._v40_boxCountsByBatch = bj.boxCounts || {};
-          console.log(`[v41s PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
+          console.log(`[v41v PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
@@ -4755,8 +4755,12 @@ function _v39_renderInvoiceQueuePanel() {
   const panel = document.getElementById('v39-invoice-queue');
   if (!panel) return;
   const invoices = _v39_pendingInvoices || [];
-  // Restrict visibility to dispatch / admin / planning roles (others won't see this panel)
-  const roleAllowed = currentUser && ['admin','planning','dispatch'].includes(currentUser.role);
+  // v41t FIX: Tracking app uses `currentDept` (a single string like 'admin' set at login,
+  // line 1245), not `currentUser.role`. The previous gate read `currentUser.role`, which is
+  // never defined in tracking → role check failed silently for EVERY user → Invoice Queue
+  // panel + Pending Reconciliation button rendered empty for everyone. The v41q ordering fix
+  // made the container exist, but this latent bug then short-circuited the actual render.
+  const roleAllowed = ['admin','planning','dispatch'].includes(currentDept);
   if (!roleAllowed) {
     panel.innerHTML = '';
     return;
@@ -5106,7 +5110,7 @@ function _v40_renderInvoiceGroup(group, mode) {
         <td style="padding:6px 8px;text-align:center">
           <button class="btn btn-sm" style="background:#0891b2;color:white;border:none;font-size:11px;padding:4px 10px"
                   onclick="_v39_openScanOutModal('${inv.id}')">🔍 Scan Out</button>
-          ${inv.source === 'direct_sap' && !inv.is_legacy_closed && ['admin','dispatch','planning'].includes(currentUser?.role) ? `
+          ${inv.source === 'direct_sap' && !inv.is_legacy_closed && ['admin','dispatch','planning'].includes(currentDept) ? `
           <button class="btn btn-sm" style="background:transparent;color:#7c3aed;border:1px solid rgba(139,92,246,0.4);font-size:10px;padding:3px 8px;margin-left:4px"
                   onclick="_v41_closeInvoiceAsLegacy('${inv.id}')" title="No matching Sales Order in Sunloc — close as legacy stock">🗂️ Legacy</button>` : ''}
         </td>

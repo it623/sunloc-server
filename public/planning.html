@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41s</p>
+      <p>Planning Suite v3.0 · build v41v</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -7799,13 +7799,13 @@ function renderDispatch() {
             <table class="dispatch-order-view-table">
               <thead><tr>
                 <th class="freeze-col-1">Customer</th><th class="freeze-col-2">Batch No</th><th class="freeze-col-3">PC Code</th><th class="freeze-col-4">Month</th><th class="freeze-col-5">Colour</th>
-                <th class="freeze-col-6">Size</th><th class="freeze-col-7">PTD/UP</th><th class="freeze-col-8">Zone</th><th>Qty (L)</th><th>Boxes</th>
+                <th class="freeze-col-6">Size</th><th class="freeze-col-7">PTD/UP</th><th class="freeze-col-8">Zone</th><th title="Month when production began (from production order start date)">Month of Production</th><th>Qty (L)</th><th>Boxes</th>
                 <th>Packed</th><th>Planned Date</th><th>Dispatched (L)</th><th>Pending (L)</th><th>Status</th><th>Remarks</th><th>Actions</th>
               </tr></thead>
               <tbody>
                 ${zPlans.map(p=>renderDispatchRow(p)).join('')}
                 <tr class="pov-total-row" style="background:var(--surface2);font-weight:600">
-                  <td class="freeze-col-1" colspan="8">TOTAL</td>
+                  <td class="freeze-col-1" colspan="9">TOTAL</td>
                   <td class="text-mono text-accent">${fmt(totalQty)}</td>
                   <td class="text-mono">${zPlans.reduce((s,p)=>s+(p.boxes||0),0)}</td>
                   <td class="text-mono text-accent3">${fmt(zPlans.reduce((s,p)=>s+(p.packedQty||0),0))}L</td>
@@ -7850,6 +7850,12 @@ function renderDispatchRow(p) {
     ? '<span class="badge badge-running">Ready</span>'
     : '<span class="badge badge-pending">Pending</span>';
   const month = p.plannedDate ? new Date(p.plannedDate).toLocaleString('en-IN',{month:'short',year:'2-digit'}) : '—';
+  // v41v: separate "Month of Production" column — distinct from the existing Month (planned
+  // dispatch date). Read from the linked production order's startDate via getPlanProdMonth().
+  const prodMonthYm = getPlanProdMonth(p);
+  const prodMonth = prodMonthYm
+    ? prodMonthLabel(prodMonthYm).replace(/\s+/g, ' ')
+    : '—';
   const containerInfo = p.isConsolidatedExport
     ? `<div style="font-size:10px;color:var(--accent5);font-family:var(--mono);margin-top:2px">📦 Container: ${p.containerRef||'—'} (${(p.allProductionOrderIds||[]).length} orders)</div>` : '';
   // Lot badge for split dispatches
@@ -7885,6 +7891,7 @@ function renderDispatchRow(p) {
     <td class="freeze-col-6 text-mono">${p.size||'-'}</td>
     <td class="freeze-col-7">${p.packing==='PTD'?'<span class="badge badge-ptd">PTD</span>':'<span class="badge badge-up">UP</span>'}</td>
     <td class="freeze-col-8 text-sm">${p.zone||'-'}</td>
+    <td class="text-mono text-dim" title="Month of production">${prodMonth}</td>
     <td class="text-mono fw-bold">${fmt(p.qty)}</td>
     <td class="text-mono">${p.boxes||'-'}</td>
     <td class="text-mono">${packCell}</td>
@@ -8458,6 +8465,7 @@ function renderTruckOrdersTable(truck) {
         <th style="padding:4px 8px;text-align:left">Customer</th>
         <th style="padding:4px 8px;text-align:left">Batch</th>
         <th style="padding:4px 8px;text-align:left">PC Code</th>
+        <th style="padding:4px 8px;text-align:left" title="Month when production began (from production order start date)">Month of Production</th>
         <th style="padding:4px 8px;text-align:right">Boxes</th>
         <th style="padding:4px 8px;text-align:right">Packed</th>
         <th style="padding:4px 8px;text-align:left">Est. Ready</th>
@@ -8518,6 +8526,7 @@ function renderTruckOrdersTable(truck) {
                 title="Click to view batch tracking summary">${p.batchNumber||'-'}</span>
             </td>
             <td style="padding:5px 8px;font-family:var(--mono);font-size:11px;color:var(--accent)">${p.pcCode||'-'}</td>
+            <td style="padding:5px 8px;font-family:var(--mono);font-size:11px" title="Month when production began">${(()=>{ const ym = getPlanProdMonth(p); return ym ? prodMonthLabel(ym) : '—'; })()}</td>
             <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${p.boxes||0}</td>
             <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:var(--accent2)">${packed}</td>
             <td style="padding:5px 8px;font-family:var(--mono);font-size:11px">${readyDate}</td>
@@ -11934,6 +11943,14 @@ async function checkPlanningTempAlerts(){
       document.body.appendChild(banner);
     }
     if(j.ok && j.count > 0){
+      // v41u FIX: hide this banner when the user is already on the reconciliation page —
+      // it sits at the top of the viewport and overlaps the page heading ("TEMP/Work-Order
+      // Batch Reconciliation"), making the title unreadable. Also redundant — no need to
+      // urge "go to reconciliation" when the user is already there.
+      if (state.currentPage === 'reconciliation') {
+        banner.style.display = 'none';
+        return;
+      }
       const machines = [...new Set(j.batches.map(b=>b.machine_id))];
       const maxDays = Math.max(...j.batches.map(b=>b.daysActive));
       const woCount = (state.orders||[]).filter(o=>o.woStatus==='wo'&&o.status!=='closed').length;
