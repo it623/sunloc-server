@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41w</p>
+      <p>Planning Suite v3.0 · build v41x</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -11938,14 +11938,22 @@ async function checkPlanningTempAlerts(){
     if(!banner){
       banner = document.createElement('div');
       banner.id = 'plan-temp-banner';
-      // v41w FIX (Item 5): banner was positioned at top:0, which overlapped the #topbar
-      // (height 56px) on every page — text became unreadable. Push the banner below the
-      // topbar so it sits in a clean strip beneath the page header. Mobile #topbar is 48px
-      // (CSS at line 419) — banner at 56px still leaves it just below the mobile topbar
-      // with a small visual gap, acceptable on both desktop and mobile.
-      banner.style.cssText = 'position:fixed;top:56px;left:260px;right:0;z-index:450;background:rgba(255,171,0,0.12);border-bottom:2px solid var(--accent3);padding:8px 16px;display:flex;align-items:center;gap:10px;font-size:12px;cursor:pointer';
+      // v41x FIX (Item 5): convert from position:fixed to in-flow positioning. Fixed
+      // positioning at any top: offset floats over the content below — overlapping the
+      // task banner ("0 tasks assigned to you") and any page heading. In-flow positioning
+      // makes the banner push subsequent content down naturally, eliminating the overlap.
+      // Inserted as a sibling of #topbar at the top of #main, before any in-flow content.
+      banner.style.cssText = 'background:rgba(255,171,0,0.12);border-bottom:2px solid var(--accent3);padding:8px 16px;display:flex;align-items:center;gap:10px;font-size:12px;cursor:pointer;flex-shrink:0';
+      // Insert into #main right after #topbar (so it sits in the flexbox flow under the topbar
+      // but above any other in-flow banners). Fallback to document.body if #main not present.
+      const _mainEl = document.getElementById('main');
+      const _topbarEl = document.getElementById('topbar');
+      if (_mainEl && _topbarEl && _topbarEl.parentNode === _mainEl) {
+        _mainEl.insertBefore(banner, _topbarEl.nextSibling);
+      } else {
+        document.body.appendChild(banner);
+      }
       banner.onclick = () => navigate('reconciliation');
-      document.body.appendChild(banner);
     }
     if(j.ok && j.count > 0){
       // v41u FIX: hide this banner when the user is already on the reconciliation page —

@@ -4607,7 +4607,56 @@ app.post('/api/orders/upsert', async (req, res) => {
   try {
     const ord = req.body;
     if (!ord || !ord.id) return res.status(400).json({ ok: false, error: 'id required' });
-    const json = JSON.stringify(ord);
+
+    // v41x FIX: apply the same conflict-resolution guard as /api/orders/upsert-bulk and
+    // POST /api/planning/state. The single-order upsert was unconditionally overwriting
+    // status, which is fine for fresh user edits (they have _localEditedAt) but allowed
+    // background/legacy code paths without _localEditedAt to silently regress order
+    // statuses. Same rule: client wins UNLESS DB.updated_at is >5s newer than the
+    // client's _localEditedAt timestamp.
+    let finalStatus = ord.status || 'pending';
+    let finalDeleted = ord.deleted || false;
+    let finalActualProd = ord.actualProd || 0;
+    let mergedOrd = ord;
+    let preserved = false;
+    let existing = null;
+    try {
+      if (pgPool) {
+        const r = await pgPool.query(`SELECT data_json, status, deleted, updated_at FROM production_orders WHERE id=$1`, [ord.id]);
+        existing = r.rows[0];
+      } else {
+        existing = db.prepare(`SELECT data_json, status, deleted, updated_at FROM production_orders WHERE id=?`).get(ord.id);
+      }
+    } catch(e) {}
+    if (existing) {
+      let exData = {};
+      try { exData = typeof existing.data_json === 'string' ? JSON.parse(existing.data_json) : (existing.data_json || {}); } catch(e) {}
+      const clientEdit = parseInt(ord._localEditedAt || 0);
+      const dbUpdated  = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
+      if (existing.status && ord.status && existing.status !== ord.status) {
+        if (dbUpdated > clientEdit + 5000) {
+          finalStatus = existing.status;
+          preserved = true;
+        }
+      }
+      if (exData.deleted || existing.deleted) finalDeleted = true;
+      finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
+      const hasManualDate = exData.manualEndDate || exData.manualStartDate;
+      mergedOrd = {
+        ...ord,
+        status: finalStatus,
+        deleted: finalDeleted,
+        actualProd: finalActualProd,
+        startDate:       hasManualDate ? exData.startDate   : ord.startDate,
+        endDate:         hasManualDate ? exData.endDate     : ord.endDate,
+        manualStartDate: exData.manualStartDate || ord.manualStartDate,
+        manualEndDate:   exData.manualEndDate   || ord.manualEndDate,
+      };
+    }
+    if (preserved) {
+      console.log(`[v41x upsert] Preserved DB status on ${ord.id} (client="${ord.status}" → DB="${finalStatus}", stale write blocked)`);
+    }
+    const json = JSON.stringify(mergedOrd);
     if (pgPool) {
       await pgPool.query(`
         INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
@@ -4615,17 +4664,17 @@ app.post('/api/orders/upsert', async (req, res) => {
         ON CONFLICT(id) DO UPDATE SET
           data_json=$2, machine_id=$3, batch_number=$4,
           status=$5, deleted=$6, updated_at=NOW()::TEXT
-      `, [ord.id, json, ord.machineId||null, ord.batchNumber||null,
-          ord.status||'pending', ord.deleted||false]);
+      `, [mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null,
+          finalStatus, finalDeleted]);
     } else {
       db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
         VALUES (?,?,?,?,?,?,datetime('now'))
         ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,
         machine_id=excluded.machine_id,batch_number=excluded.batch_number,
         status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
-        .run(ord.id, json, ord.machineId||null, ord.batchNumber||null, ord.status||'pending', ord.deleted?1:0);
+        .run(mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null, finalStatus, finalDeleted?1:0);
     }
-    res.json({ ok: true, savedAt: new Date().toISOString() });
+    res.json({ ok: true, preserved, savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -8182,7 +8231,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41w',
+      build: 'v41x',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -8191,7 +8240,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41w', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41x', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -9469,7 +9518,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v41w',
+      build: 'v41x',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -9478,7 +9527,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41w', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v41x', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

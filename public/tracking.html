@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41w</title>
+<title>Sunloc Tracking Suite v1.0 · build v41x</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41w</p>
+      <p>Tracking Suite v1.0 · build v41x</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41w</p>
+      <p>Tracking Suite v1.0 · build v41x</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1724,7 +1724,7 @@ async function pullFromServer(){
           window._v40_boxStagesLoadedAt = Date.now();
           window._v40_dispatchedByBatch = bj.dispatchedByBatch || {};
           window._v40_boxCountsByBatch = bj.boxCounts || {};
-          console.log(`[v41w PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
+          console.log(`[v41x PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
@@ -4863,7 +4863,7 @@ window._v41_soLedger = [];
 async function _v41_fetchPendingReconciliationCount() {
   // Non-blocking — updates the badge if present
   try {
-    const baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || '';
+    const baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || '';
     if (!baseUrl) return;
     const r = await fetch(baseUrl + '/api/invoice/pending-reconciliation', {
       headers: { 'x-session-token': currentUser?.token || '' },
@@ -4919,7 +4919,7 @@ async function _v41_openPendingReconciliationModal() {
 }
 
 async function _v41_openSoLedgerModal() {
-  let baseUrl = ''; try { baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  let baseUrl = ''; try { baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if (!baseUrl) { alert('Server not connected'); return; }
   let ledger = [];
   try {
@@ -4980,7 +4980,7 @@ async function _v41_openSoLedgerModal() {
 // v41 P19.3: Gate scan-out by reconciliation status. Called before any scan-out activity
 // to confirm the invoice is reconciled with SAP. Returns true if scan-out can proceed.
 async function _v41_checkScanOutEligibility(invoiceRequestId) {
-  let baseUrl = ''; try { baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  let baseUrl = ''; try { baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if (!baseUrl) { return { eligible: false, reason: 'Server not connected' }; }
   try {
     const r = await fetch(baseUrl + '/api/invoice/scan-out-eligible/' + encodeURIComponent(invoiceRequestId), {
@@ -4998,7 +4998,7 @@ async function _v41_checkScanOutEligibility(invoiceRequestId) {
 // v41 P19.3: Close an invoice as "legacy" (no matching Sunloc Sales Order).
 // Used for invoices that came in from SAP for old/return stock that Sunloc didn't plan.
 async function _v41_closeInvoiceAsLegacy(invoiceId) {
-  let baseUrl = ''; try { baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  let baseUrl = ''; try { baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if (!baseUrl) { alert('Server not connected'); return; }
   const reason = prompt('Close this invoice as legacy (no matching Sales Order in Sunloc)?\n\nReason (for audit):', 'Legacy stock — no SO in Sunloc');
   if (reason === null) return;
