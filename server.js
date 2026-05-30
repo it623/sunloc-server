@@ -4926,6 +4926,15 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
     } catch(e) {
       console.warn('[v41w upsert-bulk] Existing-row preload failed (falling back to client status):', e.message);
     }
+    // Build DB running count per machine for 2-order limit enforcement
+    const dbRunningPerMachine = {};
+    Object.values(existingMap).forEach(row => {
+      if (row && row.status === 'running' && !row.deleted) {
+        let machineId = null;
+        try { const d = typeof row.data_json === 'string' ? JSON.parse(row.data_json) : row.data_json; machineId = d && d.machineId; } catch(e) {}
+        if (machineId) dbRunningPerMachine[machineId] = (dbRunningPerMachine[machineId] || 0) + 1;
+      }
+    });
     for (const ord of orders) {
       if (!ord.id) continue;
       let finalStatus = ord.status || 'pending';
@@ -4939,20 +4948,30 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         const clientEdit = parseInt(ord._localEditedAt || 0);
         const dbUpdated  = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
         // Status conflict resolution
-        // CRITICAL: running/closed are physical states — never auto-revert
-        const clientStatusIsProtected = ord.status === 'running' || ord.status === 'closed';
-        const dbStatusIsProtected = existing.status === 'running' || existing.status === 'closed';
-        if (existing.status && ord.status && existing.status !== ord.status) {
-          if (clientStatusIsProtected) {
+        // CRITICAL: Enforce 2-order limit using DB running counts
+        const _alreadyRunningInDB = existing.status === 'running';
+        const _machineRunCount = dbRunningPerMachine[ord.machineId] || 0;
+        const _wouldExceedLimit = ord.status === 'running' && !_alreadyRunningInDB && _machineRunCount >= 2;
+        if (_wouldExceedLimit) {
+          // Block 3rd running — force pending
+          finalStatus = 'pending';
+          preservedCount++;
+        } else if (existing.status && ord.status && existing.status !== ord.status) {
+          const _clientProtected = ord.status === 'running' || ord.status === 'closed';
+          const _dbProtected = existing.status === 'running' || existing.status === 'closed';
+          if (_clientProtected) {
             finalStatus = ord.status;
-          } else if (dbStatusIsProtected) {
+            if (ord.status === 'running' && !_alreadyRunningInDB && ord.machineId) {
+              dbRunningPerMachine[ord.machineId] = (dbRunningPerMachine[ord.machineId] || 0) + 1;
+            }
+          } else if (_dbProtected) {
             finalStatus = existing.status;
             preservedCount++;
-            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber || null, machineId: ord.machineId || null, clientStatus: ord.status, dbStatus: existing.status });
+            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
           } else if (dbUpdated > clientEdit + 5000) {
             finalStatus = existing.status;
             preservedCount++;
-            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber || null, machineId: ord.machineId || null, clientStatus: ord.status, dbStatus: existing.status });
+            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
           }
           // else: client wins
         }
@@ -5236,9 +5255,7 @@ app.get('/api/planning/state', async (req, res) => {
           const dbUpd = dbO._dbUpdatedAt ? new Date(dbO._dbUpdatedAt).getTime() : 0;
           // Only override if DB is meaningfully newer than blob's last save (30s grace) AND statuses differ.
           // Without the grace, normal sync timing where DB is written just after blob would always win.
-          // CRITICAL: Never auto-revert running or closed — real physical actions
-          const blobStatusIsProtected = o.status === 'running' || o.status === 'closed';
-          if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && dbUpd > blobSavedAt + 30000 && !blobStatusIsProtected) {
+          if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && dbUpd > blobSavedAt + 30000) {
             o.status = dbO._dbStatus;
             reconciledCount++;
           }
@@ -5279,22 +5296,12 @@ app.get('/api/planning/state', async (req, res) => {
           if (dbOrd.batchNumber && dbOrd.machineId && stateOrderByBatchMc.has(bmKey)) return;
           // Genuinely missing order — recover it
           state.orders = state.orders || [];
+          // Strip the v41z internal fields before adding (they're metadata, not the order payload)
           const { _dbStatus, _dbUpdatedAt, ...cleanOrd } = dbOrd;
-          // CRITICAL: Enforce max 2 IN PRODUCTION per machine
-          if (cleanOrd.status === 'running' && cleanOrd.machineId) {
-            const runningOnMachine = state.orders.filter(o => o.machineId === cleanOrd.machineId && o.status === 'running' && !o.deleted).length;
-            if (runningOnMachine >= 2) {
-              cleanOrd.status = 'pending';
-              console.log(`[State] Recovered ${cleanOrd.batchNumber} on ${cleanOrd.machineId} — downgraded to pending (2-order limit)`);
-            } else {
-              console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
-            }
-          } else {
-            console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
-          }
           state.orders.push(cleanOrd);
           stateOrderById.set(dbOrd.id, cleanOrd);
           if (dbOrd.batchNumber && dbOrd.machineId) stateOrderByBatchMc.set(bmKey, cleanOrd);
+          console.log(`[State] Recovered missing order: ${dbOrd.batchNumber} on ${dbOrd.machineId}`);
         });
       }
     } catch(e) { console.warn('[State] Order recovery failed:', e.message); }
@@ -5367,6 +5374,15 @@ app.post('/api/planning/state', async (req, res) => {
               ? JSON.parse(r.data_json) : r.data_json; } catch(e) {}
           });
 
+          // CRITICAL: Count running orders per machine from DB — authoritative 2-order limit
+          // Prevents stale browser tabs from pushing back old 'running' on machines at limit
+          const dbRunningPerMachine = {};
+          Object.values(existingMap).forEach(o => {
+            if (o && o.status === 'running' && o.machineId && !o.deleted) {
+              dbRunningPerMachine[o.machineId] = (dbRunningPerMachine[o.machineId] || 0) + 1;
+            }
+          });
+
           // v40 P18.14i Fix 1: status merge — client wins.
           // The PRIOR rule preserved DB's non-pending status, which caused two bugs:
           //   a) closed → running silently when DB had stale 'running'
@@ -5389,19 +5405,30 @@ app.post('/api/planning/state', async (req, res) => {
               const clientEdit = parseInt(ord._localEditedAt || 0);
               const dbUpdated  = ex.updated_at ? new Date(ex.updated_at).getTime() : 0;
               let finalStatus;
-              if (ex.status && ord.status && ex.status !== ord.status) {
-                // CRITICAL: running/closed are physical states — never auto-revert
-              const clientProtected = ord.status === 'running' || ord.status === 'closed';
-              const dbProtected = ex.status === 'running' || ex.status === 'closed';
-              if (clientProtected) {
-                finalStatus = ord.status;
-              } else if (dbProtected) {
-                finalStatus = ex.status;
-              } else if (clientEdit && dbUpdated && dbUpdated > clientEdit + 5000) {
-                finalStatus = ex.status;
-              } else {
-                finalStatus = ord.status;
-              }
+              // CRITICAL FIX: Enforce 2-order limit and protect running/closed
+              const alreadyRunningInDB = ex.status === 'running';
+              const machineRunCount = dbRunningPerMachine[ord.machineId] || 0;
+              const wouldExceedLimit = ord.status === 'running' && !alreadyRunningInDB && machineRunCount >= 2;
+              if (wouldExceedLimit) {
+                // Block 3rd running order — force to pending
+                finalStatus = 'pending';
+              } else if (ex.status && ord.status && ex.status !== ord.status) {
+                // Protect running/closed from being reverted
+                const clientIsProtected = ord.status === 'running' || ord.status === 'closed';
+                const dbIsProtected = ex.status === 'running' || ex.status === 'closed';
+                if (clientIsProtected) {
+                  finalStatus = ord.status;
+                  // Update running count if newly running
+                  if (ord.status === 'running' && !alreadyRunningInDB && ord.machineId) {
+                    dbRunningPerMachine[ord.machineId] = (dbRunningPerMachine[ord.machineId] || 0) + 1;
+                  }
+                } else if (dbIsProtected) {
+                  finalStatus = ex.status;
+                } else if (clientEdit && dbUpdated && dbUpdated > clientEdit + 5000) {
+                  finalStatus = ex.status;
+                } else {
+                  finalStatus = ord.status;
+                }
               } else {
                 finalStatus = ord.status || ex.status || 'pending';
               }
