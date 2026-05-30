@@ -1437,16 +1437,17 @@ function loadState() {
               }
               return patched;
             });
+            // v41z FINAL: ALWAYS clear _localOrderChanges for every preserved order
+            preserved.forEach(p => {
+              if (p.id) {
+                delete _localOrderChanges[p.id];
+                if (p.clientStatus !== p.dbStatus) {
+                  console.log('[v41z] Cleared local protection for ' + (p.batchNumber||p.id) + ' (' + p.clientStatus + '→' + p.dbStatus + ') — server correction accepted');
+                }
+              }
+            });
             if (corrected > 0 || deleted > 0) {
               console.log('[v41y bulk-sync] Server corrected ' + corrected + ' status(es), ' + deleted + ' deletion(s) — reconciling localStorage + re-render');
-              // v41z: CRITICAL — remove corrected orders from _localOrderChanges so they stop
-              // fighting the server on every 30s sync (infinite downgrade loop)
-              preserved.forEach(p => {
-                if (p.id && _localOrderChanges[p.id]) {
-                  delete _localOrderChanges[p.id];
-                  console.log('[v41z] Cleared local protection for ' + (p.batchNumber||p.id) + ' — server correction accepted');
-                }
-              });
               // Rewrite localStorage with the corrected state to prevent re-hydration of stale
               try {
                 const toSave = {...state};
@@ -1866,16 +1867,19 @@ async function saveState() {
         });
         // Also patch toSave so localStorage gets corrected state (not stale push payload)
         toSave.orders = state.orders;
+        // v41z FINAL: ALWAYS clear _localOrderChanges for every preserved order —
+        // regardless of whether correctedCount > 0. This stops the infinite fight loop
+        // where the client keeps pushing the same stale status back every 30s.
+        preserved.forEach(p => {
+          if (p.id) {
+            delete _localOrderChanges[p.id];
+            if (p.clientStatus !== p.dbStatus) {
+              console.log('[v41z] Cleared local protection for ' + (p.batchNumber||p.id) + ' (' + p.clientStatus + '→' + p.dbStatus + ') — server correction accepted');
+            }
+          }
+        });
         if (correctedCount > 0 || deletedCount > 0) {
           console.log('[v41y sync] Server corrected ' + correctedCount + ' status(es), ' + deletedCount + ' deletion(s) — local state reconciled');
-          // v41z: CRITICAL — remove corrected orders from _localOrderChanges so they stop
-          // fighting the server on every 30s sync (infinite downgrade loop)
-          preserved.forEach(p => {
-            if (p.id && _localOrderChanges[p.id]) {
-              delete _localOrderChanges[p.id];
-              console.log('[v41z] Cleared local protection for ' + (p.batchNumber||p.id) + ' — server correction accepted');
-            }
-          });
           // Force a re-render so the user sees the correction immediately
           try { if (typeof render === 'function') render(); } catch(e) {}
         }

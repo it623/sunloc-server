@@ -5622,6 +5622,74 @@ app.post('/api/planning/state', async (req, res) => {
       }
     }
 
+    // v41z FINAL FIX: Enforce 2-order limit directly in the blob before saving.
+    // This stops stale browsers from re-corrupting the blob with 3+ running orders.
+    // Also adds downgraded orders to preservedOrders so client clears _localOrderChanges.
+    if (state.orders && state.orders.length > 0) {
+      const _blobRunningPerMC = {};
+      // First pass: count running per machine (sort by _localEditedAt desc — newest protected first)
+      const _blobRunning = state.orders
+        .filter(o => o && o.status === 'running' && o.machineId && !o.deleted)
+        .sort((a, b) => (parseInt(b._localEditedAt||0)) - (parseInt(a._localEditedAt||0)));
+      const _blobAllowedIds = new Set();
+      for (const o of _blobRunning) {
+        const cnt = _blobRunningPerMC[o.machineId] || 0;
+        if (cnt < 2) {
+          _blobAllowedIds.add(o.id);
+          _blobRunningPerMC[o.machineId] = cnt + 1;
+        }
+      }
+      let blobLimitDowngraded = 0;
+      state.orders = state.orders.map(o => {
+        if (o && o.status === 'running' && o.machineId && !o.deleted && !_blobAllowedIds.has(o.id)) {
+          blobLimitDowngraded++;
+          console.log(`[v41z blob-save] MC ${o.machineId} over limit — downgrading ${o.batchNumber||o.id} to pending`);
+          preservedOrders.push({
+            id: o.id,
+            batchNumber: o.batchNumber || null,
+            machineId: o.machineId || null,
+            clientStatus: 'running',
+            dbStatus: 'pending',
+          });
+          return { ...o, status: 'pending' };
+        }
+        return o;
+      });
+      if (blobLimitDowngraded > 0) {
+        console.log(`[v41z blob-save] Downgraded ${blobLimitDowngraded} over-limit running orders to pending`);
+      }
+    }
+
+    // v41z FINAL FIX 2: Protect running/closed status in blob — never let stale client
+    // overwrite a running/closed order back to pending unless DB confirms it
+    if (state.orders && state.orders.length > 0 && pgPool) {
+      try {
+        const _protIds = state.orders
+          .filter(o => o && o.status === 'pending' && o.machineId)
+          .map(o => o.id).filter(Boolean);
+        if (_protIds.length > 0) {
+          const _protRes = await pgPool.query(
+            `SELECT id, status FROM production_orders WHERE id = ANY($1) AND status IN ('running','closed')`, [_protIds]
+          );
+          if (_protRes.rows.length > 0) {
+            const _protMap = {};
+            _protRes.rows.forEach(r => { _protMap[r.id] = r.status; });
+            state.orders = state.orders.map(o => {
+              if (o && _protMap[o.id] && o.status !== _protMap[o.id]) {
+                console.log(`[v41z blob-save] Restoring ${o.batchNumber||o.id} from pending to ${_protMap[o.id]} (DB protected)`);
+                preservedOrders.push({
+                  id: o.id, batchNumber: o.batchNumber||null, machineId: o.machineId||null,
+                  clientStatus: o.status, dbStatus: _protMap[o.id],
+                });
+                return { ...o, status: _protMap[o.id] };
+              }
+              return o;
+            });
+          }
+        }
+      } catch(e) { console.warn('[v41z blob-save] Status protection check failed:', e.message); }
+    }
+
     const json = JSON.stringify(state);
     if (pgPool) {
       const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
