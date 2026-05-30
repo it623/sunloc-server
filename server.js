@@ -4651,6 +4651,10 @@ app.post('/api/orders/upsert', async (req, res) => {
         endDate:         hasManualDate ? exData.endDate     : ord.endDate,
         manualStartDate: exData.manualStartDate || ord.manualStartDate,
         manualEndDate:   exData.manualEndDate   || ord.manualEndDate,
+        // v41z: protect SAP refs and PO number — DB wins if set; stale client cannot blank them
+        sapDocEntry: exData.sapDocEntry || ord.sapDocEntry || null,
+        sapDocNum:   exData.sapDocNum   || ord.sapDocNum   || '',
+        poNumber:    exData.poNumber    || ord.poNumber    || '',
       };
     }
     if (preserved) {
@@ -4927,12 +4931,33 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
       console.warn('[v41w upsert-bulk] Existing-row preload failed (falling back to client status):', e.message);
     }
     // Build DB running count per machine for 2-order limit enforcement
+    // Sort oldest-first so the 2 most established running orders are protected
     const dbRunningPerMachine = {};
-    Object.values(existingMap).forEach(row => {
-      if (row && row.status === 'running' && !row.deleted) {
-        let machineId = null;
-        try { const d = typeof row.data_json === 'string' ? JSON.parse(row.data_json) : row.data_json; machineId = d && d.machineId; } catch(e) {}
-        if (machineId) dbRunningPerMachine[machineId] = (dbRunningPerMachine[machineId] || 0) + 1;
+    const _dbRunningOrderIds = {};
+    const _allRunningRows = Object.entries(existingMap)
+      .filter(([, row]) => row && row.status === 'running' && !row.deleted)
+      .sort((a, b) => {
+        const ta = a[1].updated_at ? new Date(a[1].updated_at).getTime() : 0;
+        const tb = b[1].updated_at ? new Date(b[1].updated_at).getTime() : 0;
+        return ta - tb;
+      });
+    _allRunningRows.forEach(([rowId, row]) => {
+      let machineId = null;
+      try { const d = typeof row.data_json === 'string' ? JSON.parse(row.data_json) : row.data_json; machineId = d && d.machineId; } catch(e) {}
+      if (machineId) {
+        dbRunningPerMachine[machineId] = (dbRunningPerMachine[machineId] || 0) + 1;
+        if (!_dbRunningOrderIds[machineId]) _dbRunningOrderIds[machineId] = [];
+        _dbRunningOrderIds[machineId].push(rowId);
+      }
+    });
+    // ACTIVE ENFORCEMENT: if DB already has 3+ running on a machine, downgrade the newest ones
+    const _forcePendingIds = new Set();
+    Object.entries(_dbRunningOrderIds).forEach(([machineId, ids]) => {
+      if (ids.length > 2) {
+        ids.slice(2).forEach(id => {
+          _forcePendingIds.add(id);
+          console.log('[v41z upsert-bulk] MC ' + machineId + ' has ' + ids.length + ' running — downgrading ' + id + ' to pending (2-order limit)');
+        });
       }
     });
     for (const ord of orders) {
@@ -4951,6 +4976,11 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         // CRITICAL: Enforce 2-order limit using DB running counts
         const _alreadyRunningInDB = existing.status === 'running';
         const _machineRunCount = dbRunningPerMachine[ord.machineId] || 0;
+        // Force pending if this order is already over the limit in DB
+        if (_forcePendingIds.has(ord.id)) {
+          finalStatus = 'pending';
+          preservedCount++;
+        } else {
         const _wouldExceedLimit = ord.status === 'running' && !_alreadyRunningInDB && _machineRunCount >= 2;
         if (_wouldExceedLimit) {
           // Block 3rd running — force pending
@@ -4975,6 +5005,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           }
           // else: client wins
         }
+        } // end _forcePendingIds else
         // Deleted is sticky once true — never resurrect a deleted order
         if ((exData.deleted || existing.deleted) && !ord.deleted) {
           finalDeleted = true;
@@ -5002,6 +5033,10 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           endDate:         hasManualDate ? exData.endDate     : ord.endDate,
           manualStartDate: exData.manualStartDate || ord.manualStartDate,
           manualEndDate:   exData.manualEndDate   || ord.manualEndDate,
+          // v41z: protect SAP refs and PO number — DB wins if set; stale client cannot blank them
+          sapDocEntry: exData.sapDocEntry || ord.sapDocEntry || null,
+          sapDocNum:   exData.sapDocNum   || ord.sapDocNum   || '',
+          poNumber:    exData.poNumber    || ord.poNumber    || '',
         };
       }
       const json = JSON.stringify(mergedOrd);
@@ -5387,11 +5422,29 @@ app.post('/api/planning/state', async (req, res) => {
           });
 
           // CRITICAL: Count running orders per machine from DB — authoritative 2-order limit
-          // Prevents stale browser tabs from pushing back old 'running' on machines at limit
+          // Sort oldest-first so the 2 most established running orders are protected
           const dbRunningPerMachine = {};
-          Object.values(existingMap).forEach(o => {
-            if (o && o.status === 'running' && o.machineId && !o.deleted) {
-              dbRunningPerMachine[o.machineId] = (dbRunningPerMachine[o.machineId] || 0) + 1;
+          const _bgRunningOrderIds = {};
+          const _bgAllRunning = Object.entries(existingMap)
+            .filter(([, o]) => o && o.status === 'running' && o.machineId && !o.deleted)
+            .sort((a, b) => {
+              const ta = a[1].updated_at ? new Date(a[1].updated_at).getTime() : 0;
+              const tb = b[1].updated_at ? new Date(b[1].updated_at).getTime() : 0;
+              return ta - tb;
+            });
+          _bgAllRunning.forEach(([id, o]) => {
+            dbRunningPerMachine[o.machineId] = (dbRunningPerMachine[o.machineId] || 0) + 1;
+            if (!_bgRunningOrderIds[o.machineId]) _bgRunningOrderIds[o.machineId] = [];
+            _bgRunningOrderIds[o.machineId].push(id);
+          });
+          // ACTIVE ENFORCEMENT: downgrade newest orders on machines already over limit
+          const _bgForcePendingIds = new Set();
+          Object.entries(_bgRunningOrderIds).forEach(([machineId, ids]) => {
+            if (ids.length > 2) {
+              ids.slice(2).forEach(id => {
+                _bgForcePendingIds.add(id);
+                console.log('[v41z bg-merge] MC ' + machineId + ' has ' + ids.length + ' running — downgrading ' + id + ' to pending (2-order limit)');
+              });
             }
           });
 
@@ -5420,6 +5473,10 @@ app.post('/api/planning/state', async (req, res) => {
               // CRITICAL FIX: Enforce 2-order limit and protect running/closed
               const alreadyRunningInDB = ex.status === 'running';
               const machineRunCount = dbRunningPerMachine[ord.machineId] || 0;
+              // Force pending if this order is already over the limit in DB
+              if (_bgForcePendingIds.has(ord.id)) {
+                finalStatus = 'pending';
+              } else {
               const wouldExceedLimit = ord.status === 'running' && !alreadyRunningInDB && machineRunCount >= 2;
               if (wouldExceedLimit) {
                 // Block 3rd running order — force to pending
@@ -5444,6 +5501,7 @@ app.post('/api/planning/state', async (req, res) => {
               } else {
                 finalStatus = ord.status || ex.status || 'pending';
               }
+              } // end _bgForcePendingIds else
               mergedOrd = {
                 ...ord,
                 startDate:       hasManualDate ? ex.startDate   : ord.startDate,
@@ -5452,6 +5510,10 @@ app.post('/api/planning/state', async (req, res) => {
                 manualStartDate: ex.manualStartDate || ord.manualStartDate,
                 status: finalStatus,
                 actualProd: Math.max(ord.actualProd||0, ex.actualProd||0),
+                // v41z: protect SAP refs and PO number — DB wins if set; client cannot blank them via stale tab
+                sapDocEntry: ex.sapDocEntry || ord.sapDocEntry || null,
+                sapDocNum:   ex.sapDocNum   || ord.sapDocNum   || '',
+                poNumber:    ex.poNumber    || ord.poNumber    || '',
               };
             }
             return mergedOrd;
@@ -5503,10 +5565,14 @@ app.post('/api/planning/state', async (req, res) => {
         const ids = state.orders.map(o => o.id).filter(Boolean);
         if (ids.length > 0) {
           const dbRes = await pgPool.query(
-            `SELECT id, status, deleted, updated_at FROM production_orders WHERE id = ANY($1)`, [ids]
+            `SELECT id, status, deleted, updated_at, data_json FROM production_orders WHERE id = ANY($1)`, [ids]
           );
           const dbMap = {};
-          dbRes.rows.forEach(r => { dbMap[r.id] = r; });
+          dbRes.rows.forEach(r => {
+            let exData = {};
+            try { exData = r.data_json ? (typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json) : {}; } catch(e) {}
+            dbMap[r.id] = { ...r, _exData: exData };
+          });
           state.orders = state.orders.map(ord => {
             const dbRow = dbMap[ord.id];
             if (!dbRow) return ord;
@@ -5538,6 +5604,13 @@ app.post('/api/planning/state', async (req, res) => {
                 deleted: true,
               });
             }
+            // v41z: protect SAP refs and PO number — DB wins if set; stale client cannot blank them
+            const dbSapEntry = dbRow._exData.sapDocEntry || null;
+            const dbSapNum   = dbRow._exData.sapDocNum   || '';
+            const dbPoNumber = dbRow._exData.poNumber    || '';
+            if (dbSapEntry && !result.sapDocEntry) result = { ...result, sapDocEntry: dbSapEntry };
+            if (dbSapNum   && !result.sapDocNum)   result = { ...result, sapDocNum:   dbSapNum };
+            if (dbPoNumber && !result.poNumber)    result = { ...result, poNumber:    dbPoNumber };
             return result;
           });
           if (blobPreservedCount > 0) {
