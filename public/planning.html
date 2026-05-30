@@ -918,11 +918,25 @@ const SYNC = (() => {
         // Restore locally changed orders — they win over server
         // BUT always take actualProd and status from server (live DPR data)
         if (Object.keys(_protectedOrders).length > 0) {
+          // Count running orders per machine from server state (before protection merge)
+          const serverRunningPerMC = {};
+          (state.orders||[]).forEach(o => {
+            if (o.status === 'running' && !o.deleted) {
+              serverRunningPerMC[o.machineId] = (serverRunningPerMC[o.machineId] || 0) + 1;
+            }
+          });
           state.orders = (state.orders||[]).map(o => {
             const local = _protectedOrders[o.id];
             if (!local) return o;
-            // Keep local order but update live fields from server
-            // FIX 2: Always preserve local status/deleted — never let server overwrite
+            // CRITICAL: If server downgraded to pending due to 2-order limit, accept it
+            // Do NOT let local 'running' override server 'pending' when machine is over limit
+            const serverDowngradedToPending = o.status === 'pending' && local.status === 'running';
+            const machineOverLimit = local.machineId && (serverRunningPerMC[local.machineId] || 0) >= 2;
+            if (serverDowngradedToPending && machineOverLimit) {
+              // Accept server's downgrade — machine is at limit
+              return { ...local, status: 'pending', actualProd: o.actualProd || local.actualProd };
+            }
+            // Normal protection — keep local status
             return { ...local,
               actualProd: o.actualProd || local.actualProd,
               stageStatus: o.stageStatus || local.stageStatus,
