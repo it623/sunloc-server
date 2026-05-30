@@ -4939,38 +4939,22 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         const clientEdit = parseInt(ord._localEditedAt || 0);
         const dbUpdated  = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
         // Status conflict resolution
-        // CRITICAL: running and closed are set by real physical actions — never auto-revert them.
-        // Only pending can be freely overwritten by server.
+        // CRITICAL: running/closed are physical states — never auto-revert
         const clientStatusIsProtected = ord.status === 'running' || ord.status === 'closed';
         const dbStatusIsProtected = existing.status === 'running' || existing.status === 'closed';
         if (existing.status && ord.status && existing.status !== ord.status) {
           if (clientStatusIsProtected) {
-            // Client says running/closed — always trust client, never revert
             finalStatus = ord.status;
           } else if (dbStatusIsProtected) {
-            // DB says running/closed but client says pending — DB wins (protect physical state)
             finalStatus = existing.status;
             preservedCount++;
-            preservedOrders.push({
-              id: ord.id,
-              batchNumber: ord.batchNumber || null,
-              machineId: ord.machineId || null,
-              clientStatus: ord.status,
-              dbStatus: existing.status,
-            });
+            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber || null, machineId: ord.machineId || null, clientStatus: ord.status, dbStatus: existing.status });
           } else if (dbUpdated > clientEdit + 5000) {
-            // Both pending — DB is meaningfully newer — DB wins
             finalStatus = existing.status;
             preservedCount++;
-            preservedOrders.push({
-              id: ord.id,
-              batchNumber: ord.batchNumber || null,
-              machineId: ord.machineId || null,
-              clientStatus: ord.status,
-              dbStatus: existing.status,
-            });
+            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber || null, machineId: ord.machineId || null, clientStatus: ord.status, dbStatus: existing.status });
           }
-          // else: client wins (most recent user action)
+          // else: client wins
         }
         // Deleted is sticky once true — never resurrect a deleted order
         if ((exData.deleted || existing.deleted) && !ord.deleted) {
@@ -5252,8 +5236,7 @@ app.get('/api/planning/state', async (req, res) => {
           const dbUpd = dbO._dbUpdatedAt ? new Date(dbO._dbUpdatedAt).getTime() : 0;
           // Only override if DB is meaningfully newer than blob's last save (30s grace) AND statuses differ.
           // Without the grace, normal sync timing where DB is written just after blob would always win.
-          // CRITICAL: Never auto-revert running or closed — these represent real physical actions.
-          // Only PENDING can be freely auto-changed by server reconciliation.
+          // CRITICAL: Never auto-revert running or closed — real physical actions
           const blobStatusIsProtected = o.status === 'running' || o.status === 'closed';
           if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && dbUpd > blobSavedAt + 30000 && !blobStatusIsProtected) {
             o.status = dbO._dbStatus;
@@ -5296,19 +5279,13 @@ app.get('/api/planning/state', async (req, res) => {
           if (dbOrd.batchNumber && dbOrd.machineId && stateOrderByBatchMc.has(bmKey)) return;
           // Genuinely missing order — recover it
           state.orders = state.orders || [];
-          // Strip the v41z internal fields before adding (they're metadata, not the order payload)
           const { _dbStatus, _dbUpdatedAt, ...cleanOrd } = dbOrd;
-          // CRITICAL: Enforce max 2 IN PRODUCTION per machine before recovering
+          // CRITICAL: Enforce max 2 IN PRODUCTION per machine
           if (cleanOrd.status === 'running' && cleanOrd.machineId) {
-            const runningOnMachine = (state.orders).filter(o =>
-              o.machineId === cleanOrd.machineId &&
-              o.status === 'running' &&
-              !o.deleted
-            ).length;
+            const runningOnMachine = state.orders.filter(o => o.machineId === cleanOrd.machineId && o.status === 'running' && !o.deleted).length;
             if (runningOnMachine >= 2) {
-              // Downgrade to pending — machine already has 2 running orders
               cleanOrd.status = 'pending';
-              console.log(`[State] Recovered order ${cleanOrd.batchNumber} on ${cleanOrd.machineId} — downgraded to pending (2-order limit)`);
+              console.log(`[State] Recovered ${cleanOrd.batchNumber} on ${cleanOrd.machineId} — downgraded to pending (2-order limit)`);
             } else {
               console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
             }
@@ -5417,13 +5394,10 @@ app.post('/api/planning/state', async (req, res) => {
               const clientProtected = ord.status === 'running' || ord.status === 'closed';
               const dbProtected = ex.status === 'running' || ex.status === 'closed';
               if (clientProtected) {
-                // Client says running/closed — always trust it
                 finalStatus = ord.status;
               } else if (dbProtected) {
-                // DB says running/closed but client says pending — keep DB state
                 finalStatus = ex.status;
               } else if (clientEdit && dbUpdated && dbUpdated > clientEdit + 5000) {
-                // Both pending — DB is newer — DB wins
                 finalStatus = ex.status;
               } else {
                 finalStatus = ord.status;
