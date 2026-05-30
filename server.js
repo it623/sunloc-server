@@ -4849,7 +4849,7 @@ app.get('/api/planning/customer-mismatch', async (req, res) => {
     if (pgPool) {
       const r1 = await pgPool.query(`SELECT id, batch_number, data_json FROM production_orders WHERE deleted = false AND batch_number IS NOT NULL`);
       orderRows = r1.rows;
-      const r2 = await pgPool.query(`SELECT batch_number, customer, generated FROM tracking_labels WHERE voided = false AND customer IS NOT NULL AND customer <> '' ORDER BY generated DESC`);
+      const r2 = await pgPool.query(`SELECT batch_number, customer, generated FROM tracking_labels WHERE voided = 0 AND customer IS NOT NULL AND customer <> '' ORDER BY generated DESC`);
       labelRows = r2.rows;
     } else {
       orderRows = db.prepare(`SELECT id, batch_number, data_json FROM production_orders WHERE deleted = 0 AND batch_number IS NOT NULL`).all();
@@ -5255,7 +5255,9 @@ app.get('/api/planning/state', async (req, res) => {
           const dbUpd = dbO._dbUpdatedAt ? new Date(dbO._dbUpdatedAt).getTime() : 0;
           // Only override if DB is meaningfully newer than blob's last save (30s grace) AND statuses differ.
           // Without the grace, normal sync timing where DB is written just after blob would always win.
-          if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && dbUpd > blobSavedAt + 30000) {
+          // CRITICAL: Never auto-revert running or closed — real physical actions
+          const blobStatusIsProtected = o.status === 'running' || o.status === 'closed';
+          if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && dbUpd > blobSavedAt + 30000 && !blobStatusIsProtected) {
             o.status = dbO._dbStatus;
             reconciledCount++;
           }
@@ -5296,12 +5298,22 @@ app.get('/api/planning/state', async (req, res) => {
           if (dbOrd.batchNumber && dbOrd.machineId && stateOrderByBatchMc.has(bmKey)) return;
           // Genuinely missing order — recover it
           state.orders = state.orders || [];
-          // Strip the v41z internal fields before adding (they're metadata, not the order payload)
           const { _dbStatus, _dbUpdatedAt, ...cleanOrd } = dbOrd;
+          // CRITICAL: Enforce max 2 IN PRODUCTION per machine
+          if (cleanOrd.status === 'running' && cleanOrd.machineId) {
+            const runningOnMachine = state.orders.filter(o => o.machineId === cleanOrd.machineId && o.status === 'running' && !o.deleted).length;
+            if (runningOnMachine >= 2) {
+              cleanOrd.status = 'pending';
+              console.log(`[State] Recovered ${cleanOrd.batchNumber} on ${cleanOrd.machineId} — downgraded to pending (2-order limit)`);
+            } else {
+              console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
+            }
+          } else {
+            console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
+          }
           state.orders.push(cleanOrd);
           stateOrderById.set(dbOrd.id, cleanOrd);
           if (dbOrd.batchNumber && dbOrd.machineId) stateOrderByBatchMc.set(bmKey, cleanOrd);
-          console.log(`[State] Recovered missing order: ${dbOrd.batchNumber} on ${dbOrd.machineId}`);
         });
       }
     } catch(e) { console.warn('[State] Order recovery failed:', e.message); }
@@ -7507,7 +7519,7 @@ app.post('/api/wo/split/propose', async (req, res) => {
     let totalBoxesInBatch = 0;
     try {
       if (pgPool) {
-        const r = await pgPool.query(`SELECT COUNT(*)::int AS c FROM tracking_labels WHERE batch_number=$1 AND (voided IS NULL OR voided=false)`, [sourceOrd.batchNumber]);
+        const r = await pgPool.query(`SELECT COUNT(*)::int AS c FROM tracking_labels WHERE batch_number=$1 AND (voided IS NULL OR voided=0)`, [sourceOrd.batchNumber]);
         totalBoxesInBatch = r.rows[0]?.c || 0;
       } else {
         totalBoxesInBatch = db.prepare(`SELECT COUNT(*) c FROM tracking_labels WHERE batch_number=? AND (voided IS NULL OR voided=0)`).get(sourceOrd.batchNumber)?.c || 0;
