@@ -2736,10 +2736,12 @@ function _userIsFocused(){
 
 // Track user activity — any click or keypress marks user as active for 60 seconds
 let _userActiveUntil = 0;
-function _markUserActive(){ _userActiveUntil = Date.now() + 60000; }
+function _markUserActive(){ _userActiveUntil = Date.now() + 300000; } // 5 minutes
 function _userIsActive(){ return Date.now() < _userActiveUntil; }
 document.addEventListener('mousedown', _markUserActive, true);
 document.addEventListener('keydown',   _markUserActive, true);
+document.addEventListener('scroll',    _markUserActive, true);
+document.addEventListener('touchstart',_markUserActive, true);
 document.addEventListener('touchstart',_markUserActive, true);
 function _renderImmediate() {
   // Never switch away from search page if user is actively typing in it
@@ -12038,7 +12040,41 @@ let _planningAutoSyncTimer = null;
 async function _planningAutoSync(){
   // Skip auto-sync if we saved within last 60s — prevents overwriting recent changes
   if(_lastServerSaveTime > 0 && (Date.now()-_lastServerSaveTime) < 60000) return;
-  if(!document.hidden && !_userIsActive()){ await SYNC.loadFromServer(); }
+  if(!document.hidden){
+    // v41z FIX: if user is active (scrolling, clicking, typing) — sync data silently
+    // without re-rendering the screen. User stays exactly where they are.
+    if(_userIsActive()){
+      // Silent sync — update state in background, no render, no screen change
+      try {
+        const _url = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
+        if(!_url) return;
+        const r = await fetch(_url + '/api/planning/state', {signal: AbortSignal.timeout(15000)});
+        if(!r.ok) return;
+        const serverState = await r.json();
+        if(!serverState || !serverState.orders) return;
+        // Only update orders data silently — no render, no screen change
+        const _scrollEl = document.getElementById('content');
+        const _savedScroll = _scrollEl ? _scrollEl.scrollTop : 0;
+        // Merge server orders into state without triggering render
+        if(Array.isArray(serverState.orders)){
+          const serverMap = {};
+          serverState.orders.forEach(o => { if(o.id) serverMap[o.id] = o; });
+          state.orders = (state.orders||[]).map(o => {
+            const srv = serverMap[o.id];
+            if(!srv) return o;
+            // Only update non-user-protected fields silently
+            const isProtected = _localOrderChanges[o.id] && (Date.now() - _localOrderChanges[o.id]) < 300000;
+            if(isProtected) return o; // user changed this recently — keep local
+            return { ...o, actualProd: srv.actualProd || o.actualProd };
+          });
+        }
+        console.log('[v41z silent-sync] Data updated silently — screen unchanged');
+      } catch(e) { /* silent */ }
+    } else {
+      // User is idle — safe to do full sync and render
+      await SYNC.loadFromServer();
+    }
+  }
 }
 _planningAutoSyncTimer = setInterval(_planningAutoSync, 30000);
 
