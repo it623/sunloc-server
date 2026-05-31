@@ -8200,9 +8200,7 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
     } else if (ord?.poType === 'verbal' || ord?.poType === 'po') {
       const poNum = (ord?.poNumber || '').trim();
       reason  = poNum ? `🔗 PO: ${poNum}` : '🔗 No SAP Indent';
-      tooltip = poNum
-        ? `Purchase Order No: ${poNum} — manually planned order`
-        : 'Verbal/PO order — no SAP indent attached. Edit the order to add Sales Order Number once SAP indent is received.';
+      tooltip = poNum ? `PO Number: ${poNum}` : 'Verbal/PO order — no SAP indent attached. Edit the order to add Sales Order Number once SAP indent is received.';
     } else {
       reason  = '🔗 Awaiting SAP Link';
       tooltip = 'Order has no Sales Order Number. Edit the order to attach SAP indent.';
