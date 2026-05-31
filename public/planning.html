@@ -942,6 +942,10 @@ const SYNC = (() => {
               stageStatus: o.stageStatus || local.stageStatus,
               status: local.status || o.status,
               deleted: local.deleted !== undefined ? local.deleted : o.deleted,
+              // v41z: qty is user-set — keep local value, never let server overwrite it
+              qty:      local.qty      != null ? local.qty      : o.qty,
+              grossQty: local.grossQty != null ? local.grossQty : o.grossQty,
+              aGrade:   local.aGrade   != null ? local.aGrade   : o.aGrade,
             };
           });
           console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
