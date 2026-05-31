@@ -487,7 +487,9 @@ class SapClient {
     // SAP OData v3 filter syntax: DocumentStatus eq 'bost_Open' and DocDate ge 'YYYY-MM-DD'
     // v41z FIX: Remove date filter — fetch ALL open orders regardless of age
     // Low-numbered POs (191, 199, 166, 200) were created years ago but still open in SAP
-    const filter = `$filter=DocumentStatus eq 'bost_Open'`;
+    // v41z2 FIX: Also fetch bost_Partial — partially delivered orders still have open qty
+    // SAP marks orders as bost_Partial when some lines are delivered but others remain open
+    const filter = `$filter=(DocumentStatus eq 'bost_Open' or DocumentStatus eq 'bost_Partial')`;
     // v41f FIX (issue 1): use $expand=DocumentLines (NOT $select) so SAP B1 Service Layer returns
     // the COMPLETE line entity for each line — including user-defined fields (U_* UDFs) such as the
     // printing-matter field. With $select=DocumentLines, the Service Layer does not reliably return
