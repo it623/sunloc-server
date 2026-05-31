@@ -8186,8 +8186,7 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
   // v39 Phase 9b: State 2: packed but no Sales Order Number — explain why no Invoice button.
   // Different message per origin so dispatch manager knows next step.
   const sapDocEntry = ord?.sapDocEntry || null;
-  const sapDocNum   = (ord?.sapDocNum || '').trim();
-  if (!sapDocEntry && !sapDocNum) {
+  if (!sapDocEntry) {
     let reason, tooltip;
     if (ord?.woStatus === 'wo') {
       reason  = '🔗 Awaiting Reconciliation';
