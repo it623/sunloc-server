@@ -7750,6 +7750,14 @@ function getActiveDispatchOrderIds() {
 
 
 function renderDispatch() {
+  // Refresh tracking data (packedQty) if stale — then re-render dispatch page
+  const _trackingAge = Date.now() - (window._trackingLastLoaded || 0);
+  if (_trackingAge > 30000) {
+    window._trackingLastLoaded = Date.now();
+    SYNC.loadTrackingStatus().then(() => {
+      if (state.currentPage === 'dispatch') try { _renderImmediate(); } catch { try { renderDispatch(); } catch {} }
+    }).catch(() => {});
+  }
   const editable = isMonthEditable(_selectedPlanMonth);
   const status = getMonthEditStatus(_selectedPlanMonth);
   const bannerHtml = status === 'locked' && currentUser?.role !== 'admin'
