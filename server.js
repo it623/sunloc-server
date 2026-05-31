@@ -4977,36 +4977,41 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         // CRITICAL: Enforce 2-order limit using DB running counts
         const _alreadyRunningInDB = existing.status === 'running';
         const _machineRunCount = dbRunningPerMachine[ord.machineId] || 0;
-        // Force pending if this order is already over the limit in DB
-        if (_forcePendingIds.has(ord.id)) {
+        // PERMANENT STATUS PROTECTION: running and closed are user-set and must NEVER
+        // be changed automatically by any process — only the user can change them.
+        const _dbIsRunningOrClosed = existing.status === 'running' || existing.status === 'closed';
+        const _clientIsRunningOrClosed = ord.status === 'running' || ord.status === 'closed';
+
+        // If DB already has running/closed — preserve it always, client cannot overwrite
+        if (_dbIsRunningOrClosed && ord.status !== existing.status) {
+          finalStatus = existing.status;
+          preservedCount++;
+          preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
+        // If client is setting running/closed — always accept (user action)
+        } else if (_clientIsRunningOrClosed && !_dbIsRunningOrClosed) {
+          finalStatus = ord.status;
+          if (ord.status === 'running' && !_alreadyRunningInDB && ord.machineId) {
+            dbRunningPerMachine[ord.machineId] = (dbRunningPerMachine[ord.machineId] || 0) + 1;
+          }
+        // 2-order limit: only applies to running, never to closed
+        } else if (_forcePendingIds.has(ord.id) && ord.status === 'running' && existing.status !== 'closed') {
           finalStatus = 'pending';
           preservedCount++;
+          preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: 'pending' });
         } else {
         const _wouldExceedLimit = ord.status === 'running' && !_alreadyRunningInDB && _machineRunCount >= 2;
         if (_wouldExceedLimit) {
-          // Block 3rd running — force pending
           finalStatus = 'pending';
           preservedCount++;
         } else if (existing.status && ord.status && existing.status !== ord.status) {
-          const _clientProtected = ord.status === 'running' || ord.status === 'closed';
-          const _dbProtected = existing.status === 'running' || existing.status === 'closed';
-          if (_clientProtected) {
-            finalStatus = ord.status;
-            if (ord.status === 'running' && !_alreadyRunningInDB && ord.machineId) {
-              dbRunningPerMachine[ord.machineId] = (dbRunningPerMachine[ord.machineId] || 0) + 1;
-            }
-          } else if (_dbProtected) {
-            finalStatus = existing.status;
-            preservedCount++;
-            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
-          } else if (dbUpdated > clientEdit + 5000) {
+          if (dbUpdated > clientEdit + 5000) {
             finalStatus = existing.status;
             preservedCount++;
             preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
           }
           // else: client wins
         }
-        } // end _forcePendingIds else
+        } // end 2-order limit else
         // Deleted is sticky once true — never resurrect a deleted order
         if ((exData.deleted || existing.deleted) && !ord.deleted) {
           finalDeleted = true;
@@ -5471,16 +5476,22 @@ app.post('/api/planning/state', async (req, res) => {
               const clientEdit = parseInt(ord._localEditedAt || 0);
               const dbUpdated  = ex.updated_at ? new Date(ex.updated_at).getTime() : 0;
               let finalStatus;
-              // CRITICAL FIX: Enforce 2-order limit and protect running/closed
+              // PERMANENT STATUS PROTECTION: running and closed are user-set, never change automatically
               const alreadyRunningInDB = ex.status === 'running';
               const machineRunCount = dbRunningPerMachine[ord.machineId] || 0;
-              // Force pending if this order is already over the limit in DB
-              if (_bgForcePendingIds.has(ord.id)) {
+              const _bgDbProtected = ex.status === 'running' || ex.status === 'closed';
+              const _bgClientProtected = ord.status === 'running' || ord.status === 'closed';
+              if (_bgDbProtected && ord.status !== ex.status) {
+                // DB has running/closed — preserve it, client cannot change it
+                finalStatus = ex.status;
+              } else if (_bgClientProtected && !_bgDbProtected) {
+                // Client setting running/closed — accept it (user action)
+                finalStatus = ord.status;
+              } else if (_bgForcePendingIds.has(ord.id) && ord.status === 'running' && ex.status !== 'closed') {
                 finalStatus = 'pending';
               } else {
               const wouldExceedLimit = ord.status === 'running' && !alreadyRunningInDB && machineRunCount >= 2;
               if (wouldExceedLimit) {
-                // Block 3rd running order — force to pending
                 finalStatus = 'pending';
               } else if (ex.status && ord.status && ex.status !== ord.status) {
                 // Protect running/closed from being reverted
@@ -5642,6 +5653,7 @@ app.post('/api/planning/state', async (req, res) => {
       }
       let blobLimitDowngraded = 0;
       state.orders = state.orders.map(o => {
+        // NEVER downgrade closed orders — only running orders subject to 2-order limit
         if (o && o.status === 'running' && o.machineId && !o.deleted && !_blobAllowedIds.has(o.id)) {
           blobLimitDowngraded++;
           console.log(`[v41z blob-save] MC ${o.machineId} over limit — downgrading ${o.batchNumber||o.id} to pending`);
@@ -5654,6 +5666,7 @@ app.post('/api/planning/state', async (req, res) => {
           });
           return { ...o, status: 'pending' };
         }
+        // CLOSED orders are permanent — never touch them
         return o;
       });
       if (blobLimitDowngraded > 0) {

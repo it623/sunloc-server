@@ -1437,12 +1437,18 @@ function loadState() {
               }
               return patched;
             });
-            // v41z FINAL: ALWAYS clear _localOrderChanges for every preserved order
+            // v41z FINAL: Clear _localOrderChanges ONLY for 2-order limit downgrades.
+            // NEVER clear for running or closed — user set these, they are permanent.
             preserved.forEach(p => {
               if (p.id) {
-                delete _localOrderChanges[p.id];
-                if (p.clientStatus !== p.dbStatus) {
-                  console.log('[v41z] Cleared local protection for ' + (p.batchNumber||p.id) + ' (' + p.clientStatus + '→' + p.dbStatus + ') — server correction accepted');
+                const isRunningOrClosed = p.clientStatus === 'running' || p.clientStatus === 'closed';
+                const isServerDowngradeToPending = p.dbStatus === 'pending' && p.clientStatus === 'running';
+                if (isServerDowngradeToPending && !isRunningOrClosed) {
+                  delete _localOrderChanges[p.id];
+                  console.log('[v41z] Cleared local protection for ' + (p.batchNumber||p.id) + ' — 2-order limit accepted');
+                } else if (isRunningOrClosed) {
+                  _localOrderChanges[p.id] = Date.now();
+                  console.log('[v41z] Re-protected ' + (p.batchNumber||p.id) + ' — status ' + p.clientStatus + ' is user-set, server cannot change it');
                 }
               }
             });
@@ -1867,14 +1873,21 @@ async function saveState() {
         });
         // Also patch toSave so localStorage gets corrected state (not stale push payload)
         toSave.orders = state.orders;
-        // v41z FINAL: ALWAYS clear _localOrderChanges for every preserved order —
-        // regardless of whether correctedCount > 0. This stops the infinite fight loop
-        // where the client keeps pushing the same stale status back every 30s.
+        // v41z FINAL: Clear _localOrderChanges for preserved orders ONLY if the
+        // server is downgrading running→pending (2-order limit enforcement).
+        // NEVER clear protection for running or closed orders — user set these manually
+        // and they must never be changed automatically by any process.
         preserved.forEach(p => {
           if (p.id) {
-            delete _localOrderChanges[p.id];
-            if (p.clientStatus !== p.dbStatus) {
-              console.log('[v41z] Cleared local protection for ' + (p.batchNumber||p.id) + ' (' + p.clientStatus + '→' + p.dbStatus + ') — server correction accepted');
+            const isRunningOrClosed = p.clientStatus === 'running' || p.clientStatus === 'closed';
+            const isServerDowngradeToPending = p.dbStatus === 'pending' && p.clientStatus === 'running';
+            if (isServerDowngradeToPending && !isRunningOrClosed) {
+              delete _localOrderChanges[p.id];
+              console.log('[v41z] Cleared local protection for ' + (p.batchNumber||p.id) + ' — 2-order limit accepted');
+            } else if (isRunningOrClosed) {
+              // Keep protection — user manually set this, server must not change it
+              _localOrderChanges[p.id] = Date.now();
+              console.log('[v41z] Re-protected ' + (p.batchNumber||p.id) + ' — status ' + p.clientStatus + ' is user-set, server cannot change it');
             }
           }
         });
