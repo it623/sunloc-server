@@ -1630,12 +1630,24 @@ async function _dprPushRaw(fl,d,data){
         // was no longer In Production). Without this, the operator would think their
         // entry saved but the cache would silently drop it.
         if (j.rejectedCount > 0 && Array.isArray(j.rejected)) {
-          const reasons = j.rejected.slice(0, 5).map(rr =>
-            `• ${rr.batchNumber||rr.orderId||'(no batch)'} on ${rr.machineId} ${rr.shift} — ${rr.reason}`
-          ).join('\n');
-          const more = j.rejected.length > 5 ? `\n…and ${j.rejected.length - 5} more` : '';
-          // Use alert so the user has to acknowledge — these are silent data loss otherwise
-          alert(`⚠️ ${j.rejectedCount} DPR ${j.rejectedCount===1?'entry was':'entries were'} not saved:\n\n${reasons}${more}\n\nSee the reason shown next to each entry. Closed batches need a one-time same-day Reopen; non-running batches must be set to In Production in Planning.`);
+          // All other entries saved successfully. Only show which specific batches were blocked.
+          const closedBatches = j.rejected.filter(rr => rr.reason && rr.reason.includes('CLOSED'));
+          const nonRunning   = j.rejected.filter(rr => rr.reason && !rr.reason.includes('CLOSED') && !rr.reason.includes('deleted'));
+          const deleted      = j.rejected.filter(rr => rr.reason && rr.reason.includes('deleted'));
+          const lines = [];
+          if (closedBatches.length) {
+            const names = [...new Set(closedBatches.map(rr => rr.batchNumber||rr.orderId||'?'))].join(', ');
+            lines.push(`• Closed batch${closedBatches.length>1?'es':''}: ${names} — Reopen to enter data`);
+          }
+          if (nonRunning.length) {
+            const names = [...new Set(nonRunning.map(rr => rr.batchNumber||rr.orderId||'?'))].join(', ');
+            lines.push(`• Not in production: ${names} — Set to In Production in Planning`);
+          }
+          if (deleted.length) {
+            const names = [...new Set(deleted.map(rr => rr.batchNumber||rr.orderId||'?'))].join(', ');
+            lines.push(`• Deleted order${deleted.length>1?'s':''}: ${names}`);
+          }
+          alert(`⚠️ All other entries saved. The following batch entries were skipped:\n\n${lines.join('\n')}`);
         }
       }catch(_){}
       setSyncBadge('synced'); return true;
