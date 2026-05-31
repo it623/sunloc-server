@@ -3130,19 +3130,20 @@ app.get('/api/sap/indent-fields', async (req, res) => {
 
 app.get('/api/sap/indents', async (req, res) => {
   try {
-    const filter = (req.query.status || 'unprocessed').toString();
+    // v41z FIX: Always return ALL indents (processed and unprocessed).
+    // The client-side _v39_reconcileSapIndents calculates remaining unplanned qty per line
+    // and only shows lines where unplannedQty > 0. Hiding processed indents was causing
+    // old open SAP orders (PO 191, 199, 166, 200 etc.) to not appear in Unplanned Orders.
     let rows;
     if (pgPool) {
-      const sql = filter === 'all'
-        ? `SELECT * FROM sap_indent_cache ORDER BY doc_due_date ASC NULLS LAST, fetched_at DESC LIMIT 500`
-        : `SELECT * FROM sap_indent_cache WHERE processed_at IS NULL ORDER BY doc_due_date ASC NULLS LAST, fetched_at DESC LIMIT 500`;
-      const r = await pgPool.query(sql);
+      const r = await pgPool.query(
+        `SELECT * FROM sap_indent_cache ORDER BY doc_due_date ASC NULLS LAST, fetched_at DESC LIMIT 1000`
+      );
       rows = r.rows;
     } else {
-      const sql = filter === 'all'
-        ? `SELECT * FROM sap_indent_cache ORDER BY doc_due_date ASC, fetched_at DESC LIMIT 500`
-        : `SELECT * FROM sap_indent_cache WHERE processed_at IS NULL ORDER BY doc_due_date ASC, fetched_at DESC LIMIT 500`;
-      rows = db.prepare(sql).all();
+      rows = db.prepare(
+        `SELECT * FROM sap_indent_cache ORDER BY doc_due_date ASC, fetched_at DESC LIMIT 1000`
+      ).all();
     }
     // Parse payload_json so client gets clean structured data
     const indents = rows.map(r => {

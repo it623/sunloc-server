@@ -4586,7 +4586,7 @@ async function _v39_fetchSapIndents({ silent = false } = {}) {
     return [];
   }
   try {
-    const r = await fetch(baseUrl + '/api/sap/indents?status=unprocessed', { signal: AbortSignal.timeout(8000) });
+    const r = await fetch(baseUrl + '/api/sap/indents?status=all', { signal: AbortSignal.timeout(8000) });
     const j = await r.json();
     if (j.ok) {
       _v39_sapIndents = j.indents || [];
