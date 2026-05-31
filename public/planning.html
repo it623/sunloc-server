@@ -8198,8 +8198,11 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
       reason  = '🔗 Awaiting Reconciliation';
       tooltip = 'Auto-created TEMP batch — needs reconciliation in Planning App before it can be invoiced.';
     } else if (ord?.poType === 'verbal' || ord?.poType === 'po') {
-      reason  = '🔗 No SAP Indent';
-      tooltip = 'Verbal/PO order — no SAP indent attached. Edit the order to add Sales Order Number once SAP indent is received.';
+      const poNum = (ord?.poNumber || '').trim();
+      reason  = poNum ? `🔗 PO: ${poNum}` : '🔗 No SAP Indent';
+      tooltip = poNum
+        ? `Purchase Order No: ${poNum} — manually planned order`
+        : 'Verbal/PO order — no SAP indent attached. Edit the order to add Sales Order Number once SAP indent is received.';
     } else {
       reason  = '🔗 Awaiting SAP Link';
       tooltip = 'Order has no Sales Order Number. Edit the order to attach SAP indent.';
