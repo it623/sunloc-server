@@ -5635,6 +5635,13 @@ app.post('/api/planning/state', async (req, res) => {
             if (dbSapEntry && !result.sapDocEntry) result = { ...result, sapDocEntry: dbSapEntry };
             if (dbSapNum   && !result.sapDocNum)   result = { ...result, sapDocNum:   dbSapNum };
             if (dbPoNumber && !result.poNumber)    result = { ...result, poNumber:    dbPoNumber };
+            // v41z2: qty — DB always wins in blob-save so refresh never reverts user's change
+            const dbQty      = dbRow._exData.qty      != null ? dbRow._exData.qty      : null;
+            const dbGrossQty = dbRow._exData.grossQty != null ? dbRow._exData.grossQty : null;
+            const dbAGrade   = dbRow._exData.aGrade   != null ? dbRow._exData.aGrade   : null;
+            if (dbQty      != null) result = { ...result, qty:      dbQty };
+            if (dbGrossQty != null) result = { ...result, grossQty: dbGrossQty };
+            if (dbAGrade   != null) result = { ...result, aGrade:   dbAGrade };
             return result;
           });
           if (blobPreservedCount > 0) {
