@@ -5103,9 +5103,9 @@ function _v39_openAssignModal(idx) {
     <div class="form-group"><label>Zone *</label>
       <select id="v39-assign-zone" class="form-control">
         <option value="">— Select zone —</option>
-        ${ZONES.map(z => `<option value="${z}"${u.isExport && isExportZone(z) ? ' selected' : ''}>${z}</option>`).join('')}
+        ${(() => { const suggestedZone = u.isExport ? (ZONES.find(z=>isExportZone(z))||'') : ((state.orders||[]).filter(o=>o.customer===u.cardName&&o.zone&&!isExportZone(o.zone)).sort((a,b)=>new Date(b.createdAt||0)-new Date(a.createdAt||0))[0]?.zone||''); return ZONES.map(z => `<option value="${z}"${z===suggestedZone?' selected':''}>${z}</option>`).join(''); })()}
       </select>
-      <div style="font-size:10px;color:var(--text3);margin-top:3px">${u.isExport ? 'SAP currency indicates EXPORT — pick the export zone.' : 'Pick the dispatch zone for this order.'}</div>
+      <div style="font-size:10px;color:var(--text3);margin-top:3px">${u.isExport ? 'SAP currency indicates EXPORT — pick the export zone.' : 'Zone auto-suggested from previous orders for this customer. Verify before confirming.'}</div>
     </div>
     <div style="font-size:11px;color:var(--text3);padding:8px;background:rgba(0,150,255,0.05);border-radius:4px;line-height:1.5">
       🔗 Sales Order Number <strong>${u.docNum}</strong> (ID ${u.docEntry}) will be auto-attached to the production order.<br>
@@ -5190,7 +5190,8 @@ async function _v39_confirmAssign() {
     grossQty: parseFloat((assignPrinted ? (qty * 1.07 * 1.01 * 1.01) : (qty / (aGrade/100))).toFixed(3)),
     daysNeeded: 0,        // recalc downstream
     startDate: startDateStr,
-    endDate: u.dueDate ? new Date(u.dueDate).toISOString().slice(0,10) : startDateStr,
+    // v41z2 FIX: if SAP due date is in the past, use startDate to avoid past end dates
+    endDate: (u.dueDate && new Date(u.dueDate) >= new Date(startDateStr)) ? new Date(u.dueDate).toISOString().slice(0,10) : startDateStr,
     manualEndDate: false,
     packing: assignPrinted ? 'PTD' : 'UP',
     zone: assignZone,
