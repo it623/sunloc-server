@@ -490,7 +490,8 @@ class SapClient {
     // v41z2 FIX: Also fetch bost_Delivered and bost_Close — SAP marks partially delivered orders
     // as bost_Delivered or bost_Close even when lines still have remaining open quantity
     // bost_Partial does NOT exist in this SAP version
-    const filter = `$filter=(DocumentStatus eq 'bost_Open' or DocumentStatus eq 'bost_Delivered' or DocumentStatus eq 'bost_Close')`;
+    // Fetch only open orders — bost_Open is the correct status for all undelivered SAP orders
+    const filter = `$filter=DocumentStatus eq 'bost_Open'`;
     // v41f FIX (issue 1): use $expand=DocumentLines (NOT $select) so SAP B1 Service Layer returns
     // the COMPLETE line entity for each line — including user-defined fields (U_* UDFs) such as the
     // printing-matter field. With $select=DocumentLines, the Service Layer does not reliably return
@@ -503,7 +504,8 @@ class SapClient {
     // cache, regardless of its age. ("22 loaded" was a first-page artifact, not the true open count.)
     // We now follow nextLink and accumulate ALL pages (capped to avoid runaway loops).
     let indents = [];
-    let r = await this.call({ method: 'GET', path: 'Orders', query: `${filter}&${select}` });
+    // $top=500 forces SAP to return all open orders (old + new) not just 20 most recent
+    let r = await this.call({ method: 'GET', path: 'Orders', query: `${filter}&${select}&$top=500` });
     if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded };
     indents = indents.concat(r.data?.value || []);
     let nextLink = r.data?.['@odata.nextLink'];
