@@ -490,37 +490,42 @@ class SapClient {
     // v41z2 FIX: Also fetch bost_Delivered and bost_Close — SAP marks partially delivered orders
     // as bost_Delivered or bost_Close even when lines still have remaining open quantity
     // bost_Partial does NOT exist in this SAP version
-    // Fetch only bost_Open orders + $top=500 to cover old and new orders
+    // v41z4 FIX: Use bost_Open only (correct status) + manual $skip pagination
+    // SAP B1 Service Layer ignores $top and returns max 20 per page with no nextLink
+    // So we manually paginate using $skip=0, $skip=20, $skip=40... until empty page
     const filter = `$filter=DocumentStatus eq 'bost_Open'`;
-    // v41f FIX (issue 1): use $expand=DocumentLines (NOT $select) so SAP B1 Service Layer returns
-    // the COMPLETE line entity for each line — including user-defined fields (U_* UDFs) such as the
-    // printing-matter field. With $select=DocumentLines, the Service Layer does not reliably return
-    // line-level UDFs, which is why print matter came back blank even when the SO was printed.
-    // Header fields stay in $select; the line collection comes via $expand.
     const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,DocCurrency,DocumentLines`;
-    // v41m FIX (issue 3 — REAL cause): SAP B1 Service Layer paginates at ~20 records per page and
-    // does NOT honour a large $top — it returns one page plus an @odata.nextLink. The old code read
-    // only r.data.value (first page), so any open order beyond the first page never reached the
-    // cache, regardless of its age. ("22 loaded" was a first-page artifact, not the true open count.)
-    // We now follow nextLink and accumulate ALL pages (capped to avoid runaway loops).
     let indents = [];
-    // $top=500 forces SAP to return all open orders not just 20 most recent
-    let r = await this.call({ method: 'GET', path: 'Orders', query: `${filter}&${select}&$top=500` });
-    if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded };
-    indents = indents.concat(r.data?.value || []);
-    let nextLink = r.data?.['@odata.nextLink'];
+    let skip = 0;
     let pageGuard = 0;
-    while (nextLink && pageGuard < 60) {
+    while (pageGuard < 100) {
       pageGuard++;
-      // nextLink may be relative ("Orders?$skip=20...") or absolute ("https://host/b1s/v1/Orders?...").
-      // Normalise to the relative path call() expects (it prefixes /b1s/v1/ for non-slash paths).
-      let nlPath = nextLink;
-      const m = /\/b1s\/v1\/(.*)$/.exec(nextLink);
-      if (m) nlPath = m[1];                 // strip scheme+host+/b1s/v1/ if absolute
-      const nr = await this.call({ method: 'GET', path: nlPath });
-      if (!nr.ok) { console.warn('[SAP fetch] nextLink page failed, returning partial:', nr.error); break; }
-      indents = indents.concat(nr.data?.value || []);
-      nextLink = nr.data?.['@odata.nextLink'];
+      const query = `${filter}&${select}&$skip=${skip}`;
+      const r = await this.call({ method: 'GET', path: 'Orders', query });
+      if (!r.ok) {
+        if (skip === 0) return { ok: false, error: r.error, degraded: r.degraded };
+        console.warn('[SAP fetch] page failed at skip=' + skip + ', returning partial:', r.error);
+        break;
+      }
+      const page = r.data?.value || [];
+      if (page.length === 0) break; // no more results
+      indents = indents.concat(page);
+      console.log('[SAP fetch] skip=' + skip + ' got ' + page.length + ' orders, total so far: ' + indents.length);
+      // Also follow nextLink if SAP provides it
+      let nextLink = r.data?.['@odata.nextLink'];
+      if (nextLink) {
+        let nlPath = nextLink;
+        const m = /\/b1s\/v1\/(.*)$/.exec(nextLink);
+        if (m) nlPath = m[1];
+        const nr = await this.call({ method: 'GET', path: nlPath });
+        if (nr.ok) {
+          indents = indents.concat(nr.data?.value || []);
+          skip += (page.length + (nr.data?.value?.length || 0));
+        } else { break; }
+      } else {
+        if (page.length < 20) break; // last page
+        skip += page.length;
+      }
     }
     return { ok: true, indents };
   }
