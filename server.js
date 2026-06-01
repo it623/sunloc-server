@@ -4656,10 +4656,10 @@ app.post('/api/orders/upsert', async (req, res) => {
         sapDocEntry: exData.sapDocEntry || ord.sapDocEntry || null,
         sapDocNum:   exData.sapDocNum   || ord.sapDocNum   || '',
         poNumber:    exData.poNumber    || ord.poNumber    || '',
-        // v41z: qty is user-set — DB wins; stale client cannot revert a user's qty change
-        qty:      exData.qty      != null ? exData.qty      : (ord.qty      != null ? ord.qty      : null),
-        grossQty: exData.grossQty != null ? exData.grossQty : (ord.grossQty != null ? ord.grossQty : null),
-        aGrade:   exData.aGrade   != null ? exData.aGrade   : (ord.aGrade   != null ? ord.aGrade   : null),
+        // v41z2: qty is user-set — client wins when saving; fall back to DB only if client sends null
+        qty:      ord.qty      != null ? ord.qty      : (exData.qty      != null ? exData.qty      : null),
+        grossQty: ord.grossQty != null ? ord.grossQty : (exData.grossQty != null ? exData.grossQty : null),
+        aGrade:   ord.aGrade   != null ? ord.aGrade   : (exData.aGrade   != null ? exData.aGrade   : null),
       };
     }
     if (preserved) {
@@ -5047,10 +5047,10 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           sapDocEntry: exData.sapDocEntry || ord.sapDocEntry || null,
           sapDocNum:   exData.sapDocNum   || ord.sapDocNum   || '',
           poNumber:    exData.poNumber    || ord.poNumber    || '',
-          // v41z: qty is user-set — DB wins; stale client cannot revert a user's qty change
-          qty:      exData.qty      != null ? exData.qty      : (ord.qty      != null ? ord.qty      : null),
-          grossQty: exData.grossQty != null ? exData.grossQty : (ord.grossQty != null ? ord.grossQty : null),
-          aGrade:   exData.aGrade   != null ? exData.aGrade   : (ord.aGrade   != null ? ord.aGrade   : null),
+          // v41z2: qty is user-set — client wins when saving; DB only as fallback
+          qty:      ord.qty      != null ? ord.qty      : (exData.qty      != null ? exData.qty      : null),
+          grossQty: ord.grossQty != null ? ord.grossQty : (exData.grossQty != null ? exData.grossQty : null),
+          aGrade:   ord.aGrade   != null ? ord.aGrade   : (exData.aGrade   != null ? exData.aGrade   : null),
         };
       }
       const json = JSON.stringify(mergedOrd);
@@ -5534,7 +5534,7 @@ app.post('/api/planning/state', async (req, res) => {
                 sapDocEntry: ex.sapDocEntry || ord.sapDocEntry || null,
                 sapDocNum:   ex.sapDocNum   || ord.sapDocNum   || '',
                 poNumber:    ex.poNumber    || ord.poNumber    || '',
-                // v41z: qty is user-set — DB wins; stale client cannot revert a user's qty change
+                // v41z2: bg-merge — DB qty wins over blob (stale); protects saved changes after refresh
                 qty:      ex.qty      != null ? ex.qty      : (ord.qty      != null ? ord.qty      : null),
                 grossQty: ex.grossQty != null ? ex.grossQty : (ord.grossQty != null ? ord.grossQty : null),
                 aGrade:   ex.aGrade   != null ? ex.aGrade   : (ord.aGrade   != null ? ord.aGrade   : null),
