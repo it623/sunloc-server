@@ -4671,7 +4671,9 @@ app.post('/api/orders/upsert', async (req, res) => {
         aGrade:   ord.aGrade   != null ? ord.aGrade   : (exData.aGrade   != null ? exData.aGrade   : null),
         packing:  ord.packing  || exData.packing  || null,
         zone:     ord.zone     || exData.zone     || null,
-        endDate:  ord.endDate  || exData.endDate  || null,
+        pcCode:    ord.pcCode    || exData.pcCode    || null,
+        startDate: ord.startDate || exData.startDate || null,
+        endDate:   ord.endDate   || exData.endDate   || null,
       };
     }
     if (preserved) {
@@ -5065,7 +5067,9 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           aGrade:   ord.aGrade   != null ? ord.aGrade   : (exData.aGrade   != null ? exData.aGrade   : null),
           packing:  ord.packing  || exData.packing  || null,
           zone:     ord.zone     || exData.zone     || null,
-          endDate:  ord.endDate  || exData.endDate  || null,
+          pcCode:    ord.pcCode    || exData.pcCode    || null,
+          startDate: ord.startDate || exData.startDate || null,
+          endDate:   ord.endDate   || exData.endDate   || null,
         };
       }
       const json = JSON.stringify(mergedOrd);
@@ -5555,7 +5559,9 @@ app.post('/api/planning/state', async (req, res) => {
                 aGrade:   ex.aGrade   != null ? ex.aGrade   : (ord.aGrade   != null ? ord.aGrade   : null),
                 zone:     ex.zone     || ord.zone     || null,
                 packing:  ex.packing  || ord.packing  || null,
-                endDate:  ex.endDate  || ord.endDate  || null,
+                pcCode:    ex.pcCode    || ord.pcCode    || null,
+                startDate: ex.startDate || ord.startDate || null,
+                endDate:   ex.endDate   || ord.endDate   || null,
               };
             }
             return mergedOrd;
@@ -5658,14 +5664,18 @@ app.post('/api/planning/state', async (req, res) => {
             const dbGrossQty = dbRow._exData.grossQty != null ? dbRow._exData.grossQty : null;
             const dbAGrade   = dbRow._exData.aGrade   != null ? dbRow._exData.aGrade   : null;
             const dbZone     = dbRow._exData.zone     || null;
-            const dbEndDate  = dbRow._exData.endDate  || null;
-            const dbPacking  = dbRow._exData.packing   || null;
+            const dbPacking   = dbRow._exData.packing   || null;
+            const dbPcCode    = dbRow._exData.pcCode    || null;
+            const dbStartDate = dbRow._exData.startDate || null;
+            const dbEndDate   = dbRow._exData.endDate   || null;
             if (dbQty      != null) result = { ...result, qty:      dbQty };
             if (dbGrossQty != null) result = { ...result, grossQty: dbGrossQty };
             if (dbAGrade   != null) result = { ...result, aGrade:   dbAGrade };
             if (dbZone)             result = { ...result, zone:     dbZone };
-            if (dbEndDate)          result = { ...result, endDate:  dbEndDate };
-            if (dbPacking)          result = { ...result, packing:  dbPacking };
+            if (dbEndDate)    result = { ...result, endDate:   dbEndDate };
+            if (dbPacking)   result = { ...result, packing:  dbPacking };
+            if (dbPcCode)    result = { ...result, pcCode:   dbPcCode };
+            if (dbStartDate) result = { ...result, startDate: dbStartDate };
             return result;
           });
           if (blobPreservedCount > 0) {

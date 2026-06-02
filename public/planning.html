@@ -6543,7 +6543,9 @@ async function savePrintModal(existingId) {
     const groupId = uid();
     const customer     = document.getElementById('fp-customer')?.value || '';
     const batchNumber  = document.getElementById('fp-batch')?.value || '';
-    const pcCode       = document.getElementById('fp-pccode')?.value || '';
+    // v41z2: pcCode always from linked production order — never from form
+  const _linkedProdForPrint = state.orders.find(o => o.id === (state.printOrders.find(p=>p.id===existingId)?.productionOrderId));
+  const pcCode = _linkedProdForPrint?.pcCode || document.getElementById('fp-pccode')?.value || '';
     const size         = document.getElementById('fp-size-multi')?.value || '';
     const colour       = document.getElementById('fp-colour')?.value || '';
     const printMatter  = document.getElementById('fp-ptdmatter')?.value || '';
@@ -6649,7 +6651,8 @@ async function savePrintModal(existingId) {
       machineId: machineId || null,
       customer: document.getElementById('fp-customer')?.value,
       batchNumber: document.getElementById('fp-batch')?.value,
-      pcCode: document.getElementById('fp-pccode')?.value,
+      // v41z2: pcCode always from linked production order — never from form (prevents mismatch)
+      pcCode: (() => { const linkedProd = state.orders.find(o => o.id === (existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null)); return linkedProd?.pcCode || document.getElementById('fp-pccode')?.value || ''; })(),
       size: document.getElementById('fp-size')?.value,
       colour: document.getElementById('fp-colour')?.value,
       printMatter: document.getElementById('fp-ptdmatter')?.value,
