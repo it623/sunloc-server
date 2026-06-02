@@ -7980,6 +7980,19 @@ function renderDispatch() {
   // Close order view wrapper + add truck view panel
   html += '</div>'; // close dispatch-view-orders
   html += '<div id="dispatch-view-trucks" style="display:none">' + renderTruckViewHTML(zones) + '</div>';
+  // v41z2: restore active view and zone after render
+  setTimeout(() => {
+    const savedView = window._dispatchActiveView || 'orders';
+    const savedZone = window._dispatchActiveZone || 'all';
+    if (savedView === 'trucks') {
+      const trucksTab = document.querySelector('#dispatch-view-tabs .tab:nth-child(2)');
+      if (trucksTab) switchDispatchViewTab(trucksTab, 'trucks');
+    }
+    if (savedZone && savedZone !== 'all') {
+      const zoneTab = [...document.querySelectorAll('#dispatch-zone-tabs .tab')].find(t => t.textContent.trim() === savedZone);
+      if (zoneTab) switchDispatchTab(zoneTab, savedZone);
+    }
+  }, 0);
 
   document.getElementById('content').innerHTML = html;
 
@@ -8231,6 +8244,7 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
 }
 
 function switchDispatchTab(el, zone) {
+  window._dispatchActiveZone = zone; // v41z2: persist zone across re-renders
   document.querySelectorAll('#dispatch-zone-tabs .tab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
   if (zone==='all') {
@@ -8241,6 +8255,7 @@ function switchDispatchTab(el, zone) {
 }
 
 function switchDispatchViewTab(el, view) {
+  window._dispatchActiveView = view; // v41z2: persist view across re-renders
   document.querySelectorAll('#dispatch-view-tabs .tab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
   const ordersEl = document.getElementById('dispatch-view-orders');
