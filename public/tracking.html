@@ -3590,7 +3590,17 @@ function filterOrangeLabels(){
 }
 
 function openLabelGen(preselect){
-  const activeBatches=getTrkMonthBatches().filter(b=>b.status==='running').sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  // v41z2 FIX: also include closed batches within 2 days of closing (same rule as label list)
+  const activeBatches=getTrkMonthBatches().filter(b=>{
+    if(b.status==='running') return true;
+    if(b.status==='closed'){
+      const closedAt = b.closedDate || b.endDate;
+      if(!closedAt) return false;
+      const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
+      return daysSinceClosed <= 2;
+    }
+    return false;
+  }).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   openModal('Generate Labels','Select batch and quantity to generate',`
     <div class="form-group">
       <label>Batch</label>
