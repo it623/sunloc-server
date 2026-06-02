@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41z</p>
+      <p>Planning Suite v3.0 · build v41ZB</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -12788,6 +12788,10 @@ let _v40_integrityAutoRefreshTimer = null;
 let _v40_integrityFindings = [];
 let _v40_integritySummary = { critical: 0, warning: 0, info: 0 };
 let _v40_integrityFilter = 'all';
+let _v40_integritySearch = '';          // v41ZB: batch/description/check text search
+let _v40_integrityCheckType = 'all';    // v41ZB: filter by check type (header option)
+let _v40_integrityIncludeAcked = false; // v41ZB: also show acked/assigned items + their status
+function _v40_fmtTs(t) { try { return t ? new Date(t).toISOString().slice(0,16).replace('T',' ') : '?'; } catch(e){ return '?'; } }
 
 // v40 P18.17: HTML-escape helper local to integrity dashboard (no global _v40_esc() in planning.html).
 function _v40_esc(s) {
@@ -12837,6 +12841,17 @@ async function renderDataIntegrity() {
           <button class="btn btn-sm" style="padding:3px 12px;font-size:11px;background:rgba(148,163,184,0.15);color:#475569" onclick="_v40_openMutesPanel()">🔕 Manage Mutes</button>
         </div>
       </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+        <input type="text" id="int-search" placeholder="🔍 Search batch / order / description / check…" value="${_v40_esc(_v40_integritySearch)}" oninput="_v40_setIntegritySearch(this.value)" style="flex:1;min-width:220px;font-size:12px;padding:5px 10px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);outline:none">
+        <select id="int-checktype" onchange="_v40_setIntegrityCheckType(this.value)" style="font-size:12px;padding:5px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1)">
+          <option value="all">All checks</option>
+          ${Object.entries(_v40_CHECK_TYPE_LABELS).map(([k,v])=>`<option value="${k}"${_v40_integrityCheckType===k?' selected':''}>${_v40_esc(v)}</option>`).join('')}
+        </select>
+        <label style="display:flex;align-items:center;gap:5px;font-size:11px;color:var(--text2);white-space:nowrap;cursor:pointer">
+          <input type="checkbox" id="int-incack" ${_v40_integrityIncludeAcked?'checked':''} onchange="_v40_toggleIncludeAcked(this.checked)" style="cursor:pointer">
+          Show acked / assigned
+        </label>
+      </div>
       <div style="background:rgba(8,145,178,0.06);border-radius:4px;padding:8px 12px;margin-bottom:12px;font-size:11px;color:var(--text2);line-height:1.5">
         💡 <strong>How this works:</strong> Server runs all 12 integrity checks every 60 minutes. Critical findings need individual review. Warning/Info can be bulk-acked. Ack expires after 24h so issues resurface — meaning ack is for triage, not "fixed". Assign tasks to operators to direct fixes. Findings auto-resolve when the next scan no longer detects them.
       </div>
@@ -12861,13 +12876,16 @@ function _v40_setIntegrityFilter(sev) {
     if (b) b.style.opacity = (s === sev ? '1' : '0.5');
   });
 }
+function _v40_setIntegritySearch(v) { _v40_integritySearch = v; _v40_renderIntegrityFindings(); }
+function _v40_setIntegrityCheckType(v) { _v40_integrityCheckType = v; _v40_renderIntegrityFindings(); }
+function _v40_toggleIncludeAcked(c) { _v40_integrityIncludeAcked = c; _v40_loadIntegrityFindings(); }
 
 async function _v40_loadIntegrityFindings() {
   let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) return;
   try {
-    const r = await fetch(serverUrl + '/api/integrity/findings', {
+    const r = await fetch(serverUrl + '/api/integrity/findings' + (_v40_integrityIncludeAcked ? '?includeAcked=1' : ''), {
       headers:{'x-session-token': currentUser?.token||''},
       signal: AbortSignal.timeout(10000)
     });
@@ -12904,14 +12922,28 @@ function _v40_renderIntegritySummary(lastRunAt, isRunning) {
 }
 
 function _v40_renderIntegrityFindings() {
-  const filtered = _v40_integrityFilter === 'all'
-    ? _v40_integrityFindings
-    : _v40_integrityFindings.filter(f => f.severity === _v40_integrityFilter);
+  let filtered = _v40_integrityFindings;
+  if (_v40_integrityFilter !== 'all') filtered = filtered.filter(f => f.severity === _v40_integrityFilter);
+  if (_v40_integrityCheckType !== 'all') filtered = filtered.filter(f => f.check_type === _v40_integrityCheckType);
+  const q = (_v40_integritySearch || '').trim().toLowerCase();
+  if (q) filtered = filtered.filter(f =>
+    (f.batch_number||'').toLowerCase().includes(q) ||
+    (f.order_id||'').toLowerCase().includes(q) ||
+    (f.description||'').toLowerCase().includes(q) ||
+    (_v40_CHECK_TYPE_LABELS[f.check_type]||f.check_type||'').toLowerCase().includes(q)
+  );
   const el = document.getElementById('integrity-findings-table');
   if (!el) return;
+  // meta: filtered count + distinct batches + how many have an investigation (ack or task) assigned
+  const meta = document.getElementById('integrity-meta');
+  if (meta) {
+    const batches = new Set(filtered.filter(f=>f.batch_number).map(f=>f.batch_number));
+    const assigned = filtered.filter(f => f.ack_at || (f.tasks && f.tasks.length)).length;
+    meta.textContent = `${filtered.length} shown · ${batches.size} batch${batches.size===1?'':'es'} · ${assigned} with investigation assigned`;
+  }
   if (filtered.length === 0) {
     el.innerHTML = `<div style="color:var(--green);padding:30px;text-align:center;font-size:14px">
-      ✅ No active ${_v40_integrityFilter === 'all' ? '' : _v40_integrityFilter + ' '}findings.
+      ✅ No ${_v40_integrityFilter === 'all' ? '' : _v40_integrityFilter + ' '}findings${q?` matching “${_v40_esc(_v40_integritySearch)}”`:''}.
     </div>`;
     return;
   }
@@ -12924,13 +12956,35 @@ function _v40_renderIntegrityFindings() {
     const c = map[s] || map.info;
     return `<span style="background:${c.bg};color:${c.color};padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">${c.icon} ${s.toUpperCase()}</span>`;
   };
+  // v41ZB: per-finding action status + timestamps (ack actions + task assignments)
+  const statusCell = (f) => {
+    const lines = [];
+    const now = Date.now();
+    const ackActive = f.ack_at && (!f.ack_until || new Date(f.ack_until).getTime() > now);
+    const ackExpired = f.ack_at && f.ack_until && new Date(f.ack_until).getTime() <= now;
+    if (ackActive) {
+      lines.push(`<div style="color:#16a34a">✓ Acked by <b>${_v40_esc(f.ack_by||'?')}</b> · ${_v40_fmtTs(f.ack_at)}${f.ack_until?` (until ${_v40_fmtTs(f.ack_until)})`:''}</div>`
+        + (f.ack_reason?`<div style="color:var(--text3);font-size:10px">“${_v40_esc(f.ack_reason)}”</div>`:''));
+    } else if (ackExpired) {
+      lines.push(`<div style="color:var(--text3)">⌛ Ack expired ${_v40_fmtTs(f.ack_until)}</div>`);
+    }
+    (f.tasks||[]).filter(t => !t.dismissed_at).forEach(t => {
+      const st = t.resolved_at ? `✅ resolved ${_v40_fmtTs(t.resolved_at)}`
+               : t.seen_at    ? `👁 seen ${_v40_fmtTs(t.seen_at)}`
+               : `⏳ ${_v40_esc(t.status||'pending')}`;
+      lines.push(`<div style="color:#0e7490">📋 Assigned to <b>${_v40_esc(t.assigned_to)}</b> by ${_v40_esc(t.assigned_by)} · ${_v40_fmtTs(t.assigned_at)} — ${st}</div>`);
+    });
+    return lines.length ? lines.join('') : `<span style="color:var(--text3)">🔵 Open</span>`;
+  };
   const rowsHtml = filtered.map(f => {
     const lastSeen = f.last_seen ? new Date(f.last_seen).toISOString().slice(0,16).replace('T',' ') : '?';
     const label = _v40_CHECK_TYPE_LABELS[f.check_type] || f.check_type;
+    const batchTag = f.batch_number ? `<div style="font-size:10px;color:var(--text3);font-family:var(--mono);margin-top:3px">${_v40_esc(f.batch_number)}</div>` : '';
     return `<tr>
       <td style="vertical-align:top;padding:8px">${sevBadge(f.severity)}</td>
-      <td style="vertical-align:top;padding:8px;font-size:11px;color:var(--text3)">${label}</td>
+      <td style="vertical-align:top;padding:8px;font-size:11px;color:var(--text3)">${label}${batchTag}</td>
       <td style="vertical-align:top;padding:8px;font-size:12px;line-height:1.5">${_v40_esc(f.description||'')}</td>
+      <td style="vertical-align:top;padding:8px;font-size:11px;line-height:1.5">${statusCell(f)}</td>
       <td style="vertical-align:top;padding:8px;font-size:10px;color:var(--text3);font-family:var(--mono)">${lastSeen}</td>
       <td style="vertical-align:top;padding:8px;white-space:nowrap">
         <button class="btn btn-sm" style="padding:3px 10px;font-size:11px;background:rgba(8,145,178,0.15);color:#0e7490" onclick="_v40_openFindingDetail('${f.id}')">Investigate</button>
@@ -12940,7 +12994,7 @@ function _v40_renderIntegrityFindings() {
   }).join('');
   el.innerHTML = `<div style="overflow-x:auto">
     <table class="summary-table" style="font-size:12px">
-      <thead><tr><th style="width:90px">Severity</th><th style="width:170px">Check</th><th>Description</th><th style="width:120px">Last Seen</th><th style="width:200px">Actions</th></tr></thead>
+      <thead><tr><th style="width:90px">Severity</th><th style="width:160px">Check</th><th>Description</th><th style="width:230px">Status</th><th style="width:110px">Last Seen</th><th style="width:200px">Actions</th></tr></thead>
       <tbody>${rowsHtml}</tbody>
     </table>
   </div>`;

@@ -935,6 +935,15 @@ const MIGRATIONS = [
         reopened_by TEXT
       );`
   },
+  {
+    // v41ZB: per-entry remark/note on salvage & remelt wastage. Added as a new end-of-array
+    // migration (the live table was created by v2 without this column; later CREATE TABLE
+    // IF NOT EXISTS blocks are no-ops on the existing table). schema_migrations tracking
+    // ensures this ALTER runs exactly once. Pattern mirrors existing ADD COLUMN migrations.
+    version: 34,
+    name: 'tracking_wastage_note',
+    sql: `ALTER TABLE tracking_wastage ADD COLUMN note TEXT;`
+  },
 ];
 
 function runMigrations() {
@@ -7125,6 +7134,29 @@ app.get('/api/integrity/findings', async (req, res) => {
         try { r.raw_data = JSON.parse(r.raw_data_json); delete r.raw_data_json; } catch (e) {}
       }
     }
+    // v41ZB: attach assignment/action history per finding (read-only join, no schema change).
+    // Surfaces "status against each action + timestamp" in the Data Integrity dashboard.
+    try {
+      const ids = rows.map(r => r.id).filter(Boolean);
+      if (ids.length) {
+        let taskRows = [];
+        if (pgPool) {
+          const r2 = await pgPool.query(`SELECT * FROM integrity_tasks WHERE finding_id = ANY($1) ORDER BY assigned_at ASC`, [ids]);
+          taskRows = r2.rows;
+        } else {
+          const ph = ids.map(() => '?').join(',');
+          taskRows = db.prepare(`SELECT * FROM integrity_tasks WHERE finding_id IN (${ph}) ORDER BY assigned_at ASC`).all(...ids);
+        }
+        const byFinding = {};
+        for (const t of taskRows) { (byFinding[t.finding_id] = byFinding[t.finding_id] || []).push(t); }
+        for (const r of rows) { r.tasks = byFinding[r.id] || []; }
+      } else {
+        for (const r of rows) { r.tasks = []; }
+      }
+    } catch (e) {
+      console.error('[Integrity] task attach failed:', e.message);
+      for (const r of rows) { if (!r.tasks) r.tasks = []; }
+    }
     // Summary counts (unack, unresolved)
     let summarySql = `SELECT severity, COUNT(*)::int AS c FROM integrity_findings WHERE resolved=0 AND (ack_until IS NULL OR ack_until < `;
     summarySql += pgPool ? `NOW()::TEXT` : `datetime('now')`;
@@ -11760,17 +11792,18 @@ app.post('/api/tracking/reconcile-wip', async (req, res) => {
 
 app.post('/api/tracking/wastage', async (req, res) => {
   try {
-    const { batchNumber, dept, salvage, remelt } = req.body;
+    const { batchNumber, dept, salvage, remelt, note } = req.body;
     if (!batchNumber || !dept) return res.status(400).json({ ok: false, error: 'batchNumber and dept required' });
     const ts = new Date().toISOString();
+    const noteVal = (typeof note === 'string' && note.trim()) ? note.trim().slice(0,200) : null;
     const genId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     if (pgPool) {
-      if (parseFloat(salvage) > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts]);
-      if (parseFloat(remelt)  > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts]);
+      if (parseFloat(salvage) > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal]);
+      if (parseFloat(remelt)  > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal]);
     } else {
-      const insert = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES (?,?,?,?,?,?)`);
-      if (parseFloat(salvage) > 0) insert.run(genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts);
-      if (parseFloat(remelt)  > 0) insert.run(genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts);
+      const insert = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note) VALUES (?,?,?,?,?,?,?)`);
+      if (parseFloat(salvage) > 0) insert.run(genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal);
+      if (parseFloat(remelt)  > 0) insert.run(genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal);
     }
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }

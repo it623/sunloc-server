@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41z</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZB</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41z</p>
+      <p>Tracking Suite v1.0 · build v41ZB</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41z</p>
+      <p>Tracking Suite v1.0 · build v41ZB</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2273,8 +2273,14 @@ function getBatchWIPBreakdown(batchNo){
   const wPI    = getTotalWastage(batchNo,'pi');
   const grossProd = batch.actualProd || batch.actualQty || 0;
 
-  const preAIM   = Math.max(0, grossProd - aimIn);
-  const aimWIP   = Math.max(0, aimIn - aimOut - wAIM.salvage - wAIM.remelt);
+  // v41ZB: Production WIP (pre-AIM / "Unsorted") now deducts AIM-stage wastage so the
+  // wastage impact lives here, not in AIM WIP. AIM WIP becomes a clean Scan In − Scan Out.
+  //   Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In
+  //   AIM WIP        =  AIM Scan In − AIM Scan Out
+  // Downstream (Printing/PI) WIP and totalWIP are intentionally UNCHANGED — wastage moves
+  // from the AIM bucket into the Unsorted bucket, so the breakdown still sums to totalWIP.
+  const preAIM   = Math.max(0, grossProd - wAIM.salvage - wAIM.remelt - aimIn);
+  const aimWIP   = Math.max(0, aimIn - aimOut);
   const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - wPrint.salvage - wPrint.remelt) : 0;
   const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt) : 0;
   // v37E: Transit gap between last production stage and packing receipt
@@ -3911,6 +3917,12 @@ function renderDeptScan(dept){
         <input type="number" id="wastage-remelt-${dept}" step="0.01" placeholder="0.00">
       </div>
     </div>
+    <div class="form-row" style="margin-top:8px">
+      <div class="form-group" style="margin-bottom:0">
+        <label>Remark <span class="text-muted" style="font-weight:400">(optional — reason / note for this salvage/remelt)</span></label>
+        <input type="text" id="wastage-note-${dept}" maxlength="200" placeholder="e.g. colour mismatch, machine jam, sample run…">
+      </div>
+    </div>
     <button class="btn btn-warning btn-sm" onclick="saveWastage('${dept}')">Save Wastage Entry</button>
     <div id="wastage-result-${dept}" class="mt-8"></div>
     ${(currentDept==='admin'||currentDept==='planning')?`
@@ -3921,19 +3933,20 @@ function renderDeptScan(dept){
     </div>
     <div class="text-sm text-muted mb-8">Admin and Planning roles can correct erroneous wastage entries.</div>
     <div class="tbl-wrap"><table>
-      <thead><tr><th>Batch</th><th>Type</th><th>Qty (L)</th><th>Entered By</th><th>Time</th><th>Action</th></tr></thead>
+      <thead><tr><th>Batch</th><th>Type</th><th>Qty (L)</th><th>Remark</th><th>Entered By</th><th>Time</th><th>Action</th></tr></thead>
       <tbody>
       ${state.wastage.filter(w=>w.dept===dept).slice().reverse().map(w=>`<tr id="wrow-${w.id}" data-wbatch="${w.batchNumber.toLowerCase()}">
         <td class="td-mono fw-bold">${w.batchNumber}</td>
         <td><span class="badge ${w.type==='salvage'?'badge-amber':'badge-red'}">${w.type}</span></td>
         <td class="td-mono" id="wqty-${w.id}">${fmt(w.qty)}</td>
+        <td class="text-sm" style="max-width:200px">${w.note?_v40_esc(w.note):'<span class="text-muted">—</span>'}</td>
         <td class="text-sm">${w.by||'—'}</td>
         <td class="text-sm">${fmtDateTime(w.ts)}</td>
         <td>
           <button class="btn btn-sm btn-secondary" style="font-size:10px;padding:3px 7px" onclick="openWastageEdit('${w.id}','${dept}')">✏️ Edit</button>
           <button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 7px;margin-left:4px" onclick="deleteWastageEntry('${w.id}','${dept}')">🗑</button>
         </td>
-      </tr>`).join('')||'<tr><td colspan="6" class="text-center text-muted">No wastage recorded for this dept</td></tr>'}
+      </tr>`).join('')||'<tr><td colspan="7" class="text-center text-muted">No wastage recorded for this dept</td></tr>'}
       </tbody>
     </table></div>`:''}
   </div>`:''}
@@ -4147,6 +4160,7 @@ function saveWastage(dept){
   const batchNo=document.getElementById(`wastage-batch-${dept}`)?.value;
   const salvage=parseFloat(document.getElementById(`wastage-salvage-${dept}`)?.value)||0;
   const remelt=parseFloat(document.getElementById(`wastage-remelt-${dept}`)?.value)||0;
+  const note=(document.getElementById(`wastage-note-${dept}`)?.value||'').trim().slice(0,200);
   const resultEl=document.getElementById(`wastage-result-${dept}`);
   if(!batchNo){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Please select a batch.</div>'; return; }
   if(salvage===0&&remelt===0){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Enter salvage or remelt quantity.</div>'; return; }
@@ -4160,13 +4174,15 @@ function saveWastage(dept){
     if(resultEl) resultEl.innerHTML=`<div class="alert alert-danger">Total wastage (${fmt(existing.total+salvage+remelt)}L) exceeds scanned IN qty (${fmt(inQty)}L)</div>`;
     return;
   }
-  if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept});
-  if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept});
+  // v41ZB: the same remark is attached to both salvage and remelt rows from this save.
+  if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept,note});
+  if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept,note});
   saveLocal();
-  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt});
+  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt,note});
   document.getElementById(`wastage-salvage-${dept}`).value='';
   document.getElementById(`wastage-remelt-${dept}`).value='';
-  if(resultEl) resultEl.innerHTML=`<div class="alert alert-success">✅ Wastage saved — S:${fmt(salvage)}L R:${fmt(remelt)}L</div>`;
+  const _noteEl=document.getElementById(`wastage-note-${dept}`); if(_noteEl) _noteEl.value='';
+  if(resultEl) resultEl.innerHTML=`<div class="alert alert-success">✅ Wastage saved — S:${fmt(salvage)}L R:${fmt(remelt)}L${note?' · "'+_v40_esc(note)+'"':''}</div>`;
   setTimeout(()=>{ if(resultEl) resultEl.innerHTML=''; renderDeptScan(dept); },2000);
 }
 
@@ -7102,11 +7118,15 @@ function renderReports(forceRebuild){
     </div>
     <!-- v41m: Report K — Per-day Scan In/Out Movement, now exposed on the Reports page (previously
          only reachable via the Dispatch page container). Renders into its own output container. -->
-    <div class="card cursor-pointer" onclick="setTimeout(()=>renderReportK('report-k-container'),50)" style="border-left:4px solid #0891b2;grid-column:span 2">
+    <!-- v41ZB: trigger moved from the whole card onto the Generate button. The report renders
+         into report-k-container INSIDE this card, so a card-level onclick made every inner
+         control (filters, search, drill-down) bubble back and re-generate — which is why the
+         report felt "disabled". Button-only trigger fixes that. -->
+    <div class="card" style="border-left:4px solid #0891b2;grid-column:span 2">
       <div class="card-title" style="color:#0891b2">📦 Report K — Daily Scan In / Out Movement</div>
       <div class="fw-bold mb-4">Per-day Pack-In → Dispatch-Out Movement</div>
       <div class="text-sm text-muted">Daily movement of boxes: scanned IN to packing vs scanned OUT for dispatch, per batch/customer, for the selected period. Use to reconcile dispatch flow day by day.</div>
-      <button class="btn btn-sm mt-12" style="background:#0891b2;color:#fff">Generate Movement Report →</button>
+      <button class="btn btn-sm mt-12" style="background:#0891b2;color:#fff" onclick="renderReportK('report-k-container')">Generate Movement Report →</button>
       <div id="report-k-container" class="mt-12"></div>
     </div>
     <!-- v39 Phase 12: Report L — sequential invoice ledger -->
@@ -7295,6 +7315,12 @@ function renderReportH(){ window._activeReport = renderReportH;
       <td class="td-mono" style="color:var(--accent4)">${fmt(r.gapQty)}L</td>
     </tr>`).join('');
 
+  // v41ZB: totals across the filtered tab rows
+  const _hOut = tabRows.reduce((s,r)=>s+(r.fromOut||0),0);
+  const _hIn  = tabRows.reduce((s,r)=>s+(r.toIn||0),0);
+  const _hGap = tabRows.reduce((s,r)=>s+(r.gap||0),0);
+  const _hGapQ= tabRows.reduce((s,r)=>s+(r.gapQty||0),0);
+
   const html = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div>
@@ -7320,6 +7346,12 @@ function renderReportH(){ window._activeReport = renderReportH;
                <th>Gap (Boxes)</th><th>Gap (L)</th>
              </tr></thead>
              <tbody>${detailRows}</tbody>
+             <tfoot><tr style="background:var(--surface2);font-weight:800">
+               <td colspan="6" class="text-right" style="padding-right:8px">TOTAL (${tabRows.length})</td>
+               <td class="td-mono">${_hOut}</td><td class="td-mono">${_hIn}</td>
+               <td class="td-mono" style="color:var(--accent4)">${_hGap}</td>
+               <td class="td-mono" style="color:var(--accent4)">${fmt(_hGapQ)}L</td>
+             </tr></tfoot>
            </table></div>`
          :'<div class="alert alert-info">No rows match current filters.</div>'}
        `
@@ -7605,7 +7637,19 @@ function renderReportZ(){ window._activeReport = renderReportZ;
     return { b, wip, totalWIP, packWIP, isOpen };
   }).filter(x=>x.isOpen);
 
-  const rows = items.map(({b,wip,totalWIP,packWIP})=>{
+  // v41ZB: machine filter (→ only that machine's batches) + free-text search + totals row.
+  const mFilter = window._rptZMachine || '';
+  const sQ = (window._rptZSearch || '').toLowerCase().trim();
+  const machineOpts = [...new Set(items.map(x=>x.b.machineId).filter(Boolean))].sort()
+    .map(m=>`<option value="${m}" ${mFilter===m?'selected':''}>${m}</option>`).join('');
+  let shown = items;
+  if (mFilter) shown = shown.filter(x => x.b.machineId === mFilter);
+  if (sQ) shown = shown.filter(x =>
+    (x.b.batchNumber||'').toLowerCase().includes(sQ) ||
+    (x.b.customer||'').toLowerCase().includes(sQ) ||
+    (x.b.pcCode||'').toLowerCase().includes(sQ));
+
+  const rows = shown.map(({b,wip,totalWIP,packWIP})=>{
     const statusBadge = b.status==='closed'
       ? '<span class="badge badge-gray">closed</span>'
       : '<span class="badge" style="background:rgba(220,38,38,0.15);color:#dc2626">open</span>';
@@ -7618,6 +7662,7 @@ function renderReportZ(){ window._activeReport = renderReportZ;
     ].filter(Boolean).join(', ') : '';
     return `<tr>
       <td class="td-bold td-mono">${b.batchNumber}</td>
+      <td class="td-mono text-sm">${b.machineId||'—'}</td>
       <td class="text-sm">${b.customer||'—'}</td>
       <td class="td-mono">${b.size}</td>
       <td>${b.isPrinted?'<span class="badge badge-purple">PTD</span>':'<span class="badge badge-gray">UP</span>'}</td>
@@ -7630,23 +7675,54 @@ function renderReportZ(){ window._activeReport = renderReportZ;
     </tr>`;
   }).join('');
 
+  // Totals across the currently shown (filtered) rows
+  const sumGross = shown.reduce((s,x)=>s+(x.b.actualProd||x.b.actualQty||0),0);
+  const sumWIP   = shown.reduce((s,x)=>s+(x.totalWIP||0),0);
+  const sumPack  = shown.reduce((s,x)=>s+(x.packWIP||0),0);
+  const totalsRow = shown.length ? `<tfoot><tr style="background:var(--surface2);font-weight:800">
+      <td colspan="6" class="text-right" style="padding-right:8px">TOTAL (${shown.length} item${shown.length===1?'':'s'})</td>
+      <td class="td-mono">${fmt(sumGross)}L</td>
+      <td class="td-mono amber">${fmt(sumWIP)}L</td>
+      <td></td>
+      <td class="td-mono green">${fmt(sumPack)}L</td>
+      <td></td>
+    </tr></tfoot>` : '';
+
+  const filterBar = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
+      <input type="text" id="rptz-search" placeholder="🔍 Batch / Customer / PC Code" value="${(window._rptZSearch||'').replace(/"/g,'&quot;')}"
+             oninput="window._rptZSearch=this.value;renderReportZ()"
+             style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;min-width:220px;font-size:12px;flex:1;max-width:320px">
+      <select onchange="window._rptZMachine=this.value;renderReportZ()" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface)">
+        <option value="">All Machines</option>${machineOpts}
+      </select>
+      ${(mFilter||sQ)?`<button class="btn btn-ghost btn-sm" onclick="window._rptZSearch='';window._rptZMachine='';renderReportZ()">✕ Clear</button>`:''}
+      <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${shown.length} of ${items.length} open</span>
+    </div>`;
+
   const html = `
   <div class="card mb-16">
     <div class="section-title mb-12">🧹 Report Z — Month Changeover / Open Items (${ym})</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid #be123c">
       Lists batches in <b>${ym}</b> still open: unclosed orders and/or non-zero residual WIP. To get a clean slate before the next month, either complete the genuine production (close the order in Planning) or, for material that was produced but never fully scanned, use <b>Reconcile WIP</b> to resolve the residual. Reconciliation entries are timestamped inside <b>${ym}</b> so A-Grade stays attributed to this production month.
     </div>
+    ${filterBar}
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
-        <th>Batch</th><th>Customer</th><th>Sz</th><th>Type</th><th>Order Status</th>
+        <th>Batch</th><th>Machine</th><th>Customer</th><th>Sz</th><th>Type</th><th>Order Status</th>
         <th>Gross Prod</th><th>Total WIP</th><th>WIP Breakdown</th><th>FG Awaiting Dispatch</th><th>Action</th>
       </tr></thead>
-      <tbody>${rows||'<tr><td colspan="10" class="text-center text-muted">✅ No open items for '+ym+' — clean slate</td></tr>'}</tbody>
+      <tbody>${rows||'<tr><td colspan="11" class="text-center text-muted">'+(items.length?'No items match the current filter':'✅ No open items for '+ym+' — clean slate')+'</td></tr>'}</tbody>
+      ${totalsRow}
     </table></div>
-    <div style="font-size:11px;color:var(--text3);margin-top:10px">${items.length} open item${items.length===1?'':'s'}. FG awaiting dispatch (packed, not yet dispatched) is shown for context but is not WIP — it resolves on dispatch scan.</div>
+    <div style="font-size:11px;color:var(--text3);margin-top:10px">${items.length} open item${items.length===1?'':'s'} total. FG awaiting dispatch (packed, not yet dispatched) is shown for context but is not WIP — it resolves on dispatch scan.</div>
   </div>`;
   _captureReportScroll();
+  // v41ZB: preserve search focus + caret across the per-keystroke re-render.
+  const _afZ = document.activeElement, _afZId = _afZ && _afZ.id;
+  const _selZS = _afZ && _afZ.selectionStart, _selZE = _afZ && _afZ.selectionEnd;
   document.getElementById('report-output').innerHTML = html;
+  if (_afZId) { const n = document.getElementById(_afZId); if (n) { n.focus(); try { if (_selZS!=null) n.setSelectionRange(_selZS,_selZE); } catch(e){} } }
   _scrollIntoReportIfFirstView('Z');
 }
 
@@ -7788,6 +7864,8 @@ function renderReportF(){ window._activeReport = renderReportF;
   let exceptions = 0;
   let rows = '';
   const statusMap = {};
+  // v41ZB: running totals for the footer row
+  let _fTotDprL=0, _fTotDprBx=0, _fTotAim=0, _fTotAimToday=0, _fTotPacked=0;
 
   const _getAimIn  = bn => hasScanSummary() ? (_ss(bn,'aim').in      + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)      : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length;
   const _getPackOut= bn => hasScanSummary() ? (_ss(bn,'packing').in + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in').length;
@@ -7802,10 +7880,17 @@ function renderReportF(){ window._activeReport = renderReportF;
     const aimInTotal   = _getAimIn(batchNo);
     const aimInToday   = _getAimInToday(batchNo);
     const packOutTotal = _getPackOut(batchNo);
-    const diff = aimInTotal - dprBoxes;
+    // v41ZB: reconcile against the wastage-adjusted target. AIM Salvage + AIM Remelt never
+    // make it past AIM, so the expected AIM-scan target = DPR Boxes − AIM wastage (in boxes).
+    // Shortfall/overage rounded UP to whole boxes (e.g. (40−3.8)−31 = 5.2 → 6 boxes under).
+    const _fW = getTotalWastage(batchNo,'aim');
+    const _fWasteBoxes = lakhToBox(_fW.salvage + _fW.remelt, batch.size);
+    const _fTarget = dprBoxes - _fWasteBoxes;
+    const underBoxes = Math.max(0, Math.ceil((_fTarget - aimInTotal) - 1e-9));
+    const overBoxes  = Math.max(0, Math.ceil((aimInTotal - _fTarget) - 1e-9));
     const hasException = dprBoxes===0 && aimInTotal>0 ? 'NO_DPR'
-                       : aimInTotal > dprBoxes         ? 'OVER_SCAN'
-                       : aimInTotal < dprBoxes && dprBoxes>0 ? 'UNDER_SCAN'
+                       : overBoxes >= 1 && dprBoxes>0  ? 'OVER_SCAN'
+                       : underBoxes >= 1 && dprBoxes>0 ? 'UNDER_SCAN'
                        : 'OK';
     statusMap[batchNo] = hasException;
     if(hasException !== 'OK') exceptions++;
@@ -7826,15 +7911,20 @@ function renderReportF(){ window._activeReport = renderReportF;
     const aimInTotal   = _getAimIn(batchNo);
     const aimInToday   = _getAimInToday(batchNo);
     const packOutTotal = _getPackOut(batchNo);
-    const diff = aimInTotal - dprBoxes;
+    // v41ZB: same wastage-adjusted target as the classification loop above.
+    const _fW = getTotalWastage(batchNo,'aim');
+    const _fWasteBoxes = lakhToBox(_fW.salvage + _fW.remelt, batch.size);
+    const _fTarget = dprBoxes - _fWasteBoxes;
+    const underBoxes = Math.max(0, Math.ceil((_fTarget - aimInTotal) - 1e-9));
+    const overBoxes  = Math.max(0, Math.ceil((aimInTotal - _fTarget) - 1e-9));
     const hasException = statusMap[batchNo];
     const statusBadge = hasException==='OK'
       ? '<span class="badge badge-green">✅ Matched</span>'
       : hasException==='NO_DPR'
       ? '<span class="badge" style="background:rgba(220,38,38,0.12);color:#dc2626;border:1px solid rgba(220,38,38,0.3)">❌ No DPR Entry</span>'
       : hasException==='OVER_SCAN'
-      ? `<span class="badge" style="background:rgba(255,171,0,0.12);color:#C55A11;border:1px solid rgba(255,171,0,0.3)">⚠️ Over-scan (+${Math.abs(diff)} boxes)</span>`
-      : `<span class="badge" style="background:rgba(59,130,246,0.12);color:#2563eb;border:1px solid rgba(59,130,246,0.3)">📋 Under-scan (${Math.abs(diff)} boxes)</span>`;
+      ? `<span class="badge" style="background:rgba(255,171,0,0.12);color:#C55A11;border:1px solid rgba(255,171,0,0.3)">⚠️ Over-scan (+${overBoxes} boxes)</span>`
+      : `<span class="badge" style="background:rgba(59,130,246,0.12);color:#2563eb;border:1px solid rgba(59,130,246,0.3)">📋 Under-scan (${underBoxes} boxes)</span>`;
 
     rows += `<tr style="${hasException!=='OK'?'background:rgba(220,38,38,0.04)':''}">
       <td class="td-bold td-mono">${batchNo}</td>
@@ -7847,6 +7937,7 @@ function renderReportF(){ window._activeReport = renderReportF;
       <td class="td-mono">${packOutTotal}</td>
       <td style="white-space:nowrap">${statusBadge}</td>
     </tr>`;
+    _fTotDprL+=dprQtyL; _fTotDprBx+=dprBoxes; _fTotAim+=aimInTotal; _fTotAimToday+=aimInToday; _fTotPacked+=packOutTotal;
   });
 
   if(!rows){
@@ -7908,6 +7999,12 @@ function renderReportF(){ window._activeReport = renderReportF;
         <th>Status</th>
       </tr></thead>
       <tbody>${rows}</tbody>
+      ${filteredBatches.length?`<tfoot><tr style="background:var(--surface2);font-weight:800">
+        <td colspan="3" class="text-right" style="padding-right:8px">TOTAL (${filteredBatches.length})</td>
+        <td class="td-mono">${fmt(_fTotDprL)}L</td><td class="td-mono">${_fTotDprBx}</td>
+        <td class="td-mono">${_fTotAim}</td><td class="td-mono">${_fTotAimToday}</td><td class="td-mono">${_fTotPacked}</td>
+        <td></td>
+      </tr></tfoot>`:''}
     </table></div>
     <div style="margin-top:16px;display:flex;gap:10px;flex-wrap:wrap">
       <button class="btn btn-secondary btn-sm" onclick="window.print()">🖨️ Print Report</button>
@@ -8003,6 +8100,8 @@ function renderReportB(){ window._activeReport = renderReportB;
     html+=`<div class="mb-16"><div class="card-title" style="color:${DEPT_CONFIG[dept].color}">${DEPT_CONFIG[dept].label}</div>
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr><th>Batch</th><th>Customer</th><th>Prod WIP (L)</th><th>Boxes IN</th><th>Boxes OUT</th>${hasWastage?'<th>Wastage (L)</th>':''}<th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead><tbody>`;
+    // v41ZB: per-department totals
+    let _bIn=0,_bOut=0,_bW=0,_bWipBx=0,_bWipQ=0,_bProd=0,_bN=0;
     batchSet.forEach(batchNo=>{
       const batch=getBatch(batchNo);
       // Use _ss() for accurate counts from full history
@@ -8013,14 +8112,18 @@ function renderReportB(){ window._activeReport = renderReportB;
       const w = hasWastage ? getTotalWastage(batchNo, dept) : {total:0, salvage:0, remelt:0};
       const ps = PACK_SIZES[String(batch?.size||'0')]||1;
       const wastageBoxes = hasWastage ? Math.round(w.total/ps) : 0;
-      const wip=Math.max(0, inn - out - wastageBoxes);
+      // v41ZB: AIM WIP = Scan In − Scan Out (AIM wastage now sits in Production WIP, not here).
+      // Printing/PI rows keep their existing in−out−wastage definition (unchanged).
+      const wip=Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
       const wipQty=boxToLakh(wip,batch?.size||'0');
       const grossProd=batch?.actualProd||0;
       const aimInBoxes = hasScanSummary()
         ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
         : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
       const aimInQty=boxToLakh(aimInBoxes,batch?.size||'0');
-      const prodWip=Math.max(0,grossProd-aimInQty);
+      // v41ZB: Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In.
+      const aimWaste = getTotalWastage(batchNo,'aim');
+      const prodWip=Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt - aimInQty);
       // firstIn uses state.scans for timestamp (acceptable — only for display, not calculation)
       const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
       const hrs=firstIn?hoursAgo(firstIn.ts):0;
@@ -8037,7 +8140,18 @@ function renderReportB(){ window._activeReport = renderReportB;
         <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
         <td>${isStageComplete(batchNo,dept)?'<span class="badge badge-green">✅ Closed</span>':wip>0?'<span class="badge badge-blue">In Dept</span>':out>0?'<span class="badge badge-gray">↗ Left Dept</span>':'<span class="badge badge-gray">—</span>'}</td>
       </tr>`;
+      _bIn+=inn; _bOut+=out; _bW+=w.total; _bWipBx+=wip; _bWipQ+=wipQty; _bProd+=prodWip; _bN++;
     });
+    if(_bN){
+      html+=`<tr style="background:var(--surface2);font-weight:800">
+        <td>TOTAL (${_bN})</td><td></td>
+        <td class="td-mono">${_bProd>0?fmt(_bProd)+'L':'—'}</td>
+        <td class="td-mono">${_bIn}</td><td class="td-mono">${_bOut}</td>
+        ${hasWastage?`<td class="td-mono">${_bW>0?fmt(_bW)+'L':'—'}</td>`:''}
+        <td class="td-mono">${_bWipBx}</td><td class="td-mono">${fmt(_bWipQ)}</td>
+        <td></td><td></td>
+      </tr>`;
+    }
     html+=`</tbody></table></div></div>`;
   });
   if(!anyData){
@@ -8100,6 +8214,7 @@ _scrollIntoReportIfFirstView('C');
   if(!batches.length){
     html+=`<tr><td colspan="8" class="text-center text-muted" style="padding:20px">No batches found with current filters.</td></tr>`;
   } else {
+    let _cProd=0,_cPacked=0,_cN=0;
     batches.forEach(b=>{
       // v37E WIP-fix: Use canonical getBatchWIPDays (same as Report C export, dashboard, dispatch).
       // Prior code did `Gross − packedQty` which incorrectly counted salvage and remelt as WIP.
@@ -8128,7 +8243,12 @@ _scrollIntoReportIfFirstView('C');
         <td class="td-mono ${wipDays>std?'red':''}">${fmt(wipDays,1)}d</td>
         <td>${statusBadge}</td>
       </tr>`;
+      _cProd+=grossProd; _cPacked+=packedQty; _cN++;
     });
+    html+=`<tr style="background:var(--surface2);font-weight:800">
+      <td colspan="4" class="text-right" style="padding-right:8px">TOTAL (${_cN})</td>
+      <td class="td-mono">${fmt(_cProd)}</td><td class="td-mono">${fmt(_cPacked)}</td><td></td><td></td>
+    </tr>`;
   }
   html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
   _captureReportScroll();
@@ -8192,6 +8312,7 @@ function _v41_renderReportDInner(){
       return `<tr><td class="fw-bold">${DEPT_LABELS[dept]}</td><td class="td-mono">${wip}</td><td class="td-mono">${fmt(qty)}</td><td class="td-mono">${totalGross>0?fmt(qty/totalGross*100,1):0}%</td></tr>`;
     }).join('')}
     </tbody>
+    ${(()=>{const tb=stages.reduce((s,d)=>s+stageWIP[d],0);const tq=tb*1.5;return `<tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono">${tb}</td><td class="td-mono">${fmt(tq)}</td><td class="td-mono">${totalGross>0?fmt(tq/totalGross*100,1):0}%</td></tr></tfoot>`;})()}
   </table></div>
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   _captureReportScroll();
@@ -8473,7 +8594,10 @@ function _v41_renderReportEInner(){
       aimSalvage:fmt(aimW.salvage),_aimSalvage:aimW.salvage,
       aimRemelt:fmt(aimW.remelt),_aimRemelt:aimW.remelt,
       aimAGrade:fmt(aimOutQty),_aimAGrade:aimOutQty,
-      aimAGradePct:fmt(aGradePct,1),
+      // v41ZB: AIM % = frozen AIM A-Grade % = AIMOut / (AIMOut + AIM Salvage + AIM Remelt) × 100.
+      // (Previously used ag.pct, which for PTD batches was the net post-PI %, making the column
+      //  disagree with the weighted subtotal and with the frozen formula.)
+      aimAGradePct:fmt(aimInputTotal>0?(aimOutQty/aimInputTotal*100):0,1),
       manInspect:fmt(manW.total),_manInspect:manW.total,
       totalAGrade:fmt(totalAG),_totalAGrade:totalAG,
       aGradePctUnptd:fmt(aGradePct,1),
@@ -8551,8 +8675,7 @@ function _v41_renderReportEInner(){
       <td colspan="3"></td>
       <td>${fmtN(sumRows(arr,'plannedQty'))}</td><td><b>${fmtN(g)}</b></td>
       <td>${fmtN(aimInsp)}</td><td>${fmtN(sumRows(arr,'aimSalvage'))}</td><td>${fmtN(sumRows(arr,'aimRemelt'))}</td>
-      <td><b>${fmtN(aimOut)}</b></td><td>${aimPct}</td><td>${fmtN(sumRows(arr,'manInspect'))}</td>
-      <td><b>${fmtN(ag)}</b></td><td><b>${totalPct}</b></td>
+      <td><b>${fmtN(aimOut)}</b></td><td>${aimPct}</td>
       <td>${fmtN(sumRows(arr,'wip'))}</td><td>${fmtN(sumRows(arr,'availUnptd'))}</td><td>${fmtN(sumRows(arr,'availPrint'))}</td>
       <td>${fmtN(printOutSum)}</td><td>${fmtN(sumRows(arr,'printRej'))}</td><td><b>${printPct}</b></td>
       <td>${fmtN(piOutSum)}</td><td>${fmtN(sumRows(arr,'piSalRem'))}</td><td><b>${piPct}</b></td>
@@ -8570,11 +8693,11 @@ function _v41_renderReportEInner(){
     allFloorRows.push(...flRows);
     const machines = [...new Set(flRows.map(r=>r.machine))];
     // Floor header
-    tableRows += `<tr class="grp-hdr"><td colspan="29" class="sticky-col" style="left:0;background:#d4e8d8;color:#1a3a2e;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:1px">FLOOR: ${fl}</td></tr>`;
+    tableRows += `<tr class="grp-hdr"><td colspan="26" class="sticky-col" style="left:0;background:#d4e8d8;color:#1a3a2e;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:1px">FLOOR: ${fl}</td></tr>`;
     machines.forEach(mc => {
       const mcRows = flRows.filter(r=>r.machine===mc);
       // Machine header
-      tableRows += `<tr class="grp-hdr"><td colspan="29" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
+      tableRows += `<tr class="grp-hdr"><td colspan="26" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
       tableRows += mcRows.map(r=>{
         // v37H: For PTD batches, show 0.00 (not '—') so print columns are visibly populated
         // even before scans accumulate. UP batches keep '—' since printing doesn't apply.
@@ -8587,8 +8710,7 @@ function _v41_renderReportEInner(){
         <td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td>
         <td>${fmtN(r._plannedQty)}</td><td>${fmtN(r._grossProd)}</td>
         <td>${fmtN(r._aimRunTotal)}</td><td>${fmtN(r._aimSalvage)}</td><td>${fmtN(r._aimRemelt)}</td>
-        <td><b>${fmtN(r._aimAGrade)}</b></td><td>${r.aimAGradePct}%</td><td>${fmtN(r._manInspect)}</td>
-        <td><b>${fmtN(r._totalAGrade)}</b></td><td><b>${r.aGradePctUnptd}%</b></td>
+        <td><b>${fmtN(r._aimAGrade)}</b></td><td>${r.aimAGradePct}%</td>
         <td>${fmtN(r._wip)}</td><td>${fmtN(r._availUnptd)}</td><td>${fmtN(r._availPrint)}</td>
         <td>${fmtPrint(r._printingTD)}</td><td>${fmtPrint(r._printRej)}</td><td><b>${r.printAGradePct==='—'?'—':r.printAGradePct+'%'}</b></td>
         <td>${fmtPrint(r._piInspect)}</td><td>${fmtPrint(r._piSalRem)}</td><td><b>${r.piAGradePct==='—'?'—':r.piAGradePct+'%'}</b></td>
@@ -8601,7 +8723,7 @@ function _v41_renderReportEInner(){
     // Floor subtotal row
     tableRows += buildSubtotalRow(flRows, `${fl} FLOOR TOTAL`, 'background:#c8e6c9;color:#1a3a2e;font-weight:800;font-size:13px');
   });
-  if (!tableRows) tableRows = '<tr><td colspan="29" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
+  if (!tableRows) tableRows = '<tr><td colspan="26" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
 
   // Build grand totals row — white text explicitly on every cell
   const sum = k => allFloorRows.reduce((a,r)=>a+(r['_'+k]||0),0);
@@ -8619,8 +8741,7 @@ function _v41_renderReportEInner(){
     <td colspan="7" style="text-align:right;padding-right:8px;color:#f0c060;letter-spacing:.5px">GRAND TOTAL (${allFloorRows.length} batches)</td>
     <td style="color:#fff">${fmtN(sum('plannedQty'))}</td><td style="color:#fff"><b>${fmtN(totalGross)}</b></td>
     <td style="color:#fff">${fmtN(totalAimInsp)}</td><td style="color:#fff">${fmtN(sum('aimSalvage'))}</td><td style="color:#fff">${fmtN(sum('aimRemelt'))}</td>
-    <td style="color:#fff"><b>${fmtN(sum('aimAGrade'))}</b></td><td style="color:#f0c060">${totalAimInsp>0?(sum('aimAGrade')/totalAimInsp*100).toFixed(1)+'%':'—'}</td><td style="color:#fff">${fmtN(sum('manInspect'))}</td>
-    <td style="color:#fff"><b>${fmtN(totalAG)}</b></td><td style="color:#f0c060"><b>${totalAimInsp>0?(totalAG/totalAimInsp*100).toFixed(1)+'%':'—'}</b></td>
+    <td style="color:#fff"><b>${fmtN(sum('aimAGrade'))}</b></td><td style="color:#f0c060">${totalAimInsp>0?(sum('aimAGrade')/totalAimInsp*100).toFixed(1)+'%':'—'}</td>
     <td style="color:#fff">${fmtN(sum('wip'))}</td><td style="color:#fff">${fmtN(sum('availUnptd'))}</td><td style="color:#fff">${fmtN(sum('availPrint'))}</td>
     <td style="color:#fff">${fmtN(totalPrintOut)}</td><td style="color:#fff">${fmtN(sum('printRej'))}</td><td style="color:#f0c060"><b>${printPctTotal}</b></td>
     <td style="color:#fff">${fmtN(totalPiOut)}</td><td style="color:#fff">${fmtN(sum('piSalRem'))}</td><td style="color:#f0c060"><b>${piPctTotal}</b></td>
@@ -8700,8 +8821,7 @@ function _v41_renderReportEInner(){
       <th>PC Code</th><th>Colour</th><th>Size</th>
       <th>Planned (L)</th><th>Gross Prod (L)</th>
       <th>AIM Run (L)</th><th>AIM Salvage (L)</th><th>AIM Remelt (L)</th>
-      <th>AIM A-Grade (L)</th><th>AIM %</th><th>Manual Insp (L)</th>
-      <th>Total A-Grade (L)</th><th>A-Grade %</th>
+      <th>AIM A-Grade (L)</th><th>AIM %</th>
       <th>WIP (L)</th><th>Avail UNPTD (L)</th><th>Avail PTD (L)</th>
       <th>Print TD (L)</th><th>Print Rej (L)</th><th>Print A-Grade %</th>
       <th>PI Inspect (L)</th><th>PI Sal/Rem (L)</th><th>PI A-Grade %</th>
@@ -8757,11 +8877,12 @@ function applySearch(q){
 
   // Compute filtered totals from visible data rows
   const visibleRows=[...tbody.querySelectorAll('tr[data-batch]')].filter(r=>r.style.display!=='none');
-  // v37E T2: Layout now 29 columns (added Print A-Grade % at col 22, PI A-Grade % at col 25).
-  // Numeric columns include the L-quantity cells but EXCLUDE the % cells (they need numerator/denom recomputation)
-  const nCols=29;
-  const numCols=[7,8,9,10,11,12,14,15,17,18,19,20,21,23,24,26,27,28]; // 0-indexed numeric L columns
-  // % columns are: 13 (AIM %), 16 (Total A-Grade %), 22 (Print A-Grade %), 25 (PI A-Grade %) — recomputed below
+  // v41ZB: Layout now 26 columns (removed Manual Insp, Total A-Grade, A-Grade %).
+  // Print A-Grade % is at col 19, PI A-Grade % at col 22. AIM % stays at col 13.
+  // Numeric columns include the L-quantity cells but EXCLUDE the % cells (recomputed below).
+  const nCols=26;
+  const numCols=[7,8,9,10,11,12,14,15,16,17,18,20,21,23,24,25]; // 0-indexed numeric L columns
+  // % columns are: 13 (AIM %), 19 (Print A-Grade %), 22 (PI A-Grade %) — recomputed below
 
   // Sum numeric columns across visible rows
   const totals={};
@@ -8791,8 +8912,8 @@ function applySearch(q){
   labelCell.textContent='FILTERED TOTAL (' + visibleRows.length + ' batch' + (visibleRows.length!==1?'es':'') + ') \u2014 "' + q + '"';
   tr.appendChild(labelCell);
 
-  // Compute A-Grade % from totals (col 9=aimRun, col 12=aimAGrade, col 15=totalAGrade)
-  const aimInsp=totals[9]||0, aimOut=totals[12]||0, totalAGr=totals[15]||0;
+  // Compute AIM A-Grade % from totals (col 9=aimRun denom, col 12=aimAGrade out)
+  const aimInsp=totals[9]||0, aimOut=totals[12]||0;
   // v37E T2: Print and PI A-Grade % require numerator/denominator pulled from row data attributes
   let printOutSum=0, printDenomSum=0, piOutSum=0, piDenomSum=0;
   visibleRows.forEach(row=>{
@@ -8808,13 +8929,10 @@ function applySearch(q){
     if(ci===13){ // AIM %
       td.style.color='#f0d060';
       td.textContent=aimInsp>0?(aimOut/aimInsp*100).toFixed(1)+'%':'—';
-    } else if(ci===16){ // A-Grade %
-      td.style.color='#f0d060'; td.style.fontWeight='900';
-      td.textContent=aimInsp>0?(totalAGr/aimInsp*100).toFixed(1)+'%':'—';
-    } else if(ci===22){ // v37E T2: Print A-Grade %
+    } else if(ci===19){ // Print A-Grade %
       td.style.color='#f0d060'; td.style.fontWeight='900';
       td.textContent=printDenomSum>0?(printOutSum/printDenomSum*100).toFixed(1)+'%':'—';
-    } else if(ci===25){ // v37E T2: PI A-Grade %
+    } else if(ci===22){ // PI A-Grade %
       td.style.color='#f0d060'; td.style.fontWeight='900';
       td.textContent=piDenomSum>0?(piOutSum/piDenomSum*100).toFixed(1)+'%':'—';
     } else if(numCols.includes(ci)){
@@ -8880,7 +8998,7 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
             <th style="padding:6px 4px">PC</th><th style="padding:6px 4px">Color</th><th style="padding:6px 4px">Sz</th>
             <th style="padding:6px 4px">Plan</th><th style="padding:6px 4px">Gross</th>
             <th style="padding:6px 4px">AIM Run</th><th style="padding:6px 4px">Salv</th><th style="padding:6px 4px">Rem</th>
-            <th style="padding:6px 4px">A-Gr</th><th style="padding:6px 4px">A-Gr %</th>
+            <th style="padding:6px 4px">AIM A-Gr</th><th style="padding:6px 4px">AIM %</th>
             <th style="padding:6px 4px">Print TD</th><th style="padding:6px 4px">Print Rej</th><th style="padding:6px 4px">Print %</th>
             <th style="padding:6px 4px">PI Out</th><th style="padding:6px 4px">PI %</th>
             <th style="padding:6px 4px">Pack UP</th><th style="padding:6px 4px">Pack PTD</th><th style="padding:6px 4px">Disp</th>
@@ -8902,8 +9020,8 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
           <td style="padding:5px 4px;text-align:right">${fmtN(r._aimRunTotal)}</td>
           <td style="padding:5px 4px;text-align:right">${fmtN(r._aimSalvage)}</td>
           <td style="padding:5px 4px;text-align:right">${fmtN(r._aimRemelt)}</td>
-          <td style="padding:5px 4px;text-align:right;font-weight:600">${fmtN(r._totalAGrade)}</td>
-          <td style="padding:5px 4px;text-align:right;font-weight:700;color:#1a3a2e">${r.aGradePctUnptd}%</td>
+          <td style="padding:5px 4px;text-align:right;font-weight:600">${fmtN(r._aimAGrade)}</td>
+          <td style="padding:5px 4px;text-align:right;font-weight:700;color:#1a3a2e">${r.aimAGradePct}%</td>
           <td style="padding:5px 4px;text-align:right">${fmtPrintInline(r._printingTD)}</td>
           <td style="padding:5px 4px;text-align:right">${fmtPrintInline(r._printRej)}</td>
           <td style="padding:5px 4px;text-align:right;font-weight:600">${r.printAGradePct==='—'?'—':r.printAGradePct+'%'}</td>
@@ -8915,7 +9033,7 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
         </tr>`;}).join('')}</tbody>
       </table>
     </div>
-    <div class="text-sm text-muted mt-8">💡 Tip: Use the Search box to filter rows. Click "Open Full View" for a new-tab view with all 29 columns and sticky headers.</div>
+    <div class="text-sm text-muted mt-8">💡 Tip: Use the Search box to filter rows. Click "Open Full View" for a new-tab view with all 26 columns and sticky headers.</div>
   </div>`;
 _scrollIntoReportIfFirstView('E');
 
@@ -9667,6 +9785,9 @@ function renderReportJ() {
 }
 
 function _renderReportJContent(alerts) {
+  // v41ZB: cache the last server fetch so filter/tab re-renders are instant and client-side
+  // (no per-keystroke network round-trip). Called with no args → re-render from cache.
+  if (alerts) window._reportJAlerts = alerts; else alerts = window._reportJAlerts || [];
   const tab = window._reportJTab;
   const f = window._reportJFilters;
   // Filter alerts by tab type
@@ -9702,11 +9823,11 @@ function _renderReportJContent(alerts) {
   // Tab buttons
   const tabsHtml = `
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin:8px 0 16px">
-      <button onclick="window._reportJTab='A';_fetchReconcileAlerts().then(_renderReportJContent)"
+      <button onclick="window._reportJTab='A';_renderReportJContent()"
         class="btn btn-sm" style="background:${tab==='A'?'#d97706':'var(--surface2)'};color:${tab==='A'?'#fff':'var(--text)'};font-weight:600">
         FG Stock Aging <span class="badge" style="background:rgba(255,255,255,0.25);color:inherit;margin-left:6px">${countA}</span>
       </button>
-      ${canSeeB ? `<button onclick="window._reportJTab='B';_fetchReconcileAlerts().then(_renderReportJContent)"
+      ${canSeeB ? `<button onclick="window._reportJTab='B';_renderReportJContent()"
         class="btn btn-sm" style="background:${tab==='B'?'#d97706':'var(--surface2)'};color:${tab==='B'?'#fff':'var(--text)'};font-weight:600">
         Scan-out Awaiting Record <span class="badge" style="background:rgba(255,255,255,0.25);color:inherit;margin-left:6px">${countB}</span>
       </button>` : ''}
@@ -9715,13 +9836,13 @@ function _renderReportJContent(alerts) {
   // Filter bar
   const filtersHtml = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px;padding:8px;background:var(--surface2);border-radius:4px;position:sticky;top:0;z-index:10">
-      <input type="text" placeholder="🔍 Batch" value="${f.batch||''}"
-             oninput="window._reportJFilters.batch=this.value;_fetchReconcileAlerts().then(_renderReportJContent)"
+      <input type="text" id="rptj-filter-batch" placeholder="🔍 Batch" value="${f.batch||''}"
+             oninput="window._reportJFilters.batch=this.value;_renderReportJContent()"
              style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
-      <input type="text" placeholder="🔍 Customer" value="${f.customer||''}"
-             oninput="window._reportJFilters.customer=this.value;_fetchReconcileAlerts().then(_renderReportJContent)"
+      <input type="text" id="rptj-filter-customer" placeholder="🔍 Customer" value="${f.customer||''}"
+             oninput="window._reportJFilters.customer=this.value;_renderReportJContent()"
              style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
-      <button class="btn btn-ghost btn-sm" onclick="window._reportJFilters={batch:'',customer:'',vehicle:'',agedOnly:true};_fetchReconcileAlerts().then(_renderReportJContent)">✕ Clear</button>
+      <button class="btn btn-ghost btn-sm" onclick="window._reportJFilters={batch:'',customer:'',vehicle:'',agedOnly:true};_renderReportJContent()">✕ Clear</button>
       <button class="btn btn-secondary btn-sm" onclick="exportReportJ()">📥 Export Excel</button>
       <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">Auto-refresh every 5 min · ${filtered.length} alerts</span>
     </div>`;
@@ -9757,6 +9878,9 @@ function _renderReportJContent(alerts) {
               </tr>`;
             }).join('')}
         </tbody>
+        ${filtered.length?`<tfoot><tr style="background:var(--surface2);font-weight:800">
+          <td colspan="${canAck?7:6}" class="text-right" style="padding-right:8px">TOTAL — ${filtered.length} label${filtered.length===1?'':'s'} aged beyond threshold</td>
+        </tr></tfoot>`:''}
       </table></div>`;
   } else {
     // Tab B — group by batch to show summary
@@ -9790,6 +9914,21 @@ function _renderReportJContent(alerts) {
               </tr>`;
             }).join('')}
         </tbody>
+        ${filtered.length?(()=>{
+          let _o=0,_r=0,_u=0;
+          filtered.forEach(a=>{
+            const lo=state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
+            const so=hasScanSummary()?(_ss(a.batch_number,'dispatch').out+lo):state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
+            const rec=state.dispatchRecs.filter(r=>r.batchNumber===a.batch_number).reduce((s,r)=>s+(parseInt(r.boxes)||0),0);
+            _o+=so; _r+=rec; _u+=Math.max(0,so-rec);
+          });
+          return `<tfoot><tr style="background:var(--surface2);font-weight:800">
+            <td colspan="2" class="text-right" style="padding-right:8px">TOTAL (${filtered.length})</td>
+            <td class="td-mono">${_o}</td><td class="td-mono">${_r}</td>
+            <td class="td-mono ${_u>0?'amber':''}">${_u}</td>
+            <td></td><td></td>${canAck?'<td></td>':''}
+          </tr></tfoot>`;
+        })():''}
       </table></div>`;
   }
 
@@ -9809,7 +9948,18 @@ function _renderReportJContent(alerts) {
     </div>`;
 
   const el = document.getElementById('report-output');
-  if (el) el.innerHTML = html;
+  if (el) {
+    // v41ZB: preserve focus + caret position so typing a full batch/customer isn't interrupted
+    // by the re-render (previously the input was destroyed on every keystroke).
+    const _af = document.activeElement;
+    const _afId = _af && _af.id;
+    const _selS = _af && _af.selectionStart, _selE = _af && _af.selectionEnd;
+    el.innerHTML = html;
+    if (_afId) {
+      const n = document.getElementById(_afId);
+      if (n) { n.focus(); try { if (_selS != null) n.setSelectionRange(_selS, _selE); } catch(e){} }
+    }
+  }
 }
 
 function _openAckDialog(alertId, batchNo) {
@@ -10070,6 +10220,11 @@ function renderReportK(targetId) {
   const statusPill = (val, label, color) =>
     `<button class="btn btn-sm" style="background:${filters.status===val?color:'var(--surface2)'};color:${filters.status===val?'#fff':'var(--text)'};font-weight:600;font-size:10px;padding:3px 8px;border:1px solid ${color}" onclick="window._reportKFilters.status='${filters.status===val?'':val}';renderReportK('${containerId}')">${label}</button>`;
 
+  // v41ZB: preserve focus + caret of inner filter inputs across the per-keystroke re-render.
+  const _afK = document.activeElement;
+  const _afKId = _afK && _afK.id;
+  const _selKS = _afK && _afK.selectionStart, _selKE = _afK && _afK.selectionEnd;
+
   el.innerHTML = `
     <div class="card mb-16" style="border-top:4px solid #0891b2">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
@@ -10094,13 +10249,13 @@ function renderReportK(targetId) {
         ${statusPill('stale_15d', '🚨 Stale 15d+', '#dc2626')}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:4px">
-        <input type="text" placeholder="🔍 Customer" value="${filters.customer||''}"
+        <input type="text" id="rptk-filter-customer" placeholder="🔍 Customer" value="${filters.customer||''}"
                oninput="window._reportKFilters.customer=this.value;renderReportK('${containerId}')"
                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
-        <input type="text" placeholder="🔍 Batch" value="${filters.batch||''}"
+        <input type="text" id="rptk-filter-batch" placeholder="🔍 Batch" value="${filters.batch||''}"
                oninput="window._reportKFilters.batch=this.value;renderReportK('${containerId}')"
                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
-        <input type="text" placeholder="🔍 PC Code" value="${filters.pcCode||''}"
+        <input type="text" id="rptk-filter-pccode" placeholder="🔍 PC Code" value="${filters.pcCode||''}"
                oninput="window._reportKFilters.pcCode=this.value;renderReportK('${containerId}')"
                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:120px;font-size:12px">
         <button class="btn btn-ghost btn-sm" onclick="window._reportKFilters={customer:'',batch:'',pcCode:'',status:''};renderReportK('${containerId}')">✕ Clear all filters</button>
@@ -10159,6 +10314,11 @@ function renderReportK(targetId) {
       </table></div>
       <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Click a batch row to drill down to date-wise scan-by-scan movement.  Status: Closed = Pack In ≤ Dispatch Out · Partial = some packed-in not yet dispatched · In Progress = pack-in active · Stale = packed but not dispatched after 7/15 days (matches Report J alert thresholds).</div>
     </div>`;
+  // v41ZB: restore focus + caret so the inner filter inputs can be typed without interruption.
+  if (_afKId) {
+    const n = document.getElementById(_afKId);
+    if (n) { n.focus(); try { if (_selKS != null) n.setSelectionRange(_selKS, _selKE); } catch(e){} }
+  }
 }
 
 // v40 Phase 18.10: render the drill-down panel for a single batch
@@ -10823,7 +10983,7 @@ function exportReportE(){
         summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,
           'PLANNED QUANTITY (lac)':fmt(b.qty),'TOTAL PRODUCTION (lac)':fmt(grossProd),
           'AIM TOTAL RUN (lac)':fmt(aimIn),'SALVAGE':fmt(aimW.salvage),'REMELT':fmt(aimW.remelt),
-          'A GRADE QTY (lac)':fmt(netAGrade),'A GRADE %':fmt(aGradePct,2),
+          'AIM A-GRADE (lac)':fmt(aimOut),'AIM %':fmt(aimInputTotalEx>0?(aimOut/aimInputTotalEx*100):0,2),
           'WIP (lac)':fmt(wip),
           'PRINT TD (lac)':fmt(printOut),'PRINT REJ (lac)':fmt(printW.salvage),
           'PRINT A-GRADE %': b.isPrinted ? fmt(printAGradePctEx,2) : '—',
@@ -10898,6 +11058,10 @@ function exportTrackerReport(){
 function renderTrackingSearch(){
   const el=document.getElementById('page-search');
   if(!el) return;
+  // v41ZB: capture caret BEFORE the re-render destroys the input, so it can be restored exactly.
+  const _oldInput = document.getElementById('trk-search-input');
+  const _wasFocused = document.activeElement === _oldInput;
+  const _caret = _oldInput ? _oldInput.selectionStart : null;
   const q=(window._trkSearchQ||'').toLowerCase().trim();
   const by=window._trkSearchBy||'all';
 
@@ -10963,7 +11127,16 @@ function renderTrackingSearch(){
           </tbody></table></div>`}
       `:'<p style="color:var(--text3);font-size:13px">Type at least 2 characters to search...</p>'}
     </div>`;
-  setTimeout(()=>document.getElementById('trk-search-input')?.focus(),50);
+  // v41ZB: restore focus AND caret synchronously (using the position captured before the
+  // re-render) so a full query can be typed without interruption.
+  const _ni = document.getElementById('trk-search-input');
+  if (_ni && (_wasFocused || (window._trkSearchQ||'').length)) {
+    _ni.focus();
+    try {
+      const pos = (_caret != null) ? _caret : _ni.value.length;
+      _ni.setSelectionRange(pos, pos);
+    } catch(e){}
+  }
 }
 
 function renderSettings(){
