@@ -4665,10 +4665,13 @@ app.post('/api/orders/upsert', async (req, res) => {
         sapDocEntry: exData.sapDocEntry || ord.sapDocEntry || null,
         sapDocNum:   exData.sapDocNum   || ord.sapDocNum   || '',
         poNumber:    exData.poNumber    || ord.poNumber    || '',
-        // v41z2: qty is user-set — client wins when saving; fall back to DB only if client sends null
+        // v41z2: user-editable fields — client wins when saving; fall back to DB only if null
         qty:      ord.qty      != null ? ord.qty      : (exData.qty      != null ? exData.qty      : null),
         grossQty: ord.grossQty != null ? ord.grossQty : (exData.grossQty != null ? exData.grossQty : null),
         aGrade:   ord.aGrade   != null ? ord.aGrade   : (exData.aGrade   != null ? exData.aGrade   : null),
+        packing:  ord.packing  || exData.packing  || null,
+        zone:     ord.zone     || exData.zone     || null,
+        endDate:  ord.endDate  || exData.endDate  || null,
       };
     }
     if (preserved) {
@@ -5056,10 +5059,13 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           sapDocEntry: exData.sapDocEntry || ord.sapDocEntry || null,
           sapDocNum:   exData.sapDocNum   || ord.sapDocNum   || '',
           poNumber:    exData.poNumber    || ord.poNumber    || '',
-          // v41z2: qty is user-set — client wins when saving; DB only as fallback
+          // v41z2: user-editable fields — client wins when saving; DB only as fallback
           qty:      ord.qty      != null ? ord.qty      : (exData.qty      != null ? exData.qty      : null),
           grossQty: ord.grossQty != null ? ord.grossQty : (exData.grossQty != null ? exData.grossQty : null),
           aGrade:   ord.aGrade   != null ? ord.aGrade   : (exData.aGrade   != null ? exData.aGrade   : null),
+          packing:  ord.packing  || exData.packing  || null,
+          zone:     ord.zone     || exData.zone     || null,
+          endDate:  ord.endDate  || exData.endDate  || null,
         };
       }
       const json = JSON.stringify(mergedOrd);
@@ -5543,10 +5549,13 @@ app.post('/api/planning/state', async (req, res) => {
                 sapDocEntry: ex.sapDocEntry || ord.sapDocEntry || null,
                 sapDocNum:   ex.sapDocNum   || ord.sapDocNum   || '',
                 poNumber:    ex.poNumber    || ord.poNumber    || '',
-                // v41z2: bg-merge — DB qty wins over blob (stale); protects saved changes after refresh
+                // v41z2: bg-merge — DB always wins over stale blob for user-editable fields
                 qty:      ex.qty      != null ? ex.qty      : (ord.qty      != null ? ord.qty      : null),
                 grossQty: ex.grossQty != null ? ex.grossQty : (ord.grossQty != null ? ord.grossQty : null),
                 aGrade:   ex.aGrade   != null ? ex.aGrade   : (ord.aGrade   != null ? ord.aGrade   : null),
+                zone:     ex.zone     || ord.zone     || null,
+                packing:  ex.packing  || ord.packing  || null,
+                endDate:  ex.endDate  || ord.endDate  || null,
               };
             }
             return mergedOrd;
@@ -5650,11 +5659,13 @@ app.post('/api/planning/state', async (req, res) => {
             const dbAGrade   = dbRow._exData.aGrade   != null ? dbRow._exData.aGrade   : null;
             const dbZone     = dbRow._exData.zone     || null;
             const dbEndDate  = dbRow._exData.endDate  || null;
+            const dbPacking  = dbRow._exData.packing   || null;
             if (dbQty      != null) result = { ...result, qty:      dbQty };
             if (dbGrossQty != null) result = { ...result, grossQty: dbGrossQty };
             if (dbAGrade   != null) result = { ...result, aGrade:   dbAGrade };
             if (dbZone)             result = { ...result, zone:     dbZone };
             if (dbEndDate)          result = { ...result, endDate:  dbEndDate };
+            if (dbPacking)          result = { ...result, packing:  dbPacking };
             return result;
           });
           if (blobPreservedCount > 0) {
