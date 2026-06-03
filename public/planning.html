@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZB</p>
+      <p>Planning Suite v3.0 · build v41ZC</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -900,13 +900,11 @@ const SYNC = (() => {
             console.log('[DailyPrinting] Restored', missing.length, 'local entries not yet on server');
           }
         }
-        // Stamp manualStartDate/manualEndDate on all orders that have both dates — prevents recalc from ever changing them
-        if (Array.isArray(state.orders)) {
-          state.orders = state.orders.map(o => {
-            if (o.startDate && o.endDate) return { ...o, manualStartDate: true, manualEndDate: true };
-            return o;
-          });
-        }
+        // v41ZC #4: REMOVED the blanket manualStartDate/manualEndDate stamping that previously
+        // marked every dated order as "manual" on load. That froze all dates and blocked the
+        // uniform delay-cascade. Per spec, the cascade now applies to all orders regardless of
+        // manual/auto, so dates are recomputed by recalcMachineSchedule on each change. The
+        // per-edit manual flags set in the order form (fo-enddate) are left untouched.
         // FIX 1: Permanently deleted orders must NEVER return from server
         // If DB has the order as deleted, keep it deleted regardless of server state
         const _deletedByServer = new Set((serverState.orders||[]).filter(o=>o.deleted).map(o=>o.id));
@@ -1510,6 +1508,47 @@ let _lastServerSaveTime = 0;
 let _localOrderChanges = {};
 // Registry of locally changed print order IDs
 let _localPrintOrderChanges = {};
+// v41ZC #2.1/2.2: merge server print-orders with local state WITHOUT clobbering a freshly-assigned
+// machineId. Two failure modes this fixes:
+//   (a) the authoritative-load paths rebuilt state purely from the server, so an assignment whose
+//       POST hadn't landed yet (flaky tunnel) reverted to the server's unassigned copy on next load
+//       — the order "became unassigned again" while its daily-printing log entry persisted.
+//   (b) when the server still holds an unassigned copy of the SAME id, a local assignment within the
+//       protection window must win.
+// Rule: start from the server list (deduped, assigned-wins). Then for every locally-changed print
+// order still inside the protection window, overlay the LOCAL version (it's the user's latest intent,
+// possibly still being POSTed). Also, if a server row for the same id is unassigned but the local row
+// is assigned, keep the local machineId.
+const _PRINT_PROTECT_MS = 120000; // 2 min — covers POST + a couple of sync cycles on a slow tunnel
+function _mergePrintOrdersFromServer(serverList) {
+  const now = Date.now();
+  // 1) dedup server rows (assigned machineId wins over null for same batch+machine+type)
+  const map = new Map();
+  for (const p of (serverList || [])) {
+    const key = `${p.productionOrderId||p.batchNumber||p.id}__${p.machineId||''}__${p.printType||''}`;
+    const ex = map.get(key);
+    const hasM = p.machineId && p.machineId !== 'null' && p.machineId !== '';
+    const exHasM = ex && ex.machineId && ex.machineId !== 'null' && ex.machineId !== '';
+    if (!ex || (!exHasM && hasM)) map.set(key, p);
+  }
+  let merged = [...map.values()];
+  // 2) overlay recent local changes by id (protection window) so in-flight assignments survive
+  const mergedById = new Map(merged.map(p => [p.id, p]));
+  for (const lp of (state.printOrders || [])) {
+    const ts = _localPrintOrderChanges[lp.id];
+    if (ts && (now - ts) < _PRINT_PROTECT_MS) {
+      mergedById.set(lp.id, lp); // local wins entirely while protected
+    } else {
+      // even outside the window: never let a null-machine server copy erase a local assignment
+      const sv = mergedById.get(lp.id);
+      const lpHasM = lp.machineId && lp.machineId !== 'null' && lp.machineId !== '';
+      const svHasM = sv && sv.machineId && sv.machineId !== 'null' && sv.machineId !== '';
+      if (sv && lpHasM && !svHasM) mergedById.set(lp.id, { ...sv, machineId: lp.machineId });
+    }
+  }
+  return [...mergedById.values()];
+}
+
 function _scheduleRetry(toSave) {
   _pendingSave = toSave;
   if (_retryTimer) return;
@@ -1765,24 +1804,22 @@ async function loadFromKV() {
       if (prRes.ok) {
         const prj = await prRes.json();
         if (prj.ok && Array.isArray(prj.printOrders) && prj.printOrders.length > 0) {
-          // Dedup: same batch+machine+printType — assigned machineId wins over null
-          const _poMap = new Map();
-          for (const p of prj.printOrders) {
-            const _key = `${p.productionOrderId||p.batchNumber||p.id}__${p.machineId||''}__${p.printType||''}`;
-            const _ex = _poMap.get(_key);
-            const _hasM = p.machineId && p.machineId !== 'null' && p.machineId !== '';
-            const _exHasM = _ex && _ex.machineId && _ex.machineId !== 'null' && _ex.machineId !== '';
-            if (!_ex || (!_exHasM && _hasM)) _poMap.set(_key, p);
-          }
-          state.printOrders = [..._poMap.values()];
-          // Delete loser duplicate IDs from DB immediately so they never come back
+          // v41ZC #2.1/2.2: merge with local assignments instead of blindly replacing.
+          const _before = new Map((state.printOrders||[]).map(p=>[p.id,p]));
+          state.printOrders = _mergePrintOrdersFromServer(prj.printOrders);
           const keptIds = new Set(state.printOrders.map(p=>p.id));
-          const lostIds = prj.printOrders.filter(p=>!keptIds.has(p.id)).map(p=>p.id);
+          // Only delete server rows that we actually dropped AND that aren't a locally-protected
+          // assignment (never delete an order the user just assigned but whose POST may be in flight).
+          const _nowDel = Date.now();
+          const lostIds = prj.printOrders
+            .filter(p=>!keptIds.has(p.id))
+            .map(p=>p.id)
+            .filter(id => !(_localPrintOrderChanges[id] && (_nowDel-_localPrintOrderChanges[id])<_PRINT_PROTECT_MS));
           if (lostIds.length > 0) {
             console.log('[PrintOrders] Deleting', lostIds.length, 'duplicate IDs from DB:', lostIds);
             lostIds.forEach(id => fetch(_url+'/api/print-orders/'+id, {method:'DELETE'}).catch(()=>{}));
           }
-          console.log('[PrintOrders] Loaded', prj.printOrders.length, '→ deduped to', state.printOrders.length);
+          console.log('[PrintOrders] Loaded', prj.printOrders.length, '→ merged to', state.printOrders.length);
         }
       }
     } catch(e) { console.warn('[PrintOrders] Load failed:', e?.message); }
@@ -1812,23 +1849,19 @@ async function loadFromKV() {
       if (prResPO.ok) {
         const prjPO = await prResPO.json();
         if (prjPO.ok && Array.isArray(prjPO.printOrders) && prjPO.printOrders.length > 0) {
-          const _poMap2 = new Map();
-          for (const p of prjPO.printOrders) {
-            const _key = `${p.productionOrderId||p.batchNumber||p.id}__${p.machineId||''}__${p.printType||''}`;
-            const _ex = _poMap2.get(_key);
-            const _hasM = p.machineId && p.machineId !== 'null' && p.machineId !== '';
-            const _exHasM = _ex && _ex.machineId && _ex.machineId !== 'null' && _ex.machineId !== '';
-            if (!_ex || (!_exHasM && _hasM)) _poMap2.set(_key, p);
-          }
-          state.printOrders = [..._poMap2.values()];
-          // Delete loser duplicate IDs from DB immediately
+          // v41ZC #2.1/2.2: merge with local assignments instead of blindly replacing.
+          state.printOrders = _mergePrintOrdersFromServer(prjPO.printOrders);
           const _keptIds2 = new Set(state.printOrders.map(p=>p.id));
-          const _lostIds2 = prjPO.printOrders.filter(p=>!_keptIds2.has(p.id)).map(p=>p.id);
+          const _nowDel2 = Date.now();
+          const _lostIds2 = prjPO.printOrders
+            .filter(p=>!_keptIds2.has(p.id))
+            .map(p=>p.id)
+            .filter(id => !(_localPrintOrderChanges[id] && (_nowDel2-_localPrintOrderChanges[id])<_PRINT_PROTECT_MS));
           if (_lostIds2.length > 0) {
             console.log('[PrintOrders] Deleting', _lostIds2.length, 'duplicate IDs from DB:', _lostIds2);
             _lostIds2.forEach(id => fetch(_urlPO+'/api/print-orders/'+id, {method:'DELETE'}).catch(()=>{}));
           }
-          console.log('[PrintOrders] Guaranteed load:', prjPO.printOrders.length, '→ deduped to', state.printOrders.length);
+          console.log('[PrintOrders] Guaranteed load:', prjPO.printOrders.length, '→ merged to', state.printOrders.length);
         }
       }
     }
@@ -2176,63 +2209,51 @@ function recalcMachineScheduleQuiet(machineId) {
       }
       continue;
     }
-    // v41 P19.1 Fix 1A: auto-roll stale dates for running orders.
-    // Trigger: status='running', not manually flagged, endDate is in the past, gross remaining > 0.
-    // Behaviour: recompute endDate from today + remainingDays. Cascade to subsequent orders.
-    // User-edited dates (manualStartDate/manualEndDate flags) are preserved — user intent wins.
-    if (ord.startDate && ord.endDate) {
-      const sc = calcOrderSchedule(ord, mc);
-      ord.grossQty   = sc.grossQty;
-      ord.aimOut     = sc.aimOut;
-      ord.printOut   = sc.printOut;
-      ord.piOut      = sc.piOut;
-      ord.daysNeeded = sc.daysNeeded;
-      const todayD = new Date(today());
-      const endD   = new Date(ord.endDate);
-      const isStale = (ord.status === 'running')
-        && !ord.manualStartDate && !ord.manualEndDate
-        && !isNaN(endD) && endD < todayD
-        && sc.daysNeeded != null && sc.daysNeeded > 0
-        && (sc.grossQty - (ord.actualProd || ord.actualQty || 0)) > 0.01;
-      if (isStale) {
-        // Order is still running past its planned endDate. Push endDate to today + remainingDays.
-        const remainingGross = Math.max(0, sc.grossQty - (ord.actualProd || ord.actualQty || 0));
-        const remainingDays  = sc.effectiveCap ? (remainingGross / sc.effectiveCap) : 0;
-        const newEnd = new Date(todayD);
-        newEnd.setDate(newEnd.getDate() + Math.ceil(remainingDays));
-        ord.endDate = newEnd;
-        // Note: do NOT touch startDate — production already happened from that date.
-        if (!cursor || newEnd > cursor) cursor = newEnd;
-      } else {
-        if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
-      }
-      continue;
-    }
-    if (!cursor) {
-      // Seed cursor: use today if the saved startDate is in the past with no production yet
-      const savedStart = ord.startDate ? new Date(ord.startDate) : null;
-      const todayD = new Date(today());
-      const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
-      // If startDate is in past and no actual production — order hasn't started, use today
-      if (savedStart && savedStart < todayD && !hasProduction) {
-        cursor = todayD;
-        ord.startDate = new Date(cursor);
-      } else {
-        cursor = savedStart || todayD;
-      }
-    } else {
-      ord.startDate = new Date(cursor);
-    }
+    // v41ZC #4: UNIFORM cascade. Every non-closed order re-anchors to the running cursor so an
+    // upstream delay pushes ALL downstream orders' start AND end dates — including manually-edited
+    // ones (per spec: cascade applies uniformly regardless of manual/auto). An order that has
+    // already started production keeps its historical startDate (production happened then) but its
+    // endDate is still recomputed from remaining work; the cursor advances either way.
     const sc = calcOrderSchedule(ord, mc);
-    ord.grossQty    = sc.grossQty;
-    ord.aimOut      = sc.aimOut;
-    ord.printOut    = sc.printOut;
-    ord.piOut       = sc.piOut;
-    ord.daysNeeded  = sc.daysNeeded;
-    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    ord.grossQty   = sc.grossQty;
+    ord.aimOut     = sc.aimOut;
+    ord.printOut   = sc.printOut;
+    ord.piOut      = sc.piOut;
+    ord.daysNeeded = sc.daysNeeded;
+    const todayD = new Date(today());
+    const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
+
+    // Determine start date.
+    if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
+      // Already running — keep the real (historical) start; do not re-anchor backwards.
+      ord.startDate = new Date(ord.startDate);
+    } else if (cursor) {
+      // Downstream of an earlier order — start right after it (this is the cascade).
+      ord.startDate = new Date(cursor);
+    } else {
+      // First order on the machine, not yet started. Use its saved start, but never schedule
+      // into the past with no production behind it.
+      const savedStart = ord.startDate ? new Date(ord.startDate) : null;
+      ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
+    }
+
+    // Determine end date.
+    if (hasProduction && ord.status === 'running') {
+      // End = today + days for the gross still remaining (can't finish in the past).
+      const remainingGross = Math.max(0, sc.grossQty - (ord.actualProd || ord.actualQty || 0));
+      const remainingDays  = sc.effectiveCap ? (remainingGross / sc.effectiveCap) : 0;
+      const startD = new Date(ord.startDate);
+      const fromToday = new Date(todayD); fromToday.setDate(fromToday.getDate() + Math.ceil(remainingDays));
+      const fromStart = calcEndDate(startD, sc.daysNeeded);
+      // End is the later of (start + full duration) and (today + remaining) so it never lands early.
+      ord.endDate = (fromStart && fromStart > fromToday) ? fromStart : fromToday;
+    } else {
+      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
+    continue;
   }
   // Cascade to print schedule — production end dates drive print start dates
   recalcPrintScheduleQuiet();
@@ -2260,48 +2281,41 @@ function recalcMachineSchedule(machineId) {
       }
       continue;
     }
-    // v41 P19.1 Fix 1A: auto-roll stale dates for running orders (same logic as recalcMachineScheduleQuiet)
-    if ((ord.startDate && ord.endDate) || ord.manualStartDate || ord.manualEndDate) {
-      const sc = calcOrderSchedule(ord, mc);
-      ord.grossQty   = sc.grossQty;
-      ord.aimOut     = sc.aimOut;
-      ord.printOut   = sc.printOut;
-      ord.piOut      = sc.piOut;
-      ord.daysNeeded = sc.daysNeeded;
-      const todayD = new Date(today());
-      const endD   = new Date(ord.endDate);
-      const isStale = (ord.status === 'running')
-        && !ord.manualStartDate && !ord.manualEndDate
-        && !isNaN(endD) && endD < todayD
-        && sc.daysNeeded != null && sc.daysNeeded > 0
-        && (sc.grossQty - (ord.actualProd || ord.actualQty || 0)) > 0.01;
-      if (isStale) {
-        const remainingGross = Math.max(0, sc.grossQty - (ord.actualProd || ord.actualQty || 0));
-        const remainingDays  = sc.effectiveCap ? (remainingGross / sc.effectiveCap) : 0;
-        const newEnd = new Date(todayD);
-        newEnd.setDate(newEnd.getDate() + Math.ceil(remainingDays));
-        ord.endDate = newEnd;
-        if (!cursor || newEnd > cursor) cursor = newEnd;
-      } else {
-        if (!isNaN(endD) && (!cursor || endD > cursor)) cursor = endD;
-      }
-      continue;
-    }
-    if (!cursor) {
-      cursor = new Date(ord.startDate || today());
-    } else {
-      ord.startDate = new Date(cursor);
-    }
+    // v41ZC #4: UNIFORM cascade (same logic as recalcMachineScheduleQuiet). Re-anchor every
+    // non-closed order to the running cursor so upstream delays push all downstream start/end dates,
+    // including manually-edited ones. Orders already in production keep their historical start.
     const sc = calcOrderSchedule(ord, mc);
     ord.grossQty   = sc.grossQty;
     ord.aimOut     = sc.aimOut;
     ord.printOut   = sc.printOut;
     ord.piOut      = sc.piOut;
     ord.daysNeeded = sc.daysNeeded;
-    ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    const todayD = new Date(today());
+    const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
+
+    if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
+      ord.startDate = new Date(ord.startDate);
+    } else if (cursor) {
+      ord.startDate = new Date(cursor);
+    } else {
+      const savedStart = ord.startDate ? new Date(ord.startDate) : null;
+      ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
+    }
+
+    if (hasProduction && ord.status === 'running') {
+      const remainingGross = Math.max(0, sc.grossQty - (ord.actualProd || ord.actualQty || 0));
+      const remainingDays  = sc.effectiveCap ? (remainingGross / sc.effectiveCap) : 0;
+      const startD = new Date(ord.startDate);
+      const fromToday = new Date(todayD); fromToday.setDate(fromToday.getDate() + Math.ceil(remainingDays));
+      const fromStart = calcEndDate(startD, sc.daysNeeded);
+      ord.endDate = (fromStart && fromStart > fromToday) ? fromStart : fromToday;
+    } else {
+      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
+    }
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
+    continue;
   }
   // Sync batchNumber changes to linked printOrders and dispatchPlans
   for (const ord of state.orders.filter(o=>o.machineId===machineId&&!o.deleted)) {
@@ -3169,6 +3183,17 @@ function renderOrderRow(ord, idx, mc) {
   </select>`;
   const ptdBadge = ord.isPrinted ? '<span class="badge badge-ptd">PTD</span>' : '<span class="badge badge-up">UP</span>';
   const grossQty = ord.grossQty ? fmt(ord.grossQty) : '-';
+  // v41ZC #5: if the planner overrode gross qty, mark the row inline with a small "edited" badge.
+  // Tooltip shows the original auto-calculated gross so the change is visible without the audit log.
+  let grossEditedBadge = '';
+  if (Number.isFinite(ord.grossOverride) && ord.grossOverride > 0) {
+    let autoGross = null;
+    try { autoGross = calcOrderSchedule({ ...ord, grossOverride: null }, mc)?.grossQty; } catch(e) {}
+    const tip = (autoGross != null && isFinite(autoGross))
+      ? `Gross qty edited by planner — auto-calc was ${fmt(autoGross)}L, set to ${fmt(ord.grossOverride)}L`
+      : `Gross qty manually set to ${fmt(ord.grossOverride)}L (overrides auto-calc)`;
+    grossEditedBadge = ` <span class="badge" style="background:rgba(245,158,11,0.18);color:#b45309;font-size:9px;font-weight:700;padding:1px 5px;border-radius:6px;cursor:help" title="${tip.replace(/"/g,'&quot;')}">✎ edited</span>`;
+  }
   // Live A-grade flag for this order's batch
   const liveAG = window._liveAGrade && ord.batchNumber
     ? (window._liveAGrade[ord.batchNumber.trim().toUpperCase()] || window._liveAGrade[ord.batchNumber] || {})
@@ -3227,7 +3252,7 @@ function renderOrderRow(ord, idx, mc) {
     <td style="font-size:11px;color:var(--accent3)">${ord.inkCap||'-'}</td>
     <td style="font-size:11px;color:var(--accent3)">${ord.inkBody||'-'}</td>
     <td class="text-mono fw-bold">${fmt(ord.qty)}</td>
-    <td class="text-mono text-blue">${grossQty}${extraFlag}${aimProgress}</td>
+    <td class="text-mono text-blue">${grossQty}${grossEditedBadge}${extraFlag}${aimProgress}</td>
     <td class="text-mono" style="white-space:nowrap">${fmtDate(ord.startDate)}</td>
     <td class="text-mono" style="white-space:nowrap">${fmtDate(ord.endDate)}</td>
     <td class="text-sm">${ord.packing||'-'}</td>
@@ -4676,7 +4701,12 @@ function _v39_reconcileSapIndents(indents) {
         ? parseFloat(line.RemainingOpenQuantity) || 0
         : parseFloat(line.Quantity) || 0;
       const lineQty = rawOpenQty * uomScale;
-      if (lineQty <= 0) continue;
+      if (lineQty <= 0) {
+        // v41ZC issue 1 diagnostic: a line with no open qty is intentionally skipped (nothing to plan),
+        // but log it so IT can confirm WHY a SAP line isn't appearing (vs. a true pull/pagination gap).
+        if (window._SAP_DEBUG) console.log('[SAP reconcile] SKIP line — zero open qty', {docNum, lineNum: line.LineNum, itemCode: line.ItemCode, Quantity: line.Quantity, RemainingOpenQuantity: line.RemainingOpenQuantity, uomScale});
+        continue;
+      }
       // v41o FIX (regression caught on test by IT): when export detection moved to per-line UoM,
       // the old `isExportIndent` variable was removed but is still referenced below (isExport flag,
       // line ~4584) — a ReferenceError that crashed the reconcile loop and rendered zero indents.
@@ -4738,6 +4768,10 @@ function _v39_reconcileSapIndents(indents) {
         });
       }
     }
+  }
+  if (window._SAP_DEBUG) {
+    const docNums = (indents||[]).map(i => String(i.sap_doc_num||'')).filter(Boolean);
+    console.log('[SAP reconcile] processed', (indents||[]).length, 'cached SOs →', out.length, 'unplanned lines. SO DocNums:', docNums.join(','));
   }
   return out;
 }
@@ -6291,7 +6325,7 @@ function showAddPrintModal(machineId, existingId) {
   const selectedSize = existing?.size || '';
   const allPms = state.printMachineMaster.filter(pm => pm.active !== false);
   const filteredMachines = selectedSize
-    ? allPms.filter(pm => String(pm.size) === String(selectedSize))
+    ? allPms.filter(pm => _opmMatchesSize(pm.size, selectedSize))
     : allPms;
 
   const opmOptions = (selId='') =>
@@ -6505,13 +6539,24 @@ function recalcOpmBalance() {
   if (warn) warn.textContent = assigned > total ? `⚠️ Over-allocated by ${fmt(assigned-total)}L` : '';
 }
 
+// v41ZC #2.3: OPM machines can serve multiple sizes (e.g. OPM07 size '1&2'). A strict
+// String(pm.size)===String(size) hid those from the assign dropdown. This helper treats a
+// machine's size field as a set: split on non-digit separators (& , / space) and match if the
+// requested size is among them. Blank requested size = match all.
+function _opmMatchesSize(pmSize, wantSize) {
+  if (!wantSize) return true;
+  const parts = String(pmSize == null ? '' : pmSize).split(/[^0-9]+/).filter(Boolean);
+  if (!parts.length) return String(pmSize) === String(wantSize); // non-numeric size label — exact compare
+  return parts.includes(String(wantSize));
+}
+
 function refreshOpmDropdown() {
   const size = document.getElementById('fp-size')?.value;
   const sel = document.getElementById('fp-machine');
   if (!sel) return;
   const currentVal = sel.value;
   const filtered = size
-    ? state.printMachineMaster.filter(pm => String(pm.size) === String(size) && pm.active !== false)
+    ? state.printMachineMaster.filter(pm => _opmMatchesSize(pm.size, size) && pm.active !== false)
     : state.printMachineMaster.filter(pm => pm.active !== false);
   sel.innerHTML = '<option value="">Unassigned</option>' +
     filtered.map(pm => `<option value="${pm.id}">${pm.id} (Size ${pm.size}, ${pm.cap}L/day)</option>`).join('');
@@ -6521,7 +6566,7 @@ function refreshOpmDropdown() {
 function refreshOpmDropdownMulti() {
   const size = document.getElementById('fp-size-multi')?.value;
   const filtered = size
-    ? state.printMachineMaster.filter(pm => String(pm.size) === String(size) && pm.active !== false)
+    ? state.printMachineMaster.filter(pm => _opmMatchesSize(pm.size, size) && pm.active !== false)
     : state.printMachineMaster.filter(pm => pm.active !== false);
   const opts = `<option value="">-- OPM --</option>` +
     filtered.map(pm=>`<option value="${pm.id}">${pm.id} (${pm.cap}L/d)</option>`).join('');
@@ -7832,14 +7877,14 @@ function renderDispatch() {
           const pct = Math.min(100,(zd.ready/plannedBoxes*100)).toFixed(0);
           const isReady = zd.ready >= plannedBoxes;
           const truckCount = Math.ceil(plannedBoxes / zoneCap);
-          return `<div class="mc-card" style="${isReady?'border-color:var(--accent3)':''}">
+          return `<div class="mc-card" style="cursor:pointer;${isReady?'border-color:var(--accent3)':''}" onclick="jumpToZoneTrucks('${z.replace(/'/g,"\\'")}')" title="Click to view ${z} trucks">
             <div style="display:flex;justify-content:space-between;margin-bottom:6px">
               <span class="text-mono text-sm fw-bold ${isReady?'text-green':''}">${z}</span>
               ${isReady?'<span class="badge badge-completed">Ready</span>':'<span class="badge badge-pending">Filling</span>'}
             </div>
             <div class="text-mono" style="font-size:20px;font-weight:700;color:var(--text)">${zd.ready}<span class="text-dim text-sm">/${plannedBoxes} boxes</span></div>
             <div class="progress-bar mt-4"><div class="progress-fill ${isReady?'green':'blue'}" style="width:${pct}%"></div></div>
-            <div class="text-dim text-sm mt-4">${zd.count} orders · ${truckCount} truck${truckCount!==1?'s':''} @ ${zoneCap} boxes</div>
+            <div class="text-dim text-sm mt-4">${zd.count} orders · ${truckCount} truck${truckCount!==1?'s':''} @ ${zoneCap} boxes · <span style="color:var(--accent)">view trucks →</span></div>
           </div>`;
         }).join('')}
       </div>
@@ -8264,6 +8309,32 @@ function switchDispatchViewTab(el, view) {
   if (trucksEl) trucksEl.style.display = view==='trucks' ? '' : 'none';
 }
 
+// v41ZC: clicking a Zone Readiness card jumps to that zone's trucks in Truck View.
+function jumpToZoneTrucks(zone) {
+  window._dispatchActiveView = 'trucks';
+  // activate Truck View tab
+  document.querySelectorAll('#dispatch-view-tabs .tab').forEach(t => {
+    const isTrucks = /Truck View/.test(t.textContent);
+    t.classList.toggle('active', isTrucks);
+  });
+  const ordersEl = document.getElementById('dispatch-view-orders');
+  const trucksEl = document.getElementById('dispatch-view-trucks');
+  if (ordersEl) ordersEl.style.display = 'none';
+  if (trucksEl) trucksEl.style.display = '';
+  // scroll to the zone's truck card
+  const anchor = document.getElementById('truckzone-' + zone.replace(/[^a-zA-Z0-9]/g,'_'));
+  if (anchor) {
+    anchor.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    // brief highlight so it's obvious which zone we landed on
+    anchor.style.transition = 'box-shadow .2s';
+    const prev = anchor.style.boxShadow;
+    anchor.style.boxShadow = '0 0 0 2px var(--accent)';
+    setTimeout(() => { anchor.style.boxShadow = prev; }, 1500);
+  } else if (trucksEl) {
+    trucksEl.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
 // v37I B6: Apply AND-logic filters to Planning Order View table rows in-place using data-attributes.
 // Filter state persists across navigations within session via window._planningOrderViewFilters.
 // Hides total row when filters are active (recomputing partial total would be expensive).
@@ -8358,7 +8429,7 @@ function renderTruckViewHTML(zones) {
       .reduce((s,p)=>s+(p.boxes||0),0);
 
     html += `
-      <div class="card mb-4">
+      <div class="card mb-4" id="truckzone-${zone.replace(/[^a-zA-Z0-9]/g,'_')}">
         <div class="card-title" style="display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:8px">
           <span>🗺️ ${zone} — ${trucks.length} truck${trucks.length!==1?'s':''} planned</span>
           <span class="text-dim text-sm">${totalBoxes} boxes total · ${cap} boxes/truck</span>
@@ -8916,12 +8987,14 @@ function exportDispatchPlan() {
 // 2. CUSTOMER-WISE — separate Excel file per customer
 function exportCustomerWise() {
   if (document.getElementById('export-menu')) document.getElementById('export-menu').style.display = 'none';
-  const customers = [...new Set(state.dispatchPlans.map(p => p.customer).filter(Boolean))].sort();
+  const _activeIds = getActiveDispatchOrderIds(); // v41ZC: match dispatch-plan scope
+  const _scoped = state.dispatchPlans.filter(p => !p.productionOrderId || _activeIds.has(p.productionOrderId));
+  const customers = [...new Set(_scoped.map(p => p.customer).filter(Boolean))].sort();
   if (customers.length === 0) { alert('No dispatch plans found.'); return; }
 
   let exported = 0;
   customers.forEach(cust => {
-    const plans = state.dispatchPlans
+    const plans = _scoped
       .filter(p => p.customer === cust)
       .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
     if (plans.length === 0) return;
@@ -8956,12 +9029,14 @@ function exportCustomerWise() {
 // 3. ZONE-WISE — one file, one sheet per zone
 function exportZoneWise() {
   if (document.getElementById('export-menu')) document.getElementById('export-menu').style.display = 'none';
-  const zones = [...new Set(state.dispatchPlans.map(p => p.zone).filter(Boolean))].sort();
+  const _activeIdsZ = getActiveDispatchOrderIds(); // v41ZC: match dispatch-plan scope
+  const _scopedZ = state.dispatchPlans.filter(p => !p.productionOrderId || _activeIdsZ.has(p.productionOrderId));
+  const zones = [...new Set(_scopedZ.map(p => p.zone).filter(Boolean))].sort();
   if (zones.length === 0) { alert('No dispatch plans found.'); return; }
 
   const wb = XLSX.utils.book_new();
   zones.forEach(zone => {
-    const plans = state.dispatchPlans
+    const plans = _scopedZ
       .filter(p => p.zone === zone)
       .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
     if (plans.length === 0) return;
@@ -9263,9 +9338,11 @@ function showDayDispatch(day, month, year) {
 // =============================
 function renderDispatchExport() {
   document.getElementById('topbar-actions').innerHTML = `<span style="font-size:11px;color:var(--text3);padding:4px 8px">${monthLabel(_selectedPlanMonth)}</span>`;
-  // Filter dispatch plans by selected month
-  const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
-  const monthPlans = state.dispatchPlans.filter(p => !p.productionOrderId || monthOrdIds.has(p.productionOrderId));
+  // v41ZC: use the SAME scoping as the Dispatch Planning page so box/order counts match exactly.
+  // Previously this used getMonthOrders() (all orders in month, incl. fully-dispatched/historical),
+  // which inflated zone box totals vs. the dispatch plan (active + closed-with-undispatched only).
+  const activeDispatchOrdIds = getActiveDispatchOrderIds();
+  const monthPlans = state.dispatchPlans.filter(p => !p.productionOrderId || activeDispatchOrdIds.has(p.productionOrderId));
   const zones = [...new Set(monthPlans.map(p=>p.zone).filter(Boolean))].sort();
   const customers = [...new Set(monthPlans.map(p=>p.customer).filter(Boolean))].sort();
 
@@ -9320,7 +9397,7 @@ function renderDispatchExport() {
 }
 
 function exportSingleZone(zone) {
-  const _monthOrdIds = new Set(getMonthOrders().map(o => o.id));
+  const _monthOrdIds = getActiveDispatchOrderIds(); // v41ZC: match dispatch-plan scope
   const rows = state.dispatchPlans
     .filter(p => p.zone === zone && (!p.productionOrderId || _monthOrdIds.has(p.productionOrderId)))
     .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate))
@@ -9333,7 +9410,7 @@ function exportSingleZone(zone) {
 }
 
 function exportSingleCustomer(customer) {
-  const _monthOrdIds2 = new Set(getMonthOrders().map(o => o.id));
+  const _monthOrdIds2 = getActiveDispatchOrderIds(); // v41ZC: match dispatch-plan scope
   const rows = state.dispatchPlans
     .filter(p => p.customer === customer && (!p.productionOrderId || _monthOrdIds2.has(p.productionOrderId)))
     .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate))
@@ -12809,6 +12886,8 @@ let _v40_integrityFilter = 'all';
 let _v40_integritySearch = '';          // v41ZB: batch/description/check text search
 let _v40_integrityCheckType = 'all';    // v41ZB: filter by check type (header option)
 let _v40_integrityIncludeAcked = false; // v41ZB: also show acked/assigned items + their status
+let _v40_integrityTotalMatching = 0;    // v41ZC: total rows matching active filter (pre-LIMIT)
+let _v40_integrityCapped = false;       // v41ZC: true when more rows match than were returned
 function _v40_fmtTs(t) { try { return t ? new Date(t).toISOString().slice(0,16).replace('T',' ') : '?'; } catch(e){ return '?'; } }
 
 // v40 P18.17: HTML-escape helper local to integrity dashboard (no global _v40_esc() in planning.html).
@@ -12887,7 +12966,7 @@ async function renderDataIntegrity() {
 
 function _v40_setIntegrityFilter(sev) {
   _v40_integrityFilter = sev;
-  _v40_renderIntegrityFindings();
+  _v40_loadIntegrityFindings();  // v41ZC: server-side filter (LIMIT must apply AFTER severity filter)
   // Update button styling
   ['all','critical','warning','info'].forEach(s => {
     const b = document.getElementById('ifilt-'+s);
@@ -12895,7 +12974,7 @@ function _v40_setIntegrityFilter(sev) {
   });
 }
 function _v40_setIntegritySearch(v) { _v40_integritySearch = v; _v40_renderIntegrityFindings(); }
-function _v40_setIntegrityCheckType(v) { _v40_integrityCheckType = v; _v40_renderIntegrityFindings(); }
+function _v40_setIntegrityCheckType(v) { _v40_integrityCheckType = v; _v40_loadIntegrityFindings(); }  // v41ZC: server-side
 function _v40_toggleIncludeAcked(c) { _v40_integrityIncludeAcked = c; _v40_loadIntegrityFindings(); }
 
 async function _v40_loadIntegrityFindings() {
@@ -12903,7 +12982,11 @@ async function _v40_loadIntegrityFindings() {
   if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) return;
   try {
-    const r = await fetch(serverUrl + '/api/integrity/findings' + (_v40_integrityIncludeAcked ? '?includeAcked=1' : ''), {
+    const qs = [];
+    if (_v40_integrityFilter && _v40_integrityFilter !== 'all') qs.push('severity=' + encodeURIComponent(_v40_integrityFilter));
+    if (_v40_integrityCheckType && _v40_integrityCheckType !== 'all') qs.push('checkType=' + encodeURIComponent(_v40_integrityCheckType));
+    if (_v40_integrityIncludeAcked) qs.push('includeAcked=1');
+    const r = await fetch(serverUrl + '/api/integrity/findings' + (qs.length ? ('?' + qs.join('&')) : ''), {
       headers:{'x-session-token': currentUser?.token||''},
       signal: AbortSignal.timeout(10000)
     });
@@ -12911,6 +12994,8 @@ async function _v40_loadIntegrityFindings() {
     if (!j.ok) throw new Error(j.error || 'Failed');
     _v40_integrityFindings = j.findings || [];
     _v40_integritySummary = j.summary || { critical: 0, warning: 0, info: 0 };
+    _v40_integrityTotalMatching = (typeof j.totalMatching === 'number') ? j.totalMatching : _v40_integrityFindings.length;
+    _v40_integrityCapped = !!j.capped;
     _v40_renderIntegritySummary(j.lastRunAt, j.isRunning);
     _v40_renderIntegrityFindings();
   } catch(e) {
@@ -12940,9 +13025,9 @@ function _v40_renderIntegritySummary(lastRunAt, isRunning) {
 }
 
 function _v40_renderIntegrityFindings() {
+  // v41ZC: severity + check_type are now filtered SERVER-SIDE (so the 500-row LIMIT applies after
+  // filtering). Only the free-text search remains client-side, over the already-filtered set.
   let filtered = _v40_integrityFindings;
-  if (_v40_integrityFilter !== 'all') filtered = filtered.filter(f => f.severity === _v40_integrityFilter);
-  if (_v40_integrityCheckType !== 'all') filtered = filtered.filter(f => f.check_type === _v40_integrityCheckType);
   const q = (_v40_integritySearch || '').trim().toLowerCase();
   if (q) filtered = filtered.filter(f =>
     (f.batch_number||'').toLowerCase().includes(q) ||
@@ -12957,7 +13042,11 @@ function _v40_renderIntegrityFindings() {
   if (meta) {
     const batches = new Set(filtered.filter(f=>f.batch_number).map(f=>f.batch_number));
     const assigned = filtered.filter(f => f.ack_at || (f.tasks && f.tasks.length)).length;
-    meta.textContent = `${filtered.length} shown · ${batches.size} batch${batches.size===1?'':'es'} · ${assigned} with investigation assigned`;
+    let m = `${filtered.length} shown · ${batches.size} batch${batches.size===1?'':'es'} · ${assigned} with investigation assigned`;
+    // v41ZC: when the server capped at 500, tell the user how many actually match so the
+    // count doesn't look like it disagrees with the severity cards.
+    if (_v40_integrityCapped && !q) m += ` · showing first ${_v40_integrityFindings.length} of ${_v40_integrityTotalMatching} — narrow with a filter or search`;
+    meta.textContent = m;
   }
   if (filtered.length === 0) {
     el.innerHTML = `<div style="color:var(--green);padding:30px;text-align:center;font-size:14px">

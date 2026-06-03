@@ -3146,12 +3146,12 @@ app.get('/api/sap/indents', async (req, res) => {
     let rows;
     if (pgPool) {
       const r = await pgPool.query(
-        `SELECT * FROM sap_indent_cache ORDER BY doc_due_date ASC NULLS LAST, fetched_at DESC LIMIT 1000`
+        `SELECT * FROM sap_indent_cache ORDER BY doc_due_date ASC NULLS LAST, fetched_at DESC LIMIT 5000`
       );
       rows = r.rows;
     } else {
       rows = db.prepare(
-        `SELECT * FROM sap_indent_cache ORDER BY doc_due_date ASC, fetched_at DESC LIMIT 1000`
+        `SELECT * FROM sap_indent_cache ORDER BY doc_due_date ASC, fetched_at DESC LIMIT 5000`
       ).all();
     }
     // Parse payload_json so client gets clean structured data
@@ -7125,6 +7125,7 @@ app.get('/api/integrity/findings', async (req, res) => {
     if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
 
     const severity = req.query.severity;  // critical|warning|info or all
+    const checkType = req.query.checkType; // specific check_type or 'all'/empty
     const includeAcked = req.query.includeAcked === '1';
     const includeResolved = req.query.includeResolved === '1';
 
@@ -7133,6 +7134,10 @@ app.get('/api/integrity/findings', async (req, res) => {
     if (severity && severity !== 'all') {
       sql += ` AND severity = ?`;
       params.push(severity);
+    }
+    if (checkType && checkType !== 'all') {
+      sql += ` AND check_type = ?`;
+      params.push(checkType);
     }
     if (!includeResolved) sql += ` AND resolved = 0`;
     if (!includeAcked) {
@@ -7192,10 +7197,26 @@ app.get('/api/integrity/findings', async (req, res) => {
     const summary = { critical: 0, warning: 0, info: 0 };
     for (const s of summaryRows) summary[s.severity] = parseInt(s.c) || 0;
 
+    // v41ZC: total rows matching the ACTIVE filter (pre-LIMIT), so the UI can show "showing 500 of N".
+    let totalMatching = rows.length;
+    try {
+      let countSql = sql.replace('SELECT *', 'SELECT COUNT(*) AS c').replace(/ ORDER BY[\s\S]*$/, '');
+      if (pgPool) {
+        let i = 0; const pgCount = countSql.replace(/\?/g, () => `$${++i}`);
+        const cr = await pgPool.query(pgCount, params);
+        totalMatching = parseInt(cr.rows[0]?.c) || rows.length;
+      } else {
+        const cr = db.prepare(countSql).get(...params);
+        totalMatching = (cr && (cr.c|0)) || rows.length;
+      }
+    } catch (e) { /* fall back to rows.length */ }
+
     res.json({
       ok: true,
       findings: rows,
       summary,
+      totalMatching,
+      capped: totalMatching > rows.length,
       lastRunAt: _integrityLastRunAt,
       isRunning: _integrityIsRunning,
     });

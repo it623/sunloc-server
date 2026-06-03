@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZB</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZC</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZB</p>
+      <p>Tracking Suite v1.0 · build v41ZC</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZB</p>
+      <p>Tracking Suite v1.0 · build v41ZC</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -6840,7 +6840,7 @@ function applyBatchFilter(){
   let batches = state.batches.filter(b=>!b.deleted);
   batches = batches.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}));
   if(filterBatch) batches=batches.filter(b=>b.batchNumber?.toLowerCase().includes(filterBatch)||b.customer?.toLowerCase().includes(filterBatch));
-  if(filterMachine) batches=batches.filter(b=>b.machineId===filterMachine);
+  if(filterMachine) batches=batches.filter(b=>normMcId(b.machineId)===normMcId(filterMachine));
   if(filterPc) batches=batches.filter(b=>b.pcCode===filterPc);
   if(filterColour) batches=batches.filter(b=>b.colour===filterColour);
   if(filterStatus==='alerts') batches=batches.filter(b=>state.alerts.some(a=>a.batchNumber===b.batchNumber));
@@ -7237,7 +7237,7 @@ function renderReportH(){ window._activeReport = renderReportH;
   let tabRows = gapRows;
   if(activeTab !== 'all') tabRows = tabRows.filter(r=>r.transKey===activeTab);
   if(filterBatch)   tabRows = tabRows.filter(r=>r.batch.toLowerCase().includes(filterBatch.toLowerCase()));
-  if(filterMachine) tabRows = tabRows.filter(r=>r.machineId===filterMachine);
+  if(filterMachine) tabRows = tabRows.filter(r=>normMcId(r.machineId)===normMcId(filterMachine));
   if(filterPc)      tabRows = tabRows.filter(r=>r.pcCode===filterPc);
   if(filterColour)  tabRows = tabRows.filter(r=>r.colour===filterColour);
 
@@ -7404,6 +7404,13 @@ function exportReportH(){
   }
 }
 
+// v41ZC: Report G filter bar (mirrors Report H — batch/machine/PC/colour). Narrows both the
+// table and the cumulative totals/KPIs when active.
+window._rptGBatch   = window._rptGBatch   || '';
+window._rptGMachine = window._rptGMachine || '';
+window._rptGPc      = window._rptGPc      || '';
+window._rptGColour  = window._rptGColour  || '';
+
 function renderReportG(){ window._activeReport = renderReportG;
   if(!document.getElementById('report-output')) renderReports();
   // v41 P19.6 (Q3): fetch month-attributed A-Grade data (6 AM-cut), then render.
@@ -7415,7 +7422,18 @@ function renderReportG(){ window._activeReport = renderReportG;
 }
 function _v41_renderReportGInner(){
   const md = _v41_useMonthAttributed ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
-  const batches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const allMonthBatches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  // v41ZC: filter state (machine uses normMcId so MC.30 / mc30 / "MC 30" all match)
+  const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
+  let batches = allMonthBatches;
+  if(gB) batches = batches.filter(b=>(b.batchNumber||'').toLowerCase().includes(gB.toLowerCase()));
+  if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
+  if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
+  if(gC) batches = batches.filter(b=>(b.colour||'')===gC);
+  // dropdown option lists from the full month set (so all choices stay available)
+  const gAllMachines = [...new Set(allMonthBatches.map(b=>b.machineId).filter(Boolean))].sort();
+  const gAllPcCodes  = [...new Set(allMonthBatches.map(b=>b.pcCode).filter(Boolean))].sort();
+  const gAllColours  = [...new Set(allMonthBatches.map(b=>b.colour).filter(Boolean))].sort();
   let totalGrossProd = 0;
   let totalAGradeQty = 0;
   let totalInspected = 0;
@@ -7560,6 +7578,38 @@ function _v41_renderReportGInner(){
       <b>⚠️</b> = Inspected &gt; Gross Production (check DPR entry)
     </div>
 
+    <div class="form-row cols-4 mb-16" style="gap:10px">
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Batch</label>
+        <input type="text" id="rptg-filter-batch" placeholder="🔍 Batch" value="${gB.replace(/"/g,'&quot;')}"
+          oninput="window._rptGBatch=this.value;renderReportG()">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Machine</label>
+        <select onchange="window._rptGMachine=this.value;renderReportG()">
+          <option value="">All Machines</option>
+          ${gAllMachines.map(m=>`<option value="${m}" ${gM===m?'selected':''}>${m}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">PC Code</label>
+        <select onchange="window._rptGPc=this.value;renderReportG()">
+          <option value="">All PC Codes</option>
+          ${gAllPcCodes.map(p=>`<option value="${p}" ${gP===p?'selected':''}>${p}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group" style="margin-bottom:0;display:flex;gap:6px;align-items:flex-end">
+        <div style="flex:1">
+          <label style="font-size:11px">Colour</label>
+          <select onchange="window._rptGColour=this.value;renderReportG()">
+            <option value="">All Colours</option>
+            ${gAllColours.map(c=>`<option value="${c}" ${gC===c?'selected':''}>${c}</option>`).join('')}
+          </select>
+        </div>
+        ${(gB||gM||gP||gC)?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';renderReportG()">✕ Clear</button>`:''}
+      </div>
+    </div>
+
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
         <th>Batch</th><th>Customer</th><th>Sz</th><th>Type</th>
@@ -7582,12 +7632,25 @@ function _v41_renderReportGInner(){
   </div>`;
 
   _captureReportScroll();
+  // v41ZC: preserve focus + caret on the batch filter so typing isn't interrupted by re-render
+  const _gAf = document.activeElement, _gAfId = _gAf && _gAf.id;
+  const _gSelS = _gAf && _gAf.selectionStart, _gSelE = _gAf && _gAf.selectionEnd;
   document.getElementById('report-output').innerHTML = html;
+  if (_gAfId === 'rptg-filter-batch') {
+    const n = document.getElementById('rptg-filter-batch');
+    if (n) { n.focus(); try { if (_gSelS != null) n.setSelectionRange(_gSelS, _gSelE); } catch(e){} }
+  }
 _scrollIntoReportIfFirstView('G');
 }
 
 function exportReportG(){
-  const batches = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  let batches = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  // v41ZC: honour the on-screen filter bar so the export matches what's displayed
+  const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
+  if(gB) batches = batches.filter(b=>(b.batchNumber||'').toLowerCase().includes(gB.toLowerCase()));
+  if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
+  if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
+  if(gC) batches = batches.filter(b=>(b.colour||'')===gC);
   // v41 P19.6: match on-screen attribution. If month-attributed toggle is ON and the windowed
   // data is already cached (user viewed the report before exporting), use month-sliced A-Grade.
   const md = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
@@ -7653,7 +7716,7 @@ function renderReportZ(){ window._activeReport = renderReportZ;
   const machineOpts = [...new Set(items.map(x=>x.b.machineId).filter(Boolean))].sort()
     .map(m=>`<option value="${m}" ${mFilter===m?'selected':''}>${m}</option>`).join('');
   let shown = items;
-  if (mFilter) shown = shown.filter(x => x.b.machineId === mFilter);
+  if (mFilter) shown = shown.filter(x => normMcId(x.b.machineId) === normMcId(mFilter));
   if (sQ) shown = shown.filter(x =>
     (x.b.batchNumber||'').toLowerCase().includes(sQ) ||
     (x.b.customer||'').toLowerCase().includes(sQ) ||
@@ -7855,7 +7918,7 @@ function renderReportF(){ window._activeReport = renderReportF;
   // Machine filter
   if(filterMachine){
     allRelevantBatches = allRelevantBatches.filter(bn=>{
-      const b=getBatch(bn); return b && b.machineId===filterMachine;
+      const b=getBatch(bn); return b && normMcId(b.machineId)===normMcId(filterMachine);
     });
   }
   // Batch filter
@@ -8196,7 +8259,7 @@ _scrollIntoReportIfFirstView('C');
   }).join('');
 
   let batches = monthBatches.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
-  if(filterMachine) batches = batches.filter(b=>b.machineId===filterMachine);
+  if(filterMachine) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(filterMachine));
   if(filterBatch)   batches = batches.filter(b=>b.batchNumber===filterBatch);
 
   let html=`<div class="card">
@@ -9728,7 +9791,7 @@ function exportReportI() {
 
 let _reportJTimer = null;
 window._reportJTab = window._reportJTab || 'A';
-window._reportJFilters = window._reportJFilters || {batch:'', customer:'', vehicle:'', agedOnly:true};
+window._reportJFilters = window._reportJFilters || {batch:'', customer:'', vehicle:'', colour:'', pcCode:'', size:'', agedOnly:true};
 
 async function _fetchReconcileAlerts() {
   try {
@@ -9810,6 +9873,10 @@ function _renderReportJContent(alerts) {
       return (b?.customer||'').toLowerCase().includes(f.customer.toLowerCase());
     });
   }
+  // v41ZC: colour / PC Code / size filters (read from the batch master)
+  if (f.colour) filtered = filtered.filter(a => ((getBatch(a.batch_number)?.colour)||'').toLowerCase().includes(f.colour.toLowerCase()));
+  if (f.pcCode) filtered = filtered.filter(a => String((getBatch(a.batch_number)?.pcCode)||'').toLowerCase().includes(f.pcCode.toLowerCase()));
+  if (f.size)   filtered = filtered.filter(a => String((getBatch(a.batch_number)?.size)||'').toLowerCase().includes(f.size.toLowerCase()));
   // Vehicle filter: only relevant for Tab B (records with vehicles)
   // Aged>60min: triggered_at older than threshold (already handled server-side via background job
   // — alerts only INSERTed once aged past threshold, so this is mostly a UX confirmation)
@@ -9852,7 +9919,16 @@ function _renderReportJContent(alerts) {
       <input type="text" id="rptj-filter-customer" placeholder="🔍 Customer" value="${f.customer||''}"
              oninput="window._reportJFilters.customer=this.value;_renderReportJContent()"
              style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
-      <button class="btn btn-ghost btn-sm" onclick="window._reportJFilters={batch:'',customer:'',vehicle:'',agedOnly:true};_renderReportJContent()">✕ Clear</button>
+      <input type="text" id="rptj-filter-colour" placeholder="🔍 Colour" value="${f.colour||''}"
+             oninput="window._reportJFilters.colour=this.value;_renderReportJContent()"
+             style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:110px;font-size:12px">
+      <input type="text" id="rptj-filter-pccode" placeholder="🔍 PC Code" value="${f.pcCode||''}"
+             oninput="window._reportJFilters.pcCode=this.value;_renderReportJContent()"
+             style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:110px;font-size:12px">
+      <input type="text" id="rptj-filter-size" placeholder="🔍 Size" value="${f.size||''}"
+             oninput="window._reportJFilters.size=this.value;_renderReportJContent()"
+             style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:90px;font-size:12px">
+      <button class="btn btn-ghost btn-sm" onclick="window._reportJFilters={batch:'',customer:'',vehicle:'',colour:'',pcCode:'',size:'',agedOnly:true};_renderReportJContent()">✕ Clear</button>
       <button class="btn btn-secondary btn-sm" onclick="exportReportJ()">📥 Export Excel</button>
       <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">Auto-refresh every 5 min · ${filtered.length} alerts</span>
     </div>`;
@@ -9865,12 +9941,12 @@ function _renderReportJContent(alerts) {
     tableHtml = `
       <div class="tbl-wrap"><table>
         <thead><tr>
-          <th>Batch</th><th>Customer</th><th>Zone</th><th>Label ID</th><th>Pack-In Time</th><th>Days Aged</th>
+          <th>Batch</th><th>Customer</th><th>Colour</th><th>PC Code</th><th>Size</th><th>Zone</th><th>Label ID</th><th>Pack-In Time</th><th>Days Aged</th>
           ${canAck ? '<th>Action</th>' : ''}
         </tr></thead>
         <tbody>
           ${filtered.length === 0
-            ? `<tr><td colspan="${canAck?7:6}" class="text-center text-muted" style="padding:30px">No FG stock aged beyond threshold ✓</td></tr>`
+            ? `<tr><td colspan="${canAck?10:9}" class="text-center text-muted" style="padding:30px">No FG stock aged beyond threshold ✓</td></tr>`
             : filtered.map(a => {
               const b = getBatch(a.batch_number);
               // Detect export via planning state if available — fall back to non-export
@@ -9880,6 +9956,9 @@ function _renderReportJContent(alerts) {
               return `<tr>
                 <td class="td-bold td-mono">${a.batch_number||'—'}</td>
                 <td class="text-sm">${b?.customer||'—'}</td>
+                <td class="text-sm">${b?.colour||'—'}</td>
+                <td class="td-mono text-sm">${b?.pcCode||'—'}</td>
+                <td class="text-sm">${b?.size||'—'}</td>
                 <td class="text-sm">${zoneLabel}</td>
                 <td class="td-mono text-sm">${a.label_id||'—'}</td>
                 <td class="td-mono text-sm">${a.triggered_at?fmtDateTime(a.triggered_at):'—'}</td>
@@ -9889,7 +9968,7 @@ function _renderReportJContent(alerts) {
             }).join('')}
         </tbody>
         ${filtered.length?`<tfoot><tr style="background:var(--surface2);font-weight:800">
-          <td colspan="${canAck?7:6}" class="text-right" style="padding-right:8px">TOTAL — ${filtered.length} label${filtered.length===1?'':'s'} aged beyond threshold</td>
+          <td colspan="${canAck?10:9}" class="text-right" style="padding-right:8px">TOTAL — ${filtered.length} label${filtered.length===1?'':'s'} aged beyond threshold</td>
         </tr></tfoot>`:''}
       </table></div>`;
   } else {
@@ -9897,12 +9976,12 @@ function _renderReportJContent(alerts) {
     tableHtml = `
       <div class="tbl-wrap"><table>
         <thead><tr>
-          <th>Batch</th><th>Customer</th><th>Scan-out Boxes</th><th>Recorded</th><th>Uncovered</th><th>Earliest Scan-out</th><th>Age</th>
+          <th>Batch</th><th>Customer</th><th>Colour</th><th>PC Code</th><th>Size</th><th>Scan-out Boxes</th><th>Recorded</th><th>Uncovered</th><th>Earliest Scan-out</th><th>Age</th>
           ${canAck ? '<th>Action</th>' : ''}
         </tr></thead>
         <tbody>
           ${filtered.length === 0
-            ? `<tr><td colspan="${canAck?8:7}" class="text-center text-muted" style="padding:30px">No pending Flow B alerts ✓</td></tr>`
+            ? `<tr><td colspan="${canAck?11:10}" class="text-center text-muted" style="padding:30px">No pending Flow B alerts ✓</td></tr>`
             : filtered.map(a => {
               const b = getBatch(a.batch_number);
               const localScanOut = state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
@@ -9912,6 +9991,9 @@ function _renderReportJContent(alerts) {
               return `<tr>
                 <td class="td-bold td-mono">${a.batch_number||'—'}</td>
                 <td class="text-sm">${b?.customer||'—'}</td>
+                <td class="text-sm">${b?.colour||'—'}</td>
+                <td class="td-mono text-sm">${b?.pcCode||'—'}</td>
+                <td class="text-sm">${b?.size||'—'}</td>
                 <td class="td-mono">${scanOutBoxes}</td>
                 <td class="td-mono">${recordedBoxes}</td>
                 <td class="td-mono fw-bold ${uncovered>0?'amber':''}">${uncovered}</td>
@@ -9933,7 +10015,7 @@ function _renderReportJContent(alerts) {
             _o+=so; _r+=rec; _u+=Math.max(0,so-rec);
           });
           return `<tfoot><tr style="background:var(--surface2);font-weight:800">
-            <td colspan="2" class="text-right" style="padding-right:8px">TOTAL (${filtered.length})</td>
+            <td colspan="5" class="text-right" style="padding-right:8px">TOTAL (${filtered.length})</td>
             <td class="td-mono">${_o}</td><td class="td-mono">${_r}</td>
             <td class="td-mono ${_u>0?'amber':''}">${_u}</td>
             <td></td><td></td>${canAck?'<td></td>':''}
@@ -10017,6 +10099,9 @@ function exportReportJ() {
       return {
         'Batch': a.batch_number||'',
         'Customer': b?.customer||'',
+        'Colour': b?.colour||'',
+        'PC Code': b?.pcCode||'',
+        'Size': b?.size||'',
         'Zone': isExport ? 'Export' : 'Domestic',
         'Threshold': isExport ? '15 days' : '7 days',
         'Label ID': a.label_id||'',
@@ -10032,6 +10117,9 @@ function exportReportJ() {
       return {
         'Batch': a.batch_number||'',
         'Customer': b?.customer||'',
+        'Colour': b?.colour||'',
+        'PC Code': b?.pcCode||'',
+        'Size': b?.size||'',
         'Scan-out Boxes': scanOutBoxes,
         'Recorded Boxes': recordedBoxes,
         'Uncovered Boxes': Math.max(0, scanOutBoxes - recordedBoxes),

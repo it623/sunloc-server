@@ -460,7 +460,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZB</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZC</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -3165,31 +3165,46 @@ async function renderAnalytics(){
   // Build aggregated stats across all dates in range
   const mcs = getActiveMachines(fl);
   const mcStats = {};
-  mcs.forEach(mc => { mcStats[mc.id] = {prod:0, tgt:0, dt:0, resort:0}; });
-
+  mcs.forEach(mc => { mcStats[mc.id] = {prod:0, tgt:0, dt:0, resort:0, batches:0, dtCats:{}}; });
+  DT_CATS.forEach(c=>mcs.forEach(mc=>mcStats[mc.id].dtCats[c]=0));
+  // v41ZC #1: range-wide aggregates the CHARTS read from (previously charts used single-day `day`,
+  // so range buttons changed nothing). aggResort: reason→qty across range; aggResortByMc: mcId→qty.
+  const aggResort = {};
+  const aggResortByMc = {};
   dates.forEach(date => {
-    const day = loadDay(fl, date);
+    const dDay = loadDay(fl, date);
     mcs.forEach(mc => {
       SHIFTS.forEach(sh => {
-        const m = migrateMachineData(day.shifts[sh].machines[mc.id] || blankMachine());
+        const m = migrateMachineData(dDay.shifts[sh].machines[mc.id] || blankMachine());
         mcStats[mc.id].prod += mcTotalProd(m);
         mcStats[mc.id].tgt  += tgt(fl, mc.id);
         mcStats[mc.id].dt   += (m.dtEntries||[]).reduce((s,e)=>s+(e.mins||0),0);
         mcStats[mc.id].resort += parseFloat(m.resort||0);
+        mcStats[mc.id].batches += m.runs.filter(r=>r.qty||r.batchNumber).length;
+        DT_CATS.forEach(c=>mcStats[mc.id].dtCats[c] += parseFloat(m[c]||0));
       });
     });
+    (dDay.resort||[]).forEach(r=>{
+      aggResort[r.reason]=(aggResort[r.reason]||0)+parseFloat(r.qty||0);
+      if(r.mc) aggResortByMc[r.mc]=(aggResortByMc[r.mc]||0)+parseFloat(r.qty||0);
+    });
   });
+  const isRange = rangeMode !== 'today';
 
-  const day = loadDay(fl, d); // for single-date charts fall back
+  const day = loadDay(fl, d); // single-date data (used for 'today' mode)
+
+  // v41ZC #1: per-machine production for the active scope. In 'today' mode = selected date `d`;
+  // in any range mode = the range aggregate from mcStats. This is what every chart/table below
+  // now reads, so the RANGE buttons actually change the displayed data.
+  const mcProd = mc => {
+    if (isRange) return mcStats[mc.id].prod;
+    let p=0; SHIFTS.forEach(sh=>{ p+=mcTotalProd(migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine())); });
+    return p;
+  };
+  const mcTargetScope = mc => isRange ? mcStats[mc.id].tgt : tgt(fl,mc.id)*3;
 
   // P vs T
-  const pvtData=mcs.map(mc=>{
-    let prod=0;SHIFTS.forEach(sh=>{
-      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
-      prod+=mcTotalProd(m);
-    });
-    return {mc:mc.id.replace('MC',''),prod,tgt:tgt(fl,mc.id)*3};
-  });
+  const pvtData=mcs.map(mc=>({mc:mc.id.replace('MC',''),prod:mcProd(mc),tgt:mcTargetScope(mc)}));
   newChart('ch-pvt',{type:'bar',data:{
     labels:pvtData.map(x=>x.mc),
     datasets:[
@@ -3198,16 +3213,22 @@ async function renderAnalytics(){
     ]
   },options:{...chartOpts(),plugins:{...chartOpts().plugins,legend:{display:true,labels:{color:'#7a8ba8',font:{size:10}}}}}});
 
-  // DT by category — minutes + %
+  // DT by category — minutes + %  (v41ZC #1: range-aware)
   const dtCats={proc:0,mech:0,elec:0,gpr:0,hvac:0,dw:0};
   const DT_MAX_MINS = 1440; // 24h * 60min per dept per day
-  mcs.forEach(mc=>SHIFTS.forEach(sh=>{
-    const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
-    DT_CATS.forEach(c=>dtCats[c]+=parseFloat(m[c]||0));
-  }));
+  if (isRange) {
+    mcs.forEach(mc=>DT_CATS.forEach(c=>dtCats[c]+=mcStats[mc.id].dtCats[c]||0));
+  } else {
+    mcs.forEach(mc=>SHIFTS.forEach(sh=>{
+      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+      DT_CATS.forEach(c=>dtCats[c]+=parseFloat(m[c]||0));
+    }));
+  }
+  // For range mode the DT% denominator scales by number of days in range.
+  const dtDayCount = isRange ? Math.max(1, dates.length) : 1;
   const dtTotal = Object.values(dtCats).reduce((a,b)=>a+b,0);
   const dtPcts = {};
-  DT_CATS.forEach(c=>dtPcts[c]=Math.min(100,(dtCats[c]/DT_MAX_MINS*100)));
+  DT_CATS.forEach(c=>dtPcts[c]=Math.min(100,(dtCats[c]/(DT_MAX_MINS*dtDayCount)*100)));
   // Donut: minutes breakdown — show zero-state if no DT recorded
   if(dtTotal === 0){
     newChart('ch-dt',{type:'doughnut',data:{
@@ -3230,18 +3251,15 @@ async function renderAnalytics(){
       borderRadius:4,
     }]
   },options:{...chartOpts(),plugins:{...chartOpts().plugins,
-    tooltip:{callbacks:{label:ctx=>`${ctx.parsed.y}% (${dtCats[DT_CATS[ctx.dataIndex]]} min / ${DT_MAX_MINS} min)`}}},
+    tooltip:{callbacks:{label:ctx=>`${ctx.parsed.y}% (${dtCats[DT_CATS[ctx.dataIndex]]} min / ${DT_MAX_MINS*dtDayCount} min)`}}},
     scales:{y:{min:0,max:Math.max(20,Math.ceil(Math.max(...DT_CATS.map(c=>dtPcts[c]))/5)*5),
       ticks:{color:'#7a8ba8',callback:v=>v+'%'},grid:{color:'rgba(255,255,255,0.04)'}},
       x:{ticks:{color:'#7a8ba8'},grid:{display:false}}}}});
 
   // Efficiency
   const effData=mcs.map(mc=>{
-    let prod=0;SHIFTS.forEach(sh=>{
-      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
-      prod+=mcTotalProd(m);
-    });
-    const t=tgt(fl,mc.id)*3;
+    const prod=mcProd(mc);
+    const t=mcTargetScope(mc);
     return {mc:mc.id.replace('MC',''),eff:t>0?Math.min(120,prod/t*100):0};
   });
   newChart('ch-eff',{type:'bar',data:{
@@ -3249,9 +3267,8 @@ async function renderAnalytics(){
     datasets:[{label:'Efficiency %',data:effData.map(x=>x.eff),backgroundColor:effData.map(x=>x.eff>=90?'rgba(0,230,118,.6)':x.eff>=75?'rgba(255,171,0,.6)':'rgba(255,64,96,.6)'),borderRadius:3}]
   },options:{...chartOpts(),plugins:{...chartOpts().plugins,legend:{display:false}},scales:{...chartOpts().scales,y:{...chartOpts().scales?.y,max:120,ticks:{callback:v=>v+'%',color:'#7a8ba8',font:{size:9}}}}}});
 
-  // Re-sort pareto
-  const rsMap={};
-  (day.resort||[]).forEach(r=>rsMap[r.reason]=(rsMap[r.reason]||0)+parseFloat(r.qty||0));
+  // Re-sort pareto  (v41ZC #1: range-aware)
+  const rsMap = isRange ? aggResort : (()=>{ const m={}; (day.resort||[]).forEach(r=>m[r.reason]=(m[r.reason]||0)+parseFloat(r.qty||0)); return m; })();
   const rsKeys=Object.keys(rsMap).sort((a,b)=>rsMap[b]-rsMap[a]);
   newChart('ch-rs',{type:'bar',data:{
     labels:rsKeys.length?rsKeys:['No re-sort'],
@@ -3261,35 +3278,45 @@ async function renderAnalytics(){
   // Machine summary table
   let html=`<div class="tbl-mobile-wrap"><table class="data-table"><thead><tr><th>Machine</th><th>Size</th><th>Batches Run</th><th>Target</th><th>Produced</th><th>Efficiency</th><th>DT (min)</th><th>Re-Sort</th></tr></thead><tbody>`;
   mcs.forEach(mc=>{
-    let prod=0,dt=0,batchCount=0;
-    SHIFTS.forEach(sh=>{
-      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
-      prod+=mcTotalProd(m);
-      batchCount+=m.runs.filter(r=>r.qty||r.batchNumber).length;
-      DT_CATS.forEach(c=>dt+=parseFloat(m[c]||0));
-    });
-    const t=tgt(fl,mc.id)*3;
+    let prod, dt, batchCount;
+    if (isRange) {
+      prod = mcStats[mc.id].prod; dt = mcStats[mc.id].dt; batchCount = mcStats[mc.id].batches;
+    } else {
+      prod=0; dt=0; batchCount=0;
+      SHIFTS.forEach(sh=>{
+        const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+        prod+=mcTotalProd(m);
+        batchCount+=m.runs.filter(r=>r.qty||r.batchNumber).length;
+        DT_CATS.forEach(c=>dt+=parseFloat(m[c]||0));
+      });
+    }
+    const t=mcTargetScope(mc);
     const eff=t>0?(prod/t*100):0;
-    const rs=(day.resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
+    const rs=isRange ? (aggResortByMc[mc.id]||0) : (day.resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
     const effCls=eff>=90?'g':eff>=75?'a':'r';
     html+=`<tr><td class="mono">${mc.id}</td><td style="color:var(--t3)">${mc.sz}</td>
-      <td style="color:var(--t2)">${batchCount>1?`<span class="pill a">${batchCount} runs</span>`:'<span style="color:var(--t3)">1</span>'}</td>
-      <td class="mono">${t}</td><td class="mono">${prod>0?prod.toFixed(2):'—'}</td>
+      <td style="color:var(--t2)">${batchCount>1?`<span class="pill a">${batchCount} runs</span>`:'<span style="color:var(--t3)">'+(batchCount||0)+'</span>'}</td>
+      <td class="mono">${t.toFixed?t.toFixed(2):t}</td><td class="mono">${prod>0?prod.toFixed(2):'—'}</td>
       <td><span class="pill ${effCls}">${prod>0?eff.toFixed(1)+'%':'—'}</span></td>
       <td class="mono">${dt||'—'}</td><td class="mono">${rs>0?`<span style="color:var(--red)">${parseFloat(rs).toFixed(2)}</span>`:'—'}</td></tr>`;
   });
   // Totals row
   let totProd=0,totDT=0,totBatches=0,totTarget=0,totRs=0;
   mcs.forEach(mc=>{
-    let prod=0,dt=0,batchCount=0;
-    SHIFTS.forEach(sh=>{
-      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
-      prod+=mcTotalProd(m);
-      batchCount+=m.runs.filter(r=>r.qty||r.batchNumber).length;
-      DT_CATS.forEach(cat=>dt+=parseFloat(m[cat]||0));
-    });
-    const t=tgt(fl,mc.id)*3;
-    const rs=(day.resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
+    let prod, dt, batchCount;
+    if (isRange) {
+      prod = mcStats[mc.id].prod; dt = mcStats[mc.id].dt; batchCount = mcStats[mc.id].batches;
+    } else {
+      prod=0; dt=0; batchCount=0;
+      SHIFTS.forEach(sh=>{
+        const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+        prod+=mcTotalProd(m);
+        batchCount+=m.runs.filter(r=>r.qty||r.batchNumber).length;
+        DT_CATS.forEach(cat=>dt+=parseFloat(m[cat]||0));
+      });
+    }
+    const t=mcTargetScope(mc);
+    const rs=isRange ? (aggResortByMc[mc.id]||0) : (day.resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
     totProd+=prod; totDT+=dt; totBatches+=batchCount; totTarget+=t; totRs+=rs;
   });
   const totEff=totTarget>0?(totProd/totTarget*100):0;
@@ -3650,85 +3677,98 @@ async function renderPerf(){
   const dates = getDprDateRange(fl, rangeMode);
   const day = loadDay(fl, d);
 
-  // Scorecard for selected date
-  const isToday = (d === today());
+  // v41ZC #2.1: Shift Incharge scorecard now respects the RANGE selector. For 'today' it shows
+  // the selected date; for any range it aggregates production/DT across every date in range.
+  const scoreDates = (rangeMode === 'today') ? [d] : dates;
+  const rangeLabelSC = (rangeMode === 'today')
+    ? `Date: <b style="color:var(--t1)">${d}</b>`
+    : `Range: <b style="color:var(--t1)">${scoreDates[0]||d} → ${scoreDates[scoreDates.length-1]||d}</b> (${scoreDates.length} day${scoreDates.length!==1?'s':''})`;
+  const isToday = (rangeMode === 'today' && d === today());
   const unsavedNote = (isToday && unsaved)
     ? `<div style="background:rgba(255,171,0,0.12);border:1.5px solid var(--amber);border-radius:4px;padding:6px 10px;margin-bottom:10px;font-size:11px;color:var(--amber);font-weight:700">⚠️ Unsaved changes detected — Save data first (Save button) so DT and production figures reflect your latest entries.</div>`
     : '';
-  let html=`${unsavedNote}<div class="text-sm" style="color:var(--t3);margin-bottom:10px">Date: <b style="color:var(--t1)">${d}</b> &nbsp;|&nbsp; Floor: <b style="color:var(--cyan)">${FLOORS[fl]?.label||fl}</b></div>`;
+  let html=`${unsavedNote}<div class="text-sm" style="color:var(--t3);margin-bottom:10px">${rangeLabelSC} &nbsp;|&nbsp; Floor: <b style="color:var(--cyan)">${FLOORS[fl]?.label||fl}</b></div>`;
   html+=`<div class="tbl-mobile-wrap"><table class="data-table"><thead><tr><th>Shift</th><th>Incharge</th><th>Production</th><th>Efficiency</th><th>DT%</th><th>Score</th></tr></thead><tbody>`;
   SHIFTS.forEach(sh=>{
-    const sd=day.shifts[sh];
-    let prod=0,t=0;
+    let prod=0,t=0,dtTotal=0,dtBase=0;
+    const inchargeNames = new Set();
     const mcs=getActiveMachines(fl);
-    mcs.forEach(mc=>{
-      const m=migrateMachineData(sd.machines[mc.id]||blankMachine());
-      prod+=mcTotalProd(m);
-      t+=tgt(fl,mc.id);
+    scoreDates.forEach(sdDate=>{
+      const dayN = loadDay(fl, sdDate);
+      const sd = dayN.shifts[sh];
+      if (sd?.incharge) inchargeNames.add(sd.incharge.trim());
+      mcs.forEach(mc=>{
+        const m=migrateMachineData(sd.machines[mc.id]||blankMachine());
+        prod+=mcTotalProd(m);
+        t+=tgt(fl,mc.id);
+      });
+      const dtd=calcShiftDT(fl,sdDate,sh);
+      dtTotal += dtd.total; dtBase += (dtd.total>0 ? dtd.total/(dtd.dtPct/100) : 0);
     });
     prod = parseFloat(prod.toFixed(2));
-    const dt=calcShiftDT(fl,d,sh);
+    const dtPct = dtBase>0 ? (dtTotal/dtBase*100) : 0;
     const eff=t>0?(prod/t*100):0;
-    const score=Math.max(0,Math.min(100,(eff*0.6)+(100-dt.dtPct)*0.3+(sd.incharge?10:0))).toFixed(0);
+    const inchargeDisp = inchargeNames.size ? [...inchargeNames].join(', ') : '';
+    const score=Math.max(0,Math.min(100,(eff*0.6)+(100-dtPct)*0.3+(inchargeDisp?10:0))).toFixed(0);
     const sc=parseInt(score);
     const scCls=sc>=80?'g':sc>=60?'a':'r';
     html+=`<tr><td style="color:var(--cyan);font-family:var(--fc);font-weight:700">Shift ${sh}</td>
-      <td>${sd.incharge||'<span style="color:var(--t3)">—</span>'}</td>
+      <td>${inchargeDisp||'<span style="color:var(--t3)">—</span>'}</td>
       <td class="mono">${prod||'—'}</td>
       <td><span class="pill ${eff>=90?'g':eff>=75?'a':'r'}">${prod>0?eff.toFixed(1)+'%':'—'}</span></td>
-      <td><span class="pill ${dt.dtPct<=5?'g':dt.dtPct<=10?'a':'r'}">${dt.total>0?dt.dtPct.toFixed(1)+'%':'—'}</span></td>
+      <td><span class="pill ${dtPct<=5?'g':dtPct<=10?'a':'r'}">${dtTotal>0?dtPct.toFixed(1)+'%':'—'}</span></td>
       <td><span class="pill ${scCls}">${prod>0?score:'—'}</span></td>
     </tr>`;
   });
   html+=`</tbody></table></div>`;
   document.getElementById('perfTable').innerHTML=html;
 
-  // Operator-wise performance — use selected range
-  const rangeVal = document.getElementById('perfOpRange')?.value || 'ALL';
+  // Operator-wise performance — v41ZC #2.2: driven by the SAME range bar (the old perfOpRange
+  // dropdown didn't exist in the DOM, so it always defaulted to ALL regardless of the range).
+  const opDates = (rangeMode === 'today') ? [d] : dates;
   const operatorStats = {};
-  const allKeys = Object.keys(localStorage).filter(k=>k.startsWith('dpr3_'));
-  const cutoffDate = rangeVal === 'ALL' ? '0000-00-00' : (() => {
-    const c = new Date(); c.setDate(c.getDate() - parseInt(rangeVal));
-    return _localYMD(c); // v41k local
-  })();
-
-  allKeys.forEach(k=>{
-    const parts=k.split('_');
-    const dayFl=parts[1], dayDate=parts[2];
-    if(dayFl!==fl) return;
-    if(dayDate < cutoffDate) return;
-    const dy=loadDay(dayFl,dayDate);
+  // Canonical display name per normalized key (first-seen casing wins) so case/spacing variants
+  // of the same operator aggregate into ONE row instead of many duplicates.
+  const _opCanon = {};
+  const _opKey = s => (s||'').trim().toUpperCase().replace(/\s+/g,' ');
+  opDates.forEach(opDate=>{
+    const dy=loadDay(fl,opDate);
     SHIFTS.forEach(sh=>{
       const sd2=dy.shifts[sh];
       getActiveMachines(fl).forEach(mc=>{
         const m=migrateMachineData(sd2.machines[mc.id]||blankMachine());
-        // Operators field — can be single string or array
         const ops = (m.operators||[m.operator]).filter(Boolean).map(o=>o.trim()).filter(Boolean);
-        ops.forEach(op=>{
+        ops.forEach(opRaw=>{
+          const key=_opKey(opRaw);
+          if(!key) return;
+          if(!_opCanon[key]) _opCanon[key]=opRaw.trim();
           const prod=mcTotalProd(m);
           const t2=tgt(fl,mc.id);
-          if(!operatorStats[op]) operatorStats[op]={prod:0,target:0,shifts:0,resort:0};
-          operatorStats[op].prod = parseFloat((operatorStats[op].prod + prod).toFixed(2));
-          operatorStats[op].target += t2;
-          operatorStats[op].shifts += prod>0?1:0;
+          if(!operatorStats[key]) operatorStats[key]={prod:0,target:0,shifts:0,resort:0};
+          operatorStats[key].prod = parseFloat((operatorStats[key].prod + prod).toFixed(2));
+          operatorStats[key].target += t2;
+          operatorStats[key].shifts += prod>0?1:0;
         });
       });
     });
     (dy.resort||[]).forEach(r=>{
-      const op=(r.operator||'').trim();
-      if(op && operatorStats[op]) operatorStats[op].resort = parseFloat((operatorStats[op].resort + parseFloat(r.qty||0)).toFixed(2));
+      const key=_opKey(r.operator);
+      if(key && operatorStats[key]) operatorStats[key].resort = parseFloat((operatorStats[key].resort + parseFloat(r.qty||0)).toFixed(2));
     });
   });
 
   const ops=Object.entries(operatorStats).sort((a,b)=>b[1].prod-a[1].prod);
   let opHtml='';
-  const rangeLabel = rangeVal==='ALL' ? 'All Time (Cumulative)' : `Last ${rangeVal} days`;
+  const rangeLabel = (rangeMode === 'today')
+    ? `Date: ${d}`
+    : `${(opDates[0]||d)} → ${(opDates[opDates.length-1]||d)} (${opDates.length} day${opDates.length!==1?'s':''})`;
   if(ops.length>0){
     opHtml=`<div style="font-size:11px;color:var(--t3);margin-bottom:8px">${rangeLabel} · ${ops.length} operators · Floor: ${FLOORS[fl]?.label||fl}</div>`;
     opHtml+=`<div style="overflow-x:auto"><div class="tbl-mobile-wrap"><table class="data-table"><thead><tr>
       <th>Operator</th><th>Total Prod (L)</th><th>Shifts Active</th><th>Avg Efficiency</th><th>Re-Sort</th><th>Performance</th>
     </tr></thead><tbody>`;
-    ops.forEach(([name,s])=>{
+    ops.forEach(([key,s])=>{
+      const name = _opCanon[key] || key;
       const eff=s.target>0?(s.prod/s.target*100):0;
       const cls=eff>=90?'g':eff>=75?'a':'r';
       opHtml+=`<tr>
@@ -3852,7 +3892,24 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
   totals.vsTarget = parseFloat((totals.dayTotal - totals.dailyTgt).toFixed(2));
   totals.cumAvg   = totals.cumDays > 0 ? parseFloat((totals.cumTotal / totals.cumDays).toFixed(2)) : 0;
 
-  return { rows, totals };
+  // v41ZC #3: per-floor subtotals (floor-wise production summed, shown before the grand total).
+  const floorTotals = {};
+  Object.keys(FLOORS).forEach(fl => {
+    const fRows = rows.filter(r => r.floor === fl);
+    if (!fRows.length) return;
+    const ft = fRows.reduce((acc,r)=>{
+      acc.dailyTgt+=r.dailyTgt; acc.dayA+=r.dayA; acc.dayB+=r.dayB; acc.dayC+=r.dayC;
+      acc.dayTotal+=r.dayTotal; acc.cumTotal+=r.cumTotal; acc.cumDays=Math.max(acc.cumDays,r.cumDays);
+      return acc;
+    }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0,cumDays:0});
+    ['dailyTgt','dayA','dayB','dayC','dayTotal','cumTotal'].forEach(k=>ft[k]=parseFloat(ft[k].toFixed(2)));
+    ft.vsTarget = parseFloat((ft.dayTotal - ft.dailyTgt).toFixed(2));
+    ft.cumAvg   = ft.cumDays>0 ? parseFloat((ft.cumTotal/ft.cumDays).toFixed(2)) : 0;
+    ft.label    = FLOORS[fl]?.label || fl;
+    floorTotals[fl] = ft;
+  });
+
+  return { rows, totals, floorTotals };
 }
 
 // Legacy helper kept for Trends/History which still use localStorage only
@@ -3923,7 +3980,7 @@ async function renderPlantReport(){
   });
 
   // ── Step 4: Build rows and render ──
-  const { rows, totals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
+  const { rows, totals, floorTotals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
 
   const allDates = [...new Set(Object.values(allDatesMap).flat())].filter(d => d <= selectedDate).sort();
   const cumLabel = allDates.length > 0
@@ -3939,7 +3996,27 @@ async function renderPlantReport(){
                    : n>0   ? `<span style="color:var(--green);font-weight:800">+${fmt2(n)}</span>`
                    :         `<span style="color:var(--red);font-weight:800">${fmt2(n)}</span>`;
 
-  const rowsHtml = rows.map(r=>`
+  // v41ZC #3: render machine rows grouped by floor, with a FLOOR SUBTOTAL row after each floor.
+  const floorSubtotalRow = (ft) => `
+    <tr style="background:#16302a">
+      <td colspan="3" style="font-family:var(--fc);font-weight:800;font-size:10px;letter-spacing:.6px;color:#9fd9c0">▸ ${ft.label.split(' ')[0].toUpperCase()} FLOOR TOTAL</td>
+      <td class="r" style="font-family:var(--mono);font-weight:800;color:#9fd9c0">${fmt2(ft.dailyTgt)}</td>
+      <td class="r" style="font-family:var(--mono);font-weight:800;color:#e8f5ee">${ft.dayA>0?fmt2(ft.dayA):'—'}</td>
+      <td class="r" style="font-family:var(--mono);font-weight:800;color:#e8f5ee">${ft.dayB>0?fmt2(ft.dayB):'—'}</td>
+      <td class="r" style="font-family:var(--mono);font-weight:800;color:#e8f5ee">${ft.dayC>0?fmt2(ft.dayC):'—'}</td>
+      <td class="r" style="font-family:var(--fc);font-weight:800;font-size:12px;color:#9fd9c0">${ft.dayTotal>0?fmt2(ft.dayTotal):'—'}</td>
+      <td class="r" style="font-family:var(--mono);font-weight:800;color:${ft.vsTarget>=0?'#6ee7b7':'#fca5a5'}">${ft.dayTotal>0?(ft.vsTarget>=0?'+':'')+fmt2(ft.vsTarget):'—'}</td>
+      <td class="r" style="font-family:var(--mono);font-weight:800;color:#9fd9c0">${ft.cumTotal>0?fmt2(ft.cumTotal):'—'}</td>
+      <td class="r" style="font-family:var(--mono);font-weight:800;color:#9fd9c0">${ft.cumDays>0?ft.cumDays:'—'}</td>
+      <td class="r" style="font-family:var(--mono);font-weight:800;color:#9fd9c0">${ft.cumAvg>0?fmt2(ft.cumAvg):'—'}</td>
+    </tr>`;
+  let rowsHtml = '';
+  let _prevFloor = null;
+  rows.forEach((r, idx) => {
+    if (_prevFloor !== null && r.floor !== _prevFloor && floorTotals[_prevFloor]) {
+      rowsHtml += floorSubtotalRow(floorTotals[_prevFloor]);
+    }
+    rowsHtml += `
     <tr>
       <td style="font-family:var(--fc);font-weight:800;color:var(--cyan)">${r.id}</td>
       <td style="font-family:var(--mono);font-size:10px;color:var(--t3);font-weight:700">${r.sz}</td>
@@ -3953,7 +4030,11 @@ async function renderPlantReport(){
       <td class="r" style="font-family:var(--mono);font-weight:700;color:var(--cyan)">${r.cumTotal>0?fmt2(r.cumTotal):'—'}</td>
       <td class="r" style="font-family:var(--mono);color:var(--t3)">${r.cumDays>0?r.cumDays:'—'}</td>
       <td class="r" style="font-family:var(--mono);font-weight:700;color:var(--purple)">${r.cumAvg>0?fmt2(r.cumAvg):'—'}</td>
-    </tr>`).join('');
+    </tr>`;
+    _prevFloor = r.floor;
+  });
+  // subtotal for the final floor
+  if (_prevFloor !== null && floorTotals[_prevFloor]) rowsHtml += floorSubtotalRow(floorTotals[_prevFloor]);
 
   const totRow = `
     <tr style="background:#1a3a2e">
@@ -4037,23 +4118,37 @@ async function exportPlantReport(){
     allDatesMap[fl] = [...new Set(Object.keys(localStorage).filter(k=>k.startsWith(`dpr3_${fl}_`)).map(k=>k.split('_')[2]).filter(d=>d&&d<=selectedDate))].sort();
   });
 
-  const { rows, totals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
+  const { rows, totals, floorTotals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
   const fmt2 = n => parseFloat((+n).toFixed(2));
 
-  const data = rows.map(r=>({
-    'Machine':      r.id,
-    'Size':         r.sz,
-    'Floor':        r.flLabel,
-    'Daily Target': fmt2(r.dailyTgt),
-    'A-Shift':      fmt2(r.dayA),
-    'B-Shift':      fmt2(r.dayB),
-    'C-Shift':      fmt2(r.dayC),
-    'Day Total':    fmt2(r.dayTotal),
-    'Vs Target':    fmt2(r.vsTarget),
-    'Cum Total':    fmt2(r.cumTotal),
-    'Days Counted': r.cumDays,
-    'Daily Avg':    fmt2(r.cumAvg),
-  }));
+  // v41ZC #3: build with FLOOR TOTAL subtotal rows after each floor's machines, then PLANT TOTAL.
+  const data = [];
+  let _pf = null;
+  const floorTotRow = (ft) => ({
+    'Machine': (ft.label.split(' ')[0].toUpperCase()+' FLOOR TOTAL'), 'Size':'', 'Floor': ft.label,
+    'Daily Target': fmt2(ft.dailyTgt), 'A-Shift': fmt2(ft.dayA), 'B-Shift': fmt2(ft.dayB),
+    'C-Shift': fmt2(ft.dayC), 'Day Total': fmt2(ft.dayTotal), 'Vs Target': fmt2(ft.vsTarget),
+    'Cum Total': fmt2(ft.cumTotal), 'Days Counted': ft.cumDays, 'Daily Avg': fmt2(ft.cumAvg),
+  });
+  rows.forEach(r => {
+    if (_pf !== null && r.floor !== _pf && floorTotals[_pf]) data.push(floorTotRow(floorTotals[_pf]));
+    data.push({
+      'Machine':      r.id,
+      'Size':         r.sz,
+      'Floor':        r.flLabel,
+      'Daily Target': fmt2(r.dailyTgt),
+      'A-Shift':      fmt2(r.dayA),
+      'B-Shift':      fmt2(r.dayB),
+      'C-Shift':      fmt2(r.dayC),
+      'Day Total':    fmt2(r.dayTotal),
+      'Vs Target':    fmt2(r.vsTarget),
+      'Cum Total':    fmt2(r.cumTotal),
+      'Days Counted': r.cumDays,
+      'Daily Avg':    fmt2(r.cumAvg),
+    });
+    _pf = r.floor;
+  });
+  if (_pf !== null && floorTotals[_pf]) data.push(floorTotRow(floorTotals[_pf]));
 
   // Totals row
   data.push({

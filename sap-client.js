@@ -495,38 +495,41 @@ class SapClient {
     // So we manually paginate using $skip=0, $skip=20, $skip=40... until empty page
     const filter = `$filter=DocumentStatus eq 'bost_Open'`;
     const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,DocCurrency,DocumentLines`;
+    // v41ZC issue 1: SINGLE, unambiguous pagination strategy. The previous loop mixed manual $skip
+    // with @odata.nextLink — when a nextLink was present it fetched that page inline AND advanced
+    // skip past it, double-skipping (or dropping) a page and losing orders. SAP B1 Service Layer
+    // pages by $skip with a server-set page size (commonly 20). We page purely by $skip, derive the
+    // page size from the first page, and stop only on a short or empty page. nextLink is followed
+    // ONLY when SAP omits a full page yet provides one (defensive), without also bumping skip.
     let indents = [];
     let skip = 0;
+    let pageSize = 0;            // learned from the first page
     let pageGuard = 0;
-    while (pageGuard < 100) {
+    const seen = new Set();      // guard against any duplicate DocEntry across pages
+    while (pageGuard < 500) {
       pageGuard++;
       const query = `${filter}&${select}&$skip=${skip}`;
       const r = await this.call({ method: 'GET', path: 'Orders', query });
       if (!r.ok) {
         if (skip === 0) return { ok: false, error: r.error, degraded: r.degraded };
-        console.warn('[SAP fetch] page failed at skip=' + skip + ', returning partial:', r.error);
+        console.warn('[SAP fetch] page failed at skip=' + skip + ', returning partial set of ' + indents.length + ':', r.error);
         break;
       }
       const page = r.data?.value || [];
-      if (page.length === 0) break; // no more results
-      indents = indents.concat(page);
-      console.log('[SAP fetch] skip=' + skip + ' got ' + page.length + ' orders, total so far: ' + indents.length);
-      // Also follow nextLink if SAP provides it
-      let nextLink = r.data?.['@odata.nextLink'];
-      if (nextLink) {
-        let nlPath = nextLink;
-        const m = /\/b1s\/v1\/(.*)$/.exec(nextLink);
-        if (m) nlPath = m[1];
-        const nr = await this.call({ method: 'GET', path: nlPath });
-        if (nr.ok) {
-          indents = indents.concat(nr.data?.value || []);
-          skip += (page.length + (nr.data?.value?.length || 0));
-        } else { break; }
-      } else {
-        if (page.length < 20) break; // last page
-        skip += page.length;
+      if (page.length === 0) break;
+      if (pageSize === 0) pageSize = page.length; // first page defines the server page size
+      let added = 0;
+      for (const o of page) {
+        if (o && o.DocEntry != null && seen.has(o.DocEntry)) continue;
+        if (o && o.DocEntry != null) seen.add(o.DocEntry);
+        indents.push(o); added++;
       }
+      console.log('[SAP fetch] skip=' + skip + ' got ' + page.length + ' (new ' + added + '), total ' + indents.length);
+      // Stop when SAP returned fewer than a full page → last page reached.
+      if (page.length < pageSize) break;
+      skip += page.length;
     }
+    console.log('[SAP fetch] DONE — ' + indents.length + ' open Sales Orders across ' + pageGuard + ' page(s)');
     return { ok: true, indents };
   }
 
