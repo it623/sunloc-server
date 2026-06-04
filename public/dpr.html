@@ -3718,7 +3718,10 @@ async function renderPerf(){
     scoreDates.forEach(sdDate=>{
       const dayN = loadDay(fl, sdDate);
       const sd = dayN.shifts[sh];
-      if (sd?.incharge) inchargeNames.add(sd.incharge.trim());
+      if (sd?.incharge) {
+        const names = Array.isArray(sd.incharge) ? sd.incharge : [sd.incharge];
+        names.forEach(n => { if (n) inchargeNames.add(n.trim()); });
+      }
       mcs.forEach(mc=>{
         const m=migrateMachineData(sd.machines[mc.id]||blankMachine());
         prod+=mcTotalProd(m);
