@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZC</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZD</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZC</p>
+      <p>Tracking Suite v1.0 · build v41ZD</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZC</p>
+      <p>Tracking Suite v1.0 · build v41ZD</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -7243,7 +7243,9 @@ function renderReportH(){ window._activeReport = renderReportH;
 
   // Dropdown options for filters in active tab scope
   const scopeRows = activeTab==='all' ? gapRows : gapRows.filter(r=>r.transKey===activeTab);
-  const allBatchesH   = [...new Set(scopeRows.map(r=>r.batch))].sort();
+  // v41ZD #1: batch dropdown shows only the selected machine's batches
+  const batchScopeH = filterMachine ? scopeRows.filter(r=>_batchBelongsToMachine({batchNumber:r.batch, machineId:r.machineId}, filterMachine)) : scopeRows;
+  const allBatchesH   = [...new Set(batchScopeH.map(r=>r.batch))].sort();
   const allMachinesH  = [...new Set(scopeRows.map(r=>r.machineId).filter(m=>m&&m!=='-'))].sort();
   const allPcCodesH   = [...new Set(scopeRows.map(r=>r.pcCode).filter(p=>p&&p!=='-'))].sort();
   const allColoursH   = [...new Set(scopeRows.map(r=>r.colour).filter(c=>c&&c!=='-'))].sort();
@@ -7442,6 +7444,7 @@ function _v41_renderReportGInner(){
   // v37E WIP-fix: Track plant-level WIP using canonical per-batch totalWIP (NOT Gross−Inspected,
   // which only captures pre-AIM WIP and contradicts the per-batch breakdown shown in the same report).
   let plantTotalWIP  = 0;
+  let totalPacked    = 0; // v41ZD #3b: cumulative packed (packing.in) so WIP reconciles visibly
   const alerts = [];
 
   const rows = batches.map(b=>{
@@ -7469,6 +7472,7 @@ function _v41_renderReportGInner(){
     totalSalvage   += ag.salvage || 0;
     totalRemelt    += ag.remelt  || 0;
     if (wip) plantTotalWIP += wip.totalWIP || 0;
+    if (wip) totalPacked += wip.packIn || 0;
 
     // Alert: inspected > gross production (DPR entry is less than scans)
     const overInspected = ag.inspected > 0 && grossProd > 0 && ag.inspected > grossProd;
@@ -7520,6 +7524,7 @@ function _v41_renderReportGInner(){
       <td class="td-mono" style="color:var(--amber)">${ag.salvage>0?fmt(ag.salvage)+'L':'—'}</td>
       <td class="td-mono" style="color:var(--red)">${ag.remelt>0?fmt(ag.remelt)+'L':'—'}</td>
       <td style="min-width:150px">${wipBreakdown}</td>
+      <td class="td-mono" style="color:var(--green)">${wip && wip.packIn>0?fmt(wip.packIn)+'L':'—'}</td>
       <td>
         <span style="font-size:13px;font-weight:700;color:${pctCls}">${ag.inspected>0?fmt(ag.pct,2)+'%':'—'}</span>
         ${aGradeBreakdown}
@@ -7614,9 +7619,9 @@ function _v41_renderReportGInner(){
       <thead><tr>
         <th>Batch</th><th>Customer</th><th>Sz</th><th>Type</th>
         <th>Gross Prod</th><th>Inspected</th><th>A-Grade</th>
-        <th>Salvage</th><th>Remelt</th><th>WIP (Stage-wise)</th><th>A-Grade %</th>
+        <th>Salvage</th><th>Remelt</th><th>WIP (Stage-wise)</th><th>Packed (L)</th><th>A-Grade %</th>
       </tr></thead>
-      <tbody>${rows||'<tr><td colspan="11" class="text-center text-muted">No batch data yet</td></tr>'}</tbody>
+      <tbody>${rows||'<tr><td colspan="12" class="text-center text-muted">No batch data yet</td></tr>'}</tbody>
       <tfoot><tr style="background:var(--surface2);font-weight:700">
         <td colspan="4" style="font-size:11px;letter-spacing:.5px">CUMULATIVE TOTAL</td>
         <td class="td-mono">${fmt(totalGrossProd)}L</td>
@@ -7625,6 +7630,7 @@ function _v41_renderReportGInner(){
         <td class="td-mono amber">${fmt(totalSalvage)}L</td>
         <td class="td-mono red">${fmt(totalRemelt)}L</td>
         <td class="td-mono amber">${fmt(totalWIP)}L WIP</td>
+        <td class="td-mono" style="color:var(--green)">${fmt(totalPacked)}L</td>
         <td><span style="font-size:13px;font-weight:700;color:${cumCls}">${fmt(cumPct,2)}%</span></td>
       </tr></tfoot>
     </table></div>
@@ -7672,6 +7678,7 @@ function exportReportG(){
       'Remelt (L)': fmt(ag.remelt),
       'A-Grade %': ag.inspected>0?fmt(ag.pct,2)+'%':'—',
       'Total WIP (L)': wip ? fmt(wip.totalWIP) : '0',
+      'Packed (L)': wip ? fmt(wip.packIn) : '0',
       'Unsorted WIP (Pre-AIM) (L)': wip ? fmt(wip.preAIM) : '0',
       'AIM WIP (L)': wip ? fmt(wip.aimWIP) : '0',
       'Printing WIP (L)': wip && b.isPrinted ? fmt(wip.printWIP) : 'N/A',
@@ -7733,6 +7740,10 @@ function renderReportZ(){ window._activeReport = renderReportZ;
       wip.piWIP>0.005?`PI ${fmt(wip.piWIP)}L`:'',
       wip.toPackTransit>0.005?`Transit ${fmt(wip.toPackTransit)}L`:'',
     ].filter(Boolean).join(', ') : '';
+    // v41ZD #5: A-Grade qty (same source as Reports D/G) + Packed qty (packing.in)
+    const _agZ = _v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
+    const aGradeQty = _agZ ? _agZ.aGrade : 0;
+    const packedQty = wip ? (wip.packIn || 0) : 0;
     return `<tr>
       <td class="td-bold td-mono">${b.batchNumber}</td>
       <td class="td-mono text-sm">${b.machineId||'—'}</td>
@@ -7741,8 +7752,10 @@ function renderReportZ(){ window._activeReport = renderReportZ;
       <td>${b.isPrinted?'<span class="badge badge-purple">PTD</span>':'<span class="badge badge-gray">UP</span>'}</td>
       <td>${statusBadge}</td>
       <td class="td-mono">${fmt(b.actualProd||b.actualQty||0)}L</td>
+      <td class="td-mono green">${aGradeQty>0.005?fmt(aGradeQty)+'L':'—'}</td>
       <td class="td-mono amber">${totalWIP>0.005?fmt(totalWIP)+'L':'—'}</td>
       <td class="text-sm" style="color:var(--text3)">${wipDetail||'—'}</td>
+      <td class="td-mono green">${packedQty>0.005?fmt(packedQty)+'L':'—'}</td>
       <td class="td-mono green">${packWIP>0.005?fmt(packWIP)+'L':'—'}</td>
       <td>${(totalWIP>0.005)?`<button class="btn btn-sm" style="background:#be123c;color:#fff;font-size:11px" onclick="_v41_openReconcileModal('${b.batchNumber}','${b.isPrinted?'printed':'unprinted'}')">Reconcile WIP</button>`:'—'}</td>
     </tr>`;
@@ -7750,13 +7763,17 @@ function renderReportZ(){ window._activeReport = renderReportZ;
 
   // Totals across the currently shown (filtered) rows
   const sumGross = shown.reduce((s,x)=>s+(x.b.actualProd||x.b.actualQty||0),0);
+  const sumAGrade= shown.reduce((s,x)=>{const a=_v41_agradeFor(x.b.batchNumber,x.b.isPrinted?'printed':'unprinted');return s+(a?a.aGrade:0);},0);
+  const sumPacked= shown.reduce((s,x)=>s+((x.wip&&x.wip.packIn)||0),0);
   const sumWIP   = shown.reduce((s,x)=>s+(x.totalWIP||0),0);
   const sumPack  = shown.reduce((s,x)=>s+(x.packWIP||0),0);
   const totalsRow = shown.length ? `<tfoot><tr style="background:var(--surface2);font-weight:800">
       <td colspan="6" class="text-right" style="padding-right:8px">TOTAL (${shown.length} item${shown.length===1?'':'s'})</td>
       <td class="td-mono">${fmt(sumGross)}L</td>
+      <td class="td-mono green">${fmt(sumAGrade)}L</td>
       <td class="td-mono amber">${fmt(sumWIP)}L</td>
       <td></td>
+      <td class="td-mono green">${fmt(sumPacked)}L</td>
       <td class="td-mono green">${fmt(sumPack)}L</td>
       <td></td>
     </tr></tfoot>` : '';
@@ -7783,9 +7800,9 @@ function renderReportZ(){ window._activeReport = renderReportZ;
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
         <th>Batch</th><th>Machine</th><th>Customer</th><th>Sz</th><th>Type</th><th>Order Status</th>
-        <th>Gross Prod</th><th>Total WIP</th><th>WIP Breakdown</th><th>FG Awaiting Dispatch</th><th>Action</th>
+        <th>Gross Prod</th><th>A-Grade</th><th>Total WIP</th><th>WIP Breakdown</th><th>Packed</th><th>FG Awaiting Dispatch</th><th>Action</th>
       </tr></thead>
-      <tbody>${rows||'<tr><td colspan="11" class="text-center text-muted">'+(items.length?'No items match the current filter':'✅ No open items for '+ym+' — clean slate')+'</td></tr>'}</tbody>
+      <tbody>${rows||'<tr><td colspan="13" class="text-center text-muted">'+(items.length?'No items match the current filter':'✅ No open items for '+ym+' — clean slate')+'</td></tr>'}</tbody>
       ${totalsRow}
     </table></div>
     <div style="font-size:11px;color:var(--text3);margin-top:10px">${items.length} open item${items.length===1?'':'s'} total. FG awaiting dispatch (packed, not yet dispatched) is shown for context but is not WIP — it resolves on dispatch scan.</div>
@@ -7927,12 +7944,14 @@ function renderReportF(){ window._activeReport = renderReportF;
   // Build dropdown options (month-scoped)
   const monthBatchesArr = getTrkMonthBatches();
   const allMachinesF = [...new Set(monthBatchesArr.map(b=>b.machineId).filter(Boolean))].sort();
-  const allBatchesF  = [...new Set([
+  let allBatchesF  = [...new Set([
     ...monthBatchesArr.filter(b=>(b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
     ...(hasScanSummary()
       ? [...monthBatchNos].filter(bn => _ss(bn,'aim').in > 0)
       : state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))
   ])].filter(Boolean).sort();
+  // v41ZD #1: restrict batch dropdown to the selected machine's batches
+  if (filterMachine) allBatchesF = allBatchesF.filter(bn => _batchBelongsToMachine(getBatch(bn) || {batchNumber:bn}, filterMachine));
 
   let exceptions = 0;
   let rows = '';
@@ -8251,7 +8270,9 @@ _scrollIntoReportIfFirstView('C');
 
   const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted);
   const allMachines = [...new Set(monthBatches.map(b=>b.machineId).filter(Boolean))].sort();
-  const allBatchNos = [...new Set(monthBatches.map(b=>b.batchNumber))].sort();
+  // v41ZD #1: batch dropdown shows only batches belonging to the selected machine
+  const batchPoolC = filterMachine ? monthBatches.filter(b=>_batchBelongsToMachine(b, filterMachine)) : monthBatches;
+  const allBatchNos = [...new Set(batchPoolC.map(b=>b.batchNumber))].sort();
   const machineOpts = allMachines.map(m=>`<option value="${m}" ${filterMachine===m?'selected':''}>${m}</option>`).join('');
   const batchOpts   = allBatchNos.map(bn=>{
     const b=getBatch(bn);
@@ -8339,9 +8360,22 @@ function renderReportD(){ window._activeReport = renderReportD;
 }
 function _v41_renderReportDInner(){
   if(!document.getElementById('report-output')) renderReports();
-  const monthBatches = getTrkMonthBatches();
+  const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber);
   const monthBatchNos = new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
-  const totalGross=monthBatches.reduce((s,b)=>s+(b.actualProd||0),0);
+  // v41ZD #2: Gross Production must use the SAME basis as Report G so the two report headers agree.
+  // When the "Month of Production" toggle is ON, Report G uses month-sliced gross (monthGross per
+  // batch); Report D previously always summed full cumulative actualProd, producing a different
+  // Gross (e.g. 1257L vs 963L) for the same fields. Mirror Report G's logic here.
+  const _mgD = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]?.monthGross)
+    ? _v41_agradeMonthCache[_trkSelectedMonth].monthGross : null;
+  const _grossForD = (b) => {
+    let g = b.actualProd || b.actualQty || 0;
+    if (_v41_useMonthAttributed && _mgD) {
+      g = Object.prototype.hasOwnProperty.call(_mgD, b.batchNumber) ? _mgD[b.batchNumber] : 0;
+    }
+    return g;
+  };
+  const totalGross=monthBatches.reduce((s,b)=>s+_grossForD(b),0);
   const stages=['aim','printing','pi','packing','dispatch'];
   const stageWIP={};
   stages.forEach(dept=>{
@@ -8563,6 +8597,30 @@ function renderBatchFlowSummary(batch){
 }
 
 function normMcId(id){ return (id||'').replace(/[.\s]/g,'').toUpperCase(); }
+// v41ZD #1: machine→batch-letter linkage, identical to planning's machineToAlpha.
+// MC1→A … MC26→Z, MC27→ZA … MC30→ZD, MC31→ZE, … MC52→ZZ. Used to filter the report
+// batch dropdowns so selecting a machine only shows that machine's batches (e.g. MC31 → 26ZE###).
+function machineToAlpha(mcId){
+  const num = parseInt(String(mcId).replace(/[^0-9]/g,'')) || 0;
+  if (num >= 1 && num <= 26) return String.fromCharCode(64 + num);
+  if (num >= 27 && num <= 52) return 'Z' + String.fromCharCode(64 + (num - 26));
+  return null; // undefined mapping — caller falls back to machineId match
+}
+// True if a batch belongs to the given machine. Primary signal = batch-number letter prefix
+// (YY + machine letter), which is how batches are named in planning; falls back to the batch's
+// stored machineId when the number doesn't match the expected pattern (legacy/edge batches).
+function _batchBelongsToMachine(batch, machineId){
+  if (!machineId) return true;
+  const bn = (batch?.batchNumber || '').toUpperCase();
+  const alpha = machineToAlpha(machineId);
+  if (alpha) {
+    // batch number is YY + LETTERS + serial, e.g. 26ZE081 → letters "ZE"
+    const m = bn.match(/^\d{2}([A-Z]+)\d+$/);
+    if (m) return m[1] === alpha;
+  }
+  // fallback: direct machineId comparison
+  return normMcId(batch?.machineId) === normMcId(machineId);
+}
 
 function renderReportE(){ window._activeReport = renderReportE;
   // v41 P19.6 (Q1): warm the month-attributed A-Grade cache, then render. If fetch fails,
@@ -8805,11 +8863,25 @@ function _v41_renderReportEInner(){
   const totalAimInsp = sum('aimRunTotal');
   // v37E T2: Print and PI A-Grade % computed from aggregated numerator/denominator
   const totalPrintOut   = sum('printingTD');
-  const totalPrintDenom = sum('printDenom');
   const totalPiOut      = sum('piInspect');
-  const totalPiDenom    = sum('piDenom');
-  const printPctTotal = totalPrintDenom>0 ? (totalPrintOut/totalPrintDenom*100).toFixed(1)+'%' : '—';
-  const piPctTotal    = totalPiDenom>0    ? (totalPiOut/totalPiDenom*100).toFixed(1)+'%'      : '—';
+  // v41ZD #4: the grand-total Print/PI A-Grade % must use the SAME frozen formula as the per-batch
+  // and subtotal rows (post-print/post-PI numerator over AIM-inspected denominator), aggregated
+  // across PTD batches only. The old code used sum('piDenom')/sum('printDenom') which didn't match,
+  // leaving the cumulative PI A-Grade % blank while per-batch values showed.
+  //   Post-Print A-Grade % = (Σ AIMOut − Σ PrintSal − Σ PrintRem) / Σ AIM-Inspected × 100
+  //   Post-PI    A-Grade % = (Σ AIMOut − Σ PrintSal − Σ PrintRem − Σ PISal − Σ PIRem) / Σ AIM-Inspected × 100
+  const _ptdAll          = allFloorRows.filter(r=>r.isPrinted);
+  const _ptdSum = k => _ptdAll.reduce((a,r)=>a+(r['_'+k]||0),0);
+  const _ptdAimInsp      = _ptdSum('aimRunTotal');
+  const _ptdAimOut       = _ptdSum('aimAGrade');
+  const _ptdPrintSal     = _ptdSum('printSalvage');
+  const _ptdPrintRem     = _ptdSum('printRemelt');
+  const _ptdPiSal        = _ptdSum('piSalvage');
+  const _ptdPiRem        = _ptdSum('piRemelt');
+  const _postPrintNum    = _ptdAimOut - _ptdPrintSal - _ptdPrintRem;
+  const _postPiNum       = _ptdAimOut - _ptdPrintSal - _ptdPrintRem - _ptdPiSal - _ptdPiRem;
+  const printPctTotal = _ptdAimInsp>0 ? Math.max(0, _postPrintNum/_ptdAimInsp*100).toFixed(1)+'%' : '—';
+  const piPctTotal    = _ptdAimInsp>0 ? Math.max(0, _postPiNum   /_ptdAimInsp*100).toFixed(1)+'%' : '—';
   const totalsRow = allFloorRows.length ? `<tr id="grand-total-row" style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
     <td colspan="7" style="text-align:right;padding-right:8px;color:#f0c060;letter-spacing:.5px">GRAND TOTAL (${allFloorRows.length} batches)</td>
     <td style="color:#fff">${fmtN(sum('plannedQty'))}</td><td style="color:#fff"><b>${fmtN(totalGross)}</b></td>

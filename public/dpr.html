@@ -460,7 +460,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZC</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZD</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -3115,6 +3115,19 @@ function getDprDateRange(fl, mode) {
   return [...dates].sort();
 }
 
+// v41ZD #2: count of ELAPSED calendar days in a range mode, from the period start through today
+// (inclusive). For "This Month" on 4 June this is 4 (1st–4th); for the 30d/90d/etc. windows it is
+// the window length capped so it never exceeds days since the period start. Used to scale the
+// Analytics target so a partly-elapsed period compares actuals against only the elapsed target.
+function _dprElapsedDayCount(mode) {
+  const t = today();
+  if (mode === 'today') return 1;
+  const from = _dprFromDateForMode(mode);
+  const da = new Date(from + 'T00:00:00'), db = new Date(t + 'T00:00:00');
+  const n = Math.floor((db - da) / 86400000) + 1;
+  return n >= 1 ? n : 1;
+}
+
 function addDaysStr(dateStr, n) {
   const d = new Date(dateStr);
   d.setDate(d.getDate() + n);
@@ -3178,7 +3191,10 @@ async function renderAnalytics(){
         const m = migrateMachineData(dDay.shifts[sh].machines[mc.id] || blankMachine());
         mcStats[mc.id].prod += mcTotalProd(m);
         mcStats[mc.id].tgt  += tgt(fl, mc.id);
-        mcStats[mc.id].dt   += (m.dtEntries||[]).reduce((s,e)=>s+(e.mins||0),0);
+        // v41ZD #4: DT is stored as per-category fields (proc/mech/elec/gpr/hvac/dw), NOT as a
+        // dtEntries[] array — the old `(m.dtEntries||[])` sum was always 0, so the analytics
+        // "DT (min)" column showed blank. Sum the category fields to match the DT donut/% charts.
+        mcStats[mc.id].dt   += DT_CATS.reduce((s,c)=>s+parseFloat(m[c]||0),0);
         mcStats[mc.id].resort += parseFloat(m.resort||0);
         mcStats[mc.id].batches += m.runs.filter(r=>r.qty||r.batchNumber).length;
         DT_CATS.forEach(c=>mcStats[mc.id].dtCats[c] += parseFloat(m[c]||0));
@@ -3190,6 +3206,10 @@ async function renderAnalytics(){
     });
   });
   const isRange = rangeMode !== 'today';
+  // v41ZD #2: elapsed calendar days in the selected range (period start → today). Target is scaled
+  // by this so, e.g., "This Month" on the 4th compares actuals against a 4-day target, and idle
+  // days (no production) still count toward target, correctly pulling efficiency down.
+  const elapsedDays = _dprElapsedDayCount(rangeMode);
 
   const day = loadDay(fl, d); // single-date data (used for 'today' mode)
 
@@ -3201,7 +3221,8 @@ async function renderAnalytics(){
     let p=0; SHIFTS.forEach(sh=>{ p+=mcTotalProd(migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine())); });
     return p;
   };
-  const mcTargetScope = mc => isRange ? mcStats[mc.id].tgt : tgt(fl,mc.id)*3;
+  // v41ZD #2: range target = daily target (tgt × 3 shifts) × elapsed days in range.
+  const mcTargetScope = mc => isRange ? (tgt(fl,mc.id)*3*elapsedDays) : tgt(fl,mc.id)*3;
 
   // P vs T
   const pvtData=mcs.map(mc=>({mc:mc.id.replace('MC',''),prod:mcProd(mc),tgt:mcTargetScope(mc)}));
@@ -3224,8 +3245,8 @@ async function renderAnalytics(){
       DT_CATS.forEach(c=>dtCats[c]+=parseFloat(m[c]||0));
     }));
   }
-  // For range mode the DT% denominator scales by number of days in range.
-  const dtDayCount = isRange ? Math.max(1, dates.length) : 1;
+  // For range mode the DT% denominator scales by elapsed days in range (every calendar day counts).
+  const dtDayCount = isRange ? Math.max(1, elapsedDays) : 1;
   const dtTotal = Object.values(dtCats).reduce((a,b)=>a+b,0);
   const dtPcts = {};
   DT_CATS.forEach(c=>dtPcts[c]=Math.min(100,(dtCats[c]/(DT_MAX_MINS*dtDayCount)*100)));
@@ -3648,6 +3669,7 @@ function renderShiftPersonnelPerf(){
 }
 
 async function renderPerf(){
+ try {
   restrictDateToMonth('perfDate');
   const flSel = document.getElementById('perfFloor');
   if(flSel && !flSel.dataset.userSet) flSel.value = curFloor;
@@ -3811,6 +3833,13 @@ async function renderPerf(){
     return cnt>0?parseFloat((totalScore/cnt).toFixed(1)):null;
   });
   newChart('ch-perf',{type:'line',data:{labels:perfTrendDates.map(d=>{const[,m,dy]=d.split('-');return`${dy}/${m}`;}),datasets:[{label:'Avg Score',data:scores,borderColor:'#b388ff',backgroundColor:'rgba(179,136,255,.08)',fill:true,borderWidth:2,tension:.3,pointRadius:3,spanGaps:true}]},options:chartOpts()});
+ } catch(err) {
+   // v41ZD #1: never leave Shift Performance blank. If anything throws mid-render (bad cached
+   // record, chart lib, etc.) show a clear message and log the real cause for diagnosis.
+   console.error('[renderPerf] failed:', err);
+   const pt = document.getElementById('perfTable');
+   if (pt) pt.innerHTML = `<div style="padding:14px;color:var(--amber);font-size:12px;font-weight:600">⚠️ Could not render the scorecard for this date/range. Try another date or reload. <span style="color:var(--t3)">(${(err&&err.message)||'unknown error'})</span></div>`;
+ }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -3825,6 +3854,26 @@ async function renderPerf(){
 // allDates is used for cumulative calculation — passed in so caller controls the range.
 function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
   // allDatesMap: { GF: [dates...], '1F': [dates...], '2F': [dates...] }
+  // v41ZD #3: averages use ELAPSED DAYS in the selected scope (not per-machine days-with-production,
+  // not a fixed 30). "This Month" → from the 1st of the month through the selected date;
+  // "Cumulative" → from the earliest date that has any data through the selected date.
+  // The same elapsedDays value is the denominator for every machine, floor, and the plant total,
+  // so a 3-day period always divides by 3 regardless of how many days a given machine ran.
+  const _scopeStart = (() => {
+    if (_dprCumulativeMode) {
+      const allD = [...new Set(Object.values(allDatesMap||{}).flat())].filter(d => d && d <= selectedDate).sort();
+      return allD.length ? allD[0] : selectedDate;
+    }
+    return _dprSelectedMonth + '-01';
+  })();
+  const _daysInclusive = (a, b) => {
+    // inclusive whole-day count between YYYY-MM-DD a..b (b>=a), else 1
+    const da = new Date(a + 'T00:00:00'), db = new Date(b + 'T00:00:00');
+    const n = Math.floor((db - da) / 86400000) + 1;
+    return n >= 1 ? n : 1;
+  };
+  const elapsedDays = _daysInclusive(_scopeStart, selectedDate);
+
   const allMachines = [];
   Object.entries(FLOORS).forEach(([fl, flData]) => {
     flData.machines.forEach(mc => { allMachines.push({id:mc.id, sz:mc.sz, floor:fl, flLabel:flData.label}); });
@@ -3874,9 +3923,10 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
       } catch(e) {}
     });
     cumTotal = parseFloat(cumTotal.toFixed(2));
-    const cumAvg = cumDays > 0 ? parseFloat((cumTotal / cumDays).toFixed(2)) : 0;
+    // v41ZD #3: average over elapsed days in scope (uniform), not per-machine days-with-production.
+    const cumAvg = elapsedDays > 0 ? parseFloat((cumTotal / elapsedDays).toFixed(2)) : 0;
 
-    return { ...mc, dailyTgt, dayA, dayB, dayC, dayTotal, vsTarget, cumTotal, cumDays, cumAvg };
+    return { ...mc, dailyTgt, dayA, dayB, dayC, dayTotal, vsTarget, cumTotal, cumDays: elapsedDays, cumAvg };
   });
 
   const totals = rows.reduce((acc, r) => {
@@ -3886,11 +3936,11 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
     acc.dayC     += r.dayC;
     acc.dayTotal += r.dayTotal;
     acc.cumTotal += r.cumTotal;
-    acc.cumDays   = Math.max(acc.cumDays, r.cumDays);
+    acc.cumDays   = elapsedDays;
     return acc;
   }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0,cumDays:0});
   totals.vsTarget = parseFloat((totals.dayTotal - totals.dailyTgt).toFixed(2));
-  totals.cumAvg   = totals.cumDays > 0 ? parseFloat((totals.cumTotal / totals.cumDays).toFixed(2)) : 0;
+  totals.cumAvg   = elapsedDays > 0 ? parseFloat((totals.cumTotal / elapsedDays).toFixed(2)) : 0;
 
   // v41ZC #3: per-floor subtotals (floor-wise production summed, shown before the grand total).
   const floorTotals = {};
@@ -3899,12 +3949,12 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
     if (!fRows.length) return;
     const ft = fRows.reduce((acc,r)=>{
       acc.dailyTgt+=r.dailyTgt; acc.dayA+=r.dayA; acc.dayB+=r.dayB; acc.dayC+=r.dayC;
-      acc.dayTotal+=r.dayTotal; acc.cumTotal+=r.cumTotal; acc.cumDays=Math.max(acc.cumDays,r.cumDays);
+      acc.dayTotal+=r.dayTotal; acc.cumTotal+=r.cumTotal; acc.cumDays=elapsedDays;
       return acc;
     }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0,cumDays:0});
     ['dailyTgt','dayA','dayB','dayC','dayTotal','cumTotal'].forEach(k=>ft[k]=parseFloat(ft[k].toFixed(2)));
     ft.vsTarget = parseFloat((ft.dayTotal - ft.dailyTgt).toFixed(2));
-    ft.cumAvg   = ft.cumDays>0 ? parseFloat((ft.cumTotal/ft.cumDays).toFixed(2)) : 0;
+    ft.cumAvg   = elapsedDays>0 ? parseFloat((ft.cumTotal/elapsedDays).toFixed(2)) : 0;
     ft.label    = FLOORS[fl]?.label || fl;
     floorTotals[fl] = ft;
   });
@@ -3968,6 +4018,15 @@ async function renderPlantReport(){
     }
   });
 
+  // v41ZD #3: cumulative totals were built only from days already in localStorage, so on a fresh
+  // session (or a different device) prior days were missing and the cumulative per-machine values
+  // under-counted. Sync the full scope range from the server first so the cumulative is complete.
+  if (serverUrl) {
+    const _scopeFrom = _dprCumulativeMode ? '2000-01-01' : (_dprSelectedMonth + '-01');
+    try { await syncDateRangeFromServer(Object.keys(FLOORS), _scopeFrom, selectedDate); }
+    catch(e) { console.warn('[plant-report] range sync failed:', e?.message); }
+  }
+
   // ── Step 3: Build allDatesMap for cumulative — use all localStorage dates per floor ──
   const allDatesMap = {};
   Object.keys(FLOORS).forEach(fl => {
@@ -3980,11 +4039,15 @@ async function renderPlantReport(){
   });
 
   // ── Step 4: Build rows and render ──
+  try {
   const { rows, totals, floorTotals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
 
   const allDates = [...new Set(Object.values(allDatesMap).flat())].filter(d => d <= selectedDate).sort();
-  const cumLabel = allDates.length > 0
-    ? `Cumulative up to ${selectedDate} (${allDates.length} day${allDates.length!==1?'s':''})`
+  // v41ZD #3: label shows the elapsed-day denominator actually used for averages (totals.cumDays),
+  // plus how many of those days have saved data, so the basis is transparent.
+  const _daysWithData = allDates.length;
+  const cumLabel = totals.cumDays > 0
+    ? `Cumulative up to ${selectedDate} · ${totals.cumDays} elapsed day${totals.cumDays!==1?'s':''}${_daysWithData!==totals.cumDays?` (${_daysWithData} with data)`:''}`
     : 'No cumulative data yet';
 
   const sourceNote = serverFetched
@@ -4098,6 +4161,11 @@ async function renderPlantReport(){
         <tfoot>${totRow}</tfoot>
       </table>
     </div>`;
+  } catch(err) {
+    // v41ZD #1: never leave Plant Report stuck on "Loading". Surface a clear message + log cause.
+    console.error('[renderPlantReport] failed:', err);
+    el.innerHTML = `<div style="padding:16px;color:var(--amber);font-size:12px;font-weight:600">⚠️ Could not build the plant report for ${selectedDate}. Try another date or reload. <span style="color:var(--t3)">(${(err&&err.message)||'unknown error'})</span></div>`;
+  }
 }
 
 async function exportPlantReport(){

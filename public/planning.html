@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZC</p>
+      <p>Planning Suite v3.0 · build v41ZD</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2224,9 +2224,15 @@ function recalcMachineScheduleQuiet(machineId) {
     const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
 
     // Determine start date.
+    // v41ZD #2: an order on a single machine can never start before the previous order finishes.
+    // Previously an order with ANY actual production was pinned to its own historical start and
+    // never moved, so an upstream overrun left downstream in-production orders overlapping (their
+    // end dates updated but start dates didn't cascade). Now: a not-yet-started order anchors to the
+    // cursor; an in-production order keeps its historical start ONLY if that start is already at/after
+    // the cursor — otherwise it is pushed forward to the cursor so it can't overlap its predecessor.
     if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
-      // Already running — keep the real (historical) start; do not re-anchor backwards.
-      ord.startDate = new Date(ord.startDate);
+      const histStart = new Date(ord.startDate);
+      ord.startDate = (cursor && cursor > histStart) ? new Date(cursor) : histStart;
     } else if (cursor) {
       // Downstream of an earlier order — start right after it (this is the cascade).
       ord.startDate = new Date(cursor);
@@ -2293,8 +2299,11 @@ function recalcMachineSchedule(machineId) {
     const todayD = new Date(today());
     const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
 
+    // v41ZD #2: in-production order keeps its historical start only if it's already >= cursor;
+    // otherwise it is pushed forward so it can't overlap the previous order on the same machine.
     if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
-      ord.startDate = new Date(ord.startDate);
+      const histStart = new Date(ord.startDate);
+      ord.startDate = (cursor && cursor > histStart) ? new Date(cursor) : histStart;
     } else if (cursor) {
       ord.startDate = new Date(cursor);
     } else {
@@ -2916,7 +2925,7 @@ function renderProduction() {
     ? state.orders.filter(o => {
         if (o.deleted) return false;
         if (o.status === 'completed') return false;
-        if (o.sapDocEntry && o.sapDocNum) return false;   // already linked
+        if (o.sapDocEntry || o.sapDocNum) return false;   // v41ZD #1: already linked (either id suffices)
         // Skip pristine WO (no customer assigned yet — covered by reconciliation page)
         if (o.woStatus === 'wo') return false;
         // Otherwise include if order has actual production activity or is in the active plan
@@ -3218,8 +3227,14 @@ function renderOrderRow(ord, idx, mc) {
                   isWOReconciled ? '<span class="badge badge-completed" style="font-size:10px">✅ W/O Assigned</span>' : '';
   // v39 Phase 17.1: SAP link indicator — small badge on rows that still need linking.
   // Skips already-linked orders + pristine WO (no customer yet, handled by Reconciliation page).
+  // v41ZD #1: an order is considered LINKED if it has EITHER the Sales Order Number (sapDocNum)
+  // OR the DocEntry. Previously this required BOTH (sapDocEntry && sapDocNum), so an order the
+  // planner linked manually with just the Sales Order Number still showed the amber "🔗 SAP?"
+  // prompt. Per the app's own rule ("the Sales Order Number alone is enough to link"), either
+  // identifier clears the prompt.
+  const _isSapLinked = !!(ord.sapDocNum || ord.sapDocEntry);
   const needsSapLink = !isClosed && ord.qty > 0 && !isWO &&
-    !(ord.sapDocEntry && ord.sapDocNum) && (
+    !_isSapLinked && (
       isWOReconciled ||
       ord.poType === 'indent' ||
       ord.poType === 'verbal' ||
@@ -3346,6 +3361,7 @@ function changeOrderStatus(ordId, machineId, newStatus) {
       return;
     }
   }
+  const _prevStatus = ord.status;
   ord.status = newStatus;
   ord._localEditedAt = Date.now();   // v40 P18.14i: timestamp for server merge tie-break
   if (newStatus === 'closed') {
@@ -3359,6 +3375,8 @@ function changeOrderStatus(ordId, machineId, newStatus) {
   recalcMachineSchedule(machineId);
   upsertOrderToDB(ord);
   saveState();
+  // v41ZD #1: detailed audit — which order, on which machine, status transition
+  auditLog('ORDER_STATUS', `${machineId} · ${ord.batchNumber||ord.poNumber||ordId} (${ord.customer||'—'}) status ${_prevStatus} → ${newStatus}`);
   render();
 }
 
@@ -3400,6 +3418,8 @@ function closeOrder(ordId, machineId) {
   // v37E PL1: protect this local change from being overwritten by next server sync
   _localOrderChanges[ordId] = Date.now();
   saveState();
+  // v41ZD #1: detailed audit — batch, machine, planned vs actual, mismatch flag
+  auditLog('ORDER_CLOSED', `${machineId} · ${ord.batchNumber||ord.poNumber||ordId} (${ord.customer||'—'}) closed — planned ${fmt(grossPlanned)}L, actual ${fmt(actual)}L${ord.mismatchFlag?' ⚠ MISMATCH':''}`);
   if (isExportZone(ord.zone)) {
     checkAndConsolidateExportContainer(ord);
   }
@@ -3424,6 +3444,8 @@ function deleteOrder(ordId, machineId) {
   _localOrderChanges[ordId] = Date.now();
   saveState();
   recalcMachineSchedule(machineId);
+  // v41ZD #1: detailed audit — what was deleted
+  if (ord) auditLog('ORDER_DELETED', `${machineId} · ${ord.batchNumber||ord.poNumber||ordId} (${ord.customer||'—'}, ${fmt(ord.qty||0)}L) deleted`);
   render();
 }
 
@@ -4368,6 +4390,9 @@ function saveOrderModal(existingId, defaultMachine) {
   saveState();
   closeModal();
   render();
+  // v41ZD #1: detailed audit — distinguish create vs edit, capture key fields
+  auditLog(existingId ? 'ORDER_EDITED' : 'ORDER_CREATED',
+    `${machineId} · ${ord.batchNumber||ord.poNumber||ord.id} (${ord.customer||'—'}) · ${fmt(ord.qty||0)}L, size ${ord.size||'—'}, ${ord.zone||'—'}${ord.sapDocNum?`, SO# ${ord.sapDocNum}`:''}`);
   // v40 Phase 18.4: fire soft SAP-link reminder for non-indent orders saved without SAP refs.
   // Hard-block path (indent) returns earlier via alert(); only successful saves reach this point.
   if (_v40_softSapWarning) {
@@ -5273,7 +5298,7 @@ function _v39_showSapLinkList() {
   const needs = (state.orders || []).filter(o => {
     if (o.deleted) return false;
     if (o.status === 'completed') return false;
-    if (o.sapDocEntry && o.sapDocNum) return false;
+    if (o.sapDocEntry || o.sapDocNum) return false; // v41ZD #1: either id = linked
     if (o.woStatus === 'wo') return false;
     return (o.qty > 0) && (
       o.woStatus === 'wo-reconciled' ||
@@ -13142,8 +13167,10 @@ function _v40_openFindingDetail(findingId) {
       <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
         <div style="font-size:12px;font-weight:700;margin-bottom:8px">Direct an operator to fix this:</div>
         <div class="form-group" style="margin-bottom:8px">
-          <label style="font-size:11px;color:var(--text3)">Assign to</label>
-          <input class="form-control" id="if-assign-to" placeholder="username (e.g. Track_AIM) or role:tracking_aim" style="font-size:12px">
+          <label style="font-size:11px;color:var(--text3)">Assign to <span style="color:var(--text3)">(select one or more — Ctrl/Cmd-click for multiple)</span></label>
+          <select class="form-control" id="if-assign-to" multiple size="6" style="font-size:12px;min-height:120px">
+            <option value="" disabled>Loading users…</option>
+          </select>
         </div>
         <div class="form-group" style="margin-bottom:8px">
           <label style="font-size:11px;color:var(--text3)">App</label>
@@ -13166,6 +13193,59 @@ function _v40_openFindingDetail(findingId) {
     { label: 'Assign Task', cls: 'btn-primary', fn: `_v40_assignFindingTask('${f.id}', '${f.suggested_app||''}')` },
     { label: 'Close', cls: 'btn-secondary', fn: 'closeModal()' }
   ]);
+  // v41ZD #2: populate the Assign-to multi-select with all users across all three apps.
+  _v40_populateAssigneeOptions(f.suggested_role || '');
+}
+
+// v41ZD #2: load all users (across DPR/Planning/Tracking) into the assign multi-select. Admin-only
+// endpoint; the Data Integrity dashboard is admin-facing so the caller is authorised. Also appends
+// role:<role> entries so an admin can target a whole role instead of named individuals.
+let _v40_assigneeUsersCache = null;
+async function _v40_populateAssigneeOptions(suggestedRole) {
+  const sel = document.getElementById('if-assign-to');
+  if (!sel) return;
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
+  const build = (users) => {
+    // group by app for readable optgroups
+    const byApp = {};
+    users.filter(u => u.is_active !== 0 && u.is_active !== false)
+         .forEach(u => { (byApp[u.app] = byApp[u.app] || []).push(u); });
+    const appLabel = { dpr:'DPR', planning:'Planning', tracking:'Tracking' };
+    let html = '';
+    Object.keys(byApp).sort().forEach(app => {
+      html += `<optgroup label="${appLabel[app]||app}">`;
+      byApp[app].sort((a,b)=>a.username.localeCompare(b.username)).forEach(u => {
+        html += `<option value="${_v40_esc(u.username)}">${_v40_esc(u.username)} — ${_v40_esc(u.role)}</option>`;
+      });
+      html += `</optgroup>`;
+    });
+    // role-level targets
+    const roles = [...new Set(users.map(u=>u.role).filter(Boolean))].sort();
+    if (roles.length) {
+      html += `<optgroup label="Assign by ROLE (all users in role)">`;
+      roles.forEach(r => {
+        const selAttr = (suggestedRole && r === suggestedRole) ? ' selected' : '';
+        html += `<option value="role:${_v40_esc(r)}"${selAttr}>role: ${_v40_esc(r)}</option>`;
+      });
+      html += `</optgroup>`;
+    }
+    sel.innerHTML = html || '<option value="" disabled>No users found</option>';
+  };
+  if (_v40_assigneeUsersCache) { build(_v40_assigneeUsersCache); return; }
+  if (!serverUrl) { sel.innerHTML = '<option value="" disabled>Server not connected</option>'; return; }
+  try {
+    const r = await fetch(serverUrl + '/api/admin/users', {
+      headers: { 'x-session-token': currentUser?.token || '' },
+      signal: AbortSignal.timeout(6000)
+    });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'Failed');
+    _v40_assigneeUsersCache = j.users || [];
+    build(_v40_assigneeUsersCache);
+  } catch(e) {
+    sel.innerHTML = `<option value="" disabled>Could not load users: ${_v40_esc(e.message)}</option>`;
+  }
 }
 
 async function _v40_ackFinding(findingId, closeAfter) {
@@ -13190,26 +13270,37 @@ async function _v40_ackFinding(findingId, closeAfter) {
 }
 
 async function _v40_assignFindingTask(findingId, defaultApp) {
-  const assignTo = document.getElementById('if-assign-to')?.value?.trim();
+  const sel = document.getElementById('if-assign-to');
+  // v41ZD #2: multi-select — gather all chosen usernames / role: entries.
+  const assignees = sel ? Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean) : [];
   const app = document.getElementById('if-assign-app')?.value || defaultApp || '';
   const note = document.getElementById('if-assign-note')?.value?.trim() || '';
-  if (!assignTo) { alert('Please enter a username or role'); return; }
+  if (!assignees.length) { alert('Please select at least one user or role to assign.'); return; }
   let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) { alert('Server not connected'); return; }
   try {
-    const r = await fetch(serverUrl + '/api/integrity/assign-task', {
-      method:'POST',
-      headers:{'Content-Type':'application/json','x-session-token': currentUser?.token||''},
-      body: JSON.stringify({ findingId, assignedTo: assignTo, app, note }),
-      signal: AbortSignal.timeout(5000)
+    const results = await Promise.allSettled(assignees.map(assignTo =>
+      fetch(serverUrl + '/api/integrity/assign-task', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','x-session-token': currentUser?.token||''},
+        body: JSON.stringify({ findingId, assignedTo: assignTo, app, note }),
+        signal: AbortSignal.timeout(5000)
+      }).then(r => r.json())
+    ));
+    const ok = [];
+    const failed = [];
+    results.forEach((r, i) => {
+      if (r.status === 'fulfilled' && r.value?.ok) ok.push(assignees[i]);
+      else failed.push(assignees[i]);
     });
-    const j = await r.json();
-    if (j.ok) {
+    if (ok.length) {
       closeModal();
-      alert(`✅ Task assigned to ${assignTo}. They will see it as a banner in their app on next login.`);
-      auditLog('INTEGRITY_TASK_ASSIGNED', `Assigned ${findingId} to ${assignTo}`);
-    } else alert('Error: ' + (j.error || 'Failed'));
+      alert(`✅ Task assigned to ${ok.length} ${ok.length===1?'assignee':'assignees'}: ${ok.join(', ')}.${failed.length?`\n\n⚠️ Failed: ${failed.join(', ')}`:''}\n\nThey will see it as a banner in their app on next login.`);
+      auditLog('INTEGRITY_TASK_ASSIGNED', `Assigned ${findingId} to ${ok.join(', ')}`);
+    } else {
+      alert('Error: could not assign to any selected user. Please retry.');
+    }
   } catch(e) { alert('Server error: ' + e.message); }
 }
 

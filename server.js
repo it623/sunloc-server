@@ -1411,6 +1411,22 @@ async function ensurePostgresTables() {
       )
     `);
 
+    // v41ZD: month_archives — previously created ONLY in the SQLite migrations array, so on
+    // Railway (Postgres) the table never existed. That made /api/archives/save and
+    // /api/archives/list throw, which (a) broke the Archives page ("Loading archives…" hang) and
+    // (b) silently failed the on-load auto-archive, leaving activeMonth stuck on the prior month.
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS month_archives (
+        id SERIAL PRIMARY KEY,
+        month TEXT NOT NULL UNIQUE,
+        archived_at TIMESTAMPTZ DEFAULT NOW(),
+        archived_by TEXT,
+        snapshot_json JSONB,
+        is_auto BOOLEAN DEFAULT TRUE
+      )
+    `);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_month_archives_month ON month_archives(month)`).catch(()=>{});
+
     // schema_migrations (for tracking)
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS schema_migrations (
@@ -11955,6 +11971,7 @@ app.post('/api/archives/save', async (req, res) => {
   try {
     const { month, snapshot, archivedBy, isAuto } = req.body;
     if (!month || !/^\d{4}-\d{2}$/.test(month)) return res.status(400).json({ ok: false, error: 'Invalid month format. Expected YYYY-MM' });
+    if (!pgPool) return res.json({ ok: true, month, note: 'archive store unavailable (SQLite dev)' });
     await pgPool.query(
       `INSERT INTO month_archives (month, archived_at, archived_by, snapshot_json, is_auto)
        VALUES ($1, NOW(), $2, $3, $4)
@@ -11975,11 +11992,13 @@ app.post('/api/archives/save', async (req, res) => {
 // GET /api/archives/list — list all archived months (no snapshot — metadata only)
 app.get('/api/archives/list', async (req, res) => {
   try {
+    if (!pgPool) return res.json({ ok: true, archives: [] }); // SQLite dev — no archive store
     const result = await pgPool.query(
       `SELECT month, archived_at, archived_by, is_auto FROM month_archives ORDER BY month DESC`
     );
     res.json({ ok: true, archives: result.rows });
   } catch (err) {
+    console.error('[Archives] list error:', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
@@ -11988,6 +12007,7 @@ app.get('/api/archives/list', async (req, res) => {
 app.get('/api/archives/:month', async (req, res) => {
   try {
     const { month } = req.params;
+    if (!pgPool) return res.json({ ok: false, error: 'archive store unavailable' });
     const result = await pgPool.query(
       `SELECT month, archived_at, archived_by, is_auto, snapshot_json FROM month_archives WHERE month = $1`,
       [month]
@@ -12008,6 +12028,7 @@ app.get('/api/archives/check/:month', async (req, res) => {
     const currentYM = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
     if (month === currentYM) return res.json({ ok: true, status: 'current', editable: true });
     if (month > currentYM) return res.json({ ok: true, status: 'future', editable: true });
+    if (!pgPool) return res.json({ ok: true, status: 'unarchived', editable: true });
     const result = await pgPool.query(
       `SELECT archived_at FROM month_archives WHERE month = $1`, [month]
     );
