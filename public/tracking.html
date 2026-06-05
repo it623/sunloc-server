@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZF</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZG</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZF</p>
+      <p>Tracking Suite v1.0 · build v41ZG</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZF</p>
+      <p>Tracking Suite v1.0 · build v41ZG</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -7163,7 +7163,17 @@ function renderReports(forceRebuild){
 // name now and delegates to the existing renderReportL implementation (kept to avoid churn in the
 // ledger's internal refresh/export wiring). The former Report H (Dept Handover Gaps) is the
 // "handover" view of Report F; its internal controls now call renderReportF() directly.
-function renderReportH(){ return renderReportL(); }
+function renderReportH(){
+  // v41ZG #2: renderReportL is async and has no scroll-into-view call, so Report H rendered at the
+  // bottom without the screen landing on it like other reports. Scroll once the ledger resolves.
+  const _p = renderReportL();
+  if (_p && typeof _p.then === 'function') {
+    _p.then(() => _scrollIntoReportIfFirstView('H')).catch(() => {});
+  } else {
+    _scrollIntoReportIfFirstView('H');
+  }
+  return _p;
+}
 function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(window._v41_composingD)window._v41_composingD=false;
   _captureReportScroll();
   if(!document.getElementById('report-output')) renderReports();
@@ -7379,7 +7389,10 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   _captureReportScroll();
   document.getElementById('report-output').innerHTML=html;
   document.getElementById('report-output').insertAdjacentHTML('afterbegin', _v41_reportFToggleHtml());
-_scrollIntoReportIfFirstView('H');
+// v41ZG #2: this is the HANDOVER view of Report F (it sets _activeReport=renderReportF and its
+// controls call renderReportF). Track it under key 'F' like the recon view so toggling F's two
+// views preserves scroll — and so it no longer collides with the Report H ledger's 'H' key.
+_scrollIntoReportIfFirstView('F');
 }
 
 function exportReportH(){
@@ -7445,7 +7458,12 @@ function _v41_reportGToggleHtml(){
   }
   const canSeeB = (typeof currentDept!=='undefined') && (currentDept==='admin');
   const btn = (key,label,show=true) => show ? `<button onclick="window._v41_reportGView='${key}';renderReportG()" style="font-size:11px;padding:5px 12px;border-radius:5px;cursor:pointer;border:1px solid ${v===key?'#0891b2':'var(--border)'};background:${v===key?'rgba(8,145,178,0.15)':'transparent'};color:${v===key?'#0891b2':'var(--text3)'};font-weight:${v===key?'700':'400'}">${label}</button>` : '';
-  return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+  // v41ZG #2: Report G had no heading after the J+K merge — the dispatcher only prepended the VIEW
+  // toggle. Add a title that reflects the active view so the merged report reads like the others.
+  const _gTitleMap = { movement: 'Daily Scan In / Out Movement', aging: 'FG Stock Aging Alerts', flowb: 'Flow B Alerts' };
+  const _gTitle = _gTitleMap[v] || 'Movement & Alerts';
+  return `<div class="section-title mb-12">Report G — ${_gTitle}</div>
+  <div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
     <span style="font-size:11px;color:var(--text3);font-weight:700;letter-spacing:.5px">VIEW:</span>
     ${btn('movement','📦 Daily Scan In / Out Movement')}
     ${btn('aging','⏱️ FG Stock Aging Alerts')}
@@ -7461,12 +7479,15 @@ function renderReportG(){
   if(view === 'aging' || view === 'flowb'){
     // Route to the former Report J alert flows (A = aging, B = flowb), then prepend the G toggle.
     window._reportJTab = (view === 'flowb') ? 'B' : 'A';
-    renderReportJ();
+    renderReportJ(); // async — scrolls itself after its fetch resolves (key 'G')
     document.getElementById('report-output')?.insertAdjacentHTML('afterbegin', _v41_reportGToggleHtml());
   } else {
     // Movement view (former Report K) renders into the standard report-output container.
     renderReportK('report-output');
     document.getElementById('report-output')?.insertAdjacentHTML('afterbegin', _v41_reportGToggleHtml());
+    // v41ZG #2: movement (K) is synchronous and has no scroll call of its own — scroll into view here
+    // so the screen lands on the report. The aging/flowb (J) path scrolls itself post-fetch.
+    _scrollIntoReportIfFirstView('G');
   }
 }
 function _v41_renderReportGInner(){
@@ -7601,7 +7622,7 @@ function _v41_renderReportGInner(){
 
   const html = `
   <div class="card mb-16">
-    <div class="section-title mb-12">Report G — A-Grade Performance &amp; WIP Breakdown</div>
+    <div class="section-title mb-12">Report D — A-Grade Performance &amp; WIP Breakdown</div>
 
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid #16a34a;flex-wrap:wrap">
       <span style="font-size:12px;font-weight:700;color:var(--text)">A-Grade attribution:</span>
@@ -9981,7 +10002,7 @@ function renderReportJ() {
 
   _fetchReconcileAlerts().then(alerts => {
     _renderReportJContent(alerts);
-    _scrollIntoReportIfFirstView('J');
+    _scrollIntoReportIfFirstView('G');
     // v37I.1: Auto-refresh every 5 min — matches server-side scan cadence (day-scale thresholds)
     if (_reportJTimer) clearInterval(_reportJTimer);
     _reportJTimer = setInterval(() => {

@@ -21,20 +21,20 @@
 *{box-sizing:border-box;margin:0;padding:0}
 body{font-family:var(--font);background:var(--bg);color:var(--t1);font-size:13px;min-height:100vh;font-weight:500}
 /* NAV — deep forest green matching Planning sidebar */
-#nav{position:fixed;top:0;left:0;right:0;height:var(--nav);background:#1a3a2e;border-bottom:3px solid #0f2a20;z-index:200;display:flex;align-items:center;padding:0 16px;gap:0;box-shadow:0 2px 8px rgba(26,19,8,0.2)}
+#nav{position:fixed;top:0;left:0;right:0;min-height:var(--nav);background:#1a3a2e;border-bottom:3px solid #0f2a20;z-index:200;display:flex;align-items:center;flex-wrap:wrap;padding:0 16px;gap:0 4px;box-shadow:0 2px 8px rgba(26,19,8,0.2)}
 .nbrand{font-family:var(--fc);font-weight:800;font-size:15px;letter-spacing:1px;color:#f0c060;white-space:nowrap;margin-right:6px;flex-shrink:0}
 .nbrand b{color:#ffffff}
 .nbrand small{font-size:11px;color:rgba(255,255,255,0.5);font-weight:400;margin-left:4px}
-.ntabs{display:flex;flex:1;height:100%;overflow-x:auto;scrollbar-width:thin;scrollbar-color:rgba(240,192,96,0.5) transparent;min-width:0}
-/* v41ZF #1: the nav tab row scrolls horizontally when there are more tabs than fit (e.g. admin gets
-   an extra "Audit Log" tab, which pushed Plant Report / Search / Settings off the right edge with NO
-   visible scrollbar — so admins literally could not see or reach the Plant Report tab). Show a slim
-   scrollbar as a scroll affordance so the overflow is discoverable. (Mobile keeps it hidden for
-   touch-swipe — see the max-width:768px block below.) */
+/* v41ZG #1: the DPR nav row could not be scrolled on the user's setup, so the tabs past "Shift
+   Performance" (History, Plant Report, Search, Settings) were unreachable — admins reported the
+   Plant Report tab "not showing up". Instead of relying on horizontal scroll, let the tab row WRAP
+   onto a second line so every tab is always visible. The nav height is no longer fixed; #wrap's
+   top offset is measured at runtime (see _dprSyncNavOffset) with a CSS fallback. */
+.ntabs{display:flex;flex-wrap:wrap;flex:1;align-items:center;min-height:var(--nav);scrollbar-width:thin;scrollbar-color:rgba(240,192,96,0.5) transparent;min-width:0}
 .ntabs::-webkit-scrollbar{height:5px}
 .ntabs::-webkit-scrollbar-thumb{background:rgba(240,192,96,0.5);border-radius:3px}
 .ntabs::-webkit-scrollbar-track{background:transparent}
-.ntab{display:flex;align-items:center;gap:4px;padding:0 8px;height:100%;font-family:var(--fc);font-weight:700;font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:rgba(255,255,255,0.55);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;transition:.15s;flex-shrink:0}
+.ntab{display:flex;align-items:center;gap:4px;padding:0 8px;height:var(--nav);font-family:var(--fc);font-weight:700;font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:rgba(255,255,255,0.55);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;transition:.15s;flex-shrink:0}
 .ntab:hover{color:rgba(255,255,255,0.85)}
 .ntab.on{color:#f0c060;border-bottom-color:#f0c060}
 .nright{display:flex;align-items:center;gap:4px;margin-left:6px;flex-shrink:0;min-width:0;overflow:visible}
@@ -51,7 +51,7 @@ body{font-family:var(--font);background:var(--bg);color:var(--t1);font-size:13px
 #syncBadge.syncing{background:#dbeafe;color:#1e3a8a;border:1.5px solid #93c5fd}
 #unsavedDot{width:7px;height:7px;border-radius:50%;background:#f0c060;display:none;flex-shrink:0}
 /* PAGES */
-#wrap{margin-top:var(--nav);min-height:calc(100vh - var(--nav));padding:20px}
+#wrap{margin-top:var(--nav-real,var(--nav));min-height:calc(100vh - var(--nav-real,var(--nav)));padding:20px}
 .page{display:none}.page.on{display:block}
 /* CARDS */
 .card{background:var(--s1);border:1.5px solid var(--b2);border-radius:var(--r);padding:16px;margin-bottom:12px;box-shadow:0 2px 6px rgba(26,19,8,0.07)}
@@ -467,7 +467,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZF</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZG</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -971,6 +971,9 @@ function go(page) {
 let _dprSelectedMonth = today().slice(0,7); // 'YYYY-MM'
 let _dprMonthArchiveCache = {};
 let _dprCumulativeMode = false; // false = This Month, true = Up To This Month
+let _histSyncedMonth = null; // v41ZG #4: guards the one-time History month sync (avoids re-sync loop)
+let _dprDatesListCache = {}; // v41ZG #5: fl -> {dates:[...], ts} cache for /api/dpr/dates (report perf)
+const _DPR_DATES_TTL = 90000; // 90s — short enough that other devices' new days appear soon
 
 function dprCurrentYM(){ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; }
 
@@ -1434,6 +1437,7 @@ function _doSaveDay(fl, d){
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
   _dprLastSaveTime = Date.now(); // block fetch for 10s after save
+  markDprDatesDirty(fl); // v41ZG #5: a (possibly new) date was saved — let range syncs rediscover it
   pushToServer(fl,d,data); // goes to server regardless
   renderDayKpis();
   // Show warning toast — save always goes through
@@ -1718,19 +1722,36 @@ async function fetchDayFromServer(fl, d){
 // fromDate / toDate are YYYY-MM-DD inclusive bounds.
 async function syncDateRangeFromServer(floors, fromDate, toDate) {
   if (!serverUrl || !floors || !floors.length) return;
-  const targets = []; // {fl, d}
-  for (const fl of floors) {
+  // v41ZG #5: previously this fetched /api/dpr/dates/:floor sequentially (one round-trip per floor)
+  // on EVERY analytics/plant/history visit — the all-floors analytics view alone meant 3 serial
+  // round-trips before any day data loaded. Now: (a) fetch all floors' date-lists in parallel, and
+  // (b) cache each floor's list for a short TTL so repeated report visits reuse it. The cache is
+  // invalidated for a floor whenever that floor is saved (see markDprDatesDirty), so freshly saved
+  // days still appear. Day-level data is unaffected (still pulled per missing day, server-authoritative).
+  const _now = Date.now();
+  const listFor = async (fl) => {
+    const c = _dprDatesListCache[fl];
+    if (c && (_now - c.ts) < _DPR_DATES_TTL) return c.dates;
     try {
       const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(fl), {signal: AbortSignal.timeout(6000)});
-      if (!r.ok) continue;
+      if (!r.ok) return (c ? c.dates : []);
       const j = await r.json();
-      if (!j.ok || !Array.isArray(j.dates)) continue;
-      for (const d of j.dates) {
-        if (d < fromDate || d > toDate) continue;
-        if (localStorage.getItem(skey(fl, d))) continue;
-        targets.push({fl, d});
-      }
-    } catch (e) { console.warn('[DPR sync] dates list failed for', fl, e?.message); }
+      if (!j.ok || !Array.isArray(j.dates)) return (c ? c.dates : []);
+      _dprDatesListCache[fl] = { dates: j.dates, ts: Date.now() };
+      return j.dates;
+    } catch (e) {
+      console.warn('[DPR sync] dates list failed for', fl, e?.message);
+      return (c ? c.dates : []);
+    }
+  };
+  const lists = await Promise.all(floors.map(fl => listFor(fl).then(dates => ({fl, dates}))));
+  const targets = []; // {fl, d}
+  for (const {fl, dates} of lists) {
+    for (const d of dates) {
+      if (d < fromDate || d > toDate) continue;
+      if (localStorage.getItem(skey(fl, d))) continue;
+      targets.push({fl, d});
+    }
   }
   if (!targets.length) return;
   const BATCH = 6;
@@ -1739,6 +1760,9 @@ async function syncDateRangeFromServer(floors, fromDate, toDate) {
     await Promise.all(slice.map(t => fetchDayFromServer(t.fl, t.d)));
   }
 }
+
+// v41ZG #5: invalidate a floor's cached date-list (call after a save so a new date is discoverable).
+function markDprDatesDirty(fl){ if(fl) delete _dprDatesListCache[fl]; else _dprDatesListCache = {}; }
 
 // v37I (restoring v37H): Resolve from-date for a range mode (mirrors getDprDateRange's logic
 // but returns just the from-bound for the server sync call).
@@ -1946,7 +1970,7 @@ async function updateTempAlertBanner(){
     if(!banner){
       banner = document.createElement('div');
       banner.id = 'temp-alert-banner';
-      banner.style.cssText = 'position:fixed;top:var(--nav);left:0;right:0;z-index:400;background:rgba(255,171,0,0.15);border-bottom:2px solid var(--amber);padding:8px 16px;display:flex;align-items:center;gap:10px;font-size:12px';
+      banner.style.cssText = 'position:fixed;top:var(--nav-real,var(--nav));left:0;right:0;z-index:400;background:rgba(255,171,0,0.15);border-bottom:2px solid var(--amber);padding:8px 16px;display:flex;align-items:center;gap:10px;font-size:12px';
       document.body.appendChild(banner);
     }
     if(j.ok && j.count > 0){
@@ -3172,18 +3196,30 @@ async function renderAnalytics(){
   // v37I (restoring v37H): For ALL range modes, sync server data before computing.
   // Previously only 'today' fetched from server; range modes used localStorage which was
   // empty on fresh browser sessions, causing blank charts and missing values.
+  // v41ZG #2: when the floor selector is "All Floors", `fl` is the synthetic 'ALL' — which is NOT a
+  // real floor key. The previous sync called fetchDayFromServer('ALL',…) / syncDateRangeFromServer
+  // (['ALL'],…), so NOTHING was fetched for the real floors; the aggregation then summed only
+  // whatever floor-days happened to already be in this browser's localStorage — a partial total
+  // (e.g. 564.60) that matches no real floor and is short of the true all-floor grand total.
+  // Expand 'ALL' to the real floor list for every server fetch.
+  const _aggFloors = (fl === 'ALL') ? Object.keys(FLOORS) : [fl];
   if (rangeMode === 'today') {
-    const serverData = await fetchDayFromServer(fl, d);
-    if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
+    // v41ZG #5: fetch all floors in parallel (was sequential). fetchDayFromServer caches to
+    // localStorage itself, so no separate setItem needed.
+    await Promise.all(_aggFloors.map(_f => fetchDayFromServer(_f, d)));
   } else {
-    await syncDateRangeFromServer([fl], _dprFromDateForMode(rangeMode), today());
+    await syncDateRangeFromServer(_aggFloors, _dprFromDateForMode(rangeMode), today());
   }
 
   // For range modes other than 'today', aggregate across date range
   const dates = getDprDateRange(fl, rangeMode);
 
-  // Build aggregated stats across all dates in range
-  const mcs = getActiveMachines(fl);
+  // Build aggregated stats across all dates in range.
+  // v41ZG #2: support the "All Floors" scope. Build the machine set as the union of every real
+  // floor's active machines, tagging each with its source floor (_fl) so all reads (loadDay, tgt)
+  // hit the correct floor. Previously this used getActiveMachines('ALL') → [] (no such floor),
+  // so the all-floors view aggregated nothing real and fell back to stale partial localStorage.
+  const mcs = _aggFloors.flatMap(_f => getActiveMachines(_f).map(mc => ({ ...mc, _fl: _f })));
   const mcStats = {};
   mcs.forEach(mc => { mcStats[mc.id] = {prod:0, tgt:0, dt:0, resort:0, batches:0, dtCats:{}}; });
   DT_CATS.forEach(c=>mcs.forEach(mc=>mcStats[mc.id].dtCats[c]=0));
@@ -3192,12 +3228,15 @@ async function renderAnalytics(){
   const aggResort = {};
   const aggResortByMc = {};
   dates.forEach(date => {
-    const dDay = loadDay(fl, date);
+    // v41ZG #2: load each floor's day once per date, then read each machine from its own floor.
+    const _dayByFloor = {};
+    _aggFloors.forEach(_f => { _dayByFloor[_f] = loadDay(_f, date); });
     mcs.forEach(mc => {
+      const dDay = _dayByFloor[mc._fl];
       SHIFTS.forEach(sh => {
         const m = migrateMachineData(dDay.shifts[sh].machines[mc.id] || blankMachine());
         mcStats[mc.id].prod += mcTotalProd(m);
-        mcStats[mc.id].tgt  += tgt(fl, mc.id);
+        mcStats[mc.id].tgt  += tgt(mc._fl, mc.id);
         // v41ZD #4: DT is stored as per-category fields (proc/mech/elec/gpr/hvac/dw), NOT as a
         // dtEntries[] array — the old `(m.dtEntries||[])` sum was always 0, so the analytics
         // "DT (min)" column showed blank. Sum the category fields to match the DT donut/% charts.
@@ -3207,9 +3246,12 @@ async function renderAnalytics(){
         DT_CATS.forEach(c=>mcStats[mc.id].dtCats[c] += parseFloat(m[c]||0));
       });
     });
-    (dDay.resort||[]).forEach(r=>{
-      aggResort[r.reason]=(aggResort[r.reason]||0)+parseFloat(r.qty||0);
-      if(r.mc) aggResortByMc[r.mc]=(aggResortByMc[r.mc]||0)+parseFloat(r.qty||0);
+    // resort entries are per floor-day — sum across all aggregated floors
+    _aggFloors.forEach(_f => {
+      (_dayByFloor[_f].resort||[]).forEach(r=>{
+        aggResort[r.reason]=(aggResort[r.reason]||0)+parseFloat(r.qty||0);
+        if(r.mc) aggResortByMc[r.mc]=(aggResortByMc[r.mc]||0)+parseFloat(r.qty||0);
+      });
     });
   });
   const isRange = rangeMode !== 'today';
@@ -3218,18 +3260,21 @@ async function renderAnalytics(){
   // days (no production) still count toward target, correctly pulling efficiency down.
   const elapsedDays = _dprElapsedDayCount(rangeMode);
 
-  const day = loadDay(fl, d); // single-date data (used for 'today' mode)
+  // v41ZG #2: single-date data per floor (used for 'today' mode). Keyed by floor so all-floors works.
+  const _dayByFloorToday = {};
+  _aggFloors.forEach(_f => { _dayByFloorToday[_f] = loadDay(_f, d); });
 
   // v41ZC #1: per-machine production for the active scope. In 'today' mode = selected date `d`;
   // in any range mode = the range aggregate from mcStats. This is what every chart/table below
   // now reads, so the RANGE buttons actually change the displayed data.
   const mcProd = mc => {
     if (isRange) return mcStats[mc.id].prod;
-    let p=0; SHIFTS.forEach(sh=>{ p+=mcTotalProd(migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine())); });
+    const _day = _dayByFloorToday[mc._fl] || _dayByFloorToday[fl];
+    let p=0; SHIFTS.forEach(sh=>{ p+=mcTotalProd(migrateMachineData(_day.shifts[sh].machines[mc.id]||blankMachine())); });
     return p;
   };
   // v41ZD #2: range target = daily target (tgt × 3 shifts) × elapsed days in range.
-  const mcTargetScope = mc => isRange ? (tgt(fl,mc.id)*3*elapsedDays) : tgt(fl,mc.id)*3;
+  const mcTargetScope = mc => isRange ? (tgt(mc._fl,mc.id)*3*elapsedDays) : tgt(mc._fl,mc.id)*3;
 
   // P vs T
   const pvtData=mcs.map(mc=>({mc:mc.id.replace('MC',''),prod:mcProd(mc),tgt:mcTargetScope(mc)}));
@@ -3248,7 +3293,7 @@ async function renderAnalytics(){
     mcs.forEach(mc=>DT_CATS.forEach(c=>dtCats[c]+=mcStats[mc.id].dtCats[c]||0));
   } else {
     mcs.forEach(mc=>SHIFTS.forEach(sh=>{
-      const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+      const m=migrateMachineData((_dayByFloorToday[mc._fl]||_dayByFloorToday[fl]).shifts[sh].machines[mc.id]||blankMachine());
       DT_CATS.forEach(c=>dtCats[c]+=parseFloat(m[c]||0));
     }));
   }
@@ -3296,7 +3341,7 @@ async function renderAnalytics(){
   },options:{...chartOpts(),plugins:{...chartOpts().plugins,legend:{display:false}},scales:{...chartOpts().scales,y:{...chartOpts().scales?.y,max:120,ticks:{callback:v=>v+'%',color:'#7a8ba8',font:{size:9}}}}}});
 
   // Re-sort pareto  (v41ZC #1: range-aware)
-  const rsMap = isRange ? aggResort : (()=>{ const m={}; (day.resort||[]).forEach(r=>m[r.reason]=(m[r.reason]||0)+parseFloat(r.qty||0)); return m; })();
+  const rsMap = isRange ? aggResort : (()=>{ const m={}; _aggFloors.forEach(_f=>((_dayByFloorToday[_f]||{}).resort||[]).forEach(r=>m[r.reason]=(m[r.reason]||0)+parseFloat(r.qty||0))); return m; })();
   const rsKeys=Object.keys(rsMap).sort((a,b)=>rsMap[b]-rsMap[a]);
   newChart('ch-rs',{type:'bar',data:{
     labels:rsKeys.length?rsKeys:['No re-sort'],
@@ -3312,7 +3357,7 @@ async function renderAnalytics(){
     } else {
       prod=0; dt=0; batchCount=0;
       SHIFTS.forEach(sh=>{
-        const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+        const m=migrateMachineData((_dayByFloorToday[mc._fl]||_dayByFloorToday[fl]).shifts[sh].machines[mc.id]||blankMachine());
         prod+=mcTotalProd(m);
         batchCount+=m.runs.filter(r=>r.qty||r.batchNumber).length;
         DT_CATS.forEach(c=>dt+=parseFloat(m[c]||0));
@@ -3320,7 +3365,7 @@ async function renderAnalytics(){
     }
     const t=mcTargetScope(mc);
     const eff=t>0?(prod/t*100):0;
-    const rs=isRange ? (aggResortByMc[mc.id]||0) : (day.resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
+    const rs=isRange ? (aggResortByMc[mc.id]||0) : ((_dayByFloorToday[mc._fl]||_dayByFloorToday[fl]).resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
     const effCls=eff>=90?'g':eff>=75?'a':'r';
     html+=`<tr><td class="mono">${mc.id}</td><td style="color:var(--t3)">${mc.sz}</td>
       <td style="color:var(--t2)">${batchCount>1?`<span class="pill a">${batchCount} runs</span>`:'<span style="color:var(--t3)">'+(batchCount||0)+'</span>'}</td>
@@ -3337,14 +3382,14 @@ async function renderAnalytics(){
     } else {
       prod=0; dt=0; batchCount=0;
       SHIFTS.forEach(sh=>{
-        const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
+        const m=migrateMachineData((_dayByFloorToday[mc._fl]||_dayByFloorToday[fl]).shifts[sh].machines[mc.id]||blankMachine());
         prod+=mcTotalProd(m);
         batchCount+=m.runs.filter(r=>r.qty||r.batchNumber).length;
         DT_CATS.forEach(cat=>dt+=parseFloat(m[cat]||0));
       });
     }
     const t=mcTargetScope(mc);
-    const rs=isRange ? (aggResortByMc[mc.id]||0) : (day.resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
+    const rs=isRange ? (aggResortByMc[mc.id]||0) : ((_dayByFloorToday[mc._fl]||_dayByFloorToday[fl]).resort||[]).filter(r=>r.mc===mc.id).reduce((s,r)=>s+parseFloat(r.qty||0),0);
     totProd+=prod; totDT+=dt; totBatches+=batchCount; totTarget+=t; totRs+=rs;
   });
   const totEff=totTarget>0?(totProd/totTarget*100):0;
@@ -3941,6 +3986,47 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
   };
   const elapsedDays = _daysInclusive(_scopeStart, selectedDate);
 
+  // v41ZG #3: read-once pre-pass. Parse each (floor,date) from localStorage exactly once and cache
+  // it, instead of re-reading + re-parsing the same key for every machine (the old per-machine loop
+  // did N_machines parses of the same day). This builds:
+  //   parsedCache[fl][d]      = parsed day object (reused below)
+  //   floorDateProd[fl][d]    = total floor production that day (for floor/plant active-day counts)
+  // It also reduces localStorage churn, which helps the Plant Report's load time (#5).
+  const _scopeFilter = d => _dprCumulativeMode ? (d <= selectedDate) : (d >= _dprSelectedMonth + '-01' && d <= selectedDate);
+  const parsedCache = {};
+  const floorDateProd = {};
+  Object.keys(FLOORS).forEach(fl => {
+    parsedCache[fl] = {};
+    floorDateProd[fl] = {};
+    const flDates = (allDatesMap[fl] || []).filter(_scopeFilter);
+    const flMachines = FLOORS[fl].machines || [];
+    flDates.forEach(d => {
+      const cached = localStorage.getItem(skey(fl, d));
+      if (!cached) return;
+      try {
+        const dd = JSON.parse(cached);
+        parsedCache[fl][d] = dd;
+        let floorDay = 0;
+        flMachines.forEach(mc => SHIFTS.forEach(sh => {
+          const m = dd.shifts?.[sh]?.machines?.[mc.id];
+          if (m) floorDay += mcTotalProd(migrateMachineData(m));
+        }));
+        floorDateProd[fl][d] = parseFloat(floorDay.toFixed(2));
+      } catch(e) {}
+    });
+  });
+  // Active-day counts (days WITH production) — denominator for averages.
+  const floorProdDays = {};
+  const _plantDates = new Set();
+  Object.keys(FLOORS).forEach(fl => {
+    let cnt = 0;
+    Object.entries(floorDateProd[fl]).forEach(([d, v]) => {
+      if (v > 0.0001) { cnt++; _plantDates.add(d); }
+    });
+    floorProdDays[fl] = cnt;
+  });
+  const plantProdDays = _plantDates.size;
+
   const allMachines = [];
   Object.entries(FLOORS).forEach(([fl, flData]) => {
     flData.machines.forEach(mc => { allMachines.push({id:mc.id, sz:mc.sz, floor:fl, flLabel:flData.label}); });
@@ -3969,31 +4055,27 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
     const vsTarget  = parseFloat((dayTotal - dailyTgt).toFixed(2));
 
     // Cumulative: scope based on _dprCumulativeMode
-    const flDates = (allDatesMap[fl] || []).filter(d => {
-      if (_dprCumulativeMode) return d <= selectedDate; // all history up to date
-      return d >= _dprSelectedMonth + '-01' && d <= selectedDate; // this month only
-    });
+    const flDates = (allDatesMap[fl] || []).filter(_scopeFilter);
     let cumTotal=0, cumDays=0;
     flDates.forEach(d => {
-      // Try server-cached data first (stored in localStorage by previous fetches), then localStorage
-      const cached = localStorage.getItem(skey(fl, d));
-      if (!cached) return;
-      try {
-        const dd = JSON.parse(cached);
-        let dayProd = 0;
-        SHIFTS.forEach(sh => {
-          const m = dd.shifts?.[sh]?.machines?.[mc.id];
-          if (m) dayProd += mcTotalProd(migrateMachineData(m));
-        });
-        dayProd = parseFloat(dayProd.toFixed(2));
-        if (dayProd > 0) { cumTotal += dayProd; cumDays++; }
-      } catch(e) {}
+      // v41ZG #3: use the pre-parsed cache (read once above) instead of re-reading localStorage.
+      const dd = parsedCache[fl]?.[d];
+      if (!dd) return;
+      let dayProd = 0;
+      SHIFTS.forEach(sh => {
+        const m = dd.shifts?.[sh]?.machines?.[mc.id];
+        if (m) dayProd += mcTotalProd(migrateMachineData(m));
+      });
+      dayProd = parseFloat(dayProd.toFixed(2));
+      if (dayProd > 0) { cumTotal += dayProd; cumDays++; }
     });
     cumTotal = parseFloat(cumTotal.toFixed(2));
-    // v41ZD #3: average over elapsed days in scope (uniform), not per-machine days-with-production.
-    const cumAvg = elapsedDays > 0 ? parseFloat((cumTotal / elapsedDays).toFixed(2)) : 0;
+    // v41ZG #3: average over days this machine ACTUALLY produced (days-with-data), not elapsed
+    // calendar days. "Average production" = mean output on the days the machine ran. cumDays is the
+    // count of those days. (For a range where every day has data, this equals elapsed days.)
+    const cumAvg = cumDays > 0 ? parseFloat((cumTotal / cumDays).toFixed(2)) : 0;
 
-    return { ...mc, dailyTgt, dayA, dayB, dayC, dayTotal, vsTarget, cumTotal, cumDays: elapsedDays, cumAvg };
+    return { ...mc, dailyTgt, dayA, dayB, dayC, dayTotal, vsTarget, cumTotal, cumDays, cumAvg };
   });
 
   const totals = rows.reduce((acc, r) => {
@@ -4003,11 +4085,12 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
     acc.dayC     += r.dayC;
     acc.dayTotal += r.dayTotal;
     acc.cumTotal += r.cumTotal;
-    acc.cumDays   = elapsedDays;
     return acc;
-  }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0,cumDays:0});
+  }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0});
+  totals.cumDays  = plantProdDays;
   totals.vsTarget = parseFloat((totals.dayTotal - totals.dailyTgt).toFixed(2));
-  totals.cumAvg   = elapsedDays > 0 ? parseFloat((totals.cumTotal / elapsedDays).toFixed(2)) : 0;
+  // v41ZG #3: plant average daily production = plant cumulative ÷ days the plant produced.
+  totals.cumAvg   = plantProdDays > 0 ? parseFloat((totals.cumTotal / plantProdDays).toFixed(2)) : 0;
 
   // v41ZC #3: per-floor subtotals (floor-wise production summed, shown before the grand total).
   const floorTotals = {};
@@ -4016,12 +4099,14 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
     if (!fRows.length) return;
     const ft = fRows.reduce((acc,r)=>{
       acc.dailyTgt+=r.dailyTgt; acc.dayA+=r.dayA; acc.dayB+=r.dayB; acc.dayC+=r.dayC;
-      acc.dayTotal+=r.dayTotal; acc.cumTotal+=r.cumTotal; acc.cumDays=elapsedDays;
+      acc.dayTotal+=r.dayTotal; acc.cumTotal+=r.cumTotal;
       return acc;
-    }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0,cumDays:0});
+    }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0});
     ['dailyTgt','dayA','dayB','dayC','dayTotal','cumTotal'].forEach(k=>ft[k]=parseFloat(ft[k].toFixed(2)));
+    ft.cumDays  = floorProdDays[fl] || 0;
     ft.vsTarget = parseFloat((ft.dayTotal - ft.dailyTgt).toFixed(2));
-    ft.cumAvg   = elapsedDays>0 ? parseFloat((ft.cumTotal/elapsedDays).toFixed(2)) : 0;
+    // v41ZG #3: floor average daily production = floor cumulative ÷ days that floor produced.
+    ft.cumAvg   = ft.cumDays > 0 ? parseFloat((ft.cumTotal/ft.cumDays).toFixed(2)) : 0;
     ft.label    = FLOORS[fl]?.label || fl;
     floorTotals[fl] = ft;
   });
@@ -4121,11 +4206,11 @@ async function renderPlantReport(){
   const { rows, totals, floorTotals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
 
   const allDates = [...new Set(Object.values(allDatesMap).flat())].filter(d => d <= selectedDate).sort();
-  // v41ZD #3: label shows the elapsed-day denominator actually used for averages (totals.cumDays),
-  // plus how many of those days have saved data, so the basis is transparent.
+  // v41ZG #3: the DAYS column / averages now divide by days that actually had production (active
+  // days), per machine/floor/plant — not elapsed calendar days. Label reflects the plant's active days.
   const _daysWithData = allDates.length;
   const cumLabel = totals.cumDays > 0
-    ? `Cumulative up to ${selectedDate} · ${totals.cumDays} elapsed day${totals.cumDays!==1?'s':''}${_daysWithData!==totals.cumDays?` (${_daysWithData} with data)`:''}`
+    ? `Cumulative up to ${selectedDate} · avg over ${totals.cumDays} production day${totals.cumDays!==1?'s':''}`
     : 'No cumulative data yet';
 
   const sourceNote = serverFetched
@@ -4191,7 +4276,7 @@ async function renderPlantReport(){
       <td class="r" style="font-family:var(--mono);font-weight:800;color:#f0c060">${totals.cumAvg>0?fmt2(totals.cumAvg):'—'}</td>
     </tr>
     <tr style="background:#142e22">
-      <td colspan="3" style="font-family:var(--fc);font-weight:800;font-size:11px;letter-spacing:.8px;color:rgba(240,192,96,0.7)">PLANT AVERAGE</td>
+      <td colspan="3" style="font-family:var(--fc);font-weight:800;font-size:11px;letter-spacing:.8px;color:rgba(240,192,96,0.7)">PLANT AVG / ACTIVE M·C</td>
       <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(240,192,96,0.7)">${rows.length>0?fmt2(totals.dailyTgt/rows.length):'—'}</td>
       <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(255,255,255,0.6)">${totals.dayA>0?fmt2(totals.dayA/(rows.filter(r=>r.dayA>0).length||1)):'—'}</td>
       <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(255,255,255,0.6)">${totals.dayB>0?fmt2(totals.dayB/(rows.filter(r=>r.dayB>0).length||1)):'—'}</td>
@@ -4200,7 +4285,7 @@ async function renderPlantReport(){
       <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(240,192,96,0.6)">${totals.dayTotal>0?fmt2(totals.vsTarget/(rows.filter(r=>r.dayTotal>0).length||1)):'—'}</td>
       <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(240,192,96,0.7)">${totals.cumTotal>0?fmt2(totals.cumTotal/(rows.filter(r=>r.cumTotal>0).length||1)):'—'}</td>
       <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(240,192,96,0.6)">—</td>
-      <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(240,192,96,0.7)">${totals.cumAvg>0?fmt2(totals.cumAvg):'—'}</td>
+      <td class="r" style="font-family:var(--mono);font-weight:700;color:rgba(240,192,96,0.7)">—</td>
     </tr>`;
 
   el.innerHTML = `
@@ -4339,9 +4424,34 @@ function renderHistory(){
 
   if(!entries.length){document.getElementById('historyList').innerHTML=`<p style="color:var(--t3);padding:10px">No saved records yet.</p>`;return;}
 
+  // v41ZG #4: one-time month sync so the floor-wise TOTAL/AVG below are complete (History reads
+  // localStorage only; on a fresh session prior days weren't cached, undercounting the totals).
+  // Renders immediately from cache first (fast), then re-renders once after the server fills in.
+  if(serverUrl && dprUser && !filterDate && _histSyncedMonth !== _dprSelectedMonth){
+    _histSyncedMonth = _dprSelectedMonth;
+    const _mStart = _dprSelectedMonth + '-01';
+    // v41ZG #4/#5: bound the sync at the LESSER of today and the selected month's last day — viewing
+    // a past month must not over-fetch into later months (correctness + perf).
+    const [_my,_mm] = _dprSelectedMonth.split('-').map(Number);
+    const _mEnd = _localYMD(new Date(_my, _mm, 0));
+    const _mTo = (today() < _mEnd) ? today() : _mEnd;
+    Promise.resolve().then(async()=>{
+      try{
+        await Promise.race([
+          syncDateRangeFromServer(Object.keys(FLOORS), _mStart, _mTo),
+          new Promise((_,rej)=>setTimeout(()=>rej(new Error('hist-sync timeout')),12000))
+        ]);
+        if(document.getElementById('page-history')?.classList.contains('on')) renderHistory();
+      }catch(e){ console.warn('[history] month sync skipped:', e?.message); }
+    });
+  }
+
   const months=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
   let html=`<div class="tbl-mobile-wrap"><table class="data-table"><thead><tr><th>Date</th><th>Floor</th><th>Production</th><th>Efficiency</th><th>DT%</th><th>Re-Sort</th><th></th></tr></thead><tbody>`;
-  (filtered.length?filtered:entries).forEach(e=>{
+  const _rowsToShow = (filtered.length?filtered:entries);
+  // v41ZG #4: accumulate floor-wise per-day rows into plant TOTAL + AVERAGE.
+  let _sumProd=0, _sumTgt=0, _sumResort=0, _sumDtPct=0, _nProd=0, _nResort=0, _nDt=0;
+  _rowsToShow.forEach(e=>{
     const s=calcDayStats(e.floor,e.date);
     const[y,mo,dy]=e.date.split('-');
     html+=`<tr>
@@ -4353,8 +4463,34 @@ function renderHistory(){
       <td class="mono">${s.totResort>0?`<span style="color:var(--red)">${parseFloat(s.totResort).toFixed(2)}</span>`:'—'}</td>
       <td><button class="btn-sm" onclick="loadRecord('${e.floor}','${e.date}')">Load</button></td>
     </tr>`;
+    if(s.totProd>0){ _sumProd+=s.totProd; _sumTgt+=s.totTgt; _nProd++; }
+    if(s.totResort>0){ _sumResort+=parseFloat(s.totResort); _nResort++; }
+    if(s.totDT>0){ _sumDtPct+=s.dtPct; _nDt++; }
   });
   if(filtered.length===0 && filterDate) html+=`<tr><td colspan="7" style="color:var(--t3);text-align:center;padding:12px">No records for selected date/floor.</td></tr>`;
+  // TOTAL + AVERAGE footer rows (production & re-sort are additive; efficiency/DT% are rates).
+  if(_nProd>0 || _nResort>0){
+    const _wEff = _sumTgt>0 ? (_sumProd/_sumTgt*100) : 0;          // weighted plant efficiency
+    const _avgProd = _nProd>0 ? (_sumProd/_nProd) : 0;             // avg over days with production
+    const _avgResort = _nResort>0 ? (_sumResort/_nResort) : 0;
+    const _avgDt = _nDt>0 ? (_sumDtPct/_nDt) : 0;                  // mean daily DT%
+    html+=`<tr style="background:#1a3a2e;font-weight:800">
+      <td colspan="2" class="mono" style="color:#f0c060;letter-spacing:.5px">TOTAL${filterFloor?' ('+(FLOORS[filterFloor]?.label||filterFloor)+')':' — ALL FLOORS'}</td>
+      <td class="mono" style="color:#f0c060">${_sumProd>0?_sumProd.toFixed(2):'—'}</td>
+      <td style="color:var(--t3)">—</td>
+      <td style="color:var(--t3)">—</td>
+      <td class="mono" style="color:#f0c060">${_sumResort>0?_sumResort.toFixed(2):'—'}</td>
+      <td></td>
+    </tr>
+    <tr style="background:#142e22;font-weight:700">
+      <td colspan="2" class="mono" style="color:rgba(240,192,96,0.75);letter-spacing:.5px">AVERAGE / DAY${_nProd>0?' ('+_nProd+' prod day'+(_nProd!==1?'s':'')+')':''}</td>
+      <td class="mono" style="color:rgba(240,192,96,0.75)">${_avgProd>0?_avgProd.toFixed(2):'—'}</td>
+      <td><span class="pill ${_wEff>=90?'g':_wEff>=75?'a':'r'}">${_wEff>0?_wEff.toFixed(1)+'%':'—'}</span></td>
+      <td><span class="pill ${_avgDt<=5?'g':_avgDt<=10?'a':'r'}">${_avgDt>0?_avgDt.toFixed(1)+'%':'—'}</span></td>
+      <td class="mono" style="color:rgba(240,192,96,0.75)">${_avgResort>0?_avgResort.toFixed(2):'—'}</td>
+      <td></td>
+    </tr>`;
+  }
   html+=`</tbody></table></div>`;
   document.getElementById('historyList').innerHTML=html;
 }
@@ -5034,6 +5170,9 @@ function addDprUserBadge() {
       document.querySelector('.pages')?.appendChild(auditPage);
     }
   }
+  // v41ZG #1: the badge changes the nav row width, which can change how the tab row wraps —
+  // re-measure so #wrap's top offset stays correct.
+  if (typeof _dprSyncNavOffset === 'function') { try { _dprSyncNavOffset(); setTimeout(_dprSyncNavOffset, 50); } catch(e){} }
 }
 
 function showDprUserMenu() {
@@ -5363,6 +5502,33 @@ if (typeof document !== 'undefined') {
   } else {
     document.addEventListener('DOMContentLoaded', () => setTimeout(_v39_sapStatusBadgeInit, 1000));
   }
+}
+
+// v41ZG #1: the nav tab row now WRAPS (so Plant Report / Search / Settings are always visible even
+// when they don't fit on one line). Because the nav can be taller than the fixed --nav height,
+// measure its real height and publish it as --nav-real so #wrap's top margin (and the warning
+// banner) sit just below the nav instead of being overlapped by the second tab row.
+function _dprSyncNavOffset(){
+  try {
+    const nav = document.getElementById('nav');
+    if (!nav) return;
+    const h = Math.ceil(nav.getBoundingClientRect().height);
+    if (h > 0) {
+      document.documentElement.style.setProperty('--nav-real', h + 'px');
+      // keep any fixed warning banner anchored just under the (possibly wrapped) nav
+      const banner = document.getElementById('temp-alert-banner');
+      if (banner) banner.style.top = h + 'px';
+    }
+  } catch(e) { /* non-fatal: CSS fallback (--nav) still applies */ }
+}
+if (typeof window !== 'undefined') {
+  window.addEventListener('load', _dprSyncNavOffset);
+  window.addEventListener('resize', _dprSyncNavOffset);
+  // re-measure shortly after load in case fonts/badges change tab wrapping
+  if (document.readyState === 'complete' || document.readyState === 'interactive') setTimeout(_dprSyncNavOffset, 0);
+  else document.addEventListener('DOMContentLoaded', () => setTimeout(_dprSyncNavOffset, 0));
+  setTimeout(_dprSyncNavOffset, 400);
+  setTimeout(_dprSyncNavOffset, 1200);
 }
 
 </script>

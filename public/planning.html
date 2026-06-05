@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZF</p>
+      <p>Planning Suite v3.0 · build v41ZG</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1027,13 +1027,16 @@ const SYNC = (() => {
         try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
         const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
         allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
-        // v41ZE #4: the server pull (Object.assign above) overwrites state.activeMonth with the value
-        // saved back during the previous month — which raced the 800ms initMonthlyArchive() timer and
-        // left the active month stuck (e.g. showing May on the 4th of June). Now that state is fully
-        // hydrated from the authoritative server blob, re-run the rollover check so the month advances
-        // (and the prior month auto-archives) against the real activeMonth. autoArchiveIfNeeded is
-        // idempotent — it no-ops when activeMonth already equals the current month.
-        try { await autoArchiveIfNeeded(); if (typeof buildMonthPicker === 'function') buildMonthPicker(); } catch(e) { console.warn('[Archive] post-pull rollover failed:', e?.message); }
+        // v41ZE #4 / v41ZG #2: re-run the rollover check so the month advances (and the prior month
+        // auto-archives) against the real activeMonth after the server pull hydrates state.
+        // CRITICAL (v41ZG #2): this must NOT block the print-order/order loads below. Previously it was
+        // `await`ed inline here, and when the archive save was slow/failing (Issue 1) it stalled the
+        // whole load chain, so the Printing Plan rendered empty before state.printOrders populated and
+        // never re-rendered. Run it fire-and-forget: it is idempotent and saves itself.
+        Promise.resolve().then(async () => {
+          try { await autoArchiveIfNeeded(); if (typeof buildMonthPicker === 'function') buildMonthPicker(); }
+          catch(e) { console.warn('[Archive] post-pull rollover failed:', e?.message); }
+        });
         // v41ZE #6: collapse any content-duplicate daily-printing rows now that state is fully loaded.
         if (typeof _purgeDuplicateDailyPrinting === 'function') _purgeDuplicateDailyPrinting();
         // State updated silently — user must navigate or act to see changes (prevents screen flipping)
@@ -1210,6 +1213,15 @@ const SYNC = (() => {
       }
     } catch(e) { console.warn('[Machines] Merge failed:', e.message); }
 
+    // v41ZG #2: after ALL loads above have populated state (orders, print orders, machines), re-render
+    // the current page so late-arriving data appears WITHOUT the user having to navigate away and back.
+    // Previously only the dispatch page re-rendered post-load, so if a load landed after the first
+    // render (e.g. Printing Plan), the page sat empty. Guard: skip if the user is actively typing in a
+    // field (prevents disrupting input / "screen flipping"); _renderImmediate already protects search.
+    try {
+      if (!_userIsFocused()) { _renderImmediate(); }
+    } catch(e) { /* render is best-effort; never let it break the load */ }
+
     // STEP 3: Load tracking/DPR status in background
     loadTrackingStatus().catch(() => {});
   }
@@ -1219,7 +1231,11 @@ const SYNC = (() => {
     // Run all fetches in PARALLEL
     const [wipRes, agRes, daRes, dcRes, mcActRes] = await Promise.allSettled([
       fetch(_url + '/api/tracking/wip-summary',      { signal: AbortSignal.timeout(5000) }),
-      fetch(_url + '/api/tracking/agrade-summary',   { signal: AbortSignal.timeout(5000) }),
+      // v41ZG #3: window the A-Grade aggregation to the start of the PREVIOUS month and give it a
+      // longer timeout. The unwindowed full-history aggregation was timing out at 5s on production,
+      // leaving window._liveAGrade empty so every Daily Printing Log Scan Out / Reconciliation cell
+      // showed "—". Previous-month start covers all batches in the current planning view.
+      fetch(_url + '/api/tracking/agrade-summary?since=' + _agradeSinceDate(), { signal: AbortSignal.timeout(12000) }),
       fetch(_url + '/api/tracking/dispatch-actuals', { signal: AbortSignal.timeout(5000) }),
       fetch(_url + '/api/dpr/batch-closed',          { signal: AbortSignal.timeout(5000) }),
       fetch(_url + '/api/actuals/machine-summary',   { signal: AbortSignal.timeout(5000) })
@@ -4786,6 +4802,25 @@ function _v39_reconcileSapIndents(indents) {
       printMatter = (
         line.U_PRNT_MATTR || line.U_PrintMatter || line.U_PrintingMatter || ''
       ).toString().trim();
+      // v41ZG #4: read the SAP per-line printing-ink fields (Ink Cap / Ink Body — e.g. BLACK / RED).
+      // The exact SAP UDF name isn't documented (print matter turned out to be the non-obvious
+      // U_PRNT_MATTR), so scan a list of likely names per SAP B1 convention rather than guessing one.
+      // First match wins; whitespace-trimmed. If none match, fields stay '' and the planner can type them.
+      const _pickField = (cands) => {
+        for (const k of cands) {
+          const v = line[k];
+          if (v != null && String(v).trim() !== '') return String(v).trim();
+        }
+        return '';
+      };
+      const inkCap = _pickField([
+        'U_INK_CAP','U_INKCAP','U_INK_CAP_COLOUR','U_INK_CAP_COLOR','U_CAP_INK',
+        'U_InkCap','U_Ink_Cap','U_INKCAPCOLOUR','U_INK_C','U_CAPINK'
+      ]);
+      const inkBody = _pickField([
+        'U_INK_BODY','U_INKBODY','U_INK_BODY_COLOUR','U_INK_BODY_COLOR','U_BODY_INK',
+        'U_InkBody','U_Ink_Body','U_INKBODYCOLOUR','U_INK_B','U_BODYINK'
+      ]);
       // Find matching planned orders
       const planned = (state.orders || []).filter(o =>
         !o.deleted &&
@@ -4800,7 +4835,7 @@ function _v39_reconcileSapIndents(indents) {
         out.push({
           docEntry, docNum, cardCode, cardName, dueDate,
           lineNum: line.LineNum != null ? line.LineNum : li,
-          itemCode, size, colour, pcCode, printMatter,
+          itemCode, size, colour, pcCode, printMatter, inkCap, inkBody,
           totalIndentQty: parseFloat(lineQty.toFixed(3)),
           plannedQty: parseFloat(plannedQty.toFixed(3)),
           unplannedQty: parseFloat(unplannedQty.toFixed(3)),
@@ -5258,8 +5293,10 @@ async function _v39_confirmAssign() {
     // because SAP's U_PrintMatter UDF is not populated. Print matter likewise entered by planner.
     isPrinted: assignPrinted,
     printMatter: assignPrinted ? assignMatter : '',
-    inkCap: '',
-    inkBody: '',
+    // v41ZG #4: fill Printing Ink from the SAP indent (read in _v39_reconcileSapIndents). Previously
+    // hardcoded '' here, so assigning a SAP indent always left Ink Cap / Ink Body blank in Planning.
+    inkCap: u.inkCap || '',
+    inkBody: u.inkBody || '',
     qty,
     aGrade,
     grossQty: parseFloat((assignPrinted ? (qty * 1.07 * 1.01 * 1.01) : (qty / (aGrade/100))).toFixed(3)),
@@ -9732,6 +9769,14 @@ function monthLabel(ym) {
 function currentYM() {
   const now = new Date();
   return `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+}
+
+// v41ZG #3: first day of the PREVIOUS month, as YYYY-MM-DD. Used to window the live A-Grade
+// aggregation so it covers the current + prior planning month without scanning all history.
+function _agradeSinceDate() {
+  const now = new Date();
+  const d = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-01`;
 }
 
 // ── Month filter state ────────────────────────────────────────

@@ -11404,18 +11404,45 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
     (planState.orders||[]).forEach(o => { if(o.batchNumber) batchSizeMap[o.batchNumber.toUpperCase()] = String(o.size||'2'); });
 
     // Scan counts per batch per dept per type
+    // v41ZG #3: optional ?since=YYYY-MM-DD window. The three aggregations below scan the FULL
+    // tracking_scans / tracking_wastage / production_actuals tables, which have grown unbounded
+    // since April. On production Postgres that exceeds the planning client's fetch timeout, so the
+    // live A-Grade feed (window._liveAGrade) never loads and the Daily Printing Log's Scan Out /
+    // Reconciliation columns all show "—". Windowing to recent activity keeps every per-batch value
+    // identical for the batches the planning view cares about, while cutting the rows scanned.
+    const sinceRaw = (req.query.since || '').trim();
+    const since = /^\d{4}-\d{2}-\d{2}$/.test(sinceRaw) ? sinceRaw : null;
     let scans, wastage, prodActuals;
     if (pgPool) {
+      const scanSql = since
+        ? 'SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans WHERE ts >= $1 GROUP BY batch_number, dept, type'
+        : 'SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type';
+      const wasteSql = since
+        ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE ts >= $1 GROUP BY batch_number, dept, type'
+        : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
+      const prodSql = since
+        ? 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals WHERE date >= $1 GROUP BY batch_number'
+        : 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number';
+      const args = since ? [since] : [];
       const [r1, r2, r3] = await Promise.all([
-        pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type'),
-        pgPool.query('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type'),
-        pgPool.query('SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number'),
+        pgPool.query(scanSql, args),
+        pgPool.query(wasteSql, args),
+        pgPool.query(prodSql, args),
       ]);
       scans = r1.rows; wastage = r2.rows; prodActuals = r3.rows;
     } else {
-      scans = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type').all();
-      wastage = db.prepare('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type').all();
-      prodActuals = db.prepare('SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number').all();
+      const scanSql = since
+        ? 'SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans WHERE ts >= ? GROUP BY batch_number, dept, type'
+        : 'SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type';
+      const wasteSql = since
+        ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE ts >= ? GROUP BY batch_number, dept, type'
+        : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
+      const prodSql = since
+        ? 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals WHERE date >= ? GROUP BY batch_number'
+        : 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number';
+      scans = since ? db.prepare(scanSql).all(since) : db.prepare(scanSql).all();
+      wastage = since ? db.prepare(wasteSql).all(since) : db.prepare(wasteSql).all();
+      prodActuals = since ? db.prepare(prodSql).all(since) : db.prepare(prodSql).all();
     }
     const grossProdMap = {};
     prodActuals.forEach(r => { if(r.batch_number) grossProdMap[r.batch_number.toUpperCase()] = parseFloat(r.gross_prod||0); });
@@ -12155,11 +12182,39 @@ app.get('/api/planning/all-kv', async (req, res) => {
 });
 
 // ── Start server ──────────────────────────────────────────────
+// v41ZG #1: ensurePostgresTables() creates ~30 tables inside a SINGLE try block, so if any one
+// CREATE/ALTER throws (transient error, type conflict on a pre-existing table, etc.) the whole
+// function aborts and tables defined later — notably month_archives — never get created. A missing
+// month_archives makes /api/archives/save return 500, which silently fails the auto-archive and
+// leaves the active planning month stuck on the prior month (the symptom reported on June 5).
+// This helper creates the SAME critical tables idempotently, each in its OWN try, so one failure
+// can't block the others. CREATE TABLE IF NOT EXISTS is safe to run on every boot.
+async function ensureCriticalPostgresTables() {
+  if (!pgPool) return;
+  const stmts = [
+    ['month_archives', `CREATE TABLE IF NOT EXISTS month_archives (
+        id SERIAL PRIMARY KEY,
+        month TEXT NOT NULL UNIQUE,
+        archived_at TIMESTAMPTZ DEFAULT NOW(),
+        archived_by TEXT,
+        snapshot_json JSONB,
+        is_auto BOOLEAN DEFAULT TRUE
+      )`],
+    ['idx_month_archives_month', `CREATE INDEX IF NOT EXISTS idx_month_archives_month ON month_archives(month)`],
+  ];
+  for (const [label, sql] of stmts) {
+    try { await pgPool.query(sql); }
+    catch (e) { console.warn(`[ensureCriticalPostgresTables] ${label} failed:`, e.message); }
+  }
+}
+
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
   console.log(`[Sunloc] DB: ${DB_PATH}`);
   // Ensure PostgreSQL tables exist (handles cases where PgDatabase migrations didn't create them)
-  ensurePostgresTables().then(()=>{
+  // v41ZG #1: run the isolated critical-table creator FIRST so month_archives is guaranteed even if
+  // the big ensurePostgresTables() aborts partway through.
+  ensureCriticalPostgresTables().then(() => ensurePostgresTables()).then(()=>{
     warmPlanningCache();
     warmActualsCache();
     // v37I bugfix: one-time backfill — recompute dispatched_qty for ALL batches that have
