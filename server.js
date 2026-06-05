@@ -10862,10 +10862,19 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
 
 app.get('/api/tracking/wip-summary', async (req, res) => {
   try {
-    let summary, closures;
+    // v41ZH #1a: Planning's loadTrackingStatus (every 60s, on every open Planning tab) only reads
+    // `closures` from this response — it explicitly discards `scanSummary`. The scan GROUP BY over
+    // the full, unbounded tracking_scans table was therefore pure wasted work every minute. When
+    // ?closuresOnly=1 is passed we skip that aggregation entirely and return closures only. DPR
+    // still calls without the flag (it genuinely consumes scanSummary for per-machine A-Grade), so
+    // its behaviour is byte-identical to before.
+    const closuresOnly = req.query.closuresOnly === '1' || req.query.closuresOnly === 'true';
+    let summary = [], closures;
     if (pgPool) {
-      const r1 = await pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type');
-      summary = r1.rows;
+      if (!closuresOnly) {
+        const r1 = await pgPool.query('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type');
+        summary = r1.rows;
+      }
       try {
         const r2 = await pgPool.query("SELECT batch_number, dept, closed, closed_at FROM tracking_stage_closure WHERE closed = 1 OR closed::text = '1'");
         closures = r2.rows;
@@ -10876,11 +10885,52 @@ app.get('/api/tracking/wip-summary', async (req, res) => {
         } catch(ce2) { closures = []; }
       }
     } else {
-      summary = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type').all();
+      if (!closuresOnly) {
+        summary = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt FROM tracking_scans GROUP BY batch_number, dept, type').all();
+      }
       closures = db.prepare("SELECT batch_number, dept, closed, closed_at FROM tracking_stage_closure WHERE closed = 1").all();
     }
     res.json({ ok: true, scanSummary: summary, closures });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── v41ZH #1: Lightweight sync-version probe ──────────────────
+// Returns cheap aggregate signatures so the tracking client can decide which heavy endpoints
+// actually need re-fetching on its 2-minute auto-sync. The goal: never re-pull a large quantum
+// of data (all ~10k labels, the full box-stages map, the scan-summary aggregation) when nothing
+// has changed. Each signature changes on the mutations that matter:
+//   labels   — count (insert), voided (void), printed (print) → covers display-affecting changes
+//   scans    — count + max(ts) (scans are append-only) → drives scan-summary + box-stages + recent
+//   wastage  — count (append-only)
+//   dispatch — count (Phase 18 truck dispatches; affects box-stages 'dispatched' promotion)
+// All four are COUNT/MAX aggregates with tiny result payloads. No history is dropped anywhere —
+// the heavy endpoints themselves are unchanged; the client just skips calling them when the
+// signature is identical to the last successfully-applied pull.
+app.get('/api/tracking/sync-version', async (req, res) => {
+  try {
+    const one = async (sql) => {
+      try {
+        if (pgPool) { const r = await pgPool.query(sql); return r.rows[0] || {}; }
+        return db.prepare(sql).get() || {};
+      } catch (e) { return {}; }
+    };
+    // voided/printed flags are stored as 0/1 (SQLite) or boolean/0-1 (PG). COALESCE→0 then
+    // compare > 0 / truthy works in both dialects without dialect-specific literals.
+    const labSql = pgPool
+      ? "SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN COALESCE(voided,0)::int <> 0 THEN 1 ELSE 0 END),0) AS voided, COALESCE(SUM(CASE WHEN COALESCE(printed,0)::int <> 0 THEN 1 ELSE 0 END),0) AS printed FROM tracking_labels"
+      : "SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN COALESCE(voided,0)<>0 THEN 1 ELSE 0 END),0) AS voided, COALESCE(SUM(CASE WHEN COALESCE(printed,0)<>0 THEN 1 ELSE 0 END),0) AS printed FROM tracking_labels";
+    const lab = await one(labSql);
+    const scn = await one('SELECT COUNT(*) AS count, MAX(ts) AS maxts FROM tracking_scans');
+    const wst = await one('SELECT COUNT(*) AS count FROM tracking_wastage');
+    const dsp = await one('SELECT COUNT(*) AS count FROM tracking_dispatch_records');
+    res.json({
+      ok: true,
+      labels:   { count: parseInt(lab.count || 0, 10), voided: parseInt(lab.voided || 0, 10), printed: parseInt(lab.printed || 0, 10) },
+      scans:    { count: parseInt(scn.count || 0, 10), maxTs: scn.maxts || scn.maxTs || null },
+      wastage:  { count: parseInt(wst.count || 0, 10) },
+      dispatch: { count: parseInt(dsp.count || 0, 10) }
+    });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 
@@ -11227,10 +11277,18 @@ app.get('/api/tracking/box-stages', async (req, res) => {
       const key = `${s.dept}_${s.type}`;
       boxCounts[s.batch_number][key] = (boxCounts[s.batch_number][key] || 0) + 1;
     }
+    // v41ZH #2: authoritative per-batch NON-VOIDED label total. `labels` was loaded above with
+    // `WHERE COALESCE(voided,0)=0`, and labelsByBatch groups it — so this count matches the client's
+    // getLabelsByBatch(bn).length definition exactly. It is the source-of-truth fallback the tracking
+    // client uses for the "Labels" header when its own label cache hasn't loaded yet (kills the
+    // transient "Labels: 0 / Packed: N" race without ever changing a count that the cache would show).
+    const labelCountByBatch = {};
+    for (const bn in labelsByBatch) labelCountByBatch[bn] = labelsByBatch[bn].length;
     res.json({
       ok: true,
       stages,
       boxCounts,
+      labelCountByBatch,
       dispatchedByBatch,
       labelCount: labels.length,
       scanCount: scans.length,

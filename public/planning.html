@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZG</p>
+      <p>Planning Suite v3.0 · build v41ZH</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1230,7 +1230,7 @@ const SYNC = (() => {
     if (!_url) return;
     // Run all fetches in PARALLEL
     const [wipRes, agRes, daRes, dcRes, mcActRes] = await Promise.allSettled([
-      fetch(_url + '/api/tracking/wip-summary',      { signal: AbortSignal.timeout(5000) }),
+      fetch(_url + '/api/tracking/wip-summary?closuresOnly=1',      { signal: AbortSignal.timeout(5000) }),
       // v41ZG #3: window the A-Grade aggregation to the start of the PREVIOUS month and give it a
       // longer timeout. The unwindowed full-history aggregation was timing out at 5s on production,
       // leaving window._liveAGrade empty so every Daily Printing Log Scan Out / Reconciliation cell

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZG</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZH</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZG</p>
+      <p>Tracking Suite v1.0 · build v41ZH</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZG</p>
+      <p>Tracking Suite v1.0 · build v41ZH</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1076,6 +1076,22 @@ function getNextStage(dept, batchNo){
 
 function getLabelsByBatch(batchNo){ return state.labels.filter(l=>l.batchNumber===batchNo&&!l.voided) }
 function getPrintedLabelCount(batchNo){ return state.labels.filter(l=>l.batchNumber===batchNo&&l.printed&&!l.voided).length }
+// v41ZH #2: CANONICAL per-batch label count — the single source of truth for every batch/report
+// render (collapsed batch card, Report A screen+export, search results) so the displayed "Labels"
+// count can never disagree across views. The client label cache (non-voided) stays authoritative
+// whenever it is populated — this returns the SAME number as the old `getLabelsByBatch(bn).length`
+// in that case, so no existing count changes. ONLY when the client cache is empty for this batch
+// (the labels-all fetch hasn't landed yet on a fresh load) does it fall back to the server-
+// authoritative non-voided label count per batch from /api/tracking/box-stages
+// (window._v40_labelCountByBatch). Both sides count non-voided labels, so the fallback is definitionally identical — it simply
+// prevents the spurious "Labels: 0 / Packed: 8" race seen before the label cache loads. Never
+// returns a number smaller than the client cache would.
+function getBatchLabelCount(batchNo){
+  const local = getLabelsByBatch(batchNo).length;
+  if (local > 0) return local;
+  const srv = window._v40_labelCountByBatch ? window._v40_labelCountByBatch[batchNo] : null;
+  return (typeof srv === 'number' && srv > 0) ? srv : 0;
+}
 
 function getStageQty(batchNo, dept, type){
   // Returns total lakhs scanned in/out for a batch at a dept
@@ -1502,7 +1518,7 @@ function configureServer(){
   if(url===null) return;
   serverUrl=sanitizeServerUrl(url);
   try { localStorage.setItem('sunloc_server_url',serverUrl); } catch(e) {}
-  checkServer().then(ok=>{ if(ok) pullFromServer(); });
+  checkServer().then(ok=>{ if(ok) pullFromServer(true); });
 }
 
 
@@ -1547,7 +1563,11 @@ function normLabel(l){
   return out;
 }
 
-async function pullFromServer(){
+// v41ZH #1: last successfully-applied sync signature (from /api/tracking/sync-version). Each
+// section (labels/scans/wastage/dispatch) is only recorded here once its heavy pull succeeded,
+// so a transient failure is retried on the next cycle rather than skipped.
+let _lastSyncVer = null;
+async function pullFromServer(force){
   if(!serverUrl) return;
   try{
     // STEP 1: Load planning batches FIRST — fast, shows batches immediately
@@ -1572,13 +1592,38 @@ async function pullFromServer(){
         // State updated silently — no auto-render to prevent screen flipping
       }
     }
+    // v41ZH #1: sync-version gate — decide which HEAVY endpoints actually need re-fetching.
+    // Principle: never re-pull a large quantum of data (all ~10k labels, the full box-stages map,
+    // the scan-summary aggregation, the scans-recent window) when its signature is unchanged since
+    // the last successfully-applied pull. force=true (initial load + manual Sync + post-action
+    // refreshes) always pulls everything. If the probe itself fails, ver=null → every flag is true
+    // → we fall back to the old always-pull behaviour (safe). NO history is dropped: the heavy
+    // endpoints are unchanged; we only skip CALLING them when nothing changed.
+    let _ver = null;
+    try {
+      const vr = await fetch(serverUrl+'/api/tracking/sync-version',{signal:AbortSignal.timeout(8000)});
+      if (vr.ok) { const vj = await vr.json(); if (vj && vj.ok) _ver = vj; }
+    } catch(_ve) {}
+    const _lv = _lastSyncVer;
+    const _eq = (a,b)=> a && b && JSON.stringify(a)===JSON.stringify(b);
+    const _bsMap = window._v40_boxStagesMap;
+    const labelsChanged  = !!force || !_ver || !_lv || !_eq(_ver.labels, _lv.labels) || state.labels.length===0;
+    const scansChanged   = !!force || !_ver || !_lv || (_ver.scans&&_lv.scans ? (_ver.scans.count!==_lv.scans.count || _ver.scans.maxTs!==_lv.scans.maxTs) : true) || state.scans.length===0;
+    const wastageChanged = !!force || !_ver || !_lv || (_ver.wastage&&_lv.wastage ? (_ver.wastage.count!==_lv.wastage.count) : true) || !(state.wastage&&state.wastage.length);
+    const dispatchChanged= !!force || !_ver || !_lv || (_ver.dispatch&&_lv.dispatch ? (_ver.dispatch.count!==_lv.dispatch.count) : true);
+    const _ssNeed = scansChanged || !hasScanSummary();
+    const _bsNeed = scansChanged || dispatchChanged || !_bsMap || Object.keys(_bsMap||{}).length===0;
+    const _wNeed  = wastageChanged;
     // STEP 2: Load all labels — with retry so a single slow/timed-out fetch never leaves the
     // client label cache empty (which showed as "Labels Generated: 0", empty label table, empty
     // print queue, no orange labels). v41b: the labels-all query (~10.2k rows) was timing out on
     // the shared pool; the new idx_labels_generated index fixes the speed, and this retry loop is
     // the safety net so a transient slow response self-heals instead of silently giving up.
+    // v41ZH #1: gated — only re-pulled when the label signature (count/voided/printed) changed.
     flushPendingLabelPush();
     let _labelsLoaded = false;
+    const _labelsRan = labelsChanged;
+    if (labelsChanged)
     for (let _attempt = 1; _attempt <= 3 && !_labelsLoaded; _attempt++) {
       try {
         const lr = await fetch(serverUrl+'/api/tracking/labels-all', { signal: AbortSignal.timeout(30000) });
@@ -1610,6 +1655,7 @@ async function pullFromServer(){
               try {
                 if (currentPage === 'labels') renderLabels();
                 else if (currentPage === 'dashboard') renderDashboard();
+                else if (currentPage === 'batch-tracker') renderBatchTracker();
               } catch(_re) {}
             }
           }
@@ -1621,8 +1667,10 @@ async function pullFromServer(){
         await new Promise(r => setTimeout(r, 1500 * _attempt)); // backoff 1.5s, 3s
       }
     }
-    if (!_labelsLoaded) {
+    if (_labelsRan && !_labelsLoaded) {
       console.warn('[labels-all] all 3 attempts failed — keeping any cached labels ('+state.labels.length+')');
+    } else if (!_labelsRan) {
+      console.log('[labels-all] skipped — label signature unchanged');
     }
     // STEP 3: Recent scans for the operator scan UI + alerts.
     // v41 PERF ROOT-CAUSE FIX: the endpoint previously returned ALL scans (LIMIT removed in v40).
@@ -1632,7 +1680,10 @@ async function pullFromServer(){
     // operator scan UI (recent boxes) and alerts (only care since 2026-04-27). Full-history needs
     // are served elsewhere: reports use the server-side scan-summary (_ss), and per-box stage uses
     // the box-stages endpoint — both unaffected. Scan duplicate-prevention is server-authoritative.
+    // v41ZH #1: gated — skipped when the scan signature (count + max ts) is unchanged.
     let _step3ScansOk = false;
+    const _scansRan = scansChanged;
+    if (scansChanged)
     try{
       const _now=new Date();
       const _since=new Date(_now.getFullYear(), _now.getMonth()-1, 1); // 1st of previous month
@@ -1670,16 +1721,20 @@ async function pullFromServer(){
     // awaited strictly in series (~15s + ~15s + ~20s), a big chunk of the 2–3 min dashboard delay.
     // Fire all three CONCURRENTLY and process each result in its original order so every data-
     // integrity guard and the scan-summary _local-clearing logic stay byte-identical to before.
+    // v41ZH #1: each is gated — a skipped one resolves to null and the existing `wr&&wr.ok`-style
+    // guards below treat null as "no fresh data" without touching state, so no history is dropped.
+    let _ssOk = false, _bsOk = false, _wOk = false;
     const [_wRes, _ssRes, _bsRes] = await Promise.allSettled([
-      fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)}),
-      fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)}),
-      fetch(serverUrl+'/api/tracking/box-stages',{signal:AbortSignal.timeout(20000)}),
+      _wNeed  ? fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)})      : Promise.resolve(null),
+      _ssNeed ? fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)}) : Promise.resolve(null),
+      _bsNeed ? fetch(serverUrl+'/api/tracking/box-stages',{signal:AbortSignal.timeout(20000)})   : Promise.resolve(null),
     ]);
 
     // STEP 3.5: wastage (dedicated endpoint)
     try{
       const wr = _wRes.status==='fulfilled' ? _wRes.value : null;
       if(wr&&wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){
+        _wOk = true;
         const sw=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));
         // v41 DATA-INTEGRITY GUARD (same class as labels): don't let a transient empty response
         // wipe + persist non-empty local wastage. Empty server wastage while we hold local entries
@@ -1698,6 +1753,7 @@ async function pullFromServer(){
       if(ss&&ss.ok){
         const sj=await ss.json();
         if(sj.ok){
+          _ssOk = true;
           state.scanSummary  = sj.summary   || {};
           state.wastageSummary = sj.wastage  || {};
           state.dispatchedSummary = sj.dispatched || {};
@@ -1733,10 +1789,12 @@ async function pullFromServer(){
       if (bs&&bs.ok) {
         const bj = await bs.json();
         if (bj.ok) {
+          _bsOk = true;
           window._v40_boxStagesMap = bj.stages || {};
           window._v40_boxStagesLoadedAt = Date.now();
           window._v40_dispatchedByBatch = bj.dispatchedByBatch || {};
           window._v40_boxCountsByBatch = bj.boxCounts || {};
+          window._v40_labelCountByBatch = bj.labelCountByBatch || {};
           console.log(`[v41y PERF] Box stages loaded: ${Object.keys(window._v40_boxStagesMap).length} labels, ${bj.scanCount} scans, ${bj.dispatchRecCount} dispatch records`);
         }
       }
@@ -1744,14 +1802,23 @@ async function pullFromServer(){
     // v41ZE #1: now that wastage + scan-summary (the dashboard WIP sources) are in, paint the
     // dashboard immediately rather than waiting for the final full-state step.
     try { if (currentPage === 'dashboard') renderDashboard(); } catch(_rd36) {}
+    // v41ZH #2: box-stages just populated window._v40_boxCountsByBatch (authoritative non-voided
+    // box counts). Repaint the Batch Tracker so the "Labels" header reflects the true count even
+    // when the client label cache is still loading — kills the "Labels: 0 / Packed: N" race.
+    try { if (currentPage === 'batch-tracker') renderBatchTracker(); } catch(_rbt37) {}
     // STEP 4: Full state (stageClosure + dispatchRecs + alerts; scans only as fallback)
     // v41 PERF FIX: /api/tracking/state returns SELECT * FROM tracking_scans (ALL ~29.5k rows) —
     // extremely heavy, and it ran every sync. stageClosure & dispatchRecs are ONLY available here,
     // so we can't simply skip it. Instead: when STEP 3 already loaded scans, request ?light=1 which
     // omits the giant scans array but still returns stageClosure/dispatchRecs/alerts. Only when
     // STEP 3 failed do we request the full payload (scans included) as the recovery path.
+    // v41ZH #1: request the light payload whenever we already hold scans — either STEP 3 just
+    // loaded them, OR STEP 3 was skipped because the scan signature was unchanged (scans already
+    // in state). Only request the heavy full payload (with scans) when state.scans is genuinely
+    // empty and STEP 3 didn't succeed — the true recovery case.
     try{
-      const _stateUrl = serverUrl+'/api/tracking/state'+(_step3ScansOk?'?light=1':'');
+      const _haveScans = _step3ScansOk || state.scans.length>0;
+      const _stateUrl = serverUrl+'/api/tracking/state'+(_haveScans?'?light=1':'');
       const r=await fetch(_stateUrl,{signal:AbortSignal.timeout(30000)});
       if(r.ok){
         const j=await r.json();
@@ -1781,6 +1848,17 @@ async function pullFromServer(){
         }
       }
     }catch(e4){}
+    // v41ZH #1: record the just-applied signature PER SECTION — only advance a section's recorded
+    // version when its heavy pull actually succeeded (or was legitimately skipped as unchanged), so
+    // a transient failure leaves that section "changed" and forces a retry on the next 2-min cycle.
+    if (_ver) {
+      _lastSyncVer = _lastSyncVer || {};
+      if (!_labelsRan || _labelsLoaded) _lastSyncVer.labels = _ver.labels;
+      const _scansDepsOk = (!_scansRan || _step3ScansOk) && (!_ssNeed || _ssOk) && (!_bsNeed || _bsOk);
+      if (_scansDepsOk) _lastSyncVer.scans = _ver.scans;
+      if (!_bsNeed || _bsOk) _lastSyncVer.dispatch = _ver.dispatch;
+      if (!_wNeed  || _wOk)  _lastSyncVer.wastage  = _ver.wastage;
+    }
   }catch(e){ setSyncBadge('offline'); }
 }
 
@@ -1892,7 +1970,7 @@ function loadState(){
   state.alerts = [];
   if(serverUrl){
     // Flush any pending scans immediately before loading state
-    _flushPendingScans().then(()=> pullFromServer());
+    _flushPendingScans().then(()=> pullFromServer(true));
   }
 }
 
@@ -3845,7 +3923,7 @@ function renderDeptScan(dept){
 
   document.getElementById('tb-actions').innerHTML=`
     <button class="btn btn-secondary btn-sm" onclick="navigate('batch-tracker')">📊 View All Batches</button>
-    <button class="btn btn-secondary btn-sm" onclick="pullFromServer().then(()=>renderPage(currentPage))">🔄 Sync</button>`;
+    <button class="btn btn-secondary btn-sm" onclick="pullFromServer(true).then(()=>renderPage(currentPage))">🔄 Sync</button>`;
 
   el.innerHTML=`
   <div class="card mb-16" style="border-top:4px solid ${cfg.color}">
@@ -6909,7 +6987,7 @@ function renderBatchCard(batch){
   const dispDate=calcDispatchDate(batch);
   const ag=_v41_agradeFor(batchNo,batch.isPrinted?'printed':'unprinted');
   const labels=getLabelsByBatch(batchNo);
-  const totalBoxes=labels.length;
+  const totalBoxes=getBatchLabelCount(batchNo);
   // v40 Phase 18.14: combined-source dispatched count (legacy scans + Phase 18 records)
   const dispatched = _v40_dispatchedBoxes(batchNo);
   const dispatchPct=totalBoxes>0?(dispatched/totalBoxes*100):0;
@@ -7980,7 +8058,7 @@ async function _v41_submitReconcile(batchNo, ym){
     closeModal();
     // Refresh: clear month A-Grade cache (windowed data changed) + reload scans/wastage, then re-render
     _v41_clearAgradeMonthCache();
-    if(typeof pullFromServer==='function'){ try{ await pullFromServer(); }catch(e){} }
+    if(typeof pullFromServer==='function'){ try{ await pullFromServer(true); }catch(e){} }
     renderReportZ();
   }catch(e){
     toast('Network error: '+e.message,'#dc2626');
@@ -8351,7 +8429,7 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
     _captureReportScroll();
-    reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Report C — Machine-wise WIP Status</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer().then(()=>renderReportC())">🔄 Sync & Retry</button></div>`;
+    reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Report C — Machine-wise WIP Status</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer(true).then(()=>renderReportC())">🔄 Sync & Retry</button></div>`;
 _scrollIntoReportIfFirstView('C');
     return;
   }
@@ -8634,7 +8712,7 @@ function _v41_renderReportAInner(){
         <span class="badge ${ag.pct>=95?'badge-green':ag.pct>=90?'badge-amber':'badge-red'}">${fmt(ag.pct,1)}% A-Grade</span>
       </div>
       <div class="grid-4 mb-8">
-        <div class="text-sm"><span class="text-muted">Labels:</span> ${labels.length}</div>
+        <div class="text-sm"><span class="text-muted">Labels:</span> ${getBatchLabelCount(b.batchNumber)}</div>
         <div class="text-sm"><span class="text-muted">WIP Days:</span> ${fmt(wipDays,1)}</div>
         <div class="text-sm"><span class="text-muted">Est Dispatch:</span> ${fmtDate(calcDispatchDate(b))}</div>
         <div class="text-sm"><span class="text-muted">Dispatched:</span> ${fmt(dispatched)}L</div>
@@ -11087,7 +11165,7 @@ function exportReportA(){
       'Batch':b.batchNumber,'Customer':b.customer||'','Machine':b.machineId||'','Size':b.size,
       'Type':b.isPrinted?'PTD':'UP','Status':b.status||'',
       'Planned Qty (L)':fmt(b.qty||0),'Gross Prod (L)':fmt(b.actualProd||b.actualQty||0),
-      'Labels Generated':getLabelsByBatch(b.batchNumber).length,
+      'Labels Generated':getBatchLabelCount(b.batchNumber),
       'WIP Days':fmt(wipDays,1),'Est Dispatch':calcDispatchDate(b)||'',
       'A-Grade %':fmt(ag.pct,1),'A-Grade (L)':fmt(ag.aGrade),
       'Salvage (L)':fmt(ag.salvage),'Remelt (L)':fmt(ag.remelt),
@@ -11132,7 +11210,12 @@ function exportReportB(){
         ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
         : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
       const aimInQtyEx=boxToLakh(aimInBoxesEx,b?.size||'0');
-      const prodWipEx=Math.max(0,grossProdEx-aimInQtyEx);
+      // v41ZH #0: bring the Report B EXPORT Prod WIP in line with the on-screen / canonical v41ZB
+      // formula. The export path was still on the old (Gross − AIM Scan In) definition while the
+      // screen (line ~8309) and getBatchWIPBreakdown.preAIM both deduct AIM-stage salvage+remelt.
+      //   Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In
+      const aimWasteEx=getTotalWastage(batchNo,'aim');
+      const prodWipEx=Math.max(0,grossProdEx-aimWasteEx.salvage-aimWasteEx.remelt-aimInQtyEx);
       rows.push({
         'Department':DEPT_LABELS[dept]||dept,'Batch':batchNo,'Customer':b?.customer||'',
         'Prod WIP (L)':fmt(prodWipEx),
@@ -11346,7 +11429,7 @@ function renderTrackingSearch(){
       const scans=state.scans.filter(s=>s.batchNumber===b.batchNumber);
       const localPacked = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
       const packed = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPacked) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
-      return {...b, _labelCount:labels.length, _scanCount:scans.length, _packed:packed};
+      return {...b, _labelCount:getBatchLabelCount(b.batchNumber), _scanCount:scans.length, _packed:packed};
     });
   }
 
@@ -11599,7 +11682,7 @@ function submitBackfill(){
     .then(j=>{
       if(j.ok){
         resultEl.innerHTML=`<div class="alert alert-success">✅ ${j.inserted} scan records inserted for ${batchNumber} @ ${dept.toUpperCase()}. Syncing...</div>`;
-        pullFromServer();
+        pullFromServer(true);
       } else {
         resultEl.innerHTML=`<div class="alert alert-danger">❌ Server error: ${j.error}</div>`;
       }
@@ -11624,7 +11707,7 @@ function submitBackfillWastage(){
     .then(j=>{
       if(j.ok){
         resultEl.innerHTML=`<div class="alert alert-success">✅ Wastage entries inserted for ${batchNumber} @ ${dept.toUpperCase()}. Syncing...</div>`;
-        pullFromServer();
+        pullFromServer(true);
       } else {
         resultEl.innerHTML=`<div class="alert alert-danger">❌ Server error: ${j.error}</div>`;
       }
@@ -11637,7 +11720,7 @@ function saveServerUrl(){
   try { localStorage.setItem('sunloc_server_url',serverUrl); } catch(e) {}
   checkServer().then(ok=>{
     if(ok){
-      pullFromServer().then(()=>{
+      pullFromServer(true).then(()=>{
         const msg = state.batches.length > 0
           ? '✅ Server connected! ' + state.batches.length + ' batches loaded from Planning App.'
           : '⚠️ Server connected but 0 batches found. Open Planning App and make sure orders are saved, then click Save & Test again.';
@@ -11864,9 +11947,24 @@ setInterval(()=>{
 
 // v40 Phase 18.14: Box-stages refresh every 5 minutes — keeps per-label stages
 // fresh in long-running tracking sessions so dispatched batches transition without hard refresh.
+// v41ZH #1: now version-gated — checks the cheap sync-version probe first and only re-pulls the
+// full box-stages map when the scan or dispatch signature actually changed since the last applied
+// sync. Avoids loading the entire scans+labels set into the server every 5 minutes when idle.
 setInterval(async () => {
   if (!serverUrl) return;
   try {
+    let ver = null;
+    try {
+      const vr = await fetch(serverUrl + '/api/tracking/sync-version', { signal: AbortSignal.timeout(8000) });
+      if (vr.ok) { const vj = await vr.json(); if (vj && vj.ok) ver = vj; }
+    } catch (_ve) {}
+    const lv = _lastSyncVer;
+    const unchanged = ver && lv && lv.scans && lv.dispatch
+      && ver.scans && ver.dispatch
+      && ver.scans.count === lv.scans.count && ver.scans.maxTs === lv.scans.maxTs
+      && ver.dispatch.count === lv.dispatch.count
+      && window._v40_boxStagesMap && Object.keys(window._v40_boxStagesMap).length > 0;
+    if (unchanged) return; // nothing new — skip the heavy pull
     const r = await fetch(serverUrl + '/api/tracking/box-stages', { signal: AbortSignal.timeout(20000) });
     if (r.ok) {
       const j = await r.json();
@@ -11875,6 +11973,9 @@ setInterval(async () => {
         window._v40_boxStagesLoadedAt = Date.now();
         window._v40_dispatchedByBatch = j.dispatchedByBatch || {};
         window._v40_boxCountsByBatch = j.boxCounts || {};
+        window._v40_labelCountByBatch = j.labelCountByBatch || {};
+        if (ver) { _lastSyncVer = _lastSyncVer || {}; _lastSyncVer.scans = ver.scans; _lastSyncVer.dispatch = ver.dispatch; }
+        if (currentPage === 'batch-tracker') { try { renderBatchTracker(); } catch (_e) {} }
       }
     }
   } catch (e) { /* silent — next interval will retry */ }
