@@ -25,8 +25,15 @@ body{font-family:var(--font);background:var(--bg);color:var(--t1);font-size:13px
 .nbrand{font-family:var(--fc);font-weight:800;font-size:15px;letter-spacing:1px;color:#f0c060;white-space:nowrap;margin-right:6px;flex-shrink:0}
 .nbrand b{color:#ffffff}
 .nbrand small{font-size:11px;color:rgba(255,255,255,0.5);font-weight:400;margin-left:4px}
-.ntabs{display:flex;flex:1;height:100%;overflow-x:auto;scrollbar-width:none;min-width:0}
-.ntabs::-webkit-scrollbar{display:none}
+.ntabs{display:flex;flex:1;height:100%;overflow-x:auto;scrollbar-width:thin;scrollbar-color:rgba(240,192,96,0.5) transparent;min-width:0}
+/* v41ZF #1: the nav tab row scrolls horizontally when there are more tabs than fit (e.g. admin gets
+   an extra "Audit Log" tab, which pushed Plant Report / Search / Settings off the right edge with NO
+   visible scrollbar — so admins literally could not see or reach the Plant Report tab). Show a slim
+   scrollbar as a scroll affordance so the overflow is discoverable. (Mobile keeps it hidden for
+   touch-swipe — see the max-width:768px block below.) */
+.ntabs::-webkit-scrollbar{height:5px}
+.ntabs::-webkit-scrollbar-thumb{background:rgba(240,192,96,0.5);border-radius:3px}
+.ntabs::-webkit-scrollbar-track{background:transparent}
 .ntab{display:flex;align-items:center;gap:4px;padding:0 8px;height:100%;font-family:var(--fc);font-weight:700;font-size:10px;letter-spacing:.5px;text-transform:uppercase;color:rgba(255,255,255,0.55);cursor:pointer;border-bottom:3px solid transparent;white-space:nowrap;transition:.15s;flex-shrink:0}
 .ntab:hover{color:rgba(255,255,255,0.85)}
 .ntab.on{color:#f0c060;border-bottom-color:#f0c060}
@@ -460,7 +467,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZD</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZF</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -646,7 +653,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
     <div id="perf-range-bar"></div>
   </div>
   <div class="card"><div class="card-title">Shift Incharge Scorecard</div><div id="perfTable"></div></div>
-  <div class="card"><div class="card-title">Incharge vs Efficiency</div><div class="chart-wrap-lg"><canvas id="ch-perf"></canvas></div></div>
+  <div class="card"><div class="card-title">Incharge vs Efficiency <span style="font-weight:400;color:var(--t3);font-size:11px">— avg shift efficiency per incharge (rolling 30d)</span></div><div class="chart-wrap-lg"><canvas id="ch-perf"></canvas></div></div>
   <div class="card"><div class="card-title">👤 Operator-wise Performance</div><div id="operatorPerfSection"><p style="color:var(--t3);font-size:12px">Loading...</p></div></div>
   <div class="card"><div class="card-title">🏭 Shift Personnel Performance</div><div id="shiftPersonnelSection"><p style="color:var(--t3);font-size:12px">Loading...</p></div></div>
 </div>
@@ -3540,6 +3547,10 @@ function renderShiftPersonnelPerf(){
       const dt=calcShiftDT(fl,date,sh);
       Object.entries(ROLE_MAP).forEach(([roleKey, roleCfg])=>{
         const names=(sd[roleKey]||[]).filter(n=>n.trim());
+        // v41ZE #3: DT is recorded per-MACHINE per-shift, not per-person. Previously the FULL shift
+        // DT total was added to EVERY person in the role — so e.g. 4 electricians each showed the
+        // same 2500. Split the shift's role-DT equally among the staff in that role (per-capita).
+        const _roleHeadcount = names.length || 1;
         names.forEach(name=>{
           if(!personStats[name]) personStats[name]={role:roleKey,label:roleCfg.label,color:roleCfg.color,dtMins:0,dtShifts:0,aimBoxes:0,shiftsWorked:0};
           personStats[name].shiftsWorked++;
@@ -3553,10 +3564,10 @@ function renderShiftPersonnelPerf(){
             });
             personStats[name].aimBoxes+=aimSum;
           } else {
-            // DT performance: lower DT = better
+            // DT performance: lower DT = better. Per-capita share of the shift's role DT.
             let roleDT=0;
             roleCfg.dtCats.forEach(cat=>roleDT+=dt[cat]||0);
-            personStats[name].dtMins+=roleDT;
+            personStats[name].dtMins+=roleDT/_roleHeadcount;
             personStats[name].dtShifts++;
           }
         });
@@ -3571,6 +3582,7 @@ function renderShiftPersonnelPerf(){
     const dt=calcShiftDT(fl,today,sh);
     Object.entries(ROLE_MAP).forEach(([roleKey,roleCfg])=>{
       const names=(sd[roleKey]||[]).filter(n=>n.trim());
+      const _roleHeadcount = names.length || 1; // v41ZE #3: per-capita DT split (see saved-days block)
       names.forEach(name=>{
         if(!personStats[name]) personStats[name]={role:roleKey,label:roleCfg.label,color:roleCfg.color,dtMins:0,dtShifts:0,aimBoxes:0,shiftsWorked:0};
         const already=allKeys.some(k=>k.includes(`_${fl}_${today}`));
@@ -3586,7 +3598,7 @@ function renderShiftPersonnelPerf(){
           } else {
             let roleDT=0;
             roleCfg.dtCats.forEach(cat=>roleDT+=dt[cat]||0);
-            personStats[name].dtMins+=roleDT;
+            personStats[name].dtMins+=roleDT/_roleHeadcount;
             personStats[name].dtShifts++;
           }
         }
@@ -3653,10 +3665,10 @@ function renderShiftPersonnelPerf(){
         html+=`<tr>
           <td style="font-weight:600;color:var(--cyan)">${name}</td>
           <td class="mono">${s.shiftsWorked}</td>
-          <td class="mono">${s.dtMins}</td>
+          <td class="mono">${s.dtMins.toFixed(0)}</td>
           <td class="mono">${avgDT.toFixed(0)}</td>
-          <td><span class="pill ${cls}">${avgDT<=15?'Excellent':avgDT<=30?'Good':'Needs Attention'}</span>
-            <div style="background:var(--s3);border-radius:3px;height:8px;width:80px;display:inline-block;vertical-align:middle;margin-left:6px">
+          <td><span class="pill ${cls}">${avgDT<=15?'Excellent':avgDT<=30?'Good':'Needs Attention'}</span></td>
+          <td><div style="background:var(--s3);border-radius:3px;height:8px;width:80px;display:inline-block;vertical-align:middle">
               <div style="height:100%;width:${barW}%;background:${cls==='g'?'var(--green)':cls==='a'?'var(--amber)':'var(--red)'};border-radius:3px"></div>
             </div></td>
         </tr>`;
@@ -3758,11 +3770,17 @@ async function renderPerf(){
   const _opKey = s => (s||'').trim().toUpperCase().replace(/\s+/g,' ');
   opDates.forEach(opDate=>{
     const dy=loadDay(fl,opDate);
+    // v41ZE #4: resort entries store {mc, shift, qty} — NOT an operator. The old code matched
+    // r.operator (always undefined), so the Re-Sort column was always empty. Build a machine+shift
+    // → operator-keys map while iterating, then attribute each resort to the operator(s) who ran
+    // that machine on that shift (split per-capita when shared).
+    const _mcShiftOps={}; // { 'mcId|shift': [opKey,...] }
     SHIFTS.forEach(sh=>{
       const sd2=dy.shifts[sh];
       getActiveMachines(fl).forEach(mc=>{
         const m=migrateMachineData(sd2.machines[mc.id]||blankMachine());
         const ops = (m.operators||[m.operator]).filter(Boolean).map(o=>o.trim()).filter(Boolean);
+        const _msKey=`${mc.id}|${sh}`;
         ops.forEach(opRaw=>{
           const key=_opKey(opRaw);
           if(!key) return;
@@ -3773,12 +3791,25 @@ async function renderPerf(){
           operatorStats[key].prod = parseFloat((operatorStats[key].prod + prod).toFixed(2));
           operatorStats[key].target += t2;
           operatorStats[key].shifts += prod>0?1:0;
+          if(!_mcShiftOps[_msKey]) _mcShiftOps[_msKey]=[];
+          if(!_mcShiftOps[_msKey].includes(key)) _mcShiftOps[_msKey].push(key);
         });
       });
     });
     (dy.resort||[]).forEach(r=>{
-      const key=_opKey(r.operator);
-      if(key && operatorStats[key]) operatorStats[key].resort = parseFloat((operatorStats[key].resort + parseFloat(r.qty||0)).toFixed(2));
+      // Attribute by machine+shift. Prefer exact mc+shift; fall back to mc on any shift that day.
+      let targets = _mcShiftOps[`${r.mc}|${r.shift}`];
+      if((!targets||!targets.length)){
+        // fallback: any operator on that machine across shifts this day
+        const merged=[];
+        SHIFTS.forEach(sh=>{(_mcShiftOps[`${r.mc}|${sh}`]||[]).forEach(k=>{if(!merged.includes(k))merged.push(k);});});
+        targets=merged;
+      }
+      if(!targets||!targets.length) return; // no operator to attribute to — skip silently
+      const share=parseFloat(r.qty||0)/targets.length; // per-capita split when shared
+      targets.forEach(key=>{
+        if(operatorStats[key]) operatorStats[key].resort = parseFloat((operatorStats[key].resort + share).toFixed(2));
+      });
     });
   });
 
@@ -3818,24 +3849,57 @@ async function renderPerf(){
   // Shift personnel performance
   renderShiftPersonnelPerf();
 
-  // Trend chart — last 30 days for selected floor
-  const perfTrendDates=[];
-  for(let i=29;i>=0;i--){const d2=new Date();d2.setDate(d2.getDate()-i);perfTrendDates.push(_localYMD(d2));} // v41k local
-  const scores=perfTrendDates.map(date=>{
+  // v41ZE #2: genuinely per-incharge trend. Previously this plotted a single floor-wide daily
+  // average mislabeled "Incharge vs Efficiency" with no incharge attribution, over a fixed 30-day
+  // window (so it showed an empty grid with a line only at the right). Now: one line per shift
+  // incharge = that incharge's average shift efficiency on the days they were on duty. Window is a
+  // rolling 30 days with leading empty days trimmed so the x-axis fits the actual data.
+  const _perfWindow=[];
+  for(let i=29;i>=0;i--){const d2=new Date();d2.setDate(d2.getDate()-i);_perfWindow.push(_localYMD(d2));} // v41k local
+  // Per incharge → per date → {effSum, shiftCnt}
+  const _inchargeDaily={}; // { name: { 'YYYY-MM-DD': {sum, cnt} } }
+  _perfWindow.forEach(date=>{
     const dy=loadDay(fl,date);
-    let totalScore=0,cnt=0;
     SHIFTS.forEach(sh=>{
       const sd2=dy.shifts[sh];
+      // shift efficiency (same formula as the scorecard/score line below)
       let p=0,t2=0;
       getActiveMachines(fl).forEach(mc=>{
         const m=migrateMachineData(sd2.machines[mc.id]||blankMachine());
         p+=mcTotalProd(m); t2+=tgt(fl,mc.id);
       });
-      if(p>0){const e=t2>0?p/t2*100:0;totalScore+=Math.max(0,Math.min(100,e*0.7+30));cnt++;}
+      if(p<=0) return; // no production this shift → nothing to attribute
+      const eff=t2>0?Math.max(0,Math.min(100,p/t2*100)):0;
+      const names=Array.isArray(sd2.incharge)?sd2.incharge:(sd2.incharge?[sd2.incharge]:[]);
+      names.filter(n=>n&&n.trim()).forEach(n=>{
+        const nm=n.trim();
+        if(!_inchargeDaily[nm]) _inchargeDaily[nm]={};
+        if(!_inchargeDaily[nm][date]) _inchargeDaily[nm][date]={sum:0,cnt:0};
+        _inchargeDaily[nm][date].sum+=eff;
+        _inchargeDaily[nm][date].cnt++;
+      });
     });
-    return cnt>0?parseFloat((totalScore/cnt).toFixed(1)):null;
   });
-  newChart('ch-perf',{type:'line',data:{labels:perfTrendDates.map(d=>{const[,m,dy]=d.split('-');return`${dy}/${m}`;}),datasets:[{label:'Avg Score',data:scores,borderColor:'#b388ff',backgroundColor:'rgba(179,136,255,.08)',fill:true,borderWidth:2,tension:.3,pointRadius:3,spanGaps:true}]},options:chartOpts()});
+  // Trim leading empty days: find first date in the window that has ANY incharge data.
+  const _hasDataOn=date=>Object.values(_inchargeDaily).some(byDate=>byDate[date]);
+  let _firstIdx=_perfWindow.findIndex(_hasDataOn);
+  if(_firstIdx<0) _firstIdx=_perfWindow.length-1; // no data at all → keep last day so axis isn't empty
+  const perfTrendDates=_perfWindow.slice(_firstIdx);
+  // One dataset per incharge (only those with data in the trimmed window).
+  const _palette=['#b388ff','#00d4ff','#00e676','#ffab00','#ff4060','#7FC8F8','#A8E6CF','#FFD93D','#FF6B6B','#c792ea'];
+  const _inchargeNames=Object.keys(_inchargeDaily).filter(nm=>perfTrendDates.some(d=>_inchargeDaily[nm][d]));
+  const _datasets=_inchargeNames.map((nm,i)=>{
+    const col=_palette[i%_palette.length];
+    return {
+      label:nm,
+      data:perfTrendDates.map(d=>{const cell=_inchargeDaily[nm][d];return cell&&cell.cnt>0?parseFloat((cell.sum/cell.cnt).toFixed(1)):null;}),
+      borderColor:col,backgroundColor:'transparent',fill:false,borderWidth:2,tension:.3,pointRadius:3,spanGaps:true
+    };
+  });
+  const _perfChartData = _datasets.length
+    ? _datasets
+    : [{label:'No incharge data',data:perfTrendDates.map(()=>null),borderColor:'#7a8ba8',borderWidth:1,pointRadius:0}];
+  newChart('ch-perf',{type:'line',data:{labels:perfTrendDates.map(d=>{const[,m,dy]=d.split('-');return`${dy}/${m}`;}),datasets:_perfChartData},options:{...chartOpts(),plugins:{...chartOpts().plugins,legend:{display:true,labels:{color:'#7a8ba8',font:{size:10},boxWidth:12}}}}});
  } catch(err) {
    // v41ZD #1: never leave Shift Performance blank. If anything throws mid-render (bad cached
    // record, chart lib, etc.) show a clear message and log the real cause for diagnosis.
@@ -3986,7 +4050,11 @@ async function renderPlantReport(){
   restrictDateToMonth('plant-date');
   const selectedDate = document.getElementById('plant-date')?.value || today();
   const el = document.getElementById('plant-report-output');
-  if(!el) return;
+  // v41ZF #1: the Plant Report was reportedly not rendering under admin login, with no visible
+  // reason. Nothing in this path is role-dependent, so log entry state to surface the real cause
+  // (missing container, fetch failure, etc.) instead of any silent return.
+  console.log('[renderPlantReport] start', { selectedDate, hasEl: !!el, role: (typeof dprUser!=='undefined'&&dprUser)?dprUser.role:'(none)', serverUrl: !!serverUrl, cumulative: _dprCumulativeMode });
+  if(!el){ console.error('[renderPlantReport] ABORT — #plant-report-output not in DOM (page markup missing or not yet shown)'); return; }
 
   // Show loading state
   el.innerHTML = `<div style="padding:20px;color:var(--t3);font-family:var(--fc);font-size:12px">⏳ Loading plant data${serverUrl ? ' from server' : ' from local cache'}...</div>`;
@@ -4026,8 +4094,15 @@ async function renderPlantReport(){
   // under-counted. Sync the full scope range from the server first so the cumulative is complete.
   if (serverUrl) {
     const _scopeFrom = _dprCumulativeMode ? '2000-01-01' : (_dprSelectedMonth + '-01');
-    try { await syncDateRangeFromServer(Object.keys(FLOORS), _scopeFrom, selectedDate); }
-    catch(e) { console.warn('[plant-report] range sync failed:', e?.message); }
+    // v41ZF #1: wrap with a hard timeout. If syncDateRangeFromServer hangs (slow/large range), the
+    // report previously could sit on "Loading" indefinitely — which presents exactly as "doesn't
+    // show up". Time-box it; the cumulative still renders from whatever is already cached locally.
+    try {
+      await Promise.race([
+        syncDateRangeFromServer(Object.keys(FLOORS), _scopeFrom, selectedDate),
+        new Promise((_, rej) => setTimeout(() => rej(new Error('range-sync timeout')), 12000))
+      ]);
+    } catch(e) { console.warn('[plant-report] range sync skipped:', e?.message); }
   }
 
   // ── Step 3: Build allDatesMap for cumulative — use all localStorage dates per floor ──
@@ -4946,18 +5021,18 @@ function addDprUserBadge() {
   if(saveBtn) saveBtn.parentNode.insertBefore(wrap, saveBtn);
   else document.body.appendChild(wrap);
 
-  // Show audit tab for admin
+  // v41ZF #1: do NOT append an "Audit Log" NAV TAB for admin. That extra 10th tab pushed the nav
+  // row into horizontal overflow, scrolling Plant Report / Search / Settings off the right edge with
+  // no obvious scrollbar — which is why admins reported the Plant Report tab "not showing up". The
+  // Audit Log is already reachable from the user menu (showDprUserMenu → showDprAuditPage), so the
+  // nav tab was redundant. We still inject the audit PAGE container so that access keeps working.
   if (dprUser.role === 'admin') {
-    const auditTabEl = document.createElement('div');
-    auditTabEl.className = 'ntab';
-    auditTabEl.textContent = '📋 Audit Log';
-    auditTabEl.onclick = () => go('audit');
-    document.querySelector('.ntabs')?.appendChild(auditTabEl);
-    // Add audit page
-    const auditPage = document.createElement('div');
-    auditPage.id = 'page-audit';
-    auditPage.className = 'page';
-    document.querySelector('.pages')?.appendChild(auditPage);
+    if (!document.getElementById('page-audit')) {
+      const auditPage = document.createElement('div');
+      auditPage.id = 'page-audit';
+      auditPage.className = 'page';
+      document.querySelector('.pages')?.appendChild(auditPage);
+    }
   }
 }
 

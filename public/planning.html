@@ -517,7 +517,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZD</p>
+      <p>Planning Suite v3.0 · build v41ZF</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1027,6 +1027,15 @@ const SYNC = (() => {
         try { const s = {...serverState}; delete s.pcCodes; delete s.zoneMap; localStorage.setItem('sunloc_state', JSON.stringify(s)); } catch {}
         const allMachineIds = [...new Set((state.orders||[]).filter(o=>!o.deleted).map(o=>o.machineId).filter(Boolean))];
         allMachineIds.forEach(mid => recalcMachineScheduleQuiet(mid));
+        // v41ZE #4: the server pull (Object.assign above) overwrites state.activeMonth with the value
+        // saved back during the previous month — which raced the 800ms initMonthlyArchive() timer and
+        // left the active month stuck (e.g. showing May on the 4th of June). Now that state is fully
+        // hydrated from the authoritative server blob, re-run the rollover check so the month advances
+        // (and the prior month auto-archives) against the real activeMonth. autoArchiveIfNeeded is
+        // idempotent — it no-ops when activeMonth already equals the current month.
+        try { await autoArchiveIfNeeded(); if (typeof buildMonthPicker === 'function') buildMonthPicker(); } catch(e) { console.warn('[Archive] post-pull rollover failed:', e?.message); }
+        // v41ZE #6: collapse any content-duplicate daily-printing rows now that state is fully loaded.
+        if (typeof _purgeDuplicateDailyPrinting === 'function') _purgeDuplicateDailyPrinting();
         // State updated silently — user must navigate or act to see changes (prevents screen flipping)
       }
     }
@@ -1785,6 +1794,7 @@ async function loadFromKV() {
         const _dlMergeMap = new Map();
         [...j.logs, ...localOnly].forEach(l => { if (l.id && !_dlMergeMap.has(l.id)) _dlMergeMap.set(l.id, l); });
         state.dailyPrinting = [..._dlMergeMap.values()];
+        _purgeDuplicateDailyPrinting(); // v41ZE #6: drop content-identical dupes so all calcs are clean
         console.log('[DailyPrinting] Loaded', j.logs.length, 'logs from server, state has', state.dailyPrinting.length);
       }
     }
@@ -2925,7 +2935,7 @@ function renderProduction() {
     ? state.orders.filter(o => {
         if (o.deleted) return false;
         if (o.status === 'completed') return false;
-        if (o.sapDocEntry || o.sapDocNum) return false;   // v41ZD #1: already linked (either id suffices)
+        if (o.sapDocEntry || o.sapDocNum || (o.poNumber && String(o.poNumber).trim())) return false;   // v41ZE #1: SO#, DocEntry, OR PO/Reference number = linked (matches row badge + reconcile)
         // Skip pristine WO (no customer assigned yet — covered by reconciliation page)
         if (o.woStatus === 'wo') return false;
         // Otherwise include if order has actual production activity or is in the active plan
@@ -3227,12 +3237,13 @@ function renderOrderRow(ord, idx, mc) {
                   isWOReconciled ? '<span class="badge badge-completed" style="font-size:10px">✅ W/O Assigned</span>' : '';
   // v39 Phase 17.1: SAP link indicator — small badge on rows that still need linking.
   // Skips already-linked orders + pristine WO (no customer yet, handled by Reconciliation page).
-  // v41ZD #1: an order is considered LINKED if it has EITHER the Sales Order Number (sapDocNum)
-  // OR the DocEntry. Previously this required BOTH (sapDocEntry && sapDocNum), so an order the
-  // planner linked manually with just the Sales Order Number still showed the amber "🔗 SAP?"
-  // prompt. Per the app's own rule ("the Sales Order Number alone is enough to link"), either
-  // identifier clears the prompt.
-  const _isSapLinked = !!(ord.sapDocNum || ord.sapDocEntry);
+  // v41ZD #1: an order is considered LINKED if it has the Sales Order Number (sapDocNum) OR DocEntry.
+  // v41ZE #1: ALSO treat a PO / Reference Number (poNumber) as a valid link source. Rationale: the
+  // SAP reconcile already matches planned orders by poNumber when sapDocEntry is absent
+  // (`!o.sapDocEntry && o.poNumber === docNum`), so auto-linked/SAP-origin orders show no badge on
+  // the strength of their PO number alone. Manual orders carrying only a PO number must behave the
+  // same way — otherwise they keep nagging "🔗 SAP?" despite being linkable exactly like the auto ones.
+  const _isSapLinked = !!(ord.sapDocNum || ord.sapDocEntry || (ord.poNumber && String(ord.poNumber).trim()));
   const needsSapLink = !isClosed && ord.qty > 0 && !isWO &&
     !_isSapLinked && (
       isWOReconciled ||
@@ -4235,6 +4246,9 @@ function saveOrderModal(existingId, defaultMachine) {
     }
     const idx = state.orders.findIndex(o=>o.id===existingId);
     if (idx>=0) state.orders[idx] = ord;
+    // v41ZE #3: detailed edit audit (re-add — did not land in v41ZD). Records what the order looks
+    // like after the edit so the Audit Log shows real changes, not just "Saved planning state".
+    auditLog('ORDER_EDITED', `${ord.machineId} · ${ord.batchNumber||ord.poNumber||ord.id} (${ord.customer||'—'}) · ${fmt(ord.qty||0)}L, size ${ord.size||'—'}, ${ord.zone||'—'}${ord.sapDocNum?`, SO# ${ord.sapDocNum}`:''}, status ${ord.status||'—'}`);
   } else {
     // Duplicate batch number check — block if same batch on same machine (non-deleted)
     const batchSameMC = state.orders.find(o =>
@@ -4274,6 +4288,8 @@ function saveOrderModal(existingId, defaultMachine) {
       }
     }
     state.orders.push(ord);
+    // v41ZE #3: detailed create audit (re-add — did not land in v41ZD).
+    auditLog('ORDER_CREATED', `${ord.machineId} · ${ord.batchNumber||ord.poNumber||ord.id} (${ord.customer||'—'}) · ${fmt(ord.qty||0)}L, size ${ord.size||'—'}, ${ord.zone||'—'}${ord.sapDocNum?`, SO# ${ord.sapDocNum}`:''}, ${ord.poType||'—'}`);
   }
 
   // Auto-create print order if PTD — only if truly no print order exists for this production order
@@ -5298,7 +5314,7 @@ function _v39_showSapLinkList() {
   const needs = (state.orders || []).filter(o => {
     if (o.deleted) return false;
     if (o.status === 'completed') return false;
-    if (o.sapDocEntry || o.sapDocNum) return false; // v41ZD #1: either id = linked
+    if (o.sapDocEntry || o.sapDocNum || (o.poNumber && String(o.poNumber).trim())) return false; // v41ZE #1: SO#, DocEntry, OR PO/Reference = linked
     if (o.woStatus === 'wo') return false;
     return (o.qty > 0) && (
       o.woStatus === 'wo-reconciled' ||
@@ -6816,10 +6832,19 @@ function renderDailyPrinting() {
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `<button class="btn btn-primary btn-sm" onclick="showDailyPrintingModal()">+ Log Today's Printing</button>`;
 
-  // Dedup by id only — prevent exact duplicate IDs, but allow multiple logs per day per machine
+  // v41ZE #6: state.dailyPrinting is purged of content-duplicates at load; this is a belt-and-
+  // suspenders pass for any same-session dupes before the next reload. Uses the shared key helper.
   const _dlById = new Map();
   (state.dailyPrinting||[]).forEach(l => { if (l.id && !_dlById.has(l.id)) _dlById.set(l.id, l); });
-  const allLogs = [..._dlById.values()].sort((a,b)=>new Date(b.date)-new Date(a.date));
+  const _seenContent = new Set();
+  const _dlDeduped = [];
+  [..._dlById.values()].forEach(l => {
+    const _k = _dailyPrintingContentKey(l);
+    if (_seenContent.has(_k)) return;
+    _seenContent.add(_k);
+    _dlDeduped.push(l);
+  });
+  const allLogs = _dlDeduped.sort((a,b)=>new Date(b.date)-new Date(a.date));
 
   // Collect unique filter values
   const uniqueDates   = [...new Set(allLogs.map(l => toDateInput(new Date(l.date))))].sort((a,b)=>b.localeCompare(a));
@@ -6922,6 +6947,7 @@ function renderDailyPrinting() {
             <th title="Print Scan Out from Tracking">Scan Out ↗</th>
             <th title="Manual log vs Tracking scan — should match">Reconciliation</th>
             <th>Remarks</th>
+            <th>Actions</th>
           </tr></thead>
           <tbody>
             ${logs.map((l,i)=>{
@@ -6965,6 +6991,10 @@ function renderDailyPrinting() {
                     : '<span style="color:var(--accent4)">⚠️ Gap: '+fmt(diff,2)+'L ('+pct+'%)</span>';
                 })()}</td>
                 <td class="text-sm">${l.remarks||'-'}</td>
+                <td class="text-sm" style="white-space:nowrap">
+                  <button class="btn btn-sm" style="padding:2px 8px;font-size:11px" title="Edit this entry" onclick="editDailyLog('${l.id}')">✏️ Edit</button>
+                  <button class="btn btn-sm" style="padding:2px 8px;font-size:11px;color:var(--accent4)" title="Delete this entry" onclick="deleteDailyLog('${l.id}')">🗑</button>
+                </td>
               </tr>`;
             }).join('')}
           </tbody>
@@ -6981,7 +7011,7 @@ function renderDailyPrinting() {
               <td class="text-mono fw-bold">${fmt(logs.reduce((s,l)=>s+(l.shiftA||0)+(l.shiftB||0)+(l.shiftC||0),0),1)}</td>
               <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.salvage||0),0),2)}</td>
               <td class="text-mono">${(()=>{const to=logs.reduce((s,l)=>s+(l.totalOutput||0),0);const ts=logs.reduce((s,l)=>s+(l.salvage||0),0);return to>0?(ts/to*100).toFixed(2):0})()}%</td>
-              <td colspan="5">—</td>
+              <td colspan="6">—</td>
             </tr>
           </tfoot>
         </table>
@@ -7070,7 +7100,7 @@ function showDailyPrintingModal() {
       </div>
     </div>
   `, [
-    {label:'Save Log', cls:'btn-primary', fn:'saveDailyLog()'},
+    {label: window._dlEditId?'Update Entry':'Save Log', cls:'btn-primary', fn:'saveDailyLog()', id:'dl-save-btn'},
     {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'}
   ]);
 }
@@ -7120,7 +7150,60 @@ function updateSalvagePct() {
   if (el) { el.value = pct+'%'; el.style.color = pct>2?'var(--accent4)':'var(--accent3)'; }
 }
 
+// v41ZE #6: collapse content-identical daily-printing rows in state.dailyPrinting itself (not just
+// in the view), so the Printing Plan "Print to Date", salvage %, and daily totals can never be
+// inflated by accidental double-submits. Keeps the first occurrence of each unique content key.
+// Returns the number of duplicates removed (0 if none).
+function _dailyPrintingContentKey(l){
+  return [
+    toDateInput(new Date(l.date)), l.machineId||'', l.printOrderId||'', l.size||'',
+    l.pcCode||'', l.printMatter||'',
+    l.shiftA||0, l.shiftB||0, l.shiftC||0,
+    l.shiftAqty||0, l.shiftBqty||0, l.shiftCqty||0,
+    l.totalOutput||0, l.salvage||0
+  ].join('|');
+}
+function _purgeDuplicateDailyPrinting(){
+  const seen = new Set();
+  const kept = [];
+  const removedIds = [];
+  (state.dailyPrinting||[]).forEach(l => {
+    const k = _dailyPrintingContentKey(l);
+    if (seen.has(k)) { removedIds.push(l.id); return; }
+    seen.add(k); kept.push(l);
+  });
+  if (removedIds.length > 0) {
+    state.dailyPrinting = kept;
+    // Recompute printed-to-date for any print orders that lost duplicate rows (non-manual only).
+    const affected = new Set(kept.filter(l=>l.printOrderId).map(l=>l.printOrderId));
+    affected.forEach(poId => {
+      const po = state.printOrders.find(p => p.id === poId);
+      if (po && !po.printedToDateManual) {
+        const total = state.dailyPrinting.filter(l=>l.printOrderId===poId).reduce((s,l)=>s+(l.totalQtyLakhs||0),0);
+        po.printedToDate = parseFloat(total.toFixed(3));
+      }
+    });
+    // v41ZE #6: delete the duplicate rows from the server table so they don't return on next load.
+    if (serverUrl) {
+      removedIds.filter(Boolean).forEach(rid => {
+        fetch(serverUrl + '/api/daily-printing/' + encodeURIComponent(rid), { method: 'DELETE' }).catch(()=>{});
+      });
+    }
+    console.log('[DailyPrinting] Purged', removedIds.length, 'duplicate log(s)');
+  }
+  return removedIds.length;
+}
+
 async function saveDailyLog() {
+  // v41ZE #6: hard guard against double-submit. Duplicate daily-printing rows (same batch/shift
+  // repeated 3–4×) corrupt the day's totals and the Printing Plan "Print to Date". Each push used a
+  // fresh uid(), so the server's id-based upsert couldn't collapse them. Block re-entrancy and
+  // disable the Save button for the duration of the save so one logical entry = exactly one row.
+  if (window._dlSaving) return;
+  window._dlSaving = true;
+  const _dlSaveBtn = document.getElementById('dl-save-btn');
+  if (_dlSaveBtn) { _dlSaveBtn.disabled = true; _dlSaveBtn.style.opacity = '0.6'; _dlSaveBtn.style.pointerEvents = 'none'; }
+  try {
   const output = parseFloat(document.getElementById('dl-output')?.value)||0;
   const salvage = parseFloat(document.getElementById('dl-salvage')?.value)||0;
   const shiftAqty = parseFloat(document.getElementById('dl-shiftA-qty')?.value)||0;
@@ -7129,8 +7212,9 @@ async function saveDailyLog() {
   const totalQtyLakhs = shiftAqty + shiftBqty + shiftCqty;
   const linkedPrintOrderId = document.getElementById('dl-batch')?.value || null;
 
+  const _editId = window._dlEditId || null; // v41ZE #5: set when editing an existing entry
   const logEntry = {
-    id: uid(),
+    id: _editId || uid(),
     date: new Date(document.getElementById('dl-date')?.value||today()),
     machineId: document.getElementById('dl-machine')?.value,
     printOrderId: linkedPrintOrderId,
@@ -7145,7 +7229,13 @@ async function saveDailyLog() {
     salvagePct: output>0?(salvage/output*100):0,
     remarks: document.getElementById('dl-remarks')?.value,
   };
-  state.dailyPrinting.push(logEntry);
+  // v41ZE #5: if editing, replace the existing entry in place; else append.
+  if (_editId) {
+    const _i = state.dailyPrinting.findIndex(l => l.id === _editId);
+    if (_i >= 0) state.dailyPrinting[_i] = logEntry; else state.dailyPrinting.push(logEntry);
+  } else {
+    state.dailyPrinting.push(logEntry);
+  }
 
   // Auto-update Printed to Date on the matched print order (unless manually overridden)
   if (linkedPrintOrderId) {
@@ -7162,6 +7252,73 @@ async function saveDailyLog() {
   }
 
   await saveState(); closeModal(); render();
+  } finally {
+    window._dlSaving = false;
+    window._dlEditId = null;
+    if (_dlSaveBtn) { _dlSaveBtn.disabled = false; _dlSaveBtn.style.opacity = ''; _dlSaveBtn.style.pointerEvents = ''; }
+  }
+}
+
+// v41ZE #5: edit an existing daily-printing entry. Opens the same modal, flags edit mode so
+// saveDailyLog() replaces the row in place (same id) instead of appending a new one, and pre-fills
+// every field. This finally lets planners fix typos (e.g. a 350.00 mis-key that should be 3.50).
+function editDailyLog(id){
+  const l = (state.dailyPrinting||[]).find(x => x.id === id);
+  if (!l) { toast('Entry not found', 'var(--red)'); return; }
+  window._dlEditId = id;
+  showDailyPrintingModal();
+  // Modal DOM is built synchronously by openModal; fill on next tick to be safe.
+  setTimeout(() => {
+    const set = (fid, val) => { const e = document.getElementById(fid); if (e != null && val != null) e.value = val; };
+    set('dl-date', toDateInput(new Date(l.date)));
+    set('dl-machine', l.machineId || '');
+    if (typeof refreshDLBatchDropdown === 'function') refreshDLBatchDropdown();
+    // batch dropdown is rebuilt by refreshDLBatchDropdown — set after it repopulates
+    setTimeout(() => {
+      set('dl-batch', l.printOrderId || '');
+      set('dl-size', l.size || '');
+      set('dl-pccode', l.pcCode || '');
+      set('dl-ptdmatter', l.printMatter || '');
+      set('dl-shiftA-qty', l.shiftAqty || 0);
+      set('dl-shiftB-qty', l.shiftBqty || 0);
+      set('dl-shiftC-qty', l.shiftCqty || 0);
+      set('dl-shiftA', l.shiftA || 0);
+      set('dl-shiftB', l.shiftB || 0);
+      set('dl-shiftC', l.shiftC || 0);
+      set('dl-output', l.totalOutput || 0);
+      set('dl-salvage', l.salvage || 0);
+      set('dl-remarks', l.remarks || '');
+      if (typeof updateDLTotals === 'function') updateDLTotals();
+      if (typeof updateSalvagePct === 'function') updateSalvagePct();
+    }, 30);
+  }, 20);
+}
+
+// v41ZE #5: delete a daily-printing entry (e.g. a duplicate or a bad-typo row). Recomputes the
+// linked print order's printed-to-date so the Printing Plan stays correct.
+async function deleteDailyLog(id){
+  const l = (state.dailyPrinting||[]).find(x => x.id === id);
+  if (!l) { toast('Entry not found', 'var(--red)'); return; }
+  if (!confirm(`Delete this printing log?\n\n${fmtDate(l.date)} · ${l.machineId||'—'} · ${l.pcCode||l.printMatter||''}\nQty ${fmt(l.totalQtyLakhs||0,2)}L\n\nThis cannot be undone.`)) return;
+  const poId = l.printOrderId;
+  state.dailyPrinting = state.dailyPrinting.filter(x => x.id !== id);
+  // v41ZE #5: remove from the dedicated server table too, else it returns on next load.
+  if (serverUrl) {
+    try { await fetch(serverUrl + '/api/daily-printing/' + encodeURIComponent(id), { method: 'DELETE' }); }
+    catch(e) { console.warn('[DailyPrinting] server delete failed:', e?.message); }
+  }
+  if (poId) {
+    const po = state.printOrders.find(p => p.id === poId);
+    if (po && !po.printedToDateManual) {
+      const total = state.dailyPrinting.filter(x=>x.printOrderId===poId).reduce((s,x)=>s+(x.totalQtyLakhs||0),0);
+      po.printedToDate = parseFloat(total.toFixed(3));
+      if (po.printedToDate >= (po.qtyToPrint || 0)) po.status = 'completed';
+      else if (po.printedToDate > 0) po.status = 'running';
+      else po.status = 'pending';
+    }
+  }
+  await saveState(); render();
+  toast('Printing log deleted', 'var(--accent3)');
 }
 
 // =============================
@@ -11897,7 +12054,7 @@ function _renderSearchResults(q, by) {
       <div class="card-title">${results.length} result${results.length!==1?'s':''} for "${q}"</div>
       ${results.length===0?'<div class="empty-state"><p>No matches found</p></div>':`
       <div class="table-wrap"><table class="summary-table">
-        <thead><tr><th>Type</th><th>Batch No</th><th>Customer</th><th>PC Code</th><th>Size</th><th>Qty (L)</th><th>Status</th><th>Machine</th><th>Zone</th></tr></thead>
+        <thead><tr><th>Type</th><th>Batch No</th><th>Customer</th><th>PC Code</th><th>Size</th><th>Qty (L)</th><th>Status</th><th>Machine</th><th>Zone</th><th>Start</th><th>End</th></tr></thead>
         <tbody>
           ${results.map(r=>`<tr style="cursor:pointer" title="Click to open in Production Plan" onclick="navigateToOrder('${r.id||''}','${r.machineId||''}','${r._type}')" onmouseover="this.style.background='rgba(0,212,255,0.06)'" onmouseout="this.style.background=''">
             <td><span class="badge ${r._type==='Print Order'?'badge-ptd':'badge-running'}" style="font-size:10px">${r._type}</span></td>
@@ -11909,6 +12066,8 @@ function _renderSearchResults(q, by) {
             <td><span class="badge badge-${r.status==='closed'||r.status==='completed'?'completed':r.status==='running'?'running':'pending'}">${r.status||'-'}</span></td>
             <td class="text-mono">${r.machineId||'-'}</td>
             <td class="text-sm">${r.zone||'-'}</td>
+            <td class="text-mono text-sm" style="white-space:nowrap">${r.startDate?fmtDate(r.startDate):'—'}</td>
+            <td class="text-mono text-sm" style="white-space:nowrap">${r.endDate?fmtDate(r.endDate):'—'}</td>
           </tr>`).join('')}
         </tbody>
       </table></div>`}
@@ -12147,7 +12306,7 @@ function clearAllData() {
 function openModal(title, body, buttons) {
   document.getElementById('modal-title').textContent = title;
   document.getElementById('modal-body').innerHTML = body;
-  document.getElementById('modal-footer').innerHTML = (buttons||[]).map(b=>`<button class="btn ${b.cls}" onclick="${b.fn}">${b.label}</button>`).join('');
+  document.getElementById('modal-footer').innerHTML = (buttons||[]).map(b=>`<button class="btn ${b.cls}"${b.id?` id="${b.id}"`:''} onclick="${b.fn}">${b.label}</button>`).join('');
   document.getElementById('modal-overlay').style.display='flex';
 }
 

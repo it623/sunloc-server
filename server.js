@@ -8997,6 +8997,22 @@ app.post('/api/daily-printing/bulk', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// DELETE /api/daily-printing/:id — remove a single daily printing log (edit-typo / dedup support)
+// v41ZE #5/#6: deletes must reach the dedicated daily_printing table, otherwise a row removed in
+// the client reappears on the next load (the bulk endpoint only upserts, never deletes).
+app.delete('/api/daily-printing/:id', async (req, res) => {
+  try {
+    const id = req.params.id;
+    if (!id) return res.status(400).json({ ok: false, error: 'id required' });
+    if (pgPool) {
+      await pgPool.query('DELETE FROM daily_printing WHERE id=$1', [id]);
+    } else {
+      db.prepare('DELETE FROM daily_printing WHERE id=?').run(id);
+    }
+    res.json({ ok: true, deleted: id });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ═══════════════════════════════════════════════════════
 // PACK SIZES — dedicated table
 // ═══════════════════════════════════════════════════════

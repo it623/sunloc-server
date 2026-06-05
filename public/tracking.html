@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZD</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZF</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -560,7 +560,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZD</p>
+      <p>Tracking Suite v1.0 · build v41ZF</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +591,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZD</p>
+      <p>Tracking Suite v1.0 · build v41ZF</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1434,7 +1434,7 @@ function navigate(page){
   // v40 Phase 18.14h: Snapshot the current page's view state BEFORE switching, so when the
   // user comes back (or browser refresh), they land on the same scroll/tab/filter state.
   try { if (typeof currentPage !== 'undefined' && currentPage && currentPage !== page) _v40_saveTrackViewState(currentPage); } catch(e) {}
-  if(page !== 'reports') window._activeReport = null; // clear report tracker when leaving reports
+  if(page !== 'reports') { window._activeReport = null; window._v41_composingD = false; } // clear report trackers when leaving reports
   currentPage=page;
   // Persist page in URL hash so browser refresh restores position
   history.replaceState(null,'','#'+page);
@@ -1665,10 +1665,21 @@ async function pullFromServer(){
         }
       }
     }catch(e3){ console.warn('STEP 3 scans failed:',e3?.message||e3); }
-    // STEP 3.5: Load wastage fast (dedicated endpoint)
+    // STEP 3.5–3.7 (v41ZE #1 PERF): wastage, scan-summary, and box-stages are mutually independent
+    // (each only needs the scans already loaded in STEP 3 / present in state). They were previously
+    // awaited strictly in series (~15s + ~15s + ~20s), a big chunk of the 2–3 min dashboard delay.
+    // Fire all three CONCURRENTLY and process each result in its original order so every data-
+    // integrity guard and the scan-summary _local-clearing logic stay byte-identical to before.
+    const [_wRes, _ssRes, _bsRes] = await Promise.allSettled([
+      fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)}),
+      fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)}),
+      fetch(serverUrl+'/api/tracking/box-stages',{signal:AbortSignal.timeout(20000)}),
+    ]);
+
+    // STEP 3.5: wastage (dedicated endpoint)
     try{
-      const wr=await fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)});
-      if(wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){
+      const wr = _wRes.status==='fulfilled' ? _wRes.value : null;
+      if(wr&&wr.ok){const wj=await wr.json();if(wj.ok&&wj.wastage){
         const sw=wj.wastage.map(w=>({...w,batchNumber:w.batchNumber||w.batch_number}));
         // v41 DATA-INTEGRITY GUARD (same class as labels): don't let a transient empty response
         // wipe + persist non-empty local wastage. Empty server wastage while we hold local entries
@@ -1680,10 +1691,11 @@ async function pullFromServer(){
         }
       }}
     }catch(e35){}
+
     // STEP 3.6: Full scan summary (aggregated — NO LIMIT — correct source for all reports)
     try{
-      const ss=await fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)});
-      if(ss.ok){
+      const ss = _ssRes.status==='fulfilled' ? _ssRes.value : null;
+      if(ss&&ss.ok){
         const sj=await ss.json();
         if(sj.ok){
           state.scanSummary  = sj.summary   || {};
@@ -1711,13 +1723,14 @@ async function pullFromServer(){
         }
       }
     }catch(e36){ console.warn('STEP 3.6 scan-summary failed:',e36?.message||e36); }
+
     // STEP 3.7 (v40 P18.14): Server-authoritative box stages — full DB, no limits.
     // Combines per-box scans with Phase 18 dispatch records so Batch Tracker shows
     // accurate per-label state even when scan history was paginated or Phase 18
     // truck dispatch was used without per-box scans.
     try {
-      const bs = await fetch(serverUrl + '/api/tracking/box-stages', { signal: AbortSignal.timeout(20000) });
-      if (bs.ok) {
+      const bs = _bsRes.status==='fulfilled' ? _bsRes.value : null;
+      if (bs&&bs.ok) {
         const bj = await bs.json();
         if (bj.ok) {
           window._v40_boxStagesMap = bj.stages || {};
@@ -1728,6 +1741,9 @@ async function pullFromServer(){
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
+    // v41ZE #1: now that wastage + scan-summary (the dashboard WIP sources) are in, paint the
+    // dashboard immediately rather than waiting for the final full-state step.
+    try { if (currentPage === 'dashboard') renderDashboard(); } catch(_rd36) {}
     // STEP 4: Full state (stageClosure + dispatchRecs + alerts; scans only as fallback)
     // v41 PERF FIX: /api/tracking/state returns SELECT * FROM tracking_scans (ALL ~29.5k rows) —
     // extremely heavy, and it ran every sync. stageClosure & dispatchRecs are ONLY available here,
@@ -3028,12 +3044,12 @@ function renderDashboard(){
     <div class="kpi"><div class="kpi-label">Packed Boxes</div><div class="kpi-val green">${packedBoxes}</div><div class="kpi-sub">FG ready (Pack-In)</div></div>
     <div class="kpi"><div class="kpi-label">Dispatched Boxes</div><div class="kpi-val purple">${dispBoxes}</div><div class="kpi-sub">This month</div></div>
     <div class="kpi"><div class="kpi-label">🚨 Alerts</div><div class="kpi-val ${totalAlerts>0?'red':'green'}">${totalAlerts}</div><div class="kpi-sub">Stuck 48h+ (this month)</div></div>
-    <div class="kpi cursor-pointer" onclick="window._reportJTab='A';navigate('reports');setTimeout(()=>renderReportJ(),200)" title="Click to open Report J — FG Stock Aging">
+    <div class="kpi cursor-pointer" onclick="window._v41_reportGView='aging';navigate('reports');setTimeout(()=>renderReportG(),200)" title="Click to open Report G — FG Stock Aging Alerts">
       <div class="kpi-label">⏳ FG Aged</div>
       <div class="kpi-val" id="kpi-dra-a-val">—</div>
       <div class="kpi-sub">&gt;7d (15d export)</div>
     </div>
-    <div class="kpi cursor-pointer" onclick="window._reportJTab='B';navigate('reports');setTimeout(()=>renderReportJ(),200)" title="Click to open Report J — Flow B">
+    <div class="kpi cursor-pointer" onclick="window._v41_reportGView='flowb';navigate('reports');setTimeout(()=>renderReportG(),200)" title="Click to open Report G — Flow B Alerts">
       <div class="kpi-label">🚚 Scan-out Pending Record</div>
       <div class="kpi-val" id="kpi-dra-b-val">—</div>
       <div class="kpi-sub">Unrecorded &gt; 60 min</div>
@@ -7090,10 +7106,10 @@ function renderReports(forceRebuild){
       <div class="text-sm text-muted">Per machine: Closed / Pending / In Progress status for each batch.</div>
       <button class="btn btn-warning btn-sm mt-12" onclick="event.stopPropagation();renderReportC()">Generate →</button>
     </div>
-    <div class="card cursor-pointer" onclick="renderReportD()" style="border-left:4px solid var(--accent5)">
-      <div class="card-title">Report D</div>
-      <div class="fw-bold mb-4">Overall Summary</div>
-      <div class="text-sm text-muted">Gross Production vs A-Grade vs Stage-wise WIP across all machines.</div>
+    <div class="card cursor-pointer" onclick="renderReportD()" style="border-left:4px solid var(--accent5);grid-column:span 2">
+      <div class="card-title">Report D — Summary & Batch-wise A-Grade</div>
+      <div class="fw-bold mb-4">Overall Summary + Batch-wise & Cumulative A-Grade</div>
+      <div class="text-sm text-muted">Top: Gross Production vs A-Grade vs Stage-wise WIP across all machines. Below: per-batch A-Grade % with WIP breakdown, stage-wise % for printed batches (AIM / Printing / PI), and cumulative A-Grade weighted by gross production. (Former Report G is now this report's second section.)</div>
       <button class="btn btn-sm mt-12" style="background:var(--accent5);color:#fff" onclick="event.stopPropagation();renderReportD()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportE()" style="border-left:4px solid #0891b2;grid-column:span 2">
@@ -7103,45 +7119,24 @@ function renderReports(forceRebuild){
       <button class="btn btn-sm mt-12" style="background:#0891b2;color:#fff" onclick="event.stopPropagation();renderReportE()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportF()" style="border-left:4px solid #dc2626;grid-column:span 2">
-      <div class="card-title" style="color:#dc2626">🚨 Report F — End-of-Day Production vs Scan Reconciliation</div>
-      <div class="fw-bold mb-4">Daily Exception Report (Run at End of C Shift)</div>
-      <div class="text-sm text-muted">Compares DPR gross production against AIM scan counts for each batch. Flags discrepancies, missing entries, and over-scans. Run at close of C shift (10pm–6am) for daily sign-off.</div>
-      <button class="btn btn-sm mt-12" style="background:#dc2626;color:#fff">Generate Daily Report →</button>
+      <div class="card-title" style="color:#dc2626">🚨 Report F — Scan Discrepancies</div>
+      <div class="fw-bold mb-4">Prod vs Scan Reconciliation + Dept Handover Gaps</div>
+      <div class="text-sm text-muted">A header toggle switches between two views: <b>Prod vs Scan Reconciliation</b> (compares DPR gross production against AIM scan counts per batch — flags discrepancies, missing entries, over-scans; run at close of C shift) and <b>Dept Handover Gaps</b> (boxes scanned OUT of a department but not yet scanned IN to the next — cumulative gap count & qty per transition). (Former Report H is now the second view here.)</div>
+      <button class="btn btn-sm mt-12" style="background:#dc2626;color:#fff" onclick="event.stopPropagation();renderReportF()">Generate →</button>
     </div>
-    <div class="card cursor-pointer" onclick="renderReportG()" style="border-left:4px solid #16a34a;grid-column:span 2">
-      <div class="card-title" style="color:#16a34a">📊 Report G — Batch-wise & Cumulative A-Grade</div>
-      <div class="fw-bold mb-4">A-Grade Performance Report</div>
-      <div class="text-sm text-muted">Per-batch A-Grade % with WIP breakdown. Stage-wise % for printed batches (AIM / Printing / PI). Cumulative A-Grade weighted by gross production. Excludes WIP from calculation.</div>
-      <button class="btn btn-sm mt-12" style="background:#16a34a;color:#fff">Generate A-Grade Report →</button>
+    <!-- v41ZF: Report G (Batch-wise & Cumulative A-Grade) folded into Report D as its second section. Card removed. -->
+    <!-- v41ZF: Report H (Department Handover Gaps) folded into Report F as its "handover" view. Card removed. -->
+    <!-- v41ZF: NEW Report G = Daily Scan In/Out Movement (former Report K) + Dispatch Reconciliation
+         Alerts (former Report J Flow A / Flow B) as selectable header views. -->
+    <div class="card cursor-pointer" onclick="renderReportG()" style="border-left:4px solid #0891b2;grid-column:span 2">
+      <div class="card-title" style="color:#0891b2">📦 Report G — Scan Movement &amp; Dispatch Alerts</div>
+      <div class="fw-bold mb-4">Daily Scan In/Out Movement + FG Aging / Flow B Alerts</div>
+      <div class="text-sm text-muted">A header toggle switches between: <b>Daily Scan In / Out Movement</b> (per-day pack-in → dispatch-out movement per batch/customer), <b>FG Stock Aging Alerts</b> (labels packed but not received by dispatch within 7 days / 15 for export), and <b>Flow B Alerts</b> (admin-only legacy/recovery detector). (Former Reports J and K are now the views of this report.)</div>
+      <button class="btn btn-sm mt-12" style="background:#0891b2;color:#fff" onclick="event.stopPropagation();renderReportG()">Generate →</button>
     </div>
-    <div class="card cursor-pointer" onclick="renderReportH()" style="border-left:4px solid #7c3aed;grid-column:span 2">
-      <div class="card-title" style="color:#7c3aed">🔗 Report H — Department Handover Gap Report</div>
-      <div class="fw-bold mb-4">Boxes Exited Dept — Not Yet Entered Next</div>
-      <div class="text-sm text-muted">Identifies batches where boxes were scanned OUT of a department but not yet scanned IN to the next. Shows cumulative gap count and qty per batch per department transition.</div>
-      <button class="btn btn-sm mt-12" style="background:#7c3aed;color:#fff">Generate Gap Report →</button>
-    </div>
-    <div class="card cursor-pointer" onclick="renderReportJ()" style="border-left:4px solid #d97706;grid-column:span 2">
-      <div class="card-title" style="color:#d97706">⏱️ Report J — Dispatch Reconciliation Alerts</div>
-      <div class="fw-bold mb-4">FG Stock Aging &amp; Transitional Flow B</div>
-      <div class="text-sm text-muted"><b>Flow A — FG Stock Aging:</b> labels packed (scan-IN to packing) but not yet received by dispatch within 7 days (15 days for export batches). Active indefinitely. <b>Flow B — Legacy/Recovery Detector (transitional):</b> applies only to admin-override legacy scans (pre-v39 in-flight batches or SAP-offline recovery). v39's primary atomic Scan Out flow makes Flow B inert for all SAP-linked orders. Once legacy backfill is complete and the legacy dispatch panel is no longer used, this tab will show zero alerts. Acknowledge with reason (24h auto-expiry).</div>
-      <button class="btn btn-sm mt-12" style="background:#d97706;color:#fff">Generate Reconciliation Alerts →</button>
-    </div>
-    <!-- v41m: Report K — Per-day Scan In/Out Movement, now exposed on the Reports page (previously
-         only reachable via the Dispatch page container). Renders into its own output container. -->
-    <!-- v41ZB: trigger moved from the whole card onto the Generate button. The report renders
-         into report-k-container INSIDE this card, so a card-level onclick made every inner
-         control (filters, search, drill-down) bubble back and re-generate — which is why the
-         report felt "disabled". Button-only trigger fixes that. -->
-    <div class="card" style="border-left:4px solid #0891b2;grid-column:span 2">
-      <div class="card-title" style="color:#0891b2">📦 Report K — Daily Scan In / Out Movement</div>
-      <div class="fw-bold mb-4">Per-day Pack-In → Dispatch-Out Movement</div>
-      <div class="text-sm text-muted">Daily movement of boxes: scanned IN to packing vs scanned OUT for dispatch, per batch/customer, for the selected period. Use to reconcile dispatch flow day by day.</div>
-      <button class="btn btn-sm mt-12" style="background:#0891b2;color:#fff" onclick="renderReportK('report-k-container')">Generate Movement Report →</button>
-      <div id="report-k-container" class="mt-12"></div>
-    </div>
-    <!-- v39 Phase 12: Report L — sequential invoice ledger -->
-    <div class="card cursor-pointer" onclick="renderReportL()" style="border-left:4px solid #0e7490;grid-column:span 2">
-      <div class="card-title" style="color:#0e7490">📋 Report L — SAP Invoice Ledger</div>
+    <!-- v41ZF: Report L (SAP Invoice Ledger) renamed to Report H. -->
+    <div class="card cursor-pointer" onclick="renderReportH()" style="border-left:4px solid #0e7490;grid-column:span 2">
+      <div class="card-title" style="color:#0e7490">📋 Report H — SAP Invoice Ledger</div>
       <div class="fw-bold mb-4">Sequential Invoice Register with Dispatch Status</div>
       <div class="text-sm text-muted">Chronological list of all SAP invoices received during the selected month. Columns: Sales Order Number, date, customer, batch, boxes, qty, taxable amount, IGST, total, IRN, dispatch status, vehicle, dispatched-at. Totals row at bottom. Print-friendly + CSV export. Use for GST audits and monthly reconciliation.</div>
       <button class="btn btn-sm mt-12" style="background:#0e7490;color:#fff">Generate Invoice Ledger →</button>
@@ -7163,7 +7158,13 @@ function renderReports(forceRebuild){
   }
 }
 
-function renderReportH(){ window._activeReport = renderReportH;
+// v41ZF: former Report H (Department Handover Gaps) is now the "handover" view of the merged
+// v41ZF: Report L (SAP Invoice Ledger) is renamed to Report H. renderReportH() is the canonical
+// name now and delegates to the existing renderReportL implementation (kept to avoid churn in the
+// ledger's internal refresh/export wiring). The former Report H (Dept Handover Gaps) is the
+// "handover" view of Report F; its internal controls now call renderReportF() directly.
+function renderReportH(){ return renderReportL(); }
+function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(window._v41_composingD)window._v41_composingD=false;
   _captureReportScroll();
   if(!document.getElementById('report-output')) renderReports();
   // v40 Phase 18.14: scan-driven inclusion. Don't rely solely on getTrkMonthBatches() —
@@ -7263,7 +7264,7 @@ function renderReportH(){ window._activeReport = renderReportH;
   // Tab bar
   const tabBar = `
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:10px">
-      <div onclick="window._rptHTab='all';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportH()"
+      <div onclick="window._rptHTab='all';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportF()"
         style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:2px solid ${activeTab==='all'?'#7c3aed':'var(--border)'};background:${activeTab==='all'?'rgba(124,58,237,0.1)':'var(--surface2)'};color:${activeTab==='all'?'#7c3aed':'var(--text2)'}">
         All Transitions
         <span style="margin-left:6px;background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px">${gapRows.length}</span>
@@ -7271,7 +7272,7 @@ function renderReportH(){ window._activeReport = renderReportH;
       ${allTransitions.map(tk=>{
         const s=summaryMap[tk]||{count:0,totalGap:0,totalQty:0};
         const isActive=activeTab===tk;
-        return `<div onclick="window._rptHTab='${tk}';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportH()"
+        return `<div onclick="window._rptHTab='${tk}';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportF()"
           style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:2px solid ${isActive?'#7c3aed':'var(--border)'};background:${isActive?'rgba(124,58,237,0.1)':'var(--surface2)'};color:${isActive?'#7c3aed':'var(--text2)'}">
           ${tk.replace('AIM Inspection','AIM').replace('Print Inspection','PI')}
           <span style="margin-left:6px;background:${isActive?'#7c3aed':'var(--text3)'};color:#fff;font-size:10px;padding:1px 6px;border-radius:8px">${s.count}</span>
@@ -7284,28 +7285,28 @@ function renderReportH(){ window._activeReport = renderReportH;
     <div class="form-row cols-4 mb-16">
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Batch</label>
-        <select onchange="window._rptHBatch=this.value;renderReportH()">
+        <select onchange="window._rptHBatch=this.value;renderReportF()">
           <option value="">All Batches</option>
           ${allBatchesH.map(bn=>`<option value="${bn}" ${filterBatch===bn?'selected':''}>${bn}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Machine</label>
-        <select onchange="window._rptHMachine=this.value;renderReportH()">
+        <select onchange="window._rptHMachine=this.value;renderReportF()">
           <option value="">All Machines</option>
           ${allMachinesH.map(m=>`<option value="${m}" ${filterMachine===m?'selected':''}>${m}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">PC Code</label>
-        <select onchange="window._rptHPc=this.value;renderReportH()">
+        <select onchange="window._rptHPc=this.value;renderReportF()">
           <option value="">All PC Codes</option>
           ${allPcCodesH.map(p=>`<option value="${p}" ${filterPc===p?'selected':''}>${p}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Colour</label>
-        <select onchange="window._rptHColour=this.value;renderReportH()">
+        <select onchange="window._rptHColour=this.value;renderReportF()">
           <option value="">All Colours</option>
           ${allColoursH.map(c=>`<option value="${c}" ${filterColour===c?'selected':''}>${c}</option>`).join('')}
         </select>
@@ -7336,7 +7337,7 @@ function renderReportH(){ window._activeReport = renderReportH;
   const html = `<div class="card">
     <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:16px">
       <div>
-        <div class="section-title" style="color:#7c3aed">🔗 Report H — Department Handover Gap Report</div>
+        <div class="section-title" style="color:#7c3aed">🔗 Report F — Dept Handover Gaps</div>
         <div class="text-sm text-muted">Cumulative — boxes scanned OUT of a dept but not yet IN to next dept</div>
       </div>
       <div style="text-align:right">
@@ -7370,13 +7371,14 @@ function renderReportH(){ window._activeReport = renderReportH;
     }
     <div style="margin-top:16px;display:flex;gap:10px">
       <button class="btn btn-secondary btn-sm" onclick="exportReportH()">📥 Export Excel</button>
-      <button class="btn btn-ghost btn-sm" onclick="window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportH()">✕ Clear Filters</button>
-      <button class="btn btn-ghost btn-sm" onclick="renderReportH()" style="margin-left:auto">🔄 Refresh</button>
+      <button class="btn btn-ghost btn-sm" onclick="window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportF()">✕ Clear Filters</button>
+      <button class="btn btn-ghost btn-sm" onclick="renderReportF()" style="margin-left:auto">🔄 Refresh</button>
     </div>
   </div>`;
 
   _captureReportScroll();
   document.getElementById('report-output').innerHTML=html;
+  document.getElementById('report-output').insertAdjacentHTML('afterbegin', _v41_reportFToggleHtml());
 _scrollIntoReportIfFirstView('H');
 }
 
@@ -7413,13 +7415,58 @@ window._rptGMachine = window._rptGMachine || '';
 window._rptGPc      = window._rptGPc      || '';
 window._rptGColour  = window._rptGColour  || '';
 
-function renderReportG(){ window._activeReport = renderReportG;
+function renderReportD(){ window._activeReport = renderReportD;
+  // v41ZF: Report D now bundles the former Report G (Batch-wise & Cumulative A-Grade) as a second
+  // stacked section. Set the compose flag so the Report G renderer appends below D's summary and so
+  // any G-section filter/toggle re-renders the whole merged Report D (see renderReportG).
+  window._v41_composingD = true;
+  // v41 P19.6 (Q1): warm month-attributed cache, then render (fallback to cumulative on fetch fail).
+  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+    _v41_ensureAgradeMonthLoaded().then(()=>{ _v41_renderReportDInner(); _v41_renderReportGInner(); });
+    return;
+  }
+  _v41_renderReportDInner();
+  // Second section: batch-wise & cumulative A-Grade (former Report G), appended below.
+  if (_v41_useMonthAttributed) { _v41_fetchAgradeMonth(_trkSelectedMonth).then(()=>{ _v41_renderReportGInner(); }); }
+  else { _v41_renderReportGInner(); }
+}
+// v41ZF: NEW Report G = Daily Scan In/Out Movement (former Report K) as the primary view, with the
+// former Report J dispatch-reconciliation ALERTS available as two selectable header options
+// (FG Stock Aging = J Flow A, Flow B = J Flow B). The former Report G (A-Grade) lives in Report D
+// now; old-G internals route to renderReportD(), so this name is free to host the J+K merge.
+function _v41_reportGToggleHtml(){
+  // v41ZF audit fix: in an alert view, derive the highlighted option from the ACTUAL J tab
+  // (_reportJTab) so that switching via Report J's own internal A/B tabs keeps this top toggle in
+  // sync (A = aging, B = flowb). Movement view is independent.
+  let v = window._v41_reportGView || 'movement';
+  if (v === 'aging' || v === 'flowb') {
+    v = (window._reportJTab === 'B') ? 'flowb' : 'aging';
+    window._v41_reportGView = v; // keep state coherent with what's displayed
+  }
+  const canSeeB = (typeof currentDept!=='undefined') && (currentDept==='admin');
+  const btn = (key,label,show=true) => show ? `<button onclick="window._v41_reportGView='${key}';renderReportG()" style="font-size:11px;padding:5px 12px;border-radius:5px;cursor:pointer;border:1px solid ${v===key?'#0891b2':'var(--border)'};background:${v===key?'rgba(8,145,178,0.15)':'transparent'};color:${v===key?'#0891b2':'var(--text3)'};font-weight:${v===key?'700':'400'}">${label}</button>` : '';
+  return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--text3);font-weight:700;letter-spacing:.5px">VIEW:</span>
+    ${btn('movement','📦 Daily Scan In / Out Movement')}
+    ${btn('aging','⏱️ FG Stock Aging Alerts')}
+    ${btn('flowb','🔄 Flow B Alerts', canSeeB)}
+  </div>`;
+}
+function renderReportG(){
+  // v41ZF: if an old-G (A-Grade) control fires while merged Report D is on screen, keep that working.
+  if (window._v41_composingD) { renderReportD(); return; }
+  window._activeReport = renderReportG;
   if(!document.getElementById('report-output')) renderReports();
-  // v41 P19.6 (Q3): fetch month-attributed A-Grade data (6 AM-cut), then render.
-  if(_v41_useMonthAttributed){
-    _v41_fetchAgradeMonth(_trkSelectedMonth).then(()=>{ _v41_renderReportGInner(); });
+  const view = window._v41_reportGView || 'movement';
+  if(view === 'aging' || view === 'flowb'){
+    // Route to the former Report J alert flows (A = aging, B = flowb), then prepend the G toggle.
+    window._reportJTab = (view === 'flowb') ? 'B' : 'A';
+    renderReportJ();
+    document.getElementById('report-output')?.insertAdjacentHTML('afterbegin', _v41_reportGToggleHtml());
   } else {
-    _v41_renderReportGInner();
+    // Movement view (former Report K) renders into the standard report-output container.
+    renderReportK('report-output');
+    document.getElementById('report-output')?.insertAdjacentHTML('afterbegin', _v41_reportGToggleHtml());
   }
 }
 function _v41_renderReportGInner(){
@@ -7523,8 +7570,8 @@ function _v41_renderReportGInner(){
       <td class="td-mono green">${ag.aGrade>0?fmt(ag.aGrade)+'L':'—'}</td>
       <td class="td-mono" style="color:var(--amber)">${ag.salvage>0?fmt(ag.salvage)+'L':'—'}</td>
       <td class="td-mono" style="color:var(--red)">${ag.remelt>0?fmt(ag.remelt)+'L':'—'}</td>
-      <td style="min-width:150px">${wipBreakdown}</td>
       <td class="td-mono" style="color:var(--green)">${wip && wip.packIn>0?fmt(wip.packIn)+'L':'—'}</td>
+      <td style="min-width:150px">${wipBreakdown}</td>
       <td>
         <span style="font-size:13px;font-weight:700;color:${pctCls}">${ag.inspected>0?fmt(ag.pct,2)+'%':'—'}</span>
         ${aGradeBreakdown}
@@ -7558,8 +7605,8 @@ function _v41_renderReportGInner(){
 
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid #16a34a;flex-wrap:wrap">
       <span style="font-size:12px;font-weight:700;color:var(--text)">A-Grade attribution:</span>
-      <button onclick="_v41_useMonthAttributed=true;_v41_clearAgradeMonthCache();renderReportG()" style="font-size:11px;padding:4px 10px;border-radius:4px;cursor:pointer;border:1px solid ${_v41_useMonthAttributed?'#16a34a':'var(--border)'};background:${_v41_useMonthAttributed?'rgba(22,163,74,0.15)':'transparent'};color:${_v41_useMonthAttributed?'#16a34a':'var(--text3)'};font-weight:${_v41_useMonthAttributed?'700':'400'}">📅 Month of Production (6 AM cut)</button>
-      <button onclick="_v41_useMonthAttributed=false;renderReportG()" style="font-size:11px;padding:4px 10px;border-radius:4px;cursor:pointer;border:1px solid ${!_v41_useMonthAttributed?'var(--accent)':'var(--border)'};background:${!_v41_useMonthAttributed?'rgba(96,165,250,0.15)':'transparent'};color:${!_v41_useMonthAttributed?'var(--accent)':'var(--text3)'};font-weight:${!_v41_useMonthAttributed?'700':'400'}">∑ Live Cumulative</button>
+      <button onclick="_v41_useMonthAttributed=true;_v41_clearAgradeMonthCache();renderReportD()" style="font-size:11px;padding:4px 10px;border-radius:4px;cursor:pointer;border:1px solid ${_v41_useMonthAttributed?'#16a34a':'var(--border)'};background:${_v41_useMonthAttributed?'rgba(22,163,74,0.15)':'transparent'};color:${_v41_useMonthAttributed?'#16a34a':'var(--text3)'};font-weight:${_v41_useMonthAttributed?'700':'400'}">📅 Month of Production (6 AM cut)</button>
+      <button onclick="_v41_useMonthAttributed=false;renderReportD()" style="font-size:11px;padding:4px 10px;border-radius:4px;cursor:pointer;border:1px solid ${!_v41_useMonthAttributed?'var(--accent)':'var(--border)'};background:${!_v41_useMonthAttributed?'rgba(96,165,250,0.15)':'transparent'};color:${!_v41_useMonthAttributed?'var(--accent)':'var(--text3)'};font-weight:${!_v41_useMonthAttributed?'700':'400'}">∑ Live Cumulative</button>
       <span style="font-size:10px;color:var(--text3)">${_v41_useMonthAttributed?`Showing A-Grade for production inspected within ${_trkSelectedMonth} (scans up to 6 AM on the 1st of next month). ⇄ = batch spans boundary.`:'Showing all-time cumulative A-Grade per batch (not month-sliced).'}</span>
     </div>
 
@@ -7587,18 +7634,18 @@ function _v41_renderReportGInner(){
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Batch</label>
         <input type="text" id="rptg-filter-batch" placeholder="🔍 Batch" value="${gB.replace(/"/g,'&quot;')}"
-          oninput="window._rptGBatch=this.value;renderReportG()">
+          oninput="window._rptGBatch=this.value;renderReportD()">
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Machine</label>
-        <select onchange="window._rptGMachine=this.value;renderReportG()">
+        <select onchange="window._rptGMachine=this.value;renderReportD()">
           <option value="">All Machines</option>
           ${gAllMachines.map(m=>`<option value="${m}" ${gM===m?'selected':''}>${m}</option>`).join('')}
         </select>
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">PC Code</label>
-        <select onchange="window._rptGPc=this.value;renderReportG()">
+        <select onchange="window._rptGPc=this.value;renderReportD()">
           <option value="">All PC Codes</option>
           ${gAllPcCodes.map(p=>`<option value="${p}" ${gP===p?'selected':''}>${p}</option>`).join('')}
         </select>
@@ -7606,12 +7653,12 @@ function _v41_renderReportGInner(){
       <div class="form-group" style="margin-bottom:0;display:flex;gap:6px;align-items:flex-end">
         <div style="flex:1">
           <label style="font-size:11px">Colour</label>
-          <select onchange="window._rptGColour=this.value;renderReportG()">
+          <select onchange="window._rptGColour=this.value;renderReportD()">
             <option value="">All Colours</option>
             ${gAllColours.map(c=>`<option value="${c}" ${gC===c?'selected':''}>${c}</option>`).join('')}
           </select>
         </div>
-        ${(gB||gM||gP||gC)?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';renderReportG()">✕ Clear</button>`:''}
+        ${(gB||gM||gP||gC)?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';renderReportD()">✕ Clear</button>`:''}
       </div>
     </div>
 
@@ -7619,7 +7666,7 @@ function _v41_renderReportGInner(){
       <thead><tr>
         <th>Batch</th><th>Customer</th><th>Sz</th><th>Type</th>
         <th>Gross Prod</th><th>Inspected</th><th>A-Grade</th>
-        <th>Salvage</th><th>Remelt</th><th>WIP (Stage-wise)</th><th>Packed (L)</th><th>A-Grade %</th>
+        <th>Salvage</th><th>Remelt</th><th>Packed (L)</th><th>WIP (Stage-wise)</th><th>A-Grade %</th>
       </tr></thead>
       <tbody>${rows||'<tr><td colspan="12" class="text-center text-muted">No batch data yet</td></tr>'}</tbody>
       <tfoot><tr style="background:var(--surface2);font-weight:700">
@@ -7629,8 +7676,8 @@ function _v41_renderReportGInner(){
         <td class="td-mono green">${fmt(totalAGradeQty)}L</td>
         <td class="td-mono amber">${fmt(totalSalvage)}L</td>
         <td class="td-mono red">${fmt(totalRemelt)}L</td>
-        <td class="td-mono amber">${fmt(totalWIP)}L WIP</td>
         <td class="td-mono" style="color:var(--green)">${fmt(totalPacked)}L</td>
+        <td class="td-mono amber">${fmt(totalWIP)}L WIP</td>
         <td><span style="font-size:13px;font-weight:700;color:${cumCls}">${fmt(cumPct,2)}%</span></td>
       </tr></tfoot>
     </table></div>
@@ -7641,12 +7688,17 @@ function _v41_renderReportGInner(){
   // v41ZC: preserve focus + caret on the batch filter so typing isn't interrupted by re-render
   const _gAf = document.activeElement, _gAfId = _gAf && _gAf.id;
   const _gSelS = _gAf && _gAf.selectionStart, _gSelE = _gAf && _gAf.selectionEnd;
-  document.getElementById('report-output').innerHTML = html;
+  // v41ZF: when Report G is rendered as the second (batch-wise) section of the merged Report D,
+  // APPEND below Report D's overall-summary section instead of overwriting the container.
+  const _outEl = document.getElementById('report-output');
+  if (!_outEl) return; // v41ZF audit: container gone (user navigated away during async A-Grade fetch) — abort safely
+  if (window._v41_composingD) { _outEl.insertAdjacentHTML('beforeend', html); }
+  else { _outEl.innerHTML = html; }
   if (_gAfId === 'rptg-filter-batch') {
     const n = document.getElementById('rptg-filter-batch');
     if (n) { n.focus(); try { if (_gSelS != null) n.setSelectionRange(_gSelS, _gSelE); } catch(e){} }
   }
-_scrollIntoReportIfFirstView('G');
+  if (!window._v41_composingD) _scrollIntoReportIfFirstView('G');
 }
 
 function exportReportG(){
@@ -7703,7 +7755,7 @@ function exportReportG(){
 // NOTE: named "Z" because "Report K" is already taken by the Dispatch Pack-In→Dispatch-Out
 // summary (renderReportK(targetId) further below). Keeping them distinct avoids a fatal
 // duplicate-function-name shadow.
-function renderReportZ(){ window._activeReport = renderReportZ;
+function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_composingD)window._v41_composingD=false;
   if(currentDept!=='admin'){ toast('Admin only','#dc2626'); return; }
   if(!document.getElementById('report-output')) renderReports();
   const ym = _trkSelectedMonth;
@@ -7753,9 +7805,9 @@ function renderReportZ(){ window._activeReport = renderReportZ;
       <td>${statusBadge}</td>
       <td class="td-mono">${fmt(b.actualProd||b.actualQty||0)}L</td>
       <td class="td-mono green">${aGradeQty>0.005?fmt(aGradeQty)+'L':'—'}</td>
+      <td class="td-mono green">${packedQty>0.005?fmt(packedQty)+'L':'—'}</td>
       <td class="td-mono amber">${totalWIP>0.005?fmt(totalWIP)+'L':'—'}</td>
       <td class="text-sm" style="color:var(--text3)">${wipDetail||'—'}</td>
-      <td class="td-mono green">${packedQty>0.005?fmt(packedQty)+'L':'—'}</td>
       <td class="td-mono green">${packWIP>0.005?fmt(packWIP)+'L':'—'}</td>
       <td>${(totalWIP>0.005)?`<button class="btn btn-sm" style="background:#be123c;color:#fff;font-size:11px" onclick="_v41_openReconcileModal('${b.batchNumber}','${b.isPrinted?'printed':'unprinted'}')">Reconcile WIP</button>`:'—'}</td>
     </tr>`;
@@ -7771,9 +7823,9 @@ function renderReportZ(){ window._activeReport = renderReportZ;
       <td colspan="6" class="text-right" style="padding-right:8px">TOTAL (${shown.length} item${shown.length===1?'':'s'})</td>
       <td class="td-mono">${fmt(sumGross)}L</td>
       <td class="td-mono green">${fmt(sumAGrade)}L</td>
+      <td class="td-mono green">${fmt(sumPacked)}L</td>
       <td class="td-mono amber">${fmt(sumWIP)}L</td>
       <td></td>
-      <td class="td-mono green">${fmt(sumPacked)}L</td>
       <td class="td-mono green">${fmt(sumPack)}L</td>
       <td></td>
     </tr></tfoot>` : '';
@@ -7800,7 +7852,7 @@ function renderReportZ(){ window._activeReport = renderReportZ;
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
         <th>Batch</th><th>Machine</th><th>Customer</th><th>Sz</th><th>Type</th><th>Order Status</th>
-        <th>Gross Prod</th><th>A-Grade</th><th>Total WIP</th><th>WIP Breakdown</th><th>Packed</th><th>FG Awaiting Dispatch</th><th>Action</th>
+        <th>Gross Prod</th><th>A-Grade</th><th>Packed</th><th>Total WIP</th><th>WIP Breakdown</th><th>FG Awaiting Dispatch</th><th>Action</th>
       </tr></thead>
       <tbody>${rows||'<tr><td colspan="13" class="text-center text-muted">'+(items.length?'No items match the current filter':'✅ No open items for '+ym+' — clean slate')+'</td></tr>'}</tbody>
       ${totalsRow}
@@ -7914,8 +7966,25 @@ async function _v41_submitReconcile(batchNo, ym){
   }
 }
 
-function renderReportF(){ window._activeReport = renderReportF;
+// v41ZF: Report F now bundles the former Report H. A header toggle switches between the two
+// scan-discrepancy views: "Prod vs Scan Reconciliation" (original F) and "Dept Handover Gaps"
+// (former H). Each view keeps its own filters and logic intact.
+function _v41_reportFToggleHtml(){
+  const v = window._v41_reportFView || 'recon';
+  const btn = (key,label) => `<button onclick="window._v41_reportFView='${key}';renderReportF()" style="font-size:11px;padding:5px 12px;border-radius:5px;cursor:pointer;border:1px solid ${v===key?'#dc2626':'var(--border)'};background:${v===key?'rgba(220,38,38,0.15)':'transparent'};color:${v===key?'#dc2626':'var(--text3)'};font-weight:${v===key?'700':'400'}">${label}</button>`;
+  return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+    <span style="font-size:11px;color:var(--text3);font-weight:700;letter-spacing:.5px">VIEW:</span>
+    ${btn('recon','🚨 Prod vs Scan Reconciliation')}
+    ${btn('handover','🔗 Dept Handover Gaps')}
+  </div>`;
+}
+function renderReportF(){ window._activeReport = renderReportF; if(window._v41_composingD)window._v41_composingD=false;
   if(!document.getElementById('report-output')) renderReports();
+  const view = window._v41_reportFView || 'recon';
+  if(view === 'handover'){ _v41_renderReportHInner(); }
+  else { _v41_renderReportFInner(); }
+}
+function _v41_renderReportFInner(){
   // End-of-day production vs scan reconciliation
   const todayStr = today();
   const filterStatus  = window._rptFStatus  || '';
@@ -8108,6 +8177,7 @@ function renderReportF(){ window._activeReport = renderReportF;
 
   _captureReportScroll();
   document.getElementById('report-output').innerHTML = html;
+  document.getElementById('report-output').insertAdjacentHTML('afterbegin', _v41_reportFToggleHtml());
 _scrollIntoReportIfFirstView('F');
 }
 
@@ -8133,7 +8203,7 @@ function exportReportF(){
 }
 
 
-function renderReportB(){ window._activeReport = renderReportB;
+function renderReportB(){ window._activeReport = renderReportB; if(window._v41_composingD)window._v41_composingD=false;
   if(!document.getElementById('report-output')) renderReports();
   const filterDept  = window._rptBDept  || '';
   const filterBatch = window._rptBBatch || '';
@@ -8255,7 +8325,7 @@ function renderReportB(){ window._activeReport = renderReportB;
 _scrollIntoReportIfFirstView('B');
 }
 
-function renderReportC(){ window._activeReport = renderReportC;
+function renderReportC(){ window._activeReport = renderReportC; if(window._v41_composingD)window._v41_composingD=false;
   if(!document.getElementById('report-output')) renderReports();
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
@@ -8350,14 +8420,9 @@ _scrollIntoReportIfFirstView('C');
 _scrollIntoReportIfFirstView('C');
 }
 
-function renderReportD(){ window._activeReport = renderReportD;
-  // v41 P19.6 (Q1): warm month-attributed cache, then render (fallback to cumulative on fetch fail).
-  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
-    _v41_ensureAgradeMonthLoaded().then(()=>_v41_renderReportDInner());
-    return;
-  }
-  _v41_renderReportDInner();
-}
+// v41ZF: renderReportD() is defined above (near renderReportG) so it can compose both the overall
+// summary and the former Report G batch-wise section. _v41_renderReportDInner() (below) builds only
+// the summary section.
 function _v41_renderReportDInner(){
   if(!document.getElementById('report-output')) renderReports();
   const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber);
@@ -8427,7 +8492,7 @@ function _v41_renderReportDInner(){
 _scrollIntoReportIfFirstView('D');
 }
 
-function renderReportA(){ window._activeReport = renderReportA;
+function renderReportA(){ window._activeReport = renderReportA; if(window._v41_composingD)window._v41_composingD=false;
   // v41 P19.6 (Q1): warm month-attributed cache, then render (fallback to cumulative on fetch fail).
   if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
     _v41_ensureAgradeMonthLoaded().then(()=>_v41_renderReportAInner());
@@ -8622,7 +8687,7 @@ function _batchBelongsToMachine(batch, machineId){
   return normMcId(batch?.machineId) === normMcId(machineId);
 }
 
-function renderReportE(){ window._activeReport = renderReportE;
+function renderReportE(){ window._activeReport = renderReportE; if(window._v41_composingD)window._v41_composingD=false;
   // v41 P19.6 (Q1): warm the month-attributed A-Grade cache, then render. If fetch fails,
   // _v41_agradeFor transparently falls back to cumulative so the report still renders.
   if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
@@ -9905,14 +9970,14 @@ function _isExportBatchClient(batchNo) {
 }
 
 function renderReportJ() {
-  window._activeReport = renderReportJ;
+  window._activeReport = renderReportJ; if(window._v41_composingD)window._v41_composingD=false;
   _captureReportScroll();
   if(!document.getElementById('report-output')) renderReports();
   const targetId = 'report-output';
   // Start with loading state
   const el = document.getElementById(targetId);
   if (!el) return;
-  el.innerHTML = `<div class="card"><div class="section-title">Report J — Pending Dispatch Reconciliations</div><div class="text-center text-muted" style="padding:40px">Loading alerts…</div></div>`;
+  el.innerHTML = `<div class="card"><div class="section-title">Report G — Pending Dispatch Reconciliations</div><div class="text-center text-muted" style="padding:40px">Loading alerts…</div></div>`;
 
   _fetchReconcileAlerts().then(alerts => {
     _renderReportJContent(alerts);
@@ -10099,7 +10164,7 @@ function _renderReportJContent(alerts) {
   const html = `
     <div class="card">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px">
-        <div class="section-title" style="margin:0">Report J — Dispatch Reconciliation Alerts</div>
+        <div class="section-title" style="margin:0">Report G — Dispatch Reconciliation Alerts</div>
         <div class="text-sm text-muted">${(countA+countB)} active · Flow A: 7d/15d aging · Flow B: 60 min</div>
       </div>
       ${tabsHtml}
@@ -10119,6 +10184,11 @@ function _renderReportJContent(alerts) {
     const _afId = _af && _af.id;
     const _selS = _af && _af.selectionStart, _selE = _af && _af.selectionEnd;
     el.innerHTML = html;
+    // v41ZF: when the J alert flows are shown as views of the merged Report G, keep the G view
+    // toggle pinned at the top across J's async re-renders (loading → content) and filter changes.
+    if ((window._v41_reportGView === 'aging' || window._v41_reportGView === 'flowb') && typeof _v41_reportGToggleHtml === 'function') {
+      el.insertAdjacentHTML('afterbegin', _v41_reportGToggleHtml());
+    }
     if (_afId) {
       const n = document.getElementById(_afId);
       if (n) { n.focus(); try { if (_selS != null) n.setSelectionRange(_selS, _selE); } catch(e){} }
@@ -10398,7 +10468,7 @@ function renderReportK(targetId) {
   el.innerHTML = `
     <div class="card mb-16" style="border-top:4px solid #0891b2">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-        <div class="card-title" style="margin-bottom:0">📅 Report K — Per-Batch Pack In → Dispatch Out Summary</div>
+        <div class="card-title" style="margin-bottom:0">📅 Per-Batch Pack In → Dispatch Out Summary</div>
         <button class="btn btn-secondary btn-sm" onclick="exportReportK()">📥 Export Excel</button>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
@@ -10488,6 +10558,12 @@ function renderReportK(targetId) {
   if (_afKId) {
     const n = document.getElementById(_afKId);
     if (n) { n.focus(); try { if (_selKS != null) n.setSelectionRange(_selKS, _selKE); } catch(e){} }
+  }
+  // v41ZF: when K's movement view is shown as part of the merged Report G (renders into
+  // report-output, not the dispatch page's report-k-container), keep the G view toggle pinned on top
+  // across K's internal filter/date re-renders.
+  if (containerId === 'report-output' && (window._v41_reportGView || 'movement') === 'movement' && typeof _v41_reportGToggleHtml === 'function') {
+    el.insertAdjacentHTML('afterbegin', _v41_reportGToggleHtml());
   }
 }
 
@@ -10721,7 +10797,7 @@ function _v39_renderReportLTable() {
     <div class="card" style="border-top:4px solid #0e7490">
       <div class="section-header">
         <div>
-          <div class="section-title">📋 Report L — SAP Invoice Ledger</div>
+          <div class="section-title">📋 Report H — SAP Invoice Ledger</div>
           <div class="section-sub">${_trkSelectedMonth} • ${invoices.length} invoice${invoices.length===1?'':'s'} ${filterCustomer||filterStatus?' (filtered)':''}</div>
         </div>
         <div style="display:flex;gap:8px">
