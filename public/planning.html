@@ -501,12 +501,13 @@ input[type="file"] { display:none; }
       <p>PLANNING SUITE</p>
     </div>
     <div class="auth-form-group">
-      <label>Role</label>
+      <label>Username</label>
       <select id="auth-role">
-        <option value="Planning_Manager">Planning Manager</option>
-        <option value="Printing_Manager">Printing Manager</option>
-        <option value="Dispatch_Manager">Dispatch Manager</option>
-        <option value="Plan_Admin">Admin</option>
+        <option value="Dispatch_Manager">Dispatch_Manager</option>
+        <option value="Marketing">Marketing</option>
+        <option value="Plan_Admin">Plan_Admin</option>
+        <option value="Planning_Manager">Planning_Manager</option>
+        <option value="Printing_Manager">Printing_Manager</option>
       </select>
     </div>
     <div class="auth-form-group">
@@ -12596,6 +12597,22 @@ const PLAN_ROLE_NAV = {
   dispatch_manager: ['dispatch','dispatch-calendar','dispatch-customer','dispatch-export','planned-vs-actual','search'],
   admin: null // null = all pages
 };
+
+// Auto-populate username dropdown from server on page load
+(async function populateLoginUsers() {
+  try {
+    let serverUrl = '';
+    try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+    if (!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
+    if (!serverUrl) return;
+    const r = await fetch(serverUrl + '/api/auth/usernames?app=planning', { signal: AbortSignal.timeout(5000) });
+    const j = await r.json();
+    if (!j.ok || !Array.isArray(j.usernames) || j.usernames.length === 0) return;
+    const sel = document.getElementById('auth-role');
+    if (!sel) return;
+    sel.innerHTML = j.usernames.map(u => `<option value="${u}">${u}</option>`).join('');
+  } catch(e) { /* silently ignore — fallback options remain */ }
+})();
 
 async function doLogin() {
   const role = document.getElementById('auth-role').value;
