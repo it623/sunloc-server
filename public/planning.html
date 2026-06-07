@@ -501,13 +501,8 @@ input[type="file"] { display:none; }
       <p>PLANNING SUITE</p>
     </div>
     <div class="auth-form-group">
-      <label>Role</label>
-      <select id="auth-role">
-        <option value="Planning_Manager">Planning Manager</option>
-        <option value="Printing_Manager">Printing Manager</option>
-        <option value="Dispatch_Manager">Dispatch Manager</option>
-        <option value="Plan_Admin">Admin</option>
-      </select>
+      <label>Username</label>
+      <input type="text" id="auth-role" placeholder="Enter username" autocomplete="username" onkeydown="if(event.key==='Enter')document.getElementById('auth-pin').focus()">
     </div>
     <div class="auth-form-group">
       <label>PIN</label>
@@ -12598,19 +12593,20 @@ const PLAN_ROLE_NAV = {
 };
 
 async function doLogin() {
-  const role = document.getElementById('auth-role').value;
+  const username = document.getElementById('auth-role').value.trim();
   const pin = document.getElementById('auth-pin').value;
   const errEl = document.getElementById('auth-error');
   errEl.textContent = '';
+  if (!username) { errEl.textContent = 'Please enter your username'; return; }
   if (!pin) { errEl.textContent = 'Please enter your PIN'; return; }
   let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) {
     // Offline fallback — simple hardcoded check
     const defaults = {Planning_Manager:'3333',Printing_Manager:'4444',Dispatch_Manager:'5555',Plan_Admin:'9999'};
-    if (defaults[role] !== pin) { errEl.textContent = 'Invalid PIN'; return; }
+    if (defaults[username] !== pin) { errEl.textContent = 'Invalid username or PIN'; return; }
     // Normalise role key to match PLAN_ROLE_NAV
     const roleMap = {Planning_Manager:'planning_manager', Printing_Manager:'printing_manager', Dispatch_Manager:'dispatch_manager', Plan_Admin:'admin'};
-    currentUser = { username: role, role: roleMap[role] || 'planning_manager', token: null };
+    currentUser = { username: username, role: roleMap[username] || 'planning_manager', token: null };
     applyRoleRestrictions();
     document.getElementById('auth-overlay').classList.add('hidden');
     updateUserBadge();
@@ -12620,7 +12616,7 @@ async function doLogin() {
   try {
     const r = await fetch(serverUrl + '/api/auth/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ username: role, pin, app: 'planning' }),
+      body: JSON.stringify({ username: username, pin, app: 'planning' }),
       signal: AbortSignal.timeout(5000)
     });
     const j = await r.json();
