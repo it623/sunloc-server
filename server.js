@@ -5684,7 +5684,6 @@ app.post('/api/planning/state', async (req, res) => {
           const changedList = mergedList.filter(m => {
             const ex = existingMap[m.id];
             if (!ex) return true; // new order
-            // Compare key fields only — skip if nothing meaningful changed
             return (ex.status !== m.status) ||
                    (ex.deleted !== m.deleted) ||
                    (ex.machineId !== m.machineId) ||
@@ -5692,26 +5691,25 @@ app.post('/api/planning/state', async (req, res) => {
                    (Math.abs((ex.actualProd||0) - (m.actualProd||0)) > 0.001);
           });
           if (changedList.length === 0) {
-            console.log(`[State] Background merge: no changes detected, skipped upsert`);
+            console.log(`[State] Background merge: no changes, skipped upsert`);
           } else {
             for (let i = 0; i < changedList.length; i += CHUNK) {
               const chunk = changedList.slice(i, i + CHUNK);
-            const vals = [];
-            const params = [];
-            chunk.forEach((m, idx) => {
-              const b = idx * 6;
-              vals.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},NOW()::TEXT)`);
-              params.push(m.id, JSON.stringify(m), m.machineId||null,
-                          m.batchNumber||null, m.status||'pending', m.deleted||false);
-            });
-            await pgPool.query(`
-              INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
-              VALUES ${vals.join(',')}
-              ON CONFLICT(id) DO UPDATE SET data_json=EXCLUDED.data_json,machine_id=EXCLUDED.machine_id,
-                batch_number=EXCLUDED.batch_number,status=EXCLUDED.status,deleted=EXCLUDED.deleted,
-                updated_at=NOW()::TEXT
-            `, params);
-          }
+              const vals = [];
+              const params = [];
+              chunk.forEach((m, idx) => {
+                const b = idx * 6;
+                vals.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},NOW()::TEXT)`);
+                params.push(m.id, JSON.stringify(m), m.machineId||null,
+                            m.batchNumber||null, m.status||'pending', m.deleted||false);
+              });
+              await pgPool.query(`
+                INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+                VALUES ${vals.join(',')}
+                ON CONFLICT(id) DO UPDATE SET data_json=EXCLUDED.data_json,machine_id=EXCLUDED.machine_id,
+                  batch_number=EXCLUDED.batch_number,status=EXCLUDED.status,deleted=EXCLUDED.deleted,
+                  updated_at=NOW()::TEXT
+              `, params);
             }
             console.log(`[State] Background merged ${changedList.length}/${orders.length} orders into production_orders`);
           }
