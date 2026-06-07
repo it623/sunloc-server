@@ -1597,7 +1597,7 @@ async function pullFromServer(force){
   if(!serverUrl) return;
   try{
     // STEP 1: Load planning batches FIRST — fast, shows batches immediately
-    const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(8000)});
+    const pr=await fetch(serverUrl+'/api/planning/state',{signal:AbortSignal.timeout(20000)});
     if(pr.ok){
       const pj=await pr.json();
       if(pj.ok && pj.state?.orders){
@@ -6985,7 +6985,7 @@ function applyBatchFilter(){
     if(state.batches.length === 0) {
       // Batches not loaded yet — trigger reload from planning state
       container.innerHTML='<div class="card text-center text-muted" style="padding:40px"><div style="font-size:24px;margin-bottom:8px">⏳</div><div style="font-weight:600;margin-bottom:4px">Loading batch data...</div><div class="text-sm">Fetching from planning server</div></div>';
-      setTimeout(() => { loadFromServer().then(() => applyBatchFilter()); }, 500);
+      setTimeout(() => { pullFromServer(true).then(() => applyBatchFilter()); }, 500);
     } else {
       container.innerHTML='<div class="card text-center text-muted" style="padding:40px">No batches found for selected filters</div>';
     }
@@ -12035,7 +12035,7 @@ async function refreshScans(){
     // ("refreshScans error: aborted") and starved the labels load. Now it pulls only the most
     // recent 200 scans (?limit=200) with a short 6s timeout and MERGES them into state.scans by
     // id, so full history loaded once by STEP 3 / scan-summary is preserved and never truncated.
-    const sr=await fetch(serverUrl+'/api/tracking/scans-recent?limit=200',{signal:AbortSignal.timeout(6000)});
+    const sr=await fetch(serverUrl+'/api/tracking/scans-recent?limit=200',{signal:AbortSignal.timeout(15000)});
     if(!sr.ok) return;
     const sj=await sr.json();
     if(!sj.ok||!sj.scans) return;
