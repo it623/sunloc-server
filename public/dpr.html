@@ -1384,7 +1384,7 @@ async function syncFromServer(fl, d){
   // Never sync within 60 seconds of any save — gives server time to process and protects fresh data
   if((Date.now() - _dprLastSaveTime) < 60000) return;
   try{
-    const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
+    const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(20000)});
     if(!r.ok) return;
     const j=await r.json();
     if(j.data){
@@ -1750,7 +1750,7 @@ async function syncDateRangeFromServer(floors, fromDate, toDate) {
     const c = _dprDatesListCache[fl];
     if (c && (_now - c.ts) < _DPR_DATES_TTL) return c.dates;
     try {
-      const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(fl), {signal: AbortSignal.timeout(6000)});
+      const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(fl), {signal: AbortSignal.timeout(20000)});
       if (!r.ok) return (c ? c.dates : []);
       const j = await r.json();
       if (!j.ok || !Array.isArray(j.dates)) return (c ? c.dates : []);

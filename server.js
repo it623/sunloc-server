@@ -137,6 +137,7 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_actuals_batch ON production_actuals(batch_number);
       CREATE INDEX IF NOT EXISTS idx_actuals_machine ON production_actuals(machine_id, date);
       CREATE INDEX IF NOT EXISTS idx_dpr_date ON dpr_records(date);
+      CREATE INDEX IF NOT EXISTS idx_dpr_floor_date ON dpr_records(floor, date);
     `
   },
   {
@@ -1468,6 +1469,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC)`).catch(()=>{});
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_prod_actuals_date ON production_actuals(date, machine_id)`).catch(()=>{});
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_records_date ON dpr_records(date)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_floor_date ON dpr_records(floor, date)`).catch(()=>{});
 
     // v37H: idempotent ALTER for tracking_labels to bring any prod table up to spec
     const labelColumns = [
@@ -2317,6 +2319,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC)`).catch(()=>{});
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_prod_actuals_date ON production_actuals(date, machine_id)`).catch(()=>{});
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_records_date ON dpr_records(date)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_floor_date ON dpr_records(floor, date)`).catch(()=>{});
 
 
         console.log('[DB] PostgreSQL tables verified/created');
