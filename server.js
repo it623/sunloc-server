@@ -10920,8 +10920,8 @@ async function _draScanAndInsert() {
 // so polling every 60 seconds was overkill. Flow B threshold (60 min) is still well within
 // the 5-min scan window.
 if (typeof process !== 'undefined' && !process.env.SUNLOC_DISABLE_BG_JOBS) {
-  setInterval(_draScanAndInsert, 5 * 60 * 1000);
-  setTimeout(_draScanAndInsert, 15 * 1000); // initial run after startup
+  setInterval(_draScanAndInsert, 15 * 60 * 1000);
+  setTimeout(_draScanAndInsert, 10 * 60 * 1000); // initial run 10 minutes after startup
 }
 
 // GET /api/tracking/scan-summary — ALL scan counts aggregated by batch+dept+type (no LIMIT)
