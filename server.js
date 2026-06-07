@@ -5680,8 +5680,22 @@ app.post('/api/planning/state', async (req, res) => {
           }));
 
           const CHUNK = 500;
-          for (let i = 0; i < mergedList.length; i += CHUNK) {
-            const chunk = mergedList.slice(i, i + CHUNK);
+          // Only upsert orders that actually changed vs what's in the DB
+          const changedList = mergedList.filter(m => {
+            const ex = existingMap[m.id];
+            if (!ex) return true; // new order
+            // Compare key fields only — skip if nothing meaningful changed
+            return (ex.status !== m.status) ||
+                   (ex.deleted !== m.deleted) ||
+                   (ex.machineId !== m.machineId) ||
+                   (ex.batchNumber !== m.batchNumber) ||
+                   (Math.abs((ex.actualProd||0) - (m.actualProd||0)) > 0.001);
+          });
+          if (changedList.length === 0) {
+            console.log(`[State] Background merge: no changes detected, skipped upsert`);
+          } else {
+            for (let i = 0; i < changedList.length; i += CHUNK) {
+              const chunk = changedList.slice(i, i + CHUNK);
             const vals = [];
             const params = [];
             chunk.forEach((m, idx) => {
@@ -5698,7 +5712,9 @@ app.post('/api/planning/state', async (req, res) => {
                 updated_at=NOW()::TEXT
             `, params);
           }
-          console.log(`[State] Background merged ${orders.length} orders into production_orders (batched)`);
+            }
+            console.log(`[State] Background merged ${changedList.length}/${orders.length} orders into production_orders`);
+          }
         } catch(e) { console.warn('[State] Background order merge failed:', e.message); }
       });
     }
