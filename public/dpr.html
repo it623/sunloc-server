@@ -147,21 +147,19 @@ td.r,th.r{text-align:right}
    ════════════════════════════════════════ */
 @media(max-width:768px){
 
-  /* ── Nav bar — wrap tabs onto their own full-width line so every tab is visible on mobile.
-     v41ZI: the previous nowrap+horizontal-scroll squeezed the tab row between the brand and the
-     right-side controls to a sliver (users reported "cannot see the navigation tab"). Wrapping is
-     the same approach desktop uses; #wrap's top margin tracks the measured nav height (--nav-real). */
-  #nav { height: auto; min-height: var(--nav); flex-wrap: wrap; padding: 4px 8px; gap: 4px 0; align-items: center; }
-  .nbrand { font-size: 13px !important; white-space: nowrap; margin-right: 4px; order: 1; }
+  /* ── Nav bar — horizontal scroll tabs ── */
+  #nav { height: auto; min-height: var(--nav); flex-wrap: nowrap; padding: 0 6px; gap: 0; }
+  .nbrand { font-size: 13px !important; white-space: nowrap; margin-right: 4px; }
   .nbrand small { display: none; } /* hide version on mobile */
-  .nright { order: 2; margin-left: auto; flex-shrink: 0; gap: 3px; }
+  .ntabs { overflow-x: auto; flex-wrap: nowrap; -webkit-overflow-scrolling: touch; scrollbar-width: none; }
+  .ntabs::-webkit-scrollbar { display: none; }
+  .ntab { padding: 0 10px; font-size: 11px; white-space: nowrap; flex-shrink: 0; }
+  .nright { flex-shrink: 0; gap: 3px; }
   .nright .nbtn { padding: 4px 7px; font-size: 10px; }
   #syncBadge { font-size: 9px !important; padding: 3px 7px !important; }
-  .ntabs { order: 3; flex-basis: 100%; width: 100%; flex-wrap: wrap; overflow-x: visible; row-gap: 2px; border-top: 1px solid rgba(255,255,255,0.1); padding-top: 2px; }
-  .ntab { padding: 0 10px; height: 30px; font-size: 11px; white-space: nowrap; flex-shrink: 0; }
 
-  /* ── Wrap & content — sit below the (now taller, wrapped) nav ── */
-  #wrap { padding: 10px 8px !important; margin-top: var(--nav-real, var(--nav)) !important; }
+  /* ── Wrap & content ── */
+  #wrap { padding: 10px 8px !important; margin-top: var(--nav); }
 
   /* ── Date input ── */
   #ndate { font-size: 11px; padding: 4px 5px; width: 105px; }
@@ -310,7 +308,6 @@ td.r,th.r{text-align:right}
 
 @media(max-width:480px){
   /* ── Very small screens (iPhone SE, etc) ── */
-  .auth-card { padding: 24px 18px !important; }
   .nbrand { font-size: 12px !important; }
   .ntab { padding: 0 8px; font-size: 10px; }
   .kpi-val { font-size: 18px !important; }
@@ -377,10 +374,6 @@ td.r,th.r{text-align:right}
 @media (hover: none) and (pointer: coarse) {
   .ntab:active { opacity: 0.7; }
   .ftab:active { opacity: 0.7; }
-  /* v41ZI: reliable tap targets so floor/nav switches register on the first tap (users reported the
-     floor bubble needing several taps — partly the old nav overlapping it, partly small hit areas). */
-  .ftab { min-height: 40px; display: flex; align-items: center; touch-action: manipulation; }
-  .ntab { touch-action: manipulation; }
   .btn:active { opacity: 0.85; transform: scale(0.97); }
   .nbtn:active { opacity: 0.7; }
   .run-row input:focus { outline: 2px solid var(--cyan); outline-offset: 1px; border-color: var(--cyan) !important; }
@@ -423,7 +416,7 @@ td.r,th.r{text-align:right}
 @media(max-width:600px){.dpr-month-wrap select{min-width:80px;font-size:10px}}
 </style>
 <style>
-#auth-overlay{position:fixed;inset:0;background:#0b0d12;z-index:9999;display:flex;align-items:center;justify-content:center;overflow:auto;padding:16px;-webkit-overflow-scrolling:touch}
+#auth-overlay{position:fixed;inset:0;background:#0b0d12;z-index:9999;display:flex;align-items:center;justify-content:center}
 #auth-overlay.hidden{display:none}
 .auth-card{background:#181d28;border:1px solid #263040;border-radius:12px;padding:36px 40px;width:100%;max-width:360px}
 .auth-logo{text-align:center;margin-bottom:24px}
@@ -474,7 +467,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZI2</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZH</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -484,7 +477,6 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
     <div class="ntab" onclick="go('history')">📅 History</div>
     <div class="ntab" onclick="go('plant')">🏭 Plant Report</div>
     <div class="ntab" onclick="go('search')">🔍 Search</div>
-    <div class="ntab" onclick="go('closed')">📦 Closed Batches</div>
     <div class="ntab" onclick="go('settings')">⚙ Settings</div>
   </div>
   <div class="nright">
@@ -726,15 +718,6 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
       </select>
     </div>
     <div id="dpr-search-results"><p style="color:var(--t3);font-size:12px">Type to search across all DPR records...</p></div>
-  </div>
-</div>
-
-<!-- ═══ CLOSED BATCHES (v41ZI Item 6) ═══════════════════════ -->
-<div id="page-closed" class="page">
-  <div class="card">
-    <div class="card-title">📦 Closed Batches — Machine-wise</div>
-    <div style="font-size:12px;color:var(--t3);margin-bottom:10px">All closed batches with Planned vs Actual DPR Gross. Production Manager / Admin can correct an incorrect DPR gross here — the correction flows to Planning and Tracking Reports D & E.</div>
-    <div id="closed-batches-container"><p style="color:var(--t3);font-size:12px">Loading…</p></div>
   </div>
 </div>
 
@@ -1384,7 +1367,7 @@ async function syncFromServer(fl, d){
   // Never sync within 60 seconds of any save — gives server time to process and protects fresh data
   if((Date.now() - _dprLastSaveTime) < 60000) return;
   try{
-    const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(20000)});
+    const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
     if(!r.ok) return;
     const j=await r.json();
     if(j.data){
@@ -1750,7 +1733,7 @@ async function syncDateRangeFromServer(floors, fromDate, toDate) {
     const c = _dprDatesListCache[fl];
     if (c && (_now - c.ts) < _DPR_DATES_TTL) return c.dates;
     try {
-      const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(fl), {signal: AbortSignal.timeout(20000)});
+      const r = await fetch(serverUrl + '/api/dpr/dates/' + encodeURIComponent(fl), {signal: AbortSignal.timeout(6000)});
       if (!r.ok) return (c ? c.dates : []);
       const j = await r.json();
       if (!j.ok || !Array.isArray(j.dates)) return (c ? c.dates : []);
@@ -4555,7 +4538,7 @@ function go(page){
   document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
   document.querySelectorAll('.ntab').forEach(t=>t.classList.remove('on'));
   document.getElementById('page-'+page)?.classList.add('on');
-  const idx={entry:0,analytics:1,trends:2,aim:3,perf:4,history:5,plant:6,search:7,closed:8,settings:9};
+  const idx={entry:0,analytics:1,trends:2,aim:3,perf:4,history:5,plant:6,search:7,settings:8};
   document.querySelectorAll('.ntab')[idx[page]]?.classList.add('on');
   if(page==='analytics') renderAnalytics();
   else if(page==='trends') renderTrends();
@@ -4572,158 +4555,7 @@ function go(page){
   else if(page==='perf') renderPerf();
   else if(page==='history') renderHistory();
   else if(page==='plant'){ document.getElementById('plant-date').value=document.getElementById('plant-date').value||today(); renderPlantReport(); }
-  else if(page==='closed') renderClosedBatches();
   else if(page==='settings') renderSettings();
-}
-
-// ═══ v41ZI Item 6: DPR Closed-Batches report + batch-level gross override ═══
-async function renderClosedBatches(){
-  const cont = document.getElementById('closed-batches-container');
-  if(!cont) return;
-  if(!serverUrl){ cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Server not available — closed batches load from the server.</p>'; return; }
-  cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Loading closed batches…</p>';
-  try{
-    const r = await fetch(serverUrl+'/api/dpr/closed-batches',{signal:AbortSignal.timeout(60000)});
-    const j = await r.json();
-    if(!j.ok){ cont.innerHTML = '<p style="color:var(--red)">Failed to load: '+(j.error||'error')+'</p>'; return; }
-    window._closedBatches = j.batches || [];
-  }catch(e){ cont.innerHTML = '<p style="color:var(--red)">Failed to load closed batches: '+e.message+'</p>'; return; }
-
-  window._cbFilters = window._cbFilters || {floor:'',machineId:'',size:'',colour:'',pcCode:'',customer:'',q:''};
-  const f = window._cbFilters;
-  const data = window._closedBatches;
-  const MC_FLOOR_MAP = {};
-  Object.entries(FLOORS).forEach(([fl,flData])=>{ flData.machines.forEach(m=>{ MC_FLOOR_MAP[m.id]=fl; }); });
-  window._cbMcFloorMap = MC_FLOOR_MAP;
-  const uniq = k => [...new Set(data.map(b=>b[k]).filter(v=>v!==''&&v!=null).map(String))].sort();
-  const esc = v => String(v).replace(/"/g,'&quot;');
-  const sel = (k,label)=>`<div><label style="font-size:10px;color:var(--t3);display:block;margin-bottom:2px">${label}</label>
-    <select onchange="window._cbFilters.${k}=this.value;_cbRenderRows()" style="background:var(--s2);border:1px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px">
-      <option value="">All</option>${uniq(k).map(o=>`<option value="${esc(o)}" ${f[k]===o?'selected':''}>${o}</option>`).join('')}
-    </select></div>`;
-  const floorSel = `<div><label style="font-size:10px;color:var(--t3);display:block;margin-bottom:2px">FLOOR</label>
-    <select onchange="window._cbFilters.floor=this.value;_cbRenderRows()" style="background:var(--s2);border:1px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px">
-      <option value="">All</option>
-      ${Object.entries(FLOORS).map(([fl,fd])=>`<option value="${fl}" ${f.floor===fl?'selected':''}>${fd.label}</option>`).join('')}
-    </select></div>`;
-  cont.innerHTML = `
-    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
-      ${floorSel}
-      ${sel('machineId','MACHINE')}
-      ${sel('size','SIZE')}
-      ${sel('colour','COLOUR')}
-      ${sel('pcCode','PC CODE')}
-      ${sel('customer','CUSTOMER')}
-      <div><label style="font-size:10px;color:var(--t3);display:block;margin-bottom:2px">SEARCH</label>
-        <input type="text" value="${esc(f.q||'')}" placeholder="batch / customer / PC…" oninput="window._cbFilters.q=this.value;_cbRenderRows()" style="background:var(--s2);border:1px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px;min-width:180px;outline:none"></div>
-      <button onclick="window._cbFilters={floor:'',machineId:'',size:'',colour:'',pcCode:'',customer:'',q:''};renderClosedBatches()" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--t2);border-radius:4px;padding:6px 10px;cursor:pointer">✕ Clear</button>
-      <span id="cb-count" style="font-size:12px;color:var(--t3);align-self:center"></span>
-    </div>
-    <div class="table-wrap" style="max-height:62vh;overflow:auto;border:1px solid var(--b2);border-radius:6px">
-      <table class="data-table" style="width:100%">
-        <thead style="position:sticky;top:0;z-index:5"><tr>
-          <th>Batch No</th><th>Machine</th><th>Size</th><th>Colour</th><th>PC Code</th><th>Customer</th><th>Start</th><th>End</th>
-          <th>Planned Gross (L)</th><th>Actual DPR Gross (L)</th><th>Action</th>
-        </tr></thead>
-        <tbody id="cb-tbody"></tbody>
-      </table>
-    </div>`;
-  _cbRenderRows();
-}
-
-function _cbFiltered(){
-  const data = window._closedBatches || [];
-  const f = window._cbFilters || {};
-  const mcFloorMap = window._cbMcFloorMap || {};
-  const q = (f.q||'').toLowerCase().trim();
-  return data.filter(b=>{
-    if(f.floor && mcFloorMap[b.machineId] !== f.floor) return false;
-    if(f.machineId && b.machineId!==f.machineId) return false;
-    if(f.size && String(b.size)!==String(f.size)) return false;
-    if(f.colour && b.colour!==f.colour) return false;
-    if(f.pcCode && b.pcCode!==f.pcCode) return false;
-    if(f.customer && b.customer!==f.customer) return false;
-    if(q && !((b.batchNumber||'').toLowerCase().includes(q)||(b.customer||'').toLowerCase().includes(q)||(b.pcCode||'').toLowerCase().includes(q))) return false;
-    return true;
-  });
-}
-
-function _cbRenderRows(){
-  const tb = document.getElementById('cb-tbody'); if(!tb) return;
-  const rows = _cbFiltered();
-  const mcFloorMap = window._cbMcFloorMap || {};
-  const canEdit = !!dprUser;
-  const fmtL = v => (v||v===0) ? Number(v).toFixed(2) : '—';
-  const fmtDt = d => { if(!d) return '—'; try{ return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }catch(_){ return d; } };
-  // Group by floor
-  const floorOrder = Object.keys(FLOORS);
-  const grouped = {};
-  rows.forEach(b => { const fl = mcFloorMap[b.machineId]||'OTHER'; if(!grouped[fl]) grouped[fl]=[]; grouped[fl].push(b); });
-  const rowHtml = (b) => {
-    const ov = b.hasOverride;
-    const badge = ov ? ` <span title="Overridden by ${(b.overrideBy||'').replace(/"/g,'&quot;')}: ${(b.overrideReason||'').replace(/"/g,'&quot;')}" style="font-size:9px;color:#f0c060;border:1px solid #f0c060;border-radius:3px;padding:0 3px;vertical-align:middle">OVERRIDE</span>` : '';
-    const bn = (b.batchNumber||'').replace(/'/g,"\\'");
-    return `<tr>
-      <td class="mono" style="white-space:nowrap">${b.batchNumber||'—'}</td>
-      <td class="mono">${b.machineId||'—'}</td>
-      <td>${b.size||'—'}</td><td>${b.colour||'—'}</td>
-      <td class="mono">${b.pcCode||'—'}</td>
-      <td>${b.customer||'—'}</td>
-      <td class="mono" style="white-space:nowrap">${fmtDt(b.startDate)}</td>
-      <td class="mono" style="white-space:nowrap">${fmtDt(b.endDate)}</td>
-      <td class="mono">${fmtL(b.plannedGross)}</td>
-      <td class="mono" style="${ov?'color:#f0c060;font-weight:700':''}">${fmtL(b.actualGross)}${badge}</td>
-      <td style="white-space:nowrap">${canEdit?`<button onclick="editClosedGross('${bn}')" title="Correct the DPR gross for this batch" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--accent);border-radius:3px;padding:2px 7px;cursor:pointer">✎ Edit</button>${ov?` <button onclick="clearClosedGross('${bn}')" title="Revert to the DPR-entered sum" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--red);border-radius:3px;padding:2px 7px;cursor:pointer">↺</button>`:''}`:'<span style="color:var(--t3);font-size:11px">—</span>'}</td>
-    </tr>`;
-  };
-  let html = '';
-  [...floorOrder, 'OTHER'].forEach(fl => {
-    if(!grouped[fl]?.length) return;
-    const flLabel = FLOORS[fl]?.label || fl;
-    html += `<tr><td colspan="11" style="background:var(--s2);font-family:var(--fc);font-size:10px;font-weight:800;letter-spacing:1px;color:var(--accent);padding:6px 10px;border-top:2px solid var(--b2)">${flLabel.toUpperCase()} — ${grouped[fl].length} batch${grouped[fl].length!==1?'es':''}</td></tr>`;
-    grouped[fl].forEach(b => { html += rowHtml(b); });
-  });
-  tb.innerHTML = html || `<tr><td colspan="11" style="text-align:center;color:var(--t3);padding:18px">No closed batches match the filters.</td></tr>`;
-  const cnt = document.getElementById('cb-count'); if(cnt) cnt.textContent = rows.length+' batch'+(rows.length!==1?'es':'');
-}
-
-async function editClosedGross(batchNumber){
-  if(!dprUser){ alert('Please log in.'); return; }
-  const b = (window._closedBatches||[]).find(x=>x.batchNumber===batchNumber);
-  if(!b){ return; }
-  const cur = (b.actualGross!=null ? b.actualGross : '');
-  const input = prompt(
-    `Correct Actual DPR Gross for batch ${batchNumber}\n\n`+
-    `Planned Gross : ${Number(b.plannedGross||0).toFixed(2)} L\n`+
-    `DPR sum now   : ${Number(b.rawDprGross||0).toFixed(2)} L\n\n`+
-    `Enter the corrected gross (in Lakhs):`, String(cur));
-  if(input===null) return;
-  const g = parseFloat(input);
-  if(!isFinite(g) || g<0){ alert('Please enter a valid number ≥ 0.'); return; }
-  const reason = prompt('Reason for this correction (recorded for audit):','') || '';
-  try{
-    const r = await fetch(serverUrl+'/api/dpr/gross-override',{
-      method:'POST',
-      headers:{'Content-Type':'application/json','X-User-Role':(dprUser?.role||'')},
-      body:JSON.stringify({batchNumber, grossLakhs:g, reason, updatedBy:(dprUser?.username||dprUser?.role||'dpr'), userRole:(dprUser?.role||'')})
-    });
-    const j = await r.json();
-    if(!j.ok){ alert('Could not save: '+(j.error||'error')); return; }
-    if(typeof toast==='function') toast(`Gross for ${batchNumber} set to ${g.toFixed(2)} L — updated in Planning & Reports`, 'var(--green)', 4000);
-  }catch(e){ alert('Save failed: '+e.message); return; }
-  renderClosedBatches();
-}
-
-async function clearClosedGross(batchNumber){
-  if(!dprUser){ alert('Please log in.'); return; }
-  if(!confirm(`Revert batch ${batchNumber} to the DPR-entered sum (remove the override)?`)) return;
-  try{
-    const r = await fetch(serverUrl+'/api/dpr/gross-override/'+encodeURIComponent(batchNumber)+'?by='+encodeURIComponent(dprUser?.username||dprUser?.role||'dpr'),{method:'DELETE'});
-    const j = await r.json();
-    if(!j.ok){ alert('Could not revert: '+(j.error||'error')); return; }
-    if(typeof toast==='function') toast(`Override removed for ${batchNumber}`, 'var(--green)', 3500);
-  }catch(e){ alert('Revert failed: '+e.message); return; }
-  renderClosedBatches();
 }
 
 function setFloor(fl){
