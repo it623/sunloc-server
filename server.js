@@ -5544,7 +5544,11 @@ app.post('/api/planning/state', async (req, res) => {
 
     // Background order merge — runs AFTER response is sent so planning_state save is never blocked
     // With 300+ orders, sequential queries timed out and prevented planning_state from saving
-    if (state.orders && state.orders.length > 0) {
+    // THROTTLE: run at most once per 60s to avoid hammering DB on every DPR sync
+    const _now = Date.now();
+    if (!global._lastBgMergeTime) global._lastBgMergeTime = 0;
+    if (state.orders && state.orders.length > 0 && (_now - global._lastBgMergeTime) > 60000) {
+      global._lastBgMergeTime = _now;
       setImmediate(async () => {
         try {
           const orders = state.orders.filter(o => o && o.id &&
