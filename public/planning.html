@@ -319,6 +319,12 @@ input[type="file"] { display:none; }
   }
   table { min-width: 700px; font-size: 12px; }
   .summary-table { min-width: 700px; }
+  /* v41ZI mobile net: a bare table (one not inside a scroll wrapper — e.g. some production-summary,
+     printing and dispatch sub-tables) becomes horizontally scrollable on its own so it can never be
+     clipped off-screen. Tables inside .tbl-wrap/.table-wrap or any inline overflow wrapper stay real
+     <table>s so the wrapper does the scrolling and their position:sticky headers/freeze-cols work. */
+  table { display:block; overflow-x:auto; -webkit-overflow-scrolling:touch; }
+  .tbl-wrap table, .table-wrap table, [style*="overflow"] table { display:table; overflow-x:visible; }
   thead th { padding: 8px 8px !important; font-size: 10px !important; }
   tbody td { padding: 8px 8px !important; font-size: 12px !important; }
   .summary-table td, .summary-table th { padding: 6px 8px; font-size: 11px; }
@@ -362,7 +368,7 @@ input[type="file"] { display:none; }
   #user-badge { font-size: 10px !important; padding: 3px 7px !important; }
 
   /* ── Auth card ── */
-  .auth-card { margin: 16px !important; padding: 24px 18px !important; border-radius: 12px !important; }
+  .auth-card { margin: 0 !important; padding: 24px 18px !important; border-radius: 12px !important; }
 
   /* ── Zone tabs — scrollable ── */
   #dispatch-zone-tabs { overflow-x: auto; flex-wrap: nowrap !important; -webkit-overflow-scrolling: touch; }
@@ -453,7 +459,7 @@ input[type="file"] { display:none; }
 </style>
 <style>
 /* ── AUTH OVERLAY ── */
-#auth-overlay{position:fixed;inset:0;background:var(--surface,#0f1522);z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column}
+#auth-overlay{position:fixed;inset:0;background:var(--surface,#0f1522);z-index:9999;display:flex;align-items:center;justify-content:center;flex-direction:column;overflow:auto;padding:16px;-webkit-overflow-scrolling:touch}
 #auth-overlay.hidden{display:none}
 .auth-card{background:var(--surface2,#1a2035);border:1px solid var(--border,rgba(255,255,255,0.08));border-radius:12px;padding:36px 40px;width:100%;max-width:380px;box-shadow:0 8px 40px rgba(0,0,0,0.6)}
 .auth-logo{text-align:center;margin-bottom:24px}
@@ -517,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZH</p>
+      <p>Planning Suite v3.0 · build v41ZI</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6107,11 +6113,22 @@ function renderProdSummary() {
             </tr>
           </thead>
           <tbody>
-            ${customers.map(c=>`<tr>
+            ${customers.map(c=>{
+              // v41ZI Item 1: under each customer (subtotal row) list its W/O (work-order/batch) rows,
+              // each showing its planned qty in its own size column — exactly the same size-wise basis
+              // as the customer row, so the W/O rows sum to the customer subtotal.
+              const woRows = orders.filter(o=>o.customer===c)
+                .sort((a,b)=>(a.batchNumber||a.id||'').localeCompare(b.batchNumber||b.id||''))
+                .map(o=>`<tr style="font-size:12px;background:var(--surface)">
+                  <td style="padding-left:30px;color:var(--text3)">${o.batchNumber||o.id||'—'}</td>
+                  ${sizesWithData.map(sz=>`<td>${(o.size===sz && o.qty)?`<span style="color:var(--text2)">${fmt(o.qty)}</span>`:'-'}</td>`).join('')}
+                  <td class="text-mono" style="color:var(--text3)">${fmt(o.qty||0)}</td>
+                </tr>`).join('');
+              return `<tr style="font-weight:600">
               <td>${c}</td>
               ${sizesWithData.map(sz=>`<td>${custMatrix[c][sz]?`<span class="highlight">${fmt(custMatrix[c][sz])}</span>`:'-'}</td>`).join('')}
               <td class="text-accent fw-bold">${fmt(custMatrix[c]._total)}</td>
-            </tr>`).join('')}
+            </tr>${woRows}`;}).join('')}
             <tr class="total-row">
               <td>TOTAL</td>
               ${sizesWithData.map(sz=>`<td>${fmt(orders.filter(o=>o.size===sz).reduce((s,o)=>s+o.qty,0))}</td>`).join('')}
@@ -6883,9 +6900,19 @@ function renderDailyPrinting() {
   });
   const allLogs = _dlDeduped.sort((a,b)=>new Date(b.date)-new Date(a.date));
 
+  // v41ZI: single batch resolver used everywhere in this view (filter list, filter match, row
+  // display, scan-out lookup) so the log is consistently batch-wise. Priority: stored batchNumber →
+  // linked print order's batchNumber → that print order's production order's batchNumber.
+  const _dlResolveBatch = (l) => {
+    if (l.batchNumber) return l.batchNumber;
+    const po = l.printOrderId ? state.printOrders.find(p=>p.id===l.printOrderId) : null;
+    if (po) return po.batchNumber || (po.productionOrderId ? ((state.orders.find(o=>o.id===po.productionOrderId)||{}).batchNumber||'') : '') || '';
+    return '';
+  };
+
   // Collect unique filter values
   const uniqueDates   = [...new Set(allLogs.map(l => toDateInput(new Date(l.date))))].sort((a,b)=>b.localeCompare(a));
-  const uniqueBatches = [...new Set(allLogs.map(l => l.printOrderId ? (state.printOrders.find(p=>p.id===l.printOrderId)?.batchNumber||l.pcCode||'') : (l.pcCode||'')).filter(Boolean))].sort();
+  const uniqueBatches = [...new Set(allLogs.map(l => _dlResolveBatch(l) || l.pcCode || '').filter(Boolean))].sort();
   const uniqueMatters = [...new Set(allLogs.map(l => l.printMatter||l.pcCode||'').filter(Boolean))].sort();
   const uniqueSizes   = [...new Set(allLogs.map(l => l.size||'').filter(Boolean))].sort();
   const uniqueCusts   = [...new Set(allLogs.map(l => {
@@ -6899,11 +6926,17 @@ function renderDailyPrinting() {
   const selMatter = window._dlFilterMatter || '';
   const selSize   = window._dlFilterSize   || '';
   const selCust   = window._dlFilterCust   || '';
+  // v41ZI Item 2: from/to date-range filter (applies to the log entry date)
+  const selFrom   = window._dlFilterFrom   || '';
+  const selTo     = window._dlFilterTo     || '';
 
   const logs = allLogs.filter(l => {
-    if (selDate && toDateInput(new Date(l.date)) !== selDate) return false;
+    const di = toDateInput(new Date(l.date));
+    if (selDate && di !== selDate) return false;
+    if (selFrom && di < selFrom) return false;
+    if (selTo   && di > selTo)   return false;
     const po = l.printOrderId ? state.printOrders.find(p=>p.id===l.printOrderId) : null;
-    const batchLabel = po ? (po.batchNumber||po.pcCode||l.pcCode||'') : (l.pcCode||'');
+    const batchLabel = _dlResolveBatch(l) || l.pcCode || '';
     const matter = l.printMatter||l.pcCode||'';
     const cust = po?.customer || l.customer || '';
     if (selBatch  && batchLabel !== selBatch)  return false;
@@ -6970,13 +7003,23 @@ function renderDailyPrinting() {
             ${uniqueDates.map(d=>`<option value="${d}" ${selDate===d?'selected':''}>${d}</option>`).join('')}
           </select>
         </div>
-        ${(selDate||selBatch||selMatter||selSize||selCust)?`<button class="btn btn-ghost btn-sm" onclick="window._dlFilterDate='';window._dlFilterBatch='';window._dlFilterMatter='';window._dlFilterSize='';window._dlFilterCust='';renderDailyPrinting()" style="align-self:flex-end">✕ Clear All</button>`:''}
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">FROM</label>
+          <input type="date" value="${selFrom}" style="background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px"
+            onchange="window._dlFilterFrom=this.value;renderDailyPrinting()">
+        </div>
+        <div>
+          <label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">TO</label>
+          <input type="date" value="${selTo}" style="background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 8px;font-size:12px"
+            onchange="window._dlFilterTo=this.value;renderDailyPrinting()">
+        </div>
+        ${(selDate||selBatch||selMatter||selSize||selCust||selFrom||selTo)?`<button class="btn btn-ghost btn-sm" onclick="window._dlFilterDate='';window._dlFilterBatch='';window._dlFilterMatter='';window._dlFilterSize='';window._dlFilterCust='';window._dlFilterFrom='';window._dlFilterTo='';renderDailyPrinting()" style="align-self:flex-end">✕ Clear All</button>`:''}
         <span style="font-size:12px;color:var(--text3);align-self:flex-end">${logs.length} of ${allLogs.length} records</span>
       </div>
       ${logs.length===0?'<div class="empty-state"><p>No logs match the selected filters</p></div>':`
-      <div class="table-wrap">
+      <div class="table-wrap" style="max-height:60vh;overflow:auto">
         <table>
-          <thead><tr>
+          <thead style="position:sticky;top:0;z-index:7"><tr>
             <th>Date</th><th>Batch / Print Order</th><th>Machine</th><th>Size</th><th>PC Code</th><th>Print Matter</th>
             <th>Shift A (Qty L)</th><th>Shift B (Qty L)</th><th>Shift C (Qty L)</th><th>Total Qty (L)</th>
             <th>Shift A (kg)</th><th>Shift B (kg)</th><th>Shift C (kg)</th><th>Total Output (kg)</th>
@@ -6992,7 +7035,10 @@ function renderDailyPrinting() {
               const cumOutput = logs.slice(i).reduce((s,x)=>s+(x.totalOutput||0),0);
               const cumPct = cumOutput>0?(cumSalvage/cumOutput*100).toFixed(2):0;
               const linkedPO = l.printOrderId ? state.printOrders.find(p=>p.id===l.printOrderId) : null;
-              const batchLabel = linkedPO ? (linkedPO.batchNumber || linkedPO.pcCode || l.printOrderId) : (l.pcCode || '-');
+              // v41ZI: batch-first resolution (shared helper) — Batch column shows the batch and the
+              // Scan Out / Reconciliation cells below key off it.
+              const dlBatch = _dlResolveBatch(l);
+              const batchLabel = dlBatch || (linkedPO ? (linkedPO.pcCode || l.printOrderId) : (l.pcCode || '-'));
               return `<tr>
                 <td class="text-mono">${fmtDate(l.date)}</td>
                 <td class="text-mono text-accent">${batchLabel}</td>
@@ -7012,12 +7058,14 @@ function renderDailyPrinting() {
                 <td class="text-mono ${(l.salvagePct||0)>2?'text-red':''}">${fmt(l.salvagePct,2)}%</td>
                 <td class="text-mono ${cumPct>2?'text-red':'text-green'}">${cumPct}%</td>
                 <td class="text-sm" style="white-space:nowrap">${(()=>{
-                  const liveAG = window._liveAGrade && l.batchNumber ? (window._liveAGrade[l.batchNumber]||{}) : {};
+                  const _b = (dlBatch||'').trim();
+                  const liveAG = window._liveAGrade && _b ? (window._liveAGrade[_b.toUpperCase()] || window._liveAGrade[_b] || {}) : {};
                   const scanOut = liveAG.printing?.outQty || 0;
                   return scanOut > 0 ? '<span style="color:var(--accent)">'+fmt(scanOut)+'L</span>' : '<span style="color:var(--text3)">—</span>';
                 })()}</td>
                 <td class="text-sm">${(()=>{
-                  const liveAG = window._liveAGrade && l.batchNumber ? (window._liveAGrade[l.batchNumber]||{}) : {};
+                  const _b = (dlBatch||'').trim();
+                  const liveAG = window._liveAGrade && _b ? (window._liveAGrade[_b.toUpperCase()] || window._liveAGrade[_b] || {}) : {};
                   const scanOut = liveAG.printing?.outQty || 0;
                   const manualQty = l.totalQtyLakhs || 0;
                   if(!scanOut || !manualQty) return '<span style="color:var(--text3)">—</span>';
@@ -7036,7 +7084,7 @@ function renderDailyPrinting() {
             }).join('')}
           </tbody>
           <tfoot>
-            <tr style="background:var(--surface2);font-weight:700;font-size:12px">
+            <tr style="background:var(--surface2);font-weight:700;font-size:12px;position:sticky;bottom:0;z-index:7;box-shadow:0 -1px 0 var(--border)">
               <td colspan="6" style="padding:7px 10px;color:var(--accent)">TOTAL (${logs.length} entries)</td>
               <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.shiftAqty||0),0),2)}</td>
               <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.shiftBqty||0),0),2)}</td>
@@ -7048,7 +7096,7 @@ function renderDailyPrinting() {
               <td class="text-mono fw-bold">${fmt(logs.reduce((s,l)=>s+(l.shiftA||0)+(l.shiftB||0)+(l.shiftC||0),0),1)}</td>
               <td class="text-mono">${fmt(logs.reduce((s,l)=>s+(l.salvage||0),0),2)}</td>
               <td class="text-mono">${(()=>{const to=logs.reduce((s,l)=>s+(l.totalOutput||0),0);const ts=logs.reduce((s,l)=>s+(l.salvage||0),0);return to>0?(ts/to*100).toFixed(2):0})()}%</td>
-              <td colspan="6">—</td>
+              <td colspan="5">—</td>
             </tr>
           </tfoot>
         </table>
@@ -7248,6 +7296,12 @@ async function saveDailyLog() {
   const shiftCqty = parseFloat(document.getElementById('dl-shiftC-qty')?.value)||0;
   const totalQtyLakhs = shiftAqty + shiftBqty + shiftCqty;
   const linkedPrintOrderId = document.getElementById('dl-batch')?.value || null;
+  // v41ZI: denormalize the production batch number onto the entry so the log is batch-wise at the
+  // source (independent of resolving a possibly-stale print-order link later).
+  const _dlPO = linkedPrintOrderId ? state.printOrders.find(p=>p.id===linkedPrintOrderId) : null;
+  const _dlBatchSave = (_dlPO && _dlPO.batchNumber)
+    || (_dlPO && _dlPO.productionOrderId ? ((state.orders.find(o=>o.id===_dlPO.productionOrderId)||{}).batchNumber||'') : '')
+    || '';
 
   const _editId = window._dlEditId || null; // v41ZE #5: set when editing an existing entry
   const logEntry = {
@@ -7255,6 +7309,7 @@ async function saveDailyLog() {
     date: new Date(document.getElementById('dl-date')?.value||today()),
     machineId: document.getElementById('dl-machine')?.value,
     printOrderId: linkedPrintOrderId,
+    batchNumber: _dlBatchSave,
     size: document.getElementById('dl-size')?.value,
     pcCode: document.getElementById('dl-pccode')?.value,
     printMatter: document.getElementById('dl-ptdmatter')?.value,
@@ -12086,6 +12141,18 @@ function _renderSearchResults(q, by) {
     const orders = state.orders.filter(o=>!o.deleted && matchOrder(o)).map(o=>({...o,_type:'Production Order'}));
     const prints = state.printOrders.filter(p=>matchOrder(p)).map(p=>({...p,_type:'Print Order'}));
     results = [...orders, ...prints];
+    // v41ZI Item 3: optional Start-date range filter (inclusive, on the order Start date). Rows with
+    // no start date are excluded only when a bound is active.
+    const _sf = window._searchFrom || '', _st = window._searchTo || '';
+    if (_sf || _st) {
+      results = results.filter(r => {
+        if (!r.startDate) return false;
+        const d = toDateInput(new Date(r.startDate));
+        if (_sf && d < _sf) return false;
+        if (_st && d > _st) return false;
+        return true;
+      });
+    }
   }
   const hint = document.getElementById('search-hint');
   if (hint) hint.innerHTML = q.length<2&&q.length>0?'<div style="color:var(--text3);font-size:12px;margin-top:8px">Type at least 2 characters to search</div>':'';
@@ -12115,6 +12182,11 @@ function _renderSearchResults(q, by) {
             <td class="text-mono text-sm" style="white-space:nowrap">${r.endDate?fmtDate(r.endDate):'—'}</td>
           </tr>`).join('')}
         </tbody>
+        <tfoot><tr style="background:var(--surface2);font-weight:700">
+          <td colspan="5" style="padding:7px 10px;color:var(--accent)">TOTAL (${results.length} result${results.length!==1?'s':''})</td>
+          <td class="text-mono">${fmt(results.reduce((s,r)=>s+(r.qty||r.qtyToPrint||0),0))}</td>
+          <td colspan="5">—</td>
+        </tr></tfoot>
       </table></div>`}
     </div>`;
   } else {
@@ -12187,6 +12259,17 @@ function renderSearch() {
           <option value="customer" ${by==='customer'?'selected':''}>Customer Name</option>
           <option value="pccode" ${by==='pccode'?'selected':''}>PC Code</option>
         </select>
+        <div style="display:flex;gap:6px;align-items:center">
+          <span style="font-size:11px;color:var(--text3)">Start date</span>
+          <input type="date" class="form-control" id="search-from" style="max-width:150px" value="${window._searchFrom||''}"
+            title="Start date from"
+            onchange="window._searchFrom=this.value;_renderSearchResults(window._searchQuery||'',window._searchBy||'all')">
+          <span style="font-size:11px;color:var(--text3)">→</span>
+          <input type="date" class="form-control" id="search-to" style="max-width:150px" value="${window._searchTo||''}"
+            title="Start date to"
+            onchange="window._searchTo=this.value;_renderSearchResults(window._searchQuery||'',window._searchBy||'all')">
+          ${(window._searchFrom||window._searchTo)?`<button class="btn btn-ghost btn-sm" title="Clear date range" onclick="window._searchFrom='';window._searchTo='';document.getElementById('search-from').value='';document.getElementById('search-to').value='';_renderSearchResults(window._searchQuery||'',window._searchBy||'all')">✕</button>`:''}
+        </div>
         <button class="btn btn-ghost btn-sm" id="search-clear-btn"
           onclick="window._searchQuery='';document.getElementById('search-input').value='';_renderSearchResults('',window._searchBy||'all')"
           style="${q?'':'display:none'}">✕ Clear</button>

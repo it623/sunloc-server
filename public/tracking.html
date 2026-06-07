@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZH</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZI</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -213,8 +213,8 @@ input[type=number]{font-family:var(--mono)}
 .grid-4{display:grid;grid-template-columns:repeat(4,1fr);gap:16px}
 
 /* ── LOGIN PAGE ── */
-#login-page{position:fixed;inset:0;background:linear-gradient(135deg,#eff6ff 0%,#f0f9ff 50%,#ecfdf5 100%);display:flex;align-items:center;justify-content:center;z-index:1000}
-.login-card{background:var(--surface);border-radius:16px;padding:40px;width:360px;box-shadow:var(--shadow-lg);border:1px solid var(--border)}
+#login-page{position:fixed;inset:0;background:linear-gradient(135deg,#eff6ff 0%,#f0f9ff 50%,#ecfdf5 100%);display:flex;align-items:center;justify-content:center;z-index:1000;overflow:auto;padding:16px;-webkit-overflow-scrolling:touch}
+.login-card{background:var(--surface);border-radius:16px;padding:40px;width:100%;max-width:360px;box-shadow:var(--shadow-lg);border:1px solid var(--border)}
 .login-logo{text-align:center;margin-bottom:28px}
 .login-logo h1{font-size:24px;font-weight:800;color:var(--accent)}
 .login-logo p{font-size:12px;color:var(--text3);font-family:var(--mono);margin-top:4px}
@@ -362,6 +362,13 @@ input[type=number]{font-family:var(--mono)}
   thead th{padding:8px 8px!important;font-size:10px!important;white-space:nowrap}
   tbody td{padding:7px 8px!important;font-size:12px!important}
   .tbl-wrap.tbl-sticky table{min-width:620px}
+  /* v41ZI mobile net: any report table NOT inside a .tbl-wrap (rendered bare in a card or in
+     #report-output) becomes horizontally scrollable on its own so wide reports never overflow the
+     viewport. Tables already inside .tbl-wrap are unaffected (they're not direct children here). */
+  .card > table,#report-output > table,#report-output .card > table{display:block;width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
+  /* v41ZI: keep position:sticky inline report headers aligned with the body during horizontal
+     scroll (border-collapse:collapse causes the header to drift on mobile — see Report E popup). */
+  .tbl-sticky table,.tbl-sticky>table{border-collapse:separate;border-spacing:0}
 
   /* ── Cards ── */
   .card{
@@ -560,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZH</p>
+      <p>Tracking Suite v1.0 · build v41ZI</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -591,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZH</p>
+      <p>Tracking Suite v1.0 · build v41ZI</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1012,6 +1019,16 @@ function hasScanSummary() {
   return state.scanSummary && Object.keys(state.scanSummary).length > 0;
 }
 
+// v41ZI Item 4: cumulative DPR gross for a batch — prefer the authoritative server map
+// (state.grossSummary = override → pure SUM(production_actuals) per batch_number) and fall back to
+// the planning order's injected actualProd/actualQty only when the map hasn't loaded for this batch.
+function _grossFor(batchNo, b) {
+  if (state.grossSummary && Object.prototype.hasOwnProperty.call(state.grossSummary, batchNo)) {
+    return state.grossSummary[batchNo] || 0;
+  }
+  return (b && (b.actualProd || b.actualQty)) || 0;
+}
+
 // v40 Phase 18.14: combined-source dispatch helpers.
 // Returns total dispatched qty/boxes for a batch, considering BOTH:
 //   - legacy per-box dispatch.out scans (from scan-summary or state.scans)
@@ -1151,12 +1168,21 @@ function canScanDept(batchNo, dept){
   // No previous scannable stage = this is the first scannable dept (AIM) — always open
   if(!prevScannable) return true;
 
-  // Count how many boxes were scanned OUT of the previous scannable department
-  const prevOut = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===prevScannable&&s.type==='out').length;
+  // v41ZI Item 5: count from the FULL-history scan summary (state.scanSummary via _ss), NOT the
+  // recency-windowed state.scans. The operator scan array is intentionally limited to recent boxes
+  // (see the note above _ss) — so a batch whose previous-stage OUT scans had aged out of the window
+  // read prevOut=0 and packing was wrongly blocked ("Previous department has not closed this batch
+  // yet"), forcing staff onto the admin id. Full-history summary + local pending is the correct,
+  // integrity-preserving basis (the server gate remains authoritative per-label).
+  const _useSS = hasScanSummary();
+  const _localCnt = (d,t)=>state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===d&&s.type===t&&s._local).length;
+  const prevOut = _useSS ? (_ss(batchNo, prevScannable).out + _localCnt(prevScannable,'out'))
+                         : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===prevScannable&&s.type==='out').length;
   if(prevOut === 0) return false;
 
-  // Count how many boxes already scanned IN to this department
-  const thisIn = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
+  // Count how many boxes already scanned IN to this department (full history + local pending)
+  const thisIn = _useSS ? (_ss(batchNo, dept).in + _localCnt(dept,'in'))
+                        : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
   return thisIn < prevOut;
 }
 
@@ -1757,6 +1783,10 @@ async function pullFromServer(force){
           state.scanSummary  = sj.summary   || {};
           state.wastageSummary = sj.wastage  || {};
           state.dispatchedSummary = sj.dispatched || {};
+          // v41ZI Item 4: authoritative per-batch DPR gross (override → pure SUM(production_actuals)).
+          // Reports D & E read this so Gross Prod shows the DPR-entered quantity for EVERY batch,
+          // independent of whether the planning order's injected actualProd happened to be populated.
+          state.grossSummary = sj.grossByBatch || {};
           // v41 P19.6 (deep-audit fix): scan/wastage data just refreshed → the month-attributed
           // A-Grade windowed cache is now stale. Clear it so the next report render re-fetches
           // fresh windowed data, keeping month-attributed reports as live as cumulative ones.
@@ -2024,13 +2054,20 @@ function recordScan(labelId, dept, type, operator, parsed){
     else if (dept === 'packing') prevDept = batchIsPrinted ? 'pi' : 'aim';
     else if (dept === 'dispatch') prevDept = 'packing';
     if (prevDept) {
-      const hasPrevOut = getScansForBox(labelId).some(s => s.dept === prevDept && s.type === 'out');
-      if (!hasPrevOut) {
-        if (currentDept !== 'admin') {
-          return {ok:false, msg:`🚫 Box not yet scanned OUT of ${(DEPT_LABELS[prevDept]||prevDept).toUpperCase()}. Complete ${(DEPT_LABELS[prevDept]||prevDept).toUpperCase()} before ${(DEPT_LABELS[dept]||dept).toUpperCase()}.`};
-        }
-        // Admin: continue (server will challenge with override prompt)
+      // v41ZI Item 5: this per-label check previously read getScansForBox() over the recency-windowed
+      // state.scans, so a box whose previous-stage OUT scan had aged out of the window looked
+      // un-progressed and packing was hard-blocked (operators resorted to the admin id). Reliable
+      // per-label full history isn't available client-side, so we now only hard-block when the ENTIRE
+      // previous stage has ZERO out-scans in full history (_ss) and none pending locally — i.e. the
+      // scan is genuinely premature. Otherwise we defer to the server's authoritative per-label gate
+      // (full DB history; it already rolls the scan back and offers admin override on a real breach).
+      const _summOut = hasScanSummary() ? _ss(label.batchNumber, prevDept).out : null;
+      const _localOut = state.scans.filter(s=>s.batchNumber===label.batchNumber&&s.dept===prevDept&&s.type==='out'&&(_summOut===null||s._local)).length;
+      const stagePrevOut = (_summOut||0) + _localOut;
+      if (stagePrevOut === 0 && currentDept !== 'admin') {
+        return {ok:false, msg:`🚫 No box has been scanned OUT of ${(DEPT_LABELS[prevDept]||prevDept).toUpperCase()} yet for batch ${label.batchNumber}. Complete ${(DEPT_LABELS[prevDept]||prevDept).toUpperCase()} before ${(DEPT_LABELS[dept]||dept).toUpperCase()}.`};
       }
+      // else: previous stage has progressed (or admin) → server enforces exact per-label correctness.
     }
   }
 
@@ -8533,7 +8570,8 @@ function _v41_renderReportDInner(){
   const _mgD = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]?.monthGross)
     ? _v41_agradeMonthCache[_trkSelectedMonth].monthGross : null;
   const _grossForD = (b) => {
-    let g = b.actualProd || b.actualQty || 0;
+    // v41ZI Item 4: cumulative gross from authoritative server map (override → batch sum).
+    let g = _grossFor(b.batchNumber, b);
     if (_v41_useMonthAttributed && _mgD) {
       g = Object.prototype.hasOwnProperty.call(_mgD, b.batchNumber) ? _mgD[b.batchNumber] : 0;
     }
@@ -8817,7 +8855,7 @@ function _v41_renderReportEInner(){
     // batch's DPR entries dated within the selected month) so Report E gross reconciles with the
     // DPR per-machine "Produced" total. In cumulative mode (or if month data hasn't loaded), fall
     // back to the batch's all-time actualProd as before.
-    let grossProd = b.actualProd||b.actualQty||0;
+    let grossProd = _grossFor(b.batchNumber, b);
     if (_v41_useMonthAttributed) {
       const _mg = _v41_agradeMonthCache[_trkSelectedMonth]?.monthGross;
       if (_mg && Object.prototype.hasOwnProperty.call(_mg, b.batchNumber)) {
@@ -9074,8 +9112,11 @@ function _v41_renderReportEInner(){
   select{border:2px solid #d4b896;border-radius:4px;padding:5px 10px;font-size:12px;font-weight:700;background:#fff;cursor:pointer;color:#1a1208}
   button{padding:6px 14px;border-radius:4px;border:2px solid #1a3a2e;background:#1a3a2e;color:#f0c060;font-weight:700;font-size:12px;cursor:pointer}
   button:hover{background:#0f2a20}
-  .wrap{flex:1;overflow:auto;border:2px solid #d4b896;margin:10px 16px 16px 16px;border-radius:0}
-  table{width:100%;border-collapse:collapse;font-size:12px;white-space:nowrap;border-spacing:0}
+  .wrap{flex:1;overflow:auto;border:2px solid #d4b896;margin:10px 16px 16px 16px;border-radius:0;position:relative;-webkit-overflow-scrolling:touch}
+  /* v41ZI: border-collapse:separate (not collapse) keeps position:sticky headers aligned with the
+     body during horizontal scroll — with collapse, the sticky header detaches/drifts on mobile so
+     data appears to "float" out from under its column heading. Cell borders are drawn per-cell. */
+  table{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;white-space:nowrap}
   thead th{background:#1a3a2e;color:#f0c060;padding:8px 10px;text-align:left;font-weight:700;font-size:11px;letter-spacing:.5px;text-transform:uppercase;border-bottom:2px solid #0f2a20;position:sticky;top:0;z-index:3}
   thead th.sticky-col{position:sticky;top:0;z-index:5}
   tbody td.sticky-col{position:sticky;z-index:2;background:#faf6f0}
