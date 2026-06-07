@@ -6772,7 +6772,12 @@ app.get('/api/dpr/batch-closed', async (req, res) => {
 // One row per closed production order. "Actual DPR Gross" = override (if set) else SUM(production_actuals).
 app.get('/api/dpr/closed-batches', async (req, res) => {
   try {
-    await warmActualsCache().catch(()=>{});
+    // v41ZK: do NOT await the heavy actuals aggregation here — this is an on-demand report and the
+    // client aborts at 12s. warmActualsCache() blocked long enough on the production DB to time the
+    // request out ("Failed to load closed batches: The operation timed out"). The gross maps are kept
+    // warm by the startup warm + planning/state polling, so we read them as-is and only await the
+    // cheap single-row override refresh below for correctness.
+    warmActualsCache().catch(()=>{});
     await loadGrossOverrides();
     const ps = await getPlanningStateAsync();
     const orders = (ps.orders || []).filter(o => o && !o.deleted);
@@ -7102,6 +7107,24 @@ app.post('/api/auth/login', async (req, res) => {
     logAudit(user.username, user.role, appName, 'LOGIN', 'Successful login', req.ip);
     res.json({ ok: true, token, username: user.username, role: user.role });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/auth/users?app=<app> — PUBLIC (pre-login). Returns the minimal list of ACTIVE usernames
+// for an app so the login screen can list EVERY defined account (not just the seeded defaults) —
+// fixes admin-created users (e.g. "Marketing") being unable to sign in because their username never
+// appeared in the picker. Returns only username + role; never PINs or hashes.
+app.get('/api/auth/login-users', async (req, res) => {
+  try {
+    const appName = req.query.app;
+    if (!appName) return res.status(400).json({ ok: false, error: 'app required' });
+    let rows;
+    if (pgPool) rows = (await pgPool.query('SELECT username, role, is_active FROM app_users WHERE app=$1 ORDER BY username ASC', [appName])).rows;
+    else rows = db.prepare('SELECT username, role, is_active FROM app_users WHERE app=? ORDER BY username ASC').all(appName);
+    const users = (rows || [])
+      .filter(r => r.is_active !== 0 && r.is_active !== false)
+      .map(r => ({ username: r.username, role: r.role }));
+    res.json({ ok: true, users });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // POST /api/auth/verify

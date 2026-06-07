@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZJ</p>
+      <p>Planning Suite v3.0 · build v41ZK</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -12772,6 +12772,7 @@ async function doLogout() {
   document.getElementById('auth-pin').value = '';
   document.getElementById('auth-error').textContent = '';
   document.getElementById('auth-overlay').classList.remove('hidden');
+  loadLoginUsers();
 }
 
 async function auditLog(action, details) {
@@ -13743,6 +13744,28 @@ function closePlanSidebar() {
 }
 
 // ── On page init — check for saved session ──
+// v41ZK: populate the login picker with EVERY defined planning user (not just the seeded defaults)
+// so admin-created accounts (e.g. "Marketing") can sign in. Falls back to the built-in <option>s if
+// the list can't be fetched (offline / server down). Never blocks login — purely additive.
+async function loadLoginUsers() {
+  try {
+    let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+    if (!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
+    if (!serverUrl) return; // offline — keep hardcoded defaults
+    const sel = document.getElementById('auth-role');
+    if (!sel) return;
+    const r = await fetch(serverUrl + '/api/auth/login-users?app=planning', { signal: AbortSignal.timeout(6000) });
+    const j = await r.json();
+    if (j && j.ok && Array.isArray(j.users) && j.users.length) {
+      const prev = sel.value;
+      const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+      sel.innerHTML = j.users.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join('');
+      // preserve the prior selection if it still exists in the new list
+      if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+    }
+  } catch(e) { /* keep hardcoded defaults */ }
+}
+
 (function initAuth() {
   const saved = sessionStorage.getItem('plan_session');
   if (saved) {
@@ -13773,6 +13796,7 @@ function closePlanSidebar() {
   }
   // Show login — don't render yet
   document.getElementById('auth-overlay').classList.remove('hidden');
+  loadLoginUsers();
 })();
 
 // Save prompt on close

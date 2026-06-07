@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZJ</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZK</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -4583,7 +4583,7 @@ async function renderClosedBatches(){
   if(!serverUrl){ cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Server not available — closed batches load from the server.</p>'; return; }
   cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Loading closed batches…</p>';
   try{
-    const r = await fetch(serverUrl+'/api/dpr/closed-batches',{signal:AbortSignal.timeout(12000)});
+    const r = await fetch(serverUrl+'/api/dpr/closed-batches',{signal:AbortSignal.timeout(20000)});
     const j = await r.json();
     if(!j.ok){ cont.innerHTML = '<p style="color:var(--red)">Failed to load: '+(j.error||'error')+'</p>'; return; }
     window._closedBatches = j.batches || [];
@@ -5341,6 +5341,27 @@ async function doDprLogout() {
   document.getElementById('auth-pin').value = '';
   document.getElementById('auth-error').textContent = '';
   document.getElementById('auth-overlay').classList.remove('hidden');
+  loadDprLoginUsers();
+}
+
+// v41ZK: populate the DPR login picker with EVERY defined DPR user (not just GF/FF/Admin defaults)
+// so admin-created DPR accounts can sign in. Falls back to the built-in <option>s on any failure.
+async function loadDprLoginUsers() {
+  try {
+    let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+    if (!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
+    if (!serverUrl) return;
+    const sel = document.getElementById('auth-role');
+    if (!sel) return;
+    const r = await fetch(serverUrl + '/api/auth/login-users?app=dpr', { signal: AbortSignal.timeout(6000) });
+    const j = await r.json();
+    if (j && j.ok && Array.isArray(j.users) && j.users.length) {
+      const prev = sel.value;
+      const esc = s => String(s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/"/g,'&quot;');
+      sel.innerHTML = j.users.map(u => `<option value="${esc(u.username)}">${esc(u.username)}</option>`).join('');
+      if ([...sel.options].some(o => o.value === prev)) sel.value = prev;
+    }
+  } catch(e) { /* keep hardcoded defaults */ }
 }
 
 async function dprAuditLog(action, details) {
@@ -5473,6 +5494,7 @@ function showDprAuditPage() {
     } catch(e) {}
   }
   document.getElementById('auth-overlay').classList.remove('hidden');
+  loadDprLoginUsers();
 })();
 
 // ── TEMP Batch PC Code Prompt ────────────────────────────────────
