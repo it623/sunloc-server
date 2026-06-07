@@ -6762,9 +6762,10 @@ app.get('/api/dpr/batch-closed', async (req, res) => {
 // One row per closed production order. "Actual DPR Gross" = override (if set) else SUM(production_actuals).
 app.get('/api/dpr/closed-batches', async (req, res) => {
   try {
+    // warmActualsCache already calls loadGrossOverrides internally — no need to call it again
     await warmActualsCache().catch(()=>{});
-    await loadGrossOverrides();
-    const ps = await getPlanningStateAsync();
+    // Use cached planning state if available (avoids re-parsing large JSON blob)
+    const ps = _planningStateCache && _planningStateCache.orders ? _planningStateCache : await getPlanningStateAsync();
     const orders = (ps.orders || []).filter(o => o && !o.deleted);
 
     // closed set from dpr_batch_closed (keyed by order_id and batch_number) + closed_at lookup
@@ -7690,6 +7691,21 @@ app.get('/api/audit/view', async (req, res) => {
       rows = db.prepare(`SELECT * FROM audit_log WHERE app = ? ORDER BY ts DESC LIMIT ?`).all(app, limit);
     }
     res.json({ ok: true, logs: rows });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/auth/usernames — public — returns just usernames for a given app (no PINs)
+app.get('/api/auth/usernames', async (req, res) => {
+  try {
+    const appName = req.query.app || 'planning';
+    let usernames;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT username FROM app_users WHERE app=$1 AND is_active=1 ORDER BY username`, [appName]);
+      usernames = r.rows.map(row => row.username);
+    } else {
+      usernames = db.prepare(`SELECT username FROM app_users WHERE app=? AND is_active=1 ORDER BY username`).all(appName).map(row => row.username);
+    }
+    res.json({ ok: true, usernames });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
