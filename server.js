@@ -944,6 +944,22 @@ const MIGRATIONS = [
     name: 'tracking_wastage_note',
     sql: `ALTER TABLE tracking_wastage ADD COLUMN note TEXT;`
   },
+  {
+    // v41ZI Item 6: batch-level DPR gross override. A single corrected gross per batch, set by
+    // Production Manager / Admin from the DPR "Closed Batches" report when an incorrect DPR gross
+    // was entered. When present this value supersedes the SUM(production_actuals) for that batch
+    // everywhere gross is consumed (Planning order.actualProd, Tracking Reports D & E). No time
+    // gate (per Ishan: discard 24h, keep existing reopen gates untouched). Every change audited.
+    version: 35,
+    name: 'batch_gross_override',
+    sql: `CREATE TABLE IF NOT EXISTS batch_gross_override (
+        batch_number TEXT PRIMARY KEY,
+        gross_lakhs REAL NOT NULL,
+        reason TEXT,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );`
+  },
 ];
 
 function runMigrations() {
@@ -1426,6 +1442,17 @@ async function ensurePostgresTables() {
       )
     `);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_month_archives_month ON month_archives(month)`).catch(()=>{});
+
+    // v41ZI Item 6: batch-level DPR gross override (native-PG idempotent create).
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS batch_gross_override (
+        batch_number TEXT PRIMARY KEY,
+        gross_lakhs DOUBLE PRECISION NOT NULL,
+        reason TEXT,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `).catch(e=>console.warn('[v41ZI PG] batch_gross_override:', e.message));
 
     // schema_migrations (for tracking)
     await pgPool.query(`
@@ -2345,20 +2372,64 @@ function getActiveOrdersForMachine(machineId) {
 // Helper: get total actuals for an order (sums all runs across all machines/shifts)
 let _actualsCache = null;
 let _actualsCacheTime = 0;
+// v41ZI Item 4: pure batch-keyed DPR gross — SUM(qty_lakhs) GROUP BY batch_number ONLY (no order_id
+// in the GROUP BY). The legacy _actualsCache groups by (order_id,batch_number) and then writes one
+// dict entry per group, so a batch whose production_actuals rows carry differing/NULL order_id values
+// (common after a rebatch, or when DPR sent only batchNumber) splits into several groups and the
+// batch-keyed total ends up holding only the LAST group's partial sum — surfacing as blank/under-
+// counted Gross Prod in Reports D & E. This map is the single source of truth for per-batch gross.
+let _grossByBatch = null;
+// v41ZI Item 6: per-batch admin/PM override of the DPR gross. When present it supersedes _grossByBatch.
+let _grossOverride = {};
 async function warmActualsCache() {
   // Throttle to 60s — prevents DB hammering from every device's 30s auto-sync
   if (Date.now() - _actualsCacheTime < 60000 && _actualsCache) return;
   _actualsCacheTime = Date.now();
-  if (!pgPool) return;
+  if (pgPool) {
+    try {
+      const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
+      _actualsCache = {};
+      for (const row of r.rows) {
+        if (row.order_id) _actualsCache[row.order_id] = parseFloat(row.total) || 0;
+        if (row.batch_number) _actualsCache[row.batch_number] = parseFloat(row.total) || 0;
+      }
+      // v41ZI Item 4: pure batch-keyed gross (full sum per batch, robust to order_id keying).
+      const gb = await pgPool.query('SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE batch_number IS NOT NULL GROUP BY batch_number');
+      _grossByBatch = {};
+      for (const row of gb.rows) { _grossByBatch[row.batch_number] = parseFloat(row.total) || 0; }
+      console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries;', gb.rows.length, 'batches');
+    } catch(e) { console.error('[DB] Actuals cache error:', e.message); }
+  }
+  // v41ZI Item 6: always refresh the override map (both DB modes) so effectiveGross() applies
+  // overrides even in the SQLite fallback path (where the PG aggregation above is skipped).
+  await loadGrossOverrides();
+}
+
+// v41ZI Item 6: load all batch gross overrides into _grossOverride. Works in both DB modes
+// (single query). Called from warmActualsCache and re-called immediately after any override write.
+async function loadGrossOverrides() {
   try {
-    const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
-    _actualsCache = {};
-    for (const row of r.rows) {
-      if (row.order_id) _actualsCache[row.order_id] = parseFloat(row.total) || 0;
-      if (row.batch_number) _actualsCache[row.batch_number] = parseFloat(row.total) || 0;
-    }
-    console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries');
-  } catch(e) { console.error('[DB] Actuals cache error:', e.message); }
+    let rows;
+    if (pgPool) rows = (await pgPool.query('SELECT batch_number, gross_lakhs FROM batch_gross_override')).rows;
+    else rows = db.prepare('SELECT batch_number, gross_lakhs FROM batch_gross_override').all();
+    const next = {};
+    for (const r of (rows||[])) { if (r.batch_number != null) next[r.batch_number] = parseFloat(r.gross_lakhs) || 0; }
+    _grossOverride = next;
+  } catch(e) { /* table may not exist yet on very first boot before migrations — safe to ignore */ }
+}
+
+// v41ZI Item 4 + 6: the authoritative DPR gross for a batch.
+//   override (if set)  →  pure batch-keyed sum (cache)  →  direct query fallback  →  0
+// In PG mode the cache is warm before any per-order loop runs (planning/state warms it first), so
+// the slow synchronous fallback is only ever hit for one-off single-batch lookups or SQLite dev.
+function effectiveGross(batchNumber) {
+  if (!batchNumber) return 0;
+  if (Object.prototype.hasOwnProperty.call(_grossOverride, batchNumber)) return _grossOverride[batchNumber];
+  if (_grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, batchNumber)) return _grossByBatch[batchNumber];
+  try {
+    const row = db.prepare('SELECT SUM(qty_lakhs) as total FROM production_actuals WHERE batch_number = ?').get(batchNumber);
+    return (row && row.total) ? (parseFloat(row.total) || 0) : 0;
+  } catch(e) { return 0; }
 }
 
 function getOrderActuals(orderId, batchNumber) {
@@ -5408,10 +5479,30 @@ app.get('/api/planning/state', async (req, res) => {
     // this caused closed→running and stuck >2 running orders per machine. With the new
     // DPR gate at /api/dpr/save, non-running orders can no longer receive actuals,
     // so the auto-promote is unnecessary. Status is now fully user-controlled.
+    // v41ZI Item 4+6: refresh the actuals/gross/override caches in the BACKGROUND (fire-and-forget,
+    // throttled to 60s) and inject from whatever is already cached. This MUST NOT be awaited: this
+    // endpoint is on the Tracking app's critical path (pullFromServer STEP 1, 8s timeout) and the
+    // actuals aggregation can exceed that on a busy DB — awaiting it made the Tracking fetch abort,
+    // leaving state.batches empty so every dashboard/WIP/label count read 0. The cache stays warm via
+    // the startup warm + frequent polling; on a cold cache we simply skip injection this once (orders
+    // keep their stored actualProd, exactly as before Item 4) and the next warmed read injects.
+    warmActualsCache().catch(()=>{});
     if (state.orders && _actualsCache) {
       for (const ord of state.orders) {
-        const actual = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
-        ord.actualProd = actual;
+        // v41ZI Item 4+6 / v41ZJ perf: prefer the authoritative per-batch DPR gross using ONLY the
+        // in-memory caches (override → pure batch sum) — never the synchronous SQLite fallback inside
+        // effectiveGross(). This endpoint is polled by every client; a per-order DB query here would
+        // block the event loop on the hot path. An explicit override always wins (even 0); otherwise
+        // the pure batch sum if present; else the legacy (order_id|batch) cache. A batch absent from
+        // both gross maps has no actuals, so the legacy/0 fallback is exactly what effectiveGross
+        // would have returned in PG mode (SQLite is dormant) — behaviour is unchanged, just faster.
+        const bn = ord.batchNumber;
+        const hasOverride = bn != null && Object.prototype.hasOwnProperty.call(_grossOverride, bn);
+        let eff = 0;
+        if (hasOverride) eff = _grossOverride[bn] || 0;
+        else if (bn != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) eff = _grossByBatch[bn] || 0;
+        const legacy = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
+        ord.actualProd = (hasOverride || eff > 0) ? eff : legacy;
       }
     }
     const savedAt = pgPool
@@ -6671,6 +6762,129 @@ app.get('/api/dpr/batch-closed', async (req, res) => {
   }
 });
 
+// ═══════════════════════════════════════════════════════════════
+// v41ZI Item 6: DPR Closed-Batches report + batch-level gross override
+// MUST be declared BEFORE the /api/dpr/:floor/:date catch-all below, otherwise
+// "closed-batches" / "gross-override" would be captured as a :floor param.
+// ═══════════════════════════════════════════════════════════════
+
+// GET /api/dpr/closed-batches — machine-wise list of all closed batches with planned vs actual DPR gross.
+// One row per closed production order. "Actual DPR Gross" = override (if set) else SUM(production_actuals).
+app.get('/api/dpr/closed-batches', async (req, res) => {
+  try {
+    await warmActualsCache().catch(()=>{});
+    await loadGrossOverrides();
+    const ps = await getPlanningStateAsync();
+    const orders = (ps.orders || []).filter(o => o && !o.deleted);
+
+    // closed set from dpr_batch_closed (keyed by order_id and batch_number) + closed_at lookup
+    let closedRows;
+    if (pgPool) closedRows = (await pgPool.query('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed')).rows;
+    else closedRows = db.prepare('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed').all();
+    const closedById = new Map(), closedByBatch = new Map();
+    for (const c of (closedRows || [])) {
+      if (c.order_id) closedById.set(c.order_id, c);
+      if (c.batch_number) closedByBatch.set(c.batch_number, c);
+    }
+
+    // override metadata (reason/by/at) for display
+    let ovRows;
+    if (pgPool) ovRows = (await pgPool.query('SELECT batch_number, gross_lakhs, reason, updated_by, updated_at FROM batch_gross_override')).rows;
+    else ovRows = db.prepare('SELECT batch_number, gross_lakhs, reason, updated_by, updated_at FROM batch_gross_override').all();
+    const ovByBatch = new Map((ovRows || []).map(r => [r.batch_number, r]));
+
+    const out = [];
+    for (const o of orders) {
+      const cRow = closedById.get(o.id) || closedByBatch.get(o.batchNumber);
+      const isClosed = !!cRow || o.status === 'closed';
+      if (!isClosed) continue;
+      const ov = ovByBatch.get(o.batchNumber) || null;
+      const rawGross = _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, o.batchNumber)
+        ? _grossByBatch[o.batchNumber] : effectiveGross(o.batchNumber);
+      out.push({
+        orderId: o.id,
+        batchNumber: o.batchNumber || '',
+        machineId: o.machineId || '',
+        size: (o.size != null ? String(o.size) : ''),
+        colour: o.colour || o.color || '',
+        pcCode: o.pcCode || '',
+        customer: o.customer || '',
+        startDate: o.startDate || '',
+        endDate: o.endDate || '',
+        plannedGross: parseFloat(o.grossQty || 0) || 0,
+        rawDprGross: parseFloat(rawGross || 0) || 0,                 // pure SUM(production_actuals)
+        actualGross: effectiveGross(o.batchNumber),                 // override (if any) else raw sum
+        hasOverride: !!ov,
+        overrideReason: ov ? (ov.reason || '') : '',
+        overrideBy: ov ? (ov.updated_by || '') : '',
+        overrideAt: ov ? (ov.updated_at || '') : '',
+        closedAt: cRow ? (cRow.closed_at || '') : '',
+        status: o.status || ''
+      });
+    }
+    // Machine then batch ordering (report is grouped/filtered client-side)
+    out.sort((a,b) => (a.machineId||'').localeCompare(b.machineId||'') || (a.batchNumber||'').localeCompare(b.batchNumber||''));
+    res.json({ ok: true, batches: out });
+  } catch (err) {
+    console.error('[closed-batches]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/dpr/gross-override — set/replace a batch-level DPR gross correction (Production Manager / Admin).
+// No time gate (per Ishan: 24h requirement discarded; existing reopen gates left untouched).
+// Body: { batchNumber, grossLakhs, reason, updatedBy, userRole }. Cascades to Planning + Reports D/E.
+app.post('/api/dpr/gross-override', async (req, res) => {
+  try {
+    const { batchNumber, grossLakhs, reason, updatedBy, userRole } = req.body || {};
+    if (!batchNumber) return res.status(400).json({ ok: false, error: 'batchNumber required' });
+    const g = parseFloat(grossLakhs);
+    if (!Number.isFinite(g) || g < 0) return res.status(400).json({ ok: false, error: 'grossLakhs must be a number ≥ 0' });
+    const by = (updatedBy || userRole || 'unknown').toString().slice(0, 120);
+    const reasonStr = (reason || '').toString().slice(0, 500);
+
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO batch_gross_override (batch_number, gross_lakhs, reason, updated_by, updated_at)
+         VALUES ($1,$2,$3,$4,NOW()::TEXT)
+         ON CONFLICT(batch_number) DO UPDATE SET gross_lakhs=EXCLUDED.gross_lakhs, reason=EXCLUDED.reason,
+           updated_by=EXCLUDED.updated_by, updated_at=NOW()::TEXT`,
+        [batchNumber, g, reasonStr, by]
+      );
+    } else {
+      db.prepare(
+        `INSERT INTO batch_gross_override (batch_number, gross_lakhs, reason, updated_by, updated_at)
+         VALUES (?,?,?,?,datetime('now'))
+         ON CONFLICT(batch_number) DO UPDATE SET gross_lakhs=excluded.gross_lakhs, reason=excluded.reason,
+           updated_by=excluded.updated_by, updated_at=datetime('now')`
+      ).run(batchNumber, g, reasonStr, by);
+    }
+    await loadGrossOverrides();                 // refresh override map → effectiveGross() picks it up immediately
+    _planningStateCacheTime = 0;                // force planning state cache to re-serve with new gross
+    try { logAudit(by, userRole || '', 'dpr', 'DPR_GROSS_OVERRIDE', `Set batch ${batchNumber} gross → ${g}L. ${reasonStr}`, req.ip); } catch {}
+    res.json({ ok: true, batchNumber, actualGross: effectiveGross(batchNumber) });
+  } catch (err) {
+    console.error('[gross-override]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// DELETE /api/dpr/gross-override/:batchNumber — revert to the raw SUM(production_actuals) for this batch.
+app.delete('/api/dpr/gross-override/:batchNumber', async (req, res) => {
+  try {
+    const bn = req.params.batchNumber;
+    const by = (req.query.by || req.body?.updatedBy || 'unknown').toString().slice(0,120);
+    if (pgPool) await pgPool.query('DELETE FROM batch_gross_override WHERE batch_number=$1', [bn]);
+    else db.prepare('DELETE FROM batch_gross_override WHERE batch_number=?').run(bn);
+    await loadGrossOverrides();
+    _planningStateCacheTime = 0;
+    try { logAudit(by, '', 'dpr', 'DPR_GROSS_OVERRIDE_CLEAR', `Cleared gross override for batch ${bn}`, req.ip); } catch {}
+    res.json({ ok: true, batchNumber: bn, actualGross: effectiveGross(bn) });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET DPR record for a floor + date — MUST be after all specific /api/dpr/* routes
 app.get('/api/dpr/:floor/:date', async (req, res) => {
   try {
@@ -7445,13 +7659,17 @@ app.post('/api/integrity/task/:id/dismiss', async (req, res) => {
 });
 
 // ─── Hourly scheduler ────────────────────────────────────────────
-// First scan runs 30 seconds after server boot, then every 60 minutes.
-// Configurable via env var INTEGRITY_SCAN_INTERVAL_MIN (default 60).
+// First scan runs 180 seconds after server boot, then every 60 minutes.
+// v41ZJ: deferred from 30s → 180s. The scan holds DB connections for ~50s (1697 findings); running
+// it 30s after boot collided with the post-deploy reconnection storm (every client re-syncing at
+// once) + startup cache warms, starving the pool and causing client-side request aborts. 180s lets
+// startup settle first. Configurable via env vars (interval + first-delay).
 const _intervalMin = parseInt(process.env.INTEGRITY_SCAN_INTERVAL_MIN) || 60;
+const _firstScanDelayMs = parseInt(process.env.INTEGRITY_SCAN_FIRST_DELAY_MS) || 180000;
 setTimeout(() => {
   console.log(`[Integrity] First scan starting (interval: ${_intervalMin}min)...`);
   _runIntegrityScan().catch(e => console.error('[Integrity] First scan failed:', e.message));
-}, 30000);
+}, _firstScanDelayMs);
 setInterval(() => {
   _runIntegrityScan().catch(e => console.error('[Integrity] Periodic scan failed:', e.message));
 }, _intervalMin * 60 * 1000);
@@ -10721,7 +10939,17 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
     const dispatched = {};
     dispatchRows.forEach(r => { if (r.batch_number) dispatched[r.batch_number] = parseFloat(r.total_qty||0); });
 
-    res.json({ ok: true, summary, wastage, dispatched });
+    // v41ZI Item 4: authoritative per-batch DPR gross (override → pure batch sum), so Tracking
+    // Reports D & E show the DPR-entered gross for EVERY batch. The warm is fire-and-forget (NOT
+    // awaited) — this endpoint is on the Tracking sync path (15s timeout) and must stay fast. The
+    // gross maps are kept warm by the startup warm + planning/state polling, so they're populated
+    // here in practice; on a rare cold read grossByBatch is briefly empty and self-heals next sync.
+    warmActualsCache().catch(()=>{});
+    const grossByBatch = {};
+    for (const bn of Object.keys(_grossByBatch || {})) grossByBatch[bn] = effectiveGross(bn);
+    for (const bn of Object.keys(_grossOverride || {})) grossByBatch[bn] = _grossOverride[bn];
+
+    res.json({ ok: true, summary, wastage, dispatched, grossByBatch });
   } catch(err) {
     console.error('[scan-summary]', err.message);
     res.status(500).json({ ok: false, error: err.message });
@@ -12265,6 +12493,30 @@ async function ensureCriticalPostgresTables() {
     catch (e) { console.warn(`[ensureCriticalPostgresTables] ${label} failed:`, e.message); }
   }
 }
+
+// v41ZJ: terminal error-handling middleware. Registered LAST (after all routes) so it catches errors
+// from any handler or from body-parser. Its main job is to absorb client-disconnect errors quietly:
+// when a browser closes the connection mid-request (navigation, its own fetch AbortSignal timeout, or
+// simply because the pool was momentarily busy during the hourly integrity scan), body-parser raises
+// BadRequestError "request aborted". That is a CLIENT event, not a server fault — without this handler
+// Express's default handler prints the full stack as an [err], which looked alarming in the logs and
+// was mistaken for a server overload. We swallow those, return a clean status for real errors, and
+// never re-throw (which could otherwise crash the process on an unhandled error).
+app.use((err, req, res, next) => {
+  const msg = err && err.message;
+  const isClientAbort = err && (err.type === 'request.aborted' || err.code === 'ECONNABORTED' || msg === 'request aborted');
+  if (isClientAbort) {
+    // Benign: the client went away. Don't log a stack, don't try to write a body to a dead socket.
+    if (!res.headersSent) { try { res.status(400).end(); } catch(_e) {} }
+    return;
+  }
+  if (err && err.type === 'entity.too.large') {
+    if (!res.headersSent) { try { res.status(413).json({ ok:false, error:'payload too large' }); } catch(_e) {} }
+    return;
+  }
+  console.error('[error]', req && req.method, req && req.originalUrl, '-', msg);
+  if (!res.headersSent) { try { res.status(500).json({ ok:false, error:'server error' }); } catch(_e) {} }
+});
 
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
