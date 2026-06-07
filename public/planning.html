@@ -12599,20 +12599,28 @@ const PLAN_ROLE_NAV = {
 };
 
 // Auto-populate username dropdown from server on page load
-(async function populateLoginUsers() {
-  try {
-    let serverUrl = '';
-    try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
-    if (!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
-    if (!serverUrl) return;
-    const r = await fetch(serverUrl + '/api/auth/usernames?app=planning', { signal: AbortSignal.timeout(5000) });
-    const j = await r.json();
-    if (!j.ok || !Array.isArray(j.usernames) || j.usernames.length === 0) return;
-    const sel = document.getElementById('auth-role');
-    if (!sel) return;
-    sel.innerHTML = j.usernames.map(u => `<option value="${u}">${u}</option>`).join('');
-  } catch(e) { /* silently ignore — fallback options remain */ }
-})();
+function populateLoginUsers() {
+  (async () => {
+    try {
+      let serverUrl = '';
+      try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+      if (!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
+      if (!serverUrl) return;
+      const r = await fetch(serverUrl + '/api/auth/usernames?app=planning', { signal: AbortSignal.timeout(5000) });
+      const j = await r.json();
+      if (!j.ok || !Array.isArray(j.usernames) || j.usernames.length === 0) return;
+      const sel = document.getElementById('auth-role');
+      if (!sel) return;
+      sel.innerHTML = j.usernames.map(u => `<option value="${u}">${u}</option>`).join('');
+    } catch(e) { /* silently ignore — fallback options remain */ }
+  })();
+}
+// Run after all JS is parsed
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', populateLoginUsers);
+} else {
+  setTimeout(populateLoginUsers, 100);
+}
 
 async function doLogin() {
   const role = document.getElementById('auth-role').value;
