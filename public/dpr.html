@@ -4583,7 +4583,7 @@ async function renderClosedBatches(){
   if(!serverUrl){ cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Server not available — closed batches load from the server.</p>'; return; }
   cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Loading closed batches…</p>';
   try{
-    const r = await fetch(serverUrl+'/api/dpr/closed-batches',{signal:AbortSignal.timeout(12000)});
+    const r = await fetch(serverUrl+'/api/dpr/closed-batches',{signal:AbortSignal.timeout(30000)});
     const j = await r.json();
     if(!j.ok){ cont.innerHTML = '<p style="color:var(--red)">Failed to load: '+(j.error||'error')+'</p>'; return; }
     window._closedBatches = j.batches || [];
