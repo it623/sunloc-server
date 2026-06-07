@@ -503,10 +503,10 @@ input[type="file"] { display:none; }
     <div class="auth-form-group">
       <label>Username</label>
       <select id="auth-role">
-        <option value="Planning_Manager">Planning Manager</option>
-        <option value="Printing_Manager">Printing Manager</option>
-        <option value="Dispatch_Manager">Dispatch Manager</option>
-        <option value="Plan_Admin">Admin</option>
+        <option value="Planning_Manager">Planning_Manager</option>
+        <option value="Printing_Manager">Printing_Manager</option>
+        <option value="Dispatch_Manager">Dispatch_Manager</option>
+        <option value="Plan_Admin">Plan_Admin</option>
       </select>
     </div>
     <div class="auth-form-group">
@@ -12597,10 +12597,7 @@ const PLAN_ROLE_NAV = {
   admin: null // null = all pages
 };
 
-async function doLogin() {
-  const role = document.getElementById('auth-role').value;
-
-// Auto-populate the username dropdown from server on page load
+// Auto-populate username dropdown from server on page load
 (async function populateLoginUsers() {
   try {
     let serverUrl = '';
