@@ -5445,6 +5445,7 @@ app.get('/api/planning/state', async (req, res) => {
           }
         }
         // Only add orders from DB that are MISSING from planning_state
+        let _recoveredCount = 0, _downgradedCount = 0;
         dbOrders.forEach(dbOrd => {
           if (!dbOrd || !dbOrd.id) return;
           if (dbOrd.deleted) return;
@@ -5462,17 +5463,20 @@ app.get('/api/planning/state', async (req, res) => {
             const runningOnMachine = state.orders.filter(o => o.machineId === cleanOrd.machineId && o.status === 'running' && !o.deleted).length;
             if (runningOnMachine >= 2) {
               cleanOrd.status = 'pending';
-              console.log(`[State] Recovered ${cleanOrd.batchNumber} on ${cleanOrd.machineId} — downgraded to pending (2-order limit)`);
+              _downgradedCount++;
             } else {
-              console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
+              _recoveredCount++;
             }
           } else {
-            console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
+            _recoveredCount++;
           }
           state.orders.push(cleanOrd);
           stateOrderById.set(dbOrd.id, cleanOrd);
           if (dbOrd.batchNumber && dbOrd.machineId) stateOrderByBatchMc.set(bmKey, cleanOrd);
         });
+        if (_recoveredCount > 0 || _downgradedCount > 0) {
+          console.log(`[State] Recovered ${_recoveredCount} missing order(s)${_downgradedCount > 0 ? `, downgraded ${_downgradedCount} to pending` : ''}`);
+        }
       }
     } catch(e) { console.warn('[State] Order recovery failed:', e.message); }
 
