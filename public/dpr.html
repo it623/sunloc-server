@@ -4589,17 +4589,26 @@ async function renderClosedBatches(){
     window._closedBatches = j.batches || [];
   }catch(e){ cont.innerHTML = '<p style="color:var(--red)">Failed to load closed batches: '+e.message+'</p>'; return; }
 
-  window._cbFilters = window._cbFilters || {machineId:'',size:'',colour:'',pcCode:'',customer:'',q:''};
+  window._cbFilters = window._cbFilters || {floor:'',machineId:'',size:'',colour:'',pcCode:'',customer:'',q:''};
   const f = window._cbFilters;
   const data = window._closedBatches;
+  const MC_FLOOR_MAP = {};
+  Object.entries(FLOORS).forEach(([fl,flData])=>{ flData.machines.forEach(m=>{ MC_FLOOR_MAP[m.id]=fl; }); });
+  window._cbMcFloorMap = MC_FLOOR_MAP;
   const uniq = k => [...new Set(data.map(b=>b[k]).filter(v=>v!==''&&v!=null).map(String))].sort();
   const esc = v => String(v).replace(/"/g,'&quot;');
   const sel = (k,label)=>`<div><label style="font-size:10px;color:var(--t3);display:block;margin-bottom:2px">${label}</label>
     <select onchange="window._cbFilters.${k}=this.value;_cbRenderRows()" style="background:var(--s2);border:1px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px">
       <option value="">All</option>${uniq(k).map(o=>`<option value="${esc(o)}" ${f[k]===o?'selected':''}>${o}</option>`).join('')}
     </select></div>`;
+  const floorSel = `<div><label style="font-size:10px;color:var(--t3);display:block;margin-bottom:2px">FLOOR</label>
+    <select onchange="window._cbFilters.floor=this.value;_cbRenderRows()" style="background:var(--s2);border:1px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px">
+      <option value="">All</option>
+      ${Object.entries(FLOORS).map(([fl,fd])=>`<option value="${fl}" ${f.floor===fl?'selected':''}>${fd.label}</option>`).join('')}
+    </select></div>`;
   cont.innerHTML = `
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:12px">
+      ${floorSel}
       ${sel('machineId','MACHINE')}
       ${sel('size','SIZE')}
       ${sel('colour','COLOUR')}
@@ -4607,7 +4616,7 @@ async function renderClosedBatches(){
       ${sel('customer','CUSTOMER')}
       <div><label style="font-size:10px;color:var(--t3);display:block;margin-bottom:2px">SEARCH</label>
         <input type="text" value="${esc(f.q||'')}" placeholder="batch / customer / PC…" oninput="window._cbFilters.q=this.value;_cbRenderRows()" style="background:var(--s2);border:1px solid var(--b2);border-radius:4px;color:var(--t1);padding:5px 8px;font-size:12px;min-width:180px;outline:none"></div>
-      <button onclick="window._cbFilters={machineId:'',size:'',colour:'',pcCode:'',customer:'',q:''};renderClosedBatches()" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--t2);border-radius:4px;padding:6px 10px;cursor:pointer">✕ Clear</button>
+      <button onclick="window._cbFilters={floor:'',machineId:'',size:'',colour:'',pcCode:'',customer:'',q:''};renderClosedBatches()" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--t2);border-radius:4px;padding:6px 10px;cursor:pointer">✕ Clear</button>
       <span id="cb-count" style="font-size:12px;color:var(--t3);align-self:center"></span>
     </div>
     <div class="table-wrap" style="max-height:62vh;overflow:auto;border:1px solid var(--b2);border-radius:6px">
@@ -4625,8 +4634,10 @@ async function renderClosedBatches(){
 function _cbFiltered(){
   const data = window._closedBatches || [];
   const f = window._cbFilters || {};
+  const mcFloorMap = window._cbMcFloorMap || {};
   const q = (f.q||'').toLowerCase().trim();
   return data.filter(b=>{
+    if(f.floor && mcFloorMap[b.machineId] !== f.floor) return false;
     if(f.machineId && b.machineId!==f.machineId) return false;
     if(f.size && String(b.size)!==String(f.size)) return false;
     if(f.colour && b.colour!==f.colour) return false;
@@ -4640,18 +4651,22 @@ function _cbFiltered(){
 function _cbRenderRows(){
   const tb = document.getElementById('cb-tbody'); if(!tb) return;
   const rows = _cbFiltered();
-  const canEdit = !!dprUser; // floor Production Managers + Admin (all authenticated DPR users); every change is audited server-side
+  const mcFloorMap = window._cbMcFloorMap || {};
+  const canEdit = !!dprUser;
   const fmtL = v => (v||v===0) ? Number(v).toFixed(2) : '—';
   const fmtDt = d => { if(!d) return '—'; try{ return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }catch(_){ return d; } };
-  tb.innerHTML = rows.map(b=>{
+  // Group by floor
+  const floorOrder = Object.keys(FLOORS);
+  const grouped = {};
+  rows.forEach(b => { const fl = mcFloorMap[b.machineId]||'OTHER'; if(!grouped[fl]) grouped[fl]=[]; grouped[fl].push(b); });
+  const rowHtml = (b) => {
     const ov = b.hasOverride;
     const badge = ov ? ` <span title="Overridden by ${(b.overrideBy||'').replace(/"/g,'&quot;')}: ${(b.overrideReason||'').replace(/"/g,'&quot;')}" style="font-size:9px;color:#f0c060;border:1px solid #f0c060;border-radius:3px;padding:0 3px;vertical-align:middle">OVERRIDE</span>` : '';
     const bn = (b.batchNumber||'').replace(/'/g,"\\'");
     return `<tr>
       <td class="mono" style="white-space:nowrap">${b.batchNumber||'—'}</td>
       <td class="mono">${b.machineId||'—'}</td>
-      <td>${b.size||'—'}</td>
-      <td>${b.colour||'—'}</td>
+      <td>${b.size||'—'}</td><td>${b.colour||'—'}</td>
       <td class="mono">${b.pcCode||'—'}</td>
       <td>${b.customer||'—'}</td>
       <td class="mono" style="white-space:nowrap">${fmtDt(b.startDate)}</td>
@@ -4660,7 +4675,15 @@ function _cbRenderRows(){
       <td class="mono" style="${ov?'color:#f0c060;font-weight:700':''}">${fmtL(b.actualGross)}${badge}</td>
       <td style="white-space:nowrap">${canEdit?`<button onclick="editClosedGross('${bn}')" title="Correct the DPR gross for this batch" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--accent);border-radius:3px;padding:2px 7px;cursor:pointer">✎ Edit</button>${ov?` <button onclick="clearClosedGross('${bn}')" title="Revert to the DPR-entered sum" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--red);border-radius:3px;padding:2px 7px;cursor:pointer">↺</button>`:''}`:'<span style="color:var(--t3);font-size:11px">—</span>'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--t3);padding:18px">No closed batches match the filters.</td></tr>`;
+  };
+  let html = '';
+  [...floorOrder, 'OTHER'].forEach(fl => {
+    if(!grouped[fl]?.length) return;
+    const flLabel = FLOORS[fl]?.label || fl;
+    html += `<tr><td colspan="11" style="background:var(--s2);font-family:var(--fc);font-size:10px;font-weight:800;letter-spacing:1px;color:var(--accent);padding:6px 10px;border-top:2px solid var(--b2)">${flLabel.toUpperCase()} — ${grouped[fl].length} batch${grouped[fl].length!==1?'es':''}</td></tr>`;
+    grouped[fl].forEach(b => { html += rowHtml(b); });
+  });
+  tb.innerHTML = html || `<tr><td colspan="11" style="text-align:center;color:var(--t3);padding:18px">No closed batches match the filters.</td></tr>`;
   const cnt = document.getElementById('cb-count'); if(cnt) cnt.textContent = rows.length+' batch'+(rows.length!==1?'es':'');
 }
 
