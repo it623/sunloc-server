@@ -4613,7 +4613,7 @@ async function renderClosedBatches(){
     <div class="table-wrap" style="max-height:62vh;overflow:auto;border:1px solid var(--b2);border-radius:6px">
       <table class="data-table" style="width:100%">
         <thead style="position:sticky;top:0;z-index:5"><tr>
-          <th>Machine</th><th>Size</th><th>Colour</th><th>PC Code</th><th>Customer</th><th>Start</th><th>End</th>
+          <th>Batch No</th><th>Machine</th><th>Size</th><th>Colour</th><th>PC Code</th><th>Customer</th><th>Start</th><th>End</th>
           <th>Planned Gross (L)</th><th>Actual DPR Gross (L)</th><th>Action</th>
         </tr></thead>
         <tbody id="cb-tbody"></tbody>
@@ -4648,6 +4648,7 @@ function _cbRenderRows(){
     const badge = ov ? ` <span title="Overridden by ${(b.overrideBy||'').replace(/"/g,'&quot;')}: ${(b.overrideReason||'').replace(/"/g,'&quot;')}" style="font-size:9px;color:#f0c060;border:1px solid #f0c060;border-radius:3px;padding:0 3px;vertical-align:middle">OVERRIDE</span>` : '';
     const bn = (b.batchNumber||'').replace(/'/g,"\\'");
     return `<tr>
+      <td class="mono" style="white-space:nowrap">${b.batchNumber||'—'}</td>
       <td class="mono">${b.machineId||'—'}</td>
       <td>${b.size||'—'}</td>
       <td>${b.colour||'—'}</td>
@@ -4659,7 +4660,7 @@ function _cbRenderRows(){
       <td class="mono" style="${ov?'color:#f0c060;font-weight:700':''}">${fmtL(b.actualGross)}${badge}</td>
       <td style="white-space:nowrap">${canEdit?`<button onclick="editClosedGross('${bn}')" title="Correct the DPR gross for this batch" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--accent);border-radius:3px;padding:2px 7px;cursor:pointer">✎ Edit</button>${ov?` <button onclick="clearClosedGross('${bn}')" title="Revert to the DPR-entered sum" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--red);border-radius:3px;padding:2px 7px;cursor:pointer">↺</button>`:''}`:'<span style="color:var(--t3);font-size:11px">—</span>'}</td>
     </tr>`;
-  }).join('') || `<tr><td colspan="10" style="text-align:center;color:var(--t3);padding:18px">No closed batches match the filters.</td></tr>`;
+  }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--t3);padding:18px">No closed batches match the filters.</td></tr>`;
   const cnt = document.getElementById('cb-count'); if(cnt) cnt.textContent = rows.length+' batch'+(rows.length!==1?'es':'');
 }
 
