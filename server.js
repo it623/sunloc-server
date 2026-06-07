@@ -2386,7 +2386,7 @@ let _grossByBatch = null;
 let _grossOverride = {};
 async function warmActualsCache() {
   // Throttle to 60s — prevents DB hammering from every device's 30s auto-sync
-  if (Date.now() - _actualsCacheTime < 60000 && _actualsCache) return;
+  if (Date.now() - _actualsCacheTime < 300000 && _actualsCache) return;
   _actualsCacheTime = Date.now();
   if (pgPool) {
     try {
@@ -5547,7 +5547,7 @@ app.post('/api/planning/state', async (req, res) => {
     // THROTTLE: run at most once per 60s to avoid hammering DB on every DPR sync
     const _now = Date.now();
     if (!global._lastBgMergeTime) global._lastBgMergeTime = 0;
-    if (state.orders && state.orders.length > 0 && (_now - global._lastBgMergeTime) > 60000) {
+    if (state.orders && state.orders.length > 0 && (_now - global._lastBgMergeTime) > 180000) {
       global._lastBgMergeTime = _now;
       setImmediate(async () => {
         try {
@@ -7681,13 +7681,13 @@ app.post('/api/integrity/task/:id/dismiss', async (req, res) => {
 });
 
 // ─── Hourly scheduler ────────────────────────────────────────────
-// First scan runs 30 seconds after server boot, then every 60 minutes.
-// Configurable via env var INTEGRITY_SCAN_INTERVAL_MIN (default 60).
-const _intervalMin = parseInt(process.env.INTEGRITY_SCAN_INTERVAL_MIN) || 60;
+// First scan runs 5 minutes after server boot, then every 4 hours minimum.
+// Configurable via env var INTEGRITY_SCAN_INTERVAL_MIN (default 240).
+const _intervalMin = Math.max(parseInt(process.env.INTEGRITY_SCAN_INTERVAL_MIN) || 240, 120);
 setTimeout(() => {
   console.log(`[Integrity] First scan starting (interval: ${_intervalMin}min)...`);
   _runIntegrityScan().catch(e => console.error('[Integrity] First scan failed:', e.message));
-}, 30000);
+}, 5 * 60 * 1000);
 setInterval(() => {
   _runIntegrityScan().catch(e => console.error('[Integrity] Periodic scan failed:', e.message));
 }, _intervalMin * 60 * 1000);
