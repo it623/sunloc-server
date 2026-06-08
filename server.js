@@ -2393,10 +2393,20 @@ async function warmActualsCache() {
         if (row.order_id) _actualsCache[row.order_id] = parseFloat(row.total) || 0;
         if (row.batch_number) _actualsCache[row.batch_number] = parseFloat(row.total) || 0;
       }
-      // v41ZI Item 4: pure batch-keyed gross (full sum per batch, robust to order_id keying).
-      const gb = await pgPool.query('SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE batch_number IS NOT NULL GROUP BY batch_number');
+      // v41ZI Item 4 / v41ZL #4: authoritative per-batch DPR gross. Attribute every production_actuals
+      // row to its EFFECTIVE batch — the row's own batch_number when present, otherwise the batch of the
+      // order it was logged against (join on order_id). Earlier this summed only rows WHERE batch_number
+      // IS NOT NULL, so DPR runs saved with just an order_id (blank batch_number) were invisible to the
+      // batch-keyed gross — Reports D & E showed "—" for those batches even though Planning (which also
+      // keys actuals by order_id) showed the value. COALESCE makes one source of truth for all four views.
+      const gb = await pgPool.query(`
+        SELECT COALESCE(NULLIF(pa.batch_number,''), po.batch_number) AS batch, SUM(pa.qty_lakhs) AS total
+        FROM production_actuals pa
+        LEFT JOIN production_orders po ON po.id = pa.order_id
+        WHERE COALESCE(NULLIF(pa.batch_number,''), po.batch_number) IS NOT NULL
+        GROUP BY COALESCE(NULLIF(pa.batch_number,''), po.batch_number)`);
       _grossByBatch = {};
-      for (const row of gb.rows) { _grossByBatch[row.batch_number] = parseFloat(row.total) || 0; }
+      for (const row of gb.rows) { _grossByBatch[row.batch] = parseFloat(row.total) || 0; }
       console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries;', gb.rows.length, 'batches');
     } catch(e) { console.error('[DB] Actuals cache error:', e.message); }
   }

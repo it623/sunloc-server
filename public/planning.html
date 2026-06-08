@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZK</p>
+      <p>Planning Suite v3.0 · build v41ZM</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2234,6 +2234,18 @@ function recalcMachineScheduleQuiet(machineId) {
         ord.printOut = scClosed.printOut;
         ord.piOut    = scClosed.piOut;
       }
+      // v41ZM #5: a closed order can't start before the previous order on the same machine finished.
+      // If its stored start overlaps the predecessor (start < cursor), shift it forward by the overlap
+      // while preserving its duration — so two closed orders never show the same/overlapping dates.
+      if (cursor && ord.startDate && !isNaN(new Date(ord.startDate))) {
+        const _cs = new Date(ord.startDate);
+        if (_cs < cursor) {
+          const _ce = ord.endDate && !isNaN(new Date(ord.endDate)) ? new Date(ord.endDate) : null;
+          const _dur = (_ce && _ce > _cs) ? (_ce - _cs) : 0;
+          ord.startDate = new Date(cursor);
+          ord.endDate = new Date(cursor.getTime() + _dur);
+        }
+      }
       // Advance cursor through closed orders so next order starts right after
       if (ord.endDate && !isNaN(new Date(ord.endDate))) {
         const closedEnd = new Date(ord.endDate);
@@ -2264,7 +2276,7 @@ function recalcMachineScheduleQuiet(machineId) {
     // the cursor — otherwise it is pushed forward to the cursor so it can't overlap its predecessor.
     if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
       const histStart = new Date(ord.startDate);
-      ord.startDate = (cursor && cursor > histStart) ? new Date(cursor) : histStart;
+      ord.startDate = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
     } else if (cursor) {
       // Downstream of an earlier order — start right after it (this is the cascade).
       ord.startDate = new Date(cursor);
@@ -2312,6 +2324,18 @@ function recalcMachineSchedule(machineId) {
         ord.printOut = scClosed.printOut;
         ord.piOut    = scClosed.piOut;
       }
+      // v41ZM #5: a closed order can't start before the previous order on the same machine finished.
+      // If its stored start overlaps the predecessor (start < cursor), shift it forward by the overlap
+      // while preserving its duration — so two closed orders never show the same/overlapping dates.
+      if (cursor && ord.startDate && !isNaN(new Date(ord.startDate))) {
+        const _cs = new Date(ord.startDate);
+        if (_cs < cursor) {
+          const _ce = ord.endDate && !isNaN(new Date(ord.endDate)) ? new Date(ord.endDate) : null;
+          const _dur = (_ce && _ce > _cs) ? (_ce - _cs) : 0;
+          ord.startDate = new Date(cursor);
+          ord.endDate = new Date(cursor.getTime() + _dur);
+        }
+      }
       // Advance cursor through closed orders so next order starts right after
       if (ord.endDate && !isNaN(new Date(ord.endDate))) {
         const closedEnd = new Date(ord.endDate);
@@ -2335,7 +2359,7 @@ function recalcMachineSchedule(machineId) {
     // otherwise it is pushed forward so it can't overlap the previous order on the same machine.
     if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
       const histStart = new Date(ord.startDate);
-      ord.startDate = (cursor && cursor > histStart) ? new Date(cursor) : histStart;
+      ord.startDate = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
     } else if (cursor) {
       ord.startDate = new Date(cursor);
     } else {

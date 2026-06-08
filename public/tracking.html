@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZK</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZM</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -567,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZK</p>
+      <p>Tracking Suite v1.0 · build v41ZM</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -598,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZK</p>
+      <p>Tracking Suite v1.0 · build v41ZM</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -7642,8 +7642,10 @@ function _v41_renderReportGInner(){
     }
     if (!ag) ag = getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
     const wip = getBatchWIPBreakdown(b.batchNumber);
-    // v41i FIX (issue 4): month-sliced gross in month mode (reconciles with DPR); see Report E note.
-    let grossProd = b.actualProd || b.actualQty || 0;
+    // v41ZM #2: read the SAME authoritative per-batch DPR gross Report E uses (_grossFor =
+    // server grossByBatch → override/SUM(production_actuals), falling back to the injected
+    // actualProd only while the map is cold) so Report D == Report E == Planning == DPR.
+    let grossProd = _grossFor(b.batchNumber, b);
     if (_v41_useMonthAttributed) {
       const _mg = _v41_agradeMonthCache[_trkSelectedMonth]?.monthGross;
       if (_mg && Object.prototype.hasOwnProperty.call(_mg, b.batchNumber)) grossProd = _mg[b.batchNumber];
@@ -7699,8 +7701,11 @@ function _v41_renderReportGInner(){
     return `<tr ${overInspected||noGross?'style="background:rgba(220,38,38,0.04)"':''}>
       <td class="td-bold td-mono">${b.batchNumber}${alertFlag}${crossFlag}</td>
       <td class="text-sm">${b.customer||'—'}</td>
+      <td class="text-sm">${b.colour||'—'}</td>
       <td class="td-mono">${b.size}</td>
       <td>${b.isPrinted?'<span class="badge badge-purple">PTD</span>':'<span class="badge badge-gray">UP</span>'}</td>
+      <td class="td-mono" style="white-space:nowrap;font-size:11px">${b.startDate?new Date(b.startDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
+      <td class="td-mono" style="white-space:nowrap;font-size:11px">${b.endDate?new Date(b.endDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
       <td class="td-mono">${grossProd>0?fmt(grossProd)+'L':'—'}</td>
       <td class="td-mono">${ag.inspected>0?fmt(ag.inspected)+'L':'—'}</td>
       <td class="td-mono green">${ag.aGrade>0?fmt(ag.aGrade)+'L':'—'}</td>
@@ -7800,13 +7805,13 @@ function _v41_renderReportGInner(){
 
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
-        <th>Batch</th><th>Customer</th><th>Sz</th><th>Type</th>
+        <th>Batch</th><th>Customer</th><th>Colour</th><th>Sz</th><th>Type</th><th>Start</th><th>End</th>
         <th>Gross Prod</th><th>Inspected</th><th>A-Grade</th>
         <th>Salvage</th><th>Remelt</th><th>Packed (L)</th><th>WIP (Stage-wise)</th><th>A-Grade %</th>
       </tr></thead>
-      <tbody>${rows||'<tr><td colspan="12" class="text-center text-muted">No batch data yet</td></tr>'}</tbody>
+      <tbody>${rows||'<tr><td colspan="15" class="text-center text-muted">No batch data yet</td></tr>'}</tbody>
       <tfoot><tr style="background:var(--surface2);font-weight:700">
-        <td colspan="4" style="font-size:11px;letter-spacing:.5px">CUMULATIVE TOTAL</td>
+        <td colspan="7" style="font-size:11px;letter-spacing:.5px">CUMULATIVE TOTAL</td>
         <td class="td-mono">${fmt(totalGrossProd)}L</td>
         <td class="td-mono">${fmt(totalInspected)}L</td>
         <td class="td-mono green">${fmt(totalAGradeQty)}L</td>
@@ -8919,7 +8924,7 @@ function _v41_renderReportEInner(){
     const _legLakhs = boxToLakh(_legBoxes, b.size);
     const _p18 = state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber&&(!filterDate||r.ts?.slice(0,10)===filterDate)).reduce((s,r)=>s+r.qty,0);
     const disp = _legLakhs + _p18;
-    rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,
+    rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,startDate:b.startDate||null,endDate:b.endDate||null,
       isPrinted: b.isPrinted,  // v37H: used by table render to distinguish PTD vs UP for column display
       plannedQty:b.qty||0, _plannedQty:b.qty||0,
       grossProd:fmt(grossProd),_grossProd:grossProd,
@@ -8953,8 +8958,10 @@ function _v41_renderReportEInner(){
   // First pass: batches assigned to a known FLOORS machine
   Object.entries(FLOORS).forEach(([floorKey,floor])=>{
     floor.machines.forEach(mc=>{
-      // Match batches by normalised machine ID (MC.20 == MC20) — month-filtered
-      const batches=getTrkMonthBatches().filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc));
+      // Match batches by normalised machine ID (MC.20 == MC20) — month-filtered.
+      // v41ZL #3: sort sequentially by batch number within each machine group (was insertion order).
+      const batches=getTrkMonthBatches().filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc))
+        .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}));
       batches.forEach(b=>{
         _addBatchRowToReport(b, mc, floorKey);
       });
@@ -8963,7 +8970,8 @@ function _v41_renderReportEInner(){
   // v37E T4: Second pass — include any month batches whose machineId does NOT match any FLOORS machine
   // (orphans). Without this, Report E's cumulative A-Grade % differs from Report G because Report G
   // includes ALL month batches.
-  const orphanBatches = getTrkMonthBatches().filter(b => !b.deleted && !includedBatchNos.has(b.batchNumber));
+  const orphanBatches = getTrkMonthBatches().filter(b => !b.deleted && !includedBatchNos.has(b.batchNumber))
+    .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}));
   orphanBatches.forEach(b => {
     const mcLabel = b.machineId || 'UNASSIGNED';
     _addBatchRowToReport(b, mcLabel, 'OTHER');
@@ -9005,7 +9013,7 @@ function _v41_renderReportEInner(){
     const piOutSum    = sumRows(arr,'piInspect');
     return `<tr style="${style};font-size:12px">
       <td colspan="4" style="padding:5px 10px;font-family:sans-serif;font-size:11px;letter-spacing:.5px;text-transform:uppercase">${label}</td>
-      <td colspan="3"></td>
+      <td colspan="5"></td>
       <td>${fmtN(sumRows(arr,'plannedQty'))}</td><td><b>${fmtN(g)}</b></td>
       <td>${fmtN(aimInsp)}</td><td>${fmtN(sumRows(arr,'aimSalvage'))}</td><td>${fmtN(sumRows(arr,'aimRemelt'))}</td>
       <td><b>${fmtN(aimOut)}</b></td><td>${aimPct}</td>
@@ -9026,11 +9034,11 @@ function _v41_renderReportEInner(){
     allFloorRows.push(...flRows);
     const machines = [...new Set(flRows.map(r=>r.machine))];
     // Floor header
-    tableRows += `<tr class="grp-hdr"><td colspan="26" class="sticky-col" style="left:0;background:#d4e8d8;color:#1a3a2e;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:1px">FLOOR: ${fl}</td></tr>`;
+    tableRows += `<tr class="grp-hdr"><td colspan="28" class="sticky-col" style="left:0;background:#d4e8d8;color:#1a3a2e;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:1px">FLOOR: ${fl}</td></tr>`;
     machines.forEach(mc => {
       const mcRows = flRows.filter(r=>r.machine===mc);
       // Machine header
-      tableRows += `<tr class="grp-hdr"><td colspan="26" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
+      tableRows += `<tr class="grp-hdr"><td colspan="28" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
       tableRows += mcRows.map(r=>{
         // v37H: For PTD batches, show 0.00 (not '—') so print columns are visibly populated
         // even before scans accumulate. UP batches keep '—' since printing doesn't apply.
@@ -9040,7 +9048,7 @@ function _v41_renderReportEInner(){
         <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
         <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}</td>
         <td class="sticky-col" style="left:210px;min-width:180px;border-right:2px solid #d4b896">${r.customer||'—'}</td>
-        <td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td>
+        <td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td><td style="white-space:nowrap;font-size:11px">${r.startDate?new Date(r.startDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td><td style="white-space:nowrap;font-size:11px">${r.endDate?new Date(r.endDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
         <td>${fmtN(r._plannedQty)}</td><td>${fmtN(r._grossProd)}</td>
         <td>${fmtN(r._aimRunTotal)}</td><td>${fmtN(r._aimSalvage)}</td><td>${fmtN(r._aimRemelt)}</td>
         <td><b>${fmtN(r._aimAGrade)}</b></td><td>${r.aimAGradePct}%</td>
@@ -9056,7 +9064,7 @@ function _v41_renderReportEInner(){
     // Floor subtotal row
     tableRows += buildSubtotalRow(flRows, `${fl} FLOOR TOTAL`, 'background:#c8e6c9;color:#1a3a2e;font-weight:800;font-size:13px');
   });
-  if (!tableRows) tableRows = '<tr><td colspan="26" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
+  if (!tableRows) tableRows = '<tr><td colspan="28" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
 
   // Build grand totals row — white text explicitly on every cell
   const sum = k => allFloorRows.reduce((a,r)=>a+(r['_'+k]||0),0);
@@ -9085,7 +9093,7 @@ function _v41_renderReportEInner(){
   const printPctTotal = _ptdAimInsp>0 ? Math.max(0, _postPrintNum/_ptdAimInsp*100).toFixed(1)+'%' : '—';
   const piPctTotal    = _ptdAimInsp>0 ? Math.max(0, _postPiNum   /_ptdAimInsp*100).toFixed(1)+'%' : '—';
   const totalsRow = allFloorRows.length ? `<tr id="grand-total-row" style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
-    <td colspan="7" style="text-align:right;padding-right:8px;color:#f0c060;letter-spacing:.5px">GRAND TOTAL (${allFloorRows.length} batches)</td>
+    <td colspan="9" style="text-align:right;padding-right:8px;color:#f0c060;letter-spacing:.5px">GRAND TOTAL (${allFloorRows.length} batches)</td>
     <td style="color:#fff">${fmtN(sum('plannedQty'))}</td><td style="color:#fff"><b>${fmtN(totalGross)}</b></td>
     <td style="color:#fff">${fmtN(totalAimInsp)}</td><td style="color:#fff">${fmtN(sum('aimSalvage'))}</td><td style="color:#fff">${fmtN(sum('aimRemelt'))}</td>
     <td style="color:#fff"><b>${fmtN(sum('aimAGrade'))}</b></td><td style="color:#f0c060">${totalAimInsp>0?(sum('aimAGrade')/totalAimInsp*100).toFixed(1)+'%':'—'}</td>
@@ -9168,7 +9176,7 @@ function _v41_renderReportEInner(){
       <th class="sticky-col" style="left:70px;min-width:50px">Floor</th>
       <th class="sticky-col" style="left:120px;min-width:90px">Batch</th>
       <th class="sticky-col" style="left:210px;min-width:180px">Customer</th>
-      <th>PC Code</th><th>Colour</th><th>Size</th>
+      <th>PC Code</th><th>Colour</th><th>Size</th><th>Start</th><th>End</th>
       <th>Planned (L)</th><th>Gross Prod (L)</th>
       <th>AIM Run (L)</th><th>AIM Salvage (L)</th><th>AIM Remelt (L)</th>
       <th>AIM A-Grade (L)</th><th>AIM %</th>
