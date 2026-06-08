@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZM</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v41ZN</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1824,6 +1824,10 @@ async function fetchActiveOrders(){
         if(!activeOrders[o.machineId]) activeOrders[o.machineId]=[];
         activeOrders[o.machineId].push(o);
       });
+      // v41ZN #3: full order lookup (INCLUDING closed) — closed orders stay out of the dropdown above,
+      // but the inline Gross/Prod/Rem summary should still show on every saved run, so resolve from this.
+      window._dprOrderById = {};
+      j.orders.forEach(o=>{ if(o && o.id) window._dprOrderById[o.id]=o; });
       // Cache locally
       localStorage.setItem('dpr_active_orders',JSON.stringify(activeOrders));
       // Orders synced silently — toast only on manual sync button click
@@ -2473,8 +2477,12 @@ function renderShifts(){
             <input type="text" id="run-note-${sh}-${mc.id}-${ri}" value="${esc(run.note||'')}" placeholder="Note" style="width:80px;font-size:10px;color:var(--t3);flex-shrink:0" oninput="markUnsaved()" title="e.g. Colour change, Batch closed">
             ${isMult?`<button onclick="removeRun('${sh}','${mc.id}',${ri})" style="background:transparent;border:none;color:var(--t3);cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0" title="Remove this run">✕</button>`:''}
             ${(()=>{ 
-              // Fix 1: Show Gross/Prod/Rem summary inline for every run with a known order
-              const ord2 = run.orderId ? (activeOrders[mc.id]||[]).find(o=>o.id===run.orderId) : null;
+              // Fix 1: Show Gross/Prod/Rem summary inline for every run with a known order.
+              // v41ZN #3: closed orders are excluded from activeOrders, so fall back to the full order
+              // map (by id, then by batch+machine) so saved runs on closed batches still show the summary.
+              const ord2 = (run.orderId ? (activeOrders[mc.id]||[]).find(o=>o.id===run.orderId) : null)
+                || (run.orderId && window._dprOrderById ? window._dprOrderById[run.orderId] : null)
+                || (run.batchNumber && window._dprOrderById ? Object.values(window._dprOrderById).find(o=>o.batchNumber===run.batchNumber && o.machineId===mc.id) : null);
               if(!ord2) return '';
               const planned2 = ord2.qty || 0;
               const gross2   = ord2.grossQty || planned2;

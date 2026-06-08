@@ -1024,6 +1024,12 @@ if (!USE_POSTGRES) {
 // ─── Helper: get latest planning state ────────────────────────
 let _planningStateCache = null;
 let _planningStateCacheTime = 0;
+// v41ZN: throttle the background production_orders merge. The blob (planning_state) is saved on every
+// POST regardless; production_orders is only the recovery/reconciliation copy, so it tolerates a short
+// lag. Skipping redundant merges keeps the 5-connection pool from being churned every ~13s (the cause
+// of intermittent timeouts/offline alongside the now-removed gross JOIN).
+let _lastBgMerge = 0;
+const BG_MERGE_DEBOUNCE_MS = parseInt(process.env.BG_MERGE_DEBOUNCE_MS, 10) || 30000;
 
 async function getPlanningStateAsync() {
   if (pgPool) {
@@ -2393,21 +2399,25 @@ async function warmActualsCache() {
         if (row.order_id) _actualsCache[row.order_id] = parseFloat(row.total) || 0;
         if (row.batch_number) _actualsCache[row.batch_number] = parseFloat(row.total) || 0;
       }
-      // v41ZI Item 4 / v41ZL #4: authoritative per-batch DPR gross. Attribute every production_actuals
-      // row to its EFFECTIVE batch — the row's own batch_number when present, otherwise the batch of the
-      // order it was logged against (join on order_id). Earlier this summed only rows WHERE batch_number
-      // IS NOT NULL, so DPR runs saved with just an order_id (blank batch_number) were invisible to the
-      // batch-keyed gross — Reports D & E showed "—" for those batches even though Planning (which also
-      // keys actuals by order_id) showed the value. COALESCE makes one source of truth for all four views.
-      const gb = await pgPool.query(`
-        SELECT COALESCE(NULLIF(pa.batch_number,''), po.batch_number) AS batch, SUM(pa.qty_lakhs) AS total
-        FROM production_actuals pa
-        LEFT JOIN production_orders po ON po.id = pa.order_id
-        WHERE COALESCE(NULLIF(pa.batch_number,''), po.batch_number) IS NOT NULL
-        GROUP BY COALESCE(NULLIF(pa.batch_number,''), po.batch_number)`);
+      // v41ZL #4 / v41ZN: authoritative per-batch DPR gross, attributing every production_actuals
+      // group to its EFFECTIVE batch — the row's own batch_number when present, otherwise the batch
+      // of the order it was logged against. v41ZL did this with a SQL LEFT JOIN on production_orders
+      // + GROUP BY a COALESCE expression; but production_orders is write-churned by the planning/state
+      // background merge, so that join+expression-group contended on the DB and timed out closed-batches
+      // and made the apps go offline (v41ZM). We now do the same attribution IN MEMORY from the rows
+      // already fetched above plus the warmed order cache — no extra query, no join on the hot table.
+      const _orderBatch = {};
+      try {
+        const _co = (_planningStateCache && _planningStateCache.orders) || [];
+        for (const o of _co) { if (o && o.id && o.batchNumber) _orderBatch[o.id] = o.batchNumber; }
+      } catch(_) {}
       _grossByBatch = {};
-      for (const row of gb.rows) { _grossByBatch[row.batch] = parseFloat(row.total) || 0; }
-      console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries;', gb.rows.length, 'batches');
+      for (const row of r.rows) {
+        const batch = (row.batch_number && String(row.batch_number).trim()) ? row.batch_number : _orderBatch[row.order_id];
+        if (!batch) continue;
+        _grossByBatch[batch] = (_grossByBatch[batch] || 0) + (parseFloat(row.total) || 0);
+      }
+      console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries;', Object.keys(_grossByBatch).length, 'batches');
     } catch(e) { console.error('[DB] Actuals cache error:', e.message); }
   }
   // v41ZI Item 6: always refresh the override map (both DB modes) so effectiveGross() applies
@@ -5559,6 +5569,13 @@ app.post('/api/planning/state', async (req, res) => {
           const orders = state.orders.filter(o => o && o.id &&
             !(o.batchNumber === '26V049' && (o.customer||'').includes('SHYAM')));
           if (!orders.length || !pgPool) return;
+
+          // v41ZN: debounce — skip if a background merge ran within the window. Set the timestamp
+          // BEFORE the awaits below so a concurrent save can't slip a second merge through. The blob
+          // is already persisted by this POST; production_orders just catches up on the next merge.
+          const _bgNow = Date.now();
+          if (_bgNow - _lastBgMerge < BG_MERGE_DEBOUNCE_MS) return;
+          _lastBgMerge = _bgNow;
 
           // Fetch ALL existing records in ONE query — no N+1
           const ids = orders.map(o => o.id);
