@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZN</p>
+      <p>Planning Suite v3.0 · build v41ZO</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -938,11 +938,11 @@ const SYNC = (() => {
             const machineOverLimit = local.machineId && (serverRunningPerMC[local.machineId] || 0) >= 2;
             if (serverDowngradedToPending && machineOverLimit) {
               // Accept server's downgrade — machine is at limit
-              return { ...local, status: 'pending', actualProd: o.actualProd || local.actualProd };
+              return { ...local, status: 'pending', actualProd: (o.actualProd != null ? o.actualProd : local.actualProd) };
             }
             // Normal protection — keep local status
             return { ...local,
-              actualProd: o.actualProd || local.actualProd,
+              actualProd: (o.actualProd != null ? o.actualProd : local.actualProd),
               stageStatus: o.stageStatus || local.stageStatus,
               status: local.status || o.status,
               deleted: local.deleted !== undefined ? local.deleted : o.deleted,
@@ -1132,7 +1132,7 @@ const SYNC = (() => {
               deleted:      dbOrd.deleted,
               closedDate:   dbOrd.closedDate  || o.closedDate,
               remarks:      dbOrd.remarks     || o.remarks,
-              actualProd:   dbOrd.actualProd  || o.actualProd,
+              actualProd:   (dbOrd.actualProd != null ? dbOrd.actualProd : o.actualProd),
               mismatchFlag: dbOrd.mismatchFlag !== undefined ? dbOrd.mismatchFlag : o.mismatchFlag,
               // Keep manual dates from either source
               startDate:       (o.manualStartDate || o.manualEndDate) ? o.startDate   : dbOrd.startDate,
@@ -2234,18 +2234,13 @@ function recalcMachineScheduleQuiet(machineId) {
         ord.printOut = scClosed.printOut;
         ord.piOut    = scClosed.piOut;
       }
-      // v41ZM #5: a closed order can't start before the previous order on the same machine finished.
-      // If its stored start overlaps the predecessor (start < cursor), shift it forward by the overlap
-      // while preserving its duration — so two closed orders never show the same/overlapping dates.
-      if (cursor && ord.startDate && !isNaN(new Date(ord.startDate))) {
-        const _cs = new Date(ord.startDate);
-        if (_cs < cursor) {
-          const _ce = ord.endDate && !isNaN(new Date(ord.endDate)) ? new Date(ord.endDate) : null;
-          const _dur = (_ce && _ce > _cs) ? (_ce - _cs) : 0;
-          ord.startDate = new Date(cursor);
-          ord.endDate = new Date(cursor.getTime() + _dur);
-        }
-      }
+      // v41ZO #1: a finished order is history — do NOT re-cascade it. The v41ZM forward-shift drifted
+      // closed orders into the future and, when a stored span was 0, collapsed them to a single day.
+      // Keep its stored run dates, but never show a finished order starting/ending in the future.
+      const _td = new Date(today());
+      if (ord.endDate   && !isNaN(new Date(ord.endDate))   && new Date(ord.endDate)   > _td) ord.endDate   = new Date(_td);
+      if (ord.startDate && !isNaN(new Date(ord.startDate)) && new Date(ord.startDate) > _td) ord.startDate = new Date(_td);
+      if (ord.startDate && ord.endDate && new Date(ord.startDate) > new Date(ord.endDate)) ord.startDate = new Date(ord.endDate);
       // Advance cursor through closed orders so next order starts right after
       if (ord.endDate && !isNaN(new Date(ord.endDate))) {
         const closedEnd = new Date(ord.endDate);
@@ -2266,6 +2261,9 @@ function recalcMachineScheduleQuiet(machineId) {
     ord.daysNeeded = sc.daysNeeded;
     const todayD = new Date(today());
     const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
+    // v41ZO #1: FULL run duration from TOTAL gross & effective daily rate (not remaining-work days,
+    // which collapsed a fully-produced order's span to a single day). A 2-day order always shows 2 days.
+    const fullDays = (sc.effectiveCap && sc.effectiveCap > 0) ? Math.max(1, Math.ceil(sc.grossQty / sc.effectiveCap)) : 1;
 
     // Determine start date.
     // v41ZD #2: an order on a single machine can never start before the previous order finishes.
@@ -2287,19 +2285,10 @@ function recalcMachineScheduleQuiet(machineId) {
       ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
     }
 
-    // Determine end date.
-    if (hasProduction && ord.status === 'running') {
-      // End = today + days for the gross still remaining (can't finish in the past).
-      const remainingGross = Math.max(0, sc.grossQty - (ord.actualProd || ord.actualQty || 0));
-      const remainingDays  = sc.effectiveCap ? (remainingGross / sc.effectiveCap) : 0;
-      const startD = new Date(ord.startDate);
-      const fromToday = new Date(todayD); fromToday.setDate(fromToday.getDate() + Math.ceil(remainingDays));
-      const fromStart = calcEndDate(startD, sc.daysNeeded);
-      // End is the later of (start + full duration) and (today + remaining) so it never lands early.
-      ord.endDate = (fromStart && fromStart > fromToday) ? fromStart : fromToday;
-    } else {
-      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
-    }
+    // Determine end date — start + full run duration; the current open order can never be planned to
+    // finish before today (v41ZO #1).
+    ord.endDate = calcEndDate(ord.startDate, fullDays);
+    if (ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
@@ -2324,18 +2313,13 @@ function recalcMachineSchedule(machineId) {
         ord.printOut = scClosed.printOut;
         ord.piOut    = scClosed.piOut;
       }
-      // v41ZM #5: a closed order can't start before the previous order on the same machine finished.
-      // If its stored start overlaps the predecessor (start < cursor), shift it forward by the overlap
-      // while preserving its duration — so two closed orders never show the same/overlapping dates.
-      if (cursor && ord.startDate && !isNaN(new Date(ord.startDate))) {
-        const _cs = new Date(ord.startDate);
-        if (_cs < cursor) {
-          const _ce = ord.endDate && !isNaN(new Date(ord.endDate)) ? new Date(ord.endDate) : null;
-          const _dur = (_ce && _ce > _cs) ? (_ce - _cs) : 0;
-          ord.startDate = new Date(cursor);
-          ord.endDate = new Date(cursor.getTime() + _dur);
-        }
-      }
+      // v41ZO #1: a finished order is history — do NOT re-cascade it. The v41ZM forward-shift drifted
+      // closed orders into the future and, when a stored span was 0, collapsed them to a single day.
+      // Keep its stored run dates, but never show a finished order starting/ending in the future.
+      const _td = new Date(today());
+      if (ord.endDate   && !isNaN(new Date(ord.endDate))   && new Date(ord.endDate)   > _td) ord.endDate   = new Date(_td);
+      if (ord.startDate && !isNaN(new Date(ord.startDate)) && new Date(ord.startDate) > _td) ord.startDate = new Date(_td);
+      if (ord.startDate && ord.endDate && new Date(ord.startDate) > new Date(ord.endDate)) ord.startDate = new Date(ord.endDate);
       // Advance cursor through closed orders so next order starts right after
       if (ord.endDate && !isNaN(new Date(ord.endDate))) {
         const closedEnd = new Date(ord.endDate);
@@ -2354,6 +2338,9 @@ function recalcMachineSchedule(machineId) {
     ord.daysNeeded = sc.daysNeeded;
     const todayD = new Date(today());
     const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
+    // v41ZO #1: FULL run duration from TOTAL gross & effective daily rate (not remaining-work days,
+    // which collapsed a fully-produced order's span to a single day). A 2-day order always shows 2 days.
+    const fullDays = (sc.effectiveCap && sc.effectiveCap > 0) ? Math.max(1, Math.ceil(sc.grossQty / sc.effectiveCap)) : 1;
 
     // v41ZD #2: in-production order keeps its historical start only if it's already >= cursor;
     // otherwise it is pushed forward so it can't overlap the previous order on the same machine.
@@ -2367,16 +2354,10 @@ function recalcMachineSchedule(machineId) {
       ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
     }
 
-    if (hasProduction && ord.status === 'running') {
-      const remainingGross = Math.max(0, sc.grossQty - (ord.actualProd || ord.actualQty || 0));
-      const remainingDays  = sc.effectiveCap ? (remainingGross / sc.effectiveCap) : 0;
-      const startD = new Date(ord.startDate);
-      const fromToday = new Date(todayD); fromToday.setDate(fromToday.getDate() + Math.ceil(remainingDays));
-      const fromStart = calcEndDate(startD, sc.daysNeeded);
-      ord.endDate = (fromStart && fromStart > fromToday) ? fromStart : fromToday;
-    } else {
-      ord.endDate = calcEndDate(ord.startDate, sc.daysNeeded);
-    }
+    // Determine end date — start + full run duration; the current open order can never be planned to
+    // finish before today (v41ZO #1).
+    ord.endDate = calcEndDate(ord.startDate, fullDays);
+    if (ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
