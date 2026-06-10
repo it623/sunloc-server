@@ -11911,7 +11911,7 @@ async function renderReconciliation() {
   const isAdmin = currentUser?.role === 'admin';
   const isPlanManager = ['admin','planning_manager'].includes(currentUser?.role);
   // W/O orders awaiting customer assignment
-  const woOrders = (state.orders||[]).filter(o => o.woStatus === 'wo' && o.status !== 'closed');
+  const woOrders = (state.orders||[]).filter(o => o.woStatus === 'wo'); // v41ZY FIX: include closed batches — split must happen even after production close
 
   content.innerHTML = `
     ${tempBatches.length === 0 && pendingRequests.length === 0 && woOrders.length === 0 && woPendingRequests.length === 0 ? `
@@ -12743,7 +12743,7 @@ async function checkPlanningTempAlerts(){
       }
       const machines = [...new Set(j.batches.map(b=>b.machine_id))];
       const maxDays = Math.max(...j.batches.map(b=>b.daysActive));
-      const woCount = (state.orders||[]).filter(o=>o.woStatus==='wo'&&o.status!=='closed').length;
+      const woCount = (state.orders||[]).filter(o=>o.woStatus==='wo').length;
       const woText = woCount > 0 ? ` · ${woCount} W/O order${woCount>1?'s':''} awaiting customer` : '';
       banner.style.display = 'flex';
       banner.innerHTML = `⚠️ <strong style="color:var(--accent3)">${j.count} TEMP batch${j.count>1?'es':''} unreconciled</strong>
