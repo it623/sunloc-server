@@ -6907,7 +6907,42 @@ app.post('/api/dpr/batch-close', async (req, res) => {
   try {
     const { orderId, batchNumber, closedBy, notes } = req.body;
     if (!orderId) return res.status(400).json({ ok: false, error: 'orderId required' });
+
+    // v41ZY FIX: Before marking as closed, flush any pending actuals for this batch
+    // from ALL dpr_records. This ensures today's qty is written to production_actuals
+    // before the gate starts rejecting saves for this closed batch.
     if (pgPool) {
+      try {
+        const allRecords = await pgPool.query(`SELECT floor, date, data_json FROM dpr_records`);
+        for (const rec of allRecords.rows) {
+          const data = typeof rec.data_json === 'string' ? JSON.parse(rec.data_json) : rec.data_json;
+          const shifts = data.shifts || {};
+          for (const [shiftName, shiftData] of Object.entries(shifts)) {
+            if (!shiftData.machines) continue;
+            for (const [machineId, machineData] of Object.entries(shiftData.machines)) {
+              const runs = machineData.runs || [];
+              for (let ri = 0; ri < runs.length; ri++) {
+                const run = runs[ri];
+                if ((run.orderId !== orderId) && (run.batchNumber !== batchNumber)) continue;
+                const qty = parseFloat(run.qty) || 0;
+                if (qty <= 0) continue;
+                await pgPool.query(
+                  `INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
+                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                   ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
+                   order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number, qty_lakhs=EXCLUDED.qty_lakhs`,
+                  [run.orderId||orderId, batchNumber||run.batchNumber||null, machineId, rec.date, shiftName, ri, qty, rec.floor]
+                );
+              }
+            }
+          }
+        }
+        console.log(`[batch-close] flushed actuals for ${batchNumber||orderId} before close`);
+      } catch (flushErr) {
+        console.warn('[batch-close] actuals flush warning:', flushErr.message);
+        // Non-fatal — proceed with close even if flush has issues
+      }
+
       await pgPool.query(
         `INSERT INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
          VALUES ($1,$2,NOW(),$3,$4)
@@ -6918,6 +6953,10 @@ app.post('/api/dpr/batch-close', async (req, res) => {
       db.prepare(`INSERT OR REPLACE INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
         VALUES (?, ?, datetime('now'), ?, ?)`).run(orderId, batchNumber||null, closedBy||null, notes||null);
     }
+
+    // Refresh actuals cache after flush+close
+    try { await warmActualsCache(); } catch {}
+
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
