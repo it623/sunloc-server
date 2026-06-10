@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZW</p>
+      <p>Planning Suite v3.0 · build v41ZY</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -833,6 +833,10 @@ const SYNC = (() => {
 
   async function loadFromServer() {
     if (!_url) return;
+    // v41ZY: start the print-orders fetch in PARALLEL with the rest of the load chain (state blob,
+    // daily-printing, pc-codes, customers). It's then already in flight when we merge it, so the
+    // Printing Plan populates as soon as those earlier awaits clear — not after a serial PO fetch.
+    const _poFetchEarly = fetch(_url + '/api/print-orders', { signal: AbortSignal.timeout(12000) }).catch(() => null);
 
     // STEP 1: (render called after login — skipped here to avoid pre-login crash)
 
@@ -1051,8 +1055,9 @@ const SYNC = (() => {
 
     // ALWAYS runs — regardless of guard — dedicated table is authoritative for machineId
     try {
-      const por = await fetch(_url + '/api/print-orders', { signal: AbortSignal.timeout(5000) });
-      if (por.ok) {
+      const _poCountBefore = (state.printOrders||[]).length;
+      const por = await _poFetchEarly;
+      if (por && por.ok) {
         const poj = await por.json();
         if (poj.ok && Array.isArray(poj.printOrders) && poj.printOrders.length > 0) {
           const dbMap = {};
@@ -1106,6 +1111,16 @@ const SYNC = (() => {
           if (_syncPoMap.size < state.printOrders.length) {
             state.printOrders = [..._syncPoMap.values()];
             changed = true;
+          }
+          // v41ZX Issue 1: on a fresh login state.printOrders starts empty (print orders are NOT
+          // cached in localStorage), and the only render in this loader runs at the very END of a long
+          // sequential fetch chain (orders/all, machine master, ...). So the Printing Plan sat blank
+          // until the whole chain finished "after some time", then blanked again on the next login.
+          // Render the instant print orders first arrive (empty -> populated). printMachineMaster is
+          // already defaulted/loaded by here, so the OPM cards render too. Fires once per fresh load;
+          // periodic syncs that already had data skip this, so it never causes screen flipping.
+          if (_poCountBefore === 0 && state.printOrders.length > 0 && !_userIsFocused()) {
+            try { _renderImmediate(); } catch(e) {}
           }
           // State updated silently — no auto-render to prevent screen flipping
         }

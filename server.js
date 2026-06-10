@@ -2387,7 +2387,35 @@ let _actualsCacheTime = 0;
 let _grossByBatch = null;
 // v41ZI Item 6: per-batch admin/PM override of the DPR gross. When present it supersedes _grossByBatch.
 let _grossOverride = {};
+// v41ZY: one-time idempotent backfill — fill batch_number on existing production_actuals rows saved
+// as NULL before the explicit-batch fix, from their order's batch in production_orders. This
+// retroactively repairs batches whose cumulative DPR gross collapsed after close (NULL-batch rows
+// were dropped once the order left active planning state). Cheap no-op once no NULL rows remain.
+let _poBatchBackfillDone = false;
+async function backfillProductionActualsBatch() {
+  if (pgPool) {
+    await pgPool.query(`
+      UPDATE production_actuals pa
+         SET batch_number = po.batch_number
+        FROM production_orders po
+       WHERE pa.order_id = po.id
+         AND (pa.batch_number IS NULL OR pa.batch_number = '')
+         AND po.batch_number IS NOT NULL AND po.batch_number <> ''`);
+  } else {
+    db.exec(`
+      UPDATE production_actuals
+         SET batch_number = (SELECT po.batch_number FROM production_orders po WHERE po.id = production_actuals.order_id)
+       WHERE (batch_number IS NULL OR batch_number = '')
+         AND order_id IN (SELECT id FROM production_orders WHERE batch_number IS NOT NULL AND batch_number <> '')`);
+  }
+}
 async function warmActualsCache() {
+  // v41ZY: ensure existing NULL-batch rows are repaired before the per-batch sum is computed. Runs
+  // once (retried until it succeeds), then never again — so the very next warm reflects the fix.
+  if (!_poBatchBackfillDone) {
+    try { await backfillProductionActualsBatch(); _poBatchBackfillDone = true; console.log('[DPR] production_actuals batch backfill complete'); }
+    catch(e) { console.warn('[DPR] batch backfill failed (will retry next warm):', e.message); }
+  }
   // Throttle to 60s — prevents DB hammering from every device's 30s auto-sync
   if (Date.now() - _actualsCacheTime < 60000 && _actualsCache) return;
   _actualsCacheTime = Date.now();
@@ -6469,11 +6497,13 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
     let _planForGate = null;
     let _orderStatusById = {};
     let _orderStatusByBatch = {};
+    const _orderBatchById = {}; // v41ZY: explicit-batch resolution (mirrors /api/dpr/save)
     try {
       _planForGate = await getPlanningStateAsync();
       for (const o of (_planForGate.orders || [])) {
         if (o.id) _orderStatusById[o.id] = { status: o.status, deleted: o.deleted };
         if (o.batchNumber) _orderStatusByBatch[o.batchNumber] = { status: o.status, deleted: o.deleted };
+        if (o.id && o.batchNumber) _orderBatchById[o.id] = o.batchNumber;
       }
     } catch(e) { console.warn('[v40 P18.14i bulk-import] planning state fetch failed; gate will allow all:', e.message); }
     const _rejected = [];
@@ -6523,7 +6553,7 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
                   ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
                   order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number, qty_lakhs=EXCLUDED.qty_lakhs`,
-                  [run.orderId||null, run.batchNumber||null, machineId, date, shiftName, ri, qty, floor]);
+                  [run.orderId||null, (run.batchNumber || _orderBatchById[run.orderId] || null), machineId, date, shiftName, ri, qty, floor]);
               }
             }
           }
@@ -6609,9 +6639,15 @@ app.post('/api/dpr/save', async (req, res) => {
       const _planForGate = await getPlanningStateAsync();
       const _orderStatusById = {};
       const _orderStatusByBatch = {};
+      // v41ZY: order -> batch map so every production_actuals row can be stored with an EXPLICIT
+      // batch_number. Previously a run with a blank batch was saved as NULL and the per-batch DPR
+      // gross relied on a LIVE-planning-state fallback that broke when the batch closed (its order
+      // left active state) — collapsing the cumulative to only the dates that had an explicit batch.
+      const _orderBatchById = {};
       for (const o of (_planForGate.orders || [])) {
         if (o.id) _orderStatusById[o.id] = { status: o.status, deleted: o.deleted };
         if (o.batchNumber) _orderStatusByBatch[o.batchNumber] = { status: o.status, deleted: o.deleted };
+        if (o.id && o.batchNumber) _orderBatchById[o.id] = o.batchNumber;
       }
       // Overlay authoritative production_orders rows (status column is the source of truth).
       try {
@@ -6626,6 +6662,9 @@ app.post('/api/dpr/save', async (req, res) => {
           const meta = { status: r.status, deleted: (r.deleted === true || r.deleted === 1) };
           if (r.id) _orderStatusById[r.id] = meta;
           if (r.batch_number) _orderStatusByBatch[r.batch_number] = meta;
+          // production_orders is authoritative for an order's batch and includes CLOSED orders, so
+          // this resolves the batch even after close (the case that previously broke attribution).
+          if (r.id && r.batch_number) _orderBatchById[r.id] = r.batch_number;
         }
       } catch (e) {
         console.warn('[v41h DPR gate] production_orders overlay failed, using blob status:', e.message);
@@ -6687,7 +6726,7 @@ app.post('/api/dpr/save', async (req, res) => {
         for (const a of actuals) {
           if (!a.qty || a.qty <= 0) continue;
           if (!_gateRow(a.orderId, a.batchNumber, a.machineId, a.shift, a.qty)) continue;
-          actualsToSave.push([a.orderId||null, a.batchNumber||null, a.machineId, date, a.shift, a.runIndex||0, a.qty, a.floor||floor]);
+          actualsToSave.push([a.orderId||null, (a.batchNumber || _orderBatchById[a.orderId] || null), a.machineId, date, a.shift, a.runIndex||0, a.qty, a.floor||floor]);
         }
       } else {
         const shifts = data.shifts || {};
@@ -6699,7 +6738,7 @@ app.post('/api/dpr/save', async (req, res) => {
               const qty = parseFloat(run.qty)||0;
               if (qty <= 0) return;
               if (!_gateRow(run.orderId, run.batchNumber, machineId, shiftName, qty)) return;
-              actualsToSave.push([run.orderId||null, run.batchNumber||null, machineId, date, shiftName, ri, qty, floor]);
+              actualsToSave.push([run.orderId||null, (run.batchNumber || _orderBatchById[run.orderId] || null), machineId, date, shiftName, ri, qty, floor]);
             });
           }
         }
@@ -6729,9 +6768,11 @@ app.post('/api/dpr/save', async (req, res) => {
       const _planForGateSq = await getPlanningStateAsync();
       const _orderStatusByIdSq = {};
       const _orderStatusByBatchSq = {};
+      const _orderBatchByIdSq = {}; // v41ZY: explicit-batch resolution (mirrors PG path)
       for (const o of (_planForGateSq.orders || [])) {
         if (o.id) _orderStatusByIdSq[o.id] = { status: o.status, deleted: o.deleted };
         if (o.batchNumber) _orderStatusByBatchSq[o.batchNumber] = { status: o.status, deleted: o.deleted };
+        if (o.id && o.batchNumber) _orderBatchByIdSq[o.id] = o.batchNumber;
       }
       // v41h FIX (issues 1 & 2): overlay authoritative production_orders status (see PG-path note).
       try {
@@ -6746,6 +6787,7 @@ app.post('/api/dpr/save', async (req, res) => {
           const meta = { status: r.status, deleted: (r.deleted === true || r.deleted === 1) };
           if (r.id) _orderStatusByIdSq[r.id] = meta;
           if (r.batch_number) _orderStatusByBatchSq[r.batch_number] = meta;
+          if (r.id && r.batch_number) _orderBatchByIdSq[r.id] = r.batch_number;
         }
       } catch (e) {
         console.warn('[v41h DPR gate Sq] production_orders overlay failed, using blob status:', e.message);
@@ -6800,7 +6842,7 @@ app.post('/api/dpr/save', async (req, res) => {
       const upsert = db.prepare(`INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET order_id=excluded.order_id, batch_number=excluded.batch_number, qty_lakhs=excluded.qty_lakhs, synced_at=datetime('now')`);
       const rows = (actuals && actuals.length > 0)
         ? actuals.filter(a => a.qty > 0 && _gateSq(a.orderId, a.batchNumber, a.machineId, a.shift, a.qty))
-                 .map(a => [a.orderId||null, a.batchNumber||null, a.machineId, date, a.shift, a.runIndex||0, a.qty, a.floor||floor])
+                 .map(a => [a.orderId||null, (a.batchNumber || _orderBatchByIdSq[a.orderId] || null), a.machineId, date, a.shift, a.runIndex||0, a.qty, a.floor||floor])
         : [];
       db.transaction(rows => rows.forEach(r => upsert.run(...r)))(rows);
       if (_rejectedSq.length > 0) res._dprRejected = _rejectedSq;
