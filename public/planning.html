@@ -956,6 +956,15 @@ const SYNC = (() => {
               aGrade:   local.aGrade   != null ? local.aGrade   : o.aGrade,
             };
           });
+          // v41ZY FIX: also re-add protected orders that server doesn't have yet (never saved)
+          const _serverOrderIds = new Set((state.orders||[]).map(o=>o.id));
+          const _orphanProtected = Object.values(_protectedOrders).filter(o => !_serverOrderIds.has(o.id) && !o.deleted);
+          if (_orphanProtected.length > 0) {
+            state.orders = [...(state.orders||[]), ..._orphanProtected];
+            // Re-trigger upsert for each orphan — keep retrying until server has it
+            _orphanProtected.forEach(o => upsertOrderToDB(o));
+            console.log('[Sync] Re-added', _orphanProtected.length, 'locally-created orders not yet on server');
+          }
           console.log('[Sync] Protected', Object.keys(_protectedOrders).length, 'locally changed orders from server overwrite');
         }
         if (Object.keys(_protectedPrintOrders).length > 0) {
