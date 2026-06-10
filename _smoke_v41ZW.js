@@ -380,5 +380,99 @@ eq(/is_legacy_closed/.test(onConflictBlock),false,'Audit: poller upsert does NOT
 eq((`COALESCE(NULLIF(?,'')),?,?,?,?,?,?,?,?,?,?`.match(/\?/g)||[]).length,11,'Audit: SQLite regularise placeholder count = 11 (matches .run args)');
 
 
+
+// ==== v41ZT Issue 1: Printing Plan blank — destructive dedup neutralised + resilient filter ====
+const planSrc = fs.readFileSync('public/planning.html','utf8');
+eq((planSrc.match(/print-orders\/'?\s*\+\s*_?\w*[Ii]?[Dd]\w*,?\s*\{\s*method:\s*'DELETE'/g)||[]).length,0,'Issue1: no client-side print-order server-DELETE on sync');
+eq(/lostIds\.forEach\(id => fetch/.test(planSrc),false,'Issue1: destructive lostIds delete removed (#1)');
+eq(/_lostIds2\.forEach\(id => fetch/.test(planSrc),false,'Issue1: destructive lostIds delete removed (#2)');
+eq(/_lost\.forEach\(id => fetch\(_url\+'\/api\/print-orders/.test(planSrc),false,'Issue1: destructive sync-dedup delete removed (#3)');
+eq((planSrc.match(/__\$\{p\.pcCode\|\|''\}__\$\{p\.size\|\|''\}__\$\{p\.colour\|\|''\}/g)||[]).length>=3,true,'Issue1: all 3 dedup keys now specific (pcCode/size/colour)');
+eq((planSrc.match(/__keep__/g)||[]).length>=3,true,'Issue1: degenerate-key orders preserved (never collapsed) in all 3 paths');
+eq(/function printOrderInSelectedMonth/.test(planSrc),true,'Issue1: resilient month fallback helper present');
+eq(/\|\| printOrderInSelectedMonth\(p\)/.test(planSrc),true,'Issue1: Printing Plan filter uses resilient fallback');
+eq(/p\.productionOrderId\|\|p\.batchNumber\|\|p\.id/.test(planSrc),false,'Issue1: old over-broad key fully removed');
+// dedup-decision replica: distinct orders (diff size) must NOT collapse
+function pkey(p){const id=p.productionOrderId||p.batchNumber;return id?`${id}__${p.machineId||''}__${p.printType||''}__${p.pcCode||''}__${p.size||''}__${p.colour||''}`:`__keep__${p.id}`;}
+eq(pkey({productionOrderId:'O1',machineId:'M1',printType:'T',pcCode:'PC',size:'0',colour:'RED',id:'a'})!==pkey({productionOrderId:'O1',machineId:'M1',printType:'T',pcCode:'PC',size:'2',colour:'RED',id:'b'}),true,'Issue1: same order+machine, diff size -> distinct keys (no collapse)');
+eq(pkey({machineId:'M1',printType:'T',id:'a'}),pkey({machineId:'M1',printType:'T',id:'a'}),'Issue1: degenerate key stable per id');
+eq(pkey({machineId:'M1',id:'a'})!==pkey({machineId:'M1',id:'b'}),true,'Issue1: two no-ident orders on same machine -> NOT collapsed');
+
+
+
+// ==== v41ZU Issue 4: full cascade purge on order delete (scoped to OLD customer) ====
+const srvSrc = fs.readFileSync('server.js','utf8');
+const planSrc2 = fs.readFileSync('public/planning.html','utf8');
+eq(/app\.post\('\/api\/orders\/purge-cascade'/.test(srvSrc),true,'Issue4: purge-cascade endpoint present');
+eq(/DELETE FROM print_orders WHERE production_order_id=\$1/.test(srvSrc),true,'Issue4: print orders purged by production_order_id');
+eq(/UPDATE dispatch_plans SET deleted=true WHERE production_order_id=\$1/.test(srvSrc),true,'Issue4: dispatch plans soft-deleted by production_order_id');
+eq(/UPDATE tracking_labels SET voided=1/.test(srvSrc),true,'Issue4: old labels VOIDED (not hard-deleted)');
+eq((srvSrc.match(/LOWER\(TRIM\(COALESCE\(customer,''\)\)\)=LOWER\(\$2\)/g)||[]).length>=3,true,'Issue4: EXACT customer match (no substring LIKE) on labels/print/dispatch');
+eq(/batch_number=\$1 AND LOWER\(TRIM\(COALESCE\(customer,''\)\)\)=LOWER\(\$2\) AND voided=0/.test(srvSrc),true,'Issue4: label void scoped to batch+exact-customer, only non-voided rows');
+eq(/purge-cascade/.test(planSrc2),true,'Issue4: client deleteOrder calls purge-cascade');
+eq(/allProductionOrderIds\.includes\(ordId\)/.test(planSrc2),true,'Issue4: client also drops consolidated dispatch plans containing the order');
+eq(/delete-by-batch/.test(planSrc2),false,'Issue4: client no longer uses the order-only delete-by-batch');
+// exact-match scoping replica — must NOT void a new customer that contains the old name
+const _match=(stored,old)=>String(stored).trim().toLowerCase()===String(old).trim().toLowerCase();
+eq(_match('ALKEM','alkem '),true,'Issue4: exact match (case/space-insensitive) voids old-customer labels');
+eq(_match('ALKEM LABS','ALKEM'),false,'Issue4: exact match spares new "ALKEM LABS" when old was "ALKEM" (no over-void)');
+
+// ==== v41ZU Issue 2: batch-level scan-out reconciliation (no false per-row gaps) ====
+eq(/_dlBatchPrinted/.test(planSrc2),true,'Issue2: batch-level printed totals precomputed');
+eq(/const manualQty = _b \? \(_dlBatchPrinted\[_b\.toUpperCase\(\)\] \|\| 0\) : 0;/.test(planSrc2),true,'Issue2: reconciliation uses BATCH total, not per-row totalQtyLakhs');
+eq(/const manualQty = l\.totalQtyLakhs \|\| 0;/.test(planSrc2),false,'Issue2: old per-row reconciliation removed');
+// replica: 3 OPM rows of one batch reconcile at batch level
+const _logs=[{b:'26ZC10',q:100},{b:'26ZC10',q:120},{b:'26ZC10',q:80}];
+const _bp={}; for(const x of _logs){const k=x.b.toUpperCase();_bp[k]=(_bp[k]||0)+x.q;}
+eq(_bp['26ZC10'],300,'Issue2: batch printed total sums all OPM rows (100+120+80=300)');
+const _scanOut=300;
+eq(Math.abs(100-_scanOut)>0 && Math.abs(_bp['26ZC10']-_scanOut)<0.05,true,'Issue2: per-row would gap (100 vs 300) but batch-total matches (300 vs 300)');
+
+// ==== v41ZU Issue 3: Batch column shows real batch, PC-only rows labelled distinctly ====
+eq(/No batch linked — PC code shown/.test(planSrc2),true,'Issue3: PC-only rows labelled distinctly');
+eq(/>PC '\+_pcOnly/.test(planSrc2),true,'Issue3: PC code prefixed (not a bare batch-looking value)');
+eq(/const batchCell = dlBatch/.test(planSrc2),true,'Issue3: batch cell prefers real resolved batch');
+
+
+
+// ==== v41ZV Issue 3 (root): print order must always carry a batch number ====
+const planSrc3 = fs.readFileSync('public/planning.html','utf8');
+const srvSrc3 = fs.readFileSync('server.js','utf8');
+eq(/A batch number is required for every print order/.test(planSrc3),true,'Issue3: hard batch-required gate present');
+eq(/const _effBatch = String\(_linkedProd\?\.batchNumber/.test(planSrc3),true,'Issue3: batch auto-derived from linked production order then form');
+eq(/if \(!_effBatch\) \{/.test(planSrc3),true,'Issue3: save blocked when batch empty');
+eq(/const batchNumber  = document\.getElementById\('fp-batch'\)/.test(planSrc3),false,'Issue3: multi-OPM path no longer reads raw form batch');
+eq(/batchNumber: document\.getElementById\('fp-batch'\)/.test(planSrc3),false,'Issue3: single-OPM path no longer reads raw form batch');
+eq((planSrc3.match(/batchNumber: _effBatch|const batchNumber  = _effBatch/g)||[]).length>=2,true,'Issue3: both paths use the validated batch');
+
+// ==== v41ZV Issue 4: extend purge to dispatch records (exact old-customer scope) ====
+eq(/DELETE FROM tracking_dispatch_records WHERE batch_number=\$1 AND LOWER\(TRIM\(COALESCE\(customer,''\)\)\)=LOWER\(\$2\)/.test(srvSrc3),true,'Issue4: dispatch records purged (PG, exact customer)');
+eq(/DELETE FROM tracking_dispatch_records WHERE batch_number=\? AND LOWER\(TRIM\(COALESCE\(customer,''\)\)\)=LOWER\(\?\)/.test(srvSrc3),true,'Issue4: dispatch records purged (SQLite, exact customer)');
+eq(/dispatchRecords:0/.test(srvSrc3),true,'Issue4: dispatchRecords counter present');
+eq(/dispatchRecords:', j\.dispatchRecords/.test(planSrc3),true,'Issue4: client logs dispatchRecords count');
+// invoices intentionally NOT auto-deleted — confirm no invoice DELETE inside purge-cascade
+const _pc = srvSrc3.slice(srvSrc3.indexOf("purge-cascade'"), srvSrc3.indexOf('// v37J Sub-issue 1.3'));
+eq(/DELETE FROM invoices_received|DELETE FROM invoice_requests/.test(_pc),false,'Issue4: invoices deliberately left untouched in purge');
+
+
+
+// ==== v41ZW: production-order batch/machine edits must not revert on stale-server sync ====
+const planSrcW = fs.readFileSync('public/planning.html','utf8');
+const srvSrcW  = fs.readFileSync('server.js','utf8');
+eq(/const _ORDER_PROTECT_MS = 300000/.test(planSrcW),true,'ZW: order protection window constant present');
+eq(/const _protd  = _editTs && \(Date\.now\(\) - _editTs\) < _ORDER_PROTECT_MS/.test(planSrcW),true,'ZW: dedicated-table merge computes protection flag');
+eq(/batchNumber: _protd \? o\.batchNumber : dbOrd\.batchNumber/.test(planSrcW),true,'ZW: batch preserved within window (Case 1 renumber)');
+eq(/machineId:   _protd \? o\.machineId   : dbOrd\.machineId/.test(planSrcW),true,'ZW: machine preserved within window (Case 2 move)');
+eq(/UPDATE production_orders SET batch_number=\$1, data_json=\$2/.test(srvSrcW),true,'ZW: rebatch persists new batch to production_orders (bridge valid)');
+eq(/_localOrderChanges\[r\.orderId\] = Date\.now\(\)/.test(planSrcW),true,'ZW: renames-apply stamps local change (protection covers it)');
+// behavioural replica of the merge decision
+const _PW=300000;
+const mB=(ts,lb,db)=>{const p=ts&&(Date.now()-ts)<_PW;return p?lb:db;};
+eq(mB(Date.now(),'26ZE087','26ZE088'),'26ZE087','ZW: recent local renumber kept (no revert)');
+eq(mB(Date.now()-400000,'26ZE087','26ZE088'),'26ZE088','ZW: after window server batch wins (already persisted)');
+eq(mB(Date.now(),'OPM22','OPM16'),'OPM22','ZW: recent machine move kept (no snap-back)');
+eq(mB(null,'X','26ZE088'),'26ZE088','ZW: un-edited order takes server value (normal sync unaffected)');
+
+
 console.log(`\n[FINAL] ${PASS} PASS / ${FAIL} FAIL`);
 process.exit(FAIL?1:0);

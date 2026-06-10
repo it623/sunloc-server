@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZS</p>
+      <p>Planning Suite v3.0 · build v41ZW</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1083,19 +1083,27 @@ const SYNC = (() => {
               state.printOrders.push(dbP); changed = true;
             }
           });
-          // After merge, dedup local state and delete losers from DB
+          // After merge, dedup the local DISPLAY only.
+          // v41ZT Issue 1: the previous key was (productionOrderId||batchNumber||id)__machine__type
+          // — too broad. Distinct print orders (different PC code / size / colour) collided, and the
+          // "losers" were DELETEd from the server on every sync. With orphaned or empty links the key
+          // degenerated to __machine__type and collapsed ALL of a machine's orders to one — wiping
+          // legitimate print orders server-side and blanking the Printing Plan for everyone. Now:
+          //  • the key includes pcCode/size/colour so only TRUE duplicates collapse,
+          //  • orders lacking BOTH productionOrderId and batchNumber are never collapsed,
+          //  • the client NEVER deletes server rows — true duplicates are cleaned server-side by the
+          //    cleanup_duplicate_print_orders migration. A sync must never silently delete data.
           const _syncPoMap = new Map();
           for (const p of state.printOrders) {
-            const _k = `${p.productionOrderId||p.batchNumber||p.id}__${p.machineId||''}__${p.printType||''}`;
+            const _ident = p.productionOrderId || p.batchNumber;
+            if (!_ident) { _syncPoMap.set('__keep__' + p.id, p); continue; } // degenerate key — keep as-is
+            const _k = `${_ident}__${p.machineId||''}__${p.printType||''}__${p.pcCode||''}__${p.size||''}__${p.colour||''}`;
             const _e = _syncPoMap.get(_k);
             const _hM = p.machineId && p.machineId !== 'null' && p.machineId !== '';
             const _eHM = _e && _e.machineId && _e.machineId !== 'null' && _e.machineId !== '';
             if (!_e || (!_eHM && _hM)) _syncPoMap.set(_k, p);
           }
           if (_syncPoMap.size < state.printOrders.length) {
-            const _kept = new Set([..._syncPoMap.values()].map(p=>p.id));
-            const _lost = state.printOrders.filter(p=>!_kept.has(p.id)).map(p=>p.id);
-            _lost.forEach(id => fetch(_url+'/api/print-orders/'+id, {method:'DELETE'}).catch(()=>{}));
             state.printOrders = [..._syncPoMap.values()];
             changed = true;
           }
@@ -1124,9 +1132,20 @@ const SYNC = (() => {
             if (!dbOrd) return o; // not in DB yet — keep local version
             // FIX 1: If deleted in DB — permanently remove
             if (dbOrd.deleted) return null;
+            // v41ZW: if the user edited this order recently (batch renumber / machine move / zone),
+            // a stale server copy must NOT revert it — within the protection window the LOCAL
+            // batch/machine/zone are the latest intent. Mirrors the print-order protection
+            // (_PRINT_PROTECT_MS) and the actualProd protection at the live-A-grade merge. Without
+            // this, a renumbered batch or a moved machine snapped back to the old value on next sync.
+            const _editTs = _localOrderChanges[o.id];
+            const _protd  = _editTs && (Date.now() - _editTs) < _ORDER_PROTECT_MS;
             // FIX 2: DB status always wins — user set it explicitly
             return {
               ...dbOrd,
+              // v41ZW: preserve recent local batch/machine/zone edits against stale server data
+              batchNumber: _protd ? o.batchNumber : dbOrd.batchNumber,
+              machineId:   _protd ? o.machineId   : dbOrd.machineId,
+              zone:        _protd ? (o.zone !== undefined ? o.zone : dbOrd.zone) : (dbOrd.zone !== undefined ? dbOrd.zone : o.zone),
               // DB is authoritative for these user-set fields:
               status:       dbOrd.status      || o.status,
               deleted:      dbOrd.deleted,
@@ -1570,12 +1589,21 @@ let _localPrintOrderChanges = {};
 // possibly still being POSTed). Also, if a server row for the same id is unassigned but the local row
 // is assigned, keep the local machineId.
 const _PRINT_PROTECT_MS = 120000; // 2 min — covers POST + a couple of sync cycles on a slow tunnel
+// v41ZW: protection window for recent production-order batch/machine/zone edits, so a stale server
+// copy can't revert a batch renumber or a machine move on the next sync. 5 min matches the actualProd
+// protection already used at the live-A-grade merge.
+const _ORDER_PROTECT_MS = 300000;
 function _mergePrintOrdersFromServer(serverList) {
   const now = Date.now();
   // 1) dedup server rows (assigned machineId wins over null for same batch+machine+type)
   const map = new Map();
   for (const p of (serverList || [])) {
-    const key = `${p.productionOrderId||p.batchNumber||p.id}__${p.machineId||''}__${p.printType||''}`;
+    // v41ZT Issue 1: specific key (incl. pcCode/size/colour) so distinct print orders don't collide
+    // and get dropped; orders lacking BOTH productionOrderId and batchNumber are never collapsed.
+    const _ident = p.productionOrderId || p.batchNumber;
+    const key = _ident
+      ? `${_ident}__${p.machineId||''}__${p.printType||''}__${p.pcCode||''}__${p.size||''}__${p.colour||''}`
+      : `__keep__${p.id}`;
     const ex = map.get(key);
     const hasM = p.machineId && p.machineId !== 'null' && p.machineId !== '';
     const exHasM = ex && ex.machineId && ex.machineId !== 'null' && ex.machineId !== '';
@@ -1858,18 +1886,9 @@ async function loadFromKV() {
           // v41ZC #2.1/2.2: merge with local assignments instead of blindly replacing.
           const _before = new Map((state.printOrders||[]).map(p=>[p.id,p]));
           state.printOrders = _mergePrintOrdersFromServer(prj.printOrders);
-          const keptIds = new Set(state.printOrders.map(p=>p.id));
-          // Only delete server rows that we actually dropped AND that aren't a locally-protected
-          // assignment (never delete an order the user just assigned but whose POST may be in flight).
-          const _nowDel = Date.now();
-          const lostIds = prj.printOrders
-            .filter(p=>!keptIds.has(p.id))
-            .map(p=>p.id)
-            .filter(id => !(_localPrintOrderChanges[id] && (_nowDel-_localPrintOrderChanges[id])<_PRINT_PROTECT_MS));
-          if (lostIds.length > 0) {
-            console.log('[PrintOrders] Deleting', lostIds.length, 'duplicate IDs from DB:', lostIds);
-            lostIds.forEach(id => fetch(_url+'/api/print-orders/'+id, {method:'DELETE'}).catch(()=>{}));
-          }
+          // v41ZT Issue 1: do NOT delete server rows from a sync. The previous code deleted whatever
+          // the (over-broad) dedup dropped, which wiped legitimate print orders. The display is already
+          // deduped above; true duplicate rows are cleaned server-side by cleanup_duplicate_print_orders.
           console.log('[PrintOrders] Loaded', prj.printOrders.length, '→ merged to', state.printOrders.length);
         }
       }
@@ -1902,16 +1921,7 @@ async function loadFromKV() {
         if (prjPO.ok && Array.isArray(prjPO.printOrders) && prjPO.printOrders.length > 0) {
           // v41ZC #2.1/2.2: merge with local assignments instead of blindly replacing.
           state.printOrders = _mergePrintOrdersFromServer(prjPO.printOrders);
-          const _keptIds2 = new Set(state.printOrders.map(p=>p.id));
-          const _nowDel2 = Date.now();
-          const _lostIds2 = prjPO.printOrders
-            .filter(p=>!_keptIds2.has(p.id))
-            .map(p=>p.id)
-            .filter(id => !(_localPrintOrderChanges[id] && (_nowDel2-_localPrintOrderChanges[id])<_PRINT_PROTECT_MS));
-          if (_lostIds2.length > 0) {
-            console.log('[PrintOrders] Deleting', _lostIds2.length, 'duplicate IDs from DB:', _lostIds2);
-            _lostIds2.forEach(id => fetch(_urlPO+'/api/print-orders/'+id, {method:'DELETE'}).catch(()=>{}));
-          }
+          // v41ZT Issue 1: display deduped via _mergePrintOrdersFromServer; do NOT delete server rows.
           console.log('[PrintOrders] Guaranteed load:', prjPO.printOrders.length, '→ merged to', state.printOrders.length);
         }
       }
@@ -2025,9 +2035,12 @@ async function saveState() {
           const poSaveMap = new Map();
           for (const p of state.printOrders) {
             if (!p.id) continue;
-            const key = p.productionOrderId
-              ? `${p.productionOrderId}__${p.machineId||''}__${p.printType||''}`
-              : `${p.batchNumber||p.pcCode}__${p.machineId||''}__${p.printType||''}`;
+            // v41ZT Issue 1: specific key so distinct print orders aren't collapsed before bulk-save;
+            // orders with no productionOrderId/batchNumber/pcCode are never collapsed.
+            const _ident = p.productionOrderId || p.batchNumber || p.pcCode;
+            const key = _ident
+              ? `${_ident}__${p.machineId||''}__${p.printType||''}__${p.pcCode||''}__${p.size||''}__${p.colour||''}`
+              : `__keep__${p.id}`;
             const existing = poSaveMap.get(key);
             if (!existing || (!existing.machineId && p.machineId)) poSaveMap.set(key, p);
           }
@@ -3486,18 +3499,28 @@ function closeOrder(ordId, machineId) {
 function deleteOrder(ordId, machineId) {
   if (!confirm('Delete this order?')) return;
   const ord = state.orders.find(o=>o.id===ordId);
-  // Permanently delete from dedicated table (hard delete — never comes back)
+  // v41ZT Issue 4: full cascade purge — remove the order, its print orders, its dispatch plans, and
+  // VOID the OLD customer's labels for this batch (server-side), so a batch reassigned to a new
+  // customer has no leftover collision. Scoped server-side by orderId + exact old-customer match.
   if (ord) {
-    fetch(SYNC._url + '/api/orders/delete-by-batch', {
+    fetch(SYNC._url + '/api/orders/purge-cascade', {
       method: 'POST',
       headers: {'Content-Type':'application/json'},
-      body: JSON.stringify({ batchNumber: ord.batchNumber, customerContains: ord.customer?.slice(0,8) })
+      body: JSON.stringify({ orderId: ordId, batchNumber: ord.batchNumber, customer: ord.customer, voidedBy: (state.currentUser?.username || 'planning') })
+    }).then(r=>r.json()).then(j=>{
+      if (j && j.ok) console.log('[Purge] order', ordId, '→ orders:', j.orders, 'printOrders:', j.printOrders, 'dispatchPlans:', j.dispatchPlans, 'dispatchRecords:', j.dispatchRecords, 'labelsVoided:', j.labelsVoided);
     }).catch(()=>{});
     // Also mark deleted in upsert as fallback
     ord.deleted = true; _localOrderChanges[ordId] = Date.now(); upsertOrderToDB(ord);
   }
   state.orders = state.orders.filter(o=>o.id!==ordId);
   state.printOrders = state.printOrders.filter(p=>p.productionOrderId!==ordId);
+  // v41ZT Issue 4: drop dispatch plans tied to this order locally too (by direct link or, for
+  // consolidated exports, membership), so nothing lingers in the Dispatch Plan view.
+  state.dispatchPlans = (state.dispatchPlans||[]).filter(dp =>
+    dp.productionOrderId !== ordId &&
+    !(Array.isArray(dp.allProductionOrderIds) && dp.allProductionOrderIds.includes(ordId))
+  );
   _localOrderChanges[ordId] = Date.now();
   saveState();
   recalcMachineSchedule(machineId);
@@ -6306,9 +6329,18 @@ function renderPrinting() {
     ${editable ? `<button class="btn btn-primary btn-sm" onclick="showAddPrintModal()">+ Add Print Order</button>` : ''}
   `;
 
-  // Filter print orders by selected month via linked production order
+  // Filter print orders by selected month via linked production order.
+  // v41ZT Issue 1: a print order whose productionOrderId no longer resolves to a current-month
+  // order (orphaned link — e.g. the linked order was deleted/recreated) was previously hidden,
+  // which could blank the entire Printing Plan even though the print orders still exist. Fall back
+  // to the print order's OWN month signal (its start/end date, or current-month daily-printing
+  // activity) so a broken link can never blank the plan.
   const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
-  const printOrders = (state.printOrders || []).filter(p => !p.productionOrderId || monthOrdIds.has(p.productionOrderId));
+  const printOrders = (state.printOrders || []).filter(p =>
+    !p.productionOrderId
+    || monthOrdIds.has(p.productionOrderId)
+    || printOrderInSelectedMonth(p)
+  );
 
   let html = `
     ${bannerHtml}
@@ -6755,11 +6787,22 @@ async function savePrintModal(existingId) {
   const multiSection = document.getElementById('fp-multi-section');
   const multi = _opmIsMulti && multiSection && multiSection.style.display !== 'none';
 
+  // v41ZV Issue 3 (root): a print order must ALWAYS carry a batch number. Batch-less print orders
+  // were the source of daily-log rows that showed a PC code in the Batch column. Derive the batch
+  // from the linked production order (same as PC code already is), and HARD-REQUIRE it — block the
+  // save if it's still empty, so a batch-less print order can never be created.
+  const _linkedProd = state.orders.find(o => o.id === (state.printOrders.find(p=>p.id===existingId)?.productionOrderId));
+  const _effBatch = String(_linkedProd?.batchNumber || document.getElementById('fp-batch')?.value || '').trim();
+  if (!_effBatch) {
+    alert('⚠️ A batch number is required for every print order.\n\nEnter the batch number (or link a production order that has one) before saving.');
+    return;
+  }
+
   if (multi) {
     // Save multiple print orders — one per OPM
     const groupId = uid();
     const customer     = document.getElementById('fp-customer')?.value || '';
-    const batchNumber  = document.getElementById('fp-batch')?.value || '';
+    const batchNumber  = _effBatch;
     // v41z2: pcCode always from linked production order — never from form
   const _linkedProdForPrint = state.orders.find(o => o.id === (state.printOrders.find(p=>p.id===existingId)?.productionOrderId));
   const pcCode = _linkedProdForPrint?.pcCode || document.getElementById('fp-pccode')?.value || '';
@@ -6867,7 +6910,7 @@ async function savePrintModal(existingId) {
       productionOrderId: existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null,
       machineId: machineId || null,
       customer: document.getElementById('fp-customer')?.value,
-      batchNumber: document.getElementById('fp-batch')?.value,
+      batchNumber: _effBatch,
       // v41z2: pcCode always from linked production order — never from form (prevents mismatch)
       pcCode: (() => { const linkedProd = state.orders.find(o => o.id === (existingId ? state.printOrders.find(p=>p.id===existingId)?.productionOrderId : null)); return linkedProd?.pcCode || document.getElementById('fp-pccode')?.value || ''; })(),
       size: document.getElementById('fp-size')?.value,
@@ -6986,6 +7029,18 @@ function renderDailyPrinting() {
     if (po) return po.batchNumber || (po.productionOrderId ? ((state.orders.find(o=>o.id===po.productionOrderId)||{}).batchNumber||'') : '') || '';
     return '';
   };
+
+  // v41ZT Issue 2: batch-level printed totals. Scan-Out (window._liveAGrade[batch].printing.outQty)
+  // is a WHOLE-BATCH figure, so reconciling it against a single OPM row's printed qty flagged a false
+  // "Gap" on every row of a multi-OPM batch. Sum each batch's printed qty across ALL its log rows so
+  // the reconciliation compares batch-total-printed vs batch-scan-out (correct, and identical on each
+  // row of the batch). Keyed upper-cased to match the Scan-Out lookup.
+  const _dlBatchPrinted = {};
+  for (const _l of allLogs) {
+    const _bb = (_dlResolveBatch(_l) || '').trim().toUpperCase();
+    if (!_bb) continue;
+    _dlBatchPrinted[_bb] = (_dlBatchPrinted[_bb] || 0) + (_l.totalQtyLakhs || 0);
+  }
 
   // Collect unique filter values
   const uniqueDates   = [...new Set(allLogs.map(l => toDateInput(new Date(l.date))))].sort((a,b)=>b.localeCompare(a));
@@ -7115,10 +7170,16 @@ function renderDailyPrinting() {
               // v41ZI: batch-first resolution (shared helper) — Batch column shows the batch and the
               // Scan Out / Reconciliation cells below key off it.
               const dlBatch = _dlResolveBatch(l);
-              const batchLabel = dlBatch || (linkedPO ? (linkedPO.pcCode || l.printOrderId) : (l.pcCode || '-'));
+              // v41ZT Issue 3: only a real batch belongs in the Batch column. When the row has no
+              // linked batch (print order created without one), show its PC code DISTINCTLY as
+              // "PC <code>" (muted) instead of a bare PC code masquerading as a batch number.
+              const _pcOnly = linkedPO ? (linkedPO.pcCode || '') : (l.pcCode || '');
+              const batchCell = dlBatch
+                ? '<span class="text-accent">'+dlBatch+'</span>'
+                : (_pcOnly ? '<span style="color:var(--text3)" title="No batch linked — PC code shown">PC '+_pcOnly+'</span>' : '<span style="color:var(--text3)">—</span>');
               return `<tr>
                 <td class="text-mono">${fmtDate(l.date)}</td>
-                <td class="text-mono text-accent">${batchLabel}</td>
+                <td class="text-mono">${batchCell}</td>
                 <td class="text-mono text-accent">${l.machineId||'-'}</td>
                 <td class="text-mono">${l.size||'-'}</td>
                 <td class="text-mono">${l.pcCode||'-'}</td>
@@ -7144,13 +7205,15 @@ function renderDailyPrinting() {
                   const _b = (dlBatch||'').trim();
                   const liveAG = window._liveAGrade && _b ? (window._liveAGrade[_b.toUpperCase()] || window._liveAGrade[_b] || {}) : {};
                   const scanOut = liveAG.printing?.outQty || 0;
-                  const manualQty = l.totalQtyLakhs || 0;
+                  // v41ZT Issue 2: compare the WHOLE batch's printed total against the batch scan-out,
+                  // not this single OPM row's qty (which produced a false gap on every row).
+                  const manualQty = _b ? (_dlBatchPrinted[_b.toUpperCase()] || 0) : 0;
                   if(!scanOut || !manualQty) return '<span style="color:var(--text3)">—</span>';
                   const diff = Math.abs(manualQty - scanOut);
                   const pct = (diff/scanOut*100).toFixed(1);
                   return diff < 0.05
                     ? '<span style="color:var(--accent2)">✓ Match</span>'
-                    : '<span style="color:var(--accent4)">⚠️ Gap: '+fmt(diff,2)+'L ('+pct+'%)</span>';
+                    : '<span style="color:var(--accent4)" title="Batch-level: '+fmt(manualQty,2)+'L printed vs '+fmt(scanOut,2)+'L scanned out">⚠️ Gap: '+fmt(diff,2)+'L ('+pct+'%)</span>';
                 })()}</td>
                 <td class="text-sm">${l.remarks||'-'}</td>
                 <td class="text-sm" style="white-space:nowrap">
@@ -10003,6 +10066,30 @@ function orderInMonth(ord, ym) {
   if (closed && closed >= mStart && closed <= mEnd) return true;
   // Unclosed carry-forward: show if order started before month end and not yet closed
   if (ord.status !== 'closed' && start && start <= mEnd) return true;
+  return false;
+}
+
+// v41ZT Issue 1: month membership for a print order using its OWN fields — used as a fallback in the
+// Printing Plan when the productionOrderId link is orphaned. Mirrors orderInMonth's date logic and
+// also counts any current-month daily-printing activity for the order.
+function printOrderInSelectedMonth(p) {
+  const ym = _selectedPlanMonth;
+  if (!ym) return false;
+  const [y, m] = ym.split('-').map(Number);
+  const mStart = new Date(y, m-1, 1);
+  const mEnd   = new Date(y, m, 0, 23, 59, 59);
+  const s = p.startDate ? new Date(p.startDate) : null;
+  const e = p.endDate   ? new Date(p.endDate)   : null;
+  if (s && s >= mStart && s <= mEnd) return true;
+  if (e && e >= mStart && e <= mEnd) return true;
+  if (s && e && s < mStart && e > mEnd) return true;
+  const logs = (state.dailyPrinting || []);
+  for (const l of logs) {
+    if (l.printOrderId === p.id || (p.batchNumber && l.batchNumber === p.batchNumber)) {
+      const d = l.date ? new Date(l.date) : null;
+      if (d && d >= mStart && d <= mEnd) return true;
+    }
+  }
   return false;
 }
 

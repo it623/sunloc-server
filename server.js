@@ -5063,6 +5063,72 @@ app.post('/api/orders/delete-by-batch', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v41ZT Issue 4: FULL cascade purge of an OLD customer's footprint when an order is deleted from
+// Planning, so a batch reassigned to a NEW customer has no leftover collision. Removes the order,
+// its print orders, and its dispatch plans, and VOIDS the OLD customer's labels for that batch.
+// Scoping is deliberately precise to spare the reassigned batch's NEW-customer records:
+//   • orders/print-orders/dispatch are removed by the exact orderId / production_order_id, AND
+//     additionally by (batch_number + EXACT old-customer match) to catch rows with no link;
+//   • labels are VOIDED (not hard-deleted — preserves audit trail; active queries filter voided=0)
+//     only where (batch_number + EXACT old-customer match). An exact (case-insensitive, trimmed)
+//     customer comparison is used — never a substring LIKE — so e.g. old "ALKEM" never matches a
+//     new "ALKEM LABS" on the same batch.
+app.post('/api/orders/purge-cascade', async (req, res) => {
+  try {
+    const { orderId, batchNumber, customer, voidedBy } = req.body;
+    if (!batchNumber && !orderId) return res.status(400).json({ ok:false, error:'batchNumber or orderId required' });
+    const cust = (customer != null) ? String(customer).trim() : '';
+    const out = { orders:0, printOrders:0, dispatchPlans:0, dispatchRecords:0, labelsVoided:0 };
+    if (pgPool) {
+      if (orderId) {
+        out.orders       += (await pgPool.query(`DELETE FROM production_orders WHERE id=$1`, [orderId])).rowCount || 0;
+        out.printOrders  += (await pgPool.query(`DELETE FROM print_orders WHERE production_order_id=$1`, [orderId])).rowCount || 0;
+        out.dispatchPlans+= (await pgPool.query(`UPDATE dispatch_plans SET deleted=true WHERE production_order_id=$1`, [orderId])).rowCount || 0;
+      }
+      if (batchNumber && cust) {
+        out.orders += (await pgPool.query(
+          `DELETE FROM production_orders WHERE batch_number=$1 AND LOWER(TRIM(COALESCE(data_json::jsonb->>'customer','')))=LOWER($2)`,
+          [batchNumber, cust])).rowCount || 0;
+        out.printOrders += (await pgPool.query(
+          `DELETE FROM print_orders WHERE batch_number=$1 AND LOWER(TRIM(COALESCE(customer,'')))=LOWER($2)`,
+          [batchNumber, cust])).rowCount || 0;
+        out.dispatchPlans += (await pgPool.query(
+          `UPDATE dispatch_plans SET deleted=true WHERE batch_number=$1 AND LOWER(TRIM(COALESCE(customer,'')))=LOWER($2)`,
+          [batchNumber, cust])).rowCount || 0;
+        out.labelsVoided += (await pgPool.query(
+          `UPDATE tracking_labels SET voided=1, void_reason=$3, voided_at=NOW()::TEXT, voided_by=$4
+             WHERE batch_number=$1 AND LOWER(TRIM(COALESCE(customer,'')))=LOWER($2) AND voided=0`,
+          [batchNumber, cust, 'Order deleted — batch reassigned (cascade purge)', voidedBy || 'planning'])).rowCount || 0;
+        // v41ZV Issue 4: dispatch records also carry (batch_number + customer) — clear the old
+        // customer's for this batch (exact match spares the reassigned batch's new-customer records).
+        out.dispatchRecords += (await pgPool.query(
+          `DELETE FROM tracking_dispatch_records WHERE batch_number=$1 AND LOWER(TRIM(COALESCE(customer,'')))=LOWER($2)`,
+          [batchNumber, cust])).rowCount || 0;
+      } else if (batchNumber && !cust && !orderId) {
+        // no customer scope and no orderId — fall back to batch-wide order delete only (legacy behaviour)
+        out.orders += (await pgPool.query(`DELETE FROM production_orders WHERE batch_number=$1`, [batchNumber])).rowCount || 0;
+      }
+    } else {
+      if (orderId) {
+        db.prepare(`DELETE FROM production_orders WHERE id=?`).run(orderId);
+        db.prepare(`DELETE FROM print_orders WHERE production_order_id=?`).run(orderId);
+        try { db.prepare(`UPDATE dispatch_plans SET deleted=1 WHERE production_order_id=?`).run(orderId); } catch(e){}
+      }
+      if (batchNumber && cust) {
+        db.prepare(`DELETE FROM print_orders WHERE batch_number=? AND LOWER(TRIM(COALESCE(customer,'')))=LOWER(?)`).run(batchNumber, cust);
+        try { db.prepare(`UPDATE dispatch_plans SET deleted=1 WHERE batch_number=? AND LOWER(TRIM(COALESCE(customer,'')))=LOWER(?)`).run(batchNumber, cust); } catch(e){}
+        db.prepare(`UPDATE tracking_labels SET voided=1, void_reason=?, voided_at=datetime('now'), voided_by=?
+                      WHERE batch_number=? AND LOWER(TRIM(COALESCE(customer,'')))=LOWER(?) AND voided=0`)
+          .run('Order deleted — batch reassigned (cascade purge)', voidedBy || 'planning', batchNumber, cust);
+        try { db.prepare(`DELETE FROM tracking_dispatch_records WHERE batch_number=? AND LOWER(TRIM(COALESCE(customer,'')))=LOWER(?)`).run(batchNumber, cust); } catch(e){}
+      } else if (batchNumber) {
+        db.prepare(`DELETE FROM production_orders WHERE batch_number=?`).run(batchNumber);
+      }
+    }
+    res.json({ ok:true, ...out });
+  } catch(err) { console.error('[purge-cascade]', err); res.status(500).json({ ok:false, error: err.message }); }
+});
+
 // v37J Sub-issue 1.3: Detect batches where Planning's production_order customer
 // differs from the most recent label customer for the same batch number. This
 // commonly happens when a batch is reassigned mid-flight (labels regenerated
