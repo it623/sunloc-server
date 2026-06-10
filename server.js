@@ -2684,6 +2684,31 @@ async function _doRefreshSapIndents() {
       console.warn('[SAP] indent upsert error for DocEntry', ind.DocEntry, ':', e.message);
     }
   }
+  // v41ZS Issue 1: prune the cache of orders no longer open in SAP. fetchOpenSalesOrders returns
+  // ONLY bost_Open orders; a cached row whose DocEntry was NOT in this fetch has since been closed/
+  // executed in SAP and must be removed, else it lingers forever in the Unplanned Orders list (the
+  // upsert above only touches rows that ARE returned). Guards: prune ONLY on a COMPLETE fetch
+  // (r.complete — never on a partial/paged-failure set, which would wrongly delete unfetched open
+  // orders) and never when the fetch came back empty (avoid wiping the cache on a transient empty
+  // response). Anything not in bost_Open is genuinely closed (a SAP SO header stays open while any
+  // line is open), so this cannot drop a genuinely-open order.
+  if (r.complete && indents.length > 0) {
+    const keepEntries = indents.map(i => parseInt(i.DocEntry, 10)).filter(e => Number.isInteger(e));
+    if (keepEntries.length > 0) {
+      try {
+        let pruned;
+        if (pgPool) {
+          const pr = await pgPool.query(`DELETE FROM sap_indent_cache WHERE sap_doc_entry <> ALL($1::int[])`, [keepEntries]);
+          pruned = pr.rowCount;
+        } else {
+          const placeholders = keepEntries.map(() => '?').join(',');
+          const pr = db.prepare(`DELETE FROM sap_indent_cache WHERE sap_doc_entry NOT IN (${placeholders})`).run(...keepEntries);
+          pruned = pr.changes;
+        }
+        if (pruned) console.log('[SAP] indent cache pruned', pruned, 'no-longer-open order(s)');
+      } catch (e) { console.warn('[SAP] indent cache prune failed:', e.message); }
+    }
+  }
   // Update last_indent_poll_at
   try {
     if (pgPool) {
@@ -2799,7 +2824,8 @@ async function _doRefreshSapInvoices() {
           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW()::TEXT,$20)
           ON CONFLICT (sap_doc_entry) DO UPDATE SET
             sap_doc_num=$3, sap_invoice_no=$4, invoice_date=$5, customer=$6,
-            card_code=$7, po_number=$8, batch_number=$9,
+            card_code=$7, po_number=$8,
+            batch_number=COALESCE(NULLIF($9,''), invoices_received.batch_number),
             pc_code=COALESCE(NULLIF(EXCLUDED.pc_code,''), invoices_received.pc_code),
             size=COALESCE(NULLIF(EXCLUDED.size,''), invoices_received.size),
             colour=COALESCE(NULLIF(EXCLUDED.colour,''), invoices_received.colour),
@@ -2821,7 +2847,7 @@ async function _doRefreshSapInvoices() {
             sap_doc_num=excluded.sap_doc_num, sap_invoice_no=excluded.sap_invoice_no,
             invoice_date=excluded.invoice_date, customer=excluded.customer,
             card_code=excluded.card_code, po_number=excluded.po_number,
-            batch_number=excluded.batch_number,
+            batch_number=COALESCE(NULLIF(excluded.batch_number,''), invoices_received.batch_number),
             pc_code=COALESCE(NULLIF(excluded.pc_code,''), invoices_received.pc_code),
             size=COALESCE(NULLIF(excluded.size,''), invoices_received.size),
             colour=COALESCE(NULLIF(excluded.colour,''), invoices_received.colour),
@@ -4171,6 +4197,77 @@ app.get('/api/invoice/truck-scan-session/:truckNumber', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// v41ZS — POST /api/invoice/:id/regularise-dispatch
+// Admin-only. Regularise a legacy / return / no-SO invoice (whether physically dispatched or not)
+// WITHOUT a scan-out. The dispatch officer can't push these through the normal flow because there's
+// no Sunloc request to reconcile and (for legacy/return stock) no system-generated labels to scan.
+// Admin optionally attaches a batch, then this marks the invoice admin-approved + legacy-closed +
+// dispatched so it leaves the queue. No scan counts are logged — there's nothing to reconcile
+// against, and counting for the sake of counting adds no value (per spec).
+app.post('/api/invoice/:id/regularise-dispatch', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    const isAdmin = (session && session.role === 'admin')
+      || req.headers['x-user-role'] === 'admin'
+      || req.body?.userRole === 'admin';
+    if (!isAdmin) return res.status(403).json({ ok: false, error: 'Admin only — regularising a legacy/return dispatch requires admin sign-in.' });
+    const invId = req.params.id;
+    const { batchNumber, reason } = req.body || {};
+    let inv;
+    if (pgPool) { inv = (await pgPool.query(`SELECT * FROM invoices_received WHERE id=$1`, [invId])).rows[0]; }
+    else        { inv = db.prepare(`SELECT * FROM invoices_received WHERE id=?`).get(invId); }
+    if (!inv) return res.status(404).json({ ok: false, error: 'Invoice not found' });
+    if (inv.dispatch_status === 'dispatched') {
+      return res.status(409).json({ ok: false, error: 'Invoice already dispatched', already_dispatched: true });
+    }
+    const who = (session && session.username) || req.body?.userName || 'admin';
+    const ts  = new Date().toISOString();
+    const newBatch = (batchNumber && String(batchNumber).trim()) ? String(batchNumber).trim() : (inv.batch_number || '');
+    const rsn = (reason && String(reason).trim()) || 'Legacy / return / no-SO — regularised by admin';
+    if (pgPool) {
+      await pgPool.query(
+        `UPDATE invoices_received SET
+           batch_number       = COALESCE(NULLIF($1,''), batch_number),
+           is_legacy_closed   = 1,
+           legacy_closed_by   = $2,
+           legacy_closed_at   = $3,
+           legacy_close_reason= $4,
+           admin_approved_by  = $2,
+           admin_approved_at  = $3,
+           is_deemed_scan_out = TRUE,
+           deemed_reason      = $4,
+           deemed_by          = $2,
+           dispatched_at      = $3,
+           dispatched_by      = $2,
+           dispatch_status    = 'dispatched'
+         WHERE id=$5`,
+        [newBatch, who, ts, rsn, invId]
+      );
+    } else {
+      db.prepare(
+        `UPDATE invoices_received SET
+           batch_number       = COALESCE(NULLIF(?,''), batch_number),
+           is_legacy_closed   = 1,
+           legacy_closed_by   = ?,
+           legacy_closed_at   = ?,
+           legacy_close_reason= ?,
+           admin_approved_by  = ?,
+           admin_approved_at  = ?,
+           is_deemed_scan_out = 1,
+           deemed_reason      = ?,
+           deemed_by          = ?,
+           dispatched_at      = ?,
+           dispatched_by      = ?,
+           dispatch_status    = 'dispatched'
+         WHERE id=?`
+      ).run(newBatch, who, ts, rsn, who, ts, rsn, who, ts, who, invId);
+    }
+    try { logAudit(who, 'admin', 'invoice', 'INVOICE_REGULARISE_DISPATCH',
+      `Regularised legacy dispatch for invoice ${invId} (SO ${inv.sap_doc_num || '—'}) batch=${newBatch || '(none)'}: ${rsn}`, req.ip); } catch {}
+    res.json({ ok: true, id: invId, batch_number: newBatch || null, dispatch_status: 'dispatched', is_legacy_closed: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // PUT — upsert session state. Body: { invoiceIds, scannedLabels, vehicleNo, lrNo, remarks, startedBy }
@@ -6321,6 +6418,14 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
       if (!meta) return true;
       if (meta.deleted) { _rejected.push({ orderId, batchNumber, machineId, date, shift, qty, reason: 'deleted' }); return false; }
       if (meta.status === 'running') return true;
+      // v41ZR Issue 4: a batch wound down mid-shift (its final partial production recorded while the
+      // next batch takes the machine's running slot) has its planning status moved off 'running'. Its
+      // last entry was previously dropped (DELETE+skip) — leaving the batch short of gross → perpetual
+      // phantom pending → forced manual close. Allow the entry when the batch already has accumulated
+      // production (a real, previously-running batch finishing up). Never-started orders in a wrong
+      // status have no prior actuals and stay gated; DPR-closed/deleted are already blocked above.
+      if ((batchNumber && _grossByBatch && (_grossByBatch[batchNumber] || 0) > 0) ||
+          (orderId && _actualsCache && (_actualsCache[orderId] || 0) > 0)) return true;
       if (_isAdminCaller && _forceEntry) {
         console.warn(`[v40 P18.14i Fix 2 bulk] force-import: ${qty}L to ${meta.status} order ${orderId||batchNumber} on ${machineId} ${date}/${shift}`);
         return true;
@@ -6493,6 +6598,14 @@ app.post('/api/dpr/save', async (req, res) => {
           return false;
         }
         if (meta.status === 'running') return true;
+        // v41ZR Issue 4: a batch wound down mid-shift (its final partial production recorded while the
+        // next batch takes the machine's running slot) has its planning status moved off 'running'. Its
+        // last entry was previously dropped (DELETE+skip) — leaving the batch short of gross → perpetual
+        // phantom pending → forced manual close. Allow the entry when the batch already has accumulated
+        // production (a real, previously-running batch finishing up). Never-started orders in a wrong
+        // status have no prior actuals and stay gated; DPR-closed/deleted are already blocked above.
+        if ((batchNumber && _grossByBatch && (_grossByBatch[batchNumber] || 0) > 0) ||
+            (orderId && _actualsCache && (_actualsCache[orderId] || 0) > 0)) return true;
         // Non-running order
         if (_isAdminCaller && _forceEntry) {
           // Admin force-entry — allow but audit
@@ -6601,6 +6714,14 @@ app.post('/api/dpr/save', async (req, res) => {
           return false;
         }
         if (meta.status === 'running') return true;
+        // v41ZR Issue 4: a batch wound down mid-shift (its final partial production recorded while the
+        // next batch takes the machine's running slot) has its planning status moved off 'running'. Its
+        // last entry was previously dropped (DELETE+skip) — leaving the batch short of gross → perpetual
+        // phantom pending → forced manual close. Allow the entry when the batch already has accumulated
+        // production (a real, previously-running batch finishing up). Never-started orders in a wrong
+        // status have no prior actuals and stay gated; DPR-closed/deleted are already blocked above.
+        if ((batchNumber && _grossByBatch && (_grossByBatch[batchNumber] || 0) > 0) ||
+            (orderId && _actualsCache && (_actualsCache[orderId] || 0) > 0)) return true;
         if (_isAdminCallerSq && _forceEntrySq) {
           console.warn(`[v40 P18.14i Fix 2 SQLite] DPR force-entry: admin wrote ${qty}L to ${meta.status} order ${orderId||batchNumber}`);
           return true;
@@ -11987,16 +12108,35 @@ app.post('/api/tracking/backfill', async (req, res) => {
 });
 app.post('/api/tracking/backfill-wastage', async (req, res) => {
   try {
-    const { wastage } = req.body;
-    if (!wastage || !Array.isArray(wastage)) return res.status(400).json({ ok: false, error: 'wastage array required' });
+    let { wastage, batchNumber, dept, salvage, remelt, backdateTs } = req.body;
+    // v41ZR Issue 3: accept EITHER an explicit wastage[] array (each {batch_number,dept,type,qty,ts[,id]}),
+    // OR the admin Settings "Wastage Backfill" form shape {batchNumber,dept,salvage,remelt,backdateTs} and
+    // build the salvage/remelt rows here. IDs are generated server-side when absent (the form sends none).
+    if (!Array.isArray(wastage)) {
+      const ts = backdateTs || new Date().toISOString();
+      const sv = parseFloat(salvage) || 0;
+      const rm = parseFloat(remelt) || 0;
+      wastage = [];
+      if (sv > 0) wastage.push({ batch_number: batchNumber, dept, type: 'salvage', qty: sv, ts });
+      if (rm > 0) wastage.push({ batch_number: batchNumber, dept, type: 'remelt',  qty: rm, ts });
+    }
+    if (!Array.isArray(wastage) || wastage.length === 0) {
+      return res.status(400).json({ ok: false, error: 'Provide a wastage array, or batch with salvage/remelt' });
+    }
     let count = 0;
     for (const w of wastage) {
-      if (!w.id) continue;
+      const bn = w.batchNumber || w.batch_number || batchNumber || null;
+      if (!bn) continue;
+      const id  = w.id || ('bfw_' + Date.now() + '_' + Math.random().toString(36).slice(2, 8));
+      const wd  = w.dept || dept || null;
+      const wt  = w.type || null;
+      const wq  = (w.qty != null ? w.qty : null);
+      const wts = w.ts || backdateTs || new Date().toISOString();
       if (pgPool) {
         await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(id) DO NOTHING`,
-          [w.id, w.batchNumber||w.batch_number||null, w.dept, w.type||null, w.qty||null, w.ts||new Date().toISOString()]);
+          [id, bn, wd, wt, wq, wts]);
       } else {
-        db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES (?,?,?,?,?,?)`).run(w.id, w.batchNumber||w.batch_number||null, w.dept, w.type||null, w.qty||null, w.ts||new Date().toISOString());
+        db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts) VALUES (?,?,?,?,?,?)`).run(id, bn, wd, wt, wq, wts);
       }
       count++;
     }

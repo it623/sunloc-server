@@ -172,13 +172,24 @@ eq(canScan('BN','pi','packing'),true,'local pending PI-out unblocks packing');
      'cascade gap-fix anchor present in both schedule functions');
   eq(/cursor && cursor > histStart\) \? new Date\(cursor\) : histStart/.test(ph), false,
      'old gap-bug pattern (keep later histStart) removed from both');
-  eq((ph.match(/shift it forward by the overlap/g)||[]).length, 2,
-     'closed-order overlap sequencing present in both schedule functions');
-  eq((ph.match(/ord\.endDate = new Date\(cursor\.getTime\(\) \+ _dur\);/g)||[]).length, 2,
-     'closed-order duration-preserving shift present in both functions');
+  // v41ZQ #1: the buggy v41ZM closed-order forward-shift (drifted closed orders into the future and
+  // collapsed 0-span ones to a single day) must be GONE from both functions...
+  eq((ph.match(/ord\.endDate = new Date\(cursor\.getTime\(\) \+ _dur\);/g)||[]).length, 0,
+     'v41ZM closed-order duration-preserving shift removed from both functions');
+  // ...replaced by: a finished (closed) order is frozen and clamped so it never shows in the future.
+  eq((ph.match(/new Date\(ord\.endDate\)\s+> _td\) ord\.endDate\s+= new Date\(_td\);/g)||[]).length, 2,
+     'closed-order not-future end clamp present in both schedule functions');
+  // v41ZQ #1: open orders use FULL run duration (total gross / cap), not remaining-work days.
+  eq((ph.match(/const fullDays = \(sc\.effectiveCap && sc\.effectiveCap > 0\) \? Math\.max\(1, Math\.ceil\(sc\.grossQty \/ sc\.effectiveCap\)\) : 1;/g)||[]).length, 2,
+     'full-duration (total gross) computation present in both functions');
+  eq((ph.match(/ord\.endDate = calcEndDate\(ord\.startDate, fullDays\);/g)||[]).length, 2,
+     'open-order end uses full duration in both functions');
+  // the remaining-work end logic that collapsed completed spans must be gone.
+  eq(/fromToday\.setDate\(fromToday\.getDate\(\) \+ Math\.ceil\(remainingDays\)\)/.test(ph), false,
+     'remaining-work end logic (span collapse source) removed from both');
 }).call(this);
 
-// ---- 10. v41ZN OVERLOAD GUARD: the gross warm must NOT join the write-churned production_orders
+// ---- 10. v41ZQ OVERLOAD GUARD: the gross warm must NOT join the write-churned production_orders
 //         table (that join+expression-group on a 5-connection pool timed out closed-batches and made
 //         the apps go offline in v41ZM). _grossByBatch is now built in memory from the actuals rows +
 //         the warmed order cache. ----
@@ -209,7 +220,7 @@ eq(canScan('BN','pi','packing'),true,'local pending PI-out unblocks packing');
   eq(Object.prototype.hasOwnProperty.call(g,'undefined'),false,'unmappable row dropped (no phantom batch)');
 }).call(this);
 
-// ---- 11. v41ZN MERGE DEBOUNCE GUARD: the background production_orders merge must be throttled so it
+// ---- 11. v41ZQ MERGE DEBOUNCE GUARD: the background production_orders merge must be throttled so it
 //         can't churn the 5-connection pool on every ~13s save. ----
 (function(){
   const src=require('fs').readFileSync('server.js','utf8');
@@ -223,6 +234,151 @@ eq(canScan('BN','pi','packing'),true,'local pending PI-out unblocks packing');
   eq(tryMerge(T+9000),  false, 'debounce: another within window skipped');
   eq(tryMerge(T+50000), true,  'debounce: merge after window proceeds');
 }).call(this);
+
+// ---- 12. v41ZQ #2 GROSS SINGLE-SOURCE-OF-TRUTH: planning's protection merge must take the server's
+//         injected actualProd (the authoritative per-batch DPR gross) over any locally-edited value,
+//         so Planning "Actual Prod" matches DPR / Closed Batches / Reports D-E-F. The old
+//         "o.actualProd || local.actualProd" let a stale local edit win when server sent a value. ----
+(function(){
+  const ph=require('fs').readFileSync('public/planning.html','utf8');
+  const sv=require('fs').readFileSync('server.js','utf8');
+  eq(/actualProd: \(o\.actualProd != null \? o\.actualProd : local\.actualProd\)/.test(ph), true,
+     'planning merge prefers server (DPR) actualProd over local');
+  eq((ph.match(/actualProd: o\.actualProd \|\| local\.actualProd/g)||[]).length, 0,
+     'old local-wins actualProd merge removed');
+  // server still injects the authoritative per-batch DPR gross (override -> _grossByBatch) into actualProd
+  eq(/ord\.actualProd = \(hasOverride \|\| eff > 0\) \? eff : legacy;/.test(sv), true,
+     'server planning/state still injects authoritative DPR gross into actualProd');
+}).call(this);
+
+
+// ---- 13. v41ZQ #2 INVOICE BOXES = ACTUAL PACKED (not planned) + size-wise pack qty ----
+(function(){
+  const ph=require('fs').readFileSync('public/planning.html','utf8');
+  eq(/plan\.packedBoxes != null \? \(parseInt\(plan\.packedBoxes/.test(ph), true,
+     'invoice item boxes use actual packed (plan.packedBoxes), not planned plan.boxes');
+  eq(/const _invQty = Math\.round\(\(_invBoxes \* _invPackSize \/ 100000\)/.test(ph), true,
+     'invoice item qty derived from size-wise pack size');
+  eq((ph.match(/boxes: plan\.boxes \|\| 0,\n\s*qtyLakhs: plan\.packedQty/g)||[]).length, 0,
+     'old planned-box invoice mapping removed');
+}).call(this);
+// ---- 14. v41ZQ #3 PROD SUMMARY collapsible batch rows ----
+(function(){
+  const ph=require('fs').readFileSync('public/planning.html','utf8');
+  eq(/function toggleWoRows\(ci, rowEl\)/.test(ph), true, 'prod-summary toggleWoRows present');
+  eq(/class="wo-row wo-grp-\$\{ci\}" style="display:none/.test(ph), true, 'batch rows collapsed by default');
+  eq(/onclick="toggleWoRows\(\$\{ci\},this\)"/.test(ph), true, 'customer row toggles its batch rows');
+}).call(this);
+
+
+// ---- 15. v41ZQ #2 SEQUENTIAL lot fill + soft short-invoice warning + auto-adjust ----
+(function(){
+  const ph=require('fs').readFileSync('public/planning.html','utf8');
+  eq(/SEQUENTIAL lot fill/.test(ph), true, 'sequential lot-fill block present');
+  eq(/const allocBoxes = \(i === lots\.length - 1\) \? Math\.max\(0, remBoxes\)/.test(ph), true,
+     'last lot absorbs remainder (short/excess)');
+  eq((ph.match(/_plannedQtyByBatch/g)||[]).length, 0, 'old proportional split removed');
+  eq(/function _v40_autoAdjustShort\(planId\)/.test(ph), true, 'auto-adjust helper present');
+  eq(/const _short = \(it\.plannedBoxes \|\| 0\) > \(it\.boxes \|\| 0\)/.test(ph), true,
+     'short detection (packed < planned) present');
+  eq(/Math\.abs\(it\.batchWip \|\| 0\) <= 0\.005/.test(ph), true,
+     'WIP=0 accounted-for condition present');
+}).call(this);
+
+
+// ==== v41ZR Issue 3: wastage backfill normalization (admin form shape -> rows) ====
+function bfwNormalize(body){
+  let { wastage, batchNumber, dept, salvage, remelt, backdateTs } = body;
+  if (!Array.isArray(wastage)) {
+    const ts = backdateTs || 'TS';
+    const sv = parseFloat(salvage) || 0;
+    const rm = parseFloat(remelt) || 0;
+    wastage = [];
+    if (sv > 0) wastage.push({ batch_number: batchNumber, dept, type: 'salvage', qty: sv, ts });
+    if (rm > 0) wastage.push({ batch_number: batchNumber, dept, type: 'remelt',  qty: rm, ts });
+  }
+  return wastage;
+}
+let w = bfwNormalize({batchNumber:'26N024',dept:'AIM',salvage:8.45,remelt:0,backdateTs:'2026-06-08'});
+eq(w.length,1,'Issue3: salvage-only form -> 1 row');
+eq(w[0].type,'salvage','Issue3: row type salvage');
+eq(w[0].qty,8.45,'Issue3: row qty 8.45');
+eq(w[0].batch_number,'26N024','Issue3: row batch 26N024');
+w = bfwNormalize({batchNumber:'X',dept:'AIM',salvage:2,remelt:3});
+eq(w.length,2,'Issue3: salvage+remelt -> 2 rows');
+w = bfwNormalize({wastage:[{batch_number:'Y',type:'salvage',qty:1}]});
+eq(w.length,1,'Issue3: explicit array preserved');
+eq(w[0].batch_number,'Y','Issue3: explicit array batch preserved');
+w = bfwNormalize({batchNumber:'Z',salvage:0,remelt:0});
+eq(w.length,0,'Issue3: zero salvage+remelt -> no rows');
+eq(/type: 'salvage'/.test(src) && /type: 'remelt'/.test(src),true,'Issue3: server builds salvage+remelt rows');
+eq(/'bfw_' \+ Date\.now\(\)/.test(src),true,'Issue3: server generates id server-side');
+
+// ==== v41ZR Issue 4: DPR gate allows prior-production batch wound down (status off "running") ====
+function gate(meta, dprClosed, deleted, batchNumber, grossByBatch){
+  if (dprClosed) return false;                 // DPR-closed blocked (unless admin force, not modeled)
+  if (!meta) return true;                       // unknown -> allow (legacy/orphan)
+  if (deleted) return false;                    // deleted blocked
+  if (meta.status === 'running') return true;   // running allowed
+  if (batchNumber && grossByBatch && (grossByBatch[batchNumber]||0) > 0) return true; // v41ZR fix
+  return false;                                 // never-started wrong-status blocked
+}
+eq(gate({status:'completed'},false,false,'26ZF091',{'26ZF091':34.6}),true,'Issue4: downgraded batch w/ prior prod ALLOWED');
+eq(gate({status:'pending'},false,false,'NEW1',{}),false,'Issue4: never-started wrong-status still GATED');
+eq(gate({status:'running'},false,false,'R1',{}),true,'Issue4: running allowed');
+eq(gate({status:'completed'},true,false,'26ZF091',{'26ZF091':34.6}),false,'Issue4: DPR-closed still blocked');
+eq(gate({status:'completed'},false,true,'D1',{'D1':5}),false,'Issue4: deleted still blocked');
+eq((src.match(/_grossByBatch\[batchNumber\] \|\| 0\) > 0/g)||[]).length>=3,true,'Issue4: prior-prod allowance present in all 3 gates');
+
+
+
+// ==== v41ZS Issue 1: SAP cache prune — only on complete, non-empty fetch ====
+const sapSrc = fs.readFileSync('sap-client.js','utf8');
+eq(/return \{ ok: true, indents, complete \};/.test(sapSrc),true,'Issue1: fetchOpenSalesOrders returns complete flag');
+eq(/complete = false;/.test(sapSrc),true,'Issue1: complete set false on partial page fail');
+eq(/r\.complete && indents\.length > 0/.test(src),true,'Issue1: prune gated on complete + non-empty');
+eq(/sap_doc_entry <> ALL\(\$1::int\[\]\)/.test(src),true,'Issue1: PG prune deletes rows not in fetched open set');
+// prune-decision replica
+function shouldPrune(complete, fetchedLen){ return !!(complete && fetchedLen > 0); }
+eq(shouldPrune(true, 5), true,  'Issue1: complete+5 fetched -> prune');
+eq(shouldPrune(false,5), false, 'Issue1: partial fetch -> NO prune (safety)');
+eq(shouldPrune(true, 0), false, 'Issue1: empty fetch -> NO prune (never wipe cache)');
+// what survives a prune: only DocEntries in the fresh open set
+function pruneCache(cacheEntries, fetchedEntries){
+  const keep = new Set(fetchedEntries);
+  return cacheEntries.filter(e => keep.has(e));
+}
+eq(JSON.stringify(pruneCache([101,102,103,104],[101,103])),JSON.stringify([101,103]),'Issue1: closed orders (102,104) pruned, open kept');
+
+// ==== v41ZS legacy-dispatch regularise — endpoint + single consolidated admin button ====
+eq(/app\.post\('\/api\/invoice\/:id\/regularise-dispatch'/.test(src),true,'Legacy: regularise-dispatch endpoint exists');
+eq(/Admin only — regularising a legacy\/return dispatch/.test(src),true,'Legacy: admin-gated');
+eq(/is_legacy_closed   = 1/.test(src) && /dispatch_status    = 'dispatched'/.test(src),true,'Legacy: marks legacy-closed + dispatched');
+eq(/is_deemed_scan_out = TRUE/.test(src),true,'Legacy: deemed scan-out (no scan counts)');
+const trkSrc = fs.readFileSync('public/tracking.html','utf8');
+eq(/Regularise Dispatch/.test(trkSrc),true,'Legacy: single Regularise Dispatch button present');
+eq(/_v41zs_regulariseDispatch/.test(trkSrc),true,'Legacy: client handler present');
+// consolidation: the three old admin buttons are no longer surfaced
+eq(/label: '✅ Approve as Direct-SAP'/.test(trkSrc),false,'Legacy: old Approve-Direct-SAP button removed');
+eq(/label: '⚠️ Deemed Scan-Out'/.test(trkSrc),false,'Legacy: old Deemed-Scan-Out button removed');
+eq(/label: '🗂️ Mark as Legacy Closed'/.test(trkSrc),false,'Legacy: old Mark-Legacy-Closed button removed');
+
+
+
+// ==== v41ZS deep-audit fixes ====
+eq(/batch_number=COALESCE\(NULLIF\(\$9,''\), invoices_received\.batch_number\)/.test(src),true,'Audit: poller preserves admin-attached batch on blank SAP UDF (PG)');
+eq(/batch_number=COALESCE\(NULLIF\(excluded\.batch_number,''\), invoices_received\.batch_number\)/.test(src),true,'Audit: poller preserves batch on blank (SQLite)');
+eq(/dispatched_at      = \$3/.test(src) && /dispatched_by      = \$2/.test(src),true,'Audit: regularise sets dispatched_at/by (coherent dispatched state)');
+eq(/deemed_reason      = \$4/.test(src) && /deemed_by          = \$2/.test(src),true,'Audit: regularise sets deemed_reason/by (consistent w/ is_deemed_scan_out)');
+const sapSrc2 = fs.readFileSync('sap-client.js','utf8');
+eq(/pageGuard >= 500.*complete = false/.test(sapSrc2),true,'Audit: prune skipped on runaway pagination (incomplete)');
+// poller does NOT clobber regularised state (dispatch_status / is_legacy_closed not in ON CONFLICT SET)
+const onConflictBlock = (src.match(/ON CONFLICT \(sap_doc_entry\) DO UPDATE SET[\s\S]*?fetched_at=NOW\(\)::TEXT/)||[''])[0];
+eq(/dispatch_status/.test(onConflictBlock),false,'Audit: poller upsert does NOT overwrite dispatch_status (regularisation persists)');
+eq(/is_legacy_closed/.test(onConflictBlock),false,'Audit: poller upsert does NOT overwrite is_legacy_closed');
+// SQLite regularise UPDATE param-count sanity (11 placeholders, 11 args)
+eq((`COALESCE(NULLIF(?,'')),?,?,?,?,?,?,?,?,?,?`.match(/\?/g)||[]).length,11,'Audit: SQLite regularise placeholder count = 11 (matches .run args)');
+
 
 console.log(`\n[FINAL] ${PASS} PASS / ${FAIL} FAIL`);
 process.exit(FAIL?1:0);

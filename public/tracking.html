@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZQ</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZS</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -567,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZQ</p>
+      <p>Tracking Suite v1.0 · build v41ZS</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -598,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZQ</p>
+      <p>Tracking Suite v1.0 · build v41ZS</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -5110,6 +5110,40 @@ async function _v41_closeInvoiceAsLegacy(invoiceId) {
   }
 }
 
+// v41ZS: one-step admin regularisation for legacy / return / no-SO invoices. Optionally attach a
+// batch, then mark the invoice dispatched + legacy-closed (admin-approved) via a single endpoint.
+// No scan-out is performed and no scan counts are logged — label-less legacy/return stock has
+// nothing to reconcile against, so counting for its own sake adds no value.
+async function _v41zs_regulariseDispatch(invoiceId) {
+  let baseUrl = ''; try { baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  if (!baseUrl) { alert('Server not connected'); return; }
+  const inv = (_v39_invoiceList || []).find(i => i.id === invoiceId) || {};
+  let batchNumber = inv.batch_number || '';
+  if (!batchNumber) {
+    batchNumber = prompt('Attach a batch for this invoice (optional — leave blank if not applicable):', '') || '';
+  }
+  const reason = prompt('Regularise dispatch for this invoice (Legacy stock / Return material / no Sales Order).\n\nThis marks it dispatched WITHOUT a scan-out. Reason (for audit):', 'Legacy / return / no-SO — regularised by admin');
+  if (reason === null) return;
+  try {
+    const r = await fetch(baseUrl + '/api/invoice/' + encodeURIComponent(invoiceId) + '/regularise-dispatch', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'x-user-role': currentDept || '' },
+      body: JSON.stringify({ batchNumber: (batchNumber || '').trim(), reason: reason || '', userRole: currentDept, userName: currentUser?.username }),
+      signal: AbortSignal.timeout(8000)
+    });
+    const j = await r.json();
+    if (j.ok) {
+      alert('✓ Dispatch regularised' + (j.batch_number ? ' (batch ' + j.batch_number + ')' : '') + '. Invoice marked dispatched & legacy-closed.');
+      closeModal();
+      _v39_loadAndRenderInvoiceQueue();
+    } else {
+      alert('Failed: ' + (j.error || 'unknown'));
+    }
+  } catch (e) {
+    alert('Server error: ' + e.message);
+  }
+}
+
 // Shim for the modal — fallback to a generic open-modal if a tracking-specific one isn't defined
 function openTrackingModal(title, html) {
   if (typeof openModal === 'function') {
@@ -6477,33 +6511,17 @@ function _v39_showInvoiceDetail(invoiceId) {
     cls: 'btn-secondary',
     fn: `_v40_showSalesRegisterDetails('${inv.id}')`,
   });
-  if (currentDept === 'admin') {
-    // Direct-SAP approval action (only if source='direct_sap' and not yet approved)
-    if (inv.source === 'direct_sap' && !inv.admin_approved_at) {
-      footerButtons.push({
-        label: '✅ Approve as Direct-SAP',
-        cls: 'btn-success',
-        fn: `_v39_openDirectSapApproveModal('${inv.id}')`,
-      });
-    }
-    // Deemed Scan-Out action (only if invoice is pending dispatch and has batch_number)
-    if (inv.dispatch_status === 'pending' && inv.batch_number) {
-      footerButtons.push({
-        label: '⚠️ Deemed Scan-Out',
-        cls: 'btn-secondary',
-        fn: `_v39_openDeemedScanOutModal('${inv.id}')`,
-      });
-    }
-    // v41 P19.3: Mark as Legacy Closed — for direct_sap invoices that don't match
-    // any planned Sales Order in Sunloc (return stock, legacy inventory, etc.).
-    // Available for any not-yet-dispatched, not-yet-legacy-closed invoice.
-    if (!inv.is_legacy_closed && inv.dispatch_status !== 'dispatched') {
-      footerButtons.push({
-        label: '🗂️ Mark as Legacy Closed',
-        cls: 'btn-warning',
-        fn: `_v41_closeInvoiceAsLegacy('${inv.id}')`,
-      });
-    }
+  // v41ZS: single admin action — regularise a legacy / return / no-SO invoice (whether the goods
+  // were physically dispatched or not). Optionally attach a batch, then mark it dispatched +
+  // legacy-closed. No scan-out / scan counts: there are no system labels to reconcile for this stock.
+  // Supersedes the earlier separate Approve-Direct-SAP / Deemed-Scan-Out / Mark-Legacy-Closed admin
+  // actions — consolidated into one to keep the workflow simple.
+  if (currentDept === 'admin' && !inv.is_legacy_closed && inv.dispatch_status !== 'dispatched') {
+    footerButtons.push({
+      label: '🗂️ Regularise Dispatch',
+      cls: 'btn-warning',
+      fn: `_v41zs_regulariseDispatch('${inv.id}')`,
+    });
   }
   footerButtons.push({ label: 'Close', cls: 'btn-secondary', fn: 'closeModal()' });
   openModal(`Invoice ${inv.sap_doc_num || inv.id}`, inv.customer || '', body, footerButtons);
