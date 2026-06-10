@@ -1709,18 +1709,22 @@ async function fetchDayFromServer(fl, d){
   // Don't fetch if this floor/date has a pending (unsaved) save in the queue
   if(_dprPendingSaves.has(fl+'|'+d)) return null;
   // Don't fetch for 10 seconds after user saved — prevents server returning stale data
-  if((Date.now() - _dprLastSaveTime) < 10000) return null;
+  if((Date.now() - _dprLastSaveTime) < 120000) return null;
   try{
     const r=await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(6000)});
     if(!r.ok) return null;
     const j=await r.json();
     if(j.data){
-      // Server is ALWAYS authoritative — always update localStorage
-      // (pending saves protected by _dprPendingSaves.has() guard above)
-      const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : Date.now();
-      j.data._savedAt = serverSavedAt;
-      localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
-      return j.data;
+      // Only overwrite local data if server's savedAt is newer than our local savedAt
+      const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
+      const localRaw = localStorage.getItem(skey(fl,d));
+      const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt || 0) : 0;
+      if(serverSavedAt > localSavedAt + 5000){
+        j.data._savedAt = serverSavedAt;
+        localStorage.setItem(skey(fl,d), JSON.stringify(j.data));
+        return j.data;
+      }
+      return localRaw ? JSON.parse(localRaw) : null;
     }
   }catch(e){ console.warn('fetchDayFromServer failed:', e?.message); }
   return null;
@@ -3768,14 +3772,12 @@ async function renderPerf(){
   // last 7 days). Without this, charts for 30d / 90d / 6 months / 1 year had blank data
   // on fresh sessions.
   if (rangeMode === 'today') {
-    const serverData = await fetchDayFromServer(fl, d);
-    if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
+    await fetchDayFromServer(fl, d); // fetchDayFromServer now handles timestamp comparison internally
   } else {
     await syncDateRangeFromServer([fl], _dprFromDateForMode(rangeMode), today());
   }
-  // Always ensure selected date itself is fresh
-  const serverData = await fetchDayFromServer(fl, d);
-  if(serverData) localStorage.setItem(skey(fl,d), JSON.stringify(serverData));
+  // Always ensure selected date itself is fresh (timestamp-safe)
+  await fetchDayFromServer(fl, d);
 
   // v37I: Compute dates AFTER sync so newly-fetched data is reflected
   const dates = getDprDateRange(fl, rangeMode);
