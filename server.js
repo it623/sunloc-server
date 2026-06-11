@@ -960,6 +960,25 @@ const MIGRATIONS = [
         updated_at TEXT NOT NULL DEFAULT (datetime('now'))
       );`
   },
+  {
+    // v41ZZ: retired (legacy "as-is-where-is") batches. A retire is a STATUS-ONLY close —
+    // it records this marker + sets Planning status=closed + DPR dpr_batch_closed, and the
+    // batch's WIP is EXCLUDED (treated 0) everywhere. NO production/scan data is touched, so
+    // A-Grade / gross / average are unchanged. prev_* columns make it fully reversible (un-retire).
+    version: 36,
+    name: 'retired_batches',
+    sql: `CREATE TABLE IF NOT EXISTS retired_batches (
+        batch_number TEXT PRIMARY KEY,
+        order_id TEXT,
+        retired_at TEXT NOT NULL DEFAULT (datetime('now')),
+        retired_by TEXT,
+        reason TEXT,
+        prod_month TEXT,
+        residual_wip REAL DEFAULT 0,
+        prev_order_status TEXT,
+        prev_dpr_closed INTEGER DEFAULT 0
+      );`
+  },
 ];
 
 function runMigrations() {
@@ -7036,6 +7055,130 @@ app.post('/api/dpr/batch-reopen', async (req, res) => {
   }
 });
 
+// ═══════════════ v41ZZ: Retire stale / legacy batches ═══════════════
+// Retire = "as-is-where-is" close of an unclosed/never-dispatched batch. It is STATUS-ONLY:
+//   • records a retired marker (audited: who/when/reason; reversible via prev_* snapshot)
+//   • sets Planning status=closed and inserts dpr_batch_closed
+//   • the batch's WIP is EXCLUDED (treated as 0) at every WIP site (server wipLakhs + the three
+//     client sites), so phantom WIP for a physically-gone batch disappears.
+// It touches NO production_actuals / scan / wastage data — so A-Grade, gross and average production
+// stay exactly as-is. (This is deliberately NOT /api/dpr/batch-close, so IT's pre-close actuals
+// flush does NOT run — retire must never materialise new numbers.) Reconcile WIP remains the
+// separate data-entry path that DOES move A-Grade/WIP.
+let _retiredBatchSet = new Set();
+async function loadRetiredBatches() {
+  try {
+    let rows;
+    if (pgPool) rows = (await pgPool.query('SELECT batch_number FROM retired_batches')).rows;
+    else rows = db.prepare('SELECT batch_number FROM retired_batches').all();
+    _retiredBatchSet = new Set(rows.map(r => (r.batch_number || '').toUpperCase()));
+  } catch (e) { console.warn('[retire] loadRetiredBatches failed:', e.message); }
+}
+
+// POST /api/batch/retire — bulk. body: { batches:[{batchNumber,orderId,prodMonth,residualWip}], by, reason }
+app.post('/api/batch/retire', async (req, res) => {
+  try {
+    const list = Array.isArray(req.body && req.body.batches) ? req.body.batches : [];
+    const by = ((req.body && req.body.by) || 'admin').toString().slice(0, 120);
+    const reason = ((req.body && req.body.reason) || '').toString().slice(0, 500);
+    if (!list.length) return res.status(400).json({ ok: false, error: 'no batches' });
+    const nowIso = new Date().toISOString();
+    let retired = 0;
+    for (const item of list) {
+      const batchNumber = ((item && item.batchNumber) || '').toString().trim();
+      if (!batchNumber) continue;
+      let orderId = ((item && item.orderId) || '').toString().trim() || null;
+      if (!orderId) { // robustness: resolve the production order from the batch number
+        try {
+          if (pgPool) orderId = (await pgPool.query('SELECT id FROM production_orders WHERE batch_number=$1 LIMIT 1', [batchNumber])).rows[0]?.id || null;
+          else orderId = (db.prepare('SELECT id FROM production_orders WHERE batch_number=? LIMIT 1').get(batchNumber) || {}).id || null;
+        } catch (e) {}
+      }
+      const prodMonth = ((item && item.prodMonth) || '').toString().slice(0, 7) || null;
+      const residualWip = parseFloat(item && item.residualWip || 0) || 0;
+      let prevStatus = null, prevDprClosed = 0;
+      if (pgPool) {
+        if (orderId) {
+          prevStatus = (await pgPool.query('SELECT status FROM production_orders WHERE id=$1', [orderId])).rows[0]?.status || null;
+          prevDprClosed = (await pgPool.query('SELECT 1 FROM dpr_batch_closed WHERE order_id=$1', [orderId])).rows.length ? 1 : 0;
+        }
+        await pgPool.query(
+          `INSERT INTO retired_batches (batch_number, order_id, retired_at, retired_by, reason, prod_month, residual_wip, prev_order_status, prev_dpr_closed)
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+           ON CONFLICT(batch_number) DO UPDATE SET retired_at=EXCLUDED.retired_at, retired_by=EXCLUDED.retired_by, reason=EXCLUDED.reason, residual_wip=EXCLUDED.residual_wip`,
+          [batchNumber, orderId, nowIso, by, reason, prodMonth, residualWip, prevStatus, prevDprClosed]);
+        if (orderId) {
+          await pgPool.query(`UPDATE production_orders SET status='closed' WHERE id=$1`, [orderId]);
+          if (!prevDprClosed) await pgPool.query(
+            `INSERT INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
+             VALUES ($1,$2,$3,$4,$5) ON CONFLICT(order_id) DO NOTHING`,
+            [orderId, batchNumber, nowIso, by, 'retired (legacy cleanup)']);
+        }
+      } else {
+        if (orderId) {
+          prevStatus = (db.prepare('SELECT status FROM production_orders WHERE id=?').get(orderId) || {}).status || null;
+          prevDprClosed = db.prepare('SELECT 1 FROM dpr_batch_closed WHERE order_id=?').get(orderId) ? 1 : 0;
+        }
+        db.prepare(`INSERT OR REPLACE INTO retired_batches (batch_number, order_id, retired_at, retired_by, reason, prod_month, residual_wip, prev_order_status, prev_dpr_closed)
+                    VALUES (?,?,?,?,?,?,?,?,?)`)
+          .run(batchNumber, orderId, nowIso, by, reason, prodMonth, residualWip, prevStatus, prevDprClosed);
+        if (orderId) {
+          db.prepare(`UPDATE production_orders SET status='closed' WHERE id=?`).run(orderId);
+          if (!prevDprClosed) db.prepare(`INSERT OR IGNORE INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes) VALUES (?,?,?,?,?)`)
+            .run(orderId, batchNumber, nowIso, by, 'retired (legacy cleanup)');
+        }
+      }
+      retired++;
+    }
+    await loadRetiredBatches();
+    try { await warmPlanningCache(); } catch (e) {}
+    console.log(`[retire] ${retired} batch(es) retired by ${by}`);
+    res.json({ ok: true, retired });
+  } catch (err) { console.error('[retire] error', err.message); res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/batch/unretire — reverse a retire. body: { batches:[batchNumber,...] }
+app.post('/api/batch/unretire', async (req, res) => {
+  try {
+    const list = Array.isArray(req.body && req.body.batches) ? req.body.batches : [];
+    if (!list.length) return res.status(400).json({ ok: false, error: 'no batches' });
+    let restored = 0;
+    for (const bn of list) {
+      const batchNumber = (bn || '').toString().trim();
+      if (!batchNumber) continue;
+      let row;
+      if (pgPool) row = (await pgPool.query('SELECT * FROM retired_batches WHERE batch_number=$1', [batchNumber])).rows[0];
+      else row = db.prepare('SELECT * FROM retired_batches WHERE batch_number=?').get(batchNumber);
+      if (!row) continue;
+      const orderId = row.order_id;
+      if (pgPool) {
+        if (orderId && row.prev_order_status) await pgPool.query(`UPDATE production_orders SET status=$1 WHERE id=$2`, [row.prev_order_status, orderId]);
+        if (orderId && !row.prev_dpr_closed) await pgPool.query('DELETE FROM dpr_batch_closed WHERE order_id=$1', [orderId]);
+        await pgPool.query('DELETE FROM retired_batches WHERE batch_number=$1', [batchNumber]);
+      } else {
+        if (orderId && row.prev_order_status) db.prepare(`UPDATE production_orders SET status=? WHERE id=?`).run(row.prev_order_status, orderId);
+        if (orderId && !row.prev_dpr_closed) db.prepare('DELETE FROM dpr_batch_closed WHERE order_id=?').run(orderId);
+        db.prepare('DELETE FROM retired_batches WHERE batch_number=?').run(batchNumber);
+      }
+      restored++;
+    }
+    await loadRetiredBatches();
+    try { await warmPlanningCache(); } catch (e) {}
+    console.log(`[retire] ${restored} batch(es) un-retired`);
+    res.json({ ok: true, restored });
+  } catch (err) { console.error('[unretire] error', err.message); res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/batch/retired — list retired batches (client uses for WIP exclusion + Report Z display)
+app.get('/api/batch/retired', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) rows = (await pgPool.query('SELECT batch_number, order_id, retired_at, retired_by, reason, prod_month, residual_wip FROM retired_batches')).rows;
+    else rows = db.prepare('SELECT batch_number, order_id, retired_at, retired_by, reason, prod_month, residual_wip FROM retired_batches').all();
+    res.json({ ok: true, retired: rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // GET all DPR-closed batches (used by Planning to gate close button)
 app.get('/api/dpr/batch-closed', async (req, res) => {
   try {
@@ -12099,7 +12242,7 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       const dispatchInQty = dispatch.inQty || 0;
       // v37E WIP-fix: material at packing is FG, not WIP (uses packIn)
       const totalWastageForWIP = aimWaste + printWaste + piWaste;
-      const wipLakhs = Math.max(0, grossProd - totalWastageForWIP - packInQty);
+      const wipLakhs = _retiredBatchSet.has((batchNo||'').toUpperCase()) ? 0 : Math.max(0, grossProd - totalWastageForWIP - packInQty);
       // v37I.1: Pack-Out stage removed. FG = boxes pack-in'd but not yet received by dispatch.
       // Old: packing.in - packing.out (boxes inside packing dept, packed but not yet shipped).
       // New: packing.in - dispatch.in (boxes packed and pending dispatch receipt — same concept,
@@ -12824,6 +12967,17 @@ async function ensureCriticalPostgresTables() {
         is_auto BOOLEAN DEFAULT TRUE
       )`],
     ['idx_month_archives_month', `CREATE INDEX IF NOT EXISTS idx_month_archives_month ON month_archives(month)`],
+    ['retired_batches', `CREATE TABLE IF NOT EXISTS retired_batches (
+        batch_number TEXT PRIMARY KEY,
+        order_id TEXT,
+        retired_at TEXT,
+        retired_by TEXT,
+        reason TEXT,
+        prod_month TEXT,
+        residual_wip REAL DEFAULT 0,
+        prev_order_status TEXT,
+        prev_dpr_closed INTEGER DEFAULT 0
+      )`],
   ];
   for (const [label, sql] of stmts) {
     try { await pgPool.query(sql); }
@@ -12864,6 +13018,7 @@ app.listen(PORT, () => {
   ensureCriticalPostgresTables().then(() => ensurePostgresTables()).then(()=>{
     warmPlanningCache();
     warmActualsCache();
+    loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
     // v37I bugfix: one-time backfill — recompute dispatched_qty for ALL batches that have
     // manual records. Fixes data from before the SUM-based recompute was introduced where
     // multiple records overwrote each other and only the last per-record qty was saved.

@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v41ZY</p>
+      <p>Planning Suite v3.0 · build v41ZZ</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -728,6 +728,17 @@ function getContainerOffset(ord) {
 // =============================
 // STATE
 // =============================
+// v41ZZ FIX: global server URL. Several helpers (e.g. _purgeDuplicateDailyPrinting, loadArchiveList,
+// the archive rollover) reference `serverUrl` without their own local copy. With no global it threw
+// ReferenceError mid-load — and because _purgeDuplicateDailyPrinting is a SYNC function called outside
+// a try at the top of loadFromServer, that throw aborted the load BEFORE print orders were merged,
+// blanking the Printing Plan (Daily Printing loads on a separate path, so it kept working). Defined
+// globally so every such reference resolves; functions that declare their own `let serverUrl` shadow it.
+var serverUrl = (function(){
+  try { var u = localStorage.getItem('sunloc_server_url') || ''; if (!u && location.hostname !== 'localhost') u = location.origin; return u; }
+  catch(e) { return (location.hostname !== 'localhost' ? location.origin : ''); }
+})();
+
 let state = {
   currentPage: 'production',
   orders: [],
@@ -1057,7 +1068,10 @@ const SYNC = (() => {
           catch(e) { console.warn('[Archive] post-pull rollover failed:', e?.message); }
         });
         // v41ZE #6: collapse any content-duplicate daily-printing rows now that state is fully loaded.
-        if (typeof _purgeDuplicateDailyPrinting === 'function') _purgeDuplicateDailyPrinting();
+        // v41ZZ: never let a helper throw abort the load before print orders merge (this was blanking
+        // the Printing Plan when _purgeDuplicateDailyPrinting hit an undefined `serverUrl`).
+        try { if (typeof _purgeDuplicateDailyPrinting === 'function') _purgeDuplicateDailyPrinting(); }
+        catch(e) { console.warn('[Purge] daily-printing dedup skipped:', e?.message); }
         // State updated silently — user must navigate or act to see changes (prevents screen flipping)
       }
     }

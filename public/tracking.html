@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZY</title>
+<title>Sunloc Tracking Suite v1.0 · build v41ZZ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -567,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZY</p>
+      <p>Tracking Suite v1.0 · build v41ZZ</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -598,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZY</p>
+      <p>Tracking Suite v1.0 · build v41ZZ</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -924,9 +924,10 @@ function onTrkMonthChange(ym) {
 }
 
 // Filter batches by selected month (production order active in that month)
-function getTrkMonthBatches() {
+function getTrkMonthBatches(excludeRetired) {
   return state.batches.filter(b => {
     if (b.deleted) return false;
+    if (excludeRetired && _isRetired(b.batchNumber)) return false; // v41ZZ: drop retired from operational reports (A/B/C/F/G)
     // Use order start/end dates from batch metadata
     const start = b.startDate || b.orderStartDate;
     const end   = b.endDate   || b.orderEndDate;
@@ -2360,9 +2361,36 @@ function calcDispatchDate(batch){
 // Printing: Print Scan In (=AIM Out) − Print Scan Out − Print Salvage − Print Remelt  (PTD only)
 // PI      : PI Scan In (=Print Out) − PI Scan Out − PI Salvage − PI Remelt            (PTD only)
 // Packing : Pack Scan In − Pack Scan Out  (no salvage)
+// ═══════════════ v41ZZ: retired (legacy "as-is-where-is") batch state ═══════════════
+// A retired batch is excluded from WIP (treated as 0 everywhere) — this is a SCOPING rule, not a
+// formula change: the frozen WIP formulas below are untouched, we just short-circuit before them
+// for batches the admin has closed as-is. No scan/production data is read, so A-Grade & average
+// production are unaffected. _retiredSet is loaded from GET /api/batch/retired.
+window._retiredSet = window._retiredSet || new Set();
+window._retiredBatches = window._retiredBatches || {};
+function _isRetired(bn){ return !!(bn && window._retiredSet.has(String(bn).toUpperCase())); }
+async function loadRetiredBatchesTrk(){
+  try{
+    const r = await fetch('/api/batch/retired'); const j = await r.json();
+    if(j && j.ok){
+      const set = new Set(); const map = {};
+      (j.retired||[]).forEach(x=>{ const k=String(x.batch_number||'').toUpperCase(); set.add(k); map[k]=x; });
+      window._retiredSet = set; window._retiredBatches = map;
+    }
+  }catch(e){ /* keep prior set on failure — never blank a populated set on a transient error */ }
+}
+
 function getBatchWIPBreakdown(batchNo){
   const batch = getBatch(batchNo);
   if(!batch) return null;
+  if(_isRetired(batchNo)){
+    // Retired: WIP excluded to 0 (batch declared physically gone). Gross kept (it was produced);
+    // A-Grade is computed separately from scan data, so it is unaffected by this exclusion.
+    const _g = batch.actualProd || batch.actualQty || 0;
+    return { grossProd:_g, aimIn:0, aimOut:0, packIn:0, packOut:0, preAIM:0, aimWIP:0, printWIP:0,
+             piWIP:0, toPackTransit:0, packWIP:0, totalWIP:0,
+             wAIM:{salvage:0,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, retired:true };
+  }
   const sz = batch.size;
   const useSummary = hasScanSummary();
 
@@ -7625,7 +7653,7 @@ function renderReportG(){
 }
 function _v41_renderReportGInner(){
   const md = _v41_useMonthAttributed ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
-  const allMonthBatches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const allMonthBatches = getTrkMonthBatches(true).filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   // v41ZC: filter state (machine uses normMcId so MC.30 / mc30 / "MC 30" all match)
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
   let batches = allMonthBatches;
@@ -7861,7 +7889,7 @@ function _v41_renderReportGInner(){
 }
 
 function exportReportG(){
-  let batches = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  let batches = getTrkMonthBatches(true).filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   // v41ZC: honour the on-screen filter bar so the export matches what's displayed
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
   if(gB) batches = batches.filter(b=>(b.batchNumber||'').toLowerCase().includes(gB.toLowerCase()));
@@ -7917,30 +7945,117 @@ function exportReportG(){
 function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_composingD)window._v41_composingD=false;
   if(currentDept!=='admin'){ toast('Admin only','#dc2626'); return; }
   if(!document.getElementById('report-output')) renderReports();
+  // v41ZZ: lazy-load the retired set once, then re-render so retire/un-retire + WIP exclusion reflect.
+  if(!window._rptZRetiredLoaded){ window._rptZRetiredLoaded=true; loadRetiredBatchesTrk().then(()=>renderReportZ()); }
+  if(!window._rptZSel) window._rptZSel = new Set();
+
   const ym = _trkSelectedMonth;
-  const batches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
-  // An "open item" = order not closed OR has non-zero residual WIP.
-  const items = batches.map(b=>{
+  const allMonths = !!window._rptZAllMonths;            // v41ZZ: all-months legacy-cleanup view
+  const minAge = (window._rptZMinAge==null) ? 60 : (parseInt(window._rptZMinAge,10)||0);  // default ≥60 days
+  const viewRetired = (window._rptZView==='retired');
+  const mFilter = window._rptZMachine || '';
+  const sQ = (window._rptZSearch || '').toLowerCase().trim();
+  const _esc = s => String(s==null?'':s).replace(/"/g,'&quot;');
+  const _ageOf = (b)=>{ const s=b&&(b.startDate||b.orderStartDate); if(!s) return null; const d=Math.floor((Date.now()-new Date(s).getTime())/86400000); return isNaN(d)?null:d; };
+  const _retCount = Object.keys(window._retiredBatches||{}).length;
+
+  // Shared header: Open/Retired tabs + all-months toggle + (open-only) min-age filter.
+  const controls = `
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;margin-bottom:10px;padding:8px 10px;background:var(--surface2);border-radius:4px">
+      <div style="display:inline-flex;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+        <button class="btn btn-sm" style="border-radius:0;${!viewRetired?'background:#be123c;color:#fff':'background:transparent'}" onclick="window._rptZView='open';renderReportZ()">Open Items</button>
+        <button class="btn btn-sm" style="border-radius:0;${viewRetired?'background:#be123c;color:#fff':'background:transparent'}" onclick="window._rptZView='retired';renderReportZ()">Retired${_retCount?(' ('+_retCount+')'):''}</button>
+      </div>
+      <label style="font-size:12px;display:inline-flex;align-items:center;gap:5px;cursor:pointer">
+        <input type="checkbox" ${allMonths?'checked':''} onchange="window._rptZAllMonths=this.checked;renderReportZ()"> All months
+      </label>
+      ${(!viewRetired && allMonths)?`<label style="font-size:12px;display:inline-flex;align-items:center;gap:5px">Show age ≥ <input type="number" min="0" value="${minAge}" onchange="window._rptZMinAge=this.value;renderReportZ()" style="width:64px;padding:3px 6px;border:1px solid var(--border);border-radius:4px"> days</label>`:''}
+    </div>`;
+
+  const searchBar = `
+    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
+      <input type="text" id="rptz-search" placeholder="🔍 Batch / Customer / PC Code" value="${_esc(window._rptZSearch||'')}"
+             oninput="window._rptZSearch=this.value;renderReportZ()"
+             style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;min-width:200px;font-size:12px;flex:1;max-width:300px">
+      <select onchange="window._rptZMachine=this.value;renderReportZ()" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface)">
+        <option value="">All Machines</option>${[...new Set(state.batches.map(b=>b.machineId).filter(Boolean))].sort().map(m=>`<option value="${m}" ${mFilter===m?'selected':''}>${m}</option>`).join('')}
+      </select>
+      ${(mFilter||sQ)?`<button class="btn btn-ghost btn-sm" onclick="window._rptZSearch='';window._rptZMachine='';renderReportZ()">✕ Clear</button>`:''}
+    </div>`;
+
+  const _renderHtml = (html)=>{
+    _captureReportScroll();
+    const _afZ = document.activeElement, _afZId = _afZ && _afZ.id;
+    const _selZS = _afZ && _afZ.selectionStart, _selZE = _afZ && _afZ.selectionEnd;
+    document.getElementById('report-output').innerHTML = html;
+    if (_afZId) { const n = document.getElementById(_afZId); if (n) { n.focus(); try { if (_selZS!=null) n.setSelectionRange(_selZS,_selZE); } catch(e){} } }
+    _scrollIntoReportIfFirstView('Z');
+  };
+
+  // ═══════════════ RETIRED VIEW ═══════════════
+  if(viewRetired){
+    let ret = Object.values(window._retiredBatches||{});
+    if(!allMonths) ret = ret.filter(r => (r.prod_month||'') === ym);
+    let rrows = ret.map(r=>({ r, b: getBatch(r.batch_number)||{} }));
+    if(mFilter) rrows = rrows.filter(x=> normMcId(x.b.machineId)===normMcId(mFilter));
+    if(sQ) rrows = rrows.filter(x=> (x.r.batch_number||'').toLowerCase().includes(sQ) || (x.b.customer||'').toLowerCase().includes(sQ));
+    rrows.sort((a,b)=>(a.r.batch_number||'').localeCompare(b.r.batch_number||''));
+    const body = rrows.map(({r,b})=>{
+      const gross = b.actualProd||b.actualQty||0;
+      const _ag = _v41_agradeFor(r.batch_number, b.isPrinted?'printed':'unprinted');
+      const aGradeQty = _ag?_ag.aGrade:0;
+      const gap = +(r.residual_wip||0);
+      return `<tr>
+        <td class="td-bold td-mono">${r.batch_number} <span class="badge" style="background:rgba(190,18,60,.15);color:#be123c">retired</span></td>
+        <td class="td-mono text-sm">${r.prod_month||'—'}</td>
+        <td class="td-mono text-sm">${b.machineId||'—'}</td>
+        <td class="text-sm">${b.customer||'—'}</td>
+        <td class="td-mono">${fmt(gross)}L</td>
+        <td class="td-mono green">${aGradeQty>0.005?fmt(aGradeQty)+'L':'—'}</td>
+        <td class="td-mono amber">${gap>0.005?fmt(gap)+'L':'—'}</td>
+        <td class="text-sm" style="color:var(--text3)">${fmtDate(r.retired_at)} · ${_esc(r.retired_by||'—')}${r.reason?(' · '+_esc(r.reason)):''}</td>
+        <td><button class="btn btn-sm btn-ghost" style="font-size:11px" onclick="_rptZUnretire('${r.batch_number}')">↩ Un-retire</button></td>
+      </tr>`;
+    }).join('');
+    _renderHtml(`
+    <div class="card mb-16">
+      <div class="section-title mb-12">🧹 Report Z — Retired Batches${allMonths?' (all months)':' ('+ym+')'}</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid #be123c">
+        Batches closed <b>as-is-where-is</b> (legacy cleanup): excluded from open/active views with WIP treated as 0. Gross and A-Grade are unchanged — the <b>Gap</b> is the residual that was produced but never reached A-grade/scrap/pack (an honest write-off). Each is shown in its production month. Use <b>Un-retire</b> to reverse (restores prior status).
+      </div>
+      ${controls}
+      ${searchBar}
+      <div class="tbl-wrap tbl-sticky"><table>
+        <thead><tr><th>Batch</th><th>Prod Month</th><th>Machine</th><th>Customer</th><th>Gross</th><th>A-Grade</th><th>Gap (write-off)</th><th>Retired (when · by · note)</th><th>Action</th></tr></thead>
+        <tbody>${body||'<tr><td colspan="9" class="text-center text-muted">No retired batches'+(allMonths?'':' for '+ym)+'</td></tr>'}</tbody>
+      </table></div>
+    </div>`);
+    return;
+  }
+
+  // ═══════════════ OPEN ITEMS VIEW ═══════════════
+  const baseBatches = (allMonths
+      ? state.batches.filter(b=>!b.deleted && b.batchNumber)
+      : getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber)
+    ).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  // An "open item" = order not closed OR non-zero residual WIP — and NOT already retired.
+  const items = baseBatches.map(b=>{
     const wip = getBatchWIPBreakdown(b.batchNumber);
     const totalWIP = wip ? (wip.totalWIP||0) : 0;
     const packWIP  = wip ? (wip.packWIP||0)  : 0;   // FG awaiting dispatch
     const isOpen = (b.status!=='closed') || totalWIP>0.005 || packWIP>0.005;
-    return { b, wip, totalWIP, packWIP, isOpen };
-  }).filter(x=>x.isOpen);
+    return { b, wip, totalWIP, packWIP, isOpen, age:_ageOf(b) };
+  }).filter(x=>x.isOpen && !_isRetired(x.b.batchNumber));
 
-  // v41ZB: machine filter (→ only that machine's batches) + free-text search + totals row.
-  const mFilter = window._rptZMachine || '';
-  const sQ = (window._rptZSearch || '').toLowerCase().trim();
-  const machineOpts = [...new Set(items.map(x=>x.b.machineId).filter(Boolean))].sort()
-    .map(m=>`<option value="${m}" ${mFilter===m?'selected':''}>${m}</option>`).join('');
   let shown = items;
   if (mFilter) shown = shown.filter(x => normMcId(x.b.machineId) === normMcId(mFilter));
   if (sQ) shown = shown.filter(x =>
     (x.b.batchNumber||'').toLowerCase().includes(sQ) ||
     (x.b.customer||'').toLowerCase().includes(sQ) ||
     (x.b.pcCode||'').toLowerCase().includes(sQ));
+  if (allMonths && minAge>0) shown = shown.filter(x => x.age==null || x.age>=minAge); // legacy staleness filter
 
-  const rows = shown.map(({b,wip,totalWIP,packWIP})=>{
+  const rows = shown.map(({b,wip,totalWIP,packWIP,age})=>{
     const statusBadge = b.status==='closed'
       ? '<span class="badge badge-gray">closed</span>'
       : '<span class="badge" style="background:rgba(220,38,38,0.15);color:#dc2626">open</span>';
@@ -7951,12 +8066,16 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
       wip.piWIP>0.005?`PI ${fmt(wip.piWIP)}L`:'',
       wip.toPackTransit>0.005?`Transit ${fmt(wip.toPackTransit)}L`:'',
     ].filter(Boolean).join(', ') : '';
-    // v41ZD #5: A-Grade qty (same source as Reports D/G) + Packed qty (packing.in)
     const _agZ = _v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
     const aGradeQty = _agZ ? _agZ.aGrade : 0;
     const packedQty = wip ? (wip.packIn || 0) : 0;
+    const checked = window._rptZSel.has(b.batchNumber) ? 'checked' : '';
+    const ageTxt = age==null?'—':(age+'d');
+    const ageCls = (age!=null && age>=60)?'red':((age!=null && age>=30)?'amber':'');
     return `<tr>
+      <td><input type="checkbox" ${checked} onclick="_rptZToggle('${b.batchNumber}',this.checked)"></td>
       <td class="td-bold td-mono">${b.batchNumber}</td>
+      <td class="td-mono ${ageCls}">${ageTxt}</td>
       <td class="td-mono text-sm">${b.machineId||'—'}</td>
       <td class="text-sm">${b.customer||'—'}</td>
       <td class="td-mono">${b.size}</td>
@@ -7979,7 +8098,7 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
   const sumWIP   = shown.reduce((s,x)=>s+(x.totalWIP||0),0);
   const sumPack  = shown.reduce((s,x)=>s+(x.packWIP||0),0);
   const totalsRow = shown.length ? `<tfoot><tr style="background:var(--surface2);font-weight:800">
-      <td colspan="6" class="text-right" style="padding-right:8px">TOTAL (${shown.length} item${shown.length===1?'':'s'})</td>
+      <td colspan="8" class="text-right" style="padding-right:8px">TOTAL (${shown.length} item${shown.length===1?'':'s'})</td>
       <td class="td-mono">${fmt(sumGross)}L</td>
       <td class="td-mono green">${fmt(sumAGrade)}L</td>
       <td class="td-mono green">${fmt(sumPacked)}L</td>
@@ -7989,42 +8108,63 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
       <td></td>
     </tr></tfoot>` : '';
 
-  const filterBar = `
-    <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:12px">
-      <input type="text" id="rptz-search" placeholder="🔍 Batch / Customer / PC Code" value="${(window._rptZSearch||'').replace(/"/g,'&quot;')}"
-             oninput="window._rptZSearch=this.value;renderReportZ()"
-             style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;min-width:220px;font-size:12px;flex:1;max-width:320px">
-      <select onchange="window._rptZMachine=this.value;renderReportZ()" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface)">
-        <option value="">All Machines</option>${machineOpts}
-      </select>
-      ${(mFilter||sQ)?`<button class="btn btn-ghost btn-sm" onclick="window._rptZSearch='';window._rptZMachine='';renderReportZ()">✕ Clear</button>`:''}
-      <span style="margin-left:auto;font-size:11px;color:var(--text-muted)">${shown.length} of ${items.length} open</span>
+  const selN = window._rptZSel.size;
+  const retireBar = `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:8px 0">
+      <button id="rptz-retire-btn" class="btn btn-sm" ${selN?'':'disabled'} style="background:#be123c;color:#fff" onclick="_rptZRetireSelected()">🗃️ Retire ${selN?selN+' ':''}selected</button>
+      ${selN?`<button class="btn btn-ghost btn-sm" onclick="window._rptZSel=new Set();renderReportZ()">Clear selection</button>`:''}
+      <span style="font-size:11px;color:var(--text-muted)">Retire = close as-is across Planning + DPR and exclude WIP. No A-Grade / production change. Reversible from the Retired tab.</span>
     </div>`;
 
-  const html = `
+  _renderHtml(`
   <div class="card mb-16">
-    <div class="section-title mb-12">🧹 Report Z — Month Changeover / Open Items (${ym})</div>
+    <div class="section-title mb-12">🧹 Report Z — Open Items${allMonths?' (all months)':' ('+ym+')'}</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid #be123c">
-      Lists batches in <b>${ym}</b> still open: unclosed orders and/or non-zero residual WIP. To get a clean slate before the next month, either complete the genuine production (close the order in Planning) or, for material that was produced but never fully scanned, use <b>Reconcile WIP</b> to resolve the residual. Reconciliation entries are timestamped inside <b>${ym}</b> so A-Grade stays attributed to this production month.
+      Batches still open${allMonths?' across <b>all months</b>':' in <b>'+ym+'</b>'}: unclosed orders and/or residual WIP. For genuine residual you want to account, use <b>Reconcile WIP</b> (moves A-Grade). For batches that are physically gone, tick them and <b>Retire</b> — an as-is close that excludes WIP without changing A-Grade or production.${allMonths?` Showing items aged ≥ <b>${minAge}</b> days.`:''}
     </div>
-    ${filterBar}
+    ${controls}
+    ${searchBar}
+    ${retireBar}
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
-        <th>Batch</th><th>Machine</th><th>Customer</th><th>Sz</th><th>Type</th><th>Order Status</th>
+        <th style="width:28px"></th><th>Batch</th><th>Age</th><th>Machine</th><th>Customer</th><th>Sz</th><th>Type</th><th>Order Status</th>
         <th>Gross Prod</th><th>A-Grade</th><th>Packed</th><th>Total WIP</th><th>WIP Breakdown</th><th>FG Awaiting Dispatch</th><th>Action</th>
       </tr></thead>
-      <tbody>${rows||'<tr><td colspan="13" class="text-center text-muted">'+(items.length?'No items match the current filter':'✅ No open items for '+ym+' — clean slate')+'</td></tr>'}</tbody>
+      <tbody>${rows||'<tr><td colspan="15" class="text-center text-muted">'+(items.length?'No items match the current filter':'✅ No open items — clean slate')+'</td></tr>'}</tbody>
       ${totalsRow}
     </table></div>
-    <div style="font-size:11px;color:var(--text3);margin-top:10px">${items.length} open item${items.length===1?'':'s'} total. FG awaiting dispatch (packed, not yet dispatched) is shown for context but is not WIP — it resolves on dispatch scan.</div>
-  </div>`;
-  _captureReportScroll();
-  // v41ZB: preserve search focus + caret across the per-keystroke re-render.
-  const _afZ = document.activeElement, _afZId = _afZ && _afZ.id;
-  const _selZS = _afZ && _afZ.selectionStart, _selZE = _afZ && _afZ.selectionEnd;
-  document.getElementById('report-output').innerHTML = html;
-  if (_afZId) { const n = document.getElementById(_afZId); if (n) { n.focus(); try { if (_selZS!=null) n.setSelectionRange(_selZS,_selZE); } catch(e){} } }
-  _scrollIntoReportIfFirstView('Z');
+    <div style="font-size:11px;color:var(--text3);margin-top:10px">${shown.length} shown of ${items.length} open. FG awaiting dispatch (packed, not yet dispatched) is shown for context but is not WIP — it resolves on dispatch scan.</div>
+  </div>`);
+}
+
+// v41ZZ: Report Z selection + retire/un-retire actions.
+function _rptZToggle(bn, on){ if(!window._rptZSel) window._rptZSel=new Set(); if(on) window._rptZSel.add(bn); else window._rptZSel.delete(bn);
+  const el=document.getElementById('rptz-retire-btn'); const n=window._rptZSel.size;
+  if(el){ el.disabled=!n; el.textContent = n?`🗃️ Retire ${n} selected`:'🗃️ Retire selected'; }
+}
+async function _rptZRetireSelected(){
+  const sel=[...(window._rptZSel||[])]; if(!sel.length) return;
+  if(!confirm(`Retire ${sel.length} batch(es)?\n\nThis closes them as-is (Planning status + DPR), removes them from open/active views, and excludes their WIP. No A-Grade or production numbers change. Reversible from the Retired tab.`)) return;
+  const reason = (prompt('Reason / note (optional):','legacy cleanup')||'').toString();
+  const batches = sel.map(bn=>{
+    const b=getBatch(bn)||{}; const wip=getBatchWIPBreakdown(bn);
+    const prodMonth=((b.startDate||b.orderStartDate)||'').toString().slice(0,7);
+    return { batchNumber:bn, orderId:(b.id||null), prodMonth, residualWip: wip?(wip.totalWIP||0):0 };
+  });
+  try{
+    const r=await fetch('/api/batch/retire',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batches,by:(currentUser&&currentUser.username)||currentDept||'admin',reason})});
+    const j=await r.json();
+    if(j&&j.ok){ toast(`Retired ${j.retired} batch(es)`,'#16a34a'); window._rptZSel=new Set(); await loadRetiredBatchesTrk(); renderReportZ(); }
+    else toast('Retire failed: '+((j&&j.error)||'error'),'#dc2626');
+  }catch(e){ toast('Retire failed: '+e.message,'#dc2626'); }
+}
+async function _rptZUnretire(bn){
+  if(!confirm(`Un-retire ${bn}?\n\nIt returns to its prior status and re-appears in open/active views.`)) return;
+  try{
+    const r=await fetch('/api/batch/unretire',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batches:[bn]})});
+    const j=await r.json();
+    if(j&&j.ok){ toast(`Un-retired ${bn}`,'#16a34a'); await loadRetiredBatchesTrk(); renderReportZ(); }
+    else toast('Un-retire failed: '+((j&&j.error)||'error'),'#dc2626');
+  }catch(e){ toast('Un-retire failed: '+e.message,'#dc2626'); }
 }
 
 function _v41_openReconcileModal(batchNo, stage){
@@ -8150,7 +8290,7 @@ function _v41_renderReportFInner(){
   const filterMachine = window._rptFMachine || '';
   const filterBatch   = window._rptFBatch   || '';
 
-  const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
+  const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
 
   // All month batches with any DPR production entered — use scanSummary for batch discovery
   let allRelevantBatches = [...new Set([
@@ -8170,7 +8310,7 @@ function _v41_renderReportFInner(){
   if(filterBatch) allRelevantBatches = allRelevantBatches.filter(bn=>bn===filterBatch);
 
   // Build dropdown options (month-scoped)
-  const monthBatchesArr = getTrkMonthBatches();
+  const monthBatchesArr = getTrkMonthBatches(true);
   const allMachinesF = [...new Set(monthBatchesArr.map(b=>b.machineId).filter(Boolean))].sort();
   let allBatchesF  = [...new Set([
     ...monthBatchesArr.filter(b=>(b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
@@ -8368,7 +8508,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   const filterBatch = window._rptBBatch || '';
 
   // Filter to month batches only
-  const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
+  const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
   // Build batch list from scanSummary (full history) when available
   let allBatchNos;
   if (hasScanSummary()) {
@@ -8444,7 +8584,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const aimInQty=boxToLakh(aimInBoxes,batch?.size||'0');
       // v41ZB: Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In.
       const aimWaste = getTotalWastage(batchNo,'aim');
-      const prodWip=Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt - aimInQty);
+      const prodWip=_isRetired(batchNo)?0:Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt - aimInQty);
       // firstIn uses state.scans for timestamp (acceptable — only for display, not calculation)
       const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
       const hrs=firstIn?hoursAgo(firstIn.ts):0;
@@ -8497,7 +8637,7 @@ _scrollIntoReportIfFirstView('C');
   const filterMachine = window._rptCMachine || '';
   const filterBatch   = window._rptCBatch   || '';
 
-  const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted);
+  const monthBatches = getTrkMonthBatches(true).filter(b=>!b.deleted);
   const allMachines = [...new Set(monthBatches.map(b=>b.machineId).filter(Boolean))].sort();
   // v41ZD #1: batch dropdown shows only batches belonging to the selected machine
   const batchPoolC = filterMachine ? monthBatches.filter(b=>_batchBelongsToMachine(b, filterMachine)) : monthBatches;
@@ -8664,7 +8804,7 @@ function _v41_renderReportAInner(){
   if(!document.getElementById('report-output')) renderReports();
   // Date filter
   const filterBatch = window._rptABatch||'';
-  const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted);
+  const monthBatches = getTrkMonthBatches(true).filter(b=>!b.deleted);
   const batches = monthBatches.filter(b=>!filterBatch||b.batchNumber===filterBatch);
   // v37F: Sort batch dropdown ascending by batch number for easier scanning
   const sortedBatches = [...monthBatches].sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}));
@@ -8904,7 +9044,7 @@ function _v41_renderReportEInner(){
     const ag=_v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
     const totalAG=ag.aGrade;
     const aGradePct=ag.pct;
-    const wip=Math.max(0,grossProd-aimIn);
+    const wip=_isRetired(b.batchNumber)?0:Math.max(0,grossProd-aimIn);
     const printingTD_c = useSS ? (_ss(b.batchNumber,'printing').out + localExtra('printing','out'))
                                 : scansForBatch.filter(s=>s.dept==='printing'&&s.type==='out').length;
     const printingTD=b.isPrinted?boxToLakh(printingTD_c,b.size):0;
@@ -10167,7 +10307,7 @@ function _renderReportJContent(alerts) {
   const tab = window._reportJTab;
   const f = window._reportJFilters;
   // Filter alerts by tab type
-  let filtered = alerts.filter(a => a.alert_type === tab);
+  let filtered = alerts.filter(a => a.alert_type === tab && !_isRetired(a.batch_number)); // v41ZZ: drop retired from aging/flow-B
   // Apply filters
   if (f.batch) filtered = filtered.filter(a => (a.batch_number||'').toLowerCase().includes(f.batch.toLowerCase()));
   if (f.customer) {
@@ -11202,7 +11342,7 @@ function exportDispatch() {
 }
 
 function exportReportA(){
-  const rows=getTrkMonthBatches().filter(b=>!b.deleted).map(b=>{
+  const rows=getTrkMonthBatches(true).filter(b=>!b.deleted).map(b=>{
     const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');
     const wipDays=getBatchWIPDays(b.batchNumber);
     // v40 Phase 18.14: combined-source dispatch
@@ -11247,7 +11387,7 @@ function exportReportA(){
 function exportReportB(){
   const rows=[];
   const depts=['aim','printing','pi','packing'];
-  const monthBatchNos = new Set(getTrkMonthBatches().map(b=>b.batchNumber).filter(Boolean));
+  const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
   depts.forEach(dept=>{
     const hasWastage=dept==='aim'||dept==='printing'||dept==='pi';
     // Build batch list from scanSummary (full) when available
@@ -11282,7 +11422,7 @@ function exportReportB(){
       // screen (line ~8309) and getBatchWIPBreakdown.preAIM both deduct AIM-stage salvage+remelt.
       //   Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In
       const aimWasteEx=getTotalWastage(batchNo,'aim');
-      const prodWipEx=Math.max(0,grossProdEx-aimWasteEx.salvage-aimWasteEx.remelt-aimInQtyEx);
+      const prodWipEx=_isRetired(batchNo)?0:Math.max(0,grossProdEx-aimWasteEx.salvage-aimWasteEx.remelt-aimInQtyEx);
       rows.push({
         'Department':DEPT_LABELS[dept]||dept,'Batch':batchNo,'Customer':b?.customer||'',
         'Prod WIP (L)':fmt(prodWipEx),
@@ -11300,7 +11440,7 @@ function exportReportB(){
 }
 
 function exportReportC(){
-  const rows=getTrkMonthBatches().filter(b=>!b.deleted).map(b=>{
+  const rows=getTrkMonthBatches(true).filter(b=>!b.deleted).map(b=>{
     const wipDays=getBatchWIPDays(b.batchNumber);
     const std=b.isPrinted?3:2;
     const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
@@ -11374,7 +11514,7 @@ function exportReportE(){
         const aimIn=aimOut+aimW.total;
         const ag=_v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
         const aGradePct=ag.pct, netAGrade=ag.aGrade;
-        const wip=Math.max(0,grossProd-aimIn);
+        const wip=_isRetired(b.batchNumber)?0:Math.max(0,grossProd-aimIn);
         const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
         const packOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
         const packQty = boxToLakh(packOutBoxes, b.size);
@@ -12402,6 +12542,7 @@ function _v39_sapStatusBadgeInit() {
 if (typeof document !== 'undefined') {
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(_v39_sapStatusBadgeInit, 1000);
+    setTimeout(loadRetiredBatchesTrk, 1200); // v41ZZ: load retired set so WIP exclusion applies in all reports
   } else {
     document.addEventListener('DOMContentLoaded', () => setTimeout(_v39_sapStatusBadgeInit, 1000));
   }
