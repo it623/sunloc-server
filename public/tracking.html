@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44D</title>
+<title>Sunloc Tracking Suite v1.0 · build v44E</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -567,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44D</p>
+      <p>Tracking Suite v1.0 · build v44E</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -598,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44D</p>
+      <p>Tracking Suite v1.0 · build v44E</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1254,7 +1254,7 @@ function checkAlerts(){
 
 function getAlertCount(dept){
   checkAlerts();
-  return dept ? state.alerts.filter(a=>a.dept===dept).length : state.alerts.length;
+  return dept ? state.alerts.filter(a=>a.dept===dept&&!_isRetired(a.batchNumber)).length : state.alerts.filter(a=>!_isRetired(a.batchNumber)).length; // v44E Issue#2: retired drop out of alerts
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2433,6 +2433,24 @@ async function loadRetiredBatchesTrk(){
   }catch(e){ /* keep prior set on failure — never blank a populated set on a transient error */ }
 }
 
+// ═══ v44E Issue#1: WIP reconciliation OVERRIDE (admin-typed authoritative per-batch values) ═══
+// When an override exists for a batch, the central accessors getBatchWIPBreakdown + getBatchAGrade
+// return the admin's typed Gross/A-Grade/Packing/WIP/Wastage, so every report (A–G) reflects them.
+window._reconOverrides = window._reconOverrides || {};
+function _reconOverride(bn){ return bn ? (window._reconOverrides[String(bn).toUpperCase()]||null) : null; }
+function _reconGross(b){ const o=b?_reconOverride(b.batchNumber):null; return o&&o.gross!=null ? o.gross : (b?(b.actualProd||b.actualQty||0):0); }
+async function loadReconcileOverridesTrk(){
+  try{
+    const r = await fetch('/api/batch/reconcile-overrides'); const j = await r.json();
+    if(j && j.ok && Array.isArray(j.overrides)){
+      const map={};
+      j.overrides.forEach(o=>{ const k=String(o.batch_number||'').toUpperCase();
+        map[k]={ gross:o.gross, aGrade:o.a_grade, packing:o.packing, wip:o.wip, wastage:o.wastage, reason:o.reason, by:o.by_user, ts:o.ts }; });
+      window._reconOverrides = map;
+    }
+  }catch(e){ /* keep prior overrides on transient failure */ }
+}
+
 function getBatchWIPBreakdown(batchNo){
   const batch = getBatch(batchNo);
   if(!batch) return null;
@@ -2443,6 +2461,14 @@ function getBatchWIPBreakdown(batchNo){
     return { grossProd:_g, aimIn:0, aimOut:0, packIn:0, packOut:0, preAIM:0, aimWIP:0, printWIP:0,
              piWIP:0, toPackTransit:0, packWIP:0, totalWIP:0,
              wAIM:{salvage:0,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, retired:true };
+  }
+  // v44E Issue#1: admin reconciliation override — authoritative typed totals replace scan-derived WIP.
+  const _ovW = _reconOverride(batchNo);
+  if(_ovW){
+    const g=_ovW.gross||0, pk=_ovW.packing||0, w=_ovW.wip||0, ws=_ovW.wastage||0;
+    return { grossProd:g, aimIn:0, aimOut:0, packIn:pk, packOut:pk, preAIM:0, aimWIP:0, printWIP:0,
+             piWIP:0, toPackTransit:0, packWIP:0, totalWIP:w,
+             wAIM:{salvage:ws,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, reconciled:true };
   }
   const sz = batch.size;
   const useSummary = hasScanSummary();
@@ -2521,6 +2547,14 @@ function getBatchAGrade(batchNo, stage){
   // Falls back to state.scans (recent only) if scanSummary not yet loaded
   const batch = getBatch(batchNo);
   if(!batch) return {inspected:0,aGrade:0,pct:0,salvage:0,remelt:0,wip:0};
+
+  // v44E Issue#1: admin reconciliation override — A-Grade(lakhs) + Wastage are admin-typed; keep the
+  // frozen A-Grade% shape (Out/(Out+Salvage+Remelt)) using those values.
+  const _ovA = _reconOverride(batchNo);
+  if(_ovA){
+    const a=_ovA.aGrade||0, ws=_ovA.wastage||0, denom=a+ws;
+    return { inspected:a+ws, aGrade:a, pct: denom>0?(a/denom*100):0, salvage:ws, remelt:0, wip:_ovA.wip||0, reconciled:true };
+  }
 
   const useSummary = hasScanSummary();
 
@@ -2612,6 +2646,9 @@ function _v41_clearAgradeMonthCache(){ _v41_agradeMonthCache = {}; }
 // Reports must call _v41_ensureAgradeMonthLoaded() once before their batch loop so the cache
 // is warm; if it isn't (e.g. fetch failed), this transparently falls back to cumulative.
 function _v41_agradeFor(batchNo, stage){
+  // v44E Issue#1: reconciliation override wins over both cumulative and month-attributed A-Grade.
+  const _ov = _reconOverride(batchNo);
+  if(_ov){ const a=_ov.aGrade||0, ws=_ov.wastage||0, d=a+ws; return {inspected:a+ws,aGrade:a,pct:d>0?(a/d*100):0,salvage:ws,remelt:0,wip:_ov.wip||0,reconciled:true}; }
   if (_v41_useMonthAttributed) {
     const md = _v41_agradeMonthCache[_trkSelectedMonth];
     if (md) {
@@ -3201,7 +3238,7 @@ function renderDashboard(){
   const monthBatchNos = new Set(monthBatches.map(b=>b.batchNumber));
   const totalBatches=monthBatches.filter(b=>b.status!=='closed').length;
   const totalLabels=state.labels.filter(l=>!l.voided&&!l.isOrange&&monthBatchNos.has(l.batchNumber)).length;
-  const monthAlerts=state.alerts.filter(a=>monthBatchNos.has(a.batchNumber));
+  const monthAlerts=state.alerts.filter(a=>monthBatchNos.has(a.batchNumber)&&!_isRetired(a.batchNumber)); // v44E Issue#2
   const totalAlerts=monthAlerts.length;
   // Use _ss() for full history counts — fixes LIMIT 2000 gap on dashboard KPIs
   // v40 Phase 18.14: Dispatched count combines legacy per-box dispatch scans + Phase 18 truck dispatches
@@ -3290,7 +3327,7 @@ function renderDashboard(){
         const dispDate=calcDispatchDate(b);
         const std=b.isPrinted?3:2;
         const statusBadge=wipDays===0?'<span class="badge badge-green">✅ Closed</span>':wipDays<=std?'<span class="badge badge-blue">🔵 On Track</span>':'<span class="badge badge-amber">⚠️ Delayed</span>';
-        const alerts=state.alerts.filter(a=>a.batchNumber===b.batchNumber).length;
+        const alerts=state.alerts.filter(a=>a.batchNumber===b.batchNumber&&!_isRetired(a.batchNumber)).length;
         return `<tr>
           <td class="td-bold td-mono">${b.batchNumber}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
           <td>${b.customer||'-'}</td>
@@ -4036,7 +4073,7 @@ const DEPT_CONFIG={
 function renderDeptScan(dept){
   const el=document.getElementById('page-'+dept);
   const cfg=DEPT_CONFIG[dept];
-  const myAlerts=state.alerts.filter(a=>a.dept===dept);
+  const myAlerts=state.alerts.filter(a=>a.dept===dept&&!_isRetired(a.batchNumber)); // v44E Issue#2: retired drop out
   const activeBatches=getActiveBatchesForDept(dept);
 
   document.getElementById('tb-actions').innerHTML=`
@@ -4197,7 +4234,7 @@ function renderDeptScan(dept){
         const balanced=inCount>0&&accountedBoxes===inCount;
         const canClose=balanced&&!closed&&(currentDept==='admin'||balanced);
         const balanceShortfall=inCount-accountedBoxes; // positive = unaccounted boxes remain
-        const alerts=state.alerts.filter(a=>a.batchNumber===b.batchNumber&&a.dept===dept).length;
+        const alerts=state.alerts.filter(a=>a.batchNumber===b.batchNumber&&a.dept===dept&&!_isRetired(a.batchNumber)).length;
         return `<tr>
           <td class="td-bold td-mono">${b.batchNumber}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
           <td class="text-sm">${b.customer||'-'}</td>
@@ -7456,6 +7493,9 @@ function _scrollIntoReportIfFirstView(reportKey) {
 }
 
 function renderReports(forceRebuild){
+  // v44E Issue#2: make the retired set + reconcile overrides reliably loaded before any report renders,
+  // so retired batches drop out of ALL reports (A–G) regardless of load timing.
+  if(!window._rptDataLoaded){ window._rptDataLoaded=true; Promise.all([loadRetiredBatchesTrk(),loadReconcileOverridesTrk()]).then(()=>{ try{ if(typeof window._activeReport==='function') window._activeReport(); }catch(e){} }); }
   // v37E T3: forceRebuild means user navigated to /reports anew — reset last-shown report tracker
   if (forceRebuild) _lastReportShown = null;
   // v37F: Reset Report I active container so any direct call from this page goes to report-output
@@ -7566,7 +7606,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   // include any batch that has scan activity (in scanSummary OR scans) so batches with
   // mismatched metadata dates still surface their gaps. This fixes the reported issue
   // of batches being absent from Report H despite having visible gaps.
-  const monthBatchSet = new Set(getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).map(b=>b.batchNumber));
+  const monthBatchSet = new Set(getTrkMonthBatches(true).filter(b=>!b.deleted&&b.batchNumber).map(b=>b.batchNumber));
   const scanActiveBatchSet = new Set(Object.keys(state.scanSummary || {}));
   // Also include batches that have Phase 18 dispatch records
   for (const r of (state.dispatchRecs || [])) {
@@ -7781,7 +7821,7 @@ _scrollIntoReportIfFirstView('F');
 }
 
 function exportReportH(){
-  const batches=getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  const batches=getTrkMonthBatches(true).filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const getTransitions=(batch)=>batch.isPrinted
     ?[['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
     :[['aim','packing'],['packing','dispatch']];
@@ -8134,7 +8174,7 @@ function exportReportG(){
       'Type': b.isPrinted?'PTD':'UP',
       'A-Grade Basis': md ? (`Production month ${_trkSelectedMonth} (6 AM cut)`) : 'Live cumulative',
       'Cross-Month': (ag && ag.crossMonth) ? 'YES — spans boundary' : '',
-      'Gross Production (L)': fmt(b.actualProd||b.actualQty||0),
+      'Gross Production (L)': fmt(_reconGross(b)),
       'Inspected (L)': fmt(ag.inspected),
       'A-Grade (L)': fmt(ag.aGrade),
       'Salvage (L)': fmt(ag.salvage),
@@ -8170,7 +8210,7 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
   if(currentDept!=='admin'){ toast('Admin only','#dc2626'); return; }
   if(!document.getElementById('report-output')) renderReports();
   // v41ZZ: lazy-load the retired set once, then re-render so retire/un-retire + WIP exclusion reflect.
-  if(!window._rptZRetiredLoaded){ window._rptZRetiredLoaded=true; loadRetiredBatchesTrk().then(()=>renderReportZ()); }
+  if(!window._rptZRetiredLoaded){ window._rptZRetiredLoaded=true; Promise.all([loadRetiredBatchesTrk(),loadReconcileOverridesTrk()]).then(()=>renderReportZ()); }
   if(!window._rptZSel) window._rptZSel = new Set();
 
   const ym = _trkSelectedMonth;
@@ -8225,7 +8265,7 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
     if(sQ) rrows = rrows.filter(x=> (x.r.batch_number||'').toLowerCase().includes(sQ) || (x.b.customer||'').toLowerCase().includes(sQ));
     rrows.sort((a,b)=>(a.r.batch_number||'').localeCompare(b.r.batch_number||''));
     const body = rrows.map(({r,b})=>{
-      const gross = b.actualProd||b.actualQty||0;
+      const gross = _reconGross(b);
       const _ag = _v41_agradeFor(r.batch_number, b.isPrinted?'printed':'unprinted');
       const aGradeQty = _ag?_ag.aGrade:0;
       const gap = +(r.residual_wip||0);
@@ -8267,11 +8307,12 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
     const wip = getBatchWIPBreakdown(b.batchNumber);
     const totalWIP = wip ? (wip.totalWIP||0) : 0;
     const packWIP  = wip ? (wip.packWIP||0)  : 0;   // FG awaiting dispatch
-    const isOpen = (b.status!=='closed') || totalWIP>0.005 || packWIP>0.005;
+    const isOpen = (b.status!=='closed') || totalWIP>0.005 || packWIP>0.005 || !!_reconOverride(b.batchNumber);
     return { b, wip, totalWIP, packWIP, isOpen, age:_ageOf(b) };
   }).filter(x=>x.isOpen && !_isRetired(x.b.batchNumber));
 
   let shown = items;
+  // v44E: remember which batches are shown for bulk select-all
   if (mFilter) shown = shown.filter(x => normMcId(x.b.machineId) === normMcId(mFilter));
   if (sQ) shown = shown.filter(x =>
     (x.b.batchNumber||'').toLowerCase().includes(sQ) ||
@@ -8279,6 +8320,7 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
     (x.b.pcCode||'').toLowerCase().includes(sQ));
   if (allMonths && minAge>0) shown = shown.filter(x => x.age==null || x.age>=minAge); // legacy staleness filter
 
+  window._rptZShownBns = shown.map(x=>x.b.batchNumber);
   const rows = shown.map(({b,wip,totalWIP,packWIP,age})=>{
     const statusBadge = b.status==='closed'
       ? '<span class="badge badge-gray">closed</span>'
@@ -8298,25 +8340,25 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
     const ageCls = (age!=null && age>=60)?'red':((age!=null && age>=30)?'amber':'');
     return `<tr>
       <td><input type="checkbox" ${checked} onclick="_rptZToggle('${b.batchNumber}',this.checked)"></td>
-      <td class="td-bold td-mono">${b.batchNumber}</td>
+      <td class="td-bold td-mono">${b.batchNumber}${_reconOverride(b.batchNumber)?` <span class="badge" style="background:rgba(190,18,60,.15);color:#be123c;font-size:9px">reconciled</span>`:''}</td>
       <td class="td-mono ${ageCls}">${ageTxt}</td>
       <td class="td-mono text-sm">${b.machineId||'—'}</td>
       <td class="text-sm">${b.customer||'—'}</td>
       <td class="td-mono">${b.size}</td>
       <td>${b.isPrinted?'<span class="badge badge-purple">PTD</span>':'<span class="badge badge-gray">UP</span>'}</td>
       <td>${statusBadge}</td>
-      <td class="td-mono">${fmt(b.actualProd||b.actualQty||0)}L</td>
+      <td class="td-mono">${fmt(_reconGross(b))}L</td>
       <td class="td-mono green">${aGradeQty>0.005?fmt(aGradeQty)+'L':'—'}</td>
       <td class="td-mono green">${packedQty>0.005?fmt(packedQty)+'L':'—'}</td>
       <td class="td-mono amber">${totalWIP>0.005?fmt(totalWIP)+'L':'—'}</td>
       <td class="text-sm" style="color:var(--text3)">${wipDetail||'—'}</td>
       <td class="td-mono green">${packWIP>0.005?fmt(packWIP)+'L':'—'}</td>
-      <td>${(totalWIP>0.005)?`<button class="btn btn-sm" style="background:#be123c;color:#fff;font-size:11px" onclick="_v41_openReconcileModal('${b.batchNumber}','${b.isPrinted?'printed':'unprinted'}')">Reconcile WIP</button>`:'—'}</td>
+      <td><button class="btn btn-sm" style="background:${_reconOverride(b.batchNumber)?'#0e7490':'#be123c'};color:#fff;font-size:11px" onclick="_v41_openReconcileModal('${b.batchNumber}','${b.isPrinted?'printed':'unprinted'}')">${_reconOverride(b.batchNumber)?'Edit reconcile':'Reconcile'}</button></td>
     </tr>`;
   }).join('');
 
   // Totals across the currently shown (filtered) rows
-  const sumGross = shown.reduce((s,x)=>s+(x.b.actualProd||x.b.actualQty||0),0);
+  const sumGross = shown.reduce((s,x)=>s+_reconGross(x.b),0);
   const sumAGrade= shown.reduce((s,x)=>{const a=_v41_agradeFor(x.b.batchNumber,x.b.isPrinted?'printed':'unprinted');return s+(a?a.aGrade:0);},0);
   const sumPacked= shown.reduce((s,x)=>s+((x.wip&&x.wip.packIn)||0),0);
   const sumWIP   = shown.reduce((s,x)=>s+(x.totalWIP||0),0);
@@ -8343,14 +8385,14 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
   <div class="card mb-16">
     <div class="section-title mb-12">🧹 Report Z — Open Items${allMonths?' (all months)':' ('+ym+')'}</div>
     <div style="font-size:12px;color:var(--text3);margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid #be123c">
-      Batches still open${allMonths?' across <b>all months</b>':' in <b>'+ym+'</b>'}: unclosed orders and/or residual WIP. For genuine residual you want to account, use <b>Reconcile WIP</b> (moves A-Grade). For batches that are physically gone, tick them and <b>Retire</b> — an as-is close that excludes WIP without changing A-Grade or production.${allMonths?` Showing items aged ≥ <b>${minAge}</b> days.`:''}
+      Batches still open${allMonths?' across <b>all months</b>':' in <b>'+ym+'</b>'}: unclosed orders and/or residual WIP. To correct a batch to your own figures, use <b>Reconcile</b> — edit Gross/A-Grade/Packing/WIP/Wastage directly (authoritative across all reports, reversible). For batches that are physically gone, tick them and <b>Retire</b> — an as-is close that excludes WIP without changing A-Grade or production.${allMonths?` Showing items aged ≥ <b>${minAge}</b> days.`:''}
     </div>
     ${controls}
     ${searchBar}
     ${retireBar}
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
-        <th style="width:28px"></th><th>Batch</th><th>Age</th><th>Machine</th><th>Customer</th><th>Sz</th><th>Type</th><th>Order Status</th>
+        <th style="width:28px"><input type="checkbox" id="rptz-selall" title="Select all shown" ${shown.length&&shown.every(x=>window._rptZSel.has(x.b.batchNumber))?'checked':''} onclick="_rptZSelectAllShown(this.checked)"></th><th>Batch</th><th>Age</th><th>Machine</th><th>Customer</th><th>Sz</th><th>Type</th><th>Order Status</th>
         <th>Gross Prod</th><th>A-Grade</th><th>Packed</th><th>Total WIP</th><th>WIP Breakdown</th><th>FG Awaiting Dispatch</th><th>Action</th>
       </tr></thead>
       <tbody>${rows||'<tr><td colspan="15" class="text-center text-muted">'+(items.length?'No items match the current filter':'✅ No open items — clean slate')+'</td></tr>'}</tbody>
@@ -8364,6 +8406,13 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
 function _rptZToggle(bn, on){ if(!window._rptZSel) window._rptZSel=new Set(); if(on) window._rptZSel.add(bn); else window._rptZSel.delete(bn);
   const el=document.getElementById('rptz-retire-btn'); const n=window._rptZSel.size;
   if(el){ el.disabled=!n; el.textContent = n?`🗃️ Retire ${n} selected`:'🗃️ Retire selected'; }
+}
+// v44E: bulk select/deselect all currently-shown Report Z rows.
+function _rptZSelectAllShown(on){
+  if(!window._rptZSel) window._rptZSel=new Set();
+  const bns = window._rptZShownBns||[];
+  if(on) bns.forEach(bn=>window._rptZSel.add(bn)); else bns.forEach(bn=>window._rptZSel.delete(bn));
+  renderReportZ();
 }
 async function _rptZRetireSelected(){
   const sel=[...(window._rptZSel||[])]; if(!sel.length) return;
@@ -8393,86 +8442,59 @@ async function _rptZUnretire(bn){
 
 function _v41_openReconcileModal(batchNo, stage){
   if(currentDept!=='admin'){ toast('Admin only','#dc2626'); return; }
-  const wip = getBatchWIPBreakdown(batchNo);
-  const totalWIP = wip ? (wip.totalWIP||0) : 0;
-  const ym = _trkSelectedMonth;
-  // Suggest the dept that holds the most WIP as the default reconciliation dept
-  const stageWips = wip ? [
-    ['aim', (wip.preAIM||0)+(wip.aimWIP||0)],
-    ['printing', wip.printWIP||0],
-    ['pi', wip.piWIP||0],
-  ] : [['aim',0]];
-  stageWips.sort((a,b)=>b[1]-a[1]);
-  const defaultDept = stageWips[0][0];
-  const deptOpts = (stage==='printed'?['aim','printing','pi']:['aim'])
-    .map(d=>`<option value="${d}" ${d===defaultDept?'selected':''}>${({aim:'AIM',printing:'Printing',pi:'PI'})[d]}</option>`).join('');
-
-  openModal(`Reconcile WIP — ${batchNo}`, `Resolve residual WIP for ${ym}`, `
+  const b = getBatch(batchNo) || {batchNumber:batchNo};
+  const wip = getBatchWIPBreakdown(batchNo) || {};
+  const ag  = _v41_agradeFor(batchNo, b.isPrinted?'printed':'unprinted') || {};
+  const ov  = _reconOverride(batchNo);
+  const wTot = (w)=> (w? (w.salvage||0)+(w.remelt||0) :0);
+  const curGross   = _reconGross(b);
+  const curAGrade  = ag.aGrade || 0;
+  const curPacking = wip.packIn || 0;
+  const curWIP     = wip.totalWIP || 0;
+  const curWastage = wTot(wip.wAIM)+wTot(wip.wPrint)+wTot(wip.wPI);
+  const f = (n)=> (Math.round((n||0)*100)/100);
+  const row = (id,label,val,hint)=>`
+    <div class="form-group">
+      <label>${label} (Lakhs)</label>
+      <input type="number" id="${id}" class="form-control" value="${f(val)}" step="0.01">
+      ${hint?`<div style="font-size:10px;color:var(--text3);margin-top:2px">${hint}</div>`:''}
+    </div>`;
+  openModal(`Reconcile — ${batchNo}`, `Admin correction — type the correct figures from your records`, `
     <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
-      Total residual WIP: <b style="color:var(--amber)">${fmt(totalWIP)}L</b>. Choose how to resolve it.
-      The A-Grade impact differs — pick the one that reflects what the material actually was.
+      Edit any of the five values to match your own data and Apply. These become the authoritative figures
+      for this batch across <b>all reports (A–G)</b> and A-Grade${ov?` <span style="color:#be123c">(currently reconciled)</span>`:''}. Reversible any time.
     </div>
-    <div class="form-group">
-      <label>Department (stage holding the WIP)</label>
-      <select id="recon-dept" class="form-control">${deptOpts}</select>
-    </div>
-    <div class="form-group">
-      <label>Resolution mode</label>
-      <select id="recon-mode" class="form-control" onchange="_v41_reconModeChange()">
-        <option value="writeoff">Write off as wastage — A-Grade DROPS (material scrapped/remelted)</option>
-        <option value="output">Record as completed output — A-Grade HOLDS (good, just unscanned)</option>
-      </select>
-    </div>
-    <div id="recon-writeoff-fields">
-      <div class="form-group">
-        <label>Salvage (Lakhs)</label>
-        <input type="number" id="recon-salvage" class="form-control" value="0" min="0" step="0.01">
-      </div>
-      <div class="form-group">
-        <label>Remelt (Lakhs)</label>
-        <input type="number" id="recon-remelt" class="form-control" value="0" min="0" step="0.01">
-      </div>
-    </div>
-    <div id="recon-output-fields" style="display:none">
-      <div class="form-group">
-        <label>Completed output to record (Lakhs)</label>
-        <input type="number" id="recon-outqty" class="form-control" value="${fmt(totalWIP)}" min="0" step="0.01">
-      </div>
-    </div>
+    ${row('recon-gross','Gross Production',curGross)}
+    ${row('recon-agrade','A-Grade',curAGrade)}
+    ${row('recon-packing','Packing',curPacking)}
+    ${row('recon-wip','WIP',curWIP,'Typed directly — not auto-derived.')}
+    ${row('recon-wastage','Wastage (salvage + remelt)',curWastage)}
     <div class="form-group">
       <label>Reason / note (audit)</label>
-      <input type="text" id="recon-reason" class="form-control" placeholder="e.g. May data incomplete — reconciled at changeover">
+      <input type="text" id="recon-reason" class="form-control" value="${ov&&ov.reason?_esc(ov.reason):''}" placeholder="e.g. Physically verified at changeover — corrected to actuals">
     </div>
-    <div style="font-size:11px;color:var(--text3)">This action is logged in the audit trail and timestamped into ${ym}.</div>
+    <div style="font-size:11px;color:var(--text3)">Logged in the audit trail. A-Grade % is recomputed as A-Grade ÷ (A-Grade + Wastage).</div>
   `, [
     { label:'Cancel', cls:'btn-secondary', fn:'closeModal()' },
-    { label:'Apply Reconciliation', cls:'btn-danger', fn:`_v41_submitReconcile('${batchNo}','${ym}')` },
+    ...(ov?[{ label:'Remove reconciliation', cls:'btn-ghost', fn:`_v41_clearReconcile('${batchNo}')` }]:[]),
+    { label:'Apply Reconciliation', cls:'btn-danger', fn:`_v41_submitReconcile('${batchNo}')` },
   ]);
 }
 
-function _v41_reconModeChange(){
-  const mode = document.getElementById('recon-mode')?.value;
-  const wo = document.getElementById('recon-writeoff-fields');
-  const op = document.getElementById('recon-output-fields');
-  if(wo) wo.style.display = mode==='writeoff' ? '' : 'none';
-  if(op) op.style.display = mode==='output'   ? '' : 'none';
-}
-
-async function _v41_submitReconcile(batchNo, ym){
-  const dept = document.getElementById('recon-dept')?.value;
-  const mode = document.getElementById('recon-mode')?.value;
-  const reason = document.getElementById('recon-reason')?.value || '';
-  const body = { batchNumber:batchNo, dept, mode, month:ym, reason, reconciledBy: (currentDept||'admin') };
-  if(mode==='writeoff'){
-    body.salvage = parseFloat(document.getElementById('recon-salvage')?.value||0);
-    body.remelt  = parseFloat(document.getElementById('recon-remelt')?.value||0);
-    if((body.salvage||0)<=0 && (body.remelt||0)<=0){ toast('Enter salvage and/or remelt > 0','#dc2626'); return; }
-  } else {
-    body.outQty = parseFloat(document.getElementById('recon-outqty')?.value||0);
-    if((body.outQty||0)<=0){ toast('Enter output qty > 0','#dc2626'); return; }
-  }
+async function _v41_submitReconcile(batchNo){
+  const val = id => { const el=document.getElementById(id); const v=el?el.value:''; return (v===''||v===null)?null:parseFloat(v); };
+  const body = {
+    batchNumber: batchNo,
+    gross:   val('recon-gross'),
+    aGrade:  val('recon-agrade'),
+    packing: val('recon-packing'),
+    wip:     val('recon-wip'),
+    wastage: val('recon-wastage'),
+    reason:  document.getElementById('recon-reason')?.value || '',
+    by: (currentUser&&currentUser.username)||currentDept||'admin'
+  };
   try{
-    const r = await fetch(serverUrl+'/api/tracking/reconcile-wip',{
+    const r = await fetch(serverUrl+'/api/batch/reconcile-override',{
       method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body),
       signal:AbortSignal.timeout(15000)
     });
@@ -8480,13 +8502,28 @@ async function _v41_submitReconcile(batchNo, ym){
     if(!j.ok){ toast('Failed: '+(j.error||'error'),'#dc2626'); return; }
     toast('Reconciliation applied','#16a34a');
     closeModal();
-    // Refresh: clear month A-Grade cache (windowed data changed) + reload scans/wastage, then re-render
-    _v41_clearAgradeMonthCache();
-    if(typeof pullFromServer==='function'){ try{ await pullFromServer(true); }catch(e){} }
+    await loadReconcileOverridesTrk();
+    if(typeof _v41_clearAgradeMonthCache==='function') _v41_clearAgradeMonthCache();
     renderReportZ();
-  }catch(e){
-    toast('Network error: '+e.message,'#dc2626');
-  }
+  }catch(e){ toast('Network error: '+e.message,'#dc2626'); }
+}
+
+async function _v41_clearReconcile(batchNo){
+  if(!confirm(`Remove reconciliation for ${batchNo}?\n\nThe batch returns to its scan-derived figures.`)) return;
+  try{
+    const r = await fetch(serverUrl+'/api/batch/reconcile-override/clear',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({batchNumber:batchNo, by:(currentUser&&currentUser.username)||currentDept||'admin'}),
+      signal:AbortSignal.timeout(15000)
+    });
+    const j = await r.json();
+    if(!j.ok){ toast('Failed: '+(j.error||'error'),'#dc2626'); return; }
+    toast('Reconciliation removed','#16a34a');
+    closeModal();
+    await loadReconcileOverridesTrk();
+    if(typeof _v41_clearAgradeMonthCache==='function') _v41_clearAgradeMonthCache();
+    renderReportZ();
+  }catch(e){ toast('Network error: '+e.message,'#dc2626'); }
 }
 
 // v41ZF: Report F now bundles the former Report H. A header toggle switches between the two
@@ -8522,7 +8559,7 @@ function _v41_renderReportFInner(){
     ...(hasScanSummary()
       ? [...monthBatchNos].filter(bn => _ss(bn,'aim').in > 0)
       : state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))
-  ])].filter(Boolean);
+  ])].filter(Boolean).filter(bn=>!_isRetired(bn)); // v44E Issue#2: retired drop out of Dept Handover Gaps
 
   // Machine filter
   if(filterMachine){
@@ -8801,7 +8838,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       // Printing/PI rows keep their existing in−out−wastage definition (unchanged).
       const wip=Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
       const wipQty=boxToLakh(wip,batch?.size||'0');
-      const grossProd=batch?.actualProd||0;
+      const grossProd=_reconGross(batch);
       const aimInBoxes = hasScanSummary()
         ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
         : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
@@ -11595,7 +11632,7 @@ function exportReportA(){
     return {
       'Batch':b.batchNumber,'Customer':b.customer||'','Machine':b.machineId||'','Size':b.size,
       'Type':b.isPrinted?'PTD':'UP','Status':b.status||'',
-      'Planned Qty (L)':fmt(b.qty||0),'Gross Prod (L)':fmt(b.actualProd||b.actualQty||0),
+      'Planned Qty (L)':fmt(b.qty||0),'Gross Prod (L)':fmt(_reconGross(b)),
       'Labels Generated':getBatchLabelCount(b.batchNumber),
       'WIP Days':fmt(wipDays,1),'Est Dispatch':calcDispatchDate(b)||'',
       'A-Grade %':fmt(ag.pct,1),'A-Grade (L)':fmt(ag.aGrade),
@@ -11636,7 +11673,7 @@ function exportReportB(){
       const hrs=firstIn?hoursAgo(firstIn.ts):0;
       const alerts=state.alerts.filter(a=>a.batchNumber===batchNo&&a.dept===dept).length;
       const stageStatus=isStageComplete(batchNo,dept)?'Closed':wip>0?'In Dept':'—';
-      const grossProdEx=b?.actualProd||0;
+      const grossProdEx=_reconGross(b);
       const aimInBoxesEx = hasScanSummary()
         ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
         : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
@@ -11670,7 +11707,7 @@ function exportReportC(){
     const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
     const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
     const packedQty=boxToLakh(packedOut,b.size);
-    const grossProd=b.actualProd||0;
+    const grossProd=_reconGross(b);
     const status=wipDays===0&&packedOut>0?'Closed':wipDays<=std?'In Progress':'Pending';
     return {
       'Machine':b.machineId||'','Floor':getMachineFloor(b.machineId),'Batch':b.batchNumber,
@@ -11685,7 +11722,7 @@ function exportReportC(){
 function exportReportD(){
   const monthBatches=getTrkMonthBatches();
   const monthBatchNos=new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
-  const totalGross=monthBatches.reduce((s,b)=>s+(b.actualProd||0),0);
+  const totalGross=monthBatches.reduce((s,b)=>s+_reconGross(b),0);
   const totalAGrade=monthBatches.reduce((s,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.aGrade;},0);
   const aGradePct=totalGross>0?(totalAGrade/totalGross*100):0;
   const totalDispatched=state.dispatchRecs.reduce((s,r)=>s+r.qty,0);
@@ -11714,7 +11751,7 @@ function exportReportD(){
   ];
   const batchRows=monthBatches.filter(b=>!b.deleted).map(b=>{
     const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');
-    return {'Batch':b.batchNumber,'Gross Prod (L)':fmt(b.actualProd||0),'A-Grade (L)':fmt(ag.aGrade),'A-Grade %':fmt(ag.pct,1),'Salvage (L)':fmt(ag.salvage),'Remelt (L)':fmt(ag.remelt)};
+    return {'Batch':b.batchNumber,'Gross Prod (L)':fmt(_reconGross(b)),'A-Grade (L)':fmt(ag.aGrade),'A-Grade %':fmt(ag.pct,1),'Salvage (L)':fmt(ag.salvage),'Remelt (L)':fmt(ag.remelt)};
   });
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summaryRows),'KPI Summary');
@@ -11730,7 +11767,7 @@ function exportReportE(){
   Object.entries(FLOORS).forEach(([floorKey,floor])=>{
     floor.machines.forEach(mc=>{
       state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc) && monthBatchSet.has(b.batchNumber)).forEach(b=>{
-        const grossProd=b.actualProd||0;
+        const grossProd=_reconGross(b);
         const localAimOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='aim'&&sc.type==='out'&&sc._local).length;
         const aimOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'aim').out + localAimOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='out').length;
         const aimOut=boxToLakh(aimOutBoxes,b.size);
@@ -11809,7 +11846,7 @@ function exportReportE(){
         const packOutLac = boxToLakh(packOutEx, b.size);
         return {'DATE':today(),'BATCH NO':b.batchNumber,'COLOR CODE':b.colour||'','CUSTOMER NAME':b.customer||'',
           'PRINT TYPE':b.isPrinted?'PTD':'UP',
-          'PLAN QTY (lac)':fmt(b.qty),'PRODUCT CODE':b.pcCode||'','PRODUCTION (lac)':fmt(b.actualProd||0),
+          'PLAN QTY (lac)':fmt(b.qty),'PRODUCT CODE':b.pcCode||'','PRODUCTION (lac)':fmt(_reconGross(b)),
           'AIM A GRADE (lac)':fmt(aimOutLac),
           'AIM SALVAGE':fmt(aimW.salvage),
           'AIM REMELT':fmt(aimW.remelt),
@@ -12767,6 +12804,7 @@ if (typeof document !== 'undefined') {
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(_v39_sapStatusBadgeInit, 1000);
     setTimeout(loadRetiredBatchesTrk, 1200); // v41ZZ: load retired set so WIP exclusion applies in all reports
+    setTimeout(loadReconcileOverridesTrk, 1200); // v44E: load reconcile overrides so report values reflect them
   } else {
     document.addEventListener('DOMContentLoaded', () => setTimeout(_v39_sapStatusBadgeInit, 1000));
   }

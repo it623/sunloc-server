@@ -1046,6 +1046,26 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id);
       CREATE INDEX IF NOT EXISTS idx_scan_rev_label ON tracking_scan_reversals(label_id);`
   },
+  {
+    // v44E Issue#1: admin WIP reconciliation OVERRIDE. Authoritative per-batch values typed by the
+    // admin (Gross / A-Grade / Packing / WIP / Wastage, all in Lakhs). When present, every report
+    // (A–G) + the A-Grade calc read these IN PLACE OF the scan-derived figures for that batch.
+    // Fully reversible (clear). No scan/DPR/wastage rows are written — the override sits at the
+    // consumption layer, so the frozen formulas themselves are untouched.
+    version: 41,
+    name: 'batch_reconcile_override',
+    sql: `CREATE TABLE IF NOT EXISTS batch_reconcile_override (
+        batch_number TEXT PRIMARY KEY,
+        gross REAL,
+        a_grade REAL,
+        packing REAL,
+        wip REAL,
+        wastage REAL,
+        reason TEXT,
+        by_user TEXT,
+        ts TEXT NOT NULL DEFAULT (datetime('now'))
+      );`
+  },
 ];
 
 function runMigrations() {
@@ -1238,6 +1258,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE TABLE IF NOT EXISTS recustomer_log (id TEXT PRIMARY KEY, batch_number TEXT, child_batch_number TEXT, action_type TEXT, from_customer TEXT, to_customer TEXT, from_po TEXT, to_po TEXT, card_code TEXT, ship_to TEXT, bill_to TEXT, split_boxes INTEGER DEFAULT 0, total_boxes INTEGER DEFAULT 0, converted_to_printed INTEGER DEFAULT 0, labels_affected INTEGER DEFAULT 0, before_json TEXT, after_json TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
     await pgPool.query(`CREATE TABLE IF NOT EXISTS tracking_scan_reversals (id TEXT PRIMARY KEY, reversed_scan_id TEXT NOT NULL, batch_number TEXT, label_id TEXT, dept TEXT, type TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS batch_reconcile_override (batch_number TEXT PRIMARY KEY, gross REAL, a_grade REAL, packing REAL, wip REAL, wastage REAL, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44E Issue#1
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS dpr_batch_closed (
         order_id TEXT PRIMARY KEY,
@@ -1631,6 +1652,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE TABLE IF NOT EXISTS recustomer_log (id TEXT PRIMARY KEY, batch_number TEXT, child_batch_number TEXT, action_type TEXT, from_customer TEXT, to_customer TEXT, from_po TEXT, to_po TEXT, card_code TEXT, ship_to TEXT, bill_to TEXT, split_boxes INTEGER DEFAULT 0, total_boxes INTEGER DEFAULT 0, converted_to_printed INTEGER DEFAULT 0, labels_affected INTEGER DEFAULT 0, before_json TEXT, after_json TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
     await pgPool.query(`CREATE TABLE IF NOT EXISTS tracking_scan_reversals (id TEXT PRIMARY KEY, reversed_scan_id TEXT NOT NULL, batch_number TEXT, label_id TEXT, dept TEXT, type TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS batch_reconcile_override (batch_number TEXT PRIMARY KEY, gross REAL, a_grade REAL, packing REAL, wip REAL, wastage REAL, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44E Issue#1
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS dpr_batch_closed (
         order_id TEXT PRIMARY KEY,
@@ -7319,6 +7341,62 @@ app.get('/api/batch/retired', async (req, res) => {
     else rows = db.prepare('SELECT batch_number, order_id, retired_at, retired_by, reason, prod_month, residual_wip FROM retired_batches').all();
     res.json({ ok: true, retired: rows });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── v44E Issue#1: WIP reconciliation OVERRIDE (admin-typed authoritative values) ──
+// Upsert a per-batch override of Gross/A-Grade/Packing/WIP/Wastage (all Lakhs). Reports read
+// these in place of scan-derived values. Reversible via /clear. No scan/DPR/wastage rows touched.
+app.post('/api/batch/reconcile-override', async (req, res) => {
+  try {
+    const { batchNumber, gross, aGrade, packing, wip, wastage, reason, by } = req.body || {};
+    if (!batchNumber) return res.status(400).json({ ok:false, error:'batchNumber required' });
+    const num = v => (v===''||v===null||v===undefined||isNaN(parseFloat(v))) ? null : parseFloat(v);
+    const g=num(gross), a=num(aGrade), p=num(packing), w=num(wip), ws=num(wastage);
+    const who = (by||'admin').toString().slice(0,60);
+    const rsn = (reason||'').toString().slice(0,300);
+    const ts = new Date().toISOString();
+    const details = JSON.stringify({ batchNumber, gross:g, aGrade:a, packing:p, wip:w, wastage:ws, reason:rsn, ts });
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO batch_reconcile_override (batch_number,gross,a_grade,packing,wip,wastage,reason,by_user,ts)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
+         ON CONFLICT (batch_number) DO UPDATE SET gross=$2,a_grade=$3,packing=$4,wip=$5,wastage=$6,reason=$7,by_user=$8,ts=$9`,
+        [batchNumber,g,a,p,w,ws,rsn,who,ts]);
+      await pgPool.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','RECONCILE_OVERRIDE_SET',$2)`, [who, details]);
+    } else {
+      db.prepare(`INSERT INTO batch_reconcile_override (batch_number,gross,a_grade,packing,wip,wastage,reason,by_user,ts)
+         VALUES (?,?,?,?,?,?,?,?,?)
+         ON CONFLICT(batch_number) DO UPDATE SET gross=excluded.gross,a_grade=excluded.a_grade,packing=excluded.packing,wip=excluded.wip,wastage=excluded.wastage,reason=excluded.reason,by_user=excluded.by_user,ts=excluded.ts`)
+        .run(batchNumber,g,a,p,w,ws,rsn,who,ts);
+      db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','RECONCILE_OVERRIDE_SET',?)`).run(who, details);
+    }
+    res.json({ ok:true, ts });
+  } catch (err) { res.status(500).json({ ok:false, error: err.message }); }
+});
+
+app.post('/api/batch/reconcile-override/clear', async (req, res) => {
+  try {
+    const { batchNumber, by } = req.body || {};
+    if (!batchNumber) return res.status(400).json({ ok:false, error:'batchNumber required' });
+    const who = (by||'admin').toString().slice(0,60);
+    if (pgPool) {
+      await pgPool.query(`DELETE FROM batch_reconcile_override WHERE batch_number=$1`, [batchNumber]);
+      await pgPool.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','RECONCILE_OVERRIDE_CLEAR',$2)`, [who, JSON.stringify({batchNumber})]);
+    } else {
+      db.prepare(`DELETE FROM batch_reconcile_override WHERE batch_number=?`).run(batchNumber);
+      db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','RECONCILE_OVERRIDE_CLEAR',?)`).run(who, JSON.stringify({batchNumber}));
+    }
+    res.json({ ok:true });
+  } catch (err) { res.status(500).json({ ok:false, error: err.message }); }
+});
+
+app.get('/api/batch/reconcile-overrides', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) rows = (await pgPool.query('SELECT batch_number,gross,a_grade,packing,wip,wastage,reason,by_user,ts FROM batch_reconcile_override')).rows;
+    else rows = db.prepare('SELECT batch_number,gross,a_grade,packing,wip,wastage,reason,by_user,ts FROM batch_reconcile_override').all();
+    res.json({ ok:true, overrides: rows });
+  } catch (err) { res.status(500).json({ ok:false, error: err.message }); }
 });
 
 // GET all DPR-closed batches (used by Planning to gate close button)
