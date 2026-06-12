@@ -979,6 +979,73 @@ const MIGRATIONS = [
         prev_dpr_closed INTEGER DEFAULT 0
       );`
   },
+  {
+    // v43A #4: index parent_label_id so the PI scan-out orange gate (lookup of a box's orange child
+    // label) is an index hit, not a seq scan of tracking_labels on every PI scan-out.
+    version: 37,
+    name: 'idx_labels_parent',
+    sql: `CREATE INDEX IF NOT EXISTS idx_labels_parent ON tracking_labels(parent_label_id);`
+  },
+  {
+    // v44 #2(ii): short-qty close. Lets the printing manager close the PRINTING stage with fewer boxes
+    // out than in (no formal wastage rows) when AIM delivered fewer or printing wastage ran higher.
+    // The reason + shortfall are persisted on the closure and carried downstream (packing/dispatch).
+    version: 38,
+    name: 'stage_closure_short',
+    sql: `ALTER TABLE tracking_stage_closure ADD COLUMN short_close INTEGER DEFAULT 0;
+          ALTER TABLE tracking_stage_closure ADD COLUMN short_reason TEXT;
+          ALTER TABLE tracking_stage_closure ADD COLUMN short_boxes INTEGER DEFAULT 0;`
+  },
+  {
+    // v44C #6 (Addition 3): full before/after snapshot for every re-customer action (audit-grade log,
+    // queryable). One row per action; covers full / split / printed-conversion variants.
+    version: 39,
+    name: 'recustomer_log',
+    sql: `CREATE TABLE IF NOT EXISTS recustomer_log (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT,
+        child_batch_number TEXT,
+        action_type TEXT,
+        from_customer TEXT,
+        to_customer TEXT,
+        from_po TEXT,
+        to_po TEXT,
+        card_code TEXT,
+        ship_to TEXT,
+        bill_to TEXT,
+        split_boxes INTEGER DEFAULT 0,
+        total_boxes INTEGER DEFAULT 0,
+        converted_to_printed INTEGER DEFAULT 0,
+        labels_affected INTEGER DEFAULT 0,
+        before_json TEXT,
+        after_json TEXT,
+        reason TEXT,
+        by_user TEXT,
+        ts TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_recustomer_batch ON recustomer_log(batch_number);`
+  },
+  {
+    // v44C #6 (Addition 2/D5): scan-reversal ledger. When an unprinted batch is re-customered INTO a
+    // printed flow, its packing-in scans are NOT deleted — instead a reversal row is posted here (the
+    // "debit"), preserving full history. Reversed scans are excluded from the scan-summary counts and
+    // from the box-identity dedup, so the box shows pending-printing and can be re-packed after PI.
+    version: 40,
+    name: 'tracking_scan_reversals',
+    sql: `CREATE TABLE IF NOT EXISTS tracking_scan_reversals (
+        id TEXT PRIMARY KEY,
+        reversed_scan_id TEXT NOT NULL,
+        batch_number TEXT,
+        label_id TEXT,
+        dept TEXT,
+        type TEXT,
+        reason TEXT,
+        by_user TEXT,
+        ts TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id);
+      CREATE INDEX IF NOT EXISTS idx_scan_rev_label ON tracking_scan_reversals(label_id);`
+  },
 ];
 
 function runMigrations() {
@@ -1141,6 +1208,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_dept_ts ON tracking_scans(dept, ts DESC)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_batch ON tracking_scans(batch_number, dept)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_batch ON tracking_labels(batch_number)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_parent ON tracking_labels(parent_label_id)`).catch(()=>{}); // v43A #4: orange-gate lookup
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS tracking_wastage (
         id TEXT PRIMARY KEY,
@@ -1164,6 +1232,12 @@ async function ensurePostgresTables() {
         UNIQUE(batch_number, dept)
       )
     `);
+    try { await pgPool.query(`ALTER TABLE tracking_stage_closure ADD COLUMN IF NOT EXISTS short_close INTEGER DEFAULT 0`); } catch(e){}
+    try { await pgPool.query(`ALTER TABLE tracking_stage_closure ADD COLUMN IF NOT EXISTS short_reason TEXT`); } catch(e){}
+    try { await pgPool.query(`ALTER TABLE tracking_stage_closure ADD COLUMN IF NOT EXISTS short_boxes INTEGER DEFAULT 0`); } catch(e){} // v44 #2(ii)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS recustomer_log (id TEXT PRIMARY KEY, batch_number TEXT, child_batch_number TEXT, action_type TEXT, from_customer TEXT, to_customer TEXT, from_po TEXT, to_po TEXT, card_code TEXT, ship_to TEXT, bill_to TEXT, split_boxes INTEGER DEFAULT 0, total_boxes INTEGER DEFAULT 0, converted_to_printed INTEGER DEFAULT 0, labels_affected INTEGER DEFAULT 0, before_json TEXT, after_json TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS tracking_scan_reversals (id TEXT PRIMARY KEY, reversed_scan_id TEXT NOT NULL, batch_number TEXT, label_id TEXT, dept TEXT, type TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id)`).catch(()=>{});
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS dpr_batch_closed (
         order_id TEXT PRIMARY KEY,
@@ -1527,6 +1601,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_dept_ts ON tracking_scans(dept, ts DESC)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_batch ON tracking_scans(batch_number, dept)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_batch ON tracking_labels(batch_number)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_parent ON tracking_labels(parent_label_id)`).catch(()=>{}); // v43A #4: orange-gate lookup
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS tracking_wastage (
         id TEXT PRIMARY KEY,
@@ -1550,6 +1625,12 @@ async function ensurePostgresTables() {
         UNIQUE(batch_number, dept)
       )
     `);
+    try { await pgPool.query(`ALTER TABLE tracking_stage_closure ADD COLUMN IF NOT EXISTS short_close INTEGER DEFAULT 0`); } catch(e){}
+    try { await pgPool.query(`ALTER TABLE tracking_stage_closure ADD COLUMN IF NOT EXISTS short_reason TEXT`); } catch(e){}
+    try { await pgPool.query(`ALTER TABLE tracking_stage_closure ADD COLUMN IF NOT EXISTS short_boxes INTEGER DEFAULT 0`); } catch(e){} // v44 #2(ii)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS recustomer_log (id TEXT PRIMARY KEY, batch_number TEXT, child_batch_number TEXT, action_type TEXT, from_customer TEXT, to_customer TEXT, from_po TEXT, to_po TEXT, card_code TEXT, ship_to TEXT, bill_to TEXT, split_boxes INTEGER DEFAULT 0, total_boxes INTEGER DEFAULT 0, converted_to_printed INTEGER DEFAULT 0, labels_affected INTEGER DEFAULT 0, before_json TEXT, after_json TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS tracking_scan_reversals (id TEXT PRIMARY KEY, reversed_scan_id TEXT NOT NULL, batch_number TEXT, label_id TEXT, dept TEXT, type TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id)`).catch(()=>{});
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS dpr_batch_closed (
         order_id TEXT PRIMARY KEY,
@@ -5735,6 +5816,7 @@ app.get('/api/planning/state', async (req, res) => {
         ord.actualProd = (hasOverride || eff > 0) ? eff : legacy;
       }
     }
+
     const savedAt = pgPool
       ? (await pgPool.query('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1')).rows[0]?.saved_at
       : db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get()?.saved_at;
@@ -6646,6 +6728,20 @@ app.post('/api/dpr/save', async (req, res) => {
         [floor, date, JSON.stringify(data)]
       );
 
+      // v43 #1: snapshot existing actuals BEFORE the blanket delete so a post-close re-save cannot
+      // silently erase a DPR-closed batch's already-recorded production. After the gated re-insert we
+      // restore any snapshot row that (a) was NOT re-saved this round and (b) belongs to a DPR-closed
+      // batch. New entry to a closed batch (no prior row) stays blocked; legitimate slot reassignment
+      // (same machine/shift/run re-saved) still wins. One scoped SELECT per save; restores are rare.
+      let _preDeleteActuals = [];
+      try {
+        const _snap = await pgPool.query(
+          'SELECT order_id, batch_number, machine_id, shift, run_index, qty_lakhs, floor FROM production_actuals WHERE floor = $1 AND date = $2',
+          [floor, date]
+        );
+        _preDeleteActuals = _snap.rows || [];
+      } catch (e) { console.warn('[v43 #1] pre-delete snapshot failed:', e.message); }
+
       // Delete old actuals for this floor+date, then re-insert
       await pgPool.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2', [floor, date]);
 
@@ -6772,6 +6868,33 @@ app.post('/api/dpr/save', async (req, res) => {
           row
         );
       }
+
+      // v43 #1: restore DPR-closed batches' production that this re-save would have dropped. A snapshot
+      // row is "dropped" when its (machine,shift,run_index) slot was NOT re-saved this round; restore it
+      // only when its batch/order is DPR-closed (preserve historical production). This is what fixes the
+      // "close running batch → select next → recent days vanish" loss: the gate refuses to re-insert the
+      // closed batch's runs after the blanket delete, so we put back exactly those that belonged to it.
+      if (_preDeleteActuals.length) {
+        const _savedKeys = new Set(actualsToSave.map(r => `${r[2]}|${r[4]}|${r[5]}`));
+        let _restored = 0;
+        for (const s of _preDeleteActuals) {
+          if (_savedKeys.has(`${s.machine_id}|${s.shift}|${s.run_index}`)) continue;  // slot legitimately re-saved
+          const _closed = _closedSet.has('id:'+s.order_id) || (s.batch_number && _closedSet.has('bn:'+s.batch_number));
+          if (!_closed) continue;                                                      // only preserve closed-batch history
+          if (!(parseFloat(s.qty_lakhs) > 0)) continue;
+          await pgPool.query(
+            `INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+             ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
+               order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number,
+               qty_lakhs=EXCLUDED.qty_lakhs, synced_at=NOW()`,
+            [s.order_id||null, s.batch_number||null, s.machine_id, date, s.shift, s.run_index, s.qty_lakhs, s.floor||floor]
+          );
+          _restored++;
+        }
+        if (_restored) console.log(`[v43 #1] preserved ${_restored} closed-batch actual row(s) on ${floor}/${date} a re-save would have dropped`);
+      }
+
       // Attach rejected list to res so client can show error
       if (_rejected.length > 0) {
         res._dprRejected = _rejected;
@@ -6857,6 +6980,11 @@ app.post('/api/dpr/save', async (req, res) => {
         return false;
       };
       db.prepare(`INSERT INTO dpr_records (floor, date, data_json) VALUES (?, ?, ?) ON CONFLICT(floor, date) DO UPDATE SET data_json = excluded.data_json, saved_at = datetime('now')`).run(floor, date, JSON.stringify(data));
+      // v43 #1: snapshot before the blanket delete so a post-close re-save can't erase a DPR-closed
+      // batch's recorded production (see PG path for rationale). Restored after the gated re-insert.
+      let _preDeleteActualsSq = [];
+      try { _preDeleteActualsSq = db.prepare('SELECT order_id, batch_number, machine_id, shift, run_index, qty_lakhs, floor FROM production_actuals WHERE floor = ? AND date = ?').all(floor, date) || []; }
+      catch (e) { console.warn('[v43 #1 SQLite] pre-delete snapshot failed:', e.message); }
       db.prepare('DELETE FROM production_actuals WHERE floor = ? AND date = ?').run(floor, date);
       const upsert = db.prepare(`INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET order_id=excluded.order_id, batch_number=excluded.batch_number, qty_lakhs=excluded.qty_lakhs, synced_at=datetime('now')`);
       const rows = (actuals && actuals.length > 0)
@@ -6864,6 +6992,20 @@ app.post('/api/dpr/save', async (req, res) => {
                  .map(a => [a.orderId||null, (a.batchNumber || _orderBatchByIdSq[a.orderId] || null), a.machineId, date, a.shift, a.runIndex||0, a.qty, a.floor||floor])
         : [];
       db.transaction(rows => rows.forEach(r => upsert.run(...r)))(rows);
+      // v43 #1: restore DPR-closed batches' production dropped by this re-save (mirror of PG path).
+      if (_preDeleteActualsSq.length) {
+        const _savedKeysSq = new Set(rows.map(r => `${r[2]}|${r[4]}|${r[5]}`));
+        let _restoredSq = 0;
+        for (const s of _preDeleteActualsSq) {
+          if (_savedKeysSq.has(`${s.machine_id}|${s.shift}|${s.run_index}`)) continue;
+          const _closed = _closedSetSq.has('id:'+s.order_id) || (s.batch_number && _closedSetSq.has('bn:'+s.batch_number));
+          if (!_closed) continue;
+          if (!(parseFloat(s.qty_lakhs) > 0)) continue;
+          upsert.run(s.order_id||null, s.batch_number||null, s.machine_id, date, s.shift, s.run_index, s.qty_lakhs, s.floor||floor);
+          _restoredSq++;
+        }
+        if (_restoredSq) console.log(`[v43 #1 SQLite] preserved ${_restoredSq} closed-batch actual row(s) on ${floor}/${date}`);
+      }
       if (_rejectedSq.length > 0) res._dprRejected = _rejectedSq;
     }
 
@@ -10732,48 +10874,54 @@ app.get('/api/tracking/state', async (req, res) => {
     // This removes a large per-sync payload that was a primary cause of Tracking slowness.
     const light = req.query.light === '1' || req.query.light === 'true';
     if (pgPool) {
-      const mapClosure = r => ({ ...r, batchNumber: r.batch_number, closedAt: r.closed_at, closedBy: r.closed_by });
+      const mapClosure = r => ({ ...r, batchNumber: r.batch_number, closedAt: r.closed_at, closedBy: r.closed_by, shortClose: r.short_close, shortReason: r.short_reason, shortBoxes: r.short_boxes });
       const mapWastage = r => ({ ...r, batchNumber: r.batch_number });
       const mapDispatch = r => ({ ...r, batchNumber: r.batch_number, vehicleNo: r.vehicle_no, invoiceNo: r.invoice_no });
       const mapAlert = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, scanInTs: r.scan_in_ts, hoursStuck: r.hours_stuck });
+      const mapRev = r => ({ reversedScanId: r.reversed_scan_id, labelId: r.label_id, batchNumber: r.batch_number, dept: r.dept, type: r.type });
       if (light) {
-        const [closure, wastage, dispatch, alerts] = await Promise.all([
+        const [closure, wastage, dispatch, alerts, revs] = await Promise.all([
           pgPool.query('SELECT * FROM tracking_stage_closure'),
           pgPool.query('SELECT * FROM tracking_wastage ORDER BY ts ASC'),
           pgPool.query('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC'),
           pgPool.query('SELECT * FROM tracking_alerts WHERE resolved = 0'),
+          pgPool.query('SELECT reversed_scan_id, label_id, batch_number, dept, type FROM tracking_scan_reversals'),
         ]);
         return res.json({ ok: true, light: true, state: {
           stageClosure: closure.rows.map(mapClosure), wastage: wastage.rows.map(mapWastage),
-          dispatchRecs: dispatch.rows.map(mapDispatch), alerts: alerts.rows.map(mapAlert)
+          dispatchRecs: dispatch.rows.map(mapDispatch), alerts: alerts.rows.map(mapAlert),
+          scanReversals: revs.rows.map(mapRev)
         }});
       }
-      const [labels, scans, closure, wastage, dispatch, alerts] = await Promise.all([
+      const [labels, scans, closure, wastage, dispatch, alerts, revs] = await Promise.all([
         pgPool.query('SELECT * FROM tracking_labels ORDER BY generated DESC'),
         pgPool.query('SELECT * FROM tracking_scans ORDER BY ts ASC'),
         pgPool.query('SELECT * FROM tracking_stage_closure'),
         pgPool.query('SELECT * FROM tracking_wastage ORDER BY ts ASC'),
         pgPool.query('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC'),
         pgPool.query('SELECT * FROM tracking_alerts WHERE resolved = 0'),
+        pgPool.query('SELECT reversed_scan_id, label_id, batch_number, dept, type FROM tracking_scan_reversals'),
       ]);
       const mapLabel = r => ({ ...r, batchNumber: r.batch_number, labelNumber: r.label_number, isPartial: r.is_partial, isOrange: r.is_orange, parentLabelId: r.parent_label_id, pcCode: r.pc_code, poNumber: r.po_number, machineId: r.machine_id, printingMatter: r.printing_matter, printedAt: r.printed_at, voidReason: r.void_reason, voidedAt: r.voided_at, voidedBy: r.voided_by, qrData: r.qr_data, woStatus: r.wo_status, shipTo: r.ship_to, billTo: r.bill_to, isExcess: r.is_excess, excessNum: r.excess_num, excessTotal: r.excess_total, normalTotal: r.normal_total });
       const mapScan = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, labelNumber: r.label_number });
       res.json({ ok: true, state: {
         labels: labels.rows.map(mapLabel), scans: scans.rows.map(mapScan),
         stageClosure: closure.rows.map(mapClosure), wastage: wastage.rows.map(mapWastage),
-        dispatchRecs: dispatch.rows.map(mapDispatch), alerts: alerts.rows.map(mapAlert)
+        dispatchRecs: dispatch.rows.map(mapDispatch), alerts: alerts.rows.map(mapAlert),
+        scanReversals: revs.rows.map(mapRev)
       }});
     } else {
       const closure = db.prepare('SELECT * FROM tracking_stage_closure').all();
       const wastage = db.prepare('SELECT * FROM tracking_wastage ORDER BY ts ASC').all();
       const dispatch= db.prepare('SELECT * FROM tracking_dispatch_records ORDER BY ts ASC').all();
       const alerts  = db.prepare('SELECT * FROM tracking_alerts WHERE resolved = 0').all();
+      const revs = db.prepare('SELECT reversed_scan_id AS reversedScanId, label_id AS labelId, batch_number AS batchNumber, dept, type FROM tracking_scan_reversals').all();
       if (light) {
-        return res.json({ ok: true, light: true, state: { stageClosure: closure, wastage, dispatchRecs: dispatch, alerts } });
+        return res.json({ ok: true, light: true, state: { stageClosure: closure, wastage, dispatchRecs: dispatch, alerts, scanReversals: revs } });
       }
       const labels  = db.prepare('SELECT * FROM tracking_labels ORDER BY generated DESC').all();
       const scans   = db.prepare('SELECT * FROM tracking_scans ORDER BY ts ASC').all();
-      res.json({ ok: true, state: { labels, scans, stageClosure: closure, wastage, dispatchRecs: dispatch, alerts } });
+      res.json({ ok: true, state: { labels, scans, stageClosure: closure, wastage, dispatchRecs: dispatch, alerts, scanReversals: revs } });
     }
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -11367,12 +11515,12 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
         catch(e) { console.warn('[scan-summary] query failed:', e.message); return []; }
       };
       [scanRows, wastageRows, dispatchRows] = await Promise.all([
-        safeQuery('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type'),
+        safeQuery(`SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans s WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY batch_number, dept, type`),
         safeQuery('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type'),
         safeQuery('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records GROUP BY batch_number')
       ]);
     } else {
-      scanRows     = db.prepare('SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type').all();
+      scanRows     = db.prepare(`SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans s WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY batch_number, dept, type`).all();
       wastageRows  = db.prepare('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type').all();
       try { dispatchRows = db.prepare('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records GROUP BY batch_number').all(); }
       catch(e) { dispatchRows = []; }
@@ -12078,12 +12226,54 @@ app.post('/api/tracking/scan', async (req, res) => {
       }
     }
 
+    // v43A #4: ORANGE-LABEL GATE at PI scan-OUT — a box cannot leave PI unless its orange label has
+    // been scanned (PI printed-matter inspection). Server-authoritative so incomplete local scan state
+    // can't bypass it. Orange scans live on the separate 'orange' channel (no WIP impact). Fail-OPEN
+    // when the box has NO orange label at all (e.g. generation skipped) so the line is never halted —
+    // we only block when an orange label exists but was not scanned. Admin may override for data fixes.
+    if (scan.type === 'out' && scan.dept === 'pi' && !adminOverride) {
+      try {
+        let orangeRow;
+        if (pgPool) {
+          const ro = await pgPool.query(
+            `SELECT ol.id, EXISTS(SELECT 1 FROM tracking_scans os WHERE os.label_id=ol.id AND os.dept='orange') AS scanned
+               FROM tracking_labels ol
+              WHERE ol.parent_label_id=$1 AND COALESCE(ol.is_orange,false)=true AND COALESCE(ol.voided,false)=false
+              LIMIT 1`, [labelId]);
+          orangeRow = ro.rows[0];
+        } else {
+          orangeRow = db.prepare(
+            `SELECT ol.id AS id, EXISTS(SELECT 1 FROM tracking_scans os WHERE os.label_id=ol.id AND os.dept='orange') AS scanned
+               FROM tracking_labels ol
+              WHERE ol.parent_label_id=? AND COALESCE(ol.is_orange,0)=1 AND COALESCE(ol.voided,0)=0
+              LIMIT 1`).get(labelId);
+        }
+        if (orangeRow && !orangeRow.scanned) {
+          return res.json({ ok:false, blocked:true, orange_gate:true,
+            error:`🟠 Orange label not scanned for this box. PI must scan its orange label (printed-matter verification) before the box can leave PI.` });
+        }
+        // No orange label found → fail-open (allow). Orange scanned → allow.
+      } catch (e) { console.warn('[v43A #4] orange-gate check failed (fail-open):', e.message); }
+    }
+
+    // v43 #5: numeric box number for box-identity dedup (orange 'OL-*' labels → null; matched by id).
+    const _lnNum = (scan.labelNumber!=null && /^-?\d+$/.test(String(scan.labelNumber))) ? parseInt(scan.labelNumber,10) : null;
+
     if (pgPool) {
-      // Server-side duplicate check: one IN and one OUT max per label per dept per batch
-      // Scoped to batch_number so same label in a new batch is never blocked
+      // v43 #5: dedup by BOX IDENTITY (batch + box number) as well as label_id. The same physical box
+      // can reach the server with different label_id values — manual batch-box entry vs QR SystemID, or
+      // two synced label records sharing a box number — which let duplicate IN/OUT slip past the old
+      // label_id-only check. Match label_id OR label_number, but EXCLUDE scans whose label has been
+      // voided so a reprinted box (regeneratePartialLabel reuses the box number on a fresh, non-voided
+      // label) is never wrongly blocked. Scoped to batch_number + dept → tiny result set, no perf cost.
       const existing = await pgPool.query(
-        `SELECT type FROM tracking_scans WHERE label_id=$1 AND dept=$2 AND batch_number=$3`,
-        [labelId, scan.dept, batchNumber]
+        `SELECT s.type FROM tracking_scans s
+           LEFT JOIN tracking_labels l ON l.id = s.label_id
+          WHERE s.dept=$2 AND s.batch_number=$3
+            AND (s.label_id=$1 OR ($4 IS NOT NULL AND s.label_number IS NOT NULL AND s.label_number=$4))
+            AND COALESCE(l.voided, false) = false
+            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = s.id)`,
+        [labelId, scan.dept, batchNumber, _lnNum]
       );
       const doneTypes = existing.rows.map(r=>r.type);
       if(doneTypes.includes(scan.type)){
@@ -12104,9 +12294,15 @@ app.post('/api/tracking/scan', async (req, res) => {
          scan.operator||null, scan.size||null, scan.qty||null]
       );
     } else {
-      // SQLite path: same duplicate + IN-before-OUT check
-      const existing = db.prepare(`SELECT type FROM tracking_scans WHERE label_id=? AND dept=? AND batch_number=?`)
-        .all(labelId, scan.dept, batchNumber);
+      // SQLite path: same box-identity dedup + IN-before-OUT check (v43 #5)
+      const existing = db.prepare(
+        `SELECT s.type FROM tracking_scans s
+           LEFT JOIN tracking_labels l ON l.id = s.label_id
+          WHERE s.dept=? AND s.batch_number=?
+            AND (s.label_id=? OR (? IS NOT NULL AND s.label_number IS NOT NULL AND s.label_number=?))
+            AND COALESCE(l.voided, 0)=0
+            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = s.id)`
+      ).all(scan.dept, batchNumber, labelId, _lnNum, _lnNum);
       const doneTypes = existing.map(r=>r.type);
       if (doneTypes.includes(scan.type)) {
         return res.json({ok:false, duplicate:true, error:'Already scanned '+scan.type.toUpperCase()+' at '+scan.dept});
@@ -12571,28 +12767,243 @@ app.post('/api/tracking/stage-status', async (req, res) => {
 // ── Stage Close — mark a dept stage as closed for a batch ──────
 app.post('/api/tracking/stage-close', async (req, res) => {
   try {
-    const { batchNumber, dept, closedBy } = req.body;
+    const { batchNumber, dept, closedBy, short, shortReason, shortBoxes } = req.body;
     if (!batchNumber || !dept) return res.status(400).json({ ok: false, error: 'Missing batchNumber or dept' });
     const id = `${batchNumber}-${dept}`;
     const ts = new Date().toISOString();
+    const isShort = short ? 1 : 0;
+    const sReason = isShort ? (shortReason || '') : null;
+    const sBoxes  = isShort ? (parseInt(shortBoxes,10) || 0) : 0;
     if (pgPool) {
       await pgPool.query(
-        `INSERT INTO tracking_stage_closure (id, batch_number, dept, closed, closed_at, closed_by)
-         VALUES ($1,$2,$3,1,$4,$5)
-         ON CONFLICT(batch_number, dept) DO UPDATE SET closed=1, closed_at=EXCLUDED.closed_at, closed_by=EXCLUDED.closed_by`,
-        [id, batchNumber, dept, ts, closedBy||null]
+        `INSERT INTO tracking_stage_closure (id, batch_number, dept, closed, closed_at, closed_by, short_close, short_reason, short_boxes)
+         VALUES ($1,$2,$3,1,$4,$5,$6,$7,$8)
+         ON CONFLICT(batch_number, dept) DO UPDATE SET closed=1, closed_at=EXCLUDED.closed_at, closed_by=EXCLUDED.closed_by, short_close=EXCLUDED.short_close, short_reason=EXCLUDED.short_reason, short_boxes=EXCLUDED.short_boxes`,
+        [id, batchNumber, dept, ts, closedBy||null, isShort, sReason, sBoxes]
       );
     } else {
-      db.prepare(`INSERT INTO tracking_stage_closure (id,batch_number,dept,closed,closed_at,closed_by)
-        VALUES (?,?,?,1,?,?) ON CONFLICT(batch_number,dept) DO UPDATE SET closed=1,closed_at=excluded.closed_at,closed_by=excluded.closed_by`)
-        .run(id, batchNumber, dept, ts, closedBy||null);
+      db.prepare(`INSERT INTO tracking_stage_closure (id,batch_number,dept,closed,closed_at,closed_by,short_close,short_reason,short_boxes)
+        VALUES (?,?,?,1,?,?,?,?,?) ON CONFLICT(batch_number,dept) DO UPDATE SET closed=1,closed_at=excluded.closed_at,closed_by=excluded.closed_by,short_close=excluded.short_close,short_reason=excluded.short_reason,short_boxes=excluded.short_boxes`)
+        .run(id, batchNumber, dept, ts, closedBy||null, isShort, sReason, sBoxes);
+    }
+    // v44 #2(ii): audit short closes (printing manager accepting fewer boxes than scanned in).
+    if (isShort) {
+      try {
+        const details = JSON.stringify({ batch_number:batchNumber, dept, short_reason:sReason, short_boxes:sBoxes });
+        if (pgPool) await pgPool.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'tracking','tracking','STAGE_CLOSE_SHORT',$2)`, [closedBy||'tracking', details]);
+        else db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'tracking','tracking','STAGE_CLOSE_SHORT',?)`).run(closedBy||'tracking', details);
+      } catch(e) { console.warn('[v44 #2(ii)] short-close audit failed:', e.message); }
     }
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v44C #6: ADMIN RE-CUSTOMER RELABEL — re-assign a packed batch to a different customer.
+//   • FULL: in-place customer/address/PO update + forced reprint (printed=0, QR regen). Box identity,
+//     every stage scan, and each invoice's selected_labels are preserved (label ids unchanged).
+//   • SPLIT (Addition 1, modeled on W/O split-approve): carve the last N boxes into a new suffixed child
+//     batch (<batch>A/B/…) re-customered to B; the original keeps the rest with customer A. Labels + their
+//     scans are re-batched IN PLACE; parent qty/boxes reduced proportionally; child gets proportional actualProd.
+//   • CONVERT (Addition 2): an unprinted target → printed. Sets isPrinted, creates a print_orders row for
+//     machine assignment, and (D5) POSTS A PACKING-SCAN REVERSAL (ledger debit) rather than deleting the
+//     packing-in — original scans stay; reversed scans are netted from summary counts + dedup so the box
+//     shows pending-printing and re-flows printing→PI(+orange)→packing→dispatch. Blocked if any target box
+//     is already dispatched.
+//   • LOG (Addition 3): full before/after snapshot row in recustomer_log.
+// BLOCKED if a SAP invoice DOCUMENT already exists for the batch. Admin-gated (verifyToken→role) + audited.
+app.post('/api/tracking/recustomer', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session) return res.status(401).json({ ok:false, error:'Not authenticated' });
+    if (session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin required' });
+    const { batchNumber, newCustomer, newCardCode, newPoNumber, shipTo, billTo, reason,
+            splitBoxes, convertToPrinted, printMatter, printType } = req.body;
+    if (!batchNumber || !newCustomer) return res.status(400).json({ ok:false, error:'batchNumber and newCustomer required' });
+    const ts = new Date().toISOString();
+    const _PACK = {'0':1.5,'00':1.5,'000':1.5,'1':1.25,'2':1.0,'3':0.75,'4':0.5,'5':0.333};
+    const boxesToLakhsServer = (boxes,size)=>{ const ps=_PACK[String(size)]||1; return (parseInt(boxes,10)||0)*ps; };
+
+    // SAP-finalized guard — a real SAP invoice document for this batch cannot be silently re-pointed.
+    let sapBlock = false, sapWhat = '';
+    if (pgPool) {
+      const ir = (await pgPool.query(`SELECT 1 FROM invoices_received WHERE batch_number=$1 LIMIT 1`,[batchNumber])).rows[0];
+      const rq = (await pgPool.query(`SELECT 1 FROM invoice_requests WHERE batch_number=$1 AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending')) LIMIT 1`,[batchNumber])).rows[0];
+      if (ir) { sapBlock=true; sapWhat='a SAP invoice has already been received'; }
+      else if (rq) { sapBlock=true; sapWhat='an invoice request has already been pushed to SAP'; }
+    } else {
+      const ir = db.prepare(`SELECT 1 FROM invoices_received WHERE batch_number=? LIMIT 1`).get(batchNumber);
+      const rq = db.prepare(`SELECT 1 FROM invoice_requests WHERE batch_number=? AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending')) LIMIT 1`).get(batchNumber);
+      if (ir) { sapBlock=true; sapWhat='a SAP invoice has already been received'; }
+      else if (rq) { sapBlock=true; sapWhat='an invoice request has already been pushed to SAP'; }
+    }
+    if (sapBlock) return res.json({ ok:false, sap_blocked:true, error:`Cannot re-customer ${batchNumber}: ${sapWhat}. Cancel that SAP document first, then retry.` });
+
+    const planState = getPlanningState();
+    const ord = (planState.orders||[]).find(o => o.batchNumber===batchNumber && !o.deleted);
+
+    // Non-voided, non-orange labels (the customer boxes), ascending box number.
+    const labelSel = pgPool
+      ? (await pgPool.query(`SELECT id, label_number, customer, size, colour FROM tracking_labels WHERE batch_number=$1 AND COALESCE(voided,false)=false AND COALESCE(is_orange,false)=false ORDER BY ABS(label_number) ASC`,[batchNumber])).rows
+      : db.prepare(`SELECT id, label_number, customer, size, colour FROM tracking_labels WHERE batch_number=? AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0 ORDER BY ABS(label_number) ASC`).all(batchNumber);
+    const totalBoxes = labelSel.length;
+    let oldCustomer = labelSel.find(l=>l.customer)?.customer || ord?.customer || '';
+    const size = ord?.size || labelSel[0]?.size || '2';
+    const wasPrinted = !!(ord?.isPrinted);
+
+    const nSplit = Math.max(0, parseInt(splitBoxes,10)||0);
+    const doSplit = nSplit > 0 && nSplit < totalBoxes;     // full switch if 0 or ≥ total
+    const doConvert = !!convertToPrinted && !wasPrinted;
+
+    // Split safety: a pending invoice request references specific labels; moving boxes to a child batch
+    // would leave its selected_labels stale. Block split until that pending request is resolved.
+    if (doSplit) {
+      const pend = pgPool
+        ? (await pgPool.query(`SELECT 1 FROM invoice_requests WHERE batch_number=$1 AND status='pending' LIMIT 1`,[batchNumber])).rows[0]
+        : db.prepare(`SELECT 1 FROM invoice_requests WHERE batch_number=? AND status='pending' LIMIT 1`).get(batchNumber);
+      if (pend) return res.json({ ok:false, split_blocked:true, error:`Cannot split ${batchNumber}: a pending invoice request references this batch. Resolve it first, then split.` });
+    }
+    const before = { batchNumber, customer: oldCustomer, isPrinted: wasPrinted, totalBoxes, poNumber: ord?.poNumber||'' };
+
+    // ── Resolve the TARGET (the batch being re-customered): a new child on split, else the original.
+    let targetBatch = batchNumber, childBatch = null, targetLabelIds = labelSel.map(l=>l.id);
+
+    if (doSplit) {
+      // Next free single-letter child suffix (A, B, C …) — like W/O split child batches.
+      const used = new Set();
+      (planState.orders||[]).forEach(o=>{ if(!o.deleted && o.batchNumber && o.batchNumber.length===batchNumber.length+1 && o.batchNumber.startsWith(batchNumber)){ const s=o.batchNumber.slice(batchNumber.length); if(/^[A-Z]$/.test(s)) used.add(s); }});
+      let suffix='Z'; for(let i=65;i<=90;i++){ const c=String.fromCharCode(i); if(!used.has(c)){ suffix=c; break; } }
+      childBatch = `${batchNumber}${suffix}`;
+      const moveLabels = labelSel.slice(totalBoxes - nSplit);   // last N boxes → child
+      targetLabelIds = moveLabels.map(l=>l.id);
+      targetBatch = childBatch;
+      // Re-batch the moved labels + ALL their scans to the child (in place — no void/mint, ids preserved).
+      for (const l of moveLabels) {
+        if (pgPool) {
+          await pgPool.query(`UPDATE tracking_labels SET batch_number=$1, customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=false, printed_at=NULL, qr_data=NULL WHERE id=$6`, [childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id]);
+          await pgPool.query(`UPDATE tracking_scans SET batch_number=$1 WHERE label_id=$2`, [childBatch, l.id]);
+        } else {
+          db.prepare(`UPDATE tracking_labels SET batch_number=?, customer=?, po_number=COALESCE(?,po_number), ship_to=COALESCE(?,ship_to), bill_to=COALESCE(?,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE id=?`).run(childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id);
+          db.prepare(`UPDATE tracking_scans SET batch_number=? WHERE label_id=?`).run(childBatch, l.id);
+        }
+      }
+      // Create the child order (clone parent; customer B; proportional actualProd; active).
+      const parentActual = parseFloat(ord?.actualProd || ord?.actualQty || 0);
+      const child = {
+        ...(ord||{}), id: childBatch, batchNumber: childBatch, customer: newCustomer,
+        shipTo: shipTo||newCustomer, billTo: billTo||'', poNumber: newPoNumber||'',
+        qty: +boxesToLakhsServer(nSplit, size).toFixed(4), totalBoxes: nSplit,
+        actualProd: +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
+        actualQty:  +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
+        isPrinted: doConvert ? true : !!(ord?.isPrinted),
+        status: (ord?.status==='closed' ? 'running' : (ord?.status||'running')),
+        deleted: false, recustomeredFrom: oldCustomer, recustomerSplitFrom: batchNumber,
+        recustomeredAt: ts, recustomeredBy: session.username,
+        sapDocEntry: null, sapDocNum: '', _localEditedAt: Date.now()
+      };
+      delete child.woStatus;
+      planState.orders.push(child);
+      // Reduce the parent proportionally (residual stays with customer A).
+      if (ord) {
+        const residual = totalBoxes - nSplit;
+        const cap = parseInt(ord.totalBoxes) || totalBoxes;
+        if (ord.qty != null) ord.qty = +(parseFloat(ord.qty) * (residual/ (cap||totalBoxes))).toFixed(4);
+        ord.totalBoxes = residual;
+        ord._localEditedAt = Date.now();
+      }
+    } else {
+      // ── FULL switch: in-place customer/address/PO update + forced reprint on the original batch.
+      if (pgPool) {
+        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=false, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,false)=false AND COALESCE(is_orange,false)=false`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
+        await pgPool.query(`UPDATE tracking_dispatch_records SET customer=$2 WHERE batch_number=$1`, [batchNumber, newCustomer]);
+        await pgPool.query(`UPDATE invoice_requests SET customer=$2, card_code=COALESCE($3,card_code), po_number=COALESCE($4,po_number), updated_at=NOW()::TEXT WHERE batch_number=$1 AND status='pending' AND sap_doc_entry IS NULL`, [batchNumber, newCustomer, newCardCode||null, newPoNumber||null]);
+      } else {
+        db.prepare(`UPDATE tracking_labels SET customer=?, po_number=COALESCE(?,po_number), ship_to=COALESCE(?,ship_to), bill_to=COALESCE(?,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=? AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`).run(newCustomer, newPoNumber||null, shipTo||null, billTo||null, batchNumber);
+        db.prepare(`UPDATE tracking_dispatch_records SET customer=? WHERE batch_number=?`).run(newCustomer, batchNumber);
+        db.prepare(`UPDATE invoice_requests SET customer=?, card_code=COALESCE(?,card_code), po_number=COALESCE(?,po_number), updated_at=datetime('now') WHERE batch_number=? AND status='pending' AND sap_doc_entry IS NULL`).run(newCustomer, newCardCode||null, newPoNumber||null, batchNumber);
+      }
+      if (ord) {
+        ord.recustomeredFrom = ord.customer || oldCustomer;
+        ord.customer = newCustomer;
+        if (newPoNumber) ord.poNumber = newPoNumber;
+        if (doConvert) { ord.isPrinted = true; if (ord.status==='closed') { ord.status='running'; ord.reopenedForConvert=true; } } // re-enter printing chain
+        ord.recustomeredAt = ts; ord.recustomeredBy = session.username; ord._localEditedAt = Date.now();
+        (planState.dispatchPlans||[]).forEach(d => { if (d.batchNumber===batchNumber || d.productionOrderId===ord.id) { d.customer=newCustomer; if(newPoNumber) d.poNumber=newPoNumber; } });
+      }
+    }
+
+    // ── CONVERT to printed (Addition 2): block if any target box already dispatched, else create the
+    //    print order + post packing-scan reversals (ledger debit; originals untouched).
+    let reversedScans = 0;
+    if (doConvert) {
+      const dispatched = pgPool
+        ? (await pgPool.query(`SELECT 1 FROM tracking_scans WHERE batch_number=$1 AND dept='dispatch' LIMIT 1`,[targetBatch])).rows[0]
+        : db.prepare(`SELECT 1 FROM tracking_scans WHERE batch_number=? AND dept='dispatch' LIMIT 1`).get(targetBatch);
+      if (dispatched) return res.json({ ok:false, convert_blocked:true, error:`Cannot convert ${targetBatch} to printed — box(es) already dispatched. Re-customer without conversion, or handle dispatch first.` });
+      // print order (status pending, machine unassigned → surfaces in planning/printing for assignment)
+      const poId = `${targetBatch}-PRINT`;
+      const colour = ord?.colour || labelSel[0]?.colour || '';
+      const qtyLakhs = boxesToLakhsServer((doSplit?nSplit:totalBoxes), size);
+      if (pgPool) {
+        await pgPool.query(`INSERT INTO print_orders (id, machine_id, customer, batch_number, pc_code, size, colour, print_matter, print_type, qty_to_print, order_qty, status, zone, production_order_id, updated_at) VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$9,'pending',$10,$11,NOW()::TEXT) ON CONFLICT(id) DO UPDATE SET customer=$2, batch_number=$3, print_matter=$7, print_type=$8, qty_to_print=$9, order_qty=$9, status='pending', updated_at=NOW()::TEXT`,
+          [poId, newCustomer, targetBatch, ord?.pcCode||null, size, colour, printMatter||null, printType||null, qtyLakhs, ord?.zone||null, (doSplit?childBatch:(ord?.id||targetBatch))]);
+      } else {
+        db.prepare(`INSERT INTO print_orders (id, machine_id, customer, batch_number, pc_code, size, colour, print_matter, print_type, qty_to_print, order_qty, status, zone, production_order_id, updated_at) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,'pending',?,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET customer=excluded.customer, batch_number=excluded.batch_number, print_matter=excluded.print_matter, print_type=excluded.print_type, qty_to_print=excluded.qty_to_print, order_qty=excluded.order_qty, status='pending', updated_at=datetime('now')`)
+          .run(poId, newCustomer, targetBatch, ord?.pcCode||null, size, colour, printMatter||null, printType||null, qtyLakhs, qtyLakhs, ord?.zone||null, (doSplit?childBatch:(ord?.id||targetBatch)));
+      }
+      // Reverse the target's packing scans (ledger debit) — originals preserved; idempotent by id.
+      const rvReason = `Re-customer→printed (${batchNumber}→${targetBatch})`;
+      if (pgPool) {
+        const r = await pgPool.query(`INSERT INTO tracking_scan_reversals (id, reversed_scan_id, batch_number, label_id, dept, type, reason, by_user, ts) SELECT 'rev-'||s.id, s.id, s.batch_number, s.label_id, s.dept, s.type, $2, $3, $4 FROM tracking_scans s WHERE s.batch_number=$1 AND s.dept='packing' AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [targetBatch, rvReason, session.username, ts]);
+        reversedScans = r.rowCount||0;
+      } else {
+        const r = db.prepare(`INSERT OR IGNORE INTO tracking_scan_reversals (id, reversed_scan_id, batch_number, label_id, dept, type, reason, by_user, ts) SELECT 'rev-'||s.id, s.id, s.batch_number, s.label_id, s.dept, s.type, ?, ?, ? FROM tracking_scans s WHERE s.batch_number=? AND s.dept='packing'`).run(rvReason, session.username, ts, targetBatch);
+        reversedScans = r.changes||0;
+      }
+    }
+
+    // ── Persist planning state + production_orders (parent and/or child).
+    try {
+      if (pgPool) await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
+      else db.prepare(`INSERT INTO planning_state (id, state_json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')`).run(JSON.stringify(planState));
+      _planningStateCache = planState; _planningStateCacheTime = Date.now();
+      const writeOrd = async (o) => {
+        if (!o) return; const oj = JSON.stringify(o);
+        if (pgPool) await pgPool.query(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at) VALUES ($1,$2,$3,$4,$5,false,NOW()::TEXT) ON CONFLICT(id) DO UPDATE SET data_json=$2, machine_id=$3, batch_number=$4, status=$5, deleted=false, updated_at=NOW()::TEXT`, [o.id, oj, o.machineId||null, o.batchNumber, o.status||'running']);
+        else db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at) VALUES (?,?,?,?,?,0,datetime('now')) ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json, machine_id=excluded.machine_id, batch_number=excluded.batch_number, status=excluded.status, deleted=0, updated_at=datetime('now')`).run(o.id, oj, o.machineId||null, o.batchNumber, o.status||'running');
+      };
+      await writeOrd(ord);
+      if (doSplit) { const child = planState.orders.find(o=>o.batchNumber===childBatch); await writeOrd(child); }
+    } catch(e) { console.warn('[v44C #6] planning persist:', e.message); }
+
+    // ── Before/after log (Addition 3) + audit.
+    const labelCount = targetLabelIds.length;
+    const after = { batchNumber: targetBatch, childBatch, customer: newCustomer, isPrinted: doConvert?true:wasPrinted, boxes: doSplit?nSplit:totalBoxes, poNumber: newPoNumber||before.poNumber, convertedToPrinted: doConvert, reversedPackingScans: reversedScans };
+    const actionType = doSplit ? (doConvert?'split+convert':'split') : (doConvert?'full+convert':'full');
+    try {
+      const logId = `rc-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+      const row = [logId, batchNumber, childBatch, actionType, oldCustomer, newCustomer, before.poNumber, newPoNumber||'', newCardCode||'', shipTo||'', billTo||'', (doSplit?nSplit:0), totalBoxes, doConvert?1:0, labelCount, JSON.stringify(before), JSON.stringify(after), reason||'', session.username, ts];
+      if (pgPool) await pgPool.query(`INSERT INTO recustomer_log (id,batch_number,child_batch_number,action_type,from_customer,to_customer,from_po,to_po,card_code,ship_to,bill_to,split_boxes,total_boxes,converted_to_printed,labels_affected,before_json,after_json,reason,by_user,ts) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, row);
+      else db.prepare(`INSERT INTO recustomer_log (id,batch_number,child_batch_number,action_type,from_customer,to_customer,from_po,to_po,card_code,ship_to,bill_to,split_boxes,total_boxes,converted_to_printed,labels_affected,before_json,after_json,reason,by_user,ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...row);
+    } catch(e) { console.warn('[v44C #6] recustomer_log:', e.message); }
+    try { logAudit(session.username, session.role, 'tracking', 'RECUSTOMER', JSON.stringify({ batch_number:batchNumber, target:targetBatch, action:actionType, from:oldCustomer, to:newCustomer, labels:labelCount, converted:doConvert, reversed:reversedScans, reason:reason||'' }), req.ip); } catch(e) {}
+
+    res.json({ ok:true, batchNumber, targetBatch, childBatch, action:actionType, from:oldCustomer, to:newCustomer, labels:labelCount, convertedToPrinted:doConvert, reversedPackingScans:reversedScans });
+  } catch(err) { console.error('[v44C #6] recustomer:', err); res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// v44C #6 (Addition 3): re-customer log — admin-only, recent first.
+app.get('/api/tracking/recustomer-log', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.query?.token);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin required' });
+    const rows = pgPool
+      ? (await pgPool.query(`SELECT * FROM recustomer_log ORDER BY ts DESC LIMIT 500`)).rows
+      : db.prepare(`SELECT * FROM recustomer_log ORDER BY ts DESC LIMIT 500`).all();
+    res.json({ ok:true, log: rows });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
 // ── Wastage — save salvage/remelt records ─────────────────────
-// ═══ v41 P19.6 (Q2): WIP reconciliation / write-off ═══
 // Lets admin resolve residual WIP on a batch at month changeover with an explicit
 // A-Grade impact choice:
 //   mode='writeoff' → inserts salvage/remelt into tracking_wastage → A-Grade % DROPS
@@ -12681,12 +13092,22 @@ app.post('/api/tracking/wastage-edit', async (req, res) => {
   try {
     const { id, qty, editedBy } = req.body;
     if (!id || qty === undefined) return res.status(400).json({ ok: false, error: 'id and qty required' });
+    const newQty = parseFloat(qty);
     if (pgPool) {
-      const r = await pgPool.query(`UPDATE tracking_wastage SET qty=$1, "by"=COALESCE("by",'') || ' [edited by ' || $2 || ']' WHERE id=$3`, [parseFloat(qty), editedBy||'admin', id]);
-      if (r.rowCount === 0) return res.status(404).json({ ok: false, error: 'Wastage entry not found' });
+      const cur = await pgPool.query('SELECT * FROM tracking_wastage WHERE id=$1', [id]);
+      if (!cur.rows[0]) return res.status(404).json({ ok: false, error: 'Wastage entry not found' });
+      const old = cur.rows[0];
+      await pgPool.query(`UPDATE tracking_wastage SET qty=$1, "by"=COALESCE("by",'') || ' [edited by ' || $2 || ']' WHERE id=$3`, [newQty, editedBy||'admin', id]);
+      // v43 #7: audit the salvage/remelt correction (old → new) so wastage edits are traceable, at
+      // parity with WASTAGE_DELETE. Downstream A-Grade / WIP recompute live from tracking_wastage on
+      // the next fetch, so the corrected value re-syncs automatically — no cache to bust.
+      await pgPool.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','WASTAGE_EDIT',$2)`,
+        [editedBy||'admin', JSON.stringify({id, batch_number:old.batch_number, dept:old.dept, type:old.type, old_qty:old.qty, new_qty:newQty})]);
     } else {
-      const result = db.prepare(`UPDATE tracking_wastage SET qty=?, by=COALESCE(by,'')||' [edited by '||?||']' WHERE id=?`).run(parseFloat(qty), editedBy||'admin', id);
-      if (result.changes === 0) return res.status(404).json({ ok: false, error: 'Wastage entry not found' });
+      const old = db.prepare('SELECT * FROM tracking_wastage WHERE id=?').get(id);
+      if (!old) return res.status(404).json({ ok: false, error: 'Wastage entry not found' });
+      db.prepare(`UPDATE tracking_wastage SET qty=?, by=COALESCE(by,'')||' [edited by '||?||']' WHERE id=?`).run(newQty, editedBy||'admin', id);
+      db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','WASTAGE_EDIT',?)`).run(editedBy||'admin', JSON.stringify({id, batch_number:old.batch_number, dept:old.dept, type:old.type, old_qty:old.qty, new_qty:newQty}));
     }
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }

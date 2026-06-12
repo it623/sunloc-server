@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v41ZZ</title>
+<title>Sunloc Tracking Suite v1.0 · build v44D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -567,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZZ</p>
+      <p>Tracking Suite v1.0 · build v44D</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -598,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v41ZZ</p>
+      <p>Tracking Suite v1.0 · build v44D</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -809,6 +809,7 @@ let state = {
   labels: [],        // generated labels
   scans: [],         // all scan events
   stageClosure: [],  // per batch per dept closure
+  scanReversals: [], // v44C #6: packing-scan reversals (unprinted→printed re-customer ledger)
   wastage: [],       // manual wastage entries
   dispatchPlans: [], // v37F: planned dispatch dates from planning app (for Dispatch Summary report) // v37F: dispatch plans from planning
   dispatchRecs: [],  // dispatch records
@@ -989,7 +990,7 @@ function getMachineFloor(machineId){
 function getBatch(batchNo){ return state.batches.find(b=>b.batchNumber===batchNo||b.id===batchNo)||null }
 function getBatchFlow(batch){ return batch?.isPrinted ? WIP_FLOW.printed : WIP_FLOW.unprinted }
 
-function getScansForBox(labelId){ return state.scans.filter(s=>s.labelId===labelId).sort((a,b)=>new Date(a.ts)-new Date(b.ts)) }
+function getScansForBox(labelId){ const revSet=new Set((state.scanReversals||[]).map(r=>r.reversedScanId||r.reversed_scan_id)); return state.scans.filter(s=>s.labelId===labelId && !revSet.has(s.id)).sort((a,b)=>new Date(a.ts)-new Date(b.ts)) }
 function getScansForBatch(batchNo){ return state.scans.filter(s=>s.batchNumber===batchNo) }
 
 // ── Scan Summary Helpers — use aggregated server data (no LIMIT, full history) ──
@@ -1145,6 +1146,18 @@ function getTotalWastage(batchNo, dept){
 function isStageComplete(batchNo, dept){
   return state.stageClosure.some(s=>s.batchNumber===batchNo&&s.dept===dept&&s.closed);
 }
+// v44 #2(ii): short-close lookup (tolerant of camel/snake field names from the two server paths).
+function getStageShort(batchNo, dept){
+  const c = state.stageClosure.find(s=>s.batchNumber===batchNo&&s.dept===dept&&s.closed);
+  if(!c) return null;
+  const sc = c.shortClose ?? c.short_close;
+  if(!sc) return null;
+  return { reason: c.shortReason ?? c.short_reason ?? '', boxes: parseInt(c.shortBoxes ?? c.short_boxes ?? 0,10) || 0 };
+}
+function isBatchShort(batchNo){
+  return state.stageClosure.some(s=>s.batchNumber===batchNo&&s.closed&&(s.shortClose ?? s.short_close));
+}
+const SHORT_CLOSE_REASONS = ['Less AIM Scan-Out received', 'Higher Printing Wastage'];
 
 function canScanDept(batchNo, dept){
   const batch = getBatch(batchNo);
@@ -1863,6 +1876,7 @@ async function pullFromServer(force){
           // actually returns entries. An empty array passes the truthiness check and would wipe +
           // persist non-empty local data on a transient empty fetch (deploy restart). Guard it.
           if(Array.isArray(j.state.stageClosure) && !(j.state.stageClosure.length===0 && state.stageClosure&&state.stageClosure.length>0)) state.stageClosure=j.state.stageClosure;
+          if(Array.isArray(j.state.scanReversals)) state.scanReversals=j.state.scanReversals; // v44C #6
           if(Array.isArray(j.state.dispatchRecs) && !(j.state.dispatchRecs.length===0 && state.dispatchRecs&&state.dispatchRecs.length>0)) state.dispatchRecs=j.state.dispatchRecs;
           if(j.state.alerts){
             state.alerts=j.state.alerts.map(a=>({
@@ -2022,6 +2036,29 @@ function recordScan(labelId, dept, type, operator, parsed){
   if(!label) return {ok:false,msg:'Label not found'};
   if(label.voided) return {ok:false,msg:'Label has been voided'};
 
+  // v43A #4: ORANGE LABEL = PI INSPECTION CONFIRMATION ONLY.
+  // Scanning an orange label records that PI inspected/verified this box's printed matter. It is
+  // recorded on a SEPARATE 'orange' channel that NO WIP / A-Grade / in-out / stage-progression logic
+  // reads, so it never affects flow or counts, and the orange number is NOT reconciled to the box
+  // number. It bypasses the normal stage checks (an orange label has no AIM/printing/PI history).
+  if(label.isOrange){
+    if(getScansForBox(label.id).some(s=>s.dept==='orange')){
+      return {ok:false, msg:'🟠 This orange label was already scanned'};
+    }
+    const parent = state.labels.find(l=>l.id===label.parentLabelId);
+    const oscan = { id:uid(), labelId:label.id, batchNumber:label.batchNumber, labelNumber:null, dept:'orange', type:'in', ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty, parentLabelId:label.parentLabelId||null, _local:true };
+    state.scans.push(oscan);
+    _lastScanTs = Date.now();
+    pushToServer('/api/tracking/scan',{scan:oscan}).then(result=>{
+      if(result && (result.duplicate||result.blocked)){
+        state.scans=state.scans.filter(s=>s.id!==oscan.id);
+        toast('🟠 Orange scan rejected: '+(result.error||'duplicate'), '#dc2626', 4000);
+      }
+    }).catch(()=>{});
+    const boxLbl = parent ? ('box '+Math.abs(parent.labelNumber||0)) : label.batchNumber;
+    return {ok:true, orangeInspection:true, label, msg:`🟠 Orange verified — ${label.batchNumber} ${boxLbl} (PI inspection; no WIP impact)`};
+  }
+
   const batch = getBatch(label.batchNumber);
   if(!batch) return {ok:false,msg:'Batch not found'};
 
@@ -2036,7 +2073,9 @@ function recordScan(labelId, dept, type, operator, parsed){
 
   // Strong duplicate check — matches server logic exactly
   // Check ALL scans for this label+dept, not just the last one
-  const allDeptScans = getScansForBox(labelId).filter(s=>s.dept===dept);
+  // v43 #5: key the local guard on the RESOLVED canonical label.id (not the scanned token, which
+  // differs between QR SystemID and manual batch-box entry for the same physical box).
+  const allDeptScans = getScansForBox(label.id).filter(s=>s.dept===dept);
   const alreadyIn  = allDeptScans.some(s=>s.type==='in');
   const alreadyOut = allDeptScans.some(s=>s.type==='out');
   if(type==='in' && alreadyIn)  return {ok:false,msg:'Box already scanned IN at this department'};
@@ -2072,7 +2111,7 @@ function recordScan(labelId, dept, type, operator, parsed){
     }
   }
 
-  const scan = { id:uid(), labelId, batchNumber:label.batchNumber, labelNumber:label.labelNumber, dept, type, ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty, _local:true };
+  const scan = { id:uid(), labelId:label.id, batchNumber:label.batchNumber, labelNumber:label.labelNumber, dept, type, ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty, _local:true };
   state.scans.push(scan);
   _lastScanTs = Date.now(); // Guard against pullFromServer race condition
 
@@ -2096,8 +2135,8 @@ function recordScan(labelId, dept, type, operator, parsed){
       state.scans=state.scans.filter(s=>s.id!==scan.id);
       const errMsg = result.error || 'Scan blocked';
       toast('🚫 ' + errMsg, '#dc2626', 5000);
-      // For admins, offer one-tap override
-      if (currentDept === 'admin' && result.upstream_dept) {
+      // For admins, offer one-tap override (upstream-progression block, v43A #4 orange-gate)
+      if (currentDept === 'admin' && (result.upstream_dept || result.orange_gate)) {
         setTimeout(() => {
           if (confirm(`ADMIN OVERRIDE\n\n${errMsg}\n\nDo you want to force this scan through?\nThis is logged for audit.\n\nUse only for data correction — never for routine scanning.`)) {
             // Resubmit with override flag
@@ -2213,8 +2252,11 @@ function canGenerateLabels(batchNo, requestedBoxes){
 
   if(requestedBoxes > remainingAllowed) return {ok:false, msg:`Only ${remainingAllowed} more labels allowed (max: ${maxTotalBoxes} boxes for ${fmt(batch.qty)}L order qty). Amend planned qty in Planning to unlock more.`};
 
-  // Daily cap applies to normal labels only; excess labels bypass daily cap
-  const isExcessRun = normalLabels.length >= lakhToBox(batch.qty, batch.size);
+  // v43 #3: classify normal-vs-excess against the ORIGINAL planned box count, not the live qty.
+  // Amending planned gross in Planning to regularise excess grows batch.qty (so the total cap above
+  // unlocks the boxes), but the extra boxes must label as E-series — so anchor the split to the
+  // normalTotal of the first-generated normal labels (fall back to live qty before any exist).
+  const isExcessRun = normalLabels.length >= originalNormalBoxMax(batchNo, batch);
   if(!isExcessRun){
     const machine = state.machineMaster.find(m=>m.id===batch.machineId||m.machineId===batch.machineId);
     const dailyTarget = machine?.dailyTarget || machine?.yTarget || 27;
@@ -2240,6 +2282,17 @@ async function pushLabelsToServer(labels,attempt=1){
 }
 function flushPendingLabelPush(){try{const s=JSON.parse(localStorage.getItem('sunloc_pending_labels')||'[]');s.forEach(l=>{if(!_pendingLabelPush.find(p=>p.id===l.id))_pendingLabelPush.push(l);});if(_pendingLabelPush.length>0)pushLabelsToServer(_pendingLabelPush.slice());}catch(e){}}
 
+// v43 #3: the original planned box count that anchors the normal-vs-excess label split. Once any
+// normal labels exist, their stored normalTotal is the original anchor (min, guarding against any
+// stray re-stamp); before the first generation, fall back to the live (possibly amended) planned qty.
+function originalNormalBoxMax(batchNo, batch){
+  const b = batch || getBatch(batchNo);
+  const totals = state.labels
+    .filter(l=>l.batchNumber===batchNo&&!l.voided&&!l.isOrange&&!l.isExcess)
+    .map(l=>+l.normalTotal).filter(n=>Number.isFinite(n)&&n>0);
+  return totals.length ? Math.min(...totals) : lakhToBox(b.qty, b.size);
+}
+
 function generateLabels(batchNo, count, isPartialLast, partialQty){
   const batch = getBatch(batchNo);
   if(!batch) return [];
@@ -2249,7 +2302,7 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
 
   const newLabels = [];
   // Determine if this is an excess run
-  const normalBoxMax = lakhToBox(batch.qty, batch.size);  // original planned boxes
+  const normalBoxMax = originalNormalBoxMax(batchNo, batch);  // v43 #3: original planned boxes (anchored, not live qty)
   const existingNormal = state.labels.filter(l=>l.batchNumber===batchNo&&!l.isOrange&&!l.isExcess&&!l.voided).length;
   const existingExcess = state.labels.filter(l=>l.batchNumber===batchNo&&!l.isOrange&&l.isExcess&&!l.voided).length;
   const isExcessRun = check.isExcessRun || existingNormal >= normalBoxMax;
@@ -4152,9 +4205,14 @@ function renderDeptScan(dept){
           <td class="td-mono">${outCount} <span class="text-muted">(${fmt(outQty)}L)</span></td>
           <td class="td-mono ${aGradePct<90?'red':aGradePct<95?'amber':'green'}">${fmt(aGradePct,1)}%</td>
           <td class="td-mono">S:${fmt(w.salvage)} R:${fmt(w.remelt)}</td>
-          <td>${closed?'<span class="badge badge-green">✅ Closed</span>':inCount===0?'<span class="badge badge-gray">No scans</span>':balanced?'<span class="badge badge-blue">Ready to Close</span>':`<span class="badge badge-amber">⚠ ${balanceShortfall>0?balanceShortfall+' boxes unaccounted':'Over by '+Math.abs(balanceShortfall)+' boxes'}</span>`}</td>
-          <td>${!closed&&canClose?`<button class="btn btn-sm btn-success" onclick="closeBatchStage('${b.batchNumber}','${dept}')">Close Stage</button>`:
-            !closed&&currentDept==='admin'?`<button class="btn btn-sm btn-warning" onclick="adminCloseBatchStage('${b.batchNumber}','${dept}')">⚡ Force Close</button>`:'—'}</td>
+          <td>${(()=>{const _sh=getStageShort(b.batchNumber,dept);return closed?`<span class="badge badge-green">✅ Closed</span>${_sh?` <span class="badge badge-amber" title="${_sh.reason}">SHORT −${_sh.boxes}</span>`:''}`:inCount===0?'<span class="badge badge-gray">No scans</span>':balanced?'<span class="badge badge-blue">Ready to Close</span>':`<span class="badge badge-amber">⚠ ${balanceShortfall>0?balanceShortfall+' boxes unaccounted':'Over by '+Math.abs(balanceShortfall)+' boxes'}</span>`;})()}</td>
+          <td>${
+            closed ? '—'
+            : canClose ? `<button class="btn btn-sm btn-success" onclick="closeBatchStage('${b.batchNumber}','${dept}')">Close Stage</button>`
+            : (dept==='printing' && balanceShortfall>0 && (currentDept==='printing'||currentDept==='admin')) ? `<button class="btn btn-sm btn-warning" onclick="openShortClose('${b.batchNumber}')" title="Close printing with fewer boxes than scanned in — reason required">Close Short</button>`
+            : currentDept==='admin' ? `<button class="btn btn-sm btn-warning" onclick="adminCloseBatchStage('${b.batchNumber}','${dept}')">⚡ Force Close</button>`
+            : '—'
+          }</td>
         </tr>`;
       }).join('')||'<tr><td colspan="8" class="text-center text-muted">No active batches at this stage</td></tr>'}
       </tbody>
@@ -4188,6 +4246,18 @@ function fillScanInput(dept,type,value){
   if(el){ el.value=value; processScanInput(dept,type); }
 }
 
+// v43A #4: distinct UI for an orange inspection scan (separate from white-box in/out feedback).
+function handleOrangeScanUI(result, dept, type, zoneEl, resultEl, el){
+  zoneEl.className='scan-zone success';
+  const msg = result.msg || '🟠 Orange label verified (PI inspection)';
+  toast(msg, '#ea580c', 3500);
+  resultEl.innerHTML=`<div class="alert alert-success" style="border-left:4px solid var(--orange)">${msg}</div>`;
+  setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, 3500);
+  renderDeptScan(dept);
+  setTimeout(()=>{ document.getElementById(`scan-${type}-${dept}`)?.focus(); }, 50);
+  if(el) el.focus();
+}
+
 function processScanInput(dept,type){
   const el=document.getElementById(`scan-${type}-${dept}`);
   const resultEl=document.getElementById(`scan-result-${type}-${dept}`);
@@ -4219,7 +4289,9 @@ function processScanInput(dept,type){
 
   // First attempt
   const firstResult = recordScan(parsed.labelId, dept, type, currentDept, parsed);
-  if(firstResult.ok){
+  if(firstResult.ok && firstResult.orangeInspection){
+    handleOrangeScanUI(firstResult, dept, type, zoneEl, resultEl, el);
+  } else if(firstResult.ok){
     // Success on first try
     zoneEl.className='scan-zone success';
     const warnHtml = firstResult.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${firstResult.warning}</div>` : '';
@@ -4283,7 +4355,9 @@ function processScanInput(dept,type){
         retry = {ok:false, msg:'Cannot reach server — check connection'};
       }
       // Always update UI — never stuck
-      if(retry.ok){
+      if(retry.ok && retry.orangeInspection){
+        handleOrangeScanUI(retry, dept, type, zoneEl, resultEl, el);
+      } else if(retry.ok){
         zoneEl.className='scan-zone success';
         const warnHtml = retry.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${retry.warning}</div>` : '';
         const orangeHtml = retry.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${retry.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${retry.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
@@ -4418,6 +4492,154 @@ function adminCloseBatchStage(batchNo,dept){
   closeBatchStage(batchNo,dept);
 }
 
+// v44 #2(ii): SHORT-QTY CLOSE — Printing manager closes the printing stage with fewer boxes out than
+// in (no wastage rows), recording one of two fixed reasons. The shortfall + reason persist on the
+// closure and carry to packing/dispatch; dispatch already invoices only the available (scanned-out)
+// quantity, so the invoice naturally reflects the short qty.
+function openShortClose(batchNo){
+  if(currentDept!=='printing' && currentDept!=='admin'){ alert('Only the Printing manager or Admin can close the printing stage short.'); return; }
+  const dept='printing';
+  if(isStageComplete(batchNo,dept)){ alert('Printing already closed for this batch.'); return; }
+  const batch=getBatch(batchNo); const ps=PACK_SIZES[String(batch?.size)]||1;
+  const inCount = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
+  const outCount= state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length;
+  const w=getTotalWastage(batchNo,dept); const wastageBoxes=Math.round(w.total/ps);
+  const shortfall = inCount - (outCount + wastageBoxes);
+  if(shortfall<=0){ alert('No shortfall at printing — use the normal Close Stage.'); return; }
+  openModal('Close Printing Short', `Batch ${batchNo} — ${shortfall} box(es) short`, `
+    <div class="alert alert-warning" style="font-size:12px;margin-bottom:10px">Scan IN: <b>${inCount}</b> · Scan OUT: <b>${outCount}</b> · Wastage: <b>${wastageBoxes}</b> → <b>${shortfall} box(es) unaccounted</b>.<br>Closing short records the reason and carries the shortage to packing &amp; dispatch. The invoice will reflect the available quantity. No wastage rows are created.</div>
+    <div class="form-group">
+      <label>Reason for shortfall <span style="color:var(--red)">*</span></label>
+      <select id="short-reason" class="form-control">
+        <option value="">— Select reason —</option>
+        ${SHORT_CLOSE_REASONS.map(r=>`<option value="${r}">${r}</option>`).join('')}
+      </select>
+    </div>
+  `, [
+    {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'},
+    {label:'Close Short', cls:'btn-warning', fn:`confirmShortClose('${batchNo}',${shortfall})`}
+  ]);
+}
+function confirmShortClose(batchNo, shortfall){
+  const reason=document.getElementById('short-reason')?.value;
+  if(!reason || !SHORT_CLOSE_REASONS.includes(reason)){ alert('Please select a reason.'); return; }
+  const dept='printing';
+  state.stageClosure.push({batchNumber:batchNo, dept, closed:1, closedAt:now(), closedBy:currentDept, shortClose:1, shortReason:reason, shortBoxes:shortfall});
+  saveLocal();
+  pushToServer('/api/tracking/stage-close',{batchNumber:batchNo,dept,closedBy:currentDept,short:true,shortReason:reason,shortBoxes:shortfall});
+  closeModal();
+  toast(`Printing closed short (−${shortfall}) — ${reason}`, '#C55A11', 4000);
+  renderPage(currentPage);
+}
+
+
+// v44 #6: ADMIN RE-CUSTOMER RELABEL — re-assign a packed batch to a different customer. In-place
+// relabel (box identity + scans + production history preserved); forces a reprint with the new
+// customer. Blocked server-side if a SAP invoice document already exists for the batch.
+function openRecustomer(preBatch){
+  if(currentDept!=='admin'){ alert('Admin only.'); return; }
+  // Candidate batches: anything that has been labelled (non-voided, non-orange) — show current customer.
+  const seen=new Map();
+  state.labels.forEach(l=>{ if(!l.voided&&!l.isOrange&&!seen.has(l.batchNumber)) seen.set(l.batchNumber, l.customer||''); });
+  const cands=[...seen.keys()].sort();
+  if(!cands.length){ alert('No labelled batches available to re-customer.'); return; }
+  const opts=cands.map(bn=>`<option value="${bn}" ${bn===preBatch?'selected':''}>${bn}${seen.get(bn)?' — '+seen.get(bn):''}</option>`).join('');
+  openModal('Re-Customer Batch', 'Re-assign a packed batch to a different customer', `
+    <div class="alert alert-warning" style="font-size:12px;margin-bottom:10px">Production &amp; scan history stay intact. Labels are flagged for reprint with the new customer. Blocked if a SAP invoice already exists for the batch.</div>
+    <div class="form-group"><label>Batch</label><select id="rc-batch" class="form-control" onchange="_rcInfo()">${opts}</select>
+      <div id="rc-info" style="font-size:11px;color:var(--text3);margin-top:3px"></div></div>
+    <div class="form-row cols-2">
+      <div class="form-group"><label>New Customer *</label><input type="text" id="rc-customer" class="form-control" placeholder="Customer name"></div>
+      <div class="form-group"><label>SAP Card Code</label><input type="text" id="rc-cardcode" class="form-control" placeholder="(optional)"></div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group"><label>PO Number</label><input type="text" id="rc-po" class="form-control" placeholder="(optional)"></div>
+      <div class="form-group"><label>Reason *</label><input type="text" id="rc-reason" class="form-control" placeholder="Why re-customered?"></div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group"><label>Ship To</label><input type="text" id="rc-shipto" class="form-control" placeholder="(optional)"></div>
+      <div class="form-group"><label>Bill To</label><input type="text" id="rc-billto" class="form-control" placeholder="(optional)"></div>
+    </div>
+    <div class="form-group" style="border-top:1px dashed var(--border);padding-top:8px">
+      <label>Split — boxes to switch <span style="color:var(--text3);font-weight:400">(0 / blank = full switch)</span></label>
+      <input type="number" id="rc-split" class="form-control" value="0" min="0" placeholder="0">
+      <div style="font-size:11px;color:var(--text3);margin-top:3px">If less than total, a new batch <b><span id="rc-childhint">…A</span></b> is created for the switched boxes; the rest stay with the current customer.</div>
+    </div>
+    <div class="form-group" style="border-top:1px dashed var(--border);padding-top:8px">
+      <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="rc-convert" style="width:auto" onchange="_rcConvertToggle()"> Convert to printed <span style="color:var(--text3);font-weight:400">(only if batch is currently unprinted)</span></label>
+      <div id="rc-print-fields" style="display:none;margin-top:6px">
+        <div class="form-row cols-2">
+          <div class="form-group" style="margin:0"><label>Print Matter</label><input type="text" id="rc-printmatter" class="form-control" placeholder="(optional)"></div>
+          <div class="form-group" style="margin:0"><label>Print Type</label><input type="text" id="rc-printtype" class="form-control" placeholder="(optional)"></div>
+        </div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">Goods will be issued to Printing from Packing (packing reversed, history kept). Batch then appears in Printing for machine assignment and flows printing→PI→packing→dispatch.</div>
+      </div>
+    </div>
+  `, [
+    {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'},
+    {label:'Re-Customer', cls:'btn-warning', fn:'confirmRecustomer()'}
+  ]);
+  _rcInfo();
+}
+function _rcBoxCount(bn){ return state.labels.filter(l=>l.batchNumber===bn&&!l.voided&&!l.isOrange).length; }
+function _rcInfo(){
+  const bn=document.getElementById('rc-batch')?.value; if(!bn) return;
+  const b=getBatch(bn); const n=_rcBoxCount(bn);
+  const info=document.getElementById('rc-info'); if(info) info.innerHTML=`${n} box(es) · ${b?.isPrinted?'PRINTED':'UNPRINTED'}${b?.customer?' · current: '+b.customer:''}`;
+  const sp=document.getElementById('rc-split'); if(sp) sp.max=n;
+  const ch=document.getElementById('rc-childhint'); if(ch) ch.textContent=bn+'A';
+}
+function _rcConvertToggle(){ const f=document.getElementById('rc-print-fields'); const c=document.getElementById('rc-convert'); if(f&&c) f.style.display=c.checked?'block':'none'; }
+async function confirmRecustomer(){
+  const batchNumber=document.getElementById('rc-batch')?.value;
+  const newCustomer=(document.getElementById('rc-customer')?.value||'').trim();
+  const newCardCode=(document.getElementById('rc-cardcode')?.value||'').trim();
+  const newPoNumber=(document.getElementById('rc-po')?.value||'').trim();
+  const shipTo=(document.getElementById('rc-shipto')?.value||'').trim();
+  const billTo=(document.getElementById('rc-billto')?.value||'').trim();
+  const reason=(document.getElementById('rc-reason')?.value||'').trim();
+  const splitBoxes=parseInt(document.getElementById('rc-split')?.value)||0;
+  const convertToPrinted=!!document.getElementById('rc-convert')?.checked;
+  const printMatter=(document.getElementById('rc-printmatter')?.value||'').trim();
+  const printType=(document.getElementById('rc-printtype')?.value||'').trim();
+  if(!batchNumber||!newCustomer){ alert('Batch and new customer are required.'); return; }
+  if(!reason){ alert('Please enter a reason (audited).'); return; }
+  const total=_rcBoxCount(batchNumber);
+  if(splitBoxes>0 && splitBoxes>=total){ alert(`Split (${splitBoxes}) must be less than total boxes (${total}). Leave 0 for a full switch.`); return; }
+  const splitMsg = splitBoxes>0 ? `${splitBoxes} of ${total} box(es) → new batch ${batchNumber}A` : `all ${total} box(es)`;
+  if(!confirm(`Re-customer ${batchNumber} → "${newCustomer}" (${splitMsg})${convertToPrinted?' + convert to printed':''}?`)) return;
+  try{
+    const r=await fetch(serverUrl+'/api/tracking/recustomer',{
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},
+      body:JSON.stringify({batchNumber,newCustomer,newCardCode,newPoNumber,shipTo,billTo,reason,splitBoxes,convertToPrinted,printMatter,printType})
+    });
+    const j=await r.json();
+    if(j&&j.ok){
+      closeModal();
+      toast(`Re-customered ${j.targetBatch||batchNumber}: ${j.from||'—'} → ${j.to} (${j.action}, ${j.labels} label(s)${j.convertedToPrinted?', → printed':''})`, 'var(--green)', 5500);
+      setTimeout(()=>{ pullFromServer(true); }, 700);
+    } else if(j&&j.sap_blocked){ alert('⛔ '+j.error); }
+    else if(j&&j.split_blocked){ alert('⛔ '+j.error); }
+    else if(j&&j.convert_blocked){ alert('⛔ '+j.error); }
+    else { alert('Re-customer failed: '+(j?.error||'server error')); }
+  }catch(e){ alert('Re-customer failed: '+e.message); }
+}
+async function openRecustomerLog(){
+  if(currentDept!=='admin'){ alert('Admin only.'); return; }
+  openModal('Re-Customer Log', 'Before/after history of every re-customer action', `<div id="rc-log-body" style="font-size:12px;color:var(--text2)">Loading…</div>`, [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);
+  try{
+    const r=await fetch(serverUrl+'/api/tracking/recustomer-log',{headers:{'x-session-token':currentUser?.token||''}});
+    const j=await r.json();
+    const body=document.getElementById('rc-log-body'); if(!body) return;
+    if(!j||!j.ok){ body.innerHTML='Failed to load log: '+((j&&j.error)||'error'); return; }
+    if(!j.log.length){ body.innerHTML='No re-customer actions logged yet.'; return; }
+    body.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>When</th><th>Batch</th><th>Action</th><th>From → To</th><th>Boxes</th><th>By</th><th>Reason</th></tr></thead><tbody>${
+      j.log.map(x=>{const when=(x.ts||'').replace('T',' ').slice(0,16);const child=x.child_batch_number?` → ${x.child_batch_number}`:'';const boxes=x.split_boxes>0?`${x.split_boxes}/${x.total_boxes} (split)`:`${x.total_boxes}`;const conv=x.converted_to_printed?' <span style="color:var(--accent3)">+printed</span>':'';return `<tr><td class="text-sm">${when}</td><td class="td-mono">${x.batch_number||''}${child}</td><td class="text-sm">${x.action_type||''}${conv}</td><td class="text-sm">${x.from_customer||'—'} → <b>${x.to_customer||''}</b></td><td class="td-mono">${boxes}</td><td class="text-sm">${x.by_user||''}</td><td class="text-sm">${(x.reason||'').replace(/</g,'&lt;')}</td></tr>`;}).join('')
+    }</tbody></table></div>`;
+  }catch(e){ const body=document.getElementById('rc-log-body'); if(body) body.innerHTML='Failed to load log: '+e.message; }
+}
+
 function getActiveBatchesForDept(dept){
   return state.batches.filter(b=>{
     if(b.status==='closed') return false;
@@ -4545,6 +4767,7 @@ function renderDispatch(){
     <div class="dept-strip dispatch"></div>
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">Dispatch Management</div><div class="section-sub">Packed quantity ledger & dispatch recording</div></div>
+      ${currentDept==='admin'?`<div style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="openRecustomer()">🔄 Re-Customer Batch</button><button class="btn btn-sm btn-secondary" onclick="openRecustomerLog()">📋 Re-Customer Log</button></div>`:''}
     </div>
 
     <!-- v39 Phase 10b: Invoice Queue panel — populated async by _v39_renderInvoiceQueuePanel().
@@ -4706,6 +4929,7 @@ function openDispatchRecord(batchNo){
     : `<div class="alert alert-info" style="font-size:11px;margin-bottom:8px">✓ All scan-out activity is already recorded. Editing not required unless documenting new dispatch.</div>`;
 
   openModal('Record Dispatch',`Batch ${batchNo} — Scan-based reconciliation`,`
+    ${(()=>{const _sh=getStageShort(batchNo,'printing');return _sh?`<div class="alert alert-warning" style="font-size:11px;margin-bottom:8px">⚠️ <b>Closed SHORT at printing</b> — ${_sh.boxes} box(es) short (${_sh.reason}). Dispatch/invoice the available quantity only.</div>`:'';})()}
     ${existingSummary}
     ${flowBNote}
     <div class="form-row cols-2">
