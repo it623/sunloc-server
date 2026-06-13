@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44E</title>
+<title>Sunloc Tracking Suite v1.0 · build v44F</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -567,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44E</p>
+      <p>Tracking Suite v1.0 · build v44F</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -598,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44E</p>
+      <p>Tracking Suite v1.0 · build v44F</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1254,7 +1254,7 @@ function checkAlerts(){
 
 function getAlertCount(dept){
   checkAlerts();
-  return dept ? state.alerts.filter(a=>a.dept===dept&&!_isRetired(a.batchNumber)).length : state.alerts.filter(a=>!_isRetired(a.batchNumber)).length; // v44E Issue#2: retired drop out of alerts
+  return dept ? state.alerts.filter(a=>a.dept===dept&&!_isRetired(a.batchNumber)).length : state.alerts.filter(a=>!_isRetired(a.batchNumber)).length; // v44F Issue#2: retired drop out of alerts
 }
 
 // ═══════════════════════════════════════════════════════
@@ -2433,7 +2433,7 @@ async function loadRetiredBatchesTrk(){
   }catch(e){ /* keep prior set on failure — never blank a populated set on a transient error */ }
 }
 
-// ═══ v44E Issue#1: WIP reconciliation OVERRIDE (admin-typed authoritative per-batch values) ═══
+// ═══ v44F Issue#1: WIP reconciliation OVERRIDE (admin-typed authoritative per-batch values) ═══
 // When an override exists for a batch, the central accessors getBatchWIPBreakdown + getBatchAGrade
 // return the admin's typed Gross/A-Grade/Packing/WIP/Wastage, so every report (A–G) reflects them.
 window._reconOverrides = window._reconOverrides || {};
@@ -2462,7 +2462,7 @@ function getBatchWIPBreakdown(batchNo){
              piWIP:0, toPackTransit:0, packWIP:0, totalWIP:0,
              wAIM:{salvage:0,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, retired:true };
   }
-  // v44E Issue#1: admin reconciliation override — authoritative typed totals replace scan-derived WIP.
+  // v44F Issue#1: admin reconciliation override — authoritative typed totals replace scan-derived WIP.
   const _ovW = _reconOverride(batchNo);
   if(_ovW){
     const g=_ovW.gross||0, pk=_ovW.packing||0, w=_ovW.wip||0, ws=_ovW.wastage||0;
@@ -2548,7 +2548,7 @@ function getBatchAGrade(batchNo, stage){
   const batch = getBatch(batchNo);
   if(!batch) return {inspected:0,aGrade:0,pct:0,salvage:0,remelt:0,wip:0};
 
-  // v44E Issue#1: admin reconciliation override — A-Grade(lakhs) + Wastage are admin-typed; keep the
+  // v44F Issue#1: admin reconciliation override — A-Grade(lakhs) + Wastage are admin-typed; keep the
   // frozen A-Grade% shape (Out/(Out+Salvage+Remelt)) using those values.
   const _ovA = _reconOverride(batchNo);
   if(_ovA){
@@ -2646,7 +2646,7 @@ function _v41_clearAgradeMonthCache(){ _v41_agradeMonthCache = {}; }
 // Reports must call _v41_ensureAgradeMonthLoaded() once before their batch loop so the cache
 // is warm; if it isn't (e.g. fetch failed), this transparently falls back to cumulative.
 function _v41_agradeFor(batchNo, stage){
-  // v44E Issue#1: reconciliation override wins over both cumulative and month-attributed A-Grade.
+  // v44F Issue#1: reconciliation override wins over both cumulative and month-attributed A-Grade.
   const _ov = _reconOverride(batchNo);
   if(_ov){ const a=_ov.aGrade||0, ws=_ov.wastage||0, d=a+ws; return {inspected:a+ws,aGrade:a,pct:d>0?(a/d*100):0,salvage:ws,remelt:0,wip:_ov.wip||0,reconciled:true}; }
   if (_v41_useMonthAttributed) {
@@ -2765,8 +2765,12 @@ function generateZPL(label, batch){
   const _b      = getBatch(batchNo);
   const normTot = label.normalTotal || (_b ? lakhToBox(_b.qty, label.size) : null) || '?';
   const _num    = Math.abs(label.labelNumber || 0);
+  // v44F #1: excess denominator = LIVE count of this batch's non-voided excess labels, so excess
+  // labels generated in separate runs all show the correct total (E-1/2, E-2/2) on (re)print,
+  // instead of the per-run frozen excessTotal that produced E-1/1 then E-2/2.
+  const _exTotLive = state.labels.filter(x=>x.batchNumber===batchNo && !x.voided && !x.isOrange && x.isExcess).length;
   const containerNo = label.isExcess
-    ? `E-${label.excessNum}/${label.excessTotal}`
+    ? `E-${label.excessNum}/${_exTotLive || label.excessTotal || 1}`
     : (normTot !== '?' ? `${_num}/${normTot}` : String(_num));
 
   const isTemp = batchNo.startsWith('TEMP-');
@@ -3238,7 +3242,7 @@ function renderDashboard(){
   const monthBatchNos = new Set(monthBatches.map(b=>b.batchNumber));
   const totalBatches=monthBatches.filter(b=>b.status!=='closed').length;
   const totalLabels=state.labels.filter(l=>!l.voided&&!l.isOrange&&monthBatchNos.has(l.batchNumber)).length;
-  const monthAlerts=state.alerts.filter(a=>monthBatchNos.has(a.batchNumber)&&!_isRetired(a.batchNumber)); // v44E Issue#2
+  const monthAlerts=state.alerts.filter(a=>monthBatchNos.has(a.batchNumber)&&!_isRetired(a.batchNumber)); // v44F Issue#2
   const totalAlerts=monthAlerts.length;
   // Use _ss() for full history counts — fixes LIMIT 2000 gap on dashboard KPIs
   // v40 Phase 18.14: Dispatched count combines legacy per-box dispatch scans + Phase 18 truck dispatches
@@ -3944,7 +3948,7 @@ function viewBatchLabels(batchNo){
       <thead><tr><th>#</th><th>Qty (L)</th><th>Status</th><th>Generated</th><th>Printed</th><th>Actions</th></tr></thead>
       <tbody>
       ${labels.map(l=>`<tr>
-        <td class="td-mono fw-bold">${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}/${l.excessTotal}</span>`:`${Math.abs(l.labelNumber||0)}/${l.normalTotal||'?'}`}${l.isPartial?' <span class="badge badge-amber">PARTIAL</span>':''}${l.batchNumber&&l.batchNumber.startsWith('TEMP-')?'<span class="badge" style="background:rgba(255,64,96,0.12);color:#ff4060;border:1px solid rgba(255,64,96,0.35);font-size:9px;margin-left:3px">⚠️ TEMP</span>':l.woStatus&&l.woStatus==='wo'?'<span class="badge" style="background:rgba(255,171,0,0.12);color:#C55A11;border:1px solid rgba(255,171,0,0.35);font-size:9px;margin-left:3px">🔶 W/O</span>':''}</td>
+        <td class="td-mono fw-bold">${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}/${state.labels.filter(x=>x.batchNumber===l.batchNumber&&!x.voided&&!x.isOrange&&x.isExcess).length||l.excessTotal||1}</span>`:`${Math.abs(l.labelNumber||0)}/${l.normalTotal||'?'}`}${l.isPartial?' <span class="badge badge-amber">PARTIAL</span>':''}${l.batchNumber&&l.batchNumber.startsWith('TEMP-')?'<span class="badge" style="background:rgba(255,64,96,0.12);color:#ff4060;border:1px solid rgba(255,64,96,0.35);font-size:9px;margin-left:3px">⚠️ TEMP</span>':l.woStatus&&l.woStatus==='wo'?'<span class="badge" style="background:rgba(255,171,0,0.12);color:#C55A11;border:1px solid rgba(255,171,0,0.35);font-size:9px;margin-left:3px">🔶 W/O</span>':''}</td>
         <td class="td-mono">${fmt(l.qty)}</td>
         <td>${l.voided?'<span class="badge badge-red">VOIDED</span>':l.printed?'<span class="badge badge-green">Printed</span>':'<span class="badge badge-gray">Not Printed</span>'}</td>
         <td class="td-mono text-sm">${fmtDateTime(l.generated)}</td>
@@ -4073,7 +4077,7 @@ const DEPT_CONFIG={
 function renderDeptScan(dept){
   const el=document.getElementById('page-'+dept);
   const cfg=DEPT_CONFIG[dept];
-  const myAlerts=state.alerts.filter(a=>a.dept===dept&&!_isRetired(a.batchNumber)); // v44E Issue#2: retired drop out
+  const myAlerts=state.alerts.filter(a=>a.dept===dept&&!_isRetired(a.batchNumber)); // v44F Issue#2: retired drop out
   const activeBatches=getActiveBatchesForDept(dept);
 
   document.getElementById('tb-actions').innerHTML=`
@@ -7493,7 +7497,7 @@ function _scrollIntoReportIfFirstView(reportKey) {
 }
 
 function renderReports(forceRebuild){
-  // v44E Issue#2: make the retired set + reconcile overrides reliably loaded before any report renders,
+  // v44F Issue#2: make the retired set + reconcile overrides reliably loaded before any report renders,
   // so retired batches drop out of ALL reports (A–G) regardless of load timing.
   if(!window._rptDataLoaded){ window._rptDataLoaded=true; Promise.all([loadRetiredBatchesTrk(),loadReconcileOverridesTrk()]).then(()=>{ try{ if(typeof window._activeReport==='function') window._activeReport(); }catch(e){} }); }
   // v37E T3: forceRebuild means user navigated to /reports anew — reset last-shown report tracker
@@ -8312,7 +8316,7 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
   }).filter(x=>x.isOpen && !_isRetired(x.b.batchNumber));
 
   let shown = items;
-  // v44E: remember which batches are shown for bulk select-all
+  // v44F: remember which batches are shown for bulk select-all
   if (mFilter) shown = shown.filter(x => normMcId(x.b.machineId) === normMcId(mFilter));
   if (sQ) shown = shown.filter(x =>
     (x.b.batchNumber||'').toLowerCase().includes(sQ) ||
@@ -8407,7 +8411,7 @@ function _rptZToggle(bn, on){ if(!window._rptZSel) window._rptZSel=new Set(); if
   const el=document.getElementById('rptz-retire-btn'); const n=window._rptZSel.size;
   if(el){ el.disabled=!n; el.textContent = n?`🗃️ Retire ${n} selected`:'🗃️ Retire selected'; }
 }
-// v44E: bulk select/deselect all currently-shown Report Z rows.
+// v44F: bulk select/deselect all currently-shown Report Z rows.
 function _rptZSelectAllShown(on){
   if(!window._rptZSel) window._rptZSel=new Set();
   const bns = window._rptZShownBns||[];
@@ -8559,7 +8563,7 @@ function _v41_renderReportFInner(){
     ...(hasScanSummary()
       ? [...monthBatchNos].filter(bn => _ss(bn,'aim').in > 0)
       : state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))
-  ])].filter(Boolean).filter(bn=>!_isRetired(bn)); // v44E Issue#2: retired drop out of Dept Handover Gaps
+  ])].filter(Boolean).filter(bn=>!_isRetired(bn)); // v44F Issue#2: retired drop out of Dept Handover Gaps
 
   // Machine filter
   if(filterMachine){
@@ -9026,12 +9030,18 @@ function _v41_renderReportDInner(){
   },0);
   const totalInspectedD=monthBatches.reduce((s,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.inspected;},0);
   const aGradePct=totalInspectedD>0?(totalAGrade/totalInspectedD*100):0;
+  // v44F #2: AIM-stage (unprinted-basis) A-Grade alongside the net post-printing figure, so Report D
+  // shows BOTH and reconciles with Report E (whose headline is the AIM-stage A-Grade %). stage='unprinted'
+  // yields AIMOut/(AIMOut+AIMSal+AIMRem) for every batch — the pre-print yield — honouring the month toggle.
+  const _aimD=monthBatches.reduce((acc,b)=>{const ag=_v41_agradeFor(b.batchNumber,'unprinted');acc.a+=ag.aGrade;acc.i+=ag.inspected;return acc;},{a:0,i:0});
+  const aimAGradePct=_aimD.i>0?(_aimD.a/_aimD.i*100):0;
   const html=`<div class="card"><div class="section-title mb-16">Report D — Overall Summary</div>
   ${_v41_agradeToggleHtml('renderReportD')}
   <div class="kpi-grid">
     <div class="kpi"><div class="kpi-label">Gross Production</div><div class="kpi-val">${fmt(totalGross)}L</div></div>
-    <div class="kpi"><div class="kpi-label">Total A-Grade</div><div class="kpi-val green">${fmt(totalAGrade)}L</div></div>
-    <div class="kpi"><div class="kpi-label">A-Grade %</div><div class="kpi-val ${aGradePct>=95?'green':aGradePct>=90?'amber':'red'}">${fmt(aGradePct,1)}%</div></div>
+    <div class="kpi"><div class="kpi-label">A-Grade % (Unprinted / AIM)</div><div class="kpi-val ${aimAGradePct>=95?'green':aimAGradePct>=90?'amber':'red'}">${fmt(aimAGradePct,1)}%</div><div class="kpi-sub">AIMOut ÷ (AIMOut+Sal+Rem) — matches Report E</div></div>
+    <div class="kpi"><div class="kpi-label">A-Grade % (Post-Printing)</div><div class="kpi-val ${aGradePct>=95?'green':aGradePct>=90?'amber':'red'}">${fmt(aGradePct,1)}%</div><div class="kpi-sub">net of Print + PI salvage/remelt</div></div>
+    <div class="kpi"><div class="kpi-label">Total A-Grade (net)</div><div class="kpi-val green">${fmt(totalAGrade)}L</div></div>
     <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${fmt(state.dispatchRecs.reduce((s,r)=>s+r.qty,0))}L</div></div>
   </div>
   <div class="card-title mt-16">Stage-wise WIP</div>
@@ -11762,6 +11772,10 @@ function exportReportD(){
 
 function exportReportE(){
   const wb=XLSX.utils.book_new();
+  // v44F #3: export real numeric cells (not fmt() strings) so Excel SUM/formulas evaluate. Blanks → '',
+  // explicit dashes ('—') stay text; _fmtNumCells applies a 2-dp display format to numeric cells.
+  const _xn=(v,_d)=>{ if(v==null||v==='') return ''; const x=+v; return isNaN(x)?'':Math.round(x*100)/100; };
+  const _fmtNumCells=(ws)=>{ if(!ws||!ws['!ref'])return; const R=XLSX.utils.decode_range(ws['!ref']); for(let r=R.s.r+1;r<=R.e.r;r++){for(let c=R.s.c;c<=R.e.c;c++){const cell=ws[XLSX.utils.encode_cell({r,c})]; if(cell&&cell.t==='n'){cell.z='0.00';}}} };
   const summaryRows=[];
   const monthBatchSet = new Set(getTrkMonthBatches().map(b=>b.batchNumber));
   Object.entries(FLOORS).forEach(([floorKey,floor])=>{
@@ -11799,21 +11813,21 @@ function exportReportE(){
         const piAGradePctEx    = (b.isPrinted && aimInputTotalEx > 0)
           ? Math.max(0, (postPiNumEx    / aimInputTotalEx) * 100) : 0;
         summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,
-          'PLANNED QUANTITY (lac)':fmt(b.qty),'TOTAL PRODUCTION (lac)':fmt(grossProd),
-          'AIM TOTAL RUN (lac)':fmt(aimIn),'SALVAGE':fmt(aimW.salvage),'REMELT':fmt(aimW.remelt),
-          'AIM A-GRADE (lac)':fmt(aimOut),'AIM %':fmt(aimInputTotalEx>0?(aimOut/aimInputTotalEx*100):0,2),
-          'WIP (lac)':fmt(wip),
-          'PRINT TD (lac)':fmt(printOut),'PRINT REJ (lac)':fmt(printW.salvage),
-          'PRINT A-GRADE %': b.isPrinted ? fmt(printAGradePctEx,2) : '—',
-          'PI INSPECT (lac)':fmt(piOut),'PI SAL/REM (lac)':fmt(piW.salvage+piW.remelt),
-          'PI A-GRADE %': b.isPrinted ? fmt(piAGradePctEx,2) : '—',
-          'PACKING UNPTD (lac)':fmt(!b.isPrinted?packQty:0),
-          'PACKING PTD (lac)':fmt(b.isPrinted?packQty:0),
-          'DISPATCH (lac)':fmt(_v40_dispatchedLakhs(b.batchNumber, b.size))});
+          'PLANNED QUANTITY (lac)':_xn(b.qty),'TOTAL PRODUCTION (lac)':_xn(grossProd),
+          'AIM TOTAL RUN (lac)':_xn(aimIn),'SALVAGE':_xn(aimW.salvage),'REMELT':_xn(aimW.remelt),
+          'AIM A-GRADE (lac)':_xn(aimOut),'AIM %':_xn(aimInputTotalEx>0?(aimOut/aimInputTotalEx*100):0,2),
+          'WIP (lac)':_xn(wip),
+          'PRINT TD (lac)':_xn(printOut),'PRINT REJ (lac)':_xn(printW.salvage),
+          'PRINT A-GRADE %': b.isPrinted ? _xn(printAGradePctEx,2) : '—',
+          'PI INSPECT (lac)':_xn(piOut),'PI SAL/REM (lac)':_xn(piW.salvage+piW.remelt),
+          'PI A-GRADE %': b.isPrinted ? _xn(piAGradePctEx,2) : '—',
+          'PACKING UNPTD (lac)':_xn(!b.isPrinted?packQty:0),
+          'PACKING PTD (lac)':_xn(b.isPrinted?packQty:0),
+          'DISPATCH (lac)':_xn(_v40_dispatchedLakhs(b.batchNumber, b.size))});
       });
     });
   });
-  XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summaryRows),'Summary');
+  { const _ws=XLSX.utils.json_to_sheet(summaryRows); _fmtNumCells(_ws); XLSX.utils.book_append_sheet(wb,_ws,'Summary'); }
   Object.entries(FLOORS).forEach(([floorKey,floor])=>{
     floor.machines.forEach(mc=>{
       const batches=state.batches.filter(b=>!b.deleted && normMcId(b.machineId)===normMcId(mc) && monthBatchSet.has(b.batchNumber));
@@ -11846,20 +11860,20 @@ function exportReportE(){
         const packOutLac = boxToLakh(packOutEx, b.size);
         return {'DATE':today(),'BATCH NO':b.batchNumber,'COLOR CODE':b.colour||'','CUSTOMER NAME':b.customer||'',
           'PRINT TYPE':b.isPrinted?'PTD':'UP',
-          'PLAN QTY (lac)':fmt(b.qty),'PRODUCT CODE':b.pcCode||'','PRODUCTION (lac)':fmt(_reconGross(b)),
-          'AIM A GRADE (lac)':fmt(aimOutLac),
-          'AIM SALVAGE':fmt(aimW.salvage),
-          'AIM REMELT':fmt(aimW.remelt),
-          'PRINT TD (lac)': b.isPrinted ? fmt(printOutLac) : '—',
-          'PRINT REJ (lac)': b.isPrinted ? fmt(printW.salvage + printW.remelt) : '—',
-          'PRINT A-GRADE %': (printAGradePctEx != null) ? fmt(printAGradePctEx, 2) : '—',
-          'PI OUT (lac)': b.isPrinted ? fmt(piOutLac) : '—',
-          'PI SAL/REM (lac)': b.isPrinted ? fmt(piW.salvage + piW.remelt) : '—',
-          'PI A-GRADE %': (piAGradePctEx != null) ? fmt(piAGradePctEx, 2) : '—',
-          'PACKING (lac)': fmt(packOutLac),
-          'DISPATCH (lac)':fmt(_v40_dispatchedLakhs(b.batchNumber, b.size))};
+          'PLAN QTY (lac)':_xn(b.qty),'PRODUCT CODE':b.pcCode||'','PRODUCTION (lac)':_xn(_reconGross(b)),
+          'AIM A GRADE (lac)':_xn(aimOutLac),
+          'AIM SALVAGE':_xn(aimW.salvage),
+          'AIM REMELT':_xn(aimW.remelt),
+          'PRINT TD (lac)': b.isPrinted ? _xn(printOutLac) : '—',
+          'PRINT REJ (lac)': b.isPrinted ? _xn(printW.salvage + printW.remelt) : '—',
+          'PRINT A-GRADE %': (printAGradePctEx != null) ? _xn(printAGradePctEx, 2) : '—',
+          'PI OUT (lac)': b.isPrinted ? _xn(piOutLac) : '—',
+          'PI SAL/REM (lac)': b.isPrinted ? _xn(piW.salvage + piW.remelt) : '—',
+          'PI A-GRADE %': (piAGradePctEx != null) ? _xn(piAGradePctEx, 2) : '—',
+          'PACKING (lac)': _xn(packOutLac),
+          'DISPATCH (lac)':_xn(_v40_dispatchedLakhs(b.batchNumber, b.size))};
       });
-      XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(mcRows),mc.replace('.','').slice(0,31));
+      { const _ws=XLSX.utils.json_to_sheet(mcRows); _fmtNumCells(_ws); XLSX.utils.book_append_sheet(wb,_ws,mc.replace('.','').slice(0,31)); }
     });
   });
   XLSX.writeFile(wb,`Sunloc_WIP_Report_${today()}.xlsx`);
@@ -12804,7 +12818,7 @@ if (typeof document !== 'undefined') {
   if (document.readyState === 'complete' || document.readyState === 'interactive') {
     setTimeout(_v39_sapStatusBadgeInit, 1000);
     setTimeout(loadRetiredBatchesTrk, 1200); // v41ZZ: load retired set so WIP exclusion applies in all reports
-    setTimeout(loadReconcileOverridesTrk, 1200); // v44E: load reconcile overrides so report values reflect them
+    setTimeout(loadReconcileOverridesTrk, 1200); // v44F: load reconcile overrides so report values reflect them
   } else {
     document.addEventListener('DOMContentLoaded', () => setTimeout(_v39_sapStatusBadgeInit, 1000));
   }

@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44E</p>
+      <p>Planning Suite v3.0 · build v44F</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -13657,19 +13657,10 @@ function _v40_openFindingDetail(findingId) {
       <div style="margin-top:18px;padding-top:14px;border-top:1px solid var(--border)">
         <div style="font-size:12px;font-weight:700;margin-bottom:8px">Direct an operator to fix this:</div>
         <div class="form-group" style="margin-bottom:8px">
-          <label style="font-size:11px;color:var(--text3)">Assign to <span style="color:var(--text3)">(select one or more — Ctrl/Cmd-click for multiple)</span></label>
-          <select class="form-control" id="if-assign-to" multiple size="6" style="font-size:12px;min-height:120px">
-            <option value="" disabled>Loading users…</option>
-          </select>
-        </div>
-        <div class="form-group" style="margin-bottom:8px">
-          <label style="font-size:11px;color:var(--text3)">App</label>
-          <select class="form-control" id="if-assign-app" style="font-size:12px">
-            <option value="">— Auto from finding —</option>
-            <option value="dpr" ${f.suggested_app==='dpr'?'selected':''}>DPR</option>
-            <option value="planning" ${f.suggested_app==='planning'?'selected':''}>Planning</option>
-            <option value="tracking" ${f.suggested_app==='tracking'?'selected':''}>Tracking</option>
-          </select>
+          <label style="font-size:11px;color:var(--text3)">Assign to <span style="color:var(--text3)">(tick one or more — across any app)</span></label>
+          <div id="if-assign-to" style="max-height:170px;overflow-y:auto;border:1px solid var(--border);border-radius:4px;padding:6px 8px;font-size:12px">
+            <div style="color:var(--text3)">Loading users…</div>
+          </div>
         </div>
         <div class="form-group" style="margin-bottom:8px">
           <label style="font-size:11px;color:var(--text3)">Note (optional)</label>
@@ -13697,30 +13688,28 @@ async function _v40_populateAssigneeOptions(suggestedRole) {
   let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   const build = (users) => {
-    // group by app for readable optgroups
+    // v44F #4: render every user (incl. Planning_Manager) as a normal, tickable checkbox grouped by
+    // app. Multiple selections need no Ctrl/Cmd-click. Each box carries data-app so the task lands in
+    // the assignee's own app (the redundant App dropdown was removed).
     const byApp = {};
     users.filter(u => u.is_active !== 0 && u.is_active !== false)
          .forEach(u => { (byApp[u.app] = byApp[u.app] || []).push(u); });
     const appLabel = { dpr:'DPR', planning:'Planning', tracking:'Tracking' };
+    const grp = (t) => `<div style="font-size:10px;font-weight:700;color:var(--text3);text-transform:uppercase;letter-spacing:.5px;margin:6px 0 2px">${t}</div>`;
+    const cb = (val, app, text, checked) => `<label style="display:block;padding:2px 0;cursor:pointer"><input type="checkbox" class="if-assignee-cb" value="${_v40_esc(val)}" data-app="${_v40_esc(app||'')}"${checked?' checked':''} style="margin-right:6px;vertical-align:middle">${_v40_esc(text)}</label>`;
     let html = '';
     Object.keys(byApp).sort().forEach(app => {
-      html += `<optgroup label="${appLabel[app]||app}">`;
+      html += grp(appLabel[app]||app);
       byApp[app].sort((a,b)=>a.username.localeCompare(b.username)).forEach(u => {
-        html += `<option value="${_v40_esc(u.username)}">${_v40_esc(u.username)} — ${_v40_esc(u.role)}</option>`;
+        html += cb(u.username, u.app, `${u.username} — ${u.role}`, false);
       });
-      html += `</optgroup>`;
     });
-    // role-level targets
     const roles = [...new Set(users.map(u=>u.role).filter(Boolean))].sort();
     if (roles.length) {
-      html += `<optgroup label="Assign by ROLE (all users in role)">`;
-      roles.forEach(r => {
-        const selAttr = (suggestedRole && r === suggestedRole) ? ' selected' : '';
-        html += `<option value="role:${_v40_esc(r)}"${selAttr}>role: ${_v40_esc(r)}</option>`;
-      });
-      html += `</optgroup>`;
+      html += grp('Assign by ROLE (all users in role)');
+      roles.forEach(r => { html += cb('role:'+r, '', 'role: '+r, !!(suggestedRole && r===suggestedRole)); });
     }
-    sel.innerHTML = html || '<option value="" disabled>No users found</option>';
+    sel.innerHTML = html || '<div style="color:var(--text3)">No users found</div>';
   };
   if (_v40_assigneeUsersCache) { build(_v40_assigneeUsersCache); return; }
   if (!serverUrl) { sel.innerHTML = '<option value="" disabled>Server not connected</option>'; return; }
@@ -13760,29 +13749,29 @@ async function _v40_ackFinding(findingId, closeAfter) {
 }
 
 async function _v40_assignFindingTask(findingId, defaultApp) {
-  const sel = document.getElementById('if-assign-to');
-  // v41ZD #2: multi-select — gather all chosen usernames / role: entries.
-  const assignees = sel ? Array.from(sel.selectedOptions).map(o => o.value).filter(Boolean) : [];
-  const app = document.getElementById('if-assign-app')?.value || defaultApp || '';
+  // v44F #4: checkbox multi-select; app derived per-assignee from its data-app (App dropdown removed).
+  // role: targets carry no app, so they fall back to the finding's suggested app (defaultApp).
+  const boxes = Array.from(document.querySelectorAll('#if-assign-to .if-assignee-cb:checked'));
+  const assignees = boxes.map(cb => ({ to: cb.value, app: (cb.dataset.app || defaultApp || '') })).filter(a => a.to);
   const note = document.getElementById('if-assign-note')?.value?.trim() || '';
   if (!assignees.length) { alert('Please select at least one user or role to assign.'); return; }
   let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
   if (!serverUrl) { alert('Server not connected'); return; }
   try {
-    const results = await Promise.allSettled(assignees.map(assignTo =>
+    const results = await Promise.allSettled(assignees.map(a =>
       fetch(serverUrl + '/api/integrity/assign-task', {
         method:'POST',
         headers:{'Content-Type':'application/json','x-session-token': currentUser?.token||''},
-        body: JSON.stringify({ findingId, assignedTo: assignTo, app, note }),
+        body: JSON.stringify({ findingId, assignedTo: a.to, app: a.app, note }),
         signal: AbortSignal.timeout(5000)
       }).then(r => r.json())
     ));
     const ok = [];
     const failed = [];
     results.forEach((r, i) => {
-      if (r.status === 'fulfilled' && r.value?.ok) ok.push(assignees[i]);
-      else failed.push(assignees[i]);
+      if (r.status === 'fulfilled' && r.value?.ok) ok.push(assignees[i].to);
+      else failed.push(assignees[i].to);
     });
     if (ok.length) {
       closeModal();
