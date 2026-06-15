@@ -12354,7 +12354,7 @@ app.post('/api/tracking/scan', async (req, res) => {
         `SELECT s.type FROM tracking_scans s
            LEFT JOIN tracking_labels l ON l.id = s.label_id
           WHERE s.dept=$2 AND s.batch_number=$3
-            AND (s.label_id=$1 OR ($4 IS NOT NULL AND s.label_number IS NOT NULL AND s.label_number=$4))
+            AND (s.label_id=$1 OR ($4::integer IS NOT NULL AND s.label_number IS NOT NULL AND s.label_number=$4::integer))
             AND COALESCE(l.voided,0)=0
             AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = s.id)`,
         [labelId, scan.dept, batchNumber, _lnNum]
