@@ -12034,6 +12034,8 @@ app.get('/api/tracking/scans-recent', async (req, res) => {
       labelNumber: r.label_number || null
     });
     const whereClause = since ? `WHERE ts >= '${since.replace(/'/g,'')}'` : '';
+    // v44F PERF: cap since-queries at 2000 rows
+    if (since && (limit <= 0 || limit > 2000)) limit = 2000;
     const limitClause = limit > 0 ? ` LIMIT ${limit}` : '';
     if (pgPool) {
       // Try with label_number column first (after migration v10)
