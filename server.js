@@ -48,8 +48,14 @@ let pgPool = null;
 if (USE_POSTGRES) {
   try {
     const { Pool } = require('pg');
-    pgPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 5 });
-    console.log('[DB] Direct pg pool ready');
+    pgPool = new Pool({ connectionString: process.env.DATABASE_URL, ssl: { rejectUnauthorized: false }, max: 10, keepAlive: true, idleTimeoutMillis: 30000, connectionTimeoutMillis: 10000 });
+    // v44F: a cloud Postgres dropping an IDLE pooled connection emits a pool 'error'. With NO listener,
+    // node-postgres rethrows it as an uncaught exception and the ENTIRE process crashes — which silently
+    // stops all scan saves (clients then queue scans locally and retry every 10s). Handle it so a routine
+    // idle drop never crashes the server. keepAlive + idle/connect timeouts reduce idle-drop churn and
+    // stop a single slow/stuck connection from blocking saves. (max 5 -> 10 for multi-device sync load.)
+    pgPool.on('error', (err) => { console.error('[DB] idle pg client error (handled — NOT crashing):', err && err.message); });
+    console.log('[DB] Direct pg pool ready (max=10, keepAlive, idle/connect timeouts, error-handled)');
   } catch(e) { console.error('[DB] pg pool error:', e.message); }
 } else {
   const Database = require('better-sqlite3');
