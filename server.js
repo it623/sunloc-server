@@ -12322,7 +12322,7 @@ app.post('/api/tracking/scan', async (req, res) => {
           const ro = await pgPool.query(
             `SELECT ol.id, EXISTS(SELECT 1 FROM tracking_scans os WHERE os.label_id=ol.id AND os.dept='orange') AS scanned
                FROM tracking_labels ol
-              WHERE ol.parent_label_id=$1 AND COALESCE(ol.is_orange,false)=true AND COALESCE(ol.voided,false)=false
+              WHERE ol.parent_label_id=$1 AND COALESCE(ol.is_orange,0)=1 AND COALESCE(ol.voided,false)=false
               LIMIT 1`, [labelId]);
           orangeRow = ro.rows[0];
         } else {
@@ -12927,7 +12927,7 @@ app.post('/api/tracking/recustomer', async (req, res) => {
 
     // Non-voided, non-orange labels (the customer boxes), ascending box number.
     const labelSel = pgPool
-      ? (await pgPool.query(`SELECT id, label_number, customer, size, colour FROM tracking_labels WHERE batch_number=$1 AND COALESCE(voided,false)=false AND COALESCE(is_orange,false)=false ORDER BY ABS(label_number) ASC`,[batchNumber])).rows
+      ? (await pgPool.query(`SELECT id, label_number, customer, size, colour FROM tracking_labels WHERE batch_number=$1 AND COALESCE(voided,false)=false AND COALESCE(is_orange,0)=0 ORDER BY ABS(label_number) ASC`,[batchNumber])).rows
       : db.prepare(`SELECT id, label_number, customer, size, colour FROM tracking_labels WHERE batch_number=? AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0 ORDER BY ABS(label_number) ASC`).all(batchNumber);
     const totalBoxes = labelSel.length;
     let oldCustomer = labelSel.find(l=>l.customer)?.customer || ord?.customer || '';
@@ -12997,7 +12997,7 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     } else {
       // ── FULL switch: in-place customer/address/PO update + forced reprint on the original batch.
       if (pgPool) {
-        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=false, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,false)=false AND COALESCE(is_orange,false)=false`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
+        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=false, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,false)=false AND COALESCE(is_orange,0)=0`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
         await pgPool.query(`UPDATE tracking_dispatch_records SET customer=$2 WHERE batch_number=$1`, [batchNumber, newCustomer]);
         await pgPool.query(`UPDATE invoice_requests SET customer=$2, card_code=COALESCE($3,card_code), po_number=COALESCE($4,po_number), updated_at=NOW()::TEXT WHERE batch_number=$1 AND status='pending' AND sap_doc_entry IS NULL`, [batchNumber, newCustomer, newCardCode||null, newPoNumber||null]);
       } else {
