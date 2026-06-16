@@ -8286,16 +8286,22 @@ app.get('/api/integrity/my-tasks', async (req, res) => {
              f.resolved AS finding_resolved
       FROM integrity_tasks t
       LEFT JOIN integrity_findings f ON f.id = t.finding_id
-      WHERE t.status IN ('pending','seen') AND (t.assigned_to = ? OR t.assigned_to = ?)
+      WHERE t.status IN ('pending','seen') AND (t.assigned_to = ? OR t.assigned_to = ? OR t.assigned_to = ?)
       ORDER BY t.assigned_at DESC LIMIT 50
     `;
     const roleKey = `role:${session.role}`;
+    // Map DPR roles to the floor codes used in assigned_to field
+    const roleFloorMap = { gf: ['GF'], ff: ['GF','1F','2F'], admin: [] };
+    const floorCodes = roleFloorMap[session.role] || [];
     if (pgPool) {
-      let i = 0; const pgSql = sql.replace(/\?/g, () => `$${++i}`);
-      const r = await pgPool.query(pgSql, [session.username, roleKey]);
+      // Build dynamic query to include all floor codes
+      let rows2 = [];
+      const base = `SELECT t.*, f.severity, f.description, f.batch_number, f.order_id, f.machine_id, f.suggested_app, f.suggested_page, f.suggested_action, f.resolved AS finding_resolved FROM integrity_tasks t LEFT JOIN integrity_findings f ON f.id = t.finding_id WHERE t.status IN ('pending','seen') AND (t.assigned_to = $1 OR t.assigned_to = $2${floorCodes.map((_,i)=>` OR t.assigned_to = $${i+3}`).join('')}) ORDER BY t.assigned_at DESC LIMIT 50`;
+      const r = await pgPool.query(base, [session.username, roleKey, ...floorCodes]);
       rows = r.rows;
     } else {
-      rows = db.prepare(sql).all(session.username, roleKey);
+      const floorKey = floorCodes[0] || '';
+      rows = db.prepare(sql).all(session.username, roleKey, floorKey);
     }
     // Filter out tasks whose findings have been auto-resolved
     rows = rows.filter(r => !r.finding_id || r.finding_resolved === 0 || r.finding_resolved === false);
@@ -12034,8 +12040,6 @@ app.get('/api/tracking/scans-recent', async (req, res) => {
       labelNumber: r.label_number || null
     });
     const whereClause = since ? `WHERE ts >= '${since.replace(/'/g,'')}'` : '';
-    // v44F PERF: cap since-queries at 2000 rows
-    if (since && (limit <= 0 || limit > 2000)) limit = 2000;
     const limitClause = limit > 0 ? ` LIMIT ${limit}` : '';
     if (pgPool) {
       // Try with label_number column first (after migration v10)
