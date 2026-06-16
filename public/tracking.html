@@ -12804,6 +12804,11 @@ window.addEventListener('beforeunload', e => {
   // Dept remembered — restore without re-entering PIN.
   // initApp() already reads location.hash to restore the correct page.
   currentDept = savedDept;
+  // Restore currentUser so token-gated API calls work after page refresh
+  const _rt = sessionStorage.getItem('trk_token');
+  const _rr = sessionStorage.getItem('trk_role');
+  const _ru = sessionStorage.getItem('trk_username');
+  if (_rt) currentUser = { token: _rt, role: _rr, username: _ru };
   document.getElementById('login-page').style.display = 'none';
   document.getElementById('app').style.display = 'flex';
   initApp();
