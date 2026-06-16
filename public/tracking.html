@@ -1311,6 +1311,7 @@ function doLogin(){
       sessionStorage.setItem('trk_token', j.token);
       sessionStorage.setItem('trk_username', j.username);
       sessionStorage.setItem('trk_role', j.role);
+      currentUser = { token: j.token, role: j.role, username: j.username };
       document.getElementById('login-page').style.display='none';
       document.getElementById('app').style.display='flex';
       initApp();
