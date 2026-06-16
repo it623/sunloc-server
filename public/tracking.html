@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44F</title>
+<title>Sunloc Tracking Suite v1.0 · build v44M</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -567,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44F</p>
+      <p>Tracking Suite v1.0 · build v44M</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -598,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44F</p>
+      <p>Tracking Suite v1.0 · build v44M</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1764,10 +1764,11 @@ async function pullFromServer(force){
     // v41ZH #1: each is gated — a skipped one resolves to null and the existing `wr&&wr.ok`-style
     // guards below treat null as "no fresh data" without touching state, so no history is dropped.
     let _ssOk = false, _bsOk = false, _wOk = false;
-    const [_wRes, _ssRes, _bsRes] = await Promise.allSettled([
+    const [_wRes, _ssRes, _bsRes, _psRes] = await Promise.allSettled([
       _wNeed  ? fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)})      : Promise.resolve(null),
       _ssNeed ? fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)}) : Promise.resolve(null),
       _bsNeed ? fetch(serverUrl+'/api/tracking/box-stages',{signal:AbortSignal.timeout(20000)})   : Promise.resolve(null),
+      fetch(serverUrl+'/api/daily-printing/salvage-pct',{signal:AbortSignal.timeout(15000)}),
     ]);
 
     // STEP 3.5: wastage (dedicated endpoint)
@@ -1843,6 +1844,13 @@ async function pullFromServer(force){
         }
       }
     } catch (e37) { console.warn('STEP 3.7 box-stages failed:', e37?.message || e37); }
+    // STEP 3.8 (v44J #2): per-batch printing salvage % from the Daily Printing Log — Report E
+    // transport. window._printSalvagePct = { BATCH_UPPER: cumulativeSalvagePct }. On failure the
+    // previous map (if any) persists; reads default to 0 (no printing deduction) until populated.
+    try {
+      const ps = _psRes && _psRes.status==='fulfilled' ? _psRes.value : null;
+      if (ps && ps.ok) { const pj = await ps.json(); if (pj && pj.ok && pj.pct) { window._printSalvagePct = pj.pct; } }
+    } catch (e38) { console.warn('STEP 3.8 salvage-pct failed:', e38?.message || e38); }
     // v41ZE #1: now that wastage + scan-summary (the dashboard WIP sources) are in, paint the
     // dashboard immediately rather than waiting for the final full-state step.
     try { if (currentPage === 'dashboard') renderDashboard(); } catch(_rd36) {}
@@ -2599,7 +2607,14 @@ function getBatchAGrade(batchNo, stage){
     const piInspected    = piOut    + wPI.total;
     const printWIP = Math.max(0, aimOut - printInspected);
     const piWIP    = Math.max(0, printOut - piInspected);
-    const downstreamWastage = wPrint.salvage + wPrint.remelt + wPI.salvage + wPI.remelt;
+    // v44L: align post-print/post-PI net A-Grade to the Report E transport (Option 1). Printing
+    // salvage comes from the Daily Printing Log (window._printSalvagePct × AIM Out), printing
+    // remelt = 0; PI salvage/remelt stay from Tracking (PI data is not in Planning). Net therefore
+    // = AIM Out − DPL printing salvage − Tracking PI wastage. (stages/WIP/totals below are left
+    // tracking-sourced to avoid touching the frozen WIP figures — see handoff note.)
+    const _agPrintSalPct     = (window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0;
+    const _agPrintSalvageDPL = aimOut * (_agPrintSalPct/100);
+    const downstreamWastage = _agPrintSalvageDPL + 0 + wPI.salvage + wPI.remelt;
     const netAGrade = Math.max(0, aimOut - downstreamWastage);
     const totalSalvage = wAIM.salvage + wPrint.salvage + wPI.salvage;
     const totalRemelt  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
@@ -2714,7 +2729,12 @@ function _v41_getBatchAGradeMonth(batchNo, stage, md){
     const aimInspected   = aimOut   + wA.salvage + wA.remelt;
     const printInspected = printOut + wP.salvage + wP.remelt;
     const piInspected    = piOut    + wI.salvage + wI.remelt;
-    const downstreamWastage = wP.salvage + wP.remelt + wI.salvage + wI.remelt;
+    // v44L: same Option-1 alignment as getBatchAGrade — printing salvage from the Daily Printing
+    // Log (window._printSalvagePct × AIM Out), printing remelt 0; PI salvage/remelt from Tracking.
+    // Note: the DPL % is whole-batch cumulative (matches the month figure for single-month batches).
+    const _agPrintSalPct     = (window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0;
+    const _agPrintSalvageDPL = aimOut * (_agPrintSalPct/100);
+    const downstreamWastage = _agPrintSalvageDPL + 0 + wI.salvage + wI.remelt;
     const netAGrade = Math.max(0, aimOut - downstreamWastage);
     const totalSalvage = wA.salvage + wP.salvage + wI.salvage;
     const totalRemelt  = wA.remelt  + wP.remelt  + wI.remelt;
@@ -4079,6 +4099,32 @@ function renderDeptScan(dept){
   const cfg=DEPT_CONFIG[dept];
   const myAlerts=state.alerts.filter(a=>a.dept===dept&&!_isRetired(a.batchNumber)); // v44F Issue#2: retired drop out
   const activeBatches=getActiveBatchesForDept(dept);
+  // v44J #1/#6: as Admin, getActiveBatchesForDept returns EVERY open in-flow batch (the
+  // currentDept==='admin' clause), so dropdowns/closure filled with zero-activity batches.
+  // Filter "down" to batches that actually have activity at THIS dept. Uses scanSummary
+  // (full history) when available, else the local (windowed) state.scans — matching the
+  // same source the closure rows and the wastage save-validation already use.
+  const _deptInCount  = bn => (typeof hasScanSummary==='function'&&hasScanSummary()) ? (_ss(bn,dept).in ||0) : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='in').length;
+  const _deptOutCount = bn => (typeof hasScanSummary==='function'&&hasScanSummary()) ? (_ss(bn,dept).out||0) : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out').length;
+  // Wastage can only be SAVED for a batch scanned-IN at this dept (save-validation rejects
+  // otherwise), so the dropdown should only offer those.
+  const wastageBatches = activeBatches.filter(b=>_deptInCount(b.batchNumber)>0);
+  // v44J #6: closure list filtered to batches with activity at THIS dept (scan-in OR scan-out OR
+  // wastage). inCount/outCount use state.scans exactly as the row math below — so hiding all-zero
+  // rows changes NO displayed number and NO close-action logic; it only removes the clutter rows.
+  const _clo = activeBatches.map(b=>{
+    const inCount  = state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='in').length;
+    const outCount = state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='out').length;
+    const w = getTotalWastage(b.batchNumber,dept);
+    return {b,inCount,outCount,w};
+  }).filter(r=>r.inCount>0||r.outCount>0||r.w.total>0);
+  // v44K #7: Recent-scans server-side filter (date range / batch / IN-OUT) for Printing,
+  // Print Inspection and Packing. Default (no filter) still shows the latest 30 from state.scans.
+  const _useRsFilter = (dept==='printing'||dept==='pi'||dept==='packing');
+  const _rsActive  = !!(window._rsActive  && window._rsActive[dept]);
+  const _rsLoading = !!(window._rsLoading && window._rsLoading[dept]);
+  const _rsRows    = (window._rsRows && window._rsRows[dept]) || [];
+  const _rsF       = (window._rsFilter && window._rsFilter[dept]) || {from:'',to:'',batch:'',type:''};
 
   document.getElementById('tb-actions').innerHTML=`
     <button class="btn btn-secondary btn-sm" onclick="navigate('batch-tracker')">📊 View All Batches</button>
@@ -4168,7 +4214,7 @@ function renderDeptScan(dept){
         <label>Batch</label>
         <select id="wastage-batch-${dept}">
           <option value="">-- Select Batch --</option>
-          ${activeBatches.map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''}${b.colour?' — '+b.colour:''}</option>`).join('')}
+          ${wastageBatches.map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''}${b.colour?' — '+b.colour:''}</option>`).join('')}
         </select>
       </div>
       <div class="form-group">
@@ -4195,8 +4241,8 @@ function renderDeptScan(dept){
       <input type="text" placeholder="Search batch..." oninput="filterWastageRows(this.value,'${dept}')" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);outline:none;width:140px">
     </div>
     <div class="text-sm text-muted mb-8">Admin and Planning roles can correct erroneous wastage entries.</div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Batch</th><th>Type</th><th>Qty (L)</th><th>Remark</th><th>Entered By</th><th>Time</th><th>Action</th></tr></thead>
+    <div class="tbl-wrap" style="max-height:340px;overflow:auto"><table>
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Type</th><th>Qty (L)</th><th>Remark</th><th>Entered By</th><th>Time</th><th>Action</th></tr></thead>
       <tbody>
       ${state.wastage.filter(w=>w.dept===dept).slice().reverse().map(w=>`<tr id="wrow-${w.id}" data-wbatch="${w.batchNumber.toLowerCase()}">
         <td class="td-mono fw-bold">${w.batchNumber}</td>
@@ -4211,6 +4257,7 @@ function renderDeptScan(dept){
         </td>
       </tr>`).join('')||'<tr><td colspan="7" class="text-center text-muted">No wastage recorded for this dept</td></tr>'}
       </tbody>
+      ${(()=>{const _wl=state.wastage.filter(w=>w.dept===dept);if(!_wl.length)return '';const _s=_wl.filter(w=>w.type==='salvage').reduce((a,w)=>a+(w.qty||0),0);const _r=_wl.filter(w=>w.type==='remelt').reduce((a,w)=>a+(w.qty||0),0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${_wl.length} ${_wl.length===1?'entry':'entries'}</td><td class="text-sm text-muted">S / R</td><td class="td-mono">${fmt(_s+_r)}L <span class="text-sm text-muted">(S:${fmt(_s)} R:${fmt(_r)})</span></td><td colspan="4"></td></tr></tfoot>`;})()}
     </table></div>`:''}
   </div>`:''}
 
@@ -4218,13 +4265,10 @@ function renderDeptScan(dept){
   <div class="card mb-16">
     <div class="card-title">✅ Batch Stage Closure</div>
     <div class="text-sm text-muted mb-12">Close a batch at this stage once all boxes have been scanned OUT.</div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Batch</th><th>Customer</th><th>Scan IN</th><th>Scan OUT</th><th>A-Grade</th><th>Wastage</th><th>Status</th><th>Action</th></tr></thead>
+    <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table>
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Customer</th><th>Scan IN</th><th>Scan OUT</th><th>A-Grade</th><th>Wastage</th><th>Status</th><th>Action</th></tr></thead>
       <tbody>
-      ${activeBatches.map(b=>{
-        const inCount=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='in').length;
-        const outCount=state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='out').length;
-        const w=getTotalWastage(b.batchNumber,dept);
+      ${_clo.map(({b,inCount,outCount,w})=>{
         const inQty=boxToLakh(inCount,b.size);
         const outQty=boxToLakh(outCount,b.size);
         const inspected = outQty + w.total; // OUT + Salvage + Remelt
@@ -4255,18 +4299,40 @@ function renderDeptScan(dept){
             : '—'
           }</td>
         </tr>`;
-      }).join('')||'<tr><td colspan="8" class="text-center text-muted">No active batches at this stage</td></tr>'}
+      }).join('')||'<tr><td colspan="8" class="text-center text-muted">No batches with activity at this stage</td></tr>'}
       </tbody>
+      ${_clo.length?(()=>{const tIn=_clo.reduce((s,r)=>s+r.inCount,0),tOut=_clo.reduce((s,r)=>s+r.outCount,0),tInQ=_clo.reduce((s,r)=>s+boxToLakh(r.inCount,r.b.size),0),tOutQ=_clo.reduce((s,r)=>s+boxToLakh(r.outCount,r.b.size),0),tSal=_clo.reduce((s,r)=>s+r.w.salvage,0),tRem=_clo.reduce((s,r)=>s+r.w.remelt,0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${_clo.length}</td><td></td><td class="td-mono">${tIn} (${fmt(tInQ)}L)</td><td class="td-mono">${tOut} (${fmt(tOutQ)}L)</td><td></td><td class="td-mono">S:${fmt(tSal)} R:${fmt(tRem)}</td><td colspan="2"></td></tr></tfoot>`;})():''}
     </table></div>
   </div>
 
   <!-- RECENT SCANS -->
   <div class="card">
     <div class="card-title">Recent Scans — ${cfg.label}</div>
-    <div class="tbl-wrap"><table>
-      <thead><tr><th>Time</th><th>Batch / Box</th><th>Qty (L)</th><th>Type</th></tr></thead>
+    ${_useRsFilter?`
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:10px">
+      <div><label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">FROM</label>
+        <input type="date" id="rsf-from-${dept}" value="${_rsF.from||''}" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1)"></div>
+      <div><label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">TO</label>
+        <input type="date" id="rsf-to-${dept}" value="${_rsF.to||''}" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1)"></div>
+      <div><label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">BATCH</label>
+        <input type="text" id="rsf-batch-${dept}" value="${_rsF.batch||''}" placeholder="any" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);width:120px"></div>
+      <div><label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">TYPE</label>
+        <select id="rsf-type-${dept}" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1)">
+          <option value="" ${(_rsF.type||'')===''?'selected':''}>All</option>
+          <option value="in" ${_rsF.type==='in'?'selected':''}>IN</option>
+          <option value="out" ${_rsF.type==='out'?'selected':''}>OUT</option>
+        </select></div>
+      <button class="btn btn-sm btn-primary" onclick="applyScanFilter('${dept}')">Apply</button>
+      ${_rsActive?`<button class="btn btn-sm btn-ghost" onclick="clearScanFilter('${dept}')">✕ Clear</button>`:''}
+      ${_rsActive?`<span style="font-size:12px;color:var(--text3)">${_rsLoading?'Loading…':_rsRows.length+' scans (max 5000, newest first)'}</span>`:''}
+    </div>`:''}
+    <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table>
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Time</th><th>Batch / Box</th><th>Qty (L)</th><th>Type</th></tr></thead>
       <tbody id="recent-scans-${dept}">
-      ${state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30).map(s=>{
+      ${(_rsActive
+          ? _rsRows
+          : state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30)
+        ).map(s=>{
         const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
         // Fallback: if label not in state, try matching by batch+labelNumber from scan, or show box from scan qty
         const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):'?'));
@@ -4276,10 +4342,96 @@ function renderDeptScan(dept){
         <td class="td-mono">${fmt(s.qty)}</td>
         <td>${s.type==='in'?'<span class="badge badge-blue">📥 IN</span>':'<span class="badge badge-green">📤 OUT</span>'}</td>
       </tr>`;
-      }).join('')||'<tr><td colspan="4" class="text-center text-muted">No scans recorded yet</td></tr>'}
+      }).join('')||`<tr><td colspan="4" class="text-center text-muted">${_rsActive?'No scans match the filter':'No scans recorded yet'}</td></tr>`}
       </tbody>
+      ${_rsActive&&_rsRows.length?(()=>{const ci=_rsRows.filter(s=>s.type==='in').length,co=_rsRows.filter(s=>s.type==='out').length,tq=_rsRows.reduce((a,s)=>a+(s.qty||0),0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${_rsRows.length}</td><td class="td-mono">IN:${ci} OUT:${co}</td><td class="td-mono">${fmt(tq)}L</td><td></td></tr></tfoot>`;})():''}
     </table></div>
+  </div>
+  ${dept==='packing'?_renderPackingLedgerCard():''}`;
+}
+
+// v44K #7: Recent-scans server-side filter (date range / batch / IN-OUT). Fetches the read-only
+// /api/tracking/scans-filtered endpoint (capped 5000, newest first) and repaints the dept page.
+async function applyScanFilter(dept){
+  const from =(document.getElementById('rsf-from-'+dept)?.value||'').trim();
+  const to   =(document.getElementById('rsf-to-'+dept)?.value||'').trim();
+  const batch=(document.getElementById('rsf-batch-'+dept)?.value||'').trim();
+  const type =(document.getElementById('rsf-type-'+dept)?.value||'').trim();
+  window._rsFilter =window._rsFilter ||{}; window._rsFilter[dept]={from,to,batch,type};
+  window._rsActive =window._rsActive ||{}; window._rsActive[dept]=true;
+  window._rsLoading=window._rsLoading||{}; window._rsLoading[dept]=true;
+  renderDeptScan(dept);
+  try{
+    const qs=new URLSearchParams({dept});
+    if(from)qs.set('from',from); if(to)qs.set('to',to); if(batch)qs.set('batch',batch); if(type)qs.set('type',type);
+    const r=await fetch(serverUrl+'/api/tracking/scans-filtered?'+qs.toString(),{signal:AbortSignal.timeout(20000)});
+    const j=await r.json();
+    window._rsRows=window._rsRows||{}; window._rsRows[dept]=(j&&j.ok&&j.scans)?j.scans:[];
+  }catch(e){ window._rsRows=window._rsRows||{}; window._rsRows[dept]=[]; try{toast('Scan filter failed: '+(e?.message||e),'#b91c1c',3000);}catch(_t){} }
+  window._rsLoading[dept]=false;
+  renderDeptScan(dept);
+}
+function clearScanFilter(dept){
+  if(window._rsActive)window._rsActive[dept]=false;
+  if(window._rsRows)window._rsRows[dept]=[];
+  if(window._rsFilter)window._rsFilter[dept]={from:'',to:'',batch:'',type:''};
+  renderDeptScan(dept);
+}
+
+// v44K #8: Packing Ledger — per-day / per-batch packing scan-in/out, from the read-only
+// /api/tracking/packing-ledger endpoint. Customer/Colour/PC Code are joined from state.batches.
+// Batch/Customer header filters apply client-side (onchange) over the loaded rows.
+function _renderPackingLedgerCard(){
+  const active =!!window._plActive, loading=!!window._plLoading;
+  const rows   = window._plRows || [];
+  const f      = window._plFilter || {from:'',to:'',batch:'',customer:''};
+  const meta   = bn => state.batches.find(b=>b.batchNumber===bn) || {};
+  let view = rows.map(r=>{const m=meta(r.batch); return {date:r.date,batch:r.batch,inB:r.in||0,outB:r.out||0,customer:m.customer||'',colour:m.colour||'',pcCode:m.pcCode||''};});
+  if(f.batch)    view=view.filter(r=>r.batch.toLowerCase().includes(f.batch.toLowerCase()));
+  if(f.customer) view=view.filter(r=>(r.customer||'').toLowerCase().includes(f.customer.toLowerCase()));
+  const tIn=view.reduce((a,r)=>a+r.inB,0), tOut=view.reduce((a,r)=>a+r.outB,0);
+  const inp='font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1)';
+  const lbl='font-size:11px;color:var(--text3);display:block;margin-bottom:3px';
+  return `<div class="card">
+    <div class="card-title">📦 Packing Ledger — per day / per batch</div>
+    <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:flex-end;margin-bottom:10px">
+      <div><label style="${lbl}">FROM</label><input type="date" id="pl-from" value="${f.from||''}" style="${inp}"></div>
+      <div><label style="${lbl}">TO</label><input type="date" id="pl-to" value="${f.to||''}" style="${inp}"></div>
+      <button class="btn btn-sm btn-primary" onclick="loadPackingLedger()">${active?'↻ Refresh':'Load'}</button>
+      <div><label style="${lbl}">BATCH</label><input type="text" id="pl-batch" value="${f.batch||''}" placeholder="any" onchange="window._plFilter=Object.assign(window._plFilter||{},{batch:this.value});renderDeptScan('packing')" style="${inp};width:110px"></div>
+      <div><label style="${lbl}">CUSTOMER</label><input type="text" id="pl-customer" value="${f.customer||''}" placeholder="any" onchange="window._plFilter=Object.assign(window._plFilter||{},{customer:this.value});renderDeptScan('packing')" style="${inp};width:140px"></div>
+      ${active?`<span style="font-size:12px;color:var(--text3)">${loading?'Loading…':view.length+' day-rows'}</span>`:''}
+    </div>
+    ${!active?'<div class="empty-state"><p>Set an optional date range and click Load to view per-day packing scans by batch.</p></div>':`
+    <div class="tbl-wrap" style="max-height:460px;overflow:auto"><table>
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Date</th><th>Batch</th><th>Customer</th><th>Colour</th><th>PC Code</th><th>Scan In</th><th>Scan Out</th></tr></thead>
+      <tbody>
+      ${view.map(r=>`<tr>
+        <td class="td-mono text-sm">${r.date}</td>
+        <td class="td-bold td-mono">${r.batch}</td>
+        <td class="text-sm">${r.customer||'-'}</td>
+        <td class="text-sm">${r.colour||'-'}</td>
+        <td class="td-mono">${r.pcCode||'-'}</td>
+        <td class="td-mono">${r.inB}</td>
+        <td class="td-mono">${r.outB}</td>
+      </tr>`).join('')||'<tr><td colspan="7" class="text-center text-muted">No packing scans in range</td></tr>'}
+      </tbody>
+      ${view.length?`<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${view.length} day-rows</td><td colspan="4"></td><td class="td-mono">${tIn}</td><td class="td-mono">${tOut}</td></tr></tfoot>`:''}
+    </table></div>`}
   </div>`;
+}
+async function loadPackingLedger(){
+  const from=(document.getElementById('pl-from')?.value||'').trim();
+  const to  =(document.getElementById('pl-to')?.value||'').trim();
+  window._plFilter=Object.assign(window._plFilter||{from:'',to:'',batch:'',customer:''},{from,to});
+  window._plActive=true; window._plLoading=true; renderDeptScan('packing');
+  try{
+    const qs=new URLSearchParams(); if(from)qs.set('from',from); if(to)qs.set('to',to);
+    const r=await fetch(serverUrl+'/api/tracking/packing-ledger'+(qs.toString()?'?'+qs.toString():''),{signal:AbortSignal.timeout(20000)});
+    const j=await r.json();
+    window._plRows=(j&&j.ok&&j.ledger)?j.ledger:[];
+  }catch(e){ window._plRows=[]; try{toast('Packing ledger failed: '+(e?.message||e),'#b91c1c',3000);}catch(_t){} }
+  window._plLoading=false; renderDeptScan('packing');
 }
 
 function fillScanInput(dept,type,value){
@@ -5243,30 +5395,47 @@ window._v41_pendingReconciliation = [];
 window._v41_soLedger = [];
 
 async function _v41_fetchPendingReconciliationCount() {
-  // Non-blocking — updates the badge if present
+  // Non-blocking — updates the badge if present.
+  // v44M #2: capture the REAL failure reason instead of silently swallowing it. Previously any
+  // 401/403/500/timeout left the queue looking identically "empty", which masked the actual cause
+  // (e.g. role-forbidden, stale token, or a server error). window._v41_pendingReconErr holds the
+  // reason so the modal can show it instead of a misleading "No invoice requests".
+  window._v41_pendingReconErr = null;
   try {
     const baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || '';
-    if (!baseUrl) return;
+    if (!baseUrl) { window._v41_pendingReconErr = 'Not connected to the server (no base URL resolved).'; return; }
     const r = await fetch(baseUrl + '/api/invoice/pending-reconciliation', {
       headers: { 'x-session-token': currentUser?.token || '' },
-      signal: AbortSignal.timeout(5000)
+      signal: AbortSignal.timeout(8000)
     });
-    const j = await r.json();
-    if (j.ok) {
-      window._v41_pendingReconciliation = j.requests || [];
-      const badge = document.getElementById('v41-pending-count-badge');
-      if (badge) {
-        badge.textContent = j.count;
-        badge.style.display = j.count > 0 ? 'inline-block' : 'none';
-      }
+    let j = null; try { j = await r.json(); } catch (_pe) {}
+    if (!r.ok || !j || !j.ok) {
+      const detail = (j && j.error) ? j.error : ('HTTP ' + r.status);
+      window._v41_pendingReconErr = 'Could not load the reconciliation queue — ' + detail
+        + (r.status === 401 ? ' (session not authenticated — try signing out and back in).'
+         : r.status === 403 ? ' (your role is not permitted to view this queue).'
+         : r.status >= 500 ? ' (server error).' : '.');
+      return;
     }
-  } catch (e) { /* tolerate */ }
+    window._v41_pendingReconciliation = j.requests || [];
+    const badge = document.getElementById('v41-pending-count-badge');
+    if (badge) {
+      badge.textContent = j.count;
+      badge.style.display = j.count > 0 ? 'inline-block' : 'none';
+    }
+  } catch (e) {
+    window._v41_pendingReconErr = 'Could not load the reconciliation queue — '
+      + (e?.name === 'TimeoutError' ? 'request timed out' : (e?.message || e));
+  }
 }
 
 async function _v41_openPendingReconciliationModal() {
   await _v41_fetchPendingReconciliationCount();
   const items = window._v41_pendingReconciliation || [];
-  const rowsHtml = items.length === 0
+  const _recErr = window._v41_pendingReconErr;
+  const rowsHtml = _recErr
+    ? `<div style="padding:20px;text-align:center;color:#b91c1c;background:rgba(185,28,28,0.06);border:1px solid rgba(185,28,28,0.25);border-radius:6px;font-size:13px;line-height:1.6">⚠️ ${_recErr}</div>`
+    : items.length === 0
     ? '<div style="padding:24px;text-align:center;color:var(--text3)">✅ No invoice requests waiting for SAP reconciliation.</div>'
     : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
         <thead style="background:var(--surface2);position:sticky;top:0">
@@ -9322,8 +9491,18 @@ function _v41_renderReportEInner(){
     const piOut_c   = useSS ? (_ss(b.batchNumber,'pi').out           + localExtra('pi','out'))
                              : scansForBatch.filter(s=>s.dept==='pi'&&s.type==='out').length;
     const piOut=b.isPrinted?boxToLakh(piOut_c,b.size):0;
-    const printW=getTotalWastage(b.batchNumber,'printing');
+    const printW=getTotalWastage(b.batchNumber,'printing'); // retained for back-compat; printing salvage for Report E now sourced from the Daily Printing Log (v44J #2)
     const piW=getTotalWastage(b.batchNumber,'pi');
+    // v44J #2 (confirmed by Ishan): printing-stage salvage for Report E is sourced from the
+    // Planning Daily Printing Log (single source — no double entry in Tracking), as the batch's
+    // WHOLE-batch cumulative salvage % applied to AIM Out (Lakhs):
+    //     Printing Salvage (Lakhs) = cumulative-salvage% × AIM Out      (base = AIM Out, confirmed)
+    //     Printing Remelt          = 0                                  (no remelt at printing, confirmed)
+    // window._printSalvagePct is { BATCH_UPPER: cumulativeSalvagePct } from the read-only server
+    // endpoint /api/daily-printing/salvage-pct. Defaults to 0 (no deduction) until loaded.
+    const _printSalPct       = (window._printSalvagePct && window._printSalvagePct[(b.batchNumber||'').toUpperCase()]) || 0;
+    const _printSalvageLakhs = aimOutQty * (_printSalPct / 100);
+    const _printRemeltLakhs  = 0;
     // Frozen formulas (per Ishan, confirmed):
     //   Post-Printing A-Grade % =
     //     (AIM Out − Printing Salvage − Printing Remelt)
@@ -9335,8 +9514,8 @@ function _v41_renderReportEInner(){
     // Numerator deducts subsequent wastage from AIM Out cumulatively.
     // Applies only to PTD batches (UP batches show '—').
     const aimInputTotal = aimOutQty + aimW.salvage + aimW.remelt;
-    const postPrintNumerator = aimOutQty - printW.salvage - printW.remelt;
-    const postPiNumerator    = aimOutQty - printW.salvage - printW.remelt - piW.salvage - piW.remelt;
+    const postPrintNumerator = aimOutQty - _printSalvageLakhs - _printRemeltLakhs;
+    const postPiNumerator    = aimOutQty - _printSalvageLakhs - _printRemeltLakhs - piW.salvage - piW.remelt;
     const printAGradePct = (b.isPrinted && aimInputTotal > 0)
       ? Math.max(0, (postPrintNumerator / aimInputTotal) * 100)
       : 0;
@@ -9372,8 +9551,8 @@ function _v41_renderReportEInner(){
       availUnptd:fmt(!b.isPrinted?totalAG:0),_availUnptd:!b.isPrinted?totalAG:0,
       availPrint:fmt(b.isPrinted?totalAG:0),_availPrint:b.isPrinted?totalAG:0,
       printingTD:fmt(printingTD),_printingTD:printingTD,
-      printRej:fmt(printW.salvage),_printRej:printW.salvage,
-      _printSalvage: printW.salvage, _printRemelt: printW.remelt,
+      printRej:fmt(_printSalvageLakhs),_printRej:_printSalvageLakhs,
+      _printSalvage: _printSalvageLakhs, _printRemelt: _printRemeltLakhs,
       printAGradePct: b.isPrinted ? fmt(printAGradePct,1) : '—', _printAGradePct: printAGradePct, _aimInputTotal: aimInputTotal,
       piInspect:fmt(piOut),_piInspect:piOut,
       piSalRem:fmt(piW.salvage),_piSalRem:piW.salvage,

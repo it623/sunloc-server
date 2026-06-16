@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44F</p>
+      <p>Planning Suite v3.0 · build v44M</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -7201,9 +7201,19 @@ function renderDailyPrinting() {
           </tr></thead>
           <tbody>
             ${logs.map((l,i)=>{
-              const cumSalvage = logs.slice(i).reduce((s,x)=>s+(x.salvage||0),0);
-              const cumOutput = logs.slice(i).reduce((s,x)=>s+(x.totalOutput||0),0);
-              const cumPct = cumOutput>0?(cumSalvage/cumOutput*100).toFixed(2):0;
+              // v44J FIX: per-batch CUMULATIVE salvage % (progression basis).
+              // BUG: logs.slice(i) summed EVERY batch's rows from here to the oldest (no batch
+              // filter) → each row collapsed to the dept-wide ratio, so all rows showed ~1.66%.
+              // CORRECT: this batch's salvage ÷ this batch's output, over its entries up to and
+              // including this row's date. Computed over allLogs (full batch history) so it stays
+              // correct even when date/customer filters are applied to the visible `logs`.
+              const _cumKey  = _dlResolveBatch(l) || l.pcCode || l.printOrderId || '';
+              const _cumDate = new Date(l.date);
+              const _cumHist = allLogs.filter(x => (_dlResolveBatch(x)||x.pcCode||x.printOrderId||'') === _cumKey
+                                                   && new Date(x.date) <= _cumDate);
+              const cumSalvage = _cumHist.reduce((s,x)=>s+(x.salvage||0),0);
+              const cumOutput  = _cumHist.reduce((s,x)=>s+(x.totalOutput||0),0);
+              const cumPct = cumOutput>0 ? (cumSalvage/cumOutput*100) : 0;
               const linkedPO = l.printOrderId ? state.printOrders.find(p=>p.id===l.printOrderId) : null;
               // v41ZI: batch-first resolution (shared helper) — Batch column shows the batch and the
               // Scan Out / Reconciliation cells below key off it.
@@ -7232,7 +7242,7 @@ function renderDailyPrinting() {
                 <td class="text-mono fw-bold">${fmt((l.shiftA||0)+(l.shiftB||0)+(l.shiftC||0),1)}</td>
                 <td class="text-mono ${(l.salvagePct||0)>2?'text-red':''}">${fmt(l.salvage,2)}</td>
                 <td class="text-mono ${(l.salvagePct||0)>2?'text-red':''}">${fmt(l.salvagePct,2)}%</td>
-                <td class="text-mono ${cumPct>2?'text-red':'text-green'}">${cumPct}%</td>
+                <td class="text-mono ${cumPct>2?'text-red':'text-green'}">${fmt(cumPct,2)}%</td>
                 <td class="text-sm" style="white-space:nowrap">${(()=>{
                   const _b = (dlBatch||'').trim();
                   const liveAG = window._liveAGrade && _b ? (window._liveAGrade[_b.toUpperCase()] || window._liveAGrade[_b] || {}) : {};

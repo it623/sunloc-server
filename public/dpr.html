@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v44F</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v44M</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -511,7 +511,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
 </div>
 
 <!-- v40 P18.17: Operator task banner — hidden by default, populated by _v40_taskBannerTick() -->
-<div id="v40-task-banner" style="display:none;background:linear-gradient(90deg,rgba(245,158,11,0.18),rgba(245,158,11,0.08));border-bottom:2px solid rgba(245,158,11,0.5);padding:8px 16px;font-size:13px;color:#92400e;align-items:center;justify-content:space-between;gap:8px">
+<div id="v40-task-banner" style="display:none;position:fixed;top:var(--nav-real,var(--nav));left:0;right:0;z-index:400;background:linear-gradient(90deg,rgba(245,158,11,0.18),rgba(245,158,11,0.08));border-bottom:2px solid rgba(245,158,11,0.5);padding:8px 16px;font-size:13px;color:#92400e;align-items:center;justify-content:space-between;gap:8px">
   <div style="display:flex;align-items:center;gap:10px">
     <span style="font-size:18px">🩺</span>
     <span id="v40-task-banner-text"><strong>0 tasks</strong> assigned to you</span>

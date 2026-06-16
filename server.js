@@ -6401,7 +6401,14 @@ function _v41_requireInvoiceRole(req, res) {
     res.status(401).json({ ok: false, error: 'Not authenticated' });
     return null;
   }
-  const allowed = ['dispatch_manager', 'planning_manager', 'admin'];
+  // v44L #2 FIX: the Tracking app's Dispatch Officer (role 'tracking_dispatch') operates the
+  // Dispatch page where invoice generation, the Pending Reconciliation queue and scan-out live.
+  // The generate endpoint is ungated (so the officer could CREATE a request, e.g. 26ZG119) but
+  // these read/scan-out endpoints previously allowed only the planning-app manager roles, so the
+  // officer was silently 403'd and the Pending Reconciliation queue showed empty. Add the tracking
+  // dispatch role so the officer can see and act on the requests they create. ('admin' covers
+  // Track_Admin too.)
+  const allowed = ['dispatch_manager', 'planning_manager', 'admin', 'tracking_dispatch'];
   if (!allowed.includes(session.role)) {
     res.status(403).json({ ok: false, error: 'Forbidden — dispatch/planning/admin only' });
     return null;
@@ -8286,22 +8293,16 @@ app.get('/api/integrity/my-tasks', async (req, res) => {
              f.resolved AS finding_resolved
       FROM integrity_tasks t
       LEFT JOIN integrity_findings f ON f.id = t.finding_id
-      WHERE t.status IN ('pending','seen') AND (t.assigned_to = ? OR t.assigned_to = ? OR t.assigned_to = ?)
+      WHERE t.status IN ('pending','seen') AND (LOWER(TRIM(t.assigned_to)) = LOWER(TRIM(?)) OR LOWER(TRIM(t.assigned_to)) = LOWER(TRIM(?)))
       ORDER BY t.assigned_at DESC LIMIT 50
     `;
     const roleKey = `role:${session.role}`;
-    // Map DPR roles to the floor codes used in assigned_to field
-    const roleFloorMap = { gf: ['GF'], ff: ['GF','1F','2F'], admin: [] };
-    const floorCodes = roleFloorMap[session.role] || [];
     if (pgPool) {
-      // Build dynamic query to include all floor codes
-      let rows2 = [];
-      const base = `SELECT t.*, f.severity, f.description, f.batch_number, f.order_id, f.machine_id, f.suggested_app, f.suggested_page, f.suggested_action, f.resolved AS finding_resolved FROM integrity_tasks t LEFT JOIN integrity_findings f ON f.id = t.finding_id WHERE t.status IN ('pending','seen') AND (t.assigned_to = $1 OR t.assigned_to = $2${floorCodes.map((_,i)=>` OR t.assigned_to = $${i+3}`).join('')}) ORDER BY t.assigned_at DESC LIMIT 50`;
-      const r = await pgPool.query(base, [session.username, roleKey, ...floorCodes]);
+      let i = 0; const pgSql = sql.replace(/\?/g, () => `$${++i}`);
+      const r = await pgPool.query(pgSql, [session.username, roleKey]);
       rows = r.rows;
     } else {
-      const floorKey = floorCodes[0] || '';
-      rows = db.prepare(sql).all(session.username, roleKey, floorKey);
+      rows = db.prepare(sql).all(session.username, roleKey);
     }
     // Filter out tasks whose findings have been auto-resolved
     rows = rows.filter(r => !r.finding_id || r.finding_resolved === 0 || r.finding_resolved === false);
@@ -9879,7 +9880,37 @@ app.get('/api/daily-printing', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// POST /api/daily-printing/bulk — save all daily printing logs
+// GET /api/daily-printing/salvage-pct  (v44J #2 — Report E transport, READ-ONLY)
+// Returns per-batch WHOLE-batch cumulative printing salvage % = 100·Σsalvage / ΣtotalOutput,
+// summed across ALL of that batch's Daily Printing Log rows. Keyed by UPPER-CASED batch number
+// (the denormalized data_json.batchNumber, which is what Report E keys batches by). Tracking's
+// Report E multiplies this % by AIM Out (Lakhs) to obtain printing salvage in Lakhs — no KG→Lakh
+// conversion needed. Rows with no batchNumber are irrelevant to Report E (its batches all have one)
+// and are skipped. Aggregation done in JS so the pgPool and SQLite paths are identical.
+app.get('/api/daily-printing/salvage-pct', async (req, res) => {
+  try {
+    let rows;
+    if (pgPool) {
+      const r = await pgPool.query('SELECT data_json FROM daily_printing');
+      rows = r.rows.map(x => typeof x.data_json === 'string' ? JSON.parse(x.data_json) : x.data_json);
+    } else {
+      rows = db.prepare('SELECT data_json FROM daily_printing').all().map(x => JSON.parse(x.data_json));
+    }
+    const agg = {}; // batchUpper -> { sal, out }
+    for (const l of rows) {
+      if (!l) continue;
+      const b = (l.batchNumber || '').trim();
+      if (!b) continue;
+      const k = b.toUpperCase();
+      if (!agg[k]) agg[k] = { sal: 0, out: 0 };
+      agg[k].sal += parseFloat(l.salvage || 0) || 0;
+      agg[k].out += parseFloat(l.totalOutput || 0) || 0;
+    }
+    const pct = {};
+    for (const k in agg) pct[k] = agg[k].out > 0 ? (agg[k].sal / agg[k].out * 100) : 0;
+    res.json({ ok: true, pct });
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 app.post('/api/daily-printing/bulk', async (req, res) => {
   try {
     const { logs } = req.body;
@@ -12040,6 +12071,8 @@ app.get('/api/tracking/scans-recent', async (req, res) => {
       labelNumber: r.label_number || null
     });
     const whereClause = since ? `WHERE ts >= '${since.replace(/'/g,'')}'` : '';
+    // v44F PERF: cap since-queries at 2000 rows
+    if (since && (limit <= 0 || limit > 2000)) limit = 2000;
     const limitClause = limit > 0 ? ` LIMIT ${limit}` : '';
     if (pgPool) {
       // Try with label_number column first (after migration v10)
@@ -12066,6 +12099,76 @@ app.get('/api/tracking/scans-recent', async (req, res) => {
       }
       res.json({ ok: true, scans: scans.map(mapScan), count: scans.length });
     }
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/tracking/scans-filtered  (v44K #7 — recent-scans filter panel, READ-ONLY)
+// Filters tracking_scans by dept (required) + optional from/to date range, batch, type.
+// PARAMETERIZED queries (no string interpolation of user-supplied values). Capped 5000, newest first.
+app.get('/api/tracking/scans-filtered', async (req, res) => {
+  try {
+    const dept = (req.query.dept || '').trim();
+    if (!dept) return res.status(400).json({ ok:false, error:'dept required' });
+    const from  = (req.query.from  || '').trim();   // 'YYYY-MM-DD' inclusive
+    const to    = (req.query.to    || '').trim();    // 'YYYY-MM-DD' inclusive
+    const batch = (req.query.batch || '').trim();
+    const type  = (req.query.type  || '').trim();    // 'in' | 'out' | '' (all)
+    let cap = parseInt(req.query.limit, 10);
+    if (!Number.isFinite(cap) || cap <= 0 || cap > 5000) cap = 5000;
+    const mapScan = r => ({ id:r.id, labelId:r.label_id, batchNumber:r.batch_number, dept:r.dept, type:r.type, ts:r.ts, operator:r.operator||null, size:r.size||null, qty:r.qty||null });
+    const cols = 'id,label_id,batch_number,dept,type,ts,operator,size,qty';
+    if (pgPool) {
+      const cond=['dept=$1']; const params=[dept]; let i=2;
+      if(from){ cond.push(`ts >= $${i++}`); params.push(from); }
+      if(to){ const _tn=new Date(to+'T00:00:00Z'); _tn.setUTCDate(_tn.getUTCDate()+1); cond.push(`ts < $${i++}`); params.push(_tn.toISOString().slice(0,10)); }
+      if(batch){ cond.push(`batch_number=$${i++}`); params.push(batch); }
+      if(type==='in'||type==='out'){ cond.push(`type=$${i++}`); params.push(type); }
+      const r = await pgPool.query(`SELECT ${cols} FROM tracking_scans WHERE ${cond.join(' AND ')} ORDER BY ts DESC LIMIT ${cap}`, params);
+      res.json({ ok:true, scans:r.rows.map(mapScan), count:r.rows.length });
+    } else {
+      const cond=['dept=?']; const params=[dept];
+      if(from){ cond.push('ts >= ?'); params.push(from); }
+      if(to){ const _tn=new Date(to+'T00:00:00Z'); _tn.setUTCDate(_tn.getUTCDate()+1); cond.push('ts < ?'); params.push(_tn.toISOString().slice(0,10)); }
+      if(batch){ cond.push('batch_number=?'); params.push(batch); }
+      if(type==='in'||type==='out'){ cond.push('type=?'); params.push(type); }
+      const scans = db.prepare(`SELECT ${cols} FROM tracking_scans WHERE ${cond.join(' AND ')} ORDER BY ts DESC LIMIT ${cap}`).all(...params);
+      res.json({ ok:true, scans:scans.map(mapScan), count:scans.length });
+    }
+  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/tracking/packing-ledger  (v44K #8 — per-day per-batch packing scans, READ-ONLY)
+// Aggregates tracking_scans at dept='packing' into per (date, batch) scan-in / scan-out counts.
+// Optional from/to date range (parameterized). Customer/Colour/PC code joined client-side from
+// state.batches. Aggregation in JS so the pgPool and SQLite paths are identical. ('packing' is a
+// fixed literal, not user input.)
+app.get('/api/tracking/packing-ledger', async (req, res) => {
+  try {
+    const from = (req.query.from || '').trim();
+    const to   = (req.query.to   || '').trim();
+    let rows;
+    if (pgPool) {
+      const cond=["dept='packing'"]; const params=[]; let i=1;
+      if(from){ cond.push(`ts >= $${i++}`); params.push(from); }
+      if(to){ const _tn=new Date(to+'T00:00:00Z'); _tn.setUTCDate(_tn.getUTCDate()+1); cond.push(`ts < $${i++}`); params.push(_tn.toISOString().slice(0,10)); }
+      const r = await pgPool.query(`SELECT ts,batch_number,type FROM tracking_scans WHERE ${cond.join(' AND ')}`, params);
+      rows = r.rows;
+    } else {
+      const cond=["dept='packing'"]; const params=[];
+      if(from){ cond.push('ts >= ?'); params.push(from); }
+      if(to){ const _tn=new Date(to+'T00:00:00Z'); _tn.setUTCDate(_tn.getUTCDate()+1); cond.push('ts < ?'); params.push(_tn.toISOString().slice(0,10)); }
+      rows = db.prepare(`SELECT ts,batch_number,type FROM tracking_scans WHERE ${cond.join(' AND ')}`).all(...params);
+    }
+    const agg = {}; // 'date|batch' -> {date,batch,in,out}
+    for (const r of rows) {
+      const d = (r.ts || '').slice(0,10); const b = r.batch_number || '';
+      if (!d || !b) continue;
+      const k = d+'|'+b;
+      if (!agg[k]) agg[k] = { date:d, batch:b, in:0, out:0 };
+      if (r.type === 'in') agg[k].in++; else if (r.type === 'out') agg[k].out++;
+    }
+    const ledger = Object.values(agg).sort((a,b)=> a.date<b.date?1 : a.date>b.date?-1 : (a.batch<b.batch?-1:1));
+    res.json({ ok:true, ledger, count:ledger.length });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -12969,7 +13072,7 @@ app.post('/api/tracking/recustomer', async (req, res) => {
       // Re-batch the moved labels + ALL their scans to the child (in place — no void/mint, ids preserved).
       for (const l of moveLabels) {
         if (pgPool) {
-          await pgPool.query(`UPDATE tracking_labels SET batch_number=$1, customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=false, printed_at=NULL, qr_data=NULL WHERE id=$6`, [childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id]);
+          await pgPool.query(`UPDATE tracking_labels SET batch_number=$1, customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE id=$6`, [childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id]);
           await pgPool.query(`UPDATE tracking_scans SET batch_number=$1 WHERE label_id=$2`, [childBatch, l.id]);
         } else {
           db.prepare(`UPDATE tracking_labels SET batch_number=?, customer=?, po_number=COALESCE(?,po_number), ship_to=COALESCE(?,ship_to), bill_to=COALESCE(?,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE id=?`).run(childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id);
@@ -13003,7 +13106,7 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     } else {
       // ── FULL switch: in-place customer/address/PO update + forced reprint on the original batch.
       if (pgPool) {
-        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=false, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
+        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
         await pgPool.query(`UPDATE tracking_dispatch_records SET customer=$2 WHERE batch_number=$1`, [batchNumber, newCustomer]);
         await pgPool.query(`UPDATE invoice_requests SET customer=$2, card_code=COALESCE($3,card_code), po_number=COALESCE($4,po_number), updated_at=NOW()::TEXT WHERE batch_number=$1 AND status='pending' AND sap_doc_entry IS NULL`, [batchNumber, newCustomer, newCardCode||null, newPoNumber||null]);
       } else {
