@@ -620,7 +620,11 @@ class SapClient {
     // Replaces previously-planned PDF download with structured Sales Register data.
     // Header: DocNum, Customer, BillTo Address, ShipTo Address, Sales Order ref, Date, Total
     // Lines: ItemCode (=PC Code), ItemDescription, Quantity, UnitPrice, LineTotal, VAT%, VAT amount
-    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,Comments`;
+    // v44N FIX: Added DocumentLines (for BaseType/BaseEntry SO matching) and UDFs (U_SunlocBatch,
+    // U_SunlocPO, U_IRN) to the select. Previously DocumentLines was omitted, so the SO-based
+    // reconciliation pass in _doRefreshSapInvoices never had data to match against, causing
+    // manually-created SAP invoices (without U_SunlocBatch UDF) to stay unreconciled indefinitely.
+    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,Comments,U_SunlocBatch,U_SunlocPO,U_IRN,DocumentLines`;
     const r = await this.call({ method: 'GET', path: 'Invoices', query: `${filter}&${select}&$top=500&$orderby=DocEntry desc` });
     if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded };
     return { ok: true, invoices: r.data?.value || [] };
