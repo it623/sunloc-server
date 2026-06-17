@@ -627,7 +627,7 @@ class SapClient {
     // U_SunlocPO, U_IRN) to the select. Previously DocumentLines was omitted, so the SO-based
     // reconciliation pass in _doRefreshSapInvoices never had data to match against, causing
     // manually-created SAP invoices (without U_SunlocBatch UDF) to stay unreconciled indefinitely.
-    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,Comments,U_SunlocBatch,U_SunlocPO,U_IRN`;
+    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,Comments`;
     const r = await this.call({ method: 'GET', path: 'Invoices', query: `${filter}&${select}&$top=500&$orderby=DocEntry desc` });
     if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded };
     return { ok: true, invoices: r.data?.value || [] };
