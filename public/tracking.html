@@ -5798,6 +5798,8 @@ function _v39_openScanOutModal(invoiceId) {
       { label: 'Cancel', cls: 'btn-secondary', fn: '_v39_closeScanOut()' },
     ]
   );
+  // v44Q: restore saved scans from server
+  _v39_restoreScansFromServer(inv.id);
   // Apply disabled state to Dispatch Out button until all checks pass
   _v39_refreshScanOutProgress();
   // Focus the scan input
@@ -6017,6 +6019,20 @@ function _v39_onBoxScanned(raw) {
   _v39_setMismatchMsg('');
   _v39_refreshScanOutProgress();
   _v40_renderLineExpectationsPanel();
+  // v44Q: persist scan to server
+  _v39_saveScansToServer();
+}
+
+async function _v39_saveScansToServer() {
+  const inv = _v39_currentScanOutInvoice;
+  if (!inv) return;
+  try {
+    await fetch(serverUrl + '/api/invoice/scan-session/' + encodeURIComponent(inv.id), {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ scanned: _v39_scanProgress.scanned }),
+    });
+  } catch (e) { console.warn('[scan-session save]', e.message); }
 }
 
 function _v39_setMismatchMsg(html) {
@@ -6089,6 +6105,19 @@ function _v39_refreshScanOutProgress() {
   }
 }
 
+async function _v39_restoreScansFromServer(invoiceId) {
+  try {
+    const r = await fetch(serverUrl + '/api/invoice/scan-session/' + encodeURIComponent(invoiceId), { signal: AbortSignal.timeout(5000) });
+    const j = await r.json();
+    if (j.ok && j.scanned && j.scanned.length > 0) {
+      _v39_scanProgress.scanned = j.scanned;
+      _v39_refreshScanOutProgress();
+      _v40_renderLineExpectationsPanel();
+      toast(`✅ Restored ${j.scanned.length} previously scanned box${j.scanned.length===1?'':'es'}`, '#10b981');
+    }
+  } catch (e) { console.warn('[scan-session restore]', e.message); }
+}
+
 async function _v39_dispatchOut() {
   const inv = _v39_currentScanOutInvoice;
   if (!inv) return;
@@ -6118,9 +6147,13 @@ async function _v39_dispatchOut() {
     });
     const j = await r.json();
     if (j.ok) {
+      // v44Q: clear saved scan session
+      fetch(serverUrl + '/api/invoice/scan-session/' + encodeURIComponent(inv.id), { method: 'DELETE' }).catch(()=>{});
       _v39_closeScanOut();
       // v40 Phase 18.9: close-the-loop — show success modal with link to Invoice Register
       _v40_showDispatchSuccessModal(inv, j, total);
+      // v44Q: success toast
+      toast(`✅ Dispatch Out successful! Invoice ${inv.sap_doc_num || inv.sap_invoice_no} — ${inv.batch_number} — ${total} boxes dispatched.`, '#10b981', 6000);
       // v44P #4: immediate refresh of invoice queue + invoice-derived views (no poll lag).
       _v44p_refreshAfterDispatch();
     } else if (j.already_dispatched) {

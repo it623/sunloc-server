@@ -669,6 +669,15 @@ const MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_truck_scan_last_updated ON truck_scan_session_state(last_updated_at);`
   },
   {
+    version: 22,
+    name: 'invoice_scan_sessions',
+    sql: `CREATE TABLE IF NOT EXISTS invoice_scan_sessions (
+      invoice_id TEXT PRIMARY KEY,
+      scanned_json TEXT NOT NULL DEFAULT '[]',
+      saved_at TEXT DEFAULT (datetime('now'))
+    );`
+  },
+  {
     // v40 Phase 18.15: WO Multi-Customer Split
     // A WO order (e.g. 50-box batch 26ZC100) can be split into 1..N child customer orders.
     // Each child gets its own batch number (parent + suffix), customer, qty, and label range.
@@ -2121,6 +2130,15 @@ async function ensurePostgresTables() {
       `);
       await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_truck_scan_last_updated ON truck_scan_session_state(last_updated_at)`);
     } catch (e) { console.warn('[v40 P18.11 PG] truck_scan_session_state:', e.message); }
+
+    // v44Q: invoice_scan_sessions — persist single-invoice scan progress
+    try {
+      await pgPool.query(`CREATE TABLE IF NOT EXISTS invoice_scan_sessions (
+        invoice_id TEXT PRIMARY KEY,
+        scanned_json TEXT NOT NULL DEFAULT '[]',
+        saved_at TEXT DEFAULT NOW()::TEXT
+      )`);
+    } catch (e) { console.warn('[v44Q PG] invoice_scan_sessions:', e.message); }
 
     // ─── v40 Phase 18.15: WO Multi-Customer Split tables (PG) ────
     try {
@@ -4623,6 +4641,56 @@ app.delete('/api/invoice/truck-scan-session/:truckNumber', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// v44Q: Single-invoice scan session persistence
+// GET  /api/invoice/scan-session/:invoiceId  — restore saved scans
+// PUT  /api/invoice/scan-session/:invoiceId  — save scans
+// DELETE /api/invoice/scan-session/:invoiceId — clear after dispatch
+
+app.get('/api/invoice/scan-session/:invoiceId', async (req, res) => {
+  const id = req.params.invoiceId;
+  try {
+    let row;
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE invoice_id=$1`, [id]);
+      row = r.rows[0];
+    } else {
+      row = db.prepare(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE invoice_id=?`).get(id);
+    }
+    if (!row) return res.json({ ok: true, scanned: [] });
+    const scanned = JSON.parse(row.scanned_json || '[]');
+    res.json({ ok: true, scanned, saved_at: row.saved_at });
+  } catch (e) { res.json({ ok: false, error: e.message, scanned: [] }); }
+});
+
+app.put('/api/invoice/scan-session/:invoiceId', async (req, res) => {
+  const id = req.params.invoiceId;
+  const { scanned } = req.body || {};
+  try {
+    const json = JSON.stringify(scanned || []);
+    const now = new Date().toISOString();
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO invoice_scan_sessions (invoice_id, scanned_json, saved_at) VALUES ($1,$2,$3)
+         ON CONFLICT (invoice_id) DO UPDATE SET scanned_json=$2, saved_at=$3`,
+        [id, json, now]
+      );
+    } else {
+      db.prepare(`INSERT INTO invoice_scan_sessions (invoice_id, scanned_json, saved_at) VALUES (?,?,?)
+                  ON CONFLICT(invoice_id) DO UPDATE SET scanned_json=excluded.scanned_json, saved_at=excluded.saved_at`).run(id, json, now);
+    }
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
+});
+
+app.delete('/api/invoice/scan-session/:invoiceId', async (req, res) => {
+  const id = req.params.invoiceId;
+  try {
+    if (pgPool) await pgPool.query(`DELETE FROM invoice_scan_sessions WHERE invoice_id=$1`, [id]);
+    else db.prepare(`DELETE FROM invoice_scan_sessions WHERE invoice_id=?`).run(id);
+    res.json({ ok: true });
+  } catch (e) { res.json({ ok: false, error: e.message }); }
 });
 
 // v40 Phase 18.12: GET /api/invoice/active-scan-sessions — list all in-progress
