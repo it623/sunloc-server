@@ -3264,8 +3264,8 @@ async function _doRefreshSapInvoices() {
                 [String(iv.sap_invoice_no || ''), iv.sap_doc_entry, recId, pr.id]
               );
               await pgPool.query(
-                `UPDATE invoices_received SET source='sunloc', invoice_request_id=$1, batch_number=COALESCE(NULLIF(batch_number,''),$2), total_boxes=$3, total_qty_lakhs=$4 WHERE id=$5`,
-                [pr.id, pr.batch_number || null, boxes, qty, recId]
+                `UPDATE invoices_received SET source='sunloc', invoice_request_id=$1, batch_number=COALESCE(NULLIF(batch_number,''),$2), total_boxes=$3, total_qty_lakhs=$4 WHERE sap_doc_entry=$5`,
+                [pr.id, pr.batch_number || null, boxes, qty, iv.sap_doc_entry]
               );
               console.log(`[SAP] v44N retry-reconciled: batch=${pr.batch_number} inv=${iv.sap_invoice_no} via Comments SO#${soNum}`);
             }
