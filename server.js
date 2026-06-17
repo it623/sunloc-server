@@ -3222,6 +3222,59 @@ async function _doRefreshSapInvoices() {
       db.prepare(`UPDATE sap_config SET last_invoice_poll_at = datetime('now') WHERE id=1`).run();
     }
   } catch {}
+
+  // v44N RETRY PASS: For invoices already stored in invoices_received (fetched before the
+  // DocumentLines fix) that still have no invoice_request_id, try to match them against
+  // pending_reconciliation requests via the Comments field ("Based On Sales Orders <SO_DocEntry>").
+  // This ensures old unreconciled invoices self-heal without manual DB intervention.
+  try {
+    if (pgPool) {
+      const unmatched = await pgPool.query(
+        `SELECT iv.id, iv.sap_doc_entry, iv.sap_invoice_no, iv.total_boxes, iv.total_qty_lakhs, iv.payload_json
+         FROM invoices_received iv
+         WHERE iv.invoice_request_id IS NULL AND iv.source = 'direct_sap'`
+      );
+      for (const iv of unmatched.rows) {
+        try {
+          const payload = typeof iv.payload_json === 'string' ? JSON.parse(iv.payload_json) : (iv.payload_json || {});
+          const comments = payload.Comments || '';
+          // Extract all SO numbers from Comments e.g. "Based On Sales Orders 245. Based On Deliveries 575."
+          const soMatches = comments.match(/Sales Orders?\s+(\d+)/gi) || [];
+          for (const soMatch of soMatches) {
+            const soNum = parseInt(soMatch.replace(/\D/g, ''), 10);
+            if (!soNum) continue;
+            // Find the SO DocEntry from sap_indent_cache by DocNum
+            const soRow = await pgPool.query(
+              `SELECT sap_doc_entry FROM sap_indent_cache WHERE sap_doc_num=$1`,
+              [String(soNum)]
+            );
+            const soDocEntry = soRow.rows[0] ? soRow.rows[0].sap_doc_entry : null;
+            if (!soDocEntry) continue;
+            // Find pending request with this SO DocEntry
+            const req = await pgPool.query(
+              `SELECT id, batch_number, boxes, qty_lakhs FROM invoice_requests WHERE sap_doc_entry=$1 AND status='pending_reconciliation' ORDER BY created_at ASC`,
+              [soDocEntry]
+            );
+            for (const pr of req.rows) {
+              const recId = `inv_${iv.sap_doc_entry}`;
+              const boxes = (pr.boxes && parseInt(pr.boxes) > 0) ? parseInt(pr.boxes) : (iv.total_boxes || 0);
+              const qty   = (pr.qty_lakhs && parseFloat(pr.qty_lakhs) > 0) ? parseFloat(pr.qty_lakhs) : (iv.total_qty_lakhs || 0);
+              await pgPool.query(
+                `UPDATE invoice_requests SET status='reconciled', sap_response_doc_num=$1, sap_response_doc_entry=$2, reconciled_at=NOW()::TEXT, reconciled_with_invoice_id=$3, updated_at=NOW()::TEXT WHERE id=$4 AND status='pending_reconciliation'`,
+                [String(iv.sap_invoice_no || ''), iv.sap_doc_entry, recId, pr.id]
+              );
+              await pgPool.query(
+                `UPDATE invoices_received SET source='sunloc', invoice_request_id=$1, batch_number=COALESCE(NULLIF(batch_number,''),$2), total_boxes=$3, total_qty_lakhs=$4 WHERE id=$5`,
+                [pr.id, pr.batch_number || null, boxes, qty, recId]
+              );
+              console.log(`[SAP] v44N retry-reconciled: batch=${pr.batch_number} inv=${iv.sap_invoice_no} via Comments SO#${soNum}`);
+            }
+          }
+        } catch (e) { console.warn('[SAP] v44N retry pass error:', e.message); }
+      }
+    }
+  } catch (e) { console.warn('[SAP] v44N retry pass outer error:', e.message); }
+
   return { ok: true, fetched: invoices.length, upserted };
 }
 
