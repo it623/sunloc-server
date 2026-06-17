@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44O</title>
+<title>Sunloc Tracking Suite v1.0 · build v44P</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -567,7 +567,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44O</p>
+      <p>Tracking Suite v1.0 · build v44P</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -598,7 +598,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44O</p>
+      <p>Tracking Suite v1.0 · build v44P</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4262,6 +4262,7 @@ function renderDeptScan(dept){
     </table></div>`:''}
   </div>`:''}
 
+  ${dept!=='packing'?`
   <!-- BATCH CLOSURE -->
   <div class="card mb-16">
     <div class="card-title">✅ Batch Stage Closure</div>
@@ -4304,7 +4305,7 @@ function renderDeptScan(dept){
       </tbody>
       ${_clo.length?(()=>{const tIn=_clo.reduce((s,r)=>s+r.inCount,0),tOut=_clo.reduce((s,r)=>s+r.outCount,0),tInQ=_clo.reduce((s,r)=>s+boxToLakh(r.inCount,r.b.size),0),tOutQ=_clo.reduce((s,r)=>s+boxToLakh(r.outCount,r.b.size),0),tSal=_clo.reduce((s,r)=>s+r.w.salvage,0),tRem=_clo.reduce((s,r)=>s+r.w.remelt,0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${_clo.length}</td><td></td><td class="td-mono">${tIn} (${fmt(tInQ)}L)</td><td class="td-mono">${tOut} (${fmt(tOutQ)}L)</td><td></td><td class="td-mono">S:${fmt(tSal)} R:${fmt(tRem)}</td><td colspan="2"></td></tr></tfoot>`;})():''}
     </table></div>
-  </div>
+  </div>`:''}
 
   <!-- RECENT SCANS -->
   <div class="card">
@@ -4321,7 +4322,7 @@ function renderDeptScan(dept){
         <select id="rsf-type-${dept}" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1)">
           <option value="" ${(_rsF.type||'')===''?'selected':''}>All</option>
           <option value="in" ${_rsF.type==='in'?'selected':''}>IN</option>
-          <option value="out" ${_rsF.type==='out'?'selected':''}>OUT</option>
+          ${dept!=='packing'?`<option value="out" ${_rsF.type==='out'?'selected':''}>OUT</option>`:''}
         </select></div>
       <button class="btn btn-sm btn-primary" onclick="applyScanFilter('${dept}')">Apply</button>
       ${_rsActive?`<button class="btn btn-sm btn-ghost" onclick="clearScanFilter('${dept}')">✕ Clear</button>`:''}
@@ -4405,7 +4406,7 @@ function _renderPackingLedgerCard(){
     </div>
     ${!active?'<div class="empty-state"><p>Set an optional date range and click Load to view per-day packing scans by batch.</p></div>':`
     <div class="tbl-wrap" style="max-height:460px;overflow:auto"><table>
-      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Date</th><th>Batch</th><th>Customer</th><th>Colour</th><th>PC Code</th><th>Scan In</th><th>Scan Out</th></tr></thead>
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Date</th><th>Batch</th><th>Customer</th><th>Colour</th><th>PC Code</th><th>Scan In</th></tr></thead>
       <tbody>
       ${view.map(r=>`<tr>
         <td class="td-mono text-sm">${r.date}</td>
@@ -4414,10 +4415,9 @@ function _renderPackingLedgerCard(){
         <td class="text-sm">${r.colour||'-'}</td>
         <td class="td-mono">${r.pcCode||'-'}</td>
         <td class="td-mono">${r.inB}</td>
-        <td class="td-mono">${r.outB}</td>
-      </tr>`).join('')||'<tr><td colspan="7" class="text-center text-muted">No packing scans in range</td></tr>'}
+      </tr>`).join('')||'<tr><td colspan="6" class="text-center text-muted">No packing scans in range</td></tr>'}
       </tbody>
-      ${view.length?`<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${view.length} day-rows</td><td colspan="4"></td><td class="td-mono">${tIn}</td><td class="td-mono">${tOut}</td></tr></tfoot>`:''}
+      ${view.length?`<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${view.length} day-rows</td><td colspan="4"></td><td class="td-mono">${tIn}</td></tr></tfoot>`:''}
     </table></div>`}
   </div>`;
 }
@@ -5599,7 +5599,9 @@ async function _v41zs_regulariseDispatch(invoiceId) {
     if (j.ok) {
       alert('✓ Dispatch regularised' + (j.batch_number ? ' (batch ' + j.batch_number + ')' : '') + '. Invoice marked dispatched & legacy-closed.');
       closeModal();
-      _v39_loadAndRenderInvoiceQueue();
+      // v44P #4/#5: immediate refresh so Generated Invoices → Dispatched, Report G → Closed/Partial,
+      // and Dispatch/Truck Plan drop-out all reflect right away (no 5-min poll wait).
+      _v44p_refreshAfterDispatch();
     } else {
       alert('Failed: ' + (j.error || 'unknown'));
     }
@@ -6088,9 +6090,8 @@ async function _v39_dispatchOut() {
       _v39_closeScanOut();
       // v40 Phase 18.9: close-the-loop — show success modal with link to Invoice Register
       _v40_showDispatchSuccessModal(inv, j, total);
-      _v39_loadAndRenderInvoiceQueue();
-      // Refresh the rest of renderDispatch too — new dispatch record in the ledger
-      setTimeout(() => { if (typeof renderDispatch === 'function') renderDispatch(); }, 500);
+      // v44P #4: immediate refresh of invoice queue + invoice-derived views (no poll lag).
+      _v44p_refreshAfterDispatch();
     } else if (j.already_dispatched) {
       alert(`⚠️ This invoice has already been dispatched (record ${j.dispatch_record_id || 'unknown'}). Refreshing queue.`);
       _v39_closeScanOut();
@@ -6552,14 +6553,28 @@ function _v40_renderTruckDispatchResults(j, st) {
   ]);
 }
 
+// v44P #4: after ANY dispatch/regularise action, refresh the invoice-derived views immediately
+// rather than waiting for the 5-minute poll. The server sets dispatch_status='dispatched'
+// synchronously, so the only lag was the client not re-fetching. This clears the cached invoice
+// list, reloads the dispatch queue, pulls fresh scan/batch state (drives Report G / Dispatch Plan),
+// and re-renders whatever invoice-derived view is currently open.
+async function _v44p_refreshAfterDispatch() {
+  try { _v39_invoiceList = []; } catch (e) {}
+  try { if (typeof _v39_loadAndRenderInvoiceQueue === 'function') await _v39_loadAndRenderInvoiceQueue(); } catch (e) {}
+  try { await pullFromServer(true); } catch (e) {}
+  try {
+    if (currentPage === 'generated-invoices' && typeof renderGeneratedInvoices === 'function') renderGeneratedInvoices();
+    else if (currentPage === 'reports' && typeof window._activeReport === 'function') window._activeReport();
+    else if (currentPage === 'dispatch' && typeof renderDispatch === 'function') renderDispatch();
+  } catch (e) {}
+}
+
 async function _v40_finishTruckDispatch() {
   // Clear local state and reload queue
   window._v40_truckScanState = null;
   closeModal();
-  // Refresh the Invoice Queue
-  if (typeof _v39_loadAndRenderInvoiceQueue === 'function') {
-    try { await _v39_loadAndRenderInvoiceQueue(); } catch (e) {}
-  }
+  // v44P #4: immediate refresh of invoice queue + all invoice-derived views (no poll lag).
+  await _v44p_refreshAfterDispatch();
 }
 
 function _v40_closeTruckScan() {
@@ -8947,6 +8962,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   if(!document.getElementById('report-output')) renderReports();
   const filterDept  = window._rptBDept  || '';
   const filterBatch = window._rptBBatch || '';
+  const filterStatus = window._rptBStatus || '';  // v44P #11: '', 'indept', 'leftdept', 'closed'
 
   // Filter to month batches only
   const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
@@ -8954,12 +8970,12 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   let allBatchNos;
   if (hasScanSummary()) {
     allBatchNos = [...monthBatchNos].filter(bn =>
-      ['aim','printing','pi','packing'].some(d => (_ss(bn,d).in > 0 || _ss(bn,d).out > 0))
+      ['aim','printing','pi'].some(d => (_ss(bn,d).in > 0 || _ss(bn,d).out > 0))
     ).sort();
   } else {
-    allBatchNos = [...new Set(state.scans.filter(s=>['aim','printing','pi','packing'].includes(s.dept)&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))].sort();
+    allBatchNos = [...new Set(state.scans.filter(s=>['aim','printing','pi'].includes(s.dept)&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))].sort();
   }
-  const depts=['aim','printing','pi','packing'];
+  const depts=['aim','printing','pi'];
   const activeDepts = filterDept ? [filterDept] : depts;
 
   const batchOpts = allBatchNos.map(bn=>`<option value="${bn}" ${filterBatch===bn?'selected':''}>${bn}${getBatch(bn)?.customer?' — '+getBatch(bn).customer:''}</option>`).join('');
@@ -8967,7 +8983,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
 
   let html=`<div class="card">
     <div class="section-title mb-12">Report B — Department-wise WIP</div>
-    <div class="form-row cols-3 mb-16" style="max-width:700px">
+    <div class="form-row cols-4 mb-16" style="max-width:920px">
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Filter by Department</label>
         <select onchange="window._rptBDept=this.value;renderReportB()">
@@ -8980,8 +8996,17 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
           <option value="">All Batches</option>${batchOpts}
         </select>
       </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Filter by Status</label>
+        <select onchange="window._rptBStatus=this.value;renderReportB()">
+          <option value="" ${filterStatus===''?'selected':''}>All Statuses</option>
+          <option value="indept" ${filterStatus==='indept'?'selected':''}>In Dept</option>
+          <option value="leftdept" ${filterStatus==='leftdept'?'selected':''}>Left Dept</option>
+          <option value="closed" ${filterStatus==='closed'?'selected':''}>Closed</option>
+        </select>
+      </div>
       <div class="form-group" style="margin-bottom:0;display:flex;align-items:flex-end">
-        <button class="btn btn-secondary btn-sm" onclick="window._rptBDept='';window._rptBBatch='';renderReportB()">✕ Clear Filters</button>
+        <button class="btn btn-secondary btn-sm" onclick="window._rptBDept='';window._rptBBatch='';window._rptBStatus='';renderReportB()">✕ Clear Filters</button>
       </div>
     </div>`;
 
@@ -8999,11 +9024,14 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     if(!batchSet.length) return;
     anyData = true;
     const hasWastage = dept==='aim'||dept==='printing'||dept==='pi';
+    const _isAimDept = dept==='aim';
+    const _aimHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Gross Prod (L)</th><th>Wastage (L)</th><th>Avail. to Scan In (L)</th><th>Boxes IN</th><th>Production WIP (L)</th><th>Boxes OUT</th><th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
+    const _stdHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Prod WIP (L)</th><th>Boxes IN</th><th>Boxes OUT</th>${hasWastage?'<th>Wastage (L)</th>':''}<th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
     html+=`<div class="mb-16"><div class="card-title" style="color:${DEPT_CONFIG[dept].color}">${DEPT_CONFIG[dept].label}</div>
     <div class="tbl-wrap tbl-sticky"><table>
-      <thead><tr><th>Batch</th><th>Customer</th><th>Prod WIP (L)</th><th>Boxes IN</th><th>Boxes OUT</th>${hasWastage?'<th>Wastage (L)</th>':''}<th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead><tbody>`;
-    // v41ZB: per-department totals
-    let _bIn=0,_bOut=0,_bW=0,_bWipBx=0,_bWipQ=0,_bProd=0,_bN=0;
+      ${_isAimDept?_aimHead:_stdHead}<tbody>`;
+    // v41ZB: per-department totals (v44P: + gross/avail for the AIM layout)
+    let _bIn=0,_bOut=0,_bW=0,_bWipBx=0,_bWipQ=0,_bProd=0,_bGross=0,_bAvail=0,_bN=0;
     batchSet.forEach(batchNo=>{
       const batch=getBatch(batchNo);
       // Use _ss() for accurate counts from full history
@@ -9030,7 +9058,34 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
       const hrs=firstIn?hoursAgo(firstIn.ts):0;
       const alerts=state.alerts.filter(a=>a.batchNumber===batchNo&&a.dept===dept).length;
-      html+=`<tr>
+      // v44P #11: compute the stage status once — drives both the badge and the Status filter.
+      const _closed = isStageComplete(batchNo,dept);
+      const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
+      if (filterStatus && statusKey !== filterStatus) return;   // skip rows not matching status filter
+      const statusBadge = _closed ? '<span class="badge badge-green">✅ Closed</span>'
+                        : wip>0 ? '<span class="badge badge-blue">In Dept</span>'
+                        : out>0 ? '<span class="badge badge-gray">↗ Left Dept</span>'
+                        : '<span class="badge badge-gray">—</span>';
+      // v44P #10: "Available to Scan In" = Gross − Wastage. Production WIP (prodWip above) is
+      // unchanged: it already equals (Gross − AIM salvage − AIM remelt) − AIM scan-in = Available − Scan In.
+      const _avail = Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt);
+      if (_isAimDept) {
+        html+=`<tr>
+          <td class="td-bold td-mono">${batchNo}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+          <td class="text-sm">${batch?.customer||'-'}</td>
+          <td class="td-mono">${grossProd>0?fmt(grossProd)+'L':'—'}</td>
+          <td class="td-mono text-sm" style="color:var(--amber)">${(aimWaste.salvage+aimWaste.remelt)>0?fmt(aimWaste.salvage+aimWaste.remelt)+'L':'—'}</td>
+          <td class="td-mono">${_avail>0?fmt(_avail)+'L':'—'}</td>
+          <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,batch?.size||'0'))}L)</span></td>
+          <td class="td-mono ${prodWip>0?'amber':''}">${prodWip>0?fmt(prodWip)+'L':'—'}</td>
+          <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,batch?.size||'0'))}L)</span></td>
+          <td class="td-mono fw-bold">${wip}</td>
+          <td class="td-mono">${fmt(wipQty)}</td>
+          <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
+          <td>${statusBadge}</td>
+        </tr>`;
+      } else {
+        html+=`<tr>
         <td class="td-bold td-mono">${batchNo}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
         <td class="text-sm">${batch?.customer||'-'}</td>
         <td class="td-mono ${prodWip>0?'amber':''}">${prodWip>0?fmt(prodWip)+'L':'—'}</td>
@@ -9040,19 +9095,34 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         <td class="td-mono fw-bold">${wip}</td>
         <td class="td-mono">${fmt(wipQty)}</td>
         <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
-        <td>${isStageComplete(batchNo,dept)?'<span class="badge badge-green">✅ Closed</span>':wip>0?'<span class="badge badge-blue">In Dept</span>':out>0?'<span class="badge badge-gray">↗ Left Dept</span>':'<span class="badge badge-gray">—</span>'}</td>
+        <td>${statusBadge}</td>
       </tr>`;
-      _bIn+=inn; _bOut+=out; _bW+=w.total; _bWipBx+=wip; _bWipQ+=wipQty; _bProd+=prodWip; _bN++;
+      }
+      _bIn+=inn; _bOut+=out; _bW+=w.total; _bWipBx+=wip; _bWipQ+=wipQty; _bProd+=prodWip; _bGross+=grossProd; _bAvail+=_avail; _bN++;
     });
     if(_bN){
-      html+=`<tr style="background:var(--surface2);font-weight:800">
-        <td>TOTAL (${_bN})</td><td></td>
-        <td class="td-mono">${_bProd>0?fmt(_bProd)+'L':'—'}</td>
-        <td class="td-mono">${_bIn}</td><td class="td-mono">${_bOut}</td>
-        ${hasWastage?`<td class="td-mono">${_bW>0?fmt(_bW)+'L':'—'}</td>`:''}
-        <td class="td-mono">${_bWipBx}</td><td class="td-mono">${fmt(_bWipQ)}</td>
-        <td></td><td></td>
-      </tr>`;
+      if (_isAimDept) {
+        html+=`<tr style="background:var(--surface2);font-weight:800">
+          <td>TOTAL (${_bN})</td><td></td>
+          <td class="td-mono">${_bGross>0?fmt(_bGross)+'L':'—'}</td>
+          <td class="td-mono">${_bW>0?fmt(_bW)+'L':'—'}</td>
+          <td class="td-mono">${_bAvail>0?fmt(_bAvail)+'L':'—'}</td>
+          <td class="td-mono">${_bIn}</td>
+          <td class="td-mono">${_bProd>0?fmt(_bProd)+'L':'—'}</td>
+          <td class="td-mono">${_bOut}</td>
+          <td class="td-mono">${_bWipBx}</td><td class="td-mono">${fmt(_bWipQ)}</td>
+          <td></td><td></td>
+        </tr>`;
+      } else {
+        html+=`<tr style="background:var(--surface2);font-weight:800">
+          <td>TOTAL (${_bN})</td><td></td>
+          <td class="td-mono">${_bProd>0?fmt(_bProd)+'L':'—'}</td>
+          <td class="td-mono">${_bIn}</td><td class="td-mono">${_bOut}</td>
+          ${hasWastage?`<td class="td-mono">${_bW>0?fmt(_bW)+'L':'—'}</td>`:''}
+          <td class="td-mono">${_bWipBx}</td><td class="td-mono">${fmt(_bWipQ)}</td>
+          <td></td><td></td>
+        </tr>`;
+      }
     }
     html+=`</tbody></table></div></div>`;
   });
@@ -11857,7 +11927,7 @@ function exportReportA(){
 
 function exportReportB(){
   const rows=[];
-  const depts=['aim','printing','pi','packing'];
+  const depts=['aim','printing','pi'];  // v44P #9: Packing WIP removed from Report B (now in Report G)
   const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
   depts.forEach(dept=>{
     const hasWastage=dept==='aim'||dept==='printing'||dept==='pi';

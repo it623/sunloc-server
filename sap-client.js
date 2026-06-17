@@ -619,18 +619,43 @@ class SapClient {
     const lookbackDate = new Date(Date.now() - lookbackDays * 86400_000);
     const dateStr = lookbackDate.toISOString().slice(0, 10);
     const filter = `$filter=DocDate ge '${dateStr}'`;
-    // v40 P18.7: Pull richer line-item fields and addresses for Scan-Out matching.
-    // Replaces previously-planned PDF download with structured Sales Register data.
-    // Header: DocNum, Customer, BillTo Address, ShipTo Address, Sales Order ref, Date, Total
-    // Lines: ItemCode (=PC Code), ItemDescription, Quantity, UnitPrice, LineTotal, VAT%, VAT amount
-    // v44N FIX: Added DocumentLines (for BaseType/BaseEntry SO matching) and UDFs (U_SunlocBatch,
-    // U_SunlocPO, U_IRN) to the select. Previously DocumentLines was omitted, so the SO-based
-    // reconciliation pass in _doRefreshSapInvoices never had data to match against, causing
-    // manually-created SAP invoices (without U_SunlocBatch UDF) to stay unreconciled indefinitely.
-    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,Comments`;
-    const r = await this.call({ method: 'GET', path: 'Invoices', query: `${filter}&${select}&$top=500&$orderby=DocEntry desc` });
-    if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded };
-    return { ok: true, invoices: r.data?.value || [] };
+    // Header + UDF fields only (lean). Per-line detail (PC/Size/Colour/Boxes/Qty) is fetched
+    // on demand via getInvoice(DocEntry) for direct-SAP invoices that need it — keeping this
+    // bulk fetch small and avoiding $select on the DocumentLines collection (which B1 SL can
+    // reject/ignore). Reconciliation is keyed on the Comments "Based On Sales Orders <n>" text.
+    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,Comments,U_SunlocBatch,U_SunlocPO,U_IRN`;
+    // v44P FIX (#12): SAP B1 Service Layer IGNORES $top and returns max ~20 rows per page with no
+    // nextLink (documented in fetchOpenSalesOrders above). The previous single-request fetch
+    // therefore only ever ingested the first page — invoices beyond it (e.g. on busy days, or
+    // across multiple numbering series) were silently dropped and NEVER landed in
+    // invoices_received, so their requests stayed "Awaiting SAP" forever. We now paginate by
+    // $skip exactly like the Sales-Order fetch: learn the page size from the first page, loop
+    // until a short/empty page, dedupe by DocEntry, with a 500-page guard.
+    const invoices = [];
+    const seen = new Set();
+    let skip = 0, pageSize = 0, pageGuard = 0;
+    while (pageGuard < 500) {
+      pageGuard++;
+      const r = await this.call({ method: 'GET', path: 'Invoices', query: `${filter}&${select}&$orderby=DocEntry desc&$skip=${skip}` });
+      if (!r.ok) {
+        // Partial set (page failure mid-pagination). Return what we have so the caller can still
+        // upsert/reconcile those, but flag degraded so it is treated as a non-authoritative fetch.
+        if (invoices.length > 0) return { ok: true, invoices, degraded: true };
+        return { ok: false, error: r.error, degraded: r.degraded };
+      }
+      const page = r.data?.value || [];
+      if (page.length === 0) break;
+      if (pageSize === 0) pageSize = page.length;
+      for (const inv of page) {
+        const key = String(inv.DocEntry);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        invoices.push(inv);
+      }
+      if (page.length < pageSize) break;   // last page reached
+      skip += page.length;
+    }
+    return { ok: true, invoices };
   }
 
   /** Get a single invoice by DocEntry — used for verifying after creation. */

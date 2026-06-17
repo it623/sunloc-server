@@ -3001,9 +3001,9 @@ async function _doRefreshSapInvoices() {
             pc_code=COALESCE(NULLIF(EXCLUDED.pc_code,''), invoices_received.pc_code),
             size=COALESCE(NULLIF(EXCLUDED.size,''), invoices_received.size),
             colour=COALESCE(NULLIF(EXCLUDED.colour,''), invoices_received.colour),
-            total_boxes=$13,
+            total_boxes=CASE WHEN $13>0 THEN $13 ELSE invoices_received.total_boxes END,
             taxable_amount=$14, igst_amount=$15, total_amount=$16, irn=$17,
-            payload_json=$20, total_qty_lakhs=$21, fetched_at=NOW()::TEXT
+            payload_json=$20, total_qty_lakhs=CASE WHEN $21>0 THEN $21 ELSE invoices_received.total_qty_lakhs END, fetched_at=NOW()::TEXT
         `, [recId, inv.DocEntry, String(inv.DocNum || ''), String(inv.DocNum || ''),
             inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchUdf,
             pcCode, size, colour,
@@ -3023,10 +3023,10 @@ async function _doRefreshSapInvoices() {
             pc_code=COALESCE(NULLIF(excluded.pc_code,''), invoices_received.pc_code),
             size=COALESCE(NULLIF(excluded.size,''), invoices_received.size),
             colour=COALESCE(NULLIF(excluded.colour,''), invoices_received.colour),
-            total_boxes=excluded.total_boxes,
+            total_boxes=CASE WHEN excluded.total_boxes>0 THEN excluded.total_boxes ELSE invoices_received.total_boxes END,
             taxable_amount=excluded.taxable_amount, igst_amount=excluded.igst_amount,
             total_amount=excluded.total_amount, irn=excluded.irn,
-            payload_json=excluded.payload_json, total_qty_lakhs=excluded.total_qty_lakhs, fetched_at=datetime('now')
+            payload_json=excluded.payload_json, total_qty_lakhs=CASE WHEN excluded.total_qty_lakhs>0 THEN excluded.total_qty_lakhs ELSE invoices_received.total_qty_lakhs END, fetched_at=datetime('now')
         `).run(recId, inv.DocEntry, String(inv.DocNum || ''), String(inv.DocNum || ''),
             inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchUdf,
             pcCode, size, colour,
@@ -3248,7 +3248,11 @@ async function _doRefreshSapInvoices() {
               `SELECT sap_doc_entry FROM sap_indent_cache WHERE sap_doc_num=$1`,
               [String(soNum)]
             );
-            const soDocEntry = soRow.rows[0] ? soRow.rows[0].sap_doc_entry : null;
+            // v44P (#1 hardening): SAP's "Based On Sales Orders <n>" text can carry either the SO
+            // DocNum or the SO DocEntry depending on configuration. If the DocNum lookup misses,
+            // fall back to treating the number as the DocEntry directly (the request stores the SO
+            // DocEntry in sap_doc_entry), so reconciliation can't silently fail on that ambiguity.
+            const soDocEntry = soRow.rows[0] ? soRow.rows[0].sap_doc_entry : soNum;
             if (!soDocEntry) continue;
             // Find pending request with this SO DocEntry
             const req = await pgPool.query(
@@ -3264,8 +3268,8 @@ async function _doRefreshSapInvoices() {
                 [String(iv.sap_invoice_no || ''), iv.sap_doc_entry, recId, pr.id]
               );
               await pgPool.query(
-                `UPDATE invoices_received SET source='sunloc', invoice_request_id=$1, batch_number=COALESCE(NULLIF(batch_number,''),$2), total_boxes=$3, total_qty_lakhs=$4 WHERE sap_doc_entry=$5`,
-                [pr.id, pr.batch_number || null, boxes, qty, iv.sap_doc_entry]
+                `UPDATE invoices_received SET source='sunloc', invoice_request_id=$1, batch_number=COALESCE(NULLIF(batch_number,''),$2), total_boxes=$3, total_qty_lakhs=$4 WHERE id=$5`,
+                [pr.id, pr.batch_number || null, boxes, qty, recId]
               );
               console.log(`[SAP] v44N retry-reconciled: batch=${pr.batch_number} inv=${iv.sap_invoice_no} via Comments SO#${soNum}`);
             }
@@ -3274,6 +3278,50 @@ async function _doRefreshSapInvoices() {
       }
     }
   } catch (e) { console.warn('[SAP] v44N retry pass outer error:', e.message); }
+
+  // v44P (#2): LINE-DETAIL ENRICHMENT. The bulk invoice fetch is lean (no DocumentLines), so
+  // direct-SAP invoices land with blank PC Code / Size / Colour and zero Qty — invisible in the
+  // Generated Invoices + Report H tables and unsearchable by those filters. Here we fetch the
+  // FULL invoice once per row that is still missing PC Code (bounded per cycle), derive
+  // pc_code/size/colour from the first line's ItemCode via the pc_codes master, and qty (Lakhs)
+  // from the line quantities, then store them (and the full payload, so the per-line detail modal
+  // and line-count hint work). Values persist via the COALESCE/CASE upsert above, so each invoice
+  // is enriched at most once; the backlog drains over a few cycles then steady-state is ~0.
+  try {
+    if (pgPool) {
+      const need = await pgPool.query(
+        `SELECT id, sap_doc_entry FROM invoices_received
+         WHERE (pc_code IS NULL OR pc_code='')
+         ORDER BY fetched_at DESC NULLS LAST LIMIT 40`
+      );
+      for (const row of need.rows) {
+        try {
+          const full = await sap.getInvoice(row.sap_doc_entry);
+          if (!full.ok || !full.invoice) continue;
+          const lines = full.invoice.DocumentLines || [];
+          if (!lines.length) continue;
+          let pc = '', sz = '', col = '';
+          const itemCode = lines[0].ItemCode || '';
+          if (itemCode) {
+            const pcRow = (await pgPool.query(`SELECT code, size, colour FROM pc_codes WHERE code=$1 LIMIT 1`, [itemCode])).rows[0];
+            if (pcRow) { pc = pcRow.code || itemCode; sz = pcRow.size || ''; col = pcRow.colour || ''; }
+            else pc = itemCode;
+          }
+          const qtyL = lines.reduce((s, l) => s + (parseFloat(l.Quantity) || 0), 0);
+          await pgPool.query(
+            `UPDATE invoices_received SET
+               pc_code=COALESCE(NULLIF($1,''), pc_code),
+               size=COALESCE(NULLIF($2,''), size),
+               colour=COALESCE(NULLIF($3,''), colour),
+               total_qty_lakhs=CASE WHEN $4::numeric>0 THEN $4 ELSE total_qty_lakhs END
+             WHERE id=$5`,
+            [pc, sz, col, qtyL, row.id]
+          );
+          console.log(`[SAP] v44P enriched line-detail for inv DocEntry=${row.sap_doc_entry} (pc=${pc||'?'})`);
+        } catch (e) { /* per-row: skip and continue */ }
+      }
+    }
+  } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
   return { ok: true, fetched: invoices.length, upserted };
 }
@@ -4486,6 +4534,31 @@ app.post('/api/invoice/:id/regularise-dispatch', async (req, res) => {
          WHERE id=?`
       ).run(newBatch, who, ts, rsn, who, ts, rsn, who, ts, who, invId);
     }
+    // v44P #5: create a deemed dispatch record so Report G (Pack In → Dispatch Out) and every
+    // dispatch-out consumer reflect this regularised dispatch as Closed/Partial (per quantity),
+    // exactly like the normal dispatch-out path. Uses the invoice's authoritative boxes/qty.
+    try {
+      const recId = 'disprec_' + crypto.randomBytes(6).toString('hex');
+      const rqty = parseFloat(inv.total_qty_lakhs) > 0
+        ? parseFloat(inv.total_qty_lakhs)
+        : (parseFloat(inv.total_boxes) > 0 ? parseFloat(inv.total_boxes) / 100 : 0);
+      const rboxes = parseInt(inv.total_boxes) || 0;
+      if (pgPool) {
+        await pgPool.query(
+          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
+           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+          [recId, newBatch || inv.batch_number || '', inv.customer || '', rqty, rboxes, '', inv.sap_doc_num || '', 'Regularised: ' + rsn, ts, who]
+        );
+        await pgPool.query(`UPDATE invoices_received SET dispatch_record_id=$1 WHERE id=$2`, [recId, invId]);
+      } else {
+        db.prepare(
+          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
+           VALUES (?,?,?,?,?,?,?,?,?,?)`
+        ).run(recId, newBatch || inv.batch_number || '', inv.customer || '', rqty, rboxes, '', inv.sap_doc_num || '', 'Regularised: ' + rsn, ts, who);
+        db.prepare(`UPDATE invoices_received SET dispatch_record_id=? WHERE id=?`).run(recId, invId);
+      }
+      try { if (typeof _recomputeDispatchActuals === 'function') await _recomputeDispatchActuals(newBatch || inv.batch_number, null, inv.sap_doc_num || null); } catch (e) {}
+    } catch (e) { console.warn('[v44P #5] regularise dispatch-record create failed:', e.message); }
     try { logAudit(who, 'admin', 'invoice', 'INVOICE_REGULARISE_DISPATCH',
       `Regularised legacy dispatch for invoice ${invId} (SO ${inv.sap_doc_num || '—'}) batch=${newBatch || '(none)'}: ${rsn}`, req.ip); } catch {}
     res.json({ ok: true, id: invId, batch_number: newBatch || null, dispatch_status: 'dispatched', is_legacy_closed: true });
