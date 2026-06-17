@@ -2015,7 +2015,7 @@ async function ensurePostgresTables() {
         vehicle_no TEXT,
         lr_no TEXT,
         remarks TEXT,
-        is_deemed_scan_out BOOLEAN NOT NULL DEFAULT FALSE,
+        is_deemed_scan_out INTEGER NOT NULL DEFAULT 0,
         deemed_reason TEXT,
         deemed_by TEXT,
         admin_approved_at TEXT,
@@ -2299,6 +2299,7 @@ async function ensurePostgresTables() {
     try { await pgPool.query(`ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS legacy_closed_at TEXT`); } catch (e) { console.warn('[v41 P19.3 PG] add legacy_closed_at:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS legacy_close_reason TEXT`); } catch (e) { console.warn('[v41 P19.3 PG] add legacy_close_reason:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS soc_applied INTEGER NOT NULL DEFAULT 0`); } catch (e) { console.warn('[v41 P19.3 PG] add soc_applied:', e.message); }
+    try { await pgPool.query(`ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS total_qty_lakhs DOUBLE PRECISION`); } catch (e) { console.warn('[v44O #3 PG] add total_qty_lakhs:', e.message); }
     try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_inv_recv_soc_applied ON invoices_received(soc_applied)`); } catch (e) { console.warn('[v41 P19.3 PG] idx_inv_recv_soc_applied:', e.message); }
 
     // ─── end v39 SAP tables ────────────────────────────────────────
@@ -2917,7 +2918,13 @@ async function _doRefreshSapInvoices() {
     // v41 fix: total_boxes is an INTEGER column. SAP DocumentLines.Quantity can be decimal
     // (e.g. 31.35 Lakhs), which PostgreSQL rejects for an integer column ("invalid input syntax
     // for type integer: 31.35"). Round to nearest whole unit for the box-count column.
-    const totalBoxes = Math.round((inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0));
+    // v44O #3: SAP DocumentLines.Quantity is in LAKHS, not boxes. Deriving the scan-out box count
+    // from it gave a wrong (or, when DocumentLines weren't fetched, zero) "Expected boxes", which
+    // blocked Dispatch Out. For a Sunloc-linked invoice the authoritative physical box count and
+    // Lakhs both come from the invoice_request (applied below). These are the SAP-derived fallbacks
+    // used only for direct_sap invoices that have no linked Sunloc request.
+    let totalBoxes = Math.round((inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0));
+    let totalQtyLakhs = (inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0);
     const docTotal = parseFloat(inv.DocTotal) || 0;
     const vatSum = parseFloat(inv.VatSum) || 0;
     const taxable = docTotal - vatSum;
@@ -2929,21 +2936,23 @@ async function _doRefreshSapInvoices() {
     // Priority: (1) linked Sunloc invoice_request (definitive — dispatch manager entered these);
     // (2) PC Code master lookup via first line's ItemCode (covers direct_sap and Sunloc both,
     // since SAP carries the item but not always our Sunloc UDFs).
-    let pcCode = '', size = '', colour = '';
+    let pcCode = '', size = '', colour = '', reqBoxes = null, reqQtyLakhs = null;
     try {
       if (invReqId) {
         // Use the linked request's values — most reliable.
         let reqRow;
         if (pgPool) {
-          const rr = await pgPool.query(`SELECT pc_code, size, colour FROM invoice_requests WHERE id=$1`, [invReqId]);
+          const rr = await pgPool.query(`SELECT pc_code, size, colour, boxes, qty_lakhs FROM invoice_requests WHERE id=$1`, [invReqId]);
           reqRow = rr.rows[0];
         } else {
-          reqRow = db.prepare(`SELECT pc_code, size, colour FROM invoice_requests WHERE id=?`).get(invReqId);
+          reqRow = db.prepare(`SELECT pc_code, size, colour, boxes, qty_lakhs FROM invoice_requests WHERE id=?`).get(invReqId);
         }
         if (reqRow) {
           pcCode = reqRow.pc_code || '';
           size   = reqRow.size   || '';
           colour = reqRow.colour || '';
+          reqBoxes    = reqRow.boxes;
+          reqQtyLakhs = reqRow.qty_lakhs;
         }
       }
       // Fallback: PC master lookup on first line's ItemCode (works for direct_sap and as backup).
@@ -2970,14 +2979,21 @@ async function _doRefreshSapInvoices() {
       }
     } catch (e) { console.warn('[v41s] pc/size/colour derivation failed:', e.message); }
 
+    // v44O #3: for a Sunloc-linked invoice, the invoice_request holds the authoritative physical
+    // box count and Lakhs the dispatch manager selected — use them (SAP Quantity is Lakhs, not boxes).
+    if (invReqId) {
+      if (reqBoxes != null && parseInt(reqBoxes) > 0) totalBoxes = parseInt(reqBoxes);
+      if (reqQtyLakhs != null && parseFloat(reqQtyLakhs) > 0) totalQtyLakhs = parseFloat(reqQtyLakhs);
+    }
+
     try {
       if (pgPool) {
         await pgPool.query(`
           INSERT INTO invoices_received (id, sap_doc_entry, sap_doc_num, sap_invoice_no,
             invoice_date, customer, card_code, po_number, batch_number, pc_code, size, colour,
             total_boxes, taxable_amount, igst_amount, total_amount, irn, source, invoice_request_id,
-            fetched_at, payload_json)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW()::TEXT,$20)
+            fetched_at, payload_json, total_qty_lakhs)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,NOW()::TEXT,$20,$21)
           ON CONFLICT (sap_doc_entry) DO UPDATE SET
             sap_doc_num=$3, sap_invoice_no=$4, invoice_date=$5, customer=$6,
             card_code=$7, po_number=$8,
@@ -2987,18 +3003,18 @@ async function _doRefreshSapInvoices() {
             colour=COALESCE(NULLIF(EXCLUDED.colour,''), invoices_received.colour),
             total_boxes=$13,
             taxable_amount=$14, igst_amount=$15, total_amount=$16, irn=$17,
-            payload_json=$20, fetched_at=NOW()::TEXT
+            payload_json=$20, total_qty_lakhs=$21, fetched_at=NOW()::TEXT
         `, [recId, inv.DocEntry, String(inv.DocNum || ''), String(inv.DocNum || ''),
             inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchUdf,
             pcCode, size, colour,
-            totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload]);
+            totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload, totalQtyLakhs]);
       } else {
         db.prepare(`
           INSERT INTO invoices_received (id, sap_doc_entry, sap_doc_num, sap_invoice_no,
             invoice_date, customer, card_code, po_number, batch_number, pc_code, size, colour,
             total_boxes, taxable_amount, igst_amount, total_amount, irn, source, invoice_request_id,
-            fetched_at, payload_json)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?)
+            fetched_at, payload_json, total_qty_lakhs)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),?,?)
           ON CONFLICT(sap_doc_entry) DO UPDATE SET
             sap_doc_num=excluded.sap_doc_num, sap_invoice_no=excluded.sap_invoice_no,
             invoice_date=excluded.invoice_date, customer=excluded.customer,
@@ -3010,11 +3026,11 @@ async function _doRefreshSapInvoices() {
             total_boxes=excluded.total_boxes,
             taxable_amount=excluded.taxable_amount, igst_amount=excluded.igst_amount,
             total_amount=excluded.total_amount, irn=excluded.irn,
-            payload_json=excluded.payload_json, fetched_at=datetime('now')
+            payload_json=excluded.payload_json, total_qty_lakhs=excluded.total_qty_lakhs, fetched_at=datetime('now')
         `).run(recId, inv.DocEntry, String(inv.DocNum || ''), String(inv.DocNum || ''),
             inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchUdf,
             pcCode, size, colour,
-            totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload);
+            totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload, totalQtyLakhs);
       }
       if (invReqId) {
         try {
@@ -4243,15 +4259,12 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
     }
     // Build dispatch record
     const recId = 'disprec_' + crypto.randomBytes(6).toString('hex');
-    const qty = parseFloat(inv.total_amount) > 0
-      ? (() => {
-          // qty in Lakhs: derive from invoice taxable_amount / rate if available,
-          // else fall back to total_boxes × pack-size lookup (approximate).
-          // Most accurate path: use total_boxes since SAP invoice line shows boxes.
-          // For ledger we record the Lakhs equivalent for downstream reports.
-          return parseFloat(inv.total_boxes) > 0 ? parseFloat(inv.total_boxes) / 100 : 0;
-        })()
-      : 0;
+    // v44O #3: ledger qty in Lakhs — prefer the authoritative total_qty_lakhs (from the
+    // invoice_request, or SAP Σ Quantity which is itself in Lakhs). The old total_boxes/100 was
+    // wrong: a box count is not Lakhs/100 (e.g. 4 boxes is not 0.04 Lakhs).
+    const qty = parseFloat(inv.total_qty_lakhs) > 0
+      ? parseFloat(inv.total_qty_lakhs)
+      : (parseFloat(inv.total_boxes) > 0 ? parseFloat(inv.total_boxes) / 100 : 0);
     const boxes = parseInt(inv.total_boxes) || 0;
     const ts = new Date().toISOString();
     // Insert dispatch record
@@ -4392,7 +4405,7 @@ app.post('/api/invoice/:id/regularise-dispatch', async (req, res) => {
            legacy_close_reason= $4,
            admin_approved_by  = $2,
            admin_approved_at  = $3,
-           is_deemed_scan_out = TRUE,
+           is_deemed_scan_out = 1,
            deemed_reason      = $4,
            deemed_by          = $2,
            dispatched_at      = $3,
@@ -4880,7 +4893,7 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
               dispatched_by=$2,
               vehicle_no=$3,
               dispatch_record_id=$4,
-              is_deemed_scan_out=TRUE,
+              is_deemed_scan_out=1,
               deemed_reason=$5,
               deemed_by=$6
            WHERE id=$7`,

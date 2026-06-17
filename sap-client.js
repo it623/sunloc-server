@@ -502,6 +502,7 @@ class SapClient {
     // page size from the first page, and stop only on a short or empty page. nextLink is followed
     // ONLY when SAP omits a full page yet provides one (defensive), without also bumping skip.
     let indents = [];
+    let complete = true;         // v44O: restore prune-safety signal — false if pagination broke mid-way (partial set), so the caller must NOT prune the indent cache on an incomplete fetch
     let skip = 0;
     let pageSize = 0;            // learned from the first page
     let pageGuard = 0;
@@ -513,6 +514,7 @@ class SapClient {
       if (!r.ok) {
         if (skip === 0) return { ok: false, error: r.error, degraded: r.degraded };
         console.warn('[SAP fetch] page failed at skip=' + skip + ', returning partial set of ' + indents.length + ':', r.error);
+        complete = false;        // v44O: partial/paged-failure set — caller must NOT prune (would wrongly delete unfetched open orders)
         break;
       }
       const page = r.data?.value || [];
@@ -529,8 +531,9 @@ class SapClient {
       if (page.length < pageSize) break;
       skip += page.length;
     }
-    console.log('[SAP fetch] DONE — ' + indents.length + ' open Sales Orders across ' + pageGuard + ' page(s)');
-    return { ok: true, indents };
+    if (pageGuard >= 500) { complete = false; console.warn('[SAP fetch] hit 500-page guard — treating as INCOMPLETE (no cache prune this cycle)'); }
+    console.log('[SAP fetch] DONE — ' + indents.length + ' open Sales Orders across ' + pageGuard + ' page(s)' + (complete ? '' : ' [INCOMPLETE — prune skipped]'));
+    return { ok: true, indents, complete };
   }
 
   /**
