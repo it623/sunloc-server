@@ -483,6 +483,8 @@ input[type=number]{font-family:var(--mono)}
   .dept-btn .dept-icon{font-size:24px!important}
   /* Scan input — very prominent on small screens */
   .scan-input{font-size:16px!important;padding:14px!important;border-radius:10px!important}
+  .iq-mobile-card{display:none}
+  .iq-desktop-row{display:table-row}
   /* Labels table columns compact */
   table{font-size:11px!important}
   th,td{padding:6px 5px!important}
@@ -534,6 +536,12 @@ input[type=number]{font-family:var(--mono)}
 .cursor-pointer{cursor:pointer}
 .text-center{text-align:center}
 .overflow-hidden{overflow:hidden}
+
+@media(max-width:700px){
+  .iq-mobile-card{display:block!important}
+  .iq-desktop-row{display:none!important}
+  .iq-desktop-thead{display:none!important}
+}
 </style>
 </head>
 <body>
@@ -5700,8 +5708,30 @@ function _v40_renderInvoiceGroup(group, mode) {
     const progressBar = boxes > 0
       ? `<div style="background:var(--surface3);border-radius:3px;height:4px;width:60px;display:inline-block;vertical-align:middle"><div style="height:100%;width:${Math.min(100, (scanned/boxes*100))}%;background:#0891b2;border-radius:3px"></div></div>`
       : '';
-    return `
-      <tr style="border-bottom:1px solid var(--border)">
+    const legacyBtn = inv.source === 'direct_sap' && !inv.is_legacy_closed && ['admin','dispatch','planning'].includes(currentDept)
+      ? `<button class="btn btn-sm" style="background:transparent;color:#7c3aed;border:1px solid rgba(139,92,246,0.4);font-size:10px;padding:3px 8px;margin-left:4px" onclick="event.stopPropagation();_v41_closeInvoiceAsLegacy('${inv.id}')" title="Legacy">🗂️ Legacy</button>`
+      : '';
+    // Mobile card (shown on small screens via CSS class)
+    const mobileCard = `
+      <div class="iq-mobile-card" onclick="_v39_openScanOutModal('${inv.id}')" style="border-bottom:1px solid var(--border);padding:10px 12px;cursor:pointer;active:background:#f0f9ff">
+        <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:4px">
+          <span style="font-family:var(--mono);font-weight:700;color:#0891b2;font-size:14px">${docNum}${sourceBadge}${truckBadge}</span>
+          <span style="background:#0891b2;color:white;border-radius:4px;padding:4px 12px;font-size:12px;font-weight:600">Scan Out →</span>
+        </div>
+        <div style="font-size:12px;color:var(--text2);margin-bottom:4px">${customer}</div>
+        <div style="display:flex;gap:16px;font-size:11px;font-family:var(--mono)">
+          <span><strong>Batch:</strong> ${batch}</span>
+          <span><strong>Boxes:</strong> ${boxes}</span>
+          <span><strong>Qty:</strong> ${qty} L</span>
+        </div>
+        <div style="margin-top:6px;display:flex;align-items:center;gap:8px">
+          <div style="flex:1;background:var(--surface3);border-radius:3px;height:6px"><div style="height:100%;width:${Math.min(100,(scanned/Math.max(1,boxes)*100))}%;background:#0891b2;border-radius:3px"></div></div>
+          <span style="font-size:11px;color:#0e7490;font-family:var(--mono)">${scanned}/${boxes}</span>
+        </div>
+      </div>`;
+    // Desktop table row
+    const desktopRow = `
+      <tr class="iq-desktop-row" style="border-bottom:1px solid var(--border);cursor:pointer" onclick="_v39_openScanOutModal('${inv.id}')">
         <td style="padding:6px 8px;font-family:var(--mono);font-weight:700;color:#0891b2">${docNum}${sourceBadge}${truckBadge}</td>
         <td style="padding:6px 8px;font-size:12px">${customer}</td>
         <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${batch}</td>
@@ -5709,18 +5739,16 @@ function _v40_renderInvoiceGroup(group, mode) {
         <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${qty} L</td>
         <td style="padding:6px 8px;text-align:center;font-family:var(--mono);font-size:11px">${scanned}/${boxes} ${progressBar}</td>
         <td style="padding:6px 8px;text-align:center">
-          <button class="btn btn-sm" style="background:#0891b2;color:white;border:none;font-size:11px;padding:4px 10px"
-                  onclick="_v39_openScanOutModal('${inv.id}')">🔍 Scan Out</button>
-          ${inv.source === 'direct_sap' && !inv.is_legacy_closed && ['admin','dispatch','planning'].includes(currentDept) ? `
-          <button class="btn btn-sm" style="background:transparent;color:#7c3aed;border:1px solid rgba(139,92,246,0.4);font-size:10px;padding:3px 8px;margin-left:4px"
-                  onclick="_v41_closeInvoiceAsLegacy('${inv.id}')" title="No matching Sales Order in Sunloc — close as legacy stock">🗂️ Legacy</button>` : ''}
+          <button class="btn btn-sm" style="background:#0891b2;color:white;border:none;font-size:11px;padding:4px 10px" onclick="event.stopPropagation();_v39_openScanOutModal('${inv.id}')">🔍 Scan Out</button>
+          ${legacyBtn}
         </td>
       </tr>`;
+    return mobileCard + desktopRow;
   }).join('');
   return header + `
     <div style="background:white;border-radius:4px;overflow:hidden;margin-bottom:${mode!=='flat'?'10px':'0'}">
       <table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead style="background:var(--surface2)">
+        <thead class="iq-desktop-thead" style="background:var(--surface2)">
           <tr>
             <th style="padding:6px 8px;text-align:left;font-weight:700;font-size:11px">Sales Order Number</th>
             <th style="padding:6px 8px;text-align:left;font-weight:700;font-size:11px">Customer</th>
