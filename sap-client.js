@@ -615,7 +615,7 @@ class SapClient {
    * Pull invoices generated in SAP within the last N days. Used by Sunloc's
    * invoice poller to discover both Sunloc-triggered and Direct-SAP invoices.
    */
-  async fetchRecentInvoices({ lookbackDays = 7 } = {}) {
+  async fetchRecentInvoices({ lookbackDays = 60 } = {}) {
     const lookbackDate = new Date(Date.now() - lookbackDays * 86400_000);
     const dateStr = lookbackDate.toISOString().slice(0, 10);
     const filter = `$filter=DocDate ge '${dateStr}'`;
