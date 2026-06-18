@@ -619,27 +619,21 @@ class SapClient {
     const lookbackDate = new Date(Date.now() - lookbackDays * 86400_000);
     const dateStr = lookbackDate.toISOString().slice(0, 10);
     const filter = `$filter=DocDate ge '${dateStr}'`;
-    // Header + UDF fields only (lean). Per-line detail (PC/Size/Colour/Boxes/Qty) is fetched
-    // on demand via getInvoice(DocEntry) for direct-SAP invoices that need it — keeping this
-    // bulk fetch small and avoiding $select on the DocumentLines collection (which B1 SL can
-    // reject/ignore). Reconciliation is keyed on the Comments "Based On Sales Orders <n>" text.
-    const select = `$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocDueDate,DocTotal,VatSum,DocTotalSys,Address,Address2,ShipToCode,PayToCode,Comments,U_SunlocBatch,U_SunlocPO,U_IRN`;
-    // v44P FIX (#12): SAP B1 Service Layer IGNORES $top and returns max ~20 rows per page with no
-    // nextLink (documented in fetchOpenSalesOrders above). The previous single-request fetch
-    // therefore only ever ingested the first page — invoices beyond it (e.g. on busy days, or
-    // across multiple numbering series) were silently dropped and NEVER landed in
-    // invoices_received, so their requests stayed "Awaiting SAP" forever. We now paginate by
-    // $skip exactly like the Sales-Order fetch: learn the page size from the first page, loop
-    // until a short/empty page, dedupe by DocEntry, with a 500-page guard.
+    // v44W FIX (CRITICAL): fetch the FULL invoice entity — NO $select at all. Earlier builds named
+    // U_SunlocBatch (and other Sunloc UDFs) in $select; on SAP B1 instances where the A/R Invoice
+    // document does not expose that UDF, B1 SL rejects the ENTIRE request ("Property 'U_SunlocBatch'
+    // of 'Document' is invalid") and ALL invoice ingestion silently stopped. Omitting $select cannot
+    // reference any UDF, so this request can never fail on a missing property. The full entity also
+    // returns DocumentLines (so SO-BaseEntry reconciliation + PC/Size/Colour enrichment work) and any
+    // UDFs that DO exist on the instance. Heavier per row, but correct and resilient on every instance.
     const invoices = [];
     const seen = new Set();
     let skip = 0, pageSize = 0, pageGuard = 0;
     while (pageGuard < 500) {
       pageGuard++;
-      const r = await this.call({ method: 'GET', path: 'Invoices', query: `${filter}&${select}&$orderby=DocEntry desc&$skip=${skip}` });
+      const r = await this.call({ method: 'GET', path: 'Invoices', query: `${filter}&$orderby=DocEntry desc&$skip=${skip}` });
       if (!r.ok) {
-        // Partial set (page failure mid-pagination). Return what we have so the caller can still
-        // upsert/reconcile those, but flag degraded so it is treated as a non-authoritative fetch.
+        // Partial set (page failure mid-pagination): return what we have, flagged degraded.
         if (invoices.length > 0) return { ok: true, invoices, degraded: true };
         return { ok: false, error: r.error, degraded: r.degraded };
       }

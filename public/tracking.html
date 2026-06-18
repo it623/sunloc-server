@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44V</title>
+<title>Sunloc Tracking Suite v1.0 · build v44W</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -575,7 +575,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44V</p>
+      <p>Tracking Suite v1.0 · build v44W</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -606,7 +606,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44V</p>
+      <p>Tracking Suite v1.0 · build v44W</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -6914,10 +6914,10 @@ async function _v39_repullFromSap() {
     const r = await fetch(serverUrl + '/api/sap/refresh-invoices', { method: 'POST', headers: { 'x-session-token': (currentUser?.token || '') }, signal: AbortSignal.timeout(60000) });
     const j = await r.json();
     if (j.ok) {
-      const msg = `SAP re-pull: fetched ${j.fetched??'?'}, upserted ${j.upserted??'?'}${j.degraded?' (partial/degraded)':''}`;
-      try { toast(msg, j.degraded?'#d97706':'var(--accent3)', 5000); } catch(_e) {}
+      const msg = `SAP re-pull [backend ${j.serverBuild||'?'}]: fetched ${j.fetched??'?'}, upserted ${j.upserted??'?'}${j.degraded?' (partial/degraded)':''}`;
+      try { toast(msg, j.degraded?'#d97706':'var(--accent3)', 6000); } catch(_e) {}
     } else {
-      try { toast('SAP re-pull failed: ' + (j.error||'unknown'), '#b91c1c', 6000); } catch(_e) {}
+      try { toast(`SAP re-pull failed [backend ${j.serverBuild||'OLD/unknown'}]: ` + (j.error||'unknown'), '#b91c1c', 7000); } catch(_e) {}
     }
   } catch (e) {
     try { toast('SAP re-pull error: ' + (e?.message||e), '#b91c1c', 6000); } catch(_e) {}
