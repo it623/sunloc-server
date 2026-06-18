@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44R</title>
+<title>Sunloc Tracking Suite v1.0 · build v44T</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -575,7 +575,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44R</p>
+      <p>Tracking Suite v1.0 · build v44T</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -606,7 +606,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44R</p>
+      <p>Tracking Suite v1.0 · build v44T</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4334,6 +4334,7 @@ function renderDeptScan(dept){
         </select></div>
       <button class="btn btn-sm btn-primary" onclick="applyScanFilter('${dept}')">Apply</button>
       ${_rsActive?`<button class="btn btn-sm btn-ghost" onclick="clearScanFilter('${dept}')">✕ Clear</button>`:''}
+      ${_rsActive&&_rsRows.length?`<button class="btn btn-sm btn-ghost" onclick="exportScansCsv('${dept}')">⬇ Export CSV</button>`:''}
       ${_rsActive?`<span style="font-size:12px;color:var(--text3)">${_rsLoading?'Loading…':_rsRows.length+' scans (max 5000, newest first)'}</span>`:''}
     </div>`:''}
     <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table>
@@ -4387,6 +4388,26 @@ function clearScanFilter(dept){
   if(window._rsFilter)window._rsFilter[dept]={from:'',to:'',batch:'',type:''};
   renderDeptScan(dept);
 }
+// v44S Issue 1: export the full filtered recent-scans set to CSV (the table is scroll-capped, so this
+// gives the complete range in one file). Exports exactly the loaded _rsRows for the dept (server
+// already applied the IST-aware date range / batch / type filter).
+function exportScansCsv(dept){
+  const rows=(window._rsRows&&window._rsRows[dept])||[];
+  if(!rows.length){ try{toast('No rows to export','#b91c1c');}catch(_e){} return; }
+  const esc=v=>{const s=(v==null?'':String(v));return /[",\n]/.test(s)?'"'+s.replace(/"/g,'""')+'"':s;};
+  const lines=[['Time','Batch','Box','Qty (L)','Type'].join(',')];
+  rows.forEach(s=>{
+    const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
+    const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):''));
+    lines.push([esc(fmtDateTime(s.ts)),esc(s.batchNumber),esc(boxNum),esc(s.qty),esc((s.type||'').toUpperCase())].join(','));
+  });
+  try{
+    const blob=new Blob([lines.join('\n')],{type:'text/csv'});
+    const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
+    a.download=`sunloc_${dept}_scans_${new Date().toISOString().slice(0,10)}.csv`;
+    document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);document.body.removeChild(a);},100);
+  }catch(e){ try{toast('Export failed: '+(e?.message||e),'#b91c1c');}catch(_e){} }
+}
 
 // v44K #8: Packing Ledger — per-day / per-batch packing scan-in/out, from the read-only
 // /api/tracking/packing-ledger endpoint. Customer/Colour/PC Code are joined from state.batches.
@@ -4394,11 +4415,14 @@ function clearScanFilter(dept){
 function _renderPackingLedgerCard(){
   const active =!!window._plActive, loading=!!window._plLoading;
   const rows   = window._plRows || [];
-  const f      = window._plFilter || {from:'',to:'',batch:'',customer:''};
+  const f      = window._plFilter || {from:'',to:'',batch:'',customer:'',size:'',colour:'',pc:''};
   const meta   = bn => state.batches.find(b=>b.batchNumber===bn) || {};
-  let view = rows.map(r=>{const m=meta(r.batch); return {date:r.date,batch:r.batch,inB:r.in||0,outB:r.out||0,customer:m.customer||'',colour:m.colour||'',pcCode:m.pcCode||''};});
+  let view = rows.map(r=>{const m=meta(r.batch); return {date:r.date,batch:r.batch,inB:r.in||0,outB:r.out||0,customer:m.customer||'',colour:m.colour||'',pcCode:m.pcCode||'',size:m.size||''};});
   if(f.batch)    view=view.filter(r=>r.batch.toLowerCase().includes(f.batch.toLowerCase()));
   if(f.customer) view=view.filter(r=>(r.customer||'').toLowerCase().includes(f.customer.toLowerCase()));
+  if(f.size)     view=view.filter(r=>(r.size||'').toLowerCase().includes(f.size.toLowerCase()));
+  if(f.colour)   view=view.filter(r=>(r.colour||'').toLowerCase().includes(f.colour.toLowerCase()));
+  if(f.pc)       view=view.filter(r=>(r.pcCode||'').toLowerCase().includes(f.pc.toLowerCase()));
   const tIn=view.reduce((a,r)=>a+r.inB,0), tOut=view.reduce((a,r)=>a+r.outB,0);
   const inp='font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1)';
   const lbl='font-size:11px;color:var(--text3);display:block;margin-bottom:3px';
@@ -4410,22 +4434,26 @@ function _renderPackingLedgerCard(){
       <button class="btn btn-sm btn-primary" onclick="loadPackingLedger()">${active?'↻ Refresh':'Load'}</button>
       <div><label style="${lbl}">BATCH</label><input type="text" id="pl-batch" value="${f.batch||''}" placeholder="any" onchange="window._plFilter=Object.assign(window._plFilter||{},{batch:this.value});renderDeptScan('packing')" style="${inp};width:110px"></div>
       <div><label style="${lbl}">CUSTOMER</label><input type="text" id="pl-customer" value="${f.customer||''}" placeholder="any" onchange="window._plFilter=Object.assign(window._plFilter||{},{customer:this.value});renderDeptScan('packing')" style="${inp};width:140px"></div>
+      <div><label style="${lbl}">SIZE</label><input type="text" id="pl-size" value="${f.size||''}" placeholder="any" onchange="window._plFilter=Object.assign(window._plFilter||{},{size:this.value});renderDeptScan('packing')" style="${inp};width:80px"></div>
+      <div><label style="${lbl}">COLOUR</label><input type="text" id="pl-colour" value="${f.colour||''}" placeholder="any" onchange="window._plFilter=Object.assign(window._plFilter||{},{colour:this.value});renderDeptScan('packing')" style="${inp};width:120px"></div>
+      <div><label style="${lbl}">PC CODE</label><input type="text" id="pl-pc" value="${f.pc||''}" placeholder="any" onchange="window._plFilter=Object.assign(window._plFilter||{},{pc:this.value});renderDeptScan('packing')" style="${inp};width:90px"></div>
       ${active?`<span style="font-size:12px;color:var(--text3)">${loading?'Loading…':view.length+' day-rows'}</span>`:''}
     </div>
     ${!active?'<div class="empty-state"><p>Set an optional date range and click Load to view per-day packing scans by batch.</p></div>':`
     <div class="tbl-wrap" style="max-height:460px;overflow:auto"><table>
-      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Date</th><th>Batch</th><th>Customer</th><th>Colour</th><th>PC Code</th><th>Scan In</th></tr></thead>
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Date</th><th>Batch</th><th>Customer</th><th>Colour</th><th>Size</th><th>PC Code</th><th>Scan In</th></tr></thead>
       <tbody>
       ${view.map(r=>`<tr>
         <td class="td-mono text-sm">${r.date}</td>
         <td class="td-bold td-mono">${r.batch}</td>
         <td class="text-sm">${r.customer||'-'}</td>
         <td class="text-sm">${r.colour||'-'}</td>
+        <td class="td-mono text-sm">${r.size||'-'}</td>
         <td class="td-mono">${r.pcCode||'-'}</td>
         <td class="td-mono">${r.inB}</td>
-      </tr>`).join('')||'<tr><td colspan="6" class="text-center text-muted">No packing scans in range</td></tr>'}
+      </tr>`).join('')||'<tr><td colspan="7" class="text-center text-muted">No packing scans in range</td></tr>'}
       </tbody>
-      ${view.length?`<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${view.length} day-rows</td><td colspan="4"></td><td class="td-mono">${tIn}</td></tr></tfoot>`:''}
+      ${view.length?`<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${view.length} day-rows</td><td colspan="5"></td><td class="td-mono">${tIn}</td></tr></tfoot>`:''}
     </table></div>`}
   </div>`;
 }
@@ -5447,27 +5475,36 @@ async function _v41_openPendingReconciliationModal() {
     ? `<div style="padding:20px;text-align:center;color:#b91c1c;background:rgba(185,28,28,0.06);border:1px solid rgba(185,28,28,0.25);border-radius:6px;font-size:13px;line-height:1.6">⚠️ ${_recErr}</div>`
     : items.length === 0
     ? '<div style="padding:24px;text-align:center;color:var(--text3)">✅ No invoice requests waiting for SAP reconciliation.</div>'
-    : `<div style="overflow-x:auto"><table style="width:100%;border-collapse:collapse;font-size:12px">
-        <thead style="background:var(--surface2);position:sticky;top:0">
+    : (() => {
+        const tBoxes = items.reduce((a,it)=>a+(parseInt(it.boxes,10)||0),0);
+        const tQty   = items.reduce((a,it)=>a+(parseFloat(it.qty_lakhs)||0),0);
+        return `<div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px;font-size:12px;color:var(--text2)">
+          <span><strong>${items.length}</strong> request${items.length!==1?'s':''} awaiting reconciliation</span>
+          <span style="font-family:var(--mono)">${tBoxes} boxes · ${tQty.toFixed(2)} L</span>
+        </div>
+        <div style="max-height:55vh;overflow:auto;border:1px solid var(--border);border-radius:6px"><table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead style="background:var(--surface2);position:sticky;top:0;z-index:2">
           <tr style="border-bottom:2px solid var(--border)">
-            <th style="text-align:left;padding:8px">Batch</th>
-            <th style="text-align:left;padding:8px">Customer</th>
-            <th style="text-align:left;padding:8px">SO Number</th>
-            <th style="text-align:right;padding:8px">Qty (L)</th>
-            <th style="text-align:right;padding:8px">Boxes</th>
-            <th style="text-align:center;padding:8px">Created</th>
-            <th style="text-align:center;padding:8px">Status</th>
+            <th style="text-align:left;padding:6px 8px">Batch</th>
+            <th style="text-align:left;padding:6px 8px">Customer</th>
+            <th style="text-align:left;padding:6px 8px">SO Number</th>
+            <th style="text-align:right;padding:6px 8px">Qty (L)</th>
+            <th style="text-align:right;padding:6px 8px">Boxes</th>
+            <th style="text-align:center;padding:6px 8px">Created</th>
+            <th style="text-align:center;padding:6px 8px">Status</th>
           </tr></thead>
         <tbody>${items.map(it => `<tr style="border-bottom:1px solid var(--border)">
-          <td style="padding:8px;font-family:var(--mono);font-weight:600">${it.batch_number||'—'}</td>
-          <td style="padding:8px">${it.customer||'—'}</td>
-          <td style="padding:8px;font-family:var(--mono)">${it.po_number||it.sap_doc_entry||'—'}</td>
-          <td style="padding:8px;text-align:right;font-family:var(--mono)">${parseFloat(it.qty_lakhs||0).toFixed(3)}</td>
-          <td style="padding:8px;text-align:right;font-family:var(--mono)">${it.boxes||0}</td>
-          <td style="padding:8px;text-align:center;font-size:11px;color:var(--text3)">${(it.created_at||'').slice(0,16)}</td>
-          <td style="padding:8px;text-align:center">${it.is_overdispatch_approved ? '<span style="background:rgba(245,158,11,0.15);color:#d97706;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⚠️ Over 115%</span>' : '<span style="background:rgba(99,102,241,0.15);color:#4f46e5;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⏳ Awaiting SAP</span>'}</td>
+          <td style="padding:5px 8px;font-family:var(--mono);font-weight:600">${it.batch_number||'—'}</td>
+          <td style="padding:5px 8px">${it.customer||'—'}</td>
+          <td style="padding:5px 8px;font-family:var(--mono)">${it.po_number||it.sap_doc_entry||'—'}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${parseFloat(it.qty_lakhs||0).toFixed(3)}</td>
+          <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${it.boxes||0}</td>
+          <td style="padding:5px 8px;text-align:center;font-size:11px;color:var(--text3)">${(it.created_at||'').slice(0,16)}</td>
+          <td style="padding:5px 8px;text-align:center">${it.is_overdispatch_approved ? '<span style="background:rgba(245,158,11,0.15);color:#d97706;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⚠️ Over 115%</span>' : '<span style="background:rgba(99,102,241,0.15);color:#4f46e5;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⏳ Awaiting SAP</span>'}</td>
         </tr>`).join('')}</tbody>
+        <tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td colspan="3" style="padding:6px 8px">TOTAL · ${items.length}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tQty.toFixed(2)}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tBoxes}</td><td colspan="2"></td></tr></tfoot>
       </table></div>`;
+      })();
   openTrackingModal('⏳ Invoices Pending SAP Reconciliation', `
     <div style="padding:8px 0">
       <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:11px;line-height:1.6;color:var(--text2)">
@@ -6760,7 +6797,13 @@ async function renderGeneratedInvoices() {
         </div>
       </div>
       <!-- v41s Q2: line-detail filters (PC / Size / Colour) — match ANY line of the invoice -->
-      <div class="form-row cols-3" style="display:grid;grid-template-columns:repeat(3,1fr);gap:10px;margin-bottom:8px">
+      <!-- v44T Point 2: SO / Invoice No. filter so a specific invoice (e.g. 1571) can be located. -->
+      <div class="form-row cols-4" style="display:grid;grid-template-columns:repeat(4,1fr);gap:10px;margin-bottom:8px">
+        <div class="form-group">
+          <label style="font-size:11px;color:var(--text3)">SO / Invoice No.</label>
+          <input type="text" id="v39-gi-sono" placeholder="e.g. 1571" class="form-control" style="padding:6px 8px;font-size:12px;font-family:var(--mono)"
+                 oninput="clearTimeout(window._giTimer);window._giTimer=setTimeout(_v39_applyInvoiceFilters,300)">
+        </div>
         <div class="form-group">
           <label style="font-size:11px;color:var(--text3)">PC Code (partial)</label>
           <input type="text" id="v39-gi-pc" placeholder="e.g. 01184" class="form-control" style="padding:6px 8px;font-size:12px;font-family:var(--mono)"
@@ -6780,6 +6823,7 @@ async function renderGeneratedInvoices() {
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
         <button class="btn btn-sm btn-secondary" onclick="_v39_applyInvoiceFilters()">↻ Refresh</button>
         <button class="btn btn-sm btn-secondary" onclick="_v39_clearInvoiceFilters()">✕ Clear filters</button>
+        <button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v39_repullFromSap()" title="Force Sunloc to pull the latest invoices from SAP now (normally runs every 5 min)">🔄 Re-pull from SAP</button>
         <button class="btn btn-sm" style="background:#10b981;color:white;border:none" onclick="_v39_exportInvoicesCsv()">📥 Export CSV</button>
         <span id="v39-gi-status-text" style="margin-left:auto;font-size:11px;color:var(--text3)"></span>
       </div>
@@ -6823,8 +6867,20 @@ async function _v39_applyInvoiceFilters() {
     const j = await r.json();
     if (j.ok) {
       _v39_invoiceList = j.invoices || [];
+      // v44T Point 2: client-side SO / Invoice No. narrowing over the loaded set. Matches the
+      // displayed SALES ORDER NUMBER (sap_doc_num) and related identifiers. (If the number isn't
+      // found here, the invoice hasn't been ingested from SAP — use 🔄 Re-pull from SAP.)
+      const sono = document.getElementById('v39-gi-sono')?.value?.trim() || '';
+      if (sono) {
+        const q = sono.toLowerCase();
+        _v39_invoiceList = _v39_invoiceList.filter(iv =>
+          String(iv.sap_doc_num||'').toLowerCase().includes(q) ||
+          String(iv.sales_order_number||'').toLowerCase().includes(q) ||
+          String(iv.sap_doc_entry||'').toLowerCase().includes(q) ||
+          String(iv.sap_invoice_no||'').toLowerCase().includes(q));
+      }
       _v39_renderInvoiceTable();
-      if (statusText) statusText.textContent = `${j.count} invoice${j.count===1?'':'s'} loaded`;
+      if (statusText) statusText.textContent = `${_v39_invoiceList.length} invoice${_v39_invoiceList.length===1?'':'s'} loaded${sono?' (filtered by SO/Inv '+sono+')':''}`;
     } else {
       document.getElementById('v39-gi-table').innerHTML = `<div style="padding:20px;text-align:center;color:var(--red)">Error: ${j.error}</div>`;
       if (statusText) statusText.textContent = '';
@@ -6837,11 +6893,34 @@ async function _v39_applyInvoiceFilters() {
 
 function _v39_clearInvoiceFilters() {
   ['v39-gi-status','v39-gi-batch','v39-gi-customer','v39-gi-from','v39-gi-to',
-   'v39-gi-pc','v39-gi-size','v39-gi-colour'].forEach(id => {
+   'v39-gi-sono','v39-gi-pc','v39-gi-size','v39-gi-colour'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
   _v39_applyInvoiceFilters();
+}
+
+// v44T Point 2: force an on-demand pull of recent invoices from SAP (normally the poller runs every
+// 5 min). Calls the existing POST /api/sap/refresh-invoices and surfaces the fetched / upserted /
+// error counts, then reloads the list. This is both a remediation (pull a just-created invoice now)
+// and a diagnostic — if fetched is high but a known invoice still isn't listed, the miss is in
+// ingestion/matching and the returned error/degraded flags say where.
+async function _v39_repullFromSap() {
+  const statusText = document.getElementById('v39-gi-status-text');
+  if (statusText) statusText.textContent = '🔄 Re-pulling from SAP…';
+  try {
+    const r = await fetch(serverUrl + '/api/sap/refresh-invoices', { method: 'POST', headers: { 'x-session-token': (currentUser?.token || '') }, signal: AbortSignal.timeout(60000) });
+    const j = await r.json();
+    if (j.ok) {
+      const msg = `SAP re-pull: fetched ${j.fetched??'?'}, upserted ${j.upserted??'?'}${j.degraded?' (partial/degraded)':''}`;
+      try { toast(msg, j.degraded?'#d97706':'var(--accent3)', 5000); } catch(_e) {}
+    } else {
+      try { toast('SAP re-pull failed: ' + (j.error||'unknown'), '#b91c1c', 6000); } catch(_e) {}
+    }
+  } catch (e) {
+    try { toast('SAP re-pull error: ' + (e?.message||e), '#b91c1c', 6000); } catch(_e) {}
+  }
+  await _v39_applyInvoiceFilters();
 }
 
 function _v39_renderInvoiceTable() {

@@ -2992,15 +2992,39 @@ async function _doRefreshSapInvoices() {
         }
       }
     } catch (e) { console.warn('[SAP] invoice match error:', e.message); }
+    // v44S Issue 4: the bulk fetchRecentInvoices omits DocumentLines (B1 SL can reject $select on the
+    // lines collection), so a DIRECT-SAP invoice (no linked Sunloc request) arrives with no line
+    // detail — leaving PC / Size / Colour blank and Qty 0 in Report H / Generated Invoices. Pull the
+    // lines once via getInvoice(DocEntry) so the existing ItemCode→PC-master derivation below can fill
+    // PC / Size / Colour and the real Qty (Lakhs). Sunloc-linked invoices get these from their
+    // invoice_request, so they don't need the call. Bounded: skip if already enriched (pc_code stored
+    // in a prior cycle). Guarded: on any failure we fall back to the prior blank behaviour — no
+    // regression and no ingestion blocking.
+    const _recId = `inv_${inv.DocEntry}`;
+    if (!invReqId && (!inv.DocumentLines || !inv.DocumentLines.length)) {
+      let _alreadyEnriched = false;
+      try {
+        if (pgPool) { const e = await pgPool.query(`SELECT pc_code FROM invoices_received WHERE id=$1`, [_recId]); _alreadyEnriched = !!(e.rows[0] && e.rows[0].pc_code); }
+        else { const e = db.prepare(`SELECT pc_code FROM invoices_received WHERE id=?`).get(_recId); _alreadyEnriched = !!(e && e.pc_code); }
+      } catch (e) { /* treat as not enriched */ }
+      if (!_alreadyEnriched) {
+        try {
+          const full = await sap.getInvoice(inv.DocEntry);
+          if (full && full.ok && full.invoice && Array.isArray(full.invoice.DocumentLines)) inv.DocumentLines = full.invoice.DocumentLines;
+        } catch (e) { console.warn('[SAP] direct-invoice line enrich failed for DocEntry', inv.DocEntry, '-', e.message); }
+      }
+    }
     // v41 fix: total_boxes is an INTEGER column. SAP DocumentLines.Quantity can be decimal
     // (e.g. 31.35 Lakhs), which PostgreSQL rejects for an integer column ("invalid input syntax
     // for type integer: 31.35"). Round to nearest whole unit for the box-count column.
     // v44O #3: SAP DocumentLines.Quantity is in LAKHS, not boxes. Deriving the scan-out box count
     // from it gave a wrong (or, when DocumentLines weren't fetched, zero) "Expected boxes", which
     // blocked Dispatch Out. For a Sunloc-linked invoice the authoritative physical box count and
-    // Lakhs both come from the invoice_request (applied below). These are the SAP-derived fallbacks
-    // used only for direct_sap invoices that have no linked Sunloc request.
-    let totalBoxes = Math.round((inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0));
+    // Lakhs both come from the invoice_request (applied below).
+    // v44S Issue 4: Quantity is Lakhs, so it must populate total_qty_lakhs — NOT total_boxes. We
+    // leave totalBoxes at 0 for direct-SAP (SAP carries no Sunloc box count); the Qty column now fills
+    // from the real summed Lakhs. Sunloc-linked invoices still get authoritative boxes below.
+    let totalBoxes = 0;
     let totalQtyLakhs = (inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0);
     const docTotal = parseFloat(inv.DocTotal) || 0;
     const vatSum = parseFloat(inv.VatSum) || 0;
@@ -4068,15 +4092,20 @@ app.post('/api/invoice/request-batch', async (req, res) => {
         let existing;
         if (pgPool) {
           const ex = await pgPool.query(
-            `SELECT id FROM invoice_requests WHERE batch_number=$1 AND status IN ('pending','sent_to_sap','pending_reconciliation','reconciled') LIMIT 1`,
+            `SELECT id FROM invoice_requests WHERE batch_number=$1 AND status IN ('pending','sent_to_sap','pending_reconciliation') LIMIT 1`,
             [b.batchNumber]
           );
           existing = ex.rows[0];
         } else {
-          existing = db.prepare(`SELECT id FROM invoice_requests WHERE batch_number=? AND status IN ('pending','sent_to_sap','pending_reconciliation','reconciled') LIMIT 1`).get(b.batchNumber);
+          existing = db.prepare(`SELECT id FROM invoice_requests WHERE batch_number=? AND status IN ('pending','sent_to_sap','pending_reconciliation') LIMIT 1`).get(b.batchNumber);
         }
         if (existing) {
-          batchRes.error = 'already has a pending invoice request (id: ' + existing.id + ')';
+          // v44T Point 3: this guard blocks only a still-IN-FLIGHT request (not yet reconciled) to
+          // prevent duplicate simultaneous requests for the same batch. It must NOT include
+          // 'reconciled' — a batch whose prior invoice was generated and reconciled (e.g. yesterday)
+          // is free to be invoiced again for a further partial dispatch. Including 'reconciled' here
+          // permanently blocked re-invoicing and stranded the batch.
+          batchRes.error = 'already has an in-flight invoice request awaiting SAP (id: ' + existing.id + ')';
           results.push(batchRes); continue;
         }
         // v41 P19.3: Check 115% over-dispatch tolerance for this batch
@@ -12375,6 +12404,28 @@ app.get('/api/tracking/scans-recent', async (req, res) => {
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v44S Issue 1: IST-aware day-range → UTC ISO bounds. Scans store ts as UTC ISO
+// (new Date().toISOString()), but the UI shows the IST date. A from/to day range must therefore be
+// converted to IST-midnight boundaries (IST = UTC + 5:30), or early-IST-morning scans (which carry
+// the PREVIOUS UTC calendar date) leak across the visible day boundary and the range looks wrong
+// even though the totals are right. fromTs = from-day 00:00 IST; toTs = (to-day +1) 00:00 IST, so
+// `ts >= fromTs AND ts < toTs` captures exactly the IST days the user picked. Both are full ISO
+// strings compared against the full ISO ts (lexicographic == chronological for same-format ISO).
+function _istRangeBounds(from, to) {
+  const out = {};
+  if (from) out.fromTs = new Date(from + 'T00:00:00+05:30').toISOString();
+  if (to)   out.toTs   = new Date(new Date(to + 'T00:00:00+05:30').getTime() + 86400000).toISOString();
+  return out;
+}
+// v44S: IST calendar date (YYYY-MM-DD) of a UTC ISO timestamp — shift the instant +5:30 then take
+// the UTC date, so per-day grouping/labels match what the operator saw on the IST clock.
+function _istDate(ts) {
+  if (!ts) return '';
+  const t = new Date(ts).getTime();
+  if (!Number.isFinite(t)) return (ts || '').slice(0, 10);
+  return new Date(t + (5 * 60 + 30) * 60000).toISOString().slice(0, 10);
+}
+
 // GET /api/tracking/scans-filtered  (v44K #7 — recent-scans filter panel, READ-ONLY)
 // Filters tracking_scans by dept (required) + optional from/to date range, batch, type.
 // PARAMETERIZED queries (no string interpolation of user-supplied values). Capped 5000, newest first.
@@ -12382,26 +12433,27 @@ app.get('/api/tracking/scans-filtered', async (req, res) => {
   try {
     const dept = (req.query.dept || '').trim();
     if (!dept) return res.status(400).json({ ok:false, error:'dept required' });
-    const from  = (req.query.from  || '').trim();   // 'YYYY-MM-DD' inclusive
-    const to    = (req.query.to    || '').trim();    // 'YYYY-MM-DD' inclusive
+    const from  = (req.query.from  || '').trim();   // 'YYYY-MM-DD' inclusive (IST day)
+    const to    = (req.query.to    || '').trim();    // 'YYYY-MM-DD' inclusive (IST day)
     const batch = (req.query.batch || '').trim();
     const type  = (req.query.type  || '').trim();    // 'in' | 'out' | '' (all)
+    const { fromTs, toTs } = _istRangeBounds(from, to);
     let cap = parseInt(req.query.limit, 10);
     if (!Number.isFinite(cap) || cap <= 0 || cap > 5000) cap = 5000;
     const mapScan = r => ({ id:r.id, labelId:r.label_id, batchNumber:r.batch_number, dept:r.dept, type:r.type, ts:r.ts, operator:r.operator||null, size:r.size||null, qty:r.qty||null });
     const cols = 'id,label_id,batch_number,dept,type,ts,operator,size,qty';
     if (pgPool) {
       const cond=['dept=$1']; const params=[dept]; let i=2;
-      if(from){ cond.push(`ts >= $${i++}`); params.push(from); }
-      if(to){ const _tn=new Date(to+'T00:00:00Z'); _tn.setUTCDate(_tn.getUTCDate()+1); cond.push(`ts < $${i++}`); params.push(_tn.toISOString().slice(0,10)); }
+      if(fromTs){ cond.push(`ts >= $${i++}`); params.push(fromTs); }
+      if(toTs){ cond.push(`ts < $${i++}`); params.push(toTs); }
       if(batch){ cond.push(`batch_number=$${i++}`); params.push(batch); }
       if(type==='in'||type==='out'){ cond.push(`type=$${i++}`); params.push(type); }
       const r = await pgPool.query(`SELECT ${cols} FROM tracking_scans WHERE ${cond.join(' AND ')} ORDER BY ts DESC LIMIT ${cap}`, params);
       res.json({ ok:true, scans:r.rows.map(mapScan), count:r.rows.length });
     } else {
       const cond=['dept=?']; const params=[dept];
-      if(from){ cond.push('ts >= ?'); params.push(from); }
-      if(to){ const _tn=new Date(to+'T00:00:00Z'); _tn.setUTCDate(_tn.getUTCDate()+1); cond.push('ts < ?'); params.push(_tn.toISOString().slice(0,10)); }
+      if(fromTs){ cond.push('ts >= ?'); params.push(fromTs); }
+      if(toTs){ cond.push('ts < ?'); params.push(toTs); }
       if(batch){ cond.push('batch_number=?'); params.push(batch); }
       if(type==='in'||type==='out'){ cond.push('type=?'); params.push(type); }
       const scans = db.prepare(`SELECT ${cols} FROM tracking_scans WHERE ${cond.join(' AND ')} ORDER BY ts DESC LIMIT ${cap}`).all(...params);
@@ -12419,22 +12471,23 @@ app.get('/api/tracking/packing-ledger', async (req, res) => {
   try {
     const from = (req.query.from || '').trim();
     const to   = (req.query.to   || '').trim();
+    const { fromTs, toTs } = _istRangeBounds(from, to);
     let rows;
     if (pgPool) {
       const cond=["dept='packing'"]; const params=[]; let i=1;
-      if(from){ cond.push(`ts >= $${i++}`); params.push(from); }
-      if(to){ const _tn=new Date(to+'T00:00:00Z'); _tn.setUTCDate(_tn.getUTCDate()+1); cond.push(`ts < $${i++}`); params.push(_tn.toISOString().slice(0,10)); }
+      if(fromTs){ cond.push(`ts >= $${i++}`); params.push(fromTs); }
+      if(toTs){ cond.push(`ts < $${i++}`); params.push(toTs); }
       const r = await pgPool.query(`SELECT ts,batch_number,type FROM tracking_scans WHERE ${cond.join(' AND ')}`, params);
       rows = r.rows;
     } else {
       const cond=["dept='packing'"]; const params=[];
-      if(from){ cond.push('ts >= ?'); params.push(from); }
-      if(to){ const _tn=new Date(to+'T00:00:00Z'); _tn.setUTCDate(_tn.getUTCDate()+1); cond.push('ts < ?'); params.push(_tn.toISOString().slice(0,10)); }
+      if(fromTs){ cond.push('ts >= ?'); params.push(fromTs); }
+      if(toTs){ cond.push('ts < ?'); params.push(toTs); }
       rows = db.prepare(`SELECT ts,batch_number,type FROM tracking_scans WHERE ${cond.join(' AND ')}`).all(...params);
     }
     const agg = {}; // 'date|batch' -> {date,batch,in,out}
     for (const r of rows) {
-      const d = (r.ts || '').slice(0,10); const b = r.batch_number || '';
+      const d = _istDate(r.ts); const b = r.batch_number || '';
       if (!d || !b) continue;
       const k = d+'|'+b;
       if (!agg[k]) agg[k] = { date:d, batch:b, in:0, out:0 };
