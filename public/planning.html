@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44P</p>
+      <p>Planning Suite v3.0 · build v44R</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -745,6 +745,7 @@ let state = {
   printOrders: [],
   dailyPrinting: [],
   dispatchPlans: [],
+  truckLocks: [],   // v44R: persisted lock-on-activation trucks (loaded from /api/dispatch/truck-locks)
   machineMaster: JSON.parse(JSON.stringify(MACHINE_MASTER)),
   printMachineMaster: JSON.parse(JSON.stringify(PRINT_MACHINES)),
   pcCodes: PC_CODES_RAW,
@@ -1292,7 +1293,7 @@ const SYNC = (() => {
   async function loadTrackingStatus() {
     if (!_url) return;
     // Run all fetches in PARALLEL
-    const [wipRes, agRes, daRes, dcRes, mcActRes] = await Promise.allSettled([
+    const [wipRes, agRes, daRes, dcRes, mcActRes, tlRes] = await Promise.allSettled([
       fetch(_url + '/api/tracking/wip-summary?closuresOnly=1',      { signal: AbortSignal.timeout(5000) }),
       // v41ZG #3: window the A-Grade aggregation to the start of the PREVIOUS month and give it a
       // longer timeout. The unwindowed full-history aggregation was timing out at 5s on production,
@@ -1301,8 +1302,25 @@ const SYNC = (() => {
       fetch(_url + '/api/tracking/agrade-summary?since=' + _agradeSinceDate(), { signal: AbortSignal.timeout(12000) }),
       fetch(_url + '/api/tracking/dispatch-actuals', { signal: AbortSignal.timeout(5000) }),
       fetch(_url + '/api/dpr/batch-closed',          { signal: AbortSignal.timeout(5000) }),
-      fetch(_url + '/api/actuals/machine-summary',   { signal: AbortSignal.timeout(5000) })
+      fetch(_url + '/api/actuals/machine-summary',   { signal: AbortSignal.timeout(5000) }),
+      fetch(_url + '/api/dispatch/truck-locks',      { signal: AbortSignal.timeout(5000) })  // v44R lock-on-activation
     ]);
+    // v44R: load persisted truck locks (lock-on-activation). buildTruckPlans renders these from their
+    // frozen manifest and lays remaining unlocked boxes around them. Tolerant of failure — falls back
+    // to fully-ephemeral binning if the endpoint is unreachable.
+    try {
+      if (tlRes.status==='fulfilled' && tlRes.value.ok) {
+        const tj = await tlRes.value.json();
+        if (tj.ok && Array.isArray(tj.locks)) {
+          state.truckLocks = tj.locks.map(l => {
+            let manifest = [];
+            try { manifest = JSON.parse(l.manifest_json||'[]'); } catch { manifest = []; }
+            return { truckId: l.truck_id, zone: l.zone, truckNumber: l.truck_number,
+                     manifest, status: l.status, vehicleNo: l.vehicle_no, lrNo: l.lr_no };
+          });
+        }
+      }
+    } catch(e) { /* keep prior state.truckLocks */ }
     try {
       if (wipRes.status==='fulfilled' && wipRes.value.ok) {
         const j = await wipRes.value.json();
@@ -1432,26 +1450,64 @@ const SYNC = (() => {
       if (daRes.status==='fulfilled' && daRes.value.ok) {
         const dj = await daRes.value.json();
         if (dj.ok && dj.actuals) {
-          const actualsMap = {};
-          dj.actuals.forEach(a => { actualsMap[a.batch_number] = a.dispatched_qty||0; });
+          const actualsMap = {};       // batch -> dispatched qty (Lakhs)
+          const actualsBoxesMap = {};  // batch -> dispatched boxes (v44R Phase 2)
+          dj.actuals.forEach(a => {
+            actualsMap[a.batch_number] = a.dispatched_qty||0;
+            actualsBoxesMap[a.batch_number] = a.dispatched_boxes||0;
+          });
+          // v44R Phase 2 (SEQUENTIAL dispatched apportionment): a batch's per-batch dispatched total
+          // is apportioned across its ordered lots SEQUENTIALLY (lot 1 fills to its planned amount
+          // first, then lot 2 …) — mirroring the packed-box sequential allocation above. Without this
+          // every split lot read the SAME per-batch total and BOTH flipped 'dispatched' when only one
+          // lot actually shipped (latent double-flip). Boxes feed the truck remaining-box binner; qty
+          // drives lot status.
+          const _dispLots = {};
           state.dispatchPlans.forEach(dp => {
-            if (dp.batchNumber && actualsMap[dp.batchNumber] !== undefined) {
-              const trackingActual = actualsMap[dp.batchNumber];
-              // v37I bugfix: Server is authoritative — always sync to server's SUM-based total.
-              // Previously was "upward only" (if trackingActual > local), which masked the
-              // overwrite bug on the server side. Now server uses SUM(qty) from records, so
-              // any direction of change (corrections, deletions, edits) propagates correctly.
-              dp.actualDispatched = trackingActual;
-              dp._trackingDispatched = trackingActual; // mark as coming from tracking
-              // v41m FIX: a MANUAL dispatch (planner clicked ✓ Dispatch) must NOT be downgraded by a
-              // lagging/zero tracking scan-out total. Tracking may still UPGRADE status (e.g. confirm
-              // full dispatch), but it cannot revert a manually-dispatched lot back to pending/ready.
-              if (dp.manuallyDispatched) {
-                dp.status = 'dispatched';
-              } else if (dp.actualDispatched >= dp.qty) dp.status = 'dispatched';
-              else if (dp.actualDispatched > 0) dp.status = 'partial';
-              else if (dp.status === 'partial' || dp.status === 'dispatched') dp.status = 'pending';
-            }
+            const bns = (dp.batchNumber||'').split(',').map(b=>b.trim()).filter(Boolean);
+            if (bns.length === 1 && actualsMap[bns[0]] !== undefined)
+              (_dispLots[bns[0]] = _dispLots[bns[0]] || []).push(dp);
+          });
+          Object.keys(_dispLots).forEach(bn => _dispLots[bn].sort((a,b)=>
+            ((a.lotNo||1)-(b.lotNo||1)) || String(a.id||'').localeCompare(String(b.id||''))));
+          const _dispAlloc = {}; // dp.id -> {qty, boxes}
+          Object.keys(_dispLots).forEach(bn => {
+            const lots = _dispLots[bn];
+            let remQty = actualsMap[bn] || 0;
+            let remBoxes = actualsBoxesMap[bn] || 0;
+            lots.forEach((dp, i) => {
+              const last = (i === lots.length - 1);
+              const lotQty = parseFloat(dp.qty || 0);
+              const lotBoxes = parseInt(dp.boxes || 0, 10);
+              const aQty = last ? Math.max(0, remQty) : Math.min(remQty, lotQty);
+              const aBoxes = last ? Math.max(0, remBoxes) : Math.min(remBoxes, lotBoxes);
+              remQty -= aQty; remBoxes -= aBoxes;
+              _dispAlloc[dp.id] = { qty: aQty, boxes: aBoxes };
+            });
+          });
+          state.dispatchPlans.forEach(dp => {
+            const bns = (dp.batchNumber||'').split(',').map(b=>b.trim()).filter(Boolean);
+            let trackingActual, trackingBoxes;
+            if (bns.length === 1) {
+              if (actualsMap[bns[0]] === undefined) return; // no tracking actuals for this batch
+              const a = _dispAlloc[dp.id] || { qty: actualsMap[bns[0]]||0, boxes: actualsBoxesMap[bns[0]]||0 };
+              trackingActual = a.qty; trackingBoxes = a.boxes;
+            } else if (bns.length > 1) {
+              // Consolidated multi-batch lot: wholesale sum of its constituent batches (mirrors packing).
+              if (!bns.some(b => actualsMap[b] !== undefined)) return;
+              trackingActual = bns.reduce((s,b)=>s+(actualsMap[b]||0),0);
+              trackingBoxes  = bns.reduce((s,b)=>s+(actualsBoxesMap[b]||0),0);
+            } else { return; }
+            // v37I bugfix: Server is authoritative — always sync to server's SUM-based total.
+            dp.actualDispatched = trackingActual;
+            dp._dispatchedBoxes = trackingBoxes;       // v44R: per-lot dispatched boxes (truck remaining)
+            dp._trackingDispatched = trackingActual;   // mark as coming from tracking
+            // v41m FIX: a MANUAL dispatch must NOT be downgraded by a lagging/zero tracking total.
+            if (dp.manuallyDispatched) {
+              dp.status = 'dispatched';
+            } else if (dp.actualDispatched >= dp.qty) dp.status = 'dispatched';
+            else if (dp.actualDispatched > 0) dp.status = 'partial';
+            else if (dp.status === 'partial' || dp.status === 'dispatched') dp.status = 'pending';
           });
         }
       }
@@ -5563,9 +5619,14 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
     const recvJ = await recvResp.json();
     const scanJ = scanResp ? await scanResp.json().catch(() => null) : null;
     const state = {};
+    // v44Q PARTIAL-INVOICE: per-request lookup (id -> qty/boxes), used as a fallback for a
+    // received invoice whose stored total qty/boxes is missing. Declared at function scope so
+    // the received-invoice loop below can read it.
+    const reqById = {};
     if (reqJ.ok) {
       for (const r of (reqJ.requests || [])) {
         if (!r.batch_number) continue;
+        reqById[r.id] = { qty: parseFloat(r.qty_lakhs) || 0, boxes: parseInt(r.boxes, 10) || 0 };
         const e = state[r.batch_number] = state[r.batch_number] || {};
         // v41r FIX (Q1): the v41 ledger-only flow uses 'pending_reconciliation' and 'reconciled'
         // as the in-flight statuses; legacy 'pending'/'sent_to_sap' kept for transition. Without
@@ -5577,6 +5638,13 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
         }
         if (r.status === 'failed') e.hasFailed = true;
         e.lastRequestStatus = r.status;
+        // v44Q PARTIAL-INVOICE: accumulate in-flight (not-yet-received) invoiced qty/boxes.
+        // 'reconciled' is skipped here — its qty is counted from the received invoice below, so
+        // counting both would double-count. 'failed' is excluded (never billed).
+        if (r.status === 'pending' || r.status === 'sent_to_sap' || r.status === 'pending_reconciliation') {
+          e.invoicedQty = (e.invoicedQty || 0) + (parseFloat(r.qty_lakhs) || 0);
+          e.invoicedBoxes = (e.invoicedBoxes || 0) + (parseInt(r.boxes, 10) || 0);
+        }
       }
     }
     // Build invoiceId → batch_number lookup for scan-session mapping
@@ -5592,6 +5660,17 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
         e.vehicleNo = r.vehicle_no || null;
         e.invoiceId = r.id;
         idToBatch[r.id] = r.batch_number;
+        // v44Q PARTIAL-INVOICE: accumulate actual invoiced qty/boxes from the received invoice.
+        // Fallback (decision 1): when the stored total is missing/0 (e.g. an older un-enriched
+        // SAP-direct invoice), use the linked invoice_request's qty/boxes so we don't under-count
+        // and wrongly re-offer already-invoiced quantity.
+        const _linked = reqById[r.invoice_request_id];
+        let _rq = parseFloat(r.total_qty_lakhs) || 0;
+        let _rb = parseInt(r.total_boxes, 10) || 0;
+        if (_rq <= 0 && _linked) _rq = _linked.qty;
+        if (_rb <= 0 && _linked) _rb = _linked.boxes;
+        e.invoicedQty = (e.invoicedQty || 0) + _rq;
+        e.invoicedBoxes = (e.invoicedBoxes || 0) + _rb;
       }
     }
     // v40 Phase 18.12: merge in active scan sessions
@@ -5793,7 +5872,13 @@ function _v39_openTruckInvoiceModal(truckIdx, zone) {
   // (we don't bundle multiple batches into one SAP invoice — SAP wants one invoice per SO usually)
   const eligible = truck.orders.filter(o => {
     const ord = state.orders.find(x => x.id === o.productionOrderId);
-    return ord?.sapDocEntry && (o.packedQty || 0) > 0;
+    if (!ord?.sapDocEntry || (o.packedQty || 0) <= 0) return false;
+    // v44Q PARTIAL-INVOICE: include only batches whose packed quantity is not yet fully invoiced,
+    // and (below) bill the remaining quantity — keeps the truck path consistent with Order View so
+    // a partially-invoiced batch is never double-billed.
+    const _inv = (window._v39_invoiceState || {})[o.batchNumber] || {};
+    const _rem = Math.round(((o.packedQty || 0) - (_inv.invoicedQty || 0)) * 100) / 100;
+    return _rem >= 0.01;
   });
   if (!eligible.length) {
     alert('⚠️ No batches in this truck are ready to invoice.\n\nA batch needs:\n  • Sales Order Number\n  • At least one packed box\n\nCheck the Order View tab to see batch-level state.');
@@ -5801,14 +5886,19 @@ function _v39_openTruckInvoiceModal(truckIdx, zone) {
   }
   const rows = eligible.map((o, i) => {
     const ord = state.orders.find(x => x.id === o.productionOrderId);
+    // v44Q PARTIAL-INVOICE: display the remaining (not-yet-invoiced) boxes/qty that will be billed.
+    const _inv = (window._v39_invoiceState || {})[o.batchNumber] || {};
+    const _baseB = (o.packedBoxes != null ? (parseInt(o.packedBoxes,10)||0) : (parseInt(o.boxes,10)||0));
+    const _remB = Math.max(0, _baseB - (parseInt(_inv.invoicedBoxes,10)||0));
+    const _remQ = Math.max(0, Math.round(((o.packedQty||0) - (_inv.invoicedQty||0)) * 100) / 100);
     return `
       <tr>
         <td><input type="checkbox" id="v39-trk-inv-${i}" checked></td>
         <td style="font-family:monospace;font-size:11px">${o.batchNumber}</td>
         <td style="font-size:11px">${(o.customer||'').substring(0,24)}</td>
         <td style="font-family:monospace;font-size:11px">${ord.sapDocEntry}</td>
-        <td style="text-align:right;font-family:monospace;font-size:11px">${o.boxes||0}</td>
-        <td style="text-align:right;font-family:monospace;font-size:11px;font-weight:700">${(o.packedQty||0).toFixed(2)}L</td>
+        <td style="text-align:right;font-family:monospace;font-size:11px">${_remB}</td>
+        <td style="text-align:right;font-family:monospace;font-size:11px;font-weight:700">${_remQ.toFixed(2)}L</td>
       </tr>`;
   }).join('');
   window._v39_truckInvoiceContext = { truckIdx, zone, eligible };
@@ -5831,6 +5921,78 @@ function _v39_openTruckInvoiceModal(truckIdx, zone) {
   ]);
 }
 
+// v44R Phase 2/3 — lock-on-activation helpers. A truck is locked (its number + manifest frozen on
+// the server) the moment it is acted on. We treat GENERATING a truck's invoices as the activation
+// point — per the business rule "invoice = dispatch intent", raising a truck's invoices commits that
+// truck. truckId = `${zone}::T${truckNumber}` is stable: once locked, the binner reserves that number
+// and lays free trucks around it, so the number never collides or drifts.
+function _v44r_truckId(zone, truckNumber) { return `${zone}::T${parseInt(truckNumber,10)||0}`; }
+async function _v44r_lockTruck(zone, truckNumber, manifest, vehicleNo) {
+  const baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || '';
+  if (!baseUrl) return;
+  try {
+    await fetch(baseUrl + '/api/dispatch/truck-lock', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        truckId: _v44r_truckId(zone, truckNumber), zone, truckNumber,
+        manifest: manifest || [], vehicleNo: vehicleNo || null,
+        lockedBy: (currentUser?.username || currentUser?.role || 'unknown'),
+      }),
+    });
+  } catch (e) { /* non-fatal — binning still works ephemerally if lock fails */ }
+}
+async function _v44r_finalizeTruck(zone, truckNumber, remarks) {
+  const baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || '';
+  if (!baseUrl) return;
+  try {
+    await fetch(baseUrl + `/api/dispatch/truck-lock/${encodeURIComponent(_v44r_truckId(zone, truckNumber))}/finalize`, {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ finalizedBy: (currentUser?.username || currentUser?.role || 'unknown'), remarks: remarks || null }),
+    });
+  } catch (e) { /* non-fatal */ }
+}
+// Re-fetch persisted locks into state (used after finalize so the rollover shows immediately).
+async function _v44r_reloadLocks() {
+  const baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || '';
+  if (!baseUrl) return;
+  try {
+    const r = await fetch(baseUrl + '/api/dispatch/truck-locks', { signal: AbortSignal.timeout(5000) });
+    const tj = await r.json();
+    if (tj.ok && Array.isArray(tj.locks)) {
+      state.truckLocks = tj.locks.map(l => {
+        let manifest = []; try { manifest = JSON.parse(l.manifest_json||'[]'); } catch { manifest = []; }
+        return { truckId: l.truck_id, zone: l.zone, truckNumber: l.truck_number, manifest,
+                 status: l.status, vehicleNo: l.vehicle_no, lrNo: l.lr_no };
+      });
+    }
+  } catch (e) { /* keep prior */ }
+}
+// v44R #3: finalize a locked truck with the short-dispatch consent prompt. The remaining (un-scanned)
+// boxes roll forward automatically — finalizing flips the lock to 'finalized', so those lots' boxes
+// leave the active-lock reservation and re-bin into the next available truck for the zone.
+function _v44r_finalizeTruckPrompt(zone, truckNumber) {
+  const trucks = window._lastRenderedTrucks?.[zone] || [];
+  const truck = trucks.find(t => t.locked && t.truckNumber === truckNumber);
+  if (!truck) { toast('Locked truck not found', 'var(--red)'); return; }
+  const planned = truck.totalBoxes || 0;
+  let dispatched = 0;
+  (truck.orders||[]).forEach(o => {
+    const dp = state.dispatchPlans.find(p => p.id === o.id);
+    const d = dp ? Math.round(parseFloat(dp._dispatchedBoxes||0)) : 0;
+    dispatched += Math.min(parseInt(o.boxes||0,10), d);
+  });
+  const remaining = Math.max(0, planned - dispatched);
+  const cap = getTruckCapacity(zone);
+  const msg = remaining > 0
+    ? `Finalise Truck ${truckNumber} (${zone}) with ${dispatched} of ${planned} boxes scanned out?\n\nThe remaining ${remaining} box(es) will be rolled forward to the next available truck for this zone, re-binned under the ${cap}-box logic.`
+    : `Finalise Truck ${truckNumber} (${zone})?\n\nAll ${planned} boxes have been scanned out.`;
+  if (!confirm(msg)) return;
+  _v44r_finalizeTruck(zone, truckNumber, `Finalised ${dispatched}/${planned} boxes; ${remaining} rolled forward`)
+    .then(() => _v44r_reloadLocks())
+    .then(() => { toast(`Truck ${truckNumber} finalised — ${remaining>0?remaining+' box(es) rolled forward':'fully dispatched'}`, 'var(--accent3)');
+      try { _renderImmediate(); } catch { try { renderDispatch(); } catch {} } });
+}
+
 async function _v39_submitTruckInvoices() {
   const ctx = window._v39_truckInvoiceContext;
   if (!ctx) { toast('No truck context', 'var(--red)'); return; }
@@ -5846,6 +6008,11 @@ async function _v39_submitTruckInvoices() {
     const p = ctx.eligible[i];
     const ord = state.orders.find(x => x.id === p.productionOrderId);
     if (!ord) continue;
+    // v44Q PARTIAL-INVOICE: bill the remaining (packed minus already-invoiced) boxes/qty.
+    const _trkInv = (window._v39_invoiceState || {})[p.batchNumber] || {};
+    const _trkBaseB = (p.packedBoxes != null ? (parseInt(p.packedBoxes,10)||0) : (parseInt(p.boxes,10)||0));
+    const _trkRemB = Math.max(0, _trkBaseB - (parseInt(_trkInv.invoicedBoxes,10)||0));
+    const _trkRemQ = Math.max(0, Math.round(((p.packedQty||0) - (_trkInv.invoicedQty||0)) * 100) / 100);
     try {
       const r = await fetch(baseUrl + '/api/invoice/request', {
         method: 'POST',
@@ -5859,8 +6026,8 @@ async function _v39_submitTruckInvoices() {
           size: p.size || ord.size,
           colour: p.colour || ord.colour,
           pcCode: p.pcCode || ord.pcCode,
-          boxes: p.boxes || 0,
-          qtyLakhs: p.packedQty || 0,
+          boxes: _trkRemB,
+          qtyLakhs: _trkRemQ,
           selectionMode: 'truck',
           truckNumber: p.truckNumber || null,
           createdBy: currentUser?.username || currentUser?.role || 'unknown',
@@ -5875,6 +6042,25 @@ async function _v39_submitTruckInvoices() {
   closeModal();
   const okCount = results.filter(x => x.ok).length;
   const failCount = results.length - okCount;
+  // v44R lock-on-activation: generating this truck's invoices commits it — freeze its number +
+  // manifest so it keeps its identity while in progress and remaining boxes bin around it.
+  if (okCount > 0) {
+    try {
+      const okBatches = new Set(results.filter(x => x.ok).map(x => x.batch));
+      const trucks = window._lastRenderedTrucks?.[ctx.zone] || [];
+      const truck = trucks[ctx.truckIdx];
+      const manifest = (ctx.eligible || [])
+        .filter(o => okBatches.has(o.batchNumber))
+        .map(o => {
+          const _inv = (window._v39_invoiceState || {})[o.batchNumber] || {};
+          const _baseB = (o.packedBoxes != null ? (parseInt(o.packedBoxes,10)||0) : (parseInt(o.boxes,10)||0));
+          const _remB = Math.max(0, _baseB - (parseInt(_inv.invoicedBoxes,10)||0));
+          const _remQ = Math.max(0, Math.round(((o.packedQty||0) - (_inv.invoicedQty||0)) * 100) / 100);
+          return { planId: o.id, batchNumber: o.batchNumber, allocatedBoxes: _remB, allocatedQty: _remQ };
+        });
+      await _v44r_lockTruck(ctx.zone, (truck?.truckNumber || ctx.truckIdx + 1), manifest, null);
+    } catch (e) { /* lock is best-effort */ }
+  }
   if (failCount === 0) {
     toast(`✅ All ${okCount} invoice request${okCount!==1?'s':''} sent to SAP`, 'var(--accent3)');
   } else if (okCount === 0) {
@@ -5910,10 +6096,20 @@ function _v40_openConsolidatedApprovalModal() {
     // overstated boxes (e.g. 30 shown for a 28-box pack). Qty is derived from the size-wise pack
     // size that is already defined (state.packSizes[size]) so boxes × packSize stays consistent.
     const _invSize = plan.size || ord.size;
-    const _invPackSize = (state.packSizes && state.packSizes[_invSize]) || 100000;
-    const _invBoxes = (plan.packedBoxes != null ? (parseInt(plan.packedBoxes, 10) || 0)
-                                                 : (plan.boxes || 0));
-    const _invQty = Math.round((_invBoxes * _invPackSize / 100000) * 100) / 100;
+    // v44Q PARTIAL-INVOICE: bill the REMAINING (packed minus already-invoiced) amount, not the full
+    // packed amount, so partial/incremental invoicing never double-bills the already-invoiced
+    // portion. Quantity is the actual packed remainder in Lakhs (plan.packedQty honours a partial
+    // last box); box count is the packed-minus-invoiced remainder. This mirrors the truck-view path
+    // (which already bills p.packedQty). When nothing is invoiced yet, the remainder equals the full
+    // packed amount, so first-time invoicing is unchanged in value.
+    const _invInvState = (window._v39_invoiceState || {})[plan.batchNumber] || {};
+    const _packedBoxesAll = (plan.packedBoxes != null ? (parseInt(plan.packedBoxes, 10) || 0)
+                                                       : (plan.boxes || 0));
+    const _packedQtyAll = Math.round((plan.packedQty || 0) * 100) / 100;
+    const _alreadyBoxes = parseInt(_invInvState.invoicedBoxes, 10) || 0;
+    const _alreadyQty = Math.round((_invInvState.invoicedQty || 0) * 100) / 100;
+    const _invBoxes = Math.max(0, _packedBoxesAll - _alreadyBoxes);
+    const _invQty = Math.max(0, Math.round((_packedQtyAll - _alreadyQty) * 100) / 100);
     // v41ZR #2: batch WIP (sum of this batch's lots' apportioned WIP) — one of the two conditions
     // under which a SHORT invoice (packed < planned) is considered fully accounted for.
     const _batchWip = (state.dispatchPlans || [])
@@ -7782,16 +7978,84 @@ function truckHasProdMonth(truck, ym) {
   return (truck.orders||[]).some(o => getPlanProdMonth(o) === ym);
 }
 
+// v44R Phase 2/3: render an ACTIVE locked truck from its frozen manifest. Lock-on-activation freezes
+// a truck's number + manifest the moment it's acted on; we render it as-is and (in buildTruckPlans)
+// remove its committed boxes from the free-binning pool so remaining boxes lay AROUND it.
+function _buildLockedTrucks(activeLocks, zone, cap) {
+  return activeLocks.map(l => {
+    const orders = (l.manifest||[]).map(m => {
+      const dp = state.dispatchPlans.find(p => p.id === m.planId) || {};
+      const allocBoxes = parseInt(m.allocatedBoxes,10)||0;
+      return {
+        ...dp,
+        id: m.planId,
+        batchNumber: m.batchNumber || dp.batchNumber,
+        boxes: allocBoxes,
+        _originalBoxes: parseInt(dp.boxes||allocBoxes,10),
+        qty: (m.allocatedQty != null) ? m.allocatedQty : dp.qty,
+        packedBoxes: allocBoxes,   // committed boxes are packed-and-loaded
+        _locked: true,
+      };
+    });
+    const totalBoxes = orders.reduce((s,o)=>s+(parseInt(o.boxes||0,10)),0);
+    return {
+      truckNumber: parseInt(l.truckNumber,10) || 1,
+      zone, orders, totalBoxes, cap,
+      isFull: totalBoxes >= cap,
+      packedBoxes: totalBoxes, pendingBoxes: 0,
+      locked: true, truckId: l.truckId, lockStatus: l.status,
+      vehicleNo: l.vehicleNo||null, lrNo: l.lrNo||null,
+      etd: null, belowMin: false, held: false,
+    };
+  });
+}
+
 function buildTruckPlans(zone) {
   const cap = getTruckCapacity(zone);
   const minCap = getTruckMinCapacity(zone);
   const isExport = isExportZone(zone);
 
-  // Get all non-dispatched plans for this zone
-  const plans = state.dispatchPlans
-    .filter(p => (p.zone||'Unassigned') === zone && p.status !== 'dispatched');
+  // v44R Phase 2/3: ACTIVE locked trucks (lock-on-activation) keep their frozen number + manifest;
+  // their committed boxes are removed from the free-binning pool so remaining boxes lay AROUND them.
+  // Finalized locks are NOT rendered in the active plan (already dispatched) and their dispatched
+  // boxes are already netted out via _dispatchedBoxes, so they never reappear in the free pool.
+  const _allLocks = Array.isArray(state.truckLocks) ? state.truckLocks : [];
+  const _activeLocks = _allLocks.filter(l => l.zone === zone && l.status === 'active');
+  const _committedByPlan = {};
+  _activeLocks.forEach(l => (l.manifest||[]).forEach(m => {
+    if (!m || !m.planId) return;
+    _committedByPlan[m.planId] = (_committedByPlan[m.planId]||0) + (parseInt(m.allocatedBoxes,10)||0);
+  }));
+  const lockedTrucks = _buildLockedTrucks(_activeLocks, zone, cap);
 
-  if (plans.length === 0) return [];
+  // Free pool: non-dispatched plans for this zone, transformed to REMAINING boxes
+  // (planned − dispatched − committed-to-active-lock). Lots with no free remainder drop out — this
+  // is what makes a short-scanned truck's leftover roll into the next truck on the next render, and
+  // what drops a (partial-)regularised lot out of the plan.
+  const _rawPlans = state.dispatchPlans
+    .filter(p => (p.zone||'Unassigned') === zone && p.status !== 'dispatched');
+  const plans = [];
+  _rawPlans.forEach(p => {
+    const plannedBoxes = parseInt(p.boxes||0, 10);
+    const dispBoxes = Math.round(parseFloat(p._dispatchedBoxes||0));
+    const committed = parseInt(_committedByPlan[p.id]||0, 10);
+    const freeBoxes = Math.max(0, plannedBoxes - dispBoxes - committed);
+    if (freeBoxes <= 0) return; // fully dispatched, or fully committed to an active locked truck
+    const ratio = plannedBoxes > 0 ? (freeBoxes / plannedBoxes) : 1;
+    // NOTE: only `boxes` (→remaining) and `qty` are transformed for binning. packedBoxes is left
+    // UNCHANGED: the truck invoice flow bills (packedBoxes − already-invoiced), and dispatched/
+    // committed are already subsets of invoiced — reducing packedBoxes here would double-subtract
+    // and wrongly suppress legitimate remaining-quantity invoicing. The truck packed display caps at
+    // min(allocated, packed) downstream, which stays correct.
+    plans.push({
+      ...p,
+      boxes: freeBoxes,
+      _plannedBoxesOrig: plannedBoxes,
+      qty: (p.qty != null && plannedBoxes > 0) ? (parseFloat(p.qty) * ratio) : p.qty,
+    });
+  });
+
+  if (plans.length === 0) return lockedTrucks.sort((a,b)=>(a.truckNumber||0)-(b.truckNumber||0));
 
   // DYNAMIC SORTING: sort by best available packing-ready date (earliest first)
   // This ensures preponed orders pull into earlier trucks and delayed orders push to later trucks
@@ -7985,6 +8249,18 @@ function buildTruckPlans(zone) {
     trucks.forEach(truck => { truck.belowMin = truck.totalBoxes < minCap; truck.held = false; });
   }
 
+  // v44R Phase 2/3: merge active locked trucks. They keep their frozen number; FREE (unlocked) trucks
+  // are renumbered to fill the slots not held by a locked truck, then both are merged in number order.
+  // (An in-progress/locked truck never renumbers; only not-yet-started free trucks reshuffle.)
+  if (lockedTrucks.length) {
+    const taken = new Set(lockedTrucks.map(t => t.truckNumber));
+    let nextNum = 1;
+    trucks.forEach(t => {
+      while (taken.has(nextNum)) nextNum++;
+      t.truckNumber = nextNum; taken.add(nextNum); nextNum++;
+    });
+    return lockedTrucks.concat(trucks).sort((a,b)=>(a.truckNumber||0)-(b.truckNumber||0));
+  }
   return trucks;
 }
 
@@ -8512,6 +8788,54 @@ function renderDispatch() {
   }
 }
 
+// v44R Phase 1/3 — three-quantity visibility + stall alerts. Surfaces the invariant
+// Dispatched ≤ Invoiced ≤ Packed ≤ Planned per lot. Dispatched is per-lot (sequentially
+// apportioned in the actuals merge). Invoiced is per-BATCH (from _v39_invoiceState); to avoid
+// double-showing it across split lots it is annotated only on the first lot of a split.
+function _v44r_syncFigures(p) {
+  const batch = p.batchNumber || '';
+  const inv = (window._v39_invoiceState || {})[batch] || {};
+  const showInv = !(p.lotTotal > 1) || (p.lotNo || 1) === 1; // batch-level invoiced shown once
+  return {
+    plannedBoxes: parseInt(p.boxes||0,10),
+    invBoxes: showInv ? parseInt(inv.invoicedBoxes||0,10) : null,
+    dispBoxes: Math.round(parseFloat(p._dispatchedBoxes||0)),
+    plannedQty: parseFloat(p.qty||0),
+    invQty: showInv ? parseFloat(inv.invoicedQty||0) : null,
+    dispQty: parseFloat(p.actualDispatched||0),
+    packedQty: parseFloat(p.packedQty||0),
+  };
+}
+// Compact "Disp · Inv" sub-line under the planned-boxes cell.
+function _v44r_boxesSubline(p) {
+  if (p.status === 'dispatched') return '';
+  const f = _v44r_syncFigures(p);
+  const bits = [];
+  if (f.dispBoxes > 0) bits.push(`<span title="Dispatched (scanned out)" style="color:var(--accent3)">🚚 ${f.dispBoxes}</span>`);
+  if (f.invBoxes != null && f.invBoxes > 0) bits.push(`<span title="Invoiced (dispatch intent)" style="color:var(--accent2)">🧾 ${f.invBoxes}</span>`);
+  if (!bits.length) return '';
+  return `<div style="font-size:9px;font-family:var(--mono);margin-top:1px;white-space:nowrap">${bits.join(' · ')}</div>`;
+}
+// Stall alert badge: invoiced but not yet physically dispatched, OR packed but not yet invoiced.
+function _v44r_stallBadge(p) {
+  if (p.status === 'dispatched') return '';
+  const f = _v44r_syncFigures(p);
+  const EPS = 0.01;
+  // invoiced-but-not-dispatched (boxes committed, not physically out) — the key "finish the dispatch" nudge
+  if (f.invQty != null) {
+    const undisp = Math.round((f.invQty - f.dispQty) * 100) / 100;
+    if (undisp >= EPS) {
+      return `<span title="${fmt(undisp)}L invoiced but not yet scanned out — physical dispatch is pending" style="display:inline-block;margin-left:4px;background:rgba(255,171,0,0.14);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">⏳ ${fmt(undisp)}L to dispatch</span>`;
+    }
+    // packed-but-not-invoiced (more to invoice before the order is fully committed)
+    const uninv = Math.round((f.packedQty - f.invQty) * 100) / 100;
+    if (uninv >= EPS) {
+      return `<span title="${fmt(uninv)}L packed but not yet invoiced" style="display:inline-block;margin-left:4px;background:rgba(41,182,246,0.12);color:#29b6f6;border:1px solid rgba(41,182,246,0.25);padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">▢ ${fmt(uninv)}L to invoice</span>`;
+    }
+  }
+  return '';
+}
+
 function renderDispatchRow(p) {
   const isDispatched = p.status==='dispatched';
   const isExportPend = p.exportPending || p.status==='export-pending';
@@ -8570,14 +8894,14 @@ function renderDispatchRow(p) {
     <td class="freeze-col-8 text-sm">${p.zone||'-'}</td>
     <td class="text-mono text-dim" title="Month of production">${prodMonth}</td>
     <td class="text-mono fw-bold">${fmt(p.qty)}</td>
-    <td class="text-mono">${p.boxes||'-'}</td>
+    <td class="text-mono">${p.boxes||'-'}${_v44r_boxesSubline(p)}</td>
     <td class="text-mono">${packCell}</td>
     <td class="text-mono" style="white-space:nowrap">${p.plannedDate ? fmtDate(p.plannedDate) + (p.tentative ? ' <span style="background:rgba(255,171,0,0.15);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:10px;font-family:var(--font-mono)">Tentative</span>' : (p.dateManuallySet ? ' <span style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);padding:1px 5px;border-radius:3px;font-size:10px">Manual</span>' : '')) : (isExportPend ? '<span style="color:var(--accent5);font-size:11px">Pending container</span>' : '<span style="color:var(--text3);font-size:11px">TBD</span>')}</td>
     <td><input type="number" value="${p.actualDispatched||0}" min="0" ${isExportPend?'disabled':''}
       style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
       onchange="updateDispatchActual('${p.id}',this.value)"></td>
     <td class="text-mono ${(p.qty-(p.actualDispatched||0))>0?'text-accent':''}">${isDispatched?'<span style="color:var(--accent3)">—</span>':fmt(Math.max(0,p.qty-(p.actualDispatched||0)))}</td>
-    <td>${statusBadge}</td>
+    <td>${statusBadge}${_v44r_stallBadge(p)}</td>
     <td><input type="text" value="${p.remarks||''}" placeholder="Remarks..."
       style="width:120px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px"
       onchange="updateDispatchRemark('${p.id}',this.value)"></td>
@@ -8598,15 +8922,25 @@ function _v40_isInvoiceEligible(p, ord) {
   if (packedOut <= 0) return { eligible: false, reason: 'No packed boxes yet', alreadyInvoiced: false, state: 'not_packed' };
   const batch = p.batchNumber || '';
   const invState = (window._v39_invoiceState || {})[batch];
-  if (invState && (invState.hasPending || invState.hasReceived)) {
-    return { eligible: false, reason: invState.hasReceived ? 'Already invoiced' : 'Delivery already sent', alreadyInvoiced: true, state: invState.hasReceived ? 'invoiced' : 'pending' };
+  // v44Q PARTIAL-INVOICE: quantity-aware eligibility. A batch can be invoiced for the part of its
+  // packed quantity that is not yet invoiced. remainingQty = actual packed Lakhs (honours a partial
+  // last box) minus already-invoiced Lakhs (received + in-flight pending, accumulated in
+  // _v39_loadInvoiceState). Epsilon 0.01 L = the 2-decimal rounding granularity, so float noise
+  // cannot surface a phantom invoice.
+  const invoicedQty = (invState && invState.invoicedQty) || 0;
+  const remainingQty = Math.round((packedOut - invoicedQty) * 100) / 100;
+  const anyInvoiced = !!(invState && (invState.hasPending || invState.hasReceived));
+  if (anyInvoiced && remainingQty < 0.01) {
+    // Fully invoiced — packed quantity is entirely accounted for.
+    return { eligible: false, reason: invState.hasReceived ? 'Fully invoiced' : 'Delivery already sent', alreadyInvoiced: true, state: invState.hasReceived ? 'invoiced' : 'pending', remainingQty: 0 };
   }
   const sapDocEntry = ord?.sapDocEntry || null;
   const sapDocNum = ord?.sapDocNum || null;
   if (!sapDocEntry || !sapDocNum) {
     return { eligible: false, reason: 'No Sales Order Number linked', alreadyInvoiced: false, state: 'no_sap' };
   }
-  return { eligible: true, reason: null, alreadyInvoiced: false, state: 'ready' };
+  // Eligible: nothing invoiced yet, or packed exceeds invoiced (remainder available to invoice).
+  return { eligible: true, reason: null, alreadyInvoiced: false, state: anyInvoiced ? 'partial' : 'ready', remainingQty };
 }
 
 // v40 Phase 18.1: Toggle multi-select mode for Order View / Truck View invoice generation.
@@ -8717,7 +9051,16 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
       color = '#10b981';  // mint
       tooltip = 'Invoice request logged to Pending Reconciliation — SAP user creates the invoice in SAP; Sunloc poller reconciles automatically (~5 min)';
     }
-    return `<button class="btn btn-ghost btn-sm" title="${tooltip}" onclick="_v39_showInvoiceState('${batch}')" style="color:${color}">${status}</button>`;
+    // v44Q PARTIAL-INVOICE: when packed quantity exceeds what has been invoiced, also offer an
+    // Invoice button for the remaining quantity, alongside the current-state badge. The badge shows
+    // where the already-invoiced portion stands; the button bills only the uninvoiced remainder.
+    const _badge = `<button class="btn btn-ghost btn-sm" title="${tooltip}" onclick="_v39_showInvoiceState('${batch}')" style="color:${color}">${status}</button>`;
+    const _remQ = Math.round(((p.packedQty || 0) - (invState.invoicedQty || 0)) * 100) / 100;
+    if (_remQ >= 0.01 && ord?.sapDocEntry) {
+      const _remBtn = `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none;margin-left:4px" onclick="window._v40_invoiceSelections=new Set(['${p.id}']);_v40_openConsolidatedApprovalModal();" title="Invoice the remaining ${_remQ.toFixed(2)}L of packed stock not yet invoiced">🧾 Invoice ${_remQ.toFixed(2)}L</button>`;
+      return _badge + _remBtn;
+    }
+    return _badge;
   }
   // v39 Phase 9b: State 2: packed but no Sales Order Number — explain why no Invoice button.
   // Different message per origin so dispatch manager knows next step.
@@ -8956,6 +9299,10 @@ function renderTruckCard(truck, cap, truckIdx, zone) {
   } else if (truck.belowMin && !truck.isExportIndent) {
     extraBadges += `<span class="badge" style="background:rgba(0,230,118,0.1);color:#00e676;border:1px solid rgba(0,230,118,0.2);margin-left:6px;font-size:10px" title="Partial truck on final dispatch date — shipping as is">📅 Final Lot (partial OK)</span>`;
   }
+  // v44R: locked (in-progress, number/manifest frozen) badge
+  if (truck.locked) {
+    extraBadges += `<span class="badge" style="background:rgba(0,230,118,0.14);color:#00e676;border:1px solid rgba(0,230,118,0.3);margin-left:6px;font-size:10px" title="Locked on activation — number & manifest frozen while this truck is in progress; remaining boxes bin around it">🔒 Locked${truck.vehicleNo?(' · '+truck.vehicleNo):''}</span>`;
+  }
 
   return `
     <div style="background:var(--surface2);border:1px solid ${truck.held?'rgba(255,171,0,0.4)':(isFull?'var(--accent3)':'var(--border)')};border-radius:8px;padding:14px;cursor:pointer;${truck.held?'opacity:0.85':''}"
@@ -9002,6 +9349,7 @@ function renderTruckCard(truck, cap, truckIdx, zone) {
       })() : ''}
       <div style="font-size:11px;color:var(--text3)">${truck.orders.length} order${truck.orders.length!==1?'s':''} · click to expand</div>
       ${_v39_renderTruckInvoiceBtn(truck, truckIdx, zone)}
+      ${truck.locked ? `<button class="btn btn-sm" style="margin-top:6px;background:rgba(0,230,118,0.12);color:#00e676;border:1px solid rgba(0,230,118,0.3)" onclick="event.stopPropagation();_v44r_finalizeTruckPrompt('${zone.replace(/'/g,"\\'")}',${truck.truckNumber})">✅ Finalise &amp; roll remainder forward</button>` : ''}
     </div>
     <div id="truck-${truck.zone.replace(/\s/g,'-')}-${truck.truckNumber}" style="display:none;margin-top:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px">
       ${renderTruckOrdersTable(truck)}
@@ -9018,7 +9366,12 @@ function _v39_renderTruckInvoiceBtn(truck, truckIdx, zone) {
   if (!truck.orders || !truck.orders.length) return '';
   const eligible = truck.orders.filter(o => {
     const ord = state.orders.find(x => x.id === o.productionOrderId);
-    return ord?.sapDocEntry && (o.packedQty || 0) > 0;
+    if (!ord?.sapDocEntry || (o.packedQty || 0) <= 0) return false;
+    // v44Q PARTIAL-INVOICE: show the truck Invoice button only when some batch still has
+    // packed-but-uninvoiced quantity (remaining >= 0.01 L).
+    const _inv = (window._v39_invoiceState || {})[o.batchNumber] || {};
+    const _rem = Math.round(((o.packedQty || 0) - (_inv.invoicedQty || 0)) * 100) / 100;
+    return _rem >= 0.01;
   });
   if (!eligible.length) return '';
   // Count those already invoiced (in pending or received state)

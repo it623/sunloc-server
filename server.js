@@ -669,15 +669,6 @@ const MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_truck_scan_last_updated ON truck_scan_session_state(last_updated_at);`
   },
   {
-    version: 22,
-    name: 'invoice_scan_sessions',
-    sql: `CREATE TABLE IF NOT EXISTS invoice_scan_sessions (
-      invoice_id TEXT PRIMARY KEY,
-      scanned_json TEXT NOT NULL DEFAULT '[]',
-      saved_at TEXT DEFAULT (datetime('now'))
-    );`
-  },
-  {
     // v40 Phase 18.15: WO Multi-Customer Split
     // A WO order (e.g. 50-box batch 26ZC100) can be split into 1..N child customer orders.
     // Each child gets its own batch number (parent + suffix), customer, qty, and label range.
@@ -1080,6 +1071,51 @@ const MIGRATIONS = [
         by_user TEXT,
         ts TEXT NOT NULL DEFAULT (datetime('now'))
       );`
+  },
+  {
+    // v44Q: invoice_scan_sessions relocated from duplicate version 22 to 42 to restore the
+    // append-only strictly-ascending migration discipline. The table is also created by the PG
+    // bootstrap (CREATE TABLE IF NOT EXISTS) below, so re-applying this migration is a safe no-op.
+    version: 42,
+    name: 'invoice_scan_sessions',
+    sql: `CREATE TABLE IF NOT EXISTS invoice_scan_sessions (
+      invoice_id TEXT PRIMARY KEY,
+      scanned_json TEXT NOT NULL DEFAULT '[]',
+      saved_at TEXT DEFAULT (datetime('now'))
+    );`
+  },
+  {
+    // v44R Phase 2: dispatched-box aggregation. tracking_dispatch_actuals already stores
+    // dispatched_qty; add dispatched_boxes so the truck binner can compute remaining boxes
+    // (planned - dispatched) per lot. Populated by _recomputeDispatchActuals (SUM of record boxes
+    // + COUNT of legacy dispatch-out scans). SQLite path; PG bootstrap adds the column too.
+    version: 43,
+    name: 'dispatch_actuals_boxes',
+    sql: `ALTER TABLE tracking_dispatch_actuals ADD COLUMN dispatched_boxes REAL NOT NULL DEFAULT 0;`
+  },
+  {
+    // v44R Phase 2/3: stable truck identity via lock-on-activation. A truck is ephemeral (recomputed
+    // each render) UNTIL it is acted on — a truck-scan-session starts, or a partial dispatch/regularise
+    // hits one of its lots. At that point the client locks it: its number + manifest freeze here, and
+    // future re-bins lay remaining boxes AROUND locked trucks. manifest_json = [{planId,batchNumber,
+    // allocatedBoxes,allocatedQty}]. status: 'active' (locked, in progress) | 'finalized' (dispatched,
+    // any short remainder already rolled forward via the remaining-boxes re-bin).
+    version: 44,
+    name: 'dispatch_truck_locks',
+    sql: `CREATE TABLE IF NOT EXISTS dispatch_truck_locks (
+      truck_id TEXT PRIMARY KEY,
+      zone TEXT NOT NULL,
+      truck_number INTEGER,
+      manifest_json TEXT NOT NULL DEFAULT '[]',
+      status TEXT NOT NULL DEFAULT 'active',
+      vehicle_no TEXT,
+      lr_no TEXT,
+      locked_by TEXT,
+      locked_at TEXT,
+      finalized_by TEXT,
+      finalized_at TEXT,
+      remarks TEXT
+    );`
   },
 ];
 
@@ -2139,6 +2175,29 @@ async function ensurePostgresTables() {
         saved_at TEXT DEFAULT NOW()::TEXT
       )`);
     } catch (e) { console.warn('[v44Q PG] invoice_scan_sessions:', e.message); }
+
+    // v44R Phase 2: dispatched_boxes on tracking_dispatch_actuals (idempotent)
+    try {
+      await pgPool.query(`ALTER TABLE tracking_dispatch_actuals ADD COLUMN IF NOT EXISTS dispatched_boxes REAL NOT NULL DEFAULT 0`);
+    } catch (e) { console.warn('[v44R PG] dispatch_actuals dispatched_boxes:', e.message); }
+
+    // v44R Phase 2/3: dispatch_truck_locks — stable truck identity (lock-on-activation)
+    try {
+      await pgPool.query(`CREATE TABLE IF NOT EXISTS dispatch_truck_locks (
+        truck_id TEXT PRIMARY KEY,
+        zone TEXT NOT NULL,
+        truck_number INTEGER,
+        manifest_json TEXT NOT NULL DEFAULT '[]',
+        status TEXT NOT NULL DEFAULT 'active',
+        vehicle_no TEXT,
+        lr_no TEXT,
+        locked_by TEXT,
+        locked_at TEXT,
+        finalized_by TEXT,
+        finalized_at TEXT,
+        remarks TEXT
+      )`);
+    } catch (e) { console.warn('[v44R PG] dispatch_truck_locks:', e.message); }
 
     // ─── v40 Phase 18.15: WO Multi-Customer Split tables (PG) ────
     try {
@@ -4513,6 +4572,13 @@ app.post('/api/invoice/:id/regularise-dispatch', async (req, res) => {
     const who = (session && session.username) || req.body?.userName || 'admin';
     const ts  = new Date().toISOString();
     const newBatch = (batchNumber && String(batchNumber).trim()) ? String(batchNumber).trim() : (inv.batch_number || '');
+    // v44R 4b: batch number is MANDATORY at regularise. The deemed dispatch record keys on batch,
+    // and the truck binner reduces a lot's remaining boxes by its batch's dispatched total — so
+    // without a batch the regularised dispatch can't auto-reconcile out of the truck plan. Reject
+    // rather than create an orphan deemed record that silently leaves the lot stuck in the plan.
+    if (!newBatch || !String(newBatch).trim()) {
+      return res.status(400).json({ ok: false, error: 'Batch number is required to regularise a dispatch — it is needed to reconcile the truck plan. Please attach the batch.' });
+    }
     const rsn = (reason && String(reason).trim()) || 'Legacy / return / no-SO — regularised by admin';
     if (pgPool) {
       await pgPool.query(
@@ -12882,46 +12948,53 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
 async function _recomputeDispatchActuals(batchNumber, vehicleNo, invoiceNo) {
   if (!batchNumber) return 0;
   let totalQty = 0;
+  let totalBoxes = 0;
   // v40 P18.14d: dispatched_qty = sum of Phase 18 records + sum of legacy dispatch.out scan qty.
   // Both flows can co-exist on a straddle batch (started under v37, finished under v40 truck flow);
   // each represents distinct physical shipments. Planning consumes this value so it must match
   // Tracking's combined-source helpers.
+  // v44R Phase 2: also aggregate dispatched_boxes (record boxes + one box per legacy dispatch-out
+  // scan), so the truck binner can compute remaining = planned - dispatched per lot.
   if (pgPool) {
     const r1 = await pgPool.query(
-      `SELECT COALESCE(SUM(qty),0) AS total FROM tracking_dispatch_records WHERE batch_number=$1`,
+      `SELECT COALESCE(SUM(qty),0) AS total, COALESCE(SUM(boxes),0) AS boxes FROM tracking_dispatch_records WHERE batch_number=$1`,
       [batchNumber]
     );
     const r2 = await pgPool.query(
-      `SELECT COALESCE(SUM(qty),0) AS total FROM tracking_scans WHERE batch_number=$1 AND dept='dispatch' AND type='out'`,
+      `SELECT COALESCE(SUM(qty),0) AS total, COUNT(*) AS boxes FROM tracking_scans WHERE batch_number=$1 AND dept='dispatch' AND type='out'`,
       [batchNumber]
     );
     const phase18Qty = parseFloat(r1.rows[0]?.total || 0);
     const legacyQty = parseFloat(r2.rows[0]?.total || 0);
     totalQty = phase18Qty + legacyQty;
+    totalBoxes = (parseFloat(r1.rows[0]?.boxes || 0)) + (parseFloat(r2.rows[0]?.boxes || 0));
     await pgPool.query(`
-      INSERT INTO tracking_dispatch_actuals (batch_number,dispatched_qty,vehicle_no,invoice_no,updated_at)
-      VALUES ($1,$2,$3,$4,NOW())
+      INSERT INTO tracking_dispatch_actuals (batch_number,dispatched_qty,dispatched_boxes,vehicle_no,invoice_no,updated_at)
+      VALUES ($1,$2,$3,$4,$5,NOW())
       ON CONFLICT(batch_number) DO UPDATE SET
         dispatched_qty=EXCLUDED.dispatched_qty,
+        dispatched_boxes=EXCLUDED.dispatched_boxes,
         vehicle_no=COALESCE(EXCLUDED.vehicle_no, tracking_dispatch_actuals.vehicle_no),
         invoice_no=COALESCE(EXCLUDED.invoice_no, tracking_dispatch_actuals.invoice_no),
         updated_at=NOW()
-    `, [batchNumber, totalQty, vehicleNo||null, invoiceNo||null]);
+    `, [batchNumber, totalQty, totalBoxes, vehicleNo||null, invoiceNo||null]);
   } else {
-    const r1 = db.prepare(`SELECT COALESCE(SUM(qty),0) AS total FROM tracking_dispatch_records WHERE batch_number=?`).get(batchNumber);
-    const r2 = db.prepare(`SELECT COALESCE(SUM(qty),0) AS total FROM tracking_scans WHERE batch_number=? AND dept='dispatch' AND type='out'`).get(batchNumber);
+    const r1 = db.prepare(`SELECT COALESCE(SUM(qty),0) AS total, COALESCE(SUM(boxes),0) AS boxes FROM tracking_dispatch_records WHERE batch_number=?`).get(batchNumber);
+    const r2 = db.prepare(`SELECT COALESCE(SUM(qty),0) AS total, COUNT(*) AS boxes FROM tracking_scans WHERE batch_number=? AND dept='dispatch' AND type='out'`).get(batchNumber);
     const phase18Qty = parseFloat(r1?.total || 0);
     const legacyQty = parseFloat(r2?.total || 0);
     totalQty = phase18Qty + legacyQty;
+    totalBoxes = (parseFloat(r1?.boxes || 0)) + (parseFloat(r2?.boxes || 0));
     db.prepare(`
-      INSERT INTO tracking_dispatch_actuals (batch_number,dispatched_qty,vehicle_no,invoice_no,updated_at)
-      VALUES (?,?,?,?,datetime('now'))
+      INSERT INTO tracking_dispatch_actuals (batch_number,dispatched_qty,dispatched_boxes,vehicle_no,invoice_no,updated_at)
+      VALUES (?,?,?,?,?,datetime('now'))
       ON CONFLICT(batch_number) DO UPDATE SET
         dispatched_qty=excluded.dispatched_qty,
+        dispatched_boxes=excluded.dispatched_boxes,
         vehicle_no=COALESCE(excluded.vehicle_no, tracking_dispatch_actuals.vehicle_no),
         invoice_no=COALESCE(excluded.invoice_no, tracking_dispatch_actuals.invoice_no),
         updated_at=excluded.updated_at
-    `).run(batchNumber, totalQty, vehicleNo||null, invoiceNo||null);
+    `).run(batchNumber, totalQty, totalBoxes, vehicleNo||null, invoiceNo||null);
   }
   return totalQty;
 }
@@ -12970,6 +13043,111 @@ app.get('/api/tracking/dispatch-actuals', async (req, res) => {
     res.json({ok:true, actuals: rows});
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });
+
+// ════════════════════════════════════════════════════════════════════════
+// v44R Phase 2/3 — Stable truck identity (lock-on-activation)
+// ────────────────────────────────────────────────────────────────────────
+// A truck is ephemeral (recomputed each render) until acted on. The client LOCKS a truck the
+// moment a truck-scan-session starts, or a partial dispatch/regularise hits one of its lots: the
+// truck's number + manifest freeze here. The binner then renders locked trucks from their frozen
+// manifest and lays remaining unlocked boxes AROUND them (no renumbering of a truck in progress).
+// Short remainders roll forward automatically via the remaining-boxes re-bin — no server math here.
+
+// GET all truck locks (optionally by zone). Planning merges these into buildTruckPlans.
+app.get('/api/dispatch/truck-locks', async (req, res) => {
+  try {
+    const zone = req.query.zone ? String(req.query.zone) : null;
+    let rows;
+    if (pgPool) {
+      rows = zone
+        ? (await pgPool.query(`SELECT * FROM dispatch_truck_locks WHERE zone=$1`, [zone])).rows
+        : (await pgPool.query(`SELECT * FROM dispatch_truck_locks`)).rows;
+    } else {
+      rows = zone
+        ? db.prepare(`SELECT * FROM dispatch_truck_locks WHERE zone=?`).all(zone)
+        : db.prepare(`SELECT * FROM dispatch_truck_locks`).all();
+    }
+    res.json({ ok: true, locks: rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST lock/upsert a truck. Body: { truckId, zone, truckNumber, manifest:[{planId,batchNumber,
+// allocatedBoxes,allocatedQty}], vehicleNo, lrNo, lockedBy, remarks }. Idempotent on truckId:
+// re-locking refreshes the manifest/vehicle but never silently flips a finalized truck back to active.
+app.post('/api/dispatch/truck-lock', async (req, res) => {
+  try {
+    const b = req.body || {};
+    const truckId = (b.truckId && String(b.truckId).trim());
+    const zone = String(b.zone || '');
+    if (!truckId) return res.status(400).json({ ok: false, error: 'truckId required' });
+    if (!zone)    return res.status(400).json({ ok: false, error: 'zone required' });
+    const truckNumber = (b.truckNumber != null) ? parseInt(b.truckNumber, 10) : null;
+    const manifestJson = JSON.stringify(Array.isArray(b.manifest) ? b.manifest : []);
+    const vehicleNo = b.vehicleNo != null ? String(b.vehicleNo) : null;
+    const lrNo = b.lrNo != null ? String(b.lrNo) : null;
+    const lockedBy = String(b.lockedBy || 'unknown');
+    const remarks = b.remarks != null ? String(b.remarks) : null;
+    const now = new Date().toISOString();
+    if (pgPool) {
+      await pgPool.query(`
+        INSERT INTO dispatch_truck_locks (truck_id,zone,truck_number,manifest_json,status,vehicle_no,lr_no,locked_by,locked_at,remarks)
+        VALUES ($1,$2,$3,$4,'active',$5,$6,$7,$8,$9)
+        ON CONFLICT(truck_id) DO UPDATE SET
+          zone=EXCLUDED.zone,
+          truck_number=EXCLUDED.truck_number,
+          manifest_json=EXCLUDED.manifest_json,
+          vehicle_no=COALESCE(EXCLUDED.vehicle_no, dispatch_truck_locks.vehicle_no),
+          lr_no=COALESCE(EXCLUDED.lr_no, dispatch_truck_locks.lr_no),
+          remarks=COALESCE(EXCLUDED.remarks, dispatch_truck_locks.remarks)
+      `, [truckId, zone, truckNumber, manifestJson, vehicleNo, lrNo, lockedBy, now, remarks]);
+    } else {
+      db.prepare(`
+        INSERT INTO dispatch_truck_locks (truck_id,zone,truck_number,manifest_json,status,vehicle_no,lr_no,locked_by,locked_at,remarks)
+        VALUES (?,?,?,?,'active',?,?,?,?,?)
+        ON CONFLICT(truck_id) DO UPDATE SET
+          zone=excluded.zone,
+          truck_number=excluded.truck_number,
+          manifest_json=excluded.manifest_json,
+          vehicle_no=COALESCE(excluded.vehicle_no, dispatch_truck_locks.vehicle_no),
+          lr_no=COALESCE(excluded.lr_no, dispatch_truck_locks.lr_no),
+          remarks=COALESCE(excluded.remarks, dispatch_truck_locks.remarks)
+      `).run(truckId, zone, truckNumber, manifestJson, vehicleNo, lrNo, lockedBy, now, remarks);
+    }
+    res.json({ ok: true, truckId });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST finalize a locked truck. Body: { finalizedBy, remarks }. Marks it finalized; the physical
+// dispatch records were already written by the scan-out, and any short remainder rolls forward via
+// the remaining-boxes re-bin on the next render. We KEEP the row (status='finalized') so the truck
+// retains its number and manifest in history rather than vanishing.
+app.post('/api/dispatch/truck-lock/:truckId/finalize', async (req, res) => {
+  try {
+    const truckId = String(req.params.truckId);
+    const finalizedBy = String((req.body && req.body.finalizedBy) || 'unknown');
+    const remarks = (req.body && req.body.remarks != null) ? String(req.body.remarks) : null;
+    const now = new Date().toISOString();
+    if (pgPool) {
+      await pgPool.query(`UPDATE dispatch_truck_locks SET status='finalized', finalized_by=$1, finalized_at=$2, remarks=COALESCE($3,remarks) WHERE truck_id=$4`, [finalizedBy, now, remarks, truckId]);
+    } else {
+      db.prepare(`UPDATE dispatch_truck_locks SET status='finalized', finalized_by=?, finalized_at=?, remarks=COALESCE(?,remarks) WHERE truck_id=?`).run(finalizedBy, now, remarks, truckId);
+    }
+    res.json({ ok: true, truckId, status: 'finalized' });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// DELETE unlock a truck (re-plan on edits / abandon a not-yet-dispatched lock). Only removes the
+// lock row — it does NOT touch dispatch records, so anything already dispatched stays immutable.
+app.delete('/api/dispatch/truck-lock/:truckId', async (req, res) => {
+  try {
+    const truckId = String(req.params.truckId);
+    if (pgPool) { await pgPool.query(`DELETE FROM dispatch_truck_locks WHERE truck_id=$1`, [truckId]); }
+    else        { db.prepare(`DELETE FROM dispatch_truck_locks WHERE truck_id=?`).run(truckId); }
+    res.json({ ok: true, truckId, deleted: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+// ════════════════════════════════════════════════════════════════════════
+
 
 // ── Admin Backfill — manual entry of historical scan data ──
 app.post('/api/tracking/backfill', async (req, res) => {
