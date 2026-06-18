@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44T</title>
+<title>Sunloc Tracking Suite v1.0 · build v44V</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -575,7 +575,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44T</p>
+      <p>Tracking Suite v1.0 · build v44V</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -606,7 +606,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44T</p>
+      <p>Tracking Suite v1.0 · build v44V</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4337,7 +4337,7 @@ function renderDeptScan(dept){
       ${_rsActive&&_rsRows.length?`<button class="btn btn-sm btn-ghost" onclick="exportScansCsv('${dept}')">⬇ Export CSV</button>`:''}
       ${_rsActive?`<span style="font-size:12px;color:var(--text3)">${_rsLoading?'Loading…':_rsRows.length+' scans (max 5000, newest first)'}</span>`:''}
     </div>`:''}
-    <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table>
+    <div class="tbl-wrap"><table>
       <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Time</th><th>Batch / Box</th><th>Qty (L)</th><th>Type</th></tr></thead>
       <tbody id="recent-scans-${dept}">
       ${(_rsActive
@@ -4355,7 +4355,7 @@ function renderDeptScan(dept){
       </tr>`;
       }).join('')||`<tr><td colspan="4" class="text-center text-muted">${_rsActive?'No scans match the filter':'No scans recorded yet'}</td></tr>`}
       </tbody>
-      ${_rsActive&&_rsRows.length?(()=>{const ci=_rsRows.filter(s=>s.type==='in').length,co=_rsRows.filter(s=>s.type==='out').length,tq=_rsRows.reduce((a,s)=>a+(s.qty||0),0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${_rsRows.length}</td><td class="td-mono">IN:${ci} OUT:${co}</td><td class="td-mono">${fmt(tq)}L</td><td></td></tr></tfoot>`;})():''}
+      ${_rsActive&&_rsRows.length?(()=>{const ci=_rsRows.filter(s=>s.type==='in').length,co=_rsRows.filter(s=>s.type==='out').length,tq=_rsRows.reduce((a,s)=>a+(s.qty||0),0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2)"><td class="td-mono">TOTAL · ${_rsRows.length}</td><td class="td-mono">IN:${ci} OUT:${co}</td><td class="td-mono">${fmt(tq)}L</td><td></td></tr></tfoot>`;})():''}
     </table></div>
   </div>
   ${dept==='packing'?_renderPackingLedgerCard():''}`;
@@ -5396,7 +5396,9 @@ function _v39_renderInvoiceQueuePanel() {
         <input type="text" id="v40-queue-quick-scan" placeholder="Scan any box (e.g. 26V001-1) to auto-open its truck modal" onkeydown="if(event.key==='Enter'){_v40_quickScanFromQueue(this.value);this.value='';return false;}" style="flex:1;padding:5px 8px;font-size:12px;font-family:var(--mono);border:1px solid rgba(16,185,129,0.4);border-radius:4px;background:white">
         <button onclick="startCamera(v=>{var el=document.getElementById('v40-queue-quick-scan');if(el){el.value=v;_v40_quickScanFromQueue(v);el.value='';}})" style="background:#059669;color:white;border:none;border-radius:4px;padding:5px 10px;font-size:14px;cursor:pointer;white-space:nowrap">📷</button>
       </div>
-      ${groupsHtml}
+      <!-- v44U Issue 2: cap the queue list height so a long pending-Scan-Out list stays compact
+           and scrolls within its own panel instead of pushing the page down indefinitely. -->
+      <div style="max-height:60vh;overflow:auto">${groupsHtml}</div>
     </div>`;
 }
 

@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44T</p>
+      <p>Planning Suite v3.0 · build v44V</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -9054,11 +9054,26 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
     // v44Q PARTIAL-INVOICE: when packed quantity exceeds what has been invoiced, also offer an
     // Invoice button for the remaining quantity, alongside the current-state badge. The badge shows
     // where the already-invoiced portion stands; the button bills only the uninvoiced remainder.
-    const _badge = `<button class="btn btn-ghost btn-sm" title="${tooltip}" onclick="_v39_showInvoiceState('${batch}')" style="color:${color}">${status}</button>`;
-    const _remQ = Math.round(((p.packedQty || 0) - (invState.invoicedQty || 0)) * 100) / 100;
-    if (_remQ >= 0.01 && ord?.sapDocEntry) {
-      const _remBtn = `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none;margin-left:4px" onclick="window._v40_invoiceSelections=new Set(['${p.id}']);_v40_openConsolidatedApprovalModal();" title="Invoice the remaining ${_remQ.toFixed(2)}L of packed stock not yet invoiced">🧾 Invoice ${_remQ.toFixed(2)}L</button>`;
-      return _badge + _remBtn;
+    // v44V (issues 4/6): make the breakdown VISIBLE. Previously, when a remainder existed but the
+    // order had no SAP Sales Order linked, the row silently showed only the badge and the balance
+    // button "disappeared" with no explanation. Now the badge tooltip always carries the
+    // packed/invoiced/remaining numbers, and a remainder with no SO link shows an explicit reason.
+    const _pkd  = Math.round((p.packedQty || 0) * 100) / 100;
+    const _invd = Math.round((invState.invoicedQty || 0) * 100) / 100;
+    const _remQ = Math.round((_pkd - _invd) * 100) / 100;
+    const _bd = ` · Packed ${_pkd.toFixed(2)}L / Invoiced ${_invd.toFixed(2)}L / Balance ${_remQ.toFixed(2)}L`;
+    const _badge = `<button class="btn btn-ghost btn-sm" title="${tooltip}${_bd}" onclick="_v39_showInvoiceState('${batch}')" style="color:${color}">${status}</button>`;
+    if (_remQ >= 0.01) {
+      if (ord?.sapDocEntry) {
+        const _remBtn = `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none;margin-left:4px" onclick="window._v40_invoiceSelections=new Set(['${p.id}']);_v40_openConsolidatedApprovalModal();" title="Invoice the remaining ${_remQ.toFixed(2)}L of packed stock not yet invoiced">🧾 Invoice ${_remQ.toFixed(2)}L</button>`;
+        return _badge + _remBtn;
+      }
+      // Remainder exists but no SAP Sales Order is linked — a reconcilable invoice request cannot be
+      // created without it. Say so explicitly instead of hiding the button.
+      const _msg = `${_remQ.toFixed(2)}L packed is not yet invoiced, but this order has no SAP Sales Order linked. Link the Sales Order (Reconciliation / Edit Order → Sales Order ID) to invoice the balance.`;
+      const _safe = _msg.split("'").join("\\'");
+      const _hint = `<button class="btn btn-ghost btn-sm" title="${_msg}" onclick="alert('${_safe}')" style="color:#f59e0b;font-size:11px;margin-left:4px">🔗 +${_remQ.toFixed(2)}L · needs SAP SO</button>`;
+      return _badge + _hint;
     }
     return _badge;
   }
