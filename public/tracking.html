@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44W</title>
+<title>Sunloc Tracking Suite v1.0 · build v44Y</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -537,6 +537,10 @@ input[type=number]{font-family:var(--mono)}
 .text-center{text-align:center}
 .overflow-hidden{overflow:hidden}
 
+/* v44X FIX (Pending/Invoice Queue compaction): the tall mobile cards had NO desktop rule, so they
+   defaulted to visible at ALL widths — on desktop the queue rendered as a long stack of big cards
+   instead of the dense table. Hide the cards by default; the ≤700px rule below re-shows them on phones. */
+.iq-mobile-card{display:none}
 @media(max-width:700px){
   .iq-mobile-card{display:block!important}
   .iq-desktop-row{display:none!important}
@@ -575,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44W</p>
+      <p>Tracking Suite v1.0 · build v44Y</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -606,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44W</p>
+      <p>Tracking Suite v1.0 · build v44Y</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -12914,6 +12918,12 @@ async function refreshScans(){
     }
     const tbody=document.getElementById(`recent-scans-${dept}`);
     if(!tbody) return; // State updated silently
+    // v44X FIX (permanent): the 5-second refresh was overwriting this table with the latest 30
+    // LOCAL scans every cycle — so a user-selected date range (Recent Scans filter) showed correctly
+    // for a moment, then reverted to current-day entries. When a filter is active for this dept, the
+    // filtered result (_rsRows) owns the table; do NOT clobber it here. (Same fix covers packing,
+    // printing, print-inspection and AIM, which all share this refresh.)
+    if(window._rsActive && window._rsActive[dept]) return;
     const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
     tbody.innerHTML=scans.map(s=>{
       const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));

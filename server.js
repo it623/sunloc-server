@@ -11,6 +11,43 @@ const express = require('express');
 const cors    = require('cors');
 const path    = require('path');
 const fs      = require('fs');
+
+// ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
+// Invoice enrichment derives size/colour from an ItemCode. The server `pc_codes`
+// table (admin-saved + hand-edited + future PC-Master additions) is the authoritative
+// source and is queried FIRST (it wins). This map is the comprehensive shipped master
+// (public/pc-codes-data.js → PC_CODES_RAW), used only as a FALLBACK so a code that was
+// never saved server-side still resolves its size/colour. Loaded once and cached; a new
+// deploy of pc-codes-data.js refreshes it automatically on next startup.
+let _pcMasterMap = null;
+function _getPcMasterMap() {
+  if (_pcMasterMap) return _pcMasterMap;
+  _pcMasterMap = new Map();
+  try {
+    const txt = fs.readFileSync(path.join(__dirname, 'public', 'pc-codes-data.js'), 'utf8');
+    const start = txt.indexOf('{');
+    const end = txt.lastIndexOf('}');
+    if (start >= 0 && end > start) {
+      const raw = JSON.parse(txt.slice(start, end + 1));
+      for (const sz of Object.keys(raw)) {
+        const list = raw[sz] || [];
+        for (const e of list) {
+          if (!e || !e.c) continue;
+          const code = String(e.c).trim();
+          if (code && !_pcMasterMap.has(code)) _pcMasterMap.set(code, { size: sz, colour: e.n || '' });
+        }
+      }
+    }
+    console.log('[PC master] loaded ' + _pcMasterMap.size + ' codes from pc-codes-data.js (enrichment fallback)');
+  } catch (e) {
+    console.warn('[PC master] could not load pc-codes-data.js fallback:', e.message);
+  }
+  return _pcMasterMap;
+}
+function _pcMasterLookup(code) {
+  if (!code) return null;
+  return _getPcMasterMap().get(String(code).trim()) || null;
+}
 const crypto  = require('crypto');
 
 // v39: SAP B1 Service Layer client — handles login, session, audit, graceful degradation
@@ -2970,7 +3007,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44W' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44Y' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3072,10 +3109,19 @@ async function _doRefreshSapInvoices() {
             if (!pcCode) pcCode = pcRow.code || itemCode;
             if (!size)   size   = pcRow.size || '';
             if (!colour) colour = pcRow.colour || '';
-          } else if (!pcCode) {
-            // No PC master match — at least record the ItemCode so the column isn't blank.
-            pcCode = itemCode;
           }
+          // v44Y: still missing size/colour? fall back to the shipped PC master (pc-codes-data.js).
+          // The server pc_codes table (admin-saved / hand-edited) is queried above and WINS; this
+          // only fills codes that were never saved server-side.
+          if (!size || !colour) {
+            const pm = _pcMasterLookup(itemCode);
+            if (pm) {
+              if (!size)   size   = pm.size   || '';
+              if (!colour) colour = pm.colour || '';
+            }
+          }
+          // No match anywhere — at least record the ItemCode so the column isn't blank.
+          if (!pcCode) pcCode = itemCode;
         }
       }
     } catch (e) { console.warn('[v41s] pc/size/colour derivation failed:', e.message); }
@@ -3406,7 +3452,12 @@ async function _doRefreshSapInvoices() {
           if (itemCode) {
             const pcRow = (await pgPool.query(`SELECT code, size, colour FROM pc_codes WHERE code=$1 LIMIT 1`, [itemCode])).rows[0];
             if (pcRow) { pc = pcRow.code || itemCode; sz = pcRow.size || ''; col = pcRow.colour || ''; }
-            else pc = itemCode;
+            // v44Y: fall back to the shipped PC master for size/colour when the server table lacks them.
+            if (!sz || !col) {
+              const pm = _pcMasterLookup(itemCode);
+              if (pm) { if (!sz) sz = pm.size || ''; if (!col) col = pm.colour || ''; }
+            }
+            if (!pc) pc = itemCode;
           }
           const qtyL = lines.reduce((s, l) => s + (parseFloat(l.Quantity) || 0), 0);
           await pgPool.query(
@@ -3424,7 +3475,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44W' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44Y' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -9909,7 +9960,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44W',
+      build: 'v44Y',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -9918,7 +9969,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44W', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44Y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11242,7 +11293,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44W',
+      build: 'v44Y',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11251,7 +11302,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44W', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44Y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
