@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44Y</title>
+<title>Sunloc Tracking Suite v1.0 · build v44Z</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44Y</p>
+      <p>Tracking Suite v1.0 · build v44Z</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44Y</p>
+      <p>Tracking Suite v1.0 · build v44Z</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9112,6 +9112,8 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   const filterDept  = window._rptBDept  || '';
   const filterBatch = window._rptBBatch || '';
   const filterStatus = window._rptBStatus || '';  // v44P #11: '', 'indept', 'leftdept', 'closed'
+  const filterColour = window._rptBColour || '';   // v44Z: colour search filter
+  const filterPC     = window._rptBPC || '';        // v44Z: PC code search filter
 
   // Filter to month batches only
   const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
@@ -9154,8 +9156,18 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
           <option value="closed" ${filterStatus==='closed'?'selected':''}>Closed</option>
         </select>
       </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Search Colour</label>
+        <input type="text" value="${(filterColour||'').replace(/"/g,'&quot;')}" placeholder="e.g. Blue/White"
+          onchange="window._rptBColour=this.value;renderReportB()">
+      </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Search PC</label>
+        <input type="text" value="${(filterPC||'').replace(/"/g,'&quot;')}" placeholder="e.g. 2046"
+          onchange="window._rptBPC=this.value;renderReportB()">
+      </div>
       <div class="form-group" style="margin-bottom:0;display:flex;align-items:flex-end">
-        <button class="btn btn-secondary btn-sm" onclick="window._rptBDept='';window._rptBBatch='';window._rptBStatus='';renderReportB()">✕ Clear Filters</button>
+        <button class="btn btn-secondary btn-sm" onclick="window._rptBDept='';window._rptBBatch='';window._rptBStatus='';window._rptBColour='';window._rptBPC='';renderReportB()">✕ Clear Filters</button>
       </div>
     </div>`;
 
@@ -9170,11 +9182,13 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       batchSet = [...new Set(inScansAll.map(s=>s.batchNumber))];
     }
     if(filterBatch) batchSet = batchSet.filter(bn=>bn===filterBatch);
+    if(filterColour) batchSet = batchSet.filter(bn=>(getBatch(bn)?.colour||'').toLowerCase().includes(filterColour.toLowerCase()));
+    if(filterPC) batchSet = batchSet.filter(bn=>String(getBatch(bn)?.pcCode||'').toLowerCase().includes(filterPC.toLowerCase()));
     if(!batchSet.length) return;
     anyData = true;
     const hasWastage = dept==='aim'||dept==='printing'||dept==='pi';
     const _isAimDept = dept==='aim';
-    const _aimHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Gross Prod (L)</th><th>Wastage (L)</th><th>Avail. to Scan In (L)</th><th>Boxes IN</th><th>Production WIP (L)</th><th>Boxes OUT</th><th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
+    const _aimHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Colour</th><th>PC</th><th>Gross Prod (L)</th><th>Wastage (L)</th><th>Avail. to Scan In (L)</th><th>Boxes IN</th><th>Production WIP (L)</th><th>Boxes OUT</th><th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
     const _stdHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Prod WIP (L)</th><th>Boxes IN</th><th>Boxes OUT</th>${hasWastage?'<th>Wastage (L)</th>':''}<th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
     html+=`<div class="mb-16"><div class="card-title" style="color:${DEPT_CONFIG[dept].color}">${DEPT_CONFIG[dept].label}</div>
     <div class="tbl-wrap tbl-sticky"><table>
@@ -9222,6 +9236,8 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         html+=`<tr>
           <td class="td-bold td-mono">${batchNo}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
           <td class="text-sm">${batch?.customer||'-'}</td>
+          <td class="text-sm">${batch?.colour||'-'}</td>
+          <td class="td-mono text-sm">${batch?.pcCode||'-'}</td>
           <td class="td-mono">${grossProd>0?fmt(grossProd)+'L':'—'}</td>
           <td class="td-mono text-sm" style="color:var(--amber)">${(aimWaste.salvage+aimWaste.remelt)>0?fmt(aimWaste.salvage+aimWaste.remelt)+'L':'—'}</td>
           <td class="td-mono">${_avail>0?fmt(_avail)+'L':'—'}</td>
@@ -9252,7 +9268,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     if(_bN){
       if (_isAimDept) {
         html+=`<tr style="background:var(--surface2);font-weight:800">
-          <td>TOTAL (${_bN})</td><td></td>
+          <td>TOTAL (${_bN})</td><td></td><td></td><td></td>
           <td class="td-mono">${_bGross>0?fmt(_bGross)+'L':'—'}</td>
           <td class="td-mono">${_bW>0?fmt(_bW)+'L':'—'}</td>
           <td class="td-mono">${_bAvail>0?fmt(_bAvail)+'L':'—'}</td>
@@ -9764,8 +9780,21 @@ function _v41_renderReportEInner(){
       : 0;
     const packUnptd_c = useSS ? (_ss(b.batchNumber,'packing').in + localExtra('packing','out'))
                                : scansForBatch.filter(s=>s.dept==='packing'&&s.type==='in').length;
-    const packUnptd=!b.isPrinted?boxToLakh(packUnptd_c,b.size):0;
-    const packPtd=b.isPrinted?boxToLakh(packUnptd_c,b.size):0;
+    // v44Z fix (a): the packing column shows the ACTUAL packed quantity — the sum of scan qty, which
+    // honours a partial last box and excludes reversed scans — matching the Dispatch Plan's packed
+    // figure. Previously this was box-count × pack-size (boxToLakh), which rounded a partial last box
+    // UP to a full box (e.g. Report E 27.50 vs the true Dispatch 27.35). The server scan summary's
+    // inQty is SUM(qty) excluding reversals; the local-only fallback sums scan qty directly. The box
+    // COUNT (packUnptd_c) is untouched and still drives any box-count displays. This column does not
+    // feed WIP or A-Grade (those use the frozen getBatchWIPBreakdown), so nothing frozen changes.
+    const _localPackInQty = state.scans
+      .filter(s=>s.batchNumber===b.batchNumber && s.dept==='packing' && s.type==='in' && s._local)
+      .reduce((a,s)=>a+(parseFloat(s.qty)||0), 0);
+    const _packInQty = useSS
+      ? ((_ss(b.batchNumber,'packing').inQty || 0) + _localPackInQty)
+      : scansForBatch.filter(s=>s.dept==='packing'&&s.type==='in').reduce((a,s)=>a+(parseFloat(s.qty)||0), 0);
+    const packUnptd=!b.isPrinted?_packInQty:0;
+    const packPtd=b.isPrinted?_packInQty:0;
     // v40 Phase 18.14d: sum legacy + Phase 18 (straddle batches have both flows for different shipments)
     const _legBoxes = useSS ? (_ss(b.batchNumber,'dispatch').out + localExtra('dispatch','out'))
                             : scansForBatch.filter(s=>s.dept==='dispatch'&&s.type==='out').length;

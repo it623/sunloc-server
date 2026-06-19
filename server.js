@@ -3007,7 +3007,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44Y' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44Z' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3475,7 +3475,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44Y' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44Z' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -4129,36 +4129,38 @@ app.post('/api/invoice/request-batch', async (req, res) => {
     for (const b of batches) {
       const batchRes = { batchNumber: b.batchNumber, ok: false };
       try {
-        // Validate
-        if (!b.batchNumber || !b.customer || !b.sapDocEntry) {
-          batchRes.error = 'missing required fields (batchNumber/customer/sapDocEntry)';
+        // Validate. v44Z: accept a Sales Order NUMBER (sapDocNum) when the internal DocEntry is
+        // absent — many orders are linked by SO number only. The DocEntry is resolved below.
+        if (!b.batchNumber || !b.customer || (!b.sapDocEntry && !b.sapDocNum)) {
+          batchRes.error = 'missing required fields (need batchNumber, customer, and a Sales Order DocEntry or Number)';
           results.push(batchRes); continue;
         }
         if (!(parseInt(b.boxes) > 0) || !(parseFloat(b.qtyLakhs) > 0)) {
           batchRes.error = 'invalid boxes or qty (both must be > 0)';
           results.push(batchRes); continue;
         }
-        // Check for existing pending/in-flight invoice for this batch.
-        // v41 P19.3: include new pending_reconciliation + reconciled statuses; keep legacy ones for transition.
-        let existing;
-        if (pgPool) {
-          const ex = await pgPool.query(
-            `SELECT id FROM invoice_requests WHERE batch_number=$1 AND status IN ('pending','sent_to_sap','pending_reconciliation') LIMIT 1`,
-            [b.batchNumber]
-          );
-          existing = ex.rows[0];
-        } else {
-          existing = db.prepare(`SELECT id FROM invoice_requests WHERE batch_number=? AND status IN ('pending','sent_to_sap','pending_reconciliation') LIMIT 1`).get(b.batchNumber);
+        // v44Z: resolve the SAP Sales Order DocEntry from the SO Number via the indent cache when
+        // only the number was supplied (order linked by SO number, not by internal DocEntry). The
+        // poller reconciles by DocEntry, so it is required; if the SO isn't cached, say so plainly
+        // instead of failing silently.
+        if (!b.sapDocEntry && b.sapDocNum) {
+          let cached;
+          if (pgPool) {
+            const r = await pgPool.query(`SELECT sap_doc_entry FROM sap_indent_cache WHERE sap_doc_num=$1 LIMIT 1`, [String(b.sapDocNum).trim()]);
+            cached = r.rows[0];
+          } else {
+            cached = db.prepare(`SELECT sap_doc_entry FROM sap_indent_cache WHERE sap_doc_num=? LIMIT 1`).get(String(b.sapDocNum).trim());
+          }
+          if (cached && cached.sap_doc_entry != null) {
+            b.sapDocEntry = cached.sap_doc_entry;
+          } else {
+            batchRes.error = 'Sales Order ' + b.sapDocNum + ' not found in SAP indent cache — re-pull indents (SAP button) then retry';
+            results.push(batchRes); continue;
+          }
         }
-        if (existing) {
-          // v44T Point 3: this guard blocks only a still-IN-FLIGHT request (not yet reconciled) to
-          // prevent duplicate simultaneous requests for the same batch. It must NOT include
-          // 'reconciled' — a batch whose prior invoice was generated and reconciled (e.g. yesterday)
-          // is free to be invoiced again for a further partial dispatch. Including 'reconciled' here
-          // permanently blocked re-invoicing and stranded the batch.
-          batchRes.error = 'already has an in-flight invoice request awaiting SAP (id: ' + existing.id + ')';
-          results.push(batchRes); continue;
-        }
+        // v44Z (Ishan): the in-flight duplicate guard is REMOVED. Multiple in-flight invoices for one
+        // batch are permitted — e.g. four 5L invoices on a 20L batch while three await SAP. The only
+        // gate that remains is the 115%-of-SO over-dispatch tolerance checked below.
         // v41 P19.3: Check 115% over-dispatch tolerance for this batch
         let overdispatchReason = null;
         try {
@@ -9960,7 +9962,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44Y',
+      build: 'v44Z',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -9969,7 +9971,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44Y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44Z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11293,7 +11295,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44Y',
+      build: 'v44Z',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11302,7 +11304,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44Y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44Z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

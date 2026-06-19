@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44Y</p>
+      <p>Planning Suite v3.0 · build v44Z</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -5872,7 +5872,7 @@ function _v39_openTruckInvoiceModal(truckIdx, zone) {
   // (we don't bundle multiple batches into one SAP invoice — SAP wants one invoice per SO usually)
   const eligible = truck.orders.filter(o => {
     const ord = state.orders.find(x => x.id === o.productionOrderId);
-    if (!ord?.sapDocEntry || (o.packedQty || 0) <= 0) return false;
+    if ((!ord?.sapDocEntry && !(ord?.sapDocNum && String(ord.sapDocNum).trim())) || (o.packedQty || 0) <= 0) return false;
     // v44Q PARTIAL-INVOICE: include only batches whose packed quantity is not yet fully invoiced,
     // and (below) bill the remaining quantity — keeps the truck path consistent with Order View so
     // a partially-invoiced batch is never double-billed.
@@ -6122,7 +6122,7 @@ function _v40_openConsolidatedApprovalModal() {
       cardCode: ord.cardCode || '',
       poNumber: ord.poNumber || '',
       sapDocEntry: ord.sapDocEntry,
-      sapDocNum: ord.sapDocNum,
+      sapDocNum: ord.sapDocNum || '',
       size: _invSize,
       colour: plan.colour || ord.colour,
       pcCode: plan.pcCode || ord.pcCode,
@@ -8936,7 +8936,10 @@ function _v40_isInvoiceEligible(p, ord) {
   }
   const sapDocEntry = ord?.sapDocEntry || null;
   const sapDocNum = ord?.sapDocNum || null;
-  if (!sapDocEntry || !sapDocNum) {
+  // v44Z: an order is invoiceable when it carries EITHER the internal DocEntry OR a Sales Order
+  // Number (the server resolves the DocEntry from the number). Previously this required BOTH, so
+  // an order linked by SO number only (the common case) was wrongly marked "No Sales Order linked".
+  if (!sapDocEntry && !sapDocNum) {
     return { eligible: false, reason: 'No Sales Order Number linked', alreadyInvoiced: false, state: 'no_sap' };
   }
   // Eligible: nothing invoiced yet, or packed exceeds invoiced (remainder available to invoice).
@@ -9064,7 +9067,7 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
     const _bd = ` · Packed ${_pkd.toFixed(2)}L / Invoiced ${_invd.toFixed(2)}L / Balance ${_remQ.toFixed(2)}L`;
     const _badge = `<button class="btn btn-ghost btn-sm" title="${tooltip}${_bd}" onclick="_v39_showInvoiceState('${batch}')" style="color:${color}">${status}</button>`;
     if (_remQ >= 0.01) {
-      if (ord?.sapDocEntry) {
+      if (ord?.sapDocEntry || (ord?.sapDocNum && String(ord.sapDocNum).trim())) {
         const _remBtn = `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none;margin-left:4px" onclick="window._v40_invoiceSelections=new Set(['${p.id}']);_v40_openConsolidatedApprovalModal();" title="Invoice the remaining ${_remQ.toFixed(2)}L of packed stock not yet invoiced">🧾 Invoice ${_remQ.toFixed(2)}L</button>`;
         return _badge + _remBtn;
       }
@@ -9080,7 +9083,11 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
   // v39 Phase 9b: State 2: packed but no Sales Order Number — explain why no Invoice button.
   // Different message per origin so dispatch manager knows next step.
   const sapDocEntry = ord?.sapDocEntry || null;
-  if (!sapDocEntry) {
+  // v44Z: an order is invoiceable when it has the internal DocEntry OR a Sales Order Number (the
+  // server resolves the DocEntry from the number via the indent cache). Previously this gate looked
+  // only at sapDocEntry, so SO-number-linked orders showed the "PO:" chip and never an Invoice button.
+  const _hasSO = !!(sapDocEntry || (ord?.sapDocNum && String(ord.sapDocNum).trim()));
+  if (!_hasSO) {
     let reason, tooltip;
     if (ord?.woStatus === 'wo') {
       reason  = '🔗 Awaiting Reconciliation';
@@ -9381,7 +9388,7 @@ function _v39_renderTruckInvoiceBtn(truck, truckIdx, zone) {
   if (!truck.orders || !truck.orders.length) return '';
   const eligible = truck.orders.filter(o => {
     const ord = state.orders.find(x => x.id === o.productionOrderId);
-    if (!ord?.sapDocEntry || (o.packedQty || 0) <= 0) return false;
+    if ((!ord?.sapDocEntry && !(ord?.sapDocNum && String(ord.sapDocNum).trim())) || (o.packedQty || 0) <= 0) return false;
     // v44Q PARTIAL-INVOICE: show the truck Invoice button only when some batch still has
     // packed-but-uninvoiced quantity (remaining >= 0.01 L).
     const _inv = (window._v39_invoiceState || {})[o.batchNumber] || {};
