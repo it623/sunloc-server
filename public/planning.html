@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44ZC</p>
+      <p>Planning Suite v3.0 · build v44ZD</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -5696,7 +5696,7 @@ function _v39_openGenerateInvoiceModal(planId, mode) {
   if (!p) { toast('Dispatch plan not found', 'var(--red)'); return; }
   const ord = state.orders.find(o => o.id === p.productionOrderId);
   if (!ord) { toast('Production order not found for this plan', 'var(--red)'); return; }
-  if (!ord.sapDocEntry) {
+  if (!ord.sapDocEntry && !ord.sapDocNum) {
     alert('⚠️ This order has no Sales Order Number. Cannot generate invoice.\n\nThe order must be linked to a SAP Sales Order before invoicing. Edit the order to add the Sales Order Number, or recreate it via the Unplanned Orders page.');
     return;
   }
@@ -8666,6 +8666,11 @@ function renderDispatch() {
       <div class="tab active" onclick="switchDispatchViewTab(this,'orders')">📋 Order View</div>
       <div class="tab" onclick="switchDispatchViewTab(this,'trucks')">🚚 Truck View</div>
       <div style="flex:1"></div>
+      <!-- v44ZD Issue 2A: open this whole Order/Truck view in a fresh tab (full app instance —
+           all zones, view tabs, multi-select and search work natively there via the #dispatch hash). -->
+      <button class="btn btn-sm" onclick="window.open(location.pathname + '#dispatch', '_blank')"
+              title="Open the dispatch view in a new browser tab"
+              style="background:var(--surface2);color:var(--text);border:1px solid var(--border);font-size:11px;font-weight:600;padding:5px 12px;margin-right:8px">🗗 New Tab</button>
       <!-- v40 Phase 18.1: multi-select mode toggle (only shown for invoice-eligible roles) -->
       ${(currentUser?.role === 'admin' || currentUser?.role === 'planning_manager' || currentUser?.role === 'dispatch_manager') ? `
         <button class="btn btn-sm" id="v40-multiselect-btn"
@@ -8704,7 +8709,8 @@ function renderDispatch() {
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
             <div class="card-title" style="margin:0">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
             <input type="text" placeholder="🔍 Search customer / batch / PC..." id="pov-quick-search-${z}"
-              oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;filterPlanningOrderView('${z}')"
+              value="${((window._planningOrderViewFilters||{})._quickSearch||'').replace(/"/g,'&quot;')}"
+              oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;_povDebouncedFilter('${z}')"
               style="padding:6px 12px;border:1.5px solid var(--accent3);border-radius:6px;font-size:12px;width:250px;background:var(--surface2);color:var(--text)">
           </div>
           <!-- v37I B6: Filter bar — hidden by default -->
@@ -8764,6 +8770,11 @@ function renderDispatch() {
                     style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px">
               <option value="">All Status</option>
               ${distinctStatuses.map(st=>`<option value="${st}" ${((window._planningOrderViewFilters||{}).status===st)?'selected':''}>${st}</option>`).join('')}
+            </select>
+            <!-- v44ZD Issue 2B: Action/Invoice-state filter. Labels mirror the row Actions/Status badges. -->
+            <select onchange="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters.actionState=this.value;filterPlanningOrderView('${z}')"
+                    style="padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px" title="Filter by dispatch / invoice action state">
+              ${[['','All Actions'],['dispatched','Dispatched'],['ready','Ready to Invoice'],['partial','Invoice Pending — Partial'],['pending','Invoice Pending — Delivery Sent'],['invoiced','Fully Invoiced'],['no_sap','No SAP Indent / Not Linked'],['not_packed','Not Packed Yet'],['export_pending','Awaiting Container']].map(([v,label])=>`<option value="${v}" ${((window._planningOrderViewFilters||{}).actionState===v && v!=='')?'selected':''}>${label}</option>`).join('')}
             </select>
             <button class="btn btn-ghost btn-sm" style="padding:4px 10px;font-size:11px"
                     onclick="window._planningOrderViewFilters={};document.querySelectorAll('.pov-filter-bar input, .pov-filter-bar select').forEach(i=>{if(i.tagName==='SELECT')i.selectedIndex=0;else i.value='';});filterPlanningOrderView('${z}')">✕ Clear</button>
@@ -8903,6 +8914,13 @@ function renderDispatchRow(p) {
     ? `<span style="color:${packedOut>=p.qty*0.99?'var(--accent3)':'var(--accent2)'};">${fmt(packedOut)}L</span><span style="color:var(--text3);font-size:10px"> (${packPct}%)</span>`
     : '<span style="color:var(--text3);font-size:11px">—</span>';
 
+  // v44ZD Issue 2B: derive the row's action/status state for the Order-View filter, reusing the
+  // exact same logic that drives the Actions/Status badges (no separate source of truth).
+  const _povElig = (typeof _v40_isInvoiceEligible === 'function') ? _v40_isInvoiceEligible(p, ord) : { state: '' };
+  const _povActionState = isDispatched ? 'dispatched'
+                        : isExportPend ? 'export_pending'
+                        : (_povElig.state || 'pending');
+
   // v37I B6: data-attrs for sticky filter bar (filterPlanningOrderView matches against these)
   const dataAttrs = [
     `data-customer="${(p.customer||'').replace(/"/g,'&quot;').toLowerCase()}"`,
@@ -8915,7 +8933,8 @@ function renderDispatchRow(p) {
     `data-ptdup="${p.packing==='PTD'?'PTD':'UP'}"`,
     `data-zone="${(p.zone||'').replace(/"/g,'&quot;')}"`,
     `data-planneddate="${p.plannedDate||''}"`,
-    `data-status="${p.status||'pending'}"`
+    `data-status="${p.status||'pending'}"`,
+    `data-actionstate="${_povActionState}"`
   ].join(' ');
 
   return `<tr ${dataAttrs}>
@@ -9200,6 +9219,14 @@ function jumpToZoneTrucks(zone) {
 // v37I B6: Apply AND-logic filters to Planning Order View table rows in-place using data-attributes.
 // Filter state persists across navigations within session via window._planningOrderViewFilters.
 // Hides total row when filters are active (recomputing partial total would be expensive).
+// v44ZD Issue 2C: debounce the Order-View quick search so typing over 600+ rows stays responsive
+// (the raw oninput re-filtered the whole table on every keystroke). 180ms after the last keystroke.
+let _povDebounceTimer = null;
+function _povDebouncedFilter(zone) {
+  if (_povDebounceTimer) clearTimeout(_povDebounceTimer);
+  _povDebounceTimer = setTimeout(() => { try { filterPlanningOrderView(zone); } catch(e){} }, 180);
+}
+
 function filterPlanningOrderView(zone) {
   const f = window._planningOrderViewFilters || {};
   const panel = document.querySelector(`.dispatch-zone-panel[data-zone="${zone}"]`);
@@ -9229,6 +9256,8 @@ function filterPlanningOrderView(zone) {
     if (f.plannedDateFrom && ds.planneddate && ds.planneddate < f.plannedDateFrom) visible = false;
     if (f.plannedDateTo && ds.planneddate && ds.planneddate > f.plannedDateTo) visible = false;
     if (f.status && ds.status !== f.status) visible = false;
+    // v44ZD Issue 2B: action/status filter (Dispatched, Ready to Invoice, Invoice Pending, etc.)
+    if (f.actionState && ds.actionstate !== f.actionState) visible = false;
     row.style.display = visible ? '' : 'none';
     if (visible) visibleCount++;
   });
@@ -13086,7 +13115,10 @@ async function _planningAutoSync(){
   if(!document.hidden){
     // v41z FIX: if user is active (scrolling, clicking, typing) — sync data silently
     // without re-rendering the screen. User stays exactly where they are.
-    if(_userIsActive()){
+    // v44ZD Issue 2C: the Dispatch Order View is a long, search-heavy table — a background
+    // re-render wipes scroll position and the active search. Treat the dispatch page as always
+    // "active" so the timer updates state silently and never disrupts the view here.
+    if(_userIsActive() || state.currentPage === 'dispatch'){
       // Silent sync — update state in background, no render, no screen change
       try {
         const _url = SYNC._url || localStorage.getItem('sunloc_server_url') || '';
@@ -13120,6 +13152,25 @@ async function _planningAutoSync(){
   }
 }
 _planningAutoSyncTimer = setInterval(_planningAutoSync, 30000);
+
+// v44ZD Issue 2A: deep-link routing so "Open in new tab" (planning.html#dispatch) lands directly on
+// the requested page. Retries briefly until the app is authed/ready and the target nav item exists
+// and is permitted for this role; otherwise it leaves the default landing page untouched.
+(function _v44zd_hashRoute(){
+  function tryRoute(attempt){
+    try {
+      const pg = (location.hash || '').replace(/^#/, '').trim();
+      if (!pg) return;
+      const navItem = document.querySelector(`.nav-item[onclick*="'${pg}'"]`);
+      const visible = navItem && navItem.style.display !== 'none';
+      if (typeof navigate === 'function' && visible && typeof state !== 'undefined' && state.currentPage !== pg) {
+        navigate(pg); return;
+      }
+      if (!visible && attempt < 16) { setTimeout(() => tryRoute(attempt + 1), 500); }
+    } catch(e) { if (attempt < 16) setTimeout(() => tryRoute(attempt + 1), 500); }
+  }
+  window.addEventListener('load', () => setTimeout(() => tryRoute(0), 600));
+})();
 
 // v40 P18.14i Fix 3: Background poll of over-limit-machines endpoint every 5 min.
 // Result is logged to console + stashed on window._v40_overLimitFromServer so the next
