@@ -45,6 +45,14 @@ html, body { height:100%; background:var(--bg); color:var(--text); font-family:v
 #main { flex:1; overflow:hidden; display:flex; flex-direction:column; }
 #topbar { background:var(--surface); border-bottom:2px solid var(--border2); padding:0 24px; height:56px; display:flex; align-items:center; justify-content:space-between; flex-shrink:0; box-shadow:0 2px 6px rgba(26,19,8,0.08); }
 #content { flex:1; overflow-y:auto; padding:24px; }
+/* v44ZE Issue 2A: "Open in New Tab" lands here (planning.html#dispatch-table). Strips the sidebar,
+   topbar and task banner so the Order View table renders full-width with no horizontal scroll, while
+   keeping every native control (zone tabs, view toggle, multi-select, search) and action working. */
+body.pov-fulltable-mode #sidebar,
+body.pov-fulltable-mode #topbar,
+body.pov-fulltable-mode #v40-task-banner { display:none !important; }
+body.pov-fulltable-mode #content { padding:12px 16px !important; }
+body.pov-fulltable-mode .dispatch-prelude { display:none !important; }
 
 /* SIDEBAR — deep forest green, high contrast */
 .sidebar-logo { padding:20px 16px 12px; border-bottom:1px solid rgba(255,255,255,0.1); }
@@ -523,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44ZD</p>
+      <p>Planning Suite v3.0 · build v44ZE</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1282,8 +1290,11 @@ const SYNC = (() => {
     // Previously only the dispatch page re-rendered post-load, so if a load landed after the first
     // render (e.g. Printing Plan), the page sat empty. Guard: skip if the user is actively typing in a
     // field (prevents disrupting input / "screen flipping"); _renderImmediate already protects search.
+    // v44ZE Issue 2C: the Dispatch Order View is a long, search-heavy table — a post-load re-render
+    // wipes scroll + the active search even when no field is focused. Skip the auto re-render here on
+    // the dispatch page (data still updates silently in state; explicit actions re-render normally).
     try {
-      if (!_userIsFocused()) { _renderImmediate(); }
+      if (!_userIsFocused() && state.currentPage !== 'dispatch') { _renderImmediate(); }
     } catch(e) { /* render is best-effort; never let it break the load */ }
 
     // STEP 3: Load tracking/DPR status in background
@@ -5696,7 +5707,7 @@ function _v39_openGenerateInvoiceModal(planId, mode) {
   if (!p) { toast('Dispatch plan not found', 'var(--red)'); return; }
   const ord = state.orders.find(o => o.id === p.productionOrderId);
   if (!ord) { toast('Production order not found for this plan', 'var(--red)'); return; }
-  if (!ord.sapDocEntry && !ord.sapDocNum) {
+  if (!ord.sapDocEntry && !ord.sapDocNum && !(ord.poNumber && String(ord.poNumber).trim())) {
     alert('⚠️ This order has no Sales Order Number. Cannot generate invoice.\n\nThe order must be linked to a SAP Sales Order before invoicing. Edit the order to add the Sales Order Number, or recreate it via the Unplanned Orders page.');
     return;
   }
@@ -5712,7 +5723,7 @@ function _v39_openGenerateInvoiceModal(planId, mode) {
     cardCode: ord.cardCode || '',
     poNumber: ord.poNumber || '',
     sapDocEntry: ord.sapDocEntry,
-    sapDocNum: ord.sapDocNum || '',
+    sapDocNum: ord.sapDocNum || ord.poNumber || '',
     size: p.size || ord.size,
     colour: p.colour || ord.colour,
     pcCode: p.pcCode || ord.pcCode,
@@ -8638,6 +8649,7 @@ function renderDispatch() {
 
   let html = `
     ${bannerHtml}
+    <div class="dispatch-prelude">
     <div class="alert alert-info mb-4">🚚 Truck dispatch is triggered when ≥ <strong>${getTruckCapacity()} boxes</strong> are ready for a zone/route.</div>
     <div class="card mb-4">
       <div class="card-title">Zone Readiness Dashboard</div>
@@ -8662,15 +8674,17 @@ function renderDispatch() {
         }).join('')}
       </div>
     </div>
+    </div>
     <div class="tabs" id="dispatch-view-tabs" style="margin-bottom:0;display:flex;align-items:center;gap:0">
       <div class="tab active" onclick="switchDispatchViewTab(this,'orders')">📋 Order View</div>
       <div class="tab" onclick="switchDispatchViewTab(this,'trucks')">🚚 Truck View</div>
       <div style="flex:1"></div>
-      <!-- v44ZD Issue 2A: open this whole Order/Truck view in a fresh tab (full app instance —
-           all zones, view tabs, multi-select and search work natively there via the #dispatch hash). -->
-      <button class="btn btn-sm" onclick="window.open(location.pathname + '#dispatch', '_blank')"
-              title="Open the dispatch view in a new browser tab"
-              style="background:var(--surface2);color:var(--text);border:1px solid var(--border);font-size:11px;font-weight:600;padding:5px 12px;margin-right:8px">🗗 New Tab</button>
+      <!-- v44ZE Issue 2A: open ONLY the Order/Truck table (no sidebar/topbar/dashboard) in a fresh
+           tab via the #dispatch-table hash — full-width like Report E, with every native control kept.
+           Hidden when we're already in that table-only tab. -->
+      ${document.body.classList.contains('pov-fulltable-mode') ? '' : `<button class="btn btn-sm" onclick="window.open(location.pathname + '#dispatch-table', '_blank')"
+              title="Open just this table in a new full-width tab"
+              style="background:var(--surface2);color:var(--text);border:1px solid var(--border);font-size:11px;font-weight:600;padding:5px 12px;margin-right:8px">🗗 New Tab</button>`}
       <!-- v40 Phase 18.1: multi-select mode toggle (only shown for invoice-eligible roles) -->
       ${(currentUser?.role === 'admin' || currentUser?.role === 'planning_manager' || currentUser?.role === 'dispatch_manager') ? `
         <button class="btn btn-sm" id="v40-multiselect-btn"
@@ -8708,10 +8722,15 @@ function renderDispatch() {
         <div class="card mb-4">
           <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
             <div class="card-title" style="margin:0">${z==='all'?'All Orders':'Zone: '+z} <span class="text-dim text-sm">— ${zPlans.length} orders</span></div>
-            <input type="text" placeholder="🔍 Search customer / batch / PC..." id="pov-quick-search-${z}"
-              value="${((window._planningOrderViewFilters||{})._quickSearch||'').replace(/"/g,'&quot;')}"
-              oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;_povDebouncedFilter('${z}')"
-              style="padding:6px 12px;border:1.5px solid var(--accent3);border-radius:6px;font-size:12px;width:250px;background:var(--surface2);color:var(--text)">
+            <div style="display:flex;gap:6px;align-items:center">
+              <button class="btn btn-sm" title="Show/hide column, status & action filters"
+                onclick="const b=this.closest('.card').querySelector('.pov-filter-bar'); if(b){const open=(b.style.display==='none'||!b.style.display); b.style.display=open?'flex':'none'; this.style.background=open?'var(--accent3)':'var(--surface2)'; this.style.color=open?'#fff':'var(--text)';}"
+                style="background:var(--surface2);color:var(--text);border:1px solid var(--border);font-size:11px;font-weight:600;padding:5px 10px;white-space:nowrap">🎚 Filters</button>
+              <input type="text" placeholder="🔍 Search customer / batch / PC..." id="pov-quick-search-${z}"
+                value="${((window._planningOrderViewFilters||{})._quickSearch||'').replace(/"/g,'&quot;')}"
+                oninput="window._planningOrderViewFilters=window._planningOrderViewFilters||{};window._planningOrderViewFilters._quickSearch=this.value;_povDebouncedFilter('${z}')"
+                style="padding:6px 12px;border:1.5px solid var(--accent3);border-radius:6px;font-size:12px;width:250px;background:var(--surface2);color:var(--text)">
+            </div>
           </div>
           <!-- v37I B6: Filter bar — hidden by default -->
           <div class="pov-filter-bar" data-zone="${z}" style="display:none;gap:6px;flex-wrap:wrap;padding:8px;background:var(--surface2);border-radius:4px;margin-bottom:6px;border:1px solid var(--border)">
@@ -8990,10 +9009,12 @@ function _v40_isInvoiceEligible(p, ord) {
   }
   const sapDocEntry = ord?.sapDocEntry || null;
   const sapDocNum = ord?.sapDocNum || null;
-  // v44Z: an order is invoiceable when it carries EITHER the internal DocEntry OR a Sales Order
-  // Number (the server resolves the DocEntry from the number). Previously this required BOTH, so
-  // an order linked by SO number only (the common case) was wrongly marked "No Sales Order linked".
-  if (!sapDocEntry && !sapDocNum) {
+  const poNum = (ord?.poNumber && String(ord.poNumber).trim()) || null;
+  // v44Z/v44ZE: an order is invoiceable when it carries the internal DocEntry, a Sales Order Number,
+  // OR a PO/reference number (the server resolves the DocEntry from the number). This mirrors the row
+  // "linked" badge — which already counts poNumber — so the button can no longer show as eligible while
+  // the invoice path reports "no Sales Order linked" (the v44ZD gap for PO-linked orders like 26ZG111).
+  if (!sapDocEntry && !sapDocNum && !poNum) {
     return { eligible: false, reason: 'No Sales Order Number linked', alreadyInvoiced: false, state: 'no_sap' };
   }
   // Eligible: nothing invoiced yet, or packed exceeds invoiced (remainder available to invoice).
@@ -13159,12 +13180,18 @@ _planningAutoSyncTimer = setInterval(_planningAutoSync, 30000);
 (function _v44zd_hashRoute(){
   function tryRoute(attempt){
     try {
-      const pg = (location.hash || '').replace(/^#/, '').trim();
+      let pg = (location.hash || '').replace(/^#/, '').trim();
       if (!pg) return;
+      // v44ZE Issue 2A: #dispatch-table = open the Order/Truck table only (strip the app chrome).
+      if (pg === 'dispatch-table') { document.body.classList.add('pov-fulltable-mode'); pg = 'dispatch'; }
       const navItem = document.querySelector(`.nav-item[onclick*="'${pg}'"]`);
       const visible = navItem && navItem.style.display !== 'none';
       if (typeof navigate === 'function' && visible && typeof state !== 'undefined' && state.currentPage !== pg) {
         navigate(pg); return;
+      }
+      if (typeof navigate === 'function' && visible && document.body.classList.contains('pov-fulltable-mode') && state.currentPage === pg) {
+        // already on the page but mode just applied — re-render so the chrome-strip takes effect
+        try { render(); } catch(e){} return;
       }
       if (!visible && attempt < 16) { setTimeout(() => tryRoute(attempt + 1), 500); }
     } catch(e) { if (attempt < 16) setTimeout(() => tryRoute(attempt + 1), 500); }
