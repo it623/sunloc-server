@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44ZB</title>
+<title>Sunloc Tracking Suite v1.0 · build v44ZC</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZB</p>
+      <p>Tracking Suite v1.0 · build v44ZC</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZB</p>
+      <p>Tracking Suite v1.0 · build v44ZC</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -5990,7 +5990,8 @@ function _v39_buildScanOutModalBody() {
   return `
     <div style="background:var(--surface2);border-radius:6px;padding:12px;margin-bottom:14px;font-size:12px;line-height:1.6">
       <div style="display:grid;grid-template-columns:130px 1fr;gap:4px 12px">
-        <div style="color:var(--text3)">Sales Order Number:</div><div style="font-family:var(--mono);font-weight:700;color:#0891b2">${inv.sap_doc_num || '—'}</div>
+        <div style="color:var(--text3)">Sales Order Number:</div><div style="font-family:var(--mono);font-weight:700;color:#0891b2">${inv.base_so_doc_num || '—'}</div>
+        <div style="color:var(--text3)">Invoice No:</div><div style="font-family:var(--mono);font-weight:700">${inv.sap_invoice_no || inv.sap_doc_num || '—'}</div>
         <div style="color:var(--text3)">DocEntry:</div><div style="font-family:var(--mono)">${inv.sap_doc_entry}</div>
         <div style="color:var(--text3)">Customer:</div><div style="font-weight:600">${inv.customer || '—'}</div>
         <div style="color:var(--text3)">Batch:</div><div style="font-family:var(--mono)">${inv.batch_number}</div>
@@ -7104,7 +7105,8 @@ function _v39_showInvoiceDetail(invoiceId) {
     <div style="font-size:12px;line-height:1.7">
       <div style="font-weight:700;color:#0e7490;margin-bottom:8px;font-size:13px">SAP Reference</div>
       <div style="background:var(--surface2);border-radius:6px;padding:10px 14px;margin-bottom:14px;display:grid;grid-template-columns:140px 1fr;gap:4px 12px">
-        <div style="color:var(--text3)">Sales Order Number:</div><div style="font-family:var(--mono);font-weight:700;color:#0891b2">${inv.sap_doc_num || '—'}</div>
+        <div style="color:var(--text3)">Sales Order Number:</div><div style="font-family:var(--mono);font-weight:700;color:#0891b2">${inv.base_so_doc_num || '—'}</div>
+        <div style="color:var(--text3)">Invoice No:</div><div style="font-family:var(--mono);font-weight:700">${inv.sap_invoice_no || inv.sap_doc_num || '—'}</div>
         <div style="color:var(--text3)">DocEntry:</div><div style="font-family:var(--mono)">${inv.sap_doc_entry || '—'}</div>
         <div style="color:var(--text3)">Invoice Date:</div><div>${invDate}</div>
         <div style="color:var(--text3)">Source:</div><div>${inv.source === 'direct_sap' ? 'Direct SAP (no Sunloc request)' : 'Sunloc-triggered'}</div>
@@ -7446,7 +7448,8 @@ function _v39_openDirectSapApproveModal(invoiceId) {
           <div style="font-size:12px;color:var(--text2)">This invoice was created directly in SAP without a corresponding Sunloc invoice request. Verify the details below and optionally attach a batch_number so it enters the dispatch flow.</div>
         </div>
         <div style="background:var(--surface2);border-radius:6px;padding:10px;margin-bottom:14px;display:grid;grid-template-columns:130px 1fr;gap:4px 12px;font-size:12px">
-          <div style="color:var(--text3)">Sales Order Number:</div><div style="font-family:var(--mono);font-weight:700">${inv.sap_doc_num || '—'}</div>
+          <div style="color:var(--text3)">Sales Order Number:</div><div style="font-family:var(--mono);font-weight:700">${inv.base_so_doc_num || '—'}</div>
+        <div style="color:var(--text3)">Invoice No:</div><div style="font-family:var(--mono);font-weight:700">${inv.sap_invoice_no || inv.sap_doc_num || '—'}</div>
           <div style="color:var(--text3)">Sales Order ID:</div><div style="font-family:var(--mono)">${inv.sap_doc_entry || '—'}</div>
           <div style="color:var(--text3)">Customer:</div><div>${inv.customer || '—'}</div>
           <div style="color:var(--text3)">PO Number:</div><div style="font-family:var(--mono)">${inv.po_number || '—'}</div>
@@ -7521,7 +7524,8 @@ function _v39_openDeemedScanOutModal(invoiceId) {
           <div style="font-size:12px;color:var(--text2)">This will mark the invoice as <strong>dispatched without physical box scanning</strong>. A dispatch record will be created with "DEEMED: &lt;reason&gt;" in the remarks for audit. Use only for documentation-only dispatches or remote-warehouse handoffs where boxes never pass through Sunloc dispatch.</div>
         </div>
         <div style="background:var(--surface2);border-radius:6px;padding:10px;margin-bottom:14px;display:grid;grid-template-columns:130px 1fr;gap:4px 12px;font-size:12px">
-          <div style="color:var(--text3)">Sales Order Number:</div><div style="font-family:var(--mono);font-weight:700">${inv.sap_doc_num || '—'}</div>
+          <div style="color:var(--text3)">Sales Order Number:</div><div style="font-family:var(--mono);font-weight:700">${inv.base_so_doc_num || '—'}</div>
+        <div style="color:var(--text3)">Invoice No:</div><div style="font-family:var(--mono);font-weight:700">${inv.sap_invoice_no || inv.sap_doc_num || '—'}</div>
           <div style="color:var(--text3)">Customer:</div><div>${inv.customer || '—'}</div>
           <div style="color:var(--text3)">Batch:</div><div style="font-family:var(--mono)">${inv.batch_number || '—'}</div>
           <div style="color:var(--text3)">Boxes:</div><div style="font-family:var(--mono);font-weight:700">${inv.total_boxes || 0}</div>

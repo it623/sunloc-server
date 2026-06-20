@@ -1154,6 +1154,21 @@ const MIGRATIONS = [
       remarks TEXT
     );`
   },
+  {
+    // v44ZC (v44AD): SO-number reconciliation. SAP invoices created via the standard
+    // SO -> Delivery -> Invoice chain reference the Delivery (BaseType 15), not the SO, so the
+    // poller's SO-DocEntry/batch matches miss and the request never reconciles (dead scan-out).
+    // The reliable cross-document key is the SO NUMBER: it appears in the invoice's Comments
+    // ("Based On Sales Orders 237") and is known on the request at creation. Storing it explicitly
+    // on both tables lets us match number-to-number with no dependence on the indent cache (which
+    // prunes completed SOs, so the old DocNum->DocEntry bridge fails at reconcile time).
+    //   invoice_requests.so_doc_num     = the SO number this request is for
+    //   invoices_received.base_so_doc_num = SO number parsed from the invoice's Comments
+    version: 45,
+    name: 'so_number_reconciliation_columns',
+    sql: `ALTER TABLE invoice_requests ADD COLUMN so_doc_num TEXT;
+          ALTER TABLE invoices_received ADD COLUMN base_so_doc_num TEXT;`
+  },
 ];
 
 function runMigrations() {
@@ -2404,6 +2419,26 @@ async function ensurePostgresTables() {
 
     // ─── v41 P19.3: invoice_requests + invoices_received reconciliation fields (PG) ─
     try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS reconciled_at TEXT`); } catch (e) { console.warn('[v41 P19.3 PG] add reconciled_at:', e.message); }
+    // v44ZC (v44AD): SO-number reconciliation columns (see migration 45)
+    try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS so_doc_num TEXT`); } catch (e) { console.warn('[v44ZC PG] add invoice_requests.so_doc_num:', e.message); }
+    try { await pgPool.query(`ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS base_so_doc_num TEXT`); } catch (e) { console.warn('[v44ZC PG] add invoices_received.base_so_doc_num:', e.message); }
+    // v44ZC (v44AD): one-time backfill so already-stuck requests/invoices (created before these
+    // columns) self-heal on deploy. (a) Requests hold the SO number in po_number — copy it into
+    // so_doc_num. (b) Invoices: parse the SO number out of each stored invoice's Comments. After
+    // this, the v44N retry pass reconciles them on the next poll via the so_doc_num match.
+    try {
+      const _r1 = await pgPool.query(`UPDATE invoice_requests SET so_doc_num = NULLIF(po_number,'') WHERE so_doc_num IS NULL AND po_number IS NOT NULL AND po_number <> '' AND status='pending_reconciliation'`);
+      const _bf = await pgPool.query(`SELECT sap_doc_entry, payload_json FROM invoices_received WHERE (base_so_doc_num IS NULL OR base_so_doc_num='') AND source='direct_sap' AND payload_json IS NOT NULL LIMIT 5000`);
+      let _bfN = 0;
+      for (const row of _bf.rows) {
+        try {
+          const pj = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {});
+          const so = ((pj.Comments || '').match(/Sales Orders?\s+(\d+)/i) || [])[1] || null;
+          if (so) { await pgPool.query(`UPDATE invoices_received SET base_so_doc_num=$1 WHERE sap_doc_entry=$2 AND (base_so_doc_num IS NULL OR base_so_doc_num='')`, [so, row.sap_doc_entry]); _bfN++; }
+        } catch {}
+      }
+      console.log(`[v44ZC] SO-number backfill: requests.so_doc_num rows=${_r1.rowCount}, invoices.base_so_doc_num set=${_bfN}`);
+    } catch (e) { console.warn('[v44ZC] SO-number backfill error:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS reconciled_with_invoice_id TEXT`); } catch (e) { console.warn('[v41 P19.3 PG] add reconciled_with_invoice_id:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS is_overdispatch_approved INTEGER NOT NULL DEFAULT 0`); } catch (e) { console.warn('[v41 P19.3 PG] add is_overdispatch_approved:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS overdispatch_approved_by TEXT`); } catch (e) { console.warn('[v41 P19.3 PG] add overdispatch_approved_by:', e.message); }
@@ -3007,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZB' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZC' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3179,6 +3214,16 @@ async function _doRefreshSapInvoices() {
             pcCode, size, colour,
             totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload, totalQtyLakhs);
       }
+      // v44ZC (v44AD): capture the real SO NUMBER from the invoice's Comments ("Based On Sales
+      // Orders 237 ...") and store it separately from the invoice number (sap_doc_num=DocNum). The
+      // modal can then show the true SO instead of the invoice number, and reconciliation matches on it.
+      try {
+        const _baseSoNum = ((inv.Comments || '').match(/Sales Orders?\s+(\d+)/i) || [])[1] || null;
+        if (_baseSoNum) {
+          if (pgPool) await pgPool.query(`UPDATE invoices_received SET base_so_doc_num=$1 WHERE sap_doc_entry=$2 AND (base_so_doc_num IS NULL OR base_so_doc_num='')`, [_baseSoNum, inv.DocEntry]);
+          else        db.prepare(`UPDATE invoices_received SET base_so_doc_num=? WHERE sap_doc_entry=? AND (base_so_doc_num IS NULL OR base_so_doc_num='')`).run(_baseSoNum, inv.DocEntry);
+        }
+      } catch (e) { console.warn('[v44ZC] set invoice base_so_doc_num:', e.message); }
       if (invReqId) {
         try {
           if (pgPool) {
@@ -3401,10 +3446,13 @@ async function _doRefreshSapInvoices() {
             // DocEntry in sap_doc_entry), so reconciliation can't silently fail on that ambiguity.
             const soDocEntry = soRow.rows[0] ? soRow.rows[0].sap_doc_entry : soNum;
             if (!soDocEntry) continue;
-            // Find pending request with this SO DocEntry
+            // Find pending request by SO DocEntry OR — v44ZC (v44AD) — by SO NUMBER directly
+            // (so_doc_num), the cache-independent key. The DocEntry path needs the indent cache to
+            // resolve the SO number, but the cache prunes completed SOs, so it fails at reconcile
+            // time; the so_doc_num match (recorded on the request at creation) reconciles regardless.
             const req = await pgPool.query(
-              `SELECT id, batch_number, boxes, qty_lakhs FROM invoice_requests WHERE sap_doc_entry=$1 AND status='pending_reconciliation' ORDER BY created_at ASC`,
-              [soDocEntry]
+              `SELECT id, batch_number, boxes, qty_lakhs FROM invoice_requests WHERE (sap_doc_entry=$1 OR so_doc_num=$2) AND status='pending_reconciliation' ORDER BY created_at ASC`,
+              [soDocEntry, String(soNum)]
             );
             for (const pr of req.rows) {
               const recId = `inv_${iv.sap_doc_entry}`;
@@ -3475,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZB' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZC' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -4055,6 +4103,14 @@ app.post('/api/invoice/request', async (req, res) => {
             preLinkedInvoiceRow ? new Date().toISOString() : null,
             preLinkedInvoiceRow ? preLinkedInvoiceRow.id : null);
       }
+      // v44ZC (v44AD): record the SO NUMBER on the request (see request-batch handler).
+      try {
+        const _soNum = (body.sapDocNum && String(body.sapDocNum).trim()) || (body.poNumber && String(body.poNumber).trim()) || null;
+        if (_soNum) {
+          if (pgPool) await pgPool.query(`UPDATE invoice_requests SET so_doc_num=$1 WHERE id=$2`, [_soNum, id]);
+          else        db.prepare(`UPDATE invoice_requests SET so_doc_num=? WHERE id=?`).run(_soNum, id);
+        }
+      } catch (e) { console.warn('[v44ZC] set request so_doc_num:', e.message); }
       // v41r: if we pre-linked, promote the invoice row in the same logical operation.
       if (preLinkedInvoiceRow) {
         try {
@@ -4270,6 +4326,15 @@ app.post('/api/invoice/request-batch', async (req, res) => {
               preLinkedInv ? new Date().toISOString() : null,
               preLinkedInv ? preLinkedInv.id : null);
         }
+        // v44ZC (v44AD): record the SO NUMBER on the request so the poller can reconcile the
+        // returning invoice number-to-number against its Comments, with no indent-cache dependence.
+        try {
+          const _soNum = (b.sapDocNum && String(b.sapDocNum).trim()) || (b.poNumber && String(b.poNumber).trim()) || null;
+          if (_soNum) {
+            if (pgPool) await pgPool.query(`UPDATE invoice_requests SET so_doc_num=$1 WHERE id=$2`, [_soNum, id]);
+            else        db.prepare(`UPDATE invoice_requests SET so_doc_num=? WHERE id=?`).run(_soNum, id);
+          }
+        } catch (e) { console.warn('[v44ZC] set request so_doc_num:', e.message); }
         // v41r: promote the invoice if we pre-linked.
         if (preLinkedInv) {
           try {
@@ -10118,7 +10183,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZB',
+      build: 'v44ZC',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10127,7 +10192,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZB', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZC', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11451,7 +11516,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZB',
+      build: 'v44ZC',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11460,7 +11525,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZB', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZC', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
