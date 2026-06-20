@@ -3007,7 +3007,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44Z' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZB' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3475,7 +3475,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44Z' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZB' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -4628,6 +4628,141 @@ app.get('/api/invoice/truck-scan-session/:truckNumber', async (req, res) => {
   }
 });
 
+// ── v44ZB (v44AB): batch + customer + qty fallback reconciliation ────────────────────────────
+// Root cause (proven via batch 26ZG113): when a SAP invoice arrives based on a DIFFERENT Sales
+// Order than the Sunloc request recorded, the poller's strict sap_doc_entry match fails, so the
+// invoice is filed source='direct_sap', invoice_request_id=null. The goods then dispatch (deemed /
+// regularise), but the original invoice_request is never cleared and sits in pending_reconciliation
+// forever. This fallback matches on batch_number + customer + qty_lakhs (NOT boxes — direct_sap rows
+// carry total_boxes=0 until separately enriched), within the 115% over-dispatch ceiling. It AUTO-
+// reconciles only on a clean single match; multiple candidates or an out-of-band qty are surfaced as
+// a proposal (_fallbackProposal) and left in the list — never silently cleared. Reconcile semantics
+// mirror the poller exactly (request -> 'reconciled' + refs; invoice promoted direct_sap -> sunloc +
+// linked). No sap-client.js / SAP API involvement — purely our own tables.
+const _RECON_OVER  = 1.15;   // 115% over-dispatch ceiling (matches dispatch tolerance)
+const _RECON_UNDER = 0.99;   // small float-rounding slack on the low side
+
+async function _orphanInvoicesForRequest(reqRow) {
+  const batch = reqRow.batch_number || '';
+  const cust  = reqRow.customer || '';
+  if (!batch.trim() || !cust.trim()) return [];
+  if (pgPool) {
+    const r = await pgPool.query(
+      `SELECT * FROM invoices_received
+        WHERE invoice_request_id IS NULL
+          AND dispatch_status='dispatched'
+          AND LOWER(TRIM(batch_number)) = LOWER(TRIM($1))
+          AND LOWER(TRIM(customer))     = LOWER(TRIM($2))
+        ORDER BY invoice_date ASC`,
+      [batch, cust]
+    );
+    return r.rows;
+  }
+  return db.prepare(
+    `SELECT * FROM invoices_received
+      WHERE invoice_request_id IS NULL
+        AND dispatch_status='dispatched'
+        AND LOWER(TRIM(batch_number)) = LOWER(TRIM(?))
+        AND LOWER(TRIM(customer))     = LOWER(TRIM(?))
+      ORDER BY invoice_date ASC`
+  ).all(batch, cust);
+}
+
+async function _applyFallbackReconcile(reqRow, inv) {
+  // Mirror the poller's reconcile: request -> reconciled (+ SAP refs), invoice -> sunloc + linked.
+  // Guards (status='pending_reconciliation', invoice_request_id IS NULL) keep it idempotent + race-safe.
+  const docNum = String(inv.sap_doc_num || '');
+  if (pgPool) {
+    await pgPool.query(
+      `UPDATE invoice_requests
+          SET status='reconciled', sap_response_doc_num=$1, sap_response_doc_entry=$2,
+              reconciled_at=NOW()::TEXT, reconciled_with_invoice_id=$3, updated_at=NOW()::TEXT
+        WHERE id=$4 AND status='pending_reconciliation'`,
+      [docNum, inv.sap_doc_entry || null, inv.id, reqRow.id]
+    );
+    await pgPool.query(
+      `UPDATE invoices_received
+          SET source='sunloc', invoice_request_id=$1,
+              batch_number=COALESCE(NULLIF(batch_number,''), $2)
+        WHERE id=$3 AND invoice_request_id IS NULL`,
+      [reqRow.id, reqRow.batch_number || null, inv.id]
+    );
+  } else {
+    db.prepare(
+      `UPDATE invoice_requests
+          SET status='reconciled', sap_response_doc_num=?, sap_response_doc_entry=?,
+              reconciled_at=datetime('now'), reconciled_with_invoice_id=?, updated_at=datetime('now')
+        WHERE id=? AND status='pending_reconciliation'`
+    ).run(docNum, inv.sap_doc_entry || null, inv.id, reqRow.id);
+    db.prepare(
+      `UPDATE invoices_received
+          SET source='sunloc', invoice_request_id=?,
+              batch_number=COALESCE(NULLIF(batch_number,''), ?)
+        WHERE id=? AND invoice_request_id IS NULL`
+    ).run(reqRow.id, reqRow.batch_number || null, inv.id);
+  }
+  console.log(`[v44ZB fallback-recon] request ${reqRow.id} (batch ${reqRow.batch_number}) reconciled via invoice ${inv.id} DocNum=${docNum} on batch+customer+qty match`);
+}
+
+// Request-side: evaluate one pending request. Returns {reconciled:true} on a clean single auto-match,
+// {proposal:[...]} when ambiguous (multiple candidates or qty out of band), or null when no match.
+async function _fallbackReconcileRequest(reqRow) {
+  if (!reqRow || reqRow.status !== 'pending_reconciliation') return null;
+  const cands = await _orphanInvoicesForRequest(reqRow);
+  if (!cands.length) return null;
+  const reqQty = parseFloat(reqRow.qty_lakhs) || 0;
+  if (cands.length === 1 && reqQty > 0) {
+    const q = parseFloat(cands[0].total_qty_lakhs) || 0;
+    if (q >= reqQty * _RECON_UNDER && q <= reqQty * _RECON_OVER) {
+      await _applyFallbackReconcile(reqRow, cands[0]);
+      return { reconciled: true, invoiceId: cands[0].id };
+    }
+  }
+  return {
+    proposal: cands.map(c => ({
+      invoiceId: c.id, docNum: c.sap_doc_num, sapDocEntry: c.sap_doc_entry,
+      qty: c.total_qty_lakhs, boxes: c.total_boxes, dispatchStatus: c.dispatch_status
+    }))
+  };
+}
+
+// Invoice-side: a freshly-dispatched, unlinked invoice clears a single matching pending request.
+async function _fallbackReconcileInvoice(invId) {
+  let inv;
+  if (pgPool) inv = (await pgPool.query(`SELECT * FROM invoices_received WHERE id=$1`, [invId])).rows[0];
+  else        inv = db.prepare(`SELECT * FROM invoices_received WHERE id=?`).get(invId);
+  if (!inv || inv.invoice_request_id || inv.dispatch_status !== 'dispatched') return null;
+  if (!inv.batch_number || !inv.customer) return null;
+  let reqs;
+  if (pgPool) {
+    reqs = (await pgPool.query(
+      `SELECT * FROM invoice_requests
+        WHERE status='pending_reconciliation'
+          AND LOWER(TRIM(batch_number)) = LOWER(TRIM($1))
+          AND LOWER(TRIM(customer))     = LOWER(TRIM($2))
+        ORDER BY created_at ASC`,
+      [inv.batch_number, inv.customer]
+    )).rows;
+  } else {
+    reqs = db.prepare(
+      `SELECT * FROM invoice_requests
+        WHERE status='pending_reconciliation'
+          AND LOWER(TRIM(batch_number)) = LOWER(TRIM(?))
+          AND LOWER(TRIM(customer))     = LOWER(TRIM(?))
+        ORDER BY created_at ASC`
+    ).all(inv.batch_number, inv.customer);
+  }
+  if (reqs.length !== 1) return null;   // only auto-clear an unambiguous single request
+  const reqRow = reqs[0];
+  const reqQty = parseFloat(reqRow.qty_lakhs) || 0;
+  const q = parseFloat(inv.total_qty_lakhs) || 0;
+  if (reqQty > 0 && q >= reqQty * _RECON_UNDER && q <= reqQty * _RECON_OVER) {
+    await _applyFallbackReconcile(reqRow, inv);
+    return { reconciled: true, requestId: reqRow.id };
+  }
+  return null;
+}
+
 // v41ZS — POST /api/invoice/:id/regularise-dispatch
 // Admin-only. Regularise a legacy / return / no-SO invoice (whether physically dispatched or not)
 // WITHOUT a scan-out. The dispatch officer can't push these through the normal flow because there's
@@ -4727,6 +4862,9 @@ app.post('/api/invoice/:id/regularise-dispatch', async (req, res) => {
     } catch (e) { console.warn('[v44P #5] regularise dispatch-record create failed:', e.message); }
     try { logAudit(who, 'admin', 'invoice', 'INVOICE_REGULARISE_DISPATCH',
       `Regularised legacy dispatch for invoice ${invId} (SO ${inv.sap_doc_num || '—'}) batch=${newBatch || '(none)'}: ${rsn}`, req.ip); } catch {}
+    // v44ZB (v44AB): a regularised (now-dispatched) unlinked invoice may match a pending request
+    // by batch+customer+qty — clear that orphan immediately so it never sits in reconciliation.
+    try { await _fallbackReconcileInvoice(invId); } catch (e) { console.warn('[v44ZB fallback-recon] regularise sweep:', e.message); }
     res.json({ ok: true, id: invId, batch_number: newBatch || null, dispatch_status: 'dispatched', is_legacy_closed: true });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -5278,6 +5416,9 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
     } catch (e) {
       console.warn('[v39 P16] dispatch_plans annotate failed:', e.message);
     }
+    // v44ZB (v44AB): a deemed-dispatched, unlinked invoice may match a pending request by
+    // batch+customer+qty — clear that orphan immediately so it never sits in reconciliation.
+    try { await _fallbackReconcileInvoice(invId); } catch (e) { console.warn('[v44ZB fallback-recon] deemed sweep:', e.message); }
     res.json({
       ok: true,
       dispatch_record_id: recId,
@@ -6793,7 +6934,22 @@ app.get('/api/invoice/pending-reconciliation', async (req, res) => {
          LIMIT 500`
       ).all();
     }
-    res.json({ ok: true, count: rows.length, requests: rows });
+    // v44ZB (v44AB): before returning, run the batch+customer+qty fallback for each pending
+    // request. Clean single matches against a dispatched, unlinked invoice auto-reconcile and drop
+    // off the list (this clears shipped orphans whose invoice arrived on a different SO than the
+    // request recorded — the strict sap_doc_entry match the poller relies on misses these). Ambiguous
+    // requests (multiple candidates or out-of-band qty) stay, annotated with _fallbackProposal so an
+    // admin can confirm. Idempotent + race-safe via the UPDATE guards inside _applyFallbackReconcile.
+    const out = [];
+    for (const row of rows) {
+      let outcome = null;
+      try { outcome = await _fallbackReconcileRequest(row); }
+      catch (e) { console.warn('[v44ZB fallback-recon] list sweep error:', e.message); }
+      if (outcome && outcome.reconciled) continue;            // auto-cleared — omit from the list
+      if (outcome && outcome.proposal) row._fallbackProposal = outcome.proposal;
+      out.push(row);
+    }
+    res.json({ ok: true, count: out.length, requests: out });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -9962,7 +10118,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44Z',
+      build: 'v44ZB',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -9971,7 +10127,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44Z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZB', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11295,7 +11451,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44Z',
+      build: 'v44ZB',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11304,7 +11460,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44Z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZB', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

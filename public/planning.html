@@ -523,7 +523,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44Z</p>
+      <p>Planning Suite v3.0 · build v44ZB</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -8138,7 +8138,37 @@ function buildTruckPlans(zone) {
       if (truck.orders.length > 0) trucks.push(truck);
     }
   } else {
-    // Non-export zones: original greedy fill across orders
+    // v44ZA (v44AC): LOT-ATOMIC, PACKED-FIRST two-phase fill for domestic zones.
+    //
+    // A "lot" is the atomic dispatch unit already produced upstream by the <50L one-shot /
+    // >=50L 50-50|60-40 split rule (each leg carries its own lotNo/lotTotal). The binner NEVER
+    // separates a lot's packed boxes from its pending boxes across trucks — the only split that
+    // remains is the unavoidable capacity overflow (a single lot exceeding truck capacity).
+    //
+    //   Phase 1 — bin only FULLY-PACKED lots (every remaining box packed) -> 100%-packed,
+    //             dispatch-ready trucks.
+    //   Phase 2 — bin the NOT-fully-packed lots, ordered by live WIP-driven ready date
+    //             (getOrderReadyDate). Each such truck becomes ready only once all its lots
+    //             finish packing; a truck may sit a few days for complete packing rather than
+    //             ship half a lot. As packing completes a lot auto-crosses Phase 2 -> Phase 1
+    //             (its ready date flips to "today"), since this runs fresh on every render.
+    //
+    // Packed and pending lots NEVER share a truck (each phase finalises its last, possibly
+    // partial, truck). Dispatched/regularised quantity is already netted out upstream via
+    // freeBoxes (= planned − dispatched − committed) before any classification, so scanned-out
+    // or admin-regularised boxes have already left the bin.
+    //
+    // A lot is fully packed when its packed boxes cover its full ORIGINAL planned size
+    // (packedBoxes >= _plannedBoxesOrig): the dispatched/committed portion was necessarily
+    // packed, so this is equivalent to "all free boxes are packed".
+    const _isFullyPacked = (p) => {
+      const planned = parseInt(p._plannedBoxesOrig != null ? p._plannedBoxesOrig : (p.boxes || 0), 10);
+      const packed  = parseInt(p.packedBoxes || 0, 10);
+      return planned > 0 && packed >= planned;
+    };
+    const packedLots  = sorted.filter(_isFullyPacked);
+    const pendingLots = sorted.filter(p => !_isFullyPacked(p));
+
     let currentTruck = { truckNumber: 1, zone, orders: [], totalBoxes: 0 };
     const finalizeTruck = () => {
       if (currentTruck.orders.length > 0) {
@@ -8147,46 +8177,51 @@ function buildTruckPlans(zone) {
       }
     };
 
-    for (const p of sorted) {
-      let remainingBoxes = p.boxes || 0;
-      let splitIndex = 0;
+    const fillPhase = (lots) => {
+      for (const p of lots) {
+        let remainingBoxes = p.boxes || 0;
+        let splitIndex = 0;
 
-      while (remainingBoxes > 0) {
-        const spaceInTruck = cap - currentTruck.totalBoxes;
+        while (remainingBoxes > 0) {
+          const spaceInTruck = cap - currentTruck.totalBoxes;
 
-        if (spaceInTruck <= 0) {
-          finalizeTruck();
-          continue;
-        }
+          if (spaceInTruck <= 0) {
+            finalizeTruck();
+            continue;
+          }
 
-        const boxesThisTruck = Math.min(remainingBoxes, spaceInTruck);
-        const isSplit = remainingBoxes > boxesThisTruck || splitIndex > 0;
+          const boxesThisTruck = Math.min(remainingBoxes, spaceInTruck);
+          const isSplit = remainingBoxes > boxesThisTruck || splitIndex > 0;
 
-        // Create a (possibly partial) order entry for this truck
-        // Scale qty and packedBoxes proportionally when order is split across trucks
-        const splitRatio = (p.boxes && p.boxes > 0) ? boxesThisTruck / p.boxes : 1;
-        const orderEntry = {
-          ...p,
-          boxes: boxesThisTruck,
-          _originalBoxes: p.boxes || 0,
-          _isSplit: isSplit,
-          _splitPart: splitIndex + 1,
-          qty: p.qty && p.boxes ? (p.qty / p.boxes) * boxesThisTruck : p.qty,
-          packedBoxes: Math.round(parseInt(p.packedBoxes||0, 10) * splitRatio),
-        };
+          // Scale qty and packedBoxes proportionally when a lot is split across trucks
+          // (capacity overflow only — never a packed-vs-pending split)
+          const splitRatio = (p.boxes && p.boxes > 0) ? boxesThisTruck / p.boxes : 1;
+          const orderEntry = {
+            ...p,
+            boxes: boxesThisTruck,
+            _originalBoxes: p.boxes || 0,
+            _isSplit: isSplit,
+            _splitPart: splitIndex + 1,
+            qty: p.qty && p.boxes ? (p.qty / p.boxes) * boxesThisTruck : p.qty,
+            packedBoxes: Math.round(parseInt(p.packedBoxes||0, 10) * splitRatio),
+          };
 
-        currentTruck.orders.push(orderEntry);
-        currentTruck.totalBoxes += boxesThisTruck;
-        remainingBoxes -= boxesThisTruck;
-        splitIndex++;
+          currentTruck.orders.push(orderEntry);
+          currentTruck.totalBoxes += boxesThisTruck;
+          remainingBoxes -= boxesThisTruck;
+          splitIndex++;
 
-        // If truck is now full, close it
-        if (currentTruck.totalBoxes >= cap) {
-          finalizeTruck();
+          if (currentTruck.totalBoxes >= cap) {
+            finalizeTruck();
+          }
         }
       }
-    }
-    if (currentTruck.orders.length > 0) trucks.push(currentTruck);
+      // Close this phase's last (possibly partial) truck so packed & pending lots never share one
+      finalizeTruck();
+    };
+
+    fillPhase(packedLots);   // Phase 1 — fully-packed lots -> dispatch-ready trucks
+    fillPhase(pendingLots);  // Phase 2 — completing lots, ordered by live ready date
   }
 
   // ETD for each truck = latest ready date among its orders (the bottleneck order)

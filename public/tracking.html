@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44Z</title>
+<title>Sunloc Tracking Suite v1.0 · build v44ZB</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44Z</p>
+      <p>Tracking Suite v1.0 · build v44ZB</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44Z</p>
+      <p>Tracking Suite v1.0 · build v44ZB</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4895,6 +4895,47 @@ function renderDispatch(){
   // Reconciliation button never appeared on the Dispatch page. Moved AFTER innerHTML below.
   // Use scanSummary (full history) when available, else fall back to state.scans
   // v40 P18.14: Dispatch counts now combine legacy scan dispatch.out + Phase 18 truck dispatches
+  // v44ZA (v44AA + comma cleanup): colour-wise metadata resolver.
+  //   1) getBatch first (the loaded planning working set).
+  //   2) For orphan/closed batches that have aged out of the planning set (their orders are no
+  //      longer in /api/planning/state), fall back to the batch's own LABELS — which carry size +
+  //      colour directly — and its DISPATCH RECORD, which carries customer. This is why colour/size/
+  //      customer were showing blank: getBatch returned null for those rows. Metric math (packed/
+  //      dispatched/pending) is unchanged — only the display metadata is resolved differently.
+  //   3) Comma cleanup: a malformed dispatch key like "25ZE96,50.75" (real batch + stray numeric)
+  //      is reduced to its batch token(s); legit consolidated multi-batch keys such as
+  //      "26A062, 26D088" are preserved (every real batch token carries a machine-alpha letter,
+  //      whereas a stray qty like "50.75"/"3.5"/"21" does not).
+  function _cwCleanKey(raw){
+    const s = (raw==null ? '' : String(raw));
+    const toks = s.split(',').map(t=>t.trim()).filter(Boolean);
+    const valid = toks.filter(t => /[A-Za-z]/.test(t));
+    return valid.length ? valid.join(', ') : s.trim();
+  }
+  function _cwMeta(rawBn){
+    const key = _cwCleanKey(rawBn);
+    const direct = getBatch(rawBn) || (key!==rawBn ? getBatch(key) : null);
+    if (direct) return { size: direct.size || '0', colour: direct.colour || '-', customer: direct.customer || '-', pcCode: direct.pcCode || '-' };
+    // orphan/closed batch — server-loaded labels carry size + colour + pcCode (+ customer/shipTo);
+    // dispatch record is a backup source for customer when the label has none.
+    let size='0', colour='-', customer='-', pcCode='-';
+    const toks = key.split(',').map(t=>t.trim()).filter(Boolean);
+    for (const t of toks){
+      const lbl = (state.labels||[]).find(l => l.batchNumber===t && (l.size!=null || l.colour || l.pcCode));
+      if (lbl){
+        if(lbl.size!=null && lbl.size!=='') size=lbl.size;
+        if(lbl.colour) colour=lbl.colour;
+        if(lbl.pcCode) pcCode=lbl.pcCode;
+        if(lbl.customer || lbl.shipTo) customer=(lbl.customer||lbl.shipTo);
+        break;
+      }
+    }
+    if (customer==='-'){
+      const rec = (state.dispatchRecs||[]).find(r => _cwCleanKey(r.batchNumber)===key && r.customer);
+      if (rec) customer = rec.customer;
+    }
+    return { size, colour, customer, pcCode };
+  }
   const batchSummary={};
   if (hasScanSummary()) {
     // Build set of all batches that have packing-out OR Phase 18 dispatch records
@@ -4906,15 +4947,18 @@ function renderDispatch(){
     candidateBatches.forEach(bn => {
       const depts = state.scanSummary[bn] || {};
       const packOut = depts.packing?.out || 0;
-      const b = getBatch(bn);
       // v40 P18.14d: dispOut = legacy dispatch.out + Phase 18 truck records (sum, not max — straddle batches need both)
       const dispOut = _v40_dispatchedBoxes(bn);
+      // v44ZA: dispOut math unchanged; size/colour/customer/pcCode now via _cwMeta (getBatch → label/dispatch fallback)
+      const _m = _cwMeta(bn);
       batchSummary[bn] = {
         packed: packOut,
         dispIn: depts.dispatch?.in || 0,
         dispOut,
-        size: b?.size || '0',
-        colour: b?.colour || '-'
+        size: _m.size,
+        colour: _m.colour,
+        _customer: _m.customer,
+        _pcCode: _m.pcCode
       };
     });
   } else {
@@ -4925,8 +4969,9 @@ function renderDispatch(){
     packedOut.forEach(s=>{
       if(!batchSummary[s.batchNumber]) batchSummary[s.batchNumber]={packed:0,dispIn:0,dispOut:0,size:'0',colour:'-'};
       batchSummary[s.batchNumber].packed++;
-      const b=getBatch(s.batchNumber);
-      if(b){ batchSummary[s.batchNumber].size=b.size; batchSummary[s.batchNumber].colour=b.colour||'-'; }
+      const _m=_cwMeta(s.batchNumber);
+      batchSummary[s.batchNumber].size=_m.size; batchSummary[s.batchNumber].colour=_m.colour;
+      batchSummary[s.batchNumber]._customer=_m.customer; batchSummary[s.batchNumber]._pcCode=_m.pcCode;
     });
     dispatchedIn.forEach(s=>{ if(batchSummary[s.batchNumber]) batchSummary[s.batchNumber].dispIn++; });
     dispatchedOut.forEach(s=>{ if(batchSummary[s.batchNumber]) batchSummary[s.batchNumber].dispOut++; });
@@ -4935,8 +4980,8 @@ function renderDispatch(){
     (state.dispatchRecs || []).forEach(r => {
       if (!r.batchNumber) return;
       if (!batchSummary[r.batchNumber]) {
-        const b = getBatch(r.batchNumber);
-        batchSummary[r.batchNumber] = { packed: 0, dispIn: 0, dispOut: 0, size: b?.size||'0', colour: b?.colour||'-' };
+        const _m = _cwMeta(r.batchNumber);
+        batchSummary[r.batchNumber] = { packed: 0, dispIn: 0, dispOut: 0, size: _m.size, colour: _m.colour, _customer: _m.customer, _pcCode: _m.pcCode };
       }
       batchSummary[r.batchNumber].dispOut = _v40_dispatchedBoxes(r.batchNumber);
     });
@@ -4972,13 +5017,13 @@ function renderDispatch(){
     colourRollup[c].packedQty    += boxToLakh(s.packed,  s.size);
     colourRollup[c].outwardQty   += boxToLakh(s.dispOut, s.size);
     colourRollup[c].pendingQty   += boxToLakh(pending,   s.size);
-    // per-batch detail row
-    const b = getBatch(batchNo);
+    // per-batch detail row — v44ZA: clean display key (drops stray "25ZE96,50.75" numeric tokens),
+    // customer/pcCode from the meta resolved on the summary entry (getBatch → label/dispatch fallback)
     colourDetailRows.push({
       colour: c,
-      batchNo: batchNo,
-      customer: b?.customer || '-',
-      pcCode: b?.pcCode || '-',
+      batchNo: _cwCleanKey(batchNo),
+      customer: s._customer || '-',
+      pcCode: s._pcCode || '-',
       size: s.size,
       packedBoxes: s.packed,
       packedQty: boxToLakh(s.packed, s.size),
@@ -5362,6 +5407,14 @@ function _v39_renderInvoiceQueuePanel() {
           <button class="btn btn-ghost btn-sm" onclick="_v41_openSoLedgerModal()" style="font-size:11px">📊 SO Ledger</button>
           <button class="btn btn-ghost btn-sm" onclick="_v39_loadAndRenderInvoiceQueue()" style="font-size:11px">↻ Refresh</button>
         </div>
+      </div>
+      <!-- v44ZA (v44AA): Quick scan also available when the queue is EMPTY. Previously this block
+           lived only in the populated branch, so when the queue drained to zero the scan box
+           vanished and floor users could no longer scan a box to auto-open its truck modal. -->
+      <div style="background:rgba(16,185,129,0.06);border:1px solid rgba(16,185,129,0.25);border-radius:4px;padding:8px 12px;margin-top:8px;display:flex;align-items:center;gap:10px">
+        <span style="font-size:12px;color:#047857;font-weight:600">⚡ Quick scan:</span>
+        <input type="text" id="v40-queue-quick-scan" placeholder="Scan any box (e.g. 26V001-1) to auto-open its truck modal" onkeydown="if(event.key==='Enter'){_v40_quickScanFromQueue(this.value);this.value='';return false;}" style="flex:1;padding:5px 8px;font-size:12px;font-family:var(--mono);border:1px solid rgba(16,185,129,0.4);border-radius:4px;background:white">
+        <button onclick="startCamera(v=>{var el=document.getElementById('v40-queue-quick-scan');if(el){el.value=v;_v40_quickScanFromQueue(v);el.value='';}})" style="background:#059669;color:white;border:none;border-radius:4px;padding:5px 10px;font-size:14px;cursor:pointer;white-space:nowrap">📷</button>
       </div>`;
     return;
   }
