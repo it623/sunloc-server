@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44ZG</title>
+<title>Sunloc Tracking Suite v1.0 · build v44ZI</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZG</p>
+      <p>Tracking Suite v1.0 · build v44ZI</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZG</p>
+      <p>Tracking Suite v1.0 · build v44ZI</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9254,8 +9254,14 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     // department renders as a single group exactly as before.
     let _rptBGroups;
     if (_isAimDept) {
-      const _gf   = batchSet.filter(bn => getMachineFloor(getBatch(bn)?.machineId) === 'GF');
-      const _ffsf = batchSet.filter(bn => getMachineFloor(getBatch(bn)?.machineId) !== 'GF');
+      // v44ZI Issue 4: GF group = Ground-floor machines PLUS any other/unlisted machine (e.g.
+      // MC7/MC8, "OTHER" in Report E) rolled into GF per Ishan; FF/SF group = ONLY the explicit
+      // First/Second-floor machines. Classify via normalised machineId (normMcId strips dots/case),
+      // the same matching Report E uses, so format differences ('MC.33' vs 'MC33') don't misclassify.
+      const _ffsfMachines = new Set([...(FLOORS.FF?.machines || []), ...(FLOORS.SF?.machines || [])].map(normMcId));
+      const _isFFSF = bn => _ffsfMachines.has(normMcId(getBatch(bn)?.machineId));
+      const _ffsf = batchSet.filter(_isFFSF);
+      const _gf   = batchSet.filter(bn => !_isFFSF(bn));
       _rptBGroups = [
         { label: 'AIM Inspection — GF',    batches: _gf },
         { label: 'AIM Inspection — FF/SF', batches: _ffsf },
