@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44ZF</title>
+<title>Sunloc Tracking Suite v1.0 · build v44ZG</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZF</p>
+      <p>Tracking Suite v1.0 · build v44ZG</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZF</p>
+      <p>Tracking Suite v1.0 · build v44ZG</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -8007,16 +8007,17 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   // include any batch that has scan activity (in scanSummary OR scans) so batches with
   // mismatched metadata dates still surface their gaps. This fixes the reported issue
   // of batches being absent from Report H despite having visible gaps.
-  const monthBatchSet = new Set(getTrkMonthBatches(true).filter(b=>!b.deleted&&b.batchNumber).map(b=>b.batchNumber));
-  const scanActiveBatchSet = new Set(Object.keys(state.scanSummary || {}));
-  // Also include batches that have Phase 18 dispatch records
-  for (const r of (state.dispatchRecs || [])) {
-    if (r.batchNumber) scanActiveBatchSet.add(r.batchNumber);
-  }
-  // Union: month-meta-matched + scan-active
-  const unionBatchNos = new Set([...monthBatchSet, ...scanActiveBatchSet]);
-  const batches = state.batches
-    .filter(b => !b.deleted && b.batchNumber && unionBatchNos.has(b.batchNumber))
+  // v44ZG Issue 5: scope the handover universe to the SELECTED MONTH exactly like Reports B and E
+  // (getTrkMonthBatches). The previous code unioned the full cumulative scan history
+  // (Object.keys(state.scanSummary)) plus every dispatch record, which is NOT month-scoped — so
+  // prior-month batches with residual gaps leaked in. Console audit (June 2026): month set = 222,
+  // but the union added 563 extras, every sampled one carrying April/May metadata dates (many
+  // retired) — i.e. genuinely not June. Reports B and E never leaked because they use only
+  // getTrkMonthBatches; this aligns Report F's handover view with them. getTrkMonthBatches(true)
+  // already drops deleted + retired and honours carry-forward (unclosed / no-date batches still
+  // surface), so open June gaps are preserved while prior-month batches drop out.
+  const batches = getTrkMonthBatches(true)
+    .filter(b => !b.deleted && b.batchNumber)
     .sort((a, b) => (a.batchNumber || '').localeCompare(b.batchNumber || ''));
   const getTransitions = (batch) => batch.isPrinted
     ? [['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
@@ -9247,12 +9248,29 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     const _isAimDept = dept==='aim';
     const _aimHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Colour</th><th>PC</th><th>Gross Prod (L)</th><th>Wastage (L)</th><th>Avail. to Scan In (L)</th><th>Boxes IN</th><th>Production WIP (L)</th><th>Boxes OUT</th><th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
     const _stdHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Prod WIP (L)</th><th>Boxes IN</th><th>Boxes OUT</th>${hasWastage?'<th>Wastage (L)</th>':''}<th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
-    html+=`<div class="mb-16"><div class="card-title" style="color:${DEPT_CONFIG[dept].color}">${DEPT_CONFIG[dept].label}</div>
+    // v44ZG Issue 4: split the AIM Inspection section by floor — GF batches and FF/SF batches as
+    // two separately-titled groups (floor via getMachineFloor(machineId), the same source Report E
+    // uses for its GF/FF/SF subtotals). FF and SF are combined into one group. Every other
+    // department renders as a single group exactly as before.
+    let _rptBGroups;
+    if (_isAimDept) {
+      const _gf   = batchSet.filter(bn => getMachineFloor(getBatch(bn)?.machineId) === 'GF');
+      const _ffsf = batchSet.filter(bn => getMachineFloor(getBatch(bn)?.machineId) !== 'GF');
+      _rptBGroups = [
+        { label: 'AIM Inspection — GF',    batches: _gf },
+        { label: 'AIM Inspection — FF/SF', batches: _ffsf },
+      ];
+    } else {
+      _rptBGroups = [{ label: DEPT_CONFIG[dept].label, batches: batchSet }];
+    }
+    _rptBGroups.forEach(grp => {
+      if (!grp.batches.length) return;
+    html+=`<div class="mb-16"><div class="card-title" style="color:${DEPT_CONFIG[dept].color}">${grp.label}</div>
     <div class="tbl-wrap tbl-sticky"><table>
       ${_isAimDept?_aimHead:_stdHead}<tbody>`;
     // v41ZB: per-department totals (v44P: + gross/avail for the AIM layout)
     let _bIn=0,_bOut=0,_bW=0,_bWipBx=0,_bWipQ=0,_bProd=0,_bGross=0,_bAvail=0,_bN=0;
-    batchSet.forEach(batchNo=>{
+    grp.batches.forEach(batchNo=>{
       const batch=getBatch(batchNo);
       // Use _ss() for accurate counts from full history
       const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
@@ -9347,6 +9365,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       }
     }
     html+=`</tbody></table></div></div>`;
+    }); // close _rptBGroups (Issue 4 floor split)
   });
   if(!anyData){
     html+=`<div class="alert alert-info">No scan data found${filterDept?' for '+DEPT_CONFIG[filterDept]?.label:''}${filterBatch?' for batch '+filterBatch:''}. Make sure boxes have been scanned in at the relevant departments.</div>`;
@@ -12199,15 +12218,18 @@ function exportReportB(){
       //   Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In
       const aimWasteEx=getTotalWastage(batchNo,'aim');
       const prodWipEx=_isRetired(batchNo)?0:Math.max(0,grossProdEx-aimWasteEx.salvage-aimWasteEx.remelt-aimInQtyEx);
+      // v44ZG Issue 3: write NUMBERS (not fmt() strings) for the numeric columns so SheetJS emits
+      // numeric cells and Excel can SUM them. fmt() returns a string, which Excel treats as text.
+      const _n2 = v => (v==null||isNaN(v)) ? 0 : Math.round((+v)*100)/100;
       rows.push({
         'Department':DEPT_LABELS[dept]||dept,'Batch':batchNo,'Customer':b?.customer||'',
-        'Prod WIP (L)':fmt(prodWipEx),
+        'Prod WIP (L)':_n2(prodWipEx),
         'Boxes IN':inn,'Boxes OUT':out,
-        'Wastage (L)':hasWastage?fmt(w.total):'N/A',
-        'Salvage (L)':hasWastage?fmt(w.salvage):'N/A',
-        'Remelt (L)':hasWastage?fmt(w.remelt):'N/A',
-        'WIP Boxes':wip,'WIP Qty (L)':fmt(wipQty),
-        'Time in Dept (h)':hrs.toFixed(0),
+        'Wastage (L)':hasWastage?_n2(w.total):'',
+        'Salvage (L)':hasWastage?_n2(w.salvage):'',
+        'Remelt (L)':hasWastage?_n2(w.remelt):'',
+        'WIP Boxes':wip,'WIP Qty (L)':_n2(wipQty),
+        'Time in Dept (h)':Math.round(hrs),
         'Alert':alerts>0?'YES':'','Stage Status':stageStatus
       });
     });
