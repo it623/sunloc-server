@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44ZI</p>
+      <p>Planning Suite v3.0 · build v44ZJ</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1467,6 +1467,10 @@ const SYNC = (() => {
             actualsMap[a.batch_number] = a.dispatched_qty||0;
             actualsBoxesMap[a.batch_number] = a.dispatched_boxes||0;
           });
+          // v44ZJ Issue 3: retain the per-batch dispatched-actuals total (Lakhs) globally so the
+          // Production Plan can show a "Dispatched (L)" column. This is the same dispatched-actuals
+          // total the truck binner consumes (regularised + scan-out), keyed by clean batch.
+          state._dispatchActualsQty = actualsMap;
           // v44R Phase 2 (SEQUENTIAL dispatched apportionment): a batch's per-batch dispatched total
           // is apportioned across its ordered lots SEQUENTIALLY (lot 1 fills to its planned amount
           // first, then lot 2 …) — mirroring the packed-box sequential allocation above. Without this
@@ -3165,6 +3169,22 @@ function renderProduction() {
       </div>
       <button onclick="navigate('search')" title="Search Orders" style="background:none;border:1px solid rgba(0,212,255,0.3);border-radius:6px;padding:6px 14px;cursor:pointer;color:var(--text);font-size:12px;font-weight:600;display:flex;align-items:center;gap:5px;white-space:nowrap;flex-shrink:0" onmouseover="this.style.background='rgba(0,212,255,0.08)'" onmouseout="this.style.background='none'">🔍 Search</button>
     </div>
+    <!-- v44ZJ Issue 4: Production Plan filters — mirror the plan's own displayed fields. Filters
+         rows in-place (no re-render → no focus loss), same proven pattern as the Dispatch
+         Order-View filter. Size is still controlled by the size tabs above. -->
+    <div class="card" style="padding:10px 12px;margin-bottom:14px">
+      <div style="display:grid;grid-template-columns:repeat(7,minmax(0,1fr)) auto;gap:8px;align-items:end">
+        <div><label style="font-size:10px;color:var(--text3)">Customer</label><input id="prod-f-cust" type="text" placeholder="partial" oninput="_v44zjProdFilterInput()" style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 6px;font-size:12px"></div>
+        <div><label style="font-size:10px;color:var(--text3)">PO / Batch</label><input id="prod-f-batch" type="text" placeholder="partial" oninput="_v44zjProdFilterInput()" style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 6px;font-size:12px;font-family:var(--mono)"></div>
+        <div><label style="font-size:10px;color:var(--text3)">PC Code</label><input id="prod-f-pc" type="text" placeholder="partial" oninput="_v44zjProdFilterInput()" style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 6px;font-size:12px;font-family:var(--mono)"></div>
+        <div><label style="font-size:10px;color:var(--text3)">Colour</label><input id="prod-f-colour" type="text" placeholder="partial" oninput="_v44zjProdFilterInput()" style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 6px;font-size:12px"></div>
+        <div><label style="font-size:10px;color:var(--text3)">Zone</label><input id="prod-f-zone" type="text" placeholder="partial" oninput="_v44zjProdFilterInput()" style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 6px;font-size:12px"></div>
+        <div><label style="font-size:10px;color:var(--text3)">PTD/UP</label><select id="prod-f-ptdup" onchange="_v44zjProdFilterInput()" style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 6px;font-size:12px"><option value="">All</option><option value="ptd">PTD</option><option value="up">UP</option></select></div>
+        <div><label style="font-size:10px;color:var(--text3)">Status</label><select id="prod-f-status" onchange="_v44zjProdFilterInput()" style="width:100%;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:4px 6px;font-size:12px"><option value="">All</option><option value="pending">Pending</option><option value="running">Running</option><option value="closed">Closed</option><option value="completed">Completed</option></select></div>
+        <div><button class="btn btn-ghost btn-sm" onclick="_v44zjClearProdFilter()" title="Clear production filters">✕ Clear</button></div>
+      </div>
+      <div style="margin-top:6px"><span id="prod-filter-count" style="font-size:11px;color:var(--text3)"></span></div>
+    </div>
     <div id="machine-panels">
   `;
 
@@ -3234,7 +3254,7 @@ function renderProduction() {
                   <th>Size</th>
                   <th>PC Code</th><th>Colour</th>
                   <th>PTD/UP</th><th>Print Matter Cap</th><th>Print Matter Body</th><th>Ink Cap</th><th>Ink Body</th><th>Order Qty (L)</th><th>Gross Qty (L)</th><th>Start</th><th>End</th>
-                  <th>Packing</th><th>Zone</th><th>Actual Prod</th><th>AIM Out ↗</th><th>Status</th><th>DPR Status</th><th>Remarks</th><th>Actions</th>
+                  <th>Packing</th><th>Zone</th><th>Actual Prod</th><th>AIM Out ↗</th><th title="Dispatched — per-batch dispatched-actuals total from Tracking (regularised + scan-out)">Dispatched (L) ↗</th><th>Status</th><th>DPR Status</th><th>Remarks</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -3247,6 +3267,8 @@ function renderProduction() {
   }
   html += '</div>';
   content.innerHTML = html;
+  // v44ZJ Issue 4: restore + re-apply the production filter after a re-render so it persists.
+  _v44zjRestoreProdFilter();
 
   // v37J Sub-issue 1.3: Fetch customer-mismatches async (non-blocking) and fill banner
   if (currentUser?.role === 'admin' && editable) {
@@ -3389,6 +3411,8 @@ function renderOrderRow(ord, idx, mc) {
     ? `<div style="font-size:10px;color:var(--accent4);margin-top:2px">⚠️ +${fmt(extraNeeded,2)}L extra needed (actual AIM: ${fmt(liveAimPct,1)}%)</div>` : '';
   // For unprinted: show AIM scan out vs planned
   const liveAimOut = liveAG.aim?.outQty || 0;
+  // v44ZJ Issue 3: per-batch dispatched-actuals total (L) for the Dispatched column.
+  const liveDispatched = (state._dispatchActualsQty && state._dispatchActualsQty[ord.batchNumber]) || 0;
   const aimProgress = (!ord.isPrinted && liveAimOut > 0 && ord.grossQty)
     ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">AIM Out: ${fmt(liveAimOut)}L / ${fmt(ord.grossQty)}L planned</div>` : '';
   const dprClosed = window._dprClosedBatches && ord.id ? window._dprClosedBatches[ord.id] : null;
@@ -3420,7 +3444,7 @@ function renderOrderRow(ord, idx, mc) {
     ? `<span class="badge" title="No Sales Order Number attached — click to link" onclick="event.stopPropagation();_v39_jumpToOrderForBackfill('${ord.id}')" style="background:rgba(245,158,11,0.12);color:#d97706;border:1px solid rgba(245,158,11,0.4);font-size:10px;cursor:pointer">🔗 SAP?</span>`
     : '';
   const _rowBg = isClosed ? "var(--surface3,#1a2a1e)" : isWO ? "rgba(255,171,0,0.03)" : "var(--surface2,#0f2a20)";
-  return `<tr class="${isClosed?'closed':''}" style="${isWO?'background:rgba(255,171,0,0.03);border-left:3px solid rgba(255,171,0,0.4)':''}">
+  return `<tr class="${isClosed?'closed':''}" data-prodrow="1" data-cust="${(ord.shipTo||ord.customer||'').toLowerCase().replace(/"/g,'&quot;')}" data-batch="${(ord.batchNumber||'').toLowerCase()}" data-pc="${String(ord.pcCode||'').toLowerCase()}" data-colour="${(ord.colour||'').toLowerCase()}" data-zone="${(ord.zone||'').toLowerCase()}" data-status="${(ord.status||'').toLowerCase()}" data-ptdup="${ord.isPrinted?'ptd':'up'}" style="${isWO?'background:rgba(255,171,0,0.03);border-left:3px solid rgba(255,171,0,0.4)':''}">
     <td class="text-mono text-dim" style="position:sticky;left:0;z-index:2;background:var(--surface2,#0f2a20);box-shadow:2px 0 4px rgba(0,0,0,0.1)">${idx}</td>
     <td class="text-mono" style="position:sticky;left:28px;z-index:2;background:var(--surface2,#0f2a20);white-space:nowrap;box-shadow:2px 0 4px rgba(0,0,0,0.1)">
       ${woBadge}${sapLinkBadge}
@@ -3455,6 +3479,9 @@ function renderOrderRow(ord, idx, mc) {
     <td class="text-mono" style="color:var(--accent2);white-space:nowrap" title="AIM Scan Out — live from Tracking">
       ${liveAimOut>0?`<strong>${fmt(liveAimOut)}L</strong>`:'<span style="color:var(--text3)">—</span>'}
     </td>
+    <td class="text-mono" style="color:var(--accent3);white-space:nowrap" title="Dispatched — per-batch dispatched-actuals total from Tracking (regularised + scan-out)">
+      ${liveDispatched>0?`<strong>${fmt(liveDispatched)}L</strong>`:'<span style="color:var(--text3)">—</span>'}
+    </td>
     <td>${statusBadge}</td>
     <td><input type="text" value="${ord.remarks||''}" placeholder="Add remark..."
       style="width:130px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px"
@@ -3481,12 +3508,77 @@ function renderOrderRow(ord, idx, mc) {
 }
 
 
+let _v44zjProdFilterTimer = null;
+// v44ZJ Issue 4: read the Production Plan filter inputs into window._prodFilter, debounce-apply.
+function _v44zjProdFilterInput() {
+  window._prodFilter = {
+    cust:   (document.getElementById('prod-f-cust')?.value||'').trim(),
+    batch:  (document.getElementById('prod-f-batch')?.value||'').trim(),
+    pc:     (document.getElementById('prod-f-pc')?.value||'').trim(),
+    colour: (document.getElementById('prod-f-colour')?.value||'').trim(),
+    zone:   (document.getElementById('prod-f-zone')?.value||'').trim(),
+    ptdup:  (document.getElementById('prod-f-ptdup')?.value||'').trim(),
+    status: (document.getElementById('prod-f-status')?.value||'').trim(),
+  };
+  clearTimeout(_v44zjProdFilterTimer);
+  _v44zjProdFilterTimer = setTimeout(filterProductionPlan, 180);
+}
+// Filters production rows in-place by data-* attributes (no re-render). Panel visibility respects
+// the active size tab AND hides machines with zero matching rows while a filter is active.
+function filterProductionPlan() {
+  const f = window._prodFilter || {};
+  const n = v => (v||'').toLowerCase().trim();
+  const fc=n(f.cust), fb=n(f.batch), fp=n(f.pc), fcol=n(f.colour), fz=n(f.zone), fpt=n(f.ptdup), fs=n(f.status);
+  const any = !!(fc||fb||fp||fcol||fz||fpt||fs);
+  const activeSize = window._activeSizeTab || 'all';
+  let totalVisible = 0, total = 0;
+  document.querySelectorAll('#machine-panels .mc-panel').forEach(panel => {
+    let visible = 0;
+    panel.querySelectorAll('tr[data-prodrow]').forEach(tr => {
+      total++;
+      const ds = tr.dataset;
+      let ok = true;
+      if (fc && !(ds.cust||'').includes(fc)) ok=false;
+      if (fb && !(ds.batch||'').includes(fb)) ok=false;
+      if (fp && !(ds.pc||'').includes(fp)) ok=false;
+      if (fcol && !(ds.colour||'').includes(fcol)) ok=false;
+      if (fz && !(ds.zone||'').includes(fz)) ok=false;
+      if (fpt && (ds.ptdup||'')!==fpt) ok=false;
+      if (fs && (ds.status||'')!==fs) ok=false;
+      tr.style.display = ok ? '' : 'none';
+      if (ok) { visible++; totalVisible++; }
+    });
+    const sizeMatch = (activeSize==='all' || panel.dataset.size===activeSize);
+    panel.style.display = sizeMatch ? ((any && visible===0) ? 'none' : '') : 'none';
+  });
+  const countEl = document.getElementById('prod-filter-count');
+  if (countEl) countEl.textContent = any ? (totalVisible+' of '+total+' orders shown') : '';
+}
+function _v44zjClearProdFilter() {
+  ['prod-f-cust','prod-f-batch','prod-f-pc','prod-f-colour','prod-f-zone','prod-f-ptdup','prod-f-status']
+    .forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+  window._prodFilter = {};
+  filterProductionPlan();
+}
+// Restore filter inputs + re-apply after a Production Plan re-render (called at end of renderProduction).
+function _v44zjRestoreProdFilter() {
+  const f = window._prodFilter;
+  if (!f || !Object.values(f).some(v=>v&&String(v).trim())) return;
+  const set=(id,v)=>{const e=document.getElementById(id);if(e&&v!=null)e.value=v;};
+  set('prod-f-cust',f.cust); set('prod-f-batch',f.batch); set('prod-f-pc',f.pc);
+  set('prod-f-colour',f.colour); set('prod-f-zone',f.zone); set('prod-f-ptdup',f.ptdup); set('prod-f-status',f.status);
+  filterProductionPlan();
+}
+
 function switchSizeTab(el, size) {
   document.querySelectorAll('#size-tabs .tab').forEach(t=>t.classList.remove('active'));
   el.classList.add('active');
+  window._activeSizeTab = size; // v44ZJ Issue 4: track for the production filter's panel visibility
   document.querySelectorAll('.mc-panel').forEach(panel=>{
     panel.style.display = (size==='all' || panel.dataset.size===size) ? '' : 'none';
   });
+  // v44ZJ Issue 4: re-apply the row filter after a size switch so empty panels stay hidden.
+  if (typeof filterProductionPlan==='function' && window._prodFilter && Object.values(window._prodFilter).some(v=>v&&String(v).trim())) filterProductionPlan();
 }
 
 function updateMachineAGrade(machineId, val) {
@@ -4821,7 +4913,7 @@ function exportProdPlan() {
       Customer: ord.customer, Size: ord.size, 'PC Code': ord.pcCode, Colour: ord.colour,
       'PTD/UP': ord.isPrinted?'PTD':'UP', 'Order Qty (L)': ord.qty, 'Gross Qty (L)': fmt(ord.grossQty),
       'Start Date': fmtDate(ord.startDate), 'End Date': fmtDate(ord.endDate),
-      'Actual Prod': ord.actualProd||0, Status: ord.status, Zone: ord.zone, Remarks: ord.remarks
+      'Actual Prod': ord.actualProd||0, 'Dispatched (L)': (state._dispatchActualsQty && state._dispatchActualsQty[ord.batchNumber]) || 0, Status: ord.status, Zone: ord.zone, Remarks: ord.remarks
     };
   });
   const wb = XLSX.utils.book_new();
@@ -8050,7 +8142,19 @@ function buildTruckPlans(zone) {
     const plannedBoxes = parseInt(p.boxes||0, 10);
     const dispBoxes = Math.round(parseFloat(p._dispatchedBoxes||0));
     const committed = parseInt(_committedByPlan[p.id]||0, 10);
-    const freeBoxes = Math.max(0, plannedBoxes - dispBoxes - committed);
+    // v44ZJ Issue 5: net the bin by BOTH boxes and qty. A regularised PARTIAL entered as
+    // qty-only (boxes 0) would otherwise not shrink the box-driven pool. Convert the dispatched
+    // qty fraction to boxes and take the most-dispatched dimension (min free) — whichever of
+    // boxes/qty is more dispatched governs the remaining pool.
+    const freeBoxesByBox = Math.max(0, plannedBoxes - dispBoxes - committed);
+    let freeBoxes = freeBoxesByBox;
+    const _plannedQty = parseFloat(p.qty || 0);
+    const _dispQty = parseFloat(p.actualDispatched || 0);
+    if (_plannedQty > 0 && _dispQty > 0) {
+      const _qtyFrac = Math.max(0, 1 - (_dispQty / _plannedQty));
+      const freeBoxesByQty = Math.max(0, Math.round(plannedBoxes * _qtyFrac) - committed);
+      freeBoxes = Math.min(freeBoxes, freeBoxesByQty);
+    }
     if (freeBoxes <= 0) return; // fully dispatched, or fully committed to an active locked truck
     const ratio = plannedBoxes > 0 ? (freeBoxes / plannedBoxes) : 1;
     // NOTE: only `boxes` (→remaining) and `qty` are transformed for binning. packedBoxes is left

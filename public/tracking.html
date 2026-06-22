@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44ZI</title>
+<title>Sunloc Tracking Suite v1.0 · build v44ZJ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZI</p>
+      <p>Tracking Suite v1.0 · build v44ZJ</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZI</p>
+      <p>Tracking Suite v1.0 · build v44ZJ</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -5682,37 +5682,137 @@ async function _v41_closeInvoiceAsLegacy(invoiceId) {
 // batch, then mark the invoice dispatched + legacy-closed (admin-approved) via a single endpoint.
 // No scan-out is performed and no scan counts are logged — label-less legacy/return stock has
 // nothing to reconcile against, so counting for its own sake adds no value.
+// v44ZJ Issue 2+5: regularise via an explicit per-batch ALLOCATION modal (replaces the old
+// free-text prompt that let concatenated multi-batch keys through). One row per invoice line:
+// Qty pre-filled from the invoice, admin picks the batch from a dropdown, Boxes auto-calc from
+// the chosen batch's pack size (lakhToBox). Multi-batch invoices add a row per batch. Submitting
+// posts a clean allocations[] array so each batch gets its own dispatch record + actuals.
+let _v44zjReg = null; // { invoiceId, rows:[{batch,qty,boxes,itemCode,size}], reason, isRealloc }
+
+function _v44zjBatchOptions(selected) {
+  const list = (state.batches || []).slice().sort((a,b)=>String(a.batchNumber||'').localeCompare(String(b.batchNumber||'')));
+  let html = '<option value="">— select batch —</option>';
+  for (const b of list) {
+    const bn = b.batchNumber || '';
+    if (!bn) continue;
+    const lbl = bn + (b.size!=null?(' · sz '+b.size):'') + (b.customer?(' · '+String(b.customer).slice(0,18)):'');
+    html += `<option value="${bn}"${bn===selected?' selected':''}>${lbl}</option>`;
+  }
+  return html;
+}
+
+function _v44zjRenderRows() {
+  const box = document.getElementById('v44zj-rows');
+  if (!box || !_v44zjReg) return;
+  let html = `<table style="width:100%;border-collapse:collapse;font-size:12px">
+    <thead><tr style="text-align:left;color:#0e7490;border-bottom:1px solid #e5e7eb">
+      <th style="padding:6px 6px;width:24px">#</th>
+      <th style="padding:6px 6px">Batch (exact)</th>
+      <th style="padding:6px 6px;width:48px">Size</th>
+      <th style="padding:6px 6px;width:90px">Qty (L)</th>
+      <th style="padding:6px 6px;width:80px">Boxes</th>
+      <th style="padding:6px 6px;width:32px"></th>
+    </tr></thead><tbody>`;
+  _v44zjReg.rows.forEach((r,i)=>{
+    html += `<tr>
+      <td style="padding:5px 6px;color:#6b7280">${i+1}</td>
+      <td style="padding:5px 6px"><select onchange="_v44zjOnBatch(${i}, this.value)" style="width:100%;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">${_v44zjBatchOptions(r.batch)}</select></td>
+      <td style="padding:5px 6px;font-family:var(--mono);color:#374151" id="v44zj-sz-${i}">${r.size!=null&&r.size!==''?r.size:'—'}</td>
+      <td style="padding:5px 6px"><input type="number" step="0.01" min="0" value="${r.qty}" oninput="_v44zjOnQty(${i}, this.value)" style="width:100%;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:var(--mono)"></td>
+      <td style="padding:5px 6px"><input type="number" step="1" min="0" value="${r.boxes}" oninput="_v44zjOnBoxes(${i}, this.value)" id="v44zj-bx-${i}" style="width:100%;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:var(--mono)"></td>
+      <td style="padding:5px 6px;text-align:center">${_v44zjReg.rows.length>1?`<button onclick="_v44zjRemoveRow(${i})" title="remove" style="border:0;background:transparent;color:#dc2626;cursor:pointer;font-size:16px;line-height:1">×</button>`:''}</td>
+    </tr>`;
+  });
+  html += `</tbody></table>`;
+  box.innerHTML = html;
+}
+
+function _v44zjRecalcBoxes(i) {
+  const r = _v44zjReg.rows[i]; if (!r) return;
+  const b = getBatch(r.batch);
+  r.size = b ? b.size : '';
+  if (b && r.size!=null && r.size!=='') r.boxes = lakhToBox(parseFloat(r.qty)||0, r.size);
+  const szEl = document.getElementById('v44zj-sz-'+i); if (szEl) szEl.textContent = (r.size!=null&&r.size!=='')?r.size:'—';
+  const bxEl = document.getElementById('v44zj-bx-'+i); if (bxEl) bxEl.value = r.boxes;
+}
+function _v44zjOnBatch(i, val) { _v44zjReg.rows[i].batch = (val||'').trim(); _v44zjRecalcBoxes(i); }
+function _v44zjOnQty(i, val) { _v44zjReg.rows[i].qty = val; _v44zjRecalcBoxes(i); }
+function _v44zjOnBoxes(i, val) { _v44zjReg.rows[i].boxes = parseInt(val,10)||0; } // manual override
+function _v44zjAddRow() { _v44zjReg.rows.push({ batch:'', qty:0, boxes:0, itemCode:'', size:'' }); _v44zjRenderRows(); }
+function _v44zjRemoveRow(i) { _v44zjReg.rows.splice(i,1); _v44zjRenderRows(); }
+
 async function _v41zs_regulariseDispatch(invoiceId) {
+  const inv = (_v39_invoiceList || []).find(i => i.id === invoiceId) || {};
+  // Per-line seed from payload_json.DocumentLines (ItemCode + Quantity).
+  let lines = [];
+  try { const p = typeof inv.payload_json === 'string' ? JSON.parse(inv.payload_json) : (inv.payload_json || {}); lines = (p.DocumentLines || []); } catch(e) {}
+  const rows = [];
+  if (lines.length) {
+    lines.forEach(L => rows.push({ batch:'', qty: parseFloat(L.Quantity)||0, boxes:0, itemCode: String(L.ItemCode||'').trim(), size:'' }));
+  } else {
+    rows.push({ batch:'', qty: parseFloat(inv.total_qty_lakhs)||0, boxes: parseInt(inv.total_boxes,10)||0, itemCode:'', size:'' });
+  }
+  const isRealloc = inv.dispatch_status === 'dispatched';
+  // Best-effort prefill of batches on re-allocation: if the stored batch tokens count matches rows.
+  const tokens = String(inv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(Boolean);
+  if (tokens.length && tokens.length === rows.length) {
+    rows.forEach((r,i)=>{ r.batch = tokens[i]; const b=getBatch(tokens[i]); r.size=b?b.size:''; if(b&&r.size!=null&&r.size!=='') r.boxes=lakhToBox(parseFloat(r.qty)||0,r.size); });
+  }
+  _v44zjReg = { invoiceId, rows, reason: (inv.legacy_close_reason || 'Legacy / return / no-SO — regularised by admin'), isRealloc };
+
+  const banner = isRealloc
+    ? `<div style="background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px;color:#92400e">Re-allocating an already-regularised invoice. Prior dispatch record(s) for this invoice will be replaced and the affected batches recomputed (this clears stuck truck lots).</div>`
+    : '';
+  const html = `
+    ${banner}
+    <div style="font-size:12px;color:#374151;margin-bottom:8px">Invoice <b>${inv.sap_invoice_no || inv.sap_doc_num || invoiceId}</b> · ${inv.customer||''} · SO ${inv.sap_doc_num||'—'}</div>
+    <div style="font-size:11px;color:#6b7280;margin-bottom:10px">Pick the exact batch for each line. Qty is taken from the invoice; Boxes auto-fill from the batch's pack size and can be overridden. Add a row per batch for multi-batch invoices.</div>
+    <div id="v44zj-rows"></div>
+    <div style="margin:8px 0"><button onclick="_v44zjAddRow()" style="border:1px solid #0e7490;background:#ecfeff;color:#0e7490;border-radius:6px;padding:5px 10px;font-size:12px;cursor:pointer">+ Add batch</button></div>
+    <label style="display:block;font-size:11px;color:#6b7280;margin:10px 0 3px">Reason (audit)</label>
+    <input id="v44zj-reason" value="${(_v44zjReg.reason||'').replace(/"/g,'&quot;')}" style="width:100%;padding:6px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;margin-bottom:14px">
+    <div style="display:flex;gap:8px;justify-content:flex-end">
+      <button onclick="closeModal&&closeModal()" style="border:1px solid #d1d5db;background:#fff;border-radius:6px;padding:7px 14px;font-size:12px;cursor:pointer">Cancel</button>
+      <button onclick="_v44zjSubmitRegularise()" style="border:0;background:#0891b2;color:#fff;border-radius:6px;padding:7px 16px;font-size:12px;font-weight:600;cursor:pointer">Regularise dispatch</button>
+    </div>`;
+  openTrackingModal(isRealloc ? 'Re-allocate Regularised Dispatch' : 'Regularise Dispatch — per-batch', html);
+  setTimeout(_v44zjRenderRows, 0);
+}
+
+async function _v44zjSubmitRegularise() {
+  if (!_v44zjReg) return;
   let baseUrl = ''; try { baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if (!baseUrl) { alert('Server not connected'); return; }
-  const inv = (_v39_invoiceList || []).find(i => i.id === invoiceId) || {};
-  let batchNumber = inv.batch_number || '';
-  if (!batchNumber) {
-    batchNumber = prompt('Attach a batch for this invoice (optional — leave blank if not applicable):', '') || '';
+  const reason = (document.getElementById('v44zj-reason')?.value || _v44zjReg.reason || '').trim();
+  const allocations = [];
+  for (const r of _v44zjReg.rows) {
+    const batch = (r.batch||'').trim();
+    const qty = Math.max(0, parseFloat(r.qty)||0);
+    const boxes = Math.max(0, parseInt(r.boxes,10)||0);
+    if (!batch) { alert('Each row needs a batch selected.'); return; }
+    if (qty<=0 && boxes<=0) { alert('Row for '+batch+' needs a quantity and/or boxes.'); return; }
+    allocations.push({ batch, qty, boxes });
   }
-  const reason = prompt('Regularise dispatch for this invoice (Legacy stock / Return material / no Sales Order).\n\nThis marks it dispatched WITHOUT a scan-out. Reason (for audit):', 'Legacy / return / no-SO — regularised by admin');
-  if (reason === null) return;
+  if (!allocations.length) { alert('Add at least one batch allocation.'); return; }
   try {
-    const r = await fetch(baseUrl + '/api/invoice/' + encodeURIComponent(invoiceId) + '/regularise-dispatch', {
+    const r = await fetch(baseUrl + '/api/invoice/' + encodeURIComponent(_v44zjReg.invoiceId) + '/regularise-dispatch', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'x-user-role': currentDept || '' },
-      body: JSON.stringify({ batchNumber: (batchNumber || '').trim(), reason: reason || '', userRole: currentDept, userName: currentUser?.username }),
-      signal: AbortSignal.timeout(8000)
+      body: JSON.stringify({ allocations, reason, userRole: currentDept, userName: currentUser?.username }),
+      signal: AbortSignal.timeout(10000)
     });
     const j = await r.json();
     if (j.ok) {
-      alert('✓ Dispatch regularised' + (j.batch_number ? ' (batch ' + j.batch_number + ')' : '') + '. Invoice marked dispatched & legacy-closed.');
-      closeModal();
-      // v44P #4/#5: immediate refresh so Generated Invoices → Dispatched, Report G → Closed/Partial,
-      // and Dispatch/Truck Plan drop-out all reflect right away (no 5-min poll wait).
+      alert('✓ Dispatch regularised across ' + allocations.length + ' batch(es): ' + allocations.map(a=>a.batch+' ('+a.qty+'L/'+a.boxes+'b)').join(', ') + '.');
+      _v44zjReg = null;
+      if (typeof closeModal === 'function') closeModal();
       _v44p_refreshAfterDispatch();
     } else {
       alert('Failed: ' + (j.error || 'unknown'));
     }
-  } catch (e) {
-    alert('Server error: ' + e.message);
-  }
+  } catch (e) { alert('Server error: ' + e.message); }
 }
+
 
 // Shim for the modal — fallback to a generic open-modal if a tracking-specific one isn't defined
 function openTrackingModal(title, html) {
@@ -6885,6 +6985,8 @@ async function renderGeneratedInvoices() {
         <button class="btn btn-sm btn-secondary" onclick="_v39_clearInvoiceFilters()">✕ Clear filters</button>
         <button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v39_repullFromSap()" title="Force Sunloc to pull the latest invoices from SAP now (normally runs every 5 min)">🔄 Re-pull from SAP</button>
         <button class="btn btn-sm" style="background:#10b981;color:white;border:none" onclick="_v39_exportInvoicesCsv()">📥 Export CSV</button>
+        <button id="v39-gi-realloc-toggle" class="btn btn-sm btn-secondary" onclick="_v44zjToggleNeedsRealloc()" title="Show only regularised invoices whose dispatch landed under a multi-batch (concatenated) key — these need re-allocation to drop from the truck plan.">⚠ Needs re-allocation</button>
+        ${currentDept==='admin'?`<button class="btn btn-sm" style="background:#7c3aed;color:white;border:none" onclick="_v44zjReconcileMultibatch()" title="Auto-pair each multi-batch regularised invoice by matching invoice lines to batches by PC; rewrites clean per-batch records so the lots drop. Ambiguous ones are left for manual re-allocation.">🔧 Auto-pair reconcile</button>`:''}
         <span id="v39-gi-status-text" style="margin-left:auto;font-size:11px;color:var(--text3)"></span>
       </div>
     </div>
@@ -6897,6 +6999,40 @@ async function renderGeneratedInvoices() {
   if (currentDept === 'admin') {
     _v39_loadDirectSapApprovalQueue();
   }
+}
+
+function _v44zjToggleNeedsRealloc() {
+  window._giNeedsRealloc = !window._giNeedsRealloc;
+  const btn = document.getElementById('v39-gi-realloc-toggle');
+  if (btn) {
+    btn.style.background = window._giNeedsRealloc ? '#f59e0b' : '';
+    btn.style.color = window._giNeedsRealloc ? '#fff' : '';
+    btn.classList.toggle('btn-secondary', !window._giNeedsRealloc);
+  }
+  _v39_applyInvoiceFilters();
+}
+
+// v44ZJ Issue 5 (historical): trigger the server-side auto-pair reconcile. Previews via dry-run,
+// confirms, then applies — clean per-batch records are written for every unambiguously pairable
+// multi-batch regularised invoice; ambiguous ones are reported for manual re-allocation.
+async function _v44zjReconcileMultibatch() {
+  let baseUrl=''; try{ baseUrl=serverUrl||(typeof SYNC!=='undefined'&&SYNC._url)||localStorage.getItem('sunloc_server_url')||''; }catch(e){}
+  if(!baseUrl){ alert('Server not connected'); return; }
+  const hdrs = { 'Content-Type':'application/json','x-session-token':currentUser?.token||'','x-user-role':currentDept||'' };
+  try {
+    const dr = await (await fetch(baseUrl+'/api/invoice/reconcile-regularised-multibatch',{method:'POST',headers:hdrs,body:JSON.stringify({dryRun:true,userRole:currentDept,userName:currentUser?.username}),signal:AbortSignal.timeout(15000)})).json();
+    if(!dr.ok){ alert('Reconcile preview failed: '+(dr.error||'unknown')); return; }
+    if((dr.reconciledCount||0)===0 && (dr.skippedCount||0)===0){ alert('No multi-batch regularised invoices found to reconcile.'); return; }
+    const msg = `Auto-pair reconcile preview:\n\n• ${dr.reconciledCount} invoice(s) can be auto-paired → split into clean per-batch records (lots will drop from the truck plan).\n• ${dr.skippedCount} ambiguous invoice(s) will be SKIPPED — they need manual re-allocation.\n\nApply the ${dr.reconciledCount} auto-pair(s) now?`;
+    if(!confirm(msg)) return;
+    const ap = await (await fetch(baseUrl+'/api/invoice/reconcile-regularised-multibatch',{method:'POST',headers:hdrs,body:JSON.stringify({userRole:currentDept,userName:currentUser?.username}),signal:AbortSignal.timeout(30000)})).json();
+    if(!ap.ok){ alert('Reconcile failed: '+(ap.error||'unknown')); return; }
+    let note = `✓ Auto-paired ${ap.reconciledCount} invoice(s).`;
+    if(ap.skippedCount){ note += `\n\n${ap.skippedCount} still need manual re-allocation:\n` + (ap.skipped||[]).slice(0,12).map(s=>`• SO ${s.so||'—'} [${(s.batches||[]).join(', ')}] — ${s.reason}`).join('\n'); }
+    alert(note);
+    if (typeof _v44p_refreshAfterDispatch === 'function') _v44p_refreshAfterDispatch();
+    _v39_applyInvoiceFilters();
+  } catch(e){ alert('Server error: '+e.message); }
 }
 
 async function _v39_applyInvoiceFilters() {
@@ -6939,6 +7075,13 @@ async function _v39_applyInvoiceFilters() {
           String(iv.sap_doc_entry||'').toLowerCase().includes(q) ||
           String(iv.sap_invoice_no||'').toLowerCase().includes(q));
       }
+      // v44ZJ Issue 2/5: "Needs re-allocation" narrowing — regularised invoices whose stored
+      // batch_number is a multi-batch (concatenated) key. These never net out of the truck plan
+      // until re-allocated per-batch. Detect by splitting on whitespace/comma → more than one token.
+      if (window._giNeedsRealloc) {
+        _v39_invoiceList = _v39_invoiceList.filter(iv =>
+          String(iv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(Boolean).length > 1);
+      }
       _v39_renderInvoiceTable();
       if (statusText) statusText.textContent = `${_v39_invoiceList.length} invoice${_v39_invoiceList.length===1?'':'s'} loaded${sono?' (filtered by SO/Inv '+sono+')':''}`;
     } else {
@@ -6957,6 +7100,9 @@ function _v39_clearInvoiceFilters() {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
+  window._giNeedsRealloc = false;
+  const _rt = document.getElementById('v39-gi-realloc-toggle');
+  if (_rt) { _rt.style.background=''; _rt.style.color=''; _rt.classList.add('btn-secondary'); }
   _v39_applyInvoiceFilters();
 }
 
@@ -9185,10 +9331,18 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     allBatchNos = [...new Set(state.scans.filter(s=>['aim','printing','pi'].includes(s.dept)&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))].sort();
   }
   const depts=['aim','printing','pi'];
-  const activeDepts = filterDept ? [filterDept] : depts;
+  // v44ZJ Issue 1: the AIM option is split into two selectable floor options ('aim:gf','aim:ffsf').
+  // Decode the dropdown value into an actual department + an optional floor filter so a single
+  // floor's table (and its summable export) renders on its own.
+  const _floorFilter = filterDept.startsWith('aim:') ? filterDept.split(':')[1] : ''; // 'gf' | 'ffsf' | ''
+  const _deptOf = filterDept ? (filterDept.startsWith('aim:') ? 'aim' : filterDept) : '';
+  const activeDepts = _deptOf ? [_deptOf] : depts;
 
   const batchOpts = allBatchNos.map(bn=>`<option value="${bn}" ${filterBatch===bn?'selected':''}>${bn}${getBatch(bn)?.customer?' — '+getBatch(bn).customer:''}</option>`).join('');
-  const deptOpts  = depts.map(d=>`<option value="${d}" ${filterDept===d?'selected':''}>${DEPT_CONFIG[d].label}</option>`).join('');
+  const deptOpts  = depts.map(d=>{
+    if (d==='aim') return `<option value="aim:gf" ${filterDept==='aim:gf'?'selected':''}>AIM Inspection — GF</option><option value="aim:ffsf" ${filterDept==='aim:ffsf'?'selected':''}>AIM Inspection — FF/SF</option>`;
+    return `<option value="${d}" ${filterDept===d?'selected':''}>${DEPT_CONFIG[d].label}</option>`;
+  }).join('');
 
   let html=`<div class="card">
     <div class="section-title mb-12">Report B — Department-wise WIP</div>
@@ -9263,9 +9417,11 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const _ffsf = batchSet.filter(_isFFSF);
       const _gf   = batchSet.filter(bn => !_isFFSF(bn));
       _rptBGroups = [
-        { label: 'AIM Inspection — GF',    batches: _gf },
-        { label: 'AIM Inspection — FF/SF', batches: _ffsf },
+        { label: 'AIM Inspection — GF',    batches: _gf,   floor: 'gf' },
+        { label: 'AIM Inspection — FF/SF', batches: _ffsf, floor: 'ffsf' },
       ];
+      // v44ZJ Issue 1: when a single AIM floor is selected in the dropdown, render only that floor.
+      if (_floorFilter) _rptBGroups = _rptBGroups.filter(g => g.floor === _floorFilter);
     } else {
       _rptBGroups = [{ label: DEPT_CONFIG[dept].label, batches: batchSet }];
     }
@@ -12188,8 +12344,19 @@ function exportReportA(){
 function exportReportB(){
   const rows=[];
   const depts=['aim','printing','pi'];  // v44P #9: Packing WIP removed from Report B (now in Report G)
+  // v44ZJ Issue 1: honour the on-screen dropdown so the export scopes to the selected department
+  // and AIM floor (GF / FF-SF), plus the batch/colour/PC filters — i.e. its own summable export.
+  const _fd = window._rptBDept || '';
+  const _floorFilter = _fd.startsWith('aim:') ? _fd.split(':')[1] : '';      // 'gf' | 'ffsf' | ''
+  const _deptOf = _fd ? (_fd.startsWith('aim:') ? 'aim' : _fd) : '';
+  const _activeDepts = _deptOf ? [_deptOf] : depts;
+  const _fBatch = window._rptBBatch || '';
+  const _fColour = (window._rptBColour || '').toLowerCase();
+  const _fPC = (window._rptBPC || '').toLowerCase();
+  const _ffsfM = new Set([...(FLOORS.FF?.machines || []), ...(FLOORS.SF?.machines || [])].map(normMcId));
+  const _aimFloorOf = bn => _ffsfM.has(normMcId(getBatch(bn)?.machineId)) ? 'ffsf' : 'gf';
   const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
-  depts.forEach(dept=>{
+  _activeDepts.forEach(dept=>{
     const hasWastage=dept==='aim'||dept==='printing'||dept==='pi';
     // Build batch list from scanSummary (full) when available
     let batchNos;
@@ -12198,6 +12365,10 @@ function exportReportB(){
     } else {
       batchNos = [...new Set(state.scans.filter(s=>s.dept===dept&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))];
     }
+    if(_fBatch)  batchNos = batchNos.filter(bn=>bn===_fBatch);
+    if(_fColour) batchNos = batchNos.filter(bn=>(getBatch(bn)?.colour||'').toLowerCase().includes(_fColour));
+    if(_fPC)     batchNos = batchNos.filter(bn=>String(getBatch(bn)?.pcCode||'').toLowerCase().includes(_fPC));
+    if(dept==='aim' && _floorFilter) batchNos = batchNos.filter(bn=>_aimFloorOf(bn)===_floorFilter);
     batchNos.forEach(batchNo=>{
       const b=getBatch(batchNo);
       const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
@@ -12228,7 +12399,7 @@ function exportReportB(){
       // numeric cells and Excel can SUM them. fmt() returns a string, which Excel treats as text.
       const _n2 = v => (v==null||isNaN(v)) ? 0 : Math.round((+v)*100)/100;
       rows.push({
-        'Department':DEPT_LABELS[dept]||dept,'Batch':batchNo,'Customer':b?.customer||'',
+        'Department':DEPT_LABELS[dept]||dept,'Floor':dept==='aim'?(_aimFloorOf(batchNo)==='gf'?'GF':'FF/SF'):'','Batch':batchNo,'Customer':b?.customer||'',
         'Prod WIP (L)':_n2(prodWipEx),
         'Boxes IN':inn,'Boxes OUT':out,
         'Wastage (L)':hasWastage?_n2(w.total):'',
