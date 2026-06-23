@@ -3042,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZJ' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZK' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZJ' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZK' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -4459,6 +4459,30 @@ app.get('/api/invoice/received', async (req, res) => {
         } catch { return false; }
       });
     }
+    // v44ZK Issue 3: compute a reliable needs_realloc flag — true only when a regularised
+    // (dispatched + legacy-closed) invoice's linked dispatch RECORD is a concatenated multi-batch
+    // row (batch_number contains a space/comma = old single-record regularise that never netted in
+    // the truck plan). New per-batch allocations write only single-token records, so once an invoice
+    // is re-allocated this flips to false and it drops out of the "Needs re-allocation" filter.
+    try {
+      const recIds = rows.map(r => r.dispatch_record_id).filter(Boolean);
+      const stuckRecIds = new Set();
+      if (recIds.length) {
+        let recRows;
+        if (pgPool) {
+          recRows = (await pgPool.query(`SELECT id, batch_number FROM tracking_dispatch_records WHERE id = ANY($1)`, [recIds])).rows;
+        } else {
+          const ph = recIds.map(() => '?').join(',');
+          recRows = db.prepare(`SELECT id, batch_number FROM tracking_dispatch_records WHERE id IN (${ph})`).all(...recIds);
+        }
+        for (const rr of recRows) if (/[\s,]/.test(String(rr.batch_number || ''))) stuckRecIds.add(rr.id);
+      }
+      for (const inv of rows) {
+        inv.needs_realloc = !!(inv.dispatch_status === 'dispatched'
+          && parseInt(inv.is_legacy_closed, 10) === 1
+          && inv.dispatch_record_id && stuckRecIds.has(inv.dispatch_record_id));
+      }
+    } catch (e) { console.warn('[v44ZK needs_realloc]', e.message); }
     res.json({ ok: true, count: rows.length, invoices: rows });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -4992,44 +5016,89 @@ app.post('/api/invoice/reconcile-regularised-multibatch', async (req, res) => {
     let rows;
     if (pgPool) rows = (await pgPool.query(`SELECT * FROM invoices_received WHERE is_legacy_closed=1 AND batch_number IS NOT NULL AND batch_number <> ''`)).rows;
     else        rows = db.prepare(`SELECT * FROM invoices_received WHERE is_legacy_closed=1 AND batch_number IS NOT NULL AND batch_number <> ''`).all();
-    // batch -> {pc, size} resolver from print_orders
+    // v44ZK: restrict to TRULY stuck invoices — those whose linked dispatch record is a concatenated
+    // single-batch row (separator in batch_number). Already-split invoices have clean single-token
+    // records and are skipped, so this matches the "Needs re-allocation" filter and avoids rewriting
+    // invoices that are already correct.
+    const _recIds = rows.map(r => r.dispatch_record_id).filter(Boolean);
+    const _stuckRecIds = new Set();
+    if (_recIds.length) {
+      let _rr;
+      if (pgPool) _rr = (await pgPool.query(`SELECT id, batch_number FROM tracking_dispatch_records WHERE id = ANY($1)`, [_recIds])).rows;
+      else { const ph = _recIds.map(() => '?').join(','); _rr = db.prepare(`SELECT id, batch_number FROM tracking_dispatch_records WHERE id IN (${ph})`).all(..._recIds); }
+      for (const r of _rr) if (/[\s,]/.test(String(r.batch_number || ''))) _stuckRecIds.add(r.id);
+    }
+    rows = rows.filter(inv => inv.dispatch_record_id && _stuckRecIds.has(inv.dispatch_record_id));
+    // v44ZK auto-pair improvement: the legacy batch_number field on regularised invoices is a
+    // polluted free-text blob (real batch(es) PLUS pasted qty / PC / colour / size / unit tokens),
+    // e.g. "26ZE075, RED, TR/CT, '2', 50.75, lac". So:
+    //   1. Extract ONLY batch-shaped tokens (NN<letters>NN) — discards the pollution. dedupe.
+    //   2. SINGLE real batch  → the whole invoice goes to that one batch. No PC match / no per-line
+    //      detail needed (this clears the large majority of the stuck legacy invoices).
+    //   3. MULTIPLE real batches → still need per-line detail to split by PC. Resolve each batch's
+    //      PC/size from print_orders, falling back to tracking_labels, comparing PCs leading-zero-
+    //      and case-insensitively (SAP ItemCode '0043' vs stored '43'). Clean bijection → pair.
+    //   4. Anything still ambiguous (multi-batch with no per-line detail, or same-PC duplicates) is
+    //      SKIPPED with a reason — correctly left for manual re-allocation.
+    const BATCH_RE = /^\d+[A-Z]+\d+$/i;
+    const _normPc = (s) => String(s == null ? '' : s).trim().replace(/^0+(?=\d)/, '');
+    // batch -> {pc_code, size} resolver: print_orders first, then tracking_labels (both batch-keyed)
     const _batchInfo = async (token) => {
       let r;
       if (pgPool) r = (await pgPool.query(`SELECT pc_code, size FROM print_orders WHERE batch_number=$1 LIMIT 1`, [token])).rows[0];
       else        r = db.prepare(`SELECT pc_code, size FROM print_orders WHERE batch_number=? LIMIT 1`).get(token);
+      if (r && (r.pc_code || r.size)) return r;
+      if (pgPool) r = (await pgPool.query(`SELECT pc_code, size FROM tracking_labels WHERE batch_number=$1 AND pc_code IS NOT NULL AND pc_code <> '' LIMIT 1`, [token])).rows[0];
+      else        r = db.prepare(`SELECT pc_code, size FROM tracking_labels WHERE batch_number=? AND pc_code IS NOT NULL AND pc_code <> '' LIMIT 1`).get(token);
       return r || null;
     };
     const reconciled = [], skipped = [];
     for (const inv of rows) {
-      const tokens = String(inv.batch_number || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
-      if (tokens.length < 2) continue; // only multi-batch candidates
-      let lines = [];
-      try { const p = typeof inv.payload_json === 'string' ? JSON.parse(inv.payload_json) : (inv.payload_json || {}); lines = (p.DocumentLines || []); } catch (e) {}
-      if (!lines.length) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: tokens, reason: 'no per-line detail in payload_json' }); continue; }
-      // resolve each token's PC/size
+      const rawTokens = String(inv.batch_number || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+      // strip pollution: keep only batch-shaped tokens, dedupe (preserve order)
+      const realBatches = [...new Set(rawTokens.filter(t => BATCH_RE.test(t)))];
+      if (!realBatches.length) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: rawTokens, reason: 'no batch-shaped tokens in batch_number' }); continue; }
+      // resolve PC/size for every real batch (single source for both branches)
       const tokInfo = {};
-      for (const t of tokens) tokInfo[t] = await _batchInfo(t);
-      // pair: each line ItemCode -> tokens whose pc === ItemCode
-      let ambiguous = null;
-      const used = new Set();
-      const clean = [];
-      for (const L of lines) {
-        const item = String(L.ItemCode || '').trim();
-        const qty  = parseFloat(L.Quantity) || 0;
-        const matches = tokens.filter(t => tokInfo[t] && String(tokInfo[t].pc_code || '').trim() === item && !used.has(t));
-        if (matches.length !== 1) { ambiguous = `line ItemCode ${item || '—'} matched ${matches.length} unused batch(es)`; break; }
-        const tk = matches[0]; used.add(tk);
-        clean.push({ batch: tk, qty, boxes: _v44zj_lakhToBox(qty, tokInfo[tk] ? tokInfo[tk].size : null) });
+      for (const b of realBatches) tokInfo[b] = await _batchInfo(b);
+
+      let clean = null;
+      if (realBatches.length === 1) {
+        // SINGLE real batch — the entire invoice belongs to it. No PC match / per-line detail needed.
+        const b   = realBatches[0];
+        const qty = parseFloat(inv.total_qty_lakhs) || 0;
+        const sz  = tokInfo[b] ? tokInfo[b].size : null;
+        const boxes = (parseInt(inv.total_boxes, 10) || 0) || _v44zj_lakhToBox(qty, sz);
+        if (qty <= 0 && boxes <= 0) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: realBatches, reason: 'single batch but invoice qty and boxes are both zero' }); continue; }
+        clean = [{ batch: b, qty, boxes }];
+      } else {
+        // MULTIPLE real batches — need per-line detail to split by PC.
+        let lines = [];
+        try { const p = typeof inv.payload_json === 'string' ? JSON.parse(inv.payload_json) : (inv.payload_json || {}); lines = (p.DocumentLines || []); } catch (e) {}
+        if (!lines.length) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: realBatches, reason: 'multiple batches but no per-line detail in payload_json to split' }); continue; }
+        let ambiguous = null;
+        const used = new Set();
+        const allocs = [];
+        for (const L of lines) {
+          const item = _normPc(L.ItemCode);
+          const qty  = parseFloat(L.Quantity) || 0;
+          const matches = realBatches.filter(t => tokInfo[t] && _normPc(tokInfo[t].pc_code) !== '' && _normPc(tokInfo[t].pc_code) === item && !used.has(t));
+          if (matches.length !== 1) { ambiguous = `line ItemCode ${L.ItemCode || '—'} matched ${matches.length} unused batch(es)`; break; }
+          const tk = matches[0]; used.add(tk);
+          allocs.push({ batch: tk, qty, boxes: _v44zj_lakhToBox(qty, tokInfo[tk] ? tokInfo[tk].size : null) });
+        }
+        if (ambiguous) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: realBatches, reason: ambiguous }); continue; }
+        if (used.size !== realBatches.length) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: realBatches, reason: `paired ${used.size}/${realBatches.length} batches — count mismatch` }); continue; }
+        clean = allocs;
       }
-      if (ambiguous) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: tokens, reason: ambiguous }); continue; }
-      if (used.size !== tokens.length) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: tokens, reason: `paired ${used.size}/${tokens.length} batches — count mismatch` }); continue; }
+
       if (dryRun) { reconciled.push({ id: inv.id, so: inv.sap_doc_num, dryRun: true, allocations: clean }); continue; }
-      const rsn = (inv.legacy_close_reason && String(inv.legacy_close_reason).trim()) || 'Auto-pair reconcile (v44ZJ) — split combined multi-batch dispatch';
+      const rsn = (inv.legacy_close_reason && String(inv.legacy_close_reason).trim()) || 'Auto-pair reconcile (v44ZK) — split combined multi-batch dispatch';
       try {
         const r = await _applyRegularisation(inv, clean, who, ts, rsn);
         try { logAudit(who, 'admin', 'invoice', 'INVOICE_AUTOPAIR_RECONCILE', `Auto-paired invoice ${inv.id} (SO ${inv.sap_doc_num||'—'}): ${clean.map(c=>`${c.batch}=${c.qty}L/${c.boxes}b`).join(', ')}`, req.ip); } catch {}
         reconciled.push({ id: inv.id, so: inv.sap_doc_num, allocations: clean, affected: r.affected });
-      } catch (e) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: tokens, reason: 'apply failed: ' + e.message }); }
+      } catch (e) { skipped.push({ id: inv.id, so: inv.sap_doc_num, batches: realBatches, reason: 'apply failed: ' + e.message }); }
     }
     res.json({ ok: true, dryRun, reconciledCount: reconciled.length, skippedCount: skipped.length, reconciled, skipped });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -10286,7 +10355,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZJ',
+      build: 'v44ZK',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10295,7 +10364,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZJ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZK', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11619,7 +11688,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZJ',
+      build: 'v44ZK',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11628,7 +11697,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZJ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZK', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

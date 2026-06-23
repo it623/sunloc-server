@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44ZJ</title>
+<title>Sunloc Tracking Suite v1.0 · build v44ZK</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZJ</p>
+      <p>Tracking Suite v1.0 · build v44ZK</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZJ</p>
+      <p>Tracking Suite v1.0 · build v44ZK</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -5753,10 +5753,21 @@ async function _v41zs_regulariseDispatch(invoiceId) {
     rows.push({ batch:'', qty: parseFloat(inv.total_qty_lakhs)||0, boxes: parseInt(inv.total_boxes,10)||0, itemCode:'', size:'' });
   }
   const isRealloc = inv.dispatch_status === 'dispatched';
-  // Best-effort prefill of batches on re-allocation: if the stored batch tokens count matches rows.
-  const tokens = String(inv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(Boolean);
-  if (tokens.length && tokens.length === rows.length) {
-    rows.forEach((r,i)=>{ r.batch = tokens[i]; const b=getBatch(tokens[i]); r.size=b?b.size:''; if(b&&r.size!=null&&r.size!=='') r.boxes=lakhToBox(parseFloat(r.qty)||0,r.size); });
+  // v44ZK: prefill batches from the stored batch_number, but extract ONLY batch-shaped tokens
+  // (NN<letters>NN) — the legacy field is a polluted blob (real batch + pasted qty/PC/colour/size/
+  // unit), so a raw split would seed junk. Dedupe. SINGLE real batch → the whole invoice goes to it:
+  // collapse to one prefilled row carrying the invoice totals (mirrors the server auto-pair). Clean
+  // multi-batch (count matches the per-line rows) → positional prefill. Otherwise leave blank.
+  const batchTokens = [...new Set(String(inv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(t=>/^\d+[A-Z]+\d+$/i.test(t)))];
+  if (batchTokens.length === 1) {
+    const b = batchTokens[0]; const bd = getBatch(b); const sz = bd ? bd.size : '';
+    const qty = parseFloat(inv.total_qty_lakhs)||0;
+    const boxes = (parseInt(inv.total_boxes,10)||0) || ((sz!=null&&sz!=='') ? lakhToBox(qty, sz) : 0);
+    const firstItem = (rows[0] && rows[0].itemCode) || '';
+    rows.length = 0;
+    rows.push({ batch:b, qty, boxes, itemCode:firstItem, size:sz });
+  } else if (batchTokens.length && batchTokens.length === rows.length) {
+    rows.forEach((r,i)=>{ r.batch = batchTokens[i]; const b=getBatch(batchTokens[i]); r.size=b?b.size:''; if(b&&r.size!=null&&r.size!=='') r.boxes=lakhToBox(parseFloat(r.qty)||0,r.size); });
   }
   _v44zjReg = { invoiceId, rows, reason: (inv.legacy_close_reason || 'Legacy / return / no-SO — regularised by admin'), isRealloc };
 
@@ -7075,12 +7086,11 @@ async function _v39_applyInvoiceFilters() {
           String(iv.sap_doc_entry||'').toLowerCase().includes(q) ||
           String(iv.sap_invoice_no||'').toLowerCase().includes(q));
       }
-      // v44ZJ Issue 2/5: "Needs re-allocation" narrowing — regularised invoices whose stored
-      // batch_number is a multi-batch (concatenated) key. These never net out of the truck plan
-      // until re-allocated per-batch. Detect by splitting on whitespace/comma → more than one token.
+      // v44ZJ/v44ZK Issue 3: "Needs re-allocation" — server marks invoices whose dispatch landed
+      // under a concatenated single-record key (never netted in the truck plan). Once re-allocated
+      // per batch, the flag clears and the invoice drops out of this list.
       if (window._giNeedsRealloc) {
-        _v39_invoiceList = _v39_invoiceList.filter(iv =>
-          String(iv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(Boolean).length > 1);
+        _v39_invoiceList = _v39_invoiceList.filter(iv => iv.needs_realloc === true);
       }
       _v39_renderInvoiceTable();
       if (statusText) statusText.textContent = `${_v39_invoiceList.length} invoice${_v39_invoiceList.length===1?'':'s'} loaded${sono?' (filtered by SO/Inv '+sono+')':''}`;
@@ -7353,6 +7363,15 @@ function _v39_showInvoiceDetail(invoiceId) {
   if (currentDept === 'admin' && !inv.is_legacy_closed && inv.dispatch_status !== 'dispatched') {
     footerButtons.push({
       label: '🗂️ Regularise Dispatch',
+      cls: 'btn-warning',
+      fn: `_v41zs_regulariseDispatch('${inv.id}')`,
+    });
+  } else if (currentDept === 'admin' && parseInt(inv.is_legacy_closed, 10) === 1) {
+    // v44ZK Issue 3: an already-regularised invoice (the "Needs re-allocation" set) gets a
+    // Re-allocate action so a multi-batch dispatch can be split per batch and dropped from the
+    // truck plan. Same handler — it detects the re-allocation case and pre-seeds the rows.
+    footerButtons.push({
+      label: '🔄 Re-allocate Dispatch',
       cls: 'btn-warning',
       fn: `_v41zs_regulariseDispatch('${inv.id}')`,
     });
@@ -9311,6 +9330,21 @@ function exportReportF(){
 }
 
 
+// v44ZK Issue 2: batch-wise chronological comparator for Report B floor tables.
+// Order = year ascending, then letter-series (shorter series first, then alphabetical:
+// G,H,…,Z, then ZA,ZB,…,ZH), then the numeric sequence (e.g. ZB079 before ZB080).
+function _v44zk_batchCmp(a, b) {
+  const re = /^(\d+)([A-Z]+)(\d+)$/i;
+  const ma = String(a).match(re), mb = String(b).match(re);
+  if (!ma || !mb) return String(a).localeCompare(String(b)); // unparseable → stable string order
+  const ya = parseInt(ma[1], 10), yb = parseInt(mb[1], 10);
+  if (ya !== yb) return ya - yb;
+  const la = ma[2].toUpperCase(), lb = mb[2].toUpperCase();
+  if (la.length !== lb.length) return la.length - lb.length;
+  if (la !== lb) return la < lb ? -1 : 1;
+  return parseInt(ma[3], 10) - parseInt(mb[3], 10);
+}
+
 function renderReportB(){ window._activeReport = renderReportB; if(window._v41_composingD)window._v41_composingD=false;
   if(!document.getElementById('report-output')) renderReports();
   const filterDept  = window._rptBDept  || '';
@@ -9396,6 +9430,9 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     if(filterBatch) batchSet = batchSet.filter(bn=>bn===filterBatch);
     if(filterColour) batchSet = batchSet.filter(bn=>(getBatch(bn)?.colour||'').toLowerCase().includes(filterColour.toLowerCase()));
     if(filterPC) batchSet = batchSet.filter(bn=>String(getBatch(bn)?.pcCode||'').toLowerCase().includes(filterPC.toLowerCase()));
+    // v44ZK Issue 2: order batches batch-wise + chronologically (applies to GF, FF/SF and every
+    // other dept group, since all groups derive from batchSet).
+    batchSet = batchSet.slice().sort(_v44zk_batchCmp);
     if(!batchSet.length) return;
     anyData = true;
     const hasWastage = dept==='aim'||dept==='printing'||dept==='pi';
@@ -12369,6 +12406,7 @@ function exportReportB(){
     if(_fColour) batchNos = batchNos.filter(bn=>(getBatch(bn)?.colour||'').toLowerCase().includes(_fColour));
     if(_fPC)     batchNos = batchNos.filter(bn=>String(getBatch(bn)?.pcCode||'').toLowerCase().includes(_fPC));
     if(dept==='aim' && _floorFilter) batchNos = batchNos.filter(bn=>_aimFloorOf(bn)===_floorFilter);
+    batchNos = batchNos.slice().sort(_v44zk_batchCmp); // v44ZK Issue 2: batch-wise chronological
     batchNos.forEach(batchNo=>{
       const b=getBatch(batchNo);
       const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
