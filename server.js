@@ -3042,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZQ' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZR' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZQ' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZR' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -9603,9 +9603,20 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
     const parentActual = parseFloat(parent.actualProd || 0);
     const totalBoxesSplit = lines.reduce((s,l) => s + (l.boxes||0), 0);
     const now = new Date().toISOString();
+    // v44ZQ: split ACTUAL produced the same full-box way as planned qty — each child gets full boxes
+    // filled from the actual (cumulative-min, partial only in the tail), so children + residual
+    // conserve to parentActual instead of crediting one customer the whole production. Box ranges are
+    // recomputed sequentially here (independent of stored box_start/box_end). If pack size is somehow
+    // unknown, fall back to distributing actual by each child's planned-qty share (also conserves).
+    const _psLakhAct = _V44ZJ_PACK_SIZES[String(parent.size)] || 0;
+    const _plannedTot = lines.reduce((s,l)=>s+(parseFloat(l.qty_lakhs)||0),0);
+    let _actBoxStart = 1;
     const childOrders = [];
     for (const L of lines) {
-      const proportional = totalBoxesSplit > 0 ? (parentActual * L.boxes / totalBoxesSplit) : 0;
+      const _abs = _actBoxStart, _abe = _actBoxStart + (L.boxes||0) - 1; _actBoxStart = _abe + 1;
+      const proportional = _psLakhAct > 0
+        ? Math.max(0, Math.min(_abe*_psLakhAct, parentActual) - Math.min((_abs-1)*_psLakhAct, parentActual))
+        : (_plannedTot > 0 ? parentActual * (parseFloat(L.qty_lakhs)||0) / _plannedTot : 0);
       const childId = `${parent.id}-${L.child_batch_suffix}`;
       const child = {
         ...parent,
@@ -9644,10 +9655,18 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
         const _assignedQty = childOrders.reduce((s,c)=>s+(parseFloat(c.child.qty)||0),0);
         parent.qty = Math.max(0, +(parseFloat(parent.qty||0) - _assignedQty).toFixed(3));
         parent.totalBoxes = residualBoxes;
+        // v44ZQ: residual also keeps the remaining ACTUAL produced (parentActual − Σ assigned), so
+        // actual conserves too (children + residual = parentActual).
+        const _assignedActual = childOrders.reduce((s,c)=>s+(parseFloat(c.child.actualProd)||0),0);
+        parent.actualProd = Math.max(0, +(parentActual - _assignedActual).toFixed(3));
+        parent.actualQty = parent.actualProd;
         parent.woStatus = 'wo-split-partial';
         parent._localEditedAt = Date.now();
       } else {
         parent.qty = 0;
+        // v44ZQ: full split — all actual produced is distributed to children; parent retains none.
+        parent.actualProd = 0;
+        parent.actualQty = 0;
         parent.woStatus = 'wo-split';
         parent.deleted = false;
         parent.status = 'closed';
@@ -10372,7 +10391,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZQ',
+      build: 'v44ZR',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10381,7 +10400,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZQ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZR', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11705,7 +11724,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZQ',
+      build: 'v44ZR',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11714,7 +11733,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZQ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZR', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
