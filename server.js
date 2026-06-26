@@ -3042,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZR' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZS' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZR' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZS' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -9709,12 +9709,12 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
       let parentLabels = [];
       if (pgPool) {
         const r = await pgPool.query(
-          `SELECT id, batch_number, box_number FROM tracking_labels WHERE batch_number=$1 ORDER BY box_number ASC`,
+          `SELECT id, batch_number, label_number FROM tracking_labels WHERE batch_number=$1 AND (is_orange IS NULL OR is_orange=0) AND (is_excess IS NULL OR is_excess=0) AND label_number >= 1 ORDER BY label_number ASC`,
           [parent.batchNumber]
         );
         parentLabels = r.rows;
       } else {
-        parentLabels = db.prepare(`SELECT id, batch_number, box_number FROM tracking_labels WHERE batch_number=? ORDER BY box_number ASC`).all(parent.batchNumber);
+        parentLabels = db.prepare(`SELECT id, batch_number, label_number FROM tracking_labels WHERE batch_number=? AND (is_orange IS NULL OR is_orange=0) AND (is_excess IS NULL OR is_excess=0) AND label_number >= 1 ORDER BY label_number ASC`).all(parent.batchNumber);
       }
       const lineByBoxPos = {};
       for (const L of lines) {
@@ -9723,7 +9723,7 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
       let relabeled = 0;
       for (let pos = 0; pos < parentLabels.length; pos++) {
         const lbl = parentLabels[pos];
-        const boxPos = pos + 1;
+        const boxPos = lbl.label_number;   // v44ZS: box position = the label's own number (the missing 'box_number' column was meant to be label_number); robust to gaps/specimen/excess
         const L = lineByBoxPos[boxPos];
         if (!L) continue;
         const newBatch = L.child_batch_number;
@@ -10391,7 +10391,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZR',
+      build: 'v44ZS',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10400,7 +10400,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZR', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZS', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11724,7 +11724,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZR',
+      build: 'v44ZS',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11733,7 +11733,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZR', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZS', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
