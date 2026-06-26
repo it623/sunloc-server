@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44ZM</title>
+<title>Sunloc Tracking Suite v1.0 · build v44ZN</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZM</p>
+      <p>Tracking Suite v1.0 · build v44ZN</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZM</p>
+      <p>Tracking Suite v1.0 · build v44ZN</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2056,7 +2056,7 @@ function recordScan(labelId, dept, type, operator, parsed){
   }
   if(!label) return {ok:false,msg:'Label not found'};
   if(label.voided) return {ok:false,msg:'Label has been voided'};
-  // v44ZM Req 2: the specimen/master (BPR) label is not a production box — it must never be scanned
+  // v44ZN Req 2: the specimen/master (BPR) label is not a production box — it must never be scanned
   // into any department (doing so would inflate that dept's box IN/OUT counts).
   if(_isSpecimenLabel(label)) return {ok:false, msg:'📄 Specimen / BPR master label — not a production box, cannot be scanned'};
 
@@ -2252,7 +2252,7 @@ function generateQRData(label){
 // ═══════════════════════════════════════════════════════
 
 // ═══════════════════════════════════════════════════════
-// v44ZM Req 2: SPECIMEN / MASTER (BPR) LABEL
+// v44ZN Req 2: SPECIMEN / MASTER (BPR) LABEL
 // Every NEW batch (startDate on/after the cutoff below) gets ONE extra "specimen" label so the
 // batch's label count is n+1. The specimen is the FIRST label in the print sequence, uses the
 // identical white-label format EXCEPT the QUANTITY and CONTAINER (box-number) fields are blank
@@ -2296,7 +2296,7 @@ function canGenerateLabels(batchNo, requestedBoxes){
   if(!ps) return {ok:false,msg:'Unknown pack size'};
 
   const maxTotalBoxes = lakhToBox(batch.qty, batch.size);
-  // v44ZM: specimen (labelNumber 0) is not a box — exclude from every count below.
+  // v44ZN: specimen (labelNumber 0) is not a box — exclude from every count below.
   const normalLabels = state.labels.filter(l=>l.batchNumber===batchNo&&!l.voided&&!l.isOrange&&!l.isExcess&&!_isSpecimenLabel(l));
   const excessLabels = state.labels.filter(l=>l.batchNumber===batchNo&&!l.voided&&!l.isOrange&&l.isExcess&&!_isSpecimenLabel(l));
   const alreadyGenerated = normalLabels.length + excessLabels.length;
@@ -2388,7 +2388,7 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
     newLabels.push(label);
   }
 
-  // v44ZM Req 2: prepend the one-time specimen/master (BPR) label for eligible NEW batches.
+  // v44ZN Req 2: prepend the one-time specimen/master (BPR) label for eligible NEW batches.
   // It is created on the FIRST label-generation run for the batch (so it is physically label #1
   // in the print sequence) and brings the batch label count to n+1. Same white-label format, but
   // QUANTITY + CONTAINER are blanked at print time (see generateZPL). labelNumber 0 marks it.
@@ -2860,7 +2860,7 @@ function generateZPL(label, batch){
     ? `E-${label.excessNum}/${_exTotLive || label.excessTotal || 1}`
     : (normTot !== '?' ? `${_num}/${normTot}` : String(_num));
 
-  // v44ZM Req 2: the specimen/master (BPR) label is the identical white label EXCEPT it carries no
+  // v44ZN Req 2: the specimen/master (BPR) label is the identical white label EXCEPT it carries no
   // box number and no quantity (per spec). Blank those two fields; everything else is unchanged.
   const _isSpec      = _isSpecimenLabel(label);
   const piecesTxt    = _isSpec ? '' : pieces;
@@ -3007,7 +3007,7 @@ function downloadZPL(zpl,label){
 
 function printBatchLabels(batchNo){
   const labels = state.labels.filter(l=>l.batchNumber===batchNo&&!l.printed&&!l.voided&&!l.isOrange)
-    // v44ZM Req 2: specimen (labelNumber 0) prints FIRST; stable sort keeps existing order otherwise.
+    // v44ZN Req 2: specimen (labelNumber 0) prints FIRST; stable sort keeps existing order otherwise.
     .sort((a,b)=>(_isSpecimenLabel(a)?0:1)-(_isSpecimenLabel(b)?0:1));
   if(!labels.length){alert('No unprinted labels for this batch.');return;}
   const batch = getBatch(batchNo);
@@ -3601,7 +3601,7 @@ function renderPrintQueue(selBatch){
   if(!selBatch) return '<div style="padding:40px;text-align:center;color:var(--text3)">← Select a batch to view its print queue</div>';
   const batch=getBatch(selBatch);
   const labels=state.labels.filter(l=>l.batchNumber===selBatch&&!l.isOrange).sort((a,b)=>{
-    const sa=_isSpecimenLabel(a)?1:0, sb=_isSpecimenLabel(b)?1:0;  // v44ZM: specimen first
+    const sa=_isSpecimenLabel(a)?1:0, sb=_isSpecimenLabel(b)?1:0;  // v44ZN: specimen first
     if(sa!==sb) return sb-sa;
     return a.labelNumber-b.labelNumber;
   });
@@ -4042,7 +4042,7 @@ function confirmLabelGen(){
 function viewBatchLabels(batchNo){
   const batch=getBatch(batchNo);
   const labels=state.labels.filter(l=>l.batchNumber===batchNo&&!l.isOrange).sort((a,b)=>{
-    const sa=_isSpecimenLabel(a)?1:0, sb=_isSpecimenLabel(b)?1:0;  // v44ZM: specimen first
+    const sa=_isSpecimenLabel(a)?1:0, sb=_isSpecimenLabel(b)?1:0;  // v44ZN: specimen first
     if(sa!==sb) return sb-sa;
     return a.labelNumber-b.labelNumber;
   });
@@ -12448,7 +12448,7 @@ function exportReportA(){
   exportToExcel(rows,`Sunloc_Batch_Tracking_${today()}.xlsx`,'Batch Tracking');
 }
 
-// v44ZM Req 1: Report B Excel export is now a faithful mirror of the on-screen report — one SHEET
+// v44ZN Req 1: Report B Excel export is now a faithful mirror of the on-screen report — one SHEET
 // per department, each using that department's exact on-screen column layout (rich AIM layout vs.
 // the lean std layout for Printing / PI), the same computed values (WIP boxes, status), and the
 // same active dropdown filters INCLUDING the status filter (_rptBStatus) which the old single-flat
@@ -12466,13 +12466,26 @@ function exportReportB(){
   const _fBatch = window._rptBBatch || '';
   const _fColour = (window._rptBColour || '').toLowerCase();
   const _fPC = (window._rptBPC || '').toLowerCase();
-  const _fStatus = window._rptBStatus || '';   // v44ZM: '', 'indept', 'leftdept', 'closed' — mirror screen
+  const _fStatus = window._rptBStatus || '';   // v44ZN: '', 'indept', 'leftdept', 'closed' — mirror screen
   const _ffsfM = new Set([...(FLOORS.FF?.machines || []), ...(FLOORS.SF?.machines || [])].map(normMcId));
   const _aimFloorOf = bn => _ffsfM.has(normMcId(getBatch(bn)?.machineId)) ? 'ffsf' : 'gf';
   const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
   const _n2 = v => (v==null||isNaN(v)) ? 0 : Math.round((+v)*100)/100; // numeric cells so Excel can SUM
   const wb = XLSX.utils.book_new();
+  // v44ZN: AIM Inspection is emitted as TWO sheets — "AIM Inspection GF" and "AIM Inspection FF-SF"
+  // — exactly as the on-screen report groups it by floor. A floor dropdown filter narrows AIM to
+  // just that one floor's sheet. Printing / PI remain one sheet each.
+  const sheetSpecs = [];
   _activeDepts.forEach(dept=>{
+    if (dept==='aim') {
+      const floors = _floorFilter ? [_floorFilter] : ['gf','ffsf'];
+      floors.forEach(fl => sheetSpecs.push({dept:'aim', floor:fl, name:'AIM Inspection '+(fl==='gf'?'GF':'FF-SF')}));
+    } else {
+      sheetSpecs.push({dept, floor:null, name:DEPT_LABELS[dept]||dept});
+    }
+  });
+
+  const buildRows = (dept, floorOnly) => {
     const isAim = dept==='aim';
     const hasWastage=dept==='aim'||dept==='printing'||dept==='pi';
     // Build batch list from scanSummary (full) when available
@@ -12485,7 +12498,7 @@ function exportReportB(){
     if(_fBatch)  batchNos = batchNos.filter(bn=>bn===_fBatch);
     if(_fColour) batchNos = batchNos.filter(bn=>(getBatch(bn)?.colour||'').toLowerCase().includes(_fColour));
     if(_fPC)     batchNos = batchNos.filter(bn=>String(getBatch(bn)?.pcCode||'').toLowerCase().includes(_fPC));
-    if(dept==='aim' && _floorFilter) batchNos = batchNos.filter(bn=>_aimFloorOf(bn)===_floorFilter);
+    if(isAim && floorOnly) batchNos = batchNos.filter(bn=>_aimFloorOf(bn)===floorOnly);
     batchNos = batchNos.slice().sort(_v44zk_batchCmp); // v44ZK Issue 2: batch-wise chronological
     const rows=[];
     batchNos.forEach(batchNo=>{
@@ -12497,7 +12510,7 @@ function exportReportB(){
       const w=hasWastage?getTotalWastage(batchNo,dept):{total:0,salvage:0,remelt:0};
       const ps=PACK_SIZES[String(b?.size||'0')]||1;
       const wastageBoxes=hasWastage?Math.round(w.total/ps):0;
-      // v44ZM: mirror the on-screen WIP-boxes formula EXACTLY — AIM does not subtract wastage boxes
+      // v44ZN: mirror the on-screen WIP-boxes formula EXACTLY — AIM does not subtract wastage boxes
       // (v41ZB moved AIM wastage into Production WIP); Printing/PI still subtract wastage boxes.
       const wip=Math.max(0, inn - out - (isAim ? 0 : wastageBoxes));
       const wipQty=boxToLakh(wip,b?.size||'0');
@@ -12512,7 +12525,7 @@ function exportReportB(){
       // Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In  (canonical v41ZB; unchanged)
       const prodWip=_isRetired(batchNo)?0:Math.max(0,grossProd-aimWaste.salvage-aimWaste.remelt-aimInQty);
       const _avail = Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt); // Available to Scan In
-      // v44ZM: status mirrors the on-screen badge logic (Closed / In Dept / Left Dept / —) and the
+      // v44ZN: status mirrors the on-screen badge logic (Closed / In Dept / Left Dept / —) and the
       // same statusKey is used to honour the on-screen status filter.
       const _closed = isStageComplete(batchNo,dept);
       const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
@@ -12540,11 +12553,13 @@ function exportReportB(){
         rows.push(row);
       }
     });
-    if (!rows.length) return;  // skip empty department sheets
-    let sheetName = DEPT_LABELS[dept]||dept;
-    if (isAim && _floorFilter) sheetName += ' '+(_floorFilter==='gf'?'GF':'FF-SF');
-    sheetName = sheetName.slice(0,31);
-    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), sheetName);
+    return rows;
+  };
+
+  sheetSpecs.forEach(spec=>{
+    const rows = buildRows(spec.dept, spec.floor);
+    if (!rows.length) return;  // skip empty sheets (e.g. a floor with no AIM activity)
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), spec.name.slice(0,31));
   });
   if (!wb.SheetNames.length){ alert('No Report B data to export for the current filters.'); return; }
   XLSX.writeFile(wb,`Sunloc_DeptWIP_${today()}.xlsx`);
