@@ -3042,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZN' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZO' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZN' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZO' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -10355,7 +10355,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZN',
+      build: 'v44ZO',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10364,7 +10364,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZN', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZO', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11688,7 +11688,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZN',
+      build: 'v44ZO',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11697,7 +11697,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZN', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZO', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12658,7 +12658,7 @@ app.post('/api/tracking/labels', async (req, res) => {
     const accepted = [];
     if (pgPool) {
       for (const l of labels) {
-        const lnum = parseLabelNum(l.labelNumber || l.label_number);
+        const lnum = parseLabelNum(l.labelNumber ?? l.label_number);
         const bn = l.batchNumber || l.batch_number;
         if (!bn || lnum == null) { accepted.push(l); continue; }
         const r = await pgPool.query(
@@ -12677,7 +12677,7 @@ app.post('/api/tracking/labels', async (req, res) => {
       }
     } else {
       for (const l of labels) {
-        const lnum = parseLabelNum(l.labelNumber || l.label_number);
+        const lnum = parseLabelNum(l.labelNumber ?? l.label_number);
         const bn = l.batchNumber || l.batch_number;
         if (!bn || lnum == null) { accepted.push(l); continue; }
         const ex = db.prepare(
@@ -12721,7 +12721,7 @@ app.post('/api/tracking/labels', async (req, res) => {
             excess_total=EXCLUDED.excess_total, normal_total=EXCLUDED.normal_total`,
           [l.id, l.batchNumber||l.batch_number,
            // labelNumber may be "OL-15" (orange) or a number — always store as integer
-           (()=>{ const n=l.labelNumber||l.label_number; if(n==null) return null; const s=String(n).replace(/^OL-/i,''); return parseInt(s)||null; })(),
+           (()=>{ const n=l.labelNumber??l.label_number; if(n==null) return null; const s=String(n).replace(/^OL-/i,''); const p=parseInt(s); return isNaN(p)?null:p; })(),
            l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
            l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
            l.machineId||null, l.printingMatter||l.printMatter||null,
@@ -12739,7 +12739,7 @@ app.post('/api/tracking/labels', async (req, res) => {
          is_excess,excess_num,excess_total,normal_total)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
       labelsToWrite.forEach(l => stmt.run(
-        l.id, l.batchNumber||l.batch_number, parseLabelNum(l.labelNumber||l.label_number),
+        l.id, l.batchNumber||l.batch_number, parseLabelNum(l.labelNumber??l.label_number),
         l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
         l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
         l.machineId||null, l.printingMatter||l.printMatter||null,

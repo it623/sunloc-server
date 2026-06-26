@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v44ZN</title>
+<title>Sunloc Tracking Suite v1.0 · build v44ZO</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZN</p>
+      <p>Tracking Suite v1.0 · build v44ZO</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v44ZN</p>
+      <p>Tracking Suite v1.0 · build v44ZO</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2268,7 +2268,17 @@ function generateQRData(label){
 // started after that IST moment; the only ambiguous sliver is the 00:00–05:29 IST cutover night,
 // which date-only UTC storage cannot resolve. IT can adjust the one constant below if needed.
 const SPECIMEN_FROM = '2026-06-26';
-function _isSpecimenLabel(l){ return !!l && !l.isOrange && Number(l.labelNumber) === 0; }
+function _isSpecimenLabel(l){
+  // v44ZO: robust against the falsy-0 sentinel. A specimen is a non-orange, non-excess label whose
+  // box number is the 0 sentinel — which after a server round-trip may arrive as 0, null, or (from
+  // an older falsy-insert) NULL→null. Match camelCase or snake_case; never match a real box (>=1) or
+  // excess (negative). isSpecimen survives only pre-push, so it is an OR, not the sole signal.
+  if(!l || l.isOrange || l.isExcess) return false;
+  if(l.isSpecimen === true) return true;
+  const n = (l.labelNumber !== undefined && l.labelNumber !== null) ? l.labelNumber
+          : (l.label_number !== undefined && l.label_number !== null) ? l.label_number : 0;
+  return Number(n) === 0;
+}
 function _batchNeedsSpecimen(batch){
   if(!batch) return false;
   const sd = String(batch.startDate||'').slice(0,10);
@@ -2392,7 +2402,11 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
   // It is created on the FIRST label-generation run for the batch (so it is physically label #1
   // in the print sequence) and brings the batch label count to n+1. Same white-label format, but
   // QUANTITY + CONTAINER are blanked at print time (see generateZPL). labelNumber 0 marks it.
-  if(_batchNeedsSpecimen(batch) && !_hasSpecimen(batchNo) && !newLabels.some(_isSpecimenLabel)){
+  // v44ZO: gate on existingNormal===0 && existingExcess===0 (true first run). Without this, the
+  // labels-all reload overwriting un-pushed local labels could transiently hide the specimen from
+  // _hasSpecimen, so a later run re-created it → duplicate specimens (the +2 physical labels). A
+  // batch that already has ANY box/excess label has already had its first run and never gets a 2nd.
+  if(_batchNeedsSpecimen(batch) && existingNormal===0 && existingExcess===0 && !_hasSpecimen(batchNo) && !newLabels.some(_isSpecimenLabel)){
     const spec = {
       id:uid(), batchNumber:batchNo,
       labelNumber:0, isSpecimen:true,
@@ -3006,9 +3020,19 @@ function downloadZPL(zpl,label){
 }
 
 function printBatchLabels(batchNo){
-  const labels = state.labels.filter(l=>l.batchNumber===batchNo&&!l.printed&&!l.voided&&!l.isOrange)
+  let labels = state.labels.filter(l=>l.batchNumber===batchNo&&!l.printed&&!l.voided&&!l.isOrange)
     // v44ZN Req 2: specimen (labelNumber 0) prints FIRST; stable sort keeps existing order otherwise.
     .sort((a,b)=>(_isSpecimenLabel(a)?0:1)-(_isSpecimenLabel(b)?0:1));
+  // v44ZO: collapse any DUPLICATE specimens to a single physical print. A stale falsy-0 round-trip
+  // could have persisted >1 specimen for a batch; print only the first and mark the redundant copies
+  // printed so they neither print nor linger forever as "unprinted".
+  const _dupSpecimens=[];
+  { let _seenSpec=false; labels = labels.filter(l=>{ if(_isSpecimenLabel(l)){ if(_seenSpec){ _dupSpecimens.push(l); return false; } _seenSpec=true; } return true; }); }
+  if(_dupSpecimens.length){
+    _dupSpecimens.forEach(l=>{ l.printed=true; l.printedAt=now(); });
+    saveLocal();
+    _dupSpecimens.forEach(l=>pushToServer('/api/tracking/label-update',{labelId:l.id,printed:true,printedAt:l.printedAt}));
+  }
   if(!labels.length){alert('No unprinted labels for this batch.');return;}
   const batch = getBatch(batchNo);
   // Concatenate all ZPL — each ^XA...^XZ is one label, printer handles sequence
