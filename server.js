@@ -3042,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZS' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZU' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZS' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZU' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -9592,11 +9592,21 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
     const planState = await getPlanningStateAsync();
     const parent = (planState.orders || []).find(o => o.id === request.source_order_id);
     if (!parent) return res.status(404).json({ ok: false, error: 'Source parent order no longer exists' });
-    if (parent.woStatus !== 'wo' && parent.woStatus !== 'wo-split-partial') {
+    // v44ZU: a prior approval attempt of THIS request may have already created the child orders and
+    // adjusted the parent (and persisted) but failed before the label rebatch/finalize, leaving the
+    // request 'pending'. performSplit stamps parent.woSplitRequestId = reqId, so that reliably marks
+    // "this exact request already applied". Treat that as RESUMABLE (idempotent re-approval) rather
+    // than erroring on the parent's status or colliding with its own orphan children.
+    const _resuming = (parent.woSplitRequestId === reqId);
+
+    if (!_resuming && parent.woStatus !== 'wo' && parent.woStatus !== 'wo-split-partial') {
       return res.status(400).json({ ok: false, error: `Parent order is no longer a W/O (woStatus=${parent.woStatus||'none'}). Cannot split.` });
     }
     for (const L of lines) {
-      const collision = (planState.orders || []).find(o => o.batchNumber === L.child_batch_number && !o.deleted);
+      const childId = `${parent.id}-${L.child_batch_suffix}`;
+      // An order that IS one of this request's own children (deterministic id) is not a collision —
+      // it's our orphan from a prior failed attempt and will be reused/overwritten below.
+      const collision = (planState.orders || []).find(o => o.batchNumber === L.child_batch_number && !o.deleted && o.id !== childId);
       if (collision) return res.status(409).json({ ok: false, error: `Child batch number ${L.child_batch_number} now collides with order ${collision.id}` });
     }
 
@@ -9614,10 +9624,17 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
     const childOrders = [];
     for (const L of lines) {
       const _abs = _actBoxStart, _abe = _actBoxStart + (L.boxes||0) - 1; _actBoxStart = _abe + 1;
+      const childId = `${parent.id}-${L.child_batch_suffix}`;
+      // v44ZU: on a resumed approval the child was already created with the correct qty/actual on the
+      // first attempt — reuse it verbatim. Recomputing here would read the now-depleted
+      // parent.actualProd and overwrite the correct child actual with a wrong (smaller) value.
+      if (_resuming) {
+        const _existingChild = (planState.orders || []).find(o => o.id === childId);
+        if (_existingChild) { childOrders.push({ child: _existingChild, line: L }); continue; }
+      }
       const proportional = _psLakhAct > 0
         ? Math.max(0, Math.min(_abe*_psLakhAct, parentActual) - Math.min((_abs-1)*_psLakhAct, parentActual))
         : (_plannedTot > 0 ? parentActual * (parseFloat(L.qty_lakhs)||0) / _plannedTot : 0);
-      const childId = `${parent.id}-${L.child_batch_suffix}`;
       const child = {
         ...parent,
         id: childId,
@@ -9646,7 +9663,15 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
     }
 
     const performSplit = async () => {
-      for (const c of childOrders) planState.orders.push(c.child);
+      // v44ZU: idempotent child insert — replace an existing orphan (same id) in place instead of
+      // pushing a duplicate into planState.orders on a resumed approval.
+      for (const c of childOrders) {
+        const _i = planState.orders.findIndex(o => o.id === c.child.id);
+        if (_i >= 0) planState.orders[_i] = c.child; else planState.orders.push(c.child);
+      }
+      // v44ZU: parent qty/actual/woStatus were already adjusted + persisted by the first attempt of
+      // this request; re-applying would double-subtract. Only adjust on a fresh approval.
+      if (!_resuming) {
       const residualBoxes = request.residual_boxes || 0;
       if (residualBoxes > 0) {
         // v44ZQ: residual planned qty = batch qty − Σ(assigned child qty), so planned conserves
@@ -9674,6 +9699,7 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
         parent._localEditedAt = Date.now();
       }
       parent.woSplitRequestId = reqId;
+      }
 
       if (pgPool) {
         await pgPool.query(
@@ -10391,7 +10417,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZS',
+      build: 'v44ZU',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10400,7 +10426,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZS', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZU', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11724,7 +11750,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZS',
+      build: 'v44ZU',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11733,7 +11759,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZS', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZU', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
