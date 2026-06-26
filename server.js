@@ -3042,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZU' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZV' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZU' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZV' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -9611,7 +9611,7 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
     }
 
     const parentActual = parseFloat(parent.actualProd || 0);
-    const totalBoxesSplit = lines.reduce((s,l) => s + (l.boxes||0), 0);
+    const totalBoxesSplit = lines.reduce((s,l) => s + (Number(l.boxes)||0), 0);  // v44ZV: coerce (PG cols may be TEXT)
     const now = new Date().toISOString();
     // v44ZQ: split ACTUAL produced the same full-box way as planned qty — each child gets full boxes
     // filled from the actual (cumulative-min, partial only in the tail), so children + residual
@@ -9623,7 +9623,7 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
     let _actBoxStart = 1;
     const childOrders = [];
     for (const L of lines) {
-      const _abs = _actBoxStart, _abe = _actBoxStart + (L.boxes||0) - 1; _actBoxStart = _abe + 1;
+      const _abs = _actBoxStart, _abe = _actBoxStart + (Number(L.boxes)||0) - 1; _actBoxStart = _abe + 1;
       const childId = `${parent.id}-${L.child_batch_suffix}`;
       // v44ZU: on a resumed approval the child was already created with the correct qty/actual on the
       // first attempt — reuse it verbatim. Recomputing here would read the now-depleted
@@ -9647,7 +9647,7 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
         qty: L.qty_lakhs,
         actualProd: parseFloat(proportional.toFixed(3)),
         actualQty: parseFloat(proportional.toFixed(3)),
-        totalBoxes: L.boxes,
+        totalBoxes: Number(L.boxes)||0,
         woStatus: 'wo-split-child',
         woSplitParentId: parent.id,
         woSplitFromBatch: parent.batchNumber,
@@ -9672,7 +9672,7 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
       // v44ZU: parent qty/actual/woStatus were already adjusted + persisted by the first attempt of
       // this request; re-applying would double-subtract. Only adjust on a fresh approval.
       if (!_resuming) {
-      const residualBoxes = request.residual_boxes || 0;
+      const residualBoxes = Number(request.residual_boxes) || 0;  // v44ZV: coerce (PG col may be TEXT)
       if (residualBoxes > 0) {
         // v44ZQ: residual planned qty = batch qty − Σ(assigned child qty), so planned conserves
         // exactly (children + residual = batch). The old boxes-ratio averaged the partial box and
@@ -9732,24 +9732,34 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
         }
       }
 
+      // v44ZV: filter/sort the parent's box labels in JS, NOT in SQL. The deployed Postgres
+      // tracking_labels.label_number is stored as TEXT (the table predates the INTEGER schema and
+      // CREATE TABLE IF NOT EXISTS never altered it), so `label_number >= 1` raised
+      // "operator does not exist: text >= integer". Select plainly (batch_number is text=text) and
+      // coerce with Number() in JS — correct whether the column is text or integer — excluding
+      // specimen (0/NULL), excess (negative / is_excess) and orange labels regardless of type.
       let parentLabels = [];
       if (pgPool) {
         const r = await pgPool.query(
-          `SELECT id, batch_number, label_number FROM tracking_labels WHERE batch_number=$1 AND (is_orange IS NULL OR is_orange=0) AND (is_excess IS NULL OR is_excess=0) AND label_number >= 1 ORDER BY label_number ASC`,
+          `SELECT id, batch_number, label_number, is_orange, is_excess FROM tracking_labels WHERE batch_number=$1`,
           [parent.batchNumber]
         );
         parentLabels = r.rows;
       } else {
-        parentLabels = db.prepare(`SELECT id, batch_number, label_number FROM tracking_labels WHERE batch_number=? AND (is_orange IS NULL OR is_orange=0) AND (is_excess IS NULL OR is_excess=0) AND label_number >= 1 ORDER BY label_number ASC`).all(parent.batchNumber);
+        parentLabels = db.prepare(`SELECT id, batch_number, label_number, is_orange, is_excess FROM tracking_labels WHERE batch_number=?`).all(parent.batchNumber);
       }
+      parentLabels = parentLabels
+        .filter(x => !Number(x.is_orange) && !Number(x.is_excess) && Number(x.label_number) >= 1)
+        .sort((a, b) => Number(a.label_number) - Number(b.label_number));
       const lineByBoxPos = {};
       for (const L of lines) {
-        for (let b = L.box_start; b <= L.box_end; b++) lineByBoxPos[b] = L;
+        const _bs = Number(L.box_start), _be = Number(L.box_end);
+        for (let b = _bs; b <= _be; b++) lineByBoxPos[b] = L;
       }
       let relabeled = 0;
       for (let pos = 0; pos < parentLabels.length; pos++) {
         const lbl = parentLabels[pos];
-        const boxPos = lbl.label_number;   // v44ZS: box position = the label's own number (the missing 'box_number' column was meant to be label_number); robust to gaps/specimen/excess
+        const boxPos = Number(lbl.label_number);   // v44ZV: numeric box position (label_number may be TEXT in PG)
         const L = lineByBoxPos[boxPos];
         if (!L) continue;
         const newBatch = L.child_batch_number;
@@ -10417,7 +10427,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZU',
+      build: 'v44ZV',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10426,7 +10436,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZU', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZV', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11750,7 +11760,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZU',
+      build: 'v44ZV',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11759,7 +11769,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZU', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZV', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
