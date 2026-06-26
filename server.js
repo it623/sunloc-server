@@ -3042,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZO' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZQ' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZO' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZQ' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -9424,6 +9424,13 @@ app.post('/api/wo/split/propose', async (req, res) => {
       }
     } catch(e) {}
 
+    // v44ZP: a W/O batch typically has NO per-box labels yet, so the COUNT above is 0/tiny — which
+    // made the cap collapse to 0/1 and the per-child qty (line below) compute as boxes×full-qty.
+    // Derive box capacity from the gross qty via pack size (mirrors tracking.html lakhToBox), and use
+    // the LARGER of (labels present, qty-derived, stored totalBoxes) so the full ordered qty can split.
+    const _woBoxesFromQty = _v44zj_lakhToBox(sourceOrd.qty, sourceOrd.size);
+    totalBoxesInBatch = Math.max(totalBoxesInBatch || 0, _woBoxesFromQty || 0, parseInt(sourceOrd.totalBoxes) || 0);
+
     const conflicts = [];
     const lineNorm = [];
     let nextBoxStart = 1;
@@ -9447,7 +9454,14 @@ app.post('/api/wo/split/propose', async (req, res) => {
       const boxEnd = nextBoxStart + boxes - 1;
       nextBoxStart = boxEnd + 1;
 
-      const sizeQty = boxes * (sourceOrd.qty / Math.max(1, totalBoxesInBatch || (parseInt(sourceOrd.totalBoxes)||0) || 1));
+      // v44ZQ: boxes are FULL at the pack size (Lakhs/box); only the batch's LAST box holds the
+      // remainder. Child qty = cumulative-min, so a range of full boxes = boxes × packSize and the
+      // partial tail lands only in whichever range covers the final box. (20 boxes of size 3 =
+      // 20 × 2.25 = 45L, NOT 51/23 averaged.) Falls back to the average only if pack size is unknown.
+      const _psLakh = _V44ZJ_PACK_SIZES[String(sourceOrd.size)] || (totalBoxesInBatch > 0 ? sourceOrd.qty / totalBoxesInBatch : 0);
+      const _cumEnd   = Math.min(boxEnd * _psLakh, sourceOrd.qty);
+      const _cumStart = Math.min((boxStart - 1) * _psLakh, sourceOrd.qty);
+      const sizeQty = Math.max(0, +(_cumEnd - _cumStart).toFixed(3));
       const qtyLakhs = parseFloat(L.qtyLakhs) || sizeQty;
       const childBatchNumber = `${sourceOrd.batchNumber}-${suffix}`;
       lineNorm.push({
@@ -9624,8 +9638,11 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
       for (const c of childOrders) planState.orders.push(c.child);
       const residualBoxes = request.residual_boxes || 0;
       if (residualBoxes > 0) {
-        const cap = parseInt(parent.totalBoxes) || (totalBoxesSplit + residualBoxes);
-        parent.qty = parent.qty * (residualBoxes / cap);
+        // v44ZQ: residual planned qty = batch qty − Σ(assigned child qty), so planned conserves
+        // exactly (children + residual = batch). The old boxes-ratio averaged the partial box and
+        // could break conservation against the pack-size child quantities computed above.
+        const _assignedQty = childOrders.reduce((s,c)=>s+(parseFloat(c.child.qty)||0),0);
+        parent.qty = Math.max(0, +(parseFloat(parent.qty||0) - _assignedQty).toFixed(3));
         parent.totalBoxes = residualBoxes;
         parent.woStatus = 'wo-split-partial';
         parent._localEditedAt = Date.now();
@@ -10355,7 +10372,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZO',
+      build: 'v44ZQ',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10364,7 +10381,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZO', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZQ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11688,7 +11705,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZO',
+      build: 'v44ZQ',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11697,7 +11714,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZO', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZQ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
