@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44ZX</p>
+      <p>Planning Suite v3.0 · build v44ZY</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -3976,6 +3976,15 @@ function showAddOrderModal(machineId, existingOrder) {
   // Get PC codes for size
   const pcList = ord.size ? (state.pcCodes[ord.size] || []) : [];
 
+  // v44ZY: stash the order so updateGrossCalc shows the SAME gross the table stores.
+  window._foEditingOrder = ord;
+  // v44ZY (Option B): one-click reconcile of GROSS PLANNED to the actual DPR produced. Apply sets the
+  // Gross Override (the existing "excess production" field) to the actual produced qty, so gross planned
+  // lands EXACTLY on the actual for any order — printed/unprinted, open/closed — unlocking labels for the
+  // produced quantity. No formula is changed; it only auto-fills the override. Shown for every order
+  // below the gross field; actionable once DPR actuals exist. (Order qty is left unchanged.)
+  const _actualDPR = parseFloat(ord.actualProd || ord.actualQty || 0);
+
   openModal(isEdit ? 'Edit Order' : 'New Production Order', `
     <div style="margin-bottom:12px;padding:10px 14px;background:rgba(255,171,0,0.08);border:1px solid rgba(255,171,0,0.3);border-radius:6px;display:flex;align-items:center;gap:12px">
       <label style="font-size:13px;font-weight:600;color:var(--text)">Order Type:</label>
@@ -4086,6 +4095,19 @@ function showAddOrderModal(machineId, existingOrder) {
         <label>Gross Override (Lakhs) <span style="color:var(--text3);font-size:10px">— for excess production only</span></label>
         <input class="form-control" id="fo-gross-override" type="number" step="0.001" value="${ord.grossOverride||''}" placeholder="leave blank = auto-calc" oninput="updateGrossCalc()">
         <div style="font-size:10px;color:var(--text3);margin-top:3px">Blank → gross auto-calculates (Order × 1.07 × 1.01 × 1.01). Set a higher value to allow EXCESS production / extra labels; it will not be overwritten on refresh.</div>
+      </div>
+      <div class="form-group" style="grid-column:1/-1">
+        <label>🎯 Reconcile Gross Planned to DPR Actual</label>
+        ${(_actualDPR > 0) ? `
+          <div style="background:rgba(8,145,178,0.06);border:1px solid rgba(8,145,178,0.3);border-radius:6px;padding:10px 12px;font-size:12px;color:var(--text2);line-height:1.55">
+            DPR has produced <strong>${fmt(_actualDPR)}L</strong> on this batch. Click below to set <strong>gross planned = ${fmt(_actualDPR)}L</strong> — this fills the Gross Override above with the actual produced quantity, so labels unlock for exactly what was made. Order qty is unchanged, and the manual override stays editable.
+            <button type="button" class="btn btn-secondary btn-sm" style="margin-top:8px" onclick="document.getElementById('fo-gross-override').value='${(+_actualDPR).toFixed(3)}';updateGrossCalc();">Apply — set gross planned = ${fmt(_actualDPR)}L</button>
+          </div>
+        ` : `
+          <div style="background:var(--bg2);border:1px solid var(--border);border-radius:6px;padding:10px 12px;font-size:12px;color:var(--text3);line-height:1.5">
+            Once DPR actuals exist for this batch, a one-click button appears here to set gross planned to the produced quantity (via the Gross Override above), unlocking labels for the actual produced. The manual Gross Override always remains the final say.
+          </div>
+        `}
       </div>
       <div class="form-group">
         <label>Start Date</label>
@@ -4230,19 +4252,22 @@ function updateGrossCalc() {
   const isPtd = document.getElementById('fo-printed')?.value === '1';
   const infoEl = document.getElementById('fo-calc-info');
   if (!infoEl || qty === 0) return;
-  let gross, unprinted, days;
   const mcId = document.getElementById('fo-machine')?.value;
   const mc = getMachine(mcId);
-  if (isPtd) {
-    gross = qty * 1.07 * 1.02;
-    unprinted = gross / 1.07;
-    days = gross / (mc?.cap||20);
-    infoEl.innerHTML = `📊 <strong>Gross to Manufacture:</strong> ${fmt(gross)}L &nbsp;|&nbsp; <strong>Unprinted after Mfg:</strong> ${fmt(unprinted)}L &nbsp;|&nbsp; <strong>After Printing (${(100/1.02).toFixed(1)}%):</strong> ${fmt(qty)}L &nbsp;|&nbsp; <strong>Days on Machine:</strong> ${fmt(days,1)}d`;
-  } else {
-    gross = qty / (ag/100);
-    days = gross / (mc?.cap||20);
-    infoEl.innerHTML = `📊 <strong>Gross to Manufacture:</strong> ${fmt(gross)}L &nbsp;|&nbsp; <strong>Net A-Grade @ ${ag}%:</strong> ${fmt(qty)}L &nbsp;|&nbsp; <strong>Days on Machine:</strong> ${fmt(days,1)}d`;
-  }
+  const _ovRaw = parseFloat(document.getElementById('fo-gross-override')?.value);
+  const _ov = (Number.isFinite(_ovRaw) && _ovRaw > 0) ? _ovRaw : null;
+  const batchVal = (document.getElementById('fo-batch')?.value||'').trim().toUpperCase();
+  // v44ZY: preview the SAME gross the table will store — via calcOrderSchedule, which uses the LIVE
+  // AIM A-grade (and DPR rate). Previously this preview used the planned A-grade (qty/(ag/100)) while
+  // the table used the live A-grade, so the form disagreed with the saved gross when amending.
+  const ordObj = { ...(window._foEditingOrder||{}), qty, isPrinted: isPtd, aGrade: ag,
+                   grossOverride: _ov, batchNumber: batchVal, machineId: mcId };
+  let sc = null; try { sc = calcOrderSchedule(ordObj, mc); } catch(e) {}
+  if (!sc || !(sc.grossQty > 0)) { infoEl.innerHTML = 'Enter quantity and A-grade to see calculated values.'; return; }
+  const gross = sc.grossQty, agUsed = sc.aGradePct, days = sc.daysNeeded;
+  const agNote = (agUsed != null && Math.abs(agUsed - ag) > 0.5) ? ` <span style="color:var(--accent)">(live)</span>` : '';
+  const ovNote = _ov ? ` <span style="color:var(--accent3)">· manual override</span>` : '';
+  infoEl.innerHTML = `📊 <strong>Gross planned:</strong> ${fmt(gross)}L${ovNote} &nbsp;|&nbsp; <strong>A-Grade used:</strong> ${fmt(agUsed,1)}%${agNote} &nbsp;|&nbsp; <strong>Net @ A-Grade:</strong> ${fmt(qty)}L${days!=null?` &nbsp;|&nbsp; <strong>Days on Machine:</strong> ${fmt(days,1)}d`:''}`;
 }
 
 function saveOrderModal(existingId, defaultMachine) {
