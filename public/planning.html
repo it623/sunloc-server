@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44ZV</p>
+      <p>Planning Suite v3.0 · build v44ZX</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -12846,7 +12846,51 @@ async function renderReconciliation() {
       </div>
     </div>
     ` : ''}
+
+    ${woSplitHistory.length > 0 ? `
+    <div class="card" id="wo-split-log">
+      <div class="card-title">📋 W/O Split — Approval / Rejection Log</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px">Every W/O split decision (latest first) — who proposed it, who approved or rejected it and when, the box split, and the full customer breakdown.</div>
+      <div style="display:flex;flex-direction:column;gap:10px">
+        ${woSplitHistory.map(r=>`
+          <div style="border:1px solid var(--border);border-radius:6px;padding:12px 14px">
+            <div style="display:flex;flex-wrap:wrap;align-items:center;gap:10px;margin-bottom:8px">
+              <span class="badge ${r.status==='approved'?'badge-completed':r.status==='rejected'?'badge-red':'badge-pending'}">${(r.status||'').toUpperCase()}</span>
+              <span class="text-mono fw-bold">${r.source_batch_number||r.source_order_id||'—'}</span>
+              <span class="text-mono text-sm" style="color:var(--text3)">${r.id}</span>
+              <span style="flex:1"></span>
+              <span class="text-sm" style="color:var(--text3)">${r.total_boxes_split||0} box${(r.total_boxes_split==1)?'':'es'} split${(r.residual_boxes||0)>0?` · ${r.residual_boxes} residual`:''}</span>
+            </div>
+            <div style="display:flex;flex-wrap:wrap;gap:18px;font-size:12px;color:var(--text2);margin-bottom:${(r.lines&&r.lines.length)?'8px':'0'}">
+              <span>Proposed by <strong style="color:var(--accent)">${r.proposed_by||'—'}</strong>${r.proposed_at?` · ${(r.proposed_at||'').replace('T',' ').slice(0,16)}`:''}</span>
+              <span>${r.status==='rejected'?'Rejected':'Approved'} by <strong style="color:var(--accent)">${r.approved_by||'—'}</strong>${r.approved_at?` · ${(r.approved_at||'').replace('T',' ').slice(0,16)}`:''}</span>
+            </div>
+            ${(r.lines&&r.lines.length)?`
+            <div style="overflow-x:auto">
+              <table class="summary-table" style="font-size:12px">
+                <thead><tr><th>Customer</th><th>Child Batch</th><th>Boxes</th><th>Qty (L)</th><th>Zone</th><th>PO</th></tr></thead>
+                <tbody>${r.lines.map(L=>`<tr>
+                  <td>${L.customer||'—'}</td>
+                  <td class="text-mono">${L.child_batch_number||'—'}</td>
+                  <td class="text-mono">${L.boxes??'—'}</td>
+                  <td class="text-mono">${L.qty_lakhs??'—'}</td>
+                  <td>${L.zone||'—'}</td>
+                  <td class="text-mono">${L.po_number||'—'}</td>
+                </tr>`).join('')}</tbody>
+              </table>
+            </div>`:''}
+            ${(r.status==='rejected'&&r.rejection_reason)?`<div style="font-size:12px;color:var(--accent4);margin-top:6px">✕ Reason: ${r.rejection_reason}</div>`:''}
+          </div>
+        `).join('')}
+      </div>
+    </div>
+    ` : ''}
   `;
+  // v44ZX: quick-jump button at the top of the reconciliation screen → scrolls to the split log,
+  // so the log is easy to reach without scrolling to the bottom. Only shown when entries exist.
+  document.getElementById('topbar-actions').innerHTML = woSplitHistory.length > 0
+    ? `<button class="btn btn-secondary btn-sm" onclick="document.getElementById('wo-split-log')?.scrollIntoView({behavior:'smooth',block:'start'})">📋 Split Log (${woSplitHistory.length})</button>`
+    : '';
 }
 
 function toggleTempSelection(tbId) {

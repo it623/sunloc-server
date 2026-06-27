@@ -3042,7 +3042,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZV' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZX' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3523,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZV' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZX' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -9841,6 +9841,16 @@ app.get('/api/wo/split/history', async (req, res) => {
       rows = db.prepare(`SELECT * FROM wo_split_requests WHERE status IN ('approved','rejected') ORDER BY proposed_at DESC LIMIT 50`).all();
     }
     if (session.role !== 'admin') rows = rows.filter(r => r.proposed_by === session.username);
+    // v44ZW: attach the customer lines (customer → child batch, boxes, qty, zone, PO) so the
+    // Split Approval/Rejection Log can show the full breakdown of each decided split, not just headers.
+    for (const row of rows) {
+      if (pgPool) {
+        const lr = await pgPool.query(`SELECT * FROM wo_split_lines WHERE split_request_id=$1 ORDER BY line_index ASC`, [row.id]);
+        row.lines = lr.rows;
+      } else {
+        row.lines = db.prepare(`SELECT * FROM wo_split_lines WHERE split_request_id=? ORDER BY line_index ASC`).all(row.id);
+      }
+    }
     res.json({ ok: true, requests: rows });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -10427,7 +10437,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZV',
+      build: 'v44ZX',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10436,7 +10446,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZV', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZX', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11760,7 +11770,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZV',
+      build: 'v44ZX',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11769,7 +11779,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZV', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZX', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
