@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44ZY</p>
+      <p>Planning Suite v3.0 · build v44ZZ</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1186,9 +1186,21 @@ const SYNC = (() => {
             // this, a renumbered batch or a moved machine snapped back to the old value on next sync.
             const _editTs = _localOrderChanges[o.id];
             const _protd  = _editTs && (Date.now() - _editTs) < _ORDER_PROTECT_MS;
+            // v44ZZ: a planner gross-override (excess→DPR reconcile) is explicit intent and MUST survive
+            // the 30s dedicated-table merge. grossQty/grossOverride were NOT in the protected list, so
+            // every auto-sync reverted the override back to the auto-calc gross. Take the override from
+            // whichever copy holds it (recent local edit wins inside the 5-min protect window) and FORCE
+            // grossQty to it — exactly as calcOrderSchedule does — so the displayed gross can't snap back
+            // to the formula. Number() guards string-typed blob values.
+            const _ovL = Number(o.grossOverride), _ovD = Number(dbOrd.grossOverride);
+            const _ovLok = Number.isFinite(_ovL) && _ovL > 0, _ovDok = Number.isFinite(_ovD) && _ovD > 0;
+            const _ovEff = _protd ? (_ovLok ? _ovL : null) : (_ovDok ? _ovD : (_ovLok ? _ovL : null));
             // FIX 2: DB status always wins — user set it explicitly
             return {
               ...dbOrd,
+              // v44ZZ: override-aware gross (see above) — never reverted by a stale dedicated-table copy
+              grossOverride: _ovEff,
+              grossQty:      (_ovEff != null) ? _ovEff : (_protd ? o.grossQty : dbOrd.grossQty),
               // v41ZW: preserve recent local batch/machine/zone edits against stale server data
               batchNumber: _protd ? o.batchNumber : dbOrd.batchNumber,
               machineId:   _protd ? o.machineId   : dbOrd.machineId,
@@ -1217,7 +1229,11 @@ const SYNC = (() => {
             if (!existingIds.has(dbO.id)) {
               // Mark as coming from DB — these already have print orders in dedicated table
               // so auto-create should NOT run for them
-              state.orders.push({...dbO, _skipAutoPrintOrder: true});
+              // v44ZZ: if this DB order carries a gross-override, force grossQty to it (the blob's
+              // grossQty can be a stale auto-calc value) so it renders consistently from first paint.
+              const _ovAdd = Number(dbO.grossOverride);
+              state.orders.push({...dbO, _skipAutoPrintOrder: true,
+                ...((Number.isFinite(_ovAdd) && _ovAdd > 0) ? { grossQty: _ovAdd } : {})});
               existingIds.add(dbO.id);
               ordersChanged = true;
               console.log('[Orders] Added missing order from DB:', dbO.batchNumber, dbO.machineId);
