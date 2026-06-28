@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v44ZZ</p>
+      <p>Planning Suite v3.0 · build v45</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -4734,26 +4734,75 @@ function saveOrderModal(existingId, defaultMachine) {
 }
 
 // Save a single order to the dedicated production_orders table permanently
+// =============================
+// v45: DURABLE order-upsert queue. production_orders is the SOLE store for orders (the planning-state
+// blob carries none). upsertOrderToDB previously made 4 in-memory attempts then gave up SILENTLY, so a
+// server hiccup during a save — e.g. a reconcile that sets grossOverride — dropped the order PERMANENTLY
+// and the override read back as null after refresh (confirmed on 26ZD097 / 26ZH073). We now persist every
+// upsert to a localStorage queue (latest-wins per order id) and keep flushing it until the server
+// confirms, so a flaky save can never silently lose an order/override again.
+// =============================
+const _PENDING_ORDERS_KEY = 'sunloc_pending_order_upserts';
+function _loadPendingOrders(){ try { return JSON.parse(localStorage.getItem(_PENDING_ORDERS_KEY) || '{}') || {}; } catch(e){ return {}; } }
+function _savePendingOrders(q){ try { localStorage.setItem(_PENDING_ORDERS_KEY, JSON.stringify(q)); } catch(e){} }
+function _enqueuePendingOrder(ord, token){
+  if(!ord || !ord.id) return;
+  const q = _loadPendingOrders();
+  const keys = Object.keys(q);
+  // defensive cap so a long server outage can't grow localStorage without bound
+  if(keys.length > 250 && !q[ord.id]){ delete q[keys[0]]; }
+  q[ord.id] = { ord, t: token };
+  _savePendingOrders(q);
+}
+function _dequeuePendingOrder(id, token){
+  const q = _loadPendingOrders();
+  // only remove if not superseded by a newer enqueue (a newer edit) for the same order — latest-wins
+  if(q[id] && q[id].t === token){ delete q[id]; _savePendingOrders(q); }
+}
+async function _pushOrderOnce(ord){
+  const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+  if(!_url) return false;
+  try {
+    const r = await fetch(_url + '/api/orders/upsert', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
+    });
+    return !!(r && r.ok);
+  } catch(e){ return false; }
+}
+let _flushingPendingOrders = false;
+async function flushPendingOrders(){
+  if(_flushingPendingOrders) return;
+  const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+  if(!_url) return;
+  const q = _loadPendingOrders();
+  const ids = Object.keys(q);
+  if(!ids.length) return;
+  _flushingPendingOrders = true;
+  try {
+    for(const id of ids){
+      const entry = q[id];
+      if(!entry || !entry.ord){ _dequeuePendingOrder(id, entry && entry.t); continue; }
+      const ok = await _pushOrderOnce(entry.ord);
+      if(ok) _dequeuePendingOrder(id, entry.t);
+    }
+  } finally { _flushingPendingOrders = false; }
+}
+
 async function upsertOrderToDB(ord) {
   if (!ord || !ord.id) return;
-  try {
-    const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
-    if (!_url) return;
-    const _tryUpsert = async (attempt) => {
-      try {
-        const r = await fetch(_url + '/api/orders/upsert', {
-          method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
-          body: JSON.stringify(ord),
-          signal: AbortSignal.timeout(8000)
-        });
-        if (!r.ok && attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
-      } catch(e) {
-        if (attempt < 3) setTimeout(() => _tryUpsert(attempt+1), 3000);
-      }
-    };
-    _tryUpsert(1);
-  } catch(e) {}
+  // queue the LATEST version FIRST (latest-wins) so a failed save is never lost
+  const _token = Date.now() + ':' + Math.random().toString(36).slice(2,8);
+  _enqueuePendingOrder(ord, _token);
+  const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+  if (!_url) return; // offline — stays queued, flushed once a server URL is known
+  const _tryUpsert = async (attempt) => {
+    const ok = await _pushOrderOnce(ord);
+    if (ok) { _dequeuePendingOrder(ord.id, _token); return; }
+    if (attempt < 3) { setTimeout(() => _tryUpsert(attempt+1), 3000); return; }
+    // all in-memory attempts failed — leave it queued; flushPendingOrders() keeps retrying until it lands
+  };
+  _tryUpsert(1);
 }
 
 // =============================
@@ -13442,6 +13491,9 @@ setInterval(async()=>{try{await SYNC.loadTrackingStatus();}catch(e){}},60000); /
 // Auto-sync planning state every 30s — all devices stay in sync automatically
 let _planningAutoSyncTimer = null;
 async function _planningAutoSync(){
+  // v45: always try to drain any orders whose save failed earlier (durable override persistence),
+  // regardless of the save-throttle / active-user branches below.
+  try { flushPendingOrders(); } catch(e) {}
   // Skip auto-sync if we saved within last 60s — prevents overwriting recent changes
   if(_lastServerSaveTime > 0 && (Date.now()-_lastServerSaveTime) < 60000) return;
   if(!document.hidden){
@@ -13484,6 +13536,8 @@ async function _planningAutoSync(){
   }
 }
 _planningAutoSyncTimer = setInterval(_planningAutoSync, 30000);
+// v45: one-shot early flush so a save that failed in a previous session lands promptly on load
+setTimeout(() => { try { flushPendingOrders(); } catch(e) {} }, 5000);
 
 // v44ZD Issue 2A: deep-link routing so "Open in new tab" (planning.html#dispatch) lands directly on
 // the requested page. Retries briefly until the app is authed/ready and the target nav item exists

@@ -2665,6 +2665,14 @@ let _actualsCacheTime = 0;
 let _grossByBatch = null;
 // v41ZI Item 6: per-batch admin/PM override of the DPR gross. When present it supersedes _grossByBatch.
 let _grossOverride = {};
+// v45: PERSISTENT order_id -> batchNumber map. Built across warms (update-not-reset). Was a local
+// const inside warmActualsCache rebuilt each run from _planningStateCache.orders; when that cache was
+// thin/stale at warm time, production_actuals rows with a NULL batch_number got no mapping and were
+// SKIPPED from _grossByBatch, leaving that batch absent -> the planning/state actualProd injection
+// fell through to the order-keyed legacy cache (which mis-totals across order_id|batch groups). Making
+// this persistent means a learned order->batch mapping survives a thin warm, so null-batch rows are
+// always attributed and _grossByBatch is reliably the true per-batch sum. Latest batch wins on renumber.
+let _orderBatch = {};
 // v41ZY: one-time idempotent backfill — fill batch_number on existing production_actuals rows saved
 // as NULL before the explicit-batch fix, from their order's batch in production_orders. This
 // retroactively repairs batches whose cumulative DPR gross collapsed after close (NULL-batch rows
@@ -2702,8 +2710,13 @@ async function warmActualsCache() {
       const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
       _actualsCache = {};
       for (const row of r.rows) {
-        if (row.order_id) _actualsCache[row.order_id] = parseFloat(row.total) || 0;
-        if (row.batch_number) _actualsCache[row.batch_number] = parseFloat(row.total) || 0;
+        const _t = parseFloat(row.total) || 0;
+        if (row.order_id) _actualsCache[row.order_id] = _t;
+        // v45: ACCUMULATE the batch-keyed total (was an overwrite). A single batch_number can appear
+        // in multiple (order_id,batch_number) groups (split logs / renumbers), and the overwrite kept
+        // only the last group's partial — making _actualsCache[batch] an under-count. The injection's
+        // legacy fallback now prefers this batch-keyed value, so it must be the full batch sum.
+        if (row.batch_number) _actualsCache[row.batch_number] = (_actualsCache[row.batch_number] || 0) + _t;
       }
       // v41ZL #4 / v41ZN: authoritative per-batch DPR gross, attributing every production_actuals
       // group to its EFFECTIVE batch — the row's own batch_number when present, otherwise the batch
@@ -2712,7 +2725,8 @@ async function warmActualsCache() {
       // background merge, so that join+expression-group contended on the DB and timed out closed-batches
       // and made the apps go offline (v41ZM). We now do the same attribution IN MEMORY from the rows
       // already fetched above plus the warmed order cache — no extra query, no join on the hot table.
-      const _orderBatch = {};
+      // v45: update (do NOT reset) the PERSISTENT _orderBatch map. Reset-each-warm meant a thin
+      // _planningStateCache.orders dropped all mappings for that run, skipping null-batch rows.
       try {
         const _co = (_planningStateCache && _planningStateCache.orders) || [];
         for (const o of _co) { if (o && o.id && o.batchNumber) _orderBatch[o.id] = o.batchNumber; }
@@ -3042,7 +3056,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v44ZZ' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3523,7 +3537,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v44ZZ' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -6573,7 +6587,15 @@ app.get('/api/planning/state', async (req, res) => {
         let eff = 0;
         if (hasOverride) eff = _grossOverride[bn] || 0;
         else if (bn != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) eff = _grossByBatch[bn] || 0;
-        const legacy = (_actualsCache[ord.id] || _actualsCache[ord.batchNumber] || 0);
+        // v45: legacy fallback now prefers the BATCH-keyed cache over the order-keyed one. The order-
+        // keyed entry is a single (order_id,batch) group total that can belong to a *different* batch
+        // after a renumber/split — that is exactly how Planning's actualProd showed 57.9 while the true
+        // batch sum (and the DPR screen) was 54. The batch-keyed cache is now the accumulated per-batch
+        // sum; with the persistent _orderBatch, _grossByBatch is reliably present so eff>0 usually wins
+        // outright, but this keeps the rare fallback correct too.
+        const legacy = (bn != null && Object.prototype.hasOwnProperty.call(_actualsCache, bn))
+          ? (_actualsCache[bn] || 0)
+          : (_actualsCache[ord.id] || 0);
         ord.actualProd = (hasOverride || eff > 0) ? eff : legacy;
       }
     }
@@ -10437,7 +10459,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZZ',
+      build: 'v45',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10446,7 +10468,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZZ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11770,7 +11792,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v44ZZ',
+      build: 'v45',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11779,7 +11801,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v44ZZ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
