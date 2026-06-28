@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45</title>
+<title>Sunloc Tracking Suite v1.0 · build v45A</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45</p>
+      <p>Tracking Suite v1.0 · build v45A</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45</p>
+      <p>Tracking Suite v1.0 · build v45A</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2288,6 +2288,19 @@ function _hasSpecimen(batchNo){
   return state.labels.some(l=>l.batchNumber===batchNo && _isSpecimenLabel(l) && !l.voided);
 }
 
+// v45A: the label TOTAL cap follows the reconciled gross. When a batch has been reconciled to its
+// DPR actual (planner toggle → order.grossOverride = DPR), the cap grows to boxes(override) so the
+// inflation above the original planned boxes auto-classifies and prints as E-series (the normal/excess
+// anchor, originalNormalBoxMax, is unchanged so the split still lands on the original count). Edge (b),
+// confirmed with Ishan: never shrink below the planned cap — use max(override, qty) — so reconciling a
+// batch where DPR < planned can never retroactively strand already-generated labels. No override → qty,
+// so non-reconciled batches are completely unchanged.
+function _effGrossForCap(b){
+  const ov = Number(b && b.grossOverride);
+  const q  = Number((b && b.qty) || 0);
+  return (Number.isFinite(ov) && ov > 0) ? Math.max(ov, q) : q;
+}
+
 function canGenerateLabels(batchNo, requestedBoxes){
   const batch = getBatch(batchNo);
   if(!batch) return {ok:false,msg:'Batch not found'};
@@ -2305,14 +2318,14 @@ function canGenerateLabels(batchNo, requestedBoxes){
   const ps = PACK_SIZES[String(batch.size)];
   if(!ps) return {ok:false,msg:'Unknown pack size'};
 
-  const maxTotalBoxes = lakhToBox(batch.qty, batch.size);
+  const maxTotalBoxes = lakhToBox(_effGrossForCap(batch), batch.size);
   // v44ZN: specimen (labelNumber 0) is not a box — exclude from every count below.
   const normalLabels = state.labels.filter(l=>l.batchNumber===batchNo&&!l.voided&&!l.isOrange&&!l.isExcess&&!_isSpecimenLabel(l));
   const excessLabels = state.labels.filter(l=>l.batchNumber===batchNo&&!l.voided&&!l.isOrange&&l.isExcess&&!_isSpecimenLabel(l));
   const alreadyGenerated = normalLabels.length + excessLabels.length;
   const remainingAllowed = maxTotalBoxes - alreadyGenerated;
 
-  if(requestedBoxes > remainingAllowed) return {ok:false, msg:`Only ${remainingAllowed} more labels allowed (max: ${maxTotalBoxes} boxes for ${fmt(batch.qty)}L order qty). Amend planned qty in Planning to unlock more.`};
+  if(requestedBoxes > remainingAllowed) return {ok:false, msg:`Only ${remainingAllowed} more labels allowed (max: ${maxTotalBoxes} boxes for ${fmt(_effGrossForCap(batch))}L planned). Amend planned qty in Planning to unlock more.`};
 
   // v43 #3: classify normal-vs-excess against the ORIGINAL planned box count, not the live qty.
   // Amending planned gross in Planning to regularise excess grows batch.qty (so the total cap above
@@ -3719,7 +3732,7 @@ function renderLabels(){
         const srch=(window._labelSearch||'').toLowerCase();
         const filtered=srch?activeBatches.filter(b=>(b.batchNumber||'').toLowerCase().includes(srch)||(b.customer||'').toLowerCase().includes(srch)||(b.colour||'').toLowerCase().includes(srch)||(b.pcCode||'').toLowerCase().includes(srch)||String(b.size||'').includes(srch)):activeBatches;
         return filtered.map(b=>{
-        const maxLabels=lakhToBox(b.qty,b.size);
+        const maxLabels=lakhToBox(_effGrossForCap(b),b.size);
         const generated=state.labels.filter(l=>l.batchNumber===b.batchNumber&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l)).length;
         const printed=state.labels.filter(l=>l.batchNumber===b.batchNumber&&l.printed&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l)).length;
         const normalBoxMax2=lakhToBox(b.qty,b.size);
