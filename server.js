@@ -3056,7 +3056,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45A' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45B' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3537,7 +3537,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45A' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45B' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -6502,6 +6502,18 @@ app.get('/api/planning/state', async (req, res) => {
             o.status = dbO._dbStatus;
             reconciledCount++;
           }
+          // v45B: production_orders is authoritative for the reconciled gross. The reconcile toggle
+          // writes grossOverride/grossQty there durably (v45 queue), but the blob's copy can lag —
+          // leaving Tracking's label cap and the DPR planned-gross display on a STALE planned gross.
+          // The override is a deliberate durable action (like status), so the DB value wins whenever
+          // it is set and differs from the blob. No timestamp gate: the override's home is the table,
+          // so the table is its freshest source by design.
+          const _dbOv = Number(dbO.grossOverride);
+          if (Number.isFinite(_dbOv) && _dbOv > 0 && Number(o.grossOverride) !== _dbOv) {
+            o.grossOverride = dbO.grossOverride;
+            if (dbO.grossQty != null) o.grossQty = dbO.grossQty;
+            reconciledCount++;
+          }
         });
         if (reconciledCount > 0) {
           console.log(`[v41z GET reconcile] Updated ${reconciledCount} blob order(s) with newer DB status (stale-blob recovery)`);
@@ -8774,7 +8786,28 @@ async function _runIntegrityScan(opts = {}) {
   }
   _integrityIsRunning = true;
   try {
-    const planningState = await getPlanningStateAsync();
+    // v45B: deep-clone so the overlay below never mutates the shared planning-state cache.
+    let planningState = await getPlanningStateAsync();
+    planningState = planningState ? JSON.parse(JSON.stringify(planningState)) : planningState;
+    // v45B: production_orders holds the AUTHORITATIVE reconciled gross (the toggle writes it there
+    // durably). The planning_state blob can lag, so without this the engine compares a STALE planned
+    // gross against the (correct) DPR sum and a finding the user already reconciled never resolves —
+    // exactly the 26ZE096 case (Plan read as 54.60 while Planning shows 54.00). Overlay the DB's
+    // grossOverride/grossQty onto the scanned orders so the engine sees what Planning sees.
+    try {
+      if (planningState && Array.isArray(planningState.orders)) {
+        const _gr = pgPool
+          ? (await pgPool.query('SELECT id, data_json FROM production_orders WHERE deleted = false')).rows
+          : db.prepare('SELECT id, data_json FROM production_orders WHERE deleted = 0').all();
+        const _gmap = new Map();
+        _gr.forEach(r => { try { _gmap.set(r.id, typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json); } catch (e) {} });
+        planningState.orders.forEach(o => {
+          const d = _gmap.get(o.id); if (!d) return;
+          const ov = Number(d.grossOverride);
+          if (Number.isFinite(ov) && ov > 0) { o.grossOverride = d.grossOverride; if (d.grossQty != null) o.grossQty = d.grossQty; }
+        });
+      }
+    } catch (e) { console.warn('[Integrity] gross overlay skipped:', e.message); }
     const ctx = {
       pgPool: pgPool || null,
       db: db,
@@ -10459,7 +10492,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45A',
+      build: 'v45B',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10468,7 +10501,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45A', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45B', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11792,7 +11825,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45A',
+      build: 'v45B',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11801,7 +11834,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45A', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45B', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
