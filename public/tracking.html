@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45D</title>
+<title>Sunloc Tracking Suite v1.0 · build v45E</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45D</p>
+      <p>Tracking Suite v1.0 · build v45E</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45D</p>
+      <p>Tracking Suite v1.0 · build v45E</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4389,6 +4389,7 @@ function renderDeptScan(dept){
     </div>
     <button class="btn btn-warning btn-sm" onclick="saveWastage('${dept}')">Save Wastage Entry</button>
     <div id="wastage-result-${dept}" class="mt-8"></div>
+    ${_v45e_wastageShiftSummary(dept)}
     ${(currentDept==='admin'||currentDept==='planning')?`
     <div class="divider mt-16"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:6px">
@@ -4762,6 +4763,135 @@ function processScanInput(dept,type){
 
 // v37E Fix #16: Per-dept locks prevent double-click from creating duplicate wastage entries
 const _wastageSaving = {};
+
+// ── v45E: Shift-wise wastage summary (read-only) + Excel export ─────────────────
+// Groups AIM wastage by ENTRY DATE (the row's ts) → batch → type, pivoting qty across
+// shifts A/B/C. Total = A+B+C+unassigned, i.e. the TRUE per-(batch,type,date) total that the
+// frozen WIP formula deducts; "unassigned" = pre-v45D rows that carry no shift. Batches within a
+// date use the Report-B comparator. This block is READ-ONLY — the Edit/Delete table below remains
+// the sole place entries are corrected (2b: summary sits above it, correction flow untouched).
+let _v45e_F = { date:'', batch:'', type:'' }; // v45E.2: wastage-summary filters (date / batch / type)
+function _v45e_dateKey(ts){ const dt=new Date(ts); return isNaN(dt.getTime())?String(ts||'').slice(0,10):`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`; }
+// v45E.3: shared filter — date + type + (exact) batch. ignoreBatch=true powers the cascading batch list.
+function _v45e_filteredWl(dept, opts){
+  opts = opts || {};
+  const F = _v45e_F || {date:'',batch:'',type:''};
+  let wl = (state.wastage||[]).filter(w=>w.dept===dept);
+  if(F.type) wl = wl.filter(w=>w.type===F.type);
+  if(F.date) wl = wl.filter(w=>_v45e_dateKey(w.ts)===F.date);
+  if(!opts.ignoreBatch && F.batch) wl = wl.filter(w=>String(w.batchNumber||'')===F.batch);
+  return wl;
+}
+// Distinct batches available under the CURRENT date+type (NOT the batch filter) — cascading dropdown source.
+function _v45e_batchOptions(dept){
+  const set = [...new Set(_v45e_filteredWl(dept,{ignoreBatch:true}).map(w=>String(w.batchNumber||'')).filter(Boolean))];
+  set.sort(_v44zk_batchCmp);
+  return set;
+}
+function _v45e_wastageRows(dept){
+  const wl = _v45e_filteredWl(dept);
+  const map = {}, dateDispOf = {};
+  for(const w of wl){
+    const dt = new Date(w.ts);
+    const dateKey = _v45e_dateKey(w.ts);
+    dateDispOf[dateKey] = isNaN(dt.getTime()) ? dateKey : fmtDate(w.ts);
+    const batch = w.batchNumber||'', type = w.type||'';
+    const sh = ['A','B','C'].includes(String(w.shift||'').toUpperCase()) ? String(w.shift).toUpperCase() : 'U';
+    const k = dateKey+'||'+batch+'||'+type;
+    if(!map[k]) map[k] = {dateKey, batch, type, A:0,B:0,C:0,U:0};
+    map[k][sh] += (parseFloat(w.qty)||0);
+  }
+  const r2 = x => Math.round((x||0)*100)/100;
+  let details = Object.values(map).map(o=>({
+    dateKey:o.dateKey, dateDisp:dateDispOf[o.dateKey], batch:o.batch, type:o.type,
+    A:r2(o.A), B:r2(o.B), C:r2(o.C), U:r2(o.U), total:r2(o.A+o.B+o.C+o.U)
+  }));
+  details.sort((a,b)=>{
+    if(a.dateKey!==b.dateKey) return b.dateKey.localeCompare(a.dateKey); // most recent date first
+    const bc = _v44zk_batchCmp(a.batch,b.batch); if(bc!==0) return bc;   // Report-B batch order
+    if(a.type!==b.type) return a.type==='salvage'?-1:1;                  // salvage before remelt
+    return 0;
+  });
+  const grand = details.reduce((g,d)=>({A:r2(g.A+d.A),B:r2(g.B+d.B),C:r2(g.C+d.C),U:r2(g.U+d.U),total:r2(g.total+d.total)}),{A:0,B:0,C:0,U:0,total:0});
+  const unassignedQty = r2(details.reduce((s,d)=>s+d.U,0));
+  return {details, grand, unassignedQty, hasUnassigned: unassignedQty>0};
+}
+
+function _v45e_summaryTableHtml(dept){
+  const {details, grand, unassignedQty, hasUnassigned} = _v45e_wastageRows(dept);
+  const fmtN = n => (n||0).toFixed(2);
+  if(!details.length) return `<div class="text-sm text-muted" style="padding:10px 4px">No wastage entries match the current filters.</div>`;
+  const cell = v => v ? fmtN(v) : '<span class="text-muted">–</span>';
+  let rowsHtml='', curDate=null, sub=null;
+  const flushSub=()=>{ if(sub) rowsHtml+=`<tr style="background:var(--surface2);font-weight:700;border-top:1px solid var(--border)"><td colspan="2" class="text-sm">Subtotal · ${sub.dateDisp}</td><td class="td-mono">${fmtN(sub.A)}</td><td class="td-mono">${fmtN(sub.B)}</td><td class="td-mono">${fmtN(sub.C)}</td><td class="td-mono">${fmtN(sub.total)}</td></tr>`; };
+  for(const d of details){
+    if(d.dateKey!==curDate){ flushSub(); curDate=d.dateKey; sub={dateDisp:d.dateDisp,A:0,B:0,C:0,total:0}; rowsHtml+=`<tr style="background:var(--surface);border-top:2px solid var(--border)"><td colspan="6" style="font-weight:700;padding:6px 8px">📅 ${d.dateDisp}</td></tr>`; }
+    sub.A+=d.A; sub.B+=d.B; sub.C+=d.C; sub.total+=d.total;
+    rowsHtml+=`<tr><td class="td-mono fw-bold">${d.batch}</td><td><span class="badge ${d.type==='salvage'?'badge-amber':'badge-red'}">${d.type}</span></td><td class="td-mono">${cell(d.A)}</td><td class="td-mono">${cell(d.B)}</td><td class="td-mono">${cell(d.C)}</td><td class="td-mono fw-bold">${fmtN(d.total)}${d.U>0?` <span class="text-muted" title="includes ${fmtN(d.U)}L pre-shift/unassigned">*</span>`:''}</td></tr>`;
+  }
+  flushSub();
+  const note = hasUnassigned ? `<div class="text-sm text-muted mb-8">* Total includes ${fmtN(unassignedQty)}L from pre-shift (unassigned) entries not attributed to A/B/C.</div>` : '';
+  return `${note}<div class="tbl-wrap" style="max-height:340px;overflow:auto"><table>
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Type</th><th>Shift A</th><th>Shift B</th><th>Shift C</th><th>Total (L)</th></tr></thead>
+      <tbody>${rowsHtml}</tbody>
+      <tfoot><tr style="font-weight:800;border-top:2px solid var(--border);background:var(--surface2)"><td colspan="2">GRAND TOTAL</td><td class="td-mono">${fmtN(grand.A)}</td><td class="td-mono">${fmtN(grand.B)}</td><td class="td-mono">${fmtN(grand.C)}</td><td class="td-mono">${fmtN(grand.total)}</td></tr></tfoot>
+    </table></div>`;
+}
+
+// Read-only for everyone (incl. AIM operator); the Edit/Delete table below stays admin/planning-only.
+function _v45e_wastageShiftSummary(dept){
+  const anyWastage = (state.wastage||[]).some(w=>w.dept===dept);
+  if(!anyWastage) return '';
+  return `<div id="v45e-wastage-block-${dept}">${_v45e_summaryBlockInner(dept)}</div>`;
+}
+function _v45e_summaryBlockInner(dept){
+  const F = _v45e_F;
+  const active = !!(F.date||F.batch||F.type);
+  const batchOpts = _v45e_batchOptions(dept); // cascades off the current date + type
+  return `
+    <div class="divider mt-16"></div>
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;margin-bottom:6px;flex-wrap:wrap">
+      <div class="card-title" style="color:var(--accent2);margin:0">📊 Wastage Summary — Shift-wise (by entry date)</div>
+      <button class="btn btn-sm btn-secondary" onclick="_v45e_exportWastageShift('${dept}')">⬇ Export to Excel</button>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
+      <div><label class="text-sm text-muted" style="display:block;margin-bottom:2px">Date</label><input type="date" value="${F.date||''}" onchange="_v45e_setFilter('${dept}','date',this.value)" style="padding:5px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface2);color:var(--text1)"></div>
+      <div><label class="text-sm text-muted" style="display:block;margin-bottom:2px">Batch</label><select onchange="_v45e_setFilter('${dept}','batch',this.value)" style="padding:5px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface2);color:var(--text1);min-width:120px"><option value=""${F.batch===''?' selected':''}>All batches</option>${batchOpts.map(b=>`<option value="${b}"${F.batch===b?' selected':''}>${b}</option>`).join('')}</select></div>
+      <div><label class="text-sm text-muted" style="display:block;margin-bottom:2px">Wastage Type</label><select onchange="_v45e_setFilter('${dept}','type',this.value)" style="padding:5px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface2);color:var(--text1)"><option value=""${F.type===''?' selected':''}>All</option><option value="salvage"${F.type==='salvage'?' selected':''}>Salvage</option><option value="remelt"${F.type==='remelt'?' selected':''}>Remelt</option></select></div>
+      ${active?`<button class="btn btn-sm btn-secondary" onclick="_v45e_clearFilter('${dept}')">✕ Clear</button>`:''}
+    </div>
+    <div id="v45e-wastage-tbl-${dept}">${_v45e_summaryTableHtml(dept)}</div>`;
+}
+
+function _v45e_setFilter(dept, key, val){
+  _v45e_F[key] = val;
+  // cascade: when date or type changes, a previously-chosen batch may no longer exist in the
+  // narrowed set — drop it so the dropdown and table stay consistent.
+  if(key==='date' || key==='type'){
+    const valid = new Set(_v45e_batchOptions(dept));
+    if(_v45e_F.batch && !valid.has(_v45e_F.batch)) _v45e_F.batch = '';
+  }
+  const el = document.getElementById('v45e-wastage-block-'+dept);
+  if(el) el.innerHTML = _v45e_summaryBlockInner(dept);
+}
+function _v45e_clearFilter(dept){
+  _v45e_F = { date:'', batch:'', type:'' };
+  const el = document.getElementById('v45e-wastage-block-'+dept);
+  if(el) el.innerHTML = _v45e_summaryBlockInner(dept);
+}
+
+function _v45e_exportWastageShift(dept){
+  if(typeof XLSX==='undefined'){ alert('Excel library not loaded.'); return; }
+  const {details, grand} = _v45e_wastageRows(dept);
+  if(!details.length){ alert('No wastage entries to export.'); return; }
+  const aoa = [['Date','Batch','Type','Shift A','Shift B','Shift C','Total (L)']];
+  for(const d of details) aoa.push([d.dateDisp, d.batch, d.type, d.A, d.B, d.C, d.total]); // numeric → summable in Excel
+  aoa.push(['GRAND TOTAL','','', grand.A, grand.B, grand.C, grand.total]);
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Wastage Shiftwise');
+  XLSX.writeFile(wb, `Sunloc_Wastage_Shiftwise_${dept}_${today()}.xlsx`);
+}
 
 function saveWastage(dept){
   // Idempotency guard — ignore re-entrancy within 2s of a save in progress
