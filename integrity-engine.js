@@ -188,8 +188,15 @@ async function check_qty_reconciliation(ctx) {
     const grossQty = parseFloat(ord.grossQty || (planQty * 1.07 * 1.01 * 1.01));
 
     // DPR sum for this batch
+    // v45A: batch-keyed DPR sum — match the figure the DPR screen, Reports D/E, and the reconcile
+    // toggle all use (_grossByBatch attribution). The prior `OR order_id=?` pulled in rows logged
+    // under a DIFFERENT explicit batch_number after a renumber/split (same order_id), inflating DPR
+    // above the true batch sum — so a batch reconciled to its batch sum still showed gross != DPR and
+    // the qty_mismatch_plan_dpr finding never resolved. Now: rows that carry this batch_number, PLUS
+    // null-batch rows logged against this order (which effectively belong to this batch). Rows bearing
+    // a different explicit batch are excluded, exactly as _grossByBatch attributes them elsewhere.
     const dprRows = await _query(ctx,
-      `SELECT COALESCE(SUM(qty_lakhs),0) AS total FROM production_actuals WHERE batch_number=? OR order_id=?`,
+      `SELECT COALESCE(SUM(qty_lakhs),0) AS total FROM production_actuals WHERE batch_number=? OR (batch_number IS NULL AND order_id=?)`,
       [batchNumber, ord.id]
     );
     const dprQty = parseFloat(dprRows[0]?.total || 0);

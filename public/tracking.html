@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45B</title>
+<title>Sunloc Tracking Suite v1.0 · build v45D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45B</p>
+      <p>Tracking Suite v1.0 · build v45D</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45B</p>
+      <p>Tracking Suite v1.0 · build v45D</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1424,35 +1424,61 @@ async function _v40_taskBannerTick() {
   } catch(e) {}
 }
 
+// v45C #1: filter + Report B batch order for the integrity task panel (reuses _v44zk_batchCmp already
+// defined in this file). Batch-less tasks sort last.
+let _v40_taskSev = 'all';
+let _v40_taskBatchQ = '';
+function _v40_taskCmp(a, b){
+  const ba = a.batch_number||'', bb = b.batch_number||'';
+  if (!ba && !bb) return 0; if (!ba) return 1; if (!bb) return -1;
+  return _v44zk_batchCmp(ba, bb);
+}
+function _v40_taskRowHtml(t){
+  const sevBadge = ({
+    critical: '<span style="background:rgba(239,68,68,0.15);color:#dc2626;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🔴 CRITICAL</span>',
+    warning:  '<span style="background:rgba(245,158,11,0.15);color:#b45309;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🟡 WARNING</span>',
+    info:     '<span style="background:rgba(59,130,246,0.15);color:#1d4ed8;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🔵 INFO</span>',
+  })[t.severity] || '';
+  const desc = _v40_esc(t.description || '(No finding details — free-form task)');
+  const action = t.suggested_action ? `<div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:4px;padding:8px 12px;margin-top:8px;font-size:12px;line-height:1.5"><strong style="color:#15803d">What to do:</strong> ${_v40_esc(t.suggested_action)}${t.suggested_app ? `<div style="font-size:11px;color:#9ca3af;margin-top:4px">Where: <strong>${_v40_esc(t.suggested_app)}</strong> app → <strong>${_v40_esc(t.suggested_page||'?')}</strong> page</div>` : ''}</div>` : '';
+  const noteHtml = t.note ? `<div style="font-size:11px;color:#9ca3af;margin-top:6px;font-style:italic">Note from ${_v40_esc(t.assigned_by)}: ${_v40_esc(t.note)}</div>` : '';
+  const seenBtn = t.status === 'seen'
+    ? '<span style="font-size:11px;color:#9ca3af;font-style:italic">✓ Marked seen</span>'
+    : `<button style="padding:3px 12px;font-size:11px;background:rgba(8,145,178,0.15);color:#0e7490;border:1px solid rgba(8,145,178,0.3);border-radius:3px;cursor:pointer" onclick="_v40_markTaskSeen('${_v40_esc(t.id)}')">Mark seen</button>`;
+  return `<div style="border:1px solid #e5e7eb;border-radius:6px;padding:12px;margin-bottom:10px;background:#fafafa">
+    <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
+      <div style="display:flex;align-items:center;gap:8px">${sevBadge}${t.batch_number ? `<span style="font-family:monospace;font-size:11px;color:#0e7490">${_v40_esc(t.batch_number)}</span>` : ''}${t.machine_id ? `<span style="font-family:monospace;font-size:11px;color:#9ca3af">${_v40_esc(t.machine_id)}</span>` : ''}</div>
+      ${seenBtn}
+    </div>
+    <div style="font-size:12px;line-height:1.5">${desc}</div>
+    ${action}${noteHtml}
+  </div>`;
+}
+function _v40_renderTaskRows(){
+  const box = document.getElementById('v40-task-list'); if (!box) return;
+  const q = (_v40_taskBatchQ||'').trim().toUpperCase();
+  let list = _v40_myTasks.slice().sort(_v40_taskCmp);
+  if (_v40_taskSev !== 'all') list = list.filter(t => t.severity === _v40_taskSev);
+  if (q) list = list.filter(t => String(t.batch_number||'').toUpperCase().includes(q));
+  box.innerHTML = list.length
+    ? list.map(_v40_taskRowHtml).join('')
+    : '<div style="font-size:12px;color:#9ca3af;padding:18px;text-align:center">No tasks match the current filter.</div>';
+}
 function _v40_showMyTasks() {
   if (_v40_myTasks.length === 0) { alert('No tasks pending.'); return; }
-  const rowsHtml = _v40_myTasks.map(t => {
-    const sevBadge = ({
-      critical: '<span style="background:rgba(239,68,68,0.15);color:#dc2626;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🔴 CRITICAL</span>',
-      warning:  '<span style="background:rgba(245,158,11,0.15);color:#b45309;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🟡 WARNING</span>',
-      info:     '<span style="background:rgba(59,130,246,0.15);color:#1d4ed8;padding:2px 8px;border-radius:3px;font-size:11px;font-weight:600">🔵 INFO</span>',
-    })[t.severity] || '';
-    const desc = _v40_esc(t.description || '(No finding details — free-form task)');
-    const action = t.suggested_action ? `<div style="background:rgba(34,197,94,0.08);border:1px solid rgba(34,197,94,0.3);border-radius:4px;padding:8px 12px;margin-top:8px;font-size:12px;line-height:1.5"><strong style="color:#15803d">What to do:</strong> ${_v40_esc(t.suggested_action)}${t.suggested_app ? `<div style="font-size:11px;color:#9ca3af;margin-top:4px">Where: <strong>${_v40_esc(t.suggested_app)}</strong> app → <strong>${_v40_esc(t.suggested_page||'?')}</strong> page</div>` : ''}</div>` : '';
-    const noteHtml = t.note ? `<div style="font-size:11px;color:#9ca3af;margin-top:6px;font-style:italic">Note from ${_v40_esc(t.assigned_by)}: ${_v40_esc(t.note)}</div>` : '';
-    const seenBtn = t.status === 'seen'
-      ? '<span style="font-size:11px;color:#9ca3af;font-style:italic">✓ Marked seen</span>'
-      : `<button style="padding:3px 12px;font-size:11px;background:rgba(8,145,178,0.15);color:#0e7490;border:1px solid rgba(8,145,178,0.3);border-radius:3px;cursor:pointer" onclick="_v40_markTaskSeen('${_v40_esc(t.id)}')">Mark seen</button>`;
-    return `<div style="border:1px solid #e5e7eb;border-radius:6px;padding:12px;margin-bottom:10px;background:#fafafa">
-      <div style="display:flex;justify-content:space-between;align-items:center;gap:8px;flex-wrap:wrap;margin-bottom:6px">
-        <div style="display:flex;align-items:center;gap:8px">${sevBadge}${t.batch_number ? `<span style="font-family:monospace;font-size:11px;color:#0e7490">${_v40_esc(t.batch_number)}</span>` : ''}${t.machine_id ? `<span style="font-family:monospace;font-size:11px;color:#9ca3af">${_v40_esc(t.machine_id)}</span>` : ''}</div>
-        ${seenBtn}
-      </div>
-      <div style="font-size:12px;line-height:1.5">${desc}</div>
-      ${action}${noteHtml}
-    </div>`;
-  }).join('');
+  const sevOpts = [['all','All severities'],['critical','🔴 Critical'],['warning','🟡 Warning'],['info','🔵 Info']]
+    .map(([v,l])=>`<option value="${v}"${v===_v40_taskSev?' selected':''}>${l}</option>`).join('');
   openModal('🩺 Your Integrity Tasks', 'Tasks assigned by Admin',
     `<div style="padding:8px 0">
-      <div style="font-size:11px;color:#9ca3af;margin-bottom:12px;line-height:1.5">Admin has flagged the following data integrity issues that need your attention. Fix them via the suggested app/page; the next scan (within 60 min) will auto-clear tasks whose underlying issue is resolved.</div>
-      ${rowsHtml}
+      <div style="font-size:11px;color:#9ca3af;margin-bottom:10px;line-height:1.5">Admin has flagged the following data integrity issues that need your attention. Fix them via the suggested app/page; the next scan (within 60 min) will auto-clear tasks whose underlying issue is resolved.</div>
+      <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
+        <input id="v40-task-batchq" placeholder="Filter by batch…" value="${_v40_esc(_v40_taskBatchQ)}" oninput="_v40_taskBatchQ=this.value;_v40_renderTaskRows()" style="flex:1;min-width:140px;padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:monospace">
+        <select onchange="_v40_taskSev=this.value;_v40_renderTaskRows()" style="padding:6px 8px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">${sevOpts}</select>
+      </div>
+      <div id="v40-task-list"></div>
     </div>`,
     [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);
+  setTimeout(_v40_renderTaskRows, 0);
 }
 
 async function _v40_markTaskSeen(taskId) {
@@ -4329,12 +4355,21 @@ function renderDeptScan(dept){
   ${cfg.wastage?`
   <div class="card mb-16">
     <div class="card-title">⚠️ Wastage Entry (Salvage & Remelt)</div>
-    <div class="form-row cols-3">
+    <div class="form-row cols-4">
       <div class="form-group">
         <label>Batch</label>
         <select id="wastage-batch-${dept}">
           <option value="">-- Select Batch --</option>
           ${wastageBatches.map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''}${b.colour?' — '+b.colour:''}</option>`).join('')}
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Shift</label>
+        <select id="wastage-shift-${dept}">
+          <option value="">-- Shift --</option>
+          <option value="A">A</option>
+          <option value="B">B</option>
+          <option value="C">C</option>
         </select>
       </div>
       <div class="form-group">
@@ -4362,10 +4397,11 @@ function renderDeptScan(dept){
     </div>
     <div class="text-sm text-muted mb-8">Admin and Planning roles can correct erroneous wastage entries.</div>
     <div class="tbl-wrap" style="max-height:340px;overflow:auto"><table>
-      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Type</th><th>Qty (L)</th><th>Remark</th><th>Entered By</th><th>Time</th><th>Action</th></tr></thead>
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Shift</th><th>Type</th><th>Qty (L)</th><th>Remark</th><th>Entered By</th><th>Time</th><th>Action</th></tr></thead>
       <tbody>
       ${state.wastage.filter(w=>w.dept===dept).slice().reverse().map(w=>`<tr id="wrow-${w.id}" data-wbatch="${w.batchNumber.toLowerCase()}">
         <td class="td-mono fw-bold">${w.batchNumber}</td>
+        <td class="text-sm">${['A','B','C'].includes(String(w.shift||'').toUpperCase())?`<span style="display:inline-block;min-width:18px;text-align:center;font-weight:700;padding:1px 6px;border-radius:5px;background:var(--surface);border:1px solid var(--border)">${String(w.shift).toUpperCase()}</span>`:'<span class="text-muted" title="no shift recorded — pre-shift-tracking entry">—</span>'}</td>
         <td><span class="badge ${w.type==='salvage'?'badge-amber':'badge-red'}">${w.type}</span></td>
         <td class="td-mono" id="wqty-${w.id}">${fmt(w.qty)}</td>
         <td class="text-sm" style="max-width:200px">${w.note?_v40_esc(w.note):'<span class="text-muted">—</span>'}</td>
@@ -4375,9 +4411,9 @@ function renderDeptScan(dept){
           <button class="btn btn-sm btn-secondary" style="font-size:10px;padding:3px 7px" onclick="openWastageEdit('${w.id}','${dept}')">✏️ Edit</button>
           <button class="btn btn-sm btn-danger" style="font-size:10px;padding:3px 7px;margin-left:4px" onclick="deleteWastageEntry('${w.id}','${dept}')">🗑</button>
         </td>
-      </tr>`).join('')||'<tr><td colspan="7" class="text-center text-muted">No wastage recorded for this dept</td></tr>'}
+      </tr>`).join('')||'<tr><td colspan="8" class="text-center text-muted">No wastage recorded for this dept</td></tr>'}
       </tbody>
-      ${(()=>{const _wl=state.wastage.filter(w=>w.dept===dept);if(!_wl.length)return '';const _s=_wl.filter(w=>w.type==='salvage').reduce((a,w)=>a+(w.qty||0),0);const _r=_wl.filter(w=>w.type==='remelt').reduce((a,w)=>a+(w.qty||0),0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${_wl.length} ${_wl.length===1?'entry':'entries'}</td><td class="text-sm text-muted">S / R</td><td class="td-mono">${fmt(_s+_r)}L <span class="text-sm text-muted">(S:${fmt(_s)} R:${fmt(_r)})</span></td><td colspan="4"></td></tr></tfoot>`;})()}
+      ${(()=>{const _wl=state.wastage.filter(w=>w.dept===dept);if(!_wl.length)return '';const _s=_wl.filter(w=>w.type==='salvage').reduce((a,w)=>a+(w.qty||0),0);const _r=_wl.filter(w=>w.type==='remelt').reduce((a,w)=>a+(w.qty||0),0);const _shiftCell=(sh)=>{const rows=_wl.filter(w=>String(w.shift||'').toUpperCase()===sh);const s=rows.filter(w=>w.type==='salvage').reduce((a,w)=>a+(w.qty||0),0);const r=rows.filter(w=>w.type==='remelt').reduce((a,w)=>a+(w.qty||0),0);const has=rows.length>0;return `<span style="display:inline-block;margin-right:12px;padding:2px 9px;border-radius:6px;border:1px solid var(--border);${has?'background:var(--surface)':'opacity:.6'}"><b>Shift ${sh}</b> · ${has?`S:${fmt(s)} R:${fmt(r)} <span class="text-muted">(${rows.length})</span>`:'<span style="color:var(--accent4)">no entry</span>'}</span>`;};const _un=_wl.filter(w=>!['A','B','C'].includes(String(w.shift||'').toUpperCase()));const _uHtml=_un.length?`<span style="display:inline-block;padding:2px 9px;color:var(--accent4)">⚠ ${_un.length} unassigned (pre-shift)</span>`:'';return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2)"><td class="td-mono">TOTAL · ${_wl.length} ${_wl.length===1?'entry':'entries'}</td><td class="text-sm text-muted">—</td><td class="text-sm text-muted">S / R</td><td class="td-mono">${fmt(_s+_r)}L <span class="text-sm text-muted">(S:${fmt(_s)} R:${fmt(_r)})</span></td><td colspan="4"></td></tr><tr style="background:var(--surface2);border-top:1px dashed var(--border)"><td colspan="8" class="text-sm" style="padding:7px 8px">${_shiftCell('A')}${_shiftCell('B')}${_shiftCell('C')}${_uHtml}</td></tr></tfoot>`;})()}
     </table></div>`:''}
   </div>`:''}
 
@@ -4742,11 +4778,13 @@ function saveWastage(dept){
   setTimeout(() => { _wastageSaving[dept] = false; }, 2000);
 
   const batchNo=document.getElementById(`wastage-batch-${dept}`)?.value;
+  const shift=(document.getElementById(`wastage-shift-${dept}`)?.value||'').trim().toUpperCase(); // v45D #2b
   const salvage=parseFloat(document.getElementById(`wastage-salvage-${dept}`)?.value)||0;
   const remelt=parseFloat(document.getElementById(`wastage-remelt-${dept}`)?.value)||0;
   const note=(document.getElementById(`wastage-note-${dept}`)?.value||'').trim().slice(0,200);
   const resultEl=document.getElementById(`wastage-result-${dept}`);
   if(!batchNo){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Please select a batch.</div>'; return; }
+  if(!['A','B','C'].includes(shift)){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Please select a shift (A, B or C).</div>'; return; }
   if(salvage===0&&remelt===0){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Enter salvage or remelt quantity.</div>'; return; }
   const batch=getBatch(batchNo);
   if(!batch) return;
@@ -4759,10 +4797,10 @@ function saveWastage(dept){
     return;
   }
   // v41ZB: the same remark is attached to both salvage and remelt rows from this save.
-  if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept,note});
-  if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept,note});
+  if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept,note,shift});
+  if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept,note,shift});
   saveLocal();
-  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt,note});
+  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt,note,shift});
   document.getElementById(`wastage-salvage-${dept}`).value='';
   document.getElementById(`wastage-remelt-${dept}`).value='';
   const _noteEl=document.getElementById(`wastage-note-${dept}`); if(_noteEl) _noteEl.value='';
@@ -5796,14 +5834,18 @@ async function _v41_closeInvoiceAsLegacy(invoiceId) {
 // posts a clean allocations[] array so each batch gets its own dispatch record + actuals.
 let _v44zjReg = null; // { invoiceId, rows:[{batch,qty,boxes,itemCode,size}], reason, isRealloc }
 
-function _v44zjBatchOptions(selected) {
+// v45D #3/#4: datalist source for the batch field. The field is now free-text (type-or-pick), so an
+// invoice that CARRIES a batch auto-fills it, while an invoice with NO batch (Direct-SAP / legacy
+// pre-Sunloc stock, whose identifier will never be a Sunloc batch in this list) can be typed in by
+// hand. Existing Sunloc batches still appear as autocomplete suggestions but selection is not forced.
+function _v44zjBatchDatalist() {
   const list = (state.batches || []).slice().sort((a,b)=>String(a.batchNumber||'').localeCompare(String(b.batchNumber||'')));
-  let html = '<option value="">— select batch —</option>';
+  let html = '';
   for (const b of list) {
     const bn = b.batchNumber || '';
     if (!bn) continue;
     const lbl = bn + (b.size!=null?(' · sz '+b.size):'') + (b.customer?(' · '+String(b.customer).slice(0,18)):'');
-    html += `<option value="${bn}"${bn===selected?' selected':''}>${lbl}</option>`;
+    html += `<option value="${bn}">${lbl}</option>`;
   }
   return html;
 }
@@ -5823,14 +5865,14 @@ function _v44zjRenderRows() {
   _v44zjReg.rows.forEach((r,i)=>{
     html += `<tr>
       <td style="padding:5px 6px;color:#6b7280">${i+1}</td>
-      <td style="padding:5px 6px"><select onchange="_v44zjOnBatch(${i}, this.value)" style="width:100%;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px">${_v44zjBatchOptions(r.batch)}</select></td>
+      <td style="padding:5px 6px"><input type="text" list="v44zj-batchlist" value="${(r.batch||'').replace(/"/g,'&quot;')}" oninput="_v44zjOnBatch(${i}, this.value)" placeholder="type or pick — legacy batches can be typed" autocomplete="off" style="width:100%;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:var(--mono)"></td>
       <td style="padding:5px 6px;font-family:var(--mono);color:#374151" id="v44zj-sz-${i}">${r.size!=null&&r.size!==''?r.size:'—'}</td>
       <td style="padding:5px 6px"><input type="number" step="0.01" min="0" value="${r.qty}" oninput="_v44zjOnQty(${i}, this.value)" style="width:100%;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:var(--mono)"></td>
       <td style="padding:5px 6px"><input type="number" step="1" min="0" value="${r.boxes}" oninput="_v44zjOnBoxes(${i}, this.value)" id="v44zj-bx-${i}" style="width:100%;padding:5px;border:1px solid #d1d5db;border-radius:6px;font-size:12px;font-family:var(--mono)"></td>
       <td style="padding:5px 6px;text-align:center">${_v44zjReg.rows.length>1?`<button onclick="_v44zjRemoveRow(${i})" title="remove" style="border:0;background:transparent;color:#dc2626;cursor:pointer;font-size:16px;line-height:1">×</button>`:''}</td>
     </tr>`;
   });
-  html += `</tbody></table>`;
+  html += `</tbody></table><datalist id="v44zj-batchlist">${_v44zjBatchDatalist()}</datalist>`;
   box.innerHTML = html;
 }
 
@@ -12953,7 +12995,7 @@ function renderSettings(){
           <label>Batch Number</label>
           <select id="bf-batch">
             <option value="">-- Select Batch --</option>
-            ${[...state.batches.filter(b=>!b.deleted)].sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true})).map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''} | ${b.isPrinted?'PTD':'UP'}</option>`).join('')}
+            ${[...state.batches.filter(b=>!b.deleted)].sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true})).map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''}${b.colour?(' · '+b.colour):''}${(b.size!=null&&b.size!=='')?(' · sz '+b.size):''} | ${b.isPrinted?'PTD':'UP'}</option>`).join('')}
           </select>
         </div>
         <div class="form-group">

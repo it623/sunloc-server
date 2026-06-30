@@ -1169,6 +1169,15 @@ const MIGRATIONS = [
     sql: `ALTER TABLE invoice_requests ADD COLUMN so_doc_num TEXT;
           ALTER TABLE invoices_received ADD COLUMN base_so_doc_num TEXT;`
   },
+  {
+    // v45D #2b: shift dimension (A/B/C) on salvage/remelt wastage. WIP sums qty per dept regardless of
+    // shift, so the frozen WIP total is unchanged — this only tags each entry with its shift so the AIM
+    // wastage tab can be entered + audited shift-wise and missing-shift data is visible. Nullable:
+    // pre-existing rows stay unassigned.
+    version: 46,
+    name: 'wastage_shift',
+    sql: `ALTER TABLE tracking_wastage ADD COLUMN shift TEXT;`
+  },
 ];
 
 function runMigrations() {
@@ -1344,6 +1353,7 @@ async function ensurePostgresTables() {
         note TEXT
       )
     `);
+    try { await pgPool.query(`ALTER TABLE tracking_wastage ADD COLUMN IF NOT EXISTS shift TEXT`); } catch(e){} // v45D #2b: shift A/B/C tag
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS tracking_stage_closure (
         id TEXT PRIMARY KEY,
@@ -1738,6 +1748,7 @@ async function ensurePostgresTables() {
         note TEXT
       )
     `);
+    try { await pgPool.query(`ALTER TABLE tracking_wastage ADD COLUMN IF NOT EXISTS shift TEXT`); } catch(e){} // v45D #2b: shift A/B/C tag
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS tracking_stage_closure (
         id TEXT PRIMARY KEY,
@@ -3056,7 +3067,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45B' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45D' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3537,7 +3548,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45B' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45D' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -10492,7 +10503,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45B',
+      build: 'v45D',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10501,7 +10512,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45B', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45D', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11825,7 +11836,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45B',
+      build: 'v45D',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11834,7 +11845,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45B', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45D', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11963,8 +11974,8 @@ app.post('/api/tracking/state', async (req, res) => {
         }
         if (wastage && wastage.length) {
           for (const w of wastage) {
-            await client.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT (id) DO NOTHING`,
-              [w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null]);
+            await client.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by,shift) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT (id) DO NOTHING`,
+              [w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null,w.shift||null]);
           }
         }
         if (dispatchRecs && dispatchRecs.length) {
@@ -11986,7 +11997,7 @@ app.post('/api/tracking/state', async (req, res) => {
       const saveAll = db.transaction(() => {
         if (labels?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_labels (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`); labels.forEach(l => stmt.run(l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,l.poNumber||null,l.machineId||null,l.printingMatter||null,l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,l.woStatus||null,l.shipTo||null,l.billTo||null,l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null)); }
         if (scans?.length) { const stmt = db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?)`); scans.forEach(s => stmt.run(s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null)); }
-        if (wastage?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by) VALUES (?,?,?,?,?,?,?)`); wastage.forEach(w => stmt.run(w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null)); }
+        if (wastage?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by,shift) VALUES (?,?,?,?,?,?,?,?)`); wastage.forEach(w => stmt.run(w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null,w.shift||null)); }
       });
       saveAll();
     }
@@ -14284,18 +14295,19 @@ app.post('/api/tracking/reconcile-wip', async (req, res) => {
 
 app.post('/api/tracking/wastage', async (req, res) => {
   try {
-    const { batchNumber, dept, salvage, remelt, note } = req.body;
+    const { batchNumber, dept, salvage, remelt, note, shift } = req.body;
     if (!batchNumber || !dept) return res.status(400).json({ ok: false, error: 'batchNumber and dept required' });
     const ts = new Date().toISOString();
     const noteVal = (typeof note === 'string' && note.trim()) ? note.trim().slice(0,200) : null;
+    const shiftVal = (['A','B','C'].includes(String(shift||'').trim().toUpperCase())) ? String(shift).trim().toUpperCase() : null; // v45D #2b
     const genId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     if (pgPool) {
-      if (parseFloat(salvage) > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal]);
-      if (parseFloat(remelt)  > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note) VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal]);
+      if (parseFloat(salvage) > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal,shiftVal]);
+      if (parseFloat(remelt)  > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal,shiftVal]);
     } else {
-      const insert = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note) VALUES (?,?,?,?,?,?,?)`);
-      if (parseFloat(salvage) > 0) insert.run(genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal);
-      if (parseFloat(remelt)  > 0) insert.run(genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal);
+      const insert = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift) VALUES (?,?,?,?,?,?,?,?)`);
+      if (parseFloat(salvage) > 0) insert.run(genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal,shiftVal);
+      if (parseFloat(remelt)  > 0) insert.run(genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal,shiftVal);
     }
     res.json({ ok: true });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
