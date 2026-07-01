@@ -1201,6 +1201,20 @@ const MIGRATIONS = [
           WHERE prod_date IS NULL AND shift IN ('B','C')
             AND ts >= '2026-07-01T00:30:00' AND ts < '2026-07-02T00:30:00';`
   },
+  {
+    // v45S: production_orders was keyed on the unstable `id` alone, with NO identity on
+    // (batch_number, machine_id). A batch's blob id can change; the id-keyed sync (ON CONFLICT(id))
+    // then spawned a DUPLICATE row and the id-keyed close (WHERE id=$1) orphaned the old-id row at
+    // 'running' forever. Those orphans, being the OLDEST running rows on a machine, stole the two
+    // enforcement slots in upsert-bulk and got the real current batches downgraded to pending.
+    // This index backs the duplicate-collapse queries (one-time boot repair + post-sync collapse)
+    // that keep exactly one live row per (batch_number, machine_id). Non-unique on purpose: existing
+    // duplicates must be collapsed first, and a hard unique constraint is scoped separately once the
+    // data is proven stable in production.
+    version: 49,
+    name: 'idx_production_orders_batch_machine',
+    sql: `CREATE INDEX IF NOT EXISTS idx_po_batch_machine ON production_orders (batch_number, machine_id);`
+  },
 ];
 
 function runMigrations() {
@@ -1221,6 +1235,89 @@ function runMigrations() {
 }
 
 runMigrations();
+
+// ─── v45S: production_orders identity repair ──────────────────────────────────
+// Root cause of the phantom ">2 running per machine": production_orders carried no identity
+// on (batch_number, machine_id) — only the unstable `id`. When a batch's blob id changed, the
+// id-keyed sync (ON CONFLICT(id)) inserted a DUPLICATE row and the id-keyed close (WHERE id=$1)
+// left the old-id row 'running' forever. Those orphans, being the OLDEST running rows, then stole
+// the machine's two enforcement slots in upsert-bulk and downgraded the real current batches.
+// These helpers keep exactly one live row per (batch_number, machine_id) and close true orphans.
+// Both are IDEMPOTENT and SOFT (deleted / status='closed' only): safe to run every boot, never a
+// hard delete, and NEVER close a batch the planning blob still considers running.
+
+async function _v45s_collapseDuplicateOrders() {
+  // Soft-delete every non-newest row within a (batch_number, machine_id) group, keeping the single
+  // row with the greatest updated_at (id as a deterministic tiebreak). Returns rows affected.
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(`
+        UPDATE production_orders p SET deleted = true, updated_at = NOW()::TEXT
+        WHERE p.deleted = false
+          AND p.batch_number IS NOT NULL AND p.machine_id IS NOT NULL
+          AND EXISTS (
+            SELECT 1 FROM production_orders q
+            WHERE q.batch_number = p.batch_number AND q.machine_id = p.machine_id
+              AND q.deleted = false AND q.id <> p.id
+              AND (q.updated_at > p.updated_at
+                   OR (q.updated_at = p.updated_at AND q.id > p.id)))`);
+      return r.rowCount || 0;
+    }
+    const info = db.prepare(`
+      UPDATE production_orders SET deleted = 1, updated_at = datetime('now')
+      WHERE deleted = 0
+        AND batch_number IS NOT NULL AND machine_id IS NOT NULL
+        AND EXISTS (
+          SELECT 1 FROM production_orders q
+          WHERE q.batch_number = production_orders.batch_number
+            AND q.machine_id = production_orders.machine_id
+            AND q.deleted = 0 AND q.id <> production_orders.id
+            AND (q.updated_at > production_orders.updated_at
+                 OR (q.updated_at = production_orders.updated_at AND q.id > production_orders.id)))`).run();
+    return info.changes || 0;
+  } catch (e) {
+    console.warn('[v45S collapse] duplicate-collapse failed:', e.message);
+    return 0;
+  }
+}
+
+async function _v45s_repairProductionOrders() {
+  // Boot repair (idempotent): collapse duplicates, then close 'running' DB rows the planning blob
+  // explicitly marks 'closed' — true orphans an id-keyed close could never reach. Rows the blob
+  // still considers running are LEFT ALONE; closing those is an operator decision, never inferred.
+  try {
+    const collapsed = await _v45s_collapseDuplicateOrders();
+    const blobClosed = new Set();
+    try {
+      const state = await getPlanningStateAsync();
+      const orders = (state && Array.isArray(state.orders)) ? state.orders : [];
+      for (const o of orders) {
+        const bn = ((o && o.batchNumber) || '').toString().trim();
+        if (bn && o.status === 'closed') blobClosed.add(bn);
+      }
+    } catch (e) {
+      console.warn('[v45S repair] blob read failed — skipping ghost-close:', e.message);
+    }
+    let closed = 0;
+    if (blobClosed.size) {
+      const arr = Array.from(blobClosed);
+      if (pgPool) {
+        const r = await pgPool.query(
+          `UPDATE production_orders SET status='closed', updated_at=NOW()::TEXT
+           WHERE status='running' AND deleted=false AND batch_number = ANY($1)`, [arr]);
+        closed = r.rowCount || 0;
+      } else {
+        const stmt = db.prepare(`UPDATE production_orders SET status='closed', updated_at=datetime('now')
+                                 WHERE status='running' AND deleted=0 AND batch_number=?`);
+        const tx = db.transaction((list) => { let n = 0; for (const b of list) n += stmt.run(b).changes; return n; });
+        closed = tx(arr);
+      }
+    }
+    console.log(`[v45S repair] production_orders identity repair: ${collapsed} duplicate row(s) soft-deleted, ${closed} blob-closed ghost(s) closed`);
+  } catch (e) {
+    console.warn('[v45S repair] failed:', e.message);
+  }
+}
 
 // ─── Seed default users if none exist ─────────────────────────
 function hashPin(pin) { return crypto.createHash('sha256').update(pin + 'sunloc_salt').digest('hex'); }
@@ -3149,7 +3246,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45P' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45S' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3638,7 +3735,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45P' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45S' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -6386,6 +6483,11 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
       });
       tx(mergedList);
     }
+    // v45S: after syncing the blob into production_orders, collapse any (batch_number, machine_id)
+    // duplicate the id-keyed upsert may have just created (blob id churn → new row + old orphan).
+    // Keeps exactly one live row per batch+machine so the 2-per-machine enforcement above can never
+    // again protect a stale orphan over the real current batch. Idempotent; soft-delete only.
+    await _v45s_collapseDuplicateOrders();
     if (preservedCount > 0) {
       console.log(`[v41w upsert-bulk] Preserved DB status on ${preservedCount}/${orders.length} orders (stale client write blocked)`);
     }
@@ -6681,6 +6783,38 @@ app.get('/api/planning/state', async (req, res) => {
           if (dbOrd.batchNumber && dbOrd.machineId) stateOrderByBatchMc.set(bmKey, cleanOrd);
         });
       }
+
+      // v45R: for the tracking label view (?reconcile=1), guarantee every genuinely-running DB order
+      // surfaces as running. Earlier fixes each targeted one lever (v41z timestamp guard; the
+      // 2-per-machine recovery downgrade) but the real blocker is blob↔DB id mismatch: a batch can sit
+      // 'pending' in the blob under one id while production_orders holds it 'running' under a different
+      // id — so the id-keyed reconcile never flipped it and the batch+machine dedup skipped recovery.
+      // This pass matches by id AND by batchNumber+machineId, forces running unless the blob explicitly
+      // has that batch closed (never resurrect a closed batch), and folds in any running DB order still
+      // absent — no timestamp gate and no 2-per-machine downgrade, since those are planning constraints
+      // not label-view filters. Gated on _trkReconcile, so the planning app (no flag) is untouched.
+      if (_trkReconcile && Array.isArray(dbOrders) && dbOrders.length > 0) {
+        const _byId = new Map((state.orders||[]).map(o => [o.id, o]));
+        const _byBm = new Map();
+        (state.orders||[]).forEach(o => { if (o.batchNumber && o.machineId) _byBm.set(`${o.batchNumber}__${o.machineId}`, o); });
+        let _trkFixed = 0;
+        dbOrders.forEach(dbO => {
+          if (!dbO || dbO.deleted || dbO._dbStatus !== 'running') return;
+          let o = _byId.get(dbO.id);
+          if (!o && dbO.batchNumber && dbO.machineId) o = _byBm.get(`${dbO.batchNumber}__${dbO.machineId}`);
+          if (o) {
+            if (o.status !== 'running' && o.status !== 'closed') { o.status = 'running'; _trkFixed++; }
+          } else {
+            const { _dbStatus, _dbUpdatedAt, ...cleanOrd } = dbO;
+            cleanOrd.status = 'running';
+            state.orders = state.orders || [];
+            state.orders.push(cleanOrd);
+            if (cleanOrd.batchNumber && cleanOrd.machineId) _byBm.set(`${cleanOrd.batchNumber}__${cleanOrd.machineId}`, cleanOrd);
+            _trkFixed++;
+          }
+        });
+        if (_trkFixed > 0) console.log(`[v45R trk-reconcile] surfaced ${_trkFixed} running batch(es) for tracking label view`);
+      }
     } catch(e) { console.warn('[State] Order recovery failed:', e.message); }
 
     // v40 P18.14i Fix 2: actualProd refresh only — auto-promote pending→running REMOVED.
@@ -6920,6 +7054,8 @@ app.post('/api/planning/state', async (req, res) => {
             `, params);
           }
           console.log(`[State] Background merged ${orders.length} orders into production_orders (batched)`);
+          // v45S: collapse any (batch_number, machine_id) duplicate this id-keyed merge may have created.
+          await _v45s_collapseDuplicateOrders();
         } catch(e) { console.warn('[State] Background order merge failed:', e.message); }
       });
     }
@@ -8215,11 +8351,17 @@ app.post('/api/batch/retire', async (req, res) => {
            ON CONFLICT(batch_number) DO UPDATE SET retired_at=EXCLUDED.retired_at, retired_by=EXCLUDED.retired_by, reason=EXCLUDED.reason, residual_wip=EXCLUDED.residual_wip`,
           [batchNumber, orderId, nowIso, by, reason, prodMonth, residualWip, prevStatus, prevDprClosed]);
         if (orderId) {
-          await pgPool.query(`UPDATE production_orders SET status='closed' WHERE id=$1`, [orderId]);
+          // v45S: close by BATCH identity, not id — closes the current row AND any orphaned old-id
+          // rows for this batch that an id-keyed close (WHERE id=$1) would silently miss. That
+          // id-keyed close was the mechanism leaving ghosts stuck at 'running' for months.
+          await pgPool.query(`UPDATE production_orders SET status='closed', updated_at=NOW()::TEXT WHERE batch_number=$1 AND status<>'closed'`, [batchNumber]);
           if (!prevDprClosed) await pgPool.query(
             `INSERT INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
              VALUES ($1,$2,$3,$4,$5) ON CONFLICT(order_id) DO NOTHING`,
             [orderId, batchNumber, nowIso, by, 'retired (legacy cleanup)']);
+        } else {
+          // No resolved order id, but a batch is always present here — still close every row for it.
+          await pgPool.query(`UPDATE production_orders SET status='closed', updated_at=NOW()::TEXT WHERE batch_number=$1 AND status<>'closed'`, [batchNumber]);
         }
       } else {
         if (orderId) {
@@ -8230,9 +8372,12 @@ app.post('/api/batch/retire', async (req, res) => {
                     VALUES (?,?,?,?,?,?,?,?,?)`)
           .run(batchNumber, orderId, nowIso, by, reason, prodMonth, residualWip, prevStatus, prevDprClosed);
         if (orderId) {
-          db.prepare(`UPDATE production_orders SET status='closed' WHERE id=?`).run(orderId);
+          // v45S: close by BATCH identity, not id (see Postgres branch above).
+          db.prepare(`UPDATE production_orders SET status='closed', updated_at=datetime('now') WHERE batch_number=? AND status<>'closed'`).run(batchNumber);
           if (!prevDprClosed) db.prepare(`INSERT OR IGNORE INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes) VALUES (?,?,?,?,?)`)
             .run(orderId, batchNumber, nowIso, by, 'retired (legacy cleanup)');
+        } else {
+          db.prepare(`UPDATE production_orders SET status='closed', updated_at=datetime('now') WHERE batch_number=? AND status<>'closed'`).run(batchNumber);
         }
       }
       retired++;
@@ -10640,7 +10785,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45P',
+      build: 'v45S',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10649,7 +10794,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45P', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45S', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11973,7 +12118,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45P',
+      build: 'v45S',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11982,7 +12127,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45P', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45S', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -14864,6 +15009,10 @@ app.listen(PORT, () => {
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
+    // v45S: repair production_orders identity — collapse (batch_number, machine_id) duplicates and
+    // close blob-closed orphan 'running' rows left behind by the historical id-keyed sync/close.
+    // Idempotent and soft; runs once per boot after tables exist and the blob is reachable.
+    _v45s_repairProductionOrders().catch(e => console.warn('[v45S repair] boot invocation failed:', e?.message));
     // v37I bugfix: one-time backfill — recompute dispatched_qty for ALL batches that have
     // manual records. Fixes data from before the SUM-based recompute was introduced where
     // multiple records overwrote each other and only the last per-record qty was saved.
