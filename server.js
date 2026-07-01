@@ -3149,7 +3149,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45M' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45P' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3638,7 +3638,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45M' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45P' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -6522,6 +6522,13 @@ app.post('/api/machines/master', async (req, res) => {
 // GET full planning state — uses direct pg pool for large JSON
 app.get('/api/planning/state', async (req, res) => {
   try {
+    // v45N: the tracking app requests ?reconcile=1 so blob status is reconciled DB-authoritatively
+    // even when the blob was re-saved with a stale 'pending' AFTER the DB went 'running' (the v45
+    // month-rollover case — batches active in DPR/production_orders but sitting 'pending' in the blob,
+    // so Label Generation, which filters status==='running', dropped them). This drops ONLY the v41z
+    // timestamp guard for pending→running-type flips; the running/closed protection below still stands,
+    // and the planning app (no flag) keeps the exact prior v41z behaviour untouched.
+    const _trkReconcile = req.query.reconcile === '1';
     const rawState = await getPlanningStateAsync();
     // CRITICAL: deep clone before mutating — never modify the cached object directly
     // Direct mutation corrupts the cache and causes order count drops (194→175 bug)
@@ -6599,7 +6606,11 @@ app.get('/api/planning/state', async (req, res) => {
           // Without the grace, normal sync timing where DB is written just after blob would always win.
           // CRITICAL: Never auto-revert running or closed — real physical actions
           const blobStatusIsProtected = o.status === 'running' || o.status === 'closed';
-          if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && dbUpd > blobSavedAt + 30000 && !blobStatusIsProtected) {
+          // v45N: tracking (reconcile=1) skips the timestamp guard so a blob 'pending' that the DB
+          // has flipped to 'running' surfaces even if the blob was saved later — the running/closed
+          // protection still prevents any auto-revert of a real physical status.
+          const _passTsGuard = _trkReconcile ? true : (dbUpd > blobSavedAt + 30000);
+          if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && _passTsGuard && !blobStatusIsProtected) {
             o.status = dbO._dbStatus;
             reconciledCount++;
           }
@@ -10629,7 +10640,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45M',
+      build: 'v45P',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10638,7 +10649,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45M', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45P', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11962,7 +11973,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45M',
+      build: 'v45P',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11971,7 +11982,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45M', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45P', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
