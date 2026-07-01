@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45G</title>
+<title>Sunloc Tracking Suite v1.0 · build v45M</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45G</p>
+      <p>Tracking Suite v1.0 · build v45M</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45G</p>
+      <p>Tracking Suite v1.0 · build v45M</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -835,7 +835,7 @@ let state = {
 // ═══════════════════════════════════════════════════════
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7) }
-function today(){ return _istToday() } // v45G: IST production day (matches DPR + shift grouping)
+function today(){ return _istToday() } // v45H: IST production day (matches DPR + shift grouping)
 function now(){ return new Date().toISOString() }
 // v45F: IST production-day key — IST (UTC+5:30) calendar date with a 6 AM shift-day boundary, so a
 // C-shift entry logged after midnight attributes to the day the shift STARTED. production_day =
@@ -948,7 +948,7 @@ function onTrkMonthChange(ym) {
 }
 
 // Filter batches by selected month (production order active in that month)
-// v45G: Production-Month filter for Reports B/C/F — INDEPENDENT of the top month picker (which keeps
+// v45H: Production-Month filter for Reports B/C/F — INDEPENDENT of the top month picker (which keeps
 // driving A/D/G + A-Grade attribution). Filters batches by PRODUCTION START month
 // (b.startDate||b.orderStartDate — the same "belongs to" rule as the planning quarter scope). Default
 // 'ALL' shows every batch. Batch-SELECTION only: per-batch WIP is unchanged, no carry-forward.
@@ -2344,7 +2344,7 @@ function generateQRData(label){
 // are 1..n, excess labels are negative, orange labels live on is_orange=1 — so 0 is free and
 // round-trips through every existing insert/select with NO schema change (no migration needed).
 //
-// Cutoff note: startDate is stamped via today(), which from v45G returns the IST production day
+// Cutoff note: startDate is stamped via today(), which from v45H returns the IST production day
 // (6 AM IST boundary, UTC ts stored underneath). The go-live constant below is a plain date compared
 // against stored startDate strings; existing batches keep their original stamps. IT can adjust it.
 const SPECIMEN_FROM = '2026-06-26';
@@ -4295,6 +4295,14 @@ const DEPT_CONFIG={
 };
 
 function renderDeptScan(dept){
+  // v45M #4: preserve scroll on a RE-RENDER of the same dept view (wastage save, closure, filter),
+  // which previously reset to the top. Detected by the view already being mounted (recent-scans-DEPT
+  // present); on fresh navigation it's absent so we leave scroll to the normal top/view-state. Re-apply
+  // a few times to survive async content (labels/scan-summary) settling in after the innerHTML swap.
+  const _v45mContent=document.getElementById('content');
+  const _v45mRerender=!!document.getElementById('recent-scans-'+dept);
+  const _v45mPrevScroll=(_v45mRerender&&_v45mContent)?_v45mContent.scrollTop:0;
+  if(_v45mPrevScroll>0&&_v45mContent){ const _rs=()=>{ if(_v45mContent) _v45mContent.scrollTop=_v45mPrevScroll; }; requestAnimationFrame(_rs); setTimeout(_rs,60); setTimeout(_rs,250); setTimeout(_rs,600); }
   const el=document.getElementById('page-'+dept);
   const cfg=DEPT_CONFIG[dept];
   const myAlerts=state.alerts.filter(a=>a.dept===dept&&!_isRetired(a.batchNumber)); // v44F Issue#2: retired drop out
@@ -4427,6 +4435,10 @@ function renderDeptScan(dept){
         </select>
       </div>
       <div class="form-group">
+        <label>Production Date</label>
+        <input type="date" id="wastage-proddate-${dept}" value="${_istToday()}">
+      </div>
+      <div class="form-group">
         <label>Salvage (Lakhs)</label>
         <input type="number" id="wastage-salvage-${dept}" step="0.01" placeholder="0.00">
       </div>
@@ -4444,6 +4456,7 @@ function renderDeptScan(dept){
     <button class="btn btn-warning btn-sm" onclick="saveWastage('${dept}')">Save Wastage Entry</button>
     <div id="wastage-result-${dept}" class="mt-8"></div>
     ${_v45e_wastageShiftSummary(dept)}
+    ${_v45m_view(dept)}
     ${(currentDept==='admin'||currentDept==='planning')?`
     <div class="divider mt-16"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:6px">
@@ -4832,7 +4845,7 @@ function _v45e_filteredWl(dept, opts){
   const F = _v45e_F || {date:'',batch:'',type:''};
   let wl = (state.wastage||[]).filter(w=>w.dept===dept);
   if(F.type) wl = wl.filter(w=>w.type===F.type);
-  if(F.date) wl = wl.filter(w=>_v45e_dateKey(w.ts)===F.date);
+  if(F.date) wl = wl.filter(w=>(w.prod_date||_v45e_dateKey(w.ts))===F.date); // v45I #1: prefer explicit production day
   if(!opts.ignoreBatch && F.batch) wl = wl.filter(w=>String(w.batchNumber||'')===F.batch);
   return wl;
 }
@@ -4847,7 +4860,7 @@ function _v45e_wastageRows(dept){
   const map = {}, dateDispOf = {};
   for(const w of wl){
     const dt = new Date(w.ts);
-    const dateKey = _v45e_dateKey(w.ts);
+    const dateKey = w.prod_date||_v45e_dateKey(w.ts); // v45I #1: prefer explicit production day
     dateDispOf[dateKey] = fmtDate(dateKey); // v45F: display the IST production-day key (consistent with grouping), not the raw calendar date
     const batch = w.batchNumber||'', type = w.type||'';
     const sh = ['A','B','C'].includes(String(w.shift||'').toUpperCase()) ? String(w.shift).toUpperCase() : 'U';
@@ -4905,7 +4918,7 @@ function _v45e_summaryBlockInner(dept){
   return `
     <div class="divider mt-16"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;margin-bottom:6px;flex-wrap:wrap">
-      <div class="card-title" style="color:var(--accent2);margin:0">📊 Wastage Summary — Shift-wise (by entry date)</div>
+      <div class="card-title" style="color:var(--accent2);margin:0">📊 Wastage Summary — Shift-wise (by production day)</div>
       <button class="btn btn-sm btn-secondary" onclick="_v45e_exportWastageShift('${dept}')">⬇ Export to Excel</button>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
@@ -4947,6 +4960,151 @@ function _v45e_exportWastageShift(dept){
   XLSX.writeFile(wb, `Sunloc_Wastage_Shiftwise_${dept}_${today()}.xlsx`);
 }
 
+// ── v45M: Batch-wise wastage view (machine-select / batch-search, collapsible, Report B logic) ──
+// New AIM-Inspection panel: pick a machine → its batches list as collapsible rows showing DPR gross
+// (to-date) + total salvage + total remelt + #entries; expand → chronological per-entry detail
+// (Date · Shift · Type · Qty · Remark). A batch-search box jumps straight to any batch across
+// machines. Batch set / gross / ordering follow Report B exactly: getProdMonthBatches(true) scoped,
+// _reconGross for DPR gross (override-aware), _v44zk_batchCmp for order. All state lives in
+// window._v45m so it survives full re-renders (addresses the "lost where I left off" refresh issue).
+window._v45m = window._v45m || {};
+function _v45mState(dept){ if(!window._v45m[dept]) window._v45m[dept]={machine:'',search:'',expanded:{}}; return window._v45m[dept]; }
+function _v45m_machineList(){
+  const set=new Set();
+  getProdMonthBatches(true).forEach(b=>{ if(b&&b.machineId) set.add(b.machineId); });
+  return [...set].sort();
+}
+function _v45m_batchesForMachine(mc){
+  return getProdMonthBatches(true).filter(b=>b&&b.machineId===mc&&b.batchNumber).map(b=>b.batchNumber).sort(_v44zk_batchCmp);
+}
+function _v45m_searchBatches(txt){
+  const q=String(txt||'').trim().toUpperCase(); if(!q) return [];
+  return getProdMonthBatches(true).filter(b=>b&&b.batchNumber&&String(b.batchNumber).toUpperCase().includes(q)).map(b=>b.batchNumber).sort(_v44zk_batchCmp);
+}
+function _v45m_entries(dept, batchNo){
+  return (state.wastage||[]).filter(w=>w.batchNumber===batchNo && w.dept===dept)
+    .map(w=>({ date:(w.prod_date||_istDayKey(w.ts)), shift:(String(w.shift||'').toUpperCase()||'—'), type:w.type, qty:(+w.qty||0), note:w.note||'', ts:w.ts }))
+    .sort((a,b)=> a.date<b.date?-1 : a.date>b.date?1 : (new Date(a.ts)-new Date(b.ts)));
+}
+function _v45m_batchSummary(dept, batchNo){
+  const b=getBatch(batchNo);
+  const entries=_v45m_entries(dept,batchNo);
+  const salvage=entries.filter(e=>e.type==='salvage').reduce((s,e)=>s+e.qty,0);
+  const remelt =entries.filter(e=>e.type==='remelt').reduce((s,e)=>s+e.qty,0);
+  return { b, gross:_reconGross(b), salvage, remelt, count:entries.length, entries };
+}
+function _v45m_scopeBatches(dept){
+  const st=_v45mState(dept);
+  if(st.search && st.search.trim()) return { batches:_v45m_searchBatches(st.search), label:`Search “${st.search.trim()}”` };
+  if(st.machine) return { batches:_v45m_batchesForMachine(st.machine), label:`Machine ${st.machine}` };
+  return { batches:null, label:'' };
+}
+function _v45m_view(dept){
+  if(!DEPT_CONFIG[dept] || !DEPT_CONFIG[dept].wastage) return '';
+  const st=_v45mState(dept);
+  const mcOpts=_v45m_machineList().map(m=>`<option value="${m}" ${st.machine===m?'selected':''}>${m}</option>`).join('');
+  return `
+  <div class="divider mt-16"></div>
+  <div id="v45m-panel-${dept}">
+    <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap;margin:8px 0 6px">
+      <div class="card-title" style="color:var(--accent2);margin:0">🗂️ Batch-wise Wastage — machine-wise / batch search</div>
+      <button class="btn btn-sm btn-secondary" onclick="_v45m_export('${dept}')">⬇ Export to Excel</button>
+    </div>
+    <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
+      <div><label class="text-sm text-muted" style="display:block;margin-bottom:2px">Machine</label>
+        <select onchange="_v45m_setMachine('${dept}',this.value)" style="padding:5px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface2);color:var(--text1);min-width:130px">
+          <option value="">-- Select machine --</option>${mcOpts}
+        </select></div>
+      <div><label class="text-sm text-muted" style="display:block;margin-bottom:2px">Search batch</label>
+        <input type="text" value="${st.search||''}" placeholder="batch no." oninput="_v45m_setSearch('${dept}',this.value)" style="padding:5px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface2);color:var(--text1);min-width:150px"></div>
+    </div>
+    <div id="v45m-body-${dept}">${_v45m_body(dept)}</div>
+  </div>`;
+}
+function _v45m_body(dept){
+  const { batches, label } = _v45m_scopeBatches(dept);
+  if(batches===null) return `<div class="text-muted text-sm" style="padding:14px">Select a machine or search a batch to view batch-wise wastage.</div>`;
+  if(!batches.length) return `<div class="text-muted text-sm" style="padding:14px">No batches found for ${_v40_esc(label)}.</div>`;
+  let tG=0,tS=0,tR=0,tN=0;
+  batches.forEach(bn=>{ const s=_v45m_batchSummary(dept,bn); tG+=s.gross; tS+=s.salvage; tR+=s.remelt; tN+=s.count; });
+  const rows=batches.map(bn=>_v45m_rowHtml(dept,bn)).join('');
+  return `
+  <div class="tbl-wrap"><table id="v45m-table-${dept}" style="width:100%;border-collapse:collapse">
+    <thead><tr style="background:var(--surface2)">
+      <th style="text-align:left;padding:7px 8px;width:22px"></th>
+      <th style="text-align:left;padding:7px 8px">Batch</th>
+      <th style="text-align:right;padding:7px 8px">DPR Gross (L)</th>
+      <th style="text-align:right;padding:7px 8px">Total Salvage (L)</th>
+      <th style="text-align:right;padding:7px 8px">Total Remelt (L)</th>
+      <th style="text-align:right;padding:7px 8px">Entries</th>
+    </tr></thead>
+    <tbody>${rows}</tbody>
+    <tfoot><tr style="font-weight:800;border-top:2px solid var(--border);background:var(--surface2)">
+      <td style="padding:7px 8px"></td>
+      <td style="padding:7px 8px">TOTAL (${batches.length})</td>
+      <td class="td-mono" style="text-align:right;padding:7px 8px">${fmt(tG)}</td>
+      <td class="td-mono" style="text-align:right;padding:7px 8px;color:var(--amber)">${fmt(tS)}</td>
+      <td class="td-mono" style="text-align:right;padding:7px 8px;color:var(--red)">${fmt(tR)}</td>
+      <td class="td-mono" style="text-align:right;padding:7px 8px">${tN}</td>
+    </tr></tfoot>
+  </table></div>`;
+}
+function _v45m_rowHtml(dept,batchNo){
+  const st=_v45mState(dept);
+  const s=_v45m_batchSummary(dept,batchNo);
+  const open=!!st.expanded[batchNo];
+  const cust=s.b&&s.b.customer?` <span class="text-muted text-sm">— ${_v40_esc(s.b.customer)}</span>`:'';
+  let html=`<tr style="border-top:1px solid var(--border);cursor:pointer" onclick="_v45m_toggle('${dept}','${batchNo}')">
+    <td style="padding:6px 8px">${open?'▾':'▸'}</td>
+    <td style="padding:6px 8px" class="td-mono fw-bold">${batchNo}${cust}</td>
+    <td class="td-mono" style="text-align:right;padding:6px 8px">${fmt(s.gross)}</td>
+    <td class="td-mono" style="text-align:right;padding:6px 8px;color:var(--amber)">${fmt(s.salvage)}</td>
+    <td class="td-mono" style="text-align:right;padding:6px 8px;color:var(--red)">${fmt(s.remelt)}</td>
+    <td class="td-mono" style="text-align:right;padding:6px 8px">${s.count}</td>
+  </tr>`;
+  if(open){
+    const head=`<tr style="background:var(--surface)"><td></td><td colspan="5" style="padding:4px 8px">
+      <div style="display:grid;grid-template-columns:110px 54px 90px 100px 1fr;gap:6px;font-size:11px;font-weight:700;color:var(--text2);border-bottom:1px solid var(--border);padding-bottom:2px">
+        <span>Date</span><span>Shift</span><span>Type</span><span style="text-align:right">Qty (L)</span><span>Remark</span>
+      </div></td></tr>`;
+    const inner = s.entries.length ? s.entries.map(e=>`
+      <tr style="background:var(--surface)"><td></td><td colspan="5" style="padding:0 8px">
+        <div style="display:grid;grid-template-columns:110px 54px 90px 100px 1fr;gap:6px;font-size:12px;padding:3px 0;border-bottom:1px dashed var(--border)">
+          <span class="td-mono">${e.date}</span>
+          <span>${e.shift}</span>
+          <span><span class="badge ${e.type==='salvage'?'badge-amber':'badge-red'}">${e.type}</span></span>
+          <span class="td-mono" style="text-align:right">${fmt(e.qty)}</span>
+          <span class="text-sm" style="color:var(--text2)">${e.note?_v40_esc(e.note):'<span class="text-muted">—</span>'}</span>
+        </div></td></tr>`).join('')
+      : `<tr style="background:var(--surface)"><td></td><td colspan="5" class="text-muted text-sm" style="padding:6px 8px">No wastage entries for this batch.</td></tr>`;
+    html += head + inner;
+  }
+  return html;
+}
+function _v45m_setMachine(dept,mc){ const st=_v45mState(dept); st.machine=mc; st.search=''; st.expanded={}; _v45m_rerenderBody(dept); }
+function _v45m_setSearch(dept,txt){ const st=_v45mState(dept); st.search=txt; if(txt&&txt.trim()){ st.expanded={}; _v45m_searchBatches(txt).forEach(bn=>{ st.expanded[bn]=true; }); } _v45m_rerenderBody(dept); }
+function _v45m_toggle(dept,batchNo){ const st=_v45mState(dept); st.expanded[batchNo]=!st.expanded[batchNo]; _v45m_rerenderBody(dept); }
+function _v45m_rerenderBody(dept){ const el=document.getElementById('v45m-body-'+dept); if(el) el.innerHTML=_v45m_body(dept); }
+function _v45m_export(dept){
+  if(typeof XLSX==='undefined'){ alert('Excel library not loaded.'); return; }
+  const { batches } = _v45m_scopeBatches(dept);
+  if(!batches || !batches.length){ alert('Select a machine or search a batch first.'); return; }
+  // Sheet 1 — batch summary (each numeric column summable + a TOTAL row), same format as on-screen.
+  const sum=[['Batch','Customer','DPR Gross (L)','Total Salvage (L)','Total Remelt (L)','Entries']];
+  let tG=0,tS=0,tR=0,tN=0;
+  batches.forEach(bn=>{ const s=_v45m_batchSummary(dept,bn); sum.push([bn,(s.b&&s.b.customer)||'',s.gross,s.salvage,s.remelt,s.count]); tG+=s.gross;tS+=s.salvage;tR+=s.remelt;tN+=s.count; });
+  sum.push([`TOTAL (${batches.length})`,'',tG,tS,tR,tN]);
+  // Sheet 2 — flat chronological entries (Qty summable), matching the expanded detail.
+  const det=[['Batch','Date','Shift','Type','Qty (L)','Remark']];
+  let dTot=0;
+  batches.forEach(bn=>{ _v45m_entries(dept,bn).forEach(e=>{ det.push([bn,e.date,e.shift,e.type,e.qty,e.note]); dTot+=e.qty; }); });
+  det.push(['TOTAL','','','',dTot,'']);
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(sum), 'Batch Summary');
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(det), 'Wastage Entries');
+  XLSX.writeFile(wb, `Sunloc_BatchWastage_${dept}_${today()}.xlsx`);
+}
+
 function saveWastage(dept){
   // Idempotency guard — ignore re-entrancy within 2s of a save in progress
   // Idempotency guard — ignore re-entrancy within 2s of a save in progress
@@ -4963,6 +5121,8 @@ function saveWastage(dept){
 
   const batchNo=document.getElementById(`wastage-batch-${dept}`)?.value;
   const shift=(document.getElementById(`wastage-shift-${dept}`)?.value||'').trim().toUpperCase(); // v45D #2b
+  const _pdRaw=(document.getElementById(`wastage-proddate-${dept}`)?.value||'').trim(); // v45I #1: explicit production day
+  const prodDate=/^\d{4}-\d{2}-\d{2}$/.test(_pdRaw)?_pdRaw:_istToday();
   const salvage=parseFloat(document.getElementById(`wastage-salvage-${dept}`)?.value)||0;
   const remelt=parseFloat(document.getElementById(`wastage-remelt-${dept}`)?.value)||0;
   const note=(document.getElementById(`wastage-note-${dept}`)?.value||'').trim().slice(0,200);
@@ -4981,10 +5141,10 @@ function saveWastage(dept){
     return;
   }
   // v41ZB: the same remark is attached to both salvage and remelt rows from this save.
-  if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept,note,shift});
-  if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept,note,shift});
+  if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept,note,shift,prod_date:prodDate});
+  if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept,note,shift,prod_date:prodDate});
   saveLocal();
-  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt,note,shift});
+  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt,note,shift,prodDate});
   document.getElementById(`wastage-salvage-${dept}`).value='';
   document.getElementById(`wastage-remelt-${dept}`).value='';
   const _noteEl=document.getElementById(`wastage-note-${dept}`); if(_noteEl) _noteEl.value='';
@@ -5044,7 +5204,7 @@ function closeBatchStage(batchNo, dept){
     return;
   }
   if(!confirm('Close batch '+batchNo+' at '+dept+'?\nScan IN: '+inCount+' | Scan OUT: '+outCount+' | Wastage: '+wastageBoxes+'\nAll accounted')) return;
-  state.stageClosure.push({batchNumber:batchNo, dept, closedAt:now(), closedBy:currentDept});
+  state.stageClosure.push({batchNumber:batchNo, dept, closed:1, closedAt:now(), closedBy:currentDept});
   saveLocal();
   pushToServer('/api/tracking/stage-close',{batchNumber:batchNo,dept,closedBy:currentDept});
   renderPage(currentPage);
@@ -8511,7 +8671,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   // prior-month batches with residual gaps leaked in. Console audit (June 2026): month set = 222,
   // but the union added 563 extras, every sampled one carrying April/May metadata dates (many
   // retired) — i.e. genuinely not June. Reports B and E never leaked because they use only
-  // getTrkMonthBatches; this aligns Report F's handover view with them. v45G: Report F now uses
+  // getTrkMonthBatches; this aligns Report F's handover view with them. v45H: Report F now uses
   // getProdMonthBatches(true) — STRICT production-start-month scope (no carry-forward), driven by the
   // Production Month filter (default 'All' = every batch). Still drops deleted + retired.
   const batches = getProdMonthBatches(true)
@@ -9486,7 +9646,7 @@ function _v41_renderReportFInner(){
   let rows = '';
   const statusMap = {};
   // v41ZB: running totals for the footer row
-  let _fTotDprL=0, _fTotDprBx=0, _fTotAim=0, _fTotAimToday=0, _fTotPacked=0;
+  let _fTotDprL=0, _fTotDprBx=0, _fTotWaste=0, _fTotAim=0, _fTotAimToday=0, _fTotPacked=0;
 
   const _getAimIn  = bn => hasScanSummary() ? (_ss(bn,'aim').in      + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)      : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length;
   const _getPackOut= bn => hasScanSummary() ? (_ss(bn,'packing').in + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in').length;
@@ -9505,8 +9665,10 @@ function _v41_renderReportFInner(){
     // make it past AIM, so the expected AIM-scan target = DPR Boxes − AIM wastage (in boxes).
     // Shortfall/overage rounded UP to whole boxes (e.g. (40−3.8)−31 = 5.2 → 6 boxes under).
     const _fW = getTotalWastage(batchNo,'aim');
-    const _fWasteBoxes = lakhToBox(_fW.salvage + _fW.remelt, batch.size);
-    const _fTarget = dprBoxes - _fWasteBoxes;
+    // v45I #2: net DPR − Wastage in Lac, then ONE box conversion (was ceil(DPR)−ceil(waste), which
+    // double-rounded and flagged a spurious ±1 box on balanced batches). Match ⟺ DPR − Wastage − ScanIN = 0.
+    const _fTarget = lakhToBox(Math.max(0, dprQtyL - (_fW.salvage + _fW.remelt)), batch.size);
+    const _fWasteBoxes = Math.max(0, dprBoxes - _fTarget);
     const underBoxes = Math.max(0, Math.ceil((_fTarget - aimInTotal) - 1e-9));
     const overBoxes  = Math.max(0, Math.ceil((aimInTotal - _fTarget) - 1e-9));
     const hasException = dprBoxes===0 && aimInTotal>0 ? 'NO_DPR'
@@ -9534,8 +9696,10 @@ function _v41_renderReportFInner(){
     const packOutTotal = _getPackOut(batchNo);
     // v41ZB: same wastage-adjusted target as the classification loop above.
     const _fW = getTotalWastage(batchNo,'aim');
-    const _fWasteBoxes = lakhToBox(_fW.salvage + _fW.remelt, batch.size);
-    const _fTarget = dprBoxes - _fWasteBoxes;
+    // v45I #2: net DPR − Wastage in Lac, then ONE box conversion (was ceil(DPR)−ceil(waste), which
+    // double-rounded and flagged a spurious ±1 box on balanced batches). Match ⟺ DPR − Wastage − ScanIN = 0.
+    const _fTarget = lakhToBox(Math.max(0, dprQtyL - (_fW.salvage + _fW.remelt)), batch.size);
+    const _fWasteBoxes = Math.max(0, dprBoxes - _fTarget);
     const underBoxes = Math.max(0, Math.ceil((_fTarget - aimInTotal) - 1e-9));
     const overBoxes  = Math.max(0, Math.ceil((aimInTotal - _fTarget) - 1e-9));
     const hasException = statusMap[batchNo];
@@ -9553,16 +9717,17 @@ function _v41_renderReportFInner(){
       <td class="td-mono" style="white-space:nowrap">${batch.size}</td>
       <td class="td-mono">${dprQtyL>0?fmt(dprQtyL)+'L':'<span style="color:var(--red)">—</span>'}</td>
       <td class="td-mono">${dprBoxes>0?dprBoxes:'<span style="color:var(--red)">—</span>'}</td>
+      <td class="td-mono" style="color:var(--amber)">${_fWasteBoxes>0?_fWasteBoxes:'—'}</td>
       <td class="td-mono fw-bold">${aimInTotal}</td>
       <td class="td-mono">${aimInToday}</td>
       <td class="td-mono">${packOutTotal}</td>
       <td style="white-space:nowrap">${statusBadge}</td>
     </tr>`;
-    _fTotDprL+=dprQtyL; _fTotDprBx+=dprBoxes; _fTotAim+=aimInTotal; _fTotAimToday+=aimInToday; _fTotPacked+=packOutTotal;
+    _fTotDprL+=dprQtyL; _fTotDprBx+=dprBoxes; _fTotWaste+=_fWasteBoxes; _fTotAim+=aimInTotal; _fTotAimToday+=aimInToday; _fTotPacked+=packOutTotal;
   });
 
   if(!rows){
-    rows = '<tr><td colspan="9" class="text-center text-muted" style="padding:32px">No batch activity found</td></tr>';
+    rows = '<tr><td colspan="10" class="text-center text-muted" style="padding:32px">No batch activity found</td></tr>';
   }
 
   const summaryColor = exceptions===0 ? 'var(--green)' : '#dc2626';
@@ -9616,6 +9781,7 @@ function _v41_renderReportFInner(){
       <thead><tr>
         <th>Batch No.</th><th>Customer</th><th style="white-space:nowrap">Size</th>
         <th>DPR Qty (L)</th><th>DPR Boxes (Cumul.)</th>
+        <th style="white-space:nowrap">Wastage (Box)</th>
         <th>AIM Scans (Cumul.)</th><th>AIM Today</th><th>Packed (Cumul.)</th>
         <th>Status</th>
       </tr></thead>
@@ -9623,6 +9789,7 @@ function _v41_renderReportFInner(){
       ${filteredBatches.length?`<tfoot><tr style="background:var(--surface2);font-weight:800">
         <td colspan="3" class="text-right" style="padding-right:8px">TOTAL (${filteredBatches.length})</td>
         <td class="td-mono">${fmt(_fTotDprL)}L</td><td class="td-mono">${_fTotDprBx}</td>
+        <td class="td-mono" style="color:var(--amber)">${_fTotWaste}</td>
         <td class="td-mono">${_fTotAim}</td><td class="td-mono">${_fTotAimToday}</td><td class="td-mono">${_fTotPacked}</td>
         <td></td>
       </tr></tfoot>`:''}
@@ -9642,24 +9809,34 @@ _scrollIntoReportIfFirstView('F');
 }
 
 function exportReportF(){
-  const rows = [['Batch No.','Customer','Size','DPR Qty (L)','DPR Boxes','AIM Scans Today','AIM Total','Packed Today','Status']];
-  const todayStr = today();
-  const todayScans = state.scans.filter(s=>_istDayKey(s.ts)===todayStr);
-  const batchNos = [...new Set(todayScans.map(s=>s.batchNumber).concat(state.batches.filter(b=>b.actualQty>0).map(b=>b.batchNumber)))];
-  batchNos.forEach(batchNo=>{
-    const b = getBatch(batchNo); if(!b) return;
-    const dprL = b.actualQty||0, dprBox = dprL>0?lakhToBox(dprL,b.size):0;
-    const aimToday = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in'&&_istDayKey(s.ts)===todayStr).length;
-    const aimTotal = hasScanSummary() ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
-    const packOut  = hasScanSummary() ? (_ss(batchNo,'packing').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='in').length;
-    const status   = dprBox===0&&aimToday>0?'No DPR Entry':aimToday>dprBox?'Over-scan':aimToday<dprBox&&dprBox>0?'Under-scan':'Matched';
-    rows.push([batchNo,b.customer||'',b.size,dprL,dprBox,aimToday,aimTotal,packOut,status]);
+  // v45I #4: mirror the on-screen Report F table EXACTLY — serialize the currently-rendered table
+  // (respects the active view + filters, and stays in lock-step with the columns/values shown,
+  // including the Wastage (Box) column and the wastage-adjusted status). Numeric-looking cells are
+  // written as numbers so they stay summable in Excel.
+  if(typeof XLSX==='undefined'){ alert('Excel library not loaded.'); return; }
+  const host = document.getElementById('report-output');
+  const table = host ? host.querySelector('table') : null;
+  if(!table){ alert('Open a Report F view first, then export.'); return; }
+  const clean = el => (el && el.textContent || '').replace(/\s+/g,' ').trim();
+  const toCell = t => {
+    if(t==='' || t==='—') return '';
+    const n = t.replace(/,/g,'').replace(/\s*L$/,'').trim();
+    return (n!=='' && !isNaN(n)) ? Number(n) : t;
+  };
+  const aoa = [];
+  const heads = [...table.querySelectorAll('thead th')].map(clean);
+  if(heads.length) aoa.push(heads);
+  table.querySelectorAll('tbody tr').forEach(tr=>{
+    const row = [...tr.children].map(td=>toCell(clean(td)));
+    if(row.some(c=>c!=='' )) aoa.push(row);
   });
-  const csv = rows.map(r=>r.join(',')).join('\n');
-  const a = document.createElement('a');
-  a.href = 'data:text/csv,' + encodeURIComponent(csv);
-  a.download = `report_f_${todayStr}.csv`;
-  a.click();
+  table.querySelectorAll('tfoot tr').forEach(tr=>{
+    aoa.push([...tr.children].map(td=>toCell(clean(td))));
+  });
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Report F');
+  XLSX.writeFile(wb, `Sunloc_ReportF_${today()}.xlsx`);
 }
 
 
@@ -10716,16 +10893,12 @@ function _v41_renderReportEInnerBody(){
 </div>
 <script>
 function applyFilter(date){
-  // Reload the parent app with the date filter and re-open
-  window.opener && (window.opener._rptEDate=date);
-  // Update URL hash for reference
+  // v45H: this Full-View tab is a detached blob (window.opener is usually null), so notify the
+  // app tab over BroadcastChannel (same-origin, opener-independent). The app regenerates the
+  // report for the chosen date and reloads THIS tab via its stored handle. Fall back to opener.
   history.replaceState(null,'','#date='+encodeURIComponent(date));
-  // Notify parent to re-open with new filter
-  if(window.opener && window.opener.renderReportE){
-    window.opener._rptEDate=date;
-    window.opener.renderReportE();
-    window.close();
-  }
+  try{ var _bc=new BroadcastChannel('sunloc_rptE'); _bc.postMessage({type:'rptE_date',date:date}); _bc.close(); }
+  catch(e){ if(window.opener && window.opener._rptEReloadTab){ window.opener._rptEReloadTab(date); } }
 }
 function applySearch(q){
   const term=(q||'').toLowerCase().trim();
@@ -11010,7 +11183,7 @@ async function saveDispatchRecordEdit(id) {
   const invoice = document.getElementById('edit-disp-invoice')?.value.trim();
   const customer = document.getElementById('edit-disp-customer')?.value.trim();
 
-  if (date) rec.ts = date + 'T06:30:00.000Z'; // v45G: noon IST so the edited date round-trips to the same IST production day
+  if (date) rec.ts = date + 'T06:30:00.000Z'; // v45H: noon IST so the edited date round-trips to the same IST production day
   rec.vehicleNo = vehicle;
   rec.invoiceNo = invoice;
   rec.customer = customer;
@@ -12601,9 +12774,33 @@ function openReportETab(){
   if(!html){ renderReportE(); setTimeout(openReportETab,300); return; }
   const blob = new Blob([html], {type:'text/html'});
   const url = URL.createObjectURL(blob);
-  const tab = window.open(url,'_blank');
-  if(!tab) alert('Please allow popups for this site to open Report E in a new tab.');
+  window._rptETab = window.open(url,'_blank');
+  if(!window._rptETab) alert('Please allow popups for this site to open Report E in a new tab.');
+  _rptE_ensureBCListener();
   // Revoke after a moment
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
+}
+// v45H: the detached Full-View tab posts date changes over BroadcastChannel (its window.opener is
+// null on a blob: URL). Listen here, regenerate the report for the requested date, and reload that
+// same tab via the stored handle (opener-independent). Also reachable via the window.opener fallback.
+function _rptE_ensureBCListener(){
+  try{
+    if(window._rptEBC) return;
+    window._rptEBC = new BroadcastChannel('sunloc_rptE');
+    window._rptEBC.onmessage = (e)=>{ if(e && e.data && e.data.type==='rptE_date') _rptEReloadTab(e.data.date||''); };
+  }catch(e){}
+}
+async function _rptEReloadTab(date){
+  window._rptEDate = date || '';
+  if(date && !(date in _rptE_asofCache)) await _rptE_fetchAsof(date);
+  _v41_renderReportEInner();                 // regenerates window._reportEHtml (+ the inline view)
+  const html = window._reportEHtml;
+  if(!html) return;
+  const url = URL.createObjectURL(new Blob([html], {type:'text/html'}));
+  try{
+    if(window._rptETab && !window._rptETab.closed){ window._rptETab.location.href = url; }
+    else { window._rptETab = window.open(url,'_blank'); }
+  }catch(e){ window._rptETab = window.open(url,'_blank'); }
   setTimeout(()=>URL.revokeObjectURL(url), 60000);
 }
 

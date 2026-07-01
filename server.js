@@ -1178,6 +1178,29 @@ const MIGRATIONS = [
     name: 'wastage_shift',
     sql: `ALTER TABLE tracking_wastage ADD COLUMN shift TEXT;`
   },
+  {
+    // v45I #1: explicit production-day scoping for AIM wastage, mirroring DPR's production_actuals.date.
+    // Wastage was attributed to the production day DERIVED from the insert timestamp (ts) via the 6 AM
+    // boundary, so a C-shift entry made after 6 AM the next morning landed on the wrong day. prod_date
+    // stores the operator-chosen production day (YYYY-MM-DD); readers prefer it, falling back to the
+    // ts-derived day only for legacy rows that predate this column.
+    version: 47,
+    name: 'wastage_prod_date',
+    sql: `ALTER TABLE tracking_wastage ADD COLUMN prod_date TEXT;`
+  },
+  {
+    // v45I #1 backfill: one-time month-rollover correction. At deploy (morning of 1 Jul) the 1 Jul
+    // B and C shifts had not started, so any legacy wastage row (no explicit prod_date) tagged to the
+    // 1 Jul production day with shift B or C is necessarily a LATE-entered 30 Jun B/C entry whose ts
+    // crossed the 6 AM boundary — reallocate it to 30 Jun. Shift A (which had started) is untouched.
+    // ts window = 1 Jul production day = [1 Jul 06:00 IST, 2 Jul 06:00 IST) = [00:30Z, next-day 00:30Z).
+    // Idempotent (prod_date IS NULL guard); runs once via schema_migrations, on Postgres and SQLite.
+    version: 48,
+    name: 'wastage_reallocate_jul1_bc_to_jun30',
+    sql: `UPDATE tracking_wastage SET prod_date = '2026-06-30'
+          WHERE prod_date IS NULL AND shift IN ('B','C')
+            AND ts >= '2026-07-01T00:30:00' AND ts < '2026-07-02T00:30:00';`
+  },
 ];
 
 function runMigrations() {
@@ -1354,6 +1377,7 @@ async function ensurePostgresTables() {
       )
     `);
     try { await pgPool.query(`ALTER TABLE tracking_wastage ADD COLUMN IF NOT EXISTS shift TEXT`); } catch(e){} // v45D #2b: shift A/B/C tag
+    try { await pgPool.query(`ALTER TABLE tracking_wastage ADD COLUMN IF NOT EXISTS prod_date TEXT`); } catch(e){} // v45I #1: explicit production-day
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS tracking_stage_closure (
         id TEXT PRIMARY KEY,
@@ -1749,6 +1773,7 @@ async function ensurePostgresTables() {
       )
     `);
     try { await pgPool.query(`ALTER TABLE tracking_wastage ADD COLUMN IF NOT EXISTS shift TEXT`); } catch(e){} // v45D #2b: shift A/B/C tag
+    try { await pgPool.query(`ALTER TABLE tracking_wastage ADD COLUMN IF NOT EXISTS prod_date TEXT`); } catch(e){} // v45I #1: explicit production-day
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS tracking_stage_closure (
         id TEXT PRIMARY KEY,
@@ -2689,6 +2714,7 @@ let _orderBatch = {};
 // retroactively repairs batches whose cumulative DPR gross collapsed after close (NULL-batch rows
 // were dropped once the order left active planning state). Cheap no-op once no NULL rows remain.
 let _poBatchBackfillDone = false;
+let _v45iInvBatchBackfillDone = false; // v45I #6: one-shot repopulate of blank invoice batches from stored payload
 async function backfillProductionActualsBatch() {
   if (pgPool) {
     await pgPool.query(`
@@ -3063,11 +3089,67 @@ async function _doRefreshSapIndents() {
 // On successful reconcile:
 //   1. invoice_requests row → status='reconciled', reconciled_at, reconciled_with_invoice_id
 //   2. sales_order_consumption ledger updated (UPSERT, increment dispatched qty + value)
+// v45I #6: robust batch extractor for pulled SAP invoices. The displayed batch was previously
+// taken ONLY from the header UDF U_SunlocBatch, which is empty on SAP-direct invoices — so their
+// batch rendered blank even though SAP carries it per LINE. This reads every explicit SAP batch
+// field (no inference from context): header UDF, the standard BatchNumbers[] allocation array, and
+// line-level batch UDFs (U_Batch seen in the SAP export, plus any U_*batch* UDF). Distinct values
+// are comma-joined for multi-batch invoices (same render as Sunloc multi-batch, e.g. "26X076, 26U122").
+// Returns { batch, source } where source names the field that matched (logged for IT verification).
+function _extractSapInvoiceBatch(inv, headerUdf) {
+  const set = [];
+  let matchedFrom = '';
+  const push = (v, from) => {
+    const s = (v == null ? '' : String(v)).trim();
+    if (s && !set.includes(s)) { set.push(s); if (!matchedFrom) matchedFrom = from; }
+  };
+  push(headerUdf != null ? headerUdf : (inv && inv.U_SunlocBatch), 'U_SunlocBatch(header)');
+  for (const l of ((inv && inv.DocumentLines) || [])) {
+    if (!l || typeof l !== 'object') continue;
+    if (Array.isArray(l.BatchNumbers)) for (const b of l.BatchNumbers) push(b && (b.BatchNumber || b.Batch), 'DocumentLines.BatchNumbers');
+    push(l.U_Batch, 'line.U_Batch');
+    push(l.U_SunlocBatch, 'line.U_SunlocBatch');
+    push(l.U_BatchNo, 'line.U_BatchNo');
+    push(l.U_BatchNum, 'line.U_BatchNum');
+    for (const k of Object.keys(l)) { if (/^U_.*batch/i.test(k)) push(l[k], 'line.' + k); }
+  }
+  return { batch: set.join(', '), source: matchedFrom };
+}
+
+// v45I #6: repopulate batch_number for already-pulled invoices that rendered blank because only the
+// header UDF was read at ingest time. Reads each blank row's STORED payload_json (no new SAP call)
+// and applies the same explicit-field extractor. One-shot (retried until it succeeds), then skipped.
+async function backfillInvoiceBatchFromPayload() {
+  let rows;
+  if (pgPool) {
+    rows = (await pgPool.query(`SELECT id, payload_json FROM invoices_received WHERE (batch_number IS NULL OR batch_number = '') AND payload_json IS NOT NULL`)).rows;
+  } else {
+    rows = db.prepare(`SELECT id, payload_json FROM invoices_received WHERE (batch_number IS NULL OR batch_number = '') AND payload_json IS NOT NULL`).all();
+  }
+  let fixed = 0;
+  for (const r of (rows || [])) {
+    let inv;
+    try { inv = JSON.parse(r.payload_json); } catch { continue; }
+    const b = _extractSapInvoiceBatch(inv, inv && inv.U_SunlocBatch).batch;
+    if (!b) continue;
+    if (pgPool) await pgPool.query(`UPDATE invoices_received SET batch_number=$1 WHERE id=$2 AND (batch_number IS NULL OR batch_number='')`, [b, r.id]);
+    else db.prepare(`UPDATE invoices_received SET batch_number=? WHERE id=? AND (batch_number IS NULL OR batch_number='')`).run(b, r.id);
+    fixed++;
+  }
+  if (fixed > 0) console.log(`[SAP v45I] invoice-batch backfill repopulated ${fixed} blank invoice(s) from stored payload`);
+}
+
 async function _doRefreshSapInvoices() {
+  // v45I #6: one-shot repopulate of blank batches from stored payloads (fixes invoices pulled before
+  // the line-level extractor existed). Guarded so it runs at most once per process, on the poller.
+  if (!_v45iInvBatchBackfillDone) {
+    try { await backfillInvoiceBatchFromPayload(); _v45iInvBatchBackfillDone = true; }
+    catch (e) { console.warn('[SAP v45I] invoice-batch backfill failed (will retry next poll):', e.message); }
+  }
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45G' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45M' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3111,6 +3193,14 @@ async function _doRefreshSapInvoices() {
         } catch (e) { console.warn('[SAP] direct-invoice line enrich failed for DocEntry', inv.DocEntry, '-', e.message); }
       }
     }
+    // v45I #6: derive the batch to STORE from every explicit SAP field (header UDF + line-level
+    // U_Batch / BatchNumbers). Header-only U_SunlocBatch left direct-SAP invoices blank; this fills
+    // them from the line batch SAP actually carries. Keep batchUdf (header) for the Sunloc-request
+    // match above unchanged.
+    const _batchExtract = _extractSapInvoiceBatch(inv, batchUdf);
+    const batchForStore = _batchExtract.batch;
+    if (batchForStore && !batchUdf) console.log(`[SAP v45I] direct invoice DocEntry ${inv.DocEntry} batch '${batchForStore}' from ${_batchExtract.source}`);
+
     // v41 fix: total_boxes is an INTEGER column. SAP DocumentLines.Quantity can be decimal
     // (e.g. 31.35 Lakhs), which PostgreSQL rejects for an integer column ("invalid input syntax
     // for type integer: 31.35"). Round to nearest whole unit for the box-count column.
@@ -3212,7 +3302,7 @@ async function _doRefreshSapInvoices() {
             taxable_amount=$14, igst_amount=$15, total_amount=$16, irn=$17,
             payload_json=$20, total_qty_lakhs=CASE WHEN $21>0 THEN $21 ELSE invoices_received.total_qty_lakhs END, fetched_at=NOW()::TEXT
         `, [recId, inv.DocEntry, String(inv.DocNum || ''), String(inv.DocNum || ''),
-            inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchUdf,
+            inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchForStore,
             pcCode, size, colour,
             totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload, totalQtyLakhs]);
       } else {
@@ -3235,7 +3325,7 @@ async function _doRefreshSapInvoices() {
             total_amount=excluded.total_amount, irn=excluded.irn,
             payload_json=excluded.payload_json, total_qty_lakhs=CASE WHEN excluded.total_qty_lakhs>0 THEN excluded.total_qty_lakhs ELSE invoices_received.total_qty_lakhs END, fetched_at=datetime('now')
         `).run(recId, inv.DocEntry, String(inv.DocNum || ''), String(inv.DocNum || ''),
-            inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchUdf,
+            inv.DocDate || null, inv.CardName || '', inv.CardCode || '', poUdf, batchForStore,
             pcCode, size, colour,
             totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload, totalQtyLakhs);
       }
@@ -3548,7 +3638,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45G' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45M' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -7003,9 +7093,45 @@ app.get('/api/orders/active', async (req, res) => {
     // can mark non-running orders visually + warn before entering data against them.
     // Triggered by ?includeAll=1 query param OR X-User-Role: admin header.
     const _isAdmin = req.query.includeAll === '1' || req.headers['x-user-role'] === 'admin';
+
+    // v45I #3: reconcile the blob orders against the authoritative production_orders DB before
+    // filtering. The planning blob's status can lag (a saveState after a successful upsertOrderToDB
+    // may not have landed), so an order the planner marked 'running' can still read stale here —
+    // hiding it from the non-admin DPR feed's status filter even though Planning/Tracking (which read
+    // the DB) show it In Production. This is the month-rollover "batch not shown in DPR" case. Same
+    // reconciliation as /api/planning/overlimit-machines: DB status wins when its row is newer than
+    // the blob save, and any non-deleted DB order the blob is missing entirely is folded in from
+    // data_json. Falls back to the raw blob on any error — never worse than before.
+    let reconciledOrders = state.orders || [];
+    try {
+      // v45L #3: production_orders is the AUTHORITATIVE status store (written by upsertOrderToDB on
+      // every change); the planning blob can get stuck with a stale status or miss an order entirely.
+      // Confirmed live on 1 Jul: 26ZG132 sat 'pending' in the blob while the DB had 'running', and
+      // 26ZF104 was absent from the blob though the DB had it 'running' — the blob even held
+      // inconsistent status for orders the DB updated in the same write. So take status straight from
+      // the DB for any order it knows, and fold in non-deleted DB orders the blob is missing (rebuilt
+      // from data_json). Deleted is sticky. Falls back to the raw blob on any error — never worse.
+      let dbRows = [];
+      if (pgPool) dbRows = (await pgPool.query('SELECT id, data_json, status, deleted, updated_at FROM production_orders')).rows;
+      else dbRows = db.prepare('SELECT id, data_json, status, deleted, updated_at FROM production_orders').all();
+      const byId = {};
+      for (const o of reconciledOrders) if (o && o.id) byId[o.id] = { ...o };
+      for (const row of dbRows) {
+        const existing = byId[row.id];
+        if (existing) {
+          if (row.deleted) { existing.deleted = true; continue; }
+          if (row.status) existing.status = row.status; // DB wins — authoritative status store
+        } else if (!row.deleted) {
+          let obj = null; try { obj = JSON.parse(row.data_json); } catch {}
+          if (obj && obj.id) { obj.status = row.status || obj.status; byId[obj.id] = obj; }
+        }
+      }
+      reconciledOrders = Object.values(byId);
+    } catch (e) { console.warn('[v45L #3] order status reconcile failed, using blob as-is:', e.message); reconciledOrders = state.orders || []; }
+
     const baseSet = _isAdmin
-      ? (state.orders || []).filter(o => !o.deleted)
-      : (state.orders || []).filter(o => o.status === 'running' && !o.deleted);
+      ? reconciledOrders.filter(o => !o.deleted)
+      : reconciledOrders.filter(o => o.status === 'running' && !o.deleted);
 
     // Helper: extract YYYY-MM-DD from any startDate format (Date object, ISO string, etc.)
     const getDateStr = (d) => {
@@ -10503,7 +10629,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45G',
+      build: 'v45M',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10512,7 +10638,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45G', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45M', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11836,7 +11962,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45G',
+      build: 'v45M',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11845,7 +11971,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45G', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45M', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -13711,7 +13837,7 @@ app.get('/api/tracking/dispatch-actuals', async (req, res) => {
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
 });
 
-// v45G — POST /api/tracking/manual-dispatch
+// v45H — POST /api/tracking/manual-dispatch
 // Planning marks an order dispatched when its invoice never flowed through the software (the suite
 // was built in stages, so some invoices don't reach it). This writes ONE tracking_dispatch_record
 // (keyed MANUAL-<planId> for idempotency — re-marking replaces, never duplicates) so Report G's
@@ -14352,21 +14478,25 @@ app.post('/api/tracking/reconcile-wip', async (req, res) => {
 
 app.post('/api/tracking/wastage', async (req, res) => {
   try {
-    const { batchNumber, dept, salvage, remelt, note, shift } = req.body;
+    const { batchNumber, dept, salvage, remelt, note, shift, prodDate } = req.body;
     if (!batchNumber || !dept) return res.status(400).json({ ok: false, error: 'batchNumber and dept required' });
     const ts = new Date().toISOString();
     const noteVal = (typeof note === 'string' && note.trim()) ? note.trim().slice(0,200) : null;
     const shiftVal = (['A','B','C'].includes(String(shift||'').trim().toUpperCase())) ? String(shift).trim().toUpperCase() : null; // v45D #2b
+    // v45I #1: explicit production day (mirrors DPR). Prefer the operator-chosen prodDate; fall back to
+    // the 6 AM-IST boundary day derived from ts (matches client _istDayKey) only if none was sent.
+    const _prodDayFromTs = (t) => { const d = new Date(t); if (isNaN(d.getTime())) return String(t||'').slice(0,10); const s = new Date(d.getTime() - 30*60*1000); return `${s.getUTCFullYear()}-${String(s.getUTCMonth()+1).padStart(2,'0')}-${String(s.getUTCDate()).padStart(2,'0')}`; };
+    const prodDateVal = (typeof prodDate === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(prodDate)) ? prodDate : _prodDayFromTs(ts);
     const genId = () => Math.random().toString(36).slice(2, 10) + Date.now().toString(36);
     if (pgPool) {
-      if (parseFloat(salvage) > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal,shiftVal]);
-      if (parseFloat(remelt)  > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal,shiftVal]);
+      if (parseFloat(salvage) > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift,prod_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal,shiftVal,prodDateVal]);
+      if (parseFloat(remelt)  > 0) await pgPool.query(`INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift,prod_date) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT(id) DO NOTHING`, [genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal,shiftVal,prodDateVal]);
     } else {
-      const insert = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift) VALUES (?,?,?,?,?,?,?,?)`);
-      if (parseFloat(salvage) > 0) insert.run(genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal,shiftVal);
-      if (parseFloat(remelt)  > 0) insert.run(genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal,shiftVal);
+      const insert = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,note,shift,prod_date) VALUES (?,?,?,?,?,?,?,?,?)`);
+      if (parseFloat(salvage) > 0) insert.run(genId(),batchNumber,dept,'salvage',parseFloat(salvage),ts,noteVal,shiftVal,prodDateVal);
+      if (parseFloat(remelt)  > 0) insert.run(genId(),batchNumber,dept,'remelt',parseFloat(remelt),ts,noteVal,shiftVal,prodDateVal);
     }
-    res.json({ ok: true });
+    res.json({ ok: true, prodDate: prodDateVal });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
