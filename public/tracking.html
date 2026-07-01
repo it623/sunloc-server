@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45E</title>
+<title>Sunloc Tracking Suite v1.0 · build v45G</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45E</p>
+      <p>Tracking Suite v1.0 · build v45G</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45E</p>
+      <p>Tracking Suite v1.0 · build v45G</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -835,8 +835,19 @@ let state = {
 // ═══════════════════════════════════════════════════════
 
 function uid(){ return Date.now().toString(36)+Math.random().toString(36).slice(2,7) }
-function today(){ return new Date().toISOString().slice(0,10) }
+function today(){ return _istToday() } // v45G: IST production day (matches DPR + shift grouping)
 function now(){ return new Date().toISOString() }
+// v45F: IST production-day key — IST (UTC+5:30) calendar date with a 6 AM shift-day boundary, so a
+// C-shift entry logged after midnight attributes to the day the shift STARTED. production_day =
+// date(UTC ts − 30 min): IST(+5:30) shifted back by the 6:00 boundary nets to −0:30 from UTC. Read via
+// getUTC* on the shifted instant → correct regardless of the device's local timezone setting.
+function _istDayKey(ts){
+  const d=new Date(ts);
+  if(isNaN(d.getTime())) return String(ts||'').slice(0,10);
+  const s=new Date(d.getTime()-30*60*1000);
+  return `${s.getUTCFullYear()}-${String(s.getUTCMonth()+1).padStart(2,'0')}-${String(s.getUTCDate()).padStart(2,'0')}`;
+}
+function _istToday(){ return _istDayKey(new Date().toISOString()); } // current IST production day
 
 // ── Tracking Month filter ─────────────────────────────────────
 let _trkSelectedMonth = today().slice(0,7);
@@ -937,6 +948,50 @@ function onTrkMonthChange(ym) {
 }
 
 // Filter batches by selected month (production order active in that month)
+// v45G: Production-Month filter for Reports B/C/F — INDEPENDENT of the top month picker (which keeps
+// driving A/D/G + A-Grade attribution). Filters batches by PRODUCTION START month
+// (b.startDate||b.orderStartDate — the same "belongs to" rule as the planning quarter scope). Default
+// 'ALL' shows every batch. Batch-SELECTION only: per-batch WIP is unchanged, no carry-forward.
+window._trkProdMonthFilter = window._trkProdMonthFilter || 'ALL';
+function _trkProdStartMonth(b){
+  const start = b.startDate || b.orderStartDate;
+  if (!start) return '';
+  const d = new Date(start);
+  if (isNaN(d.getTime())) return '';
+  return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
+function getProdMonthBatches(excludeRetired){
+  const pm = window._trkProdMonthFilter || 'ALL';
+  return state.batches.filter(b => {
+    if (b.deleted) return false;
+    if (excludeRetired && _isRetired(b.batchNumber)) return false;
+    if (pm === 'ALL') return true;
+    return _trkProdStartMonth(b) === pm;   // strict: produced in the selected month, no carry-forward
+  });
+}
+function _trkProdMonthOptions(){
+  const set = new Set();
+  (state.batches||[]).forEach(b => { if (b.deleted) return; const m = _trkProdStartMonth(b); if (m) set.add(m); });
+  return [...set].sort().reverse();   // newest first
+}
+function _trkProdMonthDropdownHtml(){
+  const cur = window._trkProdMonthFilter || 'ALL';
+  const opts = `<option value="ALL"${cur==='ALL'?' selected':''}>All months</option>`
+    + _trkProdMonthOptions().map(m => {
+        const [y,mo] = m.split('-').map(Number);
+        const label = new Date(y, mo-1, 1).toLocaleString('default',{month:'short',year:'numeric'});
+        return `<option value="${m}"${cur===m?' selected':''}>${label}</option>`;
+      }).join('');
+  return `<label style="font-size:11px;font-weight:700;color:var(--text2)">Production Month:</label>`
+    + `<select onchange="setTrkProdMonthFilter(this.value)" style="font-size:12px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface);color:var(--text);font-weight:600">${opts}</select>`;
+}
+function _trkProdMonthBar(){
+  return `<div style="display:flex;align-items:center;gap:8px;margin-bottom:10px;padding:6px 10px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;flex-wrap:wrap">${_trkProdMonthDropdownHtml()}<span style="font-size:11px;color:var(--text3)">Shows only batches whose production started in the selected month · "All" shows every batch</span></div>`;
+}
+function setTrkProdMonthFilter(v){
+  window._trkProdMonthFilter = v;
+  try { if (typeof window._activeReport === 'function') window._activeReport(); } catch(e){}
+}
 function getTrkMonthBatches(excludeRetired) {
   return state.batches.filter(b => {
     if (b.deleted) return false;
@@ -960,8 +1015,8 @@ function getTrkMonthBatches(excludeRetired) {
   });
 }
 function fmt(n,d=2){ return n==null?'-':(+n).toFixed(d) }
-function fmtDate(d){ if(!d) return '-'; return new Date(d).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric'}) }
-function fmtTime(d){ if(!d) return '-'; return new Date(d).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'}) }
+function fmtDate(d){ if(!d) return '-'; return new Date(d).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric',timeZone:'Asia/Kolkata'}) }
+function fmtTime(d){ if(!d) return '-'; return new Date(d).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Kolkata'}) }
 function fmtDateTime(d){ if(!d) return '-'; return fmtDate(d)+' '+fmtTime(d) }
 function hoursAgo(ts){ return (Date.now()-new Date(ts).getTime())/3600000 }
 function boxToLakh(boxes, size){ const ps=PACK_SIZES[String(size)]; return ps ? boxes*ps : boxes; }
@@ -2289,10 +2344,9 @@ function generateQRData(label){
 // are 1..n, excess labels are negative, orange labels live on is_orange=1 — so 0 is free and
 // round-trips through every existing insert/select with NO schema change (no migration needed).
 //
-// Cutoff note: startDate is stored as a UTC date (today() = new Date().toISOString().slice(0,10)).
-// The intended go-live is 00:00 IST 26-Jun-2026. A batch dated '2026-06-26' (UTC) definitely
-// started after that IST moment; the only ambiguous sliver is the 00:00–05:29 IST cutover night,
-// which date-only UTC storage cannot resolve. IT can adjust the one constant below if needed.
+// Cutoff note: startDate is stamped via today(), which from v45G returns the IST production day
+// (6 AM IST boundary, UTC ts stored underneath). The go-live constant below is a plain date compared
+// against stored startDate strings; existing batches keep their original stamps. IT can adjust it.
 const SPECIMEN_FROM = '2026-06-26';
 function _isSpecimenLabel(l){
   // v44ZO: robust against the falsy-0 sentinel. A specimen is a non-orange, non-excess label whose
@@ -2363,7 +2417,7 @@ function canGenerateLabels(batchNo, requestedBoxes){
     const dailyTarget = machine?.dailyTarget || machine?.yTarget || 27;
     const dailyBoxTarget = lakhToBox(dailyTarget, batch.size);
     const todayDate = today();
-    const todayGenerated = state.labels.filter(l=>l.batchNumber===batchNo&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l)&&l.generated?.slice(0,10)===todayDate).length;
+    const todayGenerated = state.labels.filter(l=>l.batchNumber===batchNo&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l)&&_istDayKey(l.generated)===todayDate).length;
     const todayRemaining = dailyBoxTarget - todayGenerated;
     if(requestedBoxes > todayRemaining) return {ok:false, msg:`Daily limit: ${dailyBoxTarget} boxes (${fmt(dailyTarget)}L target). ${todayRemaining} more allowed today.`};
   }
@@ -4552,7 +4606,7 @@ function exportScansCsv(dept){
   try{
     const blob=new Blob([lines.join('\n')],{type:'text/csv'});
     const a=document.createElement('a'); a.href=URL.createObjectURL(blob);
-    a.download=`sunloc_${dept}_scans_${new Date().toISOString().slice(0,10)}.csv`;
+    a.download=`sunloc_${dept}_scans_${today()}.csv`;
     document.body.appendChild(a); a.click(); setTimeout(()=>{URL.revokeObjectURL(a.href);document.body.removeChild(a);},100);
   }catch(e){ try{toast('Export failed: '+(e?.message||e),'#b91c1c');}catch(_e){} }
 }
@@ -4771,7 +4825,7 @@ const _wastageSaving = {};
 // date use the Report-B comparator. This block is READ-ONLY — the Edit/Delete table below remains
 // the sole place entries are corrected (2b: summary sits above it, correction flow untouched).
 let _v45e_F = { date:'', batch:'', type:'' }; // v45E.2: wastage-summary filters (date / batch / type)
-function _v45e_dateKey(ts){ const dt=new Date(ts); return isNaN(dt.getTime())?String(ts||'').slice(0,10):`${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`; }
+function _v45e_dateKey(ts){ return _istDayKey(ts); } // v45F: group by IST production day (6 AM boundary), TZ-independent
 // v45E.3: shared filter — date + type + (exact) batch. ignoreBatch=true powers the cascading batch list.
 function _v45e_filteredWl(dept, opts){
   opts = opts || {};
@@ -4794,7 +4848,7 @@ function _v45e_wastageRows(dept){
   for(const w of wl){
     const dt = new Date(w.ts);
     const dateKey = _v45e_dateKey(w.ts);
-    dateDispOf[dateKey] = isNaN(dt.getTime()) ? dateKey : fmtDate(w.ts);
+    dateDispOf[dateKey] = fmtDate(dateKey); // v45F: display the IST production-day key (consistent with grouping), not the raw calendar date
     const batch = w.batchNumber||'', type = w.type||'';
     const sh = ['A','B','C'].includes(String(w.shift||'').toUpperCase()) ? String(w.shift).toUpperCase() : 'U';
     const k = dateKey+'||'+batch+'||'+type;
@@ -7789,7 +7843,7 @@ function _v39_exportInvoicesCsv() {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url;
-  a.download = `sunloc_invoices_${new Date().toISOString().slice(0,10)}.csv`;
+  a.download = `sunloc_invoices_${today()}.csv`;
   document.body.appendChild(a); a.click(); document.body.removeChild(a);
   URL.revokeObjectURL(url);
   toast(`✅ Exported ${invoices.length} invoices`, 'var(--green)');
@@ -8457,10 +8511,10 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   // prior-month batches with residual gaps leaked in. Console audit (June 2026): month set = 222,
   // but the union added 563 extras, every sampled one carrying April/May metadata dates (many
   // retired) — i.e. genuinely not June. Reports B and E never leaked because they use only
-  // getTrkMonthBatches; this aligns Report F's handover view with them. getTrkMonthBatches(true)
-  // already drops deleted + retired and honours carry-forward (unclosed / no-date batches still
-  // surface), so open June gaps are preserved while prior-month batches drop out.
-  const batches = getTrkMonthBatches(true)
+  // getTrkMonthBatches; this aligns Report F's handover view with them. v45G: Report F now uses
+  // getProdMonthBatches(true) — STRICT production-start-month scope (no carry-forward), driven by the
+  // Production Month filter (default 'All' = every batch). Still drops deleted + retired.
+  const batches = getProdMonthBatches(true)
     .filter(b => !b.deleted && b.batchNumber)
     .sort((a, b) => (a.batchNumber || '').localeCompare(b.batchNumber || ''));
   const getTransitions = (batch) => batch.isPrinted
@@ -9378,7 +9432,7 @@ async function _v41_clearReconcile(batchNo){
 function _v41_reportFToggleHtml(){
   const v = window._v41_reportFView || 'recon';
   const btn = (key,label) => `<button onclick="window._v41_reportFView='${key}';renderReportF()" style="font-size:11px;padding:5px 12px;border-radius:5px;cursor:pointer;border:1px solid ${v===key?'#dc2626':'var(--border)'};background:${v===key?'rgba(220,38,38,0.15)':'transparent'};color:${v===key?'#dc2626':'var(--text3)'};font-weight:${v===key?'700':'400'}">${label}</button>`;
-  return `<div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
+  return _trkProdMonthBar() + `<div style="display:flex;gap:8px;align-items:center;margin-bottom:14px;flex-wrap:wrap">
     <span style="font-size:11px;color:var(--text3);font-weight:700;letter-spacing:.5px">VIEW:</span>
     ${btn('recon','🚨 Prod vs Scan Reconciliation')}
     ${btn('handover','🔗 Dept Handover Gaps')}
@@ -9397,7 +9451,7 @@ function _v41_renderReportFInner(){
   const filterMachine = window._rptFMachine || '';
   const filterBatch   = window._rptFBatch   || '';
 
-  const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
+  const monthBatchNos = new Set(getProdMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
 
   // All month batches with any DPR production entered — use scanSummary for batch discovery
   let allRelevantBatches = [...new Set([
@@ -9417,7 +9471,7 @@ function _v41_renderReportFInner(){
   if(filterBatch) allRelevantBatches = allRelevantBatches.filter(bn=>bn===filterBatch);
 
   // Build dropdown options (month-scoped)
-  const monthBatchesArr = getTrkMonthBatches(true);
+  const monthBatchesArr = getProdMonthBatches(true);
   const allMachinesF = [...new Set(monthBatchesArr.map(b=>b.machineId).filter(Boolean))].sort();
   let allBatchesF  = [...new Set([
     ...monthBatchesArr.filter(b=>(b.actualQty||b.actualProd||0)>0).map(b=>b.batchNumber),
@@ -9437,7 +9491,7 @@ function _v41_renderReportFInner(){
   const _getAimIn  = bn => hasScanSummary() ? (_ss(bn,'aim').in      + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)      : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length;
   const _getPackOut= bn => hasScanSummary() ? (_ss(bn,'packing').in + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in').length;
   // aimInToday still from state.scans (timestamp needed, not just count)
-  const _getAimInToday = bn => state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in'&&s.ts?.slice(0,10)===todayStr).length;
+  const _getAimInToday = bn => state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in'&&_istDayKey(s.ts)===todayStr).length;
 
   allRelevantBatches.forEach(batchNo => {
     const batch = getBatch(batchNo);
@@ -9590,12 +9644,12 @@ _scrollIntoReportIfFirstView('F');
 function exportReportF(){
   const rows = [['Batch No.','Customer','Size','DPR Qty (L)','DPR Boxes','AIM Scans Today','AIM Total','Packed Today','Status']];
   const todayStr = today();
-  const todayScans = state.scans.filter(s=>s.ts?.slice(0,10)===todayStr);
+  const todayScans = state.scans.filter(s=>_istDayKey(s.ts)===todayStr);
   const batchNos = [...new Set(todayScans.map(s=>s.batchNumber).concat(state.batches.filter(b=>b.actualQty>0).map(b=>b.batchNumber)))];
   batchNos.forEach(batchNo=>{
     const b = getBatch(batchNo); if(!b) return;
     const dprL = b.actualQty||0, dprBox = dprL>0?lakhToBox(dprL,b.size):0;
-    const aimToday = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in'&&s.ts?.slice(0,10)===todayStr).length;
+    const aimToday = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in'&&_istDayKey(s.ts)===todayStr).length;
     const aimTotal = hasScanSummary() ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
     const packOut  = hasScanSummary() ? (_ss(batchNo,'packing').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='packing'&&s.type==='in').length;
     const status   = dprBox===0&&aimToday>0?'No DPR Entry':aimToday>dprBox?'Over-scan':aimToday<dprBox&&dprBox>0?'Under-scan':'Matched';
@@ -9633,7 +9687,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   const filterPC     = window._rptBPC || '';        // v44Z: PC code search filter
 
   // Filter to month batches only
-  const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
+  const monthBatchNos = new Set(getProdMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
   // Build batch list from scanSummary (full history) when available
   let allBatchNos;
   if (hasScanSummary()) {
@@ -9851,6 +9905,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   html+=`<button class="btn btn-secondary btn-sm mt-12" onclick="exportReportB()">📥 Export Excel</button></div>`;
   _captureReportScroll();
   document.getElementById('report-output').innerHTML=html;
+  document.getElementById('report-output').insertAdjacentHTML('afterbegin', _trkProdMonthBar());
 _scrollIntoReportIfFirstView('B');
 }
 
@@ -9867,7 +9922,7 @@ _scrollIntoReportIfFirstView('C');
   const filterMachine = window._rptCMachine || '';
   const filterBatch   = window._rptCBatch   || '';
 
-  const monthBatches = getTrkMonthBatches(true).filter(b=>!b.deleted);
+  const monthBatches = getProdMonthBatches(true).filter(b=>!b.deleted);
   const allMachines = [...new Set(monthBatches.map(b=>b.machineId).filter(Boolean))].sort();
   // v41ZD #1: batch dropdown shows only batches belonging to the selected machine
   const batchPoolC = filterMachine ? monthBatches.filter(b=>_batchBelongsToMachine(b, filterMachine)) : monthBatches;
@@ -9946,6 +10001,7 @@ _scrollIntoReportIfFirstView('C');
   html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
   _captureReportScroll();
   reportEl.innerHTML=html;
+  reportEl.insertAdjacentHTML('afterbegin', _trkProdMonthBar());
 _scrollIntoReportIfFirstView('C');
 }
 
@@ -10075,7 +10131,7 @@ function _v41_renderReportAInner(){
     const batchScans=state.scans.filter(s=>s.batchNumber===b.batchNumber);
 
     // Build day-wise scan history
-    const scanDates=[...new Set(batchScans.map(s=>s.ts?.slice(0,10)).filter(Boolean))].sort();
+    const scanDates=[...new Set(batchScans.map(s=>_istDayKey(s.ts)).filter(Boolean))].sort();
     let dayHistoryHtml='';
     if(scanDates.length>0){
       dayHistoryHtml=`<div style="margin-top:12px">
@@ -10086,10 +10142,10 @@ function _v41_renderReportAInner(){
             ${getBatchFlow(b).map(d=>`<th style="padding:6px 10px;text-align:center;border-bottom:1px solid var(--border)">${DEPT_LABELS[d]||d}</th>`).join('')}
           </tr></thead><tbody>
           ${scanDates.map(date=>{
-            const dayScans=batchScans.filter(s=>s.ts?.slice(0,10)===date);
+            const dayScans=batchScans.filter(s=>_istDayKey(s.ts)===date);
             // v40 P18.14c: same-day Phase 18 dispatches count toward Dispatch column
             const dayPhase18 = (state.dispatchRecs || [])
-              .filter(r => r.batchNumber === b.batchNumber && r.ts?.slice(0,10) === date)
+              .filter(r => r.batchNumber === b.batchNumber && _istDayKey(r.ts) === date)
               .reduce((s, r) => s + (parseInt(r.boxes) || 0), 0);
             return `<tr style="border-bottom:1px solid var(--border)">
               <td style="padding:5px 10px;font-family:var(--mono);font-size:11px">${date}</td>
@@ -10223,16 +10279,54 @@ function _batchBelongsToMachine(batch, machineId){
   return normMcId(batch?.machineId) === normMcId(machineId);
 }
 
+let _rptE_asofCache = {}; // v45E: date → date-bounded summaries for Report E (cumulative-through-date)
+function _rptE_dateOptions(){
+  const out=[]; const [y,m,d]=_istToday().split('-').map(Number);
+  for(let i=0;i<15;i++){ const dt=new Date(Date.UTC(y,m-1,d-i)); out.push(`${dt.getUTCFullYear()}-${String(dt.getUTCMonth()+1).padStart(2,'0')}-${String(dt.getUTCDate()).padStart(2,'0')}`); }
+  return out; // last 15 IST production days, most-recent first
+}
+async function _rptE_fetchAsof(date){
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/scan-summary?asof='+encodeURIComponent(date), {signal:AbortSignal.timeout(20000)});
+    const j = await r.json();
+    if(j && j.ok){
+      _rptE_asofCache[date] = { scanSummary:j.summary||{}, wastageSummary:j.wastage||{}, dispatchedSummary:j.dispatched||{}, grossSummary:j.grossByBatch||{} };
+    } else { _rptE_asofCache[date] = null; }
+  }catch(e){ _rptE_asofCache[date] = null; }
+}
 function renderReportE(){ window._activeReport = renderReportE; if(window._v41_composingD)window._v41_composingD=false;
-  // v41 P19.6 (Q1): warm the month-attributed A-Grade cache, then render. If fetch fails,
-  // _v41_agradeFor transparently falls back to cumulative so the report still renders.
-  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  const _d = window._rptEDate || '';
+  // v45E: a specific date → fetch the cumulative-through-date snapshot from the server, then render.
+  if (_d && !(_d in _rptE_asofCache)) { _rptE_fetchAsof(_d).then(()=>_v41_renderReportEInner()); return; }
+  // month-attributed warm only applies to the cumulative (no-date) view
+  if (!_d && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
     _v41_ensureAgradeMonthLoaded().then(()=>_v41_renderReportEInner());
     return;
   }
   _v41_renderReportEInner();
 }
+// v45E: when a date is selected, swap in the date-bounded inputs (server as-of snapshot for gross +
+// scan counts; client ts-slice for wastage/dispatch/local scans), render with the EXISTING body so
+// every formula and the row-builder stay byte-identical, then restore the live state in finally.
 function _v41_renderReportEInner(){
+  const filterDate = window._rptEDate || '';
+  const _asof = filterDate ? _rptE_asofCache[filterDate] : null;
+  if (!_asof) { _v41_renderReportEInnerBody(); return; }
+  const _saved = { grossSummary:state.grossSummary, scanSummary:state.scanSummary, wastageSummary:state.wastageSummary, dispatchedSummary:state.dispatchedSummary, wastage:state.wastage, dispatchRecs:state.dispatchRecs, scans:state.scans, monthAttr:_v41_useMonthAttributed };
+  const le = arr => (arr||[]).filter(x => _istDayKey(x.ts) <= filterDate); // v45F: date-bound by IST production day (matches the server asof filter)
+  state.grossSummary = _asof.grossSummary; state.scanSummary = _asof.scanSummary;
+  state.wastageSummary = _asof.wastageSummary; state.dispatchedSummary = _asof.dispatchedSummary;
+  state.wastage = le(_saved.wastage); state.dispatchRecs = le(_saved.dispatchRecs); state.scans = le(_saved.scans);
+  _v41_useMonthAttributed = false; // as-of date is cumulative-through-date: force the cumulative path so gross (_grossFor) and A-Grade (_v41_agradeFor→getBatchAGrade) read the swapped state, not the month-of-production cache
+  try { _v41_renderReportEInnerBody(); }
+  finally {
+    state.grossSummary=_saved.grossSummary; state.scanSummary=_saved.scanSummary;
+    state.wastageSummary=_saved.wastageSummary; state.dispatchedSummary=_saved.dispatchedSummary;
+    state.wastage=_saved.wastage; state.dispatchRecs=_saved.dispatchRecs; state.scans=_saved.scans;
+    _v41_useMonthAttributed=_saved.monthAttr;
+  }
+}
+function _v41_renderReportEInnerBody(){
   // Build all data first (same computation as before)
   const filterDate = window._rptEDate || '';
   // Build date list for filter — use state.scans timestamps (date grouping is display only)
@@ -10353,7 +10447,7 @@ function _v41_renderReportEInner(){
     const _legBoxes = useSS ? (_ss(b.batchNumber,'dispatch').out + localExtra('dispatch','out'))
                             : scansForBatch.filter(s=>s.dept==='dispatch'&&s.type==='out').length;
     const _legLakhs = boxToLakh(_legBoxes, b.size);
-    const _p18 = state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber&&(!filterDate||r.ts?.slice(0,10)===filterDate)).reduce((s,r)=>s+r.qty,0);
+    const _p18 = state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0); // v45E: date-bounding handled by the as-of state swap (cumulative-through-date)
     const disp = _legLakhs + _p18;
     rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,startDate:b.startDate||null,endDate:b.endDate||null,
       isPrinted: b.isPrinted,  // v37H: used by table render to distinguish PTD vs UP for column display
@@ -10410,7 +10504,7 @@ function _v41_renderReportEInner(){
 
   // Build full-page HTML and open in new tab
   const dateLabel = filterDate ? `Date: ${filterDate}` : 'Cumulative — all entries to date';
-  const dateOpts = allScanDates.map(d=>`<option value="${d}" ${filterDate===d?'selected':''}>${d}</option>`).join('');
+  const dateOpts = _rptE_dateOptions().map(d=>`<option value="${d}" ${filterDate===d?'selected':''}>${d}</option>`).join('');
 
   // Build table rows with machine subtotals and floor subtotals
   const fmtN = v => (v===0||v===undefined)?'—':parseFloat(v).toFixed(2);
@@ -10760,7 +10854,7 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
   // Show a button in the report-output area to open the new tab
   const dateSelectHtml = `<select style="border:2px solid #d4b896;border-radius:4px;padding:5px 10px;font-size:12px;font-weight:700;background:#fff;color:#1a1208" onchange="window._rptEDate=this.value;renderReportE()">
     <option value="">All Dates (Cumulative)</option>
-    ${allScanDates.map(d=>`<option value="${d}" ${filterDate===d?'selected':''}>${d}</option>`).join('')}
+    ${_rptE_dateOptions().map(d=>`<option value="${d}" ${filterDate===d?'selected':''}>${d}</option>`).join('')}
   </select>`;
 
   _captureReportScroll();
@@ -10883,7 +10977,7 @@ function editDispatchRecord(id) {
   const body = `
     <div class="form-group">
       <label>Date</label>
-      <input type="date" id="edit-disp-date" class="form-control" value="${rec.ts ? rec.ts.slice(0,10) : ''}">
+      <input type="date" id="edit-disp-date" class="form-control" value="${rec.ts ? _istDayKey(rec.ts) : ''}">
     </div>
     <div class="form-group">
       <label>Vehicle No.</label>
@@ -10916,7 +11010,7 @@ async function saveDispatchRecordEdit(id) {
   const invoice = document.getElementById('edit-disp-invoice')?.value.trim();
   const customer = document.getElementById('edit-disp-customer')?.value.trim();
 
-  if (date) rec.ts = date + 'T00:00:00.000Z';
+  if (date) rec.ts = date + 'T06:30:00.000Z'; // v45G: noon IST so the edited date round-trips to the same IST production day
   rec.vehicleNo = vehicle;
   rec.invoiceNo = invoice;
   rec.customer = customer;
@@ -11045,7 +11139,7 @@ async function renderReportI(targetId) {
     return {
       id: r.id,
       ts: r.ts,
-      actualDate: r.ts ? r.ts.slice(0,10) : '',
+      actualDate: r.ts ? _istDayKey(r.ts) : '',
       batchNumber: r.batchNumber,
       customer: r.customer || b.customer || '',
       zone: b.zone || '',
@@ -11390,7 +11484,7 @@ function exportReportI() {
       ? (parseFloat(inv.taxable_amount) || 0)
       : (totalAmount - igstAmount);
     const salesOrderNum = inv?.sap_doc_num || r.invoiceNo || '';
-    return { ts:r.ts, actualDate: r.ts?r.ts.slice(0,10):'', batchNumber:r.batchNumber,
+    return { ts:r.ts, actualDate: r.ts?_istDayKey(r.ts):'', batchNumber:r.batchNumber,
       customer: r.customer || b.customer || '', zone:b.zone||'', size:b.size||'',
       colour:b.colour||'', pcCode: b.pcCode || inv?.pc_code || '', qty:r.qty||0, boxes:r.boxes||0,
       vehicleNo:r.vehicleNo||'', invoiceNo:r.invoiceNo||'',
@@ -11903,7 +11997,7 @@ function renderReportK(targetId) {
     const daysBack = dateMode === '7d' ? 7 : (dateMode === '15d' ? 15 : 30);
     toDate = today();
     const d = new Date(); d.setDate(d.getDate() - daysBack + 1);
-    fromDate = d.toISOString().slice(0,10);
+    fromDate = _istDayKey(d.toISOString());
   }
 
   // Aggregate Pack In scans (dept='packing', type='in') and Dispatch Out scans
@@ -11941,16 +12035,16 @@ function renderReportK(targetId) {
     // Sort scans by ts asc
     d.packInScans.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
     d.dispatchOutScans.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-    const firstPackIn = d.packInScans[0]?.ts?.slice(0,10) || null;
-    const lastPackIn = d.packInScans[d.packInScans.length-1]?.ts?.slice(0,10) || null;
+    const firstPackIn = _istDayKey(d.packInScans[0]?.ts) || null;
+    const lastPackIn = _istDayKey(d.packInScans[d.packInScans.length-1]?.ts) || null;
     // v40 P18.14: include Phase 18 dispatch record timestamps too. lastDispOut should reflect
     // the latest physical dispatch event, whether legacy scan-out OR Phase 18 truck dispatch.
     const phase18TsList = (state.dispatchRecs || [])
       .filter(r => r.batchNumber === bn)
-      .map(r => r.ts?.slice(0,10))
+      .map(r => _istDayKey(r.ts))
       .filter(Boolean);
     const allDispTs = [
-      ...d.dispatchOutScans.map(s => s.ts?.slice(0,10)).filter(Boolean),
+      ...d.dispatchOutScans.map(s => _istDayKey(s.ts)).filter(Boolean),
       ...phase18TsList
     ].sort();
     const firstDispOut = allDispTs[0] || null;
@@ -12206,7 +12300,7 @@ function exportReportK() {
     const daysBack = dateMode === '7d' ? 7 : (dateMode === '15d' ? 15 : 30);
     toDate = today();
     const d = new Date(); d.setDate(d.getDate() - daysBack + 1);
-    fromDate = d.toISOString().slice(0,10);
+    fromDate = _istDayKey(d.toISOString());
   }
   // Aggregate same as renderReportK
   const byBatch = {};
@@ -12223,8 +12317,8 @@ function exportReportK() {
     const size = b?.size || '0';
     d.packInScans.sort((a, b) => (a.ts||'').localeCompare(b.ts||''));
     d.dispatchOutScans.sort((a, b) => (a.ts||'').localeCompare(b.ts||''));
-    const firstPackIn = d.packInScans[0]?.ts?.slice(0,10) || '';
-    const lastDispOut = d.dispatchOutScans[d.dispatchOutScans.length-1]?.ts?.slice(0,10) || '';
+    const firstPackIn = _istDayKey(d.packInScans[0]?.ts) || '';
+    const lastDispOut = _istDayKey(d.dispatchOutScans[d.dispatchOutScans.length-1]?.ts) || '';
     const packInBoxes = d.packInScans.length;
     const dispOutBoxes = d.dispatchOutScans.length;
     const packInQty = boxToLakh(packInBoxes, size);
@@ -13140,7 +13234,7 @@ function renderSettings(){
         </div>
         <div class="form-group">
           <label>Backdate (Date & Time)</label>
-          <input type="datetime-local" id="bf-date" value="${new Date(Date.now()-86400000).toISOString().slice(0,16)}">
+          <input type="datetime-local" id="bf-date" value="${new Date(Date.now()-86400000+(5*60+30)*60000).toISOString().slice(0,16)}">
         </div>
       </div>
       <div class="form-row cols-4" style="margin-top:8px">
@@ -13190,7 +13284,7 @@ function renderSettings(){
       <div class="form-row cols-2" style="margin-top:4px">
         <div class="form-group">
           <label>Backdate</label>
-          <input type="datetime-local" id="bfw-date" value="${new Date(Date.now()-86400000).toISOString().slice(0,16)}">
+          <input type="datetime-local" id="bfw-date" value="${new Date(Date.now()-86400000+(5*60+30)*60000).toISOString().slice(0,16)}">
         </div>
         <div class="form-group" style="display:flex;align-items:flex-end">
           <button class="btn btn-sm btn-warning" style="width:100%" onclick="submitBackfillWastage()">⬆️ Submit Wastage</button>

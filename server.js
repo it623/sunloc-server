@@ -3067,7 +3067,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45E' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45G' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3548,7 +3548,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45E' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45G' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -10503,7 +10503,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45E',
+      build: 'v45G',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10512,7 +10512,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45E', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45G', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -11836,7 +11836,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45E',
+      build: 'v45G',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11845,7 +11845,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45E', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45G', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12525,22 +12525,37 @@ if (typeof process !== 'undefined' && !process.env.SUNLOC_DISABLE_BG_JOBS) {
 // down the whole endpoint. Without this, a schema gap on any one table would 500 all reports.
 app.get('/api/tracking/scan-summary', async (req, res) => {
   try {
-    let scanRows, wastageRows, dispatchRows;
+    // v45F: optional as-of-date snapshot (cumulative THROUGH the given IST production day) — powers
+    // Report E's date filter. "Production day" uses a 6 AM IST boundary (matching the A-Grade month
+    // attribution and the shift-wise salvage/remelt grouping), so a C-shift entry logged after midnight
+    // counts toward the day the shift STARTED. ts is stored UTC, so production_day(ts) <= asof  ⟺
+    // ts_instant < 06:00 IST on (asof+1) = 00:30 UTC on (asof+1). LEFT/substr(ts,19) drops the .sssZ so
+    // the cast is format-robust. DPR gross uses production_actuals.date — already the operator-assigned
+    // production date — so it stays a plain date-prefix compare (no ts conversion).
+    const asof = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.asof||'')) ? String(req.query.asof) : null;
+    let scanRows, wastageRows, dispatchRows, grossRows = null;
     if (pgPool) {
-      const safeQuery = async (sql) => {
-        try { return (await pgPool.query(sql)).rows; }
+      const safeQuery = async (sql, params) => {
+        try { return (await pgPool.query(sql, params||[])).rows; }
         catch(e) { console.warn('[scan-summary] query failed:', e.message); return []; }
       };
+      const pgCut = col => `(LEFT(${col},19))::timestamp < ($1::date + interval '1 day' + interval '30 minutes')`;
+      const scanSql = `SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans s WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${pgCut('s.ts')}`:''} GROUP BY batch_number, dept, type`;
+      const wasteSql = `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number, dept, type`;
+      const dispSql  = `SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number`;
       [scanRows, wastageRows, dispatchRows] = await Promise.all([
-        safeQuery(`SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans s WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY batch_number, dept, type`),
-        safeQuery('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type'),
-        safeQuery('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records GROUP BY batch_number')
+        safeQuery(scanSql, asof?[asof]:[]),
+        safeQuery(wasteSql, asof?[asof]:[]),
+        safeQuery(dispSql,  asof?[asof]:[])
       ]);
+      if (asof) grossRows = await safeQuery(`SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE LEFT(date,10) <= $1 GROUP BY batch_number`, [asof]);
     } else {
-      scanRows     = db.prepare(`SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans s WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY batch_number, dept, type`).all();
-      wastageRows  = db.prepare('SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type').all();
-      try { dispatchRows = db.prepare('SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records GROUP BY batch_number').all(); }
-      catch(e) { dispatchRows = []; }
+      const sc = (sql, params) => { try { return db.prepare(sql).all(...(params||[])); } catch(e) { return []; } };
+      const liteCut = col => `datetime(${col}) < datetime(?, '+1 day', '+30 minutes')`;
+      scanRows     = sc(`SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans s WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY batch_number, dept, type`, asof?[asof]:[]);
+      wastageRows  = sc(`SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number, dept, type`, asof?[asof]:[]);
+      dispatchRows = sc(`SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number`, asof?[asof]:[]);
+      if (asof) grossRows = sc(`SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE substr(date,1,10) <= ? GROUP BY batch_number`, [asof]);
     }
 
     const summary = {};
@@ -12570,12 +12585,17 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
     // awaited) — this endpoint is on the Tracking sync path (15s timeout) and must stay fast. The
     // gross maps are kept warm by the startup warm + planning/state polling, so they're populated
     // here in practice; on a rare cold read grossByBatch is briefly empty and self-heals next sync.
-    warmActualsCache().catch(()=>{});
     const grossByBatch = {};
-    for (const bn of Object.keys(_grossByBatch || {})) grossByBatch[bn] = effectiveGross(bn);
-    for (const bn of Object.keys(_grossOverride || {})) grossByBatch[bn] = _grossOverride[bn];
+    if (asof) {
+      // as-of gross = SUM(DPR actuals) dated on/before the selected date (NOT the cumulative override)
+      (grossRows||[]).forEach(r => { if (r.batch_number) grossByBatch[r.batch_number] = parseFloat(r.total||0); });
+    } else {
+      warmActualsCache().catch(()=>{});
+      for (const bn of Object.keys(_grossByBatch || {})) grossByBatch[bn] = effectiveGross(bn);
+      for (const bn of Object.keys(_grossOverride || {})) grossByBatch[bn] = _grossOverride[bn];
+    }
 
-    res.json({ ok: true, summary, wastage, dispatched, grossByBatch });
+    res.json({ ok: true, summary, wastage, dispatched, grossByBatch, asof: asof||null });
   } catch(err) {
     console.error('[scan-summary]', err.message);
     res.status(500).json({ ok: false, error: err.message });
@@ -13689,6 +13709,43 @@ app.get('/api/tracking/dispatch-actuals', async (req, res) => {
     const rows = pgPool ? (await pgPool.query('SELECT * FROM tracking_dispatch_actuals')).rows : db.prepare('SELECT * FROM tracking_dispatch_actuals').all();
     res.json({ok:true, actuals: rows});
   } catch(err) { res.status(500).json({ok:false,error:err.message}); }
+});
+
+// v45G — POST /api/tracking/manual-dispatch
+// Planning marks an order dispatched when its invoice never flowed through the software (the suite
+// was built in stages, so some invoices don't reach it). This writes ONE tracking_dispatch_record
+// (keyed MANUAL-<planId> for idempotency — re-marking replaces, never duplicates) so Report G's
+// _v40_dispatchedBoxes nets it and the order's FG exits the system, tagged 'Manually dispatched —
+// no invoice' so manual exits stay distinguishable from invoice/scan dispatches. Recomputes the
+// batch's dispatch actuals so the Planning truck binner nets it too.
+app.post('/api/tracking/manual-dispatch', async (req, res) => {
+  try {
+    const { planId, batchNumber, customer, qty, boxes, by } = req.body || {};
+    if (!planId || !batchNumber) return res.status(400).json({ ok:false, error:'planId and batchNumber required' });
+    const recId   = 'MANUAL-' + planId;
+    const remarks = 'Manually dispatched — no invoice';
+    const q   = parseFloat(qty)   || 0;
+    const b   = parseInt(boxes,10) || 0;
+    const who = by || 'planning';
+    const ts  = new Date().toISOString();
+    if (pgPool) {
+      await pgPool.query(`DELETE FROM tracking_dispatch_records WHERE id=$1`, [recId]);
+      await pgPool.query(
+        `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
+         VALUES ($1,$2,$3,$4,$5,'','',$6,$7,$8)`,
+        [recId, batchNumber, customer || '', q, b, remarks, ts, who]
+      );
+    } else {
+      db.prepare(`DELETE FROM tracking_dispatch_records WHERE id=?`).run(recId);
+      db.prepare(
+        `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
+         VALUES (?,?,?,?,?,'','',?,?,?)`
+      ).run(recId, batchNumber, customer || '', q, b, remarks, ts, who);
+    }
+    let totalQty = null;
+    try { if (typeof _recomputeDispatchActuals === 'function') totalQty = await _recomputeDispatchActuals(batchNumber, null, null); } catch(e) {}
+    res.json({ ok:true, id: recId, totalQty });
+  } catch(err) { res.status(500).json({ ok:false, error: err.message }); }
 });
 
 // ════════════════════════════════════════════════════════════════════════
