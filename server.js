@@ -3246,7 +3246,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45S' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45T' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3735,7 +3735,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45S' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45T' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -5955,7 +5955,21 @@ app.post('/api/orders/upsert', async (req, res) => {
         }
       }
       if (exData.deleted || existing.deleted) finalDeleted = true;
-      finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
+      // v45T root fix (Rahul, 2-Jul): actualProd is OWNED by DPR (production_actuals sum +
+      // batch_gross_override), not by whichever blob copy is larger. The old Math.max() compared two
+      // CACHED copies — after a downward DPR correction (entry fix or Closed-Batches override) the
+      // stale higher copy always won and Planning "flipped back to original". Now: when the server
+      // can compute a DPR-side gross for this batch (override present, or batch in the warmed
+      // actuals cache), that value IS actualProd — BOTH directions. Only with no DPR data at all
+      // does the old max() guard apply (protects carried actuals on batches with no DPR rows).
+      {
+        const _bn45t = ord.batchNumber;
+        const _hasOv45t  = _bn45t != null && Object.prototype.hasOwnProperty.call(_grossOverride, _bn45t);
+        const _hasSum45t = _bn45t != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, _bn45t);
+        if (_hasOv45t)       finalActualProd = _grossOverride[_bn45t] || 0;
+        else if (_hasSum45t) finalActualProd = _grossByBatch[_bn45t] || 0;
+        else                 finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
+      }
       const hasManualDate = exData.manualEndDate || exData.manualStartDate;
       mergedOrd = {
         ...ord,
@@ -6415,8 +6429,16 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         } else if (exData.deleted || existing.deleted) {
           finalDeleted = true;
         }
-        // Take max of actualProd (DPR can write higher value independently)
-        finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
+        // v45T root fix (Rahul, 2-Jul): DPR owns actualProd — see the single-order upsert for the
+        // full rationale. Override → batch-sum cache → legacy max() fallback (no DPR data only).
+        {
+          const _bn45t = ord.batchNumber;
+          const _hasOv45t  = _bn45t != null && Object.prototype.hasOwnProperty.call(_grossOverride, _bn45t);
+          const _hasSum45t = _bn45t != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, _bn45t);
+          if (_hasOv45t)       finalActualProd = _grossOverride[_bn45t] || 0;
+          else if (_hasSum45t) finalActualProd = _grossByBatch[_bn45t] || 0;
+          else                 finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
+        }
         // Preserve manual date flags from DB if set
         const hasManualDate = exData.manualEndDate || exData.manualStartDate;
         mergedOrd = {
@@ -6505,6 +6527,18 @@ app.get('/api/orders/all', async (req, res) => {
     } else {
       rows = db.prepare('SELECT data_json FROM production_orders ORDER BY updated_at DESC').all()
                .map(r => JSON.parse(r.data_json));
+    }
+    // v45T root fix (Rahul, 2-Jul): serve DPR-authoritative actualProd. This endpoint fed the
+    // client's 30-second dedicated-table merge with the STORED blob actualProd, so a corrected
+    // value injected by /api/planning/state was reverted on the next 30s cycle — the visible
+    // "flips back to original" after a DPR closed-batch correction. Same precedence as
+    // planning/state injection: override → warmed batch-sum cache → stored value (cold cache or
+    // no DPR data only). In-memory maps only — nothing added to this endpoint's hot path.
+    for (const o of rows) {
+      const bn = o && o.batchNumber;
+      if (bn == null) continue;
+      if (Object.prototype.hasOwnProperty.call(_grossOverride, bn)) o.actualProd = _grossOverride[bn] || 0;
+      else if (_grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) o.actualProd = _grossByBatch[bn] || 0;
     }
     res.json({ ok: true, orders: rows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -10785,7 +10819,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45S',
+      build: 'v45T',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10794,7 +10828,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45S', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45T', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12118,7 +12152,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45S',
+      build: 'v45T',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12127,7 +12161,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45S', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45T', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

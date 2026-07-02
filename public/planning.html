@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v45S</p>
+      <p>Planning Suite v3.0 · build v45T</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1816,6 +1816,11 @@ async function saveState() {
 // HELPERS
 // =============================
 function fmt(n, dec=2) { if (n==null) return '-'; const v=+n; if (!isFinite(v) || isNaN(v)) return '-'; return v.toFixed(dec); }
+// v45T #1.1.2/#1.1.4: open the Tracking Suite deep-linked to a batch's Batch Tracker view.
+function openBatchTracking(bn){
+  if(!bn) return;
+  window.open('tracking.html#batch=' + encodeURIComponent(String(bn).trim().toUpperCase()), '_blank');
+}
 function fmtColour(colour){
   if(!colour) return '-';
   const parts = colour.split('/');
@@ -2446,9 +2451,23 @@ function recalcMachineScheduleQuiet(machineId) {
       ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
     }
 
-    // Determine end date — start + full run duration; the current open order can never be planned to
-    // finish before today (v41ZO #1).
-    ord.endDate = calcEndDate(ord.startDate, fullDays);
+    // Determine end date (v45T #1.1.1, rule confirmed by Ishan — DPR actuals drive the end date):
+    //   • actual ≥ planned gross → order is effectively complete: the end date pulls back to the
+    //     last production day planning can observe (today at the latest) instead of coasting to
+    //     start + full span — the defect where DPR-complete orders still showed 4th/5th/6th July.
+    //     (Planning holds cumulative DPR actuals, not per-day entries, so "last DPR production
+    //     date" resolves to today at the moment completion is observed — never a future date.)
+    //   • partially produced → end = today + remaining work at the ACTUAL daily rate
+    //     (sc.daysNeeded = remainingGross / effectiveCap; DPR rate with machine-cap fallback).
+    //   • no production yet → unchanged v41ZO behaviour: start + full run duration.
+    const _acts45t = (ord.actualProd || ord.actualQty || 0);
+    if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
+      ord.endDate = new Date(todayD);
+    } else if (hasProduction && sc.daysNeeded != null && isFinite(sc.daysNeeded)) {
+      ord.endDate = calcEndDate(todayD, Math.max(1, Math.ceil(sc.daysNeeded)));
+    } else {
+      ord.endDate = calcEndDate(ord.startDate, fullDays);
+    }
     if (ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
@@ -2515,9 +2534,23 @@ function recalcMachineSchedule(machineId) {
       ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
     }
 
-    // Determine end date — start + full run duration; the current open order can never be planned to
-    // finish before today (v41ZO #1).
-    ord.endDate = calcEndDate(ord.startDate, fullDays);
+    // Determine end date (v45T #1.1.1, rule confirmed by Ishan — DPR actuals drive the end date):
+    //   • actual ≥ planned gross → order is effectively complete: the end date pulls back to the
+    //     last production day planning can observe (today at the latest) instead of coasting to
+    //     start + full span — the defect where DPR-complete orders still showed 4th/5th/6th July.
+    //     (Planning holds cumulative DPR actuals, not per-day entries, so "last DPR production
+    //     date" resolves to today at the moment completion is observed — never a future date.)
+    //   • partially produced → end = today + remaining work at the ACTUAL daily rate
+    //     (sc.daysNeeded = remainingGross / effectiveCap; DPR rate with machine-cap fallback).
+    //   • no production yet → unchanged v41ZO behaviour: start + full run duration.
+    const _acts45t = (ord.actualProd || ord.actualQty || 0);
+    if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
+      ord.endDate = new Date(todayD);
+    } else if (hasProduction && sc.daysNeeded != null && isFinite(sc.daysNeeded)) {
+      ord.endDate = calcEndDate(todayD, Math.max(1, Math.ceil(sc.daysNeeded)));
+    } else {
+      ord.endDate = calcEndDate(ord.startDate, fullDays);
+    }
     if (ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
@@ -2618,6 +2651,14 @@ function recalcPrintScheduleQuiet() {
 }
 
 // Re-sequence print orders per OPM machine
+// v45T #1.2.2 (rule confirmed by Ishan): fixes the "multiple orders share one start date on the
+// same OPM" defect — the old cursor only advanced when qtyToPrint AND the machine cap were both
+// present, so one gap pinned every later order to the same date. Now:
+//   • the cursor ALWAYS advances (min 1 day when qty/cap can't be computed);
+//   • an order that has started printing (printedToDate > 0) keeps its historical start;
+//   • printedToDate ≥ qtyToPrint → effectively complete: end pulls back to today, never future;
+//   • partially printed → end = today + remaining at the OPM's daily cap;
+//   • unstarted orders anchor to the cursor and can't be planned into the past.
 function recalcPrintMachineSequence() {
   const assignedPOs = state.printOrders.filter(p => p.machineId && p.status !== 'completed');
   const byMachine = {};
@@ -2625,19 +2666,36 @@ function recalcPrintMachineSequence() {
     if (!byMachine[p.machineId]) byMachine[p.machineId] = [];
     byMachine[p.machineId].push(p);
   });
+  const todayD = new Date(today());
   Object.values(byMachine).forEach(pos => {
     pos.sort((a,b) => new Date(a.startDate) - new Date(b.startDate));
     let cursor = null;
     for (const po of pos) {
-      if (!cursor) { cursor = new Date(po.startDate || today()); }
-      else { po.startDate = new Date(cursor); }
       const pm = getPrintMachine(po.machineId);
-      if (pm && po.qtyToPrint) {
-        po.endDate = calcEndDate(po.startDate, po.qtyToPrint / pm.cap);
-        if (po.endDate && !isNaN(new Date(po.endDate))) {
-          cursor = new Date(po.endDate);
-        }
+      const cap = pm && pm.cap > 0 ? pm.cap : null;
+      const printed = po.printedToDate || 0;
+      const qty = po.qtyToPrint || 0;
+      if (printed > 0 && po.startDate && !isNaN(new Date(po.startDate))) {
+        // started — keep historical start (printing happened then)
+        po.startDate = new Date(po.startDate);
+      } else {
+        // unstarted — anchor to cursor, never into the past
+        const anchor = cursor ? new Date(cursor) : (po.startDate ? new Date(po.startDate) : todayD);
+        po.startDate = anchor >= todayD ? anchor : new Date(todayD);
       }
+      if (qty > 0 && printed >= qty - 1e-9) {
+        po.endDate = new Date(todayD);                         // complete per Daily Printing Log
+      } else if (printed > 0 && cap) {
+        po.endDate = calcEndDate(todayD, Math.max(1, Math.ceil((qty - printed) / cap))); // remaining at cap
+      } else if (qty > 0 && cap) {
+        po.endDate = calcEndDate(po.startDate, qty / cap);     // unstarted — full span from start
+      } else {
+        po.endDate = calcEndDate(po.startDate, 1);             // no qty/cap — 1-day placeholder
+      }
+      if (po.endDate && new Date(po.endDate) < new Date(po.startDate)) po.endDate = new Date(po.startDate);
+      // Cursor ALWAYS advances past this order (the old stall was here)
+      const advTo = po.endDate && !isNaN(new Date(po.endDate)) ? new Date(po.endDate) : new Date(po.startDate);
+      if (!cursor || advTo > cursor) cursor = advTo;
     }
   });
 }
@@ -2764,6 +2822,20 @@ function recalcDispatch() {
       dp.plannedDate = addDays(T, offset);
       dp.exportPending = false;
       dp.tentative = (ord.status !== 'closed');
+    }
+  }
+  // v45T #1.3.1 (confirmed by Ishan): stale planned dates — a NOT-dispatched plan can never keep a
+  // planned date in the past (previous-month SOs planned in the current month were still showing
+  // their original May/June dates). Universal floor: anything pending with a past plannedDate moves
+  // to tomorrow (earliest dispatchable day) and is marked tentative. Manual dates + dispatched rows
+  // stay untouched, and plans whose production order is missing are floored too (the main loop
+  // `continue`s past those, which is exactly how they went stale).
+  const _v45tTomorrow = addDays(todayDate, 1);
+  for (const dp of state.dispatchPlans) {
+    if (dp.dateManuallySet || dp.status === 'dispatched') continue;
+    if (dp.plannedDate && new Date(dp.plannedDate) < todayDate) {
+      dp.plannedDate = _v45tTomorrow;
+      dp.tentative = true;
     }
   }
   saveState();
@@ -3452,7 +3524,7 @@ function renderOrderRow(ord, idx, mc) {
   // the strength of their PO number alone. Manual orders carrying only a PO number must behave the
   // same way — otherwise they keep nagging "🔗 SAP?" despite being linkable exactly like the auto ones.
   const _isSapLinked = !!(ord.sapDocNum || ord.sapDocEntry || (ord.poNumber && String(ord.poNumber).trim()));
-  const needsSapLink = !isClosed && ord.qty > 0 && !isWO &&
+  const needsSapLink = !isClosed && ord.qty > 0 && !isWO && !ord.legacyClosed &&
     !_isSapLinked && (
       isWOReconciled ||
       ord.poType === 'indent' ||
@@ -3469,7 +3541,7 @@ function renderOrderRow(ord, idx, mc) {
     <td class="text-mono" style="position:sticky;left:28px;z-index:2;background:var(--surface2,#0f2a20);white-space:nowrap;box-shadow:2px 0 4px rgba(0,0,0,0.1)">
       ${woBadge}${sapLinkBadge}
       ${ord.poType==='verbal'?'<span class="tag" style="background:rgba(240,165,0,0.1);color:var(--accent);font-size:10px">VERBAL</span> ':''}${ord.poNumber||'-'}
-      ${ord.batchNumber?`<br><span class="text-dim text-sm">${ord.batchNumber}</span>`:''}
+      ${ord.batchNumber?`<br><span class="text-dim text-sm" style="cursor:pointer;text-decoration:underline dotted" title="Open batch tracking" onclick="event.stopPropagation();openBatchTracking('${(ord.batchNumber||'').replace(/'/g,'')}')">${ord.batchNumber}</span>`:''}
     </td>
     <td style="position:sticky;left:128px;z-index:2;background:var(--surface2,#0f2a20);font-weight:500;box-shadow:2px 0 4px rgba(0,0,0,0.1)">${isWO
       ? '<span style="color:var(--accent3);font-style:italic;font-size:12px">W/O — pending</span>'
@@ -5695,6 +5767,7 @@ function _v39_showSapLinkList() {
   const needs = (state.orders || []).filter(o => {
     if (o.deleted) return false;
     if (o.status === 'completed') return false;
+    if (o.legacyClosed) return false; // v45T #1.1.3: SAP-link requirement waived by the one-time bulk close
     if (o.sapDocEntry || o.sapDocNum || (o.poNumber && String(o.poNumber).trim())) return false; // v41ZE #1: SO#, DocEntry, OR PO/Reference = linked
     if (o.woStatus === 'wo') return false;
     return (o.qty > 0) && (
@@ -5747,6 +5820,13 @@ function _v39_showSapLinkList() {
       • Use the <strong>📥 Unplanned Orders</strong> page in the sidebar to auto-fill SAP refs from the SAP indent list.<br>
       • Until linked, the order cannot be invoiced or dispatched in v39.
     </div>
+    ${(currentUser?.role==='admin'||currentUser?.role==='planning_manager')?`
+    <div style="background:rgba(220,38,38,0.06);border:1px solid rgba(220,38,38,0.25);border-radius:6px;padding:10px;margin-bottom:12px;font-size:12px;line-height:1.5">
+      <strong>🧹 One-time legacy cleanup (Planning Manager):</strong> waive the SAP-link requirement for ALL ${needs.length} orders above.
+      They leave this pendency list and lose the 🔗 SAP? badge; any physical removal from Dispatch/Truck Plan stays a manual
+      step for the Dispatch Manager (green dispatch icon). This does not invoice, dispatch, or delete anything.<br>
+      <button onclick="_v45t_bulkCloseLegacySap()" style="margin-top:6px;background:#dc2626;color:#fff;border:none;padding:5px 14px;border-radius:4px;font-size:11px;font-weight:700;cursor:pointer">✅ Bulk Close All ${needs.length} (waive SAP link)</button>
+    </div>`:''}
     <div style="max-height:420px;overflow:auto">
       <table style="width:100%;font-size:12px;border-collapse:collapse">
         <thead style="background:var(--surface2);position:sticky;top:0;z-index:5">
@@ -5769,6 +5849,38 @@ function _v39_showSapLinkList() {
 
 // Backward-compat alias — older code paths may still call the previous name
 function _v39_showLegacyMissingSapList() { _v39_showSapLinkList(); }
+
+// v45T #1.1.3 (flow confirmed by Ishan): one-time bulk waiver of the SAP-link requirement for
+// legacy pending orders. Recomputes the SAME `needs` predicate at click time (never a stale list),
+// stamps legacyClosed/At/By on each, saves, and re-opens the (now empty) pendency list. Deliberately
+// does NOT invoice, dispatch, close production, or delete — physical Dispatch/Truck-Plan removal
+// remains the Dispatch Manager's manual green-dispatch-icon step.
+function _v45t_bulkCloseLegacySap() {
+  if (!(currentUser?.role==='admin' || currentUser?.role==='planning_manager')) { toast('Planning Manager or Admin only', 'var(--red)'); return; }
+  const needs = (state.orders || []).filter(o => {
+    if (o.deleted) return false;
+    if (o.status === 'completed') return false;
+    if (o.legacyClosed) return false;
+    if (o.sapDocEntry || o.sapDocNum || (o.poNumber && String(o.poNumber).trim())) return false;
+    if (o.woStatus === 'wo') return false;
+    return (o.qty > 0) && (
+      o.woStatus === 'wo-reconciled' ||
+      o.poType === 'indent' ||
+      o.poType === 'verbal' ||
+      o.poType === 'po' ||
+      (o.batchNumber || '').startsWith('TEMP-')
+    );
+  });
+  if (!needs.length) { toast('Nothing left to close — list is already clean.', 'var(--accent3)'); return; }
+  if (!confirm(`Waive SAP linking for ${needs.length} legacy order(s)?\n\nThey will leave the pendency list permanently. This cannot be bulk-undone (individual orders can still be SAP-linked later via Edit Order).`)) return;
+  const _now = new Date().toISOString();
+  const _by  = currentUser?.username || currentUser?.role || 'planning';
+  needs.forEach(o => { o.legacyClosed = true; o.legacyClosedAt = _now; o.legacyClosedBy = _by; });
+  saveState();
+  toast(`✅ ${needs.length} legacy order(s) closed without SAP link`, 'var(--accent3)');
+  closeModal();
+  _v39_showSapLinkList();
+}
 
 // Helper: jump to a specific order for backfill editing.
 function _v39_jumpToOrderForBackfill(orderId) {
@@ -6651,7 +6763,7 @@ function renderProdSummary() {
               const woRows = orders.filter(o=>o.customer===c)
                 .sort((a,b)=>(a.batchNumber||a.id||'').localeCompare(b.batchNumber||b.id||''))
                 .map(o=>`<tr class="wo-row wo-grp-${ci}" style="display:none;font-size:12px;background:var(--surface)">
-                  <td style="padding-left:30px;color:var(--text3)">${o.batchNumber||o.id||'—'}</td>
+                  <td style="padding-left:30px;color:var(--text3)">${o.batchNumber?`<span style="cursor:pointer;text-decoration:underline dotted" title="Open batch tracking" onclick="openBatchTracking('${(o.batchNumber||'').replace(/'/g,'')}')">${o.batchNumber}</span>`:(o.id||'—')}</td>
                   ${sizesWithData.map(sz=>`<td>${(o.size===sz && o.qty)?`<span style="color:var(--text2)">${fmt(o.qty)}</span>`:'-'}</td>`).join('')}
                   <td class="text-mono" style="color:var(--text3)">${fmt(o.qty||0)}</td>
                 </tr>`).join('');
@@ -6788,7 +6900,16 @@ function renderPrinting() {
     // pref may be missing when loaded from server state — fall back to constant
     const pmConst = PRINT_MACHINES.find(m=>m.id===pm.id);
     const pref = pm.pref || pmConst?.pref || '';
-    const orders = printOrders.filter(p=>p.machineId===pm.id);
+    // v45T #1.2.1 (confirmed by Ishan): the Printing Plan is month-wise like Production Planning —
+    // each OPM shows only print orders belonging to the selected plan month (same orderInMonth
+    // membership: starts/ends in month, spans it, or unclosed carry-forward). Completed print
+    // orders from earlier months no longer pile up in every month's view.
+    const orders = printOrders.filter(p=>p.machineId===pm.id && orderInMonth({
+      deleted: false,
+      startDate: p.startDate, endDate: p.endDate,
+      status: p.status==='completed' ? 'closed' : p.status,
+      closedDate: null
+    }, _selectedPlanMonth));
     html += `
       <div class="card mb-4">
         <div class="card-title">
@@ -10046,17 +10167,25 @@ function renderTruckOrdersTable(truck) {
             }
           }
           // Determine ready date and its source
+          // v45T #1.3.2 (confirmed by Ishan): a batch inside a truck can't show a ready date AFTER
+          // the truck's planned ETD — display clamps to the ETD (the bottleneck marker still flags
+          // the true driver of the ETD, so nothing is hidden operationally).
+          const _v45tClamp = d => {
+            if (!d || !truck.etd) return d;
+            const dd = new Date(d);
+            return (!isNaN(dd) && dd > new Date(truck.etd)) ? new Date(truck.etd) : d;
+          };
           let readyDate, readySource;
           if (p.packingReadyDate) {
-            readyDate = fmtDate(new Date(p.packingReadyDate));
+            readyDate = fmtDate(_v45tClamp(new Date(p.packingReadyDate)));
             readySource = '<span style="color:var(--accent2);font-size:10px">✓ Tracking</span>';
           } else {
             const prodOrder = state.orders.find(o => o.id === p.productionOrderId);
             if (prodOrder && prodOrder.actualQty > 0 && prodOrder.qty > 0 && prodOrder.actualQty < prodOrder.qty) {
-              readyDate = fmtDate(getOrderReadyDate(p));
+              readyDate = fmtDate(_v45tClamp(getOrderReadyDate(p)));
               readySource = '<span style="color:var(--accent);font-size:10px">~ DPR Est.</span>';
             } else {
-              readyDate = fmtDate(p.plannedDate) || '—';
+              readyDate = fmtDate(_v45tClamp(p.plannedDate)) || '—';
               readySource = '<span style="color:var(--text3);font-size:10px">Planned</span>';
             }
           }
