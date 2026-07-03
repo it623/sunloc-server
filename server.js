@@ -3246,7 +3246,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45U' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45V' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3735,7 +3735,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45U' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45V' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -10855,7 +10855,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45U',
+      build: 'v45V',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10864,7 +10864,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45U', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45V', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12188,7 +12188,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45U',
+      build: 'v45V',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12197,7 +12197,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45U', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45V', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -13653,13 +13653,40 @@ app.post('/api/tracking/scan', async (req, res) => {
       if (order) isPrintedBatch = !!order.isPrinted;
     } else {
       // For other depts, still determine flow type so packing previous-stage logic is correct.
+      // v45U hotfix (floor report, 3-Jul): the old logic defaulted to PRINTED flow whenever the
+      // blob lookup missed — so every unprinted batch the lookup failed on was blocked at packing
+      // with "must complete PI", a stage that does not exist in its flow. Resolution is now
+      // authoritative and layered: normalized blob match → production_orders fallback (the DB is
+      // the authoritative status store since v45L) → and if the flow is STILL unknown, the gate
+      // below accepts either flow's previous stage instead of guessing.
+      let flowKnown = false;
+      const _bnNorm = String(batchNumber||'').trim().toUpperCase();
       try {
         const planState = await getPlanningStateAsync();
         const order = (planState.orders||[]).find(o =>
-          o.batchNumber === batchNumber || o.id === batchNumber
+          String(o.batchNumber||'').trim().toUpperCase() === _bnNorm || o.id === batchNumber
         );
-        if (order) isPrintedBatch = !!order.isPrinted;
-      } catch (e) { /* assume printed flow if planning state unavailable */ }
+        if (order && order.isPrinted !== undefined && order.isPrinted !== null) {
+          isPrintedBatch = !!order.isPrinted; flowKnown = true;
+        }
+      } catch (e) { /* fall through to DB */ }
+      if (!flowKnown) {
+        try {
+          let row;
+          if (pgPool) {
+            const r = await pgPool.query(
+              `SELECT data_json FROM production_orders WHERE UPPER(TRIM(batch_number))=$1 AND deleted=false ORDER BY updated_at DESC LIMIT 1`, [_bnNorm]);
+            row = r.rows[0];
+          } else {
+            row = db.prepare(`SELECT data_json FROM production_orders WHERE UPPER(TRIM(batch_number))=? AND deleted=0 ORDER BY updated_at DESC LIMIT 1`).get(_bnNorm);
+          }
+          if (row) {
+            const d = typeof row.data_json==='string' ? JSON.parse(row.data_json) : (row.data_json||{});
+            if (d.isPrinted !== undefined && d.isPrinted !== null) { isPrintedBatch = !!d.isPrinted; flowKnown = true; }
+          }
+        } catch (e) { /* unknown flow — dual-accept below */ }
+      }
+      req._sunlocFlowKnown = flowKnown;
     }
 
     // v40 Phase 18.14b: PER-LABEL UPSTREAM PROGRESSION CHECK
@@ -13673,27 +13700,39 @@ app.post('/api/tracking/scan', async (req, res) => {
     if (scan.type === 'in' && scan.dept !== 'aim' && scan.dept !== 'production') {
       // Determine previous scannable stage
       let prevDept = null;
+      let prevDeptAlts = null; // v45U hotfix: candidate list when the flow is unknown
       if (scan.dept === 'printing') prevDept = 'aim';
       else if (scan.dept === 'pi')   prevDept = 'printing';
-      else if (scan.dept === 'packing') prevDept = isPrintedBatch ? 'pi' : 'aim';
+      else if (scan.dept === 'packing') {
+        // v45U hotfix: only demand PI when the batch is AFFIRMATIVELY printed. When the flow could
+        // not be resolved (order missing from blob AND DB), accept EITHER flow's previous stage —
+        // the box still must have completed its real upstream scan, so integrity holds in both flows.
+        if (req._sunlocFlowKnown === false) prevDeptAlts = ['pi','aim'];
+        else prevDept = isPrintedBatch ? 'pi' : 'aim';
+      }
       else if (scan.dept === 'dispatch') prevDept = 'packing';
       // Special case: if packing-in on a printed batch and prev is PI, that's fine.
       // Special case: if packing-in on UNPRINTED batch, prev is AIM, but boxes can be sent
       // straight from AIM to packing if 'manual' inspection bypass was done. For data integrity,
       // we still require AIM-out scan.
-      if (prevDept) {
-        let prevOutScan;
-        if (pgPool) {
-          const r = await pgPool.query(
-            `SELECT id FROM tracking_scans WHERE label_id=$1 AND dept=$2 AND type='out' AND batch_number=$3 LIMIT 1`,
-            [labelId, prevDept, batchNumber]
-          );
-          prevOutScan = r.rows[0];
-        } else {
-          prevOutScan = db.prepare(
-            `SELECT id FROM tracking_scans WHERE label_id=? AND dept=? AND type='out' AND batch_number=? LIMIT 1`
-          ).get(labelId, prevDept, batchNumber);
+      if (prevDept || prevDeptAlts) {
+        const _cands = prevDeptAlts || [prevDept];
+        let prevOutScan = null;
+        for (const _pd of _cands) {
+          if (pgPool) {
+            const r = await pgPool.query(
+              `SELECT id FROM tracking_scans WHERE label_id=$1 AND dept=$2 AND type='out' AND batch_number=$3 LIMIT 1`,
+              [labelId, _pd, batchNumber]
+            );
+            prevOutScan = r.rows[0];
+          } else {
+            prevOutScan = db.prepare(
+              `SELECT id FROM tracking_scans WHERE label_id=? AND dept=? AND type='out' AND batch_number=? LIMIT 1`
+            ).get(labelId, _pd, batchNumber);
+          }
+          if (prevOutScan) { prevDept = _pd; break; }
         }
+        if (!prevDept) prevDept = _cands[_cands.length - 1]; // for the error message: AIM when unknown
         if (!prevOutScan) {
           if (adminOverride) {
             console.warn(`[v40 P18.14b SCAN OVERRIDE] Admin override: label ${labelId} scanned IN at ${scan.dept} without ${prevDept} OUT scan. batch=${batchNumber} operator=${scan.operator||'?'} ts=${scan.ts}`);

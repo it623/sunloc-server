@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45U</title>
+<title>Sunloc Tracking Suite v1.0 · build v45V</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45U</p>
+      <p>Tracking Suite v1.0 · build v45V</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45U</p>
+      <p>Tracking Suite v1.0 · build v45V</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2959,7 +2959,12 @@ function generateZPL(label, batch){
   const colourCap  = (cp[0]||'').trim() || (label.colour||'');
   const colourBody = (cp[1]||'').trim() || '';
   const packSizeL  = PACK_SIZES[String(label.size)] || 1;
-  const pieces     = label.isPartial ? Math.round(label.qty*100000) : Math.round(packSizeL*100000);
+  // v45U hotfix (floor report, 3-Jul — 26ZG131 E-4): the printed QUANTITY must be the label's OWN
+  // qty, not the standard pack size. The old line only honoured label.qty for auto-partial last
+  // boxes (isPartial), so a supervisor's manual qty edit (1.25 → 0.75 via Edit Label Qty) saved to
+  // the queue and DB but the physical label still printed 125000. label.qty is authoritative for
+  // every label; standard boxes carry qty = pack size anyway, so nothing else changes.
+  const pieces     = Math.round(((label.qty > 0 ? label.qty : packSizeL)) * 100000);
   const mfgRaw     = batch?.startDate ? new Date(batch.startDate) : new Date();
   const mfgDate    = mfgRaw.toLocaleDateString('en-IN',{month:'short',year:'numeric'}).toUpperCase();
   const batchNo    = label.batchNumber || '';
