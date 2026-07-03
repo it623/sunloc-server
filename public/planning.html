@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v45T</p>
+      <p>Planning Suite v3.0 · build v45U</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1816,10 +1816,13 @@ async function saveState() {
 // HELPERS
 // =============================
 function fmt(n, dec=2) { if (n==null) return '-'; const v=+n; if (!isFinite(v) || isNaN(v)) return '-'; return v.toFixed(dec); }
-// v45T #1.1.2/#1.1.4: open the Tracking Suite deep-linked to a batch's Batch Tracker view.
+// v45T #1.1.2/#1.1.4 → v45U #1: open the SAME in-app batch-tracking modal the Dispatch/Truck Plan
+// uses (showBatchTrackingModal), instead of deep-linking to tracking.html — the deep link landed on
+// the Tracking Suite's login/role screen for anyone without an active tracking session.
 function openBatchTracking(bn){
   if(!bn) return;
-  window.open('tracking.html#batch=' + encodeURIComponent(String(bn).trim().toUpperCase()), '_blank');
+  try { showBatchTrackingModal(String(bn).trim().toUpperCase()); }
+  catch(e) { window.open('tracking.html#batch=' + encodeURIComponent(String(bn).trim().toUpperCase()), '_blank'); }
 }
 function fmtColour(colour){
   if(!colour) return '-';
@@ -6900,16 +6903,24 @@ function renderPrinting() {
     // pref may be missing when loaded from server state — fall back to constant
     const pmConst = PRINT_MACHINES.find(m=>m.id===pm.id);
     const pref = pm.pref || pmConst?.pref || '';
-    // v45T #1.2.1 (confirmed by Ishan): the Printing Plan is month-wise like Production Planning —
-    // each OPM shows only print orders belonging to the selected plan month (same orderInMonth
-    // membership: starts/ends in month, spans it, or unclosed carry-forward). Completed print
-    // orders from earlier months no longer pile up in every month's view.
-    const orders = printOrders.filter(p=>p.machineId===pm.id && orderInMonth({
-      deleted: false,
-      startDate: p.startDate, endDate: p.endDate,
-      status: p.status==='completed' ? 'closed' : p.status,
-      closedDate: null
-    }, _selectedPlanMonth));
+    // v45U #2 (confirmed by Ishan): print-specific month membership. orderInMonth couldn't scope
+    // this view — the auto-computed end date of every unclosed order is always ≥ today, so stale
+    // Apr/May orders "overlapped" the current month and passed the spanning test. Rule now: for
+    // month M show orders that STARTED in M, or started in M-1 (immediate carry-forward — unclosed,
+    // or completed with the run ending in M). Anything older lives in its own month's view (the
+    // month selector is the archive).
+    const _pIso = d => { if(!d) return ''; const dd = new Date(d); return isNaN(dd) ? '' : `${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,'0')}-${String(dd.getDate()).padStart(2,'0')}`; };
+    const _pYm = _selectedPlanMonth;
+    const _pPrevYm = (()=>{ const [y,m]=_pYm.split('-').map(Number); return m===1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`; })();
+    const orders = printOrders.filter(p => {
+      if (p.machineId !== pm.id) return false;
+      const s = _pIso(p.startDate), e = _pIso(p.endDate);
+      const sYm = s.slice(0,7), eYm = e.slice(0,7);
+      if (sYm === _pYm) return true;                                        // starts in the month
+      if (sYm === _pPrevYm && p.status !== 'completed') return true;        // unclosed carry-forward from previous month
+      if (sYm === _pPrevYm && eYm === _pYm) return true;                    // prev-month start whose run ended in this month
+      return false;
+    });
     html += `
       <div class="card mb-4">
         <div class="card-title">
@@ -9086,9 +9097,13 @@ function renderDispatch() {
   const zones = [...new Set(plans.map(p=>p.zone||'Unassigned'))].sort();
 
   // Box readiness analysis
+  // v45U #3 (confirmed by Ishan): the Zone Readiness bubbles now respect the SAME quarter/month
+  // scope as the Truck View below them (_truckPlanInScope — production-month attribution). With
+  // July selected, the bubbles flip to July's boxes/orders/trucks instead of staying stale on the
+  // all-months totals.
   const readyByZone = {};
   for (const z of ZONES) {
-    const zPlans = plans.filter(p=>p.zone===z && p.status!=='dispatched');
+    const zPlans = plans.filter(p=>p.zone===z && p.status!=='dispatched' && _truckPlanInScope(p));
     const readyBoxes = zPlans.filter(p=>{
       const ord = state.orders.find(o=>o.id===p.productionOrderId);
       return !ord || ord.status==='closed';
@@ -14628,6 +14643,7 @@ async function _v40_loadIntegrityFindings() {
     _v40_integritySummary = j.summary || { critical: 0, warning: 0, info: 0 };
     _v40_integrityTotalMatching = (typeof j.totalMatching === 'number') ? j.totalMatching : _v40_integrityFindings.length;
     _v40_integrityCapped = !!j.capped;
+    window._v40_lastRunAt = j.lastRunAt; window._v40_isRunning = j.isRunning; // v45U #8a
     _v40_renderIntegritySummary(j.lastRunAt, j.isRunning);
     _v40_renderIntegrityFindings();
   } catch(e) {
@@ -14660,6 +14676,31 @@ function _v40_renderIntegrityFindings() {
   // v41ZC: severity + check_type are now filtered SERVER-SIDE (so the 500-row LIMIT applies after
   // filtering). Only the free-text search remains client-side, over the already-filtered set.
   let filtered = _v40_integrityFindings;
+  // v45U #8a (confirmed by Ishan): findings are MONTH-SCOPED to the selected plan month. A finding
+  // belongs to a month via its batch's production-start month (order lookup); findings without a
+  // batch, or whose batch is unknown to planning, always show. Stale prior-month alerts stop
+  // flooding the current view — flip the month selector to audit any earlier month.
+  const _imYm = _selectedPlanMonth;
+  const _imMonthOf = bn => {
+    const o = (state.orders||[]).find(x => x.batchNumber === bn);
+    if (!o || !o.startDate) return '';
+    const d = new Date(o.startDate);
+    return isNaN(d) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  };
+  filtered = filtered.filter(f => {
+    if (!f.batch_number) return true;
+    const m = _imMonthOf(f.batch_number);
+    return m === '' || m === _imYm;
+  });
+  // Recompute the severity cards from the month-scoped set so cards and list always agree.
+  try {
+    _v40_integritySummary = {
+      critical: filtered.filter(f=>f.severity==='critical').length,
+      warning:  filtered.filter(f=>f.severity==='warning').length,
+      info:     filtered.filter(f=>f.severity==='info').length,
+    };
+    _v40_renderIntegritySummary(window._v40_lastRunAt, window._v40_isRunning);
+  } catch(e) {}
   const q = (_v40_integritySearch || '').trim().toLowerCase();
   if (q) filtered = filtered.filter(f =>
     (f.batch_number||'').toLowerCase().includes(q) ||
@@ -14728,6 +14769,8 @@ function _v40_renderIntegrityFindings() {
       <td style="vertical-align:top;padding:8px;white-space:nowrap">
         <button class="btn btn-sm" style="padding:3px 10px;font-size:11px;background:rgba(8,145,178,0.15);color:#0e7490" onclick="_v40_openFindingDetail('${f.id}')">Investigate</button>
         <button class="btn btn-sm" style="padding:3px 10px;font-size:11px;background:rgba(148,163,184,0.15);color:#475569;margin-left:4px" onclick="_v40_ackFinding('${f.id}')">Ack 24h</button>
+        ${(currentUser?.role==='admin' && f.batch_number && (f.check_type==='over_production' || f.check_type==='qty_mismatch_plan_dpr'))
+          ? `<button class="btn btn-sm" style="padding:3px 10px;font-size:11px;background:rgba(34,197,94,0.15);color:#15803d;margin-left:4px;font-weight:700" title="Regularise: set planning gross to the authoritative DPR figure" onclick="_v45u_autoFix('${f.id}','${(f.batch_number||'').replace(/'/g,'')}')">⚡ Auto-fix</button>` : ''}
       </td>
     </tr>`;
   }).join('');
@@ -14737,6 +14780,29 @@ function _v40_renderIntegrityFindings() {
       <tbody>${rowsHtml}</tbody>
     </table>
   </div>`;
+}
+
+// v45U #8b (confirmed by Ishan): one-click admin regularisation for Over-production and
+// Plan-vs-DPR mismatch findings. Sets the batch's planner gross override to the authoritative DPR
+// figure server-side (production_orders.data_json.grossOverride — the v44ZZ override-aware merge
+// then carries it into the client on the next sync), so plan gross ≡ DPR and the finding
+// auto-resolves on the next integrity scan. Other check types (scan gaps, wastage, packing) have
+// no safe deterministic fix, so they deliberately get no button.
+async function _v45u_autoFix(findingId, batchNumber){
+  if (currentUser?.role !== 'admin') { toast('Admin only', 'var(--red)'); return; }
+  if (!confirm(`Auto-fix ${batchNumber}?\n\nThis sets the planning gross override to the authoritative DPR figure. The finding auto-resolves on the next integrity scan (within 60 min). Reversible by editing the order's gross.`)) return;
+  try {
+    const r = await fetch(serverUrl + '/api/integrity/autofix', {
+      method: 'POST', headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ batchNumber, findingId, by: currentUser?.username || currentUser?.role || 'admin' }),
+      signal: AbortSignal.timeout(15000)
+    });
+    const j = await r.json();
+    if (j && j.ok) {
+      toast(`✅ ${batchNumber}: planning gross regularised to DPR ${fmt(j.gross)}L`, 'var(--accent3)');
+      _v40_loadIntegrityFindings();
+    } else toast('Auto-fix failed: ' + ((j && j.error) || 'unknown'), 'var(--red)');
+  } catch(e) { toast('Auto-fix failed: ' + (e?.message || e), 'var(--red)'); }
 }
 
 function _v40_openFindingDetail(findingId) {

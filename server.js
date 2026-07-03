@@ -3246,7 +3246,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45T' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45U' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3735,7 +3735,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45T' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45U' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -9281,6 +9281,42 @@ app.get('/api/integrity/findings', async (req, res) => {
 });
 
 // POST /api/integrity/ack/:id — admin-only — acknowledge a finding for N hours
+// v45U #8b (confirmed by Ishan): admin one-click regularisation for Over-production /
+// Plan-vs-DPR-mismatch findings. Sets the batch's planner gross override to the authoritative
+// DPR figure (effectiveGross: batch_gross_override → warmed batch sum) on the LIVE
+// production_orders row. The v44ZZ override-aware client merge then carries grossOverride into
+// planning on the next sync, plan gross ≡ DPR, and the finding auto-resolves on the next scan.
+// Soft and reversible (a planner can edit the order's gross afterwards); audited in data_json.
+app.post('/api/integrity/autofix', async (req, res) => {
+  try {
+    const bn = ((req.body && req.body.batchNumber) || '').trim();
+    const by = (req.body && req.body.by) || 'admin';
+    if (!bn) return res.status(400).json({ ok:false, error:'batchNumber required' });
+    await warmActualsCache().catch(()=>{});
+    const dpr = effectiveGross(bn);
+    if (!(dpr > 0)) return res.status(400).json({ ok:false, error:'No DPR gross available for ' + bn });
+    let row;
+    if (pgPool) {
+      const r = await pgPool.query(
+        `SELECT id, data_json FROM production_orders WHERE batch_number=$1 AND deleted=false ORDER BY updated_at DESC LIMIT 1`, [bn]);
+      row = r.rows[0];
+    } else {
+      row = db.prepare(`SELECT id, data_json FROM production_orders WHERE batch_number=? AND deleted=0 ORDER BY updated_at DESC LIMIT 1`).get(bn);
+    }
+    if (!row) return res.status(404).json({ ok:false, error:'No live production order for ' + bn });
+    const data = typeof row.data_json === 'string' ? JSON.parse(row.data_json) : (row.data_json || {});
+    data.grossOverride = dpr;
+    data.grossQty = dpr;
+    data._autoFixedAt = new Date().toISOString();
+    data._autoFixedBy = by;
+    const js = JSON.stringify(data);
+    if (pgPool) await pgPool.query(`UPDATE production_orders SET data_json=$1, updated_at=NOW()::TEXT WHERE id=$2`, [js, row.id]);
+    else db.prepare(`UPDATE production_orders SET data_json=?, updated_at=datetime('now') WHERE id=?`).run(js, row.id);
+    console.log(`[v45U autofix] ${bn}: grossOverride=${dpr} set by ${by} (finding ${req.body && req.body.findingId || '-'})`);
+    res.json({ ok:true, batchNumber: bn, gross: dpr });
+  } catch (e) { res.status(500).json({ ok:false, error: e.message }); }
+});
+
 app.post('/api/integrity/ack/:id', async (req, res) => {
   try {
     const token = req.headers['x-session-token'] || req.body.token;
@@ -10819,7 +10855,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45T',
+      build: 'v45U',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10828,7 +10864,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45T', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45U', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12152,7 +12188,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45T',
+      build: 'v45U',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12161,7 +12197,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45T', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45U', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45T</title>
+<title>Sunloc Tracking Suite v1.0 · build v45U</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45T</p>
+      <p>Tracking Suite v1.0 · build v45U</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45T</p>
+      <p>Tracking Suite v1.0 · build v45U</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4555,6 +4555,12 @@ function renderDeptScan(dept){
           <option value="in" ${_rsF.type==='in'?'selected':''}>IN</option>
           ${dept!=='packing'?`<option value="out" ${_rsF.type==='out'?'selected':''}>OUT</option>`:''}
         </select></div>
+      <div><label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">CUSTOMER</label>
+        <input type="text" id="rsf-cust-${dept}" value="${(_rsF.cust||'').replace(/"/g,'&quot;')}" placeholder="any" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);width:130px"></div>
+      <div><label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">COLOUR</label>
+        <input type="text" id="rsf-colour-${dept}" value="${(_rsF.colour||'').replace(/"/g,'&quot;')}" placeholder="any" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);width:100px"></div>
+      <div><label style="font-size:11px;color:var(--text3);display:block;margin-bottom:3px">PC CODE</label>
+        <input type="text" id="rsf-pc-${dept}" value="${(_rsF.pc||'').replace(/"/g,'&quot;')}" placeholder="any" style="font-size:12px;padding:4px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);width:90px"></div>
       <button class="btn btn-sm btn-primary" onclick="applyScanFilter('${dept}')">Apply</button>
       ${_rsActive?`<button class="btn btn-sm btn-ghost" onclick="clearScanFilter('${dept}')">✕ Clear</button>`:''}
       ${_rsActive&&_rsRows.length?`<button class="btn btn-sm btn-ghost" onclick="exportScansCsv('${dept}')">⬇ Export CSV</button>`:''}
@@ -4596,7 +4602,13 @@ async function applyScanFilter(dept){
   const to   =(document.getElementById('rsf-to-'+dept)?.value||'').trim();
   const batch=(document.getElementById('rsf-batch-'+dept)?.value||'').trim();
   const type =(document.getElementById('rsf-type-'+dept)?.value||'').trim();
-  window._rsFilter =window._rsFilter ||{}; window._rsFilter[dept]={from,to,batch,type};
+  // v45U #6 (confirmed by Ishan): Customer / Colour / PC Code filters. These resolve from the
+  // batch master client-side (the server scan rows carry only batch numbers), so they're applied
+  // to the fetched set below — table and CSV export both see the filtered rows.
+  const cust  =(document.getElementById('rsf-cust-'+dept)?.value||'').trim().toLowerCase();
+  const colour=(document.getElementById('rsf-colour-'+dept)?.value||'').trim().toLowerCase();
+  const pc    =(document.getElementById('rsf-pc-'+dept)?.value||'').trim().toLowerCase();
+  window._rsFilter =window._rsFilter ||{}; window._rsFilter[dept]={from,to,batch,type,cust,colour,pc};
   window._rsActive =window._rsActive ||{}; window._rsActive[dept]=true;
   window._rsLoading=window._rsLoading||{}; window._rsLoading[dept]=true;
   renderDeptScan(dept);
@@ -4605,7 +4617,17 @@ async function applyScanFilter(dept){
     if(from)qs.set('from',from); if(to)qs.set('to',to); if(batch)qs.set('batch',batch); if(type)qs.set('type',type);
     const r=await fetch(serverUrl+'/api/tracking/scans-filtered?'+qs.toString(),{signal:AbortSignal.timeout(20000)});
     const j=await r.json();
-    window._rsRows=window._rsRows||{}; window._rsRows[dept]=(j&&j.ok&&j.scans)?j.scans:[];
+    let _rows45u=(j&&j.ok&&j.scans)?j.scans:[];
+    if(cust||colour||pc){ // v45U #6: batch-metadata filters
+      _rows45u=_rows45u.filter(s=>{
+        const _b=state.batches.find(x=>x.batchNumber===s.batchNumber)||{};
+        if(cust   && !String(_b.customer||'').toLowerCase().includes(cust))   return false;
+        if(colour && !String(_b.colour||'').toLowerCase().includes(colour))   return false;
+        if(pc     && !String(_b.pcCode||'').toLowerCase().includes(pc))       return false;
+        return true;
+      });
+    }
+    window._rsRows=window._rsRows||{}; window._rsRows[dept]=_rows45u;
   }catch(e){ window._rsRows=window._rsRows||{}; window._rsRows[dept]=[]; try{toast('Scan filter failed: '+(e?.message||e),'#b91c1c',3000);}catch(_t){} }
   window._rsLoading[dept]=false;
   renderDeptScan(dept);
@@ -4613,7 +4635,7 @@ async function applyScanFilter(dept){
 function clearScanFilter(dept){
   if(window._rsActive)window._rsActive[dept]=false;
   if(window._rsRows)window._rsRows[dept]=[];
-  if(window._rsFilter)window._rsFilter[dept]={from:'',to:'',batch:'',type:''};
+  if(window._rsFilter)window._rsFilter[dept]={from:'',to:'',batch:'',type:'',cust:'',colour:'',pc:''};
   renderDeptScan(dept);
 }
 // v44S Issue 1: export the full filtered recent-scans set to CSV (the table is scroll-capped, so this
@@ -9662,7 +9684,21 @@ function _v41_renderReportFInner(){
   // v41ZB: running totals for the footer row
   let _fTotDprL=0, _fTotDprBx=0, _fTotWaste=0, _fTotAim=0, _fTotAimToday=0, _fTotPacked=0;
 
-  const _getAimIn  = bn => hasScanSummary() ? (_ss(bn,'aim').in      + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)      : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length;
+  // v45U #7 (confirmed by Ishan): when a month is selected, this report's reconcile inputs use the
+  // SAME month window Report B uses (agrade-by-month cache: windowed DPR gross, windowed AIM scan-in,
+  // windowed AIM wastage). Previously this report was cumulative while B was month-windowed, so the
+  // under-scan box totals disagreed by exactly the prior-month activity on carry-forward batches
+  // (the 49 vs 39 gap). Falls back to cumulative until the window is cached — same as B/D first paint.
+  const _fMd = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
+  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+    _v41_fetchAgradeMonth(_trkSelectedMonth).then(md => { if (md && window._activeReport===renderReportF) renderReportF(); });
+  }
+  const _fIsCurMonth = _trkSelectedMonth === today().slice(0,7);
+  const _fWinAimIn = bn => ((((_fMd.summary||{})[bn]||{}).aim)||{inBoxes:0}).inBoxes + (_fIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length : 0);
+  const _fWinDpr   = (bn,b) => (bn in (_fMd.monthGross||{})) ? (parseFloat(_fMd.monthGross[bn])||0)
+                              : (_trkProdStartMonth(b||{})===_trkSelectedMonth ? ((b&&(b.actualProd||b.actualQty))||0) : 0);
+  const _getAimIn  = bn => _fMd ? _fWinAimIn(bn)
+      : (hasScanSummary() ? (_ss(bn,'aim').in      + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)      : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length);
   const _getPackOut= bn => hasScanSummary() ? (_ss(bn,'packing').in + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in').length;
   // aimInToday still from state.scans (timestamp needed, not just count)
   const _getAimInToday = bn => state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in'&&_istDayKey(s.ts)===todayStr).length;
@@ -9670,7 +9706,7 @@ function _v41_renderReportFInner(){
   allRelevantBatches.forEach(batchNo => {
     const batch = getBatch(batchNo);
     if(!batch) return;
-    const dprQtyL   = batch.actualProd || batch.actualQty || 0;
+    const dprQtyL   = _fMd ? _fWinDpr(batchNo, batch) : (batch.actualProd || batch.actualQty || 0); // v45U #7
     const dprBoxes  = dprQtyL > 0 ? Math.round(lakhToBox(dprQtyL, batch.size)) : 0;
     const aimInTotal   = _getAimIn(batchNo);
     const aimInToday   = _getAimInToday(batchNo);
@@ -9678,7 +9714,7 @@ function _v41_renderReportFInner(){
     // v41ZB: reconcile against the wastage-adjusted target. AIM Salvage + AIM Remelt never
     // make it past AIM, so the expected AIM-scan target = DPR Boxes − AIM wastage (in boxes).
     // Shortfall/overage rounded UP to whole boxes (e.g. (40−3.8)−31 = 5.2 → 6 boxes under).
-    const _fW = getTotalWastage(batchNo,'aim');
+    const _fW = _fMd ? ((((_fMd.wastage||{})[batchNo]||{}).aim) || {salvage:0,remelt:0}) : getTotalWastage(batchNo,'aim'); // v45U #7
     // v45I #2: net DPR − Wastage in Lac, then ONE box conversion (was ceil(DPR)−ceil(waste), which
     // double-rounded and flagged a spurious ±1 box on balanced batches). Match ⟺ DPR − Wastage − ScanIN = 0.
     const _fTarget = lakhToBox(Math.max(0, dprQtyL - (_fW.salvage + _fW.remelt)), batch.size);
@@ -9703,13 +9739,13 @@ function _v41_renderReportFInner(){
 
   filteredBatches.forEach(batchNo => {
     const batch = getBatch(batchNo); if(!batch) return;
-    const dprQtyL   = batch.actualProd || batch.actualQty || 0;
+    const dprQtyL   = _fMd ? _fWinDpr(batchNo, batch) : (batch.actualProd || batch.actualQty || 0); // v45U #7
     const dprBoxes  = dprQtyL > 0 ? Math.round(lakhToBox(dprQtyL, batch.size)) : 0;
     const aimInTotal   = _getAimIn(batchNo);
     const aimInToday   = _getAimInToday(batchNo);
     const packOutTotal = _getPackOut(batchNo);
     // v41ZB: same wastage-adjusted target as the classification loop above.
-    const _fW = getTotalWastage(batchNo,'aim');
+    const _fW = _fMd ? ((((_fMd.wastage||{})[batchNo]||{}).aim) || {salvage:0,remelt:0}) : getTotalWastage(batchNo,'aim'); // v45U #7
     // v45I #2: net DPR − Wastage in Lac, then ONE box conversion (was ceil(DPR)−ceil(waste), which
     // double-rounded and flagged a spurious ±1 box on balanced batches). Match ⟺ DPR − Wastage − ScanIN = 0.
     const _fTarget = lakhToBox(Math.max(0, dprQtyL - (_fW.salvage + _fW.remelt)), batch.size);
@@ -10626,7 +10662,13 @@ function _v41_renderReportEInnerBody(){
     const ag=_v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
     const totalAG=ag.aGrade;
     const aGradePct=ag.pct;
-    const wip=_isRetired(b.batchNumber)?0:Math.max(0,grossProd-aimIn);
+    // v45U #5 (confirmed by Ishan): WIP aligned to Report B's Production WIP — same frozen shape
+    // (Gross − AIM Salvage − AIM Remelt − AIM Scan-IN qty). E previously deducted AIM-Out
+    // (inspected-through) instead of scan-IN, so batches inspected-but-unscanned or vice versa
+    // (26ZG131, 26N032) read differently in the two reports.
+    const _aimInBoxes45u = useSS ? (_ss(b.batchNumber,'aim').in + localExtra('aim','in'))
+                                 : scansForBatch.filter(s=>s.dept==='aim'&&s.type==='in').length;
+    const wip=_isRetired(b.batchNumber)?0:Math.max(0, grossProd - aimW.salvage - aimW.remelt - boxToLakh(_aimInBoxes45u, b.size));
     const printingTD_c = useSS ? (_ss(b.batchNumber,'printing').out + localExtra('printing','out'))
                                 : scansForBatch.filter(s=>s.dept==='printing'&&s.type==='out').length;
     const printingTD=b.isPrinted?boxToLakh(printingTD_c,b.size):0;
@@ -10656,14 +10698,15 @@ function _v41_renderReportEInnerBody(){
     // Numerator deducts subsequent wastage from AIM Out cumulatively.
     // Applies only to PTD batches (UP batches show '—').
     const aimInputTotal = aimOutQty + aimW.salvage + aimW.remelt;
-    const postPrintNumerator = aimOutQty - _printSalvageLakhs - _printRemeltLakhs;
-    const postPiNumerator    = aimOutQty - _printSalvageLakhs - _printRemeltLakhs - piW.salvage - piW.remelt;
-    const printAGradePct = (b.isPrinted && aimInputTotal > 0)
-      ? Math.max(0, (postPrintNumerator / aimInputTotal) * 100)
-      : 0;
-    const piAGradePct = (b.isPrinted && aimInputTotal > 0)
-      ? Math.max(0, (postPiNumerator / aimInputTotal) * 100)
-      : 0;
+    // v45U #4 (confirmed by Ishan — Report D is the reference and E must equal D): Post Printing
+    // A-Grade % now uses the EXACT Report D building block — _v41_agradeFor(bn, printed|unprinted),
+    // month-attributed + recon-override aware — instead of the Daily-Printing-Log salvage%
+    // derivation, whose different source made E read 94.0% while D read 91.3%. Per batch: ag.pct;
+    // aggregates: Σ ag.aGrade / Σ ag.inspected — identical to D's overall by construction. UP
+    // batches contribute their unprinted (AIM-level) pct, exactly as inside D.
+    const printAGradePct = ag.inspected > 0 ? Math.max(0, ag.pct) : 0;
+    const _agHas = ag.inspected > 0;
+    const piAGradePct = 0; // legacy var (column removed v45T) — retained so no stale reference breaks
     const packUnptd_c = useSS ? (_ss(b.batchNumber,'packing').in + localExtra('packing','out'))
                                : scansForBatch.filter(s=>s.dept==='packing'&&s.type==='in').length;
     // v44Z fix (a): the packing column shows the ACTUAL packed quantity — the sum of scan qty, which
@@ -10708,7 +10751,8 @@ function _v41_renderReportEInnerBody(){
       printingTD:fmt(printingTD),_printingTD:printingTD,
       printRej:fmt(_printSalvageLakhs),_printRej:_printSalvageLakhs,
       _printSalvage: _printSalvageLakhs, _printRemelt: _printRemeltLakhs,
-      printAGradePct: b.isPrinted ? fmt(printAGradePct,1) : '—', _printAGradePct: printAGradePct, _aimInputTotal: aimInputTotal,
+      printAGradePct: _agHas ? fmt(printAGradePct,1) : '—', _printAGradePct: printAGradePct, _aimInputTotal: aimInputTotal,
+      _agNum: totalAG, _agDen: ag.inspected,
       piInspect:fmt(piOut),_piInspect:piOut,
       piSalRem:fmt(piW.salvage),_piSalRem:piW.salvage,
       _piSalvage: piW.salvage, _piRemelt: piW.remelt,
@@ -10770,7 +10814,9 @@ function _v41_renderReportEInnerBody(){
     const piRemSum    = sumRows(ptdRows,'piRemelt');
     const postPrintNumSum = ptdAimOut - printSalSum - printRemSum;
     const postPiNumSum    = ptdAimOut - printSalSum - printRemSum - piSalSum - piRemSum;
-    const printPct = ptdAimInsp > 0 ? Math.max(0, postPrintNumSum / ptdAimInsp * 100).toFixed(1) + '%' : '—';
+    // v45U #4: group Post Printing % = Σ ag.aGrade / Σ ag.inspected — Report D's aggregate exactly.
+    const _agNumSum = sumRows(arr,'agNum'), _agDenSum = sumRows(arr,'agDen');
+    const printPct = _agDenSum > 0 ? Math.max(0, _agNumSum / _agDenSum * 100).toFixed(1) + '%' : '—';
     const piPct    = ptdAimInsp > 0 ? Math.max(0, postPiNumSum    / ptdAimInsp * 100).toFixed(1) + '%' : '—';
     const printOutSum = sumRows(arr,'printingTD');
     const piOutSum    = sumRows(arr,'piInspect');
@@ -10806,7 +10852,7 @@ function _v41_renderReportEInnerBody(){
         // v37H: For PTD batches, show 0.00 (not '—') so print columns are visibly populated
         // even before scans accumulate. UP batches keep '—' since printing doesn't apply.
         const fmtPrint = v => r.isPrinted ? parseFloat(v||0).toFixed(2) : '—';
-        return `<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}" data-pp-num="${r.isPrinted?Math.max(0,(r._aimAGrade||0)-(r._printSalvage||0)-(r._printRemelt||0)):0}" data-pp-den="${r.isPrinted?(r._aimInputTotal||0):0}">
+        return `<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}" data-pp-num="${r._agNum||0}" data-pp-den="${r._agDen||0}">
         <td class="sticky-col" style="left:0;min-width:70px;border-right:1px solid #d4b896">${r.machine}</td>
         <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
         <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}</td>
@@ -10853,7 +10899,9 @@ function _v41_renderReportEInnerBody(){
   const _ptdPiRem        = _ptdSum('piRemelt');
   const _postPrintNum    = _ptdAimOut - _ptdPrintSal - _ptdPrintRem;
   const _postPiNum       = _ptdAimOut - _ptdPrintSal - _ptdPrintRem - _ptdPiSal - _ptdPiRem;
-  const printPctTotal = _ptdAimInsp>0 ? Math.max(0, _postPrintNum/_ptdAimInsp*100).toFixed(1)+'%' : '—';
+  // v45U #4: grand-total Post Printing % = Σ ag / Σ inspected over every row — equals Report D.
+  const _agNumTot = sum('agNum'), _agDenTot = sum('agDen');
+  const printPctTotal = _agDenTot>0 ? Math.max(0, _agNumTot/_agDenTot*100).toFixed(1)+'%' : '—';
   const piPctTotal    = _ptdAimInsp>0 ? Math.max(0, _postPiNum   /_ptdAimInsp*100).toFixed(1)+'%' : '—';
   const totalsRow = allFloorRows.length ? `<tr id="grand-total-row" style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
     <td colspan="9" style="text-align:right;padding-right:8px;color:#f0c060;letter-spacing:.5px">GRAND TOTAL (${allFloorRows.length} batches)</td>
@@ -13246,7 +13294,11 @@ function exportReportE(){
         const aimIn=aimOut+aimW.total;
         const ag=_v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
         const aGradePct=ag.pct, netAGrade=ag.aGrade;
-        const wip=_isRetired(b.batchNumber)?0:Math.max(0,grossProd-aimIn);
+        // v45U #5: WIP aligned to Report B's Production WIP (see render site)
+        const _aimInBoxesEx45u = hasScanSummary()
+          ? (_ss(b.batchNumber,'aim').in + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
+          : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='in').length;
+        const wip=_isRetired(b.batchNumber)?0:Math.max(0, grossProd - aimW.salvage - aimW.remelt - boxToLakh(_aimInBoxesEx45u, b.size));
         const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
         const packOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
         const packQty = boxToLakh(packOutBoxes, b.size);
@@ -13265,10 +13317,9 @@ function exportReportE(){
         const aimInputTotalEx     = aimOut + aimW.salvage + aimW.remelt;
         const postPrintNumEx      = aimOut - printW.salvage - printW.remelt;
         const postPiNumEx         = aimOut - printW.salvage - printW.remelt - piW.salvage - piW.remelt;
-        const printAGradePctEx = (b.isPrinted && aimInputTotalEx > 0)
-          ? Math.max(0, (postPrintNumEx / aimInputTotalEx) * 100) : 0;
-        const piAGradePctEx    = (b.isPrinted && aimInputTotalEx > 0)
-          ? Math.max(0, (postPiNumEx    / aimInputTotalEx) * 100) : 0;
+        // v45U #4: export mirrors the render — Report D's building block, all batches
+        const printAGradePctEx = ag.inspected > 0 ? Math.max(0, ag.pct) : null;
+        const piAGradePctEx    = null; // column removed v45T
         summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,
           'PLANNED QUANTITY (lac)':_xn(b.qty),'TOTAL PRODUCTION (lac)':_xn(grossProd),
           'AIM TOTAL RUN (lac)':_xn(aimIn),'SALVAGE':_xn(aimW.salvage),'REMELT':_xn(aimW.remelt),
@@ -13276,7 +13327,7 @@ function exportReportE(){
           'WIP (lac)':_xn(wip),
           'PRINT TD (lac)':_xn(printOut),'PRINT REJ (lac)':_xn(printW.salvage),
           'PI INSPECT (lac)':_xn(piOut),'PI SAL/REM (lac)':_xn(piW.salvage+piW.remelt),
-          'POST PRINTING A-GRADE %': b.isPrinted ? _xn(printAGradePctEx,2) : '—',
+          'POST PRINTING A-GRADE %': (printAGradePctEx != null) ? _xn(printAGradePctEx,2) : '—',
           'PACKING UNPTD (lac)':_xn(!b.isPrinted?packQty:0),
           'PACKING PTD (lac)':_xn(b.isPrinted?packQty:0),
           'DISPATCH (lac)':_xn(_v40_dispatchedLakhs(b.batchNumber, b.size))});
@@ -13307,10 +13358,10 @@ function exportReportE(){
         const aimInputTotalMc = aimOutLac + aimW.salvage + aimW.remelt;
         const postPrintNumMc  = aimOutLac - printW.salvage - printW.remelt;
         const postPiNumMc     = aimOutLac - printW.salvage - printW.remelt - piW.salvage - piW.remelt;
-        const printAGradePctEx = (b.isPrinted && aimInputTotalMc > 0)
-          ? Math.max(0, (postPrintNumMc / aimInputTotalMc) * 100) : null;
-        const piAGradePctEx    = (b.isPrinted && aimInputTotalMc > 0)
-          ? Math.max(0, (postPiNumMc    / aimInputTotalMc) * 100) : null;
+        // v45U #4: per-machine sheet mirrors the render — Report D's building block
+        const _agMc = _v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
+        const printAGradePctEx = _agMc.inspected > 0 ? Math.max(0, _agMc.pct) : null;
+        const piAGradePctEx    = null; // column removed v45T
         const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
         const packOutEx = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
         const packOutLac = boxToLakh(packOutEx, b.size);
