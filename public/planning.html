@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v45X</p>
+      <p>Planning Suite v3.0 · build v45Y</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6993,20 +6993,23 @@ function renderPrinting() {
     const pref = pm.pref || pmConst?.pref || '';
     // v45U #2 (confirmed by Ishan): print-specific month membership. orderInMonth couldn't scope
     // this view — the auto-computed end date of every unclosed order is always ≥ today, so stale
-    // Apr/May orders "overlapped" the current month and passed the spanning test. Rule now: for
-    // month M show orders that STARTED in M, or started in M-1 (immediate carry-forward — unclosed,
-    // or completed with the run ending in M). Anything older lives in its own month's view (the
-    // month selector is the archive).
+    // Apr/May orders "overlapped" the current month and passed the spanning test.
+    // v45Y (confirmed by Ishan, 4-Jul): rule revised. The v45X start-date recovery (true first-log
+    // starts, no longer stomped to today) re-activated the old "started in M−1 and not completed"
+    // carry-forward for June orders that printed less than plan and will NEVER flip to completed —
+    // zombie rows cluttering July. New rule: for month M show orders that STARTED in M, or that
+    // have Daily Printing Log activity in M. A June-start order genuinely printing in July stays
+    // visible; finished prior-month orders live only in their own month's view.
     const _pIso = d => { if(!d) return ''; const dd = new Date(d); return isNaN(dd) ? '' : `${dd.getFullYear()}-${String(dd.getMonth()+1).padStart(2,'0')}-${String(dd.getDate()).padStart(2,'0')}`; };
     const _pYm = _selectedPlanMonth;
-    const _pPrevYm = (()=>{ const [y,m]=_pYm.split('-').map(Number); return m===1 ? `${y-1}-12` : `${y}-${String(m-1).padStart(2,'0')}`; })();
+    const _pLogActive = new Set((state.dailyPrinting || [])
+      .filter(l => l && l.printOrderId && l.date && String(l.date).slice(0,7) === _pYm)
+      .map(l => l.printOrderId));
     const orders = printOrders.filter(p => {
       if (p.machineId !== pm.id) return false;
-      const s = _pIso(p.startDate), e = _pIso(p.endDate);
-      const sYm = s.slice(0,7), eYm = e.slice(0,7);
-      if (sYm === _pYm) return true;                                        // starts in the month
-      if (sYm === _pPrevYm && p.status !== 'completed') return true;        // unclosed carry-forward from previous month
-      if (sYm === _pPrevYm && eYm === _pYm) return true;                    // prev-month start whose run ended in this month
+      const sYm = _pIso(p.startDate).slice(0,7);
+      if (sYm === _pYm) return true;                 // starts (or was sequenced to start) in the month
+      if (_pLogActive.has(p.id)) return true;        // real printing activity logged in the month
       return false;
     });
     html += `

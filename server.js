@@ -3273,7 +3273,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45X' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45Y' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3762,7 +3762,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45X' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45Y' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -8278,6 +8278,57 @@ app.get('/api/dpr/plant-cum', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v45Y (confirmed by Ishan): REBUILD production_actuals from dpr_records day blobs for a date
+// range. Purpose: restore months (e.g. June 2026) whose per-day actuals rows are missing while the
+// DPR grid blobs still hold the data — without them, month-gross for that month can never be
+// computed. Idempotent: same upsert + conflict key as the batch-close flush; existing rows are
+// simply overwritten with the same grid values, nothing is deleted. Dry-run by default — pass
+// {"confirm":true} to write. Body: { from:'YYYY-MM-DD', to:'YYYY-MM-DD', confirm?:boolean }.
+app.post('/api/admin/rebuild-actuals-from-dpr', async (req, res) => {
+  try {
+    if (!pgPool) return res.status(400).json({ ok: false, error: 'PostgreSQL only' });
+    const { from, to, confirm } = req.body || {};
+    const isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+    if (!isDate(from) || !isDate(to) || from > to) {
+      return res.status(400).json({ ok: false, error: 'from/to must be YYYY-MM-DD with from <= to' });
+    }
+    const recs = await pgPool.query(
+      `SELECT floor, date, data_json FROM dpr_records WHERE date >= $1 AND date <= $2 ORDER BY date, floor`,
+      [from, to]);
+    let scanned = 0, wouldWrite = 0, written = 0;
+    const perDate = {};
+    for (const rec of recs.rows) {
+      const data = typeof rec.data_json === 'string' ? JSON.parse(rec.data_json) : rec.data_json;
+      const shifts = (data && data.shifts) || {};
+      for (const [shiftName, shiftData] of Object.entries(shifts)) {
+        if (!shiftData || !shiftData.machines) continue;
+        for (const [machineId, machineData] of Object.entries(shiftData.machines)) {
+          const runs = (machineData && machineData.runs) || [];
+          for (let ri = 0; ri < runs.length; ri++) {
+            const run = runs[ri];
+            const qty = parseFloat(run && run.qty) || 0;
+            scanned++;
+            if (qty <= 0) continue;
+            wouldWrite++;
+            perDate[rec.date] = (perDate[rec.date] || 0) + 1;
+            if (confirm === true) {
+              await pgPool.query(
+                `INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
+                 VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
+                 ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
+                 order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number, qty_lakhs=EXCLUDED.qty_lakhs`,
+                [run.orderId || null, run.batchNumber || null, machineId, rec.date, shiftName, ri, qty, rec.floor]);
+              written++;
+            }
+          }
+        }
+      }
+    }
+    res.json({ ok: true, dryRun: confirm !== true, dprDays: recs.rows.length,
+               runsScanned: scanned, rowsToWrite: wouldWrite, rowsWritten: written, perDate });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // GET all DPR dates (for history navigation)
 app.get('/api/dpr/dates/:floor', async (req, res) => {
   try {
@@ -10951,7 +11002,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45X',
+      build: 'v45Y',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10960,7 +11011,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45X', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45Y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12284,7 +12335,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45X',
+      build: 'v45Y',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12293,7 +12344,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45X', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45Y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -13159,23 +13210,45 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
     // reconcile with DPR. With this, Report E gross (month mode) = sum of that batch's DPR entries
     // dated within YYYY-MM, matching DPR per-machine totals.
     const monthGross = {};
+    const monthMachine = {};
     try {
+      // v45Y (confirmed by Ishan): attribution parity with warmActualsCache. The old query grouped
+      // by RAW batch_number and dropped NULL-batch rows entirely — but the warm cache (which feeds
+      // Report E / planning actualProd) attributes those rows to their batch via the persistent
+      // order→batch map. Result: batches whose actuals rows ride on order_id alone counted in
+      // Report E and DPR but VANISHED from Report B's month gross (the FF/SF gap, 4-Jul). Same
+      // in-memory attribution here, so the three reports agree by construction. Also returns the
+      // dominant machine per batch (monthMachine) so the client can floor-classify ghost batches.
+      try { await warmActualsCache(); } catch(_) {} // refresh _orderBatch (throttled 60s — cheap)
       let grossRows;
       if (pgPool) {
         grossRows = (await pgPool.query(
-          `SELECT batch_number, COALESCE(SUM(qty_lakhs),0) AS g
-             FROM production_actuals WHERE date LIKE $1 GROUP BY batch_number`, [ym + '%'])).rows;
+          `SELECT order_id, batch_number, machine_id, COALESCE(SUM(qty_lakhs),0) AS g
+             FROM production_actuals WHERE date LIKE $1
+             GROUP BY order_id, batch_number, machine_id`, [ym + '%'])).rows;
       } else {
         grossRows = db.prepare(
-          `SELECT batch_number, COALESCE(SUM(qty_lakhs),0) AS g
-             FROM production_actuals WHERE date LIKE ? GROUP BY batch_number`).all(ym + '%');
+          `SELECT order_id, batch_number, machine_id, COALESCE(SUM(qty_lakhs),0) AS g
+             FROM production_actuals WHERE date LIKE ?
+             GROUP BY order_id, batch_number, machine_id`).all(ym + '%');
       }
+      const _mcAgg = {}; // batch -> { machineId: qty }
       for (const r of (grossRows||[])) {
-        if (r.batch_number) monthGross[r.batch_number] = parseFloat(r.g) || 0;
+        const bn = (r.batch_number && String(r.batch_number).trim()) ? r.batch_number : _orderBatch[r.order_id];
+        if (!bn) continue;
+        const g = parseFloat(r.g) || 0;
+        monthGross[bn] = (monthGross[bn] || 0) + g;
+        if (r.machine_id) {
+          if (!_mcAgg[bn]) _mcAgg[bn] = {};
+          _mcAgg[bn][r.machine_id] = (_mcAgg[bn][r.machine_id] || 0) + g;
+        }
+      }
+      for (const [bn, per] of Object.entries(_mcAgg)) {
+        monthMachine[bn] = Object.entries(per).sort((a,b)=>b[1]-a[1])[0][0];
       }
     } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
 
-    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross });
+    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross, monthMachine });
   } catch(err) {
     console.error('[agrade-by-month]', err.message);
     res.status(500).json({ ok:false, error: err.message });

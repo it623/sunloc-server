@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45X</title>
+<title>Sunloc Tracking Suite v1.0 · build v45Y</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45X</p>
+      <p>Tracking Suite v1.0 · build v45Y</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45X</p>
+      <p>Tracking Suite v1.0 · build v45Y</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1123,7 +1123,15 @@ function _v40_dispatchedBoxes(batchNumber) {
   const legacyBoxes = hasScanSummary()
     ? (_ss(batchNumber, 'dispatch').out + localOut)
     : state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out').length;
-  const phase18Boxes = state.dispatchRecs.filter(r => r.batchNumber === batchNumber).reduce((s, r) => s + (parseInt(r.boxes) || 0), 0);
+  // v45Y (confirmed by Ishan): EXPORT dispatch records carry a unit/capsule count in r.boxes, not
+  // label boxes — 26ZB074 showed "Dispatched: 6600 / 15000%". Box count now derives from the
+  // record's qty (Lakhs, the reliable field _v40_dispatchedLakhs already trusts) via the batch's
+  // pack size; r.boxes survives only as the fallback when a record has no qty.
+  const _ps45y = PACK_SIZES[String(getBatch(batchNumber)?.size ?? '0')] || 1;
+  const phase18Boxes = state.dispatchRecs.filter(r => r.batchNumber === batchNumber).reduce((s, r) => {
+    const q = parseFloat(r.qty) || 0;
+    return s + (q > 0 ? Math.round(q / _ps45y) : (parseInt(r.boxes) || 0));
+  }, 0);
   return legacyBoxes + phase18Boxes;
 }
 
@@ -3100,6 +3108,47 @@ ${hBand}
 }
 
 
+// v45Y (confirmed by Ishan, Rahul ZG134): EVERY print path must persist the printed flag to the
+// server. Five fallback paths (no printer bridge, bridge unreachable, bridge error) marked labels
+// printed LOCALLY only — on the HTTPS domain a plain-http bridge is mixed-content-blocked, so the
+// fallback is the NORMAL path and the flag silently reverted on the next server label refresh.
+// Additionally, label-update pushes had no retry — a transient failure dropped the flag forever.
+let _pendingLabelUpdates = [];
+try { _pendingLabelUpdates = JSON.parse(localStorage.getItem('sunloc_pending_label_updates')||'[]'); } catch(e){}
+function _saveLabelUpdateQueue(){
+  try{ localStorage.setItem('sunloc_pending_label_updates', JSON.stringify(_pendingLabelUpdates)); }catch(e){}
+}
+function _queueLabelUpdate(payload){
+  _pendingLabelUpdates = _pendingLabelUpdates.filter(p => p.labelId !== payload.labelId); // latest wins
+  _pendingLabelUpdates.push(payload);
+  _saveLabelUpdateQueue();
+}
+async function _flushPendingLabelUpdates(){
+  if(!serverUrl || _pendingLabelUpdates.length===0) return;
+  const toFlush = [..._pendingLabelUpdates];
+  for(const payload of toFlush){
+    try{
+      const r = await fetch(serverUrl+'/api/tracking/label-update',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload),signal:AbortSignal.timeout(8000)});
+      if(r.ok){
+        _pendingLabelUpdates = _pendingLabelUpdates.filter(p=>p.labelId!==payload.labelId);
+        _saveLabelUpdateQueue();
+      }
+    }catch(e){ /* stay queued */ }
+  }
+}
+setInterval(_flushPendingLabelUpdates, 10000);
+function _pushLabelUpdate(payload){
+  pushToServer('/api/tracking/label-update', payload)
+    .then(r => { if(!r) _queueLabelUpdate(payload); })
+    .catch(() => _queueLabelUpdate(payload));
+}
+function _persistLabelsPrinted(labelsArr){
+  const ts = now();
+  labelsArr.forEach(l => { l.printed = true; if(!l.printedAt) l.printedAt = ts; });
+  saveLocal();
+  labelsArr.forEach(l => _pushLabelUpdate({ labelId: l.id, printed: true, printedAt: l.printedAt }));
+}
+
 function printLabel(labelId){
   const label = state.labels.find(l=>l.id===labelId);
   if(!label) return;
@@ -3109,11 +3158,14 @@ function printLabel(labelId){
   const printerUrl = localStorage.getItem('sunloc_printer_url');
   if(printerUrl){
     fetch(printerUrl,{method:'POST',headers:{'Content-Type':'text/plain'},body:zpl})
-      .then(r=>{ if(r.ok){ label.printed=true; label.printedAt=now(); saveLocal(); pushToServer('/api/tracking/label-update',{labelId:label.id,printed:true,printedAt:label.printedAt}); renderPage(currentPage); } })
-      .catch(()=>downloadZPL(zpl,label));
+      .then(r=>{ if(r.ok){ _persistLabelsPrinted([label]); renderPage(currentPage); }
+                 else { downloadZPL(zpl,label); _persistLabelsPrinted([label]); renderPage(currentPage); } })
+      // v45Y: the ZPL is handed to the user for printing — treat as printed AND persist,
+      // consistent with every other download-fallback path (this branch previously did neither).
+      .catch(()=>{ downloadZPL(zpl,label); _persistLabelsPrinted([label]); renderPage(currentPage); });
   } else {
     downloadZPL(zpl,label);
-    label.printed=true; label.printedAt=now(); saveLocal();
+    _persistLabelsPrinted([label]);
   }
 }
 
@@ -3135,9 +3187,7 @@ function printBatchLabels(batchNo){
   const _dupSpecimens=[];
   { let _seenSpec=false; labels = labels.filter(l=>{ if(_isSpecimenLabel(l)){ if(_seenSpec){ _dupSpecimens.push(l); return false; } _seenSpec=true; } return true; }); }
   if(_dupSpecimens.length){
-    _dupSpecimens.forEach(l=>{ l.printed=true; l.printedAt=now(); });
-    saveLocal();
-    _dupSpecimens.forEach(l=>pushToServer('/api/tracking/label-update',{labelId:l.id,printed:true,printedAt:l.printedAt}));
+    _persistLabelsPrinted(_dupSpecimens); // v45Y: retry-queued persistence
   }
   if(!labels.length){alert('No unprinted labels for this batch.');return;}
   const batch = getBatch(batchNo);
@@ -3149,30 +3199,25 @@ function printBatchLabels(batchNo){
     fetch(printerUrl,{method:'POST',headers:{'Content-Type':'text/plain'},body:zpl})
       .then(r=>{
         if(r.ok){
-          labels.forEach(l=>{l.printed=true;l.printedAt=now();});
-          saveLocal();
-          labels.forEach(l=>pushToServer('/api/tracking/label-update',{labelId:l.id,printed:true,printedAt:l.printedAt}));
+          _persistLabelsPrinted(labels); // v45Y: single persistence path, retry-queued
           renderPage(currentPage);
           toast(`✅ ${labels.length} labels sent to printer`,'var(--green)');
         } else {
           // Printer returned error — fall back to download
           downloadZPL(zpl,{batchNumber:batchNo,labelNumber:'ALL'});
-          labels.forEach(l=>{l.printed=true;l.printedAt=now();});
-          saveLocal();
+          _persistLabelsPrinted(labels); // v45Y: was local-only — server flag never set (Rahul ZG134)
         }
       })
       .catch(()=>{
         // Printer not reachable — download as file
         downloadZPL(zpl,{batchNumber:batchNo,labelNumber:'ALL'});
-        labels.forEach(l=>{l.printed=true;l.printedAt=now();});
-        saveLocal();
+        _persistLabelsPrinted(labels); // v45Y: was local-only — server flag never set (Rahul ZG134)
         renderPage(currentPage);
       });
   } else {
     // No printer configured — download ZPL file
     downloadZPL(zpl,{batchNumber:batchNo,labelNumber:'ALL'});
-    labels.forEach(l=>{l.printed=true;l.printedAt=now();});
-    saveLocal();
+    _persistLabelsPrinted(labels); // v45Y: was local-only — server flag never set (Rahul ZG134)
     renderPage(currentPage);
   }
 }
@@ -8437,6 +8482,12 @@ function renderBatchCard(batch){
   const ag=_v41_agradeFor(batchNo,batch.isPrinted?'printed':'unprinted');
   const labels=getLabelsByBatch(batchNo);
   const totalBoxes=getBatchLabelCount(batchNo);
+  // v45Y: surface duplicate count on the card header (same rule as the box-level DUP flags).
+  const _cardDup45y = (()=>{ const seen=new Set(); let d=0;
+    labels.forEach(l=>{ if(l.voided) return;
+      const k=`${l.isOrange?'O':''}${l.isExcess?'E':''}:${l.isExcess?(l.excessNum||Math.abs(l.labelNumber)):l.labelNumber}`;
+      if(seen.has(k)) d++; else seen.add(k); });
+    return d; })();
   // v40 Phase 18.14: combined-source dispatched count (legacy scans + Phase 18 records)
   const dispatched = _v40_dispatchedBoxes(batchNo);
   const dispatchPct=totalBoxes>0?(dispatched/totalBoxes*100):0;
@@ -8488,7 +8539,7 @@ function renderBatchCard(batch){
     </div>
     <div class="flow-steps">${flowSteps}</div>
     <div class="flex items-center gap-12 mt-8">
-      <div class="text-sm text-muted">Labels: <strong>${totalBoxes}</strong></div>
+      <div class="text-sm text-muted">Labels: <strong>${totalBoxes}</strong>${_cardDup45y>0?` <span style="color:#ff4060;font-weight:700" title="Duplicate label numbers — see Details">(${_cardDup45y} dup)</span>`:''}</div>
       <div class="text-sm text-muted">Packed: <strong>${packedOut}</strong></div>
       <div class="text-sm text-muted">Dispatched: <strong>${dispatched}</strong></div>
       <div style="flex:1"><div class="progress"><div class="progress-bar ${dispatchPct>=100?'green':'blue'}" style="width:${Math.min(100,dispatchPct)}%"></div></div></div>
@@ -8524,6 +8575,18 @@ function renderBatchDetail(batch){
   const atDispatchCount = labels.filter(l => getBoxCurrentStage(l.id) === 'at_dispatch').length;
   const dispatchedCount = labels.filter(l => getBoxCurrentStage(l.id) === 'dispatched').length;
 
+  // v45Y (confirmed by Ishan, Vipin 26ZB074): flag DUPLICATE labels — same label number within the
+  // same series (normal / excess / orange), non-voided, under different ids. First occurrence stays
+  // normal; every further copy is tinted red with a DUP badge so duplicates are visible, not hidden.
+  const _dupIds45y = new Set();
+  { const _seen = new Set();
+    labels.forEach(l => {
+      if (l.voided) return;
+      const k = `${l.isOrange?'O':''}${l.isExcess?'E':''}:${l.isExcess?(l.excessNum||Math.abs(l.labelNumber)):l.labelNumber}`;
+      if (_seen.has(k)) _dupIds45y.add(l.id); else _seen.add(k);
+    });
+  }
+
   return `<div class="divider"></div>
   <div class="card-title">Box-Level Detail — All ${labels.length} Labels</div>
   <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:12px">
@@ -8533,6 +8596,7 @@ function renderBatchDetail(batch){
     }).join('')}
     ${atDispatchCount>0?`<span style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:#92400e" title="Packed-out, awaiting truck">At Dispatch: <strong>${atDispatchCount}</strong></span>`:''}
     ${dispatchedCount>0?`<span style="background:rgba(0,230,118,0.1);border:1px solid rgba(0,230,118,0.3);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:var(--accent2)" title="Physically shipped">Dispatched: <strong>${dispatchedCount}</strong></span>`:''}
+    ${_dupIds45y.size>0?`<span style="background:rgba(255,64,96,0.1);border:1px solid rgba(255,64,96,0.35);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:#ff4060" title="Same label number generated more than once (non-voided). ${labels.filter(l=>!l.voided).length - _dupIds45y.size} unique of ${labels.filter(l=>!l.voided).length}">⚠ Duplicates: <strong>${_dupIds45y.size}</strong></span>`:''}
   </div>
   <div class="tbl-wrap"><table>
     <thead><tr><th>Label #</th><th>Qty (L)</th><th>Status</th><th>Current Stage</th>
@@ -8553,8 +8617,9 @@ function renderBatchDetail(batch){
         `<span class="badge badge-blue">In WIP</span>`;
       // v40 P18.14: current stage cell uses matching color
       const stageColor = stage==='dispatched'?'badge-green':stage==='at_dispatch'?'badge-amber':stage==='production'?'badge-gray':'badge-blue';
-      return `<tr style="${isVoided?'opacity:0.5':''}">
-        <td class="td-mono fw-bold" style="color:var(--accent)">${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum||Math.abs(l.labelNumber)}</span>`:(l.labelNumber<0?`<span style="color:#C55A11">E-${Math.abs(l.labelNumber)}</span>`:`${l.labelNumber}`)}${l.isPartial?' <span class="badge badge-amber" style="font-size:8px">P</span>':''}${l.isReplacement?' <span class="badge badge-purple" style="font-size:8px">R</span>':''}</td>
+      const _isDup45y = _dupIds45y.has(l.id);
+      return `<tr style="${isVoided?'opacity:0.5':''}${_isDup45y?';background:rgba(255,64,96,0.08)':''}">
+        <td class="td-mono fw-bold" style="color:var(--accent)">${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum||Math.abs(l.labelNumber)}</span>`:(l.labelNumber<0?`<span style="color:#C55A11">E-${Math.abs(l.labelNumber)}</span>`:`${l.labelNumber}`)}${l.isPartial?' <span class="badge badge-amber" style="font-size:8px">P</span>':''}${l.isReplacement?' <span class="badge badge-purple" style="font-size:8px">R</span>':''}${_isDup45y?' <span class="badge badge-red" style="font-size:8px" title="Duplicate of an earlier label with the same number">DUP</span>':''}</td>
         <td class="td-mono">${fmt(l.qty)}</td>
         <td>${statusBadge}</td>
         <td><span class="badge ${stageColor}">${DEPT_LABELS[stage]||stage}</span></td>
@@ -9940,8 +10005,19 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   const monthBatchNos = new Set(getProdMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
   // v45T #2.4: carry-forward inclusion — any live batch with windowed activity in the selected
   // month joins the set even if its production started earlier.
+  // v45Y (confirmed by Ishan): GHOST batches — month-window activity (gross/scans/wastage) whose
+  // planning row no longer exists (archived June orders, id-churn orphans) previously vanished
+  // because _addIf required getBatch(). They now join the set; machine (for the GF/FF-SF split)
+  // comes from the server's monthMachine map, size from the batch's labels, meta renders '-'.
+  const _ghostMc45y = {};
   if (_bMd) {
-    const _addIf = bn => { const b=getBatch(bn); if(b && !b.deleted && !_isRetired(bn)) monthBatchNos.add(bn); };
+    const _addIf = bn => {
+      const b = getBatch(bn);
+      if (b) { if (!b.deleted && !_isRetired(bn)) monthBatchNos.add(bn); return; }
+      if (_isRetired(bn)) return;
+      monthBatchNos.add(bn);
+      _ghostMc45y[bn] = (_bMd.monthMachine || {})[bn] || null;
+    };
     Object.keys(_bMd.summary||{}).forEach(_addIf);
     Object.keys(_bMd.wastage||{}).forEach(_addIf);
     Object.entries(_bMd.monthGross||{}).forEach(([bn,g])=>{ if((parseFloat(g)||0)>0) _addIf(bn); });
@@ -10047,7 +10123,8 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       // First/Second-floor machines. Classify via normalised machineId (normMcId strips dots/case),
       // the same matching Report E uses, so format differences ('MC.33' vs 'MC33') don't misclassify.
       const _ffsfMachines = new Set([...(FLOORS.FF?.machines || []), ...(FLOORS.SF?.machines || [])].map(normMcId));
-      const _isFFSF = bn => _ffsfMachines.has(normMcId(getBatch(bn)?.machineId));
+      // v45Y: ghost batches classify via the server's dominant-machine map (monthMachine).
+      const _isFFSF = bn => _ffsfMachines.has(normMcId(getBatch(bn)?.machineId || _ghostMc45y[bn]));
       const _ffsf = batchSet.filter(_isFFSF);
       const _gf   = batchSet.filter(bn => !_isFFSF(bn));
       _rptBGroups = [
@@ -10068,6 +10145,8 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     let _bIn=0,_bOut=0,_bW=0,_bWipBx=0,_bWipQ=0,_bProd=0,_bGross=0,_bAvail=0,_bN=0;
     grp.batches.forEach(batchNo=>{
       const batch=getBatch(batchNo);
+      // v45Y: ghost batches take size from their labels so box↔lakh conversions stay correct.
+      const _bSize45y = (batch && batch.size != null) ? batch.size : (getLabelsByBatch(batchNo)[0]?.size ?? '0');
       // Use _ss() for accurate counts from full history
       const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
       const localOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
@@ -10083,12 +10162,12 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const w = hasWastage ? (_bMd ? { total:(_mdW.salvage+_mdW.remelt), salvage:_mdW.salvage, remelt:_mdW.remelt }
                                    : getTotalWastage(batchNo, dept))
                            : {total:0, salvage:0, remelt:0};
-      const ps = PACK_SIZES[String(batch?.size||'0')]||1;
+      const ps = PACK_SIZES[String(_bSize45y)]||1;
       const wastageBoxes = hasWastage ? Math.round(w.total/ps) : 0;
       // v41ZB: AIM WIP = Scan In − Scan Out (AIM wastage now sits in Production WIP, not here).
       // Printing/PI rows keep their existing in−out−wastage definition (unchanged).
       const wip=Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
-      const wipQty=boxToLakh(wip,batch?.size||'0');
+      const wipQty=boxToLakh(wip,_bSize45y);
       // v45T #2.4: gross is the month-sliced DPR gross (monthGross) when the window is loaded.
       // Batches whose production STARTED in the selected month fall back to cumulative recon gross
       // if the map lacks them (their entire gross belongs to this month by definition); pure
@@ -10109,7 +10188,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         : (hasScanSummary()
           ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
           : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length);
-      const aimInQty=boxToLakh(aimInBoxes,batch?.size||'0');
+      const aimInQty=boxToLakh(aimInBoxes,_bSize45y);
       // v41ZB: Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In.
       // v45T: same frozen formula shape; inputs are month-windowed when the window is loaded, so
       // the balance reads "this month's production not yet scanned into AIM this month".
@@ -10139,9 +10218,9 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
           <td class="td-mono">${grossProd>0?fmt(grossProd)+'L':'—'}</td>
           <td class="td-mono text-sm" style="color:var(--amber)">${(aimWaste.salvage+aimWaste.remelt)>0?fmt(aimWaste.salvage+aimWaste.remelt)+'L':'—'}</td>
           <td class="td-mono">${_avail>0?fmt(_avail)+'L':'—'}</td>
-          <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,batch?.size||'0'))}L)</span></td>
+          <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
           <td class="td-mono ${prodWip>0?'amber':''}">${prodWip>0?fmt(prodWip)+'L':'—'}</td>
-          <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,batch?.size||'0'))}L)</span></td>
+          <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,_bSize45y))}L)</span></td>
           <td class="td-mono fw-bold">${wip}</td>
           <td class="td-mono">${fmt(wipQty)}</td>
           <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
@@ -10152,8 +10231,8 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         <td class="td-bold td-mono">${batchNo}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
         <td class="text-sm">${batch?.customer||'-'}</td>
         <td class="td-mono ${prodWip>0?'amber':''}">${prodWip>0?fmt(prodWip)+'L':'—'}</td>
-        <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,batch?.size||'0'))}L)</span></td>
-        <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,batch?.size||'0'))}L)</span></td>
+        <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
+        <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,_bSize45y))}L)</span></td>
         ${hasWastage?`<td class="td-mono text-sm" style="color:var(--amber)">${w.total>0?fmt(w.total)+'L':'—'}</td>`:''}
         <td class="td-mono fw-bold">${wip}</td>
         <td class="td-mono">${fmt(wipQty)}</td>
