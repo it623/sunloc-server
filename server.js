@@ -2812,6 +2812,19 @@ let _orderBatch = {};
 // The DPR gate only lets running orders receive actuals, so actuals>0 proves the order legitimately
 // ran — demoting it to pending hides it from the Tracking label view mid-production (26ZF104).
 // Checks the warmed caches first (authoritative), then the order's own stored fields.
+// v45Z (confirmed by Ishan): per-line SAP UoM → Lakhs multiplier, ported from the Planning indent
+// import (_uomScaleForLine). Export lines use UoM "THOUSAND" → ×0.01 to Lakhs; anything not clearly
+// THOUSAND is domestic (already Lakhs) → ×1, the safe default. Checks every UoM-ish field because
+// SAP B1 may put a numeric UoMEntry in one field while the human name sits in another.
+function _sapUomScale(line) {
+  const candidates = [
+    line.UoMCode, line.UnitsOfMeasurement, line.MeasureUnit, line.InventoryUoM,
+    line.UoMName, line.UnitOfMeasure
+  ].map(v => String(v == null ? '' : v).toUpperCase().trim());
+  const isThousand = candidates.some(u => /THOUSAND|THOUSND|THOUS|THOU|\bTHO\b|^000$|^'000$|PER\s*THOUSAND/.test(u));
+  return isThousand ? 0.01 : 1;
+}
+
 function _orderHasActuals(o) {
   if (!o) return false;
   const b = o.batchNumber;
@@ -2878,6 +2891,23 @@ async function warmActualsCache() {
         const _co = (_planningStateCache && _planningStateCache.orders) || [];
         for (const o of _co) { if (o && o.id && o.batchNumber) _orderBatch[o.id] = o.batchNumber; }
       } catch(_) {}
+      // v45Z (confirmed by Ishan): the blob cache only maps CURRENT orders — archived (month-rolled)
+      // orders vanished from it, so their NULL-batch actuals rows stayed unattributed and Report B
+      // under-counted vs Report E/DPR. Two extra sources close that: (a) production_orders retains
+      // rows for archived orders; (b) production_actuals itself — an order whose OTHER rows carry a
+      // batch stamps its stampless siblings. Both are cheap keyed reads; the map only ever grows.
+      try {
+        let _poRows;
+        if (pgPool) _poRows = (await pgPool.query(`SELECT id, batch_number FROM production_orders WHERE batch_number IS NOT NULL AND batch_number <> ''`)).rows;
+        else _poRows = db.prepare(`SELECT id, batch_number FROM production_orders WHERE batch_number IS NOT NULL AND batch_number <> ''`).all();
+        for (const r of (_poRows||[])) { if (r.id && r.batch_number && !_orderBatch[r.id]) _orderBatch[r.id] = r.batch_number; }
+      } catch(_e1) {}
+      try {
+        let _saRows;
+        if (pgPool) _saRows = (await pgPool.query(`SELECT order_id, MAX(batch_number) AS bn FROM production_actuals WHERE batch_number IS NOT NULL AND batch_number <> '' AND order_id IS NOT NULL GROUP BY order_id`)).rows;
+        else _saRows = db.prepare(`SELECT order_id, MAX(batch_number) AS bn FROM production_actuals WHERE batch_number IS NOT NULL AND batch_number <> '' AND order_id IS NOT NULL GROUP BY order_id`).all();
+        for (const r of (_saRows||[])) { if (r.order_id && r.bn && !_orderBatch[r.order_id]) _orderBatch[r.order_id] = r.bn; }
+      } catch(_e2) {}
       _grossByBatch = {};
       _firstProdByBatch = {};
       _lastProdByBatch = {};
@@ -3273,7 +3303,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45Y' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45Z' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3336,7 +3366,11 @@ async function _doRefreshSapInvoices() {
     // leave totalBoxes at 0 for direct-SAP (SAP carries no Sunloc box count); the Qty column now fills
     // from the real summed Lakhs. Sunloc-linked invoices still get authoritative boxes below.
     let totalBoxes = 0;
-    let totalQtyLakhs = (inv.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0);
+    // v45Z (confirmed by Ishan): EXPORT invoice lines carry Quantity in THOUSANDS (UoM "THOUSAND"),
+    // exactly like export indents — the Planning SAP import already scales them ×0.01 to Lakhs
+    // (1 lakh = 100 thousand). The raw sum here assumed Lakhs, so export dispatches landed ~100×
+    // too big (Report D "Dispatched 586,326L"). Same per-line rule, ported verbatim.
+    let totalQtyLakhs = (inv.DocumentLines || []).reduce((sum, l) => sum + ((parseFloat(l.Quantity) || 0) * _sapUomScale(l)), 0);
     const docTotal = parseFloat(inv.DocTotal) || 0;
     const vatSum = parseFloat(inv.VatSum) || 0;
     const taxable = docTotal - vatSum;
@@ -3762,7 +3796,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45Y' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45Z' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -8329,6 +8363,50 @@ app.post('/api/admin/rebuild-actuals-from-dpr', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v45Z (confirmed by Ishan): REPAIR existing export-invoice quantities written before the UoM fix.
+// For every invoices_received row whose payload_json lines include a THOUSAND-UoM line, recompute
+// total_qty_lakhs with the per-line scale; where the linked tracking_dispatch_records row still
+// carries the OLD raw total (±0.01), rewrite it to the corrected Lakhs. Dry-run by default —
+// {"confirm":true} writes. Idempotent: a corrected invoice recomputes to the same value; a dispatch
+// record that no longer matches the old raw value is left untouched (manual edits are respected).
+app.post('/api/admin/repair-export-invoice-qty', async (req, res) => {
+  try {
+    if (!pgPool) return res.status(400).json({ ok: false, error: 'PostgreSQL only' });
+    const confirm = req.body && req.body.confirm === true;
+    const rows = (await pgPool.query(
+      `SELECT id, sap_doc_num, total_qty_lakhs, payload_json FROM invoices_received WHERE payload_json IS NOT NULL`)).rows;
+    let scanned = 0, exportInvs = 0, invUpdated = 0, recUpdated = 0;
+    const changes = [];
+    for (const r of rows) {
+      scanned++;
+      let inv; try { inv = typeof r.payload_json === 'string' ? JSON.parse(r.payload_json) : r.payload_json; } catch { continue; }
+      const lines = (inv && inv.DocumentLines) || [];
+      if (!lines.length || !lines.some(l => _sapUomScale(l) < 1)) continue; // no THOUSAND line → not export
+      exportInvs++;
+      const rawSum    = lines.reduce((s, l) => s + (parseFloat(l.Quantity) || 0), 0);
+      const scaledSum = parseFloat(lines.reduce((s, l) => s + ((parseFloat(l.Quantity) || 0) * _sapUomScale(l)), 0).toFixed(3));
+      const cur = parseFloat(r.total_qty_lakhs) || 0;
+      if (Math.abs(cur - scaledSum) < 0.005) continue; // already correct
+      changes.push({ invoice: r.sap_doc_num || r.id, from: cur, to: scaledSum });
+      if (confirm) {
+        await pgPool.query(`UPDATE invoices_received SET total_qty_lakhs=$1 WHERE id=$2`, [scaledSum, r.id]);
+        invUpdated++;
+        // Fix linked dispatch records still carrying the OLD raw value (either the stale
+        // total_qty_lakhs or the raw line sum) — anything else was hand-set, leave it.
+        const upd = await pgPool.query(
+          `UPDATE tracking_dispatch_records SET qty=$1
+             WHERE invoice_no = $2 AND $2 <> ''
+               AND (ABS(qty - $3) < 0.01 OR ABS(qty - $4) < 0.01)`,
+          [scaledSum, String(r.sap_doc_num || ''), cur, rawSum]);
+        recUpdated += upd.rowCount || 0;
+      }
+    }
+    res.json({ ok: true, dryRun: !confirm, scanned, exportInvoices: exportInvs,
+               invoicesToFix: changes.length, invoicesUpdated: invUpdated,
+               dispatchRecordsUpdated: recUpdated, changes: changes.slice(0, 50) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // GET all DPR dates (for history navigation)
 app.get('/api/dpr/dates/:floor', async (req, res) => {
   try {
@@ -11002,7 +11080,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45Y',
+      build: 'v45Z',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11011,7 +11089,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45Y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45Z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12335,7 +12413,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45Y',
+      build: 'v45Z',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12344,7 +12422,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45Y', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45Z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -13316,13 +13394,19 @@ app.get('/api/tracking/sync-version', async (req, res) => {
       : "SELECT COUNT(*) AS count, COALESCE(SUM(CASE WHEN COALESCE(voided,0)<>0 THEN 1 ELSE 0 END),0) AS voided, COALESCE(SUM(CASE WHEN COALESCE(printed,0)<>0 THEN 1 ELSE 0 END),0) AS printed FROM tracking_labels";
     const lab = await one(labSql);
     const scn = await one('SELECT COUNT(*) AS count, MAX(ts) AS maxts FROM tracking_scans');
-    const wst = await one('SELECT COUNT(*) AS count FROM tracking_wastage');
+    // v45Z (confirmed by Ishan): edits change qty, not count — a count-only signature meant
+    // edited wastage never re-synced to other devices and reports kept stale values. qtySum
+    // changes on every edit/delete/insert, so the client re-pull fires.
+    const wstSql = pgPool
+      ? 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(qty),0)::numeric, 3) AS qtysum FROM tracking_wastage'
+      : 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(qty),0), 3) AS qtysum FROM tracking_wastage';
+    const wst = await one(wstSql);
     const dsp = await one('SELECT COUNT(*) AS count FROM tracking_dispatch_records');
     res.json({
       ok: true,
       labels:   { count: parseInt(lab.count || 0, 10), voided: parseInt(lab.voided || 0, 10), printed: parseInt(lab.printed || 0, 10) },
       scans:    { count: parseInt(scn.count || 0, 10), maxTs: scn.maxts || scn.maxTs || null },
-      wastage:  { count: parseInt(wst.count || 0, 10) },
+      wastage:  { count: parseInt(wst.count || 0, 10), qtySum: parseFloat(wst.qtysum || wst.qtySum || 0) },
       dispatch: { count: parseInt(dsp.count || 0, 10) }
     });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }

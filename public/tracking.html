@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45Y</title>
+<title>Sunloc Tracking Suite v1.0 · build v45Z</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45Y</p>
+      <p>Tracking Suite v1.0 · build v45Z</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45Y</p>
+      <p>Tracking Suite v1.0 · build v45Z</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1759,9 +1759,9 @@ async function pullFromServer(force){
     const _bsMap = window._v40_boxStagesMap;
     const labelsChanged  = !!force || !_ver || !_lv || !_eq(_ver.labels, _lv.labels) || state.labels.length===0;
     const scansChanged   = !!force || !_ver || !_lv || (_ver.scans&&_lv.scans ? (_ver.scans.count!==_lv.scans.count || _ver.scans.maxTs!==_lv.scans.maxTs) : true) || state.scans.length===0;
-    const wastageChanged = !!force || !_ver || !_lv || (_ver.wastage&&_lv.wastage ? (_ver.wastage.count!==_lv.wastage.count) : true) || !(state.wastage&&state.wastage.length);
+    const wastageChanged = !!force || !_ver || !_lv || (_ver.wastage&&_lv.wastage ? (_ver.wastage.count!==_lv.wastage.count || (_ver.wastage.qtySum!==undefined && _ver.wastage.qtySum!==_lv.wastage.qtySum)) : true) || !(state.wastage&&state.wastage.length); // v45Z: qtySum catches edits
     const dispatchChanged= !!force || !_ver || !_lv || (_ver.dispatch&&_lv.dispatch ? (_ver.dispatch.count!==_lv.dispatch.count) : true);
-    const _ssNeed = scansChanged || !hasScanSummary();
+    const _ssNeed = scansChanged || wastageChanged || !hasScanSummary(); // v45Z: wastageSummary (reports' _sw) must refresh on edits too
     const _bsNeed = scansChanged || dispatchChanged || !_bsMap || Object.keys(_bsMap||{}).length===0;
     const _wNeed  = wastageChanged;
     // STEP 2: Load all labels — with retry so a single slow/timed-out fetch never leaves the
@@ -2835,7 +2835,7 @@ async function _v41_fetchAgradeMonth(ym){
     if (!r.ok) throw new Error('HTTP '+r.status);
     const j = await r.json();
     if (!j.ok) throw new Error(j.error||'failed');
-    _v41_agradeMonthCache[ym] = { summary: j.summary||{}, wastage: j.wastage||{}, crossMonth: j.crossMonth||{}, monthGross: j.monthGross||{}, window: j.window };
+    _v41_agradeMonthCache[ym] = { summary: j.summary||{}, wastage: j.wastage||{}, crossMonth: j.crossMonth||{}, monthGross: j.monthGross||{}, monthMachine: j.monthMachine||{}, window: j.window }; // v45Z: keep monthMachine (v45Y dropped it here, so ghost floor-split never saw it)
     return _v41_agradeMonthCache[ym];
   } catch(e){
     console.warn('[agrade-by-month] fetch failed:', e.message);
@@ -4520,13 +4520,13 @@ function renderDeptScan(dept){
     <div id="wastage-result-${dept}" class="mt-8"></div>
     ${_v45e_wastageShiftSummary(dept)}
     ${_v45m_view(dept)}
-    ${(currentDept==='admin'||currentDept==='planning')?`
+    ${(currentDept==='admin'||currentDept==='planning'||currentDept===dept)?`
     <div class="divider mt-16"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:6px">
       <div class="card-title" style="color:var(--accent4);margin:0">✏️ Wastage History — Edit / Delete</div>
       <input type="text" placeholder="Search batch..." oninput="filterWastageRows(this.value,'${dept}')" style="font-size:11px;padding:3px 8px;border:1px solid var(--border);border-radius:4px;background:var(--surface2);color:var(--text1);outline:none;width:140px">
     </div>
-    <div class="text-sm text-muted mb-8">Admin and Planning roles can correct erroneous wastage entries.</div>
+    <div class="text-sm text-muted mb-8">Admin, Planning, and this department's operator can correct erroneous wastage entries. Edits sync to the server and update all A-Grade/WIP reports (A–F).</div>
     <div class="tbl-wrap" style="max-height:340px;overflow:auto"><table>
       <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Shift</th><th>Type</th><th>Qty (L)</th><th>Remark</th><th>Entered By</th><th>Time</th><th>Action</th></tr></thead>
       <tbody>
@@ -4922,6 +4922,54 @@ function processScanInput(dept,type){
 // v37E Fix #16: Per-dept locks prevent double-click from creating duplicate wastage entries
 const _wastageSaving = {};
 
+// v45Z (confirmed by Ishan): wastage save/edit/delete were fire-and-forget — a transient push
+// failure showed the optimistic "updated" toast while the server kept the old value, which then
+// overwrote the local edit on the next wastage pull ("saves initially, then reverses"). Every op
+// is now verified; failures queue into localStorage and retry on the same 10s cycle as scans.
+// A successful op also busts the month-attributed cache so Reports A–F re-fetch fresh wastage.
+let _pendingWastageOps = [];
+try { _pendingWastageOps = JSON.parse(localStorage.getItem('sunloc_pending_wastage_ops')||'[]'); } catch(e){}
+function _saveWastageOpQueue(){ try{ localStorage.setItem('sunloc_pending_wastage_ops', JSON.stringify(_pendingWastageOps)); }catch(e){} }
+function _queueWastageOp(endpoint, payload, key){
+  _pendingWastageOps = _pendingWastageOps.filter(p => p.key !== key); // latest wins per entry
+  _pendingWastageOps.push({ endpoint, payload, key });
+  _saveWastageOpQueue();
+}
+async function _flushPendingWastageOps(){
+  if(!serverUrl || _pendingWastageOps.length===0) return;
+  const toFlush = [..._pendingWastageOps];
+  for(const op of toFlush){
+    try{
+      const r = await fetch(serverUrl+op.endpoint,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(op.payload),signal:AbortSignal.timeout(8000)});
+      if(r.ok){
+        const j = await r.json().catch(()=>null);
+        if(j && j.ok !== false){
+          _pendingWastageOps = _pendingWastageOps.filter(p=>p.key!==op.key);
+          _saveWastageOpQueue();
+        } else if (j && /not found/i.test(j.error||'')) {
+          // entry gone server-side (e.g. deleted elsewhere) — drop the op, next pull reconciles
+          _pendingWastageOps = _pendingWastageOps.filter(p=>p.key!==op.key);
+          _saveWastageOpQueue();
+        }
+      }
+    }catch(e){ /* stay queued */ }
+  }
+}
+setInterval(_flushPendingWastageOps, 10000);
+function _pushWastageOp(endpoint, payload, key, label){
+  pushToServer(endpoint, payload).then(r => {
+    if(!r || r.ok === false){
+      _queueWastageOp(endpoint, payload, key);
+      toast('⚠️ '+label+' not confirmed by server — queued for retry', '#b45309', 4000);
+    } else {
+      _v41_clearAgradeMonthCache(); // reports re-fetch windowed wastage on next render
+    }
+  }).catch(() => {
+    _queueWastageOp(endpoint, payload, key);
+    toast('⚠️ '+label+' not confirmed by server — queued for retry', '#b45309', 4000);
+  });
+}
+
 // ── v45E: Shift-wise wastage summary (read-only) + Excel export ─────────────────
 // Groups AIM wastage by ENTRY DATE (the row's ts) → batch → type, pivoting qty across
 // shifts A/B/C. Total = A+B+C+unassigned, i.e. the TRUE per-(batch,type,date) total that the
@@ -5235,7 +5283,7 @@ function saveWastage(dept){
   if(salvage>0) state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'salvage',qty:salvage,ts:now(),by:currentDept,note,shift,prod_date:prodDate});
   if(remelt>0)  state.wastage.push({id:uid(),batchNumber:batchNo,dept,type:'remelt', qty:remelt, ts:now(),by:currentDept,note,shift,prod_date:prodDate});
   saveLocal();
-  pushToServer('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt,note,shift,prodDate});
+  _pushWastageOp('/api/tracking/wastage',{batchNumber:batchNo,dept,salvage,remelt,note,shift,prodDate},'save-'+uid(),'Wastage entry'); // v45Z: verified + retry-queued
   document.getElementById(`wastage-salvage-${dept}`).value='';
   document.getElementById(`wastage-remelt-${dept}`).value='';
   const _noteEl=document.getElementById(`wastage-note-${dept}`); if(_noteEl) _noteEl.value='';
@@ -5244,7 +5292,9 @@ function saveWastage(dept){
 }
 
 function openWastageEdit(wastageId, dept){
-  if(currentDept!=='admin'&&currentDept!=='planning'){ alert('Only Admin or Planning can edit wastage.'); return; }
+  // v45Z (confirmed by Ishan): the department's own operator may edit ITS OWN dept's wastage
+  // (AIM user edits AIM salvage, etc.) — previously admin/planning only.
+  if(currentDept!=='admin'&&currentDept!=='planning'&&currentDept!==dept){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can edit this wastage.'); return; }
   const entry=state.wastage.find(w=>w.id===wastageId);
   if(!entry){ alert('Entry not found.'); return; }
   const newQty=parseFloat(prompt(`Edit wastage qty (Lakhs) for ${entry.batchNumber} [${entry.type}]\nCurrent value: ${entry.qty}`, entry.qty));
@@ -5264,19 +5314,19 @@ function openWastageEdit(wastageId, dept){
   entry.editedAt=now();
   saveLocal();
   // Push updated wastage to server: send a correction as a new server-side update
-  pushToServer('/api/tracking/wastage-edit',{id:wastageId, qty:newQty, editedBy:currentDept});
+  _pushWastageOp('/api/tracking/wastage-edit',{id:wastageId, qty:newQty, editedBy:currentDept},'edit-'+wastageId,'Wastage edit'); // v45Z: verified + retry-queued
   renderDeptScan(dept);
   toast('Wastage updated','var(--accent2)');
 }
 
 function deleteWastageEntry(wastageId, dept){
-  if(currentDept!=='admin'&&currentDept!=='planning'){ alert('Only Admin or Planning can delete wastage.'); return; }
+  if(currentDept!=='admin'&&currentDept!=='planning'&&currentDept!==dept){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can delete this wastage.'); return; } // v45Z
   const entry=state.wastage.find(w=>w.id===wastageId);
   if(!entry){ alert('Entry not found.'); return; }
   if(!confirm(`Delete wastage entry?\n${entry.batchNumber} — ${entry.type} — ${fmt(entry.qty)}L\nEntered by: ${entry.by||'unknown'}\n\nThis cannot be undone.`)) return;
   state.wastage=state.wastage.filter(w=>w.id!==wastageId);
   saveLocal();
-  pushToServer('/api/tracking/wastage-delete',{id:wastageId, deletedBy:currentDept});
+  _pushWastageOp('/api/tracking/wastage-delete',{id:wastageId, deletedBy:currentDept},'del-'+wastageId,'Wastage delete'); // v45Z: verified + retry-queued
   renderDeptScan(dept);
   toast('Wastage entry deleted','var(--accent3)');
 }
@@ -10010,11 +10060,17 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   // because _addIf required getBatch(). They now join the set; machine (for the GF/FF-SF split)
   // comes from the server's monthMachine map, size from the batch's labels, meta renders '-'.
   const _ghostMc45y = {};
+  // v45Z (confirmed by Ishan): RETIRED batches with activity in the selected month JOIN the dept
+  // tables — this was the dominant Report B gap: Report D/DPR count retired batches' month gross
+  // (getTrkMonthBatches has no retired exclusion) while B dropped them entirely, so B could never
+  // reconcile. The frozen v44 rule excludes retired WIP (prodWip already forces 0), NOT their
+  // produced gross. Rows are tagged and badged RETIRED.
+  const _retiredRows45z = new Set();
   if (_bMd) {
     const _addIf = bn => {
       const b = getBatch(bn);
-      if (b) { if (!b.deleted && !_isRetired(bn)) monthBatchNos.add(bn); return; }
-      if (_isRetired(bn)) return;
+      if (_isRetired(bn)) { monthBatchNos.add(bn); _retiredRows45z.add(bn); if (!b) _ghostMc45y[bn] = (_bMd.monthMachine || {})[bn] || null; return; }
+      if (b) { if (!b.deleted) monthBatchNos.add(bn); return; }
       monthBatchNos.add(bn);
       _ghostMc45y[bn] = (_bMd.monthMachine || {})[bn] || null;
     };
@@ -10211,7 +10267,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const _avail = Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt);
       if (_isAimDept) {
         html+=`<tr>
-          <td class="td-bold td-mono">${batchNo}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+          <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired (as-is-where-is) — WIP excluded per v44 rule; month gross shown for DPR parity">RETIRED</span>':''}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
           <td class="text-sm">${batch?.customer||'-'}</td>
           <td class="text-sm">${batch?.colour||'-'}</td>
           <td class="td-mono text-sm">${batch?.pcCode||'-'}</td>
@@ -10228,7 +10284,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         </tr>`;
       } else {
         html+=`<tr>
-        <td class="td-bold td-mono">${batchNo}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+        <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
         <td class="text-sm">${batch?.customer||'-'}</td>
         <td class="td-mono ${prodWip>0?'amber':''}">${prodWip>0?fmt(prodWip)+'L':'—'}</td>
         <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
