@@ -2796,6 +2796,7 @@ let _actualsCacheTime = 0;
 // batch-keyed total ends up holding only the LAST group's partial sum — surfacing as blank/under-
 // counted Gross Prod in Reports D & E. This map is the single source of truth for per-batch gross.
 let _grossByBatch = null;
+let _firstProdByBatch = null; // v45W: batch → first DPR production date (YYYY-MM-DD)
 // v41ZI Item 6: per-batch admin/PM override of the DPR gross. When present it supersedes _grossByBatch.
 let _grossOverride = {};
 // v45: PERSISTENT order_id -> batchNumber map. Built across warms (update-not-reset). Was a local
@@ -2841,7 +2842,7 @@ async function warmActualsCache() {
   _actualsCacheTime = Date.now();
   if (pgPool) {
     try {
-      const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total FROM production_actuals GROUP BY order_id, batch_number');
+      const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total, MIN(date) as first_date FROM production_actuals GROUP BY order_id, batch_number');
       _actualsCache = {};
       for (const row of r.rows) {
         const _t = parseFloat(row.total) || 0;
@@ -2866,10 +2867,17 @@ async function warmActualsCache() {
         for (const o of _co) { if (o && o.id && o.batchNumber) _orderBatch[o.id] = o.batchNumber; }
       } catch(_) {}
       _grossByBatch = {};
+      _firstProdByBatch = {};
       for (const row of r.rows) {
         const batch = (row.batch_number && String(row.batch_number).trim()) ? row.batch_number : _orderBatch[row.order_id];
         if (!batch) continue;
         _grossByBatch[batch] = (_grossByBatch[batch] || 0) + (parseFloat(row.total) || 0);
+        // v45W (confirmed by Ishan): first actual DPR production date per batch — anchors planning
+        // start dates to when production really began (26ZG131: DPR 29-Jun vs the cascade's 03-Jul).
+        if (row.first_date) {
+          const fd = String(row.first_date).slice(0,10);
+          if (!_firstProdByBatch[batch] || fd < _firstProdByBatch[batch]) _firstProdByBatch[batch] = fd;
+        }
       }
       console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries;', Object.keys(_grossByBatch).length, 'batches');
     } catch(e) { console.error('[DB] Actuals cache error:', e.message); }
@@ -3246,7 +3254,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45V' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45W' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3735,7 +3743,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45V' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45W' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -6539,6 +6547,7 @@ app.get('/api/orders/all', async (req, res) => {
       if (bn == null) continue;
       if (Object.prototype.hasOwnProperty.call(_grossOverride, bn)) o.actualProd = _grossOverride[bn] || 0;
       else if (_grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) o.actualProd = _grossByBatch[bn] || 0;
+      if (_firstProdByBatch && _firstProdByBatch[bn]) o.dprFirstDate = _firstProdByBatch[bn]; // v45W
     }
     res.json({ ok: true, orders: rows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -6889,6 +6898,9 @@ app.get('/api/planning/state', async (req, res) => {
           ? (_actualsCache[bn] || 0)
           : (_actualsCache[ord.id] || 0);
         ord.actualProd = (hasOverride || eff > 0) ? eff : legacy;
+        // v45W: expose the first actual DPR production date so the client cascade can anchor a
+        // started order's start date to production reality instead of the plan cursor.
+        if (bn != null && _firstProdByBatch && _firstProdByBatch[bn]) ord.dprFirstDate = _firstProdByBatch[bn];
       }
     }
 
@@ -7049,7 +7061,12 @@ app.post('/api/planning/state', async (req, res) => {
                 manualEndDate:   ex.manualEndDate   || ord.manualEndDate,
                 manualStartDate: ex.manualStartDate || ord.manualStartDate,
                 status: finalStatus,
-                actualProd: Math.max(ord.actualProd||0, ex.actualProd||0),
+                // v45W: third blob-vs-stored max() site brought in line with the v45T root fix —
+                // DPR owns actualProd; the max() guard survives only when the server has no DPR data.
+                actualProd: (()=>{ const _b=ord.batchNumber;
+                  if (_b!=null && Object.prototype.hasOwnProperty.call(_grossOverride,_b)) return _grossOverride[_b]||0;
+                  if (_b!=null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch,_b)) return _grossByBatch[_b]||0;
+                  return Math.max(ord.actualProd||0, ex.actualProd||0); })(),
                 // v41z: protect SAP refs and PO number — DB wins if set; client cannot blank them via stale tab
                 sapDocEntry: ex.sapDocEntry || ord.sapDocEntry || null,
                 sapDocNum:   ex.sapDocNum   || ord.sapDocNum   || '',
@@ -10855,7 +10872,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45V',
+      build: 'v45W',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10864,7 +10881,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45V', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45W', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12188,7 +12205,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45V',
+      build: 'v45W',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12197,7 +12214,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45V', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45W', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

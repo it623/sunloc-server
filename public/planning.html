@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v45V</p>
+      <p>Planning Suite v3.0 · build v45W</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1211,6 +1211,7 @@ const SYNC = (() => {
               closedDate:   dbOrd.closedDate  || o.closedDate,
               remarks:      dbOrd.remarks     || o.remarks,
               actualProd:   (dbOrd.actualProd != null ? dbOrd.actualProd : o.actualProd),
+              dprFirstDate: (dbOrd.dprFirstDate != null ? dbOrd.dprFirstDate : o.dprFirstDate), // v45W
               mismatchFlag: dbOrd.mismatchFlag !== undefined ? dbOrd.mismatchFlag : o.mismatchFlag,
               // Keep manual dates from either source
               startDate:       (o.manualStartDate || o.manualEndDate) ? o.startDate   : dbOrd.startDate,
@@ -2454,6 +2455,13 @@ function recalcMachineScheduleQuiet(machineId) {
       ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
     }
 
+    // v45W (confirmed by Ishan): a STARTED order's start date anchors to its FIRST actual DPR
+    // production date — planning shows when production really began, not where the plan cursor
+    // happened to sit (26ZG131: DPR 29-Jun vs the cascade's 03-Jul). Manual dates stay untouched.
+    if (hasProduction && ord.dprFirstDate && !ord.manualStartDate) {
+      const _fd45w = new Date(String(ord.dprFirstDate).slice(0,10) + 'T00:00:00');
+      if (!isNaN(_fd45w)) ord.startDate = _fd45w;
+    }
     // Determine end date (v45T #1.1.1, rule confirmed by Ishan — DPR actuals drive the end date):
     //   • actual ≥ planned gross → order is effectively complete: the end date pulls back to the
     //     last production day planning can observe (today at the latest) instead of coasting to
@@ -2537,6 +2545,13 @@ function recalcMachineSchedule(machineId) {
       ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
     }
 
+    // v45W (confirmed by Ishan): a STARTED order's start date anchors to its FIRST actual DPR
+    // production date — planning shows when production really began, not where the plan cursor
+    // happened to sit (26ZG131: DPR 29-Jun vs the cascade's 03-Jul). Manual dates stay untouched.
+    if (hasProduction && ord.dprFirstDate && !ord.manualStartDate) {
+      const _fd45w = new Date(String(ord.dprFirstDate).slice(0,10) + 'T00:00:00');
+      if (!isNaN(_fd45w)) ord.startDate = _fd45w;
+    }
     // Determine end date (v45T #1.1.1, rule confirmed by Ishan — DPR actuals drive the end date):
     //   • actual ≥ planned gross → order is effectively complete: the end date pulls back to the
     //     last production day planning can observe (today at the latest) instead of coasting to

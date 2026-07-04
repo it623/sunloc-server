@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45V</title>
+<title>Sunloc Tracking Suite v1.0 · build v45W</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45V</p>
+      <p>Tracking Suite v1.0 · build v45W</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45V</p>
+      <p>Tracking Suite v1.0 · build v45W</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9701,7 +9701,7 @@ function _v41_renderReportFInner(){
   const _fIsCurMonth = _trkSelectedMonth === today().slice(0,7);
   const _fWinAimIn = bn => ((((_fMd.summary||{})[bn]||{}).aim)||{inBoxes:0}).inBoxes + (_fIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length : 0);
   const _fWinDpr   = (bn,b) => (bn in (_fMd.monthGross||{})) ? (parseFloat(_fMd.monthGross[bn])||0)
-                              : (_trkProdStartMonth(b||{})===_trkSelectedMonth ? ((b&&(b.actualProd||b.actualQty))||0) : 0);
+                              : (((parseFloat(b?.actualProd)||0) === 0 && _trkProdStartMonth(b||{})===_trkSelectedMonth) ? ((b&&(b.actualProd||b.actualQty))||0) : 0); // v45W: zero-DPR batches only (see Report B)
   const _getAimIn  = bn => _fMd ? _fWinAimIn(bn)
       : (hasScanSummary() ? (_ss(bn,'aim').in      + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)      : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length);
   const _getPackOut= bn => hasScanSummary() ? (_ss(bn,'packing').in + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in').length;
@@ -10088,9 +10088,16 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       // Batches whose production STARTED in the selected month fall back to cumulative recon gross
       // if the map lacks them (their entire gross belongs to this month by definition); pure
       // carry-forwards without July DPR gross correctly show 0 for the month.
+      // v45W (26ZG131 floor report): the fallback must NEVER trust planning dates over DPR reality.
+      // A batch with ANY DPR history (actualProd > 0) that is absent from the selected month's
+      // window produced ZERO that month — attributing its cumulative gross to the month planning
+      // happens to name created phantom WIP (June-produced 26ZG131 showed 27.75L WIP in July
+      // because its wrong planning dates said July while its scans correctly sat in June's window).
+      // The planning-month fallback survives ONLY for zero-DPR batches (not yet produced), where
+      // showing planned qty as available-to-scan is the long-standing behaviour.
       const grossProd = _bMd
         ? ((batchNo in (_bMd.monthGross||{})) ? (parseFloat(_bMd.monthGross[batchNo])||0)
-           : (_trkProdStartMonth(batch||{})===_trkSelectedMonth ? _reconGross(batch) : 0))
+           : (((parseFloat(batch?.actualProd)||0) === 0 && _trkProdStartMonth(batch||{})===_trkSelectedMonth) ? _reconGross(batch) : 0))
         : _reconGross(batch);
       const aimInBoxes = _bMd
         ? ((((_bMd.summary||{})[batchNo]||{}).aim||{inBoxes:0}).inBoxes + (_bIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length : 0))
