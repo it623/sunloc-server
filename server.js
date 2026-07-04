@@ -3303,7 +3303,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45Z' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZA' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3796,7 +3796,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45Z' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZA' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -8407,6 +8407,46 @@ app.post('/api/admin/repair-export-invoice-qty', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v45ZA (confirmed by Ishan): per-box handover-gap detail for Report F. Returns every label of a
+// batch with a scan-OUT at `from` but NO scan-IN at `to` — so operators see exactly WHICH box
+// numbers are unaccounted, not just the count. Synthetic reconciliation scans (recon-*) excluded;
+// orange labels never enter this flow (they scan on the separate 'orange' channel).
+app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
+  try {
+    const batch = String(req.query.batch || '').trim();
+    const from = String(req.query.from || '').trim();
+    const to = String(req.query.to || '').trim();
+    const okDepts = ['aim', 'printing', 'pi', 'packing', 'dispatch'];
+    if (!batch || !okDepts.includes(from) || !okDepts.includes(to)) {
+      return res.status(400).json({ ok: false, error: 'batch, from, to required (valid depts)' });
+    }
+    const sql = `
+      SELECT s.label_id, MAX(s.ts) AS out_ts,
+             l.label_number, l.is_excess, l.excess_num, l.qty, l.voided
+        FROM tracking_scans s
+        LEFT JOIN tracking_labels l ON l.id = s.label_id
+       WHERE s.batch_number = $1 AND s.dept = $2 AND s.type = 'out'
+         AND s.label_id NOT LIKE 'recon-%'
+         AND NOT EXISTS (
+           SELECT 1 FROM tracking_scans t
+            WHERE t.label_id = s.label_id AND t.batch_number = $1
+              AND t.dept = $3 AND t.type = 'in')
+       GROUP BY s.label_id, l.label_number, l.is_excess, l.excess_num, l.qty, l.voided
+       ORDER BY l.label_number NULLS LAST`;
+    let rows;
+    if (pgPool) rows = (await pgPool.query(sql, [batch, from, to])).rows;
+    else rows = db.prepare(sql.replace(/\$1/g,'?').replace(/\$2/g,'?').replace(/\$3/g,'?').replace(' NULLS LAST','')).all(batch, from, batch, to);
+    const boxes = (rows || []).map(r => ({
+      labelId: r.label_id,
+      box: (r.is_excess ? ('E-' + (r.excess_num || Math.abs(parseInt(r.label_number) || 0))) : String(Math.abs(parseInt(r.label_number) || 0))),
+      qty: parseFloat(r.qty) || 0,
+      voided: !!(r.voided && Number(r.voided) !== 0),
+      outTs: r.out_ts || null,
+    }));
+    res.json({ ok: true, batch, from, to, count: boxes.length, boxes });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // GET all DPR dates (for history navigation)
 app.get('/api/dpr/dates/:floor', async (req, res) => {
   try {
@@ -11080,7 +11120,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45Z',
+      build: 'v45ZA',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11089,7 +11129,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45Z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZA', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12413,7 +12453,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45Z',
+      build: 'v45ZA',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12422,7 +12462,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45Z', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZA', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

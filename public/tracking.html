@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45Z</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZA</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45Z</p>
+      <p>Tracking Suite v1.0 · build v45ZA</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45Z</p>
+      <p>Tracking Suite v1.0 · build v45ZA</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4379,7 +4379,12 @@ function renderDeptScan(dept){
   const _deptOutCount = bn => (typeof hasScanSummary==='function'&&hasScanSummary()) ? (_ss(bn,dept).out||0) : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out').length;
   // Wastage can only be SAVED for a batch scanned-IN at this dept (save-validation rejects
   // otherwise), so the dropdown should only offer those.
-  const wastageBatches = activeBatches.filter(b=>_deptInCount(b.batchNumber)>0);
+  // v45ZA (confirmed by Ishan): a NEW batch that just started producing mid-shift (26V083) has no
+  // AIM scans yet, so the scan-in gate hid it from the salvage dropdown. AIM salvage physically
+  // occurs during sorting against GROSS production — the frozen Production WIP formula already
+  // deducts AIM wastage from the pre-scan bucket — so for AIM any batch with DPR gross qualifies.
+  // Printing/PI keep the scan-in gate (material only arrives there via scans).
+  const wastageBatches = activeBatches.filter(b=>_deptInCount(b.batchNumber)>0 || (dept==='aim' && (_grossFor(b.batchNumber,b)||0)>0));
   // v44J #6: closure list filtered to batches with activity at THIS dept (scan-in OR scan-out OR
   // wastage). inCount/outCount use state.scans exactly as the row math below — so hiding all-zero
   // rows changes NO displayed number and NO close-action logic; it only removes the clutter rows.
@@ -5271,12 +5276,19 @@ function saveWastage(dept){
   if(salvage===0&&remelt===0){ if(resultEl) resultEl.innerHTML='<div class="alert alert-danger">Enter salvage or remelt quantity.</div>'; return; }
   const batch=getBatch(batchNo);
   if(!batch) return;
-  // Validate: total wastage cannot exceed scanned in qty
-  const inCount=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
+  // Validate: total wastage cannot exceed the material available at this dept.
+  // v45ZA (confirmed by Ishan): (a) count scan-ins from FULL history (_ss) + local, not the
+  // recency-windowed state.scans — old batches whose scans aged out were falsely blocked;
+  // (b) for AIM the cap is max(scanned-in, DPR gross): salvage happens during sorting, before
+  // scan-in, so a new batch with production but no scans yet must accept entries up to gross.
+  const _wLocalIn45=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in'&&s._local).length;
+  const inCount=hasScanSummary() ? (_ss(batchNo,dept).in + _wLocalIn45)
+                                 : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
   const inQty=boxToLakh(inCount,batch.size);
+  const _wCap45=dept==='aim' ? Math.max(inQty, _grossFor(batchNo,batch)||0) : inQty;
   const existing=getTotalWastage(batchNo,dept);
-  if(existing.total+salvage+remelt>inQty){
-    if(resultEl) resultEl.innerHTML=`<div class="alert alert-danger">Total wastage (${fmt(existing.total+salvage+remelt)}L) exceeds scanned IN qty (${fmt(inQty)}L)</div>`;
+  if(existing.total+salvage+remelt>_wCap45){
+    if(resultEl) resultEl.innerHTML=`<div class="alert alert-danger">Total wastage (${fmt(existing.total+salvage+remelt)}L) exceeds ${dept==='aim'?'material available at AIM (max of gross production / scanned IN)':'scanned IN qty'} (${fmt(_wCap45)}L)</div>`;
     return;
   }
   // v41ZB: the same remark is attached to both salvage and remelt rows from this save.
@@ -5302,11 +5314,15 @@ function openWastageEdit(wastageId, dept){
   if(newQty<0){ alert('Quantity cannot be negative.'); return; }
   // Validate total won't exceed scanned IN
   const batch=getBatch(entry.batchNumber);
-  const inCount=state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in').length;
+  // v45ZA: full-history scan count + AIM gross cap — see saveWastage note.
+  const _eLocalIn45=state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in'&&s._local).length;
+  const inCount=hasScanSummary() ? (_ss(entry.batchNumber,dept).in + _eLocalIn45)
+                                 : state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in').length;
   const inQty=boxToLakh(inCount,batch?.size||'0');
+  const _eCap45=dept==='aim' ? Math.max(inQty, _grossFor(entry.batchNumber,batch)||0) : inQty;
   const otherWastage=state.wastage.filter(w=>w.batchNumber===entry.batchNumber&&w.dept===dept&&w.id!==wastageId).reduce((s,w)=>s+w.qty,0);
-  if(otherWastage+newQty>inQty){
-    alert(`Total wastage (${fmt(otherWastage+newQty)}L) would exceed scanned IN qty (${fmt(inQty)}L). Not saved.`);
+  if(otherWastage+newQty>_eCap45){
+    alert(`Total wastage (${fmt(otherWastage+newQty)}L) would exceed ${dept==='aim'?'material available at AIM':'scanned IN qty'} (${fmt(_eCap45)}L). Not saved.`);
     return;
   }
   entry.qty=newQty;
@@ -8819,6 +8835,31 @@ function renderReportH(){
   }
   return _p;
 }
+// v45ZA: expand/collapse the per-box gap detail under a Report F handover row. Fetched once per
+// (batch, from, to) and cached for the session; re-click just toggles visibility.
+window._rptHGapBoxCache = window._rptHGapBoxCache || {};
+async function _rptH_toggleGapBoxes(batch, fromKey, toKey, rowId){
+  const tr = document.getElementById(rowId);
+  if(!tr) return;
+  if(!tr.classList.contains('hidden')){ tr.classList.add('hidden'); return; }
+  tr.classList.remove('hidden');
+  const cacheKey = batch+'|'+fromKey+'|'+toKey;
+  const cell = tr.firstElementChild;
+  const paint = (data)=>{
+    if(!data || !data.ok){ cell.innerHTML = '<span class="text-sm" style="color:var(--accent4)">Could not load box detail'+(data&&data.error?': '+_v40_esc(data.error):'')+'</span>'; return; }
+    if(!data.boxes.length){ cell.innerHTML = '<span class="text-sm text-muted">No scan-tracked boxes in this gap (e.g. covered by truck-level dispatch records).</span>'; return; }
+    const chips = data.boxes.map(b=>`<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.35);color:var(--accent4)${b.voided?';opacity:0.5;text-decoration:line-through':''}" title="${b.qty?fmt(b.qty)+'L · ':''}out ${b.outTs?fmtDateTime(b.outTs):''}${b.voided?' · VOIDED':''}">${b.box}</span>`).join('');
+    cell.innerHTML = `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${data.count}</b> box${data.count>1?'es':''} scanned OUT of ${DEPT_LABELS[fromKey]||fromKey} with no scan IN at ${DEPT_LABELS[toKey]||toKey}:</div>${chips}`;
+  };
+  if(window._rptHGapBoxCache[cacheKey]){ paint(window._rptHGapBoxCache[cacheKey]); return; }
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/handover-gap-boxes?batch='+encodeURIComponent(batch)+'&from='+encodeURIComponent(fromKey)+'&to='+encodeURIComponent(toKey), {signal:AbortSignal.timeout(12000)});
+    const j = await r.json();
+    window._rptHGapBoxCache[cacheKey] = j;
+    paint(j);
+  }catch(e){ paint({ok:false, error:e?.message||'network'}); }
+}
+
 function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(window._v41_composingD)window._v41_composingD=false;
   _captureReportScroll();
   if(!document.getElementById('report-output')) renderReports();
@@ -8969,9 +9010,13 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       </div>
     </div>`;
 
+  // v45ZA (confirmed by Ishan): the red gap count is now clickable — expands an inline detail row
+  // listing exactly WHICH box numbers were scanned OUT of the from-dept but never IN to the to-dept
+  // (server-authoritative, full scan history). packing→dispatch gaps covered by Phase-18 truck
+  // records have no per-box scans, so the list there shows only the scan-tracked residue.
   const detailRows = tabRows
     .sort((a,b)=>b.gap-a.gap)
-    .map(r=>`<tr style="background:rgba(220,38,38,0.03)">
+    .map((r,_i)=>{ const _rid='hgapbx-'+_i; return `<tr style="background:rgba(220,38,38,0.03)">
       <td class="td-bold td-mono">${r.batch}</td>
       <td class="text-sm">${r.customer}</td>
       <td class="td-mono">${r.machineId}</td>
@@ -8980,9 +9025,11 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       <td class="text-sm" style="color:#7c3aed;font-weight:600">${r.to}</td>
       <td class="td-mono">${r.fromOut}</td>
       <td class="td-mono">${r.toIn}</td>
-      <td class="td-mono fw-bold" style="color:var(--accent4)">${r.gap}</td>
+      <td class="td-mono fw-bold" style="color:var(--accent4);cursor:pointer;white-space:nowrap" title="Click to see which box numbers are unaccounted"
+          onclick="_rptH_toggleGapBoxes('${r.batch}','${r.fromKey}','${r.toKey}','${_rid}')">${r.gap} <span style="font-size:9px">▾</span></td>
       <td class="td-mono" style="color:var(--accent4)">${fmt(r.gapQty)}L</td>
-    </tr>`).join('');
+    </tr>
+    <tr id="${_rid}" class="hidden"><td colspan="10" style="background:rgba(220,38,38,0.05);padding:8px 14px"><span class="text-sm text-muted">Loading box numbers…</span></td></tr>`; }).join('');
 
   // v41ZB: totals across the filtered tab rows
   const _hOut = tabRows.reduce((s,r)=>s+(r.fromOut||0),0);
