@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v45W</p>
+      <p>Planning Suite v3.0 · build v45X</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1212,6 +1212,7 @@ const SYNC = (() => {
               remarks:      dbOrd.remarks     || o.remarks,
               actualProd:   (dbOrd.actualProd != null ? dbOrd.actualProd : o.actualProd),
               dprFirstDate: (dbOrd.dprFirstDate != null ? dbOrd.dprFirstDate : o.dprFirstDate), // v45W
+              dprLastDate:  (dbOrd.dprLastDate  != null ? dbOrd.dprLastDate  : o.dprLastDate),  // v45X
               mismatchFlag: dbOrd.mismatchFlag !== undefined ? dbOrd.mismatchFlag : o.mismatchFlag,
               // Keep manual dates from either source
               startDate:       (o.manualStartDate || o.manualEndDate) ? o.startDate   : dbOrd.startDate,
@@ -2447,7 +2448,9 @@ function recalcMachineScheduleQuiet(machineId) {
       ord.startDate = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
     } else if (cursor) {
       // Downstream of an earlier order — start right after it (this is the cascade).
-      ord.startDate = new Date(cursor);
+      // v45X: floor at today — dprLastDate-anchored ends can sit in the past; an UNSTARTED
+      // order can't be planned into the past (started orders keep real starts elsewhere).
+      ord.startDate = new Date(Math.max(new Date(cursor).getTime(), todayD.getTime()));
     } else {
       // First order on the machine, not yet started. Use its saved start, but never schedule
       // into the past with no production behind it.
@@ -2472,14 +2475,24 @@ function recalcMachineScheduleQuiet(machineId) {
     //     (sc.daysNeeded = remainingGross / effectiveCap; DPR rate with machine-cap fallback).
     //   • no production yet → unchanged v41ZO behaviour: start + full run duration.
     const _acts45t = (ord.actualProd || ord.actualQty || 0);
+    // v45X (confirmed by Ishan): a DPR-complete order's end anchors to its LAST actual DPR
+    // production date — reality-driven, mirroring the v45W start anchor. today() survives only
+    // when the server hasn't exposed dprLastDate (cold cache / no DPR rows). The below-today
+    // clamp is skipped for the anchored end: pulling a finished order's end into the past is the
+    // point — downstream orders recalibrate off the real end via the cursor. The +ceil end-date
+    // convention for projections is unchanged (durations are hours-scoped, per Ishan 4-Jul).
+    let _endAnchored45x = false;
     if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
-      ord.endDate = new Date(todayD);
+      const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
+      if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _ld45x; _endAnchored45x = true; }
+      else ord.endDate = new Date(todayD);
     } else if (hasProduction && sc.daysNeeded != null && isFinite(sc.daysNeeded)) {
       ord.endDate = calcEndDate(todayD, Math.max(1, Math.ceil(sc.daysNeeded)));
     } else {
       ord.endDate = calcEndDate(ord.startDate, fullDays);
     }
-    if (ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
+    if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
+    if (_endAnchored45x && ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) ord.endDate = new Date(ord.startDate);
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
@@ -2539,7 +2552,8 @@ function recalcMachineSchedule(machineId) {
       const histStart = new Date(ord.startDate);
       ord.startDate = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
     } else if (cursor) {
-      ord.startDate = new Date(cursor);
+      // v45X: today-floor — see recalcMachineScheduleQuiet note (past cursors from anchored ends).
+      ord.startDate = new Date(Math.max(new Date(cursor).getTime(), todayD.getTime()));
     } else {
       const savedStart = ord.startDate ? new Date(ord.startDate) : null;
       ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
@@ -2562,14 +2576,24 @@ function recalcMachineSchedule(machineId) {
     //     (sc.daysNeeded = remainingGross / effectiveCap; DPR rate with machine-cap fallback).
     //   • no production yet → unchanged v41ZO behaviour: start + full run duration.
     const _acts45t = (ord.actualProd || ord.actualQty || 0);
+    // v45X (confirmed by Ishan): a DPR-complete order's end anchors to its LAST actual DPR
+    // production date — reality-driven, mirroring the v45W start anchor. today() survives only
+    // when the server hasn't exposed dprLastDate (cold cache / no DPR rows). The below-today
+    // clamp is skipped for the anchored end: pulling a finished order's end into the past is the
+    // point — downstream orders recalibrate off the real end via the cursor. The +ceil end-date
+    // convention for projections is unchanged (durations are hours-scoped, per Ishan 4-Jul).
+    let _endAnchored45x = false;
     if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
-      ord.endDate = new Date(todayD);
+      const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
+      if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _ld45x; _endAnchored45x = true; }
+      else ord.endDate = new Date(todayD);
     } else if (hasProduction && sc.daysNeeded != null && isFinite(sc.daysNeeded)) {
       ord.endDate = calcEndDate(todayD, Math.max(1, Math.ceil(sc.daysNeeded)));
     } else {
       ord.endDate = calcEndDate(ord.startDate, fullDays);
     }
-    if (ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
+    if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
+    if (_endAnchored45x && ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) ord.endDate = new Date(ord.startDate);
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
@@ -2653,17 +2677,42 @@ function recalcPrintScheduleQuiet() {
     // v37E: Pass OPM machineId so the adaptive Print/PI factor uses THIS OPM's cumulative
     // A-Grade history, not just the global default.
     const { qtyToPrint, printStart } = calcPrintQtyAndStart(ord, existing.machineId);
-    existing.startDate = printStart;
+    // v45X (confirmed by Ishan): startDate is only written for UNSTARTED print orders. The old
+    // unconditional `existing.startDate = printStart` stomped every started order's start to
+    // today() each recalc (printStart pins to today whenever AIM outpaces Print — i.e. almost
+    // always), so the v45T sequencer's keep-historical-start rule preserved an already-destroyed
+    // value and whole OPMs showed one shared start date. Started orders now anchor to their FIRST
+    // Daily Printing Log date — the print-side analogue of the v45W dprFirstDate anchor — which
+    // also RECOVERS the true starts that earlier builds overwrote (the log keeps dated entries).
+    const alreadyStarted = (existing.printedToDate || 0) > 0;
+    if (!alreadyStarted) {
+      existing.startDate = printStart;
+    } else {
+      const _firstLog45x = (state.dailyPrinting || [])
+        .filter(l => l.printOrderId === existing.id && l.date)
+        .map(l => String(l.date).slice(0, 10)).sort()[0];
+      if (_firstLog45x) existing.startDate = new Date(_firstLog45x + 'T00:00:00');
+    }
     // v37E: Only adjust qtyToPrint for orders that have NOT started printing yet
     // (printedToDate === 0). Running/in-progress orders keep their committed plan to avoid
     // disrupting active production. Per user spec: "auto adjusts for all subsequent
     // planned printed orders on that OPM" — subsequent planned, not already running.
-    const alreadyStarted = (existing.printedToDate || 0) > 0;
     if (!alreadyStarted && !existing.printedToDateManual) {
       existing.qtyToPrint = parseFloat(qtyToPrint.toFixed(3));
     }
-    // End date always recomputed from latest qty/start for scheduling visibility
-    existing.endDate = calcEndDate(printStart, (existing.qtyToPrint || qtyToPrint) / pm.cap);
+    // End date always recomputed from latest qty/start for scheduling visibility.
+    // v45X: a COMPLETE print order (log total ≥ plan) anchors its end to the LAST Daily Printing
+    // Log date — the sequencer excludes status='completed' rows, so without this a completed row
+    // kept a projected future end (OPM05 showed Completed with end 09-Jul on 4-Jul).
+    const _planQty45x = existing.qtyToPrint || qtyToPrint || 0;
+    if (alreadyStarted && _planQty45x > 0 && (existing.printedToDate || 0) >= _planQty45x - 1e-9) {
+      const _lastLog45x = (state.dailyPrinting || [])
+        .filter(l => l.printOrderId === existing.id && l.date)
+        .map(l => String(l.date).slice(0, 10)).sort().pop();
+      existing.endDate = _lastLog45x ? new Date(_lastLog45x + 'T00:00:00') : new Date(today());
+    } else {
+      existing.endDate = calcEndDate(existing.startDate || printStart, _planQty45x / pm.cap);
+    }
   }
   recalcPrintMachineSequence();
 }
@@ -2702,7 +2751,13 @@ function recalcPrintMachineSequence() {
         po.startDate = anchor >= todayD ? anchor : new Date(todayD);
       }
       if (qty > 0 && printed >= qty - 1e-9) {
-        po.endDate = new Date(todayD);                         // complete per Daily Printing Log
+        // v45X (confirmed by Ishan): reality-driven end — a complete print order's end anchors to
+        // its LAST Daily Printing Log date (the print-side dprLastDate analogue); today() only
+        // when no dated log entries exist. The cursor then advances from the real end.
+        const _lastLog45x = (state.dailyPrinting || [])
+          .filter(l => l.printOrderId === po.id && l.date)
+          .map(l => String(l.date).slice(0, 10)).sort().pop();
+        po.endDate = _lastLog45x ? new Date(_lastLog45x + 'T00:00:00') : new Date(todayD);
       } else if (printed > 0 && cap) {
         po.endDate = calcEndDate(todayD, Math.max(1, Math.ceil((qty - printed) / cap))); // remaining at cap
       } else if (qty > 0 && cap) {
@@ -2727,14 +2782,32 @@ function recalcPrintSchedule() {
     const pm = getPrintMachine(existing.machineId);
     if (!pm) continue;
     const { qtyToPrint, printStart } = calcPrintQtyAndStart(ord, existing.machineId);
-    existing.startDate = printStart;
+    // v45X: startDate only for UNSTARTED print orders; started ones anchor to their first Daily
+    // Printing Log date — see the full rationale in recalcPrintScheduleQuiet.
+    const alreadyStarted = (existing.printedToDate || 0) > 0;
+    if (!alreadyStarted) {
+      existing.startDate = printStart;
+    } else {
+      const _firstLog45x = (state.dailyPrinting || [])
+        .filter(l => l.printOrderId === existing.id && l.date)
+        .map(l => String(l.date).slice(0, 10)).sort()[0];
+      if (_firstLog45x) existing.startDate = new Date(_firstLog45x + 'T00:00:00');
+    }
     // v37E: Only adjust qtyToPrint for orders that have NOT started printing yet — see note in
     // recalcPrintScheduleQuiet. "auto adjusts for all subsequent planned printed orders on that OPM"
-    const alreadyStarted = (existing.printedToDate || 0) > 0;
     if (!alreadyStarted && !existing.printedToDateManual) {
       existing.qtyToPrint = parseFloat(qtyToPrint.toFixed(3));
     }
-    existing.endDate = calcEndDate(printStart, (existing.qtyToPrint || qtyToPrint) / pm.cap);
+    const _planQty45x = existing.qtyToPrint || qtyToPrint || 0;
+    if (alreadyStarted && _planQty45x > 0 && (existing.printedToDate || 0) >= _planQty45x - 1e-9) {
+      // v45X: completed print order — end anchors to last Daily Printing Log date (see Quiet loop).
+      const _lastLog45x = (state.dailyPrinting || [])
+        .filter(l => l.printOrderId === existing.id && l.date)
+        .map(l => String(l.date).slice(0, 10)).sort().pop();
+      existing.endDate = _lastLog45x ? new Date(_lastLog45x + 'T00:00:00') : new Date(today());
+    } else {
+      existing.endDate = calcEndDate(existing.startDate || printStart, _planQty45x / pm.cap);
+    }
   }
   // Recalc dispatch
   recalcDispatch();

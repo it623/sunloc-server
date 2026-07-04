@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v45W</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v45X</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -3999,7 +3999,7 @@ async function renderPerf(){
 // Build plant report rows from a map of { GF: dayData|null, '1F': dayData|null, '2F': dayData|null }
 // floorDataMap values are the same structure as loadDay() returns, or null if no data.
 // allDates is used for cumulative calculation — passed in so caller controls the range.
-function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
+function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum) {
   // allDatesMap: { GF: [dates...], '1F': [dates...], '2F': [dates...] }
   // v41ZD #3: averages use ELAPSED DAYS in the selected scope (not per-machine days-with-production,
   // not a fixed 30). "This Month" → from the 1st of the month through the selected date;
@@ -4051,8 +4051,20 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
     });
   });
   // Active-day counts (days WITH production) — denominator for averages.
+  // v45X: with server cum present, floor/plant active days are the UNION of each machine's
+  // production dates from production_actuals (per-floor via the FLOORS master), not the local grid.
   const floorProdDays = {};
   const _plantDates = new Set();
+  if (serverCum) {
+    Object.entries(FLOORS).forEach(([fl, flData]) => {
+      const _flDates = new Set();
+      (flData.machines || []).forEach(mc => {
+        const sc = serverCum[mc.id];
+        ((sc && sc.dates) || []).forEach(d => { _flDates.add(d); _plantDates.add(d); });
+      });
+      floorProdDays[fl] = _flDates.size;
+    });
+  } else
   Object.keys(FLOORS).forEach(fl => {
     let cnt = 0;
     Object.entries(floorDateProd[fl]).forEach(([d, v]) => {
@@ -4090,8 +4102,15 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
     const vsTarget  = parseFloat((dayTotal - dailyTgt).toFixed(2));
 
     // Cumulative: scope based on _dprCumulativeMode
-    const flDates = (allDatesMap[fl] || []).filter(_scopeFilter);
+    // v45X: authoritative path — per-machine cumulative straight from production_actuals
+    // (server), matching Report B's month gross. Grid-blob loop kept as offline fallback.
     let cumTotal=0, cumDays=0;
+    if (serverCum) {
+      const _sc45x = serverCum[mc.id];
+      cumTotal = _sc45x ? (parseFloat(_sc45x.total) || 0) : 0;
+      cumDays  = _sc45x ? (parseInt(_sc45x.days, 10) || 0) : 0;
+    } else {
+    const flDates = (allDatesMap[fl] || []).filter(_scopeFilter);
     flDates.forEach(d => {
       // v41ZG #3: use the pre-parsed cache (read once above) instead of re-reading localStorage.
       const dd = parsedCache[fl]?.[d];
@@ -4104,6 +4123,7 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap) {
       dayProd = parseFloat(dayProd.toFixed(2));
       if (dayProd > 0) { cumTotal += dayProd; cumDays++; }
     });
+    }
     cumTotal = parseFloat(cumTotal.toFixed(2));
     // v41ZG #3: average over days this machine ACTUALLY produced (days-with-data), not elapsed
     // calendar days. "Average production" = mean output on the days the machine ran. cumDays is the
@@ -4209,10 +4229,25 @@ async function renderPlantReport(){
     }
   });
 
+  // v45X (confirmed by Ishan): cumulative comes from production_actuals via the server — the same
+  // store Report B's month gross reads — so DPR plant totals and Tracking Report B agree by
+  // construction. The grid-blob path below survives ONLY as the offline/failed-fetch fallback
+  // (it diverges when the DPR-closed restore rule preserves actuals rows the grid dropped, when a
+  // floor-date blob was never synced to this device, or when a machine sits outside FLOORS).
+  let _serverCum45x = null;
+  if (serverUrl) {
+    try {
+      const _scopeFrom45x = _dprCumulativeMode ? '' : (_dprSelectedMonth + '-01');
+      const cr = await fetch(serverUrl + '/api/dpr/plant-cum?to=' + selectedDate + (_scopeFrom45x ? ('&from=' + _scopeFrom45x) : ''), { signal: AbortSignal.timeout(8000) });
+      if (cr.ok) { const cj = await cr.json(); if (cj && cj.ok && cj.machines) _serverCum45x = cj.machines; }
+    } catch(e) { console.warn('[plant-report] server cum unavailable — falling back to local grid:', e?.message); }
+  }
+
   // v41ZD #3: cumulative totals were built only from days already in localStorage, so on a fresh
   // session (or a different device) prior days were missing and the cumulative per-machine values
   // under-counted. Sync the full scope range from the server first so the cumulative is complete.
-  if (serverUrl) {
+  // v45X: only needed for the FALLBACK path — with server cum in hand, skip the heavy range sync.
+  if (serverUrl && !_serverCum45x) {
     const _scopeFrom = _dprCumulativeMode ? '2000-01-01' : (_dprSelectedMonth + '-01');
     // v41ZF #1: wrap with a hard timeout. If syncDateRangeFromServer hangs (slow/large range), the
     // report previously could sit on "Loading" indefinitely — which presents exactly as "doesn't
@@ -4238,7 +4273,7 @@ async function renderPlantReport(){
 
   // ── Step 4: Build rows and render ──
   try {
-  const { rows, totals, floorTotals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
+  const { rows, totals, floorTotals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, _serverCum45x);
 
   const allDates = [...new Set(Object.values(allDatesMap).flat())].filter(d => d <= selectedDate).sort();
   // v41ZG #3: the DAYS column / averages now divide by days that actually had production (active
@@ -4384,7 +4419,17 @@ async function exportPlantReport(){
     allDatesMap[fl] = [...new Set(Object.keys(localStorage).filter(k=>k.startsWith(`dpr3_${fl}_`)).map(k=>k.split('_')[2]).filter(d=>d&&d<=selectedDate))].sort();
   });
 
-  const { rows, totals, floorTotals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap);
+  // v45X: same server cumulative as renderPlantReport — the Excel export must match the display.
+  let _serverCum45x = null;
+  if (serverUrl) {
+    try {
+      const _scopeFrom45x = _dprCumulativeMode ? '' : (_dprSelectedMonth + '-01');
+      const cr = await fetch(serverUrl + '/api/dpr/plant-cum?to=' + selectedDate + (_scopeFrom45x ? ('&from=' + _scopeFrom45x) : ''), { signal: AbortSignal.timeout(8000) });
+      if (cr.ok) { const cj = await cr.json(); if (cj && cj.ok && cj.machines) _serverCum45x = cj.machines; }
+    } catch(e) {}
+  }
+
+  const { rows, totals, floorTotals } = buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, _serverCum45x);
   const fmt2 = n => parseFloat((+n).toFixed(2));
 
   // v41ZC #3: build with FLOOR TOTAL subtotal rows after each floor's machines, then PLANT TOTAL.

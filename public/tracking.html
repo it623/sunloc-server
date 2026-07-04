@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45W</title>
+<title>Sunloc Tracking Suite v1.0 · build v45X</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45W</p>
+      <p>Tracking Suite v1.0 · build v45X</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45W</p>
+      <p>Tracking Suite v1.0 · build v45X</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3774,7 +3774,11 @@ function renderPrintQueue(selBatch){
 
 function renderLabels(){
   const el=document.getElementById('page-labels');
-  // Show running batches AND closed batches within 2 days of close date
+  // Show running batches AND closed batches within 2 days of close date.
+  // v45X (confirmed by Ishan): ALSO show any non-closed batch with real production (actuals > 0),
+  // regardless of its planning status. The 2-per-machine enforcement can demote a mid-production
+  // batch to 'pending' (26ZF104 after the June→July carry-forward spike on MC32), and a batch that
+  // has produced MUST be printable — labels gate on production reality, not planning status.
   const activeBatches=getTrkMonthBatches().filter(b=>{
     if(b.status==='running') return true;
     if(b.status==='closed'){
@@ -3783,6 +3787,7 @@ function renderLabels(){
       const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
       return daysSinceClosed <= 2;
     }
+    if((parseFloat(b.actualProd||b.actualQty)||0) > 0) return true; // v45X: produced but demoted/pending
     return false;
   }).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const selBatch=window._labelSelBatch||activeBatches[0]?.batchNumber||'';
@@ -14360,4 +14365,3 @@ if (typeof document !== 'undefined') {
 </script>
 </body>
 </html>
-    if(currentPage==='reports'&&typeof window._activeReport==='function'){try{window._activeReport();}catch(e){}}

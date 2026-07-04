@@ -2797,6 +2797,7 @@ let _actualsCacheTime = 0;
 // counted Gross Prod in Reports D & E. This map is the single source of truth for per-batch gross.
 let _grossByBatch = null;
 let _firstProdByBatch = null; // v45W: batch → first DPR production date (YYYY-MM-DD)
+let _lastProdByBatch  = null; // v45X (confirmed by Ishan): batch → LAST DPR production date — anchors a complete order's end date to production reality instead of today()
 // v41ZI Item 6: per-batch admin/PM override of the DPR gross. When present it supersedes _grossByBatch.
 let _grossOverride = {};
 // v45: PERSISTENT order_id -> batchNumber map. Built across warms (update-not-reset). Was a local
@@ -2807,6 +2808,17 @@ let _grossOverride = {};
 // this persistent means a learned order->batch mapping survives a thin warm, so null-batch rows are
 // always attributed and _grossByBatch is reliably the true per-batch sum. Latest batch wins on renumber.
 let _orderBatch = {};
+// v45X (confirmed by Ishan): enforcement must NEVER downgrade an order that has real production.
+// The DPR gate only lets running orders receive actuals, so actuals>0 proves the order legitimately
+// ran — demoting it to pending hides it from the Tracking label view mid-production (26ZF104).
+// Checks the warmed caches first (authoritative), then the order's own stored fields.
+function _orderHasActuals(o) {
+  if (!o) return false;
+  const b = o.batchNumber;
+  if (b != null && _grossOverride && Object.prototype.hasOwnProperty.call(_grossOverride, b)) return (_grossOverride[b] || 0) > 0;
+  if (b != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, b)) return (_grossByBatch[b] || 0) > 0;
+  return ((parseFloat(o.actualProd) || 0) > 0) || ((parseFloat(o.actualQty) || 0) > 0);
+}
 // v41ZY: one-time idempotent backfill — fill batch_number on existing production_actuals rows saved
 // as NULL before the explicit-batch fix, from their order's batch in production_orders. This
 // retroactively repairs batches whose cumulative DPR gross collapsed after close (NULL-batch rows
@@ -2842,7 +2854,7 @@ async function warmActualsCache() {
   _actualsCacheTime = Date.now();
   if (pgPool) {
     try {
-      const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total, MIN(date) as first_date FROM production_actuals GROUP BY order_id, batch_number');
+      const r = await pgPool.query('SELECT order_id, batch_number, SUM(qty_lakhs) as total, MIN(date) as first_date, MAX(date) as last_date FROM production_actuals GROUP BY order_id, batch_number');
       _actualsCache = {};
       for (const row of r.rows) {
         const _t = parseFloat(row.total) || 0;
@@ -2868,6 +2880,7 @@ async function warmActualsCache() {
       } catch(_) {}
       _grossByBatch = {};
       _firstProdByBatch = {};
+      _lastProdByBatch = {};
       for (const row of r.rows) {
         const batch = (row.batch_number && String(row.batch_number).trim()) ? row.batch_number : _orderBatch[row.order_id];
         if (!batch) continue;
@@ -2877,6 +2890,12 @@ async function warmActualsCache() {
         if (row.first_date) {
           const fd = String(row.first_date).slice(0,10);
           if (!_firstProdByBatch[batch] || fd < _firstProdByBatch[batch]) _firstProdByBatch[batch] = fd;
+        }
+        // v45X (confirmed by Ishan): last actual DPR production date per batch — a DPR-complete
+        // order's end date pulls back to the day production actually finished, not today().
+        if (row.last_date) {
+          const ld = String(row.last_date).slice(0,10);
+          if (!_lastProdByBatch[batch] || ld > _lastProdByBatch[batch]) _lastProdByBatch[batch] = ld;
         }
       }
       console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries;', Object.keys(_grossByBatch).length, 'batches');
@@ -3254,7 +3273,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45W' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45X' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3743,7 +3762,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45W' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45X' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -6548,6 +6567,7 @@ app.get('/api/orders/all', async (req, res) => {
       if (Object.prototype.hasOwnProperty.call(_grossOverride, bn)) o.actualProd = _grossOverride[bn] || 0;
       else if (_grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) o.actualProd = _grossByBatch[bn] || 0;
       if (_firstProdByBatch && _firstProdByBatch[bn]) o.dprFirstDate = _firstProdByBatch[bn]; // v45W
+      if (_lastProdByBatch  && _lastProdByBatch[bn])  o.dprLastDate  = _lastProdByBatch[bn];  // v45X
     }
     res.json({ ok: true, orders: rows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -6778,15 +6798,21 @@ app.get('/api/planning/state', async (req, res) => {
           // Without this, every GET re-does the same reconciliation forever. The setImmediate
           // ensures the response goes out first; the rewrite uses the already-reconciled state.
           if (pgPool) {
-            const stateForBlobWrite = state;
+            // v45X FIX: serialize NOW, not inside setImmediate. The deferred callback captured the
+            // live `state` object, which this handler keeps mutating AFTER scheduling the write —
+            // notably the v45R tracking-only running-force pass. Deferred stringify persisted those
+            // label-view-only mutations into the blob (observed as 3 running orders on one machine).
+            // Freezing the JSON here persists exactly the v41z status corrections and nothing later.
+            const jsonForBlobWrite = JSON.stringify(state);
             setImmediate(async () => {
               try {
-                const json = JSON.stringify(stateForBlobWrite);
+                const json = jsonForBlobWrite;
                 const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
                 if (existing.rows[0]) {
                   await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
-                  // Update cache so subsequent reads see the corrected state
-                  _planningStateCache = stateForBlobWrite;
+                  // Update cache so subsequent reads see the corrected state (parse the frozen
+                  // snapshot — do NOT reference the live, later-mutated `state` object)
+                  _planningStateCache = JSON.parse(jsonForBlobWrite);
                   _planningStateCacheTime = Date.now();
                   console.log(`[v41z GET reconcile] Persisted ${reconciledCount} status correction(s) back to blob — won't re-reconcile`);
                 }
@@ -6810,9 +6836,12 @@ app.get('/api/planning/state', async (req, res) => {
           state.orders = state.orders || [];
           const { _dbStatus, _dbUpdatedAt, ...cleanOrd } = dbOrd;
           // CRITICAL: Enforce max 2 IN PRODUCTION per machine
+          // v45X (confirmed by Ishan): the limit gates NEW promotions only — never demote an order
+          // with real production (actuals>0). Demotion hid a mid-production batch from the Tracking
+          // label view (26ZF104) after the June→July carry-forward spike.
           if (cleanOrd.status === 'running' && cleanOrd.machineId) {
             const runningOnMachine = state.orders.filter(o => o.machineId === cleanOrd.machineId && o.status === 'running' && !o.deleted).length;
-            if (runningOnMachine >= 2) {
+            if (runningOnMachine >= 2 && !_orderHasActuals(cleanOrd)) {
               cleanOrd.status = 'pending';
               console.log(`[State] Recovered ${cleanOrd.batchNumber} on ${cleanOrd.machineId} — downgraded to pending (2-order limit)`);
             } else {
@@ -6901,6 +6930,9 @@ app.get('/api/planning/state', async (req, res) => {
         // v45W: expose the first actual DPR production date so the client cascade can anchor a
         // started order's start date to production reality instead of the plan cursor.
         if (bn != null && _firstProdByBatch && _firstProdByBatch[bn]) ord.dprFirstDate = _firstProdByBatch[bn];
+        // v45X: expose the LAST actual DPR production date — the cascade anchors a complete
+        // order's end date to it (reality-driven ends; +ceil day convention unchanged).
+        if (bn != null && _lastProdByBatch && _lastProdByBatch[bn]) ord.dprLastDate = _lastProdByBatch[bn];
       }
     }
 
@@ -6984,10 +7016,16 @@ app.post('/api/planning/state', async (req, res) => {
             _bgRunningOrderIds[o.machineId].push(id);
           });
           // ACTIVE ENFORCEMENT: downgrade newest orders on machines already over limit
+          // v45X (confirmed by Ishan): skip orders with real production — the limit gates NEW
+          // promotions, not batches that already ran (DPR gate ⇒ actuals imply it WAS running).
           const _bgForcePendingIds = new Set();
           Object.entries(_bgRunningOrderIds).forEach(([machineId, ids]) => {
             if (ids.length > 2) {
               ids.slice(2).forEach(id => {
+                if (_orderHasActuals(existingMap[id])) {
+                  console.log('[v41z bg-merge] MC ' + machineId + ' over limit but ' + id + ' has actuals — NOT downgrading (v45X guard)');
+                  return;
+                }
                 _bgForcePendingIds.add(id);
                 console.log('[v41z bg-merge] MC ' + machineId + ' has ' + ids.length + ' running — downgrading ' + id + ' to pending (2-order limit)');
               });
@@ -7030,7 +7068,9 @@ app.post('/api/planning/state', async (req, res) => {
               } else if (_bgForcePendingIds.has(ord.id) && ord.status === 'running' && ex.status !== 'closed') {
                 finalStatus = 'pending';
               } else {
-              const wouldExceedLimit = ord.status === 'running' && !alreadyRunningInDB && machineRunCount >= 2;
+              // v45X (confirmed by Ishan): an order with actuals already ran — re-promotion is not a
+              // "new" start and must not be blocked/demoted by the 2-order limit.
+              const wouldExceedLimit = ord.status === 'running' && !alreadyRunningInDB && machineRunCount >= 2 && !_orderHasActuals(ord);
               if (wouldExceedLimit) {
                 finalStatus = 'pending';
               } else if (ex.status && ord.status && ex.status !== ord.status) {
@@ -8197,6 +8237,45 @@ app.get('/api/dpr/plant-report/:date', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// v45X (confirmed by Ishan): server-side cumulative for the DPR Plant Report, summed from
+// production_actuals — the same store Report B's month gross uses — so the two reports agree by
+// construction. The client previously summed locally-cached day blobs (grid), which diverges when
+// (a) the DPR-closed restore rule preserves actuals rows the grid no longer shows, (b) a floor-date
+// blob was never synced to this device, or (c) a machine produced outside the FLOORS master.
+// Returns per-machine { total, days, dates[] } for date-range [from..to] (from optional = all-time);
+// only days with production count. The client derives floor/plant day-unions from the dates arrays.
+app.get('/api/dpr/plant-cum', async (req, res) => {
+  try {
+    const to = String(req.query.to || '').slice(0, 10);
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(to)) return res.status(400).json({ ok: false, error: 'to=YYYY-MM-DD required' });
+    const fromRaw = String(req.query.from || '');
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(fromRaw) ? fromRaw.slice(0, 10) : null;
+    let rows;
+    if (pgPool) {
+      rows = (await pgPool.query(
+        `SELECT machine_id, date, COALESCE(SUM(qty_lakhs),0) AS day_total
+           FROM production_actuals
+          WHERE date <= $1 AND ($2::text IS NULL OR date >= $2)
+          GROUP BY machine_id, date`, [to, from])).rows;
+    } else {
+      rows = from
+        ? db.prepare(`SELECT machine_id, date, COALESCE(SUM(qty_lakhs),0) AS day_total FROM production_actuals WHERE date <= ? AND date >= ? GROUP BY machine_id, date`).all(to, from)
+        : db.prepare(`SELECT machine_id, date, COALESCE(SUM(qty_lakhs),0) AS day_total FROM production_actuals WHERE date <= ? GROUP BY machine_id, date`).all(to);
+    }
+    const machines = {};
+    for (const r of rows) {
+      const mid = r.machine_id; if (!mid) continue;
+      const v = parseFloat(r.day_total) || 0;
+      if (v <= 0) continue; // days-with-production only — mirrors the client's cumDays rule
+      if (!machines[mid]) machines[mid] = { total: 0, days: 0, dates: [] };
+      machines[mid].total = parseFloat((machines[mid].total + v).toFixed(2));
+      machines[mid].days += 1;
+      machines[mid].dates.push(String(r.date).slice(0, 10));
+    }
+    res.json({ ok: true, from, to, machines });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // GET all DPR dates (for history navigation)
@@ -10872,7 +10951,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45W',
+      build: 'v45X',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -10881,7 +10960,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45W', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45X', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12205,7 +12284,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45W',
+      build: 'v45X',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12214,7 +12293,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45W', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45X', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
