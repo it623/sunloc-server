@@ -3303,7 +3303,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZA' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZB' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3796,7 +3796,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZA' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZB' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -8429,13 +8429,13 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
          AND s.label_id NOT LIKE 'recon-%'
          AND NOT EXISTS (
            SELECT 1 FROM tracking_scans t
-            WHERE t.label_id = s.label_id AND t.batch_number = $1
+            WHERE t.label_id = s.label_id
               AND t.dept = $3 AND t.type = 'in')
        GROUP BY s.label_id, l.label_number, l.is_excess, l.excess_num, l.qty, l.voided
        ORDER BY l.label_number NULLS LAST`;
     let rows;
     if (pgPool) rows = (await pgPool.query(sql, [batch, from, to])).rows;
-    else rows = db.prepare(sql.replace(/\$1/g,'?').replace(/\$2/g,'?').replace(/\$3/g,'?').replace(' NULLS LAST','')).all(batch, from, batch, to);
+    else rows = db.prepare(sql.replace(/\$1/g,'?').replace(/\$2/g,'?').replace(/\$3/g,'?').replace(' NULLS LAST','')).all(batch, from, to);
     const boxes = (rows || []).map(r => ({
       labelId: r.label_id,
       box: (r.is_excess ? ('E-' + (r.excess_num || Math.abs(parseInt(r.label_number) || 0))) : String(Math.abs(parseInt(r.label_number) || 0))),
@@ -8443,7 +8443,74 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
       voided: !!(r.voided && Number(r.voided) !== 0),
       outTs: r.out_ts || null,
     }));
-    res.json({ ok: true, batch, from, to, count: boxes.length, boxes });
+    // v45ZB: annotate the offsetting anomalies that make the per-box gap differ from the count-net:
+    // boxes scanned IN at `to` with no OUT at `from`, and synthetic reconciliation INs at `to`.
+    const extraSql = `
+      SELECT COUNT(DISTINCT t.label_id) AS n FROM tracking_scans t
+       WHERE t.batch_number = $1 AND t.dept = $2 AND t.type = 'in' AND t.label_id NOT LIKE 'recon-%'
+         AND NOT EXISTS (SELECT 1 FROM tracking_scans s
+                          WHERE s.label_id = t.label_id
+                            AND s.dept = $3 AND s.type = 'out')`;
+    const reconSql = `
+      SELECT COUNT(*) AS n FROM tracking_scans
+       WHERE batch_number = $1 AND dept = $2 AND type = 'in' AND label_id LIKE 'recon-%'`;
+    let extraIn = 0, reconIn = 0;
+    try {
+      if (pgPool) {
+        extraIn = parseInt((await pgPool.query(extraSql, [batch, to, from])).rows[0]?.n || 0, 10);
+        reconIn = parseInt((await pgPool.query(reconSql, [batch, to])).rows[0]?.n || 0, 10);
+      } else {
+        extraIn = parseInt(db.prepare(extraSql.replace(/\$1/g,'?').replace(/\$2/g,'?').replace(/\$3/g,'?')).get(batch, to, from)?.n || 0, 10);
+        reconIn = parseInt(db.prepare(reconSql.replace(/\$1/g,'?').replace(/\$2/g,'?')).get(batch, to)?.n || 0, 10);
+      }
+    } catch(_) {}
+    res.json({ ok: true, batch, from, to, count: boxes.length, boxes, extraIn, reconIn });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// v45ZB (confirmed by Ishan): per-box gap COUNTS per batch per transition, so the Report F header
+// column shows the same truth the expanded detail lists (26ZA047: header said net 3, detail listed
+// 6 — offsetting "in without out" scans and synthetic recon INs cancel inside a count-net). One
+// call returns every scan transition; packing→dispatch stays count-based client-side because
+// Phase-18 truck dispatches have no per-box scans.
+app.get('/api/tracking/handover-gap-counts', async (req, res) => {
+  try {
+    const pairs = [['aim','printing'],['printing','pi'],['pi','packing'],['aim','packing']];
+    const gapSql = `
+      SELECT s.batch_number AS bn, COUNT(DISTINCT s.label_id) AS gap
+        FROM tracking_scans s
+       WHERE s.dept = $1 AND s.type = 'out' AND s.label_id NOT LIKE 'recon-%'
+         AND s.batch_number IS NOT NULL AND s.batch_number <> ''
+         AND NOT EXISTS (SELECT 1 FROM tracking_scans t
+                          WHERE t.label_id = s.label_id AND t.dept = $2 AND t.type = 'in')
+       GROUP BY s.batch_number`;
+    const extraSql = `
+      SELECT t.batch_number AS bn, COUNT(DISTINCT t.label_id) AS extra
+        FROM tracking_scans t
+       WHERE t.dept = $2 AND t.type = 'in' AND t.label_id NOT LIKE 'recon-%'
+         AND t.batch_number IS NOT NULL AND t.batch_number <> ''
+         AND NOT EXISTS (SELECT 1 FROM tracking_scans s
+                          WHERE s.label_id = t.label_id AND s.dept = $1 AND s.type = 'out')
+       GROUP BY t.batch_number`;
+    const transitions = {};
+    for (const [from, to] of pairs) {
+      const key = from + '\u2192' + to; // from→to
+      transitions[key] = {};
+      let gRows, eRows;
+      if (pgPool) {
+        gRows = (await pgPool.query(gapSql, [from, to])).rows;
+        eRows = (await pgPool.query(extraSql, [from, to])).rows;
+      } else {
+        gRows = db.prepare(gapSql.replace(/\$1/g,'?').replace(/\$2/g,'?')).all(from, to);
+        eRows = db.prepare(extraSql.replace(/\$1/g,'?').replace(/\$2/g,'?')).all(from, to);
+      }
+      for (const r of (gRows||[])) transitions[key][r.bn] = { gap: parseInt(r.gap,10)||0, extraIn: 0 };
+      for (const r of (eRows||[])) {
+        if (!transitions[key][r.bn]) transitions[key][r.bn] = { gap: 0, extraIn: 0 };
+        transitions[key][r.bn].extraIn = parseInt(r.extra,10)||0;
+      }
+    }
+    res.json({ ok: true, transitions });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -11120,7 +11187,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZA',
+      build: 'v45ZB',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11129,7 +11196,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZA', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZB', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12453,7 +12520,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZA',
+      build: 'v45ZB',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12462,7 +12529,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZA', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZB', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 

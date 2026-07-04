@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZA</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZB</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZA</p>
+      <p>Tracking Suite v1.0 · build v45ZB</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZA</p>
+      <p>Tracking Suite v1.0 · build v45ZB</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4525,7 +4525,7 @@ function renderDeptScan(dept){
     <div id="wastage-result-${dept}" class="mt-8"></div>
     ${_v45e_wastageShiftSummary(dept)}
     ${_v45m_view(dept)}
-    ${(currentDept==='admin'||currentDept==='planning'||currentDept===dept)?`
+    ${_canEditWastage45(dept)?`
     <div class="divider mt-16"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:6px">
       <div class="card-title" style="color:var(--accent4);margin:0">✏️ Wastage History — Edit / Delete</div>
@@ -5303,10 +5303,16 @@ function saveWastage(dept){
   setTimeout(()=>{ if(resultEl) resultEl.innerHTML=''; renderDeptScan(dept); },2000);
 }
 
+// v45ZB (confirmed by Ishan): a user may edit a dept's wastage when their ROLE operates that
+// dept's tab (DEPT_INFO pages), not only when the role id equals the dept id — Label Supervisor
+// (currentDept='labels') runs the AIM Inspection tab and must see Edit/Delete there.
+function _canEditWastage45(dept){
+  if(currentDept==='admin'||currentDept==='planning') return true;
+  if(currentDept===dept) return true;
+  return ((DEPT_INFO[currentDept]?.pages)||[]).includes(dept);
+}
 function openWastageEdit(wastageId, dept){
-  // v45Z (confirmed by Ishan): the department's own operator may edit ITS OWN dept's wastage
-  // (AIM user edits AIM salvage, etc.) — previously admin/planning only.
-  if(currentDept!=='admin'&&currentDept!=='planning'&&currentDept!==dept){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can edit this wastage.'); return; }
+  if(!_canEditWastage45(dept)){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can edit this wastage.'); return; } // v45ZB: role-aware
   const entry=state.wastage.find(w=>w.id===wastageId);
   if(!entry){ alert('Entry not found.'); return; }
   const newQty=parseFloat(prompt(`Edit wastage qty (Lakhs) for ${entry.batchNumber} [${entry.type}]\nCurrent value: ${entry.qty}`, entry.qty));
@@ -5336,7 +5342,7 @@ function openWastageEdit(wastageId, dept){
 }
 
 function deleteWastageEntry(wastageId, dept){
-  if(currentDept!=='admin'&&currentDept!=='planning'&&currentDept!==dept){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can delete this wastage.'); return; } // v45Z
+  if(!_canEditWastage45(dept)){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can delete this wastage.'); return; } // v45ZB: role-aware
   const entry=state.wastage.find(w=>w.id===wastageId);
   if(!entry){ alert('Entry not found.'); return; }
   if(!confirm(`Delete wastage entry?\n${entry.batchNumber} — ${entry.type} — ${fmt(entry.qty)}L\nEntered by: ${entry.by||'unknown'}\n\nThis cannot be undone.`)) return;
@@ -8835,6 +8841,23 @@ function renderReportH(){
   }
   return _p;
 }
+// v45ZB: batch-level per-box gap counts (server truth) backing the Report F header column, so the
+// header and the expanded box list always agree. 60s TTL; the view renders instantly from counts
+// and re-renders once the per-box overlay arrives.
+async function _rptH_loadGapCounts(){
+  if(window._rptHGapSrvBusy) return;
+  window._rptHGapSrvBusy = true;
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/handover-gap-counts',{signal:AbortSignal.timeout(20000)});
+    const j = await r.json();
+    if(j && j.ok){
+      window._rptHGapSrv = { ts: Date.now(), data: j.transitions||{} };
+      if(window._activeReport===renderReportF) renderReportF();
+    }
+  }catch(e){ /* keep count-based fallback */ }
+  finally{ window._rptHGapSrvBusy = false; }
+}
+
 // v45ZA: expand/collapse the per-box gap detail under a Report F handover row. Fetched once per
 // (batch, from, to) and cached for the session; re-click just toggles visibility.
 window._rptHGapBoxCache = window._rptHGapBoxCache || {};
@@ -8849,7 +8872,9 @@ async function _rptH_toggleGapBoxes(batch, fromKey, toKey, rowId){
     if(!data || !data.ok){ cell.innerHTML = '<span class="text-sm" style="color:var(--accent4)">Could not load box detail'+(data&&data.error?': '+_v40_esc(data.error):'')+'</span>'; return; }
     if(!data.boxes.length){ cell.innerHTML = '<span class="text-sm text-muted">No scan-tracked boxes in this gap (e.g. covered by truck-level dispatch records).</span>'; return; }
     const chips = data.boxes.map(b=>`<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.35);color:var(--accent4)${b.voided?';opacity:0.5;text-decoration:line-through':''}" title="${b.qty?fmt(b.qty)+'L · ':''}out ${b.outTs?fmtDateTime(b.outTs):''}${b.voided?' · VOIDED':''}">${b.box}</span>`).join('');
-    cell.innerHTML = `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${data.count}</b> box${data.count>1?'es':''} scanned OUT of ${DEPT_LABELS[fromKey]||fromKey} with no scan IN at ${DEPT_LABELS[toKey]||toKey}:</div>${chips}`;
+    const _anno45 = (data.extraIn>0||data.reconIn>0)
+      ? `<div class="text-sm" style="margin-top:6px;color:#b45309">⚠ ${data.extraIn>0?`${data.extraIn} box(es) scanned IN at ${DEPT_LABELS[toKey]||toKey} without an OUT scan at ${DEPT_LABELS[fromKey]||fromKey}. `:''}${data.reconIn>0?`${data.reconIn} reconciliation IN(s) recorded at ${DEPT_LABELS[toKey]||toKey}. `:''}These offset the simple out−in count — the box list above is the per-box truth.</div>` : '';
+    cell.innerHTML = `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${data.count}</b> box${data.count>1?'es':''} scanned OUT of ${DEPT_LABELS[fromKey]||fromKey} with no scan IN at ${DEPT_LABELS[toKey]||toKey}:</div>${chips}${_anno45}`;
   };
   if(window._rptHGapBoxCache[cacheKey]){ paint(window._rptHGapBoxCache[cacheKey]); return; }
   try{
@@ -8876,6 +8901,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   // getTrkMonthBatches; this aligns Report F's handover view with them. v45H: Report F now uses
   // getProdMonthBatches(true) — STRICT production-start-month scope (no carry-forward), driven by the
   // Production Month filter (default 'All' = every batch). Still drops deleted + retired.
+  if(!window._rptHGapSrv || (Date.now()-window._rptHGapSrv.ts) > 60000) _rptH_loadGapCounts(); // v45ZB overlay
   const batches = getProdMonthBatches(true)
     .filter(b => !b.deleted && b.batchNumber)
     .sort((a, b) => (a.batchNumber || '').localeCompare(b.batchNumber || ''));
@@ -8905,7 +8931,16 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
           .reduce((s, r) => s + (parseInt(r.boxes) || 0), 0);
         toIn = toIn + phase18Boxes;
       }
-      const gap     = fromOut - toIn;
+      // v45ZB (confirmed by Ishan): the header gap column now uses the server's PER-BOX truth
+      // (boxes with OUT at `from` and no IN at `to`) instead of the count-net (fromOut − toIn),
+      // which silently cancels offsetting anomalies — 26ZA047 showed net 3 while 6 real boxes were
+      // unaccounted (3 had INs at printing with no AIM out / recon INs). Offsets surface as an
+      // amber ⚠ marker instead of hiding boxes. packing→dispatch keeps the count-net (Phase-18
+      // truck dispatches carry no per-box scans). Falls back to count-net until the overlay loads.
+      const _srv45 = (to!=='dispatch' && window._rptHGapSrv) ? (window._rptHGapSrv.data[`${from}→${to}`]||{})[b.batchNumber] : null;
+      const _srvOn45 = (to!=='dispatch' && !!window._rptHGapSrv);
+      const gap     = _srvOn45 ? (_srv45 ? _srv45.gap : 0) : (fromOut - toIn);
+      const extraIn = _srv45 ? (_srv45.extraIn||0) : 0;
       if(gap > 0){
         totalGaps++;
         const gapQty = boxToLakh(gap, b.size);
@@ -8914,7 +8949,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
           machineId: b.machineId||'-', pcCode: b.pcCode||'-', colour: b.colour||'-',
           from: DEPT_LABELS[from]||from, to: DEPT_LABELS[to]||to,
           fromKey: from, toKey: to,
-          fromOut, toIn, gap, gapQty,
+          fromOut, toIn, gap, gapQty, extraIn,
           transKey: `${from}→${to}`
         });
       }
@@ -8978,7 +9013,8 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
     </div>`;
 
   // Filter bar
-  const filterBar = `
+  const _srvHint45 = window._rptHGapSrv ? '' : `<div class="text-sm text-muted" style="margin-bottom:8px">Resolving per-box gaps… counts below are provisional (out−in) until this loads.</div>`;
+  const filterBar = _srvHint45 + `
     <div class="form-row cols-4 mb-16">
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Batch</label>
@@ -9026,7 +9062,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       <td class="td-mono">${r.fromOut}</td>
       <td class="td-mono">${r.toIn}</td>
       <td class="td-mono fw-bold" style="color:var(--accent4);cursor:pointer;white-space:nowrap" title="Click to see which box numbers are unaccounted"
-          onclick="_rptH_toggleGapBoxes('${r.batch}','${r.fromKey}','${r.toKey}','${_rid}')">${r.gap} <span style="font-size:9px">▾</span></td>
+          onclick="_rptH_toggleGapBoxes('${r.batch}','${r.fromKey}','${r.toKey}','${_rid}')">${r.gap}${r.extraIn>0?` <span style="color:#b45309" title="${r.extraIn} box(es) scanned IN at ${r.to} without an OUT scan at ${r.from} — this offset made the old count-net smaller than the real per-box gap">⚠</span>`:''} <span style="font-size:9px">▾</span></td>
       <td class="td-mono" style="color:var(--accent4)">${fmt(r.gapQty)}L</td>
     </tr>
     <tr id="${_rid}" class="hidden"><td colspan="10" style="background:rgba(220,38,38,0.05);padding:8px 14px"><span class="text-sm text-muted">Loading box numbers…</span></td></tr>`; }).join('');
