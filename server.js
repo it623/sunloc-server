@@ -3282,6 +3282,28 @@ function _extractSapInvoiceBatch(inv, headerUdf) {
   return { batch: set.join(', '), source: matchedFrom };
 }
 
+// v45ZJ (confirmed by Ishan): resolve a single dispatch batch's SHIPPED Lakhs from the invoice
+// payload — the Quantity of the DocumentLine whose batch identifier matches, times the same UoM
+// scale (_sapUomScale) the header uses. Matches on the same explicit fields as _extractSapInvoiceBatch
+// (line.U_Batch / U_SunlocBatch / U_BatchNo / U_BatchNum / BatchNumbers[] / any U_*batch key). Returns
+// null when no line carries that batch — the caller FLAGS such records, it never guesses a value.
+function _lineQtyForBatch(inv, batchNo) {
+  const target = String(batchNo == null ? '' : batchNo).trim();
+  if (!target) return null;
+  for (const l of ((inv && inv.DocumentLines) || [])) {
+    if (!l || typeof l !== 'object') continue;
+    const cands = [];
+    const push = v => { const s = (v == null ? '' : String(v)).trim(); if (s) cands.push(s); };
+    push(l.U_Batch); push(l.U_SunlocBatch); push(l.U_BatchNo); push(l.U_BatchNum);
+    if (Array.isArray(l.BatchNumbers)) for (const b of l.BatchNumbers) push(b && (b.BatchNumber || b.Batch));
+    for (const k of Object.keys(l)) { if (/^U_.*batch/i.test(k)) push(l[k]); }
+    if (cands.includes(target)) {
+      return parseFloat((((parseFloat(l.Quantity) || 0) * _sapUomScale(l))).toFixed(3));
+    }
+  }
+  return null;
+}
+
 // v45I #6: repopulate batch_number for already-pulled invoices that rendered blank because only the
 // header UDF was read at ingest time. Reads each blank row's STORED payload_json (no new SAP call)
 // and applies the same explicit-field extractor. One-shot (retried until it succeeds), then skipped.
@@ -3315,7 +3337,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZI' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZJ' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3808,7 +3830,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZI' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZJ' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -8426,7 +8448,13 @@ app.post('/api/admin/repair-export-invoice-qty', async (req, res) => {
            JOIN invoices_received i ON i.sap_doc_num = r.invoice_no
           WHERE r.invoice_no IS NOT NULL AND r.invoice_no <> ''
             AND i.total_qty_lakhs > 0
-            AND r.qty > i.total_qty_lakhs * 5`)).rows;
+            AND r.qty > i.total_qty_lakhs * 5
+            -- v45ZJ (confirmed by Ishan): CONSIGNMENT GUARD. Aligning a record to the FULL invoice
+            -- total is only valid when one record == one invoice. On a multi-batch consignment
+            -- (9020/9031: 8 per-batch records) this over-wrote every per-batch qty to the whole
+            -- invoice's Lakhs. Restrict pass-2 to single-record invoices; multi-record ones are
+            -- restored per-batch by pass-4 below from their own payload lines.
+            AND (SELECT COUNT(*) FROM tracking_dispatch_records r2 WHERE r2.invoice_no = r.invoice_no) = 1`)).rows;
       for (const r of dr) {
         pass2.push({ record: r.id, batch: r.batch_number, invoice: r.invoice_no,
                      from: parseFloat(r.qty), to: parseFloat(r.inv_qty) });
@@ -8460,11 +8488,50 @@ app.post('/api/admin/repair-export-invoice-qty', async (req, res) => {
         }
       }
     }
+    // v45ZJ (confirmed by Ishan): PASS 4 — batch-matched CONSIGNMENT restore. Runs DB-wide, not just
+    // 9020/9031: every MULTI-record export invoice whose per-batch dispatch records were flattened to
+    // the invoice total by the un-guarded pass-2. Each record's qty is restored from ITS OWN payload
+    // line (batch-matched Quantity × UoM scale), so 26ZB074→33, 26ZB072→30, 26ZG097→3.75, etc. The
+    // invoice HEADER (176) is already correct per v45Z and is untouched. Records whose batch has NO
+    // matchable payload line (e.g. 26ZB076 — no line, no label, no gross) are FLAGGED in pass4Unmatched
+    // for manual review, never auto-changed. Idempotent: a record already equal to its line value is
+    // skipped, so re-running is a safe no-op. Export-only (invoice must carry a THOUSAND line).
+    const pass4 = [];
+    const pass4Unmatched = [];
+    let pass4Updated = 0;
+    {
+      const drows = (await pgPool.query(
+        `SELECT r.id, r.batch_number, r.invoice_no, r.qty, i.payload_json
+           FROM tracking_dispatch_records r
+           JOIN invoices_received i ON i.sap_doc_num = r.invoice_no
+          WHERE r.invoice_no IS NOT NULL AND r.invoice_no <> ''
+            AND i.payload_json IS NOT NULL
+            AND (SELECT COUNT(*) FROM tracking_dispatch_records r2 WHERE r2.invoice_no = r.invoice_no) > 1`)).rows;
+      for (const r of drows) {
+        let inv; try { inv = typeof r.payload_json === 'string' ? JSON.parse(r.payload_json) : r.payload_json; } catch { continue; }
+        const lines = (inv && inv.DocumentLines) || [];
+        if (!lines.some(l => _sapUomScale(l) < 1)) continue; // export-only (some THOUSAND line)
+        const cur = parseFloat(r.qty) || 0;
+        const target = _lineQtyForBatch(inv, r.batch_number);
+        if (target == null) {
+          pass4Unmatched.push({ record: r.id, batch: r.batch_number, invoice: r.invoice_no, qty: cur });
+          continue;
+        }
+        if (Math.abs(cur - target) < 0.005) continue; // already correct
+        pass4.push({ record: r.id, batch: r.batch_number, invoice: r.invoice_no, from: cur, to: target });
+        if (confirm) {
+          await pgPool.query(`UPDATE tracking_dispatch_records SET qty=$1 WHERE id=$2`, [target, r.id]);
+          pass4Updated++;
+        }
+      }
+    }
     res.json({ ok: true, dryRun: !confirm, scanned, exportInvoices: exportInvs,
                invoicesToFix: changes.length, invoicesUpdated: invUpdated,
                dispatchRecordsUpdated: recUpdated, changes: changes.slice(0, 50),
                pass2InvoiceAligned: { toFix: pass2.length, updated: pass2Updated, rows: pass2.slice(0, 50) },
-               pass3Orphans: { threshold: orphanThreshold, toFix: pass3.length, updated: pass3Updated, rows: pass3.slice(0, 50) } });
+               pass3Orphans: { threshold: orphanThreshold, toFix: pass3.length, updated: pass3Updated, rows: pass3.slice(0, 50) },
+               pass4ConsignmentRestore: { toFix: pass4.length, updated: pass4Updated, rows: pass4.slice(0, 100),
+                                          unmatched: pass4Unmatched.slice(0, 100), unmatchedCount: pass4Unmatched.length } });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -11248,7 +11315,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZI',
+      build: 'v45ZJ',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11257,7 +11324,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZI', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZJ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12581,7 +12648,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZI',
+      build: 'v45ZJ',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12590,7 +12657,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZI', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZJ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
