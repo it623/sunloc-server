@@ -3337,7 +3337,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZJ' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZK' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3830,7 +3830,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZJ' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZK' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -8535,6 +8535,95 @@ app.post('/api/admin/repair-export-invoice-qty', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v45ZK (confirmed by Ishan): AUDIT + repair EXPORT INVOICE HEADERS (total_qty_lakhs). Complements
+// the dispatch-record repair above by closing the loop on the invoice HEADER value.
+//
+// Scope — DIRECT-SAP ONLY (invoice_request_id IS NULL). This is deliberate and load-bearing: a
+// Sunloc-LINKED invoice's header is set authoritatively from the dispatch manager's
+// invoice_request.qty_lakhs (poller line ~3475), NOT from the payload sum — recomputing those from
+// the payload would OVERWRITE a hand-entered authoritative figure. All observed mis-scales (9020/
+// 9031) are direct_sap, so this scope both fixes the real cases and is safe by construction.
+//
+// Two classes:
+//   • STALE_HEADER — stored total_qty_lakhs ≠ the value the CURRENT resolver computes from the
+//     payload (Σ Quantity × _sapUomScale). The stored value predates the ×0.01 UoM rule; the
+//     recomputed value is the rule applied correctly. Safe to auto-fix on confirm (payload-internal,
+//     no guessing). This is pass-1's logic generalised to every direct-SAP invoice, not only ones
+//     already flagged export.
+//   • SUSPECT_MISSED_MARKER — the resolver finds NO THOUSAND field on any line (scale stays 1), yet
+//     the stored total is ~100× the physical label qty of the invoice's dispatched batches. A
+//     THOUSAND marker may sit in a SAP field the resolver doesn't read. FLAG ONLY — never rescaled
+//     automatically, because a wrong ×0.01 would destroy a correct domestic header. Surfaced for
+//     manual review; if any are real, the fix is a targeted, evidence-driven resolver field add.
+//
+// Dry-run by default; {"confirm":true} writes STALE_HEADER corrections only. tolPct overrides the
+// match tolerance (default 0.5%). Idempotent: a corrected header recomputes to the same value.
+app.post('/api/admin/audit-export-invoice-headers', async (req, res) => {
+  try {
+    if (!pgPool) return res.status(400).json({ ok: false, error: 'PostgreSQL only' });
+    const confirm = req.body && req.body.confirm === true;
+    const tolPct = Math.max(0, parseFloat((req.body || {}).tolPct) || 0.5) / 100;
+    // Physical ground truth: live (non-voided) label qty per batch — unit-unambiguous Lakhs.
+    const labelByBatch = {};
+    for (const r of (await pgPool.query(
+        `SELECT batch_number, COALESCE(SUM(qty),0) AS q
+           FROM tracking_labels WHERE COALESCE(voided,0)=0 GROUP BY batch_number`)).rows) {
+      if (r.batch_number) labelByBatch[String(r.batch_number).trim()] = parseFloat(r.q) || 0;
+    }
+    // Which batches each invoice dispatched (invoice → distinct batches), to sum physical labels.
+    const batchesByInvoice = {};
+    for (const r of (await pgPool.query(
+        `SELECT invoice_no, batch_number FROM tracking_dispatch_records
+          WHERE invoice_no IS NOT NULL AND invoice_no <> '' AND batch_number IS NOT NULL`)).rows) {
+      const k = String(r.invoice_no).trim();
+      (batchesByInvoice[k] = batchesByInvoice[k] || new Set()).add(String(r.batch_number).trim());
+    }
+    const rows = (await pgPool.query(
+      `SELECT id, sap_doc_num, total_qty_lakhs, payload_json
+         FROM invoices_received
+        WHERE payload_json IS NOT NULL
+          AND (invoice_request_id IS NULL OR invoice_request_id = '')`)).rows;
+    let scanned = 0, stale = 0, staleFixed = 0;
+    const staleRows = [], suspectRows = [];
+    for (const r of rows) {
+      scanned++;
+      let inv; try { inv = typeof r.payload_json === 'string' ? JSON.parse(r.payload_json) : r.payload_json; } catch { continue; }
+      const lines = (inv && inv.DocumentLines) || [];
+      if (!lines.length) continue;
+      const recomputed = parseFloat(lines.reduce((s, l) => s + ((parseFloat(l.Quantity) || 0) * _sapUomScale(l)), 0).toFixed(3));
+      const stored = parseFloat(r.total_qty_lakhs) || 0;
+      const hasThou = lines.some(l => _sapUomScale(l) < 1);
+      // physical label magnitude for this invoice's batches (rough; a batch split across invoices
+      // is counted for each — fine for a 100× magnitude sanity flag, not used for auto-fix).
+      let physLbl = 0;
+      const bset = batchesByInvoice[String(r.sap_doc_num || '').trim()];
+      if (bset) for (const b of bset) physLbl += (labelByBatch[b] || 0);
+
+      const tol = Math.max(0.005, Math.abs(recomputed) * tolPct);
+      if (Math.abs(stored - recomputed) > tol) {
+        stale++;
+        staleRows.push({ invoice: r.sap_doc_num || r.id, from: stored, to: recomputed,
+                         hasThousandField: hasThou, physicalLabelLakhs: parseFloat(physLbl.toFixed(2)) });
+        if (confirm) {
+          await pgPool.query(`UPDATE invoices_received SET total_qty_lakhs=$1 WHERE id=$2`, [recomputed, r.id]);
+          staleFixed++;
+        }
+      } else if (!hasThou && physLbl > 0 && stored > physLbl * 50) {
+        // Resolver saw no THOUSAND marker, yet header dwarfs physical by ~2 orders → likely a marker
+        // in an unread field. FLAG only.
+        suspectRows.push({ invoice: r.sap_doc_num || r.id, stored,
+                           physicalLabelLakhs: parseFloat(physLbl.toFixed(2)),
+                           ratio: parseFloat((stored / physLbl).toFixed(1)),
+                           impliedIfThousands: parseFloat((stored * 0.01).toFixed(3)) });
+      }
+    }
+    res.json({ ok: true, dryRun: !confirm, scope: 'direct_sap_only', tolPct: tolPct * 100,
+               scanned, staleHeaders: { toFix: stale, updated: staleFixed, rows: staleRows.slice(0, 100) },
+               suspectMissedMarker: { count: suspectRows.length, rows: suspectRows.slice(0, 100),
+                 note: 'FLAG ONLY — not auto-fixed. Review each; if genuinely thousands, report the UoM field name so the resolver can be extended.' } });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // v45ZA (confirmed by Ishan): per-box handover-gap detail for Report F. Returns every label of a
 // batch with a scan-OUT at `from` but NO scan-IN at `to` — so operators see exactly WHICH box
 // numbers are unaccounted, not just the count. Synthetic reconciliation scans (recon-*) excluded;
@@ -11315,7 +11404,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZJ',
+      build: 'v45ZK',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11324,7 +11413,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZJ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZK', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12648,7 +12737,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZJ',
+      build: 'v45ZK',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12657,7 +12746,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZJ', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZK', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
