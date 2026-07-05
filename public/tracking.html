@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZA</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZE</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZA</p>
+      <p>Tracking Suite v1.0 · build v45ZE</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZA</p>
+      <p>Tracking Suite v1.0 · build v45ZE</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2261,7 +2261,7 @@ function recordScan(labelId, dept, type, operator, parsed){
         setTimeout(() => {
           if (confirm(`ADMIN OVERRIDE\n\n${errMsg}\n\nDo you want to force this scan through?\nThis is logged for audit.\n\nUse only for data correction — never for routine scanning.`)) {
             // Resubmit with override flag
-            const ovScan = {...scan, id: uid()};   // new id so server doesn't dedupe
+            const ovScan = {...scan, id: uid(), _adminOverride: true};   // new id so server doesn't dedupe; v45ZE: mark for amber trail render
             state.scans.push({...ovScan, _local: true});
             pushToServer('/api/tracking/scan', {scan: ovScan, adminOverride: true}).then(r2 => {
               if (r2 && r2.ok) {
@@ -3142,6 +3142,26 @@ function _pushLabelUpdate(payload){
     .then(r => { if(!r) _queueLabelUpdate(payload); })
     .catch(() => _queueLabelUpdate(payload));
 }
+// v45ZE (confirmed by Ishan, Vipin's 26ZB074): the single source of truth for a box's DISPLAYED
+// id. Duplicate detection keys on this, so if the table shows the same number twice the later row
+// is flagged BY CONSTRUCTION — the v45Y key compared stored fields, which diverge from the display
+// for legacy excess labels (stored as negative numbers, shown as E-n) and mixed-type rows.
+function _boxDisplayId(l){
+  if(l.isExcess) return 'E-' + (l.excessNum || Math.abs(parseInt(l.labelNumber)||0));
+  const n = parseInt(l.labelNumber);
+  if(!isNaN(n) && n < 0) return 'E-' + Math.abs(n);
+  return String(l.labelNumber);
+}
+function _dupLabelIds(labels){
+  const seen = new Set(), dups = new Set();
+  (labels||[]).forEach(l => {
+    if(l.voided) return;
+    const k = (l.isOrange?'O:':'') + _boxDisplayId(l);
+    if(seen.has(k)) dups.add(l.id); else seen.add(k);
+  });
+  return dups;
+}
+
 function _persistLabelsPrinted(labelsArr){
   const ts = now();
   labelsArr.forEach(l => { l.printed = true; if(!l.printedAt) l.printedAt = ts; });
@@ -4525,7 +4545,7 @@ function renderDeptScan(dept){
     <div id="wastage-result-${dept}" class="mt-8"></div>
     ${_v45e_wastageShiftSummary(dept)}
     ${_v45m_view(dept)}
-    ${(currentDept==='admin'||currentDept==='planning'||currentDept===dept)?`
+    ${_canEditWastage45(dept)?`
     <div class="divider mt-16"></div>
     <div style="display:flex;align-items:center;gap:8px;margin-top:8px;margin-bottom:6px">
       <div class="card-title" style="color:var(--accent4);margin:0">✏️ Wastage History — Edit / Delete</div>
@@ -5063,7 +5083,10 @@ function _v45e_summaryBlockInner(dept){
     <div class="divider mt-16"></div>
     <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;margin-top:8px;margin-bottom:6px;flex-wrap:wrap">
       <div class="card-title" style="color:var(--accent2);margin:0">📊 Wastage Summary — Shift-wise (by production day)</div>
-      <button class="btn btn-sm btn-secondary" onclick="_v45e_exportWastageShift('${dept}')">⬇ Export to Excel</button>
+      <div style="display:flex;gap:8px">
+        ${_canEditWastage45(dept)?`<button class="btn btn-sm btn-primary" onclick="_openWastageEditModal('${dept}')">✏️ Edit Entries</button>`:''}
+        <button class="btn btn-sm btn-secondary" onclick="_v45e_exportWastageShift('${dept}')">⬇ Export to Excel</button>
+      </div>
     </div>
     <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:flex-end;margin-bottom:8px">
       <div><label class="text-sm text-muted" style="display:block;margin-bottom:2px">Date</label><input type="date" value="${F.date||''}" onchange="_v45e_setFilter('${dept}','date',this.value)" style="padding:5px;border:1px solid var(--border);border-radius:6px;font-size:12px;background:var(--surface2);color:var(--text1)"></div>
@@ -5303,10 +5326,98 @@ function saveWastage(dept){
   setTimeout(()=>{ if(resultEl) resultEl.innerHTML=''; renderDeptScan(dept); },2000);
 }
 
+// v45ZC (confirmed by Ishan): date-first wastage editing beside the daily summary. Pick a
+// production day → every entry of this dept for that day lists with an editable qty and delete.
+// Saves ride the verified _pushWastageOp path (retry queue + month-cache bust) from v45Z.
+let _wemDept45 = null;
+function _openWastageEditModal(dept){
+  if(!_canEditWastage45(dept)){ alert('Only Admin, Planning, or this department\'s operator can edit wastage.'); return; }
+  _wemDept45 = dept;
+  const today = _istToday();
+  openModal('Edit Wastage Entries', DEPT_LABELS[dept]||dept, `
+    <div style="display:flex;gap:10px;align-items:flex-end;margin-bottom:10px">
+      <div><label class="text-sm text-muted" style="display:block;margin-bottom:2px">Production date</label>
+        <input type="date" id="wem-date45" value="${today}" style="padding:6px;border:1px solid var(--border);border-radius:6px;background:var(--surface2);color:var(--text1)"></div>
+      <button class="btn btn-sm btn-primary" onclick="_wemLoad45()">Load entries</button>
+    </div>
+    <div id="wem-list45" class="text-sm text-muted">Select a date and press Load.</div>
+  `, [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);
+  _wemLoad45();
+}
+function _wemEntries45(){
+  const d = document.getElementById('wem-date45')?.value;
+  if(!d) return [];
+  return (state.wastage||[])
+    .filter(w => w.dept === _wemDept45 && (w.prod_date || _v45e_dateKey(w.ts)) === d)
+    .sort((a,b) => String(a.batchNumber||'').localeCompare(String(b.batchNumber||'')) || String(a.shift||'').localeCompare(String(b.shift||'')));
+}
+function _wemLoad45(){
+  const box = document.getElementById('wem-list45');
+  if(!box) return;
+  const rows = _wemEntries45();
+  if(!rows.length){ box.innerHTML = '<div class="text-sm text-muted">No entries for this production date in '+(DEPT_LABELS[_wemDept45]||_wemDept45)+'.</div>'; return; }
+  box.innerHTML = `<table class="table" style="width:100%"><thead><tr>
+      <th>Batch</th><th>Shift</th><th>Type</th><th style="width:110px">Qty (L)</th><th>Remark</th><th>By</th><th style="width:150px">Action</th>
+    </tr></thead><tbody>` + rows.map(w=>`<tr id="wem-row-${w.id}">
+      <td class="td-mono td-bold">${w.batchNumber||'-'}</td>
+      <td class="td-mono">${w.shift||'—'}</td>
+      <td><span class="badge ${w.type==='salvage'?'badge-amber':'badge-purple'}">${w.type}</span></td>
+      <td><input type="number" step="0.01" min="0" id="wem-qty-${w.id}" value="${(parseFloat(w.qty)||0).toFixed(2)}" style="width:90px;padding:4px;border:1px solid var(--border);border-radius:5px;background:var(--surface2);color:var(--text1)"></td>
+      <td class="text-sm">${_v40_esc(w.note||'—')}</td>
+      <td class="text-sm">${_v40_esc(w.by||'—')}</td>
+      <td>
+        <button class="btn btn-sm btn-primary" onclick="_wemSave45('${w.id}')">Save</button>
+        <button class="btn btn-sm btn-danger" onclick="_wemDelete45('${w.id}')">🗑</button>
+      </td>
+    </tr>`).join('') + '</tbody></table>';
+}
+function _wemSave45(wid){
+  const entry = (state.wastage||[]).find(w=>w.id===wid);
+  const inp = document.getElementById('wem-qty-'+wid);
+  if(!entry || !inp) return;
+  const newQty = parseFloat(inp.value);
+  if(isNaN(newQty) || newQty < 0){ alert('Enter a valid quantity.'); return; }
+  const dept = entry.dept, batch = getBatch(entry.batchNumber);
+  // same availability cap as openWastageEdit (v45ZA): full-history scan-ins; AIM caps at gross.
+  const _lIn = state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in'&&s._local).length;
+  const inCount = hasScanSummary() ? (_ss(entry.batchNumber,dept).in + _lIn)
+                                   : state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in').length;
+  const inQty = boxToLakh(inCount, batch?.size||'0');
+  const cap = dept==='aim' ? Math.max(inQty, _grossFor(entry.batchNumber,batch)||0) : inQty;
+  const others = (state.wastage||[]).filter(w=>w.batchNumber===entry.batchNumber&&w.dept===dept&&w.id!==wid).reduce((s,w)=>s+(parseFloat(w.qty)||0),0);
+  if(others + newQty > cap){
+    alert(`Total wastage (${fmt(others+newQty)}L) would exceed ${dept==='aim'?'material available at AIM':'scanned IN qty'} (${fmt(cap)}L). Not saved.`);
+    return;
+  }
+  entry.qty = newQty; entry.editedBy = currentDept; entry.editedAt = now();
+  saveLocal();
+  _pushWastageOp('/api/tracking/wastage-edit',{id:wid, qty:newQty, editedBy:currentDept},'edit-'+wid,'Wastage edit');
+  toast('Entry updated','var(--green)');
+  renderPage(currentPage);
+  _wemLoad45();
+}
+function _wemDelete45(wid){
+  const entry = (state.wastage||[]).find(w=>w.id===wid);
+  if(!entry) return;
+  if(!confirm(`Delete this ${entry.type} entry of ${fmt(parseFloat(entry.qty)||0)}L for ${entry.batchNumber}? This cannot be undone.`)) return;
+  state.wastage = state.wastage.filter(w=>w.id!==wid);
+  saveLocal();
+  _pushWastageOp('/api/tracking/wastage-delete',{id:wid, deletedBy:currentDept},'del-'+wid,'Wastage delete');
+  toast('Entry deleted','var(--accent4)');
+  renderPage(currentPage);
+  _wemLoad45();
+}
+
+// v45ZB (confirmed by Ishan): a user may edit a dept's wastage when their ROLE operates that
+// dept's tab (DEPT_INFO pages), not only when the role id equals the dept id — Label Supervisor
+// (currentDept='labels') runs the AIM Inspection tab and must see Edit/Delete there.
+function _canEditWastage45(dept){
+  if(currentDept==='admin'||currentDept==='planning') return true;
+  if(currentDept===dept) return true;
+  return ((DEPT_INFO[currentDept]?.pages)||[]).includes(dept);
+}
 function openWastageEdit(wastageId, dept){
-  // v45Z (confirmed by Ishan): the department's own operator may edit ITS OWN dept's wastage
-  // (AIM user edits AIM salvage, etc.) — previously admin/planning only.
-  if(currentDept!=='admin'&&currentDept!=='planning'&&currentDept!==dept){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can edit this wastage.'); return; }
+  if(!_canEditWastage45(dept)){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can edit this wastage.'); return; } // v45ZB: role-aware
   const entry=state.wastage.find(w=>w.id===wastageId);
   if(!entry){ alert('Entry not found.'); return; }
   const newQty=parseFloat(prompt(`Edit wastage qty (Lakhs) for ${entry.batchNumber} [${entry.type}]\nCurrent value: ${entry.qty}`, entry.qty));
@@ -5336,7 +5447,7 @@ function openWastageEdit(wastageId, dept){
 }
 
 function deleteWastageEntry(wastageId, dept){
-  if(currentDept!=='admin'&&currentDept!=='planning'&&currentDept!==dept){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can delete this wastage.'); return; } // v45Z
+  if(!_canEditWastage45(dept)){ alert('Only Admin, Planning, or the '+(DEPT_LABELS[dept]||dept)+' operator can delete this wastage.'); return; } // v45ZB: role-aware
   const entry=state.wastage.find(w=>w.id===wastageId);
   if(!entry){ alert('Entry not found.'); return; }
   if(!confirm(`Delete wastage entry?\n${entry.batchNumber} — ${entry.type} — ${fmt(entry.qty)}L\nEntered by: ${entry.by||'unknown'}\n\nThis cannot be undone.`)) return;
@@ -8549,11 +8660,7 @@ function renderBatchCard(batch){
   const labels=getLabelsByBatch(batchNo);
   const totalBoxes=getBatchLabelCount(batchNo);
   // v45Y: surface duplicate count on the card header (same rule as the box-level DUP flags).
-  const _cardDup45y = (()=>{ const seen=new Set(); let d=0;
-    labels.forEach(l=>{ if(l.voided) return;
-      const k=`${l.isOrange?'O':''}${l.isExcess?'E':''}:${l.isExcess?(l.excessNum||Math.abs(l.labelNumber)):l.labelNumber}`;
-      if(seen.has(k)) d++; else seen.add(k); });
-    return d; })();
+  const _cardDup45y = _dupLabelIds(labels).size; // v45ZE: same display-id rule as the detail table
   // v40 Phase 18.14: combined-source dispatched count (legacy scans + Phase 18 records)
   const dispatched = _v40_dispatchedBoxes(batchNo);
   const dispatchPct=totalBoxes>0?(dispatched/totalBoxes*100):0;
@@ -8644,14 +8751,7 @@ function renderBatchDetail(batch){
   // v45Y (confirmed by Ishan, Vipin 26ZB074): flag DUPLICATE labels — same label number within the
   // same series (normal / excess / orange), non-voided, under different ids. First occurrence stays
   // normal; every further copy is tinted red with a DUP badge so duplicates are visible, not hidden.
-  const _dupIds45y = new Set();
-  { const _seen = new Set();
-    labels.forEach(l => {
-      if (l.voided) return;
-      const k = `${l.isOrange?'O':''}${l.isExcess?'E':''}:${l.isExcess?(l.excessNum||Math.abs(l.labelNumber)):l.labelNumber}`;
-      if (_seen.has(k)) _dupIds45y.add(l.id); else _seen.add(k);
-    });
-  }
+  const _dupIds45y = _dupLabelIds(labels); // v45ZE: keyed on the DISPLAYED box id
 
   return `<div class="divider"></div>
   <div class="card-title">Box-Level Detail — All ${labels.length} Labels</div>
@@ -8684,15 +8784,35 @@ function renderBatchDetail(batch){
       // v40 P18.14: current stage cell uses matching color
       const stageColor = stage==='dispatched'?'badge-green':stage==='at_dispatch'?'badge-amber':stage==='production'?'badge-gray':'badge-blue';
       const _isDup45y = _dupIds45y.has(l.id);
+      // v45ZE: implied history — a box whose CURRENT stage is downstream must show its earlier
+      // stages as complete even when their scan rows are absent (pre-gate era / the 12–15 Jun
+      // scan-save outage lost them). Implied ticks render muted with an explanatory tooltip so
+      // they're distinguishable from real scans.
+      const _dispId45 = _boxDisplayId(l);
+      const _stageIdx45 = (()=>{ let s = stage;
+        if(s==='dispatched'||s==='at_dispatch') s='dispatch';
+        const i = flow.indexOf(s); return i<0 ? -1 : i; })();
       return `<tr style="${isVoided?'opacity:0.5':''}${_isDup45y?';background:rgba(255,64,96,0.08)':''}">
-        <td class="td-mono fw-bold" style="color:var(--accent)">${l.isExcess?`<span style="color:#C55A11">E-${l.excessNum||Math.abs(l.labelNumber)}</span>`:(l.labelNumber<0?`<span style="color:#C55A11">E-${Math.abs(l.labelNumber)}</span>`:`${l.labelNumber}`)}${l.isPartial?' <span class="badge badge-amber" style="font-size:8px">P</span>':''}${l.isReplacement?' <span class="badge badge-purple" style="font-size:8px">R</span>':''}${_isDup45y?' <span class="badge badge-red" style="font-size:8px" title="Duplicate of an earlier label with the same number">DUP</span>':''}</td>
+        <td class="td-mono fw-bold" style="color:var(--accent)">${(l.isExcess||((parseInt(l.labelNumber)||0)<0))?`<span style="color:#C55A11">${_dispId45}</span>`:`${_dispId45}`}${l.isPartial?' <span class="badge badge-amber" style="font-size:8px">P</span>':''}${l.isReplacement?' <span class="badge badge-purple" style="font-size:8px">R</span>':''}${_isDup45y?' <span style="background:#dc2626;color:#fff;font-size:8px;font-weight:700;padding:1px 5px;border-radius:6px" title="Duplicate of an earlier label with the same number">DUP</span>':''}</td>
         <td class="td-mono">${fmt(l.qty)}</td>
         <td>${statusBadge}</td>
         <td><span class="badge ${stageColor}">${DEPT_LABELS[stage]||stage}</span></td>
-        ${flow.map(dept=>{
-          const inT=getStamp(dept,'in'); const outT=getStamp(dept,'out');
-          if(outT) return `<td class="td-mono text-sm"><span class="badge badge-green" title="OUT: ${outT}">✓</span></td>`;
-          if(inT) return `<td class="td-mono text-sm"><span class="badge badge-blue" title="IN: ${inT}">IN</span></td>`;
+        ${flow.map((dept,_di)=>{
+          // v45ZE (confirmed by Ishan): three-state trail — solid green/blue = genuine scan,
+          // AMBER = scan pushed through by ADMIN OVERRIDE (flag persisted from this build on;
+          // older overrides predate the flag and render solid), muted = no record, inferred.
+          const _inS=scans.find(sc=>sc.dept===dept&&sc.type==='in');
+          const _outS=scans.find(sc=>sc.dept===dept&&sc.type==='out');
+          const _ov45=s=>!!(s&&(Number(s.is_admin_override)===1||s.adminOverride===true||s._adminOverride===true));
+          if(_outS){
+            if(_ov45(_outS)) return `<td class="td-mono text-sm"><span style="background:#f59e0b;color:#fff;font-weight:700;padding:1px 6px;border-radius:6px" title="OUT via ADMIN OVERRIDE: ${fmtDateTime(_outS.ts)}${_outS.operator?' · '+_v40_esc(_outS.operator):''}">✓</span></td>`;
+            return `<td class="td-mono text-sm"><span class="badge badge-green" title="OUT: ${fmtDateTime(_outS.ts)}">✓</span></td>`;
+          }
+          if(_inS){
+            if(_ov45(_inS)) return `<td class="td-mono text-sm"><span style="background:#f59e0b;color:#fff;font-weight:700;padding:1px 6px;border-radius:6px" title="IN via ADMIN OVERRIDE: ${fmtDateTime(_inS.ts)}${_inS.operator?' · '+_v40_esc(_inS.operator):''}">IN</span></td>`;
+            return `<td class="td-mono text-sm"><span class="badge badge-blue" title="IN: ${fmtDateTime(_inS.ts)}">IN</span></td>`;
+          }
+          if(_stageIdx45 > _di) return `<td class="td-mono text-sm" style="text-align:center"><span style="color:var(--text3)" title="No scan recorded — implied complete (box is already at ${DEPT_LABELS[stage]||stage}); scans from the pre-gate era or the 12–15 Jun outage were not captured">✓</span></td>`;
           return `<td style="color:var(--text3);font-size:11px;text-align:center">—</td>`;
         }).join('')}
         <td>${boxAlerts.length>0?`<span class="red-flag" title="${boxAlerts.map(a=>a.msg).join('; ')}">🚩 ${boxAlerts.length}</span>`:'—'}</td>
@@ -8835,6 +8955,23 @@ function renderReportH(){
   }
   return _p;
 }
+// v45ZB: batch-level per-box gap counts (server truth) backing the Report F header column, so the
+// header and the expanded box list always agree. 60s TTL; the view renders instantly from counts
+// and re-renders once the per-box overlay arrives.
+async function _rptH_loadGapCounts(){
+  if(window._rptHGapSrvBusy) return;
+  window._rptHGapSrvBusy = true;
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/handover-gap-counts',{signal:AbortSignal.timeout(20000)});
+    const j = await r.json();
+    if(j && j.ok){
+      window._rptHGapSrv = { ts: Date.now(), data: j.transitions||{} };
+      if(window._activeReport===renderReportF) renderReportF();
+    }
+  }catch(e){ /* keep count-based fallback */ }
+  finally{ window._rptHGapSrvBusy = false; }
+}
+
 // v45ZA: expand/collapse the per-box gap detail under a Report F handover row. Fetched once per
 // (batch, from, to) and cached for the session; re-click just toggles visibility.
 window._rptHGapBoxCache = window._rptHGapBoxCache || {};
@@ -8849,7 +8986,9 @@ async function _rptH_toggleGapBoxes(batch, fromKey, toKey, rowId){
     if(!data || !data.ok){ cell.innerHTML = '<span class="text-sm" style="color:var(--accent4)">Could not load box detail'+(data&&data.error?': '+_v40_esc(data.error):'')+'</span>'; return; }
     if(!data.boxes.length){ cell.innerHTML = '<span class="text-sm text-muted">No scan-tracked boxes in this gap (e.g. covered by truck-level dispatch records).</span>'; return; }
     const chips = data.boxes.map(b=>`<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.35);color:var(--accent4)${b.voided?';opacity:0.5;text-decoration:line-through':''}" title="${b.qty?fmt(b.qty)+'L · ':''}out ${b.outTs?fmtDateTime(b.outTs):''}${b.voided?' · VOIDED':''}">${b.box}</span>`).join('');
-    cell.innerHTML = `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${data.count}</b> box${data.count>1?'es':''} scanned OUT of ${DEPT_LABELS[fromKey]||fromKey} with no scan IN at ${DEPT_LABELS[toKey]||toKey}:</div>${chips}`;
+    const _anno45 = (data.extraIn>0||data.reconIn>0)
+      ? `<div class="text-sm" style="margin-top:6px;color:#b45309">⚠ ${data.extraIn>0?`${data.extraIn} box(es) scanned IN at ${DEPT_LABELS[toKey]||toKey} without an OUT scan at ${DEPT_LABELS[fromKey]||fromKey}. `:''}${data.reconIn>0?`${data.reconIn} reconciliation IN(s) recorded at ${DEPT_LABELS[toKey]||toKey}. `:''}These offset the simple out−in count — the box list above is the per-box truth.</div>` : '';
+    cell.innerHTML = `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${data.count}</b> box${data.count>1?'es':''} scanned OUT of ${DEPT_LABELS[fromKey]||fromKey} with no scan IN at ${DEPT_LABELS[toKey]||toKey}:</div>${chips}${_anno45}`;
   };
   if(window._rptHGapBoxCache[cacheKey]){ paint(window._rptHGapBoxCache[cacheKey]); return; }
   try{
@@ -8876,6 +9015,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   // getTrkMonthBatches; this aligns Report F's handover view with them. v45H: Report F now uses
   // getProdMonthBatches(true) — STRICT production-start-month scope (no carry-forward), driven by the
   // Production Month filter (default 'All' = every batch). Still drops deleted + retired.
+  if(!window._rptHGapSrv || (Date.now()-window._rptHGapSrv.ts) > 60000) _rptH_loadGapCounts(); // v45ZB overlay
   const batches = getProdMonthBatches(true)
     .filter(b => !b.deleted && b.batchNumber)
     .sort((a, b) => (a.batchNumber || '').localeCompare(b.batchNumber || ''));
@@ -8905,7 +9045,16 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
           .reduce((s, r) => s + (parseInt(r.boxes) || 0), 0);
         toIn = toIn + phase18Boxes;
       }
-      const gap     = fromOut - toIn;
+      // v45ZB (confirmed by Ishan): the header gap column now uses the server's PER-BOX truth
+      // (boxes with OUT at `from` and no IN at `to`) instead of the count-net (fromOut − toIn),
+      // which silently cancels offsetting anomalies — 26ZA047 showed net 3 while 6 real boxes were
+      // unaccounted (3 had INs at printing with no AIM out / recon INs). Offsets surface as an
+      // amber ⚠ marker instead of hiding boxes. packing→dispatch keeps the count-net (Phase-18
+      // truck dispatches carry no per-box scans). Falls back to count-net until the overlay loads.
+      const _srv45 = (to!=='dispatch' && window._rptHGapSrv) ? (window._rptHGapSrv.data[`${from}→${to}`]||{})[b.batchNumber] : null;
+      const _srvOn45 = (to!=='dispatch' && !!window._rptHGapSrv);
+      const gap     = _srvOn45 ? (_srv45 ? _srv45.gap : 0) : (fromOut - toIn);
+      const extraIn = _srv45 ? (_srv45.extraIn||0) : 0;
       if(gap > 0){
         totalGaps++;
         const gapQty = boxToLakh(gap, b.size);
@@ -8914,7 +9063,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
           machineId: b.machineId||'-', pcCode: b.pcCode||'-', colour: b.colour||'-',
           from: DEPT_LABELS[from]||from, to: DEPT_LABELS[to]||to,
           fromKey: from, toKey: to,
-          fromOut, toIn, gap, gapQty,
+          fromOut, toIn, gap, gapQty, extraIn,
           transKey: `${from}→${to}`
         });
       }
@@ -8978,7 +9127,8 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
     </div>`;
 
   // Filter bar
-  const filterBar = `
+  const _srvHint45 = window._rptHGapSrv ? '' : `<div class="text-sm text-muted" style="margin-bottom:8px">Resolving per-box gaps… counts below are provisional (out−in) until this loads.</div>`;
+  const filterBar = _srvHint45 + `
     <div class="form-row cols-4 mb-16">
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Batch</label>
@@ -9026,7 +9176,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       <td class="td-mono">${r.fromOut}</td>
       <td class="td-mono">${r.toIn}</td>
       <td class="td-mono fw-bold" style="color:var(--accent4);cursor:pointer;white-space:nowrap" title="Click to see which box numbers are unaccounted"
-          onclick="_rptH_toggleGapBoxes('${r.batch}','${r.fromKey}','${r.toKey}','${_rid}')">${r.gap} <span style="font-size:9px">▾</span></td>
+          onclick="_rptH_toggleGapBoxes('${r.batch}','${r.fromKey}','${r.toKey}','${_rid}')">${r.gap}${r.extraIn>0?` <span style="color:#b45309" title="${r.extraIn} box(es) scanned IN at ${r.to} without an OUT scan at ${r.from} — this offset made the old count-net smaller than the real per-box gap">⚠</span>`:''} <span style="font-size:9px">▾</span></td>
       <td class="td-mono" style="color:var(--accent4)">${fmt(r.gapQty)}L</td>
     </tr>
     <tr id="${_rid}" class="hidden"><td colspan="10" style="background:rgba(220,38,38,0.05);padding:8px 14px"><span class="text-sm text-muted">Loading box numbers…</span></td></tr>`; }).join('');
