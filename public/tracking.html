@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZK</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZL</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZK</p>
+      <p>Tracking Suite v1.0 · build v45ZL</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZK</p>
+      <p>Tracking Suite v1.0 · build v45ZL</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2658,7 +2658,7 @@ function getBatchWIPBreakdown(batchNo){
     // A-Grade is computed separately from scan data, so it is unaffected by this exclusion.
     const _g = batch.actualProd || batch.actualQty || 0;
     return { grossProd:_g, aimIn:0, aimOut:0, packIn:0, packOut:0, preAIM:0, aimWIP:0, printWIP:0,
-             piWIP:0, toPackTransit:0, packWIP:0, totalWIP:0,
+             piWIP:0, toPackTransit:0, packWIP:0, packedNotDisp:0, totalWIP:0,
              wAIM:{salvage:0,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, retired:true };
   }
   // v44F Issue#1: admin reconciliation override — authoritative typed totals replace scan-derived WIP.
@@ -2666,7 +2666,7 @@ function getBatchWIPBreakdown(batchNo){
   if(_ovW){
     const g=_ovW.gross||0, pk=_ovW.packing||0, w=_ovW.wip||0, ws=_ovW.wastage||0;
     return { grossProd:g, aimIn:0, aimOut:0, packIn:pk, packOut:pk, preAIM:0, aimWIP:0, printWIP:0,
-             piWIP:0, toPackTransit:0, packWIP:0, totalWIP:w,
+             piWIP:0, toPackTransit:0, packWIP:0, packedNotDisp:0, totalWIP:w,
              wAIM:{salvage:ws,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, reconciled:true };
   }
   const sz = batch.size;
@@ -2723,7 +2723,14 @@ function getBatchWIPBreakdown(batchNo){
   // v37E: Transit gap between last production stage and packing receipt
   const lastProdOut   = batch.isPrinted ? piOut : aimOut;
   const toPackTransit = Math.max(0, lastProdOut - packIn);
-  const packWIP       = Math.max(0, packIn - packOut); // FG queue (NOT in totalWIP)
+  const packWIP       = Math.max(0, packIn - packOut); // FG queue (NOT in totalWIP) — legacy (≈0; no pack-out scan)
+  // v45ZL item 2b (confirmed by Ishan): TRUE packed-not-dispatched = lifetime pack-in − lifetime
+  // dispatched, i.e. Report G's Balance (L). The legacy packWIP above nets pack-in against a
+  // non-existent pack-OUT scan (pack-in IS the FG cutoff), so it reads ~0 and never reflected the
+  // FG actually sitting packed and awaiting dispatch. Additive display field — no frozen formula
+  // (WIP / totalWIP / packWIP) is changed. Same source Report G uses (_v40_dispatchedLakhs).
+  const _dispL45zl = (typeof _v40_dispatchedLakhs==='function') ? _v40_dispatchedLakhs(batchNo, sz) : 0;
+  const packedNotDisp = Math.max(0, packIn - _dispL45zl);
 
   // totalWIP formula: Gross Production − All Wastage (salvage+remelt across all stages) − Pack-In Quantity
   // ("Pack-In Quantity" = boxes that have arrived at packing dept = cleared all production stages).
@@ -2735,7 +2742,7 @@ function getBatchWIPBreakdown(batchNo){
 
   return {
     grossProd, aimIn, aimOut, packIn, packOut,
-    preAIM, aimWIP, printWIP, piWIP, toPackTransit, packWIP, totalWIP,
+    preAIM, aimWIP, printWIP, piWIP, toPackTransit, packWIP, packedNotDisp, totalWIP,
     wAIM, wPrint, wPI
   };
 }
@@ -9009,7 +9016,9 @@ async function _rptH_loadGapCounts(){
     const j = await r.json();
     if(j && j.ok){
       window._rptHGapSrv = { ts: Date.now(), data: j.transitions||{} };
+      // v45ZL item 2a: Report D's top table also consumes gap counts — re-render whichever is active.
       if(window._activeReport===renderReportF) renderReportF();
+      else if(window._activeReport===renderReportD) renderReportD();
     }
   }catch(e){ /* keep count-based fallback */ }
   finally{ window._rptHGapSrvBusy = false; }
@@ -9122,11 +9131,13 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   const filterMachine = window._rptHMachine || '';
   const filterPc      = window._rptHPc     || '';
   const filterColour  = window._rptHColour  || '';
+  const filterCust    = window._rptHCustomer || ''; // v45ZL item 1
 
   // Rows for active tab
   let tabRows = gapRows;
   if(activeTab !== 'all') tabRows = tabRows.filter(r=>r.transKey===activeTab);
   if(filterBatch)   tabRows = tabRows.filter(r=>r.batch.toLowerCase().includes(filterBatch.toLowerCase()));
+  if(filterCust)    tabRows = tabRows.filter(r=>(r.customer||'').toLowerCase().includes(filterCust.toLowerCase()));
   if(filterMachine) tabRows = tabRows.filter(r=>normMcId(r.machineId)===normMcId(filterMachine));
   if(filterPc)      tabRows = tabRows.filter(r=>r.pcCode===filterPc);
   if(filterColour)  tabRows = tabRows.filter(r=>r.colour===filterColour);
@@ -9153,7 +9164,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   // Tab bar
   const tabBar = `
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:10px">
-      <div onclick="window._rptHTab='all';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportF()"
+      <div onclick="window._rptHTab='all';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';renderReportF()"
         style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:2px solid ${activeTab==='all'?'#7c3aed':'var(--border)'};background:${activeTab==='all'?'rgba(124,58,237,0.1)':'var(--surface2)'};color:${activeTab==='all'?'#7c3aed':'var(--text2)'}">
         All Transitions
         <span style="margin-left:6px;background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px">${gapRows.length}</span>
@@ -9161,7 +9172,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       ${allTransitions.map(tk=>{
         const s=summaryMap[tk]||{count:0,totalGap:0,totalQty:0};
         const isActive=activeTab===tk;
-        return `<div onclick="window._rptHTab='${tk}';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportF()"
+        return `<div onclick="window._rptHTab='${tk}';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';renderReportF()"
           style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:2px solid ${isActive?'#7c3aed':'var(--border)'};background:${isActive?'rgba(124,58,237,0.1)':'var(--surface2)'};color:${isActive?'#7c3aed':'var(--text2)'}">
           ${tk.replace('AIM Inspection','AIM').replace('Print Inspection','PI')}
           <span style="margin-left:6px;background:${isActive?'#7c3aed':'var(--text3)'};color:#fff;font-size:10px;padding:1px 6px;border-radius:8px">${s.count}</span>
@@ -9173,6 +9184,13 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   const _srvHint45 = window._rptHGapSrv ? '' : `<div class="text-sm text-muted" style="margin-bottom:8px">Resolving per-box gaps… counts below are provisional (out−in) until this loads.</div>`;
   const filterBar = _srvHint45 + `
     <div class="form-row cols-4 mb-16">
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Customer</label>
+        <input type="text" list="rptH-cust-list" value="${(filterCust||'').replace(/"/g,'&quot;')}" placeholder="🔍 Customer…"
+          oninput="window._rptHCustomer=this.value;renderReportF()"
+          style="width:100%;padding:6px 9px;border:1px solid var(--border);border-radius:4px;font-size:13px;background:var(--surface);color:var(--text)">
+        <datalist id="rptH-cust-list">${[...new Set(scopeRows.map(r=>r.customer).filter(Boolean))].sort().map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}"></option>`).join('')}</datalist>
+      </div>
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Batch</label>
         <select onchange="window._rptHBatch=this.value;renderReportF()">
@@ -9267,7 +9285,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
     }
     <div style="margin-top:16px;display:flex;gap:10px">
       <button class="btn btn-secondary btn-sm" onclick="exportReportH()">📥 Export Excel</button>
-      <button class="btn btn-ghost btn-sm" onclick="window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';renderReportF()">✕ Clear Filters</button>
+      <button class="btn btn-ghost btn-sm" onclick="window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';renderReportF()">✕ Clear Filters</button>
       <button class="btn btn-ghost btn-sm" onclick="renderReportF()" style="margin-left:auto">🔄 Refresh</button>
     </div>
   </div>`;
@@ -9381,7 +9399,9 @@ function _v41_renderReportGInner(){
   const allMonthBatches = getTrkMonthBatches(true).filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   // v41ZC: filter state (machine uses normMcId so MC.30 / mc30 / "MC 30" all match)
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
+  const gCust = window._rptGCustomer||''; // v45ZL item 1: customer search
   let batches = allMonthBatches;
+  if(gCust) batches = batches.filter(b=>(b.customer||'').toLowerCase().includes(gCust.toLowerCase()));
   if(gB) batches = batches.filter(b=>(b.batchNumber||'').toLowerCase().includes(gB.toLowerCase()));
   if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
   if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
@@ -9390,6 +9410,7 @@ function _v41_renderReportGInner(){
   const gAllMachines = [...new Set(allMonthBatches.map(b=>b.machineId).filter(Boolean))].sort();
   const gAllPcCodes  = [...new Set(allMonthBatches.map(b=>b.pcCode).filter(Boolean))].sort();
   const gAllColours  = [...new Set(allMonthBatches.map(b=>b.colour).filter(Boolean))].sort();
+  const gAllCustomers= [...new Set(allMonthBatches.map(b=>b.customer).filter(Boolean))].sort(); // v45ZL item 1
   let totalGrossProd = 0;
   let totalAGradeQty = 0;
   let totalInspected = 0;
@@ -9452,7 +9473,7 @@ function _v41_renderReportGInner(){
     }
 
     let wipBreakdown = '—';
-    if(wip && (wip.totalWIP > 0 || wip.packWIP > 0)){
+    if(wip && (wip.totalWIP > 0 || wip.packedNotDisp > 0)){
       const rows2 = [];
       if(wip.preAIM         > 0) rows2.push(`<span style="color:var(--red)">🔴 ${b.isPrinted?'Unsorted PTD':'Unsorted UP'}: ${fmt(wip.preAIM)}L</span>`);
       if(wip.aimWIP         > 0) rows2.push(`<span style="color:var(--amber)">🟡 AIM: ${fmt(wip.aimWIP)}L</span>`);
@@ -9465,9 +9486,10 @@ function _v41_renderReportGInner(){
       { const _itemsSum45 = (wip.preAIM||0)+(wip.aimWIP||0)+(wip.printWIP||0)+(wip.piWIP||0)+(wip.toPackTransit||0);
         const _wDiff45 = _itemsSum45 - (wip.totalWIP||0);
         if(_wDiff45 > 0.005) rows2.push(`<span style="color:var(--text3)" title="Salvage/remelt recorded at these stages — deducted from the WIP header">− S/R wastage: ${fmt(_wDiff45)}L</span>`); }
-      // Packing WIP is FG awaiting dispatch — shown separately, NOT in totalWIP
-      const fgRow = wip.packWIP > 0
-        ? `<div style="font-size:10px;color:var(--green);margin-top:4px;border-top:1px dashed var(--b1);padding-top:3px">📦 FG awaiting dispatch: ${fmt(wip.packWIP)}L</div>`
+      // v45ZL item 2b: Packed WIP (packed but NOT dispatched) = Report G balance. Shown separately,
+      // NOT in totalWIP (FG is excluded from unpacked-production WIP by the frozen definition).
+      const fgRow = wip.packedNotDisp > 0
+        ? `<div style="font-size:10px;color:var(--green);margin-top:4px;border-top:1px dashed var(--b1);padding-top:3px">📦 Packed WIP (awaiting dispatch): ${fmt(wip.packedNotDisp)}L</div>`
         : '';
       wipBreakdown = `<div style="font-weight:700;color:var(--text);margin-bottom:3px">${fmt(wip.totalWIP)}L</div>
         <div style="font-size:10px;display:flex;flex-direction:column;gap:2px">${rows2.join('')}</div>${fgRow}`;
@@ -9550,6 +9572,12 @@ function _v41_renderReportGInner(){
 
     <div class="form-row cols-4 mb-16" style="gap:10px">
       <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Customer</label>
+        <input type="text" id="rptg-filter-customer" list="rptg-cust-list" placeholder="🔍 Type / pick customer…" value="${gCust.replace(/"/g,'&quot;')}"
+          oninput="window._rptGCustomer=this.value;renderReportD()">
+        <datalist id="rptg-cust-list">${gAllCustomers.map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}"></option>`).join('')}</datalist>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Batch</label>
         <input type="text" id="rptg-filter-batch" placeholder="🔍 Batch" value="${gB.replace(/"/g,'&quot;')}"
           oninput="window._rptGBatch=this.value;renderReportD()">
@@ -9576,7 +9604,7 @@ function _v41_renderReportGInner(){
             ${gAllColours.map(c=>`<option value="${c}" ${gC===c?'selected':''}>${c}</option>`).join('')}
           </select>
         </div>
-        ${(gB||gM||gP||gC)?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';renderReportD()">✕ Clear</button>`:''}
+        ${(gB||gM||gP||gC||gCust)?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';window._rptGCustomer='';renderReportD()">✕ Clear</button>`:''}
       </div>
     </div>
 
@@ -9599,6 +9627,28 @@ function _v41_renderReportGInner(){
         <td><span style="font-size:13px;font-weight:700;color:${cumCls}">${fmt(cumPct,2)}%</span></td>
       </tr></tfoot>
     </table></div>
+    ${gCust ? (()=>{
+      // v45ZL item 2c (confirmed by Ishan): stage-wise WIP MATRIX for the selected customer —
+      // stages as columns, batches as rows, summed both ways, all in Lakhs. Unpacked WIP stages
+      // (Unsorted→Transit) reuse the frozen per-batch breakdown; Packed = packed-not-dispatched
+      // (Report G balance). Row total = that batch's total RIP across stages; column total = the
+      // customer's total at that stage. Single source of truth: same getBatchWIPBreakdown as above.
+      const stageCols = [['preAIM','Unsorted'],['aimWIP','AIM'],['printWIP','Printing'],['piWIP','PI'],['toPackTransit','Transit→Pack'],['packedNotDisp','Packed']];
+      const mrows = batches.map(b=>{
+        const w = getBatchWIPBreakdown(b.batchNumber) || {};
+        const vals = stageCols.map(([k])=> w[k]||0);
+        return { batch:b.batchNumber, vals, rowTot: vals.reduce((s,v)=>s+v,0) };
+      });
+      const colTot = stageCols.map((_,i)=> mrows.reduce((s,r)=>s+r.vals[i],0));
+      const grand = colTot.reduce((s,v)=>s+v,0);
+      return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(gCust||'').replace(/</g,'&lt;')} (Lakhs)</div>
+      <div class="tbl-wrap tbl-sticky"><table>
+        <thead><tr><th>Batch</th>${stageCols.map(([,l])=>`<th class="text-right">${l}</th>`).join('')}<th class="text-right">TOTAL</th></tr></thead>
+        <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td>${r.vals.map(v=>`<td class="td-mono text-right">${v>0.005?fmt(v):'—'}</td>`).join('')}<td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${stageCols.length+2}" class="text-center text-muted">No batches for this customer</td></tr>`}</tbody>
+        <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td>${colTot.map(v=>`<td class="td-mono text-right">${fmt(v)}</td>`).join('')}<td class="td-mono text-right">${fmt(grand)}</td></tr></tfoot>
+      </table></div>
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Unpacked WIP stages (Unsorted→Transit→Pack) + Packed (awaiting dispatch, from Report G balance). Row = per-batch total across stages; column = per-stage total across ${(gCust||'').replace(/</g,'&lt;')}'s batches. All in Lakhs.</div>`;
+    })() : ''}
     <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportG()">📥 Export Excel</button>
   </div>`;
 
@@ -9623,6 +9673,8 @@ function exportReportG(){
   let batches = getTrkMonthBatches(true).filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   // v41ZC: honour the on-screen filter bar so the export matches what's displayed
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
+  const gCust = window._rptGCustomer||''; // v45ZL item 1: match on-screen customer filter
+  if(gCust) batches = batches.filter(b=>(b.customer||'').toLowerCase().includes(gCust.toLowerCase()));
   if(gB) batches = batches.filter(b=>(b.batchNumber||'').toLowerCase().includes(gB.toLowerCase()));
   if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
   if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
@@ -10283,6 +10335,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   const filterStatus = window._rptBStatus || '';  // v44P #11: '', 'indept', 'leftdept', 'closed'
   const filterColour = window._rptBColour || '';   // v44Z: colour search filter
   const filterPC     = window._rptBPC || '';        // v44Z: PC code search filter
+  const filterCust   = window._rptBCustomer || '';  // v45ZL item 1: customer search
 
   // v45T #2.4 (confirmed by Ishan): Report B is now MONTH-ATTRIBUTED like Report D/G. Every
   // quantity (gross, wastage, boxes in/out, WIP) is sliced to the selected production month via
@@ -10378,6 +10431,12 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         </select>
       </div>
       <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Search Customer</label>
+        <input type="text" list="rptB-cust-list" value="${(filterCust||'').replace(/"/g,'&quot;')}" placeholder="🔍 Customer…"
+          oninput="window._rptBCustomer=this.value;renderReportB()">
+        <datalist id="rptB-cust-list">${[...new Set([...monthBatchNos].map(bn=>getBatch(bn)?.customer).filter(Boolean))].sort().map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}"></option>`).join('')}</datalist>
+      </div>
+      <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Search Colour</label>
         <input type="text" value="${(filterColour||'').replace(/"/g,'&quot;')}" placeholder="e.g. Blue/White"
           onchange="window._rptBColour=this.value;renderReportB()">
@@ -10388,7 +10447,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
           onchange="window._rptBPC=this.value;renderReportB()">
       </div>
       <div class="form-group" style="margin-bottom:0;display:flex;align-items:flex-end">
-        <button class="btn btn-secondary btn-sm" onclick="window._rptBDept='';window._rptBBatch='';window._rptBStatus='';window._rptBColour='';window._rptBPC='';renderReportB()">✕ Clear Filters</button>
+        <button class="btn btn-secondary btn-sm" onclick="window._rptBDept='';window._rptBBatch='';window._rptBStatus='';window._rptBColour='';window._rptBPC='';window._rptBCustomer='';renderReportB()">✕ Clear Filters</button>
       </div>
     </div>`;
 
@@ -10403,6 +10462,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       batchSet = [...new Set(inScansAll.map(s=>s.batchNumber))];
     }
     if(filterBatch) batchSet = batchSet.filter(bn=>bn===filterBatch);
+    if(filterCust) batchSet = batchSet.filter(bn=>(getBatch(bn)?.customer||'').toLowerCase().includes(filterCust.toLowerCase()));
     if(filterColour) batchSet = batchSet.filter(bn=>(getBatch(bn)?.colour||'').toLowerCase().includes(filterColour.toLowerCase()));
     if(filterPC) batchSet = batchSet.filter(bn=>String(getBatch(bn)?.pcCode||'').toLowerCase().includes(filterPC.toLowerCase()));
     // v44ZK Issue 2: order batches batch-wise + chronologically (applies to GF, FF/SF and every
@@ -10700,23 +10760,48 @@ function _v41_renderReportDInner(){
   };
   const totalGross=monthBatches.reduce((s,b)=>s+_grossForD(b),0);
   const stages=['aim','printing','pi','packing','dispatch'];
-  const stageWIP={};
-  stages.forEach(dept=>{
-    // Use _ss() for full history — sum across all month batches
-    let inn=0, out=0;
-    if (hasScanSummary()) {
-      monthBatchNos.forEach(bn => {
+  // v45ZL item 2a: compute per-stage WIP boxes AND real-pack-size Lakhs (per batch, so the old flat
+  // ×1.5 approximation is gone), plus the UNSCANNED handover-gap attributed to the RECEIVING dept.
+  const stageWIP={}, stageQtyL={}, stageUnscanned={}, stageUnscannedL={};
+  stages.forEach(d=>{ stageWIP[d]=0; stageQtyL[d]=0; stageUnscanned[d]=0; stageUnscannedL[d]=0; });
+  monthBatchNos.forEach(bn => {
+    const bsz = getBatch(bn)?.size ?? '0';
+    stages.forEach(dept=>{
+      let inn, out;
+      if (hasScanSummary()) {
         const localIn  = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
         const localOut = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
-        inn += _ss(bn,dept).in  + localIn;
-        out += _ss(bn,dept).out + localOut;
-      });
-    } else {
-      inn = state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
-      out = state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
-    }
-    stageWIP[dept]=Math.max(0,inn-out);
+        inn = _ss(bn,dept).in  + localIn;
+        out = _ss(bn,dept).out + localOut;
+      } else {
+        inn = state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='in').length;
+        out = state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out').length;
+      }
+      const w = Math.max(0, inn-out);
+      stageWIP[dept]+=w;
+      stageQtyL[dept]+=boxToLakh(w, bsz);
+    });
   });
+  // Unscanned = boxes scanned OUT of the prior stage with no scan-IN here (Report F handover gap),
+  // attributed to the RECEIVING department and converted to Lakhs with each batch's real pack size.
+  // Sourced from the SAME server gap-counts Report F uses (window._rptHGapSrv). AIM (fed only by
+  // production, not a scan handover) and Dispatch (no packing→dispatch pair in this endpoint) → 0.
+  const _gapSrv = (window._rptHGapSrv && window._rptHGapSrv.data) || null;
+  if (_gapSrv) {
+    const _recvOf = { 'aim\u2192printing':'printing', 'printing\u2192pi':'pi', 'pi\u2192packing':'packing', 'aim\u2192packing':'packing' };
+    Object.entries(_recvOf).forEach(([pair, recv])=>{
+      const perBatch = _gapSrv[pair] || {};
+      Object.entries(perBatch).forEach(([bn, v])=>{
+        if (!monthBatchNos.has(bn)) return;
+        const g = (v && v.gap) || 0;
+        if (g<=0) return;
+        stageUnscanned[recv]+=g;
+        stageUnscannedL[recv]+=boxToLakh(g, getBatch(bn)?.size ?? '0');
+      });
+    });
+  } else if (typeof _rptH_loadGapCounts==='function') {
+    _rptH_loadGapCounts(); // not cached yet — fetch; re-renders Report D when it lands
+  }
   const totalAGrade=monthBatches.reduce((s,b)=>{
     const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');
     return s+ag.aGrade;
@@ -10738,18 +10823,29 @@ function _v41_renderReportDInner(){
     <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${fmt(state.dispatchRecs.reduce((s,r)=>s+r.qty,0))}L</div></div>
   </div>
   <div class="card-title mt-16">Stage-wise WIP</div>
-  <div class="tbl-wrap tbl-sticky"><table>
-    <thead><tr><th>Stage</th><th>Boxes in WIP</th><th>Approx Qty (L)</th><th>% of Total</th></tr></thead>
+  ${(()=>{
+    // v45ZL item 2a: totals for the new columns; % rebased on Total WIP (L) so it sums to 100.
+    const _totBoxes = stages.reduce((s,d)=>s+stageWIP[d],0);
+    const _totQtyL  = stages.reduce((s,d)=>s+stageQtyL[d],0);
+    const _totUnsB  = stages.reduce((s,d)=>s+stageUnscanned[d],0);
+    const _totUnsL  = stages.reduce((s,d)=>s+stageUnscannedL[d],0);
+    const _grandWip = _totQtyL + _totUnsL;
+    return `<div class="tbl-wrap tbl-sticky"><table>
+    <thead><tr><th>Stage</th><th class="text-right">Boxes in WIP</th><th class="text-right">Approx Qty (L)</th><th class="text-right" style="color:#dc2626">Unscanned Boxes</th><th class="text-right" style="color:#dc2626">Unscanned Qty (L)</th><th class="text-right">Total WIP (L)</th><th class="text-right">% of Total</th></tr></thead>
     <tbody>
     ${stages.map(dept=>{
       const wip=stageWIP[dept];
-      const avgSize=1.5;
-      const qty=wip*avgSize;
-      return `<tr><td class="fw-bold">${DEPT_LABELS[dept]}</td><td class="td-mono">${wip}</td><td class="td-mono">${fmt(qty)}</td><td class="td-mono">${totalGross>0?fmt(qty/totalGross*100,1):0}%</td></tr>`;
+      const qty=stageQtyL[dept];
+      const unsB=stageUnscanned[dept];
+      const unsL=stageUnscannedL[dept];
+      const totWip=qty+unsL;
+      return `<tr><td class="fw-bold">${DEPT_LABELS[dept]}</td><td class="td-mono text-right">${wip}</td><td class="td-mono text-right">${fmt(qty)}</td><td class="td-mono text-right ${unsB>0?'amber':''}">${unsB>0?unsB:'—'}</td><td class="td-mono text-right ${unsL>0?'amber':''}">${unsL>0?fmt(unsL):'—'}</td><td class="td-mono text-right fw-bold">${fmt(totWip)}</td><td class="td-mono text-right">${_grandWip>0?fmt(totWip/_grandWip*100,1):0}%</td></tr>`;
     }).join('')}
     </tbody>
-    ${(()=>{const tb=stages.reduce((s,d)=>s+stageWIP[d],0);const tq=tb*1.5;return `<tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono">${tb}</td><td class="td-mono">${fmt(tq)}</td><td class="td-mono">${totalGross>0?fmt(tq/totalGross*100,1):0}%</td></tr></tfoot>`;})()}
+    <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono text-right">${_totBoxes}</td><td class="td-mono text-right">${fmt(_totQtyL)}</td><td class="td-mono text-right">${_totUnsB>0?_totUnsB:'—'}</td><td class="td-mono text-right">${_totUnsL>0?fmt(_totUnsL):'—'}</td><td class="td-mono text-right">${fmt(_grandWip)}</td><td class="td-mono text-right">${_grandWip>0?'100.0':'0'}%</td></tr></tfoot>
   </table></div>
+  <div class="text-sm text-muted mt-8" style="font-size:11px">💡 <b>Unscanned</b> = boxes scanned out of the prior stage but not yet scanned IN here (Report F handover gap), attributed to the receiving department and converted to Lakhs at each batch's pack size. <b>Total WIP (L)</b> = Approx Qty + Unscanned Qty. ${_gapSrv?'':'<span style="color:#b45309">Loading handover-gap data…</span>'}</div>`;
+  })()}
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   _captureReportScroll();
   document.getElementById('report-output').innerHTML=html;
@@ -10768,17 +10864,26 @@ function _v41_renderReportAInner(){
   if(!document.getElementById('report-output')) renderReports();
   // Date filter
   const filterBatch = window._rptABatch||'';
+  const filterCust  = window._rptACustomer||''; // v45ZL item 1
   const monthBatches = getTrkMonthBatches(true).filter(b=>!b.deleted);
-  const batches = monthBatches.filter(b=>!filterBatch||b.batchNumber===filterBatch);
+  const batches = monthBatches.filter(b=>(!filterBatch||b.batchNumber===filterBatch) && (!filterCust||(b.customer||'').toLowerCase().includes(filterCust.toLowerCase())));
   // v37F: Sort batch dropdown ascending by batch number for easier scanning
   const sortedBatches = [...monthBatches].sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}));
   // v37I B5: Type-to-filter autocomplete via HTML5 datalist. Native browser feature, works on mobile + desktop.
   const datalistOptions = sortedBatches.map(b=>`<option value="${b.batchNumber}">${b.batchNumber} — ${b.customer||''}</option>`).join('');
+  const custOptions = [...new Set(monthBatches.map(b=>b.customer).filter(Boolean))].sort().map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}"></option>`).join(''); // v45ZL item 1
 
   let html=`<div class="card">
     <div class="section-title mb-16">Report A — Complete Batch Tracking (Full Duration)</div>
     ${_v41_agradeToggleHtml('renderReportA')}
     <div style="display:flex;gap:10px;margin-bottom:16px;flex-wrap:wrap;align-items:center;position:sticky;top:0;background:var(--surface);z-index:10;padding:8px 0;border-bottom:1px solid var(--border)">
+      <div style="position:relative;min-width:220px;max-width:280px">
+        <input type="text" id="rptA-cust-search" list="rptA-cust-list" placeholder="🔍 Customer…"
+               value="${filterCust.replace(/"/g,'&quot;')}"
+               oninput="window._rptACustomer=this.value;renderReportA()"
+               style="width:100%;padding:7px 10px;border:1px solid var(--border);border-radius:4px;font-size:13px;background:var(--surface);color:var(--text)">
+        <datalist id="rptA-cust-list">${custOptions}</datalist>
+      </div>
       <div style="position:relative;min-width:280px;max-width:340px">
         <input type="text" id="rptA-batch-search" list="rptA-batch-list" placeholder="🔍 Type to search batches or pick from list…"
                value="${filterBatch}"
@@ -10788,8 +10893,8 @@ function _v41_renderReportAInner(){
           ${datalistOptions}
         </datalist>
       </div>
-      ${filterBatch?`<button class="btn btn-ghost btn-sm" onclick="window._rptABatch='';renderReportA()">✕ Clear</button>`:''}
-      <span style="font-size:11px;color:var(--text-muted);align-self:center">${filterBatch ? `Showing: ${filterBatch}` : `All ${sortedBatches.length} batches`}</span>
+      ${(filterBatch||filterCust)?`<button class="btn btn-ghost btn-sm" onclick="window._rptABatch='';window._rptACustomer='';renderReportA()">✕ Clear</button>`:''}
+      <span style="font-size:11px;color:var(--text-muted);align-self:center">${filterBatch ? `Showing: ${filterBatch}` : `${batches.length} batch${batches.length!==1?'es':''}${filterCust?' · '+filterCust:''}`}</span>
     </div>`;
 
   batches.forEach(b=>{
@@ -12664,7 +12769,9 @@ function exportReportJ() {
 // DETAIL MODE (click batch): expanded panel showing every Pack In scan + every
 //   Dispatch Out scan with timestamps for that batch — date-wise movement.
 window._reportKDate = window._reportKDate || today();
-window._reportKDateRangeMode = window._reportKDateRangeMode || '30d'; // 'single' | '7d' | '15d' | '30d' | 'all'
+window._reportKDateRangeMode = window._reportKDateRangeMode || '30d'; // 'single' | 'range' | '7d' | '15d' | '30d' | 'all'
+window._reportKFrom = window._reportKFrom || '';  // v45ZL item 4: explicit FROM for 'range' mode
+window._reportKTo   = window._reportKTo   || '';  // v45ZL item 4: explicit TO for 'range' mode
 window._reportKFilters = window._reportKFilters || {customer:'', batch:'', pcCode:'', status:''};
 window._reportKExpandedBatch = window._reportKExpandedBatch || null;  // drill-down target
 
@@ -12683,6 +12790,15 @@ function renderReportK(targetId) {
     fromDate = '0000-00-00'; toDate = '9999-99-99';
   } else if (dateMode === 'single') {
     fromDate = toDate = selectedDate;
+  } else if (dateMode === 'range') {
+    // v45ZL item 4 (confirmed by Ishan): explicit FROM–TO range. Defaults to a sane 30-day window
+    // until the operator picks both ends; from>to is auto-swapped so the filter never goes empty.
+    let f = window._reportKFrom || '';
+    let t = window._reportKTo   || '';
+    if (!f) { const d = new Date(); d.setDate(d.getDate() - 29); f = _istDayKey(d.toISOString()); }
+    if (!t) t = today();
+    if (f > t) { const tmp = f; f = t; t = tmp; }
+    fromDate = f; toDate = t;
   } else {
     const daysBack = dateMode === '7d' ? 7 : (dateMode === '15d' ? 15 : 30);
     toDate = today();
@@ -12746,6 +12862,17 @@ function renderReportK(targetId) {
     const dispOutBoxes = _v40_dispatchedBoxes(bn);
     const packInQty = boxToLakh(packInBoxes, size);
     const dispOutQty = boxToLakh(dispOutBoxes, size);
+    // v45ZL item 3B (confirmed by Ishan, option B): PERIOD-WINDOWED pack-in — counts the pack-in
+    // SCAN EVENTS that physically happened inside [fromDate,toDate], from the SAME source the
+    // Packing ledger uses (state.scans, dept=packing/type=in). This reconciles box-for-box with the
+    // Packing ledger for the same period+customer (e.g. alkem 01–05 Jul → 33), unlike the LIFETIME
+    // packInBoxes above (which stays authoritative for the balance/aging math: a June-packed batch
+    // still dispatching in July must keep its full pack-in). Same state.scans window limitation as
+    // the Packing ledger, so the two move together by construction.
+    const packInWindowBoxes = d.packInScans.filter(s => {
+      const k = _istDayKey(s.ts); return k && k >= fromDate && k <= toDate;
+    }).length;
+    const packInWindowQty = boxToLakh(packInWindowBoxes, size);
     // Days in inventory: lastDispOut − firstPackIn (if both exist)
     let daysInInv = null;
     if (firstPackIn && lastDispOut) {
@@ -12778,6 +12905,7 @@ function renderReportK(targetId) {
       firstPackIn, lastPackIn,
       firstDispOut, lastDispOut,
       packInBoxes, packInQty,
+      packInWindowBoxes, packInWindowQty,
       dispOutBoxes, dispOutQty,
       daysInInv,
       balanceQty: packInQty - dispOutQty,
@@ -12810,7 +12938,9 @@ function renderReportK(targetId) {
 
   // Totals (summary only)
   let totalPackInBoxes = 0, totalPackInQty = 0, totalDispOutBoxes = 0, totalDispOutQty = 0;
+  let totalPackInWindowBoxes = 0, totalPackInWindowQty = 0; // v45ZL item 3B
   rows.forEach(r => {
+    totalPackInWindowBoxes += r.packInWindowBoxes; totalPackInWindowQty += r.packInWindowQty;
     totalPackInBoxes += r.packInBoxes; totalPackInQty += r.packInQty;
     totalDispOutBoxes += r.dispOutBoxes; totalDispOutQty += r.dispOutQty;
   });
@@ -12841,7 +12971,13 @@ function renderReportK(targetId) {
         ${quickBtn('30d', 'Last 30d')}
         ${quickBtn('all', 'All time')}
         ${quickBtn('single', 'Specific Date')}
-        ${dateMode === 'single' ? `<input type="date" value="${selectedDate}" max="${today()}" onchange="window._reportKDate=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;margin-left:8px">` : (dateMode !== 'all' ? `<span style="font-size:11px;color:var(--text-muted);margin-left:8px">${fromDate} → ${toDate}</span>` : '')}
+        ${quickBtn('range', 'Date Range')}
+        ${dateMode === 'single' ? `<input type="date" value="${selectedDate}" max="${today()}" onchange="window._reportKDate=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;margin-left:8px">`
+          : dateMode === 'range' ? `<span style="font-size:11px;color:var(--text-muted);margin-left:8px">From</span>
+             <input type="date" value="${fromDate}" max="${today()}" onchange="window._reportKFrom=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">
+             <span style="font-size:11px;color:var(--text-muted)">To</span>
+             <input type="date" value="${toDate}" max="${today()}" onchange="window._reportKTo=this.value;renderReportK('${containerId}')" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px">`
+          : (dateMode !== 'all' ? `<span style="font-size:11px;color:var(--text-muted);margin-left:8px">${fromDate} → ${toDate}</span>` : '')}
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
         <span style="font-size:11px;color:var(--text-muted);margin-right:4px">Status:</span>
@@ -12870,6 +13006,7 @@ function renderReportK(targetId) {
           <th>Batch</th><th>Customer</th><th>PC Code</th><th>Size</th>
           <th>Pack In Date</th>
           <th class="text-right">Pack In</th>
+          ${dateMode!=='all' ? '<th class="text-right" style="color:#0891b2">Pack In (Period)</th>' : ''}
           <th>Dispatch Out Date</th>
           <th class="text-right">Disp Out</th>
           <th class="text-right">Days In Inv</th>
@@ -12878,7 +13015,7 @@ function renderReportK(targetId) {
         </tr></thead>
         <tbody>
           ${rows.length === 0
-            ? `<tr><td colspan="12" class="text-center text-muted" style="padding:30px">No batch activity in the selected period</td></tr>`
+            ? `<tr><td colspan="${dateMode!=='all'?13:12}" class="text-center text-muted" style="padding:30px">No batch activity in the selected period</td></tr>`
             : rows.map(r => {
                 const isExpanded = window._reportKExpandedBatch === r.batchNo;
                 const statusLabel = r.status.replace('_', ' ').replace('stale', 'STALE');
@@ -12891,6 +13028,7 @@ function renderReportK(targetId) {
                   <td class="td-mono">${r.size}</td>
                   <td class="td-mono text-sm">${r.firstPackIn || '—'}${r.firstPackIn !== r.lastPackIn ? ' → '+r.lastPackIn : ''}</td>
                   <td class="td-mono text-right">${r.packInBoxes} bx<br><span style="font-size:10px;color:var(--text3)">${fmt(r.packInQty)} L</span></td>
+                  ${dateMode!=='all' ? `<td class="td-mono text-right" style="color:#0891b2">${r.packInWindowBoxes} bx<br><span style="font-size:10px;color:var(--text3)">${fmt(r.packInWindowQty)} L</span></td>` : ''}
                   <td class="td-mono text-sm">${r.lastDispOut || '—'}${r.firstDispOut && r.firstDispOut !== r.lastDispOut ? ' (from '+r.firstDispOut+')' : ''}</td>
                   <td class="td-mono text-right green">${r.dispOutBoxes} bx<br><span style="font-size:10px;color:var(--text3)">${fmt(r.dispOutQty)} L</span></td>
                   <td class="td-mono text-right">${r.daysInInv == null ? '—' : r.daysInInv + 'd'}</td>
@@ -12899,7 +13037,7 @@ function renderReportK(targetId) {
                 </tr>
                 ${isExpanded ? `
                 <tr>
-                  <td colspan="12" style="background:var(--surface2);padding:12px 18px">
+                  <td colspan="${dateMode!=='all'?13:12}" style="background:var(--surface2);padding:12px 18px">
                     ${_v40_renderReportKDetail(r)}
                   </td>
                 </tr>` : ''}`;
@@ -12908,6 +13046,7 @@ function renderReportK(targetId) {
         ${rows.length > 0 ? `<tfoot><tr style="background:var(--surface2);font-weight:700">
           <td colspan="6" class="text-right">TOTAL (${rows.length} batches)</td>
           <td class="td-mono text-right">${totalPackInBoxes} bx<br><span style="font-size:10px">${fmt(totalPackInQty)} L</span></td>
+          ${dateMode!=='all' ? `<td class="td-mono text-right" style="color:#0891b2">${totalPackInWindowBoxes} bx<br><span style="font-size:10px">${fmt(totalPackInWindowQty)} L</span></td>` : ''}
           <td></td>
           <td class="td-mono text-right green">${totalDispOutBoxes} bx<br><span style="font-size:10px">${fmt(totalDispOutQty)} L</span></td>
           <td></td>
