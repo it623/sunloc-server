@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZH</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZI</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZH</p>
+      <p>Tracking Suite v1.0 · build v45ZI</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZH</p>
+      <p>Tracking Suite v1.0 · build v45ZI</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3779,6 +3779,18 @@ function filterLabelRows(q){
   document.querySelectorAll('#page-labels tr[data-srch]').forEach(tr=>{
     tr.style.display=(!term||tr.dataset.srch.includes(term))?'':'none';
   });
+  // v45ZI (confirmed by Ishan): this DOM filter only shows/hides ALREADY-RENDERED rows, so the
+  // v45ZH search-override (closed >2d batches appended with a CLOSED tag) never engaged while
+  // typing — 26ZD101 still returned an empty table. Debounced re-render lets renderLabels rebuild
+  // the list with the override; focus and caret are restored so typing is uninterrupted.
+  clearTimeout(window._lgSearchT45);
+  window._lgSearchT45 = setTimeout(()=>{
+    const _el = document.getElementById('label-search');
+    const _caret = _el ? _el.selectionStart : null;
+    renderLabels();
+    const _el2 = document.getElementById('label-search');
+    if(_el2){ _el2.focus({preventScroll:true}); try{ if(_caret!=null) _el2.setSelectionRange(_caret,_caret); }catch(e){} }
+  }, 300);
 }
 // ── Select batch: only update right panel ──
 function selectLabelBatch(batchNo){
@@ -11054,7 +11066,22 @@ function _v41_renderReportEInnerBody(){
     // (26ZG131, 26N032) read differently in the two reports.
     const _aimInBoxes45u = useSS ? (_ss(b.batchNumber,'aim').in + localExtra('aim','in'))
                                  : scansForBatch.filter(s=>s.dept==='aim'&&s.type==='in').length;
-    const wip=_isRetired(b.batchNumber)?0:Math.max(0, grossProd - aimW.salvage - aimW.remelt - boxToLakh(_aimInBoxes45u, b.size));
+    // v45ZI (confirmed by Ishan): in Month-of-Production mode the scan-IN term must be the SAME
+    // month-windowed count Report B uses (_bMd.summary[bn].aim.inBoxes + current-month local
+    // pending). v45U left it CUMULATIVE while gross and wastage above are month-sliced — a mixed-
+    // window formula that only showed on June-carry-forward FF/SF batches (26N032: 57.75 − 7.65 −
+    // 49.50 cumulative = 0.60 vs Report B's windowed 5.75). GF's July-only batches masked it.
+    // Cache not yet loaded → cumulative fallback, identical to Report B's own fallback.
+    let _aimInL45i = boxToLakh(_aimInBoxes45u, b.size);
+    if (_v41_useMonthAttributed) {
+      const _mdI = _v41_agradeMonthCache[_trkSelectedMonth];
+      if (_mdI) {
+        const _sAim = (((_mdI.summary||{})[b.batchNumber]||{}).aim) || { inBoxes: 0 };
+        const _locI = (_trkSelectedMonth === trkCurrentYM()) ? localExtra('aim','in') : 0;
+        _aimInL45i = boxToLakh((_sAim.inBoxes||0) + _locI, b.size);
+      }
+    }
+    const wip=_isRetired(b.batchNumber)?0:Math.max(0, grossProd - aimW.salvage - aimW.remelt - _aimInL45i);
     const printingTD_c = useSS ? (_ss(b.batchNumber,'printing').out + localExtra('printing','out'))
                                 : scansForBatch.filter(s=>s.dept==='printing'&&s.type==='out').length;
     const printingTD=b.isPrinted?boxToLakh(printingTD_c,b.size):0;
