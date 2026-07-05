@@ -1215,6 +1215,16 @@ const MIGRATIONS = [
     name: 'idx_production_orders_batch_machine',
     sql: `CREATE INDEX IF NOT EXISTS idx_po_batch_machine ON production_orders (batch_number, machine_id);`
   },
+  {
+    // v45ZF (confirmed by Ishan): the v45ZE scan INSERT referenced is_admin_override on
+    // tracking_scans, but the column never existed on that table in ANY dialect — the build-time
+    // grep matched the dispatch-requests table's same-named column. Every scan insert threw, which
+    // forced the v45ZE rollback. Same defect class (and fix pattern) as migration 10 / the
+    // label_number boot repair.
+    version: 50,
+    name: 'tracking_scans_admin_override',
+    sql: `ALTER TABLE tracking_scans ADD COLUMN is_admin_override INTEGER NOT NULL DEFAULT 0;`
+  },
 ];
 
 function runMigrations() {
@@ -1457,6 +1467,7 @@ async function ensurePostgresTables() {
     `);
     // CRITICAL: ensure label_number column exists — missing column causes all scans to fail with 500
     await pgPool.query(`ALTER TABLE tracking_scans ADD COLUMN IF NOT EXISTS label_number INTEGER`);
+    await pgPool.query(`ALTER TABLE tracking_scans ADD COLUMN IF NOT EXISTS is_admin_override INTEGER NOT NULL DEFAULT 0`); // v45ZF: amber-trail flag — see migration 50 note
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_dept_ts ON tracking_scans(dept, ts DESC)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_batch ON tracking_scans(batch_number, dept)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_batch ON tracking_labels(batch_number)`);
@@ -1853,6 +1864,7 @@ async function ensurePostgresTables() {
     `);
     // CRITICAL: ensure label_number column exists — missing column causes all scans to fail with 500
     await pgPool.query(`ALTER TABLE tracking_scans ADD COLUMN IF NOT EXISTS label_number INTEGER`);
+    await pgPool.query(`ALTER TABLE tracking_scans ADD COLUMN IF NOT EXISTS is_admin_override INTEGER NOT NULL DEFAULT 0`); // v45ZF: amber-trail flag — see migration 50 note
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_dept_ts ON tracking_scans(dept, ts DESC)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scans_batch ON tracking_scans(batch_number, dept)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_labels_batch ON tracking_labels(batch_number)`);
@@ -3303,7 +3315,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZA' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZH' };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3796,7 +3808,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZA' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZH' };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -8401,9 +8413,58 @@ app.post('/api/admin/repair-export-invoice-qty', async (req, res) => {
         recUpdated += upd.rowCount || 0;
       }
     }
+    // v45ZD (confirmed by Ishan): PASS 2 — dispatch records whose invoice exists in
+    // invoices_received but whose qty is grossly off the invoice's (corrected) total: raw-thousands
+    // rows written before the UoM fix whose payloads carry no UoM marker (26ZB074's 9020/9031,
+    // qty 3300 vs true 33L). Aligned to the invoice total when the record is >5x off.
+    const pass2 = [];
+    let pass2Updated = 0;
+    {
+      const dr = (await pgPool.query(
+        `SELECT r.id, r.batch_number, r.invoice_no, r.qty, i.total_qty_lakhs AS inv_qty
+           FROM tracking_dispatch_records r
+           JOIN invoices_received i ON i.sap_doc_num = r.invoice_no
+          WHERE r.invoice_no IS NOT NULL AND r.invoice_no <> ''
+            AND i.total_qty_lakhs > 0
+            AND r.qty > i.total_qty_lakhs * 5`)).rows;
+      for (const r of dr) {
+        pass2.push({ record: r.id, batch: r.batch_number, invoice: r.invoice_no,
+                     from: parseFloat(r.qty), to: parseFloat(r.inv_qty) });
+        if (confirm) {
+          await pgPool.query(`UPDATE tracking_dispatch_records SET qty=$1 WHERE id=$2`,
+                             [parseFloat(r.inv_qty), r.id]);
+          pass2Updated++;
+        }
+      }
+    }
+    // PASS 3 — orphan records (no invoices_received match) with implausible qty: scaled x0.01
+    // (thousands -> Lakhs). Threshold overridable via body.orphanThreshold; every candidate is
+    // listed in the dry run for review before confirming.
+    const orphanThreshold = parseFloat((req.body||{}).orphanThreshold) || 200;
+    const pass3 = [];
+    let pass3Updated = 0;
+    {
+      const orows = (await pgPool.query(
+        `SELECT r.id, r.batch_number, r.invoice_no, r.qty
+           FROM tracking_dispatch_records r
+          WHERE r.qty > $1
+            AND NOT EXISTS (SELECT 1 FROM invoices_received i WHERE i.sap_doc_num = r.invoice_no)`,
+        [orphanThreshold])).rows;
+      for (const r of orows) {
+        const to = parseFloat((parseFloat(r.qty) * 0.01).toFixed(3));
+        pass3.push({ record: r.id, batch: r.batch_number, invoice: r.invoice_no || null,
+                     from: parseFloat(r.qty), to });
+        if (confirm) {
+          await pgPool.query(`UPDATE tracking_dispatch_records SET qty=$1 WHERE id=$2`, [to, r.id]);
+          pass3Updated++;
+        }
+      }
+    }
     res.json({ ok: true, dryRun: !confirm, scanned, exportInvoices: exportInvs,
                invoicesToFix: changes.length, invoicesUpdated: invUpdated,
-               dispatchRecordsUpdated: recUpdated, changes: changes.slice(0, 50) });
+               dispatchRecordsUpdated: recUpdated, changes: changes.slice(0, 50),
+               pass2InvoiceAligned: { toFix: pass2.length, updated: pass2Updated, rows: pass2.slice(0, 50) },
+               pass3Orphans: { threshold: orphanThreshold, toFix: pass3.length, updated: pass3Updated, rows: pass3.slice(0, 50) } });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -8429,13 +8490,13 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
          AND s.label_id NOT LIKE 'recon-%'
          AND NOT EXISTS (
            SELECT 1 FROM tracking_scans t
-            WHERE t.label_id = s.label_id AND t.batch_number = $1
+            WHERE t.label_id = s.label_id
               AND t.dept = $3 AND t.type = 'in')
        GROUP BY s.label_id, l.label_number, l.is_excess, l.excess_num, l.qty, l.voided
        ORDER BY l.label_number NULLS LAST`;
     let rows;
     if (pgPool) rows = (await pgPool.query(sql, [batch, from, to])).rows;
-    else rows = db.prepare(sql.replace(/\$1/g,'?').replace(/\$2/g,'?').replace(/\$3/g,'?').replace(' NULLS LAST','')).all(batch, from, batch, to);
+    else rows = db.prepare(sql.replace(/\$1/g,'?').replace(/\$2/g,'?').replace(/\$3/g,'?').replace(' NULLS LAST','')).all(batch, from, to);
     const boxes = (rows || []).map(r => ({
       labelId: r.label_id,
       box: (r.is_excess ? ('E-' + (r.excess_num || Math.abs(parseInt(r.label_number) || 0))) : String(Math.abs(parseInt(r.label_number) || 0))),
@@ -8443,7 +8504,74 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
       voided: !!(r.voided && Number(r.voided) !== 0),
       outTs: r.out_ts || null,
     }));
-    res.json({ ok: true, batch, from, to, count: boxes.length, boxes });
+    // v45ZB: annotate the offsetting anomalies that make the per-box gap differ from the count-net:
+    // boxes scanned IN at `to` with no OUT at `from`, and synthetic reconciliation INs at `to`.
+    const extraSql = `
+      SELECT COUNT(DISTINCT t.label_id) AS n FROM tracking_scans t
+       WHERE t.batch_number = $1 AND t.dept = $2 AND t.type = 'in' AND t.label_id NOT LIKE 'recon-%'
+         AND NOT EXISTS (SELECT 1 FROM tracking_scans s
+                          WHERE s.label_id = t.label_id
+                            AND s.dept = $3 AND s.type = 'out')`;
+    const reconSql = `
+      SELECT COUNT(*) AS n FROM tracking_scans
+       WHERE batch_number = $1 AND dept = $2 AND type = 'in' AND label_id LIKE 'recon-%'`;
+    let extraIn = 0, reconIn = 0;
+    try {
+      if (pgPool) {
+        extraIn = parseInt((await pgPool.query(extraSql, [batch, to, from])).rows[0]?.n || 0, 10);
+        reconIn = parseInt((await pgPool.query(reconSql, [batch, to])).rows[0]?.n || 0, 10);
+      } else {
+        extraIn = parseInt(db.prepare(extraSql.replace(/\$1/g,'?').replace(/\$2/g,'?').replace(/\$3/g,'?')).get(batch, to, from)?.n || 0, 10);
+        reconIn = parseInt(db.prepare(reconSql.replace(/\$1/g,'?').replace(/\$2/g,'?')).get(batch, to)?.n || 0, 10);
+      }
+    } catch(_) {}
+    res.json({ ok: true, batch, from, to, count: boxes.length, boxes, extraIn, reconIn });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// v45ZB (confirmed by Ishan): per-box gap COUNTS per batch per transition, so the Report F header
+// column shows the same truth the expanded detail lists (26ZA047: header said net 3, detail listed
+// 6 — offsetting "in without out" scans and synthetic recon INs cancel inside a count-net). One
+// call returns every scan transition; packing→dispatch stays count-based client-side because
+// Phase-18 truck dispatches have no per-box scans.
+app.get('/api/tracking/handover-gap-counts', async (req, res) => {
+  try {
+    const pairs = [['aim','printing'],['printing','pi'],['pi','packing'],['aim','packing']];
+    const gapSql = `
+      SELECT s.batch_number AS bn, COUNT(DISTINCT s.label_id) AS gap
+        FROM tracking_scans s
+       WHERE s.dept = $1 AND s.type = 'out' AND s.label_id NOT LIKE 'recon-%'
+         AND s.batch_number IS NOT NULL AND s.batch_number <> ''
+         AND NOT EXISTS (SELECT 1 FROM tracking_scans t
+                          WHERE t.label_id = s.label_id AND t.dept = $2 AND t.type = 'in')
+       GROUP BY s.batch_number`;
+    const extraSql = `
+      SELECT t.batch_number AS bn, COUNT(DISTINCT t.label_id) AS extra
+        FROM tracking_scans t
+       WHERE t.dept = $2 AND t.type = 'in' AND t.label_id NOT LIKE 'recon-%'
+         AND t.batch_number IS NOT NULL AND t.batch_number <> ''
+         AND NOT EXISTS (SELECT 1 FROM tracking_scans s
+                          WHERE s.label_id = t.label_id AND s.dept = $1 AND s.type = 'out')
+       GROUP BY t.batch_number`;
+    const transitions = {};
+    for (const [from, to] of pairs) {
+      const key = from + '\u2192' + to; // from→to
+      transitions[key] = {};
+      let gRows, eRows;
+      if (pgPool) {
+        gRows = (await pgPool.query(gapSql, [from, to])).rows;
+        eRows = (await pgPool.query(extraSql, [from, to])).rows;
+      } else {
+        gRows = db.prepare(gapSql.replace(/\$1/g,'?').replace(/\$2/g,'?')).all(from, to);
+        eRows = db.prepare(extraSql.replace(/\$1/g,'?').replace(/\$2/g,'?')).all(to, from); // v45ZG audit: extraSql's $2 precedes $1 — positional order is (to, from)
+      }
+      for (const r of (gRows||[])) transitions[key][r.bn] = { gap: parseInt(r.gap,10)||0, extraIn: 0 };
+      for (const r of (eRows||[])) {
+        if (!transitions[key][r.bn]) transitions[key][r.bn] = { gap: 0, extraIn: 0 };
+        transitions[key][r.bn].extraIn = parseInt(r.extra,10)||0;
+      }
+    }
+    res.json({ ok: true, transitions });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -11120,7 +11248,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZA',
+      build: 'v45ZH',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11129,7 +11257,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZA', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZH', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12453,7 +12581,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZA',
+      build: 'v45ZH',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -12462,7 +12590,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZA', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZH', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -13816,9 +13944,19 @@ app.get('/api/tracking/box-stages', async (req, res) => {
     } catch (e) {
       console.warn('[v40 P18.14 box-stages] planning state load failed:', e.message);
     }
+    // v45ZH (confirmed by Ishan): SCAN-EVIDENCE fallback — a batch whose boxes carry ANY printing
+    // or PI scans is a printed batch BY DEFINITION, regardless of what the blob flag says. The
+    // blob-only lookup silently classified printed batches (26ZD102) on the unprinted flow when
+    // the flag didn't resolve, which turned printing-OUT boxes into 'complete' and AIM-OUT boxes
+    // into 'packing' — corrupting Batch Tracker stage tiles and Report D's stage-wise WIP
+    // (the inflated packing bucket). Blob flag still covers printed batches not yet scanned.
+    const _printEvidence = new Set();
+    for (const s of scans) {
+      if ((s.dept === 'printing' || s.dept === 'pi') && s.batch_number) _printEvidence.add(s.batch_number);
+    }
     // Note: 'at_dispatch' and 'dispatched' are pseudo-stages beyond the scan flow.
     // The flow array stops at 'dispatch' (the literal dept used in scans).
-    const flowFor = (batchNo) => isPrintedByBatch[batchNo]
+    const flowFor = (batchNo) => (isPrintedByBatch[batchNo] || _printEvidence.has(batchNo))
       ? ['production', 'aim', 'printing', 'pi', 'packing', 'dispatch']
       : ['production', 'aim', 'packing', 'dispatch'];
 
@@ -14104,11 +14242,14 @@ app.post('/api/tracking/scan', async (req, res) => {
           error: `Box not yet scanned IN at ${scan.dept.toUpperCase()}. Can't scan OUT before IN.`
         });
       }
+      // v45ZE (confirmed by Ishan): persist the override flag — the column existed but was never
+      // written, so historical overrides are only in the console logs. From this build forward,
+      // override scans carry is_admin_override=1 and render amber in the Batch Tracker trail.
       await pgPool.query(
-        `INSERT INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty)
-         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT (id) DO NOTHING`,
+        `INSERT INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty,is_admin_override)
+         VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11) ON CONFLICT (id) DO NOTHING`,
         [scan.id, labelId, batchNumber, scan.labelNumber||null, scan.dept, scan.type, scan.ts,
-         scan.operator||null, scan.size||null, scan.qty||null]
+         scan.operator||null, scan.size||null, scan.qty||null, adminOverride ? 1 : 0]
       );
     } else {
       // SQLite path: same box-identity dedup + IN-before-OUT check (v43 #5)
@@ -14131,11 +14272,10 @@ app.post('/api/tracking/scan', async (req, res) => {
         });
       }
       db.prepare(`INSERT OR IGNORE INTO tracking_scans
-        (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty)
-        VALUES (?,?,?,?,?,?,?,?,?,?)`).run(
+        (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty,is_admin_override)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(
         scan.id, labelId, batchNumber, scan.labelNumber||null, scan.dept, scan.type, scan.ts,
-        scan.operator||null, scan.size||null, scan.qty||null
-      );
+        scan.operator||null, scan.size||null, scan.qty||null, adminOverride ? 1 : 0);
     }
     // v40 P18.14d: Legacy dispatch.out scans count toward total dispatched.
     // Recompute actuals so Planning's "Dispatched %" stays in sync.

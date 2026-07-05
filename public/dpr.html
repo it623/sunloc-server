@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v45ZA</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v45ZH</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -5038,9 +5038,9 @@ function renderDprSearch(){
       <td class="mono">${o.pcCode||'-'}</td>
       <td class="mono">${o.size||'-'}</td>
       <td class="mono">${o.machineId||'-'}</td>
-      <td class="mono">${o.qty||0}</td>
-      <td class="mono">${o.actualProd||o.actualQty||0}</td>
-      <td class="mono" style="color:${rem>0?'var(--amber)':'var(--green)'}">${rem}</td>
+      <td class="mono">${(parseFloat(o.qty)||0).toFixed(2)}</td>
+      <td class="mono">${(parseFloat(o.actualProd||o.actualQty)||0).toFixed(2)}</td>
+      <td class="mono" style="color:${rem>0?'var(--amber)':'var(--green)'}">${rem.toFixed(2)}</td>
       <td><span class="pill ${o.status==='closed'?'g':o.status==='running'?'a':'r'}">${o.status||'-'}</span></td>
     </tr>`;
   });
