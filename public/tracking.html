@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZN</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZP</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZN</p>
+      <p>Tracking Suite v1.0 · build v45ZP</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZN</p>
+      <p>Tracking Suite v1.0 · build v45ZP</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9400,14 +9400,17 @@ function _v41_renderReportGInner(){
   // v41ZC: filter state (machine uses normMcId so MC.30 / mc30 / "MC 30" all match)
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
   const gCust = window._rptGCustomer||''; // v45ZL item 1: customer search
-  // v45ZM issue 4 (confirmed by Ishan): when a CUSTOMER is selected, span ALL months (not just the
-  // selected month) for the batch-wise table AND the matrix, so Packed (packed-not-dispatched) and
-  // the WIP picture are complete for that customer regardless of production month. The top STAGE-WISE
-  // WIP summary (in _v41_renderReportDInner) is unaffected and stays month-scoped.
+  window._rptDCustMonth = window._rptDCustMonth || 'ALL'; // v45ZP req2: customer-view prod-month filter
+  const gCustMonth = window._rptDCustMonth;
+  // v45ZM issue 4 + v45ZP req2 (confirmed by Ishan): when a CUSTOMER is selected, default to spanning
+  // ALL months so Packed/WIP is complete for that customer — but provide a Production Month dropdown
+  // (same strict production-start-month logic as Reports B/F) so the user can scope to one month.
+  // 'ALL' (default) = every month. The top STAGE-WISE WIP summary stays month-scoped separately.
   let batches;
   if (gCust) {
     batches = state.batches
-      .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && (b.customer||'').toLowerCase().includes(gCust.toLowerCase()))
+      .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && (b.customer||'').toLowerCase().includes(gCust.toLowerCase())
+                   && (gCustMonth==='ALL' || _trkProdStartMonth(b)===gCustMonth))
       .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   } else {
     batches = allMonthBatches;
@@ -9416,6 +9419,18 @@ function _v41_renderReportGInner(){
   if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
   if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
   if(gC) batches = batches.filter(b=>(b.colour||'')===gC);
+  // v45ZP (confirmed by Ishan): ONE flow-aware unscanned helper, shared by the per-batch WIP
+  // breakdown (Option B) AND the matrix, so the two tables are identical by construction. Printed
+  // batches own aim→printing / printing→pi / pi→packing; unprinted own only aim→packing. Same
+  // server gap-counts + boxToLakh as the top table and Report F.
+  const _rptDGap = (window._rptHGapSrv && window._rptHGapSrv.data) || {};
+  const _rptDUns = (b) => {
+    const bn = b.batchNumber, sz = b.size;
+    const g = (pair)=> ((((_rptDGap[pair]||{})[bn])||{}).gap) || 0;
+    return b.isPrinted
+      ? { printing: boxToLakh(g('aim\u2192printing'), sz), pi: boxToLakh(g('printing\u2192pi'), sz), packing: boxToLakh(g('pi\u2192packing'), sz) }
+      : { printing: 0, pi: 0, packing: boxToLakh(g('aim\u2192packing'), sz) };
+  };
   // dropdown option lists from the full month set (so all choices stay available)
   const gAllMachines = [...new Set(allMonthBatches.map(b=>b.machineId).filter(Boolean))].sort();
   const gAllPcCodes  = [...new Set(allMonthBatches.map(b=>b.pcCode).filter(Boolean))].sort();
@@ -9483,26 +9498,34 @@ function _v41_renderReportGInner(){
     }
 
     let wipBreakdown = '—';
-    if(wip && (wip.totalWIP > 0 || wip.packedNotDisp > 0)){
+    if(wip && (wip.totalWIP > 0 || wip.packedNotDisp > 0 || (()=>{const u=_rptDUns(b);return (u.printing+u.pi+u.packing)>0.005;})())){
+      // v45ZP req1 Option B (confirmed by Ishan): the per-batch breakdown now matches the matrix
+      // line-for-line. Each stage shows TOTAL (scanned + unscanned) with the ▸unsc demarcation;
+      // "Transit→Pack" is folded into Packing (the pi→packing / aim→packing gap) exactly as the
+      // matrix does. The frozen WIP (totalWIP) is still shown as its own labeled line, and a
+      // "Total incl. unscanned + packed" line equals the matrix's per-batch total. Display-only.
+      const _u45 = _rptDUns(b);
+      const _stageCell = (label, colour, scanned, unsc) => {
+        const total = (scanned||0) + (unsc||0);
+        if (total <= 0.005) return '';
+        return `<span style="color:${colour}">${label}: ${fmt(total)}L${unsc>0.005?` <span style="color:#dc2626">▸ ${fmt(unsc)} unsc</span>`:''}</span>`;
+      };
       const rows2 = [];
-      if(wip.preAIM         > 0) rows2.push(`<span style="color:var(--red)">🔴 ${b.isPrinted?'Unsorted PTD':'Unsorted UP'}: ${fmt(wip.preAIM)}L</span>`);
-      if(wip.aimWIP         > 0) rows2.push(`<span style="color:var(--amber)">🟡 AIM: ${fmt(wip.aimWIP)}L</span>`);
-      if(wip.printWIP       > 0) rows2.push(`<span style="color:#8b5cf6">🟣 Printing: ${fmt(wip.printWIP)}L</span>`);
-      if(wip.piWIP          > 0) rows2.push(`<span style="color:var(--orange)">🟠 PI: ${fmt(wip.piWIP)}L</span>`);
-      if(wip.toPackTransit  > 0) rows2.push(`<span style="color:#0ea5e9">🔵 Transit→Pack: ${fmt(wip.toPackTransit)}L</span>`);
-      // v45ZH (confirmed by Ishan): the header WIP is NET of S/R wastage while the stage lines are
-      // gross — they differed by exactly the wastage (45.75 vs 47.25 on 26ZD102). Show the
-      // deduction so the breakdown visibly sums to the header. Display-only; formulas untouched.
-      { const _itemsSum45 = (wip.preAIM||0)+(wip.aimWIP||0)+(wip.printWIP||0)+(wip.piWIP||0)+(wip.toPackTransit||0);
-        const _wDiff45 = _itemsSum45 - (wip.totalWIP||0);
-        if(_wDiff45 > 0.005) rows2.push(`<span style="color:var(--text3)" title="Salvage/remelt recorded at these stages — deducted from the WIP header">− S/R wastage: ${fmt(_wDiff45)}L</span>`); }
-      // v45ZL item 2b: Packed WIP (packed but NOT dispatched) = Report G balance. Shown separately,
-      // NOT in totalWIP (FG is excluded from unpacked-production WIP by the frozen definition).
+      { const l = _stageCell(b.isPrinted?'🔴 Unsorted PTD':'🔴 Unsorted UP', 'var(--red)', wip.preAIM, 0); if(l) rows2.push(l); }
+      { const l = _stageCell('🟡 AIM', 'var(--amber)', wip.aimWIP, 0); if(l) rows2.push(l); }
+      { const l = _stageCell('🟣 Printing', '#8b5cf6', wip.printWIP, _u45.printing); if(l) rows2.push(l); }
+      { const l = _stageCell('🟠 PI', 'var(--orange)', wip.piWIP, _u45.pi); if(l) rows2.push(l); }
+      { const l = _stageCell('🔵 Packing', '#0ea5e9', 0, _u45.packing); if(l) rows2.push(l); }
+      // Packed WIP (packed but NOT dispatched) = Report G balance — its own line, matches matrix Packed.
       const fgRow = wip.packedNotDisp > 0
-        ? `<div style="font-size:10px;color:var(--green);margin-top:4px;border-top:1px dashed var(--b1);padding-top:3px">📦 Packed WIP (awaiting dispatch): ${fmt(wip.packedNotDisp)}L</div>`
+        ? `<span style="color:var(--green)">📦 Packed: ${fmt(wip.packedNotDisp)}L</span>`
         : '';
-      wipBreakdown = `<div style="font-weight:700;color:var(--text);margin-bottom:3px">${fmt(wip.totalWIP)}L</div>
-        <div style="font-size:10px;display:flex;flex-direction:column;gap:2px">${rows2.join('')}</div>${fgRow}`;
+      if(fgRow) rows2.push(fgRow);
+      // matrix per-batch total = Σ(scanned+unscanned across stages) + Packed
+      const _ripTotal = (wip.preAIM||0)+(wip.aimWIP||0)+(wip.printWIP||0)+(_u45.printing||0)+(wip.piWIP||0)+(_u45.pi||0)+(_u45.packing||0)+(wip.packedNotDisp||0);
+      wipBreakdown = `<div style="font-weight:700;color:var(--text);margin-bottom:3px">${fmt(_ripTotal)}L <span style="font-size:9px;color:var(--text3);font-weight:400">total incl. unsc + packed</span></div>
+        <div style="font-size:10px;display:flex;flex-direction:column;gap:2px">${rows2.join('')}</div>
+        <div style="font-size:9px;color:var(--text3);margin-top:3px;border-top:1px dashed var(--b1);padding-top:2px">Frozen WIP (scanned, unpacked): ${fmt(wip.totalWIP)}L</div>`;
     }
 
     const alertFlag = (overInspected||noGross) ? `<span title="${overInspected?'Inspected > Gross Production — check DPR':'No DPR entry'}" style="color:var(--accent4);cursor:help;margin-left:4px">⚠️</span>` : '';
@@ -9590,7 +9613,7 @@ function _v41_renderReportGInner(){
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Batch</label>
         <input type="text" id="rptg-filter-batch" placeholder="🔍 Batch" value="${gB.replace(/"/g,'&quot;')}"
-          oninput="window._rptGBatch=this.value;renderReportD()">
+          onchange="window._rptGBatch=this.value;renderReportD()">
       </div>
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Machine</label>
@@ -9614,9 +9637,17 @@ function _v41_renderReportGInner(){
             ${gAllColours.map(c=>`<option value="${c}" ${gC===c?'selected':''}>${c}</option>`).join('')}
           </select>
         </div>
-        ${(gB||gM||gP||gC||gCust)?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';window._rptGCustomer='';renderReportD()">✕ Clear</button>`:''}
+        ${(gB||gM||gP||gC||gCust)?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';window._rptGCustomer='';window._rptDCustMonth='ALL';renderReportD()">✕ Clear</button>`:''}
       </div>
     </div>
+    ${gCust ? `<div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:7px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;flex-wrap:wrap">
+      <span style="font-size:12px;font-weight:600">Production Month:</span>
+      <select onchange="window._rptDCustMonth=this.value;renderReportD()" style="border:1px solid var(--border);border-radius:4px;padding:5px 8px;font-size:12px;background:var(--surface);color:var(--text)">
+        <option value="ALL" ${gCustMonth==='ALL'?'selected':''}>All months</option>
+        ${_trkProdMonthOptions().map(m=>{const [y,mo]=m.split('-').map(Number);const lbl=new Date(y,mo-1,1).toLocaleString('en-US',{month:'short',year:'numeric'});return `<option value="${m}" ${gCustMonth===m?'selected':''}>${lbl}</option>`;}).join('')}
+      </select>
+      <span style="font-size:11px;color:var(--text3)">Scope ${(gCust||'').replace(/</g,'&lt;')}'s WIP by production start month (strict, same as Reports B & F) · "All" = every month</span>
+    </div>` : ''}
 
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
@@ -9647,18 +9678,9 @@ function _v41_renderReportGInner(){
       // server gap-counts Report F/top-table use (window._rptHGapSrv), per batch, converted to Lakhs
       // at the batch's pack size. Packing has no "scanned WIP" stage (pack-in is the FG cutoff), so
       // its cell = the pi→packing + aim→packing gap (this is what the old Transit→Pack represented).
-      const _gap = (window._rptHGapSrv && window._rptHGapSrv.data) || {};
-      // v45ZN fix: flow-aware, exactly like the top table + Report F. Printed batches own
-      // aim→printing / printing→pi / pi→packing; unprinted own only aim→packing. Prevents the
-      // server's route-blind gaps (e.g. unprinted AIM output surfacing as an aim→printing gap)
-      // from being mis-attributed.
-      const _unsL = (b) => {
-        const bn = b.batchNumber, sz = b.size;
-        const g = (pair)=> ((((_gap[pair]||{})[bn])||{}).gap) || 0;
-        return b.isPrinted
-          ? { printing: boxToLakh(g('aim\u2192printing'), sz), pi: boxToLakh(g('printing\u2192pi'), sz), packing: boxToLakh(g('pi\u2192packing'), sz) }
-          : { printing: 0, pi: 0, packing: boxToLakh(g('aim\u2192packing'), sz) };
-      };
+      // v45ZP: use the SHARED _rptDUns helper (defined above) so the matrix and the per-batch
+      // breakdown are identical by construction. Flow-aware; same server gap-counts as Report F.
+      const _unsL = _rptDUns;
       // col: label, scanned WIP key (null = no scanned stage), unscanned key (null = no gap feeds it)
       const cols = [
         {label:'Unsorted', wip:'preAIM',        uns:null},
@@ -9684,13 +9706,13 @@ function _v41_renderReportGInner(){
       const _cell = c => c.total>0.005
         ? `${fmt(c.total)}${c.unscanned>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(c.unscanned)} unsc</span>`:''}`
         : '—';
-      return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(gCust||'').replace(/</g,'&lt;')} (Lakhs, all months)</div>
+      return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(gCust||'').replace(/</g,'&lt;')} (Lakhs, ${gCustMonth==='ALL'?'all months':gCustMonth})</div>
       <div class="tbl-wrap tbl-sticky"><table>
         <thead><tr><th>Batch</th>${cols.map(c=>`<th class="text-right">${c.label}</th>`).join('')}<th class="text-right">TOTAL</th></tr></thead>
         <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td>${r.cells.map(c=>`<td class="td-mono text-right">${_cell(c)}</td>`).join('')}<td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${cols.length+2}" class="text-center text-muted">No batches for this customer</td></tr>`}</tbody>
         <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td>${colTot.map((v,i)=>`<td class="td-mono text-right">${v>0.005?fmt(v):'—'}${colUns[i]>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(colUns[i])} unsc</span>`:''}</td>`).join('')}<td class="td-mono text-right">${fmt(grand)}</td></tr></tfoot>
       </table></div>
-      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>total WIP (scanned + unscanned)</b> at that department; the red <b>▸ N unsc</b> is the unscanned portion (boxes scanned out of the prior stage but not scanned IN here, attributed to this receiving department). Packing = the pi→packing / aim→packing gap (formerly "Transit→Pack"). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(gCust||'').replace(/</g,'&lt;')}'s batches (all months). All in Lakhs.</div>`;
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>total WIP (scanned + unscanned)</b> at that department; the red <b>▸ N unsc</b> is the unscanned portion (boxes scanned out of the prior stage but not scanned IN here, attributed to this receiving department). Packing = the pi→packing / aim→packing gap (formerly "Transit→Pack"). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(gCust||'').replace(/</g,'&lt;')}'s batches (${gCustMonth==='ALL'?'all months':gCustMonth}). All in Lakhs.</div>`;
     })() : ''}
     <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportG()">📥 Export Excel</button>
   </div>`;
