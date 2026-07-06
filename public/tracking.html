@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZM</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZN</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZM</p>
+      <p>Tracking Suite v1.0 · build v45ZN</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZM</p>
+      <p>Tracking Suite v1.0 · build v45ZN</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9420,7 +9420,7 @@ function _v41_renderReportGInner(){
   const gAllMachines = [...new Set(allMonthBatches.map(b=>b.machineId).filter(Boolean))].sort();
   const gAllPcCodes  = [...new Set(allMonthBatches.map(b=>b.pcCode).filter(Boolean))].sort();
   const gAllColours  = [...new Set(allMonthBatches.map(b=>b.colour).filter(Boolean))].sort();
-  const gAllCustomers= [...new Set(allMonthBatches.map(b=>b.customer).filter(Boolean))].sort(); // v45ZL item 1
+  const gAllCustomers= [...new Set(state.batches.filter(b=>!b.deleted).map(b=>b.customer).filter(Boolean))].sort(); // v45ZN: all-month customer suggestions
   let totalGrossProd = 0;
   let totalAGradeQty = 0;
   let totalInspected = 0;
@@ -9584,7 +9584,7 @@ function _v41_renderReportGInner(){
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Customer</label>
         <input type="text" id="rptg-filter-customer" list="rptg-cust-list" placeholder="🔍 Type / pick customer…" value="${gCust.replace(/"/g,'&quot;')}"
-          oninput="window._rptGCustomer=this.value;renderReportD()">
+          onchange="window._rptGCustomer=this.value;renderReportD()">
         <datalist id="rptg-cust-list">${gAllCustomers.map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}"></option>`).join('')}</datalist>
       </div>
       <div class="form-group" style="margin-bottom:0">
@@ -9648,13 +9648,16 @@ function _v41_renderReportGInner(){
       // at the batch's pack size. Packing has no "scanned WIP" stage (pack-in is the FG cutoff), so
       // its cell = the pi→packing + aim→packing gap (this is what the old Transit→Pack represented).
       const _gap = (window._rptHGapSrv && window._rptHGapSrv.data) || {};
-      const _unsL = (bn, sz) => {
-        const g = (pair)=> (((_gap[pair]||{})[bn])||{}).gap || 0;
-        return {
-          printing: boxToLakh(g('aim\u2192printing'), sz),
-          pi:       boxToLakh(g('printing\u2192pi'), sz),
-          packing:  boxToLakh(g('pi\u2192packing') + g('aim\u2192packing'), sz),
-        };
+      // v45ZN fix: flow-aware, exactly like the top table + Report F. Printed batches own
+      // aim→printing / printing→pi / pi→packing; unprinted own only aim→packing. Prevents the
+      // server's route-blind gaps (e.g. unprinted AIM output surfacing as an aim→printing gap)
+      // from being mis-attributed.
+      const _unsL = (b) => {
+        const bn = b.batchNumber, sz = b.size;
+        const g = (pair)=> ((((_gap[pair]||{})[bn])||{}).gap) || 0;
+        return b.isPrinted
+          ? { printing: boxToLakh(g('aim\u2192printing'), sz), pi: boxToLakh(g('printing\u2192pi'), sz), packing: boxToLakh(g('pi\u2192packing'), sz) }
+          : { printing: 0, pi: 0, packing: boxToLakh(g('aim\u2192packing'), sz) };
       };
       // col: label, scanned WIP key (null = no scanned stage), unscanned key (null = no gap feeds it)
       const cols = [
@@ -9667,7 +9670,7 @@ function _v41_renderReportGInner(){
       ];
       const mrows = batches.map(b=>{
         const w = getBatchWIPBreakdown(b.batchNumber) || {};
-        const u = _unsL(b.batchNumber, b.size);
+        const u = _unsL(b);
         const cells = cols.map(c=>{
           const scanned = c.wip ? (w[c.wip]||0) : 0;
           const unscanned = c.uns ? (u[c.uns]||0) : 0;
@@ -10825,28 +10828,28 @@ function _v41_renderReportDInner(){
       stageQtyL[dept]+=boxToLakh(w, bsz);
     });
   });
-  // Unscanned = boxes scanned OUT of the prior stage with no scan-IN here (Report F handover gap),
-  // attributed to the RECEIVING department and converted to Lakhs with each batch's real pack size.
-  // Sourced from the SAME server gap-counts Report F uses (window._rptHGapSrv).
-  // v45ZM issue 1 (confirmed by Ishan): scope the gap batch-set with the SAME strict
-  // production-start-month logic Report F uses (_trkProdStartMonth === selected month), NOT
-  // getTrkMonthBatches/monthBatchNos. The gap VALUE per batch is lifetime and never resolves, so
-  // date-overlap + no-date batches (which getTrkMonthBatches admits) leaked prior-month residual
-  // gaps in and made this column read cumulative. Report F fixed the identical leak in v45H.
-  const _gapMonthNos = new Set(state.batches
-    .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && _trkProdStartMonth(b) === _trkSelectedMonth)
-    .map(b => b.batchNumber));
+  // v45ZM issue 1 + v45ZN fix (confirmed by Ishan): scope AND attribute the gap EXACTLY like
+  // Report F. (a) Batch set = strict production-start-month for the selected month. (b) FLOW-AWARE
+  // per batch, mirroring Report F's getTransitions(b): a batch only owns the handovers on its own
+  // route — printed = aim→printing→pi→packing, unprinted = aim→packing (skips printing/PI). The
+  // server counts an aim→printing "gap" for ANY batch with aim-out and no printing-in, which
+  // includes unprinted batches (their whole AIM output). Summing the server transitions blindly
+  // (pre-ZN) mis-attributed unprinted AIM output to Printing and printed AIM output to Packing, so
+  // Report D's Printing/Packing disagreed with Report F. Iterating per batch by route fixes it.
+  const _gapMonthBatches = state.batches
+    .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && _trkProdStartMonth(b) === _trkSelectedMonth);
   const _gapSrv = (window._rptHGapSrv && window._rptHGapSrv.data) || null;
   if (_gapSrv) {
-    const _recvOf = { 'aim\u2192printing':'printing', 'printing\u2192pi':'pi', 'pi\u2192packing':'packing', 'aim\u2192packing':'packing' };
-    Object.entries(_recvOf).forEach(([pair, recv])=>{
-      const perBatch = _gapSrv[pair] || {};
-      Object.entries(perBatch).forEach(([bn, v])=>{
-        if (!_gapMonthNos.has(bn)) return;
-        const g = (v && v.gap) || 0;
+    _gapMonthBatches.forEach(b => {
+      const bn = b.batchNumber, sz = b.size;
+      const trans = b.isPrinted
+        ? [['aim\u2192printing','printing'],['printing\u2192pi','pi'],['pi\u2192packing','packing']]
+        : [['aim\u2192packing','packing']];
+      trans.forEach(([pair, recv])=>{
+        const g = (((_gapSrv[pair]||{})[bn])||{}).gap || 0;
         if (g<=0) return;
         stageUnscanned[recv]+=g;
-        stageUnscannedL[recv]+=boxToLakh(g, getBatch(bn)?.size ?? '0');
+        stageUnscannedL[recv]+=boxToLakh(g, sz);
       });
     });
   } else if (typeof _rptH_loadGapCounts==='function') {
