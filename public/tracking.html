@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZP</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZT</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZP</p>
+      <p>Tracking Suite v1.0 · build v45ZT</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZP</p>
+      <p>Tracking Suite v1.0 · build v45ZT</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3867,6 +3867,11 @@ function renderLabels(){
   const activeBatches=getTrkMonthBatches().filter(b=>{
     if(b.status==='running') return true;
     if(b.status==='closed'){
+      // v45ZR item 4 (confirmed by Ishan): a CLOSED batch that actually produced (actuals > 0) stays
+      // visible in the default list for EVERY role — the label list has no role gate, so the reason a
+      // Label Supervisor couldn't see 26ZD101/26ZE101 was the 2-day window hiding produced-then-closed
+      // batches. Show them by production reality (month-scoped via getTrkMonthBatches), same as admin.
+      if((parseFloat(b.actualProd||b.actualQty)||0) > 0) return true;
       const closedAt = b.closedDate || b.endDate;
       if(!closedAt) return false;
       const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
@@ -3943,7 +3948,7 @@ function renderLabels(){
           <td style="padding:5px 6px;font-weight:700;font-family:monospace;font-size:11px;white-space:nowrap;color:var(--accent)">${b.batchNumber}${_lgClosedSet45.has(b.batchNumber)?' <span style="background:var(--surface3);color:var(--text3);font-size:8px;font-weight:700;padding:1px 5px;border-radius:6px" title="Outside the label view window (closed >2 days) — shown because you searched for it">CLOSED</span>':''}</td>
           <td style="padding:5px 6px;font-size:11px;max-width:110px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${b.customer||'-'}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;text-align:center">${b.size}</td>
-          <td style="padding:5px 6px;font-size:11px;max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${clr?`<span style="display:inline-block;max-width:75px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${clr}">${clr}</span>`:'—'}${b.packing?`<br><span style="font-size:9px;color:var(--accent);font-weight:700" title="Packing instruction">📦 ${b.packing}</span>`:''}</td>
+          <td style="padding:5px 6px;font-size:11px;max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${clr?`<span style="display:inline-block;max-width:75px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${clr}">${clr}</span>`:'—'}${b.packing?`<br><span style="font-size:9px;color:var(--accent);font-weight:700" title="Packing instruction">📦 ${b.packing}</span>`:''}${b.isPrinted?`<br><span style="font-size:9px;background:#7c3aed;color:#fde047;font-weight:800;padding:1px 6px;border-radius:6px;letter-spacing:.5px" title="Printed order (PTD) — route the box to the Printing department after AIM">PTD</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px">${b.pcCode||'—'}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;color:${actualProd>0?'var(--text1)':'var(--text3)'}">${actualProd>0?actualProd.toFixed(2):'—'}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${generated}</td>
@@ -9187,7 +9192,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Customer</label>
         <input type="text" list="rptH-cust-list" value="${(filterCust||'').replace(/"/g,'&quot;')}" placeholder="🔍 Customer…"
-          oninput="window._rptHCustomer=this.value;renderReportF()"
+          onchange="window._rptHCustomer=this.value;renderReportF()"
           style="width:100%;padding:6px 9px;border:1px solid var(--border);border-radius:4px;font-size:13px;background:var(--surface);color:var(--text)">
         <datalist id="rptH-cust-list">${[...new Set(scopeRows.map(r=>r.customer).filter(Boolean))].sort().map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}"></option>`).join('')}</datalist>
       </div>
@@ -9419,17 +9424,21 @@ function _v41_renderReportGInner(){
   if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
   if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
   if(gC) batches = batches.filter(b=>(b.colour||'')===gC);
-  // v45ZP (confirmed by Ishan): ONE flow-aware unscanned helper, shared by the per-batch WIP
-  // breakdown (Option B) AND the matrix, so the two tables are identical by construction. Printed
-  // batches own aim→printing / printing→pi / pi→packing; unprinted own only aim→packing. Same
-  // server gap-counts + boxToLakh as the top table and Report F.
-  const _rptDGap = (window._rptHGapSrv && window._rptHGapSrv.data) || {};
+  // v45ZR item 1.2 (confirmed by Ishan): the in-transit SUBSET per receiving dept, computed
+  // CLIENT-SIDE from the same scan summary as the WIP buckets — so it's a true subset and the
+  // per-batch total telescopes to frozen WIP + packed (≤ gross). NOT added on top of the buckets
+  // (printWIP = aimOut−printOut and piWIP = printOut−piOut already CONTAIN their in-transit boxes;
+  // adding the server gap again was the double-count that pushed WIP above gross). Printed batches
+  // own aim→printing / printing→pi / pi→packing in-transit; unprinted own only aim→packing.
+  const _rptDGap = null; // (server gap no longer used here — kept out to avoid the double-count)
+  const _ssIn  = (bn,dept)=>{ const l=state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='in'&&s._local).length;  return hasScanSummary()? _ss(bn,dept).in +l : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='in').length; };
+  const _ssOut = (bn,dept)=>{ const l=state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out'&&s._local).length; return hasScanSummary()? _ss(bn,dept).out+l : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out').length; };
   const _rptDUns = (b) => {
     const bn = b.batchNumber, sz = b.size;
-    const g = (pair)=> ((((_rptDGap[pair]||{})[bn])||{}).gap) || 0;
+    const aimOut=_ssOut(bn,'aim'), printIn=_ssIn(bn,'printing'), printOut=_ssOut(bn,'printing'), piIn=_ssIn(bn,'pi'), piOut=_ssOut(bn,'pi'), packIn=_ssIn(bn,'packing');
     return b.isPrinted
-      ? { printing: boxToLakh(g('aim\u2192printing'), sz), pi: boxToLakh(g('printing\u2192pi'), sz), packing: boxToLakh(g('pi\u2192packing'), sz) }
-      : { printing: 0, pi: 0, packing: boxToLakh(g('aim\u2192packing'), sz) };
+      ? { printing: boxToLakh(Math.max(0, aimOut-printIn), sz), pi: boxToLakh(Math.max(0, printOut-piIn), sz), packing: boxToLakh(Math.max(0, piOut-packIn), sz) }
+      : { printing: 0, pi: 0, packing: boxToLakh(Math.max(0, aimOut-packIn), sz) };
   };
   // dropdown option lists from the full month set (so all choices stay available)
   const gAllMachines = [...new Set(allMonthBatches.map(b=>b.machineId).filter(Boolean))].sort();
@@ -9499,33 +9508,32 @@ function _v41_renderReportGInner(){
 
     let wipBreakdown = '—';
     if(wip && (wip.totalWIP > 0 || wip.packedNotDisp > 0 || (()=>{const u=_rptDUns(b);return (u.printing+u.pi+u.packing)>0.005;})())){
-      // v45ZP req1 Option B (confirmed by Ishan): the per-batch breakdown now matches the matrix
-      // line-for-line. Each stage shows TOTAL (scanned + unscanned) with the ▸unsc demarcation;
-      // "Transit→Pack" is folded into Packing (the pi→packing / aim→packing gap) exactly as the
-      // matrix does. The frozen WIP (totalWIP) is still shown as its own labeled line, and a
-      // "Total incl. unscanned + packed" line equals the matrix's per-batch total. Display-only.
+      // v45ZP Option B + v45ZR item 1.2 (confirmed by Ishan): breakdown mirrors the matrix. Each
+      // stage line = the WIP BUCKET (which already contains its in-transit boxes); the ▸unsc is the
+      // in-transit SUBSET (shown, not added). "Transit→Pack" folded into Packing (= toPackTransit,
+      // all in-transit). Total = frozen WIP + packed (≤ gross); frozen WIP kept as its own line.
       const _u45 = _rptDUns(b);
-      const _stageCell = (label, colour, scanned, unsc) => {
-        const total = (scanned||0) + (unsc||0);
-        if (total <= 0.005) return '';
-        return `<span style="color:${colour}">${label}: ${fmt(total)}L${unsc>0.005?` <span style="color:#dc2626">▸ ${fmt(unsc)} unsc</span>`:''}</span>`;
+      const _stageCell = (label, colour, bucket, unsc) => {
+        if ((bucket||0) <= 0.005) return '';
+        const u = Math.min(unsc||0, bucket||0);
+        return `<span style="color:${colour}">${label}: ${fmt(bucket)}L${u>0.005?` <span style="color:#dc2626">▸ ${fmt(u)} in-transit</span>`:''}</span>`;
       };
       const rows2 = [];
       { const l = _stageCell(b.isPrinted?'🔴 Unsorted PTD':'🔴 Unsorted UP', 'var(--red)', wip.preAIM, 0); if(l) rows2.push(l); }
       { const l = _stageCell('🟡 AIM', 'var(--amber)', wip.aimWIP, 0); if(l) rows2.push(l); }
       { const l = _stageCell('🟣 Printing', '#8b5cf6', wip.printWIP, _u45.printing); if(l) rows2.push(l); }
       { const l = _stageCell('🟠 PI', 'var(--orange)', wip.piWIP, _u45.pi); if(l) rows2.push(l); }
-      { const l = _stageCell('🔵 Packing', '#0ea5e9', 0, _u45.packing); if(l) rows2.push(l); }
-      // Packed WIP (packed but NOT dispatched) = Report G balance — its own line, matches matrix Packed.
+      { const l = _stageCell('📦 Packing (in transit)', '#0ea5e9', wip.toPackTransit, _u45.packing); if(l) rows2.push(l); }
+      // Packed WIP (packed but NOT dispatched) = Report G balance — matches matrix Packed column.
       const fgRow = wip.packedNotDisp > 0
         ? `<span style="color:var(--green)">📦 Packed: ${fmt(wip.packedNotDisp)}L</span>`
         : '';
       if(fgRow) rows2.push(fgRow);
-      // matrix per-batch total = Σ(scanned+unscanned across stages) + Packed
-      const _ripTotal = (wip.preAIM||0)+(wip.aimWIP||0)+(wip.printWIP||0)+(_u45.printing||0)+(wip.piWIP||0)+(_u45.pi||0)+(_u45.packing||0)+(wip.packedNotDisp||0);
-      wipBreakdown = `<div style="font-weight:700;color:var(--text);margin-bottom:3px">${fmt(_ripTotal)}L <span style="font-size:9px;color:var(--text3);font-weight:400">total incl. unsc + packed</span></div>
+      // matrix per-batch total = frozen WIP (buckets) + packed  ≤ gross
+      const _ripTotal = (wip.preAIM||0)+(wip.aimWIP||0)+(wip.printWIP||0)+(wip.piWIP||0)+(wip.toPackTransit||0)+(wip.packedNotDisp||0);
+      wipBreakdown = `<div style="font-weight:700;color:var(--text);margin-bottom:3px">${fmt(_ripTotal)}L <span style="font-size:9px;color:var(--text3);font-weight:400">WIP + packed</span></div>
         <div style="font-size:10px;display:flex;flex-direction:column;gap:2px">${rows2.join('')}</div>
-        <div style="font-size:9px;color:var(--text3);margin-top:3px;border-top:1px dashed var(--b1);padding-top:2px">Frozen WIP (scanned, unpacked): ${fmt(wip.totalWIP)}L</div>`;
+        <div style="font-size:9px;color:var(--text3);margin-top:3px;border-top:1px dashed var(--b1);padding-top:2px">Frozen WIP (unpacked): ${fmt(wip.totalWIP)}L</div>`;
     }
 
     const alertFlag = (overInspected||noGross) ? `<span title="${overInspected?'Inspected > Gross Production — check DPR':'No DPR entry'}" style="color:var(--accent4);cursor:help;margin-left:4px">⚠️</span>` : '';
@@ -9680,26 +9688,33 @@ function _v41_renderReportGInner(){
       // its cell = the pi→packing + aim→packing gap (this is what the old Transit→Pack represented).
       // v45ZP: use the SHARED _rptDUns helper (defined above) so the matrix and the per-batch
       // breakdown are identical by construction. Flow-aware; same server gap-counts as Report F.
-      const _unsL = _rptDUns;
-      // col: label, scanned WIP key (null = no scanned stage), unscanned key (null = no gap feeds it)
+      // v45ZR item 1.2 (confirmed by Ishan): cell value = the WIP BUCKET (which already includes
+      // its in-transit boxes), NOT bucket+gap. The in-transit is shown as a demarcated SUBSET only.
+      // Packing = toPackTransit (the pi→packing / aim→packing in-transit — all of it unscanned).
       const cols = [
         {label:'Unsorted', wip:'preAIM',        uns:null},
         {label:'AIM',      wip:'aimWIP',         uns:null},
         {label:'Printing', wip:'printWIP',       uns:'printing'},
         {label:'PI',       wip:'piWIP',          uns:'pi'},
-        {label:'Packing',  wip:null,             uns:'packing'},
+        {label:'Packing',  wip:'toPackTransit',  uns:'packing'},
         {label:'Packed',   wip:'packedNotDisp',  uns:null},
       ];
       const mrows = batches.map(b=>{
         const w = getBatchWIPBreakdown(b.batchNumber) || {};
-        const u = _unsL(b);
+        const u = _rptDUns(b);
         const cells = cols.map(c=>{
-          const scanned = c.wip ? (w[c.wip]||0) : 0;
-          const unscanned = c.uns ? (u[c.uns]||0) : 0;
-          return { total: scanned+unscanned, unscanned };
+          const val = c.wip ? (w[c.wip]||0) : 0;              // bucket (already contains in-transit)
+          const unscanned = c.uns ? Math.min(u[c.uns]||0, val) : 0; // demarcated subset (≤ bucket)
+          return { total: val, unscanned };
         });
-        return { batch:b.batchNumber, cells, rowTot: cells.reduce((s,c)=>s+c.total,0) };
+        // v45ZR item 1.3 (confirmed by Ishan): Gross Production + total Wastage (AIM+Printing+PI
+        // salvage+remelt, same source as Reports D/E) as reference columns.
+        const gross = w.grossProd || 0;
+        const wastage = ['aim','printing','pi'].reduce((s,d)=>{ const tw=getTotalWastage(b.batchNumber,d); return s + ((tw&&tw.total)||0); }, 0);
+        return { batch:b.batchNumber, gross, wastage, cells, rowTot: cells.reduce((s,c)=>s+c.total,0) };
       });
+      const totGross = mrows.reduce((s,r)=>s+r.gross,0);
+      const totWaste = mrows.reduce((s,r)=>s+r.wastage,0);
       const colTot = cols.map((_,i)=> mrows.reduce((s,r)=>s+r.cells[i].total,0));
       const colUns = cols.map((_,i)=> mrows.reduce((s,r)=>s+r.cells[i].unscanned,0));
       const grand = colTot.reduce((s,v)=>s+v,0);
@@ -9708,11 +9723,11 @@ function _v41_renderReportGInner(){
         : '—';
       return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(gCust||'').replace(/</g,'&lt;')} (Lakhs, ${gCustMonth==='ALL'?'all months':gCustMonth})</div>
       <div class="tbl-wrap tbl-sticky"><table>
-        <thead><tr><th>Batch</th>${cols.map(c=>`<th class="text-right">${c.label}</th>`).join('')}<th class="text-right">TOTAL</th></tr></thead>
-        <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td>${r.cells.map(c=>`<td class="td-mono text-right">${_cell(c)}</td>`).join('')}<td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${cols.length+2}" class="text-center text-muted">No batches for this customer</td></tr>`}</tbody>
-        <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td>${colTot.map((v,i)=>`<td class="td-mono text-right">${v>0.005?fmt(v):'—'}${colUns[i]>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(colUns[i])} unsc</span>`:''}</td>`).join('')}<td class="td-mono text-right">${fmt(grand)}</td></tr></tfoot>
+        <thead><tr><th>Batch</th><th class="text-right">Gross Prod</th>${cols.map(c=>`<th class="text-right">${c.label}</th>`).join('')}<th class="text-right">Wastage</th><th class="text-right">TOTAL</th></tr></thead>
+        <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td><td class="td-mono text-right" style="color:var(--text2)">${r.gross>0.005?fmt(r.gross):'—'}</td>${r.cells.map(c=>`<td class="td-mono text-right">${_cell(c)}</td>`).join('')}<td class="td-mono text-right amber">${r.wastage>0.005?fmt(r.wastage):'—'}</td><td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${cols.length+4}" class="text-center text-muted">No batches for this customer</td></tr>`}</tbody>
+        <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono text-right">${fmt(totGross)}</td>${colTot.map((v,i)=>`<td class="td-mono text-right">${v>0.005?fmt(v):'—'}${colUns[i]>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(colUns[i])} unsc</span>`:''}</td>`).join('')}<td class="td-mono text-right amber">${fmt(totWaste)}</td><td class="td-mono text-right">${fmt(grand)}</td></tr></tfoot>
       </table></div>
-      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>total WIP (scanned + unscanned)</b> at that department; the red <b>▸ N unsc</b> is the unscanned portion (boxes scanned out of the prior stage but not scanned IN here, attributed to this receiving department). Packing = the pi→packing / aim→packing gap (formerly "Transit→Pack"). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(gCust||'').replace(/</g,'&lt;')}'s batches (${gCustMonth==='ALL'?'all months':gCustMonth}). All in Lakhs.</div>`;
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>WIP at that department</b> (the bucket already includes its in-transit boxes); the red <b>▸ N unsc</b> is the <b>in-transit subset</b> (boxes scanned out of the prior stage, not yet scanned IN here) — shown for visibility, NOT added, so the row total never exceeds gross. <b>📦 Packing</b> = boxes en route to packing but not yet packed (pi→packing / aim→packing, all in-transit). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(gCust||'').replace(/</g,'&lt;')}'s batches (${gCustMonth==='ALL'?'all months':gCustMonth}). All in Lakhs.</div>`;
     })() : ''}
     <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportG()">📥 Export Excel</button>
   </div>`;
@@ -10501,7 +10516,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Search Customer</label>
         <input type="text" list="rptB-cust-list" value="${(filterCust||'').replace(/"/g,'&quot;')}" placeholder="🔍 Customer…"
-          oninput="window._rptBCustomer=this.value;renderReportB()">
+          onchange="window._rptBCustomer=this.value;renderReportB()">
         <datalist id="rptB-cust-list">${[...new Set([...monthBatchNos].map(bn=>getBatch(bn)?.customer).filter(Boolean))].sort().map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}"></option>`).join('')}</datalist>
       </div>
       <div class="form-group" style="margin-bottom:0">
@@ -10808,6 +10823,59 @@ _scrollIntoReportIfFirstView('C');
 // v41ZF: renderReportD() is defined above (near renderReportG) so it can compose both the overall
 // summary and the former Report G batch-wise section. _v41_renderReportDInner() (below) builds only
 // the summary section.
+// v45ZT (confirmed by Ishan): SINGLE source for the Report D top-table stage rows, so the on-screen
+// table and the Excel export are computed identically (no drift). AIM split by floor (GF / FF-SF),
+// Printing/PI scanned net of stage wastage (Report B), Packing = packed-not-dispatched (Report G),
+// Dispatch = dispatched. Unscanned = Production WIP (AIM) / flow-aware handover gaps (Report F).
+function _v45sTopTableData(){
+  const stages=['aim_gf','aim_ffsf','printing','pi','packing','dispatch'];
+  const _RL={aim_gf:'AIM Inspection — GF', aim_ffsf:'AIM Inspection — FF/SF', printing:'Printing', pi:'Print Inspection', packing:'Packing (FG awaiting dispatch)', dispatch:'Dispatch (dispatched)'};
+  const stageWIP={}, stageQtyL={}, stageUnscanned={}, stageUnscannedL={};
+  stages.forEach(d=>{ stageWIP[d]=0; stageQtyL[d]=0; stageUnscanned[d]=0; stageUnscannedL[d]=0; });
+  const _tIn = (bn,dept)=>{ const l=state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='in'&&s._local).length;  return hasScanSummary()? _ss(bn,dept).in +l : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='in').length; };
+  const _tOut= (bn,dept)=>{ const l=state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out'&&s._local).length; return hasScanSummary()? _ss(bn,dept).out+l : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out').length; };
+  const _topBatches = state.batches
+    .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && _trkProdStartMonth(b) === _trkSelectedMonth);
+  _topBatches.forEach(b => {
+    const bn = b.batchNumber, bsz = b.size;
+    const _wb = getBatchWIPBreakdown(bn) || {};
+    const aimRow = getMachineFloor(b.machineId)==='GF' ? 'aim_gf' : 'aim_ffsf';
+    const aimScan = Math.max(0, _tIn(bn,'aim') - _tOut(bn,'aim'));
+    stageWIP[aimRow]+=aimScan; stageQtyL[aimRow]+=boxToLakh(aimScan, bsz);
+    if ((_wb.preAIM||0) > 0.005) { stageUnscannedL[aimRow]+=_wb.preAIM; stageUnscanned[aimRow]+=lakhToBox(_wb.preAIM, bsz); }
+    if (b.isPrinted) {
+      const pWasteBx  = lakhToBox((getTotalWastage(bn,'printing').total)||0, bsz);
+      const pScan  = Math.max(0, _tIn(bn,'printing') - _tOut(bn,'printing') - pWasteBx);
+      stageWIP['printing']+=pScan; stageQtyL['printing']+=boxToLakh(pScan, bsz);
+      const piWasteBx = lakhToBox((getTotalWastage(bn,'pi').total)||0, bsz);
+      const piScan = Math.max(0, _tIn(bn,'pi') - _tOut(bn,'pi') - piWasteBx);
+      stageWIP['pi']+=piScan; stageQtyL['pi']+=boxToLakh(piScan, bsz);
+    }
+    const pnd = _wb.packedNotDisp||0;
+    if (pnd > 0.005) { stageQtyL['packing']+=pnd; stageWIP['packing']+=lakhToBox(pnd, bsz); }
+    const disp = (typeof _v40_dispatchedLakhs==='function') ? _v40_dispatchedLakhs(bn, bsz) : 0;
+    if (disp > 0.005) { stageQtyL['dispatch']+=disp; stageWIP['dispatch']+=lakhToBox(disp, bsz); }
+  });
+  const _gapSrv = (window._rptHGapSrv && window._rptHGapSrv.data) || null;
+  if (_gapSrv) {
+    _topBatches.forEach(b => {
+      const bn = b.batchNumber, sz = b.size;
+      const trans = b.isPrinted
+        ? [['aim\u2192printing','printing'],['printing\u2192pi','pi'],['pi\u2192packing','packing']]
+        : [['aim\u2192packing','packing']];
+      trans.forEach(([pair, recv])=>{
+        const g = (((_gapSrv[pair]||{})[bn])||{}).gap || 0;
+        if (g<=0) return;
+        stageUnscanned[recv]+=g;
+        stageUnscannedL[recv]+=boxToLakh(g, sz);
+      });
+    });
+  } else if (typeof _rptH_loadGapCounts==='function') {
+    _rptH_loadGapCounts();
+  }
+  return { stages, _RL, stageWIP, stageQtyL, stageUnscanned, stageUnscannedL, _gapSrv, _topBatches };
+}
+
 function _v41_renderReportDInner(){
   if(!document.getElementById('report-output')) renderReports();
   const monthBatches = getTrkMonthBatches().filter(b=>!b.deleted && b.batchNumber);
@@ -10827,56 +10895,8 @@ function _v41_renderReportDInner(){
     return g;
   };
   const totalGross=monthBatches.reduce((s,b)=>s+_grossForD(b),0);
-  const stages=['aim','printing','pi','packing','dispatch'];
-  // v45ZL item 2a: compute per-stage WIP boxes AND real-pack-size Lakhs (per batch, so the old flat
-  // ×1.5 approximation is gone), plus the UNSCANNED handover-gap attributed to the RECEIVING dept.
-  const stageWIP={}, stageQtyL={}, stageUnscanned={}, stageUnscannedL={};
-  stages.forEach(d=>{ stageWIP[d]=0; stageQtyL[d]=0; stageUnscanned[d]=0; stageUnscannedL[d]=0; });
-  monthBatchNos.forEach(bn => {
-    const bsz = getBatch(bn)?.size ?? '0';
-    stages.forEach(dept=>{
-      let inn, out;
-      if (hasScanSummary()) {
-        const localIn  = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
-        const localOut = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
-        inn = _ss(bn,dept).in  + localIn;
-        out = _ss(bn,dept).out + localOut;
-      } else {
-        inn = state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='in').length;
-        out = state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out').length;
-      }
-      const w = Math.max(0, inn-out);
-      stageWIP[dept]+=w;
-      stageQtyL[dept]+=boxToLakh(w, bsz);
-    });
-  });
-  // v45ZM issue 1 + v45ZN fix (confirmed by Ishan): scope AND attribute the gap EXACTLY like
-  // Report F. (a) Batch set = strict production-start-month for the selected month. (b) FLOW-AWARE
-  // per batch, mirroring Report F's getTransitions(b): a batch only owns the handovers on its own
-  // route — printed = aim→printing→pi→packing, unprinted = aim→packing (skips printing/PI). The
-  // server counts an aim→printing "gap" for ANY batch with aim-out and no printing-in, which
-  // includes unprinted batches (their whole AIM output). Summing the server transitions blindly
-  // (pre-ZN) mis-attributed unprinted AIM output to Printing and printed AIM output to Packing, so
-  // Report D's Printing/Packing disagreed with Report F. Iterating per batch by route fixes it.
-  const _gapMonthBatches = state.batches
-    .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && _trkProdStartMonth(b) === _trkSelectedMonth);
-  const _gapSrv = (window._rptHGapSrv && window._rptHGapSrv.data) || null;
-  if (_gapSrv) {
-    _gapMonthBatches.forEach(b => {
-      const bn = b.batchNumber, sz = b.size;
-      const trans = b.isPrinted
-        ? [['aim\u2192printing','printing'],['printing\u2192pi','pi'],['pi\u2192packing','packing']]
-        : [['aim\u2192packing','packing']];
-      trans.forEach(([pair, recv])=>{
-        const g = (((_gapSrv[pair]||{})[bn])||{}).gap || 0;
-        if (g<=0) return;
-        stageUnscanned[recv]+=g;
-        stageUnscannedL[recv]+=boxToLakh(g, sz);
-      });
-    });
-  } else if (typeof _rptH_loadGapCounts==='function') {
-    _rptH_loadGapCounts(); // not cached yet — fetch; re-renders Report D when it lands
-  }
+  // v45ZT: stage rows now come from the SHARED helper (identical to the Excel export).
+  const { stages, _RL:_stageRowLabels, stageWIP, stageQtyL, stageUnscanned, stageUnscannedL, _gapSrv } = _v45sTopTableData();
   const totalAGrade=monthBatches.reduce((s,b)=>{
     const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');
     return s+ag.aGrade;
@@ -10908,18 +10928,19 @@ function _v41_renderReportDInner(){
     return `<div class="tbl-wrap tbl-sticky"><table>
     <thead><tr><th>Stage</th><th class="text-right">Boxes in WIP</th><th class="text-right">Approx Qty (L)</th><th class="text-right" style="color:#dc2626">Unscanned Boxes</th><th class="text-right" style="color:#dc2626">Unscanned Qty (L)</th><th class="text-right">Total WIP (L)</th><th class="text-right">% of Total</th></tr></thead>
     <tbody>
-    ${stages.map(dept=>{
+    ${(()=>{ const _RL=_stageRowLabels;
+      return stages.map(dept=>{
       const wip=stageWIP[dept];
       const qty=stageQtyL[dept];
       const unsB=stageUnscanned[dept];
       const unsL=stageUnscannedL[dept];
       const totWip=qty+unsL;
-      return `<tr><td class="fw-bold">${DEPT_LABELS[dept]}</td><td class="td-mono text-right">${wip}</td><td class="td-mono text-right">${fmt(qty)}</td><td class="td-mono text-right ${unsB>0?'amber':''}">${unsB>0?unsB:'—'}</td><td class="td-mono text-right ${unsL>0?'amber':''}">${unsL>0?fmt(unsL):'—'}</td><td class="td-mono text-right fw-bold">${fmt(totWip)}</td><td class="td-mono text-right">${_grandWip>0?fmt(totWip/_grandWip*100,1):0}%</td></tr>`;
-    }).join('')}
+      return `<tr><td class="fw-bold">${_RL[dept]||dept}</td><td class="td-mono text-right">${wip}</td><td class="td-mono text-right">${fmt(qty)}</td><td class="td-mono text-right ${unsB>0?'amber':''}">${unsB>0?unsB:'—'}</td><td class="td-mono text-right ${unsL>0?'amber':''}">${unsL>0?fmt(unsL):'—'}</td><td class="td-mono text-right fw-bold">${fmt(totWip)}</td><td class="td-mono text-right">${_grandWip>0?fmt(totWip/_grandWip*100,1):0}%</td></tr>`;
+    }).join(''); })()}
     </tbody>
     <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono text-right">${_totBoxes}</td><td class="td-mono text-right">${fmt(_totQtyL)}</td><td class="td-mono text-right">${_totUnsB>0?_totUnsB:'—'}</td><td class="td-mono text-right">${_totUnsL>0?fmt(_totUnsL):'—'}</td><td class="td-mono text-right">${fmt(_grandWip)}</td><td class="td-mono text-right">${_grandWip>0?'100.0':'0'}%</td></tr></tfoot>
   </table></div>
-  <div class="text-sm text-muted mt-8" style="font-size:11px">💡 <b>Unscanned</b> = boxes scanned out of the prior stage but not yet scanned IN here (Report F handover gap), attributed to the receiving department and converted to Lakhs at each batch's pack size. <b>Total WIP (L)</b> = Approx Qty + Unscanned Qty. ${_gapSrv?'':'<span style="color:#b45309">Loading handover-gap data…</span>'}</div>`;
+  <div class="text-sm text-muted mt-8" style="font-size:11px">💡 <b>Unscanned</b> = boxes scanned out of the prior stage but not yet scanned IN here (Report F handover gap), attributed to the receiving department. <b>AIM (GF / FF-SF)</b> split by floor like Report B; AIM's Unscanned = <b>Production WIP</b> (Gross − AIM wastage − AIM scan-in). Printing/PI scanned deduct stage salvage+remelt (matches Report B). <b>Packing</b> = packed-not-dispatched (Report G balance — falls as trucks leave); <b>Dispatch</b> = dispatched (rises). Every produced box is counted once, so <b>TOTAL = Gross − Wastage ≤ Gross Production</b> (${fmt(totalGross)}L). ${_gapSrv?'':'<span style="color:#b45309">Loading handover-gap data…</span>'}</div>`;
   })()}
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   _captureReportScroll();
@@ -13868,21 +13889,29 @@ function exportReportD(){
   const totalAGrade=monthBatches.reduce((s,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.aGrade;},0);
   const aGradePct=totalGross>0?(totalAGrade/totalGross*100):0;
   const totalDispatched=state.dispatchRecs.reduce((s,r)=>s+r.qty,0);
-  const stages=['aim','printing','pi','packing','dispatch'];
-  const stageRows=stages.map(dept=>{
-    let inn=0, out=0;
-    if (hasScanSummary()) {
-      monthBatchNos.forEach(bn => {
-        inn += _ss(bn,dept).in  + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
-        out += _ss(bn,dept).out + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
-      });
-    } else {
-      inn=state.scans.filter(s=>s.dept===dept&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).length;
-      out=state.scans.filter(s=>s.dept===dept&&s.type==='out'&&monthBatchNos.has(s.batchNumber)).length;
-    }
-    const wip=Math.max(0,inn-out);
-    const qty=wip*1.5;
-    return {'Stage':DEPT_LABELS[dept]||dept,'Boxes IN':inn,'Boxes OUT':out,'WIP Boxes':wip,'Approx Qty (L)':fmt(qty),'% of Total Gross':totalGross>0?fmt(qty/totalGross*100,1):0};
+  // v45ZT (confirmed by Ishan): Stage WIP sheet uses the SAME shared helper as the on-screen table,
+  // with identical rows (AIM GF / FF-SF, Printing, PI, Packing=FG-not-dispatched, Dispatch) and
+  // identical columns (Boxes in WIP, Approx Qty, Unscanned Boxes/Qty, Total WIP, % of Total).
+  const _td = _v45sTopTableData();
+  const _stTotQ = _td.stages.reduce((s,d)=>s+_td.stageQtyL[d],0);
+  const _stTotU = _td.stages.reduce((s,d)=>s+_td.stageUnscannedL[d],0);
+  const _stGrand = _stTotQ + _stTotU;
+  const stageRows=_td.stages.map(dept=>{
+    const qty=_td.stageQtyL[dept], unsL=_td.stageUnscannedL[dept], totWip=qty+unsL;
+    return {
+      'Stage': _td._RL[dept]||dept,
+      'Boxes in WIP': _td.stageWIP[dept],
+      'Approx Qty (L)': +fmt(qty),
+      'Unscanned Boxes': _td.stageUnscanned[dept],
+      'Unscanned Qty (L)': +fmt(unsL),
+      'Total WIP (L)': +fmt(totWip),
+      '% of Total': _stGrand>0? +fmt(totWip/_stGrand*100,1) : 0
+    };
+  });
+  stageRows.push({
+    'Stage':'TOTAL','Boxes in WIP':_td.stages.reduce((s,d)=>s+_td.stageWIP[d],0),
+    'Approx Qty (L)':+fmt(_stTotQ),'Unscanned Boxes':_td.stages.reduce((s,d)=>s+_td.stageUnscanned[d],0),
+    'Unscanned Qty (L)':+fmt(_stTotU),'Total WIP (L)':+fmt(_stGrand),'% of Total':_stGrand>0?100:0
   });
   const summaryRows=[
     {'Metric':'Gross Production (L)','Value':fmt(totalGross)},
