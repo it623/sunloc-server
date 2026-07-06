@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZL</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZM</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZL</p>
+      <p>Tracking Suite v1.0 · build v45ZM</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZL</p>
+      <p>Tracking Suite v1.0 · build v45ZM</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9400,8 +9400,18 @@ function _v41_renderReportGInner(){
   // v41ZC: filter state (machine uses normMcId so MC.30 / mc30 / "MC 30" all match)
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
   const gCust = window._rptGCustomer||''; // v45ZL item 1: customer search
-  let batches = allMonthBatches;
-  if(gCust) batches = batches.filter(b=>(b.customer||'').toLowerCase().includes(gCust.toLowerCase()));
+  // v45ZM issue 4 (confirmed by Ishan): when a CUSTOMER is selected, span ALL months (not just the
+  // selected month) for the batch-wise table AND the matrix, so Packed (packed-not-dispatched) and
+  // the WIP picture are complete for that customer regardless of production month. The top STAGE-WISE
+  // WIP summary (in _v41_renderReportDInner) is unaffected and stays month-scoped.
+  let batches;
+  if (gCust) {
+    batches = state.batches
+      .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && (b.customer||'').toLowerCase().includes(gCust.toLowerCase()))
+      .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+  } else {
+    batches = allMonthBatches;
+  }
   if(gB) batches = batches.filter(b=>(b.batchNumber||'').toLowerCase().includes(gB.toLowerCase()));
   if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
   if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
@@ -9628,26 +9638,56 @@ function _v41_renderReportGInner(){
       </tr></tfoot>
     </table></div>
     ${gCust ? (()=>{
-      // v45ZL item 2c (confirmed by Ishan): stage-wise WIP MATRIX for the selected customer —
-      // stages as columns, batches as rows, summed both ways, all in Lakhs. Unpacked WIP stages
-      // (Unsorted→Transit) reuse the frozen per-batch breakdown; Packed = packed-not-dispatched
-      // (Report G balance). Row total = that batch's total RIP across stages; column total = the
-      // customer's total at that stage. Single source of truth: same getBatchWIPBreakdown as above.
-      const stageCols = [['preAIM','Unsorted'],['aimWIP','AIM'],['printWIP','Printing'],['piWIP','PI'],['toPackTransit','Transit→Pack'],['packedNotDisp','Packed']];
+      // v45ZL item 2c + v45ZM issue 3 (confirmed by Ishan): stage-wise WIP MATRIX for the selected
+      // customer — departments as columns, batches as rows, summed both ways, all in Lakhs.
+      // v45ZM issue 3: the standalone "Transit→Pack" column is GONE; every handover gap (missing
+      // scan-in) is attributed to the RECEIVING department, exactly like the top table. Each cell's
+      // TOTAL = scanned WIP at the dept + unscanned (gap into the dept); the unscanned quantum is
+      // DEMARCATED beneath the total so it can be monitored per department. Gap source = the same
+      // server gap-counts Report F/top-table use (window._rptHGapSrv), per batch, converted to Lakhs
+      // at the batch's pack size. Packing has no "scanned WIP" stage (pack-in is the FG cutoff), so
+      // its cell = the pi→packing + aim→packing gap (this is what the old Transit→Pack represented).
+      const _gap = (window._rptHGapSrv && window._rptHGapSrv.data) || {};
+      const _unsL = (bn, sz) => {
+        const g = (pair)=> (((_gap[pair]||{})[bn])||{}).gap || 0;
+        return {
+          printing: boxToLakh(g('aim\u2192printing'), sz),
+          pi:       boxToLakh(g('printing\u2192pi'), sz),
+          packing:  boxToLakh(g('pi\u2192packing') + g('aim\u2192packing'), sz),
+        };
+      };
+      // col: label, scanned WIP key (null = no scanned stage), unscanned key (null = no gap feeds it)
+      const cols = [
+        {label:'Unsorted', wip:'preAIM',        uns:null},
+        {label:'AIM',      wip:'aimWIP',         uns:null},
+        {label:'Printing', wip:'printWIP',       uns:'printing'},
+        {label:'PI',       wip:'piWIP',          uns:'pi'},
+        {label:'Packing',  wip:null,             uns:'packing'},
+        {label:'Packed',   wip:'packedNotDisp',  uns:null},
+      ];
       const mrows = batches.map(b=>{
         const w = getBatchWIPBreakdown(b.batchNumber) || {};
-        const vals = stageCols.map(([k])=> w[k]||0);
-        return { batch:b.batchNumber, vals, rowTot: vals.reduce((s,v)=>s+v,0) };
+        const u = _unsL(b.batchNumber, b.size);
+        const cells = cols.map(c=>{
+          const scanned = c.wip ? (w[c.wip]||0) : 0;
+          const unscanned = c.uns ? (u[c.uns]||0) : 0;
+          return { total: scanned+unscanned, unscanned };
+        });
+        return { batch:b.batchNumber, cells, rowTot: cells.reduce((s,c)=>s+c.total,0) };
       });
-      const colTot = stageCols.map((_,i)=> mrows.reduce((s,r)=>s+r.vals[i],0));
+      const colTot = cols.map((_,i)=> mrows.reduce((s,r)=>s+r.cells[i].total,0));
+      const colUns = cols.map((_,i)=> mrows.reduce((s,r)=>s+r.cells[i].unscanned,0));
       const grand = colTot.reduce((s,v)=>s+v,0);
-      return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(gCust||'').replace(/</g,'&lt;')} (Lakhs)</div>
+      const _cell = c => c.total>0.005
+        ? `${fmt(c.total)}${c.unscanned>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(c.unscanned)} unsc</span>`:''}`
+        : '—';
+      return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(gCust||'').replace(/</g,'&lt;')} (Lakhs, all months)</div>
       <div class="tbl-wrap tbl-sticky"><table>
-        <thead><tr><th>Batch</th>${stageCols.map(([,l])=>`<th class="text-right">${l}</th>`).join('')}<th class="text-right">TOTAL</th></tr></thead>
-        <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td>${r.vals.map(v=>`<td class="td-mono text-right">${v>0.005?fmt(v):'—'}</td>`).join('')}<td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${stageCols.length+2}" class="text-center text-muted">No batches for this customer</td></tr>`}</tbody>
-        <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td>${colTot.map(v=>`<td class="td-mono text-right">${fmt(v)}</td>`).join('')}<td class="td-mono text-right">${fmt(grand)}</td></tr></tfoot>
+        <thead><tr><th>Batch</th>${cols.map(c=>`<th class="text-right">${c.label}</th>`).join('')}<th class="text-right">TOTAL</th></tr></thead>
+        <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td>${r.cells.map(c=>`<td class="td-mono text-right">${_cell(c)}</td>`).join('')}<td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${cols.length+2}" class="text-center text-muted">No batches for this customer</td></tr>`}</tbody>
+        <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td>${colTot.map((v,i)=>`<td class="td-mono text-right">${v>0.005?fmt(v):'—'}${colUns[i]>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(colUns[i])} unsc</span>`:''}</td>`).join('')}<td class="td-mono text-right">${fmt(grand)}</td></tr></tfoot>
       </table></div>
-      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Unpacked WIP stages (Unsorted→Transit→Pack) + Packed (awaiting dispatch, from Report G balance). Row = per-batch total across stages; column = per-stage total across ${(gCust||'').replace(/</g,'&lt;')}'s batches. All in Lakhs.</div>`;
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>total WIP (scanned + unscanned)</b> at that department; the red <b>▸ N unsc</b> is the unscanned portion (boxes scanned out of the prior stage but not scanned IN here, attributed to this receiving department). Packing = the pi→packing / aim→packing gap (formerly "Transit→Pack"). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(gCust||'').replace(/</g,'&lt;')}'s batches (all months). All in Lakhs.</div>`;
     })() : ''}
     <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportG()">📥 Export Excel</button>
   </div>`;
@@ -9662,8 +9702,11 @@ function _v41_renderReportGInner(){
   if (!_outEl) return; // v41ZF audit: container gone (user navigated away during async A-Grade fetch) — abort safely
   if (window._v41_composingD) { _outEl.insertAdjacentHTML('beforeend', html); }
   else { _outEl.innerHTML = html; }
-  if (_gAfId === 'rptg-filter-batch') {
-    const n = document.getElementById('rptg-filter-batch');
+  // v45ZM issue 2 (confirmed by Ishan): restore focus+caret to WHICHEVER rptg-filter-* input was
+  // active (previously only 'rptg-filter-batch'), so the customer search no longer loses focus /
+  // jumps the page / closes its datalist on every keystroke.
+  if (_gAfId && /^rptg-filter-/.test(_gAfId)) {
+    const n = document.getElementById(_gAfId);
     if (n) { n.focus(); try { if (_gSelS != null) n.setSelectionRange(_gSelS, _gSelE); } catch(e){} }
   }
   if (!window._v41_composingD) _scrollIntoReportIfFirstView('G');
@@ -9706,7 +9749,7 @@ function exportReportG(){
       'Printing WIP (L)': wip && b.isPrinted ? fmt(wip.printWIP) : 'N/A',
       'PI WIP (L)': wip && b.isPrinted ? fmt(wip.piWIP) : 'N/A',
       'Transit to Packing (L)': wip ? fmt(wip.toPackTransit) : '0',
-      'FG Awaiting Dispatch (L)': wip ? fmt(wip.packWIP) : '0',
+      'FG Awaiting Dispatch (L)': wip ? fmt(wip.packedNotDisp) : '0',
     };
     if(b.isPrinted && ag.stages){
       row['AIM Stage %'] = ag.stages.aim.inspected>0?fmt(ag.stages.aim.pct,2)+'%':'—';
@@ -10784,15 +10827,22 @@ function _v41_renderReportDInner(){
   });
   // Unscanned = boxes scanned OUT of the prior stage with no scan-IN here (Report F handover gap),
   // attributed to the RECEIVING department and converted to Lakhs with each batch's real pack size.
-  // Sourced from the SAME server gap-counts Report F uses (window._rptHGapSrv). AIM (fed only by
-  // production, not a scan handover) and Dispatch (no packing→dispatch pair in this endpoint) → 0.
+  // Sourced from the SAME server gap-counts Report F uses (window._rptHGapSrv).
+  // v45ZM issue 1 (confirmed by Ishan): scope the gap batch-set with the SAME strict
+  // production-start-month logic Report F uses (_trkProdStartMonth === selected month), NOT
+  // getTrkMonthBatches/monthBatchNos. The gap VALUE per batch is lifetime and never resolves, so
+  // date-overlap + no-date batches (which getTrkMonthBatches admits) leaked prior-month residual
+  // gaps in and made this column read cumulative. Report F fixed the identical leak in v45H.
+  const _gapMonthNos = new Set(state.batches
+    .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && _trkProdStartMonth(b) === _trkSelectedMonth)
+    .map(b => b.batchNumber));
   const _gapSrv = (window._rptHGapSrv && window._rptHGapSrv.data) || null;
   if (_gapSrv) {
     const _recvOf = { 'aim\u2192printing':'printing', 'printing\u2192pi':'pi', 'pi\u2192packing':'packing', 'aim\u2192packing':'packing' };
     Object.entries(_recvOf).forEach(([pair, recv])=>{
       const perBatch = _gapSrv[pair] || {};
       Object.entries(perBatch).forEach(([bn, v])=>{
-        if (!monthBatchNos.has(bn)) return;
+        if (!_gapMonthNos.has(bn)) return;
         const g = (v && v.gap) || 0;
         if (g<=0) return;
         stageUnscanned[recv]+=g;
