@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZV</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZW</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZV</p>
+      <p>Tracking Suite v1.0 · build v45ZW</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZV</p>
+      <p>Tracking Suite v1.0 · build v45ZW</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9780,6 +9780,11 @@ function exportReportG(){
     let ag = md ? _v41_getBatchAGradeMonth(b.batchNumber, b.isPrinted?'printed':'unprinted', md) : null;
     if (!ag) ag = getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted');
     const wip = getBatchWIPBreakdown(b.batchNumber);
+    // v45ZW: Gross must use the SAME month-sliced basis as the on-screen Report G (and as this export's
+    // own month A-Grade above) — previously it showed cumulative _reconGross, diverging from the screen
+    // and pairing a cumulative gross with a month A-Grade. Mirror renderReportG exactly.
+    let grossProd = _grossFor(b.batchNumber, b);
+    if (md) { const _mg = md.monthGross; if (_mg && Object.prototype.hasOwnProperty.call(_mg, b.batchNumber)) grossProd = _mg[b.batchNumber]; else if (_mg) grossProd = 0; }
     const row = {
       'Batch': b.batchNumber,
       'Customer': b.customer||'',
@@ -9787,7 +9792,7 @@ function exportReportG(){
       'Type': b.isPrinted?'PTD':'UP',
       'A-Grade Basis': md ? (`Production month ${_trkSelectedMonth} (6 AM cut)`) : 'Live cumulative',
       'Cross-Month': (ag && ag.crossMonth) ? 'YES — spans boundary' : '',
-      'Gross Production (L)': fmt(_reconGross(b)),
+      'Gross Production (L)': fmt(grossProd),
       'Inspected (L)': fmt(ag.inspected),
       'A-Grade (L)': fmt(ag.aGrade),
       'Salvage (L)': fmt(ag.salvage),
@@ -10422,6 +10427,102 @@ function _v44zk_batchCmp(a, b) {
   return parseInt(ma[3], 10) - parseInt(mb[3], 10);
 }
 
+// ═══════════════ v45ZW: SHARED Report B primitive (reconciliation-by-construction) ═══════════════
+// ONE source of truth for the Department-wise WIP universe + per-batch computation. Consumed by
+// renderReportB (screen), exportReportB (Excel) AND _v45sTopTableData (Report D top table), so the
+// three are numerically identical BY DESIGN — no re-implementation, no drift. Every quantity is
+// month-attributed (via _bMd) when Month-of-Production is ON, else lifetime — exactly as the screen.
+function _rptBUniverse(){
+  const _bMd = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
+  const _bIsCurMonth = _trkSelectedMonth === today().slice(0,7);
+  const monthBatchNos = new Set(getProdMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
+  const _ghostMc45y = {};
+  const _retiredRows45z = new Set();
+  if (_bMd) {
+    const _addIf = bn => {
+      const b = getBatch(bn);
+      if (_isRetired(bn)) { monthBatchNos.add(bn); _retiredRows45z.add(bn); if (!b) _ghostMc45y[bn] = (_bMd.monthMachine || {})[bn] || null; return; }
+      if (b) { if (!b.deleted) monthBatchNos.add(bn); return; }
+      monthBatchNos.add(bn);
+      _ghostMc45y[bn] = (_bMd.monthMachine || {})[bn] || null;
+    };
+    Object.keys(_bMd.summary||{}).forEach(_addIf);
+    Object.keys(_bMd.wastage||{}).forEach(_addIf);
+    Object.entries(_bMd.monthGross||{}).forEach(([bn,g])=>{ if((parseFloat(g)||0)>0) _addIf(bn); });
+  }
+  const _ffsfSet = new Set([...(FLOORS.FF?.machines||[]),...(FLOORS.SF?.machines||[])].map(normMcId));
+  return { _bMd, _bIsCurMonth, monthBatchNos, _ghostMc45y, _retiredRows45z, _ffsfSet };
+}
+
+// Per-batch dept computation — VERBATIM the on-screen renderReportB formula (frozen WIP/prodWip).
+// Returns every value the screen row, the Excel row and the Report D totals need. floor = GF/FF-SF
+// via the ghost-aware machine map (getBatch(bn)?.machineId || _ghostMc45y[bn]), identical to _isFFSF.
+function _rptBRow(batchNo, dept, U){
+  const { _bMd, _bIsCurMonth, _ghostMc45y, _retiredRows45z, _ffsfSet } = U;
+  const hasWastage = dept==='aim'||dept==='printing'||dept==='pi';
+  const batch=getBatch(batchNo);
+  const _bSize45y = (batch && batch.size != null) ? batch.size : (getLabelsByBatch(batchNo)[0]?.size ?? '0');
+  const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
+  const localOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
+  const _mdS = _bMd ? (((_bMd.summary||{})[batchNo]||{})[dept] || {inBoxes:0,outBoxes:0,inReconQty:0,outReconQty:0}) : null;
+  const _mdW = _bMd ? (((_bMd.wastage||{})[batchNo]||{})[dept] || {salvage:0,remelt:0}) : null;
+  const inn = _bMd ? (_mdS.inBoxes  + (_bIsCurMonth?localIn:0))
+                   : (hasScanSummary() ? (_ss(batchNo,dept).in  + localIn)  : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length);
+  const out = _bMd ? (_mdS.outBoxes + (_bIsCurMonth?localOut:0))
+                   : (hasScanSummary() ? (_ss(batchNo,dept).out + localOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length);
+  const w = hasWastage ? (_bMd ? { total:(_mdW.salvage+_mdW.remelt), salvage:_mdW.salvage, remelt:_mdW.remelt }
+                               : getTotalWastage(batchNo, dept))
+                       : {total:0, salvage:0, remelt:0};
+  const ps = PACK_SIZES[String(_bSize45y)]||1;
+  const wastageBoxes = hasWastage ? Math.round(w.total/ps) : 0;
+  const wip=Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
+  const wipQty=boxToLakh(wip,_bSize45y);
+  const grossProd = _bMd
+    ? ((batchNo in (_bMd.monthGross||{})) ? (parseFloat(_bMd.monthGross[batchNo])||0)
+       : (((parseFloat(batch?.actualProd)||0) === 0 && _trkProdStartMonth(batch||{})===_trkSelectedMonth) ? _reconGross(batch) : 0))
+    : _reconGross(batch);
+  const aimInBoxes = _bMd
+    ? ((((_bMd.summary||{})[batchNo]||{}).aim||{inBoxes:0}).inBoxes + (_bIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length : 0))
+    : (hasScanSummary()
+      ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
+      : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length);
+  const aimInQty=boxToLakh(aimInBoxes,_bSize45y);
+  const aimWaste = _bMd ? (((_bMd.wastage||{})[batchNo]||{}).aim || {salvage:0,remelt:0}) : getTotalWastage(batchNo,'aim');
+  const prodWip=_isRetired(batchNo)?0:Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt - aimInQty);
+  const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
+  const hrs=firstIn?hoursAgo(firstIn.ts):0;
+  const _closed = isStageComplete(batchNo,dept);
+  const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
+  const _avail = Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt);
+  const floor = _ffsfSet.has(normMcId(getBatch(batchNo)?.machineId || _ghostMc45y[batchNo])) ? 'ffsf' : 'gf';
+  return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, w, wastageBoxes, wip, wipQty,
+           grossProd, aimInBoxes, aimInQty, aimWaste, prodWip, hrs, closed:_closed, statusKey,
+           avail:_avail, floor, retired:_retiredRows45z.has(batchNo) };
+}
+
+// Per-dept batch set — the batches that appear in dept `dept`'s table. AIM (v45ZW 6B, confirmed by
+// Ishan) ALSO surfaces produced-this-month batches not yet scanned into AIM (zero AIM scans) so their
+// Production WIP is visible in BOTH Report B and Report D; those add prodWip only (wip=0), retired
+// excluded (prodWip already 0). Printing/PI unchanged = any batch with that dept's scan activity.
+// Fallback (no scan summary) mirrors renderReportB exactly (all in-scans for the dept).
+function _rptBDeptSet(dept, U){
+  const { monthBatchNos } = U;
+  let set;
+  if (hasScanSummary()) {
+    set = [...monthBatchNos].filter(bn => _ss(bn,dept).in > 0 || _ss(bn,dept).out > 0);
+  } else {
+    set = [...new Set(state.scans.filter(s=>s.dept===dept&&s.type==='in').map(s=>s.batchNumber))];
+  }
+  if (dept==='aim') {
+    const have = new Set(set);
+    [...monthBatchNos].forEach(bn => {
+      if (have.has(bn) || _isRetired(bn)) return;
+      if (_rptBRow(bn,'aim',U).prodWip > 0.005) set.push(bn);
+    });
+  }
+  return set.slice().sort(_v44zk_batchCmp);
+}
+
 function renderReportB(){ window._activeReport = renderReportB; if(window._v41_composingD)window._v41_composingD=false;
   if(!document.getElementById('report-output')) renderReports();
   const filterDept  = window._rptBDept  || '';
@@ -10444,33 +10545,11 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   }
   const _bIsCurMonth = _trkSelectedMonth === today().slice(0,7);
 
-  // Filter to month batches only
-  const monthBatchNos = new Set(getProdMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
-  // v45T #2.4: carry-forward inclusion — any live batch with windowed activity in the selected
-  // month joins the set even if its production started earlier.
-  // v45Y (confirmed by Ishan): GHOST batches — month-window activity (gross/scans/wastage) whose
-  // planning row no longer exists (archived June orders, id-churn orphans) previously vanished
-  // because _addIf required getBatch(). They now join the set; machine (for the GF/FF-SF split)
-  // comes from the server's monthMachine map, size from the batch's labels, meta renders '-'.
-  const _ghostMc45y = {};
-  // v45Z (confirmed by Ishan): RETIRED batches with activity in the selected month JOIN the dept
-  // tables — this was the dominant Report B gap: Report D/DPR count retired batches' month gross
-  // (getTrkMonthBatches has no retired exclusion) while B dropped them entirely, so B could never
-  // reconcile. The frozen v44 rule excludes retired WIP (prodWip already forces 0), NOT their
-  // produced gross. Rows are tagged and badged RETIRED.
-  const _retiredRows45z = new Set();
-  if (_bMd) {
-    const _addIf = bn => {
-      const b = getBatch(bn);
-      if (_isRetired(bn)) { monthBatchNos.add(bn); _retiredRows45z.add(bn); if (!b) _ghostMc45y[bn] = (_bMd.monthMachine || {})[bn] || null; return; }
-      if (b) { if (!b.deleted) monthBatchNos.add(bn); return; }
-      monthBatchNos.add(bn);
-      _ghostMc45y[bn] = (_bMd.monthMachine || {})[bn] || null;
-    };
-    Object.keys(_bMd.summary||{}).forEach(_addIf);
-    Object.keys(_bMd.wastage||{}).forEach(_addIf);
-    Object.entries(_bMd.monthGross||{}).forEach(([bn,g])=>{ if((parseFloat(g)||0)>0) _addIf(bn); });
-  }
+  // v45ZW: universe now comes from the SHARED primitive (identical set for screen/export/Report D).
+  // _bMd/_bIsCurMonth above are recomputed inside the helper (same values); allBatchNos (dropdown)
+  // and the AIM floor split below still read monthBatchNos/_ghostMc45y from here.
+  const U = _rptBUniverse();
+  const { monthBatchNos, _ghostMc45y, _retiredRows45z } = U;
   // Build batch list from scanSummary (full history) when available
   let allBatchNos;
   if (hasScanSummary()) {
@@ -10548,13 +10627,9 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   let anyData = false;
   activeDepts.forEach(dept=>{
     // Build batch set from scanSummary (full) or fall back to state.scans
-    let batchSet;
-    if (hasScanSummary()) {
-      batchSet = [...monthBatchNos].filter(bn => _ss(bn,dept).in > 0 || _ss(bn,dept).out > 0);
-    } else {
-      const inScansAll = state.scans.filter(s=>s.dept===dept&&s.type==='in');
-      batchSet = [...new Set(inScansAll.map(s=>s.batchNumber))];
-    }
+    // v45ZW: shared set (screen == export == Report D). For AIM this also includes produced-but-not-
+    // yet-AIM-scanned batches so their Production WIP shows (6B, confirmed by Ishan).
+    let batchSet = _rptBDeptSet(dept, U);
     if(filterBatch) batchSet = batchSet.filter(bn=>bn===filterBatch);
     if(filterCust) batchSet = batchSet.filter(bn=>(getBatch(bn)?.customer||'').toLowerCase().includes(filterCust.toLowerCase()));
     if(filterColour) batchSet = batchSet.filter(bn=>(getBatch(bn)?.colour||'').toLowerCase().includes(filterColour.toLowerCase()));
@@ -10600,59 +10675,12 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     // v41ZB: per-department totals (v44P: + gross/avail for the AIM layout)
     let _bIn=0,_bOut=0,_bW=0,_bWipBx=0,_bWipQ=0,_bProd=0,_bGross=0,_bAvail=0,_bN=0;
     grp.batches.forEach(batchNo=>{
-      const batch=getBatch(batchNo);
-      // v45Y: ghost batches take size from their labels so box↔lakh conversions stay correct.
-      const _bSize45y = (batch && batch.size != null) ? batch.size : (getLabelsByBatch(batchNo)[0]?.size ?? '0');
-      // Use _ss() for accurate counts from full history
-      const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
-      const localOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
-      // v45T #2.4: when the month window is loaded, boxes/wastage/gross are month-windowed.
-      // Local (unsent) scans are by definition current-time, so fold them in only for the
-      // current month. Fallback (window not yet fetched) is the original cumulative path.
-      const _mdS = _bMd ? (((_bMd.summary||{})[batchNo]||{})[dept] || {inBoxes:0,outBoxes:0,inReconQty:0,outReconQty:0}) : null;
-      const _mdW = _bMd ? (((_bMd.wastage||{})[batchNo]||{})[dept] || {salvage:0,remelt:0}) : null;
-      const inn = _bMd ? (_mdS.inBoxes  + (_bIsCurMonth?localIn:0))
-                       : (hasScanSummary() ? (_ss(batchNo,dept).in  + localIn)  : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length);
-      const out = _bMd ? (_mdS.outBoxes + (_bIsCurMonth?localOut:0))
-                       : (hasScanSummary() ? (_ss(batchNo,dept).out + localOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length);
-      const w = hasWastage ? (_bMd ? { total:(_mdW.salvage+_mdW.remelt), salvage:_mdW.salvage, remelt:_mdW.remelt }
-                                   : getTotalWastage(batchNo, dept))
-                           : {total:0, salvage:0, remelt:0};
-      const ps = PACK_SIZES[String(_bSize45y)]||1;
-      const wastageBoxes = hasWastage ? Math.round(w.total/ps) : 0;
-      // v41ZB: AIM WIP = Scan In − Scan Out (AIM wastage now sits in Production WIP, not here).
-      // Printing/PI rows keep their existing in−out−wastage definition (unchanged).
-      const wip=Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
-      const wipQty=boxToLakh(wip,_bSize45y);
-      // v45T #2.4: gross is the month-sliced DPR gross (monthGross) when the window is loaded.
-      // Batches whose production STARTED in the selected month fall back to cumulative recon gross
-      // if the map lacks them (their entire gross belongs to this month by definition); pure
-      // carry-forwards without July DPR gross correctly show 0 for the month.
-      // v45W (26ZG131 floor report): the fallback must NEVER trust planning dates over DPR reality.
-      // A batch with ANY DPR history (actualProd > 0) that is absent from the selected month's
-      // window produced ZERO that month — attributing its cumulative gross to the month planning
-      // happens to name created phantom WIP (June-produced 26ZG131 showed 27.75L WIP in July
-      // because its wrong planning dates said July while its scans correctly sat in June's window).
-      // The planning-month fallback survives ONLY for zero-DPR batches (not yet produced), where
-      // showing planned qty as available-to-scan is the long-standing behaviour.
-      const grossProd = _bMd
-        ? ((batchNo in (_bMd.monthGross||{})) ? (parseFloat(_bMd.monthGross[batchNo])||0)
-           : (((parseFloat(batch?.actualProd)||0) === 0 && _trkProdStartMonth(batch||{})===_trkSelectedMonth) ? _reconGross(batch) : 0))
-        : _reconGross(batch);
-      const aimInBoxes = _bMd
-        ? ((((_bMd.summary||{})[batchNo]||{}).aim||{inBoxes:0}).inBoxes + (_bIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length : 0))
-        : (hasScanSummary()
-          ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
-          : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length);
-      const aimInQty=boxToLakh(aimInBoxes,_bSize45y);
-      // v41ZB: Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In.
-      // v45T: same frozen formula shape; inputs are month-windowed when the window is loaded, so
-      // the balance reads "this month's production not yet scanned into AIM this month".
-      const aimWaste = _bMd ? (((_bMd.wastage||{})[batchNo]||{}).aim || {salvage:0,remelt:0}) : getTotalWastage(batchNo,'aim');
-      const prodWip=_isRetired(batchNo)?0:Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt - aimInQty);
-      // firstIn uses state.scans for timestamp (acceptable — only for display, not calculation)
-      const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
-      const hrs=firstIn?hoursAgo(firstIn.ts):0;
+      // v45ZW: per-batch values from the SHARED primitive (verbatim the prior inline formula), so the
+      // screen row, the Excel row and the Report D totals are computed by the SAME code. Destructured
+      // into the exact names the render block below uses — render markup is byte-for-byte unchanged.
+      const R = _rptBRow(batchNo, dept, U);
+      const batch=R.batch, _bSize45y=R.size, inn=R.inn, out=R.out, w=R.w, wip=R.wip, wipQty=R.wipQty,
+            grossProd=R.grossProd, aimWaste=R.aimWaste, prodWip=R.prodWip, hrs=R.hrs;
       const alerts=state.alerts.filter(a=>a.batchNumber===batchNo&&a.dept===dept).length;
       // v44P #11: compute the stage status once — drives both the badge and the Status filter.
       const _closed = isStageComplete(batchNo,dept);
@@ -10839,59 +10867,32 @@ _scrollIntoReportIfFirstView('C');
 // Printing/PI scanned net of stage wastage (Report B), Packing = packed-not-dispatched (Report G),
 // Dispatch = dispatched. Unscanned = Production WIP (AIM) / flow-aware handover gaps (Report F).
 function _v45sTopTableData(){
-  // v45ZU (confirmed by Ishan): rows split AIM by floor via NORMALISED machine id (same as Report B —
-  // FLOORS stores 'MC.30' but batches store 'MC30', so raw getMachineFloor sent everything to GF).
-  // Scanned WIP (AIM/Printing/PI) and Production WIP replicate Report B's EXACT month-sliced formula
-  // (via _bMd when Month-of-Production is on, else lifetime) so the top table equals Report B to the
-  // decimal. Packing = Report G balance (packed-not-dispatched) + Report F unscanned-into-packing.
-  // Dispatch row removed (FG already nets out dispatched via packed-not-dispatched).
+  // v45ZW (confirmed by Ishan): scanned WIP (AIM/Printing/PI) and AIM Production WIP come from the
+  // SHARED Report B primitive over Report B's EXACT batch set (retired + ghosts included, 6B
+  // produced-but-not-yet-AIM-scanned surfaced), so the top table equals Report B to the decimal BY
+  // CONSTRUCTION. Printing/PI unscanned stay the Report F flow-aware gap; Packing = Report G balance
+  // (packed-not-dispatched) + Report F unscanned-into-packing. Dispatch row removed (FG nets out).
   const stages=['aim_gf','aim_ffsf','printing','pi','packing'];
   const _RL={aim_gf:'AIM Inspection — GF', aim_ffsf:'AIM Inspection — FF/SF', printing:'Printing', pi:'Print Inspection', packing:'Packing (FG awaiting dispatch)'};
   const stageWIP={}, stageQtyL={}, stageUnscanned={}, stageUnscannedL={};
   stages.forEach(d=>{ stageWIP[d]=0; stageQtyL[d]=0; stageUnscanned[d]=0; stageUnscannedL[d]=0; });
-  const _ffsfSet = new Set([...(FLOORS.FF?.machines||[]), ...(FLOORS.SF?.machines||[])].map(normMcId));
-  const _bMd = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
-  const _bIsCurMonth = _trkSelectedMonth === today().slice(0,7);
-  // Per-batch/per-dept scanned WIP — byte-for-byte Report B (_bMd month-sliced, Math.round wastage).
-  const _wipFor = (bn, dept, size) => {
-    const localIn  = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
-    const localOut = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
-    const _mdS = _bMd ? (((_bMd.summary||{})[bn]||{})[dept] || {inBoxes:0,outBoxes:0}) : null;
-    const _mdW = _bMd ? (((_bMd.wastage||{})[bn]||{})[dept] || {salvage:0,remelt:0}) : null;
-    const inn = _bMd ? (_mdS.inBoxes  + (_bIsCurMonth?localIn:0))  : (hasScanSummary()? (_ss(bn,dept).in +localIn) : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='in').length);
-    const out = _bMd ? (_mdS.outBoxes + (_bIsCurMonth?localOut:0)) : (hasScanSummary()? (_ss(bn,dept).out+localOut): state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out').length);
-    const wTot = _bMd ? (_mdW.salvage+_mdW.remelt) : (getTotalWastage(bn,dept).total||0);
-    const ps = PACK_SIZES[String(size)]||1;
-    const wastageBoxes = Math.round(wTot/ps);
-    const wip = Math.max(0, inn - out - (dept==='aim'?0:wastageBoxes));
-    return { wip, wipQty: boxToLakh(wip, size) };
-  };
-  // Production WIP (AIM's "unscanned") — byte-for-byte Report B.
-  const _prodWipFor = (bn, b, size) => {
-    const grossProd = _bMd
-      ? ((bn in (_bMd.monthGross||{})) ? (parseFloat(_bMd.monthGross[bn])||0)
-         : (((parseFloat(b?.actualProd)||0)===0 && _trkProdStartMonth(b||{})===_trkSelectedMonth) ? _reconGross(b) : 0))
-      : _reconGross(b);
-    const aimInBoxes = _bMd
-      ? ((((_bMd.summary||{})[bn]||{}).aim||{inBoxes:0}).inBoxes + (_bIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length : 0))
-      : (hasScanSummary()? (_ss(bn,'aim').in + state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='aim'&&s.type==='in').length);
-    const aimInQty = boxToLakh(aimInBoxes, size);
-    const aimWaste = _bMd ? (((_bMd.wastage||{})[bn]||{}).aim || {salvage:0,remelt:0}) : getTotalWastage(bn,'aim');
-    return _isRetired(bn) ? 0 : Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt - aimInQty);
-  };
+  const U = _rptBUniverse();
+  // AIM scanned WIP (split by ghost-aware floor) + AIM Production WIP — Report B's exact AIM set.
+  _rptBDeptSet('aim', U).forEach(bn => {
+    const R = _rptBRow(bn, 'aim', U);
+    const aimRow = R.floor==='ffsf' ? 'aim_ffsf' : 'aim_gf';
+    stageWIP[aimRow]+=R.wip; stageQtyL[aimRow]+=R.wipQty;
+    if (R.prodWip > 0.005) { stageUnscannedL[aimRow]+=R.prodWip; stageUnscanned[aimRow]+=lakhToBox(R.prodWip, R.size); }
+  });
+  // Printing / PI scanned WIP — Report B's exact per-dept sets (retired + ghost scan activity incl.).
+  _rptBDeptSet('printing', U).forEach(bn => { const R=_rptBRow(bn,'printing',U); stageWIP['printing']+=R.wip; stageQtyL['printing']+=R.wipQty; });
+  _rptBDeptSet('pi', U).forEach(bn => { const R=_rptBRow(bn,'pi',U); stageWIP['pi']+=R.wip; stageQtyL['pi']+=R.wipQty; });
+  // Packing scanned + Report F handover gaps iterate the production-month batch list (unchanged —
+  // Report F printing/PI/packing unscanned already reconcile and must NOT be disturbed).
   const _topBatches = state.batches
     .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && _trkProdStartMonth(b) === _trkSelectedMonth);
   _topBatches.forEach(b => {
     const bn = b.batchNumber, bsz = b.size;
-    const aimRow = _ffsfSet.has(normMcId(b.machineId)) ? 'aim_ffsf' : 'aim_gf';
-    const aimW = _wipFor(bn,'aim',bsz);
-    stageWIP[aimRow]+=aimW.wip; stageQtyL[aimRow]+=aimW.wipQty;
-    const prodWip = _prodWipFor(bn,b,bsz);
-    if (prodWip > 0.005) { stageUnscannedL[aimRow]+=prodWip; stageUnscanned[aimRow]+=lakhToBox(prodWip, bsz); }
-    if (b.isPrinted) {
-      const pW = _wipFor(bn,'printing',bsz); stageWIP['printing']+=pW.wip; stageQtyL['printing']+=pW.wipQty;
-      const piW= _wipFor(bn,'pi',bsz);       stageWIP['pi']+=piW.wip;      stageQtyL['pi']+=piW.wipQty;
-    }
     // Packing scanned = Report G balance (packed-not-dispatched, lifetime by nature).
     const pnd = (getBatchWIPBreakdown(bn)||{}).packedNotDisp||0;
     if (pnd > 0.005) { stageQtyL['packing']+=pnd; stageWIP['packing']+=lakhToBox(pnd, bsz); }
@@ -13822,9 +13823,11 @@ function exportReportB(){
   const _fColour = (window._rptBColour || '').toLowerCase();
   const _fPC = (window._rptBPC || '').toLowerCase();
   const _fStatus = window._rptBStatus || '';   // v44ZN: '', 'indept', 'leftdept', 'closed' — mirror screen
-  const _ffsfM = new Set([...(FLOORS.FF?.machines || []), ...(FLOORS.SF?.machines || [])].map(normMcId));
-  const _aimFloorOf = bn => _ffsfM.has(normMcId(getBatch(bn)?.machineId)) ? 'ffsf' : 'gf';
-  const monthBatchNos = new Set(getTrkMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
+  const _fCust = (window._rptBCustomer || '').toLowerCase();  // v45ZW: customer filter (screen parity)
+  // v45ZW: export now consumes the SAME shared primitive as the screen — month-attributed gross/boxes/
+  // wastage/WIP, retired + ghost batches included, ghost-aware floor split, 6B AIM Production WIP. This
+  // is what makes the exported table numerically identical to the on-screen table.
+  const U = _rptBUniverse();
   const _n2 = v => (v==null||isNaN(v)) ? 0 : Math.round((+v)*100)/100; // numeric cells so Excel can SUM
   const wb = XLSX.utils.book_new();
   // v44ZN: AIM Inspection is emitted as TWO sheets — "AIM Inspection GF" and "AIM Inspection FF-SF"
@@ -13842,68 +13845,37 @@ function exportReportB(){
 
   const buildRows = (dept, floorOnly) => {
     const isAim = dept==='aim';
-    const hasWastage=dept==='aim'||dept==='printing'||dept==='pi';
-    // Build batch list from scanSummary (full) when available
-    let batchNos;
-    if (hasScanSummary()) {
-      batchNos = [...monthBatchNos].filter(bn => _ss(bn,dept).in > 0 || _ss(bn,dept).out > 0);
-    } else {
-      batchNos = [...new Set(state.scans.filter(s=>s.dept===dept&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))];
-    }
+    // v45ZW: SAME set as the screen (retired + ghosts + 6B AIM produced-not-scanned), SAME sort.
+    let batchNos = _rptBDeptSet(dept, U);
     if(_fBatch)  batchNos = batchNos.filter(bn=>bn===_fBatch);
+    if(_fCust)   batchNos = batchNos.filter(bn=>(getBatch(bn)?.customer||'').toLowerCase().includes(_fCust));
     if(_fColour) batchNos = batchNos.filter(bn=>(getBatch(bn)?.colour||'').toLowerCase().includes(_fColour));
     if(_fPC)     batchNos = batchNos.filter(bn=>String(getBatch(bn)?.pcCode||'').toLowerCase().includes(_fPC));
-    if(isAim && floorOnly) batchNos = batchNos.filter(bn=>_aimFloorOf(bn)===floorOnly);
-    batchNos = batchNos.slice().sort(_v44zk_batchCmp); // v44ZK Issue 2: batch-wise chronological
     const rows=[];
     batchNos.forEach(batchNo=>{
-      const b=getBatch(batchNo);
-      const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
-      const localOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
-      const inn = hasScanSummary() ? (_ss(batchNo,dept).in  + localIn)  : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
-      const out = hasScanSummary() ? (_ss(batchNo,dept).out + localOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length;
-      const w=hasWastage?getTotalWastage(batchNo,dept):{total:0,salvage:0,remelt:0};
-      const ps=PACK_SIZES[String(b?.size||'0')]||1;
-      const wastageBoxes=hasWastage?Math.round(w.total/ps):0;
-      // v44ZN: mirror the on-screen WIP-boxes formula EXACTLY — AIM does not subtract wastage boxes
-      // (v41ZB moved AIM wastage into Production WIP); Printing/PI still subtract wastage boxes.
-      const wip=Math.max(0, inn - out - (isAim ? 0 : wastageBoxes));
-      const wipQty=boxToLakh(wip,b?.size||'0');
-      const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,c)=>new Date(a.ts)-new Date(c.ts))[0];
-      const hrs=firstIn?hoursAgo(firstIn.ts):0;
-      const grossProd=_reconGross(b);
-      const aimInBoxes = hasScanSummary()
-        ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
-        : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length;
-      const aimInQty=boxToLakh(aimInBoxes,b?.size||'0');
-      const aimWaste=getTotalWastage(batchNo,'aim');
-      // Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In  (canonical v41ZB; unchanged)
-      const prodWip=_isRetired(batchNo)?0:Math.max(0,grossProd-aimWaste.salvage-aimWaste.remelt-aimInQty);
-      const _avail = Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt); // Available to Scan In
-      // v44ZN: status mirrors the on-screen badge logic (Closed / In Dept / Left Dept / —) and the
-      // same statusKey is used to honour the on-screen status filter.
-      const _closed = isStageComplete(batchNo,dept);
-      const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
-      if (_fStatus && statusKey !== _fStatus) return;   // skip rows not matching status filter (screen parity)
-      const statusText = _closed ? 'Closed' : (wip>0 ? 'In Dept' : (out>0 ? 'Left Dept' : '—'));
-      const timeText = `${Math.round(hrs)}h`;
+      const R = _rptBRow(batchNo, dept, U);   // v45ZW: SAME per-batch compute as the screen
+      if(isAim && floorOnly && R.floor!==floorOnly) return;   // ghost-aware floor split (screen parity)
+      if(_fStatus && R.statusKey !== _fStatus) return;        // status filter (screen parity)
+      const b = R.batch;
+      const timeText = `${Math.round(R.hrs)}h`;
+      const statusText = R.closed ? 'Closed' : (R.wip>0 ? 'In Dept' : (R.out>0 ? 'Left Dept' : '—'));
       if (isAim) {
         rows.push({
           'Batch':batchNo,'Customer':b?.customer||'','Colour':b?.colour||'','PC':b?.pcCode||'',
-          'Gross Prod (L)':_n2(grossProd),
-          'Wastage (L)':_n2(aimWaste.salvage+aimWaste.remelt),
-          'Avail. to Scan In (L)':_n2(_avail),
-          'Boxes IN':inn,'Production WIP (L)':_n2(prodWip),'Boxes OUT':out,
-          'WIP Boxes':wip,'WIP Qty (L)':_n2(wipQty),
+          'Gross Prod (L)':_n2(R.grossProd),
+          'Wastage (L)':_n2(R.aimWaste.salvage+R.aimWaste.remelt),
+          'Avail. to Scan In (L)':_n2(R.avail),
+          'Boxes IN':R.inn,'Production WIP (L)':_n2(R.prodWip),'Boxes OUT':R.out,
+          'WIP Boxes':R.wip,'WIP Qty (L)':_n2(R.wipQty),
           'Time in Dept':timeText,'Status':statusText
         });
       } else {
         const row={
-          'Batch':batchNo,'Customer':b?.customer||'','Prod WIP (L)':_n2(prodWip),
-          'Boxes IN':inn,'Boxes OUT':out
+          'Batch':batchNo,'Customer':b?.customer||'','Prod WIP (L)':_n2(R.prodWip),
+          'Boxes IN':R.inn,'Boxes OUT':R.out
         };
-        if (hasWastage) row['Wastage (L)']=_n2(w.total);
-        row['WIP Boxes']=wip; row['WIP Qty (L)']=_n2(wipQty);
+        if (R.hasWastage) row['Wastage (L)']=_n2(R.w.total);
+        row['WIP Boxes']=R.wip; row['WIP Qty (L)']=_n2(R.wipQty);
         row['Time in Dept']=timeText; row['Status']=statusText;
         rows.push(row);
       }
@@ -13942,9 +13914,18 @@ function exportReportC(){
 function exportReportD(){
   const monthBatches=getTrkMonthBatches();
   const monthBatchNos=new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
-  const totalGross=monthBatches.reduce((s,b)=>s+_reconGross(b),0);
+  // v45ZW: KPI Summary now mirrors the on-screen Report D header EXACTLY — month-sliced gross via the
+  // same _grossForD; post-printing A-Grade % = A-Grade ÷ INSPECTED (not ÷ gross, the old export bug);
+  // plus the Unprinted/AIM A-Grade % the screen also shows. (Batch A-Grade sheet stays cumulative — it
+  // has no on-screen counterpart and is an internally-consistent per-batch quality view.)
+  const _mgD = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]?.monthGross) ? _v41_agradeMonthCache[_trkSelectedMonth].monthGross : null;
+  const _grossForD = (b) => { let g=_grossFor(b.batchNumber,b); if(_v41_useMonthAttributed && _mgD){ g = Object.prototype.hasOwnProperty.call(_mgD,b.batchNumber) ? _mgD[b.batchNumber] : 0; } return g; };
+  const totalGross=monthBatches.reduce((s,b)=>s+_grossForD(b),0);
   const totalAGrade=monthBatches.reduce((s,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.aGrade;},0);
-  const aGradePct=totalGross>0?(totalAGrade/totalGross*100):0;
+  const totalInspectedD=monthBatches.reduce((s,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.inspected;},0);
+  const aGradePct=totalInspectedD>0?(totalAGrade/totalInspectedD*100):0;
+  const _aimD=monthBatches.reduce((acc,b)=>{const ag=_v41_agradeFor(b.batchNumber,'unprinted');acc.a+=ag.aGrade;acc.i+=ag.inspected;return acc;},{a:0,i:0});
+  const aimAGradePct=_aimD.i>0?(_aimD.a/_aimD.i*100):0;
   const totalDispatched=state.dispatchRecs.reduce((s,r)=>s+r.qty,0);
   // v45ZT (confirmed by Ishan): Stage WIP sheet uses the SAME shared helper as the on-screen table,
   // with identical rows (AIM GF / FF-SF, Printing, PI, Packing=FG-not-dispatched, Dispatch) and
@@ -13972,10 +13953,10 @@ function exportReportD(){
   });
   const summaryRows=[
     {'Metric':'Gross Production (L)','Value':fmt(totalGross)},
-    {'Metric':'Total A-Grade (L)','Value':fmt(totalAGrade)},
-    {'Metric':'A-Grade %','Value':fmt(aGradePct,1)+'%'},
-    {'Metric':'Total Dispatched (L)','Value':fmt(totalDispatched)},
-    {'Metric':'Active Batches','Value':monthBatches.filter(b=>b.status==='running').length},
+    {'Metric':'A-Grade % (Unprinted / AIM)','Value':fmt(aimAGradePct,1)+'%'},
+    {'Metric':'A-Grade % (Post-Printing)','Value':fmt(aGradePct,1)+'%'},
+    {'Metric':'Total A-Grade (net) (L)','Value':fmt(totalAGrade)},
+    {'Metric':'Dispatched (L)','Value':fmt(totalDispatched)},
   ];
   const batchRows=monthBatches.filter(b=>!b.deleted).map(b=>{
     const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');
