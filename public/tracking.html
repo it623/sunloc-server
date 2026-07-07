@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZW</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZX</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZW</p>
+      <p>Tracking Suite v1.0 · build v45ZX</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZW</p>
+      <p>Tracking Suite v1.0 · build v45ZX</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2201,7 +2201,20 @@ function recordScan(labelId, dept, type, operator, parsed){
   const alreadyIn  = allDeptScans.some(s=>s.type==='in');
   const alreadyOut = allDeptScans.some(s=>s.type==='out');
   if(type==='in' && alreadyIn)  return {ok:false,msg:'Box already scanned IN at this department'};
-  if(type==='out' && !alreadyIn) return {ok:false,msg:'Box not scanned IN at this department'};
+  // v45ZX: OUT-requires-IN is now SERVER-authoritative. The old client hard-block used the recency/
+  // month-windowed local scans, so a box whose IN-scan had aged out of the loaded window (heavy scan
+  // activity, or a month-boundary carry-over) was wrongly rejected on Scan OUT with "not scanned IN" —
+  // even though the server's full-history IN existed — leaving the box STUCK (Scan IN → server duplicate;
+  // Scan OUT → client block). We now only hard-block when the ENTIRE dept has ZERO INs for this batch in
+  // full history (genuinely premature). Otherwise defer to the server's authoritative per-box
+  // IN-before-OUT check (full DB history), which accepts a valid OUT or rolls it back with the real reason.
+  if(type==='out' && !alreadyIn){
+    const _summInX  = hasScanSummary() ? _ss(label.batchNumber, dept).in : null;
+    const _localInX = state.scans.filter(s=>s.batchNumber===label.batchNumber&&s.dept===dept&&s.type==='in'&&(_summInX===null||s._local)).length;
+    const _stageInX = (_summInX||0) + _localInX;
+    if(_stageInX === 0) return {ok:false,msg:'Box not scanned IN at this department'};
+    // else: this box's IN likely aged out of the loaded window — let the server decide per-box.
+  }
   if(type==='out' && alreadyOut) return {ok:false,msg:'Box already scanned OUT at this department'};
 
   // v40 P18.14b: PER-LABEL UPSTREAM PROGRESSION CHECK (client-side mirror of server).
@@ -4194,11 +4207,17 @@ function openLabelGen(preselect){
   const activeBatches=getTrkMonthBatches().filter(b=>{
     if(b.status==='running') return true;
     if(b.status==='closed'){
+      // v45ZX: align this dropdown with the main Active Batches list (v45ZR item 4 / v45X). A CLOSED
+      // batch that actually produced (actuals>0) stays selectable for EVERY role — so a Label Supervisor
+      // can generate/relabel it. Fixes 26ZB085: visible in the admin list but missing from this dropdown
+      // because the dropdown still used the stale 2-day window with no produced-batch exception.
+      if((parseFloat(b.actualProd||b.actualQty)||0) > 0) return true;
       const closedAt = b.closedDate || b.endDate;
       if(!closedAt) return false;
       const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
       return daysSinceClosed <= 2;
     }
+    if((parseFloat(b.actualProd||b.actualQty)||0) > 0) return true; // v45X: produced but demoted/pending
     return false;
   }).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   openModal('Generate Labels','Select batch and quantity to generate',`
