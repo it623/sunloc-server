@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZX</title>
+<title>Sunloc Tracking Suite v1.0 · build v45ZY</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZX</p>
+      <p>Tracking Suite v1.0 · build v45ZY</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZX</p>
+      <p>Tracking Suite v1.0 · build v45ZY</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2563,6 +2563,29 @@ function voidLabel(labelId, reason){
   return true;
 }
 
+// v45ZY item 1 (confirmed by Ishan): admin "Void box" — voids the label AND reverses its scans so the
+// box actually leaves WIP. Server blocks if the box was already dispatched. Distinct from plain
+// voidLabel (which partial-regeneration and damaged-reprint use and must not lose scan history).
+async function adminVoidBox(labelId){
+  const label = state.labels.find(l=>l.id===labelId);
+  const lname = (label&&(label.number||label.labelNumber||label.qrData))||labelId;
+  if(!confirm(`Void box "${lname}" and REVERSE all of its scans?\n\nThis removes the box from WIP everywhere. It will be blocked if the box was already dispatched.`)) return;
+  try{
+    const resp = await fetch('/api/tracking/label-void',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labelId,reason:'Admin void + scan reversal',voidedBy:currentDept,reverseScans:true})});
+    const j = await resp.json();
+    if(!j.ok){
+      toast(j.dispatch_blocked ? ('⛔ '+(j.error||'Box already dispatched — cannot void/reverse.')) : ('Void failed: '+(j.error||'unknown error')));
+      return;
+    }
+    if(label){ label.voided=true; label.voidReason='Admin void + scan reversal'; label.voidedAt=now(); label.voidedBy=currentDept; }
+    (j.reversedScanIds||[]).forEach(id=>{ if(!(state.scanReversals||[]).some(rv=>(rv.reversedScanId||rv.reversed_scan_id)===id)) (state.scanReversals=state.scanReversals||[]).push({reversedScanId:id}); });
+    saveLocal();
+    toast(`✅ Box voided${(j.reversedScanIds||[]).length?` · ${j.reversedScanIds.length} scan(s) reversed`:''}`);
+    try{ await pullFromServer(true); }catch(_){}
+    if(window._activeReport) window._activeReport(); else if(typeof renderLabels==='function') renderLabels();
+  }catch(e){ toast('Void error: '+e.message); }
+}
+
 function regeneratePartialLabel(labelId, newQty){
   const old = state.labels.find(l=>l.id===labelId);
   if(!old) return null;
@@ -3874,7 +3897,7 @@ function renderPrintQueue(selBatch){
           ${!l.voided?`<button onclick="editLabelQty('${l.id}')" title="Edit" style="padding:2px 6px;font-size:11px;border:1px solid var(--accent);border-radius:3px;background:none;cursor:pointer;color:var(--accent)">✏️</button>`:''}
           ${!l.voided&&!l.printed?`<button onclick="printLabel('${l.id}');const _rp=document.getElementById('label-print-queue');if(_rp)_rp.innerHTML=renderPrintQueue('${selBatch}')" style="padding:2px 8px;font-size:11px;border:none;border-radius:3px;background:var(--accent);color:#fff;cursor:pointer">🖨️ Print</button>`:''}
           ${!l.voided&&l.printed?`<button onclick="printLabel('${l.id}');const _rp=document.getElementById('label-print-queue');if(_rp)_rp.innerHTML=renderPrintQueue('${selBatch}')" style="padding:2px 8px;font-size:11px;border:1px solid var(--border);border-radius:3px;background:none;cursor:pointer;color:var(--text2)">Reprint</button>`:''}
-          ${!l.voided&&currentDept==='admin'?`<button onclick="voidLabel('${l.id}','Admin void');const _rp=document.getElementById('label-print-queue');if(_rp)_rp.innerHTML=renderPrintQueue('${selBatch}')" title="Void" style="padding:2px 6px;font-size:11px;border:1px solid #ef4444;border-radius:3px;background:none;cursor:pointer;color:#ef4444">✕</button>`:''}
+          ${!l.voided&&currentDept==='admin'?`<button onclick="adminVoidBox('${l.id}')" title="Void box + reverse scans" style="padding:2px 6px;font-size:11px;border:1px solid #ef4444;border-radius:3px;background:none;cursor:pointer;color:#ef4444">✕</button>`:''}
         </div></td>
       </tr>`).join('')||'<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text3)">No labels generated yet</td></tr>'}
     </tbody>
@@ -4038,7 +4061,7 @@ function renderLabels(){
                 ${!l.voided?`<button onclick="editLabelQty('${l.id}')" title="Edit" style="padding:2px 6px;font-size:11px;border:1px solid var(--accent);border-radius:3px;background:none;cursor:pointer;color:var(--accent)">✏️</button>`:''}
                 ${!l.voided&&!l.printed?`<button onclick="printLabel('${l.id}');renderLabels()" style="padding:2px 8px;font-size:11px;border:none;border-radius:3px;background:var(--accent);color:#fff;cursor:pointer">🖨️ Print</button>`:''}
                 ${!l.voided&&l.printed?`<button onclick="printLabel('${l.id}');renderLabels()" style="padding:2px 8px;font-size:11px;border:1px solid var(--border);border-radius:3px;background:none;cursor:pointer;color:var(--text2)">Reprint</button>`:''}
-                ${!l.voided&&currentDept==='admin'?`<button onclick="voidLabel('${l.id}','Admin void');renderLabels()" title="Void" style="padding:2px 6px;font-size:11px;border:1px solid #ef4444;border-radius:3px;background:none;cursor:pointer;color:#ef4444">✕</button>`:''}
+                ${!l.voided&&currentDept==='admin'?`<button onclick="adminVoidBox('${l.id}')" title="Void box + reverse scans" style="padding:2px 6px;font-size:11px;border:1px solid #ef4444;border-radius:3px;background:none;cursor:pointer;color:#ef4444">✕</button>`:''}
               </div>
             </td>
           </tr>`).join('')||'<tr><td colspan="5" style="padding:20px;text-align:center;color:var(--text3)">No labels generated yet</td></tr>'}
@@ -4325,7 +4348,7 @@ function viewBatchLabels(batchNo){
         <td class="td-mono text-sm">${l.printedAt?fmtDateTime(l.printedAt):'-'}</td>
         <td class="flex gap-8">
           ${!l.voided?`<button class="btn btn-sm btn-primary" onclick="printLabel('${l.id}');renderPage('labels')">🖨️</button>`:''}
-          ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-danger" onclick="voidLabel('${l.id}','Admin void');renderPage('labels')">Void</button>`:''}\n          ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-warning" onclick="openDamagedReprint('${l.id}')">🔄 Reprint</button>`:''}
+          ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-danger" onclick="adminVoidBox('${l.id}')">Void</button>`:''}\n          ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-warning" onclick="openDamagedReprint('${l.id}')">🔄 Reprint</button>`:''}
           ${l.isPartial&&!l.voided?`<button class="btn btn-sm btn-warning" onclick="openRegenPartial('${l.id}')">Regen</button>`:''}
         </td>
       </tr>`).join('')||'<tr><td colspan="6" class="text-center text-muted">No labels</td></tr>'}
@@ -9434,7 +9457,11 @@ function _v41_renderReportGInner(){
   const allMonthBatches = getTrkMonthBatches(true).filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   // v41ZC: filter state (machine uses normMcId so MC.30 / mc30 / "MC 30" all match)
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
+  const gSize = (window._rptGSize!=null?String(window._rptGSize):''); // v45ZY item 5
   const gCust = window._rptGCustomer||''; // v45ZL item 1: customer search
+  // v45ZY items 4+5: the stage-wise WIP matrix now renders for a Customer, a PC Code OR a Size
+  // selection (previously customer-only). _mxScope is the label shown in its title.
+  const _mxScope = gCust || (gP?`PC ${gP}`:'') || (gSize!==''?`Size ${gSize}`:'');
   window._rptDCustMonth = window._rptDCustMonth || 'ALL'; // v45ZP req2: customer-view prod-month filter
   const gCustMonth = window._rptDCustMonth;
   // v45ZM issue 4 + v45ZP req2 (confirmed by Ishan): when a CUSTOMER is selected, default to spanning
@@ -9453,6 +9480,7 @@ function _v41_renderReportGInner(){
   if(gB) batches = batches.filter(b=>(b.batchNumber||'').toLowerCase().includes(gB.toLowerCase()));
   if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
   if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
+  if(gSize!=='') batches = batches.filter(b=>String(b.size)===gSize); // v45ZY item 5
   if(gC) batches = batches.filter(b=>(b.colour||'')===gC);
   // v45ZR item 1.2 (confirmed by Ishan): the in-transit SUBSET per receiving dept, computed
   // CLIENT-SIDE from the same scan summary as the WIP buckets — so it's a true subset and the
@@ -9474,6 +9502,8 @@ function _v41_renderReportGInner(){
   const gAllMachines = [...new Set(allMonthBatches.map(b=>b.machineId).filter(Boolean))].sort();
   const gAllPcCodes  = [...new Set(allMonthBatches.map(b=>b.pcCode).filter(Boolean))].sort();
   const gAllColours  = [...new Set(allMonthBatches.map(b=>b.colour).filter(Boolean))].sort();
+  // v45ZY item 5: Size filter options — size is intrinsic to the batch (via its machine).
+  const gAllSizes    = [...new Set(allMonthBatches.map(b=>b.size).filter(s=>s!=null&&s!==''))].map(String).sort();
   const gAllCustomers= [...new Set(state.batches.filter(b=>!b.deleted).map(b=>b.customer).filter(Boolean))].sort(); // v45ZN: all-month customer suggestions
   let totalGrossProd = 0;
   let totalAGradeQty = 0;
@@ -9667,6 +9697,13 @@ function _v41_renderReportGInner(){
           ${gAllPcCodes.map(p=>`<option value="${p}" ${gP===p?'selected':''}>${p}</option>`).join('')}
         </select>
       </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Size</label>
+        <select onchange="window._rptGSize=this.value;renderReportD()">
+          <option value="">All Sizes</option>
+          ${gAllSizes.map(s=>`<option value="${s}" ${gSize===s?'selected':''}>Size ${s}</option>`).join('')}
+        </select>
+      </div>
       <div class="form-group" style="margin-bottom:0;display:flex;gap:6px;align-items:flex-end">
         <div style="flex:1">
           <label style="font-size:11px">Colour</label>
@@ -9675,7 +9712,7 @@ function _v41_renderReportGInner(){
             ${gAllColours.map(c=>`<option value="${c}" ${gC===c?'selected':''}>${c}</option>`).join('')}
           </select>
         </div>
-        ${(gB||gM||gP||gC||gCust)?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';window._rptGCustomer='';window._rptDCustMonth='ALL';renderReportD()">✕ Clear</button>`:''}
+        ${(gB||gM||gP||gC||gCust||gSize!=='')?`<button class="btn btn-ghost btn-sm" style="white-space:nowrap" onclick="window._rptGBatch='';window._rptGMachine='';window._rptGPc='';window._rptGColour='';window._rptGCustomer='';window._rptGSize='';window._rptDCustMonth='ALL';renderReportD()">✕ Clear</button>`:''}
       </div>
     </div>
     ${gCust ? `<div style="display:flex;align-items:center;gap:8px;margin:0 0 12px;padding:7px 12px;background:var(--surface2);border:1px solid var(--border);border-radius:6px;flex-wrap:wrap">
@@ -9706,7 +9743,7 @@ function _v41_renderReportGInner(){
         <td><span style="font-size:13px;font-weight:700;color:${cumCls}">${fmt(cumPct,2)}%</span></td>
       </tr></tfoot>
     </table></div>
-    ${gCust ? (()=>{
+    ${(gCust||gP||gSize!=='') ? (()=>{
       // v45ZL item 2c + v45ZM issue 3 (confirmed by Ishan): stage-wise WIP MATRIX for the selected
       // customer — departments as columns, batches as rows, summed both ways, all in Lakhs.
       // v45ZM issue 3: the standalone "Transit→Pack" column is GONE; every handover gap (missing
@@ -9751,13 +9788,13 @@ function _v41_renderReportGInner(){
       const _cell = c => c.total>0.005
         ? `${fmt(c.total)}${c.unscanned>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(c.unscanned)} unsc</span>`:''}`
         : '—';
-      return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(gCust||'').replace(/</g,'&lt;')} (Lakhs, ${gCustMonth==='ALL'?'all months':gCustMonth})</div>
+      return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(_mxScope||'').replace(/</g,'&lt;')} (Lakhs${gCust?`, ${gCustMonth==='ALL'?'all months':gCustMonth}`:''})</div>
       <div class="tbl-wrap tbl-sticky"><table>
         <thead><tr><th>Batch</th><th class="text-right">Gross Prod</th>${cols.map(c=>`<th class="text-right">${c.label}</th>`).join('')}<th class="text-right">Wastage</th><th class="text-right">TOTAL</th></tr></thead>
-        <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td><td class="td-mono text-right" style="color:var(--text2)">${r.gross>0.005?fmt(r.gross):'—'}</td>${r.cells.map(c=>`<td class="td-mono text-right">${_cell(c)}</td>`).join('')}<td class="td-mono text-right amber">${r.wastage>0.005?fmt(r.wastage):'—'}</td><td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${cols.length+4}" class="text-center text-muted">No batches for this customer</td></tr>`}</tbody>
+        <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td><td class="td-mono text-right" style="color:var(--text2)">${r.gross>0.005?fmt(r.gross):'—'}</td>${r.cells.map(c=>`<td class="td-mono text-right">${_cell(c)}</td>`).join('')}<td class="td-mono text-right amber">${r.wastage>0.005?fmt(r.wastage):'—'}</td><td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${cols.length+4}" class="text-center text-muted">No batches for this selection</td></tr>`}</tbody>
         <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono text-right">${fmt(totGross)}</td>${colTot.map((v,i)=>`<td class="td-mono text-right">${v>0.005?fmt(v):'—'}${colUns[i]>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(colUns[i])} unsc</span>`:''}</td>`).join('')}<td class="td-mono text-right amber">${fmt(totWaste)}</td><td class="td-mono text-right">${fmt(grand)}</td></tr></tfoot>
       </table></div>
-      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>WIP at that department</b> (the bucket already includes its in-transit boxes); the red <b>▸ N unsc</b> is the <b>in-transit subset</b> (boxes scanned out of the prior stage, not yet scanned IN here) — shown for visibility, NOT added, so the row total never exceeds gross. <b>📦 Packing</b> = boxes en route to packing but not yet packed (pi→packing / aim→packing, all in-transit). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(gCust||'').replace(/</g,'&lt;')}'s batches (${gCustMonth==='ALL'?'all months':gCustMonth}). All in Lakhs.</div>`;
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>WIP at that department</b> (the bucket already includes its in-transit boxes); the red <b>▸ N unsc</b> is the <b>in-transit subset</b> (boxes scanned out of the prior stage, not yet scanned IN here) — shown for visibility, NOT added, so the row total never exceeds gross. <b>📦 Packing</b> = boxes en route to packing but not yet packed (pi→packing / aim→packing, all in-transit). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(_mxScope||'').replace(/</g,'&lt;')}'s batches${gCust?` (${gCustMonth==='ALL'?'all months':gCustMonth})`:''}. All in Lakhs.</div>`;
     })() : ''}
     <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportG()">📥 Export Excel</button>
   </div>`;
@@ -9786,11 +9823,13 @@ function exportReportG(){
   let batches = getTrkMonthBatches(true).filter(b=>!b.deleted&&b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   // v41ZC: honour the on-screen filter bar so the export matches what's displayed
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
+  const gSize = (window._rptGSize!=null?String(window._rptGSize):''); // v45ZY item 5 (export parity)
   const gCust = window._rptGCustomer||''; // v45ZL item 1: match on-screen customer filter
   if(gCust) batches = batches.filter(b=>(b.customer||'').toLowerCase().includes(gCust.toLowerCase()));
   if(gB) batches = batches.filter(b=>(b.batchNumber||'').toLowerCase().includes(gB.toLowerCase()));
   if(gM) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(gM));
   if(gP) batches = batches.filter(b=>String(b.pcCode||'')===gP);
+  if(gSize!=='') batches = batches.filter(b=>String(b.size)===gSize); // v45ZY item 5 (export parity)
   if(gC) batches = batches.filter(b=>(b.colour||'')===gC);
   // v41 P19.6: match on-screen attribution. If month-attributed toggle is ON and the windowed
   // data is already cached (user viewed the report before exporting), use month-sliced A-Grade.
@@ -10704,7 +10743,13 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       // v44P #11: compute the stage status once — drives both the badge and the Status filter.
       const _closed = isStageComplete(batchNo,dept);
       const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
-      if (filterStatus && statusKey !== filterStatus) return;   // skip rows not matching status filter
+      // v45ZY item 3 (confirmed by Ishan): "In Dept" now means "holds WIP in this department" — it
+      // also surfaces retired/ghost and stage-complete rows that still carry residual WIP boxes (which
+      // the old statusKey==='indept' missed). Left Dept / Closed match on statusKey exactly as before.
+      if (filterStatus) {
+        const _fMatch = filterStatus==='indept' ? (wip>0) : (statusKey===filterStatus);
+        if (!_fMatch) return;   // skip rows not matching the status filter
+      }
       const statusBadge = _closed ? '<span class="badge badge-green">✅ Closed</span>'
                         : wip>0 ? '<span class="badge badge-blue">In Dept</span>'
                         : out>0 ? '<span class="badge badge-gray">↗ Left Dept</span>'
@@ -10712,9 +10757,15 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       // v44P #10: "Available to Scan In" = Gross − Wastage. Production WIP (prodWip above) is
       // unchanged: it already equals (Gross − AIM salvage − AIM remelt) − AIM scan-in = Available − Scan In.
       const _avail = Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt);
+      // v45ZY item 2b (confirmed by Ishan): flag rows that appear only because of carry-over WIP —
+      // produced in a PRIOR month, or a ghost (no planning row) — i.e. NOT this month's fresh
+      // production. Retired rows already carry their own RETIRED badge, so this is additive to those.
+      const _isGhost45 = !batch;
+      const _isCarryFwd45 = _isGhost45 || (batch && _trkProdStartMonth(batch) && _trkProdStartMonth(batch) < _trkSelectedMonth);
+      const _cfBadge45 = (_isCarryFwd45 && !R.retired) ? ' <span class="badge" style="font-size:8px;background:#f59e0b;color:#fff" title="Carry-forward — produced in a prior month (or ghost); still holding WIP this month, not this month\'s production">◄ CARRY-FWD</span>' : '';
       if (_isAimDept) {
         html+=`<tr>
-          <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired (as-is-where-is) — WIP excluded per v44 rule; month gross shown for DPR parity">RETIRED</span>':''}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+          <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired (as-is-where-is) — WIP excluded per v44 rule; month gross shown for DPR parity">RETIRED</span>':''}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
           <td class="text-sm">${batch?.customer||'-'}</td>
           <td class="text-sm">${batch?.colour||'-'}</td>
           <td class="td-mono text-sm">${batch?.pcCode||'-'}</td>
@@ -10731,7 +10782,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         </tr>`;
       } else {
         html+=`<tr>
-        <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+        <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
         <td class="text-sm">${batch?.customer||'-'}</td>
         <td class="td-mono ${prodWip>0?'amber':''}">${prodWip>0?fmt(prodWip)+'L':'—'}</td>
         <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>

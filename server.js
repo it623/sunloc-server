@@ -14914,15 +14914,40 @@ app.get('/jsqr.min.js', (req, res) => {
 // ── Label void — mark label voided in DB ──────────────────────
 app.post('/api/tracking/label-void', async (req, res) => {
   try {
-    const { labelId, reason, voidedBy } = req.body;
+    const { labelId, reason, voidedBy, reverseScans } = req.body;
     if (!labelId) return res.status(400).json({ ok: false, error: 'labelId required' });
     const ts = new Date().toISOString();
+    // v45ZY item 1 (confirmed by Ishan): admin "Void box" — when reverseScans is set, also reverse
+    // this label's scans so the box leaves WIP. Blocked if already DISPATCHED (mirrors the re-customer
+    // dispatch guard). Plain void (no reverseScans) is UNCHANGED — partial-regeneration and
+    // damaged-reprint call it and must keep their scan history.
+    let reversedScanIds = [];
+    if (reverseScans) {
+      if (pgPool) {
+        const disp = await pgPool.query(`SELECT 1 FROM tracking_scans WHERE label_id=$1 AND dept='dispatch' LIMIT 1`, [labelId]);
+        if (disp.rows[0]) return res.json({ ok:false, dispatch_blocked:true, error:'Box already dispatched — cannot void/reverse. Handle the dispatch first.' });
+        const ins = await pgPool.query(
+          `INSERT INTO tracking_scan_reversals (id, reversed_scan_id, batch_number, label_id, dept, type, reason, by_user, ts)
+           SELECT 'rev-'||s.id, s.id, s.batch_number, s.label_id, s.dept, s.type, $2, $3, $4
+           FROM tracking_scans s
+           WHERE s.label_id=$1 AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)
+           RETURNING reversed_scan_id`,
+          [labelId, `Admin void — ${reason||''}`, voidedBy||'', ts]);
+        reversedScanIds = ins.rows.map(r => r.reversed_scan_id);
+      } else {
+        const disp = db.prepare(`SELECT 1 FROM tracking_scans WHERE label_id=? AND dept='dispatch' LIMIT 1`).get(labelId);
+        if (disp) return res.json({ ok:false, dispatch_blocked:true, error:'Box already dispatched — cannot void/reverse. Handle the dispatch first.' });
+        const toRev = db.prepare(`SELECT s.id, s.batch_number, s.label_id, s.dept, s.type FROM tracking_scans s WHERE s.label_id=? AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`).all(labelId);
+        const insRev = db.prepare(`INSERT OR IGNORE INTO tracking_scan_reversals (id, reversed_scan_id, batch_number, label_id, dept, type, reason, by_user, ts) VALUES (?,?,?,?,?,?,?,?,?)`);
+        toRev.forEach(s => { insRev.run('rev-'+s.id, s.id, s.batch_number, s.label_id, s.dept, s.type, `Admin void — ${reason||''}`, voidedBy||'', ts); reversedScanIds.push(s.id); });
+      }
+    }
     if (pgPool) {
       await pgPool.query(`UPDATE tracking_labels SET voided=1, void_reason=$1, voided_at=$2, voided_by=$3 WHERE id=$4`, [reason||'', ts, voidedBy||'', labelId]);
     } else {
       db.prepare(`UPDATE tracking_labels SET voided=1, void_reason=?, voided_at=?, voided_by=? WHERE id=?`).run(reason||'', ts, voidedBy||'', labelId);
     }
-    res.json({ ok: true });
+    res.json({ ok: true, reversedScanIds });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
