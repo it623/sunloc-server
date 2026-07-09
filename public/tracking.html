@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v45ZY</title>
+<title>Sunloc Tracking Suite v1.0 · build v46</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZY</p>
+      <p>Tracking Suite v1.0 · build v46</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v45ZY</p>
+      <p>Tracking Suite v1.0 · build v46</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9545,13 +9545,21 @@ function _v41_renderReportGInner(){
     if (wip) plantTotalWIP += wip.totalWIP || 0;
     if (wip) totalPacked += wip.packIn || 0;
 
-    // Alert: inspected > gross production (DPR entry is less than scans)
-    const overInspected = ag.inspected > 0 && grossProd > 0 && ag.inspected > grossProd;
-    const noGross       = ag.inspected > 0 && grossProd === 0;
+    // v46 (confirmed by Ishan): the DPR-integrity alert compares on a LIFETIME basis, not the month
+    // slice. Month gross is sliced by PRODUCTION date while the month "inspected" is sliced by SCAN
+    // date, so a batch produced late in the prior month but inspected this month shows inspected>gross
+    // purely from the boundary lag — not a DPR error. Over a batch's full life Inspected = Scan-In +
+    // Salvage ≤ Gross (= Inspected + Production-WIP + Remelt), so a genuine DPR under-record still trips
+    // it while the cross-month timing artifact self-cancels. 0.005L epsilon avoids display-rounding ties.
+    // (Report display/totals above stay month-sliced — only this integrity check uses cumulative.)
+    const _cumInsp  = (getBatchAGrade(b.batchNumber, b.isPrinted?'printed':'unprinted').inspected) || 0;
+    const _cumGross = _grossFor(b.batchNumber, b) || 0;
+    const overInspected = _cumInsp > 0.005 && _cumGross > 0.005 && _cumInsp > _cumGross + 0.005;
+    const noGross       = _cumInsp > 0.005 && _cumGross <= 0.005;
     if(overInspected){
-      alerts.push({ batchNo: b.batchNumber, msg: `Inspected (${fmt(ag.inspected)}L) > Gross Production (${fmt(grossProd)}L) — DPR entry appears incomplete` });
+      alerts.push({ batchNo: b.batchNumber, msg: `Inspected (${fmt(_cumInsp)}L) > Gross Production (${fmt(_cumGross)}L) — DPR entry appears incomplete` });
     } else if(noGross){
-      alerts.push({ batchNo: b.batchNumber, msg: `Scan data exists (${fmt(ag.inspected)}L inspected) but no DPR production entry found` });
+      alerts.push({ batchNo: b.batchNumber, msg: `Scan data exists (${fmt(_cumInsp)}L inspected) but no DPR production entry found` });
     }
 
     const pctCls = ag.pct>=95?'green':ag.pct>=90?'var(--amber)':'var(--red)';
@@ -10739,15 +10747,22 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const R = _rptBRow(batchNo, dept, U);
       const batch=R.batch, _bSize45y=R.size, inn=R.inn, out=R.out, w=R.w, wip=R.wip, wipQty=R.wipQty,
             grossProd=R.grossProd, aimWaste=R.aimWaste, prodWip=R.prodWip, hrs=R.hrs;
+      // v45ZZ item 3 (confirmed by Ishan): drop all-zero month rows. A batch can enter the set via
+      // LIFETIME scan activity (_ss) yet have ZERO activity in the SELECTED month — its month-sliced
+      // values are all 0 (e.g. prior-month retired/carry-forward batches). Such rows add nothing to any
+      // total, so hiding them de-clutters the month view. Any month activity keeps the row: month gross,
+      // boxes in/out, WIP boxes, Production WIP, or dept wastage.
+      if (!(inn>0 || out>0 || wip>0 || grossProd>0.005 || prodWip>0.005 || (w && w.total>0.005))) return;
       const alerts=state.alerts.filter(a=>a.batchNumber===batchNo&&a.dept===dept).length;
       // v44P #11: compute the stage status once — drives both the badge and the Status filter.
       const _closed = isStageComplete(batchNo,dept);
       const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
-      // v45ZY item 3 (confirmed by Ishan): "In Dept" now means "holds WIP in this department" — it
-      // also surfaces retired/ghost and stage-complete rows that still carry residual WIP boxes (which
-      // the old statusKey==='indept' missed). Left Dept / Closed match on statusKey exactly as before.
+      // v45ZY item 3 + v45ZZ item 4 (confirmed by Ishan): "In Dept" means "holds WIP in this
+      // department" — scanned WIP boxes (wip>0) OR Production WIP (prodWip>0, produced-but-not-yet-AIM-
+      // scanned). Including prodWip is what makes the filtered WIP total match the unfiltered total:
+      // a row can be "Left Dept" (wip boxes 0) yet still hold Production WIP. Left Dept / Closed unchanged.
       if (filterStatus) {
-        const _fMatch = filterStatus==='indept' ? (wip>0) : (statusKey===filterStatus);
+        const _fMatch = filterStatus==='indept' ? (wip>0 || prodWip>0.005) : (statusKey===filterStatus);
         if (!_fMatch) return;   // skip rows not matching the status filter
       }
       const statusBadge = _closed ? '<span class="badge badge-green">✅ Closed</span>'
@@ -13925,7 +13940,10 @@ function exportReportB(){
     batchNos.forEach(batchNo=>{
       const R = _rptBRow(batchNo, dept, U);   // v45ZW: SAME per-batch compute as the screen
       if(isAim && floorOnly && R.floor!==floorOnly) return;   // ghost-aware floor split (screen parity)
-      if(_fStatus && R.statusKey !== _fStatus) return;        // status filter (screen parity)
+      // v45ZZ item 3 (screen parity): drop all-zero month rows (prior-month lifetime-scan batches).
+      if(!(R.inn>0 || R.out>0 || R.wip>0 || R.grossProd>0.005 || R.prodWip>0.005 || (R.w && R.w.total>0.005))) return;
+      // v45ZZ item 4 (screen parity): "In Dept" filter = scanned WIP boxes OR Production WIP.
+      if(_fStatus){ const _m = _fStatus==='indept' ? (R.wip>0||R.prodWip>0.005) : (R.statusKey===_fStatus); if(!_m) return; }
       const b = R.batch;
       const timeText = `${Math.round(R.hrs)}h`;
       const statusText = R.closed ? 'Closed' : (R.wip>0 ? 'In Dept' : (R.out>0 ? 'Left Dept' : '—'));
