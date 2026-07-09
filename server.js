@@ -11544,7 +11544,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZV',
+      build: 'v46C',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11553,7 +11553,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZV', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v46C', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12869,26 +12869,9 @@ app.get('/api/reconciliation/history', async (req, res) => {
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
-app.get('/api/health', (req, res) => {
-  try {
-    const planningRow  = db.prepare('SELECT saved_at FROM planning_state ORDER BY id DESC LIMIT 1').get();
-    const dprCount     = db.prepare('SELECT COUNT(*) as c FROM dpr_records').get();
-    const actualsCount = db.prepare('SELECT COUNT(*) as c FROM production_actuals').get();
-    res.json({
-      ok: true,
-      server: 'Sunloc Integrated Server v1.0',
-      build: 'v45ZV',
-      db: DB_PATH,
-      planningSavedAt: planningRow?.saved_at || null,
-      dprRecords: dprCount?.c || 0,
-      actualsEntries: actualsCount?.c || 0,
-      uptime: Math.floor(process.uptime()) + 's',
-    });
-  } catch(err) {
-    // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v45ZV', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
-  }
-});
+// NOTE: duplicate /api/health route removed here (v46C cleanup) — the live
+// definition is earlier in the file (~line 11539); this second block was
+// dead code since Express only dispatches to the first matching route.
 
 // NOTE: catch-all SPA fallback moved to END of file (after all API routes)
 // so that /api/tracking/* routes are not intercepted by the wildcard.
