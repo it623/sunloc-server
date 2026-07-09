@@ -11544,7 +11544,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v46C',
+      build: 'v46B',
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11553,7 +11553,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v46C', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v46B', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
