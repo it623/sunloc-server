@@ -7355,6 +7355,45 @@ app.post('/api/planning/state', async (req, res) => {
       }
     }
 
+    // v46A merge-guard (confirmed by Ishan; root cause of the 26ZC094/095 churn): the planning blob is
+    // full-state last-write-wins, so a stale client session saving after another session created new
+    // orders silently WIPED those orders. Before saving, restore any stored order that is missing from
+    // the incoming blob — but ONLY unclosed ones: the month-change archive legitimately removes CLOSED
+    // prior-month orders without tombstones (restoring those would resurrect the whole archive), while
+    // unclosed orders are never removed legitimately except via deleteOrder, which tombstones
+    // (deleted:true) in production_orders — checked below. Wrapped in try: the save is never blocked.
+    try {
+      if (state && Array.isArray(state.orders)) {
+        let _storedBlob = null;
+        if (pgPool) {
+          const _r = await pgPool.query('SELECT state_json FROM planning_state LIMIT 1');
+          if (_r.rows[0]) _storedBlob = typeof _r.rows[0].state_json === 'string' ? JSON.parse(_r.rows[0].state_json) : _r.rows[0].state_json;
+        } else {
+          const _r = db.prepare('SELECT state_json FROM planning_state LIMIT 1').get();
+          if (_r) _storedBlob = JSON.parse(_r.state_json);
+        }
+        if (_storedBlob && Array.isArray(_storedBlob.orders)) {
+          const _incIds = new Set(state.orders.map(o => o && o.id).filter(Boolean));
+          const _missing = _storedBlob.orders.filter(o => o && o.id && !_incIds.has(o.id) && !o.deleted && o.status !== 'closed');
+          if (_missing.length) {
+            const _delMap = {};
+            try {
+              if (pgPool) {
+                const _dr = await pgPool.query('SELECT id, data_json FROM production_orders WHERE id = ANY($1)', [_missing.map(o => o.id)]);
+                _dr.rows.forEach(r => { try { const d = typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json; _delMap[r.id] = !!(d && d.deleted); } catch (e) {} });
+              } else {
+                const _sel = db.prepare('SELECT data_json FROM production_orders WHERE id = ?');
+                _missing.forEach(o => { const r = _sel.get(o.id); if (r) { try { const d = JSON.parse(r.data_json); _delMap[o.id] = !!(d && d.deleted); } catch (e) {} } });
+              }
+            } catch (e) { /* production_orders absent (old sqlite) — treat as not tombstoned */ }
+            let _restored = 0;
+            _missing.forEach(o => { if (_delMap[o.id]) return; state.orders.push(o); _restored++; });
+            if (_restored) console.log(`[v46A merge-guard] restored ${_restored} unclosed order(s) missing from incoming blob (stale-client overwrite protection): ${_missing.filter(o=>!_delMap[o.id]).map(o=>o.batchNumber||o.id).join(', ')}`);
+          }
+        }
+      }
+    } catch (_mgErr) { console.warn('[v46A merge-guard] skipped:', _mgErr.message); }
+
     const json = JSON.stringify(state);
     if (pgPool) {
       const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
@@ -7380,6 +7419,107 @@ app.post('/api/planning/state', async (req, res) => {
 });
 
 // GET active orders for a machine (used by DPR dropdown)
+
+// v46A issue 1 (confirmed by Ishan): retroactive orange-label backfill for one batch. Creates an
+// orange label for every non-voided, non-orange box of the batch that has a non-reversed PI scan-IN
+// but no live orange child. Idempotent: id = 'ol-'+parent id, ON CONFLICT/OR IGNORE. Matches the
+// client autoGenerateOrangeLabel field convention; qr_data left NULL (labels-all rebuilds it client-side, v41b).
+app.post('/api/tracking/orange-backfill', async (req, res) => {
+  try {
+    const { batchNumber } = req.body || {};
+    if (!batchNumber) return res.status(400).json({ ok: false, error: 'batchNumber required' });
+    const ts = new Date().toISOString();
+    let created = 0;
+    if (pgPool) {
+      const r = await pgPool.query(
+        `INSERT INTO tracking_labels (id, batch_number, label_number, size, qty, is_orange, parent_label_id,
+                                      customer, colour, pc_code, printing_matter, generated, printed, voided)
+         SELECT 'ol-'||p.id, p.batch_number, p.label_number, p.size, p.qty, 1, p.id,
+                p.customer, p.colour, p.pc_code, p.printing_matter, $2, 0, 0
+         FROM tracking_labels p
+         WHERE p.batch_number = $1 AND COALESCE(p.is_orange,0)=0 AND COALESCE(p.voided,0)=0
+           AND EXISTS (SELECT 1 FROM tracking_scans s
+                        WHERE s.label_id = p.id AND s.dept='pi' AND s.type='in'
+                          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = s.id))
+           AND NOT EXISTS (SELECT 1 FROM tracking_labels o
+                            WHERE o.parent_label_id = p.id AND o.is_orange=1 AND COALESCE(o.voided,0)=0)
+         ON CONFLICT (id) DO NOTHING
+         RETURNING id`, [batchNumber, ts]);
+      created = r.rows.length;
+    } else {
+      const parents = db.prepare(
+        `SELECT p.* FROM tracking_labels p
+         WHERE p.batch_number = ? AND COALESCE(p.is_orange,0)=0 AND COALESCE(p.voided,0)=0
+           AND EXISTS (SELECT 1 FROM tracking_scans s
+                        WHERE s.label_id = p.id AND s.dept='pi' AND s.type='in'
+                          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = s.id))
+           AND NOT EXISTS (SELECT 1 FROM tracking_labels o
+                            WHERE o.parent_label_id = p.id AND o.is_orange=1 AND COALESCE(o.voided,0)=0)`).all(batchNumber);
+      const ins = db.prepare(
+        `INSERT OR IGNORE INTO tracking_labels (id, batch_number, label_number, size, qty, is_orange, parent_label_id,
+                                                customer, colour, pc_code, printing_matter, generated, printed, voided)
+         VALUES (?,?,?,?,?,1,?,?,?,?,?,?,0,0)`);
+      parents.forEach(p => { const info = ins.run('ol-'+p.id, p.batch_number, p.label_number, p.size, p.qty, p.id, p.customer, p.colour, p.pc_code, p.printing_matter, ts); created += info.changes; });
+    }
+    res.json({ ok: true, created, batchNumber });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// v46A issue 2 data repair (confirmed by Ishan): one-time repair for the 26ZC094/095 lost-update churn.
+// Physical truth: 26ZC094 = GREEN Tr / UCHIMI (already manufactured); 26ZC095 = CLEAR Tr (now in
+// production). System state after churn: the GREEN order was wiped from the blob (possibly still in
+// production_orders) and the CLEAR order wears 26ZC094. Repair: rename the current CLEAR 26ZC094 →
+// 26ZC095 (blob orders + linked printOrders/dispatchPlans + production_orders row), then restore the
+// GREEN order as 26ZC094 (from production_orders if found — else the planner re-creates it manually
+// typing 26ZC094 in the batch field of the order form). Optional moveDprFromDate migrates
+// production_actuals rows dated >= that date from 26ZC094 → 26ZC095 (Clear's DPR recorded during the
+// churn window). dryRun=true by default: reports what WOULD happen, changes nothing. PG only.
+app.post('/api/admin/repair-26zc094', async (req, res) => {
+  try {
+    if (!pgPool) return res.json({ ok: false, error: 'PG only — run against the Railway Postgres deployment' });
+    const { dryRun = true, moveDprFromDate = null } = req.body || {};
+    const report = { dryRun, actions: [] };
+    const br = await pgPool.query('SELECT id, state_json FROM planning_state LIMIT 1');
+    if (!br.rows[0]) return res.json({ ok: false, error: 'planning_state empty' });
+    const blob = typeof br.rows[0].state_json === 'string' ? JSON.parse(br.rows[0].state_json) : br.rows[0].state_json;
+    blob.orders = blob.orders || []; blob.printOrders = blob.printOrders || []; blob.dispatchPlans = blob.dispatchPlans || [];
+    const clearOrd = blob.orders.find(o => o && o.batchNumber === '26ZC094' && !o.deleted);
+    report.currentBlob26ZC094 = clearOrd ? { id: clearOrd.id, colour: clearOrd.colour, customer: clearOrd.customer || clearOrd.shipTo, status: clearOrd.status } : null;
+    const dup095 = blob.orders.find(o => o && o.batchNumber === '26ZC095' && !o.deleted);
+    if (dup095) return res.json({ ok: false, error: '26ZC095 already exists in blob — manual review needed', existing095: { id: dup095.id, colour: dup095.colour } });
+    // locate the lost GREEN order in production_orders
+    const pr = await pgPool.query(`SELECT id, data_json FROM production_orders`);
+    const candidates = [];
+    pr.rows.forEach(r => { try { const d = typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json; if (d && d.batchNumber === '26ZC094' && (!clearOrd || d.id !== clearOrd.id)) candidates.push(d); } catch (e) {} });
+    const green = candidates.find(d => !d.deleted && /green/i.test(d.colour || '')) || candidates.find(d => !d.deleted) || null;
+    report.lostGreenFound = green ? { id: green.id, colour: green.colour, customer: green.customer || green.shipTo, status: green.status } : null;
+    let dprCount = 0;
+    if (moveDprFromDate) {
+      const dc = await pgPool.query(`SELECT COUNT(*)::int AS n FROM production_actuals WHERE batch_number='26ZC094' AND date >= $1`, [moveDprFromDate]);
+      dprCount = dc.rows[0].n;
+    }
+    report.dprRowsToMove = moveDprFromDate ? dprCount : 'not requested';
+    if (dryRun) { report.actions.push('DRY RUN — nothing changed'); return res.json({ ok: true, report }); }
+    if (!clearOrd) return res.json({ ok: false, error: 'No live 26ZC094 order in blob to rename', report });
+    // 1) rename CLEAR 26ZC094 → 26ZC095 in blob + linkages + production_orders
+    clearOrd.batchNumber = '26ZC095';
+    blob.printOrders.forEach(p => { if (p && p.productionOrderId === clearOrd.id) p.batchNumber = '26ZC095'; });
+    blob.dispatchPlans.forEach(p => { if (p && p.productionOrderId === clearOrd.id) p.batchNumber = '26ZC095'; });
+    await pgPool.query(`UPDATE production_orders SET data_json = jsonb_set(data_json::jsonb, '{batchNumber}', '"26ZC095"')::text WHERE id = $1`, [clearOrd.id]);
+    report.actions.push(`Renamed CLEAR order ${clearOrd.id} 26ZC094 → 26ZC095`);
+    // 2) restore GREEN as 26ZC094 into the blob (if found)
+    if (green) { blob.orders.push(green); report.actions.push(`Restored GREEN order ${green.id} as 26ZC094 into blob`); }
+    else report.actions.push('GREEN order NOT found in production_orders — planner must re-create it manually with batch 26ZC094');
+    await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [JSON.stringify(blob), br.rows[0].id]);
+    // 3) optional DPR migration for Clear's churn-window entries
+    if (moveDprFromDate && dprCount > 0) {
+      await pgPool.query(`UPDATE production_actuals SET batch_number='26ZC095' WHERE batch_number='26ZC094' AND date >= $1`, [moveDprFromDate]);
+      report.actions.push(`Moved ${dprCount} production_actuals row(s) dated >= ${moveDprFromDate} from 26ZC094 to 26ZC095`);
+    }
+    res.json({ ok: true, report });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.get('/api/orders/machine/:machineId', (req, res) => {
   try {
     const orders = getActiveOrdersForMachine(req.params.machineId);

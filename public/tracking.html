@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46</title>
+<title>Sunloc Tracking Suite v1.0 · build v46A</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46</p>
+      <p>Tracking Suite v1.0 · build v46A</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46</p>
+      <p>Tracking Suite v1.0 · build v46A</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2322,7 +2322,28 @@ function autoGenerateOrangeLabel(label, batch){
   orangeLabel.qrData = generateQRData(orangeLabel);
   state.labels.push(orangeLabel);
   saveLocal();
+  // v46A issue 1 (confirmed by Ishan): persist the orange label IMMEDIATELY. Previously it lived only
+  // in this device's local state until an eventual labels-all reconciliation — if that never ran (device
+  // cache lost, session ended), the orange label silently vanished, leaving fewer orange labels than
+  // PI scan-ins (26T076: 11 scanned in, only 4 orange). Server dedupes by (batch,label_number,is_orange).
+  pushToServer('/api/tracking/labels',{labels:[orangeLabel]});
   return orangeLabel;
+}
+
+// v46A issue 1 (confirmed by Ishan): retroactive orange-label backfill. Creates the MISSING orange
+// labels for a batch from FULL server scan history (every non-voided box with a non-reversed PI scan-IN
+// and no live orange child). Idempotent (id 'ol-'+parentId, ON CONFLICT DO NOTHING) — safe to re-run.
+async function orangeBackfill(batchNo){
+  if(!batchNo) return;
+  if(!confirm(`Backfill missing orange labels for ${batchNo}?\n\nThis creates one orange label for every PI scanned-IN box that doesn't have one (from full history). Existing labels are untouched.`)) return;
+  try{
+    const resp = await fetch('/api/tracking/orange-backfill',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({batchNumber:batchNo})});
+    const j = await resp.json();
+    if(!j.ok){ toast('Backfill failed: '+(j.error||'unknown error')); return; }
+    toast(j.created>0?`✅ ${j.created} missing orange label(s) generated for ${batchNo}`:`✓ No missing orange labels — ${batchNo} is complete`);
+    try{ await pullFromServer(true); }catch(_){}
+    if(typeof renderLabels==='function') renderLabels();
+  }catch(e){ toast('Backfill error: '+e.message); }
 }
 
 function parseScanInput(raw){
@@ -3797,6 +3818,7 @@ function renderOrangePrintQueue(selBatch,selLabels,unprintedSel){
       <div style="font-size:11px;color:var(--text3)">${batch?.customer||selLabels[0]?.customer||''} | ${selLabels.length} labels | <span style="color:${unprintedSel.length>0?'var(--orange)':'var(--green)'};font-weight:600">${unprintedSel.length} unprinted</span></div>
     </div>
     ${unprintedSel.length>0?`<button class="btn btn-sm" style="background:var(--orange);color:#fff;font-size:11px;white-space:nowrap" onclick="unprintedOrangeBatch('${selBatch}')">🖨️ Print All Unprinted</button>`:''}
+    <button class="btn btn-sm" style="background:rgba(234,88,12,0.12);color:var(--orange);border:1px solid rgba(234,88,12,0.4);font-size:11px;white-space:nowrap" title="Create any missing orange labels from full PI scan history (v46A)" onclick="orangeBackfill('${selBatch}')">⚡ Backfill missing</button>
   </div>
   <div class="tbl-wrap"><table style="width:100%;border-collapse:collapse;font-size:11px">
     <thead><tr style="border-bottom:2px solid var(--border)">
