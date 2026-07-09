@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46B</title>
+<title>Sunloc Tracking Suite v1.0 · build v46C</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46B</p>
+      <p>Tracking Suite v1.0 · build v46C</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46B</p>
+      <p>Tracking Suite v1.0 · build v46C</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4008,7 +4008,16 @@ function renderLabels(){
         const excessGenerated=state.labels.filter(l=>l.batchNumber===b.batchNumber&&!l.voided&&!l.isOrange&&l.isExcess).length;
         const normalGenerated=generated-excessGenerated;
         const remaining=Math.max(0,maxLabels-generated);
-        const isExcessAvailable=normalGenerated>=normalBoxMax2&&remaining>0;
+        // v46C (confirmed by Ishan): once the normal cap is full, `remaining` clamps to 0 and the old
+        // condition (remaining>0) hid the button entirely — so the EXCESS path could never be reached
+        // from this screen (excess only begins after the normal cap fills). Now the button also shows
+        // when the normal cap is reached, labelled ⊕Exc. Actual generation is still governed by
+        // canGenerateLabels (normal respects the daily target; excess bypasses it) — unchanged.
+        const _normalFull45c = normalGenerated>=normalBoxMax2;
+        const isExcessAvailable=_normalFull45c;
+        // v46C: original behaviour for remaining>0 is preserved exactly; we ONLY additionally surface
+        // the button for the excess case (normal cap full, remaining clamped to 0) on non-closed batches.
+        const _showGenBtn45c = remaining>0 || (_normalFull45c && !_lgClosedSet45.has(b.batchNumber));
         const isSelected=b.batchNumber===selBatch;
         const pct=maxLabels>0?(generated/maxLabels*100):0;
         const actualProd=(b.actualQty||b.actualProd||0);
@@ -4024,7 +4033,7 @@ function renderLabels(){
           <td style="padding:5px 6px;font-family:monospace;font-size:11px">${printed}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:${remaining===0?'400':'700'};color:${remaining===0?'var(--text3)':'var(--accent2)'}">${remaining}</td>
           <td style="padding:4px 5px" onclick="event.stopPropagation()">
-            ${remaining>0?`<button style="font-size:10px;padding:2px 7px;border:1px solid ${isExcessAvailable?'var(--accent2)':'var(--accent)'};border-radius:3px;background:${isExcessAvailable?'rgba(255,171,0,0.15)':'rgba(96,165,250,0.15)'};color:${isExcessAvailable?'var(--accent2)':'var(--accent)'};cursor:pointer;white-space:nowrap" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕Exc':'+Gen'}</button>`:''}
+            ${_showGenBtn45c?`<button style="font-size:10px;padding:2px 7px;border:1px solid ${isExcessAvailable?'var(--accent2)':'var(--accent)'};border-radius:3px;background:${isExcessAvailable?'rgba(255,171,0,0.15)':'rgba(96,165,250,0.15)'};color:${isExcessAvailable?'var(--accent2)':'var(--accent)'};cursor:pointer;white-space:nowrap" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕Exc':'+Gen'}</button>`:''}
           </td>
         </tr>`;
       }).join('')||'<tr><td colspan="10" style="padding:16px;text-align:center;color:var(--text3)">No batches found</td></tr>'})()}

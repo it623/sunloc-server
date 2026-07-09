@@ -12,6 +12,13 @@ const cors    = require('cors');
 const path    = require('path');
 const fs      = require('fs');
 
+// v46C: SINGLE source of truth for the build version. /api/health and the SAP serverBuild responses
+// all read this — so the reported version can never again drift from the deployed code (the v46B
+// deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
+// validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
+const APP_BUILD = 'v46C';
+
+
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
 // Invoice enrichment derives size/colour from an ItemCode. The server `pc_codes`
 // table (admin-saved + hand-edited + future PC-Master additions) is the authoritative
@@ -3337,7 +3344,7 @@ async function _doRefreshSapInvoices() {
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
   const r = await sap.fetchRecentInvoices({ lookbackDays: lookback });
-  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: 'v45ZV' };
+  if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded, fetched: 0, upserted: 0, serverBuild: APP_BUILD };
   const invoices = r.invoices || [];
   let upserted = 0;
   for (const inv of invoices) {
@@ -3830,7 +3837,7 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: 'v45ZV' };
+  return { ok: true, fetched: invoices.length, upserted, serverBuild: APP_BUILD };
 }
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
@@ -11544,7 +11551,7 @@ app.get('/api/health', (req, res) => {
     res.json({
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
-      build: 'v46B',
+      build: APP_BUILD,
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -11553,7 +11560,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: 'v46B', db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: APP_BUILD, db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -12898,7 +12905,8 @@ app.get('/api/tracking/label', async (req, res) => {
     }
     if (!label && batchNumber && labelNumber != null) {
       if (pgPool) {
-        label = (await pgPool.query('SELECT * FROM tracking_labels WHERE batch_number=$1 AND ABS(label_number)=ABS($2)',[batchNumber, parseInt(labelNumber)])).rows[0] || null;
+        // v46C: label_number is TEXT on live PG — guard the ABS cast (same fix as the re-customer sort).
+        label = (await pgPool.query(`SELECT * FROM tracking_labels WHERE batch_number=$1 AND ABS(CASE WHEN label_number::text ~ '^-?[0-9]+$' THEN label_number::integer ELSE 0 END)=ABS($2)`,[batchNumber, parseInt(labelNumber)])).rows[0] || null;
       } else {
         label = db.prepare('SELECT * FROM tracking_labels WHERE batch_number=? AND ABS(label_number)=ABS(?)').get(batchNumber, parseInt(labelNumber));
       }
@@ -13104,7 +13112,7 @@ app.get('/api/tracking/alerts/detail', async (req, res) => {
     let boxes = [];
     if (pgPool) {
       const r = await pgPool.query(`
-        SELECT s.label_id as "labelId", ABS(l.label_number) as "boxNo",
+        SELECT s.label_id as "labelId", ABS(CASE WHEN l.label_number::text ~ '^-?[0-9]+$' THEN l.label_number::integer ELSE 0 END) as "boxNo",
           s.ts as "scanInTs",
           EXTRACT(EPOCH FROM (NOW() - s.ts::timestamptz))/3600 as "hoursStuck"
         FROM tracking_scans s
@@ -15252,8 +15260,14 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     const ord = (planState.orders||[]).find(o => o.batchNumber===batchNumber && !o.deleted);
 
     // Non-voided, non-orange labels (the customer boxes), ascending box number.
+    // v46C (confirmed by Ishan): the live Postgres tracking_labels.label_number column is TEXT (schema
+    // drift — declared INTEGER but stores 'OL-'-prefixed orange numbers elsewhere), so ORDER BY
+    // ABS(label_number) threw "function abs(text) does not exist" and broke Re-customer. Cast to integer
+    // for the PG sort (this query already excludes orange labels, so values are plain numerics; the
+    // regex guard makes it bulletproof against any stray non-numeric). SQLite is dynamically typed — its
+    // ABS() tolerates the text, so that path is unchanged.
     const labelSel = pgPool
-      ? (await pgPool.query(`SELECT id, label_number, customer, size, colour FROM tracking_labels WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0 ORDER BY ABS(label_number) ASC`,[batchNumber])).rows
+      ? (await pgPool.query(`SELECT id, label_number, customer, size, colour FROM tracking_labels WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0 ORDER BY ABS(CASE WHEN label_number::text ~ '^-?[0-9]+$' THEN label_number::integer ELSE 0 END) ASC`,[batchNumber])).rows
       : db.prepare(`SELECT id, label_number, customer, size, colour FROM tracking_labels WHERE batch_number=? AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0 ORDER BY ABS(label_number) ASC`).all(batchNumber);
     const totalBoxes = labelSel.length;
     let oldCustomer = labelSel.find(l=>l.customer)?.customer || ord?.customer || '';
