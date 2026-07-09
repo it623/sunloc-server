@@ -6875,7 +6875,7 @@ app.get('/api/planning/state', async (req, res) => {
             setImmediate(async () => {
               try {
                 const json = jsonForBlobWrite;
-                const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
+                const existing = await pgPool.query('SELECT id FROM planning_state ORDER BY id DESC LIMIT 1') /* v46B: newest row — match GET */;
                 if (existing.rows[0]) {
                   await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
                   // Update cache so subsequent reads see the corrected state (parse the frozen
@@ -7022,7 +7022,7 @@ app.post('/api/planning/restore', async (req, res) => {
     if (!state || !state.orders) return res.status(400).json({ ok: false, error: 'Invalid backup format' });
     const json = JSON.stringify(state);
     if (pgPool) {
-      const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
+      const existing = await pgPool.query('SELECT id FROM planning_state ORDER BY id DESC LIMIT 1') /* v46B: newest row — match GET */;
       if (existing.rows.length > 0) {
         await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
       } else {
@@ -7366,10 +7366,10 @@ app.post('/api/planning/state', async (req, res) => {
       if (state && Array.isArray(state.orders)) {
         let _storedBlob = null;
         if (pgPool) {
-          const _r = await pgPool.query('SELECT state_json FROM planning_state LIMIT 1');
+          const _r = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1') /* v46B: newest row — match GET */;
           if (_r.rows[0]) _storedBlob = typeof _r.rows[0].state_json === 'string' ? JSON.parse(_r.rows[0].state_json) : _r.rows[0].state_json;
         } else {
-          const _r = db.prepare('SELECT state_json FROM planning_state LIMIT 1').get();
+          const _r = db.prepare('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1').get() /* v46B: newest row — match GET */;
           if (_r) _storedBlob = JSON.parse(_r.state_json);
         }
         if (_storedBlob && Array.isArray(_storedBlob.orders)) {
@@ -7396,7 +7396,7 @@ app.post('/api/planning/state', async (req, res) => {
 
     const json = JSON.stringify(state);
     if (pgPool) {
-      const existing = await pgPool.query('SELECT id FROM planning_state LIMIT 1');
+      const existing = await pgPool.query('SELECT id FROM planning_state ORDER BY id DESC LIMIT 1') /* v46B: newest row — match GET */;
       if (existing.rows[0]) {
         await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
       } else {
@@ -7405,7 +7405,7 @@ app.post('/api/planning/state', async (req, res) => {
       _planningStateCache = state;
       _planningStateCacheTime = Date.now();
     } else {
-      const existing = db.prepare('SELECT id FROM planning_state LIMIT 1').get();
+      const existing = db.prepare('SELECT id FROM planning_state ORDER BY id DESC LIMIT 1').get() /* v46B: newest row — match GET */;
       if (existing) {
         db.prepare('UPDATE planning_state SET state_json = ?, saved_at = NOW() WHERE id = ?').run(json, existing.id);
       } else {
@@ -7479,7 +7479,7 @@ app.post('/api/admin/repair-26zc094', async (req, res) => {
     if (!pgPool) return res.json({ ok: false, error: 'PG only — run against the Railway Postgres deployment' });
     const { dryRun = true, moveDprFromDate = null } = req.body || {};
     const report = { dryRun, actions: [] };
-    const br = await pgPool.query('SELECT id, state_json FROM planning_state LIMIT 1');
+    const br = await pgPool.query('SELECT id, state_json FROM planning_state ORDER BY id DESC LIMIT 1') /* v46B: newest row — match GET */;
     if (!br.rows[0]) return res.json({ ok: false, error: 'planning_state empty' });
     const blob = typeof br.rows[0].state_json === 'string' ? JSON.parse(br.rows[0].state_json) : br.rows[0].state_json;
     blob.orders = blob.orders || []; blob.printOrders = blob.printOrders || []; blob.dispatchPlans = blob.dispatchPlans || [];
