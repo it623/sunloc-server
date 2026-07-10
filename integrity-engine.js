@@ -250,7 +250,11 @@ async function check_qty_reconciliation(ctx) {
     };
 
     // Pair 1: planned vs DPR
-    if (dprQty > 0 && grossQty > 0) {
+    // v46D (confirmed by Ishan): only flag CLOSED batches. A running batch legitimately has DPR <
+    // gross-planned (production isn't finished yet), so firing this on running batches produced a flood
+    // of false criticals (26ZD105/26ZC093/26ZE105... all mid-production). DPR-vs-AIM and the other
+    // actuals-vs-actuals pairs below still run for any batch (those compare same-stage physical qty).
+    if (isClosed && dprQty > 0 && grossQty > 0) {
       const gap = Math.abs(dprQty - grossQty);
       const pct = gap / Math.max(grossQty, dprQty);
       const s = sev(pct);

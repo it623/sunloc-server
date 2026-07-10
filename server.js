@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46C';
+const APP_BUILD = 'v46D';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -1393,6 +1393,50 @@ async function getPlanningStateAsync() {
     try { return JSON.parse(r.rows[0].state_json); } catch { return {}; }
   }
   return getPlanningState();
+}
+
+// v46D (confirmed by Ishan): SINGLE canonical planning-state writer. Root cause of the "saves then
+// reverts on refresh" bugs (26N031 qty edit, W/O→customer not reflecting) and a contributor to the
+// 26ZC094 churn: reads use the NEWEST row (ORDER BY id DESC — see getPlanningStateAsync above) but a
+// dozen writers hardcoded `INSERT ... VALUES (1,...)` → wrote to id=1 while the app read a newer row =
+// split-brain. This helper UPDATEs the SAME newest row the reads use (inserting only when the table is
+// empty) and refreshes the cache — mirroring the proven merge-guard save. ALL planning_state writers
+// now route through it, so the pattern can never drift again.
+async function savePlanningState(planState) {
+  const json = JSON.stringify(planState);
+  if (pgPool) {
+    const r = await pgPool.query('SELECT id FROM planning_state ORDER BY id DESC LIMIT 1');
+    if (r.rows[0]) await pgPool.query('UPDATE planning_state SET state_json=$1, saved_at=NOW()::TEXT WHERE id=$2', [json, r.rows[0].id]);
+    else await pgPool.query('INSERT INTO planning_state (state_json) VALUES ($1)', [json]);
+  } else {
+    const row = db.prepare('SELECT id FROM planning_state ORDER BY id DESC LIMIT 1').get();
+    if (row) db.prepare("UPDATE planning_state SET state_json=?, saved_at=datetime('now') WHERE id=?").run(json, row.id);
+    else db.prepare("INSERT INTO planning_state (state_json) VALUES (?)").run(json);
+  }
+  _planningStateCache = planState;
+  _planningStateCacheTime = Date.now();
+}
+
+// v46D: one-time (idempotent) collapse of planning_state to its single newest row. Reads already use
+// the newest row, so keeping it preserves exactly the data the app currently serves; deleting the
+// stale older rows removes any chance a leftover id=1 row resurfaces. Guarded + logged; only acts when
+// more than one row exists.
+async function _consolidatePlanningStateRows() {
+  try {
+    if (pgPool) {
+      const c = await pgPool.query('SELECT COUNT(*)::int AS n FROM planning_state');
+      if ((c.rows[0]?.n || 0) > 1) {
+        const d = await pgPool.query('DELETE FROM planning_state WHERE id NOT IN (SELECT id FROM planning_state ORDER BY id DESC LIMIT 1)');
+        console.log(`[v46D] planning_state consolidated: removed ${d.rowCount} stale row(s), kept newest`);
+      }
+    } else {
+      const c = db.prepare('SELECT COUNT(*) AS n FROM planning_state').get();
+      if ((c?.n || 0) > 1) {
+        const d = db.prepare('DELETE FROM planning_state WHERE id NOT IN (SELECT id FROM planning_state ORDER BY id DESC LIMIT 1)').run();
+        console.log(`[v46D] planning_state consolidated: removed ${d.changes} stale row(s), kept newest`);
+      }
+    }
+  } catch (e) { console.warn('[v46D] planning_state consolidation skipped:', e.message); }
 }
 
 function getPlanningState() {
@@ -6231,11 +6275,7 @@ app.post('/api/planning/rebatch-machine', async (req, res) => {
     }
 
     // Persist planning_state JSON
-    if (pgPool) {
-      await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json, saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
-    } else {
-      db.prepare(`INSERT INTO planning_state (id,state_json,saved_at) VALUES (1,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json, saved_at=datetime('now')`).run(JSON.stringify(planState));
-    }
+    await savePlanningState(planState); // v46D: single canonical writer (newest row)
     _planningStateCache = planState; _planningStateCacheTime = Date.now();
 
     // Update production_orders table rows + print_orders table rows
@@ -10335,11 +10375,7 @@ app.post('/api/wo/assign-customer', async (req, res) => {
         d.zone = zone || d.zone;
       }
     });
-    if (pgPool) {
-      await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
-    } else {
-      db.prepare(`INSERT INTO planning_state (id, state_json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')`).run(JSON.stringify(planState));
-    }
+    await savePlanningState(planState); // v46D: single canonical writer (newest row)
     _planningStateCache = planState;
     logAudit(session.username, session.role, 'planning', 'WO_CUSTOMER_ASSIGNED',
       `W/O order ${orderId} assigned to customer: ${customer}`);
@@ -10432,8 +10468,7 @@ app.post('/api/wo/approve/:id', async (req, res) => {
             d.zone = request.zone || d.zone;
           }
         });
-        if(pgPool){ await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`,[JSON.stringify(planState)]); _planningStateCache=planState; _planningStateCacheTime=Date.now(); }
-        else { db.prepare(`INSERT INTO planning_state (id,state_json) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json,updated_at=datetime('now')`).run(JSON.stringify(planState)); }
+        await savePlanningState(planState); // v46D: single canonical writer (newest row)
       }
       // 2. Update all tracking labels for this order's batch
       if (ord) {
@@ -10815,18 +10850,7 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
       parent.woSplitRequestId = reqId;
       }
 
-      if (pgPool) {
-        await pgPool.query(
-          `INSERT INTO planning_state (id, state_json) VALUES (1, $1)
-           ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json, saved_at=NOW()::TEXT`,
-          [JSON.stringify(planState)]
-        );
-      } else {
-        db.prepare(`INSERT INTO planning_state (id, state_json, saved_at) VALUES (1, ?, datetime('now'))
-                    ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json, saved_at=datetime('now')`).run(JSON.stringify(planState));
-      }
-      _planningStateCache = planState;
-      _planningStateCacheTime = Date.now();
+      await savePlanningState(planState); // v46D: single canonical writer (newest row)
 
       for (const c of childOrders) {
         const j = JSON.stringify(c.child);
@@ -11485,8 +11509,7 @@ app.post('/api/reconciliation/approve/:id', async (req, res) => {
         } else {
           planState.orders.push(orderToSave);
         }
-        await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json, saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
-        _planningStateCache = planState; _planningStateCacheTime = Date.now();
+        await savePlanningState(planState); // v46D: single canonical writer (newest row)
       }
 
       // 8. Mark reconciliation request as approved
@@ -12187,11 +12210,7 @@ app.post('/api/wo/assign-customer', async (req, res) => {
         d.zone = zone || d.zone;
       }
     });
-    if (pgPool) {
-      await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
-    } else {
-      db.prepare(`INSERT INTO planning_state (id, state_json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')`).run(JSON.stringify(planState));
-    }
+    await savePlanningState(planState); // v46D: single canonical writer (newest row)
     _planningStateCache = planState;
     logAudit(session.username, session.role, 'planning', 'WO_CUSTOMER_ASSIGNED',
       `W/O order ${orderId} assigned to customer: ${customer}`);
@@ -12284,8 +12303,7 @@ app.post('/api/wo/approve/:id', async (req, res) => {
             d.zone = request.zone || d.zone;
           }
         });
-        if(pgPool){ await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`,[JSON.stringify(planState)]); _planningStateCache=planState; _planningStateCacheTime=Date.now(); }
-        else { db.prepare(`INSERT INTO planning_state (id,state_json) VALUES (1,?) ON CONFLICT(id) DO UPDATE SET state_json=excluded.state_json,updated_at=datetime('now')`).run(JSON.stringify(planState)); }
+        await savePlanningState(planState); // v46D: single canonical writer (newest row)
       }
       // 2. Update all tracking labels for this order's batch
       if (ord) {
@@ -12818,8 +12836,7 @@ app.post('/api/reconciliation/approve/:id', async (req, res) => {
         } else {
           planState.orders.push(orderToSave);
         }
-        await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json, saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
-        _planningStateCache = planState; _planningStateCacheTime = Date.now();
+        await savePlanningState(planState); // v46D: single canonical writer (newest row)
       }
 
       // 8. Mark reconciliation request as approved
@@ -15387,8 +15404,7 @@ app.post('/api/tracking/recustomer', async (req, res) => {
 
     // ── Persist planning state + production_orders (parent and/or child).
     try {
-      if (pgPool) await pgPool.query(`INSERT INTO planning_state (id,state_json) VALUES (1,$1) ON CONFLICT(id) DO UPDATE SET state_json=EXCLUDED.state_json,saved_at=NOW()::TEXT`, [JSON.stringify(planState)]);
-      else db.prepare(`INSERT INTO planning_state (id, state_json) VALUES (1, ?) ON CONFLICT(id) DO UPDATE SET state_json = excluded.state_json, updated_at = datetime('now')`).run(JSON.stringify(planState));
+      await savePlanningState(planState); // v46D: single canonical writer (newest row)
       _planningStateCache = planState; _planningStateCacheTime = Date.now();
       const writeOrd = async (o) => {
         if (!o) return; const oj = JSON.stringify(o);
@@ -15866,6 +15882,7 @@ app.listen(PORT, () => {
   // v41ZG #1: run the isolated critical-table creator FIRST so month_archives is guaranteed even if
   // the big ensurePostgresTables() aborts partway through.
   ensureCriticalPostgresTables().then(() => ensurePostgresTables()).then(()=>{
+    _consolidatePlanningStateRows().catch(e => console.warn('[v46D] consolidation boot invocation failed:', e?.message)); // v46D: collapse planning_state to single canonical row
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
