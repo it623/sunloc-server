@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46D';
+const APP_BUILD = 'v46G';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -6894,14 +6894,20 @@ app.get('/api/planning/state', async (req, res) => {
             o.status = dbO._dbStatus;
             reconciledCount++;
           }
-          // v45B: production_orders is authoritative for the reconciled gross. The reconcile toggle
-          // writes grossOverride/grossQty there durably (v45 queue), but the blob's copy can lag —
-          // leaving Tracking's label cap and the DPR planned-gross display on a STALE planned gross.
-          // The override is a deliberate durable action (like status), so the DB value wins whenever
-          // it is set and differs from the blob. No timestamp gate: the override's home is the table,
-          // so the table is its freshest source by design.
+          // v45B: production_orders is authoritative for the reconciled gross — Tracking's label cap
+          // and the DPR planned-gross display read it, so a durable override propagates to the blob.
+          // v46G (root cause of 26N031/26ZC094 "gross amendment reverts, DPR correction not reflected"):
+          // the override was applied with NO recency gate and NO clear path, so once the integrity
+          // autofix stamped grossOverride, EVERY GET re-forced it onto the blob — silently reverting any
+          // later manual Planning edit or DPR correction. Fix: a manual edit made AFTER the override was
+          // set (o._localEditedAt / updated_at newer than the override's _autoFixedAt) WINS — we skip the
+          // re-apply so the human correction sticks. Batches without an override, and overridden batches
+          // never re-edited, are UNCHANGED (the override still propagates exactly as before).
           const _dbOv = Number(dbO.grossOverride);
-          if (Number.isFinite(_dbOv) && _dbOv > 0 && Number(o.grossOverride) !== _dbOv) {
+          const _ovSetAt   = dbO._autoFixedAt ? new Date(dbO._autoFixedAt).getTime() : 0;
+          const _blobEdit  = parseInt(o._localEditedAt || 0) || (o.updated_at ? new Date(o.updated_at).getTime() : 0);
+          const _editWins  = _ovSetAt > 0 && _blobEdit > _ovSetAt;   // manual correction newer than the auto-fix
+          if (Number.isFinite(_dbOv) && _dbOv > 0 && Number(o.grossOverride) !== _dbOv && !_editWins) {
             o.grossOverride = dbO.grossOverride;
             if (dbO.grossQty != null) o.grossQty = dbO.grossQty;
             reconciledCount++;
@@ -7437,6 +7443,29 @@ app.post('/api/planning/state', async (req, res) => {
             _missing.forEach(o => { if (_delMap[o.id]) return; state.orders.push(o); _restored++; });
             if (_restored) console.log(`[v46A merge-guard] restored ${_restored} unclosed order(s) missing from incoming blob (stale-client overwrite protection): ${_missing.filter(o=>!_delMap[o.id]).map(o=>o.batchNumber||o.id).join(', ')}`);
           }
+          // v46G best-effort (W/O customer reverts to "W/O — pending" after a few moments): a W/O
+          // customer is assigned via its own endpoint (wo/assign-customer → savePlanningState), but a
+          // stale Planning tab's ~30s full-state auto-save still carries the OLD unassigned order and
+          // blanks it back on save. Guard: for an order present in BOTH stored and incoming, if the
+          // STORED blob already holds a real assigned customer and the incoming payload has it empty
+          // (regressed to unassigned/"W/O"), keep the stored customer. Only ever RESTORES a lost
+          // assignment — a genuine reassignment (real->different real) still passes through. Reversible.
+          try {
+            const _isRealCust = c => { const s = (c==null?'':String(c)).trim(); return s !== '' && !/^w\/?o\b/i.test(s) && !/pending/i.test(s); };
+            const _storedById = new Map();
+            _storedBlob.orders.forEach(o => { if (o && o.id) _storedById.set(o.id, o); });
+            let _custKept = 0;
+            state.orders.forEach(o => {
+              if (!o || !o.id) return;
+              const s = _storedById.get(o.id);
+              if (s && _isRealCust(s.customer) && !_isRealCust(o.customer)) {
+                o.customer = s.customer;
+                if (s.woCustomerAssigned != null && o.woCustomerAssigned == null) o.woCustomerAssigned = s.woCustomerAssigned;
+                _custKept++;
+              }
+            });
+            if (_custKept) console.log(`[v46G customer-guard] preserved ${_custKept} assigned customer(s) a stale client blanked back to W/O`);
+          } catch (_cgErr) { console.warn('[v46G customer-guard] skipped:', _cgErr.message); }
         }
       }
     } catch (_mgErr) { console.warn('[v46A merge-guard] skipped:', _mgErr.message); }

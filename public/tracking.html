@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46D</title>
+<title>Sunloc Tracking Suite v1.0 · build v46G</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46D</p>
+      <p>Tracking Suite v1.0 · build v46G</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46D</p>
+      <p>Tracking Suite v1.0 · build v46G</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2189,25 +2189,31 @@ function recordScan(labelId, dept, type, operator, parsed){
     return {ok:false, msg:`❌ Batch ${label.batchNumber} is UNPRINTED — scanning at ${dept==='printing'?'Printing':'Print Inspection'} is not allowed. Unprinted batches go AIM → Packing directly.`};
   }
 
-  if(currentDept!=='admin' && !canScanDept(label.batchNumber, dept)){
-    return {ok:false,msg:'Previous department has not closed this batch yet'};
-  }
-
-  // Strong duplicate check — matches server logic exactly
-  // Check ALL scans for this label+dept, not just the last one
+  // v46F (26X081/E-5): the duplicate-IN / duplicate-OUT checks run BEFORE the canScanDept upstream
+  // gate, so a box that is already scanned in reports the duplicate UNIFORMLY for operator AND admin.
+  // Previously the operator path hit canScanDept first — and its capacity gate (thisIn < prevOut) is
+  // legitimately saturated once every box released by the previous dept is already IN — so it returned
+  // the misleading "Previous department has not closed this batch yet" for a box that is simply already
+  // IN, while admin (which skips canScanDept) correctly showed "Box already scanned IN". Same box, same
+  // device, two contradictory messages. Both are blocking guards, so reordering opens no new scan path.
   // v43 #5: key the local guard on the RESOLVED canonical label.id (not the scanned token, which
   // differs between QR SystemID and manual batch-box entry for the same physical box).
   const allDeptScans = getScansForBox(label.id).filter(s=>s.dept===dept);
   const alreadyIn  = allDeptScans.some(s=>s.type==='in');
   const alreadyOut = allDeptScans.some(s=>s.type==='out');
-  if(type==='in' && alreadyIn)  return {ok:false,msg:'Box already scanned IN at this department'};
-  // v45ZX: OUT-requires-IN is now SERVER-authoritative. The old client hard-block used the recency/
+  if(type==='in'  && alreadyIn)  return {ok:false,msg:'Box already scanned IN at this department'};
+  if(type==='out' && alreadyOut) return {ok:false,msg:'Box already scanned OUT at this department'};
+
+  if(currentDept!=='admin' && !canScanDept(label.batchNumber, dept)){
+    return {ok:false,msg:'Previous department has not closed this batch yet'};
+  }
+
+  // v45ZX: OUT-requires-IN is SERVER-authoritative. The old client hard-block used the recency/
   // month-windowed local scans, so a box whose IN-scan had aged out of the loaded window (heavy scan
   // activity, or a month-boundary carry-over) was wrongly rejected on Scan OUT with "not scanned IN" —
-  // even though the server's full-history IN existed — leaving the box STUCK (Scan IN → server duplicate;
-  // Scan OUT → client block). We now only hard-block when the ENTIRE dept has ZERO INs for this batch in
-  // full history (genuinely premature). Otherwise defer to the server's authoritative per-box
-  // IN-before-OUT check (full DB history), which accepts a valid OUT or rolls it back with the real reason.
+  // even though the server's full-history IN existed — leaving the box STUCK. We now only hard-block
+  // when the ENTIRE dept has ZERO INs for this batch in full history (genuinely premature). Otherwise
+  // defer to the server's authoritative per-box IN-before-OUT check (full DB history).
   if(type==='out' && !alreadyIn){
     const _summInX  = hasScanSummary() ? _ss(label.batchNumber, dept).in : null;
     const _localInX = state.scans.filter(s=>s.batchNumber===label.batchNumber&&s.dept===dept&&s.type==='in'&&(_summInX===null||s._local)).length;
@@ -2215,7 +2221,6 @@ function recordScan(labelId, dept, type, operator, parsed){
     if(_stageInX === 0) return {ok:false,msg:'Box not scanned IN at this department'};
     // else: this box's IN likely aged out of the loaded window — let the server decide per-box.
   }
-  if(type==='out' && alreadyOut) return {ok:false,msg:'Box already scanned OUT at this department'};
 
   // v40 P18.14b: PER-LABEL UPSTREAM PROGRESSION CHECK (client-side mirror of server).
   // For a scan-IN at any non-AIM dept, the SAME label must have a scan-OUT at the previous dept.
@@ -2767,14 +2772,17 @@ function getBatchWIPBreakdown(batchNo){
   const wPI    = getTotalWastage(batchNo,'pi');
   const grossProd = batch.actualProd || batch.actualQty || 0;
 
-  // v41ZB: Production WIP (pre-AIM / "Unsorted") now deducts AIM-stage wastage so the
-  // wastage impact lives here, not in AIM WIP. AIM WIP becomes a clean Scan In − Scan Out.
-  //   Production WIP = (Gross − AIM Salvage − AIM Remelt) − AIM Scan In
-  //   AIM WIP        =  AIM Scan In − AIM Scan Out
-  // Downstream (Printing/PI) WIP and totalWIP are intentionally UNCHANGED — wastage moves
-  // from the AIM bucket into the Unsorted bucket, so the breakdown still sums to totalWIP.
-  const preAIM   = Math.max(0, grossProd - wAIM.salvage - wAIM.remelt - aimIn);
-  const aimWIP   = Math.max(0, aimIn - aimOut);
+  // v46E (confirmed by Ishan): canonical AIM WIP split — salvage removed pre-box (lives in the
+  // Unsorted/Unscanned leg), remelt declared post scan-in (lives in the AIM Dept leg). This matches
+  // Report E / Report B / Report D exactly — one model across all WIP reports:
+  //   Unscanned (pre-AIM) WIP = Gross − AIM Salvage − AIM Scan In        (= Gross − Inspected)
+  //   AIM Dept WIP            = AIM Scan In − AIM Remelt − AIM Scan Out   (= A-Grade − Scan Out)
+  // Both floored at 0. The sum is unchanged vs the prior split (remelt merely moves from the
+  // Unsorted leg into the AIM leg), so downstream (Printing/PI) WIP and totalWIP stay UNCHANGED and
+  // the breakdown still sums to totalWIP. Overshoot (Scan In + Salvage > Gross) clamps here and is
+  // surfaced by the DPR-vs-Inspected integrity check rather than absorbed silently.
+  const preAIM   = Math.max(0, grossProd - wAIM.salvage - aimIn);
+  const aimWIP   = Math.max(0, aimIn - wAIM.remelt - aimOut);
   const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - wPrint.salvage - wPrint.remelt) : 0;
   const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt) : 0;
   // v37E: Transit gap between last production stage and packing receipt
@@ -10573,7 +10581,12 @@ function _rptBRow(batchNo, dept, U){
   const ps = PACK_SIZES[String(_bSize45y)]||1;
   const wastageBoxes = hasWastage ? Math.round(w.total/ps) : 0;
   const wip=Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
-  const wipQty=boxToLakh(wip,_bSize45y);
+  // v46E (confirmed by Ishan): AIM Dept WIP (qty) nets remelt — Scan In − Remelt − Scan Out — so
+  // Report B/D reconcile with Report E and getBatchWIPBreakdown. WIP boxes stay the physical inn−out
+  // count. Printing/PI keep box-rounded wastage netting (via wip) unchanged.
+  const wipQty = dept==='aim'
+    ? Math.max(0, boxToLakh(inn,_bSize45y) - w.remelt - boxToLakh(out,_bSize45y))
+    : boxToLakh(wip,_bSize45y);
   const grossProd = _bMd
     ? ((batchNo in (_bMd.monthGross||{})) ? (parseFloat(_bMd.monthGross[batchNo])||0)
        : (((parseFloat(batch?.actualProd)||0) === 0 && _trkProdStartMonth(batch||{})===_trkSelectedMonth) ? _reconGross(batch) : 0))
@@ -10585,12 +10598,15 @@ function _rptBRow(batchNo, dept, U){
       : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length);
   const aimInQty=boxToLakh(aimInBoxes,_bSize45y);
   const aimWaste = _bMd ? (((_bMd.wastage||{})[batchNo]||{}).aim || {salvage:0,remelt:0}) : getTotalWastage(batchNo,'aim');
-  const prodWip=_isRetired(batchNo)?0:Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt - aimInQty);
+  // v46E (confirmed by Ishan): Unscanned WIP = Gross − Salvage − Scan In (= Gross − Inspected).
+  // Remelt is NOT deducted here — it's post scan-in, so it lives in the AIM Dept WIP leg instead.
+  const prodWip=_isRetired(batchNo)?0:Math.max(0, grossProd - aimWaste.salvage - aimInQty);
   const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
   const hrs=firstIn?hoursAgo(firstIn.ts):0;
   const _closed = isStageComplete(batchNo,dept);
   const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
-  const _avail = Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt);
+  // v46E: Available to Scan In = Gross − Salvage (salvage removed pre-box; remelt is post scan-in). Matches Report E.
+  const _avail = Math.max(0, grossProd - aimWaste.salvage);
   const floor = _ffsfSet.has(normMcId(getBatch(batchNo)?.machineId || _ghostMc45y[batchNo])) ? 'ffsf' : 'gf';
   return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, w, wastageBoxes, wip, wipQty,
            grossProd, aimInBoxes, aimInQty, aimWaste, prodWip, hrs, closed:_closed, statusKey,
@@ -10800,9 +10816,10 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
                         : wip>0 ? '<span class="badge badge-blue">In Dept</span>'
                         : out>0 ? '<span class="badge badge-gray">↗ Left Dept</span>'
                         : '<span class="badge badge-gray">—</span>';
-      // v44P #10: "Available to Scan In" = Gross − Wastage. Production WIP (prodWip above) is
-      // unchanged: it already equals (Gross − AIM salvage − AIM remelt) − AIM scan-in = Available − Scan In.
-      const _avail = Math.max(0, grossProd - aimWaste.salvage - aimWaste.remelt);
+      // v46E (confirmed by Ishan): "Available to Scan In" = Gross − AIM Salvage (salvage is removed
+      // pre-boxing; remelt is post scan-in and does NOT reduce what's available to scan). Production
+      // WIP (prodWip above) = (Gross − AIM salvage) − AIM scan-in = Available − Scan In. Matches Report E.
+      const _avail = Math.max(0, grossProd - aimWaste.salvage);
       // v45ZY item 2b (confirmed by Ishan): flag rows that appear only because of carry-over WIP —
       // produced in a PRIOR month, or a ghost (no planning row) — i.e. NOT this month's fresh
       // production. Retired rows already carry their own RETIRED badge, so this is additive to those.
