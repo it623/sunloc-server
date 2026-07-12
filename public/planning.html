@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v46G</p>
+      <p>Planning Suite v3.0 · build v46I</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6393,6 +6393,19 @@ function _v44r_finalizeTruckPrompt(zone, truckNumber) {
       try { _renderImmediate(); } catch { try { renderDispatch(); } catch {} } });
 }
 
+// v46H Option B: dispatched/remaining boxes for a locked truck (same computation as the finalise
+// prompt). Used to surface an unmissable "short dispatch — finalise to roll forward" nudge so a
+// partially-dispatched truck's residual never gets silently stranded off the binning pool.
+function _truckDispatchedBoxes(truck) {
+  let d = 0;
+  (truck && truck.orders || []).forEach(o => {
+    const dp = (state.dispatchPlans || []).find(p => p.id === o.id);
+    const b = dp ? Math.round(parseFloat(dp._dispatchedBoxes || 0)) : 0;
+    d += Math.min(parseInt(o.boxes || 0, 10), b);
+  });
+  return d;
+}
+
 async function _v39_submitTruckInvoices() {
   const ctx = window._v39_truckInvoiceContext;
   if (!ctx) { toast('No truck context', 'var(--red)'); return; }
@@ -10070,6 +10083,22 @@ function renderTruckCard(truck, cap, truckIdx, zone) {
       })() : ''}
       <div style="font-size:11px;color:var(--text3)">${truck.orders.length} order${truck.orders.length!==1?'s':''} · click to expand</div>
       ${_v39_renderTruckInvoiceBtn(truck, truckIdx, zone)}
+      ${(() => {
+        // v46H Option B: when a locked truck is dispatched SHORT (some boxes out, some still held),
+        // surface an unmissable amber nudge — the held residual won't re-bin into the next truck
+        // until this one is finalised (finalising releases its commitment and rolls the remainder
+        // forward). Display-only: it reuses the existing finalise action, so no binning logic changes
+        // and a truck still actively loading is never auto-released.
+        if (!truck.locked) return '';
+        const _disp = _truckDispatchedBoxes(truck);
+        const _plan = truck.totalBoxes || 0;
+        const _rem = Math.max(0, _plan - _disp);
+        if (_disp > 0 && _rem > 0) {
+          const _z = zone.replace(/'/g,"\\'");
+          return `<div onclick="event.stopPropagation();_v44r_finalizeTruckPrompt('${_z}',${truck.truckNumber})" title="Click to finalise this truck and automatically roll the remaining ${_rem} box(es) forward to the next truck for this zone" style="margin-top:8px;padding:8px 10px;background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-radius:6px;font-size:11px;color:#ffab00;line-height:1.4;cursor:pointer">⚠ <strong>Short dispatch — ${_disp} of ${_plan} boxes scanned out.</strong> The remaining <strong>${_rem} box(es)</strong> are held on this truck and won't re-bin until it's finalised. <u>Click here to finalise &amp; auto-roll them forward →</u></div>`;
+        }
+        return '';
+      })()}
       ${truck.locked ? `<button class="btn btn-sm" style="margin-top:6px;background:rgba(0,230,118,0.12);color:#00e676;border:1px solid rgba(0,230,118,0.3)" onclick="event.stopPropagation();_v44r_finalizeTruckPrompt('${zone.replace(/'/g,"\\'")}',${truck.truckNumber})">✅ Finalise &amp; roll remainder forward</button>` : ''}
     </div>
     <div id="truck-${truck.zone.replace(/\s/g,'-')}-${truck.truckNumber}" style="display:none;margin-top:8px;background:var(--surface2);border:1px solid var(--border);border-radius:8px;padding:14px">
@@ -14639,6 +14668,7 @@ function _v40_esc(s) {
 const _v40_CHECK_TYPE_LABELS = {
   qty_mismatch_plan_dpr:       'Plan vs DPR mismatch',
   qty_mismatch_dpr_inspected:  'DPR vs Inspected mismatch',
+  dispatch_batch_customer_conflict: 'Batch → multiple customers',
   qty_mismatch_aim_packed:     'AIM vs Packed loss',
   upstream_missing_scan:       'Missing upstream scan',
   upstream_timestamp_inversion:'Timestamp inversion',

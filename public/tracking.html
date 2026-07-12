@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46G</title>
+<title>Sunloc Tracking Suite v1.0 · build v46I</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -579,7 +579,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46G</p>
+      <p>Tracking Suite v1.0 · build v46I</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +610,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46G</p>
+      <p>Tracking Suite v1.0 · build v46I</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -6082,6 +6082,30 @@ function renderDispatch(){
   try { _v39_loadAndRenderInvoiceQueue({ silent: true }); } catch (e) { console.warn('[v41q] invoice queue load:', e?.message); }
 }
 
+// v46I: per-box dispatch status for a batch — which box numbers were scanned OUT (from dispatch
+// record labels, recorded since v46H) and how many remain pending (packed FG boxes − dispatched).
+// Read-only; shared by Batch Tracker, the truck scan-out modal, and the dispatch/invoice list so
+// all three show the same numbers. No qty math — purely box-count/label display.
+function _v46i_boxDispatchStatus(batchNo){
+  const recs = (state.dispatchRecs||[]).filter(r=>r.batchNumber===batchNo);
+  const dispatched = [];
+  recs.forEach(r => (r.scannedLabels||[]).forEach(l => { if (l && l.boxNumber != null && l.boxNumber !== '') dispatched.push(l.boxNumber); }));
+  const packed = hasScanSummary() ? _ss(batchNo,'packing').in : (window._v40_boxCountsByBatch?.[batchNo]?.packing_in || 0);
+  const dispatchedCount = dispatched.length;
+  const pending = Math.max(0, packed - dispatchedCount);
+  const sortedNums = dispatched.slice().sort((a,b)=>(parseInt(a)||0)-(parseInt(b)||0));
+  return { dispatched: sortedNums, dispatchedCount, packed, pending, hasRecords: recs.length>0 };
+}
+// Compact one-line chip. Returns '' when there's nothing dispatch-related to show for the batch.
+function _v46i_boxStatusChip(batchNo){
+  const s = _v46i_boxDispatchStatus(batchNo);
+  if (!s.hasRecords && s.packed===0) return '';
+  const outStr = s.dispatched.length ? s.dispatched.join(', ') : '—';
+  const pendPart = s.packed>0
+    ? ` · <span style="color:${s.pending>0?'#f59e0b':'var(--green)'}">⏳ Pending: <strong>${s.pending}</strong>${s.pending>0?` of ${s.packed} packed`:''}</span>`
+    : '';
+  return `<div style="font-size:11px;color:var(--text2);margin-top:4px;line-height:1.4"><span style="color:var(--green)">📦 Dispatched boxes (${s.dispatchedCount}):</span> ${outStr}${pendPart}</div>`;
+}
 // v37I Part A: Dispatch modal — scan-based auto-fill, soft lock on quantities
 // availableToRecord = total scan-out boxes - sum of already-recorded boxes
 // Upward edit blocked (cannot exceed scan-out count)
@@ -6103,6 +6127,16 @@ function openDispatchRecord(batchNo){
     ? `<div class="alert alert-info" style="font-size:11px;margin-bottom:8px"><b>${existingRecs.length} dispatch record(s) already exist for this batch</b><br>${existingRecs.slice(-3).map(r=>`• ${r.boxes} boxes / ${fmt(r.qty)}L on ${fmtDate(r.ts)}${r.vehicleNo?' · vehicle '+r.vehicleNo:''}${r.invoiceNo?' · invoice '+r.invoiceNo:''}`).join('<br>')}${existingRecs.length>3?`<br><i>(showing last 3 of ${existingRecs.length})</i>`:''}</div>`
     : '';
 
+  // v46H #2: per-box dispatch audit — box numbers actually scanned OUT (from record labels) + pending
+  // count. Pending = packed (FG) boxes − boxes scanned out. Purely from recorded data; no double-count.
+  const _dispBoxNums = [];
+  existingRecs.forEach(r => (r.scannedLabels || []).forEach(l => { if (l && l.boxNumber != null && l.boxNumber !== '') _dispBoxNums.push(l.boxNumber); }));
+  const _packedBoxes = hasScanSummary() ? _ss(batchNo,'packing').in : (window._v40_boxCountsByBatch?.[batchNo]?.packing_in || 0);
+  const _pendingOut = Math.max(0, _packedBoxes - _dispBoxNums.length);
+  const perBoxSummary = _dispBoxNums.length
+    ? `<div class="alert alert-info" style="font-size:11px;margin-bottom:8px">📦 <b>Box numbers scanned out (${_dispBoxNums.length}):</b> ${_dispBoxNums.slice().sort((a,b)=>(parseInt(a)||0)-(parseInt(b)||0)).join(', ')}${_packedBoxes>0?(_pendingOut>0?`<br>⏳ <b>${_pendingOut} box(es) pending scan-out</b> (packed ${_packedBoxes} − dispatched ${_dispBoxNums.length}).`:'<br>✓ All packed boxes dispatched.'):''}</div>`
+    : '';
+
   // Note if scan-out exceeds recorded (Flow B condition)
   const flowBNote = (availableToRecord > 0)
     ? `<div class="alert alert-warning" style="font-size:11px;margin-bottom:8px">⚠️ <b>${availableToRecord} boxes (${fmt(availableQty)}L)</b> were scanned out but not yet recorded. The fields below are pre-filled with this remaining count.</div>`
@@ -6111,6 +6145,7 @@ function openDispatchRecord(batchNo){
   openModal('Record Dispatch',`Batch ${batchNo} — Scan-based reconciliation`,`
     ${(()=>{const _sh=getStageShort(batchNo,'printing');return _sh?`<div class="alert alert-warning" style="font-size:11px;margin-bottom:8px">⚠️ <b>Closed SHORT at printing</b> — ${_sh.boxes} box(es) short (${_sh.reason}). Dispatch/invoice the available quantity only.</div>`:'';})()}
     ${existingSummary}
+    ${perBoxSummary}
     ${flowBNote}
     <div class="form-row cols-2">
       <div class="form-group">
@@ -6840,6 +6875,7 @@ function _v40_renderInvoiceGroup(group, mode) {
           <div style="flex:1;background:var(--surface3);border-radius:3px;height:6px"><div style="height:100%;width:${Math.min(100,(scanned/Math.max(1,boxes)*100))}%;background:#0891b2;border-radius:3px"></div></div>
           <span style="font-size:11px;color:#0e7490;font-family:var(--mono)">${scanned}/${boxes}</span>
         </div>
+        ${_v46i_boxStatusChip(batch)}
       </div>`;
     // Desktop table row
     const desktopRow = `
@@ -6855,7 +6891,9 @@ function _v40_renderInvoiceGroup(group, mode) {
           ${legacyBtn}
         </td>
       </tr>`;
-    return mobileCard + desktopRow;
+    const _boxChip = _v46i_boxStatusChip(batch);
+    const desktopBoxRow = _boxChip ? `<tr class="iq-desktop-row"><td colspan="7" style="padding:0 8px 6px 8px;border-bottom:1px solid var(--border)">${_boxChip}</td></tr>` : '';
+    return mobileCard + desktopRow + desktopBoxRow;
   }).join('');
   return header + `
     <div style="background:white;border-radius:4px;overflow:hidden;margin-bottom:${mode!=='flat'?'10px':'0'}">
@@ -7657,6 +7695,10 @@ async function _v40_confirmTruckDispatch() {
     batches: completeInvoices.map(x => ({
       invoiceId: x.inv.id,
       scannedBoxes: x.scannedCount,
+      // v46H #2: send the per-box labels captured during scan-out so the server records which box
+      // numbers shipped (audit trail on the dispatch record; enables the pending-box view).
+      scannedLabels: (st.scanned || []).filter(s => s.invoiceId === x.inv.id)
+        .map(s => ({ labelId: s.labelId || null, boxNumber: (s.boxNumber != null ? s.boxNumber : null), batchNumber: s.batchNumber || x.inv.batch_number, size: s.size || null })),
     })),
   };
   // Show live progress UI
@@ -8863,6 +8905,7 @@ function renderBatchCard(batch){
       <div style="flex:1"><div class="progress"><div class="progress-bar ${dispatchPct>=100?'green':'blue'}" style="width:${Math.min(100,dispatchPct)}%"></div></div></div>
       <div class="text-sm text-muted">${fmt(dispatchPct,0)}% dispatched</div>
     </div>
+    ${_v46i_boxStatusChip(batchNo)}
     <div id="batch-detail-${batchNo}" class="hidden mt-12">
       ${renderBatchDetail(batch)}
     </div>

@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46G';
+const APP_BUILD = 'v46I';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -1232,6 +1232,11 @@ const MIGRATIONS = [
     name: 'tracking_scans_admin_override',
     sql: `ALTER TABLE tracking_scans ADD COLUMN is_admin_override INTEGER NOT NULL DEFAULT 0;`
   },
+  {
+    version: 51,
+    name: 'dispatch_records_scanned_labels',
+    sql: `ALTER TABLE tracking_dispatch_records ADD COLUMN scanned_labels_json TEXT;`
+  },
 ];
 
 function runMigrations() {
@@ -2163,7 +2168,8 @@ async function ensurePostgresTables() {
     // v37G: ensure all columns exist on previously-created tables (idempotent — IF NOT EXISTS)
     const dispatchColumns = [
       'customer TEXT', 'boxes INTEGER', 'vehicle_no TEXT', 'invoice_no TEXT',
-      'remarks TEXT', '"by" TEXT'
+      'remarks TEXT', '"by" TEXT',
+      'scanned_labels_json TEXT'   // v46H #2: per-box dispatch audit trail (box numbers scanned out)
     ];
     for (const col of dispatchColumns) {
       const colName = col.split(' ')[0];
@@ -3350,6 +3356,29 @@ function _lineQtyForBatch(inv, batchNo) {
     for (const k of Object.keys(l)) { if (/^U_.*batch/i.test(k)) push(l[k]); }
     if (cands.includes(target)) {
       return parseFloat((((parseFloat(l.Quantity) || 0) * _sapUomScale(l))).toFixed(3));
+    }
+  }
+  return null;
+}
+
+// v46H #4: per-batch dispatched qty AND boxes from the batch's own DocumentLine. Same batch-matching
+// as _lineQtyForBatch. Returns null when no line carries the batch (caller FLAGS it — never guesses a
+// share). Used to split a consolidated/export invoice into per-batch dispatch records so each batch
+// gets ITS OWN line qty, not the whole invoice total (the "full invoice qty on every batch" bug).
+function _lineDispatchForBatch(inv, batchNo) {
+  const target = String(batchNo == null ? '' : batchNo).trim();
+  if (!target) return null;
+  for (const l of ((inv && inv.DocumentLines) || [])) {
+    if (!l || typeof l !== 'object') continue;
+    const cands = [];
+    const push = v => { const s = (v == null ? '' : String(v)).trim(); if (s) cands.push(s); };
+    push(l.U_Batch); push(l.U_SunlocBatch); push(l.U_BatchNo); push(l.U_BatchNum);
+    if (Array.isArray(l.BatchNumbers)) for (const b of l.BatchNumbers) push(b && (b.BatchNumber || b.Batch));
+    for (const k of Object.keys(l)) { if (/^U_.*batch/i.test(k)) push(l[k]); }
+    if (cands.includes(target)) {
+      const q = parseFloat((((parseFloat(l.Quantity) || 0) * _sapUomScale(l))).toFixed(3));
+      const bx = parseInt(l.U_NO_BOXES, 10);
+      return { qty: q, boxes: Number.isFinite(bx) && bx > 0 ? bx : 0 };
     }
   }
   return null;
@@ -4969,24 +4998,48 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
     // v44O #3: ledger qty in Lakhs — prefer the authoritative total_qty_lakhs (from the
     // invoice_request, or SAP Σ Quantity which is itself in Lakhs). The old total_boxes/100 was
     // wrong: a box count is not Lakhs/100 (e.g. 4 boxes is not 0.04 Lakhs).
-    const qty = parseFloat(inv.total_qty_lakhs) > 0
+    const _fullQty = parseFloat(inv.total_qty_lakhs) > 0
       ? parseFloat(inv.total_qty_lakhs)
       : (parseFloat(inv.total_boxes) > 0 ? parseFloat(inv.total_boxes) / 100 : 0);
-    const boxes = parseInt(inv.total_boxes) || 0;
+    const _fullBoxes = parseInt(inv.total_boxes) || 0;
     const ts = new Date().toISOString();
-    // Insert dispatch record
+    // v46H #4: split a MULTI-batch / consolidated (export) invoice into ONE record PER batch, each
+    // carrying its OWN DocumentLine qty+boxes (_lineDispatchForBatch) — not the whole invoice total,
+    // which is the "full invoice qty shown against every batch" over-count (e.g. Eskay 188L on each
+    // of 26ZB081/26ZB079/…). A batch whose line can't be resolved is FLAGGED (qty/boxes 0 + remark)
+    // for re-allocation, never given the full share. SINGLE-batch invoices are UNCHANGED: one record,
+    // full qty — byte-for-byte the prior behaviour.
+    const _dispBatches = String(inv.batch_number || '').split(',').map(s => s.trim()).filter(Boolean);
+    let _dispPayload = null;
+    try { _dispPayload = inv.payload_json ? JSON.parse(inv.payload_json) : null; } catch { _dispPayload = null; }
+    let _dispAllocs;
+    if (_dispBatches.length > 1) {
+      _dispAllocs = _dispBatches.map(b => {
+        const d = _dispPayload ? _lineDispatchForBatch(_dispPayload, b) : null;
+        return d ? { batch: b, qty: d.qty, boxes: d.boxes, flagged: false }
+                 : { batch: b, qty: 0, boxes: 0, flagged: true };
+      });
+    } else {
+      _dispAllocs = [{ batch: (_dispBatches[0] || inv.batch_number), qty: _fullQty, boxes: _fullBoxes, flagged: false }];
+    }
+    // Insert dispatch record(s) — recId stays the FIRST record's id (preserves invoice→record linkage).
     try {
-      if (pgPool) {
-        await pgPool.query(
-          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-          [recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo || '', inv.sap_doc_num || '', remarks || '', ts, dispatchedBy || 'unknown']
-        );
-      } else {
-        db.prepare(
-          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
-           VALUES (?,?,?,?,?,?,?,?,?,?)`
-        ).run(recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo || '', inv.sap_doc_num || '', remarks || '', ts, dispatchedBy || 'unknown');
+      for (let _i = 0; _i < _dispAllocs.length; _i++) {
+        const a = _dispAllocs[_i];
+        const rid = _i === 0 ? recId : ('disprec_' + crypto.randomBytes(6).toString('hex'));
+        const rmk = (remarks || '') + (a.flagged ? ' [v46H: batch line unresolved in invoice — needs re-allocation]' : '');
+        if (pgPool) {
+          await pgPool.query(
+            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+            [rid, a.batch, inv.customer || '', a.qty, a.boxes, vehicleNo || '', inv.sap_doc_num || '', rmk, ts, dispatchedBy || 'unknown']
+          );
+        } else {
+          db.prepare(
+            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
+             VALUES (?,?,?,?,?,?,?,?,?,?)`
+          ).run(rid, a.batch, inv.customer || '', a.qty, a.boxes, vehicleNo || '', inv.sap_doc_num || '', rmk, ts, dispatchedBy || 'unknown');
+        }
       }
     } catch (e) {
       return res.status(500).json({ ok: false, error: 'Failed to write dispatch record: ' + e.message });
@@ -5006,10 +5059,13 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
     } catch (e) {
       console.warn('[v39 P10a] invoice update failed (record was created):', e.message);
     }
-    // Recompute dispatch_actuals for this batch — keeps downstream summaries fresh
+    // Recompute dispatch_actuals — v46H #4: per split batch (was the comma-joined string, which
+    // never matched an individual batch's summary), keeping downstream per-batch summaries fresh.
     try {
       if (typeof _recomputeDispatchActuals === 'function') {
-        await _recomputeDispatchActuals(inv.batch_number, vehicleNo || null, inv.sap_doc_num || null);
+        for (const _b of _dispAllocs.map(a => a.batch)) {
+          await _recomputeDispatchActuals(_b, vehicleNo || null, inv.sap_doc_num || null);
+        }
       }
     } catch (e) {
       console.warn('[v39 P10a] dispatch_actuals recompute failed:', e.message);
@@ -5681,18 +5737,25 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
       const boxes = scannedBoxes || parseInt(inv.total_boxes) || 0;
       const ts = new Date().toISOString();
       // Insert dispatch record
+      // v46H #2: per-box audit trail — the box labels scanned OUT at dispatch, stored as metadata on
+      // the (already qty-counted) record. Deliberately NOT written as tracking_scans rows, because
+      // _v40_dispatchedLakhs SUMS scan-out rows + dispatch records — separate scan rows would
+      // DOUBLE-COUNT the dispatched quantity. Pending = packed box numbers − these dispatched ones.
+      const _sLabels = Array.isArray(b.scannedLabels)
+        ? JSON.stringify(b.scannedLabels.map(s => ({ labelId: s.labelId || null, boxNumber: (s.boxNumber != null ? s.boxNumber : null), batchNumber: s.batchNumber || inv.batch_number, size: s.size || null })))
+        : '[]';
       try {
         if (pgPool) {
           await pgPool.query(
-            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-            [recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo, inv.sap_doc_num || '', remarks, ts, dispatchedBy]
+            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by", scanned_labels_json)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo, inv.sap_doc_num || '', remarks, ts, dispatchedBy, _sLabels]
           );
         } else {
           db.prepare(
-            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
-             VALUES (?,?,?,?,?,?,?,?,?,?)`
-          ).run(recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo, inv.sap_doc_num || '', remarks, ts, dispatchedBy);
+            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by, scanned_labels_json)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+          ).run(recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo, inv.sap_doc_num || '', remarks, ts, dispatchedBy, _sLabels);
         }
       } catch (e) {
         results.push({ invoiceId: invId, ok: false, error: 'Insert dispatch record failed: ' + e.message });
@@ -12971,7 +13034,7 @@ app.get('/api/tracking/state', async (req, res) => {
     if (pgPool) {
       const mapClosure = r => ({ ...r, batchNumber: r.batch_number, closedAt: r.closed_at, closedBy: r.closed_by, shortClose: r.short_close, shortReason: r.short_reason, shortBoxes: r.short_boxes });
       const mapWastage = r => ({ ...r, batchNumber: r.batch_number });
-      const mapDispatch = r => ({ ...r, batchNumber: r.batch_number, vehicleNo: r.vehicle_no, invoiceNo: r.invoice_no });
+      const mapDispatch = r => ({ ...r, batchNumber: r.batch_number, vehicleNo: r.vehicle_no, invoiceNo: r.invoice_no, scannedLabels: (() => { try { return JSON.parse(r.scanned_labels_json || '[]'); } catch { return []; } })() });
       const mapAlert = r => ({ ...r, labelId: r.label_id, batchNumber: r.batch_number, scanInTs: r.scan_in_ts, hoursStuck: r.hours_stuck });
       const mapRev = r => ({ reversedScanId: r.reversed_scan_id, labelId: r.label_id, batchNumber: r.batch_number, dept: r.dept, type: r.type });
       if (light) {
