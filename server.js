@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46J';
+const APP_BUILD = 'v46K';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -2997,6 +2997,15 @@ async function warmActualsCache() {
           if (!_lastProdByBatch[batch] || ld > _lastProdByBatch[batch]) _lastProdByBatch[batch] = ld;
         }
       }
+      // v46K: apportion each approved W/O-split parent's DPR gross across its children by their
+      // recorded box ranges (residual on the parent) so the whole app's per-batch gross — and thus
+      // the frozen WIP formulas fed by it — stops stranding the migrated boxes' WIP on the parent.
+      // Guarded: any failure leaves the un-apportioned map (prior behaviour), never blocks the warm.
+      try {
+        const _splitFams = await _v46k_loadSplitFamilies();
+        _v46k_applyGrossApportionment(_grossByBatch, _splitFams);
+        if (_splitFams.length) console.log('[v46K] split-gross apportioned across', _splitFams.length, 'W/O-split family(ies)');
+      } catch (e) { console.warn('[v46K] split-gross apportionment skipped (cumulative):', e.message); }
       console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries;', Object.keys(_grossByBatch).length, 'batches');
     } catch(e) { console.error('[DB] Actuals cache error:', e.message); }
   }
@@ -5288,6 +5297,86 @@ function _v44zj_lakhToBox(lakhs, size) {
   const ps = _V44ZJ_PACK_SIZES[String(size)];
   const q = parseFloat(lakhs) || 0;
   return ps ? Math.ceil(q / ps) : 0;
+}
+
+// ── v46K (confirmed by Ishan): W/O-split DPR-gross apportionment ─────────────────────────────────
+// A W/O split rebatches the child's box labels + scans to the child batch (see split/approve) but
+// NEVER touches production_actuals — DPR gross is machine/date/shift-keyed, not box-range-keyed, so
+// it physically can't split and stays wholly on the PARENT batch number. Every per-batch gross map
+// (cumulative _grossByBatch and month-sliced monthGross) therefore attributes the whole gross to the
+// parent and ZERO to each child. Downstream, the frozen Unscanned-WIP formula max(0, Gross−Salvage−
+// ScanIn) then reads, per the 26ZH079 case: parent = 54.00 gross with only its residual box scanned
+// in → 54−4.10−0.75 = 49.15 PHANTOM WIP; child = 0 gross with 44.25 scanned in → clamps to 0. The
+// batch family's true remaining WIP (4.90) is stranded on the parent and the child under-reports.
+//
+// Fix: at the read-model layer only, split the parent's gross across its children by their RECORDED
+// box ranges (wo_split_lines, written once at propose — the durable source, not the clobberable
+// per-order actualProd), residual to the parent. child_gross = child.boxes × packSize (the boxed
+// Lakhs that physically moved); parent keeps the remainder (its residual boxes + salvage + still-
+// unboxed WIP). Conserves to the parent's DPR total, leaves production_actuals PHYSICALLY WHOLE (DPR
+// closed-batch view unchanged), and the frozen formulas are untouched — only the `gross` they are
+// fed is corrected. Applied to BOTH gross maps so the AIM report, Reports B–E/G, planning WIP and
+// A-grade all agree. Existing splits self-heal on the next warm; no data repair.
+//
+// Loads the approved-split families once. Each family = { parentBatch, children:[{batch, boxed}] }.
+// `boxed` = boxes × packSize when the parent pack size is known (exact), else the line's stored
+// qty_lakhs (the cumulative-min planned split — a safe conserving fallback). Pack size comes from the
+// parent order in the warm planning-state cache; on a cold cache the family is skipped this cycle and
+// self-heals on the next warm (same discipline as the actuals injection).
+async function _v46k_loadSplitFamilies() {
+  let reqs, linesAll;
+  if (pgPool) {
+    reqs = (await pgPool.query(`SELECT id, source_order_id, source_batch_number FROM wo_split_requests WHERE status='approved'`)).rows;
+    linesAll = (await pgPool.query(`SELECT split_request_id, child_batch_number, boxes, qty_lakhs FROM wo_split_lines`)).rows;
+  } else {
+    reqs = db.prepare(`SELECT id, source_order_id, source_batch_number FROM wo_split_requests WHERE status='approved'`).all();
+    linesAll = db.prepare(`SELECT split_request_id, child_batch_number, boxes, qty_lakhs FROM wo_split_lines`).all();
+  }
+  if (!reqs || !reqs.length) return [];
+  const linesByReq = {};
+  for (const l of (linesAll || [])) (linesByReq[l.split_request_id] = linesByReq[l.split_request_id] || []).push(l);
+  const ordById = {};
+  const orders = (_planningStateCache && _planningStateCache.orders) || [];
+  for (const o of orders) if (o && o.id) ordById[o.id] = o;
+  const families = [];
+  for (const req of reqs) {
+    const parentBatch = req.source_batch_number && String(req.source_batch_number).trim();
+    if (!parentBatch) continue;
+    const lines = linesByReq[req.id] || [];
+    if (!lines.length) continue;
+    const parentOrder = ordById[req.source_order_id];
+    const ps = parentOrder ? (_V44ZJ_PACK_SIZES[String(parentOrder.size)] || 0) : 0;
+    const children = lines.map(l => {
+      const boxes = Number(l.boxes) || 0;
+      const boxed = ps > 0 ? boxes * ps : (parseFloat(l.qty_lakhs) || 0);
+      return { batch: l.child_batch_number, boxed: Math.max(0, boxed) };
+    }).filter(c => c.batch);
+    if (children.length) families.push({ parentBatch, children });
+  }
+  return families;
+}
+
+// Apply the apportionment to a per-batch gross map IN PLACE. Idempotent against a freshly-built map
+// (both maps are rebuilt from scratch each warm/request, so the parent still holds its full gross
+// here). Guard: never assign more than the parent's gross — if the boxed sum exceeds it (gross
+// under-reported, or a cross-month slice smaller than the boxed total), scale the children down
+// proportionally so the map still conserves and the parent residual never goes negative.
+function _v46k_applyGrossApportionment(map, families) {
+  if (!map || !families || !families.length) return;
+  for (const fam of families) {
+    const parentGross = map[fam.parentBatch];
+    if (!(parentGross > 0)) continue;                 // parent absent/zero in this map → nothing to split
+    const sum = fam.children.reduce((s, c) => s + (c.boxed || 0), 0);
+    if (!(sum > 0)) continue;
+    const scale = sum > parentGross ? parentGross / sum : 1;
+    let assigned = 0;
+    for (const c of fam.children) {
+      const g = +((c.boxed || 0) * scale).toFixed(3);
+      map[c.batch] = (map[c.batch] || 0) + g;         // child has no own production_actuals → base 0
+      assigned += g;
+    }
+    map[fam.parentBatch] = Math.max(0, +(parentGross - assigned).toFixed(3));
+  }
 }
 
 // v44ZJ Issue 2+5: single source of truth for applying a regularisation. Writes one CLEAN
@@ -13950,6 +14039,13 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
       for (const [bn, per] of Object.entries(_mcAgg)) {
         monthMachine[bn] = Object.entries(per).sort((a,b)=>b[1]-a[1])[0][0];
       }
+      // v46K: same W/O-split apportionment on the MONTH-sliced gross so Reports D/E/G (month mode)
+      // match the cumulative AIM report. Uses this month's parent gross as the total; the scale guard
+      // in _v46k_applyGrossApportionment caps a cross-month slice smaller than the boxed total.
+      try {
+        const _splitFams = await _v46k_loadSplitFamilies();
+        _v46k_applyGrossApportionment(monthGross, _splitFams);
+      } catch (e) { console.warn('[v46K] split-gross apportionment skipped (month):', e.message); }
     } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
 
     res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross, monthMachine });
