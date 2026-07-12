@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46I';
+const APP_BUILD = 'v46J';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -13145,6 +13145,55 @@ app.post('/api/tracking/state', async (req, res) => {
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
+// POST /api/repair/resplit-dispatch-records  (v46J point 3)
+// One-time repair for the export over-count on OLD records: existing multi-batch dispatch records
+// carry the WHOLE invoice qty on a single comma-joined batch_number row (e.g. Eskay 188L against
+// "26ZB081, 26ZB079, …"). Re-split each into per-batch records using the invoice's own DocumentLines
+// (_lineDispatchForBatch) — the same logic v46H applies to NEW dispatches. SAFETY: DRY-RUN by default;
+// pass ?apply=1 (or {apply:true}) to execute. Idempotent — only touches records whose batch_number
+// contains a comma. Unresolvable batch lines are FLAGGED (qty 0 + remark), never given a share. The
+// original record's id/ts/customer/vehicle/invoice_no are preserved on the first per-batch row.
+app.post('/api/repair/resplit-dispatch-records', async (req, res) => {
+  try {
+    const apply = String(req.query.apply || '') === '1' || req.body?.apply === true;
+    let recs;
+    if (pgPool) recs = (await pgPool.query(`SELECT * FROM tracking_dispatch_records WHERE batch_number LIKE '%,%'`)).rows;
+    else recs = db.prepare(`SELECT * FROM tracking_dispatch_records WHERE batch_number LIKE '%,%'`).all();
+    const plan = [];
+    let created = 0, deleted = 0, skipped = 0;
+    const _touchedBatches = new Set();
+    for (const r of recs) {
+      let inv;
+      if (pgPool) inv = (await pgPool.query(`SELECT * FROM invoices_received WHERE dispatch_record_id=$1 OR (sap_doc_num=$2 AND $2 <> '') LIMIT 1`, [r.id, r.invoice_no || ''])).rows[0];
+      else inv = db.prepare(`SELECT * FROM invoices_received WHERE dispatch_record_id=? OR (sap_doc_num=? AND ? <> '') LIMIT 1`).get(r.id, r.invoice_no || '', r.invoice_no || '');
+      let payload = null; try { payload = inv && inv.payload_json ? JSON.parse(inv.payload_json) : null; } catch { payload = null; }
+      const batches = String(r.batch_number).split(',').map(s => s.trim()).filter(Boolean);
+      if (!payload) { skipped++; plan.push({ recId: r.id, batch: r.batch_number, action: 'SKIP', reason: 'no invoice payload to split from — left unchanged' }); continue; }
+      const allocs = batches.map(b => {
+        const d = _lineDispatchForBatch(payload, b);
+        return d ? { batch: b, qty: d.qty, boxes: d.boxes, flagged: false } : { batch: b, qty: 0, boxes: 0, flagged: true };
+      });
+      plan.push({ recId: r.id, oldBatch: r.batch_number, oldQty: r.qty, oldBoxes: r.boxes, newRecords: allocs });
+      if (apply) {
+        if (pgPool) await pgPool.query(`DELETE FROM tracking_dispatch_records WHERE id=$1`, [r.id]);
+        else db.prepare(`DELETE FROM tracking_dispatch_records WHERE id=?`).run(r.id);
+        deleted++;
+        for (let i = 0; i < allocs.length; i++) {
+          const a = allocs[i];
+          const rid = i === 0 ? r.id : ('disprec_' + crypto.randomBytes(6).toString('hex'));
+          const rmk = (r.remarks || '') + ' [v46J re-split]' + (a.flagged ? ' [batch line unresolved in invoice — needs re-allocation]' : '');
+          if (pgPool) await pgPool.query(`INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by", scanned_labels_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`, [rid, a.batch, r.customer || '', a.qty, a.boxes, r.vehicle_no || '', r.invoice_no || '', rmk, r.ts, r.by || 'v46J-resplit', '[]']);
+          else db.prepare(`INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by, scanned_labels_json) VALUES (?,?,?,?,?,?,?,?,?,?,?)`).run(rid, a.batch, r.customer || '', a.qty, a.boxes, r.vehicle_no || '', r.invoice_no || '', rmk, r.ts, r.by || 'v46J-resplit', '[]');
+          created++; _touchedBatches.add(a.batch);
+        }
+      }
+    }
+    if (apply && typeof _recomputeDispatchActuals === 'function') {
+      for (const b of _touchedBatches) { try { await _recomputeDispatchActuals(b, null, null); } catch (e) { console.warn('[v46J re-split] recompute failed for', b, e.message); } }
+    }
+    res.json({ ok: true, dryRun: !apply, multiBatchRecordsFound: recs.length, wouldCreateRecords: plan.reduce((s, p) => s + (p.newRecords ? p.newRecords.length : 0), 0), created, deleted, skipped, note: apply ? 'APPLIED' : 'DRY-RUN — pass ?apply=1 to execute', plan: plan.slice(0, 300) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
 // GET /api/tracking/batch-summary/:batchNumber
 app.get('/api/tracking/batch-summary/:batchNumber', async (req, res) => {
   try {
@@ -13172,6 +13221,19 @@ app.get('/api/tracking/batch-summary/:batchNumber', async (req, res) => {
     });
     const labelStats = { total: labels.length, printed: labels.filter(l=>l.printed).length, voided: labels.filter(l=>l.voided).length };
     const dispatched = dispatch.reduce((s,d) => s + d.boxes, 0);
+    // v46J (point 4): the Batch-Tracker modal renders w.salvage / w.remelt per row, but tracking_wastage
+    // stores raw rows as { dept, type:'salvage'|'remelt', qty } — so raw rows showed 0.00 (and a batch
+    // with both a salvage and a remelt row showed two zero lines, e.g. 26ZG138). Aggregate per dept,
+    // summing qty by type, so the modal matches Report E's salvage/remelt.
+    const _wagg = {};
+    for (const w of wastage) {
+      const dept = w.dept;
+      if (!_wagg[dept]) _wagg[dept] = { dept, salvage: 0, remelt: 0 };
+      const q = parseFloat(w.qty) || 0;
+      if (w.type === 'salvage') _wagg[dept].salvage += q;
+      else if (w.type === 'remelt') _wagg[dept].remelt += q;
+    }
+    wastage = Object.values(_wagg);
     res.json({ ok: true, deptMap, labelStats, wastage, alerts, dispatched, batchNumber });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
