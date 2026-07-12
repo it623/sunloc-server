@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46K';
+const APP_BUILD = 'v46L';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -5300,7 +5300,7 @@ function _v44zj_lakhToBox(lakhs, size) {
 }
 
 // ── v46K (confirmed by Ishan): W/O-split DPR-gross apportionment ─────────────────────────────────
-// A W/O split rebatches the child's box labels + scans to the child batch (see split/approve) but
+// A W/O split — AND a re-customer split (v46L) — rebatches the child box labels + scans to the child batch (see split/approve) but
 // NEVER touches production_actuals — DPR gross is machine/date/shift-keyed, not box-range-keyed, so
 // it physically can't split and stays wholly on the PARENT batch number. Every per-batch gross map
 // (cumulative _grossByBatch and month-sliced monthGross) therefore attributes the whole gross to the
@@ -5332,26 +5332,54 @@ async function _v46k_loadSplitFamilies() {
     reqs = db.prepare(`SELECT id, source_order_id, source_batch_number FROM wo_split_requests WHERE status='approved'`).all();
     linesAll = db.prepare(`SELECT split_request_id, child_batch_number, boxes, qty_lakhs FROM wo_split_lines`).all();
   }
-  if (!reqs || !reqs.length) return [];
   const linesByReq = {};
   for (const l of (linesAll || [])) (linesByReq[l.split_request_id] = linesByReq[l.split_request_id] || []).push(l);
-  const ordById = {};
+  const ordById = {}, ordByBatch = {};
   const orders = (_planningStateCache && _planningStateCache.orders) || [];
-  for (const o of orders) if (o && o.id) ordById[o.id] = o;
+  for (const o of orders) { if (o && o.id) ordById[o.id] = o; if (o && o.batchNumber) ordByBatch[o.batchNumber] = o; }
   const families = [];
-  for (const req of reqs) {
+  const _packForSize = (o) => (o ? (_V44ZJ_PACK_SIZES[String(o.size)] || 0) : 0);
+
+  // (1) W/O splits — approved requests, children from wo_split_lines (box ranges written at propose).
+  for (const req of (reqs || [])) {
     const parentBatch = req.source_batch_number && String(req.source_batch_number).trim();
     if (!parentBatch) continue;
     const lines = linesByReq[req.id] || [];
     if (!lines.length) continue;
-    const parentOrder = ordById[req.source_order_id];
-    const ps = parentOrder ? (_V44ZJ_PACK_SIZES[String(parentOrder.size)] || 0) : 0;
+    const ps = _packForSize(ordById[req.source_order_id]);
     const children = lines.map(l => {
       const boxes = Number(l.boxes) || 0;
       const boxed = ps > 0 ? boxes * ps : (parseFloat(l.qty_lakhs) || 0);
       return { batch: l.child_batch_number, boxed: Math.max(0, boxed) };
     }).filter(c => c.batch);
     if (children.length) families.push({ parentBatch, children });
+  }
+
+  // (2) v46L: re-customer SPLITS — a distinct event from the W/O split but structurally identical
+  // (last N boxes + their scans rebatch to a suffixed child; production_actuals stays on the parent),
+  // so it must be apportioned the same way or the child shows a phantom. Full re-customers change only
+  // the customer field on the same batch (no child, no rebatch) and are correctly ignored: we select
+  // ONLY rows with a real child_batch_number and split_boxes>0 (action_type 'split' / 'split+convert').
+  // Pack size uses the canonical _V44ZJ_PACK_SIZES (the scan-matching box↔Lakhs map — the endpoint's
+  // own internal _PACK map differs and is not the box→Lakhs authority). Each row is one parent→child
+  // edge; multiple splits on one parent chain-subtract correctly (the applier re-reads the running
+  // parent gross per family). Nested re-splits of a child aren't ordered here — same limitation noted
+  // for W/O nested splits.
+  let rcRows = [];
+  try {
+    if (pgPool) rcRows = (await pgPool.query(`SELECT batch_number, child_batch_number, split_boxes FROM recustomer_log WHERE child_batch_number IS NOT NULL AND child_batch_number <> '' AND COALESCE(split_boxes,0) > 0`)).rows;
+    else        rcRows = db.prepare(`SELECT batch_number, child_batch_number, split_boxes FROM recustomer_log WHERE child_batch_number IS NOT NULL AND child_batch_number <> '' AND COALESCE(split_boxes,0) > 0`).all();
+  } catch (e) { rcRows = []; } // table absent on a very fresh boot — safe to skip
+  for (const r of (rcRows || [])) {
+    const parentBatch = r.batch_number && String(r.batch_number).trim();
+    const childBatch = r.child_batch_number && String(r.child_batch_number).trim();
+    if (!parentBatch || !childBatch) continue;
+    const boxes = Number(r.split_boxes) || 0;
+    if (!(boxes > 0)) continue;
+    const ps = _packForSize(ordByBatch[parentBatch]);
+    const boxed = ps > 0 ? boxes * ps : 0; // no per-child qty stored here; 0 → applier skips (never guesses)
+    if (!(boxed > 0)) continue;
+    families.push({ parentBatch, children: [{ batch: childBatch, boxed }] });
   }
   return families;
 }
