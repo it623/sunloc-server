@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46L</title>
+<title>Sunloc Tracking Suite v1.0 · build v46N</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -176,6 +176,11 @@ input[type=number]{font-family:var(--mono)}
 .scan-zone.success{border-color:var(--accent2);background:var(--accent2-light)}
 .scan-zone.error{border-color:var(--accent4);background:var(--accent4-light)}
 .scan-input{font-size:18px;font-family:var(--mono);text-align:center;border:2px solid var(--border2);border-radius:var(--r-sm);padding:12px;width:100%;max-width:320px;letter-spacing:2px}
+/* v46M: reconcile override — display the overridden value with the pre-override (raw) figure on hover */
+.rcv{position:relative;cursor:help;border-bottom:1px dotted rgba(14,116,144,.6)}
+.rcv .rcv-o{display:none;position:absolute;bottom:130%;left:50%;transform:translateX(-50%);background:#0f172a;color:#fbbf24;font-size:10px;font-weight:600;padding:3px 8px;border-radius:5px;white-space:nowrap;z-index:60;box-shadow:0 3px 10px rgba(0,0,0,.3);pointer-events:none}
+.rcv .rcv-o::after{content:"";position:absolute;top:100%;left:50%;transform:translateX(-50%);border:4px solid transparent;border-top-color:#0f172a}
+.rcv:hover .rcv-o{display:block}
 .scan-input:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(37,99,235,.15)}
 
 /* ── PROGRESS BAR ── */
@@ -579,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46L</p>
+      <p>Tracking Suite v1.0 · build v46N</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -610,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46L</p>
+      <p>Tracking Suite v1.0 · build v46N</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1274,6 +1279,31 @@ function canScanDept(batchNo, dept){
   const thisIn = _useSS ? (_ss(batchNo, dept).in + _localCnt(dept,'in'))
                         : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
   return thisIn < prevOut;
+}
+
+// v46M (confirmed by Ishan): genuine-prematurity check for the operator scan gate. The old gate used
+// !canScanDept(...), which ALSO closes on canScanDept's aggregate capacity clause (thisIn >= prevOut).
+// That capacity clause false-blocks operators whose full-history summary lags the server, or when
+// split/re-customer counts skew the batch aggregate — surfacing "Previous department has not closed
+// this batch yet" for a legitimately releasable box; admin skips the gate entirely, so it never sees
+// this (the reported operator-only, disappears-under-admin symptom). The server enforces per-label
+// upstream progression + duplicate authoritatively, and the per-label client check further down
+// hard-blocks true prematurity, so the client capacity heuristic is redundant and only harmful. This
+// helper blocks ONLY when the previous scannable stage has genuinely ZERO releases in full history.
+function _isPrematureScan(batchNo, dept){
+  const batch = getBatch(batchNo);
+  if(!batch) return false;                                                  // unknown batch → let the server decide
+  if(!batch.isPrinted && (dept==='printing'||dept==='pi')) return true;     // absolute: unprinted never at printing/PI
+  const flow = getBatchFlow(batch);
+  const idx = flow.indexOf(dept);
+  if(idx < 0) return false;
+  let prevScannable = null;
+  for(let i=idx-1;i>=0;i--){ if(SCANNABLE_STAGES.includes(flow[i])){ prevScannable=flow[i]; break; } }
+  if(!prevScannable) return false;                                          // AIM (first scannable) — never premature
+  const _localOut = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===prevScannable&&s.type==='out'&&s._local).length;
+  const prevOut = hasScanSummary() ? (_ss(batchNo, prevScannable).out + _localOut)
+                                   : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===prevScannable&&s.type==='out').length;
+  return prevOut === 0;                                                     // genuinely premature only
 }
 
 function checkAlerts(){
@@ -2204,7 +2234,7 @@ function recordScan(labelId, dept, type, operator, parsed){
   if(type==='in'  && alreadyIn)  return {ok:false,msg:'Box already scanned IN at this department'};
   if(type==='out' && alreadyOut) return {ok:false,msg:'Box already scanned OUT at this department'};
 
-  if(currentDept!=='admin' && !canScanDept(label.batchNumber, dept)){
+  if(currentDept!=='admin' && _isPrematureScan(label.batchNumber, dept)){
     return {ok:false,msg:'Previous department has not closed this batch yet'};
   }
 
@@ -2268,7 +2298,12 @@ function recordScan(labelId, dept, type, operator, parsed){
     if(result && result.duplicate){
       // Server rejected — another device already scanned this label
       state.scans=state.scans.filter(s=>s.id!==scan.id);
-      toast('❌ Already scanned '+type.toUpperCase()+' at '+dept.toUpperCase()+' — duplicate rejected','#dc2626', 4000);
+      // v46M (confirmed by Ishan): same wording as the client precheck (line ~2210). The two layers fire
+      // on the SAME condition (this box already scanned that direction) — the client catches it when the
+      // prior scan is in the loaded window, the server when it has aged out — so a single message avoids
+      // the "two different errors, no duplicate labels" confusion. "duplicate" (implying a duplicate
+      // LABEL) is dropped; it's the same box already scanned.
+      toast('❌ Box already scanned '+type.toUpperCase()+' at this department','#dc2626', 4000);
     } else if(result && result.blocked){
       // v40 P18.14b: Server rejected due to upstream-progression rule (per-label gating).
       // Roll back local scan immediately and tell operator clearly what's wrong.
@@ -2699,6 +2734,31 @@ async function loadRetiredBatchesTrk(){
 // return the admin's typed Gross/A-Grade/Packing/WIP/Wastage, so every report (A–G) reflects them.
 window._reconOverrides = window._reconOverrides || {};
 function _reconOverride(bn){ return bn ? (window._reconOverrides[String(bn).toUpperCase()]||null) : null; }
+// v46M: render an overridden report value with its pre-override (raw) figure surfaced on hover.
+// `on` gates the wrap so non-reconciled cells are byte-identical to before. origText is the small
+// muted popup label (e.g. "was 61.24L (computed)").
+function _rcvCell(dispHtml, origText, on){ return on ? `<span class="rcv">${dispHtml}<span class="rcv-o">${origText}</span></span>` : dispHtml; }
+// v46M: the "reconciled" badge shown on a reconciled batch's name cell in every report (A–G).
+function _reconBadge(on, title){
+  if(!on) return '';
+  const t = (title || 'Reconciled — admin-overridden figures take precedence across all reports; hover a value for its original').replace(/"/g,'&quot;');
+  return ` <span class="badge" style="font-size:8px;background:#0e7490;color:#fff;cursor:help" title="${t}">RECONCILED</span>`;
+}
+// v46N: assemble the pre-override ("was …") tooltip strings for a reconciled batch, computed from the
+// raw scan/DPR figures via the {raw:true} opt-in. Returns null for non-reconciled batches so callers
+// render byte-identically. `.title` is a consolidated one-line original-values string for the badge
+// tooltip (used by every report A–G); Report B additionally uses the per-field strings for per-cell
+// hovers. Cheap: the raw compute runs only for the (few) reconciled batches.
+function _reconTips(bn){
+  if(!_reconOverride(bn)) return null;
+  const a = getBatchAGrade(bn, 'aim', {raw:true}) || {};
+  const w = getBatchWIPBreakdown(bn, {raw:true}) || {};
+  const _t = (v,u)=> 'was '+(u==='%'?fmt(v||0,2)+'%':fmt(v||0)+'L')+' (computed)';
+  const title = `Pre-reconcile originals (computed) — Gross ${fmt(w.grossProd||0)}L · Inspected ${fmt(a.inspected||0)}L · A-Grade ${fmt(a.aGrade||0)}L · Salvage ${fmt(a.salvage||0)}L · Remelt ${fmt(a.remelt||0)}L · Packed ${fmt(w.packIn||0)}L · WIP ${fmt(w.totalWIP||0)}L · A-Grade% ${fmt(a.pct||0,2)}%`;
+  return { on:true, title,
+    gross:_t(w.grossProd), inspected:_t(a.inspected), aGrade:_t(a.aGrade), salvage:_t(a.salvage),
+    remelt:_t(a.remelt), packed:_t(w.packIn), wip:_t(w.totalWIP), pct:_t(a.pct,'%') };
+}
 function _reconGross(b){ const o=b?_reconOverride(b.batchNumber):null; return o&&o.gross!=null ? o.gross : (b?(b.actualProd||b.actualQty||0):0); }
 async function loadReconcileOverridesTrk(){
   try{
@@ -2712,10 +2772,11 @@ async function loadReconcileOverridesTrk(){
   }catch(e){ /* keep prior overrides on transient failure */ }
 }
 
-function getBatchWIPBreakdown(batchNo){
+function getBatchWIPBreakdown(batchNo, opts){
   const batch = getBatch(batchNo);
   if(!batch) return null;
-  if(_isRetired(batchNo)){
+  const _raw = !!(opts && opts.raw);   // v46N: raw=true fetches the pre-override figures (for the hover tooltip)
+  if(_isRetired(batchNo) && !_raw){
     // Retired: WIP excluded to 0 (batch declared physically gone). Gross kept (it was produced);
     // A-Grade is computed separately from scan data, so it is unaffected by this exclusion.
     const _g = batch.actualProd || batch.actualQty || 0;
@@ -2725,7 +2786,7 @@ function getBatchWIPBreakdown(batchNo){
   }
   // v44F Issue#1: admin reconciliation override — authoritative typed totals replace scan-derived WIP.
   const _ovW = _reconOverride(batchNo);
-  if(_ovW){
+  if(_ovW && !_raw){
     const g=_ovW.gross||0, pk=_ovW.packing||0, w=_ovW.wip||0, ws=_ovW.wastage||0;
     return { grossProd:g, aimIn:0, aimOut:0, packIn:pk, packOut:pk, preAIM:0, aimWIP:0, printWIP:0,
              piWIP:0, toPackTransit:0, packWIP:0, packedNotDisp:0, totalWIP:w,
@@ -2812,7 +2873,7 @@ function getBatchWIPBreakdown(batchNo){
   };
 }
 
-function getBatchAGrade(batchNo, stage){
+function getBatchAGrade(batchNo, stage, opts){
   // A-Grade formula: OUT / (OUT + Salvage + Remelt) * 100
   // Uses scanSummary (full history, no LIMIT) when available
   // Falls back to state.scans (recent only) if scanSummary not yet loaded
@@ -2820,8 +2881,8 @@ function getBatchAGrade(batchNo, stage){
   if(!batch) return {inspected:0,aGrade:0,pct:0,salvage:0,remelt:0,wip:0};
 
   // v44F Issue#1: admin reconciliation override — A-Grade(lakhs) + Wastage are admin-typed; keep the
-  // frozen A-Grade% shape (Out/(Out+Salvage+Remelt)) using those values.
-  const _ovA = _reconOverride(batchNo);
+  // frozen A-Grade% shape (Out/(Out+Salvage+Remelt)) using those values. v46N: raw skips the override.
+  const _ovA = (opts && opts.raw) ? null : _reconOverride(batchNo);
   if(_ovA){
     const a=_ovA.aGrade||0, ws=_ovA.wastage||0, denom=a+ws;
     return { inspected:a+ws, aGrade:a, pct: denom>0?(a/denom*100):0, salvage:ws, remelt:0, wip:_ovA.wip||0, reconciled:true };
@@ -2929,9 +2990,10 @@ function _v41_clearAgradeMonthCache(){ _v41_agradeMonthCache = {}; }
 // single decision point so every report (A, D, E, G, batch card, exports) stays consistent.
 // Reports must call _v41_ensureAgradeMonthLoaded() once before their batch loop so the cache
 // is warm; if it isn't (e.g. fetch failed), this transparently falls back to cumulative.
-function _v41_agradeFor(batchNo, stage){
+function _v41_agradeFor(batchNo, stage, opts){
   // v44F Issue#1: reconciliation override wins over both cumulative and month-attributed A-Grade.
-  const _ov = _reconOverride(batchNo);
+  // v46N: raw skips the override to expose the pre-override figure for the hover tooltip.
+  const _ov = (opts && opts.raw) ? null : _reconOverride(batchNo);
   if(_ov){ const a=_ov.aGrade||0, ws=_ov.wastage||0, d=a+ws; return {inspected:a+ws,aGrade:a,pct:d>0?(a/d*100):0,salvage:ws,remelt:0,wip:_ov.wip||0,reconciled:true}; }
   if (_v41_useMonthAttributed) {
     const md = _v41_agradeMonthCache[_trkSelectedMonth];
@@ -4605,9 +4667,14 @@ function renderDeptScan(dept){
 
   <!-- ORANGE LABELS — PI only -->
   ${dept==='pi' ? (()=>{
-    const printedBatches = activeBatches.filter(b=>b.isPrinted);
-    if(!printedBatches.length) return '';
-    const orangeLabels = state.labels.filter(l=>l.isOrange&&!l.voided&&printedBatches.some(b=>b.batchNumber===l.batchNumber));
+    // v46M (confirmed by Ishan): the PI orange panel previously filtered to getActiveBatchesForDept('pi')
+    // — which drops closed batches and any batch failing the canScanDept/isStageComplete gate — so orange
+    // labels on printed batches that had closed or aged out of the PI-active set silently vanished here
+    // while remaining in the Label Generation panel. Orange labels are only ever generated for printed
+    // batches at PI scan-in, so we now source them the SAME way Label Generation does — every non-voided
+    // orange label — restoring the panel.
+    const orangeLabels = state.labels.filter(l=>l.isOrange&&!l.voided);
+    if(!orangeLabels.length) return '';
     const unprinted = orangeLabels.filter(l=>!l.printed);
     return `
   <div class="card mb-16" style="border:2px solid var(--orange);background:rgba(234,88,12,0.04)">
@@ -4948,6 +5015,16 @@ function handleOrangeScanUI(result, dept, type, zoneEl, resultEl, el){
   if(el) el.focus();
 }
 
+// v46M (confirmed by Ishan): auto-refocusing the scan input after a completed scan pops the soft
+// keyboard on a touch device, which slides over the result/error message before the operator can read
+// it. Refocus only on non-touch (a hardware scanner acts as a keyboard and needs focus for the next
+// read); on touch, blur so the message stays visible. Desktop behaviour is unchanged.
+const _isTouchScanDevice = (typeof window!=='undefined') && (('ontouchstart' in window) || (navigator.maxTouchPoints > 0));
+function _refocusScan(dept, type){
+  const n = document.getElementById(`scan-${type}-${dept}`);
+  if(!n) return;
+  if(_isTouchScanDevice){ n.blur(); } else { n.focus(); }
+}
 function processScanInput(dept,type){
   const el=document.getElementById(`scan-${type}-${dept}`);
   const resultEl=document.getElementById(`scan-result-${type}-${dept}`);
@@ -4974,7 +5051,7 @@ function processScanInput(dept,type){
       resultEl.innerHTML=`<div class="alert alert-danger">❌ ${result.msg}</div>`;
       setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; },4000);
     }
-    el.focus();
+    _refocusScan(dept,type);
   };
 
   // First attempt
@@ -4993,7 +5070,7 @@ function processScanInput(dept,type){
     setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (firstResult.warning||firstResult.newOrangeLabel) ? 8000 : 3500);
     renderDeptScan(dept);
     // FIX 3: Re-focus scan input after DOM rebuild — continuous scanning without re-clicking
-    setTimeout(()=>{ document.getElementById(`scan-${type}-${dept}`)?.focus(); }, 50);
+    setTimeout(()=>_refocusScan(dept,type), 50);
   } else if(firstResult.msg === 'Label not found' && serverUrl){
     zoneEl.className='scan-zone';
     resultEl.innerHTML=`<div class="alert" style="background:rgba(255,171,0,0.1);border:1px solid rgba(255,171,0,0.4);padding:8px 12px">🔄 Fetching label from server...</div>`;
@@ -5057,19 +5134,19 @@ function processScanInput(dept,type){
         resultEl.innerHTML=`<div class="alert alert-success">${_msg3}</div>${warnHtml}${orangeHtml}`;
         setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; }, (retry.warning||retry.newOrangeLabel) ? 8000 : 3000);
         renderDeptScan(dept);
-        setTimeout(()=>{ document.getElementById(`scan-${type}-${dept}`)?.focus(); }, 50);
+        setTimeout(()=>_refocusScan(dept,type), 50);
       } else {
         zoneEl.className='scan-zone error';
         resultEl.innerHTML=`<div class="alert alert-danger">❌ ${retry.msg}</div>`;
         setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; },4000);
-        setTimeout(()=>{ document.getElementById(`scan-${type}-${dept}`)?.focus(); }, 50);
+        setTimeout(()=>_refocusScan(dept,type), 50);
       }
     })();
   } else {
     zoneEl.className='scan-zone error';
     resultEl.innerHTML=`<div class="alert alert-danger">❌ ${firstResult.msg}</div>`;
     setTimeout(()=>{ zoneEl.className='scan-zone'; resultEl.innerHTML=''; },4000);
-    el.focus();
+    _refocusScan(dept,type);
   }
 }
 
@@ -9687,21 +9764,22 @@ function _v41_renderReportGInner(){
     }
 
     const alertFlag = (overInspected||noGross) ? `<span title="${overInspected?'Inspected > Gross Production — check DPR':'No DPR entry'}" style="color:var(--accent4);cursor:help;margin-left:4px">⚠️</span>` : '';
+    const _rt = _reconTips(b.batchNumber), _rc = !!_rt;   // v46N: reconcile badge + per-cell originals (also shown in Report D)
 
     return `<tr ${overInspected||noGross?'style="background:rgba(220,38,38,0.04)"':''}>
-      <td class="td-bold td-mono">${b.batchNumber}${alertFlag}${crossFlag}</td>
+      <td class="td-bold td-mono">${b.batchNumber}${_reconBadge(_rc,_rt&&_rt.title)}${alertFlag}${crossFlag}</td>
       <td class="text-sm">${b.customer||'—'}</td>
       <td class="text-sm">${b.colour||'—'}</td>
       <td class="td-mono">${b.size}</td>
       <td>${b.isPrinted?'<span class="badge badge-purple">PTD</span>':'<span class="badge badge-gray">UP</span>'}</td>
       <td class="td-mono" style="white-space:nowrap;font-size:11px">${b.startDate?new Date(b.startDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
       <td class="td-mono" style="white-space:nowrap;font-size:11px">${b.endDate?new Date(b.endDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
-      <td class="td-mono">${grossProd>0?fmt(grossProd)+'L':'—'}</td>
-      <td class="td-mono">${ag.inspected>0?fmt(ag.inspected)+'L':'—'}</td>
-      <td class="td-mono green">${ag.aGrade>0?fmt(ag.aGrade)+'L':'—'}</td>
-      <td class="td-mono" style="color:var(--amber)">${ag.salvage>0?fmt(ag.salvage)+'L':'—'}</td>
-      <td class="td-mono" style="color:var(--red)">${ag.remelt>0?fmt(ag.remelt)+'L':'—'}</td>
-      <td class="td-mono" style="color:var(--green)">${wip && wip.packIn>0?fmt(wip.packIn)+'L':'—'}</td>
+      <td class="td-mono">${_rcvCell(grossProd>0?fmt(grossProd)+'L':'—', _rt&&_rt.gross, _rc)}</td>
+      <td class="td-mono">${_rcvCell(ag.inspected>0?fmt(ag.inspected)+'L':'—', _rt&&_rt.inspected, _rc)}</td>
+      <td class="td-mono green">${_rcvCell(ag.aGrade>0?fmt(ag.aGrade)+'L':'—', _rt&&_rt.aGrade, _rc)}</td>
+      <td class="td-mono" style="color:var(--amber)">${_rcvCell(ag.salvage>0?fmt(ag.salvage)+'L':'—', _rt&&_rt.salvage, _rc)}</td>
+      <td class="td-mono" style="color:var(--red)">${_rcvCell(ag.remelt>0?fmt(ag.remelt)+'L':'—', _rt&&_rt.remelt, _rc)}</td>
+      <td class="td-mono" style="color:var(--green)">${_rcvCell(wip && wip.packIn>0?fmt(wip.packIn)+'L':'—', _rt&&_rt.packed, _rc)}</td>
       <td style="min-width:150px">${wipBreakdown}</td>
       <td>
         <span style="font-size:13px;font-weight:700;color:${pctCls}">${ag.inspected>0?fmt(ag.pct,2)+'%':'—'}</span>
@@ -10325,7 +10403,10 @@ function _v41_renderReportFInner(){
     ...(hasScanSummary()
       ? [...monthBatchNos].filter(bn => _ss(bn,'aim').in > 0)
       : state.scans.filter(s=>s.dept==='aim'&&s.type==='in'&&monthBatchNos.has(s.batchNumber)).map(s=>s.batchNumber))
-  ])].filter(Boolean).filter(bn=>!_isRetired(bn)); // v44F Issue#2: retired drop out of Dept Handover Gaps
+  ])].filter(Boolean).filter(bn=>!_isRetired(bn))
+     // v46M (confirmed by Ishan): a batch reconciled to 0 WIP is fully accounted — its transition gap is
+     // resolved, so it drops out of Dept Handover Gaps (same as retired). Reconciled-to-nonzero WIP stays.
+     .filter(bn=>{ const _o=_reconOverride(bn); return !(_o && (_o.wip||0)<=0.005); }); // v44F Issue#2: retired drop out of Dept Handover Gaps
 
   // Machine filter
   if(filterMachine){
@@ -10643,17 +10724,33 @@ function _rptBRow(batchNo, dept, U){
   const aimWaste = _bMd ? (((_bMd.wastage||{})[batchNo]||{}).aim || {salvage:0,remelt:0}) : getTotalWastage(batchNo,'aim');
   // v46E (confirmed by Ishan): Unscanned WIP = Gross − Salvage − Scan In (= Gross − Inspected).
   // Remelt is NOT deducted here — it's post scan-in, so it lives in the AIM Dept WIP leg instead.
-  const prodWip=_isRetired(batchNo)?0:Math.max(0, grossProd - aimWaste.salvage - aimInQty);
+  const _prodWipRaw=_isRetired(batchNo)?0:Math.max(0, grossProd - aimWaste.salvage - aimInQty);
   const firstIn=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').sort((a,b)=>new Date(a.ts)-new Date(b.ts))[0];
   const hrs=firstIn?hoursAgo(firstIn.ts):0;
   const _closed = isStageComplete(batchNo,dept);
-  const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
+  // v46M (confirmed by Ishan): admin reconcile override takes precedence across ALL reports. When a
+  // batch is reconciled, its authoritative quantities (Gross, WIP, Wastage, Packed) come from the typed
+  // override — not raw scans/DPR — exactly as getBatchWIPBreakdown already does; A-Grade already routes
+  // through the override via _v41_agradeFor/getBatchAGrade. Physical box counts (inn/out) stay raw. The
+  // pre-override (raw) figures are preserved in reconOrig so reports can surface them on hover. Reconciled
+  // WIP is placed on the production-WIP leg with the dept legs zeroed — matches getBatchWIPBreakdown's
+  // single-total collapse and the point-2 agreement (reconcile-to-0 ⇒ every WIP figure 0).
+  const _rcOv = _reconOverride(batchNo);
+  let _gross=grossProd, _prodWip=_prodWipRaw, _wip=wip, _wipQty=wipQty, _w=w, _aimWaste=aimWaste, _reconOrig=null;
+  if(_rcOv){
+    _reconOrig = { grossProd, prodWip:_prodWipRaw, wip, wipQty, wastage:(w?w.total:0),
+                   aimSalvage:(aimWaste?aimWaste.salvage:0), avail:Math.max(0,grossProd-(aimWaste?aimWaste.salvage:0)) };
+    if(_rcOv.gross!=null) _gross=_rcOv.gross;
+    const _ovWip=_rcOv.wip||0; _prodWip=_ovWip; _wip=0; _wipQty=0;               // batch-total WIP → prod leg; dept legs 0
+    const _ovWaste=_rcOv.wastage||0; _w={total:_ovWaste,salvage:_ovWaste,remelt:0}; _aimWaste={salvage:_ovWaste,remelt:0};
+  }
+  const statusKey = _closed ? 'closed' : (_wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
   // v46E: Available to Scan In = Gross − Salvage (salvage removed pre-box; remelt is post scan-in). Matches Report E.
-  const _avail = Math.max(0, grossProd - aimWaste.salvage);
+  const _avail = Math.max(0, _gross - _aimWaste.salvage);
   const floor = _ffsfSet.has(normMcId(getBatch(batchNo)?.machineId || _ghostMc45y[batchNo])) ? 'ffsf' : 'gf';
-  return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, w, wastageBoxes, wip, wipQty,
-           grossProd, aimInBoxes, aimInQty, aimWaste, prodWip, hrs, closed:_closed, statusKey,
-           avail:_avail, floor, retired:_retiredRows45z.has(batchNo) };
+  return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, w:_w, wastageBoxes, wip:_wip, wipQty:_wipQty,
+           grossProd:_gross, aimInBoxes, aimInQty, aimWaste:_aimWaste, prodWip:_prodWip, hrs, closed:_closed, statusKey,
+           avail:_avail, floor, retired:_retiredRows45z.has(batchNo), reconciled:!!_rcOv, reconOrig:_reconOrig };
 }
 
 // Per-dept batch set — the batches that appear in dept `dept`'s table. AIM (v45ZW 6B, confirmed by
@@ -10836,7 +10933,8 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       // into the exact names the render block below uses — render markup is byte-for-byte unchanged.
       const R = _rptBRow(batchNo, dept, U);
       const batch=R.batch, _bSize45y=R.size, inn=R.inn, out=R.out, w=R.w, wip=R.wip, wipQty=R.wipQty,
-            grossProd=R.grossProd, aimWaste=R.aimWaste, prodWip=R.prodWip, hrs=R.hrs;
+            grossProd=R.grossProd, aimWaste=R.aimWaste, prodWip=R.prodWip, hrs=R.hrs,
+            _rc=R.reconciled, _ro=R.reconOrig||{};   // v46M: reconcile flag + raw originals for hover tooltip
       // v45ZZ item 3 (confirmed by Ishan): drop all-zero month rows. A batch can enter the set via
       // LIFETIME scan activity (_ss) yet have ZERO activity in the SELECTED month — its month-sliced
       // values are all 0 (e.g. prior-month retired/carry-forward batches). Such rows add nothing to any
@@ -10871,31 +10969,31 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const _cfBadge45 = (_isCarryFwd45 && !R.retired) ? ' <span class="badge" style="font-size:8px;background:#f59e0b;color:#fff" title="Carry-forward — produced in a prior month (or ghost); still holding WIP this month, not this month\'s production">◄ CARRY-FWD</span>' : '';
       if (_isAimDept) {
         html+=`<tr>
-          <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired (as-is-where-is) — WIP excluded per v44 rule; month gross shown for DPR parity">RETIRED</span>':''}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+          <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired (as-is-where-is) — WIP excluded per v44 rule; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
           <td class="text-sm">${batch?.customer||'-'}</td>
           <td class="text-sm">${batch?.colour||'-'}</td>
           <td class="td-mono text-sm">${batch?.pcCode||'-'}</td>
-          <td class="td-mono">${grossProd>0?fmt(grossProd)+'L':'—'}</td>
-          <td class="td-mono text-sm" style="color:var(--amber)">${(aimWaste.salvage+aimWaste.remelt)>0?fmt(aimWaste.salvage+aimWaste.remelt)+'L':'—'}</td>
-          <td class="td-mono">${_avail>0?fmt(_avail)+'L':'—'}</td>
+          <td class="td-mono">${_rcvCell(grossProd>0?fmt(grossProd)+'L':'—', 'was '+fmt(_ro.grossProd||0)+'L (computed)', _rc)}</td>
+          <td class="td-mono text-sm" style="color:var(--amber)">${_rcvCell((aimWaste.salvage+aimWaste.remelt)>0?fmt(aimWaste.salvage+aimWaste.remelt)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>
+          <td class="td-mono">${_rcvCell(_avail>0?fmt(_avail)+'L':'—', 'was '+fmt(_ro.avail||0)+'L (computed)', _rc)}</td>
           <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
-          <td class="td-mono ${prodWip>0?'amber':''}">${prodWip>0?fmt(prodWip)+'L':'—'}</td>
+          <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
           <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,_bSize45y))}L)</span></td>
-          <td class="td-mono fw-bold">${wip}</td>
-          <td class="td-mono">${fmt(wipQty)}</td>
+          <td class="td-mono fw-bold">${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}</td>
+          <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
           <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
           <td>${statusBadge}</td>
         </tr>`;
       } else {
         html+=`<tr>
-        <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+        <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
         <td class="text-sm">${batch?.customer||'-'}</td>
-        <td class="td-mono ${prodWip>0?'amber':''}">${prodWip>0?fmt(prodWip)+'L':'—'}</td>
+        <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
         <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
         <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,_bSize45y))}L)</span></td>
-        ${hasWastage?`<td class="td-mono text-sm" style="color:var(--amber)">${w.total>0?fmt(w.total)+'L':'—'}</td>`:''}
-        <td class="td-mono fw-bold">${wip}</td>
-        <td class="td-mono">${fmt(wipQty)}</td>
+        ${hasWastage?`<td class="td-mono text-sm" style="color:var(--amber)">${_rcvCell(w.total>0?fmt(w.total)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>`:''}
+        <td class="td-mono fw-bold">${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}</td>
+        <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
         <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
         <td>${statusBadge}</td>
       </tr>`;
@@ -11014,10 +11112,10 @@ _scrollIntoReportIfFirstView('C');
       html+=`<tr>
         <td class="td-bold td-mono">${b.machineId||'—'}</td>
         <td class="td-mono">${getMachineFloor(b.machineId)}</td>
-        <td class="td-mono">${b.batchNumber}</td>
+        <td class="td-mono">${b.batchNumber}${_reconBadge(!!_reconOverride(b.batchNumber),(_reconTips(b.batchNumber)||{}).title)}</td>
         <td class="text-sm">${b.customer||'-'}</td>
-        <td class="td-mono">${fmt(grossProd)}</td>
-        <td class="td-mono">${fmt(packedQty)}</td>
+        <td class="td-mono">${_rcvCell(fmt(grossProd), (_reconTips(b.batchNumber)||{}).gross, !!_reconOverride(b.batchNumber))}</td>
+        <td class="td-mono">${_rcvCell(fmt(packedQty), (_reconTips(b.batchNumber)||{}).packed, !!_reconOverride(b.batchNumber))}</td>
         <td class="td-mono ${wipDays>std?'red':''}">${fmt(wipDays,1)}d</td>
         <td>${statusBadge}</td>
       </tr>`;
@@ -11292,7 +11390,7 @@ function _v41_renderReportAInner(){
 
     html+=`<div class="mb-20" style="border-bottom:1px solid var(--border);padding-bottom:16px">
       <div class="flex justify-between mb-8">
-        <div class="fw-bold">${b.batchNumber} — ${b.customer||''} | ${b.machineId} | Size ${b.size}</div>
+        <div class="fw-bold">${b.batchNumber}${_reconBadge(!!_reconOverride(b.batchNumber),(_reconTips(b.batchNumber)||{}).title)} — ${b.customer||''} | ${b.machineId} | Size ${b.size}</div>
         <span class="badge ${ag.pct>=95?'badge-green':ag.pct>=90?'badge-amber':'badge-red'}">${fmt(ag.pct,1)}% A-Grade</span>
       </div>
       <div class="grid-4 mb-8">
@@ -11448,6 +11546,11 @@ function _v41_renderReportEInnerBody(){
         grossProd = 0; // month data loaded but this batch had no production this month
       }
     }
+    // v46M (confirmed by Ishan): admin reconcile override wins over both cumulative and month-sliced
+    // gross, so Report E shows the typed Gross — precedence across A–G. (A-Grade already overrides via
+    // _v41_agradeFor.) Physical scan counts below stay raw.
+    const _rcE = _reconOverride(b.batchNumber);
+    if (_rcE && _rcE.gross != null) grossProd = _rcE.gross;
     const useSS = hasScanSummary();
     // Fallback dataset used when scan-summary API hasn't loaded — covers all 5 fallback ternaries below
     const scansForBatch = state.scans.filter(s=>s.batchNumber===b.batchNumber);
@@ -11697,7 +11800,7 @@ function _v41_renderReportEInnerBody(){
         return `<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}" data-pp-num="${r._agNum||0}" data-pp-den="${r._agDen||0}">
         <td class="sticky-col" style="left:0;min-width:70px;border-right:1px solid #d4b896">${r.machine}</td>
         <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
-        <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}</td>
+        <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}${_reconBadge(!!_reconOverride(r.batchNo),(_reconTips(r.batchNo)||{}).title)}</td>
         <td class="sticky-col" style="left:210px;min-width:180px;border-right:2px solid #d4b896">${r.customer||'—'}</td>
         <td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td><td style="white-space:nowrap;font-size:11px">${r.startDate?new Date(r.startDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td><td style="white-space:nowrap;font-size:11px">${r.endDate?new Date(r.endDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
         <td>${fmtN(r._plannedQty)}</td><td>${fmtN(r._grossProd)}</td>
