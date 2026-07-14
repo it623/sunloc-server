@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46U';
+const APP_BUILD = 'v46V';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -5332,19 +5332,21 @@ function _dispatchQtyBoxes(batchNumber, qtyLakhs, recordedBoxes) {
   const ord = batchNumber ? orders.find(o => o && o.batchNumber === batchNumber) : null;
   const ps = ord ? (_V44ZJ_PACK_SIZES[String(ord.size)] || 0) : 0;
   if (!(q0 > 0) || !ps) return { qty: q0, boxes: rb, recalibrated: false, skip: false }; // can't derive; leave as-is
-  const orderQty     = parseFloat(ord.qty) || 0;
-  const plannedBoxes = orderQty > 0 ? Math.ceil(orderQty / ps) : 0;
-  const isExport     = _isExportZoneSrv(ord.zone);
-  // "implausible as Lakhs" = derived boxes exceed the order's planned boxes (a dispatch can't ship >1.25×
-  // the batch's plan), or — when the order qty is unknown — an absolute >200 L sanity bound.
-  const tooBig = (bx, q) => (plannedBoxes > 0 ? bx > plannedBoxes * 1.25 : q > 200);
+  const isExport = _isExportZoneSrv(ord.zone);
+  // v46V (dry-run finding): decide on an ABSOLUTE qty cutoff, NOT a ratio against the order. A single
+  // batch's whole gross is ≤ ~60 L (and orders ≥50 L are split across dispatches), so a dispatch-record
+  // qty above ~100 L in LAKH units is not a domestic Lakh value — it's either an EXPORT "THOUSAND" figure
+  // (×100 → ÷100 to Lakhs, per the planning app's UoM rule) or a corrupt domestic figure. At/below 100 L
+  // the qty is a plausible Lakh value: taken as-is, boxes derived from pack size. The earlier order-ratio
+  // test wrongly flagged normal records where the dispatch legitimately exceeds the order's planned boxes
+  // (over-production) — e.g. 25.4 L against a 17 L order, and 26U101's 5 L → 0.05 L.
+  const IMPLAUSIBLE_LAKH = 100;
   let q = q0, recalibrated = false;
-  if (tooBig(Math.ceil(q0 / ps), q0)) {
-    if (isExport) { q = q0 * 0.01; recalibrated = true; }        // THOUSAND → LAKH (planning-app UoM rule)
-    else return { qty: q0, boxes: rb, recalibrated: false, skip: true }; // domestic corruption → manual review
+  if (q0 > IMPLAUSIBLE_LAKH) {
+    if (isExport) { q = q0 * 0.01; recalibrated = true; }        // THOUSAND → LAKH
+    else return { qty: q0, boxes: rb, recalibrated: false, skip: true }; // corrupt domestic → manual review
   }
   let boxes = Math.ceil(q / ps);
-  if (tooBig(boxes, q)) return { qty: q0, boxes: rb, recalibrated: false, skip: true }; // still implausible after ÷100
   if (rb > 0 && !recalibrated) boxes = rb;                       // keep a real box count if qty wasn't corrected
   return { qty: q, boxes, recalibrated, skip: false };
 }
