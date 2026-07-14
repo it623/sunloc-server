@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46S';
+const APP_BUILD = 'v46U';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -5025,12 +5025,14 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
     if (_dispBatches.length > 1) {
       _dispAllocs = _dispBatches.map(b => {
         const d = _dispPayload ? _lineDispatchForBatch(_dispPayload, b) : null;
-        return d ? { batch: b, qty: d.qty, boxes: _dispatchBoxesFor(b, d.qty, d.boxes), flagged: false } // v46S: derive boxes if line qty present but boxes 0
-                 : { batch: b, qty: 0, boxes: 0, flagged: true };
+        if (!d) return { batch: b, qty: 0, boxes: 0, flagged: true };
+        const _qb = _dispatchQtyBoxes(b, d.qty, d.boxes); // v46U: recalibrate export qty (÷100) + derive boxes
+        return { batch: b, qty: _qb.qty, boxes: _qb.boxes, flagged: false };
       });
     } else {
       const _sb = (_dispBatches[0] || inv.batch_number);
-      _dispAllocs = [{ batch: _sb, qty: _fullQty, boxes: _dispatchBoxesFor(_sb, _fullQty, _fullBoxes), flagged: false }]; // v46S: derive boxes when invoice total_boxes is 0
+      const _qb = _dispatchQtyBoxes(_sb, _fullQty, _fullBoxes); // v46U: recalibrate export qty + derive boxes
+      _dispAllocs = [{ batch: _sb, qty: _qb.qty, boxes: _qb.boxes, flagged: false }];
     }
     // Insert dispatch record(s) — recId stays the FIRST record's id (preserves invoice→record linkage).
     try {
@@ -5306,15 +5308,45 @@ function _v44zj_lakhToBox(lakhs, size) {
 // recorded box count is 0 but a dispatched qty is present, derive boxes from the batch's pack size —
 // the SAME basis planned boxes use (ceil(Lakhs / packSizeLakhs)) — so a fully-dispatched lot nets to
 // zero. Never overrides a real (>0) box count; returns 0 (unchanged) if the batch size can't be resolved.
-function _dispatchBoxesFor(batchNumber, qtyLakhs, recordedBoxes) {
-  const b = Math.round(parseFloat(recordedBoxes) || 0);
-  if (b > 0) return b;                       // a real box count is already present — never override it
-  const q = parseFloat(qtyLakhs) || 0;
-  if (!(q > 0) || !batchNumber) return b;
+// v46U (confirmed by Ishan): server replica of the planning app's isExportZone (planning.html). Export
+// SAP lines use UoM "THOUSAND" (qty in thousands → ×0.01 to Lakhs); those orders carry an export zone.
+const _EXPORT_ZONES_SRV = ['EXPORT','BANGLADESH','NEPAL','MUMBAI'];
+function _isExportZoneSrv(zone) {
+  if (!zone) return false;
+  const z = String(zone).toUpperCase();
+  return _EXPORT_ZONES_SRV.some(ez => z.includes(ez));
+}
+// v46U (confirmed by Ishan): a dispatch record must carry the CORRECT qty + box count so the Planning
+// truck binner nets remaining boxes. Two problems seen in the v46S dry-run:
+//  1. SAP-reconciled/deemed invoices arrive with total_boxes = 0 → record written boxes=0.
+//  2. EXPORT invoices store qty in "THOUSAND" units (×100) that were never recalibrated on the dispatch
+//     record — e.g. 26ZA051 recorded 4550, which is really 45.5 L (26 boxes); another really 375 boxes.
+// This resolves both against the batch's order: derive boxes from pack size, and for EXPORT batches whose
+// qty is implausibly large for the order (the ×100 THOUSAND form) apply the planning app's ×0.01 rule to
+// get Lakhs, then derive boxes. A genuinely-corrupt DOMESTIC qty (can't exceed the order) is left for
+// manual review (skip=true). Returns { qty (Lakhs), boxes, recalibrated, skip }.
+function _dispatchQtyBoxes(batchNumber, qtyLakhs, recordedBoxes) {
+  const rb = Math.round(parseFloat(recordedBoxes) || 0);
+  const q0 = parseFloat(qtyLakhs) || 0;
   const orders = (_planningStateCache && _planningStateCache.orders) || [];
-  const ord = orders.find(o => o && o.batchNumber === batchNumber);
-  if (!ord || ord.size == null || ord.size === '') return b;   // size unknown → can't derive; leave as-is
-  return _v44zj_lakhToBox(q, ord.size);      // ceil(qtyLakhs / packSizeLakhs) — matches the planned-box basis
+  const ord = batchNumber ? orders.find(o => o && o.batchNumber === batchNumber) : null;
+  const ps = ord ? (_V44ZJ_PACK_SIZES[String(ord.size)] || 0) : 0;
+  if (!(q0 > 0) || !ps) return { qty: q0, boxes: rb, recalibrated: false, skip: false }; // can't derive; leave as-is
+  const orderQty     = parseFloat(ord.qty) || 0;
+  const plannedBoxes = orderQty > 0 ? Math.ceil(orderQty / ps) : 0;
+  const isExport     = _isExportZoneSrv(ord.zone);
+  // "implausible as Lakhs" = derived boxes exceed the order's planned boxes (a dispatch can't ship >1.25×
+  // the batch's plan), or — when the order qty is unknown — an absolute >200 L sanity bound.
+  const tooBig = (bx, q) => (plannedBoxes > 0 ? bx > plannedBoxes * 1.25 : q > 200);
+  let q = q0, recalibrated = false;
+  if (tooBig(Math.ceil(q0 / ps), q0)) {
+    if (isExport) { q = q0 * 0.01; recalibrated = true; }        // THOUSAND → LAKH (planning-app UoM rule)
+    else return { qty: q0, boxes: rb, recalibrated: false, skip: true }; // domestic corruption → manual review
+  }
+  let boxes = Math.ceil(q / ps);
+  if (tooBig(boxes, q)) return { qty: q0, boxes: rb, recalibrated: false, skip: true }; // still implausible after ÷100
+  if (rb > 0 && !recalibrated) boxes = rb;                       // keep a real box count if qty wasn't corrected
+  return { qty: q, boxes, recalibrated, skip: false };
 }
 
 // ── v46K (confirmed by Ishan): W/O-split DPR-gross apportionment ─────────────────────────────────
@@ -5866,10 +5898,12 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
       }
       // Build dispatch record
       const recId = 'tdr_' + crypto.randomBytes(8).toString('hex');
-      const qty = parseFloat(inv.total_qty_lakhs) > 0
+      const _qtyRaw = parseFloat(inv.total_qty_lakhs) > 0
         ? parseFloat(inv.total_qty_lakhs)
         : (parseInt(inv.total_boxes) > 0 ? parseInt(inv.total_boxes) / 100 : 0);
-      const boxes = _dispatchBoxesFor(inv.batch_number, qty, scannedBoxes || parseInt(inv.total_boxes) || 0); // v46S: derive from qty+pack size if 0
+      const _disp = _dispatchQtyBoxes(inv.batch_number, _qtyRaw, scannedBoxes || parseInt(inv.total_boxes) || 0); // v46U: recalibrate export qty + derive boxes
+      const qty = _disp.qty;
+      const boxes = _disp.boxes;
       const ts = new Date().toISOString();
       // Insert dispatch record
       // v46H #2: per-box audit trail — the box labels scanned OUT at dispatch, stored as metadata on
@@ -6134,10 +6168,11 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
     }
     const recId = 'disprec_deemed_' + crypto.randomBytes(6).toString('hex');
     let boxes = parseInt(inv.total_boxes) || 0;
-    const qtyLakhs = parseFloat(inv.total_qty_lakhs) > 0
+    let qtyLakhs = parseFloat(inv.total_qty_lakhs) > 0
       ? parseFloat(inv.total_qty_lakhs)
       : (boxes > 0 ? boxes / 100 : 0);
-    boxes = _dispatchBoxesFor(inv.batch_number, qtyLakhs, boxes); // v46S: derive boxes when deemed invoice total_boxes is 0
+    const _disp = _dispatchQtyBoxes(inv.batch_number, qtyLakhs, boxes); // v46U: recalibrate export qty + derive boxes
+    qtyLakhs = _disp.qty; boxes = _disp.boxes;
     const ts = new Date().toISOString();
     const dispatchRemarks = `DEEMED: ${reason}${remarks ? ' | ' + remarks : ''}`;
     // Insert dispatch record
@@ -8812,38 +8847,59 @@ app.post('/api/admin/rebuild-actuals-from-dpr', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// v46S (confirmed by Ishan — Option 2): BACKFILL dispatch-record box counts. Records written with
-// boxes=0 (SAP-reconciled / deemed invoices whose total_boxes was 0) never shrank the Planning truck
-// plan by boxes, so fully-invoiced+dispatched lots (26T078) lingered. This derives boxes from each 0-box
-// record's own qty + the batch's pack size (same basis as planned boxes), UPDATEs the record, then
-// recomputes each affected batch's dispatch actuals so the truck binner nets it. Idempotent (only
-// touches boxes<=0 rows; re-running finds none). Dry-run by default — pass {"confirm":true} to write.
+// v46U (confirmed by Ishan): BACKFILL dispatch-record box counts (and recalibrate export qty). Records
+// written with boxes=0 (SAP-reconciled / deemed invoices whose total_boxes was 0) never shrank the
+// Planning truck plan by boxes. Some of those are EXPORT invoices whose qty was stored in "THOUSAND"
+// units (×100) and never recalibrated on the dispatch record (26ZA051 recorded 4550 = really 45.5 L /
+// 26 boxes). For each 0-box record this resolves the batch's order: derives boxes from pack size, and for
+// export batches whose qty is implausibly large applies the planning app's ÷100 rule (writing the
+// corrected qty AND boxes). A corrupt DOMESTIC qty is left untouched for manual review. Then it recomputes
+// each affected batch's dispatch actuals so the truck binner nets it. Idempotent. Dry-run by default —
+// pass {"confirm":true} to write.
 app.post('/api/admin/backfill-dispatch-boxes', async (req, res) => {
   try {
     const confirm = (req.body && req.body.confirm) === true;
-    // Ensure the batch→size lookup is fresh (PG keeps _planningStateCache warm; reload defensively).
+    // Ensure the batch→order lookup is fresh (PG keeps _planningStateCache warm; reload defensively).
     if (pgPool) { try { const pr = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1'); if (pr.rows[0]) _planningStateCache = JSON.parse(pr.rows[0].state_json); } catch(_) {} }
     let recs;
     if (pgPool) recs = (await pgPool.query(`SELECT id, batch_number, qty, boxes FROM tracking_dispatch_records WHERE COALESCE(boxes,0) = 0 AND COALESCE(qty,0) > 0`)).rows;
     else        recs = db.prepare(`SELECT id, batch_number, qty, boxes FROM tracking_dispatch_records WHERE COALESCE(boxes,0) = 0 AND COALESCE(qty,0) > 0`).all();
-    let wouldFix = 0, skipped = 0, written = 0;
-    const affected = new Set(); const samples = [];
+    let boxesOnly = 0, recalibrated = 0, skippedNoSize = 0, implausible = 0, written = 0;
+    const affected = new Set(); const samples = []; const recalibratedSamples = []; const implausibleSamples = [];
     for (const r of (recs || [])) {
-      const derived = _dispatchBoxesFor(r.batch_number, r.qty, 0);
-      if (!(derived > 0)) { skipped++; continue; }   // batch size unknown → can't derive; leave as-is
-      wouldFix++;
-      if (samples.length < 25) samples.push({ id: r.id, batch: r.batch_number, qty: parseFloat(r.qty)||0, boxes: derived });
+      const q0 = parseFloat(r.qty) || 0;
+      const qb = _dispatchQtyBoxes(r.batch_number, r.qty, 0);
+      if (qb.skip) {                                   // corrupt domestic qty (or still implausible after ÷100)
+        implausible++;
+        if (implausibleSamples.length < 25) implausibleSamples.push({ id: r.id, batch: r.batch_number, qty: q0 });
+        continue;
+      }
+      if (!(qb.boxes > 0)) { skippedNoSize++; continue; } // no order/size → can't derive
       if (r.batch_number) affected.add(r.batch_number);
-      if (confirm) {
-        if (pgPool) await pgPool.query(`UPDATE tracking_dispatch_records SET boxes=$1 WHERE id=$2`, [derived, r.id]);
-        else        db.prepare(`UPDATE tracking_dispatch_records SET boxes=? WHERE id=?`).run(derived, r.id);
-        written++;
+      if (qb.recalibrated) {
+        recalibrated++;
+        if (recalibratedSamples.length < 25) recalibratedSamples.push({ id: r.id, batch: r.batch_number, fromQty: q0, toQty: qb.qty, boxes: qb.boxes });
+        if (confirm) {
+          if (pgPool) await pgPool.query(`UPDATE tracking_dispatch_records SET qty=$1, boxes=$2 WHERE id=$3`, [qb.qty, qb.boxes, r.id]);
+          else        db.prepare(`UPDATE tracking_dispatch_records SET qty=?, boxes=? WHERE id=?`).run(qb.qty, qb.boxes, r.id);
+          written++;
+        }
+      } else {
+        boxesOnly++;
+        if (samples.length < 25) samples.push({ id: r.id, batch: r.batch_number, qty: q0, boxes: qb.boxes });
+        if (confirm) {
+          if (pgPool) await pgPool.query(`UPDATE tracking_dispatch_records SET boxes=$1 WHERE id=$2`, [qb.boxes, r.id]);
+          else        db.prepare(`UPDATE tracking_dispatch_records SET boxes=? WHERE id=?`).run(qb.boxes, r.id);
+          written++;
+        }
       }
     }
     if (confirm) { for (const bn of affected) { try { await _recomputeDispatchActuals(bn, null, null); } catch(_) {} } }
     res.json({ ok: true, dryRun: confirm !== true, scanned: (recs || []).length,
-               rowsToFix: wouldFix, skippedNoSize: skipped, rowsWritten: written,
-               batchesAffected: affected.size, actualsRecomputed: confirm ? affected.size : 0, samples });
+               boxesOnlyFixed: boxesOnly, exportRecalibrated: recalibrated, rowsToFix: boxesOnly + recalibrated,
+               skippedNoSize, implausibleQty: implausible, rowsWritten: written,
+               batchesAffected: affected.size, actualsRecomputed: confirm ? affected.size : 0,
+               samples, recalibratedSamples, implausibleSamples });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
