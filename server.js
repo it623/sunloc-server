@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46Q';
+const APP_BUILD = 'v46S';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -5025,11 +5025,12 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
     if (_dispBatches.length > 1) {
       _dispAllocs = _dispBatches.map(b => {
         const d = _dispPayload ? _lineDispatchForBatch(_dispPayload, b) : null;
-        return d ? { batch: b, qty: d.qty, boxes: d.boxes, flagged: false }
+        return d ? { batch: b, qty: d.qty, boxes: _dispatchBoxesFor(b, d.qty, d.boxes), flagged: false } // v46S: derive boxes if line qty present but boxes 0
                  : { batch: b, qty: 0, boxes: 0, flagged: true };
       });
     } else {
-      _dispAllocs = [{ batch: (_dispBatches[0] || inv.batch_number), qty: _fullQty, boxes: _fullBoxes, flagged: false }];
+      const _sb = (_dispBatches[0] || inv.batch_number);
+      _dispAllocs = [{ batch: _sb, qty: _fullQty, boxes: _dispatchBoxesFor(_sb, _fullQty, _fullBoxes), flagged: false }]; // v46S: derive boxes when invoice total_boxes is 0
     }
     // Insert dispatch record(s) — recId stays the FIRST record's id (preserves invoice→record linkage).
     try {
@@ -5297,6 +5298,23 @@ function _v44zj_lakhToBox(lakhs, size) {
   const ps = _V44ZJ_PACK_SIZES[String(size)];
   const q = parseFloat(lakhs) || 0;
   return ps ? Math.ceil(q / ps) : 0;
+}
+// v46S (confirmed by Ishan — Option 2): a dispatch record MUST carry a box count, because the Planning
+// truck binner nets remaining boxes (planned − dispatched) per lot. SAP-reconciled / deemed invoices
+// routinely arrive with total_boxes = 0 (qty only), so the record was written boxes=0 and the lot never
+// shrank by boxes on the truck plan (26T078 lingered after being fully invoiced + dispatched). When the
+// recorded box count is 0 but a dispatched qty is present, derive boxes from the batch's pack size —
+// the SAME basis planned boxes use (ceil(Lakhs / packSizeLakhs)) — so a fully-dispatched lot nets to
+// zero. Never overrides a real (>0) box count; returns 0 (unchanged) if the batch size can't be resolved.
+function _dispatchBoxesFor(batchNumber, qtyLakhs, recordedBoxes) {
+  const b = Math.round(parseFloat(recordedBoxes) || 0);
+  if (b > 0) return b;                       // a real box count is already present — never override it
+  const q = parseFloat(qtyLakhs) || 0;
+  if (!(q > 0) || !batchNumber) return b;
+  const orders = (_planningStateCache && _planningStateCache.orders) || [];
+  const ord = orders.find(o => o && o.batchNumber === batchNumber);
+  if (!ord || ord.size == null || ord.size === '') return b;   // size unknown → can't derive; leave as-is
+  return _v44zj_lakhToBox(q, ord.size);      // ceil(qtyLakhs / packSizeLakhs) — matches the planned-box basis
 }
 
 // ── v46K (confirmed by Ishan): W/O-split DPR-gross apportionment ─────────────────────────────────
@@ -5851,7 +5869,7 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
       const qty = parseFloat(inv.total_qty_lakhs) > 0
         ? parseFloat(inv.total_qty_lakhs)
         : (parseInt(inv.total_boxes) > 0 ? parseInt(inv.total_boxes) / 100 : 0);
-      const boxes = scannedBoxes || parseInt(inv.total_boxes) || 0;
+      const boxes = _dispatchBoxesFor(inv.batch_number, qty, scannedBoxes || parseInt(inv.total_boxes) || 0); // v46S: derive from qty+pack size if 0
       const ts = new Date().toISOString();
       // Insert dispatch record
       // v46H #2: per-box audit trail — the box labels scanned OUT at dispatch, stored as metadata on
@@ -6115,10 +6133,11 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
       });
     }
     const recId = 'disprec_deemed_' + crypto.randomBytes(6).toString('hex');
-    const boxes = parseInt(inv.total_boxes) || 0;
+    let boxes = parseInt(inv.total_boxes) || 0;
     const qtyLakhs = parseFloat(inv.total_qty_lakhs) > 0
       ? parseFloat(inv.total_qty_lakhs)
       : (boxes > 0 ? boxes / 100 : 0);
+    boxes = _dispatchBoxesFor(inv.batch_number, qtyLakhs, boxes); // v46S: derive boxes when deemed invoice total_boxes is 0
     const ts = new Date().toISOString();
     const dispatchRemarks = `DEEMED: ${reason}${remarks ? ' | ' + remarks : ''}`;
     // Insert dispatch record
@@ -8793,6 +8812,41 @@ app.post('/api/admin/rebuild-actuals-from-dpr', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v46S (confirmed by Ishan — Option 2): BACKFILL dispatch-record box counts. Records written with
+// boxes=0 (SAP-reconciled / deemed invoices whose total_boxes was 0) never shrank the Planning truck
+// plan by boxes, so fully-invoiced+dispatched lots (26T078) lingered. This derives boxes from each 0-box
+// record's own qty + the batch's pack size (same basis as planned boxes), UPDATEs the record, then
+// recomputes each affected batch's dispatch actuals so the truck binner nets it. Idempotent (only
+// touches boxes<=0 rows; re-running finds none). Dry-run by default — pass {"confirm":true} to write.
+app.post('/api/admin/backfill-dispatch-boxes', async (req, res) => {
+  try {
+    const confirm = (req.body && req.body.confirm) === true;
+    // Ensure the batch→size lookup is fresh (PG keeps _planningStateCache warm; reload defensively).
+    if (pgPool) { try { const pr = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1'); if (pr.rows[0]) _planningStateCache = JSON.parse(pr.rows[0].state_json); } catch(_) {} }
+    let recs;
+    if (pgPool) recs = (await pgPool.query(`SELECT id, batch_number, qty, boxes FROM tracking_dispatch_records WHERE COALESCE(boxes,0) = 0 AND COALESCE(qty,0) > 0`)).rows;
+    else        recs = db.prepare(`SELECT id, batch_number, qty, boxes FROM tracking_dispatch_records WHERE COALESCE(boxes,0) = 0 AND COALESCE(qty,0) > 0`).all();
+    let wouldFix = 0, skipped = 0, written = 0;
+    const affected = new Set(); const samples = [];
+    for (const r of (recs || [])) {
+      const derived = _dispatchBoxesFor(r.batch_number, r.qty, 0);
+      if (!(derived > 0)) { skipped++; continue; }   // batch size unknown → can't derive; leave as-is
+      wouldFix++;
+      if (samples.length < 25) samples.push({ id: r.id, batch: r.batch_number, qty: parseFloat(r.qty)||0, boxes: derived });
+      if (r.batch_number) affected.add(r.batch_number);
+      if (confirm) {
+        if (pgPool) await pgPool.query(`UPDATE tracking_dispatch_records SET boxes=$1 WHERE id=$2`, [derived, r.id]);
+        else        db.prepare(`UPDATE tracking_dispatch_records SET boxes=? WHERE id=?`).run(derived, r.id);
+        written++;
+      }
+    }
+    if (confirm) { for (const bn of affected) { try { await _recomputeDispatchActuals(bn, null, null); } catch(_) {} } }
+    res.json({ ok: true, dryRun: confirm !== true, scanned: (recs || []).length,
+               rowsToFix: wouldFix, skippedNoSize: skipped, rowsWritten: written,
+               batchesAffected: affected.size, actualsRecomputed: confirm ? affected.size : 0, samples });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // v45Z (confirmed by Ishan): REPAIR existing export-invoice quantities written before the UoM fix.
 // For every invoices_received row whose payload_json lines include a THOUSAND-UoM line, recompute
 // total_qty_lakhs with the per-line scale; where the linked tracking_dispatch_records row still
@@ -9647,6 +9701,20 @@ app.get('/api/actuals/machine-summary', async (req, res) => {
     // avgPerDay = SUM(day_qty) ÷ COUNT(producing days). Identical to DPR by construction; the partial
     // "today" day is naturally excluded when it has no production and included (as DPR does) when it
     // does. Per-order partial-day attribution is a scheduling concern, unaffected by this number.
+    // v46R (confirmed by Ishan — v46Q follow-up): the math already mirrors plant-cum, but the DATE
+    // WINDOW didn't. This endpoint summed ALL production_actuals (all-time), while the DPR Plant Report's
+    // default view is "This Month" — from the 1st of the current month to today (from=<month>-01,
+    // to=<today>, exactly what dpr.html passes to /api/dpr/plant-cum). Any prior-month rows (e.g. June)
+    // shifted the all-time average off the July figure Ishan compares against (MC30 25.6 vs DPR 25.84).
+    // Fix: default the window to the current month, matching DPR "This Month" day-for-day. Optional
+    // from/to query params override it (kept for flexibility); planning calls it with none → current month.
+    const _pad = n => String(n).padStart(2, '0');
+    const _now = new Date();
+    const _defFrom = `${_now.getFullYear()}-${_pad(_now.getMonth() + 1)}-01`;
+    const _defTo   = `${_now.getFullYear()}-${_pad(_now.getMonth() + 1)}-${_pad(_now.getDate())}`;
+    const _isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+    const winFrom = _isDate(req.query.from) ? String(req.query.from).slice(0, 10) : _defFrom;
+    const winTo   = _isDate(req.query.to)   ? String(req.query.to).slice(0, 10)   : _defTo;
     let rows;
     if (pgPool) {
       const r = await pgPool.query(`
@@ -9658,14 +9726,15 @@ app.get('/api/actuals/machine-summary', async (req, res) => {
         FROM (
           SELECT machine_id, date, SUM(qty_lakhs) AS day_qty
           FROM production_actuals
+          WHERE date >= $1 AND date <= $2
           GROUP BY machine_id, date
           HAVING SUM(qty_lakhs) > 0
         ) t
-        GROUP BY machine_id`);
+        GROUP BY machine_id`, [winFrom, winTo]);
       rows = r.rows;
     } else {
-      // SQLite fallback — same rule as plant-cum: producing days only (day_qty>0).
-      const allActuals = db.prepare(`SELECT machine_id, date, SUM(qty_lakhs) AS day_qty FROM production_actuals GROUP BY machine_id, date`).all();
+      // SQLite fallback — same rule as plant-cum: producing days only (day_qty>0), current-month window.
+      const allActuals = db.prepare(`SELECT machine_id, date, SUM(qty_lakhs) AS day_qty FROM production_actuals WHERE date >= ? AND date <= ? GROUP BY machine_id, date`).all(winFrom, winTo);
       const machineAcc = {};
       allActuals.forEach(a => {
         const q = parseFloat(a.day_qty || 0);
@@ -9688,7 +9757,7 @@ app.get('/api/actuals/machine-summary', async (req, res) => {
         avgPerDay: distinctDays > 0 ? parseFloat((totalQty / distinctDays).toFixed(3)) : 0,
         firstDate: r.first_date,
         lastDate:  r.last_date,
-        note: 'Total produced ÷ days-with-production — same rule as the DPR Plant Report daily average.'
+        note: 'Total produced ÷ days-with-production this month — same rule and window as the DPR Plant Report (This Month) daily average.'
       };
     });
     res.json({ ok: true, machines });
@@ -13988,6 +14057,7 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
     // dated within YYYY-MM, matching DPR per-machine totals.
     const monthGross = {};
     const monthMachine = {};
+    let _splitFamsForClient = []; // v46R #5: filled below with W/O + re-customer split families for the client
     try {
       // v45Y (confirmed by Ishan): attribution parity with warmActualsCache. The old query grouped
       // by RAW batch_number and dropped NULL-batch rows entirely — but the warm cache (which feeds
@@ -14029,10 +14099,11 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
       try {
         const _splitFams = await _v46k_loadSplitFamilies();
         _v46k_applyGrossApportionment(monthGross, _splitFams);
+        _splitFamsForClient = _splitFams; // v46R #5: surface to client so Report C rolls child→parent
       } catch (e) { console.warn('[v46K] split-gross apportionment skipped (month):', e.message); }
     } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
 
-    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross, monthMachine });
+    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross, monthMachine, splitFamilies: _splitFamsForClient });
   } catch(err) {
     console.error('[agrade-by-month]', err.message);
     res.status(500).json({ ok:false, error: err.message });

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46Q</title>
+<title>Sunloc Tracking Suite v1.0 · build v46S</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46Q</p>
+      <p>Tracking Suite v1.0 · build v46S</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46Q</p>
+      <p>Tracking Suite v1.0 · build v46S</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3006,7 +3006,7 @@ function _v41_agradeFor(batchNo, stage, opts){
   // v44F Issue#1: reconciliation override wins over both cumulative and month-attributed A-Grade.
   // v46N: raw skips the override to expose the pre-override figure for the hover tooltip.
   const _ov = (opts && opts.raw) ? null : _reconOverride(batchNo);
-  if(_ov){ const a=_ov.aGrade||0, ws=_ov.wastage||0, d=a+ws; return {inspected:a+ws,aGrade:a,pct:d>0?(a/d*100):0,salvage:ws,remelt:0,wip:_reconWip(_ov),reconciled:true}; } /* v46Q */
+  if(_ov){ const a=_ov.aGrade||0, ws=_ov.wastage||0, d=a+ws; return {inspected:a+ws,aGrade:a,pct:d>0?(a/d*100):0,salvage:ws,remelt:0,wip:(_isRetired(batchNo)?0:_reconWip(_ov)),reconciled:true}; } /* v46R: retired ⇒ 0 WIP */
   if (_v41_useMonthAttributed) {
     const md = _v41_agradeMonthCache[_trkSelectedMonth];
     if (md) {
@@ -10790,7 +10790,7 @@ function _rptBRow(batchNo, dept, U){
     _reconOrig = { grossProd, prodWip:_prodWipRaw, wip, wipQty, wastage:(w?w.total:0),
                    aimSalvage:(aimWaste?aimWaste.salvage:0), avail:Math.max(0,grossProd-(aimWaste?aimWaste.salvage:0)) };
     if(_rcOv.gross!=null) _gross=_rcOv.gross;
-    const _ovWip=_reconWip(_rcOv); _prodWip=_ovWip; _wip=0; _wipQty=0;           // v46Q: derived reconcile WIP → prod leg; dept legs 0
+    const _ovWip=_isRetired(batchNo)?0:_reconWip(_rcOv); _prodWip=_ovWip; _wip=0; _wipQty=0;  // v46R: retired ⇒ 0 WIP (physically gone); else derived reconcile WIP → prod leg
     const _ovWaste=_rcOv.wastage||0; _w={total:_ovWaste,salvage:_ovWaste,remelt:0}; _aimWaste={salvage:_ovWaste,remelt:0};
   }
   const statusKey = _closed ? 'closed' : (_wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
@@ -11032,7 +11032,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
           <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
           <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
           <td>${statusBadge}</td>
-        </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td colspan="10"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
+        </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td></td><td colspan="9"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
       } else {
         html+=`<tr>
         <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
@@ -11045,7 +11045,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
         <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
         <td>${statusBadge}</td>
-      </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td colspan="${hasWastage?6:5}"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
+      </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td></td><td colspan="${hasWastage?5:4}"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
       }
       _bIn+=inn; _bOut+=out; _bW+=w.total; _bWipBx+=wip; _bWipQ+=wipQty; _bProd+=prodWip; _bGross+=grossProd; _bAvail+=_avail; _bN++;
     });
@@ -11106,20 +11106,37 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
         fSize=window._rptCSize||'', fPC=window._rptCPC||'', fColour=window._rptCColour||'',
         fSF=window._rptCStartFrom||'', fST=window._rptCStartTo||'';
   const monthBatches = getProdMonthBatches(true).filter(b=>!b.deleted && b.batchNumber);
-  const _mk = (b)=>{
-    const wb = getBatchWIPBreakdown(b.batchNumber) || {};
-    const grossProd = wb.grossProd!=null ? wb.grossProd : (b.actualProd||b.actualQty||0);
-    const _ro = _reconOverride(b.batchNumber);
-    const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
-    const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
-    const packed = _ro ? (wb.packIn||0) : boxToLakh(packedOut, b.size);
+  // v46R #5 (confirmed by Ishan): split-family roll-up. The server apportions a split batch's gross/
+  // A-Grade/WIP from parent to child (e.g. 26ZH079 → 26ZH079-A). Report C compares Packable vs Planned,
+  // so a parent whose boxes moved to its child showed a phantom Short (planned 50, packed 0). Fold each
+  // child's Packed + A-Grade WIP back into its parent and drop the child's own row, so the family nets
+  // against the parent's single planned order — the same parent→child attribution the other reports do.
+  const _rcFams = _v41_agradeMonthCache[_trkSelectedMonth]?.splitFamilies || [];
+  const _rcKids = {}; const _rcChildSet = new Set();
+  _rcFams.forEach(f=>{ const pB=String(f.parentBatch||'').toUpperCase(); (f.children||[]).forEach(c=>{ const cB=String(c.batch||'').toUpperCase(); if(!pB||!cB) return; _rcChildSet.add(cB); (_rcKids[pB]=_rcKids[pB]||[]).push(c.batch); }); });
+  const _pkOf = (bn, size)=>{
+    const wb = getBatchWIPBreakdown(bn) || {};
+    const _ro = _reconOverride(bn);
+    const localPackOut = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
+    const packedOut = hasScanSummary() ? (_ss(bn,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in').length;
+    const packed = _ro ? (wb.packIn||0) : boxToLakh(packedOut, size);
     const agWip = wb.totalWIP!=null ? wb.totalWIP : 0;
+    return { packed, agWip, grossProd:(wb.grossProd!=null?wb.grossProd:null) };
+  };
+  const _mk = (b)=>{
+    const self = _pkOf(b.batchNumber, b.size);
+    let packed = self.packed, agWip = self.agWip;
+    (_rcKids[String(b.batchNumber||'').toUpperCase()]||[]).forEach(cb=>{
+      const cs = _pkOf(cb, (getBatch(cb)?.size ?? b.size));
+      packed += cs.packed; agWip += cs.agWip;   // child's boxes moved here; roll them back to the parent
+    });
+    const grossProd = self.grossProd!=null ? self.grossProd : (b.actualProd||b.actualQty||0);
     const packable = packed + agWip;
     const planned = b.qty || 0;
     const deviation = packable - planned;
     return { b, grossProd, packed, agWip, packable, planned, deviation };
   };
-  let rows = monthBatches.map(_mk).filter(r=>Math.abs(r.deviation) > 0.005);
+  let rows = monthBatches.filter(b=>!_rcChildSet.has(String(b.batchNumber||'').toUpperCase())).map(_mk).filter(r=>Math.abs(r.deviation) > 0.005);
   const _like=(v,q)=>String(v||'').toLowerCase().includes(String(q).toLowerCase());
   if(fBatch)  rows=rows.filter(r=>r.b.batchNumber===fBatch);
   if(fCust)   rows=rows.filter(r=>_like(r.b.customer,fCust));

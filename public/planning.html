@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v46Q</p>
+      <p>Planning Suite v3.0 · build v46S</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -10265,7 +10265,11 @@ function _v40_openConsolidatedForTruck(truckIdx, zone) {
     // and PO-linked remainders (e.g. the 4 L on 26ZG124) had no invoice option.
     const _e = ord ? _v40_isInvoiceEligible(o, ord) : { eligible:false, reason:'No order data' };
     if (!ord || !_e.eligible) {
-      if ((o.packedQty || 0) > 0) _excluded.push({ batch: o.batchNumber || (ord && ord.batchNumber) || '—', customer: o.customer || (ord && ord.customer) || '', packed: o.packedQty || 0, reason: _e.reason || 'Not eligible' });
+      // v46R #4 (confirmed by Ishan): a fully-invoiced / already-dispatched batch (26T078) is DONE — it
+      // must drop off the modal entirely, not sit in the greyed "cannot be invoiced yet" list. Only
+      // surface batches whose block is actionable (e.g. no Sales Order linked). `alreadyInvoiced` covers
+      // both "Fully invoiced" (received) and "Delivery already sent" (pending) states.
+      if ((o.packedQty || 0) > 0 && !_e.alreadyInvoiced) _excluded.push({ batch: o.batchNumber || (ord && ord.batchNumber) || '—', customer: o.customer || (ord && ord.customer) || '', packed: o.packedQty || 0, reason: _e.reason || 'Not eligible' });
       continue;
     }
     window._v40_invoiceSelections.add(o.id);
