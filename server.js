@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46P';
+const APP_BUILD = 'v46Q';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -9636,86 +9636,42 @@ app.get('/api/dpr/:floor/:date', async (req, res) => {
 // GET /api/actuals/machine-summary — total qty and distinct days per machine (for Planning avg daily rate)
 app.get('/api/actuals/machine-summary', async (req, res) => {
   try {
-    // v37E: Per user spec — average production per day must only include FULLY-ENTERED calendar days
-    // (all 3 shifts A/B/C present in the saved DPR). Today's partial entry (e.g., only A-shift) is
-    // excluded so the average doesn't drop spuriously. The average locks at end of day and updates
-    // once all shifts are entered.
-    //
-    // Completeness signal: a shift is "entered" when its `incharge` field is non-empty.
-    // The DPR UI initializes incharge as '' (empty string) on a blank day, and operators fill it
-    // when they record the shift. This is a reliable signal that someone actively entered shift
-    // data (more reliable than checking shift keys exist — those exist by default in the skeleton).
-    // incharge can be a string OR an array of names; both forms count as "filled" if non-empty.
+    // v46Q (confirmed by Ishan): the planning header's "Avg Actual /day" must equal the DPR Plant
+    // Report's per-machine Daily Avg for every machine. DPR (/api/dpr/plant-cum) computes it as
+    // total-produced ÷ DAYS-WITH-PRODUCTION (it drops day_total<=0). This endpoint previously used a
+    // different day-set: only days where the floor DPR was "complete" (all 3 shifts' incharge filled),
+    // and — crucially — it counted EVERY (machine,date) in production_actuals in the denominator,
+    // INCLUDING zero-qty rows (COUNT(*) with no qty filter). That inflated the divisor with 0-produced
+    // days (Ishan's "extra day with 0 production"), so planning read low (MC14 11.3 vs DPR 13.2).
+    // Fix: mirror plant-cum exactly — sum per (machine,date), keep only day_qty>0, then
+    // avgPerDay = SUM(day_qty) ÷ COUNT(producing days). Identical to DPR by construction; the partial
+    // "today" day is naturally excluded when it has no production and included (as DPR does) when it
+    // does. Per-order partial-day attribution is a scheduling concern, unaffected by this number.
     let rows;
     if (pgPool) {
       const r = await pgPool.query(`
-        WITH complete_floor_days AS (
-          -- A day's DPR is complete when all 3 shifts have non-empty incharge
-          SELECT floor, date FROM dpr_records
-          WHERE COALESCE(jsonb_typeof(data_json::jsonb -> 'shifts' -> 'A' -> 'incharge'), 'null') != 'null'
-            AND COALESCE(jsonb_typeof(data_json::jsonb -> 'shifts' -> 'B' -> 'incharge'), 'null') != 'null'
-            AND COALESCE(jsonb_typeof(data_json::jsonb -> 'shifts' -> 'C' -> 'incharge'), 'null') != 'null'
-            AND (
-              -- A: array with length > 0  OR  non-empty string
-              (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'A' -> 'incharge') = 'array'
-                AND jsonb_array_length(data_json::jsonb -> 'shifts' -> 'A' -> 'incharge') > 0)
-              OR (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'A' -> 'incharge') = 'string'
-                AND length(data_json::jsonb -> 'shifts' -> 'A' ->> 'incharge') > 0)
-            )
-            AND (
-              (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'B' -> 'incharge') = 'array'
-                AND jsonb_array_length(data_json::jsonb -> 'shifts' -> 'B' -> 'incharge') > 0)
-              OR (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'B' -> 'incharge') = 'string'
-                AND length(data_json::jsonb -> 'shifts' -> 'B' ->> 'incharge') > 0)
-            )
-            AND (
-              (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'C' -> 'incharge') = 'array'
-                AND jsonb_array_length(data_json::jsonb -> 'shifts' -> 'C' -> 'incharge') > 0)
-              OR (jsonb_typeof(data_json::jsonb -> 'shifts' -> 'C' -> 'incharge') = 'string'
-                AND length(data_json::jsonb -> 'shifts' -> 'C' ->> 'incharge') > 0)
-            )
-        ),
-        machine_complete_days AS (
-          SELECT pa.machine_id, pa.date, SUM(pa.qty_lakhs) AS day_qty
-          FROM production_actuals pa
-          JOIN complete_floor_days cfd ON cfd.floor = pa.floor AND cfd.date = pa.date
-          GROUP BY pa.machine_id, pa.date
-        )
         SELECT machine_id,
-               SUM(day_qty)        AS total_qty,
-               COUNT(*)            AS distinct_days,
-               MIN(date)           AS first_date,
-               MAX(date)           AS last_date
-        FROM machine_complete_days
+               SUM(day_qty) AS total_qty,
+               COUNT(*)     AS distinct_days,
+               MIN(date)    AS first_date,
+               MAX(date)    AS last_date
+        FROM (
+          SELECT machine_id, date, SUM(qty_lakhs) AS day_qty
+          FROM production_actuals
+          GROUP BY machine_id, date
+          HAVING SUM(qty_lakhs) > 0
+        ) t
         GROUP BY machine_id`);
       rows = r.rows;
     } else {
-      // SQLite fallback — use json_extract to peek at incharge values.
-      // For SQLite we fetch all dpr_records and filter in JS (simpler and SQLite has no jsonb_typeof).
-      const allDprRecs = db.prepare('SELECT floor, date, data_json FROM dpr_records').all();
-      const completeFloorDays = new Set();
-      for (const rec of allDprRecs) {
-        try {
-          const j = JSON.parse(rec.data_json);
-          const shifts = j?.shifts || {};
-          const isFilled = (sh) => {
-            const inc = shifts[sh]?.incharge;
-            if (Array.isArray(inc)) return inc.length > 0;
-            if (typeof inc === 'string') return inc.length > 0;
-            return false;
-          };
-          if (isFilled('A') && isFilled('B') && isFilled('C')) {
-            completeFloorDays.add(`${rec.floor}|${rec.date}`);
-          }
-        } catch(e) {}
-      }
-      // Now sum production_actuals only for those (floor, date) combos
-      const allActuals = db.prepare(`SELECT machine_id, floor, date, SUM(qty_lakhs) AS day_qty FROM production_actuals GROUP BY machine_id, floor, date`).all();
+      // SQLite fallback — same rule as plant-cum: producing days only (day_qty>0).
+      const allActuals = db.prepare(`SELECT machine_id, date, SUM(qty_lakhs) AS day_qty FROM production_actuals GROUP BY machine_id, date`).all();
       const machineAcc = {};
       allActuals.forEach(a => {
-        if (!completeFloorDays.has(`${a.floor}|${a.date}`)) return;
+        const q = parseFloat(a.day_qty || 0);
+        if (!(q > 0)) return; // days-with-production only — mirrors DPR plant-cum
         if (!machineAcc[a.machine_id]) machineAcc[a.machine_id] = { total_qty: 0, distinct_days: 0, first_date: a.date, last_date: a.date };
-        machineAcc[a.machine_id].total_qty += parseFloat(a.day_qty || 0);
+        machineAcc[a.machine_id].total_qty += q;
         machineAcc[a.machine_id].distinct_days += 1;
         if (a.date < machineAcc[a.machine_id].first_date) machineAcc[a.machine_id].first_date = a.date;
         if (a.date > machineAcc[a.machine_id].last_date)  machineAcc[a.machine_id].last_date  = a.date;
@@ -9732,7 +9688,7 @@ app.get('/api/actuals/machine-summary', async (req, res) => {
         avgPerDay: distinctDays > 0 ? parseFloat((totalQty / distinctDays).toFixed(3)) : 0,
         firstDate: r.first_date,
         lastDate:  r.last_date,
-        note: 'Only days with all 3 shifts (A/B/C) fully entered (incharge filled) count toward this average.'
+        note: 'Total produced ÷ days-with-production — same rule as the DPR Plant Report daily average.'
       };
     });
     res.json({ ok: true, machines });
@@ -14985,19 +14941,27 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       const fgAwaitingDispatch = Math.max(0, packInQty - dispatchInQty);
 
       result[batchNo.toUpperCase()] = { // normalize to uppercase for consistent lookup
+        // v46Q: salvage/remelt now sent SEPARATELY (previously only the combined `wastage`). The
+        // planning header's Live A-Grade must equal Report E's per-machine AIM%, which uses the frozen
+        // formula AIM A-Grade = ScanIn − Remelt, AIM% = (ScanIn−Rem) / (ScanIn + Salvage). The old
+        // combined-wastage payload only let planning compute the Scan-OUT-based % (outQty/inspected),
+        // which reads lower than Report E. Exposing the split lets planning apply the frozen formula.
         aim: {
           inQty: aim.inQty||0, outQty: aimOut,
-          wastage: aimWaste, inspected: aimInspected,
+          wastage: aimWaste, salvage: (aim.wastage?.salvage||0), remelt: (aim.wastage?.remelt||0),
+          inspected: aimInspected,
           aGradePct: aimInspected>0 ? (aimOut/aimInspected*100) : null
         },
         printing: {
           inQty: print.inQty||0, outQty: printOut,
-          wastage: printWaste, inspected: printInspected,
+          wastage: printWaste, salvage: (print.wastage?.salvage||0), remelt: (print.wastage?.remelt||0),
+          inspected: printInspected,
           aGradePct: printInspected>0 ? (printOut/printInspected*100) : null
         },
         pi: {
           inQty: pi.inQty||0, outQty: piOut,
-          wastage: piWaste, inspected: piInspected,
+          wastage: piWaste, salvage: (pi.wastage?.salvage||0), remelt: (pi.wastage?.remelt||0),
+          inspected: piInspected,
           aGradePct: piInspected>0 ? (piOut/piInspected*100) : null
         },
         // v37I.1: packing.outQty/out preserved for legacy/historical reads but no longer

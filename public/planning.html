@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v46P</p>
+      <p>Planning Suite v3.0 · build v46Q</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1908,10 +1908,23 @@ function _populateMachineAGrade() {
     const la = window._liveAGrade?.[key] || window._liveAGrade?.[o.batchNumber];
     if (!la) return;
     const mcId = o.machineId;
-    if (!acc[mcId]) acc[mcId] = { aimOut:0, aimInsp:0, printOut:0, printInsp:0, piOut:0, piInsp:0 };
+    if (!acc[mcId]) acc[mcId] = { aimOut:0, aimInsp:0, aimAGFrozen:0, aimInspFrozen:0, printOut:0, printInsp:0, piOut:0, piInsp:0 };
     if ((la.aim?.inspected || 0) > 0) {
       acc[mcId].aimOut  += la.aim.outQty || 0;
       acc[mcId].aimInsp += la.aim.inspected;
+      // v46Q (confirmed by Ishan): a DISPLAY-ONLY per-machine AIM% that equals Report E's, using the
+      // FROZEN formula — AIM A-Grade = ScanIn − Remelt, AIM% = (ScanIn − Rem) / (ScanIn + Salvage).
+      // The server now sends salvage/remelt split (v46Q). Kept separate from aimOut/aimInsp above,
+      // which stay Scan-OUT-based and continue to feed the scheduling factor unchanged. Falls back to
+      // the Scan-OUT figures when an older payload lacks the split (pre-v46Q server).
+      if (la.aim.salvage != null || la.aim.remelt != null) {
+        const _sin = la.aim.inQty || 0, _sal = la.aim.salvage || 0, _rem = la.aim.remelt || 0;
+        acc[mcId].aimAGFrozen   += Math.max(0, _sin - _rem);
+        acc[mcId].aimInspFrozen += (_sin + _sal);
+      } else {
+        acc[mcId].aimAGFrozen   += la.aim.outQty || 0;
+        acc[mcId].aimInspFrozen += la.aim.inspected;
+      }
     }
     if ((la.printing?.inspected || 0) > 0) {
       acc[mcId].printOut  += la.printing.outQty || 0;
@@ -1924,7 +1937,8 @@ function _populateMachineAGrade() {
   });
   Object.entries(acc).forEach(([mcId, a]) => {
     window._machineAGrade[mcId] = {
-      aimPct:   a.aimInsp   > 0 ? (a.aimOut   / a.aimInsp   * 100) : null,
+      aimPct:   a.aimInsp   > 0 ? (a.aimOut   / a.aimInsp   * 100) : null,        // Scan-OUT based — scheduling factor (unchanged)
+      aimPctDisplay: a.aimInspFrozen > 0 ? (a.aimAGFrozen / a.aimInspFrozen * 100) : null, // v46Q: frozen AIM% — matches Report E (header display)
       printPct: a.printInsp > 0 ? (a.printOut / a.printInsp * 100) : null,
       piPct:    a.piInsp    > 0 ? (a.piOut    / a.piInsp    * 100) : null,
     };
@@ -2415,6 +2429,10 @@ function recalcMachineScheduleQuiet(machineId) {
   if (!mc) return;
   const orders = getMachineOrders(machineId);
   let cursor = null;
+  // v46Q (confirmed by Ishan): track the previous order + whether its end was a PROJECTION so that when
+  // a later order's real DPR start falls before that projected end, the previous order is "stopped as on"
+  // the new order's start (it clearly ended when the next one began in DPR). See the v45W block below.
+  let prevOrder = null, prevEndProjected = false;
   for (const ord of orders) {
     if (ord.status === 'closed') {
       // Still calculate grossQty/aimOut for closed orders so they show in the table
@@ -2437,6 +2455,7 @@ function recalcMachineScheduleQuiet(machineId) {
         const closedEnd = new Date(ord.endDate);
         if (!cursor || closedEnd > cursor) cursor = closedEnd;
       }
+      prevOrder = ord; prevEndProjected = false; // v46Q: closed = real end, never pulled back
       continue;
     }
     // v41ZC #4: UNIFORM cascade. Every non-closed order re-anchors to the running cursor so an
@@ -2483,7 +2502,17 @@ function recalcMachineScheduleQuiet(machineId) {
     // happened to sit (26ZG131: DPR 29-Jun vs the cascade's 03-Jul). Manual dates stay untouched.
     if (hasProduction && ord.dprFirstDate && !ord.manualStartDate) {
       const _fd45w = new Date(String(ord.dprFirstDate).slice(0,10) + 'T00:00:00');
-      if (!isNaN(_fd45w)) ord.startDate = _fd45w;
+      if (!isNaN(_fd45w)) {
+        ord.startDate = _fd45w;
+        // v46Q (confirmed by Ishan): a later order starting (in DPR) before the previous order's
+        // PROJECTED end means the previous order actually finished when this one began. Keep THIS
+        // order's real start and pull the previous order's end back to it ("previous stops as on date").
+        // Only for a projected previous end — a DPR-complete (real) end is left untouched.
+        if (prevOrder && prevEndProjected && cursor && _fd45w < cursor) {
+          prevOrder.endDate = new Date(_fd45w);
+          cursor = new Date(_fd45w);
+        }
+      }
     }
     // Determine end date (v45T #1.1.1, rule confirmed by Ishan — DPR actuals drive the end date):
     //   • actual ≥ planned gross → order is effectively complete: the end date pulls back to the
@@ -2516,6 +2545,7 @@ function recalcMachineScheduleQuiet(machineId) {
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
+    prevOrder = ord; prevEndProjected = !_endAnchored45x; // v46Q: remember whether this end is a projection
     continue;
   }
   // Cascade to print schedule — production end dates drive print start dates
@@ -2527,6 +2557,9 @@ function recalcMachineSchedule(machineId) {
   if (!mc) return;
   const orders = getMachineOrders(machineId);
   let cursor = null;
+  // v46Q (confirmed by Ishan): see recalcMachineScheduleQuiet — stop a previous order "as on" a later
+  // order's real DPR start when that start precedes the previous order's PROJECTED end.
+  let prevOrder = null, prevEndProjected = false;
   for (const ord of orders) {
     if (ord.status === 'closed') {
       // Still calculate grossQty/aimOut for closed orders so they show in the table
@@ -2549,6 +2582,7 @@ function recalcMachineSchedule(machineId) {
         const closedEnd = new Date(ord.endDate);
         if (!cursor || closedEnd > cursor) cursor = closedEnd;
       }
+      prevOrder = ord; prevEndProjected = false; // v46Q: closed = real end, never pulled back
       continue;
     }
     // v41ZC #4: UNIFORM cascade (same logic as recalcMachineScheduleQuiet). Re-anchor every
@@ -2584,7 +2618,17 @@ function recalcMachineSchedule(machineId) {
     // happened to sit (26ZG131: DPR 29-Jun vs the cascade's 03-Jul). Manual dates stay untouched.
     if (hasProduction && ord.dprFirstDate && !ord.manualStartDate) {
       const _fd45w = new Date(String(ord.dprFirstDate).slice(0,10) + 'T00:00:00');
-      if (!isNaN(_fd45w)) ord.startDate = _fd45w;
+      if (!isNaN(_fd45w)) {
+        ord.startDate = _fd45w;
+        // v46Q (confirmed by Ishan): a later order starting (in DPR) before the previous order's
+        // PROJECTED end means the previous order actually finished when this one began. Keep THIS
+        // order's real start and pull the previous order's end back to it ("previous stops as on date").
+        // Only for a projected previous end — a DPR-complete (real) end is left untouched.
+        if (prevOrder && prevEndProjected && cursor && _fd45w < cursor) {
+          prevOrder.endDate = new Date(_fd45w);
+          cursor = new Date(_fd45w);
+        }
+      }
     }
     // Determine end date (v45T #1.1.1, rule confirmed by Ishan — DPR actuals drive the end date):
     //   • actual ≥ planned gross → order is effectively complete: the end date pulls back to the
@@ -2617,6 +2661,7 @@ function recalcMachineSchedule(machineId) {
     if (ord.endDate && !isNaN(new Date(ord.endDate))) {
       cursor = new Date(ord.endDate);
     }
+    prevOrder = ord; prevEndProjected = !_endAnchored45x; // v46Q: remember whether this end is a projection
     continue;
   }
   // Sync batchNumber changes to linked printOrders and dispatchPlans
@@ -3399,7 +3444,9 @@ function renderProduction() {
     // Live A-Grade for header display — uses precomputed window._machineAGrade (populated centrally
     // by _populateMachineAGrade so scheduling and display agree on the same numbers).
     const mcCumAG = window._machineAGrade?.[mc.id] || {};
-    const liveAGPct = mcCumAG.aimPct;
+    // v46Q: header shows the frozen AIM% (= Report E) — falls back to the scheduling figure if a
+    // pre-v46Q payload didn't carry the salvage/remelt split.
+    const liveAGPct = (mcCumAG.aimPctDisplay != null) ? mcCumAG.aimPctDisplay : mcCumAG.aimPct;
 
     // Avg Actual = from DPR production_actuals via server:
     // total Lakhs produced on this machine / distinct calendar days with production
@@ -6590,7 +6637,10 @@ function _v40_openConsolidatedApprovalModal() {
     alert('None of the selected batches are still eligible for invoicing. Please refresh.');
     return;
   }
-  window._v40_approvalContext = { items, results: null };
+  // v46Q: carry any packed-but-excluded batches (set by the truck opener) into the context, one-shot,
+  // then clear the transient so a later non-truck open doesn't show a stale list.
+  window._v40_approvalContext = { items, results: null, excluded: window._v40_truckExcluded || null };
+  window._v40_truckExcluded = null;
   _v40_renderConsolidatedApprovalModalBody();
 }
 
@@ -6703,6 +6753,19 @@ function _v40_renderConsolidatedApprovalModalBody() {
         <span><strong>${distinctTrucks}</strong> trucks</span>
       </div>
       ${footerHtml}
+      ${(!results && ctx.excluded && ctx.excluded.length) ? `
+      <div style="background:rgba(107,114,128,0.06);border:1px dashed rgba(107,114,128,0.4);border-radius:6px;padding:10px 14px;margin-top:10px;font-size:11px;line-height:1.6;color:var(--text3)">
+        <strong style="color:var(--text2)">&#9888; ${ctx.excluded.length} packed batch${ctx.excluded.length!==1?'es':''} in this truck cannot be invoiced yet:</strong>
+        <table style="width:100%;border-collapse:collapse;margin-top:6px;font-size:11px;opacity:0.85">
+          <tbody>${ctx.excluded.map(e=>`<tr style="border-top:1px solid var(--border)">
+            <td style="padding:4px 8px;font-family:var(--mono)">${e.batch}</td>
+            <td style="padding:4px 8px">${(e.customer||'').substring(0,28)}</td>
+            <td style="padding:4px 8px;text-align:right;font-family:var(--mono)">${(e.packed||0).toFixed(2)} L</td>
+            <td style="padding:4px 8px;color:#b45309;font-weight:600">${e.reason}</td>
+          </tr>`).join('')}</tbody>
+        </table>
+        <div style="margin-top:6px">Link a Sales Order (or PO reference) to these — or clear any already-invoiced flag — and they'll join the one-shot list.</div>
+      </div>` : ''}
     </div>`;
   const buttons = results ? [
     { label: '✅ Done', cls: 'btn-primary', fn: 'closeModal();window._v40_invoiceSelections.clear();_v40_renderInvoiceFloatingBar();render();' },
@@ -10190,15 +10253,24 @@ function _v40_openConsolidatedForTruck(truckIdx, zone) {
   const truck = trucks[truckIdx];
   if (!truck || !truck.orders) { toast('Truck not found', 'var(--red)'); return; }
   window._v40_invoiceSelections = new Set();
+  // v46Q (confirmed by Ishan): also collect the PACKED-but-not-offered batches so the modal can show
+  // them greyed with the reason (chiefly "No Sales Order Number linked" or "already invoiced"). This
+  // makes it obvious why a packed batch isn't in the one-shot list and what to fix to include it.
+  const _excluded = [];
   for (const o of truck.orders) {
     const ord = state.orders.find(x => x.id === o.productionOrderId);
     // v44ZL Issue 2/6/7: select via the authoritative gate (DocEntry OR Sales Order number OR PO/
     // reference), matching the button counter and Order View. The old `if (!ord?.sapDocEntry) continue`
     // dropped SO-number-only / PO-only orders, so the modal showed fewer rows than the button promised
     // and PO-linked remainders (e.g. the 4 L on 26ZG124) had no invoice option.
-    if (!ord || !_v40_isInvoiceEligible(o, ord).eligible) continue;
+    const _e = ord ? _v40_isInvoiceEligible(o, ord) : { eligible:false, reason:'No order data' };
+    if (!ord || !_e.eligible) {
+      if ((o.packedQty || 0) > 0) _excluded.push({ batch: o.batchNumber || (ord && ord.batchNumber) || '—', customer: o.customer || (ord && ord.customer) || '', packed: o.packedQty || 0, reason: _e.reason || 'Not eligible' });
+      continue;
+    }
     window._v40_invoiceSelections.add(o.id);
   }
+  window._v40_truckExcluded = _excluded.length ? _excluded : null;
   if (window._v40_invoiceSelections.size === 0) {
     alert('⚠️ No batches in this truck are ready for invoicing.\n\nA batch needs:\n  • Sales Order Number linked\n  • At least one packed box\n  • Not already invoiced');
     return;
