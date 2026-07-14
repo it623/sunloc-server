@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46V';
+const APP_BUILD = 'v46W';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -8902,6 +8902,48 @@ app.post('/api/admin/backfill-dispatch-boxes', async (req, res) => {
                skippedNoSize, implausibleQty: implausible, rowsWritten: written,
                batchesAffected: affected.size, actualsRecomputed: confirm ? affected.size : 0,
                samples, recalibratedSamples, implausibleSamples });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// v46W (confirmed by Ishan): BACKFILL residual EXPORT dispatch qty. The boxes=0 backfill already
+// recalibrated export records with no box count. EXPORT scan-out records (boxes already set) still hold
+// the ×100 "THOUSAND" qty, so dispatched-qty totals (Report D) read inflated. Detect them by a qty-vs-boxes
+// mismatch — if the recorded qty implies far more boxes than the record actually carries
+// (ceil(qty/packSize) ≥ 50× boxes), the qty is the ×100 form → ÷100 (boxes already correct, left as-is).
+// Idempotent: an already-correct record's qty matches its boxes, so it's skipped; a legit large export
+// (375 L / 375 boxes) matches too and is untouched. Dry-run by default — pass {"confirm":true} to write.
+app.post('/api/admin/backfill-export-dispatch-qty', async (req, res) => {
+  try {
+    const confirm = (req.body && req.body.confirm) === true;
+    if (pgPool) { try { const pr = await pgPool.query('SELECT state_json FROM planning_state ORDER BY id DESC LIMIT 1'); if (pr.rows[0]) _planningStateCache = JSON.parse(pr.rows[0].state_json); } catch(_) {} }
+    let recs;
+    if (pgPool) recs = (await pgPool.query(`SELECT id, batch_number, qty, boxes FROM tracking_dispatch_records WHERE COALESCE(boxes,0) > 0 AND COALESCE(qty,0) > 0`)).rows;
+    else        recs = db.prepare(`SELECT id, batch_number, qty, boxes FROM tracking_dispatch_records WHERE COALESCE(boxes,0) > 0 AND COALESCE(qty,0) > 0`).all();
+    const orders = (_planningStateCache && _planningStateCache.orders) || [];
+    let wouldFix = 0, written = 0, exportScanned = 0; const affected = new Set(); const samples = [];
+    for (const r of (recs || [])) {
+      const q0 = parseFloat(r.qty) || 0; const bx = parseInt(r.boxes, 10) || 0;
+      const ord = orders.find(o => o && o.batchNumber === r.batch_number);
+      if (!ord || !_isExportZoneSrv(ord.zone)) continue;              // export batches only
+      const ps = _V44ZJ_PACK_SIZES[String(ord.size)] || 0; if (!ps || !(bx > 0)) continue;
+      exportScanned++;
+      const impliedBoxes = Math.ceil(q0 / ps);
+      if (impliedBoxes >= bx * 50) {                                  // qty ≈ ×100 the boxes → THOUSAND form
+        const newQty = Math.round((q0 * 0.01) * 1000) / 1000;
+        wouldFix++;
+        if (samples.length < 30) samples.push({ id: r.id, batch: r.batch_number, boxes: bx, fromQty: q0, toQty: newQty });
+        affected.add(r.batch_number);
+        if (confirm) {
+          if (pgPool) await pgPool.query(`UPDATE tracking_dispatch_records SET qty=$1 WHERE id=$2`, [newQty, r.id]);
+          else        db.prepare(`UPDATE tracking_dispatch_records SET qty=? WHERE id=?`).run(newQty, r.id);
+          written++;
+        }
+      }
+    }
+    if (confirm) { for (const bn of affected) { try { await _recomputeDispatchActuals(bn, null, null); } catch(_) {} } }
+    res.json({ ok: true, dryRun: confirm !== true, scanned: (recs || []).length, exportRecordsScanned: exportScanned,
+               rowsToFix: wouldFix, rowsWritten: written, batchesAffected: affected.size,
+               actualsRecomputed: confirm ? affected.size : 0, samples });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46V</title>
+<title>Sunloc Tracking Suite v1.0 · build v46W</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46V</p>
+      <p>Tracking Suite v1.0 · build v46W</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46V</p>
+      <p>Tracking Suite v1.0 · build v46W</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2195,7 +2195,10 @@ function recordScan(labelId, dept, type, operator, parsed){
   // number. It bypasses the normal stage checks (an orange label has no AIM/printing/PI history).
   if(label.isOrange){
     if(getScansForBox(label.id).some(s=>s.dept==='orange')){
-      return {ok:false, msg:'🟠 This orange label was already scanned'};
+      // v46W: this is the small ORANGE PI-verification label (already scanned once at Print Inspection),
+      // not the box's white label. Operators sometimes scan it by mistake when moving a box between
+      // departments. Spell it out so they scan the correct label — this never fires on a box's own label.
+      return {ok:false, msg:`🟠 That was the ORANGE label for box ${Math.abs((state.labels.find(l=>l.id===label.parentLabelId)||{}).labelNumber||0)||'?'} — it's only scanned once, at Print Inspection. To move the box, scan its WHITE box label, not the orange one.`};
     }
     const parent = state.labels.find(l=>l.id===label.parentLabelId);
     const oscan = { id:uid(), labelId:label.id, batchNumber:label.batchNumber, labelNumber:null, dept:'orange', type:'in', ts:now(), operator:operator||currentDept, size:label.size, qty:label.qty, parentLabelId:label.parentLabelId||null, _local:true };
@@ -2987,7 +2990,7 @@ async function _v41_fetchAgradeMonth(ym){
     if (!r.ok) throw new Error('HTTP '+r.status);
     const j = await r.json();
     if (!j.ok) throw new Error(j.error||'failed');
-    _v41_agradeMonthCache[ym] = { summary: j.summary||{}, wastage: j.wastage||{}, crossMonth: j.crossMonth||{}, monthGross: j.monthGross||{}, monthMachine: j.monthMachine||{}, window: j.window }; // v45Z: keep monthMachine (v45Y dropped it here, so ghost floor-split never saw it)
+    _v41_agradeMonthCache[ym] = { summary: j.summary||{}, wastage: j.wastage||{}, crossMonth: j.crossMonth||{}, monthGross: j.monthGross||{}, monthMachine: j.monthMachine||{}, splitFamilies: j.splitFamilies||[], window: j.window }; // v45Z: keep monthMachine; v46W: keep splitFamilies (Report C parent/child roll-up was reading an empty list)
     return _v41_agradeMonthCache[ym];
   } catch(e){
     console.warn('[agrade-by-month] fetch failed:', e.message);
@@ -11316,7 +11319,10 @@ function _v41_renderReportDInner(){
     <div class="kpi"><div class="kpi-label">A-Grade % (Unprinted / AIM)</div><div class="kpi-val ${aimAGradePct>=95?'green':aimAGradePct>=90?'amber':'red'}">${fmt(aimAGradePct,1)}%</div><div class="kpi-sub">AIMOut ÷ (AIMOut+Sal+Rem) — matches Report E</div></div>
     <div class="kpi"><div class="kpi-label">A-Grade % (Post-Printing)</div><div class="kpi-val ${aGradePct>=95?'green':aGradePct>=90?'amber':'red'}">${fmt(aGradePct,1)}%</div><div class="kpi-sub">net of Print + PI salvage/remelt</div></div>
     <div class="kpi"><div class="kpi-label">Total A-Grade (net)</div><div class="kpi-val green">${fmt(totalAGrade)}L</div></div>
-    <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${fmt(state.dispatchRecs.reduce((s,r)=>s+r.qty,0))}L</div></div>
+    <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${fmt(monthBatches.reduce((s,b)=>s+_v40_dispatchedLakhs(b.batchNumber,b.size),0))}L</div></div>
+    <!-- v46W: Dispatched was sum of ALL dispatch records (all-time) + raw qty. Now scoped to this month's
+         batches like every other Report D KPI, via _v40_dispatchedLakhs (the same helper Report G uses).
+         Export ×100 qty is corrected at source by the export-dispatch-qty backfill, so this reads true. -->
   </div>
   <div class="card-title mt-16">Stage-wise WIP</div>
   ${(()=>{
