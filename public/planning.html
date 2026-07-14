@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v46N</p>
+      <p>Planning Suite v3.0 · build v46P</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1322,7 +1322,7 @@ const SYNC = (() => {
   async function loadTrackingStatus() {
     if (!_url) return;
     // Run all fetches in PARALLEL
-    const [wipRes, agRes, daRes, dcRes, mcActRes, tlRes] = await Promise.allSettled([
+    const [wipRes, agRes, daRes, dcRes, mcActRes, tlRes, roRes] = await Promise.allSettled([
       fetch(_url + '/api/tracking/wip-summary?closuresOnly=1',      { signal: AbortSignal.timeout(5000) }),
       // v41ZG #3: window the A-Grade aggregation to the start of the PREVIOUS month and give it a
       // longer timeout. The unwindowed full-history aggregation was timing out at 5s on production,
@@ -1332,8 +1332,28 @@ const SYNC = (() => {
       fetch(_url + '/api/tracking/dispatch-actuals', { signal: AbortSignal.timeout(5000) }),
       fetch(_url + '/api/dpr/batch-closed',          { signal: AbortSignal.timeout(5000) }),
       fetch(_url + '/api/actuals/machine-summary',   { signal: AbortSignal.timeout(5000) }),
-      fetch(_url + '/api/dispatch/truck-locks',      { signal: AbortSignal.timeout(5000) })  // v44R lock-on-activation
+      fetch(_url + '/api/dispatch/truck-locks',      { signal: AbortSignal.timeout(5000) }),  // v44R lock-on-activation
+      fetch(_url + '/api/batch/reconcile-overrides', { signal: AbortSignal.timeout(5000) })   // v46P: admin reconcile map for the Short/Excess column
     ]);
+    // v46P (confirmed by Ishan): load admin reconcile overrides so the planner's Short/Excess column
+    // reflects the SAME figures as the Short & Excess report (reconciled batches show admin packing+wip,
+    // not raw). Tolerant of failure — keeps the prior map on a transient error rather than blanking it.
+    try {
+      if (roRes.status === 'fulfilled' && roRes.value.ok) {
+        const roj = await roRes.value.json();
+        if (roj && roj.ok) {
+          const _m = {};
+          (roj.overrides || []).forEach(o => {
+            if (!o.batch_number) return;
+            _m[String(o.batch_number).trim().toUpperCase()] = {
+              gross: parseFloat(o.gross) || 0, aGrade: parseFloat(o.a_grade) || 0,
+              packing: parseFloat(o.packing) || 0, wip: parseFloat(o.wip) || 0, wastage: parseFloat(o.wastage) || 0
+            };
+          });
+          window._planReconOv = _m;
+        }
+      }
+    } catch (e) { /* keep prior _planReconOv on transient failure */ }
     // v44R: load persisted truck locks (lock-on-activation). buildTruckPlans renders these from their
     // frozen manifest and lays remaining unlocked boxes around them. Tolerant of failure — falls back
     // to fully-ephemeral binning if the endpoint is unreachable.
@@ -3437,7 +3457,7 @@ function renderProduction() {
                   <th>Size</th>
                   <th>PC Code</th><th>Colour</th>
                   <th>PTD/UP</th><th>Print Matter Cap</th><th>Print Matter Body</th><th>Ink Cap</th><th>Ink Body</th><th>Order Qty (L)</th><th>Gross Qty (L)</th><th>Start</th><th>End</th>
-                  <th>Packing</th><th>Zone</th><th>Actual Prod</th><th>AIM Out ↗</th><th title="Dispatched — per-batch dispatched-actuals total from Tracking (regularised + scan-out)">Dispatched (L) ↗</th><th>Status</th><th>DPR Status</th><th>Remarks</th><th>Actions</th>
+                  <th>Packing</th><th>Zone</th><th>Actual Prod</th><th>AIM Out ↗</th><th title="Short / Excess — Packable (Packed + A-Grade WIP) vs planned order; reconcile-aware, matches the Short & Excess report">Short/Excess ↗</th><th title="Dispatched — per-batch dispatched-actuals total from Tracking (regularised + scan-out)">Dispatched (L) ↗</th><th>Status</th><th>DPR Status</th><th>Remarks</th><th>Actions</th>
                 </tr>
               </thead>
               <tbody>
@@ -3594,6 +3614,22 @@ function renderOrderRow(ord, idx, mc) {
     ? `<div style="font-size:10px;color:var(--accent4);margin-top:2px">⚠️ +${fmt(extraNeeded,2)}L extra needed (actual AIM: ${fmt(liveAimPct,1)}%)</div>` : '';
   // For unprinted: show AIM scan out vs planned
   const liveAimOut = liveAG.aim?.outQty || 0;
+  // v46P (confirmed by Ishan): real-time Short/Excess vs planned order, shown next to AIM Scan Out so the
+  // planner sees deviation live. Packable = Packed + A-Grade WIP — identical to Report C (interpretation A).
+  // Admin reconcile override wins (packing/wip from the override) so the planner and Report C never show
+  // two different values for the same batch. Dynamic: recomputed every sync as WIP is processed/packed.
+  // Colours per spec: Short = red, Excess = purple, Matched = green.
+  const _seOv = (window._planReconOv && ord.batchNumber) ? window._planReconOv[ord.batchNumber.trim().toUpperCase()] : null;
+  const _sePacked = _seOv ? _seOv.packing : (liveAG.packing?.inQty || 0);
+  const _seWip    = _seOv ? _seOv.wip     : (liveAG.wipLakhs || 0);
+  const _sePackable = _sePacked + _seWip;
+  const _sePlanned = ord.qty || 0;
+  const _seDev = _sePackable - _sePlanned;
+  const _seTip = `Packable ${fmt(_sePackable)}L (Packed ${fmt(_sePacked)} + A-Grade WIP ${fmt(_seWip)}) vs planned ${fmt(_sePlanned)}L${_seOv?' · reconciled':''}`;
+  const _seCell = !(_sePackable > 0.005 || _sePlanned > 0.005) ? '<span style="color:var(--text3)">—</span>'
+    : _seDev < -0.005 ? `<span style="color:#dc2626;font-weight:700" title="${_seTip}">▼ Short ${fmt(Math.abs(_seDev))}L</span>`
+    : _seDev >  0.005 ? `<span style="color:#7c3aed;font-weight:700" title="${_seTip}">▲ Excess ${fmt(_seDev)}L</span>`
+    : `<span style="color:#16a34a;font-weight:700" title="${_seTip}">✓ Matched</span>`;
   // v44ZJ Issue 3: per-batch dispatched-actuals total (L) for the Dispatched column.
   const liveDispatched = (state._dispatchActualsQty && state._dispatchActualsQty[ord.batchNumber]) || 0;
   const aimProgress = (!ord.isPrinted && liveAimOut > 0 && ord.grossQty)
@@ -3661,6 +3697,9 @@ function renderOrderRow(ord, idx, mc) {
     </td>
     <td class="text-mono" style="color:var(--accent2);white-space:nowrap" title="AIM Scan Out — live from Tracking">
       ${liveAimOut>0?`<strong>${fmt(liveAimOut)}L</strong>`:'<span style="color:var(--text3)">—</span>'}
+    </td>
+    <td class="text-mono" style="white-space:nowrap" title="Short / Excess — Packable (Packed + A-Grade WIP) vs planned order. Dynamic; reflects admin reconcile override so it matches the Short & Excess report.">
+      ${_seCell}
     </td>
     <td class="text-mono" style="color:var(--accent3);white-space:nowrap" title="Dispatched — per-batch dispatched-actuals total from Tracking (regularised + scan-out)">
       ${liveDispatched>0?`<strong>${fmt(liveDispatched)}L</strong>`:'<span style="color:var(--text3)">—</span>'}

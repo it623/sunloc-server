@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46N</title>
+<title>Sunloc Tracking Suite v1.0 · build v46P</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46N</p>
+      <p>Tracking Suite v1.0 · build v46P</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46N</p>
+      <p>Tracking Suite v1.0 · build v46P</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9149,9 +9149,9 @@ function renderReports(forceRebuild){
       <button class="btn btn-success btn-sm mt-12" onclick="event.stopPropagation();renderReportB()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportC()" style="border-left:4px solid var(--accent3)">
-      <div class="card-title">Report C</div>
-      <div class="fw-bold mb-4">Machine-wise WIP Status</div>
-      <div class="text-sm text-muted">Per machine: Closed / Pending / In Progress status for each batch.</div>
+      <div class="card-title">Short &amp; Excess</div>
+      <div class="fw-bold mb-4">Short &amp; Excess Quantity</div>
+      <div class="text-sm text-muted">Per batch: Planned order vs Packable (Packed + A-Grade WIP), with short/excess deviation.</div>
       <button class="btn btn-warning btn-sm mt-12" onclick="event.stopPropagation();renderReportC()">Generate →</button>
     </div>
     <div class="card cursor-pointer" onclick="renderReportD()" style="border-left:4px solid var(--accent5);grid-column:span 2">
@@ -9268,6 +9268,30 @@ async function _rptH_toggleGapBoxes(batch, fromKey, toKey, rowId){
   }catch(e){ paint({ok:false, error:e?.message||'network'}); }
 }
 
+// v46O (confirmed by Ishan): Report B WIP box-serial detail — same expandable pattern as Report F's
+// handover-gap chips, but for boxes CURRENTLY in WIP at a department. A box is "in WIP at dept X" when
+// its current stage (getBoxCurrentStage, from the cached /api/tracking/box-stages full-history map)
+// equals X — the same rule the Batch Tracker's stage tiles use, so the serial list reconciles with the
+// count. Fully client-side (no fetch): box-stages is already loaded. Note: the WIP-boxes COUNT can
+// differ from this list by the derived wastage-box estimate (remelt isn't box-serial-tied) — the list
+// is the per-box physical truth, matching Report F's "box list is the per-box truth" convention.
+function _rptB_wipBoxChips(batchNo, dept){
+  const labels = getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && getBoxCurrentStage(l.id)===dept)
+    .sort((a,b)=>Math.abs(a.labelNumber||0)-Math.abs(b.labelNumber||0));
+  if(!labels.length) return '<span class="text-sm text-muted">No scan-tracked boxes currently in WIP at this department.</span>';
+  const chips = labels.map(l=>{
+    const box = l.isExcess ? ('E-'+(l.excessNum||Math.abs(l.labelNumber||0))) : String(Math.abs(l.labelNumber||0));
+    return `<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(8,145,178,0.1);border:1px solid rgba(8,145,178,0.35);color:#0e7490${l.voided?';opacity:0.5;text-decoration:line-through':''}"${l.isPartial?' title="Partial box"':''}>${box}</span>`;
+  }).join('');
+  return `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${labels.length}</b> box${labels.length>1?'es':''} currently in WIP at ${DEPT_LABELS[dept]||dept}:</div>${chips}`;
+}
+function _rptB_toggleWipBoxes(batchNo, dept, rowId){
+  const tr = document.getElementById(rowId);
+  if(!tr) return;
+  if(!tr.classList.contains('hidden')){ tr.classList.add('hidden'); return; }
+  tr.classList.remove('hidden');
+  tr.firstElementChild.innerHTML = _rptB_wipBoxChips(batchNo, dept);
+}
 function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(window._v41_composingD)window._v41_composingD=false;
   _captureReportScroll();
   if(!document.getElementById('report-output')) renderReports();
@@ -10979,11 +11003,11 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
           <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
           <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
           <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,_bSize45y))}L)</span></td>
-          <td class="td-mono fw-bold">${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}</td>
+          <td class="td-mono fw-bold"${wip>0?` style="cursor:pointer" onclick="_rptB_toggleWipBoxes('${batchNo}','${dept}','rptb-${batchNo}-${dept}')" title="Click to see the box numbers in WIP"`:''}>${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}${wip>0?' <span style="font-size:9px;color:var(--text3)">▾</span>':''}</td>
           <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
           <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
           <td>${statusBadge}</td>
-        </tr>`;
+        </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td colspan="14" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
       } else {
         html+=`<tr>
         <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
@@ -10992,11 +11016,11 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
         <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,_bSize45y))}L)</span></td>
         ${hasWastage?`<td class="td-mono text-sm" style="color:var(--amber)">${_rcvCell(w.total>0?fmt(w.total)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>`:''}
-        <td class="td-mono fw-bold">${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}</td>
+        <td class="td-mono fw-bold"${wip>0?` style="cursor:pointer" onclick="_rptB_toggleWipBoxes('${batchNo}','${dept}','rptb-${batchNo}-${dept}')" title="Click to see the box numbers in WIP"`:''}>${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}${wip>0?' <span style="font-size:9px;color:var(--text3)">▾</span>':''}</td>
         <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
         <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
         <td>${statusBadge}</td>
-      </tr>`;
+      </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td colspan="14" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
       }
       _bIn+=inn; _bOut+=out; _bW+=w.total; _bWipBx+=wip; _bWipQ+=wipQty; _bProd+=prodWip; _bGross+=grossProd; _bAvail+=_avail; _bN++;
     });
@@ -11042,95 +11066,116 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
   const reportEl = document.getElementById('report-output');
   if(!state.batches || !state.batches.length){
     _captureReportScroll();
-    reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Report C — Machine-wise WIP Status</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer(true).then(()=>renderReportC())">🔄 Sync & Retry</button></div>`;
-_scrollIntoReportIfFirstView('C');
+    reportEl.innerHTML=`<div class="card" style="border-left:4px solid var(--accent3)"><div class="section-title mb-8">Short &amp; Excess Quantity</div><div class="alert alert-warning">No batch data available. Sync from Planning App first — go to Settings and confirm the Server URL is configured, then refresh.</div><button class="btn btn-secondary btn-sm mt-8" onclick="pullFromServer(true).then(()=>renderReportC())">🔄 Sync &amp; Retry</button></div>`;
+    _scrollIntoReportIfFirstView('C');
     return;
   }
-
-  const filterMachine = window._rptCMachine || '';
-  const filterBatch   = window._rptCBatch   || '';
-
-  const monthBatches = getProdMonthBatches(true).filter(b=>!b.deleted);
-  const allMachines = [...new Set(monthBatches.map(b=>b.machineId).filter(Boolean))].sort();
-  // v41ZD #1: batch dropdown shows only batches belonging to the selected machine
-  const batchPoolC = filterMachine ? monthBatches.filter(b=>_batchBelongsToMachine(b, filterMachine)) : monthBatches;
-  const allBatchNos = [...new Set(batchPoolC.map(b=>b.batchNumber))].sort();
-  const machineOpts = allMachines.map(m=>`<option value="${m}" ${filterMachine===m?'selected':''}>${m}</option>`).join('');
-  const batchOpts   = allBatchNos.map(bn=>{
-    const b=getBatch(bn);
-    return `<option value="${bn}" ${filterBatch===bn?'selected':''}>${bn}${b?.customer?' — '+b.customer:''}</option>`;
-  }).join('');
-
-  let batches = monthBatches.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
-  if(filterMachine) batches = batches.filter(b=>normMcId(b.machineId)===normMcId(filterMachine));
-  if(filterBatch)   batches = batches.filter(b=>b.batchNumber===filterBatch);
-
+  // v46O (confirmed by Ishan): Short & Excess Quantity — per batch, Planned order vs Packable
+  // (= Packed + A-Grade WIP). Interpretation A: A-Grade WIP = totalWIP (all not-yet-packed good
+  // material), so Packable = Packed + totalWIP = Gross − total wastage. Deviation = Packable − Planned.
+  // Dynamic by nature (A-Grade WIP sheds downstream wastage as it's processed), so status can shift
+  // Excess→Matched/Short over time. Reconcile overrides flow through getBatchWIPBreakdown, so reconciled
+  // batches show the admin figures (with badge + hover original). Only non-zero-deviation batches; sorted
+  // batch-wise chronologically like Report B; totals reflect the active filter.
+  const fType=window._rptCType||'all', fBatch=window._rptCBatch||'', fCust=window._rptCCust||'',
+        fSize=window._rptCSize||'', fPC=window._rptCPC||'', fColour=window._rptCColour||'',
+        fSF=window._rptCStartFrom||'', fST=window._rptCStartTo||'', fEF=window._rptCEndFrom||'', fET=window._rptCEndTo||'';
+  const monthBatches = getProdMonthBatches(true).filter(b=>!b.deleted && b.batchNumber);
+  const _mk = (b)=>{
+    const wb = getBatchWIPBreakdown(b.batchNumber) || {};
+    const grossProd = wb.grossProd!=null ? wb.grossProd : (b.actualProd||b.actualQty||0);
+    const _ro = _reconOverride(b.batchNumber);
+    const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
+    const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
+    const packed = _ro ? (wb.packIn||0) : boxToLakh(packedOut, b.size);
+    const agWip = wb.totalWIP!=null ? wb.totalWIP : 0;
+    const packable = packed + agWip;
+    const planned = b.qty || 0;
+    const deviation = packable - planned;
+    return { b, grossProd, packed, agWip, packable, planned, deviation };
+  };
+  let rows = monthBatches.map(_mk).filter(r=>Math.abs(r.deviation) > 0.005);
+  const _like=(v,q)=>String(v||'').toLowerCase().includes(String(q).toLowerCase());
+  if(fBatch)  rows=rows.filter(r=>r.b.batchNumber===fBatch);
+  if(fCust)   rows=rows.filter(r=>_like(r.b.customer,fCust));
+  if(fSize)   rows=rows.filter(r=>String(r.b.size)===String(fSize));
+  if(fPC)     rows=rows.filter(r=>_like(r.b.pcCode,fPC));
+  if(fColour) rows=rows.filter(r=>_like(r.b.colour,fColour));
+  const _inRange=(d,from,to)=>{ if(!from&&!to) return true; if(!d) return false; const t=new Date(d).getTime(); if(from && t<new Date(from).getTime())return false; if(to && t>new Date(to+'T23:59:59').getTime())return false; return true; };
+  if(fSF||fST) rows=rows.filter(r=>_inRange(r.b.startDate,fSF,fST));
+  if(fEF||fET) rows=rows.filter(r=>_inRange(r.b.endDate,fEF,fET));
+  if(fType==='short')  rows=rows.filter(r=>r.deviation<0);
+  else if(fType==='excess') rows=rows.filter(r=>r.deviation>0);
+  rows.sort((a,b)=>_v44zk_batchCmp(a.b.batchNumber,b.b.batchNumber));
+  const allBatchNos=[...new Set(monthBatches.map(b=>b.batchNumber))].sort();
+  const batchOpts=allBatchNos.map(bn=>{const b=getBatch(bn);return `<option value="${bn}" ${fBatch===bn?'selected':''}>${bn}${b?.customer?' — '+b.customer:''}</option>`;}).join('');
+  const custList=[...new Set(monthBatches.map(b=>b.customer).filter(Boolean))].sort();
+  const _tbtn=(k,l)=>`<button class="btn btn-sm" style="background:${fType===k?'#0891b2':'var(--surface2)'};color:${fType===k?'#fff':'var(--text)'};font-weight:600;font-size:11px;padding:4px 12px" onclick="window._rptCType='${k}';renderReportC()">${l}</button>`;
+  const _dev=(v)=> v<-0.005 ? `<span style="color:var(--red);font-weight:700">Short ${fmt(Math.abs(v))}L</span>`
+                 : v>0.005  ? `<span style="color:#b45309;font-weight:700">Excess ${fmt(v)}L</span>`
+                 : `<span class="text-muted">Matched</span>`;
   let html=`<div class="card">
-    <div class="section-title mb-12">Report C — Machine-wise WIP Status</div>
-    <div class="form-row cols-3 mb-16" style="max-width:700px">
-      <div class="form-group" style="margin-bottom:0">
-        <label style="font-size:11px">Filter by Machine</label>
-        <select onchange="window._rptCMachine=this.value;renderReportC()">
-          <option value="">All Machines</option>${machineOpts}
-        </select>
-      </div>
-      <div class="form-group" style="margin-bottom:0">
-        <label style="font-size:11px">Filter by Batch</label>
-        <select onchange="window._rptCBatch=this.value;renderReportC()">
-          <option value="">All Batches</option>${batchOpts}
-        </select>
-      </div>
+    <div class="section-title mb-12">Short &amp; Excess Quantity <span class="text-sm text-muted">— Planned vs Packable (Packed + A-Grade WIP), month of production</span></div>
+    <div style="display:flex;gap:6px;margin-bottom:12px">${_tbtn('all','All')}${_tbtn('short','Short')}${_tbtn('excess','Excess')}</div>
+    <div class="form-row cols-3 mb-8" style="max-width:900px">
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Batch</label>
+        <select onchange="window._rptCBatch=this.value;renderReportC()"><option value="">All Batches</option>${batchOpts}</select></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Customer</label>
+        <input type="text" list="rptC-cust" value="${(fCust||'').replace(/"/g,'&quot;')}" placeholder="🔍 Customer…" onchange="window._rptCCust=this.value;renderReportC()">
+        <datalist id="rptC-cust">${custList.map(c=>`<option value="${(c||'').replace(/"/g,'&quot;')}"></option>`).join('')}</datalist></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Size</label>
+        <input type="text" value="${(fSize||'').replace(/"/g,'&quot;')}" placeholder="e.g. 2" onchange="window._rptCSize=this.value;renderReportC()"></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">PC</label>
+        <input type="text" value="${(fPC||'').replace(/"/g,'&quot;')}" placeholder="e.g. 2046" onchange="window._rptCPC=this.value;renderReportC()"></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Colour</label>
+        <input type="text" value="${(fColour||'').replace(/"/g,'&quot;')}" placeholder="e.g. Blue/White" onchange="window._rptCColour=this.value;renderReportC()"></div>
       <div class="form-group" style="margin-bottom:0;display:flex;align-items:flex-end">
-        <button class="btn btn-secondary btn-sm" onclick="window._rptCMachine='';window._rptCBatch='';renderReportC()">✕ Clear</button>
-      </div>
+        <button class="btn btn-secondary btn-sm" onclick="['_rptCType','_rptCBatch','_rptCCust','_rptCSize','_rptCPC','_rptCColour','_rptCStartFrom','_rptCStartTo','_rptCEndFrom','_rptCEndTo'].forEach(k=>window[k]='');window._rptCType='all';renderReportC()">✕ Clear</button></div>
+    </div>
+    <div class="form-row cols-4 mb-16" style="max-width:900px">
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Prod Start from</label><input type="date" value="${fSF}" onchange="window._rptCStartFrom=this.value;renderReportC()"></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Prod Start to</label><input type="date" value="${fST}" onchange="window._rptCStartTo=this.value;renderReportC()"></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Prod End from</label><input type="date" value="${fEF}" onchange="window._rptCEndFrom=this.value;renderReportC()"></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Prod End to</label><input type="date" value="${fET}" onchange="window._rptCEndTo=this.value;renderReportC()"></div>
     </div>
     <div class="tbl-wrap tbl-sticky"><table>
-    <thead><tr><th>Machine</th><th>Floor</th><th>Batch</th><th>Customer</th><th>Produced (L)</th><th>Packed (L)</th><th>WIP Days</th><th>Status</th></tr></thead><tbody>`;
-
-  if(!batches.length){
-    html+=`<tr><td colspan="8" class="text-center text-muted" style="padding:20px">No batches found with current filters.</td></tr>`;
+    <thead><tr><th>Batch</th><th>Customer</th><th>Size</th><th>PC</th><th>Colour</th><th>Prod Start</th><th>Prod End</th><th>Planned (L)</th><th>Packed (L)</th><th>A-Grade WIP (L)</th><th>Packable (L)</th><th>Deviation</th></tr></thead><tbody>`;
+  if(!rows.length){
+    html+=`<tr><td colspan="12" class="text-center text-muted" style="padding:20px">No batches with a short/excess deviation for the current filters.</td></tr>`;
   } else {
-    let _cProd=0,_cPacked=0,_cN=0;
-    batches.forEach(b=>{
-      // v37E WIP-fix: Use canonical getBatchWIPDays (same as Report C export, dashboard, dispatch).
-      // Prior code did `Gross − packedQty` which incorrectly counted salvage and remelt as WIP.
-      const machine = state.machineMaster.find(m=>m.id===b.machineId||m.machineId===b.machineId);
-      const dailyCap = machine?.dailyTarget || machine?.yTarget || machine?.cap || 10;
-      const wipBreakdown = getBatchWIPBreakdown(b.batchNumber);
-      const remainingWIP = wipBreakdown ? wipBreakdown.totalWIP : 0;
-      const grossProd = wipBreakdown ? wipBreakdown.grossProd : (b.actualProd||b.actualQty||0);
-      // packedQty derived from the same canonical breakdown — uses scanSummary internally
-      const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
-      const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
-      const packedQty=boxToLakh(packedOut,b.size);
-      const wipDays = dailyCap > 0 ? remainingWIP / dailyCap : 0;
-      const std=b.isPrinted?3:2;
-      let statusBadge='';
-      if(remainingWIP===0&&packedOut>0) statusBadge='<span class="badge badge-green">✅ Packed</span>';
-      else if(wipDays<=std) statusBadge='<span class="badge badge-blue">🔵 In Progress</span>';
-      else statusBadge='<span class="badge badge-amber">⚠️ Delayed</span>';
+    let tPlan=0,tPack=0,tAg=0,tAble=0,tDev=0,tGross=0;
+    const _d=(x)=>x?new Date(x).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—';
+    rows.forEach(r=>{
+      const b=r.b, _rc=!!_reconOverride(b.batchNumber), _rt=_reconTips(b.batchNumber);
       html+=`<tr>
-        <td class="td-bold td-mono">${b.machineId||'—'}</td>
-        <td class="td-mono">${getMachineFloor(b.machineId)}</td>
-        <td class="td-mono">${b.batchNumber}${_reconBadge(!!_reconOverride(b.batchNumber),(_reconTips(b.batchNumber)||{}).title)}</td>
+        <td class="td-bold td-mono">${b.batchNumber}${_reconBadge(_rc,_rt&&_rt.title)}</td>
         <td class="text-sm">${b.customer||'-'}</td>
-        <td class="td-mono">${_rcvCell(fmt(grossProd), (_reconTips(b.batchNumber)||{}).gross, !!_reconOverride(b.batchNumber))}</td>
-        <td class="td-mono">${_rcvCell(fmt(packedQty), (_reconTips(b.batchNumber)||{}).packed, !!_reconOverride(b.batchNumber))}</td>
-        <td class="td-mono ${wipDays>std?'red':''}">${fmt(wipDays,1)}d</td>
-        <td>${statusBadge}</td>
+        <td class="td-mono">${b.size}</td>
+        <td class="td-mono text-sm">${b.pcCode||'-'}</td>
+        <td class="text-sm">${b.colour||'-'}</td>
+        <td class="td-mono" style="white-space:nowrap;font-size:11px">${_d(b.startDate)}</td>
+        <td class="td-mono" style="white-space:nowrap;font-size:11px">${_d(b.endDate)}</td>
+        <td class="td-mono">${fmt(r.planned)}</td>
+        <td class="td-mono">${_rcvCell(fmt(r.packed), _rt&&_rt.packed, _rc)}</td>
+        <td class="td-mono">${_rcvCell(fmt(r.agWip), _rt&&_rt.wip, _rc)}</td>
+        <td class="td-mono fw-bold">${fmt(r.packable)}</td>
+        <td class="td-mono">${_dev(r.deviation)}</td>
       </tr>`;
-      _cProd+=grossProd; _cPacked+=packedQty; _cN++;
+      tPlan+=r.planned; tPack+=r.packed; tAg+=r.agWip; tAble+=r.packable; tDev+=r.deviation; tGross+=r.grossProd;
     });
     html+=`<tr style="background:var(--surface2);font-weight:800">
-      <td colspan="4" class="text-right" style="padding-right:8px">TOTAL (${_cN})</td>
-      <td class="td-mono">${fmt(_cProd)}</td><td class="td-mono">${fmt(_cPacked)}</td><td></td><td></td>
+      <td colspan="7" class="text-right" style="padding-right:8px">TOTAL (${rows.length}) · Gross ${fmt(tGross)}L</td>
+      <td class="td-mono">${fmt(tPlan)}</td><td class="td-mono">${fmt(tPack)}</td><td class="td-mono">${fmt(tAg)}</td>
+      <td class="td-mono">${fmt(tAble)}</td><td class="td-mono">${_dev(tDev)}</td>
     </tr>`;
   }
-  html+=`</tbody></table></div><button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
+  html+=`</tbody></table></div>
+    <div class="text-sm text-muted mt-8">Packable = Packed + A-Grade WIP (all not-yet-packed good material). Deviation = Packable − Planned. A-Grade WIP still sheds downstream wastage as it's processed, so a batch's status can move between Excess / Matched / Short over time.</div>
+    <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportC()">📥 Export Excel</button></div>`;
   _captureReportScroll();
   reportEl.innerHTML=html;
   reportEl.insertAdjacentHTML('afterbegin', _trkProdMonthBar());
-_scrollIntoReportIfFirstView('C');
+  _scrollIntoReportIfFirstView('C');
 }
 
 // v41ZF: renderReportD() is defined above (near renderReportG) so it can compose both the overall
@@ -14175,22 +14220,29 @@ function exportReportB(){
 }
 
 function exportReportC(){
-  const rows=getTrkMonthBatches(true).filter(b=>!b.deleted).map(b=>{
-    const wipDays=getBatchWIPDays(b.batchNumber);
-    const std=b.isPrinted?3:2;
+  // v46O: Short & Excess Quantity export — Planned vs Packable (Packed + A-Grade WIP), deviation.
+  const rows=getProdMonthBatches(true).filter(b=>!b.deleted && b.batchNumber).map(b=>{
+    const wb=getBatchWIPBreakdown(b.batchNumber)||{};
+    const _ro=_reconOverride(b.batchNumber);
     const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
     const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
-    const packedQty=boxToLakh(packedOut,b.size);
-    const grossProd=_reconGross(b);
-    const status=wipDays===0&&packedOut>0?'Closed':wipDays<=std?'In Progress':'Pending';
-    return {
-      'Machine':b.machineId||'','Floor':getMachineFloor(b.machineId),'Batch':b.batchNumber,
-      'Customer':b.customer||'','Size':b.size,'Type':b.isPrinted?'PTD':'UP',
-      'Produced (L)':fmt(grossProd),'Packed (L)':fmt(packedQty),'Packed Boxes':packedOut,
-      'WIP Days':fmt(wipDays,1),'Std WIP (days)':std,'Status':status
-    };
-  });
-  exportToExcel(rows,`Sunloc_MachineWIP_${today()}.xlsx`,'Machine WIP');
+    const packed = _ro ? (wb.packIn||0) : boxToLakh(packedOut,b.size);
+    const agWip = wb.totalWIP!=null ? wb.totalWIP : 0;
+    const packable = packed + agWip;
+    const planned = b.qty || 0;
+    const deviation = packable - planned;
+    return { b, planned, packed, agWip, packable, deviation, gross:(wb.grossProd!=null?wb.grossProd:(b.actualProd||b.actualQty||0)) };
+  }).filter(r=>Math.abs(r.deviation) > 0.005)
+    .sort((a,b)=>_v44zk_batchCmp(a.b.batchNumber,b.b.batchNumber));
+  const _d=(x)=>x?new Date(x).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'';
+  const out=rows.map(r=>({
+    'Batch':r.b.batchNumber,'Customer':r.b.customer||'','Size':r.b.size,'PC':r.b.pcCode||'','Colour':r.b.colour||'',
+    'Prod Start':_d(r.b.startDate),'Prod End':_d(r.b.endDate),
+    'Planned (L)':fmt(r.planned),'Packed (L)':fmt(r.packed),'A-Grade WIP (L)':fmt(r.agWip),
+    'Packable (L)':fmt(r.packable),'Deviation (L)':fmt(r.deviation),
+    'Status':r.deviation<-0.005?'Short':r.deviation>0.005?'Excess':'Matched','Gross (L)':fmt(r.gross)
+  }));
+  exportToExcel(out,`Sunloc_ShortExcess_${today()}.xlsx`,'Short & Excess');
 }
 
 function exportReportD(){
