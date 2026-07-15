@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47C';
+const APP_BUILD = 'v47B';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -4578,9 +4578,6 @@ app.post('/api/invoice/request-batch', async (req, res) => {
       return res.status(400).json({ ok: false, error: 'too many batches in one request (max 50)' });
     }
     const results = [];
-    // v47C (confirmed by Ishan): auto-refresh the SAP indent cache at most ONCE per request on a
-    // cache miss, then re-resolve — so a stale cache self-heals instead of forcing a manual re-pull.
-    let _sapRefreshTried = false, _sapRefreshResult = null;
     for (const b of batches) {
       const batchRes = { batchNumber: b.batchNumber, ok: false };
       try {
@@ -4609,33 +4606,8 @@ app.post('/api/invoice/request-batch', async (req, res) => {
           if (cached && cached.sap_doc_entry != null) {
             b.sapDocEntry = cached.sap_doc_entry;
           } else {
-            // v47C (confirmed by Ishan): the SO isn't in the cache — auto-refresh from SAP ONCE, then
-            // re-resolve, so a stale cache self-heals. If SAP is unreachable or the SO isn't among the
-            // open orders (closed/delivered, or wrong number), fall back to a clear, specific error —
-            // no re-pull, manual or automatic, can conjure an SO that SAP doesn't return.
-            if (!_sapRefreshTried) {
-              _sapRefreshTried = true;
-              try { _sapRefreshResult = await _doRefreshSapIndents(); }
-              catch (e) { _sapRefreshResult = { ok: false, error: e.message }; }
-            }
-            let cached2 = null;
-            if (_sapRefreshResult && _sapRefreshResult.ok) {
-              if (pgPool) {
-                const r2 = await pgPool.query(`SELECT sap_doc_entry FROM sap_indent_cache WHERE sap_doc_num=$1 LIMIT 1`, [String(b.sapDocNum).trim()]);
-                cached2 = r2.rows[0];
-              } else {
-                cached2 = db.prepare(`SELECT sap_doc_entry FROM sap_indent_cache WHERE sap_doc_num=? LIMIT 1`).get(String(b.sapDocNum).trim());
-              }
-            }
-            if (cached2 && cached2.sap_doc_entry != null) {
-              b.sapDocEntry = cached2.sap_doc_entry;
-            } else {
-              const _why = (_sapRefreshResult && !_sapRefreshResult.ok)
-                ? (_sapRefreshResult.degraded ? ' — auto-refresh could not reach SAP (connectivity); ask IT to check the SAP link' : ' — auto-refresh from SAP failed: ' + (_sapRefreshResult.error || 'unknown'))
-                : ' — auto-refreshed from SAP but this Sales Order is not among the open orders (it may be closed/delivered in SAP, or the number on the order is wrong)';
-              batchRes.error = 'Sales Order ' + b.sapDocNum + ' not found in SAP indent cache' + _why;
-              results.push(batchRes); continue;
-            }
+            batchRes.error = 'Sales Order ' + b.sapDocNum + ' not found in SAP indent cache — re-pull indents (SAP button) then retry';
+            results.push(batchRes); continue;
           }
         }
         // v44Z (Ishan): the in-flight duplicate guard is REMOVED. Multiple in-flight invoices for one
@@ -9060,46 +9032,6 @@ app.post('/api/admin/normalize-orange-label-numbers', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
-// v47C (confirmed by Ishan): REPAIR labels whose `printed` flag was reset to 0 by a stale bulk sync
-// (the pre-v47C printed=EXCLUDED.printed overwrite). A label with ANY scan was physically printed —
-// you cannot scan an unprinted label — so this sets printed=1 on non-voided, currently-unprinted
-// labels that carry at least one scan, for the given batches. Dry-run by default; {"confirm":true}
-// writes. Idempotent (already-printed labels are skipped by the printed=0 filter).
-app.post('/api/admin/repair-printed-labels', async (req, res) => {
-  try {
-    const batches = Array.isArray(req.body && req.body.batches) ? req.body.batches.filter(Boolean) : [];
-    const confirm = !!(req.body && req.body.confirm);
-    if (!batches.length) return res.status(400).json({ ok:false, error:'body.batches (array of batch numbers) required' });
-    if (!pgPool) return res.status(400).json({ ok:false, error:'repair supported on Postgres only' });
-    // Candidates: non-voided, printed=0 labels in the given batches that have >=1 scan (proof of printing).
-    const cand = (await pgPool.query(
-      `SELECT l.id, l.batch_number
-       FROM tracking_labels l
-       WHERE l.batch_number = ANY($1)
-         AND COALESCE(l.voided,0)=0
-         AND COALESCE(l.printed,0)=0
-         AND EXISTS (SELECT 1 FROM tracking_scans s WHERE s.label_id = l.id)`,
-      [batches])).rows;
-    const perBatch = {};
-    cand.forEach(r => { perBatch[r.batch_number] = (perBatch[r.batch_number]||0) + 1; });
-    if (!confirm) {
-      return res.json({ ok:true, dryRun:true, candidates:cand.length, perBatch, note:'Dry-run. Re-POST with {"confirm":true} to set printed=1 on these labels.' });
-    }
-    const ids = cand.map(r => r.id);
-    let updated = 0;
-    if (ids.length) {
-      const u = await pgPool.query(
-        `UPDATE tracking_labels SET printed=1, printed_at=COALESCE(printed_at, NOW()::text) WHERE id = ANY($1)`,
-        [ids]);
-      updated = u.rowCount || 0;
-    }
-    res.json({ ok:true, dryRun:false, updated, perBatch });
-  } catch (err) {
-    console.error('[repair-printed-labels]', err.message);
-    res.status(500).json({ ok:false, error: err.message });
-  }
-});
-
 // v45Z (confirmed by Ishan): REPAIR existing export-invoice quantities written before the UoM fix.
 // For every invoices_received row whose payload_json lines include a THOUSAND-UoM line, recompute
 // total_qty_lakhs with the per-line scale; where the linked tracking_dispatch_records row still
@@ -13492,7 +13424,7 @@ app.post('/api/tracking/state', async (req, res) => {
             await client.query(`INSERT INTO tracking_labels
               (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total)
               VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
-              ON CONFLICT (id) DO UPDATE SET batch_number=EXCLUDED.batch_number,label_number=EXCLUDED.label_number,printed=GREATEST(COALESCE(tracking_labels.printed,0), COALESCE(EXCLUDED.printed,0)),printed_at=COALESCE(EXCLUDED.printed_at, tracking_labels.printed_at),voided=EXCLUDED.voided,void_reason=EXCLUDED.void_reason,voided_at=EXCLUDED.voided_at,wo_status=EXCLUDED.wo_status,ship_to=EXCLUDED.ship_to,bill_to=EXCLUDED.bill_to`,
+              ON CONFLICT (id) DO UPDATE SET batch_number=EXCLUDED.batch_number,label_number=EXCLUDED.label_number,printed=EXCLUDED.printed,printed_at=EXCLUDED.printed_at,voided=EXCLUDED.voided,void_reason=EXCLUDED.void_reason,voided_at=EXCLUDED.voided_at,wo_status=EXCLUDED.wo_status,ship_to=EXCLUDED.ship_to,bill_to=EXCLUDED.bill_to`,
               [l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,l.poNumber||null,l.machineId||null,l.printingMatter||null,l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,l.woStatus||null,l.shipTo||null,l.billTo||null,l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null]);
           }
         }
@@ -14573,8 +14505,7 @@ app.post('/api/tracking/labels', async (req, res) => {
           ON CONFLICT (id) DO UPDATE SET
             batch_number=EXCLUDED.batch_number, label_number=EXCLUDED.label_number,
             qty=EXCLUDED.qty, is_partial=EXCLUDED.is_partial,
-            printed=GREATEST(COALESCE(tracking_labels.printed,0), COALESCE(EXCLUDED.printed,0)),
-            printed_at=COALESCE(EXCLUDED.printed_at, tracking_labels.printed_at),
+            printed=EXCLUDED.printed, printed_at=EXCLUDED.printed_at,
             voided=EXCLUDED.voided, void_reason=EXCLUDED.void_reason,
             voided_at=EXCLUDED.voided_at, voided_by=EXCLUDED.voided_by,
             qr_data=EXCLUDED.qr_data, pc_code=EXCLUDED.pc_code,
