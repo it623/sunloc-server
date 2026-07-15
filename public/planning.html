@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v46Y</p>
+      <p>Planning Suite v3.0 · build v47</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -3605,6 +3605,7 @@ async function _reconcileCustomerMismatch(idx) {
   ord.shipTo   = m.labelCustomer;
   // billTo stays as-is unless user manually re-edits
   _localOrderChanges[ord.id] = Date.now();
+  ord._localEditedAt = Date.now(); // v47 Point 1: fresh stamp so this customer change wins the server staleness guard
   saveState();
   try {
     await upsertOrderToDB(ord);
@@ -4942,6 +4943,11 @@ function saveOrderModal(existingId, defaultMachine) {
   recalcMachineSchedule(machineId);
   // Stamp only this specific order as locally changed
   _localOrderChanges[ord.id] = Date.now();
+  // v47 Point 1: also stamp the PERSISTED per-order edit time. saveOrderModal rebuilds `ord` fresh from
+  // the form (colour / gross-override / customer / Ship-Bill / W-O type), so without this the edit carried
+  // no _localEditedAt and the new v47 server staleness guard on those fields would treat it as stale and
+  // keep the old DB value. With a fresh stamp, this genuine edit wins over any stale tab's later push.
+  ord._localEditedAt = Date.now();
   // PERMANENT FIX: Save this order to its own dedicated row in production_orders table
   upsertOrderToDB(ord);
   // v37J Sub-issue 1.1: Push any new Ship-to/Bill-to customer names to the customer master.

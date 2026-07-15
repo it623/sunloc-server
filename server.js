@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46Y';
+const APP_BUILD = 'v47';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -6368,8 +6368,19 @@ app.post('/api/orders/upsert', async (req, res) => {
         else                 finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
       }
       const hasManualDate = exData.manualEndDate || exData.manualStartDate;
+      const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming client older than DB by >5s
       mergedOrd = {
         ...ord,
+        // v47 Point 1 (confirmed by Ishan): planner-owned fields were written UNGUARDED here, so a stale
+        // tab's push clobbered them and colour/gross/customer/W-O "reverted" on the next sync (the client
+        // reads these from production_orders, not the blob). Guard them with the same _localEditedAt rule
+        // used for status: if the DB copy is newer than the incoming edit stamp, keep DB; else fresh edit wins.
+        colour:        _staleWrite && exData.colour        != null ? exData.colour        : ord.colour,
+        customer:      _staleWrite && exData.customer      != null ? exData.customer      : ord.customer,
+        shipTo:        _staleWrite && exData.shipTo        != null ? exData.shipTo        : ord.shipTo,
+        billTo:        _staleWrite && exData.billTo        != null ? exData.billTo        : ord.billTo,
+        grossOverride: _staleWrite && exData.grossOverride != null ? exData.grossOverride : ord.grossOverride,
+        woStatus:      _staleWrite && exData.woStatus      != null ? exData.woStatus      : ord.woStatus,
         status: finalStatus,
         deleted: finalDeleted,
         actualProd: finalActualProd,
@@ -6834,8 +6845,18 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         }
         // Preserve manual date flags from DB if set
         const hasManualDate = exData.manualEndDate || exData.manualStartDate;
+        const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming client older than DB by >5s
         mergedOrd = {
           ...ord,
+          // v47 Point 1: same stale-tab guard as the single upsert — the bulk sync pushes ALL of a tab's
+          // orders, so a stale tab clobbered colour/gross/customer/W-O for every order. Keep DB when the
+          // incoming edit stamp is older than the DB copy; otherwise the fresh edit flows through.
+          colour:        _staleWrite && exData.colour        != null ? exData.colour        : ord.colour,
+          customer:      _staleWrite && exData.customer      != null ? exData.customer      : ord.customer,
+          shipTo:        _staleWrite && exData.shipTo        != null ? exData.shipTo        : ord.shipTo,
+          billTo:        _staleWrite && exData.billTo        != null ? exData.billTo        : ord.billTo,
+          grossOverride: _staleWrite && exData.grossOverride != null ? exData.grossOverride : ord.grossOverride,
+          woStatus:      _staleWrite && exData.woStatus      != null ? exData.woStatus      : ord.woStatus,
           status: finalStatus,
           deleted: finalDeleted,
           actualProd: finalActualProd,
@@ -7466,8 +7487,18 @@ app.post('/api/planning/state', async (req, res) => {
                 finalStatus = ord.status || ex.status || 'pending';
               }
               } // end _bgForcePendingIds else
+              const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming blob older than DB by >5s
               mergedOrd = {
                 ...ord,
+                // v47 Point 1: THE primary revert vector — a stale tab's ~30s full-blob auto-save reaches
+                // this background merge, which wrote colour/gross/customer/W-O straight from the blob into
+                // production_orders. Same _localEditedAt staleness guard: keep DB when the blob is older.
+                colour:        _staleWrite && ex.colour        != null ? ex.colour        : ord.colour,
+                customer:      _staleWrite && ex.customer      != null ? ex.customer      : ord.customer,
+                shipTo:        _staleWrite && ex.shipTo        != null ? ex.shipTo        : ord.shipTo,
+                billTo:        _staleWrite && ex.billTo        != null ? ex.billTo        : ord.billTo,
+                grossOverride: _staleWrite && ex.grossOverride != null ? ex.grossOverride : ord.grossOverride,
+                woStatus:      _staleWrite && ex.woStatus      != null ? ex.woStatus      : ord.woStatus,
                 startDate:       hasManualDate ? ex.startDate   : ord.startDate,
                 endDate:         hasManualDate ? ex.endDate     : ord.endDate,
                 manualEndDate:   ex.manualEndDate   || ord.manualEndDate,

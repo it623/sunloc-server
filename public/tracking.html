@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46Y</title>
+<title>Sunloc Tracking Suite v1.0 · build v47</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46Y</p>
+      <p>Tracking Suite v1.0 · build v47</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46Y</p>
+      <p>Tracking Suite v1.0 · build v47</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2780,7 +2780,17 @@ function _reconTips(bn){
     gross:_t(w.grossProd), inspected:_t(a.inspected), aGrade:_t(a.aGrade), salvage:_t(a.salvage),
     remelt:_t(a.remelt), packed:_t(w.packIn), wip:_t(w.totalWIP), pct:_t(a.pct,'%') };
 }
-function _reconGross(b){ const o=b?_reconOverride(b.batchNumber):null; return o&&o.gross!=null ? o.gross : (b?(b.actualProd||b.actualQty||0):0); }
+function _reconGross(b){
+  if(!b) return 0;
+  // v46Z (confirmed by Ishan): precedence DPR gross override → tracking reconcile override → raw actualProd.
+  // The DPR closed-batch editor sets b.grossOverride (e.g. 26ZC094 → 8.90) and that value already flows to
+  // Planning / Report D / Batch Tracker; Report B lagged because it read only the reconcile override or the
+  // raw split production (25.50), producing a phantom Production WIP. Now every report shares one gross.
+  const go = (b.grossOverride==null || b.grossOverride==='') ? NaN : Number(b.grossOverride);
+  if(!isNaN(go) && go>=0) return go;
+  const o=_reconOverride(b.batchNumber); if(o&&o.gross!=null) return o.gross;
+  return b.actualProd||b.actualQty||0;
+}
 async function loadReconcileOverridesTrk(){
   try{
     const r = await fetch('/api/batch/reconcile-overrides'); const j = await r.json();
@@ -4042,6 +4052,23 @@ function renderLabels(){
   }).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   const selBatch=window._labelSelBatch||activeBatches[0]?.batchNumber||'';
 
+  // v47 Point 2 (confirmed by Ishan): show Salvage (L) under ACTUAL and generated-qty (L) / printed-qty (L)
+  // under the GEN / PRT counts (qty = boxes × size-wise pack standard via boxToLakh), plus the same three as
+  // a summary strip. Computed ONCE here so the strip totals are EXACTLY the sum of the per-row figures
+  // (reconciliation principle). Salvage is sourced from getBatchWIPBreakdown so the label screen agrees with
+  // Report B/D. Keyed by batchNumber; search-extra rows (out-of-window) fall back to the same helper inline.
+  const _lgComputeFig = (b) => {
+    const _gen = state.labels.filter(l=>l.batchNumber===b.batchNumber&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l)).length;
+    const _prt = state.labels.filter(l=>l.batchNumber===b.batchNumber&&l.printed&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l)).length;
+    const _wb  = (typeof getBatchWIPBreakdown==='function') ? getBatchWIPBreakdown(b.batchNumber) : null;
+    const _salvL = _wb ? (((_wb.wAIM&&_wb.wAIM.salvage)||0)+((_wb.wPrint&&_wb.wPrint.salvage)||0)+((_wb.wPI&&_wb.wPI.salvage)||0)) : 0;
+    return { salvageL:_salvL, genL:boxToLakh(_gen,b.size), prtL:boxToLakh(_prt,b.size) };
+  };
+  const _lgFig = new Map();
+  let _lgTotSalvL = 0, _lgTotGenL = 0, _lgTotPrtL = 0;
+  activeBatches.forEach(b=>{ const f=_lgComputeFig(b); _lgFig.set(b.batchNumber,f); _lgTotSalvL+=f.salvageL; _lgTotGenL+=f.genL; _lgTotPrtL+=f.prtL; });
+  const _lgFigColor = '#06b6d4'; // distinct bold colour for the (L) sub-figures
+
   document.getElementById('tb-actions').innerHTML=`
     <button class="btn btn-secondary" onclick="configurePrinter()">🖨️ Printer Setup</button>`;
 
@@ -4050,6 +4077,22 @@ function renderLabels(){
     <div><div class="section-title">Label Generation &amp; Print</div><div class="section-sub">Generate and print box labels — select a batch to see its print queue inline</div></div>
   </div>
   <div class="alert alert-info">Labels are capped by: (1) order quantity in Planning — amend planned qty to unlock more, (2) daily machine target in boxes.</div>
+
+  <!-- v47 Point 2: label-dashboard summary tiles — Salvage / Generated / Printed in Lakhs, across the active batches shown. Totals equal the sum of the per-row (L) figures. -->
+  <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
+    <div class="card" style="flex:1;min-width:150px;padding:8px 12px">
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.05em;color:var(--text3)">SALVAGE (ACTIVE)</div>
+      <div style="font-size:18px;font-weight:800;color:${_lgFigColor}">${fmt(_lgTotSalvL)} <span style="font-size:11px;font-weight:700">L</span></div>
+    </div>
+    <div class="card" style="flex:1;min-width:150px;padding:8px 12px">
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.05em;color:var(--text3)">GENERATED QTY (ACTIVE)</div>
+      <div style="font-size:18px;font-weight:800;color:${_lgFigColor}">${fmt(_lgTotGenL)} <span style="font-size:11px;font-weight:700">L</span></div>
+    </div>
+    <div class="card" style="flex:1;min-width:150px;padding:8px 12px">
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.05em;color:var(--text3)">PRINTED QTY (ACTIVE)</div>
+      <div style="font-size:18px;font-weight:800;color:${_lgFigColor}">${fmt(_lgTotPrtL)} <span style="font-size:11px;font-weight:700">L</span></div>
+    </div>
+  </div>
 
   <div style="display:flex;gap:12px;align-items:start">
 
@@ -4112,6 +4155,7 @@ function renderLabels(){
         const isSelected=b.batchNumber===selBatch;
         const pct=maxLabels>0?(generated/maxLabels*100):0;
         const actualProd=(b.actualQty||b.actualProd||0);
+        const _fig = _lgFig.get(b.batchNumber) || _lgComputeFig(b); // v47 Point 2: Salvage/Gen/Prt (L)
         const clr=b.colour||'';
         return `<tr style="cursor:pointer;${isSelected?'background:rgba(240,192,96,0.12);outline:2px solid var(--accent);outline-offset:-2px':''}" data-batch="${b.batchNumber}" data-srch="${(b.batchNumber+' '+(b.customer||'')+' '+b.size+' '+(b.colour||'')+' '+(b.pcCode||'')).toLowerCase()}" onclick="selectLabelBatch('${b.batchNumber}')">
           <td style="padding:5px 6px;font-weight:700;font-family:monospace;font-size:11px;white-space:nowrap;color:var(--accent)">${b.batchNumber}${_lgClosedSet45.has(b.batchNumber)?' <span style="background:var(--surface3);color:var(--text3);font-size:8px;font-weight:700;padding:1px 5px;border-radius:6px" title="Outside the label view window (closed >2 days) — shown because you searched for it">CLOSED</span>':''}</td>
@@ -4119,9 +4163,9 @@ function renderLabels(){
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;text-align:center">${b.size}</td>
           <td style="padding:5px 6px;font-size:11px;max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${clr?`<span style="display:inline-block;max-width:75px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${clr}">${clr}</span>`:'—'}${b.packing?`<br><span style="font-size:9px;color:var(--accent);font-weight:700" title="Packing instruction">📦 ${b.packing}</span>`:''}${b.isPrinted?`<br><span style="font-size:9px;background:#7c3aed;color:#fde047;font-weight:800;padding:1px 6px;border-radius:6px;letter-spacing:.5px" title="Printed order (PTD) — route the box to the Printing department after AIM">PTD</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px">${b.pcCode||'—'}</td>
-          <td style="padding:5px 6px;font-family:monospace;font-size:11px;color:${actualProd>0?'var(--text1)':'var(--text3)'}">${actualProd>0?actualProd.toFixed(2):'—'}</td>
-          <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${generated}</td>
-          <td style="padding:5px 6px;font-family:monospace;font-size:11px">${printed}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px;color:${actualProd>0?'var(--text1)':'var(--text3)'}">${actualProd>0?actualProd.toFixed(2):'—'}${_fig.salvageL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Salvage (L) — total recorded salvage for this batch">Sal ${fmt(_fig.salvageL)}L</span>`:''}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${generated}${_fig.genL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Generated quantity (L) = generated boxes × pack standard">${fmt(_fig.genL)}L</span>`:''}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px">${printed}${_fig.prtL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Printed quantity (L) = printed boxes × pack standard">${fmt(_fig.prtL)}L</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:${remaining===0?'400':'700'};color:${remaining===0?'var(--text3)':'var(--accent2)'}">${remaining}</td>
           <td style="padding:4px 5px" onclick="event.stopPropagation()">
             ${_showGenBtn45c?`<button style="font-size:10px;padding:2px 7px;border:1px solid ${isExcessAvailable?'var(--accent2)':'var(--accent)'};border-radius:3px;background:${isExcessAvailable?'rgba(255,171,0,0.15)':'rgba(96,165,250,0.15)'};color:${isExcessAvailable?'var(--accent2)':'var(--accent)'};cursor:pointer;white-space:nowrap" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕Exc':'+Gen'}</button>`:''}
@@ -10763,7 +10807,14 @@ function _rptBRow(batchNo, dept, U){
                        : {total:0, salvage:0, remelt:0};
   const ps = PACK_SIZES[String(_bSize45y)]||1;
   const wastageBoxes = hasWastage ? Math.round(w.total/ps) : 0;
-  const wip=Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
+  // v46Z (confirmed by Ishan): make the WIP-box COUNT match the expandable box LIST. The list uses each
+  // box's current stage (getBoxCurrentStage) — the per-box truth — while the count was net in−out−wastage,
+  // so they diverged (26ZE104 7 vs 4; 26ZD108 9 vs 25, the latter exceeding boxes-in). When the box-stages
+  // map is loaded, count the boxes whose current stage IS this dept — identical to _rptB_wipBoxChips — so
+  // count === list. Fall back to the net count only when the map isn't available (e.g. Excel export).
+  const wip = (window._v40_boxStagesLoadedAt > 0)
+    ? getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && getBoxCurrentStage(l.id)===dept).length
+    : Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
   // v46E (confirmed by Ishan): AIM Dept WIP (qty) nets remelt — Scan In − Remelt − Scan Out — so
   // Report B/D reconcile with Report E and getBatchWIPBreakdown. WIP boxes stay the physical inn−out
   // count. Printing/PI keep box-rounded wastage netting (via wip) unchanged.
@@ -11326,7 +11377,10 @@ function _v41_renderReportDInner(){
     <div class="kpi"><div class="kpi-label">A-Grade % (Unprinted / AIM)</div><div class="kpi-val ${aimAGradePct>=95?'green':aimAGradePct>=90?'amber':'red'}">${fmt(aimAGradePct,1)}%</div><div class="kpi-sub">AIMOut ÷ (AIMOut+Sal+Rem) — matches Report E</div></div>
     <div class="kpi"><div class="kpi-label">A-Grade % (Post-Printing)</div><div class="kpi-val ${aGradePct>=95?'green':aGradePct>=90?'amber':'red'}">${fmt(aGradePct,1)}%</div><div class="kpi-sub">net of Print + PI salvage/remelt</div></div>
     <div class="kpi"><div class="kpi-label">Total A-Grade (net)</div><div class="kpi-val green">${fmt(totalAGrade)}L</div></div>
-    <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${fmt(monthBatches.reduce((s,b)=>s+_v40_dispatchedLakhs(b.batchNumber,b.size),0))}L</div></div>
+    <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${fmt(monthBatches.reduce((s,b)=>s+state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((a,r)=>a+(r.qty||0),0),0))}L</div></div>
+    <!-- v46Z: was _v40_dispatchedLakhs (legacy dispatch SCANS + invoice records, summed) which double-counted
+         and read 7689L. Dispatch now flows through invoices only, so this sums the dispatch RECORDS for this
+         month's batches — matches the Generated Invoices total (484.6L). -->
     <!-- v46W: Dispatched was sum of ALL dispatch records (all-time) + raw qty. Now scoped to this month's
          batches like every other Report D KPI, via _v40_dispatchedLakhs (the same helper Report G uses).
          Export ×100 qty is corrected at source by the export-dispatch-qty backfill, so this reads true. -->
