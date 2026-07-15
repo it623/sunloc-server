@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47A</title>
+<title>Sunloc Tracking Suite v1.0 · build v47B</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47A</p>
+      <p>Tracking Suite v1.0 · build v47B</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47A</p>
+      <p>Tracking Suite v1.0 · build v47B</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3006,7 +3006,7 @@ async function _v41_fetchAgradeMonth(ym){
     if (!r.ok) throw new Error('HTTP '+r.status);
     const j = await r.json();
     if (!j.ok) throw new Error(j.error||'failed');
-    _v41_agradeMonthCache[ym] = { summary: j.summary||{}, wastage: j.wastage||{}, crossMonth: j.crossMonth||{}, monthGross: j.monthGross||{}, monthMachine: j.monthMachine||{}, splitFamilies: j.splitFamilies||[], window: j.window }; // v45Z: keep monthMachine; v46W: keep splitFamilies (Report C parent/child roll-up was reading an empty list)
+    _v41_agradeMonthCache[ym] = { summary: j.summary||{}, wastage: j.wastage||{}, crossMonth: j.crossMonth||{}, monthGross: j.monthGross||{}, monthMachine: j.monthMachine||{}, splitFamilies: j.splitFamilies||[], wipBoxes: j.wipBoxes||{}, window: j.window }; // v45Z: keep monthMachine; v46W: keep splitFamilies; v47B: keep wipBoxes (Report B WIP count === click-through list)
     return _v41_agradeMonthCache[ym];
   } catch(e){
     console.warn('[agrade-by-month] fetch failed:', e.message);
@@ -9342,6 +9342,16 @@ async function _rptH_toggleGapBoxes(batch, fromKey, toKey, rowId){
 // differ from this list by the derived wastage-box estimate (remelt isn't box-serial-tied) — the list
 // is the per-box physical truth, matching Report F's "box list is the per-box truth" convention.
 function _rptB_wipBoxChips(batchNo, dept){
+  // v47B (confirmed by Ishan): render the SAME month-scoped serial set the WIP count is derived from
+  // (agrade-by-month wipBoxes), so the expanded list length always equals the displayed count and is
+  // month-scoped. Fallback to the current-stage view only when the month set isn't loaded.
+  const _md = (typeof _v41_useMonthAttributed!=='undefined' && _v41_useMonthAttributed) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
+  const serials = (_md && _md.wipBoxes && (_md.wipBoxes[batchNo]||{})[dept]) || null;
+  if (serials) {
+    if(!serials.length) return '<span class="text-sm text-muted">No boxes in WIP at this department for this month.</span>';
+    const chips = serials.map(box=>`<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(8,145,178,0.1);border:1px solid rgba(8,145,178,0.35);color:#0e7490">${box}</span>`).join('');
+    return `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${serials.length}</b> box${serials.length>1?'es':''} in WIP at ${DEPT_LABELS[dept]||dept} (this month):</div>${chips}`;
+  }
   const labels = getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && getBoxCurrentStage(l.id)===dept)
     .sort((a,b)=>Math.abs(a.labelNumber||0)-Math.abs(b.labelNumber||0));
   if(!labels.length) return '<span class="text-sm text-muted">No scan-tracked boxes currently in WIP at this department.</span>';
@@ -10814,7 +10824,12 @@ function _rptBRow(batchNo, dept, U){
   // the single source of truth for the WIP-box count — box count and WIP qty derive from it and stay
   // consistent. (The expandable chip list remains a current-stage view; it may differ from this net count,
   // which is acceptable — the WIP number must be scan-in − scan-out − wastage, per Ishan.)
-  const wip = Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
+  // v47B (confirmed by Ishan): month-scoped WIP box SET from the server (agrade-by-month wipBoxes) — the
+  // boxes scanned into this dept this month with no scan-out. The COUNT is the length of that exact list,
+  // and _rptB_wipBoxChips renders the SAME list, so clicking N always shows those N boxes. Falls back to
+  // the frozen net formula only when the month set isn't loaded (e.g. Excel export without the cache).
+  const _wipSet = (_bMd && _bMd.wipBoxes && (_bMd.wipBoxes[batchNo]||{})[dept]) || null;
+  const wip = _wipSet ? _wipSet.length : Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
   // v46E (confirmed by Ishan): AIM Dept WIP (qty) nets remelt — Scan In − Remelt − Scan Out — so
   // Report B/D reconcile with Report E and getBatchWIPBreakdown. WIP boxes stay the physical inn−out
   // count. Printing/PI keep box-rounded wastage netting (via wip) unchanged.

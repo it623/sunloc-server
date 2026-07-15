@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47A';
+const APP_BUILD = 'v47B';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -14288,7 +14288,65 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
       } catch (e) { console.warn('[v46K] split-gross apportionment skipped (month):', e.message); }
     } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
 
-    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross, monthMachine, splitFamilies: _splitFamsForClient });
+    // v47B (confirmed by Ishan): month-scoped WIP box SET per batch/dept — boxes scanned INTO a dept
+    // within THIS window that have NO scan-OUT of that dept (any time). Report B uses this for BOTH the
+    // WIP-box count and the click-through list, so count === list by construction and is month-scoped
+    // ("click 8 → those exact 8"). Real physical boxes only: voided/orange/specimen(0) and recon-synthetic
+    // scans excluded; excess kept (rendered E-n). No wastage subtraction — salvage is pre-box (unprinted)
+    // or absorbed into the re-printed last label that scans out (printed), and remelt is phased out — so
+    // scan-in − scan-out is the whole story at the box level. Same window (start/end) as the counts above.
+    const wipBoxes = {};
+    try {
+      let wrows;
+      if (pgPool) {
+        wrows = (await pgPool.query(
+          `WITH ins AS (
+             SELECT DISTINCT label_id, dept FROM tracking_scans
+             WHERE type='in' AND ts >= $1 AND ts < $2 AND label_id NOT LIKE 'recon-%'
+           ),
+           outs AS (
+             SELECT DISTINCT label_id, dept FROM tracking_scans
+             WHERE type='out' AND label_id NOT LIKE 'recon-%'
+           )
+           SELECT l.batch_number, i.dept, l.label_number, l.is_orange, l.is_excess
+           FROM ins i
+           JOIN tracking_labels l ON l.id = i.label_id
+           LEFT JOIN outs o ON o.label_id = i.label_id AND o.dept = i.dept
+           WHERE o.label_id IS NULL AND COALESCE(l.voided,0)=0
+             AND i.dept IN ('aim','printing','pi','packing')`,
+          [start, end])).rows;
+      } else {
+        wrows = db.prepare(
+          `WITH ins AS (
+             SELECT DISTINCT label_id, dept FROM tracking_scans
+             WHERE type='in' AND ts >= ? AND ts < ? AND label_id NOT LIKE 'recon-%'
+           ),
+           outs AS (
+             SELECT DISTINCT label_id, dept FROM tracking_scans
+             WHERE type='out' AND label_id NOT LIKE 'recon-%'
+           )
+           SELECT l.batch_number, i.dept, l.label_number, l.is_orange, l.is_excess
+           FROM ins i
+           JOIN tracking_labels l ON l.id = i.label_id
+           LEFT JOIN outs o ON o.label_id = i.label_id AND o.dept = i.dept
+           WHERE o.label_id IS NULL AND COALESCE(l.voided,0)=0
+             AND i.dept IN ('aim','printing','pi','packing')`
+        ).all(start, end);
+      }
+      wrows.forEach(r => {
+        if (Number(r.is_orange)) return;                    // orange twin — not a separate physical box
+        const num = Number(r.label_number);
+        if (!Number.isFinite(num) || num === 0) return;     // specimen sentinel (0/NULL)
+        const bn = r.batch_number; if (!bn) return;
+        if (!wipBoxes[bn]) wipBoxes[bn] = {};
+        if (!wipBoxes[bn][r.dept]) wipBoxes[bn][r.dept] = [];
+        wipBoxes[bn][r.dept].push((Number(r.is_excess) || num < 0) ? ('E-' + Math.abs(num)) : String(Math.abs(num)));
+      });
+      Object.values(wipBoxes).forEach(byDept => Object.values(byDept).forEach(arr =>
+        arr.sort((a,b)=> (parseInt(String(a).replace(/\D/g,''),10)||0) - (parseInt(String(b).replace(/\D/g,''),10)||0))));
+    } catch(e) { console.warn('[agrade-by-month] wipBoxes query failed:', e.message); }
+
+    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross, monthMachine, splitFamilies: _splitFamsForClient, wipBoxes });
   } catch(err) {
     console.error('[agrade-by-month]', err.message);
     res.status(500).json({ ok:false, error: err.message });
