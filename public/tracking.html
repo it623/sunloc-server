@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v46W</title>
+<title>Sunloc Tracking Suite v1.0 · build v46Y</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46W</p>
+      <p>Tracking Suite v1.0 · build v46Y</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v46W</p>
+      <p>Tracking Suite v1.0 · build v46Y</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2177,7 +2177,13 @@ function recordScan(labelId, dept, type, operator, parsed){
   let label = state.labels.find(l=>l.id===labelId);
   // Secondary lookup: by batchNumber + labelNumber (handles sync edge cases)
   if(!label && parsed?.batchNumber && parsed?.boxNumber!=null){
+    // v46X (26ZE104 box 11): NEVER resolve a box scan to an orange PI-verification label. Server-created
+    // orange labels are stored with the PARENT box's numeric label_number (col is INTEGER), so an orange
+    // label can share the box's number — without this guard a box scanned by batch+box could land on its
+    // orange twin and be rejected as "already scanned". Orange labels are only ever reached by scanning
+    // their own QR (the primary id lookup above), which is untouched.
     label = state.labels.find(l=>
+      !l.isOrange &&
       l.batchNumber===parsed.batchNumber &&
       Math.abs(l.labelNumber)===Math.abs(parsed.boxNumber)
     );
@@ -5109,6 +5115,7 @@ function processScanInput(dept,type){
             retry = recordScan(parsed.labelId, dept, type, currentDept, parsed);
             if(!retry.ok && parsed.boxNumber != null){
               const byBatch = state.labels.find(l =>
+                !l.isOrange &&
                 l.batchNumber===batchNo &&
                 Math.abs(l.labelNumber)===Math.abs(parsed.boxNumber)
               );

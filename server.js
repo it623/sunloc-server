@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v46W';
+const APP_BUILD = 'v46Y';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -5308,6 +5308,21 @@ function _v44zj_lakhToBox(lakhs, size) {
 // recorded box count is 0 but a dispatched qty is present, derive boxes from the batch's pack size —
 // the SAME basis planned boxes use (ceil(Lakhs / packSizeLakhs)) — so a fully-dispatched lot nets to
 // zero. Never overrides a real (>0) box count; returns 0 (unchanged) if the batch size can't be resolved.
+// v46Y (confirmed by Ishan — strengthen at source): orange PI-verification labels must never share a
+// box's numeric label_number. They were stored as the bare box number (client 'OL-11' → server strips
+// 'OL-' → 11), so an orange label collided with its box (26ZE104 box 11) in the client's batch+box scan
+// lookup. We now store orange numbers in a dedicated high range (BASE + box#), which can't collide with a
+// real box number (few hundred) or an excess number (small/negative), while staying INTEGER-safe. The
+// box number is still recoverable as (stored − BASE), and orange labels are keyed by id everywhere that
+// matters, so nothing else depends on their raw number.
+const _ORANGE_NUM_BASE = 1000000;
+const _labelNumForStore = (l) => {
+  const raw = (l && (l.labelNumber ?? l.label_number));
+  if (raw == null) return null;
+  const n = parseInt(String(raw).replace(/^OL-/i, ''), 10);
+  if (isNaN(n)) return null;
+  return (l && l.isOrange) ? (_ORANGE_NUM_BASE + Math.abs(n)) : n;
+};
 // v46U (confirmed by Ishan): server replica of the planning app's isExportZone (planning.html). Export
 // SAP lines use UoM "THOUSAND" (qty in thousands → ×0.01 to Lakhs); those orders carry an export zone.
 const _EXPORT_ZONES_SRV = ['EXPORT','BANGLADESH','NEPAL','MUMBAI'];
@@ -7746,7 +7761,9 @@ app.post('/api/tracking/orange-backfill', async (req, res) => {
       const r = await pgPool.query(
         `INSERT INTO tracking_labels (id, batch_number, label_number, size, qty, is_orange, parent_label_id,
                                       customer, colour, pc_code, printing_matter, generated, printed, voided)
-         SELECT 'ol-'||p.id, p.batch_number, p.label_number, p.size, p.qty, 1, p.id,
+         SELECT 'ol-'||p.id, p.batch_number,
+                ${_ORANGE_NUM_BASE} + ABS(CASE WHEN p.label_number::text ~ '^-?[0-9]+$' THEN p.label_number::integer ELSE 0 END),
+                p.size, p.qty, 1, p.id,
                 p.customer, p.colour, p.pc_code, p.printing_matter, $2, 0, 0
          FROM tracking_labels p
          WHERE p.batch_number = $1 AND COALESCE(p.is_orange,0)=0 AND COALESCE(p.voided,0)=0
@@ -7771,7 +7788,7 @@ app.post('/api/tracking/orange-backfill', async (req, res) => {
         `INSERT OR IGNORE INTO tracking_labels (id, batch_number, label_number, size, qty, is_orange, parent_label_id,
                                                 customer, colour, pc_code, printing_matter, generated, printed, voided)
          VALUES (?,?,?,?,?,1,?,?,?,?,?,?,0,0)`);
-      parents.forEach(p => { const info = ins.run('ol-'+p.id, p.batch_number, p.label_number, p.size, p.qty, p.id, p.customer, p.colour, p.pc_code, p.printing_matter, ts); created += info.changes; });
+      parents.forEach(p => { const info = ins.run('ol-'+p.id, p.batch_number, _ORANGE_NUM_BASE + Math.abs(parseInt(p.label_number,10)||0), p.size, p.qty, p.id, p.customer, p.colour, p.pc_code, p.printing_matter, ts); created += info.changes; });
     }
     res.json({ ok: true, created, batchNumber });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -8944,6 +8961,43 @@ app.post('/api/admin/backfill-export-dispatch-qty', async (req, res) => {
     res.json({ ok: true, dryRun: confirm !== true, scanned: (recs || []).length, exportRecordsScanned: exportScanned,
                rowsToFix: wouldFix, rowsWritten: written, batchesAffected: affected.size,
                actualsRecomputed: confirm ? affected.size : 0, samples });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// v46Y (confirmed by Ishan): NORMALIZE existing orange labels into the dedicated numeric range. Older
+// orange labels were stored with the bare box number (they could collide with the box in the client's
+// batch+box scan lookup — 26ZE104 box 11). This rewrites any orange label whose number is still a real
+// box number (0 < n < BASE) to BASE + n, so it can never collide again. Keyed by id, so no other data
+// references break. Idempotent (already-normalized labels are ≥ BASE and skipped). The v46X client guard
+// already makes these harmless for scanning; this is the data-level cleanup. Dry-run by default.
+app.post('/api/admin/normalize-orange-label-numbers', async (req, res) => {
+  try {
+    const confirm = (req.body && req.body.confirm) === true;
+    let recs;
+    if (pgPool) {
+      recs = (await pgPool.query(
+        `SELECT id, batch_number,
+                ABS(CASE WHEN label_number::text ~ '^-?[0-9]+$' THEN label_number::integer ELSE 0 END) AS num
+         FROM tracking_labels WHERE COALESCE(is_orange,0) = 1`)).rows;
+    } else {
+      recs = db.prepare(`SELECT id, batch_number, label_number FROM tracking_labels WHERE COALESCE(is_orange,0)=1`).all()
+        .map(r => ({ id: r.id, batch_number: r.batch_number, num: Math.abs(parseInt(r.label_number, 10) || 0) }));
+    }
+    const todo = (recs || []).filter(r => r.num > 0 && r.num < _ORANGE_NUM_BASE);
+    const samples = todo.slice(0, 30).map(r => ({ id: r.id, batch: r.batch_number, from: r.num, to: _ORANGE_NUM_BASE + r.num }));
+    let updated = 0, conflicts = 0;
+    if (confirm) {
+      for (const r of todo) {
+        const newNum = _ORANGE_NUM_BASE + r.num;
+        try {
+          if (pgPool) await pgPool.query(`UPDATE tracking_labels SET label_number=$1 WHERE id=$2`, [newNum, r.id]);
+          else        db.prepare(`UPDATE tracking_labels SET label_number=? WHERE id=?`).run(newNum, r.id);
+          updated++;
+        } catch (e) { conflicts++; }
+      }
+    }
+    res.json({ ok: true, dryRun: confirm !== true, orangeLabelsScanned: (recs || []).length,
+               rowsToFix: todo.length, rowsWritten: updated, conflicts, samples });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -14303,12 +14357,11 @@ app.post('/api/tracking/labels', async (req, res) => {
     // (or two rapid clicks bypassing the client _v41y_labelGenInFlight flag) try to
     // create labels with the same number for the same batch. Updates to an existing id
     // (reprint state, void, etc.) still pass through.
-    const parseLabelNum = n => { if (n == null) return null; const s = String(n).replace(/^OL-/i, ''); const p = parseInt(s); return isNaN(p) ? null : p; };
     const skipped = [];
     const accepted = [];
     if (pgPool) {
       for (const l of labels) {
-        const lnum = parseLabelNum(l.labelNumber ?? l.label_number);
+        const lnum = _labelNumForStore(l);
         const bn = l.batchNumber || l.batch_number;
         if (!bn || lnum == null) { accepted.push(l); continue; }
         const r = await pgPool.query(
@@ -14327,7 +14380,7 @@ app.post('/api/tracking/labels', async (req, res) => {
       }
     } else {
       for (const l of labels) {
-        const lnum = parseLabelNum(l.labelNumber ?? l.label_number);
+        const lnum = _labelNumForStore(l);
         const bn = l.batchNumber || l.batch_number;
         if (!bn || lnum == null) { accepted.push(l); continue; }
         const ex = db.prepare(
@@ -14370,8 +14423,8 @@ app.post('/api/tracking/labels', async (req, res) => {
             is_excess=EXCLUDED.is_excess, excess_num=EXCLUDED.excess_num,
             excess_total=EXCLUDED.excess_total, normal_total=EXCLUDED.normal_total`,
           [l.id, l.batchNumber||l.batch_number,
-           // labelNumber may be "OL-15" (orange) or a number — always store as integer
-           (()=>{ const n=l.labelNumber??l.label_number; if(n==null) return null; const s=String(n).replace(/^OL-/i,''); const p=parseInt(s); return isNaN(p)?null:p; })(),
+           // v46Y: orange labels store in the dedicated high range (BASE+box#); non-orange store the box#.
+           _labelNumForStore(l),
            l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
            l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
            l.machineId||null, l.printingMatter||l.printMatter||null,
@@ -14389,7 +14442,7 @@ app.post('/api/tracking/labels', async (req, res) => {
          is_excess,excess_num,excess_total,normal_total)
         VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
       labelsToWrite.forEach(l => stmt.run(
-        l.id, l.batchNumber||l.batch_number, parseLabelNum(l.labelNumber??l.label_number),
+        l.id, l.batchNumber||l.batch_number, _labelNumForStore(l),
         l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
         l.customer||null, l.colour||null, l.pcCode||null, l.poNumber||null,
         l.machineId||null, l.printingMatter||l.printMatter||null,
