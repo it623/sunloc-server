@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47D';
+const APP_BUILD = 'v47E';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -4598,12 +4598,24 @@ app.post('/api/invoice/request-batch', async (req, res) => {
         if (!b.sapDocEntry && b.sapDocNum) {
           let cached;
           if (pgPool) {
-            const r = await pgPool.query(`SELECT sap_doc_entry FROM sap_indent_cache WHERE sap_doc_num=$1 LIMIT 1`, [String(b.sapDocNum).trim()]);
+            const r = await pgPool.query(`SELECT sap_doc_entry, card_name FROM sap_indent_cache WHERE sap_doc_num=$1 LIMIT 1`, [String(b.sapDocNum).trim()]);
             cached = r.rows[0];
           } else {
-            cached = db.prepare(`SELECT sap_doc_entry FROM sap_indent_cache WHERE sap_doc_num=? LIMIT 1`).get(String(b.sapDocNum).trim());
+            cached = db.prepare(`SELECT sap_doc_entry, card_name FROM sap_indent_cache WHERE sap_doc_num=? LIMIT 1`).get(String(b.sapDocNum).trim());
           }
           if (cached && cached.sap_doc_entry != null) {
+            // v47E (confirmed by Ishan): CUSTOMER-MATCH guard. The resolved SAP Sales Order must belong
+            // to this order's customer — this is what stops a wrong SO number (e.g. an adjacent SO for a
+            // different customer, like 292=Wellness attaching to an Alkem order) from EVER invoicing
+            // against the wrong account. Gross-mismatch only: names are tokenised (4+ char words) and must
+            // share at least one token; minor formatting differences pass, clearly different names block.
+            const _toks = s => String(s||'').toUpperCase().replace(/[^A-Z0-9]+/g,' ').trim().split(' ').filter(t => t.length >= 4);
+            const _soT  = new Set(_toks(cached.card_name));
+            const _ordT = _toks(b.customer);
+            if (_soT.size > 0 && _ordT.length > 0 && !_ordT.some(t => _soT.has(t))) {
+              batchRes.error = 'SO/customer mismatch: Sales Order ' + b.sapDocNum + ' belongs to "' + (cached.card_name || '?') + '", not this order\'s customer "' + (b.customer || '?') + '". Correct the Sales Order Number on the order before invoicing.';
+              results.push(batchRes); continue;
+            }
             b.sapDocEntry = cached.sap_doc_entry;
           } else {
             batchRes.error = 'Sales Order ' + b.sapDocNum + ' not found in SAP indent cache — re-pull indents (SAP button) then retry';
@@ -6388,10 +6400,12 @@ app.post('/api/orders/upsert', async (req, res) => {
         endDate:         hasManualDate ? exData.endDate     : ord.endDate,
         manualStartDate: exData.manualStartDate || ord.manualStartDate,
         manualEndDate:   exData.manualEndDate   || ord.manualEndDate,
-        // v41z: protect SAP refs and PO number — DB wins if set; stale client cannot blank them
-        sapDocEntry: exData.sapDocEntry || ord.sapDocEntry || null,
-        sapDocNum:   exData.sapDocNum   || ord.sapDocNum   || '',
-        poNumber:    exData.poNumber    || ord.poNumber    || '',
+        // v47E (confirmed by Ishan): SAP refs + PO are now STAMP-AWARE. A stale client still cannot
+        // blank/revert them (DB wins), but a FRESH stamped edit — e.g. a planner correcting a wrong
+        // Sales Order Number — wins, so corrections hold instead of bouncing back to the old value.
+        sapDocEntry: _staleWrite ? (exData.sapDocEntry || ord.sapDocEntry || null) : (ord.sapDocEntry || exData.sapDocEntry || null),
+        sapDocNum:   _staleWrite ? (exData.sapDocNum   || ord.sapDocNum   || '')   : (ord.sapDocNum   || exData.sapDocNum   || ''),
+        poNumber:    _staleWrite ? (exData.poNumber    || ord.poNumber    || '')   : (ord.poNumber    || exData.poNumber    || ''),
         // v41z2: user-editable fields — client wins when saving; fall back to DB only if null
         qty:      ord.qty      != null ? ord.qty      : (exData.qty      != null ? exData.qty      : null),
         grossQty: ord.grossQty != null ? ord.grossQty : (exData.grossQty != null ? exData.grossQty : null),
@@ -6864,10 +6878,10 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           endDate:         hasManualDate ? exData.endDate     : ord.endDate,
           manualStartDate: exData.manualStartDate || ord.manualStartDate,
           manualEndDate:   exData.manualEndDate   || ord.manualEndDate,
-          // v41z: protect SAP refs and PO number — DB wins if set; stale client cannot blank them
-          sapDocEntry: exData.sapDocEntry || ord.sapDocEntry || null,
-          sapDocNum:   exData.sapDocNum   || ord.sapDocNum   || '',
-          poNumber:    exData.poNumber    || ord.poNumber    || '',
+          // v47E (confirmed by Ishan): stamp-aware SAP refs + PO — stale can't blank, fresh edit wins.
+          sapDocEntry: _staleWrite ? (exData.sapDocEntry || ord.sapDocEntry || null) : (ord.sapDocEntry || exData.sapDocEntry || null),
+          sapDocNum:   _staleWrite ? (exData.sapDocNum   || ord.sapDocNum   || '')   : (ord.sapDocNum   || exData.sapDocNum   || ''),
+          poNumber:    _staleWrite ? (exData.poNumber    || ord.poNumber    || '')   : (ord.poNumber    || exData.poNumber    || ''),
           // v41z2: user-editable fields — client wins when saving; DB only as fallback
           qty:      ord.qty      != null ? ord.qty      : (exData.qty      != null ? exData.qty      : null),
           grossQty: ord.grossQty != null ? ord.grossQty : (exData.grossQty != null ? exData.grossQty : null),
@@ -7510,10 +7524,10 @@ app.post('/api/planning/state', async (req, res) => {
                   if (_b!=null && Object.prototype.hasOwnProperty.call(_grossOverride,_b)) return _grossOverride[_b]||0;
                   if (_b!=null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch,_b)) return _grossByBatch[_b]||0;
                   return Math.max(ord.actualProd||0, ex.actualProd||0); })(),
-                // v41z: protect SAP refs and PO number — DB wins if set; client cannot blank them via stale tab
-                sapDocEntry: ex.sapDocEntry || ord.sapDocEntry || null,
-                sapDocNum:   ex.sapDocNum   || ord.sapDocNum   || '',
-                poNumber:    ex.poNumber    || ord.poNumber    || '',
+                // v47E (confirmed by Ishan): stamp-aware SAP refs + PO — stale blob can't blank, fresh edit wins.
+                sapDocEntry: _staleWrite ? (ex.sapDocEntry || ord.sapDocEntry || null) : (ord.sapDocEntry || ex.sapDocEntry || null),
+                sapDocNum:   _staleWrite ? (ex.sapDocNum   || ord.sapDocNum   || '')   : (ord.sapDocNum   || ex.sapDocNum   || ''),
+                poNumber:    _staleWrite ? (ex.poNumber    || ord.poNumber    || '')   : (ord.poNumber    || ex.poNumber    || ''),
                 // v41z2: bg-merge — DB always wins over stale blob for user-editable fields
                 qty:      ex.qty      != null ? ex.qty      : (ord.qty      != null ? ord.qty      : null),
                 grossQty: ex.grossQty != null ? ex.grossQty : (ord.grossQty != null ? ord.grossQty : null),
