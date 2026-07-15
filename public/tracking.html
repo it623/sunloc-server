@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47E</title>
+<title>Sunloc Tracking Suite v1.0 · build v47F</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47E</p>
+      <p>Tracking Suite v1.0 · build v47F</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47E</p>
+      <p>Tracking Suite v1.0 · build v47F</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4053,16 +4053,21 @@ function renderLabels(){
   const selBatch=window._labelSelBatch||activeBatches[0]?.batchNumber||'';
 
   // v47 Point 2 (confirmed by Ishan): show Salvage (L) under ACTUAL and generated-qty (L) / printed-qty (L)
-  // under the GEN / PRT counts (qty = boxes × size-wise pack standard via boxToLakh), plus the same three as
+  // under the GEN / PRT counts (qty = sum of each box's actual quantity (partial-aware)), plus the same three as
   // a summary strip. Computed ONCE here so the strip totals are EXACTLY the sum of the per-row figures
   // (reconciliation principle). Salvage is sourced from getBatchWIPBreakdown so the label screen agrees with
   // Report B/D. Keyed by batchNumber; search-extra rows (out-of-window) fall back to the same helper inline.
   const _lgComputeFig = (b) => {
-    const _gen = state.labels.filter(l=>l.batchNumber===b.batchNumber&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l)).length;
-    const _prt = state.labels.filter(l=>l.batchNumber===b.batchNumber&&l.printed&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l)).length;
+    const _genLabels = state.labels.filter(l=>l.batchNumber===b.batchNumber&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l));
+    const _prtLabels = _genLabels.filter(l=>l.printed);
     const _wb  = (typeof getBatchWIPBreakdown==='function') ? getBatchWIPBreakdown(b.batchNumber) : null;
     const _salvL = _wb ? (((_wb.wAIM&&_wb.wAIM.salvage)||0)+((_wb.wPrint&&_wb.wPrint.salvage)||0)+((_wb.wPI&&_wb.wPI.salvage)||0)) : 0;
-    return { salvageL:_salvL, genL:boxToLakh(_gen,b.size), prtL:boxToLakh(_prt,b.size) };
+    // v47F (confirmed by Ishan): SUM each box's actual stored quantity (partial-aware) instead of
+    // box-count × uniform pack size, which over-counted partial/last boxes — e.g. 10×2.25=22.50 vs the
+    // real 8×2.25+1.75+1.00=20.75. label.qty is authoritative per box (partial boxes carry their true qty).
+    const _genL = _genLabels.reduce((s,l)=>s+(parseFloat(l.qty)||0), 0);
+    const _prtL = _prtLabels.reduce((s,l)=>s+(parseFloat(l.qty)||0), 0);
+    return { salvageL:_salvL, genL:_genL, prtL:_prtL };
   };
   const _lgFig = new Map();
   let _lgTotSalvL = 0, _lgTotGenL = 0, _lgTotPrtL = 0;
@@ -4164,8 +4169,8 @@ function renderLabels(){
           <td style="padding:5px 6px;font-size:11px;max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${clr?`<span style="display:inline-block;max-width:75px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${clr}">${clr}</span>`:'—'}${b.packing?`<br><span style="font-size:9px;color:var(--accent);font-weight:700" title="Packing instruction">📦 ${b.packing}</span>`:''}${b.isPrinted?`<br><span style="font-size:9px;background:#7c3aed;color:#fde047;font-weight:800;padding:1px 6px;border-radius:6px;letter-spacing:.5px" title="Printed order (PTD) — route the box to the Printing department after AIM">PTD</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px">${b.pcCode||'—'}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;color:${actualProd>0?'var(--text1)':'var(--text3)'}">${actualProd>0?actualProd.toFixed(2):'—'}${_fig.salvageL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Salvage (L) — total recorded salvage for this batch">Sal ${fmt(_fig.salvageL)}L</span>`:''}</td>
-          <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${generated}${_fig.genL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Generated quantity (L) = generated boxes × pack standard">${fmt(_fig.genL)}L</span>`:''}</td>
-          <td style="padding:5px 6px;font-family:monospace;font-size:11px">${printed}${_fig.prtL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Printed quantity (L) = printed boxes × pack standard">${fmt(_fig.prtL)}L</span>`:''}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${generated}${_fig.genL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Generated quantity (L) = sum of each box's actual quantity (partial boxes counted at true qty)">${fmt(_fig.genL)}L</span>`:''}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px">${printed}${_fig.prtL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Printed quantity (L) = sum of each printed box's actual quantity (partial boxes counted at true qty)">${fmt(_fig.prtL)}L</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:${remaining===0?'400':'700'};color:${remaining===0?'var(--text3)':'var(--accent2)'}">${remaining}</td>
           <td style="padding:4px 5px" onclick="event.stopPropagation()">
             ${_showGenBtn45c?`<button style="font-size:10px;padding:2px 7px;border:1px solid ${isExcessAvailable?'var(--accent2)':'var(--accent)'};border-radius:3px;background:${isExcessAvailable?'rgba(255,171,0,0.15)':'rgba(96,165,250,0.15)'};color:${isExcessAvailable?'var(--accent2)':'var(--accent)'};cursor:pointer;white-space:nowrap" onclick="openLabelGen('${b.batchNumber||b.id}')">${isExcessAvailable?'⊕Exc':'+Gen'}</button>`:''}

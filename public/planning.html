@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47E</p>
+      <p>Planning Suite v3.0 · build v47F</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6303,6 +6303,30 @@ async function _v39_submitInvoiceRequest() {
   }
 }
 
+// v47F (confirmed by Ishan): cancel a pending invoice request from the Invoice State dialog, freeing
+// its quantity so the batch can be re-invoiced at a different amount. Refreshes the dialog on success.
+async function _v47f_cancelInvoiceRequest(requestId, batchNumber){
+  if (!confirm(`Cancel this pending invoice request for ${batchNumber}?\n\nThis frees the quantity so you can re-invoice a different amount. Only do this if SAP has NOT already created the invoice for it — if it has, reconcile instead.`)) return;
+  const baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || '';
+  try {
+    const r = await fetch(baseUrl + '/api/invoice/cancel-request', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'X-Sunloc-Role': (currentUser?.role || ''), 'X-Sunloc-User': (currentUser?.username || '') },
+      body: JSON.stringify({ requestId })
+    });
+    const j = await r.json();
+    if (j.ok) {
+      toast('✅ Pending request cancelled — quantity freed for re-invoicing', 'var(--accent3)');
+      try { await _v39_loadInvoiceState({ silent: true }); } catch(e){}
+      _v39_showInvoiceState(batchNumber);
+    } else {
+      toast('⚠️ ' + (j.error || 'Cancel failed'), 'var(--red)');
+    }
+  } catch (e) {
+    toast('⚠️ Network error: ' + e.message, 'var(--red)');
+  }
+}
+
 async function _v39_showInvoiceState(batchNumber) {
   const baseUrl = (typeof SYNC !== 'undefined' && SYNC._url)
     || localStorage.getItem('sunloc_server_url') || '';
@@ -6316,7 +6340,12 @@ async function _v39_showInvoiceState(batchNumber) {
       ? requests.map(r => `
         <tr>
           <td style="font-family:monospace;font-size:10px;color:var(--text3)">${(r.id||'').substring(0,16)}</td>
-          <td style="font-size:11px">${r.status}</td>
+          <td style="font-size:11px">${r.status}${
+            (['pending','sent_to_sap','pending_reconciliation'].includes(r.status)
+             && ['admin','planning_manager','dispatch_manager'].includes(currentUser?.role))
+              ? ` <button onclick="_v47f_cancelInvoiceRequest('${r.id}','${batchNumber}')" style="margin-left:6px;font-size:9px;padding:1px 6px;border:1px solid #dc2626;background:#fef2f2;color:#b91c1c;border-radius:3px;cursor:pointer;font-weight:700" title="Cancel this pending request — frees the quantity so this batch can be re-invoiced at a different amount. Only works if SAP has not already created the invoice.">Cancel</button>`
+              : ''
+          }</td>
           <td style="font-size:11px">${r.boxes||0} bx / ${(r.qty_lakhs||0).toFixed(2)}L</td>
           <td style="font-family:monospace;font-size:11px">${r.sap_response_doc_num||'—'}</td>
           <td style="font-size:10px;color:var(--text3)">${(r.created_at||'').substring(0,16)}</td>

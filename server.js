@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47E';
+const APP_BUILD = 'v47F';
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -5757,6 +5757,43 @@ app.put('/api/invoice/truck-scan-session/:truckNumber', async (req, res) => {
     }
     res.json({ ok: true, truckNumber: tn, lastUpdatedAt: now });
   } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// v47F (confirmed by Ishan): CANCEL a pending (not-yet-reconciled) invoice request. A pending request
+// counts toward a batch's invoiced total (double-bill guard), so once one exists at the full packed
+// amount there is no remaining qty to re-invoice a smaller amount. This frees that qty by marking the
+// request 'cancelled' — excluded from the invoiced total. Guardrails: only in-flight statuses are
+// cancellable, and if a SAP invoice is already linked (SAP created it) the cancel is refused to avoid
+// desync — reconcile in that case instead. Role-gated to admin / planning_manager / dispatch_manager.
+app.post('/api/invoice/cancel-request', async (req, res) => {
+  try {
+    const requestId = ((req.body && req.body.requestId) || '').toString().trim();
+    const role = (req.headers['x-sunloc-role'] || '').toString().toLowerCase();
+    if (!requestId) return res.status(400).json({ ok: false, error: 'requestId required' });
+    if (!['admin', 'planning_manager', 'dispatch_manager'].includes(role)) {
+      return res.status(403).json({ ok: false, error: 'Only dispatch manager, planning manager, or admin can cancel an invoice request.' });
+    }
+    let reqRow;
+    if (pgPool) reqRow = (await pgPool.query(`SELECT id, batch_number, status FROM invoice_requests WHERE id=$1`, [requestId])).rows[0];
+    else        reqRow = db.prepare(`SELECT id, batch_number, status FROM invoice_requests WHERE id=?`).get(requestId);
+    if (!reqRow) return res.status(404).json({ ok: false, error: 'Invoice request not found.' });
+    if (!['pending', 'sent_to_sap', 'pending_reconciliation'].includes(reqRow.status)) {
+      return res.status(409).json({ ok: false, error: `Request status is '${reqRow.status}' — only an in-flight (pending) request can be cancelled.` });
+    }
+    // Refuse if a SAP invoice is already linked to this request (SAP has created it → reconcile, don't cancel).
+    let recv;
+    if (pgPool) recv = (await pgPool.query(`SELECT 1 FROM invoices_received WHERE invoice_request_id=$1 LIMIT 1`, [requestId])).rows[0];
+    else        recv = db.prepare(`SELECT 1 FROM invoices_received WHERE invoice_request_id=? LIMIT 1`).get(requestId);
+    if (recv) return res.status(409).json({ ok: false, error: 'A SAP invoice is already linked to this request — cannot cancel; reconcile it instead.' });
+    const who = (req.headers['x-sunloc-user'] || role || 'unknown').toString();
+    if (pgPool) await pgPool.query(`UPDATE invoice_requests SET status='cancelled', updated_at=NOW()::text WHERE id=$1`, [requestId]);
+    else        db.prepare(`UPDATE invoice_requests SET status='cancelled', updated_at=datetime('now') WHERE id=?`).run(requestId);
+    console.log(`[v47F cancel-request] ${requestId} (batch ${reqRow.batch_number}) cancelled by ${who}`);
+    res.json({ ok: true, requestId, batchNumber: reqRow.batch_number });
+  } catch (err) {
+    console.error('[cancel-request]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
