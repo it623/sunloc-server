@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47</title>
+<title>Sunloc Tracking Suite v1.0 · build v47A</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47</p>
+      <p>Tracking Suite v1.0 · build v47A</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47</p>
+      <p>Tracking Suite v1.0 · build v47A</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -10807,14 +10807,14 @@ function _rptBRow(batchNo, dept, U){
                        : {total:0, salvage:0, remelt:0};
   const ps = PACK_SIZES[String(_bSize45y)]||1;
   const wastageBoxes = hasWastage ? Math.round(w.total/ps) : 0;
-  // v46Z (confirmed by Ishan): make the WIP-box COUNT match the expandable box LIST. The list uses each
-  // box's current stage (getBoxCurrentStage) — the per-box truth — while the count was net in−out−wastage,
-  // so they diverged (26ZE104 7 vs 4; 26ZD108 9 vs 25, the latter exceeding boxes-in). When the box-stages
-  // map is loaded, count the boxes whose current stage IS this dept — identical to _rptB_wipBoxChips — so
-  // count === list. Fall back to the net count only when the map isn't available (e.g. Excel export).
-  const wip = (window._v40_boxStagesLoadedAt > 0)
-    ? getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && getBoxCurrentStage(l.id)===dept).length
-    : Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
+  // v47A (regression fix): REVERT to the frozen WIP-box formula. The v46Z box-stages-map count broke the
+  // fundamental invariant WIP = scan-in − scan-out: it counted every label whose CURRENT stage equals this
+  // dept (an all-time, cross-month set), so month-scoped in/out no longer reconciled with the WIP column
+  // (26W062 showed 7 on 4-in/3-out; AIM totalled 104 boxes on 843-in/822-out). The frozen net formula is
+  // the single source of truth for the WIP-box count — box count and WIP qty derive from it and stay
+  // consistent. (The expandable chip list remains a current-stage view; it may differ from this net count,
+  // which is acceptable — the WIP number must be scan-in − scan-out − wastage, per Ishan.)
+  const wip = Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
   // v46E (confirmed by Ishan): AIM Dept WIP (qty) nets remelt — Scan In − Remelt − Scan Out — so
   // Report B/D reconcile with Report E and getBatchWIPBreakdown. WIP boxes stay the physical inn−out
   // count. Printing/PI keep box-rounded wastage netting (via wip) unchanged.
