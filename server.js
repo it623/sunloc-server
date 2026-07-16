@@ -16,7 +16,24 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47F';
+const APP_BUILD = 'v47G';
+
+// v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
+// valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
+// truth), NOT box-count × a uniform pack size. Recon-synthetic scans (label_id 'recon-%', no real
+// label) keep their own stored Lakhs (s.qty). A real box with no matching label falls back to the
+// pack-standard size for its size code (the agreed fallback), using the canonical pack map that
+// mirrors the client PACK_SIZES. Used by scan-summary, agrade-summary and agrade-by-month so that
+// Scan-In / Scan-Out — and the Inspected / A-Grade / WIP legs derived from them — are the true
+// summed quantity across every report and plan. `s` = tracking_scans alias, `l` = tracking_labels.
+function _v47gPackCaseSql(s) {
+  return `CASE ${s}.size WHEN '00' THEN 0.75 WHEN '0' THEN 1.00 WHEN '1' THEN 1.25 `
+       + `WHEN '2' THEN 1.75 WHEN '3' THEN 2.25 WHEN '4' THEN 3.00 ELSE 0 END`;
+}
+function _v47gScanQtySql(s, l) {
+  return `CASE WHEN ${s}.label_id LIKE 'recon-%' THEN COALESCE(${s}.qty,0) `
+       + `ELSE COALESCE(${l}.qty, ${_v47gPackCaseSql(s)}) END`;
+}
 
 
 // ── v44Y: PC Master fallback resolver ──────────────────────────────────────────
@@ -9419,14 +9436,23 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
 app.get('/api/tracking/handover-gap-counts', async (req, res) => {
   try {
     const pairs = [['aim','printing'],['printing','pi'],['pi','packing'],['aim','packing']];
+    // v47G (confirmed by Ishan): alongside the gap COUNT, sum the ACTUAL label qty of each gap box
+    // (the exact boxes scanned OUT of `from` with no scan-IN at `to`) — partial-aware, pack-standard
+    // fallback. This is the literal "5 boxes scanned out but not in → 4×1L + 1×0.5L = 4.5L" figure, and
+    // it is derived from the SAME box set as the count, so the Boxes and (L) columns can never disagree.
+    // DISTINCT (bn,label,qty) collapses any double scan-out so each gap label is counted/summed once.
     const gapSql = `
-      SELECT s.batch_number AS bn, COUNT(DISTINCT s.label_id) AS gap
-        FROM tracking_scans s
-       WHERE s.dept = $1 AND s.type = 'out' AND s.label_id NOT LIKE 'recon-%'
-         AND s.batch_number IS NOT NULL AND s.batch_number <> ''
-         AND NOT EXISTS (SELECT 1 FROM tracking_scans t
-                          WHERE t.label_id = s.label_id AND t.dept = $2 AND t.type = 'in')
-       GROUP BY s.batch_number`;
+      SELECT bn, COUNT(*) AS gap, COALESCE(SUM(qty),0) AS gap_qty FROM (
+        SELECT DISTINCT s.batch_number AS bn, s.label_id AS lid,
+               COALESCE(l.qty, ${_v47gPackCaseSql('s')}) AS qty
+          FROM tracking_scans s
+          LEFT JOIN tracking_labels l ON l.id = s.label_id
+         WHERE s.dept = $1 AND s.type = 'out' AND s.label_id NOT LIKE 'recon-%'
+           AND s.batch_number IS NOT NULL AND s.batch_number <> ''
+           AND NOT EXISTS (SELECT 1 FROM tracking_scans t
+                            WHERE t.label_id = s.label_id AND t.dept = $2 AND t.type = 'in')
+      ) g
+      GROUP BY bn`;
     const extraSql = `
       SELECT t.batch_number AS bn, COUNT(DISTINCT t.label_id) AS extra
         FROM tracking_scans t
@@ -9447,9 +9473,9 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
         gRows = db.prepare(gapSql.replace(/\$1/g,'?').replace(/\$2/g,'?')).all(from, to);
         eRows = db.prepare(extraSql.replace(/\$1/g,'?').replace(/\$2/g,'?')).all(to, from); // v45ZG audit: extraSql's $2 precedes $1 — positional order is (to, from)
       }
-      for (const r of (gRows||[])) transitions[key][r.bn] = { gap: parseInt(r.gap,10)||0, extraIn: 0 };
+      for (const r of (gRows||[])) transitions[key][r.bn] = { gap: parseInt(r.gap,10)||0, gapQty: parseFloat(r.gap_qty)||0, extraIn: 0 };
       for (const r of (eRows||[])) {
-        if (!transitions[key][r.bn]) transitions[key][r.bn] = { gap: 0, extraIn: 0 };
+        if (!transitions[key][r.bn]) transitions[key][r.bn] = { gap: 0, gapQty: 0, extraIn: 0 };
         transitions[key][r.bn].extraIn = parseInt(r.extra,10)||0;
       }
     }
@@ -14161,7 +14187,7 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
         catch(e) { console.warn('[scan-summary] query failed:', e.message); return []; }
       };
       const pgCut = col => `(LEFT(${col},19))::timestamp < ($1::date + interval '1 day' + interval '30 minutes')`;
-      const scanSql = `SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans s WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${pgCut('s.ts')}`:''} GROUP BY batch_number, dept, type`;
+      const scanSql = `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${pgCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type`;
       const wasteSql = `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number, dept, type`;
       const dispSql  = `SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number`;
       [scanRows, wastageRows, dispatchRows] = await Promise.all([
@@ -14173,7 +14199,7 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
     } else {
       const sc = (sql, params) => { try { return db.prepare(sql).all(...(params||[])); } catch(e) { return []; } };
       const liteCut = col => `datetime(${col}) < datetime(?, '+1 day', '+30 minutes')`;
-      scanRows     = sc(`SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans s WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY batch_number, dept, type`, asof?[asof]:[]);
+      scanRows     = sc(`SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type`, asof?[asof]:[]);
       wastageRows  = sc(`SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number, dept, type`, asof?[asof]:[]);
       dispatchRows = sc(`SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number`, asof?[asof]:[]);
       if (asof) grossRows = sc(`SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE substr(date,1,10) <= ? GROUP BY batch_number`, [asof]);
@@ -14261,11 +14287,13 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
         catch(e){ console.warn('[agrade-by-month] pg query failed:', e.message); return []; }
       };
       [scanRows, wastageRows, spanRows] = await Promise.all([
-        sq(`SELECT batch_number, dept, type,
-              COUNT(*) FILTER (WHERE label_id NOT LIKE 'recon-%') AS box_cnt,
-              COALESCE(SUM(qty) FILTER (WHERE label_id LIKE 'recon-%'),0) AS recon_qty
-            FROM tracking_scans WHERE ts >= $1 AND ts < $2
-            GROUP BY batch_number, dept, type`, [start, end]),
+        sq(`SELECT s.batch_number, s.dept, s.type,
+              COUNT(*) FILTER (WHERE s.label_id NOT LIKE 'recon-%') AS box_cnt,
+              COALESCE(SUM(s.qty) FILTER (WHERE s.label_id LIKE 'recon-%'),0) AS recon_qty,
+              COALESCE(SUM(CASE WHEN s.label_id NOT LIKE 'recon-%' THEN COALESCE(l.qty, ${_v47gPackCaseSql('s')}) ELSE 0 END),0) AS real_qty
+            FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id
+            WHERE s.ts >= $1 AND s.ts < $2
+            GROUP BY s.batch_number, s.dept, s.type`, [start, end]),
         sq(`SELECT batch_number, dept, type, COALESCE(SUM(qty),0) AS total_qty
             FROM tracking_wastage WHERE ts >= $1 AND ts < $2
             GROUP BY batch_number, dept, type`, [start, end]),
@@ -14276,11 +14304,13 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
       ]);
     } else {
       const sq = (sql, params) => { try { return db.prepare(sql).all(...params); } catch(e){ console.warn('[agrade-by-month] sqlite query failed:', e.message); return []; } };
-      scanRows    = sq(`SELECT batch_number, dept, type,
-                          SUM(CASE WHEN label_id NOT LIKE 'recon-%' THEN 1 ELSE 0 END) AS box_cnt,
-                          COALESCE(SUM(CASE WHEN label_id LIKE 'recon-%' THEN qty ELSE 0 END),0) AS recon_qty
-                        FROM tracking_scans WHERE ts >= ? AND ts < ?
-                        GROUP BY batch_number, dept, type`, [start, end]);
+      scanRows    = sq(`SELECT s.batch_number, s.dept, s.type,
+                          SUM(CASE WHEN s.label_id NOT LIKE 'recon-%' THEN 1 ELSE 0 END) AS box_cnt,
+                          COALESCE(SUM(CASE WHEN s.label_id LIKE 'recon-%' THEN s.qty ELSE 0 END),0) AS recon_qty,
+                          COALESCE(SUM(CASE WHEN s.label_id NOT LIKE 'recon-%' THEN COALESCE(l.qty, ${_v47gPackCaseSql('s')}) ELSE 0 END),0) AS real_qty
+                        FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id
+                        WHERE s.ts >= ? AND s.ts < ?
+                        GROUP BY s.batch_number, s.dept, s.type`, [start, end]);
       wastageRows = sq(`SELECT batch_number, dept, type, COALESCE(SUM(qty),0) AS total_qty
                         FROM tracking_wastage WHERE ts >= ? AND ts < ?
                         GROUP BY batch_number, dept, type`, [start, end]);
@@ -14294,15 +14324,19 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
     const summary = {};
     const ensure = (bn, dept) => {
       if (!summary[bn]) summary[bn] = {};
-      if (!summary[bn][dept]) summary[bn][dept] = { inBoxes:0, outBoxes:0, inReconQty:0, outReconQty:0 };
+      if (!summary[bn][dept]) summary[bn][dept] = { inBoxes:0, outBoxes:0, inReconQty:0, outReconQty:0, inRealQty:0, outRealQty:0 };
     };
     scanRows.forEach(r => {
       const bn = r.batch_number; if (!bn) return;
       ensure(bn, r.dept);
       const boxes = parseInt(r.box_cnt||0,10);
       const reconQ = parseFloat(r.recon_qty||0);
-      if (r.type === 'in')  { summary[bn][r.dept].inBoxes  += boxes; summary[bn][r.dept].inReconQty  += reconQ; }
-      if (r.type === 'out') { summary[bn][r.dept].outBoxes += boxes; summary[bn][r.dept].outReconQty += reconQ; }
+      // v47G: realQ = SUM of each real box's label qty (partial-aware, pack-standard fallback) for
+      // this window/dept/type. Client uses (realQty + reconQty) as Scan-In/Out Lakhs, replacing the
+      // old boxToLakh(box-count, size). box_cnt is retained for the box-count columns.
+      const realQ = parseFloat(r.real_qty||0);
+      if (r.type === 'in')  { summary[bn][r.dept].inBoxes  += boxes; summary[bn][r.dept].inReconQty  += reconQ; summary[bn][r.dept].inRealQty  += realQ; }
+      if (r.type === 'out') { summary[bn][r.dept].outBoxes += boxes; summary[bn][r.dept].outReconQty += reconQ; summary[bn][r.dept].outRealQty += realQ; }
     });
     const wastage = {};
     wastageRows.forEach(r => {
@@ -15238,13 +15272,9 @@ app.post('/api/tracking/scan', async (req, res) => {
 // ── A-Grade summary per batch — for Planning live update ──────
 app.get('/api/tracking/agrade-summary', async (req, res) => {
   try {
-    // Pack sizes for fallback calculation
-    const PACK_SIZES = {'0':1.5,'00':1.5,'000':1.5,'1':1.25,'2':1.0,'3':0.75,'4':0.5,'5':0.333};
-
-    // Get batch sizes from planning state for fallback
-    const planState = getPlanningState();
-    const batchSizeMap = {};
-    (planState.orders||[]).forEach(o => { if(o.batchNumber) batchSizeMap[o.batchNumber.toUpperCase()] = String(o.size||'2'); });
+    // v47G: the divergent local PACK_SIZES map and planning-state batchSizeMap that fed the old
+    // COUNT × pack fallback are gone — per-box qty is now summed authoritatively in SQL from
+    // tracking_labels.qty (see _v47gScanQtySql), so no client-visible pack map is needed here.
 
     // Scan counts per batch per dept per type
     // v41ZG #3: optional ?since=YYYY-MM-DD window. The three aggregations below scan the FULL
@@ -15258,8 +15288,8 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
     let scans, wastage, prodActuals;
     if (pgPool) {
       const scanSql = since
-        ? 'SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans WHERE ts >= $1 GROUP BY batch_number, dept, type'
-        : 'SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type';
+        ? `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.ts >= $1 GROUP BY s.batch_number, s.dept, s.type`
+        : `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type`;
       const wasteSql = since
         ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE ts >= $1 GROUP BY batch_number, dept, type'
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
@@ -15275,8 +15305,8 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       scans = r1.rows; wastage = r2.rows; prodActuals = r3.rows;
     } else {
       const scanSql = since
-        ? 'SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans WHERE ts >= ? GROUP BY batch_number, dept, type'
-        : 'SELECT batch_number, dept, type, COUNT(*) as cnt, SUM(qty) as total_qty FROM tracking_scans GROUP BY batch_number, dept, type';
+        ? `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.ts >= ? GROUP BY s.batch_number, s.dept, s.type`
+        : `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type`;
       const wasteSql = since
         ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE ts >= ? GROUP BY batch_number, dept, type'
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
@@ -15297,11 +15327,11 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       if (!batches[bn]) batches[bn] = {};
       if (!batches[bn][s.dept]) batches[bn][s.dept] = {in:0,out:0,inQty:0,outQty:0};
       batches[bn][s.dept][s.type] = parseInt(s.cnt||0, 10);
-      // Use SUM(qty) if available, else fallback to COUNT * packSize
-      const sumQty = parseFloat(s.total_qty||0);
-      const ps = PACK_SIZES[batchSizeMap[bn]||batchSizeMap[s.batch_number]||'2'] || 1.0;
-      const effectiveQty = sumQty > 0 ? sumQty : parseInt(s.cnt||0,10) * ps;
-      batches[bn][s.dept][s.type+'Qty'] = effectiveQty;
+      // v47G (confirmed by Ishan): total_qty is now the authoritative per-box label sum computed in
+      // SQL (_v47gScanQtySql — each box valued at its tracking_labels.qty, pack-standard fallback,
+      // recon-synthetic keep their own qty). The old "SUM(qty) else COUNT × PACK_SIZES" fallback used
+      // a divergent local pack map and the unauthoritative tracking_scans.qty — both retired here.
+      batches[bn][s.dept][s.type+'Qty'] = parseFloat(s.total_qty||0);
     });
 
     wastage.forEach(w => {

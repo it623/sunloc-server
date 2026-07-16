@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47F</title>
+<title>Sunloc Tracking Suite v1.0 · build v47G</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47F</p>
+      <p>Tracking Suite v1.0 · build v47G</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47F</p>
+      <p>Tracking Suite v1.0 · build v47G</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1094,6 +1094,38 @@ function hasScanSummary() {
   return state.scanSummary && Object.keys(state.scanSummary).length > 0;
 }
 
+// v47G (confirmed by Ishan): authoritative per-box quantity for ONE scanned box, in Lakhs. The scan
+// carries its box's actual label qty (set to label.qty at scan time — partial-aware), so prefer that;
+// else resolve the box's label; else fall back to the pack-standard size for the box's size (the
+// agreed fallback). Replaces box-count × uniform pack size, which over-counted partial/last boxes.
+function _boxLakh(sc, fallbackSize){
+  let q = parseFloat(sc && sc.qty);
+  if (Number.isFinite(q)) return q;                       // scan stores its box's label qty (0 ok = specimen)
+  const lab = (sc && sc.labelId) ? (state.labels||[]).find(l=>l.id===sc.labelId) : null;
+  if (lab){ const lq = parseFloat(lab.qty); if (Number.isFinite(lq)) return lq; }
+  const ps = PACK_SIZES[String((lab&&lab.size)||(sc&&sc.size)||fallbackSize||'0')];
+  return ps || 0;
+}
+// v47G: authoritative Scan-In / Scan-Out (and every leg derived from them) in Lakhs for a batch/dept.
+// = the server's per-box label sum (scanSummary inQty/outQty — computed via tracking_labels.qty)
+// PLUS any not-yet-synced LOCAL scans, valued the same way (so a just-scanned box counts at once).
+// This is the single primitive every report/plan uses in place of boxToLakh(scanCount, size), so the
+// on-screen figures, the Excel exports and the server-side month reports cannot drift apart.
+function _scanLakhs(batchNo, dept, type, size){
+  if (hasScanSummary()){
+    const s = _ss(batchNo, dept);
+    const serverQ = (type==='in' ? s.inQty : s.outQty) || 0;
+    const localQ = (state.scans||[])
+      .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && sc._local)
+      .reduce((a,sc)=>a+_boxLakh(sc,size),0);
+    return serverQ + localQ;
+  }
+  // summary not loaded yet — sum the (windowed) local scan set directly, valued per box
+  return (state.scans||[])
+    .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type)
+    .reduce((a,sc)=>a+_boxLakh(sc,size),0);
+}
+
 // v41ZI Item 4: cumulative DPR gross for a batch — prefer the authoritative server map
 // (state.grossSummary = override → pure SUM(production_actuals) per batch_number) and fall back to
 // the planning order's injected actualProd/actualQty only when the map hasn't loaded for this batch.
@@ -1117,7 +1149,7 @@ function _v40_dispatchedLakhs(batchNumber, batchSize) {
   const legacyBoxes = hasScanSummary()
     ? (_ss(batchNumber, 'dispatch').out + localOut)
     : state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out').length;
-  const legacyLakhs = boxToLakh(legacyBoxes, batchSize);
+  const legacyLakhs = _scanLakhs(batchNumber,'dispatch','out',batchSize);  // v47G: per-box label sum
   const phase18Lakhs = state.dispatchRecs.filter(r => r.batchNumber === batchNumber).reduce((s, r) => s + (r.qty || 0), 0);
   return legacyLakhs + phase18Lakhs;
 }
@@ -2852,12 +2884,15 @@ function getBatchWIPBreakdown(batchNo, opts){
   }
 
   // Convert to Lakhs
-  const aimIn    = boxToLakh(aimInBoxes,   sz);
-  const aimOut   = boxToLakh(aimOutBoxes,  sz);
-  const printOut = boxToLakh(printOutBoxes,sz);
-  const piOut    = boxToLakh(piOutBoxes,   sz);
-  const packIn   = boxToLakh(packInBoxes,  sz);
-  const packOut  = boxToLakh(packOutBoxes, sz);
+  // v47G (confirmed by Ishan): scan-derived legs use the SUMMED per-box label qty (partial-aware),
+  // not box-count × uniform pack size. The box counts above stay for the count columns; the frozen
+  // WIP / A-Grade formulas below are untouched — only the Lakhs quantity fed into them is corrected.
+  const aimIn    = _scanLakhs(batchNo,'aim','in',       sz);
+  const aimOut   = _scanLakhs(batchNo,'aim','out',      sz);
+  const printOut = _scanLakhs(batchNo,'printing','out', sz);
+  const piOut    = _scanLakhs(batchNo,'pi','out',       sz);
+  const packIn   = _scanLakhs(batchNo,'packing','in',   sz);
+  const packOut  = _scanLakhs(batchNo,'packing','in',   sz);  // canonical "packed" = packing.in (legacy misnomer)
 
   const wAIM   = getTotalWastage(batchNo,'aim');
   const wPrint = getTotalWastage(batchNo,'printing');
@@ -2932,8 +2967,10 @@ function getBatchAGrade(batchNo, stage, opts){
       aimOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='out').length;
     }
     const w = getTotalWastage(batchNo,'aim');
-    const aimIn  = boxToLakh(aimInBoxes,  batch.size);  // Scan-In
-    const aimOut = boxToLakh(aimOutBoxes, batch.size);  // Scan-Out (moved onward) — dept-WIP + frozen post-print base
+    // v47G (confirmed by Ishan): per-box label-qty sum, not box-count × pack. Inspected = ScanIn +
+    // Salvage and A-Grade = ScanIn − Remelt derive from these, so both correct automatically.
+    const aimIn  = _scanLakhs(batchNo,'aim','in',  batch.size);  // Scan-In
+    const aimOut = _scanLakhs(batchNo,'aim','out', batch.size);  // Scan-Out (moved onward) — dept-WIP + frozen post-print base
     // v45V (confirmed by Ishan): AIM A-Grade = Scan-In − AIM Remelt (salvage removed pre-box, remelt
     // post-box). Denominator = A-Grade + Salvage + Remelt = Scan-In + Salvage (remelt already sits
     // inside Scan-In, so it is never re-added; denominator maxes at Scan-In + Salvage at completion).
@@ -2957,9 +2994,9 @@ function getBatchAGrade(batchNo, stage, opts){
       printOutBoxes = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='printing'&&s.type==='out').length;
       piOutBoxes    = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='pi'&&s.type==='out').length;
     }
-    const aimOut   = boxToLakh(aimOutBoxes,   batch.size);
-    const printOut = boxToLakh(printOutBoxes, batch.size);
-    const piOut    = boxToLakh(piOutBoxes,    batch.size);
+    const aimOut   = _scanLakhs(batchNo,'aim','out',      batch.size);  // v47G: per-box label-qty sum
+    const printOut = _scanLakhs(batchNo,'printing','out', batch.size);
+    const piOut    = _scanLakhs(batchNo,'pi','out',       batch.size);
     const wAIM   = getTotalWastage(batchNo,'aim');
     const wPrint = getTotalWastage(batchNo,'printing');
     const wPI    = getTotalWastage(batchNo,'pi');
@@ -3064,7 +3101,7 @@ function _v41_getBatchAGradeMonth(batchNo, stage, md){
   const sz = batch.size;
   const s = md.summary[batchNo] || {};
   const w = md.wastage[batchNo] || {};
-  const dep = d => s[d] || { inBoxes:0, outBoxes:0, inReconQty:0, outReconQty:0 };
+  const dep = d => s[d] || { inBoxes:0, outBoxes:0, inReconQty:0, outReconQty:0, inRealQty:0, outRealQty:0 };
   const was = d => w[d] || { salvage:0, remelt:0 };
   // If this batch has NO windowed scans AND no windowed wastage at all, it had no production
   // activity in this month window. Return an explicit ZERO result (not null) so the caller
@@ -3078,8 +3115,11 @@ function _v41_getBatchAGradeMonth(batchNo, stage, md){
     // v45V (confirmed by Ishan): AIM A-Grade = Scan-In − AIM Remelt; denominator = A-Grade + Sal + Rem
     // (= Scan-In + Salvage). Month-windowed twin of the cumulative getBatchAGrade change. Scan-Out is
     // retained (dept-WIP / frozen post-print base); post-print/PI ('printed', below) still Scan-Out.
-    const aimIn  = boxToLakh(aim.inBoxes,  sz) + aim.inReconQty;   // Scan-In
-    const aimOut = boxToLakh(aim.outBoxes, sz) + aim.outReconQty;  // Scan-Out
+    // v47G (confirmed by Ishan): summed per-box label qty (server inRealQty/outRealQty) + recon Lakhs,
+    // replacing boxToLakh(box-count, sz). Same primitive the live getBatchAGrade uses, so month and
+    // cumulative reconcile. Inspected = ScanIn + Salvage and A-Grade = ScanIn − Remelt follow.
+    const aimIn  = (aim.inRealQty  || 0) + aim.inReconQty;   // Scan-In
+    const aimOut = (aim.outRealQty || 0) + aim.outReconQty;  // Scan-Out
     const salvage = wA.salvage, remelt = wA.remelt;
     const aGrade = Math.max(0, aimIn - remelt);
     const inspected = aGrade + salvage + remelt;
@@ -3090,9 +3130,9 @@ function _v41_getBatchAGradeMonth(batchNo, stage, md){
   if(stage==='printed'){
     const aim = dep('aim'), pr = dep('printing'), pi = dep('pi');
     const wA = was('aim'), wP = was('printing'), wI = was('pi');
-    const aimOut   = boxToLakh(aim.outBoxes, sz) + aim.outReconQty;
-    const printOut = boxToLakh(pr.outBoxes,  sz) + pr.outReconQty;
-    const piOut    = boxToLakh(pi.outBoxes,  sz) + pi.outReconQty;
+    const aimOut   = (aim.outRealQty || 0) + aim.outReconQty;  // v47G: per-box label-qty sum + recon
+    const printOut = (pr.outRealQty  || 0) + pr.outReconQty;
+    const piOut    = (pi.outRealQty  || 0) + pi.outReconQty;
     const aimInspected   = aimOut   + wA.salvage + wA.remelt;
     const printInspected = printOut + wP.salvage + wP.remelt;
     const piInspected    = piOut    + wI.salvage + wI.remelt;
@@ -4848,8 +4888,10 @@ function renderDeptScan(dept){
       <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Customer</th><th>Scan IN</th><th>Scan OUT</th><th>A-Grade</th><th>Wastage</th><th>Status</th><th>Action</th></tr></thead>
       <tbody>
       ${_clo.map(({b,inCount,outCount,w})=>{
-        const inQty=boxToLakh(inCount,b.size);
-        const outQty=boxToLakh(outCount,b.size);
+        // v47G (confirmed by Ishan): displayed Scan-In/Out qty = summed per-box label qty; the balance
+        // logic below stays box-count based (physical box reconciliation for closure).
+        const inQty=_scanLakhs(b.batchNumber,dept,'in',b.size);
+        const outQty=_scanLakhs(b.batchNumber,dept,'out',b.size);
         const inspected = outQty + w.total; // OUT + Salvage + Remelt
         const aGradePct=inspected>0?(outQty/inspected*100):0;
         const closed=isStageComplete(b.batchNumber,dept);
@@ -4880,7 +4922,7 @@ function renderDeptScan(dept){
         </tr>`;
       }).join('')||'<tr><td colspan="8" class="text-center text-muted">No batches with activity at this stage</td></tr>'}
       </tbody>
-      ${_clo.length?(()=>{const tIn=_clo.reduce((s,r)=>s+r.inCount,0),tOut=_clo.reduce((s,r)=>s+r.outCount,0),tInQ=_clo.reduce((s,r)=>s+boxToLakh(r.inCount,r.b.size),0),tOutQ=_clo.reduce((s,r)=>s+boxToLakh(r.outCount,r.b.size),0),tSal=_clo.reduce((s,r)=>s+r.w.salvage,0),tRem=_clo.reduce((s,r)=>s+r.w.remelt,0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${_clo.length}</td><td></td><td class="td-mono">${tIn} (${fmt(tInQ)}L)</td><td class="td-mono">${tOut} (${fmt(tOutQ)}L)</td><td></td><td class="td-mono">S:${fmt(tSal)} R:${fmt(tRem)}</td><td colspan="2"></td></tr></tfoot>`;})():''}
+      ${_clo.length?(()=>{const tIn=_clo.reduce((s,r)=>s+r.inCount,0),tOut=_clo.reduce((s,r)=>s+r.outCount,0),tInQ=_clo.reduce((s,r)=>s+_scanLakhs(r.b.batchNumber,dept,'in',r.b.size),0),tOutQ=_clo.reduce((s,r)=>s+_scanLakhs(r.b.batchNumber,dept,'out',r.b.size),0),tSal=_clo.reduce((s,r)=>s+r.w.salvage,0),tRem=_clo.reduce((s,r)=>s+r.w.remelt,0);return `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td class="td-mono">TOTAL · ${_clo.length}</td><td></td><td class="td-mono">${tIn} (${fmt(tInQ)}L)</td><td class="td-mono">${tOut} (${fmt(tOutQ)}L)</td><td></td><td class="td-mono">S:${fmt(tSal)} R:${fmt(tRem)}</td><td colspan="2"></td></tr></tfoot>`;})():''}
     </table></div>
   </div>`:''}
 
@@ -5592,7 +5634,7 @@ function saveWastage(dept){
   const _wLocalIn45=state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in'&&s._local).length;
   const inCount=hasScanSummary() ? (_ss(batchNo,dept).in + _wLocalIn45)
                                  : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length;
-  const inQty=boxToLakh(inCount,batch.size);
+  const inQty=_scanLakhs(batchNo,dept,'in',batch.size);  // v47G: per-box scanned-in cap
   const _wCap45=dept==='aim' ? Math.max(inQty, _grossFor(batchNo,batch)||0) : inQty;
   const existing=getTotalWastage(batchNo,dept);
   if(existing.total+salvage+remelt>_wCap45){
@@ -5674,7 +5716,7 @@ function _wemSave45(wid){
   const _lIn = state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in'&&s._local).length;
   const inCount = hasScanSummary() ? (_ss(entry.batchNumber,dept).in + _lIn)
                                    : state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in').length;
-  const inQty = boxToLakh(inCount, batch?.size||'0');
+  const inQty = _scanLakhs(entry.batchNumber,dept,'in',batch?.size||'0');  // v47G: per-box scanned-in cap
   const cap = dept==='aim' ? Math.max(inQty, _grossFor(entry.batchNumber,batch)||0) : inQty;
   const others = (state.wastage||[]).filter(w=>w.batchNumber===entry.batchNumber&&w.dept===dept&&w.id!==wid).reduce((s,w)=>s+(parseFloat(w.qty)||0),0);
   if(others + newQty > cap){
@@ -5721,7 +5763,7 @@ function openWastageEdit(wastageId, dept){
   const _eLocalIn45=state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in'&&s._local).length;
   const inCount=hasScanSummary() ? (_ss(entry.batchNumber,dept).in + _eLocalIn45)
                                  : state.scans.filter(s=>s.batchNumber===entry.batchNumber&&s.dept===dept&&s.type==='in').length;
-  const inQty=boxToLakh(inCount,batch?.size||'0');
+  const inQty=_scanLakhs(entry.batchNumber,dept,'in',batch?.size||'0');  // v47G: per-box scanned-in cap
   const _eCap45=dept==='aim' ? Math.max(inQty, _grossFor(entry.batchNumber,batch)||0) : inQty;
   const otherWastage=state.wastage.filter(w=>w.batchNumber===entry.batchNumber&&w.dept===dept&&w.id!==wastageId).reduce((s,w)=>s+w.qty,0);
   if(otherWastage+newQty>_eCap45){
@@ -6041,14 +6083,18 @@ function renderDispatch(){
   // the unified Packed → Dispatched terminology. See Phase 18.14b for source-of-truth definitions.
   let totalPackedBoxes=0, totalOutwardBoxes=0, totalPendingBoxes=0;
   let totalPackedQty=0,   totalOutwardQty=0,   totalPendingQty=0;
-  Object.values(batchSummary).forEach(s=>{
+  Object.entries(batchSummary).forEach(([batchNo, s])=>{
     const pending = Math.max(0, s.packed - s.dispOut);
+    // v47G (confirmed by Ishan): per-box label-qty sums. Packed = packing.in per box; Dispatched =
+    // per-box dispatch scans + Phase-18 record qty; Pending = Packed − Dispatched (Lakhs), floored.
+    const _pkQ = _scanLakhs(batchNo,'packing','in',s.size);
+    const _dsQ = _v40_dispatchedLakhs(batchNo, s.size);
     totalPackedBoxes  += s.packed;
     totalOutwardBoxes += s.dispOut;
     totalPendingBoxes += pending;
-    totalPackedQty    += boxToLakh(s.packed,  s.size);
-    totalOutwardQty   += boxToLakh(s.dispOut, s.size);
-    totalPendingQty   += boxToLakh(pending,   s.size);
+    totalPackedQty    += _pkQ;
+    totalOutwardQty   += _dsQ;
+    totalPendingQty   += Math.max(0, _pkQ - _dsQ);
   });
 
   // v40 P18.14c: Colour-wise rollup for both ledger AND dispatch records.
@@ -6060,12 +6106,14 @@ function renderDispatch(){
     if (!colourRollup[c]) colourRollup[c] = { packedBoxes:0, outwardBoxes:0, pendingBoxes:0,
                                                packedQty:0, outwardQty:0, pendingQty:0 };
     const pending = Math.max(0, s.packed - s.dispOut);
+    const _pkQ = _scanLakhs(batchNo,'packing','in',s.size);   // v47G: per-box label sums
+    const _dsQ = _v40_dispatchedLakhs(batchNo, s.size);
     colourRollup[c].packedBoxes  += s.packed;
     colourRollup[c].outwardBoxes += s.dispOut;
     colourRollup[c].pendingBoxes += pending;
-    colourRollup[c].packedQty    += boxToLakh(s.packed,  s.size);
-    colourRollup[c].outwardQty   += boxToLakh(s.dispOut, s.size);
-    colourRollup[c].pendingQty   += boxToLakh(pending,   s.size);
+    colourRollup[c].packedQty    += _pkQ;
+    colourRollup[c].outwardQty   += _dsQ;
+    colourRollup[c].pendingQty   += Math.max(0, _pkQ - _dsQ);
     // per-batch detail row — v44ZA: clean display key (drops stray "25ZE96,50.75" numeric tokens),
     // customer/pcCode from the meta resolved on the summary entry (getBatch → label/dispatch fallback)
     colourDetailRows.push({
@@ -6075,11 +6123,11 @@ function renderDispatch(){
       pcCode: s._pcCode || '-',
       size: s.size,
       packedBoxes: s.packed,
-      packedQty: boxToLakh(s.packed, s.size),
+      packedQty: _pkQ,
       outwardBoxes: s.dispOut,
-      outwardQty: boxToLakh(s.dispOut, s.size),
+      outwardQty: _dsQ,
       pendingBoxes: pending,
-      pendingQty: boxToLakh(pending, s.size)
+      pendingQty: Math.max(0, _pkQ - _dsQ)
     });
   });
   const colourKeys = Object.keys(colourRollup).sort();
@@ -9433,7 +9481,17 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       const extraIn = _srv45 ? (_srv45.extraIn||0) : 0;
       if(gap > 0){
         totalGaps++;
-        const gapQty = boxToLakh(gap, b.size);
+        // v47G (confirmed by Ishan): gap QUANTITY = the summed ACTUAL label qty of the exact gap boxes
+        // (scanned OUT of `from`, not scanned IN at `to`) — e.g. 5 boxes = 4×1L + 1×0.5L = 4.5L. This
+        // comes from the server over the SAME box set as the Boxes count (_srv45.gapQty), so the two
+        // columns always agree — including under offset anomalies. Until the overlay loads we fall back
+        // to the per-box out-qty − in-qty (identical in the normal flow). packing→dispatch has no per-box
+        // IN scans (Phase-18 trucks), so that leg keeps count × pack.
+        const gapQty = (to === 'dispatch')
+          ? boxToLakh(gap, b.size)
+          : (_srv45 && _srv45.gapQty != null)
+              ? _srv45.gapQty
+              : Math.max(0, _scanLakhs(b.batchNumber, from, 'out', b.size) - _scanLakhs(b.batchNumber, to, 'in', b.size));
         gapRows.push({
           batch: b.batchNumber, customer: b.customer||'-', size: b.size,
           machineId: b.machineId||'-', pcCode: b.pcCode||'-', colour: b.colour||'-',
@@ -9637,8 +9695,18 @@ function exportReportH(){
       const toIn = hasScanSummary()
         ? (_ss(b.batchNumber,to).in + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept===to&&sc.type==='in'&&sc._local).length)
         : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===to&&s.type==='in').length;
-      const gap=fromOut-toIn;
-      if(gap>0) rows.push([b.batchNumber,b.customer||'',b.machineId||'',b.size,DEPT_LABELS[from]||from,DEPT_LABELS[to]||to,fromOut,toIn,gap,parseFloat(fmt(boxToLakh(gap,b.size)))]);
+      // v47G: mirror the on-screen Report F. When the server gap overlay is loaded, use its per-box
+      // truth for BOTH the Boxes count and the (L) sum (the exact out-not-in boxes, partial-aware), so
+      // the export equals the screen. Fall back to the count-net + per-box out−in only if the overlay
+      // isn't loaded. packing→dispatch keeps count × pack (Phase-18 IN has no per-box scans).
+      const _srvE = (to!=='dispatch' && window._rptHGapSrv) ? ((window._rptHGapSrv.data[`${from}\u2192${to}`]||{})[b.batchNumber]) : null;
+      const gap = _srvE ? (_srvE.gap||0) : (fromOut-toIn);
+      const gapQtyL = (to === 'dispatch')
+        ? boxToLakh(gap, b.size)
+        : (_srvE && _srvE.gapQty != null)
+            ? _srvE.gapQty
+            : Math.max(0, _scanLakhs(b.batchNumber, from, 'out', b.size) - _scanLakhs(b.batchNumber, to, 'in', b.size));
+      if(gap>0) rows.push([b.batchNumber,b.customer||'',b.machineId||'',b.size,DEPT_LABELS[from]||from,DEPT_LABELS[to]||to,fromOut,toIn,gap,parseFloat(fmt(gapQtyL))]);
     });
   });
   if(typeof XLSX!=='undefined'){
@@ -9656,7 +9724,40 @@ window._rptGMachine = window._rptGMachine || '';
 window._rptGPc      = window._rptGPc      || '';
 window._rptGColour  = window._rptGColour  || '';
 
+// v47G (confirmed by Ishan): Report D "Dispatched" = INVOICED. It is the Σ of total_qty_lakhs for
+// every invoice RAISED (invoice_date) in the selected month — exactly the figure/source the Generated
+// Invoices screen shows (invoices_received via /api/invoice/received), NOT a sum of the duplicated /
+// un-apportioned tracking_dispatch_records (which read an impossible 7689 L > Gross). "Invoiced =
+// dispatched", and an invoice raised in the month counts even if its batch was produced earlier.
+// Loaded once per month into an overlay cache; Report D re-renders when it lands (same pattern as the
+// handover-gap overlay). Always month-scoped by _trkSelectedMonth, independent of the A-Grade toggle.
+window._rptDInvoiced = window._rptDInvoiced || {};   // "YYYY-MM" -> { lakhs, ts }
+async function _rptD_loadInvoicedLakhs(month){
+  if (!/^\d{4}-\d{2}$/.test(month||'')) return;
+  const cached = window._rptDInvoiced[month];
+  if (cached && (Date.now()-cached.ts) < 120000) return;   // fresh enough
+  if (window._rptDInvoicedBusy) return;
+  window._rptDInvoicedBusy = true;
+  try {
+    const [yr,mo] = month.split('-').map(Number);
+    const fromDate = `${yr}-${String(mo).padStart(2,'0')}-01`;
+    const lastDay  = new Date(yr, mo, 0).getDate();
+    const toDate   = `${yr}-${String(mo).padStart(2,'0')}-${String(lastDay).padStart(2,'0')}`;
+    const params = new URLSearchParams({ from_date: fromDate, to_date: toDate, limit: '5000' });
+    const r = await fetch(serverUrl + '/api/invoice/received?' + params.toString(), { signal: AbortSignal.timeout(15000) });
+    const j = await r.json();
+    if (j && j.ok) {
+      // Same field + reduction the Generated Invoices "TOTAL … L" tile uses (renderGeneratedInvoices).
+      const lakhs = (j.invoices||[]).reduce((s,inv)=> s + (parseFloat(inv.total_qty_lakhs) || 0), 0);
+      window._rptDInvoiced[month] = { lakhs, ts: Date.now() };
+      if (window._activeReport === renderReportD) { try { _v41_renderReportDInner(); } catch(_){} }
+    }
+  } catch(e){ /* leave prior/absent — KPI shows a loading dash until it arrives */ }
+  finally { window._rptDInvoicedBusy = false; }
+}
+
 function renderReportD(){ window._activeReport = renderReportD;
+  _rptD_loadInvoicedLakhs(_trkSelectedMonth);   // v47G: invoiced-in-month overlay for the Dispatched KPI
   // v41ZF: Report D now bundles the former Report G (Batch-wise & Cumulative A-Grade) as a second
   // stacked section. Set the compose flag so the Report G renderer appends below D's summary and so
   // any G-section filter/toggle re-renders the whole merged Report D (see renderReportG).
@@ -9759,10 +9860,17 @@ function _v41_renderReportGInner(){
   const _ssOut = (bn,dept)=>{ const l=state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out'&&s._local).length; return hasScanSummary()? _ss(bn,dept).out+l : state.scans.filter(s=>s.batchNumber===bn&&s.dept===dept&&s.type==='out').length; };
   const _rptDUns = (b) => {
     const bn = b.batchNumber, sz = b.size;
-    const aimOut=_ssOut(bn,'aim'), printIn=_ssIn(bn,'printing'), printOut=_ssOut(bn,'printing'), piIn=_ssIn(bn,'pi'), piOut=_ssOut(bn,'pi'), packIn=_ssIn(bn,'packing');
+    // v47G (confirmed by Ishan): in-transit = the server's summed actual qty of the exact gap boxes
+    // (scanned OUT of the prior dept, not scanned IN at the next) — the SAME source Report F and the
+    // top table use, so they reconcile. Falls back to per-box out−in only until the overlay loads.
+    const _gq = (from, to) => {
+      const rec = window._rptHGapSrv ? ((window._rptHGapSrv.data[`${from}\u2192${to}`]||{})[bn]) : null;
+      return (rec && rec.gapQty != null) ? rec.gapQty
+           : Math.max(0, _scanLakhs(bn, from, 'out', sz) - _scanLakhs(bn, to, 'in', sz));
+    };
     return b.isPrinted
-      ? { printing: boxToLakh(Math.max(0, aimOut-printIn), sz), pi: boxToLakh(Math.max(0, printOut-piIn), sz), packing: boxToLakh(Math.max(0, piOut-packIn), sz) }
-      : { printing: 0, pi: 0, packing: boxToLakh(Math.max(0, aimOut-packIn), sz) };
+      ? { printing: _gq('aim','printing'), pi: _gq('printing','pi'), packing: _gq('pi','packing') }
+      : { printing: 0, pi: 0, packing: _gq('aim','packing') };
   };
   // dropdown option lists from the full month set (so all choices stay available)
   const gAllMachines = [...new Set(allMonthBatches.map(b=>b.machineId).filter(Boolean))].sort();
@@ -10811,12 +10919,19 @@ function _rptBRow(batchNo, dept, U){
   const _bSize45y = (batch && batch.size != null) ? batch.size : (getLabelsByBatch(batchNo)[0]?.size ?? '0');
   const localIn  = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).length;
   const localOut = state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='out'&&sc._local).length;
-  const _mdS = _bMd ? (((_bMd.summary||{})[batchNo]||{})[dept] || {inBoxes:0,outBoxes:0,inReconQty:0,outReconQty:0}) : null;
+  const _mdS = _bMd ? (((_bMd.summary||{})[batchNo]||{})[dept] || {inBoxes:0,outBoxes:0,inReconQty:0,outReconQty:0,inRealQty:0,outRealQty:0}) : null;
   const _mdW = _bMd ? (((_bMd.wastage||{})[batchNo]||{})[dept] || {salvage:0,remelt:0}) : null;
   const inn = _bMd ? (_mdS.inBoxes  + (_bIsCurMonth?localIn:0))
                    : (hasScanSummary() ? (_ss(batchNo,dept).in  + localIn)  : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='in').length);
   const out = _bMd ? (_mdS.outBoxes + (_bIsCurMonth?localOut:0))
                    : (hasScanSummary() ? (_ss(batchNo,dept).out + localOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept===dept&&s.type==='out').length);
+  // v47G (confirmed by Ishan): per-box label-qty sum for this dept's Scan-In/Out (not box-count × pack).
+  // Month branch = server inRealQty/outRealQty + recon Lakhs (+ current-month local scans valued per box);
+  // cumulative branch = the live _scanLakhs primitive. inn/out box counts above stay for the WIP-box column.
+  const _locInQty  = _bMd && _bIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='in'&&sc._local).reduce((a,sc)=>a+_boxLakh(sc,_bSize45y),0) : 0;
+  const _locOutQty = _bMd && _bIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept===dept&&sc.type==='out'&&sc._local).reduce((a,sc)=>a+_boxLakh(sc,_bSize45y),0) : 0;
+  const innQty = _bMd ? ((_mdS.inRealQty||0)  + (_mdS.inReconQty||0)  + _locInQty)  : _scanLakhs(batchNo, dept, 'in',  _bSize45y);
+  const outQty = _bMd ? ((_mdS.outRealQty||0) + (_mdS.outReconQty||0) + _locOutQty) : _scanLakhs(batchNo, dept, 'out', _bSize45y);
   const w = hasWastage ? (_bMd ? { total:(_mdW.salvage+_mdW.remelt), salvage:_mdW.salvage, remelt:_mdW.remelt }
                                : getTotalWastage(batchNo, dept))
                        : {total:0, salvage:0, remelt:0};
@@ -10839,8 +10954,8 @@ function _rptBRow(batchNo, dept, U){
   // Report B/D reconcile with Report E and getBatchWIPBreakdown. WIP boxes stay the physical inn−out
   // count. Printing/PI keep box-rounded wastage netting (via wip) unchanged.
   const wipQty = dept==='aim'
-    ? Math.max(0, boxToLakh(inn,_bSize45y) - w.remelt - boxToLakh(out,_bSize45y))
-    : boxToLakh(wip,_bSize45y);
+    ? Math.max(0, innQty - w.remelt - outQty)   // v47G: per-box Scan-In − Remelt − Scan-Out
+    : boxToLakh(wip,_bSize45y);                  // printing/PI keep the frozen box-net WIP qty
   const grossProd = _bMd
     ? ((batchNo in (_bMd.monthGross||{})) ? (parseFloat(_bMd.monthGross[batchNo])||0)
        : (((parseFloat(batch?.actualProd)||0) === 0 && _trkProdStartMonth(batch||{})===_trkSelectedMonth) ? _reconGross(batch) : 0))
@@ -10850,7 +10965,11 @@ function _rptBRow(batchNo, dept, U){
     : (hasScanSummary()
       ? (_ss(batchNo,'aim').in + state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
       : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='aim'&&s.type==='in').length);
-  const aimInQty=boxToLakh(aimInBoxes,_bSize45y);
+  // v47G: AIM Scan-In as per-box label sum (drives Unscanned WIP = Gross − Salvage − ScanIn).
+  const _aimS = _bMd ? (((_bMd.summary||{})[batchNo]||{}).aim || {inRealQty:0,inReconQty:0}) : null;
+  const aimInQty = _bMd
+    ? ((_aimS.inRealQty||0) + (_aimS.inReconQty||0) + (_bIsCurMonth ? state.scans.filter(sc=>sc.batchNumber===batchNo&&sc.dept==='aim'&&sc.type==='in'&&sc._local).reduce((a,sc)=>a+_boxLakh(sc,_bSize45y),0) : 0))
+    : _scanLakhs(batchNo,'aim','in',_bSize45y);
   const aimWaste = _bMd ? (((_bMd.wastage||{})[batchNo]||{}).aim || {salvage:0,remelt:0}) : getTotalWastage(batchNo,'aim');
   // v46E (confirmed by Ishan): Unscanned WIP = Gross − Salvage − Scan In (= Gross − Inspected).
   // Remelt is NOT deducted here — it's post scan-in, so it lives in the AIM Dept WIP leg instead.
@@ -10878,7 +10997,7 @@ function _rptBRow(batchNo, dept, U){
   // v46E: Available to Scan In = Gross − Salvage (salvage removed pre-box; remelt is post scan-in). Matches Report E.
   const _avail = Math.max(0, _gross - _aimWaste.salvage);
   const floor = _ffsfSet.has(normMcId(getBatch(batchNo)?.machineId || _ghostMc45y[batchNo])) ? 'ffsf' : 'gf';
-  return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, w:_w, wastageBoxes, wip:_wip, wipQty:_wipQty,
+  return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, innQty, outQty, w:_w, wastageBoxes, wip:_wip, wipQty:_wipQty,
            grossProd:_gross, aimInBoxes, aimInQty, aimWaste:_aimWaste, prodWip:_prodWip, hrs, closed:_closed, statusKey,
            avail:_avail, floor, retired:_retiredRows45z.has(batchNo), reconciled:!!_rcOv, reconOrig:_reconOrig };
 }
@@ -11062,7 +11181,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       // screen row, the Excel row and the Report D totals are computed by the SAME code. Destructured
       // into the exact names the render block below uses — render markup is byte-for-byte unchanged.
       const R = _rptBRow(batchNo, dept, U);
-      const batch=R.batch, _bSize45y=R.size, inn=R.inn, out=R.out, w=R.w, wip=R.wip, wipQty=R.wipQty,
+      const batch=R.batch, _bSize45y=R.size, inn=R.inn, out=R.out, innQty=R.innQty, outQty=R.outQty, w=R.w, wip=R.wip, wipQty=R.wipQty,
             grossProd=R.grossProd, aimWaste=R.aimWaste, prodWip=R.prodWip, hrs=R.hrs,
             _rc=R.reconciled, _ro=R.reconOrig||{};   // v46M: reconcile flag + raw originals for hover tooltip
       // v45ZZ item 3 (confirmed by Ishan): drop all-zero month rows. A batch can enter the set via
@@ -11106,9 +11225,9 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
           <td class="td-mono">${_rcvCell(grossProd>0?fmt(grossProd)+'L':'—', 'was '+fmt(_ro.grossProd||0)+'L (computed)', _rc)}</td>
           <td class="td-mono text-sm" style="color:var(--amber)">${_rcvCell((aimWaste.salvage+aimWaste.remelt)>0?fmt(aimWaste.salvage+aimWaste.remelt)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>
           <td class="td-mono">${_rcvCell(_avail>0?fmt(_avail)+'L':'—', 'was '+fmt(_ro.avail||0)+'L (computed)', _rc)}</td>
-          <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
+          <td class="td-mono">${inn} <span class="text-muted">(${fmt(innQty)}L)</span></td>
           <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
-          <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,_bSize45y))}L)</span></td>
+          <td class="td-mono">${out} <span class="text-muted">(${fmt(outQty)}L)</span></td>
           <td class="td-mono fw-bold"${wip>0?` style="cursor:pointer" onclick="_rptB_toggleWipBoxes('${batchNo}','${dept}','rptb-${batchNo}-${dept}')" title="Click to see the box numbers in WIP"`:''}>${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}${wip>0?' <span style="font-size:9px;color:var(--text3)">▾</span>':''}</td>
           <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
           <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
@@ -11119,8 +11238,8 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
         <td class="text-sm">${batch?.customer||'-'}</td>
         <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
-        <td class="td-mono">${inn} <span class="text-muted">(${fmt(boxToLakh(inn,_bSize45y))}L)</span></td>
-        <td class="td-mono">${out} <span class="text-muted">(${fmt(boxToLakh(out,_bSize45y))}L)</span></td>
+        <td class="td-mono">${inn} <span class="text-muted">(${fmt(innQty)}L)</span></td>
+        <td class="td-mono">${out} <span class="text-muted">(${fmt(outQty)}L)</span></td>
         ${hasWastage?`<td class="td-mono text-sm" style="color:var(--amber)">${_rcvCell(w.total>0?fmt(w.total)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>`:''}
         <td class="td-mono fw-bold"${wip>0?` style="cursor:pointer" onclick="_rptB_toggleWipBoxes('${batchNo}','${dept}','rptb-${batchNo}-${dept}')" title="Click to see the box numbers in WIP"`:''}>${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}${wip>0?' <span style="font-size:9px;color:var(--text3)">▾</span>':''}</td>
         <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
@@ -11200,7 +11319,7 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
     const _ro = _reconOverride(bn);
     const localPackOut = state.scans.filter(sc=>sc.batchNumber===bn&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
     const packedOut = hasScanSummary() ? (_ss(bn,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in').length;
-    const packed = _ro ? (wb.packIn||0) : boxToLakh(packedOut, size);
+    const packed = _ro ? (wb.packIn||0) : _scanLakhs(bn,'packing','in',size);  // v47G: per-box label sum
     const agWip = wb.totalWIP!=null ? wb.totalWIP : 0;
     return { packed, agWip, grossProd:(wb.grossProd!=null?wb.grossProd:null) };
   };
@@ -11346,10 +11465,15 @@ function _v45sTopTableData(){
         ? [['aim\u2192printing','printing'],['printing\u2192pi','pi'],['pi\u2192packing','packing']]
         : [['aim\u2192packing','packing']];
       trans.forEach(([pair, recv])=>{
-        const g = (((_gapSrv[pair]||{})[bn])||{}).gap || 0;
+        const _gapRec = ((_gapSrv[pair]||{})[bn])||{};
+        const g = _gapRec.gap || 0;
         if (g<=0) return;
         stageUnscanned[recv]+=g;
-        stageUnscannedL[recv]+=boxToLakh(g, sz);
+        // v47G: unscanned Lakhs = server's summed actual qty of the exact gap boxes (same set as the
+        // count) — falls back to per-box out−in only if that field is absent (older overlay).
+        stageUnscannedL[recv]+= (_gapRec.gapQty != null)
+          ? _gapRec.gapQty
+          : Math.max(0, _scanLakhs(bn, pair.split('\u2192')[0], 'out', sz) - _scanLakhs(bn, recv, 'in', sz));
       });
     });
   } else if (typeof _rptH_loadGapCounts==='function') {
@@ -11397,13 +11521,12 @@ function _v41_renderReportDInner(){
     <div class="kpi"><div class="kpi-label">A-Grade % (Unprinted / AIM)</div><div class="kpi-val ${aimAGradePct>=95?'green':aimAGradePct>=90?'amber':'red'}">${fmt(aimAGradePct,1)}%</div><div class="kpi-sub">AIMOut ÷ (AIMOut+Sal+Rem) — matches Report E</div></div>
     <div class="kpi"><div class="kpi-label">A-Grade % (Post-Printing)</div><div class="kpi-val ${aGradePct>=95?'green':aGradePct>=90?'amber':'red'}">${fmt(aGradePct,1)}%</div><div class="kpi-sub">net of Print + PI salvage/remelt</div></div>
     <div class="kpi"><div class="kpi-label">Total A-Grade (net)</div><div class="kpi-val green">${fmt(totalAGrade)}L</div></div>
-    <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${fmt(monthBatches.reduce((s,b)=>s+state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((a,r)=>a+(r.qty||0),0),0))}L</div></div>
-    <!-- v46Z: was _v40_dispatchedLakhs (legacy dispatch SCANS + invoice records, summed) which double-counted
-         and read 7689L. Dispatch now flows through invoices only, so this sums the dispatch RECORDS for this
-         month's batches — matches the Generated Invoices total (484.6L). -->
-    <!-- v46W: Dispatched was sum of ALL dispatch records (all-time) + raw qty. Now scoped to this month's
-         batches like every other Report D KPI, via _v40_dispatchedLakhs (the same helper Report G uses).
-         Export ×100 qty is corrected at source by the export-dispatch-qty backfill, so this reads true. -->
+    <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${(()=>{ const _inv = window._rptDInvoiced && window._rptDInvoiced[_trkSelectedMonth]; return _inv ? fmt(_inv.lakhs)+'L' : '…'; })()}</div><div class="kpi-sub">Invoiced (raised this month)</div></div>
+    <!-- v47G (confirmed by Ishan): Dispatched = INVOICED. Σ total_qty_lakhs for invoices raised (invoice
+         date) in the selected month — the same source/field as the Generated Invoices "TOTAL … L" tile
+         (invoices_received via /api/invoice/received; loaded by _rptD_loadInvoicedLakhs). Replaces the sum
+         over state.dispatchRecs, which double-counted duplicated / un-apportioned records and read an
+         impossible 7689 L (> Gross). "…" shows briefly until the month's invoices load. -->
   </div>
   <div class="card-title mt-16">Stage-wise WIP</div>
   ${(()=>{
@@ -11748,8 +11871,13 @@ function _v41_renderReportEInnerBody(){
       _aimInBoxes  = scansForBatch.filter(s=>s.dept==='aim'&&s.type==='in').length;
       _aimOutBoxes = scansForBatch.filter(s=>s.dept==='aim'&&s.type==='out').length;
     }
-    const aimScanIn  = boxToLakh(_aimInBoxes,  b.size);
-    const aimScanOut = boxToLakh(_aimOutBoxes, b.size);
+    // v47G (confirmed by Ishan): AIM Scan-In / Scan-Out as the per-box label sum, mode-aware (month or
+    // cumulative) via the shared 'unprinted' A-Grade primitive — the SAME source Report D / dashboard use,
+    // so Report E reconciles. In cumulative mode the primitive omits aimIn/aimOut, so we fall back to the
+    // live _scanLakhs (also per-box). Box counts (_aimInBoxes/_aimOutBoxes) stay for the count columns.
+    const _agAimE = _v41_agradeFor(b.batchNumber, 'unprinted');
+    const aimScanIn  = (_agAimE && _agAimE.aimIn  != null) ? _agAimE.aimIn  : _scanLakhs(b.batchNumber,'aim','in',  b.size);
+    const aimScanOut = (_agAimE && _agAimE.aimOut != null) ? _agAimE.aimOut : _scanLakhs(b.batchNumber,'aim','out', b.size);
     let aimW=getTotalWastage(b.batchNumber,'aim');
     if (_v41_useMonthAttributed) {
       const _md = _v41_agradeMonthCache[_trkSelectedMonth];
@@ -11763,7 +11891,7 @@ function _v41_renderReportEInnerBody(){
     // v45V: AIM A-Grade / AIM% / AIM Run(denom) read the SHARED 'unprinted' primitive so Report E ==
     // Report D == dashboard to the decimal — override-aware, month-windowed, reconQty-aware. The
     // primitive already applies A-Grade = Scan-In − Remelt, denom = A-Grade + Sal + Rem (v45V).
-    const agAim = _v41_agradeFor(b.batchNumber, 'unprinted');
+    const agAim = _agAimE;
     const aimAGradeNew = agAim.aGrade;
     const aimInspNew   = agAim.inspected;
     const aimPctNew    = agAim.pct;
@@ -11783,10 +11911,10 @@ function _v41_renderReportEInnerBody(){
     const wip         = unscannedWip + deptWip;
     const printingTD_c = useSS ? (_ss(b.batchNumber,'printing').out + localExtra('printing','out'))
                                 : scansForBatch.filter(s=>s.dept==='printing'&&s.type==='out').length;
-    const printingTD=b.isPrinted?boxToLakh(printingTD_c,b.size):0;
+    const printingTD=b.isPrinted?_scanLakhs(b.batchNumber,'printing','out',b.size):0;  // v47G: per-box label sum
     const piOut_c   = useSS ? (_ss(b.batchNumber,'pi').out           + localExtra('pi','out'))
                              : scansForBatch.filter(s=>s.dept==='pi'&&s.type==='out').length;
-    const piOut=b.isPrinted?boxToLakh(piOut_c,b.size):0;
+    const piOut=b.isPrinted?_scanLakhs(b.batchNumber,'pi','out',b.size):0;  // v47G: per-box label sum
     const printW=getTotalWastage(b.batchNumber,'printing'); // retained for back-compat; printing salvage for Report E now sourced from the Daily Printing Log (v44J #2)
     const piW=getTotalWastage(b.batchNumber,'pi');
     // v44J #2 (confirmed by Ishan): printing-stage salvage for Report E is sourced from the
@@ -11839,7 +11967,7 @@ function _v41_renderReportEInnerBody(){
     // v40 Phase 18.14d: sum legacy + Phase 18 (straddle batches have both flows for different shipments)
     const _legBoxes = useSS ? (_ss(b.batchNumber,'dispatch').out + localExtra('dispatch','out'))
                             : scansForBatch.filter(s=>s.dept==='dispatch'&&s.type==='out').length;
-    const _legLakhs = boxToLakh(_legBoxes, b.size);
+    const _legLakhs = _scanLakhs(b.batchNumber,'dispatch','out',b.size);  // v47G: per-box label sum
     const _p18 = state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0); // v45E: date-bounding handled by the as-of state swap (cumulative-through-date)
     const disp = _legLakhs + _p18;
     rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,startDate:b.startDate||null,endDate:b.endDate||null,
@@ -13465,8 +13593,8 @@ function renderReportK(targetId) {
       ? _ss(bn, 'packing').in + state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in'&&s._local).length
       : d.packInScans.length;
     const dispOutBoxes = _v40_dispatchedBoxes(bn);
-    const packInQty = boxToLakh(packInBoxes, size);
-    const dispOutQty = boxToLakh(dispOutBoxes, size);
+    const packInQty = _scanLakhs(bn,'packing','in',size);   // v47G: per-box label sum (lifetime)
+    const dispOutQty = _v40_dispatchedLakhs(bn, size);      // v47G: per-box dispatch scans + Phase-18 records
     // v45ZL item 3B (confirmed by Ishan, option B): PERIOD-WINDOWED pack-in — counts the pack-in
     // SCAN EVENTS that physically happened inside [fromDate,toDate], from the SAME source the
     // Packing ledger uses (state.scans, dept=packing/type=in). This reconciles box-for-box with the
@@ -13477,7 +13605,7 @@ function renderReportK(targetId) {
     const packInWindowBoxes = d.packInScans.filter(s => {
       const k = _istDayKey(s.ts); return k && k >= fromDate && k <= toDate;
     }).length;
-    const packInWindowQty = boxToLakh(packInWindowBoxes, size);
+    const packInWindowQty = d.packInScans.filter(s => { const k=_istDayKey(s.ts); return k && k>=fromDate && k<=toDate; }).reduce((a,s)=>a+_boxLakh(s,size),0);  // v47G: per-box sum over the windowed pack-in scans
     // Days in inventory: lastDispOut − firstPackIn (if both exist)
     let daysInInv = null;
     if (firstPackIn && lastDispOut) {
@@ -13766,8 +13894,8 @@ function exportReportK() {
     const lastDispOut = _istDayKey(d.dispatchOutScans[d.dispatchOutScans.length-1]?.ts) || '';
     const packInBoxes = d.packInScans.length;
     const dispOutBoxes = d.dispatchOutScans.length;
-    const packInQty = boxToLakh(packInBoxes, size);
-    const dispOutQty = boxToLakh(dispOutBoxes, size);
+    const packInQty = d.packInScans.reduce((a,s)=>a+_boxLakh(s,size),0);        // v47G: per-box label sum
+    const dispOutQty = d.dispatchOutScans.reduce((a,s)=>a+_boxLakh(s,size),0);  // v47G: per-box label sum
     // date range filter
     const dateRef = lastDispOut || firstPackIn;
     if (dateMode !== 'all' && (dateRef < fromDate || dateRef > toDate)) return;
@@ -14181,6 +14309,8 @@ function exportDispatch() {
   const ledgerRows = Object.entries(ledger).map(([batchNo, s])=>{
     const b = getBatch(batchNo);
     const pending = Math.max(0, s.packed - s.dispOut);
+    const _pkQ = _scanLakhs(batchNo,'packing','in',s.size);   // v47G: per-box label sums (match on-screen rollup)
+    const _dsQ = _v40_dispatchedLakhs(batchNo, s.size);
     return {
       'Batch': batchNo,
       'Customer': b?.customer || '',
@@ -14188,11 +14318,11 @@ function exportDispatch() {
       'Size': s.size,
       'PC Code': b?.pcCode || '',
       'Packed Boxes': s.packed,
-      'Packed Qty (L)': fmt(boxToLakh(s.packed, s.size)),
+      'Packed Qty (L)': fmt(_pkQ),
       'Dispatched Boxes': s.dispOut,
-      'Dispatched Qty (L)': fmt(boxToLakh(s.dispOut, s.size)),
+      'Dispatched Qty (L)': fmt(_dsQ),
       'Pending Boxes': pending,
-      'Pending Qty (L)': fmt(boxToLakh(pending, s.size))
+      'Pending Qty (L)': fmt(Math.max(0, _pkQ - _dsQ))
     };
   });
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(ledgerRows), 'Packed Ledger');
@@ -14200,17 +14330,19 @@ function exportDispatch() {
   // Sheet 3: Colour-wise summary
   // v40 P18.14c: removed Inward columns (legacy dispatch.in concept). Now 4-column rollup.
   const colourSum = {};
-  Object.values(ledger).forEach(s=>{
+  Object.entries(ledger).forEach(([batchNo, s])=>{
     const c = s.colour || '-';
     if (!colourSum[c]) colourSum[c] = { packedBoxes:0, dispatchedBoxes:0, pendingBoxes:0,
                                          packedQty:0, dispatchedQty:0, pendingQty:0 };
     const pending = Math.max(0, s.packed - s.dispOut);
+    const _pkQ = _scanLakhs(batchNo,'packing','in',s.size);   // v47G: per-box label sums
+    const _dsQ = _v40_dispatchedLakhs(batchNo, s.size);
     colourSum[c].packedBoxes     += s.packed;
     colourSum[c].dispatchedBoxes += s.dispOut;
     colourSum[c].pendingBoxes    += pending;
-    colourSum[c].packedQty       += boxToLakh(s.packed, s.size);
-    colourSum[c].dispatchedQty   += boxToLakh(s.dispOut, s.size);
-    colourSum[c].pendingQty      += boxToLakh(pending, s.size);
+    colourSum[c].packedQty       += _pkQ;
+    colourSum[c].dispatchedQty   += _dsQ;
+    colourSum[c].pendingQty      += Math.max(0, _pkQ - _dsQ);
   });
   const colourRows = Object.entries(colourSum).sort().map(([c, r])=>({
     'Colour': c,
@@ -14364,7 +14496,7 @@ function exportReportC(){
     const _ro=_reconOverride(b.batchNumber);
     const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
     const packedOut = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
-    const packed = _ro ? (wb.packIn||0) : boxToLakh(packedOut,b.size);
+    const packed = _ro ? (wb.packIn||0) : _scanLakhs(b.batchNumber,'packing','in',b.size);  // v47G
     const agWip = wb.totalWIP!=null ? wb.totalWIP : 0;
     const packable = packed + agWip;
     const planned = b.qty || 0;
@@ -14455,7 +14587,7 @@ function exportReportE(){
         const grossProd=_reconGross(b);
         const localAimOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='aim'&&sc.type==='out'&&sc._local).length;
         const aimOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'aim').out + localAimOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='out').length;
-        const aimOut=boxToLakh(aimOutBoxes,b.size);
+        const aimOut=_scanLakhs(b.batchNumber,'aim','out',b.size);  // v47G: per-box label sum
         const aimW=getTotalWastage(b.batchNumber,'aim');
         const aimIn=aimOut+aimW.total;   // Scan-Out + wastage = frozen post-print/PI denominator
         const ag=_v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
@@ -14465,7 +14597,7 @@ function exportReportE(){
         const _aimScanInBoxesEx = hasScanSummary()
           ? (_ss(b.batchNumber,'aim').in + state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='aim'&&sc.type==='in'&&sc._local).length)
           : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='in').length;
-        const aimScanInEx  = boxToLakh(_aimScanInBoxesEx, b.size);
+        const aimScanInEx  = _scanLakhs(b.batchNumber,'aim','in',b.size);  // v47G: per-box label sum
         const aimScanOutEx = aimOut;   // aimOut here is the Scan-Out qty (see above)
         // AIM A-Grade / AIM% / denom from the SHARED 'unprinted' primitive (override-aware) — matches screen + Report D.
         const _agAimEx     = _v41_agradeFor(b.batchNumber, 'unprinted');
@@ -14479,15 +14611,15 @@ function exportReportE(){
         const wip = unscannedWipEx + deptWipEx;
         const localPackOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
         const packOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
-        const packQty = boxToLakh(packOutBoxes, b.size);
+        const packQty = _scanLakhs(b.batchNumber,'packing','in',b.size);  // v47G: per-box label sum
         // v37E T2: Per-stage Print and PI A-Grade % for printed batches
         const localPrintOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='printing'&&sc.type==='out'&&sc._local).length;
         const printOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'printing').out + localPrintOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='printing'&&s.type==='out').length;
-        const printOut = b.isPrinted ? boxToLakh(printOutBoxes, b.size) : 0;
+        const printOut = b.isPrinted ? _scanLakhs(b.batchNumber,'printing','out',b.size) : 0;  // v47G
         const printW = getTotalWastage(b.batchNumber,'printing');
         const localPiOut = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='pi'&&sc.type==='out'&&sc._local).length;
         const piOutBoxes = hasScanSummary() ? (_ss(b.batchNumber,'pi').out + localPiOut) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='pi'&&s.type==='out').length;
-        const piOut = b.isPrinted ? boxToLakh(piOutBoxes, b.size) : 0;
+        const piOut = b.isPrinted ? _scanLakhs(b.batchNumber,'pi','out',b.size) : 0;  // v47G
         const piW = getTotalWastage(b.batchNumber,'pi');
         // Frozen formula (per Ishan):
         //   Post-Printing A-Grade % = (AIM Out − Print Sal − Print Rem) / (AIM Out + AIM Sal + AIM Rem) × 100
@@ -14523,17 +14655,17 @@ function exportReportE(){
         // can read the full per-machine activity from the Excel export, not just AIM + dispatch.
         const localAimOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='aim'&&sc.type==='out'&&sc._local).length;
         const aimOutEx = hasScanSummary() ? (_ss(b.batchNumber,'aim').out + localAimOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='aim'&&s.type==='out').length;
-        const aimOutLac = boxToLakh(aimOutEx,b.size);
+        const aimOutLac = _scanLakhs(b.batchNumber,'aim','out',b.size);  // v47G: per-box label sum
         const aimW = getTotalWastage(b.batchNumber,'aim');
         // v45V: AIM A-Grade = shared 'unprinted' primitive (Scan-In − Remelt, override-aware) — matches Summary + screen.
         const aimAGradeMc = _v41_agradeFor(b.batchNumber, 'unprinted').aGrade;
         const localPrintOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='printing'&&sc.type==='out'&&sc._local).length;
         const printOutEx = hasScanSummary() ? (_ss(b.batchNumber,'printing').out + localPrintOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='printing'&&s.type==='out').length;
-        const printOutLac = b.isPrinted ? boxToLakh(printOutEx, b.size) : 0;
+        const printOutLac = b.isPrinted ? _scanLakhs(b.batchNumber,'printing','out',b.size) : 0;  // v47G
         const printW = getTotalWastage(b.batchNumber,'printing');
         const localPiOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='pi'&&sc.type==='out'&&sc._local).length;
         const piOutEx = hasScanSummary() ? (_ss(b.batchNumber,'pi').out + localPiOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='pi'&&s.type==='out').length;
-        const piOutLac = b.isPrinted ? boxToLakh(piOutEx, b.size) : 0;
+        const piOutLac = b.isPrinted ? _scanLakhs(b.batchNumber,'pi','out',b.size) : 0;  // v47G
         const piW = getTotalWastage(b.batchNumber,'pi');
         // Frozen formula (per Ishan): cumulative-from-AIM with constant denominator
         const aimInputTotalMc = aimOutLac + aimW.salvage + aimW.remelt;
@@ -14545,7 +14677,7 @@ function exportReportE(){
         const piAGradePctEx    = null; // column removed v45T
         const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
         const packOutEx = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
-        const packOutLac = boxToLakh(packOutEx, b.size);
+        const packOutLac = _scanLakhs(b.batchNumber,'packing','in',b.size);  // v47G: per-box label sum
         return {'DATE':today(),'BATCH NO':b.batchNumber,'COLOR CODE':b.colour||'','CUSTOMER NAME':b.customer||'',
           'PRINT TYPE':b.isPrinted?'PTD':'UP',
           'PLAN QTY (lac)':_xn(b.qty),'PRODUCT CODE':b.pcCode||'','PRODUCTION (lac)':_xn(_reconGross(b)),
