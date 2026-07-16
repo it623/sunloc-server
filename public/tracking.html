@@ -2979,7 +2979,7 @@ function getBatchAGrade(batchNo, stage, opts){
     const aGrade = Math.max(0, aimIn - w.remelt);
     const inspected = aGrade + w.salvage + w.remelt;    // = Scan-In + Salvage
     const wip = Math.max(0, aGrade - aimOut);           // Dept WIP: good boxed at AIM, not yet moved onward
-    return { aimIn, aimOut, inspected, aGrade, salvage:w.salvage, remelt:w.remelt, wip,
+    return { aimIn, aimOut, inspected, aGrade, aimAGrade: aGrade, agNum: aGrade, agDen: inspected, salvage:w.salvage, remelt:w.remelt, wip,
              pct: inspected>0 ? (aGrade/inspected*100) : 0 };
   }
 
@@ -3005,27 +3005,28 @@ function getBatchAGrade(batchNo, stage, opts){
     const piInspected    = piOut    + wPI.total;
     const printWIP = Math.max(0, aimOut - printInspected);
     const piWIP    = Math.max(0, printOut - piInspected);
-    // v44L: align post-print/post-PI net A-Grade to the Report E transport (Option 1). Printing
-    // salvage comes from the Daily Printing Log (window._printSalvagePct × AIM Out), printing
-    // remelt = 0; PI salvage/remelt stay from Tracking (PI data is not in Planning). Net therefore
-    // = AIM Out − DPL printing salvage − Tracking PI wastage. (stages/WIP/totals below are left
-    // tracking-sourced to avoid touching the frozen WIP figures — see handoff note.)
-    // v47H (confirmed by Ishan): Post-PTD A-Grade is SCAN-BASED and aligned across Reports D & E. Base =
-    // AIM A-Grade (Scan-In − AIM Remelt); subtract printing + PI wastage from Tracking; denominator =
-    // AIM A-Grade + AIM Salvage. Replaces the earlier Daily-Printing-Log salvage derivation (AIM Out ×
-    // DPL%), which made Report E read 90.9% where scan data gives 94.1%. aGrade/inspected/pct are kept
-    // mutually consistent so any Σ-aGrade / Σ-inspected aggregate stays correct. 26ZD104:
-    // (52.5 − 0.95 − 0.10) ÷ (52.5 + 2.2) = 51.45 ÷ 54.7 = 94.1%.
-    const aimInAG           = _scanLakhs(batchNo,'aim','in', batch.size);
-    const aimAGradeBase     = Math.max(0, aimInAG - wAIM.remelt);
-    const netAGrade         = Math.max(0, aimAGradeBase - wPrint.total - wPI.total);
-    const _postPtdInspected = aimAGradeBase + wAIM.salvage;
+    // v47H (confirmed by Ishan): realized A-Grade = PI Scan-Out — the boxes that cleared Print
+    // Inspection, which is ALREADY net of PI wastage (do NOT subtract it again). Everything not yet
+    // through PI is WIP (Reports B/F). The Post-Printing A-Grade % is the convergence TARGET, not the
+    // running value: % = (AIM A-Grade − Printing Rejection − PI wastage) ÷ (AIM A-Grade + AIM Salvage),
+    // where AIM A-Grade = Scan-In − AIM Remelt and Printing Rejection = DPL cumulative salvage % ×
+    // Print-TD (printing scan-out). Reports D & E both read this stage. 26ZD104: PI Scan-Out 36.75L
+    // (running, → converges to 47.86L); % = (52.5 − 0.89 − 3.75) ÷ (52.5 + 2.2) = 87.5%.
+    const aimInAG        = _scanLakhs(batchNo,'aim','in', batch.size);
+    const aimAGradeBase  = Math.max(0, aimInAG - wAIM.remelt);         // AIM A-Grade = Scan-In − AIM Remelt
+    const _dplPctAG      = (window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0;
+    const _printRejAG    = printOut * (_dplPctAG/100);                 // Printing Rejection = DPL % × Print-TD
+    const _postPrintDen  = aimAGradeBase + wAIM.salvage;
+    const _postPrintPct  = _postPrintDen>0 ? Math.max(0, (aimAGradeBase - _printRejAG - wPI.total)/_postPrintDen*100) : 0;
+    const netAGrade      = piOut;                                      // realized A-Grade = PI Scan-Out (net of PI wastage)
     const totalSalvage = wAIM.salvage + wPrint.salvage + wPI.salvage;
     const totalRemelt  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
     return {
-      aimIn: aimOut, inspected: _postPtdInspected, aGrade: netAGrade, wip: printWIP + piWIP,
+      aimIn: aimOut, inspected: aimInspected, aGrade: netAGrade,
+      aimAGrade: aimAGradeBase, printRej: _printRejAG, postPrintPct: _postPrintPct,
+      agNum: Math.max(0, aimAGradeBase - _printRejAG - wPI.total), agDen: _postPrintDen, wip: printWIP + piWIP,
       salvage: totalSalvage, remelt: totalRemelt,
-      pct: _postPtdInspected>0 ? (netAGrade/_postPtdInspected*100) : 0,
+      pct: _postPrintPct,
       stages: {
         aim:   { out:aimOut,   wastage:wAIM.total,   inspected:aimInspected,   pct:aimInspected>0?(aimOut/aimInspected*100):0 },
         print: { out:printOut, wastage:wPrint.total,  inspected:printInspected, pct:printInspected>0?(Math.max(0,printInspected-wPrint.total)/printInspected*100):0 }, // v45ZH: stage yield nets its own wastage — 'Print: 100%' beside a non-zero print salvage contradicted the headline post-print %
@@ -3129,7 +3130,7 @@ function _v41_getBatchAGradeMonth(batchNo, stage, md){
     const salvage = wA.salvage, remelt = wA.remelt;
     const aGrade = Math.max(0, aimIn - remelt);
     const inspected = aGrade + salvage + remelt;
-    return { aimIn, aimOut, inspected, aGrade, salvage, remelt, wip: Math.max(0, aGrade - aimOut),
+    return { aimIn, aimOut, inspected, aGrade, aimAGrade: aGrade, agNum: aGrade, agDen: inspected, salvage, remelt, wip: Math.max(0, aGrade - aimOut),
              pct: inspected>0 ? (aGrade/inspected*100) : 0,
              crossMonth: !!md.crossMonth[batchNo] };
   }
@@ -3142,22 +3143,25 @@ function _v41_getBatchAGradeMonth(batchNo, stage, md){
     const aimInspected   = aimOut   + wA.salvage + wA.remelt;
     const printInspected = printOut + wP.salvage + wP.remelt;
     const piInspected    = piOut    + wI.salvage + wI.remelt;
-    // v44L: same Option-1 alignment as getBatchAGrade — printing salvage from the Daily Printing
-    // Log (window._printSalvagePct × AIM Out), printing remelt 0; PI salvage/remelt from Tracking.
-    // Note: the DPL % is whole-batch cumulative (matches the month figure for single-month batches).
-    // v47H (confirmed by Ishan): scan-based Post-PTD A-Grade — month-windowed twin of the cumulative
-    // change. Base = AIM A-Grade (Scan-In − AIM Remelt); subtract printing + PI wastage from Tracking;
-    // denominator = AIM A-Grade + AIM Salvage. aGrade/inspected/pct kept mutually consistent.
-    const aimInAG           = (aim.inRealQty || 0) + aim.inReconQty;   // Scan-In
-    const aimAGradeBase     = Math.max(0, aimInAG - wA.remelt);
-    const netAGrade         = Math.max(0, aimAGradeBase - (wP.salvage + wP.remelt) - (wI.salvage + wI.remelt));
-    const _postPtdInspected = aimAGradeBase + wA.salvage;
+    // v47H (confirmed by Ishan): month-windowed twin of the cumulative change. Realized A-Grade = PI
+    // Scan-Out (already net of PI wastage). Post-Printing % (target) = (AIM A-Grade − Printing Rejection
+    // − PI wastage) ÷ (AIM A-Grade + AIM Salvage); Printing Rejection = DPL cumulative salvage % ×
+    // Print-TD. (DPL % is whole-batch cumulative — matches the month figure for single-month batches.)
+    const aimInAG        = (aim.inRealQty || 0) + aim.inReconQty;      // Scan-In
+    const aimAGradeBase  = Math.max(0, aimInAG - wA.remelt);          // AIM A-Grade = Scan-In − AIM Remelt
+    const _dplPctAG      = (window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0;
+    const _printRejAG    = printOut * (_dplPctAG/100);                // Printing Rejection = DPL % × Print-TD
+    const _postPrintDen  = aimAGradeBase + wA.salvage;
+    const _postPrintPct  = _postPrintDen>0 ? Math.max(0, (aimAGradeBase - _printRejAG - (wI.salvage + wI.remelt))/_postPrintDen*100) : 0;
+    const netAGrade      = piOut;                                     // realized A-Grade = PI Scan-Out
     const totalSalvage = wA.salvage + wP.salvage + wI.salvage;
     const totalRemelt  = wA.remelt  + wP.remelt  + wI.remelt;
     return {
-      inspected: _postPtdInspected, aGrade: netAGrade, wip:0,
+      inspected: aimInspected, aGrade: netAGrade,
+      aimAGrade: aimAGradeBase, printRej: _printRejAG, postPrintPct: _postPrintPct,
+      agNum: Math.max(0, aimAGradeBase - _printRejAG - (wI.salvage + wI.remelt)), agDen: _postPrintDen, wip:0,
       salvage: totalSalvage, remelt: totalRemelt,
-      pct: _postPtdInspected>0 ? (netAGrade/_postPtdInspected*100) : 0,
+      pct: _postPrintPct,
       crossMonth: !!md.crossMonth[batchNo],
       stages: {
         aim:   { out:aimOut,   wastage:wA.salvage+wA.remelt, inspected:aimInspected,   pct:aimInspected>0?(aimOut/aimInspected*100):0 },
@@ -9893,6 +9897,8 @@ function _v41_renderReportGInner(){
   const gAllCustomers= [...new Set(state.batches.filter(b=>!b.deleted).map(b=>b.customer).filter(Boolean))].sort(); // v45ZN: all-month customer suggestions
   let totalGrossProd = 0;
   let totalAGradeQty = 0;
+  let totalAimAGrade = 0;  // v47H: Σ AIM A-Grade (Scan-In − Remelt)
+  let totalAGNum = 0, totalAGDen = 0;  // v47H: Σ post-printing numerator/denominator → cumulative target A-Grade %
   let totalInspected = 0;
   let totalSalvage   = 0;
   let totalRemelt    = 0;
@@ -9925,6 +9931,9 @@ function _v41_renderReportGInner(){
     }
     totalGrossProd += grossProd;
     totalAGradeQty += ag.aGrade;
+    totalAimAGrade += (ag.aimAGrade != null ? ag.aimAGrade : ag.aGrade) || 0;  // v47H
+    totalAGNum     += ag.agNum || 0;   // v47H: post-printing numerator (printed) / AIM A-Grade (UP)
+    totalAGDen     += ag.agDen || 0;   // v47H: post-printing denominator (printed) / AIM inspected (UP)
     totalInspected += ag.inspected;
     totalSalvage   += ag.salvage || 0;
     totalRemelt    += ag.remelt  || 0;
@@ -10003,6 +10012,7 @@ function _v41_renderReportGInner(){
       <td class="td-mono" style="white-space:nowrap;font-size:11px">${b.endDate?new Date(b.endDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
       <td class="td-mono">${_rcvCell(grossProd>0?fmt(grossProd)+'L':'—', _rt&&_rt.gross, _rc)}</td>
       <td class="td-mono">${_rcvCell(ag.inspected>0?fmt(ag.inspected)+'L':'—', _rt&&_rt.inspected, _rc)}</td>
+      <td class="td-mono">${(ag.aimAGrade||0)>0?fmt(ag.aimAGrade)+'L':'—'}</td>
       <td class="td-mono green">${_rcvCell(ag.aGrade>0?fmt(ag.aGrade)+'L':'—', _rt&&_rt.aGrade, _rc)}</td>
       <td class="td-mono" style="color:var(--amber)">${_rcvCell(ag.salvage>0?fmt(ag.salvage)+'L':'—', _rt&&_rt.salvage, _rc)}</td>
       <td class="td-mono" style="color:var(--red)">${_rcvCell(ag.remelt>0?fmt(ag.remelt)+'L':'—', _rt&&_rt.remelt, _rc)}</td>
@@ -10015,7 +10025,7 @@ function _v41_renderReportGInner(){
     </tr>`;
   }).join('');
 
-  const cumPct = totalInspected>0 ? (totalAGradeQty/totalInspected*100) : 0;
+  const cumPct = totalAGDen>0 ? (totalAGNum/totalAGDen*100) : 0;  // v47H: target Post-Printing % blend (matches each row's ag.pct), not running Σ PI-out ÷ Σ inspected
   const cumCls = cumPct>=95?'green':cumPct>=90?'var(--amber)':'var(--red)';
 
   // v37E WIP-fix + v37I.1: "Total WIP" uses canonical formula consistently across the report.
@@ -10049,18 +10059,18 @@ function _v41_renderReportGInner(){
     <div class="kpi-grid mb-16">
       <div class="kpi"><div class="kpi-label">Total Gross Production</div><div class="kpi-val cyan">${fmt(totalGrossProd)}L</div></div>
       <div class="kpi"><div class="kpi-label">Total Inspected</div><div class="kpi-val">${fmt(totalInspected)}L</div><div class="kpi-sub" style="color:var(--text3)">Excl. ${fmt(preAIMOnly)}L pre-AIM</div></div>
-      <div class="kpi"><div class="kpi-label">Total A-Grade Qty</div><div class="kpi-val green">${fmt(totalAGradeQty)}L</div></div>
+      <div class="kpi"><div class="kpi-label">Total A-Grade Qty</div><div class="kpi-val green">${fmt(totalAGradeQty)}L</div><div class="kpi-sub">Realized = PI Scan-Out (PTD) + AIM A-Grade (UP)</div></div>
       <div class="kpi"><div class="kpi-label">Total Salvage</div><div class="kpi-val amber">${fmt(totalSalvage)}L</div><div class="kpi-sub">Inspected = A-Grade + Salvage + Remelt</div></div>
       <div class="kpi"><div class="kpi-label">Total Remelt</div><div class="kpi-val red">${fmt(totalRemelt)}L</div></div>
       <div class="kpi"><div class="kpi-label">Total WIP (All Stages)</div><div class="kpi-val amber">${fmt(totalWIP)}L</div><div class="kpi-sub">= Gross − Wastage − Pack In (FG excluded)</div></div>
-      <div class="kpi"><div class="kpi-label">Cumulative A-Grade %</div><div class="kpi-val" style="color:${cumCls};font-size:28px">${fmt(cumPct,2)}%</div><div class="kpi-sub">= ${fmt(totalAGradeQty)}L ÷ ${fmt(totalInspected)}L inspected</div></div>
+      <div class="kpi"><div class="kpi-label">Cumulative A-Grade %</div><div class="kpi-val" style="color:${cumCls};font-size:28px">${fmt(cumPct,2)}%</div><div class="kpi-sub">Post-Printing target = Σ(AIM A-Grade − Print Rej − PI waste) ÷ Σ(AIM A-Grade + AIM Salvage)</div></div>
     </div>
 
     ${alertsHtml}
 
     <div style="font-size:11px;color:var(--text3);margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid var(--accent)">
-      <b>A-Grade % (UP)</b> = AIM Out ÷ (AIM Out + AIM Salvage + AIM Remelt) × 100. &nbsp;|&nbsp;
-      <b>A-Grade % (PTD)</b> = (AIM Out − Print Sal − Print Rem − PI Sal − PI Rem) ÷ (AIM Out + AIM Sal + AIM Rem) × 100. &nbsp;|&nbsp;
+      <b>A-Grade % (UP)</b> = AIM A-Grade ÷ (AIM A-Grade + AIM Salvage + AIM Remelt) × 100. &nbsp;|&nbsp;
+      <b>A-Grade % (PTD, target)</b> = (AIM A-Grade − Printing Rej − PI Sal − PI Rem) ÷ (AIM A-Grade + AIM Salvage) × 100, where AIM A-Grade = Scan-In − AIM Remelt and Printing Rej = DPL salvage % × Print Scan-Out. <b>PI Scan Out</b> = realized A-Grade (converges up to the target as boxes clear PI). &nbsp;|&nbsp;
       <b>Total WIP</b> = Gross Production − Total Inspected &nbsp;|&nbsp;
       <b>Total Inspected</b> = A-Grade + Salvage + Remelt &nbsp;|&nbsp;
       <b>⚠️</b> = Inspected &gt; Gross Production (check DPR entry)
@@ -10122,14 +10132,15 @@ function _v41_renderReportGInner(){
     <div class="tbl-wrap tbl-sticky"><table>
       <thead><tr>
         <th>Batch</th><th>Customer</th><th>Colour</th><th>Sz</th><th>Type</th><th>Start</th><th>End</th>
-        <th>Gross Prod</th><th>Inspected</th><th>A-Grade</th>
+        <th>Gross Prod</th><th>Inspected</th><th>AIM A-Grade</th><th>PI Scan Out</th>
         <th>Salvage</th><th>Remelt</th><th>Packed (L)</th><th>WIP (Stage-wise)</th><th>A-Grade %</th>
       </tr></thead>
-      <tbody>${rows||'<tr><td colspan="15" class="text-center text-muted">No batch data yet</td></tr>'}</tbody>
+      <tbody>${rows||'<tr><td colspan="16" class="text-center text-muted">No batch data yet</td></tr>'}</tbody>
       <tfoot><tr style="background:var(--surface2);font-weight:700">
         <td colspan="7" style="font-size:11px;letter-spacing:.5px">CUMULATIVE TOTAL</td>
         <td class="td-mono">${fmt(totalGrossProd)}L</td>
         <td class="td-mono">${fmt(totalInspected)}L</td>
+        <td class="td-mono">${fmt(totalAimAGrade)}L</td>
         <td class="td-mono green">${fmt(totalAGradeQty)}L</td>
         <td class="td-mono amber">${fmt(totalSalvage)}L</td>
         <td class="td-mono red">${fmt(totalRemelt)}L</td>
@@ -10247,7 +10258,8 @@ function exportReportG(){
       'Cross-Month': (ag && ag.crossMonth) ? 'YES — spans boundary' : '',
       'Gross Production (L)': fmt(grossProd),
       'Inspected (L)': fmt(ag.inspected),
-      'A-Grade (L)': fmt(ag.aGrade),
+      'AIM A-Grade (L)': fmt(ag.aimAGrade!=null?ag.aimAGrade:ag.aGrade),
+      'PI Scan Out (L)': fmt(ag.aGrade),
       'Salvage (L)': fmt(ag.salvage),
       'Remelt (L)': fmt(ag.remelt),
       'A-Grade %': ag.inspected>0?fmt(ag.pct,2)+'%':'—',
@@ -11986,9 +11998,12 @@ function _v41_renderReportEInnerBody(){
     // subtract printing + PI wastage from TRACKING (printW.total, piW.total), NOT the Daily-Printing-Log %.
     // % over (AIM A-Grade + AIM Salvage). Printed batches only; UP batches show "—". 26ZD104:
     // (52.5 − 0.95 − 0.10) ÷ (52.5 + 2.2) = 51.45 ÷ 54.7 = 94.1%, 51.45L.
-    const _postPtdDen45h = b.isPrinted ? (aimAGradeNew + aimW.salvage) : null;
-    const _postPtdL45h   = b.isPrinted ? Math.max(0, aimAGradeNew - printW.total - piW.total) : null;
-    const _postPtdPct45h = (b.isPrinted && _postPtdDen45h > 0) ? Math.max(0, _postPtdL45h / _postPtdDen45h * 100) : null;
+    // v47H (confirmed by Ishan): Printing Rejection = DPL cumulative salvage % × Print-TD (printing
+    // scan-out), NOT tracking wastage (which the printing manager doesn't log) and NOT the old AIM-Out
+    // base. It feeds the Post-Printing A-Grade % (target) = (AIM A-Grade − Printing Rej − PI wastage) ÷
+    // (AIM A-Grade + AIM Salvage) — that % is ag.pct per row; the subtotals aggregate _agNum/_agDen.
+    // 26ZD104: Print Rej = 1.82% × 49.00 = 0.89; % = (52.5 − 0.89 − 3.75) ÷ (52.5 + 2.2) = 87.5%.
+    const _printRejDPL45h = printingTD * (_printSalPct / 100);
     rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,startDate:b.startDate||null,endDate:b.endDate||null,
       isPrinted: b.isPrinted,  // v37H: used by table render to distinguish PTD vs UP for column display
       plannedQty:b.qty||0, _plannedQty:b.qty||0,
@@ -12013,11 +12028,11 @@ function _v41_renderReportEInnerBody(){
       availUnptd:fmt(!b.isPrinted?totalAG:0),_availUnptd:!b.isPrinted?totalAG:0,
       availPrint:fmt(b.isPrinted?totalAG:0),_availPrint:b.isPrinted?totalAG:0,
       printingTD:fmt(printingTD),_printingTD:printingTD,
-      printRej:fmt(printW.total),_printRej:printW.total,               // v47H: scan/tracking printing salvage+remelt (was DPL-derived)
+      printRej:fmt(_printRejDPL45h),_printRej:_printRejDPL45h,        // v47H: Printing Rejection = DPL % × Print-TD
       _printSalvage: _printSalvageLakhs, _printRemelt: _printRemeltLakhs,
-      _postPtdL:_postPtdL45h, _postPtdPct:_postPtdPct45h, _postPtdDen:_postPtdDen45h,  // v47H: scan-based Post-PTD A-Grade (L) + % + denominator
       printAGradePct: _agHas ? fmt(printAGradePct,1) : '—', _printAGradePct: printAGradePct, _aimInputTotal: aimInputTotal,
-      _agNum: totalAG, _agDen: ag.inspected,
+      _agNum: b.isPrinted ? Math.max(0, aimAGradeNew - _printRejDPL45h - piW.total) : totalAG,
+      _agDen: b.isPrinted ? (aimAGradeNew + aimW.salvage) : ag.inspected,
       piInspect:fmt(piOut),_piInspect:piOut,
       piSalRem:fmt(piW.total),_piSalRem:piW.total,                     // v47H: PI salvage + remelt combined (scan/tracking)
       _piSalvage: piW.salvage, _piRemelt: piW.remelt,
@@ -12078,11 +12093,11 @@ function _v41_renderReportEInnerBody(){
     const postPrintNumSum = ptdAimOut - printSalSum - printRemSum;
     const postPiNumSum    = ptdAimOut - printSalSum - printRemSum - piSalSum - piRemSum;
     // v45U #4: group Post Printing % = Σ ag.aGrade / Σ ag.inspected — Report D's aggregate exactly.
-    // v47H (confirmed by Ishan): subtotal Post-PTD A-Grade % = Σ Post-PTD A-Grade (L) ÷ Σ (AIM A-Grade
-    // + AIM Salvage) over PRINTED rows only — matches the per-row scan-based figure.
-    const _postPtdLSum   = ptdRows.reduce((a,r)=>a+(r._postPtdL||0),0);
-    const _postPtdDenSum = ptdRows.reduce((a,r)=>a+(r._postPtdDen||0),0);
-    const printPct = _postPtdDenSum > 0 ? Math.max(0, _postPtdLSum / _postPtdDenSum * 100).toFixed(1) + '%' : '—';
+    // v47H (confirmed by Ishan): subtotal Post-Printing A-Grade % = Σ _agNum ÷ Σ _agDen — for printed
+    // rows _agNum/_agDen are the post-print numerator/denominator; for UP rows they are the AIM A-Grade
+    // pair, so the blend matches each row's own ag.pct.
+    const _agNumSum = sumRows(arr,'agNum'), _agDenSum = sumRows(arr,'agDen');
+    const printPct = _agDenSum > 0 ? Math.max(0, _agNumSum / _agDenSum * 100).toFixed(1) + '%' : '—';
     const piPct    = ptdAimInsp > 0 ? Math.max(0, postPiNumSum    / ptdAimInsp * 100).toFixed(1) + '%' : '—';
     const printOutSum = sumRows(arr,'printingTD');
     const piOutSum    = sumRows(arr,'piInspect');
@@ -12095,7 +12110,7 @@ function _v41_renderReportEInnerBody(){
       <td><b>${fmtN(aimAGr)}</b></td><td>${aimPct}</td>
       <td>${fmtN(sumRows(arr,'aimScanOut'))}</td><td>${fmtN(sumRows(arr,'deptWip'))}</td><td><b>${fmtN(sumRows(arr,'wip'))}</b></td>
       <td>${fmtN(printOutSum)}</td><td>${fmtN(sumRows(arr,'printRej'))}</td>
-      <td>${fmtN(piOutSum)}</td><td>${fmtN(sumRows(arr,'piSalRem'))}</td><td><b>${fmtN(_postPtdLSum)}</b></td><td><b>${printPct}</b></td>
+      <td>${fmtN(piOutSum)}</td><td>${fmtN(sumRows(arr,'piSalRem'))}</td><td><b>${printPct}</b></td>
       <td>${fmtN(sumRows(arr,'packingUP'))}</td><td>${fmtN(sumRows(arr,'packingPTD'))}</td>
       <td><b>${fmtN(sumRows(arr,'dispatch'))}</b></td>
     </tr>`;
@@ -12110,11 +12125,11 @@ function _v41_renderReportEInnerBody(){
     allFloorRows.push(...flRows);
     const machines = [...new Set(flRows.map(r=>r.machine))];
     // Floor header
-    tableRows += `<tr class="grp-hdr"><td colspan="31" class="sticky-col" style="left:0;background:#d4e8d8;color:#1a3a2e;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:1px">FLOOR: ${fl}</td></tr>`;
+    tableRows += `<tr class="grp-hdr"><td colspan="30" class="sticky-col" style="left:0;background:#d4e8d8;color:#1a3a2e;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:1px">FLOOR: ${fl}</td></tr>`;
     machines.forEach(mc => {
       const mcRows = flRows.filter(r=>r.machine===mc);
       // Machine header
-      tableRows += `<tr class="grp-hdr"><td colspan="31" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
+      tableRows += `<tr class="grp-hdr"><td colspan="30" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
       tableRows += mcRows.map(r=>{
         // v37H: For PTD batches, show 0.00 (not '—') so print columns are visibly populated
         // even before scans accumulate. UP batches keep '—' since printing doesn't apply.
@@ -12131,7 +12146,7 @@ function _v41_renderReportEInnerBody(){
         <td><b>${fmtN(r._aimAGrade)}</b></td><td>${r.aimAGradePct}%</td>
         <td>${fmtN(r._aimScanOut)}</td><td>${fmtN(r._deptWip)}</td><td><b>${fmtN(r._wip)}</b></td>
         <td>${fmtPrint(r._printingTD)}</td><td>${fmtPrint(r._printRej)}</td>
-        <td>${fmtPrint(r._piInspect)}</td><td>${fmtPrint(r._piSalRem)}</td><td><b>${r._postPtdL==null?'—':fmtN(r._postPtdL)}</b></td><td><b>${r._postPtdPct==null?'—':r._postPtdPct.toFixed(1)+'%'}</b></td>
+        <td>${fmtPrint(r._piInspect)}</td><td>${fmtPrint(r._piSalRem)}</td><td><b>${r.printAGradePct==='—'?'—':r.printAGradePct+'%'}</b></td>
         <td>${fmtN(r._packingUP)}</td><td>${fmtN(r._packingPTD)}</td>
         <td><b>${fmtN(r._dispatch)}</b></td>
       </tr>`;}).join('');
@@ -12141,7 +12156,7 @@ function _v41_renderReportEInnerBody(){
     // Floor subtotal row
     tableRows += buildSubtotalRow(flRows, `${fl} FLOOR TOTAL`, 'background:#c8e6c9;color:#1a3a2e;font-weight:800;font-size:13px');
   });
-  if (!tableRows) tableRows = '<tr><td colspan="31" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
+  if (!tableRows) tableRows = '<tr><td colspan="30" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
 
   // Build grand totals row — white text explicitly on every cell
   const sum = k => allFloorRows.reduce((a,r)=>a+(r['_'+k]||0),0);
@@ -12168,11 +12183,10 @@ function _v41_renderReportEInnerBody(){
   const _postPrintNum    = _ptdAimOut - _ptdPrintSal - _ptdPrintRem;
   const _postPiNum       = _ptdAimOut - _ptdPrintSal - _ptdPrintRem - _ptdPiSal - _ptdPiRem;
   // v45U #4: grand-total Post Printing % = Σ ag / Σ inspected over every row — equals Report D.
-  // v47H (confirmed by Ishan): grand-total Post-PTD A-Grade % = Σ Post-PTD (L) ÷ Σ (AIM A-Grade + AIM
-  // Salvage) over PRINTED rows — same scan-based basis as per-row and subtotals.
-  const _postPtdLTot   = _ptdAll.reduce((a,r)=>a+(r._postPtdL||0),0);
-  const _postPtdDenTot = _ptdAll.reduce((a,r)=>a+(r._postPtdDen||0),0);
-  const printPctTotal = _postPtdDenTot>0 ? Math.max(0, _postPtdLTot/_postPtdDenTot*100).toFixed(1)+'%' : '—';
+  // v47H (confirmed by Ishan): grand-total Post-Printing A-Grade % = Σ _agNum ÷ Σ _agDen — same blend
+  // basis as the per-row and subtotal figures.
+  const _agNumTot = sum('agNum'), _agDenTot = sum('agDen');
+  const printPctTotal = _agDenTot>0 ? Math.max(0, _agNumTot/_agDenTot*100).toFixed(1)+'%' : '—';
   const piPctTotal    = _ptdAimInsp>0 ? Math.max(0, _postPiNum   /_ptdAimInsp*100).toFixed(1)+'%' : '—';
   const totalsRow = allFloorRows.length ? `<tr id="grand-total-row" style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
     <td colspan="9" style="text-align:right;padding-right:8px;color:#f0c060;letter-spacing:.5px">GRAND TOTAL (${allFloorRows.length} batches)</td>
@@ -12182,7 +12196,7 @@ function _v41_renderReportEInnerBody(){
     <td style="color:#fff"><b>${fmtN(sum('aimAGrade'))}</b></td><td style="color:#f0c060">${sum('aimInspNew')>0?(sum('aimAGrade')/sum('aimInspNew')*100).toFixed(1)+'%':'—'}</td>
     <td style="color:#fff">${fmtN(sum('aimScanOut'))}</td><td style="color:#fff">${fmtN(sum('deptWip'))}</td><td style="color:#fff"><b>${fmtN(sum('wip'))}</b></td>
     <td style="color:#fff">${fmtN(totalPrintOut)}</td><td style="color:#fff">${fmtN(sum('printRej'))}</td>
-    <td style="color:#fff">${fmtN(totalPiOut)}</td><td style="color:#fff">${fmtN(sum('piSalRem'))}</td><td style="color:#fff"><b>${fmtN(_postPtdLTot)}</b></td><td style="color:#f0c060"><b>${printPctTotal}</b></td>
+    <td style="color:#fff">${fmtN(totalPiOut)}</td><td style="color:#fff">${fmtN(sum('piSalRem'))}</td><td style="color:#f0c060"><b>${printPctTotal}</b></td>
     <td style="color:#fff">${fmtN(sum('packingUP'))}</td><td style="color:#fff">${fmtN(sum('packingPTD'))}</td>
     <td style="color:#fff"><b>${fmtN(sum('dispatch'))}</b></td>
   </tr>` : '';
@@ -12266,7 +12280,7 @@ function _v41_renderReportEInnerBody(){
       <th>AIM A-Grade (L)</th><th>AIM %</th>
       <th>Scan Out (L)</th><th>Dept WIP (L)</th><th>Total WIP (L)</th>
       <th>Print TD (L)</th><th>Print Rej (L)</th>
-      <th>PI Inspect (L)</th><th>PI Sal/Rem (L)</th><th>Post PTD A-Grade (L)</th><th>Post Printing A-Grade %</th>
+      <th>PI Inspect (L)</th><th>PI Sal/Rem (L)</th><th>Post Printing A-Grade %</th>
       <th>Pack UNPTD (L)</th><th>Pack PTD (L)</th><th>Dispatch (L)</th>
     </tr>
   </thead>
@@ -14650,23 +14664,19 @@ function exportReportE(){
         const postPrintNumEx      = aimOut - printW.salvage - printW.remelt;
         const postPiNumEx         = aimOut - printW.salvage - printW.remelt - piW.salvage - piW.remelt;
         // v45U #4: export mirrors the render — Report D's building block, all batches
-        const printAGradePctEx = ag.inspected > 0 ? Math.max(0, ag.pct) : null;
+        const printAGradePctEx = ag.inspected > 0 ? Math.max(0, ag.pct) : null;  // v47H: = Post-Printing target % (ag.pct)
         const piAGradePctEx    = null; // column removed v45T
-        // v47H (confirmed by Ishan): scan-based Post-PTD A-Grade — base AIM A-Grade (Scan-In − Remelt);
-        // subtract tracking printing + PI wastage; % over (AIM A-Grade + AIM Salvage). Printed only.
-        const _postPtdLEx   = b.isPrinted ? Math.max(0, aimAGradeEx - printW.total - piW.total) : null;
-        const _postPtdDenEx = aimAGradeEx + aimW.salvage;
-        const _postPtdPctEx = (b.isPrinted && _postPtdDenEx > 0) ? Math.max(0, _postPtdLEx / _postPtdDenEx * 100) : null;
+        // v47H (confirmed by Ishan): Printing Rejection = DPL cumulative salvage % × Print-TD.
+        const _printRejDPLEx = printOut * (((window._printSalvagePct && window._printSalvagePct[(b.batchNumber||'').toUpperCase()]) || 0)/100);
         summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,
           'PLANNED QUANTITY (lac)':_xn(b.qty),'TOTAL PRODUCTION (lac)':_xn(grossProd),
           'AIM SALVAGE':_xn(aimW.salvage),'AIM REMELT':_xn(aimW.remelt),'TOTAL WASTE (lac)':_xn(aimW.total),
           'AVAIL TO SCAN IN (lac)':_xn(availScanInEx),'SCAN IN (lac)':_xn(aimScanInEx),'UNSCANNED WIP (lac)':_xn(unscannedWipEx),
           'AIM A-GRADE (lac)':_xn(aimAGradeEx),'AIM %':_xn(aimPctEx,2),
           'SCAN OUT (lac)':_xn(aimScanOutEx),'DEPT WIP (lac)':_xn(deptWipEx),'TOTAL WIP (lac)':_xn(wip),
-          'PRINT TD (lac)':_xn(printOut),'PRINT REJ (lac)':_xn(printW.total),
+          'PRINT TD (lac)':_xn(printOut),'PRINT REJ (lac)':_xn(_printRejDPLEx),
           'PI INSPECT (lac)':_xn(piOut),'PI SAL/REM (lac)':_xn(piW.total),
-          'POST PTD A-GRADE (lac)': (_postPtdLEx != null) ? _xn(_postPtdLEx) : '—',
-          'POST PRINTING A-GRADE %': (_postPtdPctEx != null) ? _xn(_postPtdPctEx,2) : '—',
+          'POST PRINTING A-GRADE %': (printAGradePctEx != null) ? _xn(printAGradePctEx,2) : '—',
           'PACKING UNPTD (lac)':_xn(!b.isPrinted?packQty:0),
           'PACKING PTD (lac)':_xn(b.isPrinted?packQty:0),
           'DISPATCH (lac)':_xn(_v40_dispatchedLakhs(b.batchNumber, b.size))});
@@ -14701,12 +14711,10 @@ function exportReportE(){
         const postPiNumMc     = aimOutLac - printW.salvage - printW.remelt - piW.salvage - piW.remelt;
         // v45U #4: per-machine sheet mirrors the render — Report D's building block
         const _agMc = _v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
-        const printAGradePctEx = _agMc.inspected > 0 ? Math.max(0, _agMc.pct) : null;
+        const printAGradePctEx = _agMc.inspected > 0 ? Math.max(0, _agMc.pct) : null;  // v47H: = Post-Printing target % (ag.pct)
         const piAGradePctEx    = null; // column removed v45T
-        // v47H (confirmed by Ishan): scan-based Post-PTD A-Grade (base = AIM A-Grade Scan-In − Remelt).
-        const _postPtdLMc   = b.isPrinted ? Math.max(0, aimAGradeMc - printW.total - piW.total) : null;
-        const _postPtdDenMc = aimAGradeMc + aimW.salvage;
-        const _postPtdPctMc = (b.isPrinted && _postPtdDenMc > 0) ? Math.max(0, _postPtdLMc / _postPtdDenMc * 100) : null;
+        // v47H (confirmed by Ishan): Printing Rejection = DPL cumulative salvage % × Print-TD.
+        const _printRejDPLMc = b.isPrinted ? (printOutLac * (((window._printSalvagePct && window._printSalvagePct[(b.batchNumber||'').toUpperCase()]) || 0)/100)) : 0;
         const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
         const packOutEx = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
         const packOutLac = _scanLakhs(b.batchNumber,'packing','in',b.size);  // v47G: per-box label sum
@@ -14717,11 +14725,10 @@ function exportReportE(){
           'AIM SALVAGE':_xn(aimW.salvage),
           'AIM REMELT':_xn(aimW.remelt),
           'PRINT TD (lac)': b.isPrinted ? _xn(printOutLac) : '—',
-          'PRINT REJ (lac)': b.isPrinted ? _xn(printW.salvage + printW.remelt) : '—',
-          'PI OUT (lac)': b.isPrinted ? _xn(piOutLac) : '—',
+          'PRINT REJ (lac)': b.isPrinted ? _xn(_printRejDPLMc) : '—',
+          'PI SCAN OUT (lac)': b.isPrinted ? _xn(piOutLac) : '—',
           'PI SAL/REM (lac)': b.isPrinted ? _xn(piW.salvage + piW.remelt) : '—',
-          'POST PTD A GRADE (lac)': (_postPtdLMc != null) ? _xn(_postPtdLMc) : '—',
-          'POST PRINTING A-GRADE %': (_postPtdPctMc != null) ? _xn(_postPtdPctMc, 2) : '—',
+          'POST PRINTING A-GRADE %': (printAGradePctEx != null) ? _xn(printAGradePctEx, 2) : '—',
           'PACKING (lac)': _xn(packOutLac),
           'DISPATCH (lac)':_xn(_v40_dispatchedLakhs(b.batchNumber, b.size))};
       });
