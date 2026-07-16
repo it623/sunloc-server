@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47G';
+const APP_BUILD = 'v47H';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -16552,6 +16552,33 @@ app.use((err, req, res, next) => {
   if (!res.headersSent) { try { res.status(500).json({ ok:false, error:'server error' }); } catch(_e) {} }
 });
 
+// v47H (confirmed by Ishan): repair the 'printed' flag. A box cannot be scanned onto the line without
+// its label being physically printed, so any non-recon label that HAS a scan yet is still printed=0 was
+// printed and simply never flagged (its in-app print action never persisted printed=1). This left Label
+// Generation showing PRT 0 for fully-run batches (e.g. 26ZC092: 40 of 41 boxes scanned, 0 flagged).
+// Idempotent + safe: only upgrades printed 0→1 for labels that have real scans, never the reverse — a
+// no-op once healed. The pg sync upsert already guards printed with GREATEST(...), so a later stale
+// client push cannot undo this. Runs every boot after tables exist.
+async function _v47h_repairPrintedFlag() {
+  const sql = `
+    UPDATE tracking_labels
+       SET printed = 1,
+           printed_at = COALESCE(printed_at,
+                                 (SELECT MIN(s.ts) FROM tracking_scans s WHERE s.label_id = tracking_labels.id))
+     WHERE tracking_labels.printed = 0
+       AND EXISTS (SELECT 1 FROM tracking_scans s
+                    WHERE s.label_id = tracking_labels.id AND s.label_id NOT LIKE 'recon-%')`;
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(sql);
+      if (r.rowCount) console.log(`[v47H] printed-flag repair: ${r.rowCount} scanned label(s) marked printed`);
+    } else if (db) {
+      const info = db.prepare(sql).run();
+      if (info.changes) console.log(`[v47H] printed-flag repair: ${info.changes} scanned label(s) marked printed`);
+    }
+  } catch (e) { console.warn('[v47H] printed-flag repair failed:', e?.message); }
+}
+
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
   console.log(`[Sunloc] DB: ${DB_PATH}`);
@@ -16560,6 +16587,7 @@ app.listen(PORT, () => {
   // the big ensurePostgresTables() aborts partway through.
   ensureCriticalPostgresTables().then(() => ensurePostgresTables()).then(()=>{
     _consolidatePlanningStateRows().catch(e => console.warn('[v46D] consolidation boot invocation failed:', e?.message)); // v46D: collapse planning_state to single canonical row
+    _v47h_repairPrintedFlag().catch(e => console.warn('[v47H] printed-flag repair boot invocation failed:', e?.message)); // v47H: mark scanned-but-unflagged labels printed
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion

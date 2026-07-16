@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47G</title>
+<title>Sunloc Tracking Suite v1.0 · build v47H</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47G</p>
+      <p>Tracking Suite v1.0 · build v47H</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47G</p>
+      <p>Tracking Suite v1.0 · build v47H</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3010,16 +3010,22 @@ function getBatchAGrade(batchNo, stage, opts){
     // remelt = 0; PI salvage/remelt stay from Tracking (PI data is not in Planning). Net therefore
     // = AIM Out − DPL printing salvage − Tracking PI wastage. (stages/WIP/totals below are left
     // tracking-sourced to avoid touching the frozen WIP figures — see handoff note.)
-    const _agPrintSalPct     = (window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0;
-    const _agPrintSalvageDPL = aimOut * (_agPrintSalPct/100);
-    const downstreamWastage = _agPrintSalvageDPL + 0 + wPI.salvage + wPI.remelt;
-    const netAGrade = Math.max(0, aimOut - downstreamWastage);
+    // v47H (confirmed by Ishan): Post-PTD A-Grade is SCAN-BASED and aligned across Reports D & E. Base =
+    // AIM A-Grade (Scan-In − AIM Remelt); subtract printing + PI wastage from Tracking; denominator =
+    // AIM A-Grade + AIM Salvage. Replaces the earlier Daily-Printing-Log salvage derivation (AIM Out ×
+    // DPL%), which made Report E read 90.9% where scan data gives 94.1%. aGrade/inspected/pct are kept
+    // mutually consistent so any Σ-aGrade / Σ-inspected aggregate stays correct. 26ZD104:
+    // (52.5 − 0.95 − 0.10) ÷ (52.5 + 2.2) = 51.45 ÷ 54.7 = 94.1%.
+    const aimInAG           = _scanLakhs(batchNo,'aim','in', batch.size);
+    const aimAGradeBase     = Math.max(0, aimInAG - wAIM.remelt);
+    const netAGrade         = Math.max(0, aimAGradeBase - wPrint.total - wPI.total);
+    const _postPtdInspected = aimAGradeBase + wAIM.salvage;
     const totalSalvage = wAIM.salvage + wPrint.salvage + wPI.salvage;
     const totalRemelt  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
     return {
-      aimIn: aimOut, inspected: aimInspected, aGrade: netAGrade, wip: printWIP + piWIP,
+      aimIn: aimOut, inspected: _postPtdInspected, aGrade: netAGrade, wip: printWIP + piWIP,
       salvage: totalSalvage, remelt: totalRemelt,
-      pct: aimInspected>0 ? (netAGrade/aimInspected*100) : 0,
+      pct: _postPtdInspected>0 ? (netAGrade/_postPtdInspected*100) : 0,
       stages: {
         aim:   { out:aimOut,   wastage:wAIM.total,   inspected:aimInspected,   pct:aimInspected>0?(aimOut/aimInspected*100):0 },
         print: { out:printOut, wastage:wPrint.total,  inspected:printInspected, pct:printInspected>0?(Math.max(0,printInspected-wPrint.total)/printInspected*100):0 }, // v45ZH: stage yield nets its own wastage — 'Print: 100%' beside a non-zero print salvage contradicted the headline post-print %
@@ -3139,16 +3145,19 @@ function _v41_getBatchAGradeMonth(batchNo, stage, md){
     // v44L: same Option-1 alignment as getBatchAGrade — printing salvage from the Daily Printing
     // Log (window._printSalvagePct × AIM Out), printing remelt 0; PI salvage/remelt from Tracking.
     // Note: the DPL % is whole-batch cumulative (matches the month figure for single-month batches).
-    const _agPrintSalPct     = (window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0;
-    const _agPrintSalvageDPL = aimOut * (_agPrintSalPct/100);
-    const downstreamWastage = _agPrintSalvageDPL + 0 + wI.salvage + wI.remelt;
-    const netAGrade = Math.max(0, aimOut - downstreamWastage);
+    // v47H (confirmed by Ishan): scan-based Post-PTD A-Grade — month-windowed twin of the cumulative
+    // change. Base = AIM A-Grade (Scan-In − AIM Remelt); subtract printing + PI wastage from Tracking;
+    // denominator = AIM A-Grade + AIM Salvage. aGrade/inspected/pct kept mutually consistent.
+    const aimInAG           = (aim.inRealQty || 0) + aim.inReconQty;   // Scan-In
+    const aimAGradeBase     = Math.max(0, aimInAG - wA.remelt);
+    const netAGrade         = Math.max(0, aimAGradeBase - (wP.salvage + wP.remelt) - (wI.salvage + wI.remelt));
+    const _postPtdInspected = aimAGradeBase + wA.salvage;
     const totalSalvage = wA.salvage + wP.salvage + wI.salvage;
     const totalRemelt  = wA.remelt  + wP.remelt  + wI.remelt;
     return {
-      inspected: aimInspected, aGrade: netAGrade, wip:0,
+      inspected: _postPtdInspected, aGrade: netAGrade, wip:0,
       salvage: totalSalvage, remelt: totalRemelt,
-      pct: aimInspected>0 ? (netAGrade/aimInspected*100) : 0,
+      pct: _postPtdInspected>0 ? (netAGrade/_postPtdInspected*100) : 0,
       crossMonth: !!md.crossMonth[batchNo],
       stages: {
         aim:   { out:aimOut,   wastage:wA.salvage+wA.remelt, inspected:aimInspected,   pct:aimInspected>0?(aimOut/aimInspected*100):0 },
@@ -9039,8 +9048,9 @@ function renderBatchCard(batch){
   const std=batch.isPrinted?3:2;
   const dispDate=calcDispatchDate(batch);
   const ag=_v41_agradeFor(batchNo,batch.isPrinted?'printed':'unprinted');
-  const labels=getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l)); // v45ZH: production boxes only
+  const labels=getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && !l.isOrange); // v45ZH: production boxes only. v47H (confirmed by Ishan): exclude orange rework labels — they are counted separately, not merged into the white-box sequence (also aligns totalBoxes with Label Gen GEN, which already excludes orange).
   const _hasSpec45=getLabelsByBatch(batchNo).some(l=>_isSpecimenLabel(l));
+  const _orangeCount45=getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && l.isOrange && !l.voided).length; // v47H: separate Orange Rework tally
   const totalBoxes=labels.filter(l=>!l.voided).length; // v45ZH: matches Label Gen's GEN count
   // v45Y: surface duplicate count on the card header (same rule as the box-level DUP flags).
   const _cardDup45y = _dupLabelIds(labels).size; // v45ZE: same display-id rule as the detail table
@@ -9095,7 +9105,7 @@ function renderBatchCard(batch){
     </div>
     <div class="flow-steps">${flowSteps}</div>
     <div class="flex items-center gap-12 mt-8">
-      <div class="text-sm text-muted">Labels: <strong>${totalBoxes}</strong>${_hasSpec45?` <span style="color:var(--text3)" title="Plus the QA specimen (BPR master) label — not a production box">+ spec</span>`:''}${_cardDup45y>0?` <span style="color:#ff4060;font-weight:700" title="Duplicate label numbers — see Details">(${_cardDup45y} dup)</span>`:''}</div>
+      <div class="text-sm text-muted">Labels: <strong>${totalBoxes}</strong>${_hasSpec45?` <span style="color:var(--text3)" title="Plus the QA specimen (BPR master) label — not a production box">+ spec</span>`:''}${_orangeCount45>0?` <span style="color:var(--orange);font-weight:700" title="Orange rework labels — counted separately, not part of the white-box sequence">+ ${_orangeCount45} orange</span>`:''}${_cardDup45y>0?` <span style="color:#ff4060;font-weight:700" title="Duplicate label numbers — see Details">(${_cardDup45y} dup)</span>`:''}</div>
       <div class="text-sm text-muted">Packed: <strong>${packedOut}</strong></div>
       <div class="text-sm text-muted">Dispatched: <strong>${dispatched}</strong></div>
       <div style="flex:1"><div class="progress"><div class="progress-bar ${dispatchPct>=100?'green':'blue'}" style="width:${Math.min(100,dispatchPct)}%"></div></div></div>
@@ -9117,7 +9127,8 @@ function renderBatchDetail(batch){
   const batchNo=batch.batchNumber;
   // v45ZH (confirmed by Ishan): the SPEC/BPR specimen (label #0) is not a production box — it
   // rendered as box "0" in the detail table and inflated tile counts vs Label Gen (28 vs 27).
-  const labels=getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l)).sort((a,b)=>a.labelNumber-b.labelNumber);
+  const labels=getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && !l.isOrange).sort((a,b)=>a.labelNumber-b.labelNumber); // v47H (confirmed by Ishan): white production boxes only — orange rework is tallied separately, not interleaved into this sequence
+  const _orangeList45=getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && l.isOrange && !l.voided); // v47H: separate orange rework set
   const flow=getBatchFlow(batch);
 
   // v40 P18.14: Summary counts per stage, including new at_dispatch/dispatched buckets
@@ -9148,6 +9159,7 @@ function renderBatchDetail(batch){
     }).join('')}
     ${atDispatchCount>0?`<span style="background:rgba(245,158,11,0.12);border:1px solid rgba(245,158,11,0.3);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:#92400e" title="Packed-out, awaiting truck">At Dispatch: <strong>${atDispatchCount}</strong></span>`:''}
     ${dispatchedCount>0?`<span style="background:rgba(0,230,118,0.1);border:1px solid rgba(0,230,118,0.3);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:var(--accent2)" title="Physically shipped">Dispatched: <strong>${dispatchedCount}</strong></span>`:''}
+    ${_orangeList45.length>0?`<span style="background:rgba(234,88,12,0.12);border:1px solid var(--orange);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:var(--orange)" title="Orange rework labels for this batch — counted separately from the white boxes above">🟠 Orange Rework: <strong>${_orangeList45.length}</strong></span>`:''}
     ${_dupIds45y.size>0?`<span style="background:rgba(255,64,96,0.1);border:1px solid rgba(255,64,96,0.35);border-radius:4px;padding:4px 10px;font-size:12px;font-family:var(--mono);color:#ff4060" title="Same label number generated more than once (non-voided). ${labels.filter(l=>!l.voided).length - _dupIds45y.size} unique of ${labels.filter(l=>!l.voided).length}">⚠ Duplicates: <strong>${_dupIds45y.size}</strong></span>`:''}
   </div>
   <div class="tbl-wrap"><table>
@@ -11970,6 +11982,13 @@ function _v41_renderReportEInnerBody(){
     const _legLakhs = _scanLakhs(b.batchNumber,'dispatch','out',b.size);  // v47G: per-box label sum
     const _p18 = state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0); // v45E: date-bounding handled by the as-of state swap (cumulative-through-date)
     const disp = _legLakhs + _p18;
+    // v47H (confirmed by Ishan): Post-PTD A-Grade — SCAN-BASED. Base = AIM A-Grade (Scan-In − AIM Remelt);
+    // subtract printing + PI wastage from TRACKING (printW.total, piW.total), NOT the Daily-Printing-Log %.
+    // % over (AIM A-Grade + AIM Salvage). Printed batches only; UP batches show "—". 26ZD104:
+    // (52.5 − 0.95 − 0.10) ÷ (52.5 + 2.2) = 51.45 ÷ 54.7 = 94.1%, 51.45L.
+    const _postPtdDen45h = b.isPrinted ? (aimAGradeNew + aimW.salvage) : null;
+    const _postPtdL45h   = b.isPrinted ? Math.max(0, aimAGradeNew - printW.total - piW.total) : null;
+    const _postPtdPct45h = (b.isPrinted && _postPtdDen45h > 0) ? Math.max(0, _postPtdL45h / _postPtdDen45h * 100) : null;
     rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,startDate:b.startDate||null,endDate:b.endDate||null,
       isPrinted: b.isPrinted,  // v37H: used by table render to distinguish PTD vs UP for column display
       plannedQty:b.qty||0, _plannedQty:b.qty||0,
@@ -11994,12 +12013,13 @@ function _v41_renderReportEInnerBody(){
       availUnptd:fmt(!b.isPrinted?totalAG:0),_availUnptd:!b.isPrinted?totalAG:0,
       availPrint:fmt(b.isPrinted?totalAG:0),_availPrint:b.isPrinted?totalAG:0,
       printingTD:fmt(printingTD),_printingTD:printingTD,
-      printRej:fmt(_printSalvageLakhs),_printRej:_printSalvageLakhs,
+      printRej:fmt(printW.total),_printRej:printW.total,               // v47H: scan/tracking printing salvage+remelt (was DPL-derived)
       _printSalvage: _printSalvageLakhs, _printRemelt: _printRemeltLakhs,
+      _postPtdL:_postPtdL45h, _postPtdPct:_postPtdPct45h, _postPtdDen:_postPtdDen45h,  // v47H: scan-based Post-PTD A-Grade (L) + % + denominator
       printAGradePct: _agHas ? fmt(printAGradePct,1) : '—', _printAGradePct: printAGradePct, _aimInputTotal: aimInputTotal,
       _agNum: totalAG, _agDen: ag.inspected,
       piInspect:fmt(piOut),_piInspect:piOut,
-      piSalRem:fmt(piW.salvage),_piSalRem:piW.salvage,
+      piSalRem:fmt(piW.total),_piSalRem:piW.total,                     // v47H: PI salvage + remelt combined (scan/tracking)
       _piSalvage: piW.salvage, _piRemelt: piW.remelt,
       piAGradePct: b.isPrinted ? fmt(piAGradePct,1) : '—', _piAGradePct: piAGradePct,
       packingUP:fmt(packUnptd),_packingUP:packUnptd,
@@ -12058,8 +12078,11 @@ function _v41_renderReportEInnerBody(){
     const postPrintNumSum = ptdAimOut - printSalSum - printRemSum;
     const postPiNumSum    = ptdAimOut - printSalSum - printRemSum - piSalSum - piRemSum;
     // v45U #4: group Post Printing % = Σ ag.aGrade / Σ ag.inspected — Report D's aggregate exactly.
-    const _agNumSum = sumRows(arr,'agNum'), _agDenSum = sumRows(arr,'agDen');
-    const printPct = _agDenSum > 0 ? Math.max(0, _agNumSum / _agDenSum * 100).toFixed(1) + '%' : '—';
+    // v47H (confirmed by Ishan): subtotal Post-PTD A-Grade % = Σ Post-PTD A-Grade (L) ÷ Σ (AIM A-Grade
+    // + AIM Salvage) over PRINTED rows only — matches the per-row scan-based figure.
+    const _postPtdLSum   = ptdRows.reduce((a,r)=>a+(r._postPtdL||0),0);
+    const _postPtdDenSum = ptdRows.reduce((a,r)=>a+(r._postPtdDen||0),0);
+    const printPct = _postPtdDenSum > 0 ? Math.max(0, _postPtdLSum / _postPtdDenSum * 100).toFixed(1) + '%' : '—';
     const piPct    = ptdAimInsp > 0 ? Math.max(0, postPiNumSum    / ptdAimInsp * 100).toFixed(1) + '%' : '—';
     const printOutSum = sumRows(arr,'printingTD');
     const piOutSum    = sumRows(arr,'piInspect');
@@ -12071,9 +12094,8 @@ function _v41_renderReportEInnerBody(){
       <td>${fmtN(sumRows(arr,'availScanIn'))}</td><td>${fmtN(sumRows(arr,'aimScanIn'))}</td><td>${fmtN(sumRows(arr,'unscannedWip'))}</td>
       <td><b>${fmtN(aimAGr)}</b></td><td>${aimPct}</td>
       <td>${fmtN(sumRows(arr,'aimScanOut'))}</td><td>${fmtN(sumRows(arr,'deptWip'))}</td><td><b>${fmtN(sumRows(arr,'wip'))}</b></td>
-      <td>${fmtN(sumRows(arr,'availUnptd'))}</td><td>${fmtN(sumRows(arr,'availPrint'))}</td>
       <td>${fmtN(printOutSum)}</td><td>${fmtN(sumRows(arr,'printRej'))}</td>
-      <td>${fmtN(piOutSum)}</td><td>${fmtN(sumRows(arr,'piSalRem'))}</td><td><b>${printPct}</b></td>
+      <td>${fmtN(piOutSum)}</td><td>${fmtN(sumRows(arr,'piSalRem'))}</td><td><b>${fmtN(_postPtdLSum)}</b></td><td><b>${printPct}</b></td>
       <td>${fmtN(sumRows(arr,'packingUP'))}</td><td>${fmtN(sumRows(arr,'packingPTD'))}</td>
       <td><b>${fmtN(sumRows(arr,'dispatch'))}</b></td>
     </tr>`;
@@ -12088,11 +12110,11 @@ function _v41_renderReportEInnerBody(){
     allFloorRows.push(...flRows);
     const machines = [...new Set(flRows.map(r=>r.machine))];
     // Floor header
-    tableRows += `<tr class="grp-hdr"><td colspan="32" class="sticky-col" style="left:0;background:#d4e8d8;color:#1a3a2e;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:1px">FLOOR: ${fl}</td></tr>`;
+    tableRows += `<tr class="grp-hdr"><td colspan="31" class="sticky-col" style="left:0;background:#d4e8d8;color:#1a3a2e;padding:5px 10px;font-size:11px;font-weight:800;letter-spacing:1px">FLOOR: ${fl}</td></tr>`;
     machines.forEach(mc => {
       const mcRows = flRows.filter(r=>r.machine===mc);
       // Machine header
-      tableRows += `<tr class="grp-hdr"><td colspan="32" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
+      tableRows += `<tr class="grp-hdr"><td colspan="31" class="sticky-col" style="left:0">MACHINE: ${mc} &nbsp;—&nbsp; ${mcRows.length} batch${mcRows.length!==1?'es':''}</td></tr>`;
       tableRows += mcRows.map(r=>{
         // v37H: For PTD batches, show 0.00 (not '—') so print columns are visibly populated
         // even before scans accumulate. UP batches keep '—' since printing doesn't apply.
@@ -12108,9 +12130,8 @@ function _v41_renderReportEInnerBody(){
         <td>${fmtN(r._availScanIn)}</td><td>${fmtN(r._aimScanIn)}</td><td>${fmtN(r._unscannedWip)}</td>
         <td><b>${fmtN(r._aimAGrade)}</b></td><td>${r.aimAGradePct}%</td>
         <td>${fmtN(r._aimScanOut)}</td><td>${fmtN(r._deptWip)}</td><td><b>${fmtN(r._wip)}</b></td>
-        <td>${fmtN(r._availUnptd)}</td><td>${fmtN(r._availPrint)}</td>
         <td>${fmtPrint(r._printingTD)}</td><td>${fmtPrint(r._printRej)}</td>
-        <td>${fmtPrint(r._piInspect)}</td><td>${fmtPrint(r._piSalRem)}</td><td><b>${r.printAGradePct==='—'?'—':r.printAGradePct+'%'}</b></td>
+        <td>${fmtPrint(r._piInspect)}</td><td>${fmtPrint(r._piSalRem)}</td><td><b>${r._postPtdL==null?'—':fmtN(r._postPtdL)}</b></td><td><b>${r._postPtdPct==null?'—':r._postPtdPct.toFixed(1)+'%'}</b></td>
         <td>${fmtN(r._packingUP)}</td><td>${fmtN(r._packingPTD)}</td>
         <td><b>${fmtN(r._dispatch)}</b></td>
       </tr>`;}).join('');
@@ -12120,7 +12141,7 @@ function _v41_renderReportEInnerBody(){
     // Floor subtotal row
     tableRows += buildSubtotalRow(flRows, `${fl} FLOOR TOTAL`, 'background:#c8e6c9;color:#1a3a2e;font-weight:800;font-size:13px');
   });
-  if (!tableRows) tableRows = '<tr><td colspan="32" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
+  if (!tableRows) tableRows = '<tr><td colspan="31" style="text-align:center;padding:20px;color:#666">No data yet</td></tr>';
 
   // Build grand totals row — white text explicitly on every cell
   const sum = k => allFloorRows.reduce((a,r)=>a+(r['_'+k]||0),0);
@@ -12147,8 +12168,11 @@ function _v41_renderReportEInnerBody(){
   const _postPrintNum    = _ptdAimOut - _ptdPrintSal - _ptdPrintRem;
   const _postPiNum       = _ptdAimOut - _ptdPrintSal - _ptdPrintRem - _ptdPiSal - _ptdPiRem;
   // v45U #4: grand-total Post Printing % = Σ ag / Σ inspected over every row — equals Report D.
-  const _agNumTot = sum('agNum'), _agDenTot = sum('agDen');
-  const printPctTotal = _agDenTot>0 ? Math.max(0, _agNumTot/_agDenTot*100).toFixed(1)+'%' : '—';
+  // v47H (confirmed by Ishan): grand-total Post-PTD A-Grade % = Σ Post-PTD (L) ÷ Σ (AIM A-Grade + AIM
+  // Salvage) over PRINTED rows — same scan-based basis as per-row and subtotals.
+  const _postPtdLTot   = _ptdAll.reduce((a,r)=>a+(r._postPtdL||0),0);
+  const _postPtdDenTot = _ptdAll.reduce((a,r)=>a+(r._postPtdDen||0),0);
+  const printPctTotal = _postPtdDenTot>0 ? Math.max(0, _postPtdLTot/_postPtdDenTot*100).toFixed(1)+'%' : '—';
   const piPctTotal    = _ptdAimInsp>0 ? Math.max(0, _postPiNum   /_ptdAimInsp*100).toFixed(1)+'%' : '—';
   const totalsRow = allFloorRows.length ? `<tr id="grand-total-row" style="background:#1a3a2e;color:#fff;font-weight:700;font-size:13px">
     <td colspan="9" style="text-align:right;padding-right:8px;color:#f0c060;letter-spacing:.5px">GRAND TOTAL (${allFloorRows.length} batches)</td>
@@ -12157,9 +12181,8 @@ function _v41_renderReportEInnerBody(){
     <td style="color:#fff">${fmtN(sum('availScanIn'))}</td><td style="color:#fff">${fmtN(sum('aimScanIn'))}</td><td style="color:#fff">${fmtN(sum('unscannedWip'))}</td>
     <td style="color:#fff"><b>${fmtN(sum('aimAGrade'))}</b></td><td style="color:#f0c060">${sum('aimInspNew')>0?(sum('aimAGrade')/sum('aimInspNew')*100).toFixed(1)+'%':'—'}</td>
     <td style="color:#fff">${fmtN(sum('aimScanOut'))}</td><td style="color:#fff">${fmtN(sum('deptWip'))}</td><td style="color:#fff"><b>${fmtN(sum('wip'))}</b></td>
-    <td style="color:#fff">${fmtN(sum('availUnptd'))}</td><td style="color:#fff">${fmtN(sum('availPrint'))}</td>
     <td style="color:#fff">${fmtN(totalPrintOut)}</td><td style="color:#fff">${fmtN(sum('printRej'))}</td>
-    <td style="color:#fff">${fmtN(totalPiOut)}</td><td style="color:#fff">${fmtN(sum('piSalRem'))}</td><td style="color:#f0c060"><b>${printPctTotal}</b></td>
+    <td style="color:#fff">${fmtN(totalPiOut)}</td><td style="color:#fff">${fmtN(sum('piSalRem'))}</td><td style="color:#fff"><b>${fmtN(_postPtdLTot)}</b></td><td style="color:#f0c060"><b>${printPctTotal}</b></td>
     <td style="color:#fff">${fmtN(sum('packingUP'))}</td><td style="color:#fff">${fmtN(sum('packingPTD'))}</td>
     <td style="color:#fff"><b>${fmtN(sum('dispatch'))}</b></td>
   </tr>` : '';
@@ -12242,9 +12265,8 @@ function _v41_renderReportEInnerBody(){
       <th>Avail to Scan In (L)</th><th>Scan In (L)</th><th>Unscanned WIP (L)</th>
       <th>AIM A-Grade (L)</th><th>AIM %</th>
       <th>Scan Out (L)</th><th>Dept WIP (L)</th><th>Total WIP (L)</th>
-      <th>Avail UNPTD (L)</th><th>Avail PTD (L)</th>
       <th>Print TD (L)</th><th>Print Rej (L)</th>
-      <th>PI Inspect (L)</th><th>PI Sal/Rem (L)</th><th>Post Printing A-Grade %</th>
+      <th>PI Inspect (L)</th><th>PI Sal/Rem (L)</th><th>Post PTD A-Grade (L)</th><th>Post Printing A-Grade %</th>
       <th>Pack UNPTD (L)</th><th>Pack PTD (L)</th><th>Dispatch (L)</th>
     </tr>
   </thead>
@@ -14630,15 +14652,21 @@ function exportReportE(){
         // v45U #4: export mirrors the render — Report D's building block, all batches
         const printAGradePctEx = ag.inspected > 0 ? Math.max(0, ag.pct) : null;
         const piAGradePctEx    = null; // column removed v45T
+        // v47H (confirmed by Ishan): scan-based Post-PTD A-Grade — base AIM A-Grade (Scan-In − Remelt);
+        // subtract tracking printing + PI wastage; % over (AIM A-Grade + AIM Salvage). Printed only.
+        const _postPtdLEx   = b.isPrinted ? Math.max(0, aimAGradeEx - printW.total - piW.total) : null;
+        const _postPtdDenEx = aimAGradeEx + aimW.salvage;
+        const _postPtdPctEx = (b.isPrinted && _postPtdDenEx > 0) ? Math.max(0, _postPtdLEx / _postPtdDenEx * 100) : null;
         summaryRows.push({'M/C NO':mc,'FLOOR':floorKey,'BATCH NO':b.batchNumber,'CUSTOMER':b.customer||'','PC CODE':b.pcCode||'','COLOUR':b.colour||'','SIZE':b.size,
           'PLANNED QUANTITY (lac)':_xn(b.qty),'TOTAL PRODUCTION (lac)':_xn(grossProd),
           'AIM SALVAGE':_xn(aimW.salvage),'AIM REMELT':_xn(aimW.remelt),'TOTAL WASTE (lac)':_xn(aimW.total),
           'AVAIL TO SCAN IN (lac)':_xn(availScanInEx),'SCAN IN (lac)':_xn(aimScanInEx),'UNSCANNED WIP (lac)':_xn(unscannedWipEx),
           'AIM A-GRADE (lac)':_xn(aimAGradeEx),'AIM %':_xn(aimPctEx,2),
           'SCAN OUT (lac)':_xn(aimScanOutEx),'DEPT WIP (lac)':_xn(deptWipEx),'TOTAL WIP (lac)':_xn(wip),
-          'PRINT TD (lac)':_xn(printOut),'PRINT REJ (lac)':_xn(printW.salvage),
-          'PI INSPECT (lac)':_xn(piOut),'PI SAL/REM (lac)':_xn(piW.salvage+piW.remelt),
-          'POST PRINTING A-GRADE %': (printAGradePctEx != null) ? _xn(printAGradePctEx,2) : '—',
+          'PRINT TD (lac)':_xn(printOut),'PRINT REJ (lac)':_xn(printW.total),
+          'PI INSPECT (lac)':_xn(piOut),'PI SAL/REM (lac)':_xn(piW.total),
+          'POST PTD A-GRADE (lac)': (_postPtdLEx != null) ? _xn(_postPtdLEx) : '—',
+          'POST PRINTING A-GRADE %': (_postPtdPctEx != null) ? _xn(_postPtdPctEx,2) : '—',
           'PACKING UNPTD (lac)':_xn(!b.isPrinted?packQty:0),
           'PACKING PTD (lac)':_xn(b.isPrinted?packQty:0),
           'DISPATCH (lac)':_xn(_v40_dispatchedLakhs(b.batchNumber, b.size))});
@@ -14675,6 +14703,10 @@ function exportReportE(){
         const _agMc = _v41_agradeFor(b.batchNumber, b.isPrinted?'printed':'unprinted');
         const printAGradePctEx = _agMc.inspected > 0 ? Math.max(0, _agMc.pct) : null;
         const piAGradePctEx    = null; // column removed v45T
+        // v47H (confirmed by Ishan): scan-based Post-PTD A-Grade (base = AIM A-Grade Scan-In − Remelt).
+        const _postPtdLMc   = b.isPrinted ? Math.max(0, aimAGradeMc - printW.total - piW.total) : null;
+        const _postPtdDenMc = aimAGradeMc + aimW.salvage;
+        const _postPtdPctMc = (b.isPrinted && _postPtdDenMc > 0) ? Math.max(0, _postPtdLMc / _postPtdDenMc * 100) : null;
         const localPackOutEx = state.scans.filter(sc=>sc.batchNumber===b.batchNumber&&sc.dept==='packing'&&sc.type==='in'&&sc._local).length;
         const packOutEx = hasScanSummary() ? (_ss(b.batchNumber,'packing').in + localPackOutEx) : state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept==='packing'&&s.type==='in').length;
         const packOutLac = _scanLakhs(b.batchNumber,'packing','in',b.size);  // v47G: per-box label sum
@@ -14688,7 +14720,8 @@ function exportReportE(){
           'PRINT REJ (lac)': b.isPrinted ? _xn(printW.salvage + printW.remelt) : '—',
           'PI OUT (lac)': b.isPrinted ? _xn(piOutLac) : '—',
           'PI SAL/REM (lac)': b.isPrinted ? _xn(piW.salvage + piW.remelt) : '—',
-          'POST PRINTING A-GRADE %': (printAGradePctEx != null) ? _xn(printAGradePctEx, 2) : '—',
+          'POST PTD A GRADE (lac)': (_postPtdLMc != null) ? _xn(_postPtdLMc) : '—',
+          'POST PRINTING A-GRADE %': (_postPtdPctMc != null) ? _xn(_postPtdPctMc, 2) : '—',
           'PACKING (lac)': _xn(packOutLac),
           'DISPATCH (lac)':_xn(_v40_dispatchedLakhs(b.batchNumber, b.size))};
       });

@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47G</p>
+      <p>Planning Suite v3.0 · build v47H</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -4559,7 +4559,7 @@ function saveOrderModal(existingId, defaultMachine) {
     document.getElementById('fo-batch')?.focus();
     return;
   }
-  const batchFormatOK = /^\d{2}[A-Z]+\d+$/.test(batchVal);
+  const batchFormatOK = /^\d{2}[A-Z]+\d+(-[A-Z])?$/.test(batchVal);  // v47H (confirmed by Ishan): allow single-letter child suffix (-A), never -A1
   if (!batchFormatOK) {
     alert(`⚠️ Checkpoint 1 Failed: Invalid Batch Number format.\n\nEntered: "${batchVal}"\n\nRequired: Start with 2 digits (year) + uppercase letters + digits\n\nValid examples: 26N013, 26ZH043, 26ZA001, 27B025\n\nNote: Must start with year digits (e.g. 26 or 27).\nNo test/dummy/random names allowed.`);
     document.getElementById('fo-batch')?.focus();
