@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47K</p>
+      <p>Planning Suite v3.0 · build v47L</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6136,10 +6136,14 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
         }
         if (r.status === 'failed') e.hasFailed = true;
         e.lastRequestStatus = r.status;
-        // v44Q PARTIAL-INVOICE: accumulate in-flight (not-yet-received) invoiced qty/boxes.
-        // 'reconciled' is skipped here — its qty is counted from the received invoice below, so
-        // counting both would double-count. 'failed' is excluded (never billed).
-        if (r.status === 'pending' || r.status === 'sent_to_sap' || r.status === 'pending_reconciliation') {
+        // v47L (confirmed by Ishan): count EVERY non-failed request's qty against its OWN batch —
+        // including 'reconciled'. Previously reconciled was skipped on the assumption its received
+        // invoice would count it, but a multi-batch invoice (stored under a joined "A, B" key) or a
+        // (now-fixed) false reconcile left the qty counted NOWHERE, so the blue Invoice button re-offered
+        // already-requested quantity (26Y058 showed 36.75L instead of 12.25L). The received-invoice loop
+        // below now adds qty only for direct-SAP invoices with NO linked request, so this never double-counts.
+        if (r.status === 'pending' || r.status === 'sent_to_sap' ||
+            r.status === 'pending_reconciliation' || r.status === 'reconciled') {
           e.invoicedQty = (e.invoicedQty || 0) + (parseFloat(r.qty_lakhs) || 0);
           e.invoicedBoxes = (e.invoicedBoxes || 0) + (parseInt(r.boxes, 10) || 0);
         }
@@ -6150,25 +6154,26 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
     if (recvJ.ok) {
       for (const r of (recvJ.invoices || [])) {
         if (!r.batch_number) continue;
-        const e = state[r.batch_number] = state[r.batch_number] || {};
-        e.hasReceived = true;
-        e.docNum = r.sap_doc_num || r.sap_invoice_no;
-        e.dispatchStatus = r.dispatch_status;
-        e.dispatchedAt = r.dispatched_at || null;
-        e.vehicleNo = r.vehicle_no || null;
-        e.invoiceId = r.id;
-        idToBatch[r.id] = r.batch_number;
-        // v44Q PARTIAL-INVOICE: accumulate actual invoiced qty/boxes from the received invoice.
-        // Fallback (decision 1): when the stored total is missing/0 (e.g. an older un-enriched
-        // SAP-direct invoice), use the linked invoice_request's qty/boxes so we don't under-count
-        // and wrongly re-offer already-invoiced quantity.
-        const _linked = reqById[r.invoice_request_id];
-        let _rq = parseFloat(r.total_qty_lakhs) || 0;
-        let _rb = parseInt(r.total_boxes, 10) || 0;
-        if (_rq <= 0 && _linked) _rq = _linked.qty;
-        if (_rb <= 0 && _linked) _rb = _linked.boxes;
-        e.invoicedQty = (e.invoicedQty || 0) + _rq;
-        e.invoicedBoxes = (e.invoicedBoxes || 0) + _rb;
+        // v47L (confirmed by Ishan): a received invoice can cover MULTIPLE batches ("26Y058, 26T080").
+        // Attribute its RECEIVED status to EACH constituent batch so each shows "📤 Invoiced" (not
+        // "⏳ Awaiting SAP Invoice") and is recognised as scannable. Quantity for a request-linked
+        // invoice was already counted from its request(s) above; only a direct-SAP invoice with NO
+        // linked request adds qty here (split across its batches), so nothing double-counts.
+        const _batches47l = String(r.batch_number).split(/[\s,]+/).map(t=>t.trim()).filter(Boolean);
+        if (!_batches47l.length) continue;
+        const _addQty = (!r.invoice_request_id) ? (parseFloat(r.total_qty_lakhs) || 0) / _batches47l.length : 0;
+        const _addBox = (!r.invoice_request_id) ? Math.round((parseInt(r.total_boxes, 10) || 0) / _batches47l.length) : 0;
+        for (const _b of _batches47l) {
+          const e = state[_b] = state[_b] || {};
+          e.hasReceived = true;
+          e.docNum = r.sap_doc_num || r.sap_invoice_no;
+          e.dispatchStatus = r.dispatch_status;
+          e.dispatchedAt = r.dispatched_at || null;
+          e.vehicleNo = r.vehicle_no || null;
+          e.invoiceId = r.id;
+          if (_addQty > 0) { e.invoicedQty = (e.invoicedQty || 0) + _addQty; e.invoicedBoxes = (e.invoicedBoxes || 0) + _addBox; }
+        }
+        idToBatch[r.id] = _batches47l[0];  // scan-session mapping keyed on the invoice's primary batch
       }
     }
     // v40 Phase 18.12: merge in active scan sessions

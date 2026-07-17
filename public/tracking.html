@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47K</title>
+<title>Sunloc Tracking Suite v1.0 · build v47L</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47K</p>
+      <p>Tracking Suite v1.0 · build v47L</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47K</p>
+      <p>Tracking Suite v1.0 · build v47L</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -7312,10 +7312,14 @@ function _v39_onBoxScanned(raw) {
   const inv = _v39_currentScanOutInvoice;
   if (!inv) return;
   const sp = _v39_scanProgress;
-  // Validate batch match
-  if (parsed.batchNumber && parsed.batchNumber !== inv.batch_number) {
+  // Validate batch match — v47L (confirmed by Ishan): a single invoice can cover MULTIPLE batches
+  // ("26Y058, 26T080"); accept a scanned box whose batch is ANY of the invoice's batches, so a
+  // multi-batch invoice dispatches in one combined scan-out. Per-line matching (PC/size, below) still
+  // routes each box to its correct invoice line, and duplicate/overflow gates still apply.
+  const _invBatches47l = String(inv.batch_number || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+  if (parsed.batchNumber && _invBatches47l.length && !_invBatches47l.includes(parsed.batchNumber)) {
     sp.mismatchCount++;
-    _v39_setMismatchMsg(`⚠️ Wrong batch! Scanned: <strong>${parsed.batchNumber}</strong> — expected: <strong>${inv.batch_number}</strong>. Box NOT counted.`);
+    _v39_setMismatchMsg(`⚠️ Wrong batch! Scanned: <strong>${parsed.batchNumber}</strong> — expected one of: <strong>${_invBatches47l.join(', ')}</strong>. Box NOT counted.`);
     return;
   }
   // Validate duplicate (same labelId or same batch+boxNumber)
@@ -7399,7 +7403,7 @@ async function _v39_saveScansToServer() {
     await fetch(serverUrl + '/api/invoice/scan-session/' + encodeURIComponent(inv.id), {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ scanned: _v39_scanProgress.scanned }),
+      body: JSON.stringify({ scanned: _v39_scanProgress.scanned, batch: inv.batch_number || '' }),
     });
   } catch (e) { console.warn('[scan-session save]', e.message); }
 }
@@ -7476,7 +7480,9 @@ function _v39_refreshScanOutProgress() {
 
 async function _v39_restoreScansFromServer(invoiceId) {
   try {
-    const r = await fetch(serverUrl + '/api/invoice/scan-session/' + encodeURIComponent(invoiceId), { signal: AbortSignal.timeout(5000) });
+    const _inv47l = _v39_currentScanOutInvoice;
+    const _bq47l = (_inv47l && _inv47l.batch_number) ? ('?batch=' + encodeURIComponent(_inv47l.batch_number)) : '';  // v47L: batch fallback if invoice id changed
+    const r = await fetch(serverUrl + '/api/invoice/scan-session/' + encodeURIComponent(invoiceId) + _bq47l, { signal: AbortSignal.timeout(5000) });
     const j = await r.json();
     if (j.ok && j.scanned && j.scanned.length > 0) {
       _v39_scanProgress.scanned = j.scanned;

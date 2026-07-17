@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47K';
+const APP_BUILD = 'v47L';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1144,6 +1144,14 @@ const MIGRATIONS = [
       scanned_json TEXT NOT NULL DEFAULT '[]',
       saved_at TEXT DEFAULT (datetime('now'))
     );`
+  },
+  {
+    // v47L (confirmed by Ishan): key the scan session by BATCH too, so a re-pull that changes the
+    // invoice id can't strand an in-progress scan-out (the dispatch manager re-opens and the restore
+    // falls back to the batch's newest session instead of showing the full count again).
+    name: 'invoice_scan_sessions_batch',
+    sql: `ALTER TABLE invoice_scan_sessions ADD COLUMN batch_number TEXT;
+          CREATE INDEX IF NOT EXISTS idx_iss_batch ON invoice_scan_sessions(batch_number);`
   },
   {
     // v44R Phase 2: dispatched-box aggregation. tracking_dispatch_actuals already stores
@@ -2445,6 +2453,8 @@ async function ensurePostgresTables() {
         scanned_json TEXT NOT NULL DEFAULT '[]',
         saved_at TEXT DEFAULT NOW()::TEXT
       )`);
+      try { await pgPool.query(`ALTER TABLE invoice_scan_sessions ADD COLUMN IF NOT EXISTS batch_number TEXT`); } catch {}
+      try { await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iss_batch ON invoice_scan_sessions(batch_number)`); } catch {}
     } catch (e) { console.warn('[v44Q PG] invoice_scan_sessions:', e.message); }
 
     // v44R Phase 2: dispatched_boxes on tracking_dispatch_actuals (idempotent)
@@ -3688,6 +3698,19 @@ async function _doRefreshSapInvoices() {
               // Mark all matching pending_reconciliation rows as reconciled (first-come-first-served).
               // Note: in practice these should already have been matched via batchUdf, but this is the safety net.
               for (const pr of pendingReqsFull) {
+                // v47L (confirmed by Ishan): QUANTITY-GATE this safety-net. Previously EVERY pending request
+                // sharing this Sales Order was flipped to 'reconciled' the moment ANY invoice on the SO
+                // arrived — so batches that share a Sales Order with an invoiced batch (26ZD104/26ZE101)
+                // were falsely reconciled with no invoice of their own, vanishing from Pending Reconciliation
+                // and freeing their quantity. Now the safety-net reconciles only a request whose quantity the
+                // arriving invoice actually covers (within the recon band), at most ONE per invoice; every
+                // other request stays pending_reconciliation and visible to the SAP user.
+                const _prQtyL47l  = parseFloat(pr.qty_lakhs) || 0;
+                const _invQtyL47l = parseFloat(totalQtyLakhs) || 0;
+                if (!(_invQtyL47l > 0 && _prQtyL47l >= _invQtyL47l * _RECON_UNDER && _prQtyL47l <= _invQtyL47l * _RECON_OVER)) {
+                  console.log(`[v47L SO-gate] SO ${soDocEntry}: request ${pr.id} (${_prQtyL47l}L) left PENDING — invoice DocNum ${inv.DocNum} covers ${_invQtyL47l}L (outside recon band)`);
+                  continue;
+                }
                 if (pgPool) {
                   await pgPool.query(
                     `UPDATE invoice_requests SET status='reconciled', sap_response_doc_num=$1, sap_response_doc_entry=$2, reconciled_at=NOW()::TEXT, reconciled_with_invoice_id=$3, updated_at=NOW()::TEXT WHERE id=$4 AND status='pending_reconciliation'`,
@@ -3715,6 +3738,7 @@ async function _doRefreshSapInvoices() {
                   ).run(pr.id, pr.batch_number || null, recId);
                 }
                 console.log(`[v41r] Reconciled invoice_request ${pr.id} via SO BaseEntry=${soDocEntry} + promoted invoice ${recId} direct_sap→sunloc`);
+                break;  // v47L: one invoice reconciles at most the single request it covers — the rest stay pending
               }
             } catch (e) { console.warn('[v41 P19.3] SO reconciliation error:', e.message); }
 
@@ -5837,13 +5861,20 @@ app.delete('/api/invoice/truck-scan-session/:truckNumber', async (req, res) => {
 
 app.get('/api/invoice/scan-session/:invoiceId', async (req, res) => {
   const id = req.params.invoiceId;
+  const batch = (req.query.batch || '').toString().trim();  // v47L: batch fallback (id-churn resilient)
   try {
     let row;
     if (pgPool) {
       const r = await pgPool.query(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE invoice_id=$1`, [id]);
       row = r.rows[0];
+      if (!row && batch) {
+        // v47L: the invoice id may have changed on a re-pull — restore the batch's most-recent session
+        const rb = await pgPool.query(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE batch_number=$1 ORDER BY saved_at DESC LIMIT 1`, [batch]);
+        row = rb.rows[0];
+      }
     } else {
       row = db.prepare(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE invoice_id=?`).get(id);
+      if (!row && batch) row = db.prepare(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE batch_number=? ORDER BY saved_at DESC LIMIT 1`).get(batch);
     }
     if (!row) return res.json({ ok: true, scanned: [] });
     const scanned = JSON.parse(row.scanned_json || '[]');
@@ -5853,19 +5884,20 @@ app.get('/api/invoice/scan-session/:invoiceId', async (req, res) => {
 
 app.put('/api/invoice/scan-session/:invoiceId', async (req, res) => {
   const id = req.params.invoiceId;
-  const { scanned } = req.body || {};
+  const { scanned, batch } = req.body || {};   // v47L: capture batch so restore survives invoice-id churn
+  const batchStr = (batch || '').toString().trim() || null;
   try {
     const json = JSON.stringify(scanned || []);
     const now = new Date().toISOString();
     if (pgPool) {
       await pgPool.query(
-        `INSERT INTO invoice_scan_sessions (invoice_id, scanned_json, saved_at) VALUES ($1,$2,$3)
-         ON CONFLICT (invoice_id) DO UPDATE SET scanned_json=$2, saved_at=$3`,
-        [id, json, now]
+        `INSERT INTO invoice_scan_sessions (invoice_id, scanned_json, saved_at, batch_number) VALUES ($1,$2,$3,$4)
+         ON CONFLICT (invoice_id) DO UPDATE SET scanned_json=$2, saved_at=$3, batch_number=COALESCE($4, invoice_scan_sessions.batch_number)`,
+        [id, json, now, batchStr]
       );
     } else {
-      db.prepare(`INSERT INTO invoice_scan_sessions (invoice_id, scanned_json, saved_at) VALUES (?,?,?)
-                  ON CONFLICT(invoice_id) DO UPDATE SET scanned_json=excluded.scanned_json, saved_at=excluded.saved_at`).run(id, json, now);
+      db.prepare(`INSERT INTO invoice_scan_sessions (invoice_id, scanned_json, saved_at, batch_number) VALUES (?,?,?,?)
+                  ON CONFLICT(invoice_id) DO UPDATE SET scanned_json=excluded.scanned_json, saved_at=excluded.saved_at, batch_number=COALESCE(excluded.batch_number, invoice_scan_sessions.batch_number)`).run(id, json, now, batchStr);
     }
     res.json({ ok: true });
   } catch (e) { res.json({ ok: false, error: e.message }); }
@@ -16599,6 +16631,42 @@ async function _v47h_repairPrintedFlag() {
   } catch (e) { console.warn('[v47H] printed-flag repair failed:', e?.message); }
 }
 
+async function _v47l_repairFalseReconcile() {
+  // v47L (confirmed by Ishan): un-stick invoice requests that the old SO-pass falsely reconciled. A
+  // request sharing a Sales Order with an invoiced batch was flipped to 'reconciled' with no invoice of
+  // its own (26ZD104 / 26ZE101) — hiding it from Pending Reconciliation and freeing its quantity to be
+  // re-invoiced. Revert any 'reconciled' request for which NO received invoice bears its batch back to
+  // 'pending_reconciliation', so the SAP user sees it again. Legit reconciles (e.g. 26Y058, whose real
+  // invoice 1840 carries batch "26Y058, 26T080") are untouched — an invoice DOES bear their batch. Even
+  // a rare over-revert self-heals: the invoice still exists so the next poll re-reconciles it, and the
+  // v47L qty-gate on the SO-pass prevents the false sweep from recurring. Idempotent.
+  const pgSql = `
+    UPDATE invoice_requests ir
+       SET status='pending_reconciliation', reconciled_at=NULL, reconciled_with_invoice_id=NULL,
+           sap_response_doc_num=NULL, sap_response_doc_entry=NULL, updated_at=NOW()::TEXT
+     WHERE ir.status='reconciled'
+       AND ir.batch_number IS NOT NULL AND TRIM(ir.batch_number) <> ''
+       AND NOT EXISTS (SELECT 1 FROM invoices_received iv
+                        WHERE POSITION(LOWER(TRIM(ir.batch_number)) IN LOWER(COALESCE(iv.batch_number,''))) > 0)`;
+  const liteSql = `
+    UPDATE invoice_requests
+       SET status='pending_reconciliation', reconciled_at=NULL, reconciled_with_invoice_id=NULL,
+           sap_response_doc_num=NULL, sap_response_doc_entry=NULL, updated_at=datetime('now')
+     WHERE status='reconciled'
+       AND batch_number IS NOT NULL AND TRIM(batch_number) <> ''
+       AND NOT EXISTS (SELECT 1 FROM invoices_received iv
+                        WHERE INSTR(LOWER(COALESCE(iv.batch_number,'')), LOWER(TRIM(invoice_requests.batch_number))) > 0)`;
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(pgSql);
+      if (r.rowCount) console.log(`[v47L] false-reconcile repair: reverted ${r.rowCount} request(s) with no covering invoice to pending_reconciliation`);
+    } else if (db) {
+      const info = db.prepare(liteSql).run();
+      if (info.changes) console.log(`[v47L] false-reconcile repair: reverted ${info.changes} request(s) to pending_reconciliation`);
+    }
+  } catch (e) { console.warn('[v47L] false-reconcile repair failed:', e?.message); }
+}
+
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
   console.log(`[Sunloc] DB: ${DB_PATH}`);
@@ -16608,6 +16676,7 @@ app.listen(PORT, () => {
   ensureCriticalPostgresTables().then(() => ensurePostgresTables()).then(()=>{
     _consolidatePlanningStateRows().catch(e => console.warn('[v46D] consolidation boot invocation failed:', e?.message)); // v46D: collapse planning_state to single canonical row
     _v47h_repairPrintedFlag().catch(e => console.warn('[v47H] printed-flag repair boot invocation failed:', e?.message)); // v47H: mark scanned-but-unflagged labels printed
+    _v47l_repairFalseReconcile().catch(e => console.warn('[v47L] false-reconcile repair boot invocation failed:', e?.message)); // v47L: un-stick SO-pass false reconciles
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
