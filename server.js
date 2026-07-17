@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47N';
+const APP_BUILD = 'v47S';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3700,6 +3700,17 @@ async function _doRefreshSapInvoices() {
               // Mark all matching pending_reconciliation rows as reconciled (first-come-first-served).
               // Note: in practice these should already have been matched via batchUdf, but this is the safety net.
               for (const pr of pendingReqsFull) {
+                // v47R (C fix — 26X083): batch-token gate. If the arriving invoice carries a NON-BLANK batch
+                // list that does NOT include this request's batch as an exact token, it cannot be this
+                // request's invoice — leave it pending. A blank batch UDF still falls through to the qty-band
+                // net below (the SO-pass's original purpose). 26X083 was falsely reconciled to an SO-sharing
+                // invoice (e.g. bulk 9038, whose 12-batch list omits it); this prevents recurrence.
+                const _invBatchTokens47r = String(batchForStore || '').split(/[\s,]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
+                const _prBatchUp47r = String(pr.batch_number || '').trim().toUpperCase();
+                if (_invBatchTokens47r.length && _prBatchUp47r && !_invBatchTokens47r.includes(_prBatchUp47r)) {
+                  console.log(`[v47R SO-gate] SO ${soDocEntry}: request ${pr.id} (batch ${_prBatchUp47r}) left PENDING — invoice DocNum ${inv.DocNum} batch list omits it`);
+                  continue;
+                }
                 // v47L (confirmed by Ishan): QUANTITY-GATE this safety-net. Previously EVERY pending request
                 // sharing this Sales Order was flipped to 'reconciled' the moment ANY invoice on the SO
                 // arrived — so batches that share a Sales Order with an invoiced batch (26ZD104/26ZE101)
@@ -7408,28 +7419,32 @@ app.get('/api/planning/state', async (req, res) => {
         // both gross maps has no actuals, so the legacy/0 fallback is exactly what effectiveGross
         // would have returned in PG mode (SQLite is dormant) — behaviour is unchanged, just faster.
         const bn = ord.batchNumber;
-        // v47K (confirmed by Ishan): the planner's blob/DB gross override is authoritative for actualProd —
-        // getBatchWIPBreakdown reads batch.actualProd, so a blob-only override (26ZC094 → 8.90, set via
-        // Planning Edit Order but never written to batch_gross_override) must win HERE too, not only in
-        // _reconGross. o.grossOverride was already reconciled from the DB above (v41z GET reconcile block).
-        const _blobOv47k = (ord.grossOverride != null && ord.grossOverride !== '' && !isNaN(Number(ord.grossOverride)) && Number(ord.grossOverride) >= 0) ? Number(ord.grossOverride) : null;
-        const hasOverride = bn != null && Object.prototype.hasOwnProperty.call(_grossOverride, bn);
-        let eff = 0;
-        // v47M regression fix: skip the blob override for split-family batches — their gross is already
-        // apportioned in _grossByBatch, so eff falls through to that apportioned value (ZC095/ZG135/ZH079).
-        if (_blobOv47k != null && !_splitFamilyBatches.has(bn)) eff = _blobOv47k;
-        else if (hasOverride) eff = _grossOverride[bn] || 0;
-        else if (bn != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) eff = _grossByBatch[bn] || 0;
-        // v45: legacy fallback now prefers the BATCH-keyed cache over the order-keyed one. The order-
-        // keyed entry is a single (order_id,batch) group total that can belong to a *different* batch
-        // after a renumber/split — that is exactly how Planning's actualProd showed 57.9 while the true
-        // batch sum (and the DPR screen) was 54. The batch-keyed cache is now the accumulated per-batch
-        // sum; with the persistent _orderBatch, _grossByBatch is reliably present so eff>0 usually wins
-        // outright, but this keeps the rare fallback correct too.
+        // v47S (confirmed by Ishan — reverses v47K): DPR closed-batch gross is AUTHORITATIVE over the
+        // stale planning-blob grossOverride. actualProd precedence is now:
+        //   (1) batch_gross_override  — the deliberate DPR-Edit correction (top authority);
+        //   (2) _grossByBatch         — the DPR attributed batch sum (split-family already apportioned);
+        //   (3) blob grossOverride    — ONLY when the batch has NO DPR gross at all (a pre-production
+        //                               planning estimate) AND is not a split-family batch (v47M);
+        //   (4) legacy order/batch cache.
+        // The v47K order let a stale Planning-Edit value silently beat DPR reality in Label Gen /
+        // Report B / Report E (26ZD109 blob 52 vs DPR 54; 26ZF113 blob 43.25 vs DPR 47.25; 26ZH081
+        // blob 55.80 vs DPR 54). Batches whose ONLY correct gross lived in the blob (26ZC094 → 8.90,
+        // whose DPR sum 25.50 is wrong) are migrated to batch_gross_override BEFORE deploy, so they keep
+        // winning at (1) — no regression. o.grossOverride was already reconciled from the DB above.
+        const _blobOv = (ord.grossOverride != null && ord.grossOverride !== '' && !isNaN(Number(ord.grossOverride)) && Number(ord.grossOverride) >= 0) ? Number(ord.grossOverride) : null;
+        const _hasOverride = bn != null && Object.prototype.hasOwnProperty.call(_grossOverride, bn);
+        const _hasByBatch  = bn != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn);
+        const _isSplitFam  = bn != null && _splitFamilyBatches && _splitFamilyBatches.has(bn);
+        let eff = 0, _effSet = false;
+        if (_hasOverride)               { eff = _grossOverride[bn] || 0; _effSet = true; }  // (1) DPR-Edit override
+        else if (_hasByBatch)           { eff = _grossByBatch[bn]  || 0; _effSet = true; }  // (2) DPR attributed sum (apportioned for splits) — beats stale blob
+        else if (_blobOv != null && !_isSplitFam) { eff = _blobOv;      _effSet = true; }  // (3) blob only when NO DPR gross (and not split-family)
+        // v45: legacy fallback prefers the BATCH-keyed cache over the order-keyed one (an order-keyed
+        // group total can belong to a different batch after a renumber/split — the 57.9-vs-54 bug).
         const legacy = (bn != null && Object.prototype.hasOwnProperty.call(_actualsCache, bn))
           ? (_actualsCache[bn] || 0)
           : (_actualsCache[ord.id] || 0);
-        ord.actualProd = (_blobOv47k != null || hasOverride || eff > 0) ? eff : legacy;
+        ord.actualProd = _effSet ? eff : legacy;
         // v45W: expose the first actual DPR production date so the client cascade can anchor a
         // started order's start date to production reality instead of the plan cursor.
         if (bn != null && _firstProdByBatch && _firstProdByBatch[bn]) ord.dprFirstDate = _firstProdByBatch[bn];
@@ -14453,24 +14468,36 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
         _v46k_applyGrossApportionment(monthGross, _splitFams);
         _splitFamsForClient = _splitFams; // v46R #5: surface to client so Report C rolls child→parent
       } catch (e) { console.warn('[v46K] split-gross apportionment skipped (month):', e.message); }
-      // v47K (confirmed by Ishan): honor the planner's blob gross override on the MONTH-sliced gross too.
-      // Report B/D read monthGross in month-attributed mode; without this a blob-only override (26ZC094 →
-      // 8.90, set via Planning Edit Order, never written to batch_gross_override) was ignored here and the
-      // batch's gross stayed at the raw DPR split (25.50) → phantom Production WIP (16.65L). The override is
-      // the authoritative TOTAL gross; applied LAST so it wins over the DPR sum + apportionment. (A gross
-      // override is a per-batch correction, normally on a single-month batch where month gross == total; a
-      // cross-month override replacing the slice with the total is an accepted edge, being rare.)
+      // v47S (confirmed by Ishan — reverses v47K precedence): DPR is authoritative on the MONTH-sliced
+      // gross too. Report B/D/E read monthGross in month-attributed mode, and a STALE planning-blob
+      // grossOverride was silently overwriting the real DPR month slice (26ZF113 showed blob 43.25 vs
+      // DPR 47.25). New precedence, mirroring the actualProd injection:
+      //   (a) batch_gross_override (DPR-Edit) — authoritative; now propagates into month mode (was absent);
+      //   (b) the DPR-derived month slice already in monthGross — kept as-is (a real value wins over blob);
+      //   (c) the planning blob — applied ONLY when the batch has neither a DPR-Edit override nor a
+      //       positive DPR month slice (i.e. no DPR data this month to trust), and is not split-family.
+      // Split-family batches keep their apportioned month gross untouched (v47M).
       try {
-        // v47M regression fix: never override apportioned split-family batches — their gross is split by
-        // _v46k_applyGrossApportionment above; overriding re-inflated the parent's WIP (ZC095/ZG135/ZH079).
         const _splitB47m = new Set();
         for (const _f of (_splitFamsForClient || [])) { if (_f.parentBatch) _splitB47m.add(_f.parentBatch); for (const _c of (_f.children || [])) if (_c.batch) _splitB47m.add(_c.batch); }
+        // (a) DPR-Edit override propagates to month mode, for batches that already have a month slice
+        //     (a deliberate correction of THIS month's produced batch). Does not manufacture new month
+        //     rows for override-only batches — cross-month/carry-forward scoping is handled elsewhere.
+        for (const _bn of Object.keys(_grossOverride || {})) {
+          if (_splitB47m.has(_bn)) continue;
+          if (Object.prototype.hasOwnProperty.call(monthGross, _bn)) monthGross[_bn] = _grossOverride[_bn];
+        }
+        // (c) planning blob: fills ONLY when no DPR-Edit override and no positive DPR month slice.
         const _planBlob47k = await getPlanningStateAsync();
         for (const _o of ((_planBlob47k && _planBlob47k.orders) || [])) {
+          const _b = _o.batchNumber; if (!_b || _splitB47m.has(_b)) continue;
           const _ov47k = Number(_o.grossOverride);
-          if (_o.batchNumber && !_splitB47m.has(_o.batchNumber) && Number.isFinite(_ov47k) && _ov47k >= 0) monthGross[_o.batchNumber] = _ov47k;
+          if (!Number.isFinite(_ov47k) || _ov47k < 0) continue;
+          if (Object.prototype.hasOwnProperty.call(_grossOverride, _b)) continue;                        // (a) DPR-Edit wins
+          if (Object.prototype.hasOwnProperty.call(monthGross, _b) && (monthGross[_b] || 0) > 0) continue; // (b) real DPR month slice wins
+          monthGross[_b] = _ov47k;                                                                        // (c) blob fills only when no DPR gross this month
         }
-      } catch(e) { console.warn('[v47K] month-gross blob override apply skipped:', e.message); }
+      } catch(e) { console.warn('[v47S] month-gross DPR/blob precedence skipped:', e.message); }
     } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
 
     // v47B (confirmed by Ishan): month-scoped WIP box SET per batch/dept — boxes scanned INTO a dept
