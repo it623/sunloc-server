@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47M';
+const APP_BUILD = 'v47N';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -2885,6 +2885,11 @@ let _actualsCacheTime = 0;
 // batch-keyed total ends up holding only the LAST group's partial sum — surfacing as blank/under-
 // counted Gross Prod in Reports D & E. This map is the single source of truth for per-batch gross.
 let _grossByBatch = null;
+// v47M: set of every batch that belongs to a W/O-split family (parent + children). Populated when the
+// actuals cache warms (below). The v47K blob gross-override must SKIP these — their gross is already
+// distributed by _v46k_applyGrossApportionment, and overriding it re-inflated the parent's WIP
+// (regression on ZC095/ZG135/ZH079). Non-split batches (e.g. 26ZC094) still get the override.
+let _splitFamilyBatches = new Set();
 let _firstProdByBatch = null; // v45W: batch → first DPR production date (YYYY-MM-DD)
 let _lastProdByBatch  = null; // v45X (confirmed by Ishan): batch → LAST DPR production date — anchors a complete order's end date to production reality instead of today()
 // v41ZI Item 6: per-batch admin/PM override of the DPR gross. When present it supersedes _grossByBatch.
@@ -3024,6 +3029,10 @@ async function warmActualsCache() {
       try {
         const _splitFams = await _v46k_loadSplitFamilies();
         _v46k_applyGrossApportionment(_grossByBatch, _splitFams);
+        // v47M: capture every split-family batch so the v47K blob override skips them (regression fix).
+        const _sfb = new Set();
+        for (const _f of (_splitFams || [])) { if (_f.parentBatch) _sfb.add(_f.parentBatch); for (const _c of (_f.children || [])) if (_c.batch) _sfb.add(_c.batch); }
+        _splitFamilyBatches = _sfb;
         if (_splitFams.length) console.log('[v46K] split-gross apportioned across', _splitFams.length, 'W/O-split family(ies)');
       } catch (e) { console.warn('[v46K] split-gross apportionment skipped (cumulative):', e.message); }
       console.log('[DB] Actuals cache warmed:', r.rows.length, 'entries;', Object.keys(_grossByBatch).length, 'batches');
@@ -7406,7 +7415,9 @@ app.get('/api/planning/state', async (req, res) => {
         const _blobOv47k = (ord.grossOverride != null && ord.grossOverride !== '' && !isNaN(Number(ord.grossOverride)) && Number(ord.grossOverride) >= 0) ? Number(ord.grossOverride) : null;
         const hasOverride = bn != null && Object.prototype.hasOwnProperty.call(_grossOverride, bn);
         let eff = 0;
-        if (_blobOv47k != null) eff = _blobOv47k;
+        // v47M regression fix: skip the blob override for split-family batches — their gross is already
+        // apportioned in _grossByBatch, so eff falls through to that apportioned value (ZC095/ZG135/ZH079).
+        if (_blobOv47k != null && !_splitFamilyBatches.has(bn)) eff = _blobOv47k;
         else if (hasOverride) eff = _grossOverride[bn] || 0;
         else if (bn != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) eff = _grossByBatch[bn] || 0;
         // v45: legacy fallback now prefers the BATCH-keyed cache over the order-keyed one. The order-
@@ -14450,10 +14461,14 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
       // override is a per-batch correction, normally on a single-month batch where month gross == total; a
       // cross-month override replacing the slice with the total is an accepted edge, being rare.)
       try {
+        // v47M regression fix: never override apportioned split-family batches — their gross is split by
+        // _v46k_applyGrossApportionment above; overriding re-inflated the parent's WIP (ZC095/ZG135/ZH079).
+        const _splitB47m = new Set();
+        for (const _f of (_splitFamsForClient || [])) { if (_f.parentBatch) _splitB47m.add(_f.parentBatch); for (const _c of (_f.children || [])) if (_c.batch) _splitB47m.add(_c.batch); }
         const _planBlob47k = await getPlanningStateAsync();
         for (const _o of ((_planBlob47k && _planBlob47k.orders) || [])) {
           const _ov47k = Number(_o.grossOverride);
-          if (_o.batchNumber && Number.isFinite(_ov47k) && _ov47k >= 0) monthGross[_o.batchNumber] = _ov47k;
+          if (_o.batchNumber && !_splitB47m.has(_o.batchNumber) && Number.isFinite(_ov47k) && _ov47k >= 0) monthGross[_o.batchNumber] = _ov47k;
         }
       } catch(e) { console.warn('[v47K] month-gross blob override apply skipped:', e.message); }
     } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
