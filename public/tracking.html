@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47I</title>
+<title>Sunloc Tracking Suite v1.0 · build v47K</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47I</p>
+      <p>Tracking Suite v1.0 · build v47K</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47I</p>
+      <p>Tracking Suite v1.0 · build v47K</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -11541,7 +11541,11 @@ function _v41_renderReportDInner(){
     return s+ag.aGrade;
   },0);
   const totalInspectedD=monthBatches.reduce((s,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.inspected;},0);
-  const aGradePct=totalInspectedD>0?(totalAGrade/totalInspectedD*100):0;
+  // v47I FIX: Post-Printing A-Grade % is the TARGET blend Σ agNum ÷ Σ agDen — the SAME basis as Report E's
+  // grand total (90.6%) and the batch-wise table's cumPct. The old Σ ag.aGrade ÷ Σ inspected broke in v47H
+  // once ag.aGrade became PI Scan-Out (realized), collapsing this KPI to the running ratio (showed 75.1%).
+  const _ppD=monthBatches.reduce((acc,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');acc.num+=ag.agNum||0;acc.den+=ag.agDen||0;return acc;},{num:0,den:0});
+  const aGradePct=_ppD.den>0?(_ppD.num/_ppD.den*100):0;
   // v44F #2: AIM-stage (unprinted-basis) A-Grade alongside the net post-printing figure, so Report D
   // shows BOTH and reconciles with Report E (whose headline is the AIM-stage A-Grade %). stage='unprinted'
   // yields AIMOut/(AIMOut+AIMSal+AIMRem) for every batch — the pre-print yield — honouring the month toggle.
@@ -14572,7 +14576,10 @@ function exportReportD(){
   const totalGross=monthBatches.reduce((s,b)=>s+_grossForD(b),0);
   const totalAGrade=monthBatches.reduce((s,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.aGrade;},0);
   const totalInspectedD=monthBatches.reduce((s,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');return s+ag.inspected;},0);
-  const aGradePct=totalInspectedD>0?(totalAGrade/totalInspectedD*100):0;
+  // v47I FIX: target blend Σ agNum ÷ Σ agDen (matches the on-screen KPI + Report E); old Σ ag.aGrade ÷
+  // Σ inspected broke once ag.aGrade became PI Scan-Out in v47H.
+  const _ppD=monthBatches.reduce((acc,b)=>{const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');acc.num+=ag.agNum||0;acc.den+=ag.agDen||0;return acc;},{num:0,den:0});
+  const aGradePct=_ppD.den>0?(_ppD.num/_ppD.den*100):0;
   const _aimD=monthBatches.reduce((acc,b)=>{const ag=_v41_agradeFor(b.batchNumber,'unprinted');acc.a+=ag.aGrade;acc.i+=ag.inspected;return acc;},{a:0,i:0});
   const aimAGradePct=_aimD.i>0?(_aimD.a/_aimD.i*100):0;
   const totalDispatched=state.dispatchRecs.reduce((s,r)=>s+r.qty,0);

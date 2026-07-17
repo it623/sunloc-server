@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47I</p>
+      <p>Planning Suite v3.0 · build v47K</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2535,9 +2535,12 @@ function recalcMachineScheduleQuiet(machineId) {
       const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
       if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _ld45x; _endAnchored45x = true; }
       else ord.endDate = new Date(todayD);
-    } else if (hasProduction && sc.daysNeeded != null && isFinite(sc.daysNeeded)) {
-      ord.endDate = calcEndDate(todayD, Math.max(1, Math.ceil(sc.daysNeeded)));
     } else {
+      // v47K (confirmed by Ishan): end = START + full run duration (gross ÷ header avg rate, ceil'd) for
+      // BOTH not-yet-started and started-but-incomplete orders. The old started-order branch used
+      // end = today + ceil(remaining), which added a day whenever today was already past the start
+      // (ZC101: start 16 Jul, 0.83-day job at 22.6 L/day → 17 + ceil(0.6)=1 = 18 instead of 16 + 1 = 17)
+      // and cascaded that drift downstream. The ≥ today clamp below keeps a badly-delayed order off the past.
       ord.endDate = calcEndDate(ord.startDate, fullDays);
     }
     if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
@@ -2651,9 +2654,12 @@ function recalcMachineSchedule(machineId) {
       const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
       if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _ld45x; _endAnchored45x = true; }
       else ord.endDate = new Date(todayD);
-    } else if (hasProduction && sc.daysNeeded != null && isFinite(sc.daysNeeded)) {
-      ord.endDate = calcEndDate(todayD, Math.max(1, Math.ceil(sc.daysNeeded)));
     } else {
+      // v47K (confirmed by Ishan): end = START + full run duration (gross ÷ header avg rate, ceil'd) for
+      // BOTH not-yet-started and started-but-incomplete orders. The old started-order branch used
+      // end = today + ceil(remaining), which added a day whenever today was already past the start
+      // (ZC101: start 16 Jul, 0.83-day job at 22.6 L/day → 17 + ceil(0.6)=1 = 18 instead of 16 + 1 = 17)
+      // and cascaded that drift downstream. The ≥ today clamp below keeps a badly-delayed order off the past.
       ord.endDate = calcEndDate(ord.startDate, fullDays);
     }
     if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);

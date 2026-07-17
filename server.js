@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47I';
+const APP_BUILD = 'v47K';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -7374,9 +7374,15 @@ app.get('/api/planning/state', async (req, res) => {
         // both gross maps has no actuals, so the legacy/0 fallback is exactly what effectiveGross
         // would have returned in PG mode (SQLite is dormant) — behaviour is unchanged, just faster.
         const bn = ord.batchNumber;
+        // v47K (confirmed by Ishan): the planner's blob/DB gross override is authoritative for actualProd —
+        // getBatchWIPBreakdown reads batch.actualProd, so a blob-only override (26ZC094 → 8.90, set via
+        // Planning Edit Order but never written to batch_gross_override) must win HERE too, not only in
+        // _reconGross. o.grossOverride was already reconciled from the DB above (v41z GET reconcile block).
+        const _blobOv47k = (ord.grossOverride != null && ord.grossOverride !== '' && !isNaN(Number(ord.grossOverride)) && Number(ord.grossOverride) >= 0) ? Number(ord.grossOverride) : null;
         const hasOverride = bn != null && Object.prototype.hasOwnProperty.call(_grossOverride, bn);
         let eff = 0;
-        if (hasOverride) eff = _grossOverride[bn] || 0;
+        if (_blobOv47k != null) eff = _blobOv47k;
+        else if (hasOverride) eff = _grossOverride[bn] || 0;
         else if (bn != null && _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) eff = _grossByBatch[bn] || 0;
         // v45: legacy fallback now prefers the BATCH-keyed cache over the order-keyed one. The order-
         // keyed entry is a single (order_id,batch) group total that can belong to a *different* batch
@@ -7387,7 +7393,7 @@ app.get('/api/planning/state', async (req, res) => {
         const legacy = (bn != null && Object.prototype.hasOwnProperty.call(_actualsCache, bn))
           ? (_actualsCache[bn] || 0)
           : (_actualsCache[ord.id] || 0);
-        ord.actualProd = (hasOverride || eff > 0) ? eff : legacy;
+        ord.actualProd = (_blobOv47k != null || hasOverride || eff > 0) ? eff : legacy;
         // v45W: expose the first actual DPR production date so the client cascade can anchor a
         // started order's start date to production reality instead of the plan cursor.
         if (bn != null && _firstProdByBatch && _firstProdByBatch[bn]) ord.dprFirstDate = _firstProdByBatch[bn];
@@ -14411,6 +14417,20 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
         _v46k_applyGrossApportionment(monthGross, _splitFams);
         _splitFamsForClient = _splitFams; // v46R #5: surface to client so Report C rolls child→parent
       } catch (e) { console.warn('[v46K] split-gross apportionment skipped (month):', e.message); }
+      // v47K (confirmed by Ishan): honor the planner's blob gross override on the MONTH-sliced gross too.
+      // Report B/D read monthGross in month-attributed mode; without this a blob-only override (26ZC094 →
+      // 8.90, set via Planning Edit Order, never written to batch_gross_override) was ignored here and the
+      // batch's gross stayed at the raw DPR split (25.50) → phantom Production WIP (16.65L). The override is
+      // the authoritative TOTAL gross; applied LAST so it wins over the DPR sum + apportionment. (A gross
+      // override is a per-batch correction, normally on a single-month batch where month gross == total; a
+      // cross-month override replacing the slice with the total is an accepted edge, being rare.)
+      try {
+        const _planBlob47k = await getPlanningStateAsync();
+        for (const _o of ((_planBlob47k && _planBlob47k.orders) || [])) {
+          const _ov47k = Number(_o.grossOverride);
+          if (_o.batchNumber && Number.isFinite(_ov47k) && _ov47k >= 0) monthGross[_o.batchNumber] = _ov47k;
+        }
+      } catch(e) { console.warn('[v47K] month-gross blob override apply skipped:', e.message); }
     } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
 
     // v47B (confirmed by Ishan): month-scoped WIP box SET per batch/dept — boxes scanned INTO a dept
