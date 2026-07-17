@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47H</title>
+<title>Sunloc Tracking Suite v1.0 · build v47I</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47H</p>
+      <p>Tracking Suite v1.0 · build v47I</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47H</p>
+      <p>Tracking Suite v1.0 · build v47I</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2899,6 +2899,15 @@ function getBatchWIPBreakdown(batchNo, opts){
   const wPI    = getTotalWastage(batchNo,'pi');
   const grossProd = batch.actualProd || batch.actualQty || 0;
 
+  // v47I (confirmed by Ishan): printing salvage is logged in the DPL (Planning), never in Tracking, so
+  // getTotalWastage('printing') reads 0 and the printing loss was previously stuck in WIP. Feed the
+  // SAME figure Report E uses for Printing Rejection — DPL cumulative salvage % × Print-TD (printing
+  // scan-out) — so Printing WIP shrinks by exactly the quantum the A-Grade % already removes. Pure DPL
+  // (replaces the empty Tracking term; not additive) → WIP and A-Grade use one identical number and
+  // cannot diverge. Printing has no remelt (salvage only). Defaults to 0 until the DPL overlay loads.
+  const _dplPrintPct   = (window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0;
+  const printSalvageDPL = batch.isPrinted ? printOut * (_dplPrintPct/100) : 0;
+
   // v46E (confirmed by Ishan): canonical AIM WIP split — salvage removed pre-box (lives in the
   // Unsorted/Unscanned leg), remelt declared post scan-in (lives in the AIM Dept leg). This matches
   // Report E / Report B / Report D exactly — one model across all WIP reports:
@@ -2910,7 +2919,7 @@ function getBatchWIPBreakdown(batchNo, opts){
   // surfaced by the DPR-vs-Inspected integrity check rather than absorbed silently.
   const preAIM   = Math.max(0, grossProd - wAIM.salvage - aimIn);
   const aimWIP   = Math.max(0, aimIn - wAIM.remelt - aimOut);
-  const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - wPrint.salvage - wPrint.remelt) : 0;
+  const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - printSalvageDPL - wPrint.remelt) : 0;
   const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt) : 0;
   // v37E: Transit gap between last production stage and packing receipt
   const lastProdOut   = batch.isPrinted ? piOut : aimOut;
@@ -2927,7 +2936,7 @@ function getBatchWIPBreakdown(batchNo, opts){
   // totalWIP formula: Gross Production − All Wastage (salvage+remelt across all stages) − Pack-In Quantity
   // ("Pack-In Quantity" = boxes that have arrived at packing dept = cleared all production stages).
   // FG awaiting dispatch (packIn − packOut) is NOT in WIP — handled by next-vehicle scheduling.
-  const totalSalvageWIP = wAIM.salvage + wPrint.salvage + wPI.salvage;
+  const totalSalvageWIP = wAIM.salvage + printSalvageDPL + wPI.salvage;
   const totalRemeltWIP  = wAIM.remelt  + wPrint.remelt  + wPI.remelt;
   // v37E WIP-fix: use packIn — material at packing is FG, not WIP
   const totalWIP = Math.max(0, grossProd - totalSalvageWIP - totalRemeltWIP - packIn);
