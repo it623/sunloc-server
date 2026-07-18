@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47W</p>
+      <p>Planning Suite v3.0 · build v47X</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2366,6 +2366,17 @@ function calcEndDate(startDate, daysNeeded) {
   end.setDate(end.getDate() + Math.ceil(daysNeeded));
   return end;
 }
+// v47X (Ishan #4): floor a (possibly fractional, time-carrying) cursor Date to LOCAL midnight — the same
+// representation every stored order date already uses. The production cascade keeps a FRACTIONAL cursor
+// internally so a sub-day order (e.g. ZG147: 15.88L ÷ 25.8 L/day = 0.62 day) finishes the same calendar
+// day and the next order starts that day (ZG148 then ends the following morning), instead of the old
+// ceil() that made every order consume a whole day. Only the internal cursor carries time-of-day; nothing
+// with a time component is ever stored, so date serialisation (toISOString date-slice) is unchanged.
+function _v47xFloorDay(d) {
+  const dt = (d instanceof Date) ? d : new Date(d);
+  if (isNaN(dt)) return dt;
+  return new Date(dt.getFullYear(), dt.getMonth(), dt.getDate());
+}
 
 // Get machine orders sorted by start date
 // Auto batch number generation: YY + MachineAlpha + SerialNo
@@ -2473,29 +2484,31 @@ function recalcMachineScheduleQuiet(machineId) {
     const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
     // v41ZO #1: FULL run duration from TOTAL gross & effective daily rate (not remaining-work days,
     // which collapsed a fully-produced order's span to a single day). A 2-day order always shows 2 days.
-    const fullDays = (sc.effectiveCap && sc.effectiveCap > 0) ? Math.max(1, Math.ceil(sc.grossQty / sc.effectiveCap)) : 1;
+    // v47X (Ishan #4): FRACTIONAL run duration (gross ÷ effective daily rate) — no ceil, no 1-day floor.
+    // A sub-day order (ZG147: 15.88L ÷ 25.8 L/day = 0.62 day) now finishes its start day and the next order
+    // starts that same day; ZG148 then ends the following morning. Was Math.max(1, Math.ceil(...)), which
+    // forced every order to a whole day and jumped the cursor a full day. `cursor` carries the sub-day
+    // remainder internally; stored dates stay floored to local midnight (_v47xFloorDay) — no time is ever
+    // persisted, so date serialisation is unchanged.
+    const fracDays = (sc.effectiveCap && sc.effectiveCap > 0) ? Math.max(0, sc.grossQty / sc.effectiveCap) : 1;
 
-    // Determine start date.
-    // v41ZD #2: an order on a single machine can never start before the previous order finishes.
-    // Previously an order with ANY actual production was pinned to its own historical start and
-    // never moved, so an upstream overrun left downstream in-production orders overlapping (their
-    // end dates updated but start dates didn't cascade). Now: a not-yet-started order anchors to the
-    // cursor; an in-production order keeps its historical start ONLY if that start is already at/after
-    // the cursor — otherwise it is pushed forward to the cursor so it can't overlap its predecessor.
+    // Determine start date (v41ZD #2 / v41ZM #5 anchoring unchanged). Compute the FRACTIONAL start
+    // _startFrac, store its floored calendar date.
+    let _startFrac;
     if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
       const histStart = new Date(ord.startDate);
-      ord.startDate = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
+      _startFrac = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
     } else if (cursor) {
-      // Downstream of an earlier order — start right after it (this is the cascade).
       // v45X: floor at today — dprLastDate-anchored ends can sit in the past; an UNSTARTED
       // order can't be planned into the past (started orders keep real starts elsewhere).
-      ord.startDate = new Date(Math.max(new Date(cursor).getTime(), todayD.getTime()));
+      _startFrac = new Date(Math.max(new Date(cursor).getTime(), todayD.getTime()));
     } else {
       // First order on the machine, not yet started. Use its saved start, but never schedule
       // into the past with no production behind it.
       const savedStart = ord.startDate ? new Date(ord.startDate) : null;
-      ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
+      _startFrac = (savedStart && savedStart >= todayD) ? savedStart : todayD;
     }
+    ord.startDate = _v47xFloorDay(_startFrac);
 
     // v45W (confirmed by Ishan): a STARTED order's start date anchors to its FIRST actual DPR
     // production date — planning shows when production really began, not where the plan cursor
@@ -2503,50 +2516,35 @@ function recalcMachineScheduleQuiet(machineId) {
     if (hasProduction && ord.dprFirstDate && !ord.manualStartDate) {
       const _fd45w = new Date(String(ord.dprFirstDate).slice(0,10) + 'T00:00:00');
       if (!isNaN(_fd45w)) {
-        ord.startDate = _fd45w;
+        ord.startDate = _v47xFloorDay(_fd45w); _startFrac = _fd45w; // anchor resets fractional start to a midnight boundary
         // v46Q (confirmed by Ishan): a later order starting (in DPR) before the previous order's
         // PROJECTED end means the previous order actually finished when this one began. Keep THIS
         // order's real start and pull the previous order's end back to it ("previous stops as on date").
         // Only for a projected previous end — a DPR-complete (real) end is left untouched.
         if (prevOrder && prevEndProjected && cursor && _fd45w < cursor) {
-          prevOrder.endDate = new Date(_fd45w);
+          prevOrder.endDate = _v47xFloorDay(_fd45w);
           cursor = new Date(_fd45w);
         }
       }
     }
-    // Determine end date (v45T #1.1.1, rule confirmed by Ishan — DPR actuals drive the end date):
-    //   • actual ≥ planned gross → order is effectively complete: the end date pulls back to the
-    //     last production day planning can observe (today at the latest) instead of coasting to
-    //     start + full span — the defect where DPR-complete orders still showed 4th/5th/6th July.
-    //     (Planning holds cumulative DPR actuals, not per-day entries, so "last DPR production
-    //     date" resolves to today at the moment completion is observed — never a future date.)
-    //   • partially produced → end = today + remaining work at the ACTUAL daily rate
-    //     (sc.daysNeeded = remainingGross / effectiveCap; DPR rate with machine-cap fallback).
-    //   • no production yet → unchanged v41ZO behaviour: start + full run duration.
+    // Determine end date (v45T #1.1.1 / v45X, rule confirmed by Ishan — DPR actuals drive the end date):
+    //   • actual ≥ planned gross → end anchors to last DPR production date (today at latest).
+    //   • otherwise → end = fractional start + fractional run duration (v47X).
     const _acts45t = (ord.actualProd || ord.actualQty || 0);
-    // v45X (confirmed by Ishan): a DPR-complete order's end anchors to its LAST actual DPR
-    // production date — reality-driven, mirroring the v45W start anchor. today() survives only
-    // when the server hasn't exposed dprLastDate (cold cache / no DPR rows). The below-today
-    // clamp is skipped for the anchored end: pulling a finished order's end into the past is the
-    // point — downstream orders recalibrate off the real end via the cursor. The +ceil end-date
-    // convention for projections is unchanged (durations are hours-scoped, per Ishan 4-Jul).
     let _endAnchored45x = false;
+    let _endFrac;
     if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
       const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
-      if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _ld45x; _endAnchored45x = true; }
-      else ord.endDate = new Date(todayD);
+      if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
+      else { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
     } else {
-      // v47K (confirmed by Ishan): end = START + full run duration (gross ÷ header avg rate, ceil'd) for
-      // BOTH not-yet-started and started-but-incomplete orders. The old started-order branch used
-      // end = today + ceil(remaining), which added a day whenever today was already past the start
-      // (ZC101: start 16 Jul, 0.83-day job at 22.6 L/day → 17 + ceil(0.6)=1 = 18 instead of 16 + 1 = 17)
-      // and cascaded that drift downstream. The ≥ today clamp below keeps a badly-delayed order off the past.
-      ord.endDate = calcEndDate(ord.startDate, fullDays);
+      _endFrac = new Date(_startFrac.getTime() + fracDays * 86400000);
+      ord.endDate = _v47xFloorDay(_endFrac);
     }
-    if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
-    if (_endAnchored45x && ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) ord.endDate = new Date(ord.startDate);
-    if (ord.endDate && !isNaN(new Date(ord.endDate))) {
-      cursor = new Date(ord.endDate);
+    if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
+    if (_endAnchored45x && ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
+    if (_endFrac && !isNaN(new Date(_endFrac))) {
+      cursor = _endFrac; // v47X: fractional cursor — carries the sub-day remainder to the next order
     }
     prevOrder = ord; prevEndProjected = !_endAnchored45x; // v46Q: remember whether this end is a projection
     continue;
@@ -2601,20 +2599,25 @@ function recalcMachineSchedule(machineId) {
     const hasProduction = (ord.actualProd || ord.actualQty || 0) > 0;
     // v41ZO #1: FULL run duration from TOTAL gross & effective daily rate (not remaining-work days,
     // which collapsed a fully-produced order's span to a single day). A 2-day order always shows 2 days.
-    const fullDays = (sc.effectiveCap && sc.effectiveCap > 0) ? Math.max(1, Math.ceil(sc.grossQty / sc.effectiveCap)) : 1;
+    // v47X (Ishan #4): FRACTIONAL run duration — no ceil, no 1-day floor — so a sub-day order finishes its
+    // start day and the next order starts that day (see recalcMachineScheduleQuiet note). `cursor` carries
+    // the sub-day remainder internally; stored dates stay floored to local midnight (_v47xFloorDay).
+    const fracDays = (sc.effectiveCap && sc.effectiveCap > 0) ? Math.max(0, sc.grossQty / sc.effectiveCap) : 1;
 
     // v41ZD #2: in-production order keeps its historical start only if it's already >= cursor;
     // otherwise it is pushed forward so it can't overlap the previous order on the same machine.
+    let _startFrac;
     if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
       const histStart = new Date(ord.startDate);
-      ord.startDate = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
+      _startFrac = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
     } else if (cursor) {
       // v45X: today-floor — see recalcMachineScheduleQuiet note (past cursors from anchored ends).
-      ord.startDate = new Date(Math.max(new Date(cursor).getTime(), todayD.getTime()));
+      _startFrac = new Date(Math.max(new Date(cursor).getTime(), todayD.getTime()));
     } else {
       const savedStart = ord.startDate ? new Date(ord.startDate) : null;
-      ord.startDate = (savedStart && savedStart >= todayD) ? savedStart : todayD;
+      _startFrac = (savedStart && savedStart >= todayD) ? savedStart : todayD;
     }
+    ord.startDate = _v47xFloorDay(_startFrac);
 
     // v45W (confirmed by Ishan): a STARTED order's start date anchors to its FIRST actual DPR
     // production date — planning shows when production really began, not where the plan cursor
@@ -2622,50 +2625,34 @@ function recalcMachineSchedule(machineId) {
     if (hasProduction && ord.dprFirstDate && !ord.manualStartDate) {
       const _fd45w = new Date(String(ord.dprFirstDate).slice(0,10) + 'T00:00:00');
       if (!isNaN(_fd45w)) {
-        ord.startDate = _fd45w;
+        ord.startDate = _v47xFloorDay(_fd45w); _startFrac = _fd45w;
         // v46Q (confirmed by Ishan): a later order starting (in DPR) before the previous order's
         // PROJECTED end means the previous order actually finished when this one began. Keep THIS
         // order's real start and pull the previous order's end back to it ("previous stops as on date").
         // Only for a projected previous end — a DPR-complete (real) end is left untouched.
         if (prevOrder && prevEndProjected && cursor && _fd45w < cursor) {
-          prevOrder.endDate = new Date(_fd45w);
+          prevOrder.endDate = _v47xFloorDay(_fd45w);
           cursor = new Date(_fd45w);
         }
       }
     }
-    // Determine end date (v45T #1.1.1, rule confirmed by Ishan — DPR actuals drive the end date):
-    //   • actual ≥ planned gross → order is effectively complete: the end date pulls back to the
-    //     last production day planning can observe (today at the latest) instead of coasting to
-    //     start + full span — the defect where DPR-complete orders still showed 4th/5th/6th July.
-    //     (Planning holds cumulative DPR actuals, not per-day entries, so "last DPR production
-    //     date" resolves to today at the moment completion is observed — never a future date.)
-    //   • partially produced → end = today + remaining work at the ACTUAL daily rate
-    //     (sc.daysNeeded = remainingGross / effectiveCap; DPR rate with machine-cap fallback).
-    //   • no production yet → unchanged v41ZO behaviour: start + full run duration.
+    // Determine end date (v45T #1.1.1 / v45X — DPR actuals drive the end date; projections use the
+    // fractional start + fractional run duration, v47X).
     const _acts45t = (ord.actualProd || ord.actualQty || 0);
-    // v45X (confirmed by Ishan): a DPR-complete order's end anchors to its LAST actual DPR
-    // production date — reality-driven, mirroring the v45W start anchor. today() survives only
-    // when the server hasn't exposed dprLastDate (cold cache / no DPR rows). The below-today
-    // clamp is skipped for the anchored end: pulling a finished order's end into the past is the
-    // point — downstream orders recalibrate off the real end via the cursor. The +ceil end-date
-    // convention for projections is unchanged (durations are hours-scoped, per Ishan 4-Jul).
     let _endAnchored45x = false;
+    let _endFrac;
     if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
       const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
-      if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _ld45x; _endAnchored45x = true; }
-      else ord.endDate = new Date(todayD);
+      if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
+      else { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
     } else {
-      // v47K (confirmed by Ishan): end = START + full run duration (gross ÷ header avg rate, ceil'd) for
-      // BOTH not-yet-started and started-but-incomplete orders. The old started-order branch used
-      // end = today + ceil(remaining), which added a day whenever today was already past the start
-      // (ZC101: start 16 Jul, 0.83-day job at 22.6 L/day → 17 + ceil(0.6)=1 = 18 instead of 16 + 1 = 17)
-      // and cascaded that drift downstream. The ≥ today clamp below keeps a badly-delayed order off the past.
-      ord.endDate = calcEndDate(ord.startDate, fullDays);
+      _endFrac = new Date(_startFrac.getTime() + fracDays * 86400000);
+      ord.endDate = _v47xFloorDay(_endFrac);
     }
-    if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) ord.endDate = new Date(todayD);
-    if (_endAnchored45x && ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) ord.endDate = new Date(ord.startDate);
-    if (ord.endDate && !isNaN(new Date(ord.endDate))) {
-      cursor = new Date(ord.endDate);
+    if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
+    if (_endAnchored45x && ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
+    if (_endFrac && !isNaN(new Date(_endFrac))) {
+      cursor = _endFrac; // v47X: fractional cursor — carries the sub-day remainder to the next order
     }
     prevOrder = ord; prevEndProjected = !_endAnchored45x; // v46Q: remember whether this end is a projection
     continue;
