@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47X</title>
+<title>Sunloc Tracking Suite v1.0 · build v47Y</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47X</p>
+      <p>Tracking Suite v1.0 · build v47Y</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47X</p>
+      <p>Tracking Suite v1.0 · build v47Y</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2797,6 +2797,26 @@ function _reconBadge(on, title){
   const t = (title || 'Reconciled — admin-overridden figures take precedence across all reports; hover a value for its original').replace(/"/g,'&quot;');
   return ` <span class="badge" style="font-size:8px;background:#0e7490;color:#fff;cursor:help" title="${t}">RECONCILED</span>`;
 }
+// v47Y (confirmed by Ishan): derive the stage where a reconciled batch's FROZEN (unpacked) remainder
+// physically sits, from the live scan trail. The override stays authoritative for the AMOUNT
+// (Gross − Packed − Wastage); only the LOCATION follows real scans, so downstream WIP self-corrects as
+// boxes pack out. Two flows: PRINTED = AIM→Printing→PI (deepest-first: PI, else Printing, else AIM);
+// UNPRINTED = AIM→Packing (the only production stage before packing is AIM — it can never sit at
+// printing/PI, matching the existing unprinted guards).
+function _v47yReconStage(batchNo){
+  const b = getBatch(batchNo);
+  if (b && !b.isPrinted) return 'aim';
+  if (_ss(batchNo,'pi').in > 0 || _ss(batchNo,'pi').out > 0) return 'pi';
+  if (_ss(batchNo,'printing').in > 0 || _ss(batchNo,'printing').out > 0) return 'printing';
+  return 'aim';
+}
+// v47Y: FROZEN badge — marks a reconciled batch's frozen (unpacked) remainder so it reads as distinct from
+// ordinary live WIP. Small tag + tooltip; renders only when `on`.
+function _frozenBadge(on, title){
+  if(!on) return '';
+  const t = (title || 'Frozen WIP — reconciled unpacked remainder (Gross − Packed − Wastage), parked at the last stage the batch physically reached. Not ordinary live WIP; falls as it packs out.').replace(/"/g,'&quot;');
+  return ` <span class="badge" style="font-size:8px;background:#7c3aed;color:#fff;cursor:help" title="${t}">FROZEN</span>`;
+}
 // v46N: assemble the pre-override ("was …") tooltip strings for a reconciled batch, computed from the
 // raw scan/DPR figures via the {raw:true} opt-in. Returns null for non-reconciled batches so callers
 // render byte-identically. `.title` is a consolidated one-line original-values string for the badge
@@ -2851,6 +2871,10 @@ function getBatchWIPBreakdown(batchNo, opts){
   const _ovW = _reconOverride(batchNo);
   if(_ovW && !_raw){
     const g=_ovW.gross||0, pk=_ovW.packing||0, w=_reconWip(_ovW), ws=_ovW.wastage||0; /* v46Q: derived, not stale stored wip */
+    // v47Y: keep the frozen remainder ONLY in totalWIP here (shown as "Frozen WIP (unpacked)" on the
+    // batch-level Report D, which sums the stage buckets separately into "WIP + packed"). The stage-wise
+    // SUMMARY relocation to PI/Printing/AIM is done via _rptBRow (Report B primitive), not this function,
+    // so no double-count.
     return { grossProd:g, aimIn:0, aimOut:0, packIn:pk, packOut:pk, preAIM:0, aimWIP:0, printWIP:0,
              piWIP:0, toPackTransit:0, packWIP:0, packedNotDisp:0, totalWIP:w,
              wAIM:{salvage:ws,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, reconciled:true };
@@ -11047,21 +11071,32 @@ function _rptBRow(batchNo, dept, U){
   // WIP is placed on the production-WIP leg with the dept legs zeroed — matches getBatchWIPBreakdown's
   // single-total collapse and the point-2 agreement (reconcile-to-0 ⇒ every WIP figure 0).
   const _rcOv = _reconOverride(batchNo);
-  let _gross=grossProd, _prodWip=_prodWipRaw, _wip=wip, _wipQty=wipQty, _w=w, _aimWaste=aimWaste, _reconOrig=null;
+  let _gross=grossProd, _prodWip=_prodWipRaw, _wip=wip, _wipQty=wipQty, _w=w, _aimWaste=aimWaste, _reconOrig=null, _frozenHere=false;
   if(_rcOv){
     _reconOrig = { grossProd, prodWip:_prodWipRaw, wip, wipQty, wastage:(w?w.total:0),
                    aimSalvage:(aimWaste?aimWaste.salvage:0), avail:Math.max(0,grossProd-(aimWaste?aimWaste.salvage:0)) };
     if(_rcOv.gross!=null) _gross=_rcOv.gross;
-    const _ovWip=_isRetired(batchNo)?0:_reconWip(_rcOv); _prodWip=_ovWip; _wip=0; _wipQty=0;  // v46R: retired ⇒ 0 WIP (physically gone); else derived reconcile WIP → prod leg
+    // v47Y (confirmed by Ishan): the frozen remainder AMOUNT stays Gross−Packed−Wastage; its LOCATION is
+    // the scan-trail-derived stage (_v47yReconStage — printed: PI→Printing→AIM deepest-first; unprinted:
+    // AIM). Park it ONLY on that stage's row, 0 elsewhere — so a batch that has cleared AIM shows 0 AIM
+    // production WIP and its remainder surfaces at PI/Printing. AIM as the derived stage keeps it on the
+    // production leg; deeper stages carry it on the dept-WIP leg. Replaces v46M's "always park on AIM".
+    const _frozen47y=_isRetired(batchNo)?0:_reconWip(_rcOv);
+    const _stage47y=_v47yReconStage(batchNo);
+    if (dept === _stage47y && _frozen47y > 0.005) {
+      if (_stage47y === 'aim') { _prodWip=_frozen47y; _wip=0; _wipQty=0; }
+      else { _prodWip=0; _wip=0; _wipQty=_frozen47y; }
+      _frozenHere = true;
+    } else { _prodWip=0; _wip=0; _wipQty=0; }
     const _ovWaste=_rcOv.wastage||0; _w={total:_ovWaste,salvage:_ovWaste,remelt:0}; _aimWaste={salvage:_ovWaste,remelt:0};
   }
-  const statusKey = _closed ? 'closed' : (_wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
+  const statusKey = _closed ? 'closed' : ((_wip>0 || _frozenHere) ? 'indept' : (out>0 ? 'leftdept' : '')); // v47Y: frozen remainder here ⇒ In Dept
   // v46E: Available to Scan In = Gross − Salvage (salvage removed pre-box; remelt is post scan-in). Matches Report E.
   const _avail = Math.max(0, _gross - _aimWaste.salvage);
   const floor = _ffsfSet.has(normMcId(getBatch(batchNo)?.machineId || _ghostMc45y[batchNo])) ? 'ffsf' : 'gf';
   return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, innQty, outQty, w:_w, wastageBoxes, wip:_wip, wipQty:_wipQty,
            grossProd:_gross, aimInBoxes, aimInQty, aimWaste:_aimWaste, prodWip:_prodWip, hrs, closed:_closed, statusKey,
-           avail:_avail, floor, retired:_retiredRows45z.has(batchNo), reconciled:!!_rcOv, reconOrig:_reconOrig };
+           avail:_avail, floor, retired:_retiredRows45z.has(batchNo), reconciled:!!_rcOv, reconOrig:_reconOrig, frozenHere:_frozenHere };
 }
 
 // Per-dept batch set — the batches that appear in dept `dept`'s table. AIM (v45ZW 6B, confirmed by
@@ -11245,7 +11280,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const R = _rptBRow(batchNo, dept, U);
       const batch=R.batch, _bSize45y=R.size, inn=R.inn, out=R.out, innQty=R.innQty, outQty=R.outQty, w=R.w, wip=R.wip, wipQty=R.wipQty,
             grossProd=R.grossProd, aimWaste=R.aimWaste, prodWip=R.prodWip, hrs=R.hrs,
-            _rc=R.reconciled, _ro=R.reconOrig||{};   // v46M: reconcile flag + raw originals for hover tooltip
+            _rc=R.reconciled, _ro=R.reconOrig||{}, _fz=R.frozenHere;   // v46M: reconcile flag + raw originals for hover tooltip; v47Y: frozen-here flag
       // v45ZZ item 3 (confirmed by Ishan): drop all-zero month rows. A batch can enter the set via
       // LIFETIME scan activity (_ss) yet have ZERO activity in the SELECTED month — its month-sliced
       // values are all 0 (e.g. prior-month retired/carry-forward batches). Such rows add nothing to any
@@ -11255,17 +11290,17 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const alerts=state.alerts.filter(a=>a.batchNumber===batchNo&&a.dept===dept).length;
       // v44P #11: compute the stage status once — drives both the badge and the Status filter.
       const _closed = isStageComplete(batchNo,dept);
-      const statusKey = _closed ? 'closed' : (wip>0 ? 'indept' : (out>0 ? 'leftdept' : ''));
+      const statusKey = _closed ? 'closed' : ((wip>0 || _fz) ? 'indept' : (out>0 ? 'leftdept' : '')); // v47Y
       // v45ZY item 3 + v45ZZ item 4 (confirmed by Ishan): "In Dept" means "holds WIP in this
       // department" — scanned WIP boxes (wip>0) OR Production WIP (prodWip>0, produced-but-not-yet-AIM-
       // scanned). Including prodWip is what makes the filtered WIP total match the unfiltered total:
       // a row can be "Left Dept" (wip boxes 0) yet still hold Production WIP. Left Dept / Closed unchanged.
       if (filterStatus) {
-        const _fMatch = filterStatus==='indept' ? (wip>0 || prodWip>0.005) : (statusKey===filterStatus);
+        const _fMatch = filterStatus==='indept' ? (wip>0 || prodWip>0.005 || _fz) : (statusKey===filterStatus);
         if (!_fMatch) return;   // skip rows not matching the status filter
       }
       const statusBadge = _closed ? '<span class="badge badge-green">✅ Closed</span>'
-                        : wip>0 ? '<span class="badge badge-blue">In Dept</span>'
+                        : (wip>0 || _fz) ? '<span class="badge badge-blue">In Dept</span>'
                         : out>0 ? '<span class="badge badge-gray">↗ Left Dept</span>'
                         : '<span class="badge badge-gray">—</span>';
       // v46E (confirmed by Ishan): "Available to Scan In" = Gross − AIM Salvage (salvage is removed
@@ -11288,7 +11323,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
           <td class="td-mono text-sm" style="color:var(--amber)">${_rcvCell((aimWaste.salvage+aimWaste.remelt)>0?fmt(aimWaste.salvage+aimWaste.remelt)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>
           <td class="td-mono">${_rcvCell(_avail>0?fmt(_avail)+'L':'—', 'was '+fmt(_ro.avail||0)+'L (computed)', _rc)}</td>
           <td class="td-mono">${inn} <span class="text-muted">(${fmt(innQty)}L)</span></td>
-          <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
+          <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}${_frozenBadge(_fz)}</td>
           <td class="td-mono">${out} <span class="text-muted">(${fmt(outQty)}L)</span></td>
           <td class="td-mono fw-bold"${wip>0?` style="cursor:pointer" onclick="_rptB_toggleWipBoxes('${batchNo}','${dept}','rptb-${batchNo}-${dept}')" title="Click to see the box numbers in WIP"`:''}>${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}${wip>0?' <span style="font-size:9px;color:var(--text3)">▾</span>':''}</td>
           <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
@@ -11304,7 +11339,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         <td class="td-mono">${out} <span class="text-muted">(${fmt(outQty)}L)</span></td>
         ${hasWastage?`<td class="td-mono text-sm" style="color:var(--amber)">${_rcvCell(w.total>0?fmt(w.total)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>`:''}
         <td class="td-mono fw-bold"${wip>0?` style="cursor:pointer" onclick="_rptB_toggleWipBoxes('${batchNo}','${dept}','rptb-${batchNo}-${dept}')" title="Click to see the box numbers in WIP"`:''}>${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}${wip>0?' <span style="font-size:9px;color:var(--text3)">▾</span>':''}</td>
-        <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}</td>
+        <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}${_frozenBadge(_fz)}</td>
         <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
         <td>${statusBadge}</td>
       </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td></td><td colspan="${hasWastage?5:4}"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
@@ -11496,6 +11531,7 @@ function _v45sTopTableData(){
   const stages=['aim_gf','aim_ffsf','printing','pi','packing'];
   const _RL={aim_gf:'AIM Inspection — GF', aim_ffsf:'AIM Inspection — FF/SF', printing:'Printing', pi:'Print Inspection', packing:'Packing (FG awaiting dispatch)'};
   const stageWIP={}, stageQtyL={}, stageUnscanned={}, stageUnscannedL={};
+  const _stageFrozen={}; // v47Y: stages whose total includes reconciled frozen (unpacked) WIP
   stages.forEach(d=>{ stageWIP[d]=0; stageQtyL[d]=0; stageUnscanned[d]=0; stageUnscannedL[d]=0; });
   const U = _rptBUniverse();
   // AIM scanned WIP (split by ghost-aware floor) + AIM Production WIP — Report B's exact AIM set.
@@ -11504,10 +11540,11 @@ function _v45sTopTableData(){
     const aimRow = R.floor==='ffsf' ? 'aim_ffsf' : 'aim_gf';
     stageWIP[aimRow]+=R.wip; stageQtyL[aimRow]+=R.wipQty;
     if (R.prodWip > 0.005) { stageUnscannedL[aimRow]+=R.prodWip; stageUnscanned[aimRow]+=lakhToBox(R.prodWip, R.size); }
+    if (R.frozenHere) _stageFrozen[aimRow]=true; // v47Y
   });
   // Printing / PI scanned WIP — Report B's exact per-dept sets (retired + ghost scan activity incl.).
-  _rptBDeptSet('printing', U).forEach(bn => { const R=_rptBRow(bn,'printing',U); stageWIP['printing']+=R.wip; stageQtyL['printing']+=R.wipQty; });
-  _rptBDeptSet('pi', U).forEach(bn => { const R=_rptBRow(bn,'pi',U); stageWIP['pi']+=R.wip; stageQtyL['pi']+=R.wipQty; });
+  _rptBDeptSet('printing', U).forEach(bn => { const R=_rptBRow(bn,'printing',U); stageWIP['printing']+=R.wip; stageQtyL['printing']+=R.wipQty; if(R.frozenHere)_stageFrozen['printing']=true; });
+  _rptBDeptSet('pi', U).forEach(bn => { const R=_rptBRow(bn,'pi',U); stageWIP['pi']+=R.wip; stageQtyL['pi']+=R.wipQty; if(R.frozenHere)_stageFrozen['pi']=true; });
   // Packing scanned + Report F handover gaps iterate the production-month batch list (unchanged —
   // Report F printing/PI/packing unscanned already reconcile and must NOT be disturbed).
   const _topBatches = state.batches
@@ -11541,7 +11578,7 @@ function _v45sTopTableData(){
   } else if (typeof _rptH_loadGapCounts==='function') {
     _rptH_loadGapCounts();
   }
-  return { stages, _RL, stageWIP, stageQtyL, stageUnscanned, stageUnscannedL, _gapSrv, _topBatches };
+  return { stages, _RL, stageWIP, stageQtyL, stageUnscanned, stageUnscannedL, _gapSrv, _topBatches, _stageFrozen };
 }
 
 function _v41_renderReportDInner(){
@@ -11564,7 +11601,7 @@ function _v41_renderReportDInner(){
   };
   const totalGross=monthBatches.reduce((s,b)=>s+_grossForD(b),0);
   // v45ZT: stage rows now come from the SHARED helper (identical to the Excel export).
-  const { stages, _RL:_stageRowLabels, stageWIP, stageQtyL, stageUnscanned, stageUnscannedL, _gapSrv } = _v45sTopTableData();
+  const { stages, _RL:_stageRowLabels, stageWIP, stageQtyL, stageUnscanned, stageUnscannedL, _gapSrv, _stageFrozen } = _v45sTopTableData();
   const totalAGrade=monthBatches.reduce((s,b)=>{
     const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');
     return s+ag.aGrade;
@@ -11612,7 +11649,7 @@ function _v41_renderReportDInner(){
       const unsB=stageUnscanned[dept];
       const unsL=stageUnscannedL[dept];
       const totWip=qty+unsL;
-      return `<tr><td class="fw-bold">${_RL[dept]||dept}</td><td class="td-mono text-right">${wip}</td><td class="td-mono text-right">${fmt(qty)}</td><td class="td-mono text-right ${unsB>0?'amber':''}">${unsB>0?unsB:'—'}</td><td class="td-mono text-right ${unsL>0?'amber':''}">${unsL>0?fmt(unsL):'—'}</td><td class="td-mono text-right fw-bold">${fmt(totWip)}</td><td class="td-mono text-right">${_grandWip>0?fmt(totWip/_grandWip*100,1):0}%</td></tr>`;
+      return `<tr><td class="fw-bold">${_RL[dept]||dept}${_frozenBadge(!!(_stageFrozen&&_stageFrozen[dept]),'This stage total includes reconciled frozen (unpacked) WIP — parked here from the batch\'s scan trail; not ordinary live WIP.')}</td><td class="td-mono text-right">${wip}</td><td class="td-mono text-right">${fmt(qty)}</td><td class="td-mono text-right ${unsB>0?'amber':''}">${unsB>0?unsB:'—'}</td><td class="td-mono text-right ${unsL>0?'amber':''}">${unsL>0?fmt(unsL):'—'}</td><td class="td-mono text-right fw-bold">${fmt(totWip)}</td><td class="td-mono text-right">${_grandWip>0?fmt(totWip/_grandWip*100,1):0}%</td></tr>`;
     }).join(''); })()}
     </tbody>
     <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono text-right">${_totBoxes}</td><td class="td-mono text-right">${fmt(_totQtyL)}</td><td class="td-mono text-right">${_totUnsB>0?_totUnsB:'—'}</td><td class="td-mono text-right">${_totUnsL>0?fmt(_totUnsL):'—'}</td><td class="td-mono text-right">${fmt(_grandWip)}</td><td class="td-mono text-right">${_grandWip>0?'100.0':'0'}%</td></tr></tfoot>
