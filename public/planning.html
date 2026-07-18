@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47Y</p>
+      <p>Planning Suite v3.0 · build v47Z</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6699,6 +6699,25 @@ function _v40_openConsolidatedApprovalModal() {
   _v40_renderConsolidatedApprovalModalBody();
 }
 
+// v47Z (Ishan #2): live-recompute the box count when the DM amends the invoice qty in the Review &
+// Approve modal. Was static (${it.boxes}) so an up/down qty revision left boxes stale and scan-out could
+// never reconcile. Boxes = ceil(amended qty × 100000 / size-wise pack size); an unchanged qty restores the
+// actual packed box count. Generation reads the same recompute independently, so this is display-only.
+function _v47zRecalcInvBoxes(idx){
+  const ctx = window._v40_approvalContext; if(!ctx || !ctx.items || !ctx.items[idx]) return;
+  const it = ctx.items[idx];
+  const qi = document.getElementById('v40-conf-qty-'+idx);
+  const bx = document.getElementById('v40-conf-boxes-'+idx);
+  if(!qi || !bx) return;
+  const qty = parseFloat(qi.value);
+  if(!Number.isFinite(qty)){ return; }
+  let boxes = it.boxes;
+  if(Math.abs(qty - it.qtyLakhs) > 0.0005){
+    const ps = (state.packSizes && state.packSizes[it.size]) || 100000;
+    boxes = Math.max(0, Math.ceil((qty||0)*100000/ps));
+  }
+  bx.textContent = boxes;
+}
 function _v40_renderConsolidatedApprovalModalBody() {
   const ctx = window._v40_approvalContext;
   if (!ctx || !ctx.items) return;
@@ -6743,10 +6762,10 @@ function _v40_renderConsolidatedApprovalModalBody() {
         <td style="padding:5px 8px;font-size:11px">${(it.customer||'').substring(0,30)}</td>
         <td style="padding:5px 8px;font-family:var(--mono);font-size:11px;color:#0891b2;font-weight:600">${it.sapDocNum || '—'}</td>
         <td style="padding:5px 8px;font-family:var(--mono);font-size:11px">${it.pcCode || '—'}</td>
-        <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:11px;white-space:nowrap">${it.boxes}${shortWarn}</td>
+        <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:11px;white-space:nowrap"><span id="v40-conf-boxes-${idx}">${it.boxes}</span>${shortWarn}</td>
         <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:11px;font-weight:600">
           ${results ? it.qtyLakhs.toFixed(3) :
-            `<input type="number" step="0.001" min="0" value="${it.qtyLakhs.toFixed(3)}" id="v40-conf-qty-${idx}" style="width:70px;text-align:right;background:var(--surface3);border:1px solid var(--border);border-radius:3px;padding:2px 4px;font-family:var(--mono);font-size:11px">`}
+            `<input type="number" step="0.001" min="0" value="${it.qtyLakhs.toFixed(3)}" id="v40-conf-qty-${idx}" oninput="_v47zRecalcInvBoxes(${idx})" style="width:70px;text-align:right;background:var(--surface3);border:1px solid var(--border);border-radius:3px;padding:2px 4px;font-family:var(--mono);font-size:11px">`}
         </td>
         <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:11px">${it.truckNumber || '—'}</td>
       </tr>`;
@@ -6861,7 +6880,14 @@ async function _v40_submitConsolidated() {
     if (cb && !cb.checked) return;
     const qtyInput = document.getElementById('v40-conf-qty-' + idx);
     const qty = qtyInput ? parseFloat(qtyInput.value) : it.qtyLakhs;
-    toSend.push({ ...it, qtyLakhs: qty });
+    // v47Z (Ishan #2): if the DM amended the qty, recompute boxes from the amended qty × size-wise pack
+    // size so scan-out reconciles; an unchanged qty keeps the actual packed box count.
+    let boxes = it.boxes;
+    if (qtyInput && Number.isFinite(qty) && Math.abs(qty - it.qtyLakhs) > 0.0005) {
+      const ps = (state.packSizes && state.packSizes[it.size]) || 100000;
+      boxes = Math.max(0, Math.ceil((qty || 0) * 100000 / ps));
+    }
+    toSend.push({ ...it, qtyLakhs: qty, boxes });
   });
   if (toSend.length === 0) {
     alert('No batches checked. Tick at least one to proceed.');
@@ -10447,6 +10473,7 @@ function renderTruckOrdersTable(truck) {
         <th style="padding:4px 8px;text-align:left">Customer</th>
         <th style="padding:4px 8px;text-align:left">Batch</th>
         <th style="padding:4px 8px;text-align:left">PC Code</th>
+        <th style="padding:4px 8px;text-align:left">Colour</th>
         <th style="padding:4px 8px;text-align:left" title="Month when production began (from production order start date)">Month of Production</th>
         <th style="padding:4px 8px;text-align:right">Boxes</th>
         <th style="padding:4px 8px;text-align:right">Packed</th>
@@ -10516,6 +10543,7 @@ function renderTruckOrdersTable(truck) {
                 title="Click to view batch tracking summary">${p.batchNumber||'-'}</span>
             </td>
             <td style="padding:5px 8px;font-family:var(--mono);font-size:11px;color:var(--accent)">${p.pcCode||'-'}</td>
+            <td style="padding:5px 8px">${p.colour||'-'}</td>
             <td style="padding:5px 8px;font-family:var(--mono);font-size:11px" title="Month when production began">${(()=>{ const ym = getPlanProdMonth(p); return ym ? prodMonthLabel(ym) : '—'; })()}</td>
             <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${p.boxes||0}</td>
             <td style="padding:5px 8px;text-align:right;font-family:var(--mono);color:var(--accent2)">${packed}</td>
@@ -10734,8 +10762,8 @@ function toggleExportMenu() {
 
 // ── Helper: dispatch row to export object ─────────────────────
 function dispatchRowObj(p) {
-  // v47W (Ishan #5): 'Dispatched (Lakhs)' moved to sit immediately AFTER 'Boxes' to mirror the on-screen
-  // Dispatch Plan table column order. Values unchanged.
+  // v47W: 'Dispatched (Lakhs)' after 'Boxes'. v47Z (Ishan #1): add Packed qty + Packed boxes immediately
+  // before the dispatched section, so the export mirrors the on-screen PACKED column.
   return {
     'Customer': p.customer || '',
     'Batch No': p.batchNumber || '',
@@ -10746,6 +10774,8 @@ function dispatchRowObj(p) {
     'Zone': p.zone || '',
     'Qty (Lakhs)': fmt(p.qty),
     'Boxes': p.boxes || '',
+    'Packed (Lakhs)': fmt(p.packedQty || 0),
+    'Packed Boxes': p.packedBoxes || 0,
     'Dispatched (Lakhs)': fmt(p.actualDispatched || 0),
     'Planned Dispatch Date': p.plannedDate ? fmtDate(p.plannedDate) : 'Pending',
     'Date Status': p.dateManuallySet ? 'Manual' : (p.tentative ? 'Tentative' : 'Confirmed'),
@@ -10764,10 +10794,13 @@ function exportDispatchPlan() {
   // v47W (Ishan #5): append a TOTAL row so the sheet is summable (Qty / Boxes / Dispatched / Balance).
   const tQty  = plans.reduce((s,p)=>s+(p.qty||0),0);
   const tBox  = plans.reduce((s,p)=>s+(p.boxes||0),0);
+  const tPkQ  = plans.reduce((s,p)=>s+(p.packedQty||0),0);
+  const tPkB  = plans.reduce((s,p)=>s+(p.packedBoxes||0),0);
   const tDisp = plans.reduce((s,p)=>s+(p.actualDispatched||0),0);
   rows.push({
     'Customer':'TOTAL','Batch No':'','PC Code':'','Colour':'','Size':'','PTD/UP':'','Zone':'',
-    'Qty (Lakhs)': fmt(tQty), 'Boxes': tBox, 'Dispatched (Lakhs)': fmt(tDisp),
+    'Qty (Lakhs)': fmt(tQty), 'Boxes': tBox, 'Packed (Lakhs)': fmt(tPkQ), 'Packed Boxes': tPkB,
+    'Dispatched (Lakhs)': fmt(tDisp),
     'Planned Dispatch Date':'','Date Status':'', 'Balance (Lakhs)': fmt(tQty - tDisp),
     'Status': `${plans.filter(p=>p.status==='dispatched').length}/${plans.length} dispatched`, 'Remarks':''
   });

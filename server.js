@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47Y';
+const APP_BUILD = 'v47Z';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -5897,13 +5897,18 @@ app.get('/api/invoice/scan-session/:invoiceId', async (req, res) => {
       const r = await pgPool.query(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE invoice_id=$1`, [id]);
       row = r.rows[0];
       if (!row && batch) {
-        // v47L: the invoice id may have changed on a re-pull — restore the batch's most-recent session
-        const rb = await pgPool.query(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE batch_number=$1 ORDER BY saved_at DESC LIMIT 1`, [batch]);
+        // v47L: the invoice id may have changed on a re-pull — restore the batch's most-recent session.
+        // v47Z (Ishan): but for a batch with MULTIPLE invoices, this must NOT pull an ALREADY-DISPATCHED
+        // invoice's session into a fresh one (that made the 2nd invoice for a batch start pre-loaded with
+        // the 1st invoice's dispatched boxes → cap = new total − prior scanned, i.e. cumulative not
+        // additive). Exclude sessions whose invoice is dispatched; id-churn on a still-pending invoice
+        // (or an orphaned session with no matching invoice) is unaffected.
+        const rb = await pgPool.query(`SELECT ss.scanned_json, ss.saved_at FROM invoice_scan_sessions ss LEFT JOIN invoices_received iv ON iv.id = ss.invoice_id WHERE ss.batch_number=$1 AND COALESCE(iv.dispatch_status,'') <> 'dispatched' ORDER BY ss.saved_at DESC LIMIT 1`, [batch]);
         row = rb.rows[0];
       }
     } else {
       row = db.prepare(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE invoice_id=?`).get(id);
-      if (!row && batch) row = db.prepare(`SELECT scanned_json, saved_at FROM invoice_scan_sessions WHERE batch_number=? ORDER BY saved_at DESC LIMIT 1`).get(batch);
+      if (!row && batch) row = db.prepare(`SELECT ss.scanned_json, ss.saved_at FROM invoice_scan_sessions ss LEFT JOIN invoices_received iv ON iv.id = ss.invoice_id WHERE ss.batch_number=? AND COALESCE(iv.dispatch_status,'') <> 'dispatched' ORDER BY ss.saved_at DESC LIMIT 1`).get(batch);
     }
     if (!row) return res.json({ ok: true, scanned: [] });
     const scanned = JSON.parse(row.scanned_json || '[]');
