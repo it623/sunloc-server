@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47U';
+const APP_BUILD = 'v47V';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -5618,7 +5618,23 @@ function _v44zj_parseAllocations(body, inv) {
   let allocations = Array.isArray(body && body.allocations) ? body.allocations : null;
   if (!allocations) {
     const bn = (body && body.batchNumber && String(body.batchNumber).trim()) ? String(body.batchNumber).trim() : (inv.batch_number || '');
-    allocations = bn ? [{ batch: bn, qty: parseFloat(inv.total_qty_lakhs) || 0, boxes: parseInt(inv.total_boxes, 10) || 0 }] : [];
+    // v47V: the default (no explicit per-batch allocations) may assign the whole invoice total to ONE
+    // batch ONLY when the invoice is genuinely single-batch. For a MULTI-batch invoice regularised
+    // against a single target batch, the full total is wrong — that dumped the bulk invoice inv_44812's
+    // 362.25L onto 26X082 (the "362L phantom" dispatch record). Instead resolve that batch's OWN
+    // DocumentLine qty/boxes from the invoice payload; if it can't be resolved, 0 (which then fails the
+    // qty>0 check below, forcing an explicit allocation) — never the full total. This mirrors the v46H
+    // per-batch split on the normal dispatch route. Single-batch invoices are byte-for-byte unchanged.
+    const _invBatches47v = String(inv.batch_number || '').split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    let _qty47v = parseFloat(inv.total_qty_lakhs) || 0;
+    let _boxes47v = parseInt(inv.total_boxes, 10) || 0;
+    if (_invBatches47v.length > 1 && bn && !/[\s,]/.test(bn)) {
+      let _pl47v = null; try { _pl47v = inv.payload_json ? JSON.parse(inv.payload_json) : null; } catch { _pl47v = null; }
+      const _d47v = _pl47v ? _lineDispatchForBatch(_pl47v, bn) : null;
+      if (_d47v) { const _qb47v = _dispatchQtyBoxes(bn, _d47v.qty, _d47v.boxes); _qty47v = _qb47v.qty; _boxes47v = _qb47v.boxes; }
+      else { _qty47v = 0; _boxes47v = 0; }
+    }
+    allocations = bn ? [{ batch: bn, qty: _qty47v, boxes: _boxes47v }] : [];
   }
   const clean = [];
   for (const a of (allocations || [])) {
