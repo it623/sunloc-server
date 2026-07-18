@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47V</p>
+      <p>Planning Suite v3.0 · build v47W</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -10747,6 +10747,8 @@ function toggleExportMenu() {
 
 // ── Helper: dispatch row to export object ─────────────────────
 function dispatchRowObj(p) {
+  // v47W (Ishan #5): 'Dispatched (Lakhs)' moved to sit immediately AFTER 'Boxes' to mirror the on-screen
+  // Dispatch Plan table column order. Values unchanged.
   return {
     'Customer': p.customer || '',
     'Batch No': p.batchNumber || '',
@@ -10757,9 +10759,9 @@ function dispatchRowObj(p) {
     'Zone': p.zone || '',
     'Qty (Lakhs)': fmt(p.qty),
     'Boxes': p.boxes || '',
+    'Dispatched (Lakhs)': fmt(p.actualDispatched || 0),
     'Planned Dispatch Date': p.plannedDate ? fmtDate(p.plannedDate) : 'Pending',
     'Date Status': p.dateManuallySet ? 'Manual' : (p.tentative ? 'Tentative' : 'Confirmed'),
-    'Dispatched (Lakhs)': fmt(p.actualDispatched || 0),
     'Balance (Lakhs)': fmt((p.qty || 0) - (p.actualDispatched || 0)),
     'Status': p.status || '',
     'Remarks': p.remarks || ''
@@ -10768,9 +10770,20 @@ function dispatchRowObj(p) {
 
 // 1. FULL DISPATCH PLAN (existing — updated with tentative col)
 function exportDispatchPlan() {
-  const rows = state.dispatchPlans
-    .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate))
-    .map(p => dispatchRowObj(p));
+  const plans = state.dispatchPlans
+    .slice()
+    .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
+  const rows = plans.map(p => dispatchRowObj(p));
+  // v47W (Ishan #5): append a TOTAL row so the sheet is summable (Qty / Boxes / Dispatched / Balance).
+  const tQty  = plans.reduce((s,p)=>s+(p.qty||0),0);
+  const tBox  = plans.reduce((s,p)=>s+(p.boxes||0),0);
+  const tDisp = plans.reduce((s,p)=>s+(p.actualDispatched||0),0);
+  rows.push({
+    'Customer':'TOTAL','Batch No':'','PC Code':'','Colour':'','Size':'','PTD/UP':'','Zone':'',
+    'Qty (Lakhs)': fmt(tQty), 'Boxes': tBox, 'Dispatched (Lakhs)': fmt(tDisp),
+    'Planned Dispatch Date':'','Date Status':'', 'Balance (Lakhs)': fmt(tQty - tDisp),
+    'Status': `${plans.filter(p=>p.status==='dispatched').length}/${plans.length} dispatched`, 'Remarks':''
+  });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Dispatch Plan');
   XLSX.writeFile(wb, `Sunloc_Dispatch_Plan_${new Date().toISOString().slice(0,10)}.xlsx`);

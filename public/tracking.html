@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47V</title>
+<title>Sunloc Tracking Suite v1.0 · build v47W</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47V</p>
+      <p>Tracking Suite v1.0 · build v47W</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47V</p>
+      <p>Tracking Suite v1.0 · build v47W</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -6680,6 +6680,27 @@ async function _v41_fetchPendingReconciliationCount() {
   }
 }
 
+// v47W (Ishan #2): cancel a stale pending-reconciliation request directly from the modal. Uses the
+// existing /api/invoice/cancel-request, which REFUSES if a real SAP invoice is already linked — so it
+// can only clear rows SAP never fulfilled (exactly the stale "Awaiting SAP" ones). Refreshes the modal
+// and the pending badge on success.
+async function _v47wCancelRequest(requestId, batchNumber){
+  if (!requestId) return;
+  if (!confirm(`Cancel the pending invoice request for batch ${batchNumber||requestId}?\n\nThis removes it from the reconciliation queue. Allowed only while SAP has not yet created the invoice.`)) return;
+  try {
+    const r = await fetch('/api/invoice/cancel-request', {
+      method: 'POST',
+      headers: { 'Content-Type':'application/json', 'x-sunloc-role': currentDept || '', 'x-sunloc-user': currentDept || '' },
+      body: JSON.stringify({ requestId })
+    });
+    const j = await r.json().catch(()=>({}));
+    if (!r.ok || !j.ok) { alert('Could not cancel: ' + (j.error || r.statusText || 'unknown error')); return; }
+    if (typeof _v41_fetchPendingReconciliationCount === 'function') { try { await _v41_fetchPendingReconciliationCount(); } catch {} }
+    if (typeof _v41_openPendingReconciliationModal === 'function') { try { await _v41_openPendingReconciliationModal(); } catch {} }
+  } catch (e) {
+    alert('Could not cancel: ' + e.message);
+  }
+}
 async function _v41_openPendingReconciliationModal() {
   await _v41_fetchPendingReconciliationCount();
   const items = window._v41_pendingReconciliation || [];
@@ -6705,6 +6726,7 @@ async function _v41_openPendingReconciliationModal() {
             <th style="text-align:right;padding:6px 8px">Boxes</th>
             <th style="text-align:center;padding:6px 8px">Created</th>
             <th style="text-align:center;padding:6px 8px">Status</th>
+            <th style="text-align:center;padding:6px 8px">Action</th>
           </tr></thead>
         <tbody>${items.map(it => `<tr style="border-bottom:1px solid var(--border)">
           <td style="padding:5px 8px;font-family:var(--mono);font-weight:600">${it.batch_number||'—'}</td>
@@ -6714,8 +6736,9 @@ async function _v41_openPendingReconciliationModal() {
           <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${it.boxes||0}</td>
           <td style="padding:5px 8px;text-align:center;font-size:11px;color:var(--text3)">${(it.created_at||'').slice(0,16)}</td>
           <td style="padding:5px 8px;text-align:center">${it.is_overdispatch_approved ? '<span style="background:rgba(245,158,11,0.15);color:#d97706;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⚠️ Over 115%</span>' : '<span style="background:rgba(99,102,241,0.15);color:#4f46e5;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⏳ Awaiting SAP</span>'}</td>
+          <td style="padding:5px 8px;text-align:center">${it.id ? `<button onclick="_v47wCancelRequest('${it.id}','${(it.batch_number||'').replace(/'/g,"\\'")}')" style="background:rgba(220,38,38,0.1);color:#dc2626;border:1px solid rgba(220,38,38,0.35);border-radius:4px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer">Cancel</button>` : '—'}</td>
         </tr>`).join('')}</tbody>
-        <tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td colspan="3" style="padding:6px 8px">TOTAL · ${items.length}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tQty.toFixed(2)}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tBoxes}</td><td colspan="2"></td></tr></tfoot>
+        <tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td colspan="3" style="padding:6px 8px">TOTAL · ${items.length}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tQty.toFixed(2)}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tBoxes}</td><td colspan="3"></td></tr></tfoot>
       </table></div>`;
       })();
   openTrackingModal('⏳ Invoices Pending SAP Reconciliation', `
@@ -13657,10 +13680,16 @@ function renderReportK(targetId) {
     // packInBoxes above (which stays authoritative for the balance/aging math: a June-packed batch
     // still dispatching in July must keep its full pack-in). Same state.scans window limitation as
     // the Packing ledger, so the two move together by construction.
-    const packInWindowBoxes = d.packInScans.filter(s => {
+    // v47W (Ishan #3): once a batch's full scan history is loaded (on drill-down expand), use it for the
+    // period window too, so "Pack In (Period)" agrees with the now-complete drill-down list. Batches not yet
+    // expanded keep the windowed state.scans approximation.
+    const _pkWinSrc = (window._v47wFullScans || {})[bn]
+      ? (window._v47wFullScans[bn]).filter(s => s.dept === 'packing' && s.type === 'in')
+      : d.packInScans;
+    const packInWindowBoxes = _pkWinSrc.filter(s => {
       const k = _istDayKey(s.ts); return k && k >= fromDate && k <= toDate;
     }).length;
-    const packInWindowQty = d.packInScans.filter(s => { const k=_istDayKey(s.ts); return k && k>=fromDate && k<=toDate; }).reduce((a,s)=>a+_boxLakh(s,size),0);  // v47G: per-box sum over the windowed pack-in scans
+    const packInWindowQty = _pkWinSrc.filter(s => { const k=_istDayKey(s.ts); return k && k>=fromDate && k<=toDate; }).reduce((a,s)=>a+_boxLakh(s,size),0);  // v47G: per-box sum over the windowed pack-in scans
     // Days in inventory: lastDispOut − firstPackIn (if both exist)
     let daysInInv = null;
     if (firstPackIn && lastDispOut) {
@@ -13808,7 +13837,7 @@ function renderReportK(targetId) {
                 const isExpanded = window._reportKExpandedBatch === r.batchNo;
                 const statusLabel = r.status.replace('_', ' ').replace('stale', 'STALE');
                 return `
-                <tr style="cursor:pointer" onclick="window._reportKExpandedBatch=(window._reportKExpandedBatch==='${r.batchNo}'?null:'${r.batchNo}');renderReportK('${containerId}')">
+                <tr style="cursor:pointer" onclick="_v47wToggleReportKRow('${r.batchNo}','${containerId}')">
                   <td style="text-align:center;color:var(--text3);font-size:14px">${isExpanded ? '▼' : '▶'}</td>
                   <td class="td-bold td-mono" style="color:#0891b2">${r.batchNo}</td>
                   <td class="text-sm">${r.customer}</td>
@@ -13857,10 +13886,34 @@ function renderReportK(targetId) {
   }
 }
 
+// v47W (Ishan #3): lazy loader for a batch's FULL scan history. The drill-down list was built from the
+// recency-windowed state.scans; on first expand we fetch every non-reversed scan for the batch, cache it,
+// and re-render so the list is complete (e.g. 26ZD104 now shows all 20 pack-in scans, not 7). Any fetch
+// failure silently keeps the existing windowed list — no regression.
+window._v47wFullScans = window._v47wFullScans || {};
+async function _v47wToggleReportKRow(batchNo, containerId){
+  const wasExpanded = window._reportKExpandedBatch === batchNo;
+  window._reportKExpandedBatch = wasExpanded ? null : batchNo;
+  renderReportK(containerId);
+  if (!wasExpanded && !window._v47wFullScans[batchNo]) {
+    try {
+      const resp = await fetch('/api/tracking/batch-scans/' + encodeURIComponent(batchNo));
+      const j = await resp.json().catch(() => null);
+      if (j && j.ok && Array.isArray(j.scans)) {
+        window._v47wFullScans[batchNo] = j.scans;
+        if (window._reportKExpandedBatch === batchNo) renderReportK(containerId);
+      }
+    } catch (e) { /* keep the windowed list — no regression */ }
+  }
+}
 // v40 Phase 18.10: render the drill-down panel for a single batch
 function _v40_renderReportKDetail(r) {
   const d = r._detail;
   if (!d) return '<div style="font-size:12px;color:var(--text3)">No detail data.</div>';
+  // v47W (Ishan #3): prefer the FULL scan history (loaded on expand) over the windowed state.scans list.
+  const _fullSc = (window._v47wFullScans || {})[r.batchNo];
+  const _packInList  = _fullSc ? _fullSc.filter(s => s.dept === 'packing'  && s.type === 'in')  : d.packInScans;
+  const _dispOutList = _fullSc ? _fullSc.filter(s => s.dept === 'dispatch' && s.type === 'out') : d.dispatchOutScans;
   const fmtTs = (ts) => {
     if (!ts) return '—';
     try { return new Date(ts).toLocaleString(); } catch (e) { return ts; }
@@ -13876,17 +13929,17 @@ function _v40_renderReportKDetail(r) {
     if (s.labelNumber != null && !isNaN(parseInt(s.labelNumber))) { const n = parseInt(s.labelNumber); return n < 0 ? 'E-' + Math.abs(n) : String(Math.abs(n)); }
     return s.labelId || '—';
   };
-  const packInRows = d.packInScans.length === 0
+  const packInRows = _packInList.length === 0
     ? '<tr><td colspan="3" class="text-center text-muted" style="padding:8px">No Pack In scans</td></tr>'
-    : d.packInScans.map((s, i) => `
+    : _packInList.map((s, i) => `
       <tr style="border-bottom:1px dotted var(--border)">
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px;color:var(--text3)">${i+1}</td>
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${_boxOf(s)}</td>
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${fmtTs(s.ts)}</td>
       </tr>`).join('');
-  const dispOutRows = d.dispatchOutScans.length === 0
+  const dispOutRows = _dispOutList.length === 0
     ? '<tr><td colspan="3" class="text-center text-muted" style="padding:8px">No Dispatch Out scans yet</td></tr>'
-    : d.dispatchOutScans.map((s, i) => `
+    : _dispOutList.map((s, i) => `
       <tr style="border-bottom:1px dotted var(--border)">
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px;color:var(--text3)">${i+1}</td>
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${_boxOf(s)}</td>
@@ -13895,7 +13948,7 @@ function _v40_renderReportKDetail(r) {
   return `
     <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
       <div>
-        <div style="font-size:11px;font-weight:700;color:#0e7490;margin-bottom:6px">📥 Pack In Scans (${d.packInScans.length})</div>
+        <div style="font-size:11px;font-weight:700;color:#0e7490;margin-bottom:6px">📥 Pack In Scans (${_packInList.length})</div>
         <table style="width:100%;border:1px solid var(--border);border-radius:4px;font-size:11px">
           <thead style="background:var(--surface3)">
             <tr><th style="padding:4px 8px;text-align:left">#</th><th style="padding:4px 8px;text-align:left">Box / Label</th><th style="padding:4px 8px;text-align:left">Timestamp</th></tr>
@@ -13904,7 +13957,7 @@ function _v40_renderReportKDetail(r) {
         </table>
       </div>
       <div>
-        <div style="font-size:11px;font-weight:700;color:#10b981;margin-bottom:6px">📤 Dispatch Out Scans (${d.dispatchOutScans.length})</div>
+        <div style="font-size:11px;font-weight:700;color:#10b981;margin-bottom:6px">📤 Dispatch Out Scans (${_dispOutList.length})</div>
         <table style="width:100%;border:1px solid var(--border);border-radius:4px;font-size:11px">
           <thead style="background:var(--surface3)">
             <tr><th style="padding:4px 8px;text-align:left">#</th><th style="padding:4px 8px;text-align:left">Box / Label</th><th style="padding:4px 8px;text-align:left">Timestamp</th></tr>

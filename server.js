@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47V';
+const APP_BUILD = 'v47W';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -14243,6 +14243,39 @@ if (typeof process !== 'undefined' && !process.env.SUNLOC_DISABLE_BG_JOBS) {
 // This is the correct data source for all reports — replaces raw scan fetching
 // v37I (restoring v37G): each query is individually guarded so one bad table never takes
 // down the whole endpoint. Without this, a schema gap on any one table would 500 all reports.
+// v47W (Ishan #3): FULL per-batch scan history for the Report K / Dispatch drill-down. The drill-down's
+// scan-by-scan LIST was built from the browser's recency-windowed state.scans, so a batch with 20 pack-in
+// scans could show only the ~7 still cached (26ZD104). The COUNTS were always correct (scan-summary); only
+// the list was short. This returns every NON-REVERSED scan for the batch so the drill-down can show all of
+// them. Same reversal filter as scan-summary. Read-only; nothing else depends on it.
+app.get('/api/tracking/batch-scans/:batch', async (req, res) => {
+  try {
+    const batch = String(req.params.batch || '').trim();
+    if (!batch) return res.status(400).json({ ok: false, error: 'batch required' });
+    let rows;
+    if (pgPool) {
+      rows = (await pgPool.query(
+        `SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts, s.size, s.label_number
+         FROM tracking_scans s
+         WHERE s.batch_number = $1
+           AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id = s.id)
+         ORDER BY s.ts`, [batch])).rows;
+    } else {
+      rows = db.prepare(
+        `SELECT s.id, s.label_id, s.batch_number, s.dept, s.type, s.ts, s.size, s.label_number
+         FROM tracking_scans s
+         WHERE s.batch_number = ?
+           AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id = s.id)
+         ORDER BY s.ts`).all(batch);
+    }
+    res.json({ ok: true, batch, scans: (rows || []).map(r => ({
+      id: r.id, labelId: r.label_id, batchNumber: r.batch_number, dept: r.dept,
+      type: r.type, ts: r.ts, size: r.size, labelNumber: r.label_number
+    })) });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
 app.get('/api/tracking/scan-summary', async (req, res) => {
   try {
     // v45F: optional as-of-date snapshot (cumulative THROUGH the given IST production day) — powers
