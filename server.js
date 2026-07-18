@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47S';
+const APP_BUILD = 'v47U';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -14468,36 +14468,32 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
         _v46k_applyGrossApportionment(monthGross, _splitFams);
         _splitFamsForClient = _splitFams; // v46R #5: surface to client so Report C rolls child→parent
       } catch (e) { console.warn('[v46K] split-gross apportionment skipped (month):', e.message); }
-      // v47S (confirmed by Ishan — reverses v47K precedence): DPR is authoritative on the MONTH-sliced
-      // gross too. Report B/D/E read monthGross in month-attributed mode, and a STALE planning-blob
-      // grossOverride was silently overwriting the real DPR month slice (26ZF113 showed blob 43.25 vs
-      // DPR 47.25). New precedence, mirroring the actualProd injection:
-      //   (a) batch_gross_override (DPR-Edit) — authoritative; now propagates into month mode (was absent);
-      //   (b) the DPR-derived month slice already in monthGross — kept as-is (a real value wins over blob);
-      //   (c) the planning blob — applied ONLY when the batch has neither a DPR-Edit override nor a
-      //       positive DPR month slice (i.e. no DPR data this month to trust), and is not split-family.
-      // Split-family batches keep their apportioned month gross untouched (v47M).
+      // v47T (fixes carry-forward leak reported by Ishan): the planning-blob grossOverride is a whole-batch
+      // TOTAL with no month breakdown, so it must NOT participate in month-scoped gross. In v47S the blob
+      // still filled monthGross for a batch with no DPR production this month — which meant a carry-forward
+      // batch (produced in a prior month, blob set, zero July output) surfaced its full prior-month total as
+      // THIS month's gross, and with no current-month scan-in the entire amount showed as phantom Production
+      // WIP (e.g. 260035/Lucon: gross 49.76L, 0 boxes in, 49.76L WIP). Month-scoped gross is now purely
+      // DPR-derived:
+      //   (a) DPR-Edit batch_gross_override — authoritative, propagated to month mode (kept from v47S);
+      //   (b) the DPR month slice already in monthGross from the actuals query — kept as-is.
+      // The blob no longer fills monthGross at all, so a batch with no current-month DPR production shows
+      // month gross 0 (its prior-month gross/WIP stay counted in the month it was produced). Cumulative
+      // reports are unaffected (they use actualProd/grossSummary). Split-family apportionment untouched.
+      // 26ZC094-type batches are safe: their correct value now lives in batch_gross_override, so it wins via
+      // (a) when they have current-month production and is correctly absent (gross 0) when carried forward.
       try {
         const _splitB47m = new Set();
         for (const _f of (_splitFamsForClient || [])) { if (_f.parentBatch) _splitB47m.add(_f.parentBatch); for (const _c of (_f.children || [])) if (_c.batch) _splitB47m.add(_c.batch); }
         // (a) DPR-Edit override propagates to month mode, for batches that already have a month slice
         //     (a deliberate correction of THIS month's produced batch). Does not manufacture new month
-        //     rows for override-only batches — cross-month/carry-forward scoping is handled elsewhere.
+        //     rows for override-only batches — a carry-forward batch with no current-month DPR stays out.
         for (const _bn of Object.keys(_grossOverride || {})) {
           if (_splitB47m.has(_bn)) continue;
           if (Object.prototype.hasOwnProperty.call(monthGross, _bn)) monthGross[_bn] = _grossOverride[_bn];
         }
-        // (c) planning blob: fills ONLY when no DPR-Edit override and no positive DPR month slice.
-        const _planBlob47k = await getPlanningStateAsync();
-        for (const _o of ((_planBlob47k && _planBlob47k.orders) || [])) {
-          const _b = _o.batchNumber; if (!_b || _splitB47m.has(_b)) continue;
-          const _ov47k = Number(_o.grossOverride);
-          if (!Number.isFinite(_ov47k) || _ov47k < 0) continue;
-          if (Object.prototype.hasOwnProperty.call(_grossOverride, _b)) continue;                        // (a) DPR-Edit wins
-          if (Object.prototype.hasOwnProperty.call(monthGross, _b) && (monthGross[_b] || 0) > 0) continue; // (b) real DPR month slice wins
-          monthGross[_b] = _ov47k;                                                                        // (c) blob fills only when no DPR gross this month
-        }
-      } catch(e) { console.warn('[v47S] month-gross DPR/blob precedence skipped:', e.message); }
+        // (v47T) blob-fill loop removed: the planning blob no longer participates in month-scoped gross.
+      } catch(e) { console.warn('[v47T] month-gross DPR override apply skipped:', e.message); }
     } catch(e) { console.warn('[agrade-by-month] monthGross query failed:', e.message); }
 
     // v47B (confirmed by Ishan): month-scoped WIP box SET per batch/dept — boxes scanned INTO a dept

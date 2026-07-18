@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47S</p>
+      <p>Planning Suite v3.0 · build v47U</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6146,6 +6146,12 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
             r.status === 'pending_reconciliation' || r.status === 'reconciled') {
           e.invoicedQty = (e.invoicedQty || 0) + (parseFloat(r.qty_lakhs) || 0);
           e.invoicedBoxes = (e.invoicedBoxes || 0) + (parseInt(r.boxes, 10) || 0);
+          // v47U: this batch is now credited from the authoritative Sunloc request ledger. The
+          // received-invoice loop below must NOT also add an UNLINKED direct-SAP invoice's qty for it —
+          // that invoice is this request's own SAP fulfilment which merely failed to stamp
+          // invoice_request_id back, so counting both double-counts (26ZD104 70/35, 26ZE101 59.50/29.75,
+          // 26X083 6/3). v47L's "unlinked ⇒ no request" assumption breaks exactly here.
+          e._reqCredited47u = true;
         }
       }
     }
@@ -6180,8 +6186,14 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
         // key, correct for a single-batch key. Never double-counts.
         if (!_linked47r) {
           const e0 = state[String(r.batch_number)];
-          e0.invoicedQty = (e0.invoicedQty || 0) + (parseFloat(r.total_qty_lakhs) || 0);
-          e0.invoicedBoxes = (e0.invoicedBoxes || 0) + (parseInt(r.total_boxes, 10) || 0);
+          // v47U: only add if this batch wasn't already credited from its Sunloc request ledger above.
+          // A batch with a reconciled request + an unlinked SAP invoice of the same qty was being counted
+          // twice; the request is authoritative, so the unlinked fulfilment is skipped here. A genuinely
+          // direct-SAP batch (no request at all — e.g. 26X082) is untouched and still counted here.
+          if (e0 && !e0._reqCredited47u) {
+            e0.invoicedQty = (e0.invoicedQty || 0) + (parseFloat(r.total_qty_lakhs) || 0);
+            e0.invoicedBoxes = (e0.invoicedBoxes || 0) + (parseInt(r.total_boxes, 10) || 0);
+          }
         }
         idToBatch[r.id] = _tgts47r[0];
       }
