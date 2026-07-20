@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v48B</p>
+      <p>Planning Suite v3.0 · build v48D</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6089,6 +6089,20 @@ function _v39_jumpToOrderForBackfill(orderId) {
 window._v39_invoiceState = {};
 window._v39_invoiceStateLoadedAt = 0;
 
+// v48C (Ishan): per-batch ACTUAL dispatched (Lakhs) from the plan/actuals merge. Defined at module
+// scope so `state` here is the GLOBAL planning state (inside _v39_loadInvoiceState it is shadowed by a
+// local invoice-state object). Used to cap a reconciled request's credited qty to what actually shipped.
+function _v48c_dispByBatch() {
+  const m = {};
+  try {
+    (state.dispatchPlans || []).forEach(dp => {
+      if (!dp || !dp.batchNumber) return;
+      m[dp.batchNumber] = (m[dp.batchNumber] || 0) + (parseFloat(dp.actualDispatched) || 0);
+    });
+  } catch (_e) {}
+  return m;
+}
+
 async function _v39_loadInvoiceState({ silent = false } = {}) {
   const baseUrl = (typeof SYNC !== 'undefined' && SYNC._url)
     || localStorage.getItem('sunloc_server_url') || '';
@@ -6129,16 +6143,23 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
         // (now-fixed) false reconcile left the qty counted NOWHERE, so the blue Invoice button re-offered
         // already-requested quantity (26Y058 showed 36.75L instead of 12.25L). The received-invoice loop
         // below now adds qty only for direct-SAP invoices with NO linked request, so this never double-counts.
-        if (r.status === 'pending' || r.status === 'sent_to_sap' ||
-            r.status === 'pending_reconciliation' || r.status === 'reconciled') {
-          e.invoicedQty = (e.invoicedQty || 0) + (parseFloat(r.qty_lakhs) || 0);
-          e.invoicedBoxes = (e.invoicedBoxes || 0) + (parseInt(r.boxes, 10) || 0);
-          // v47U: this batch is now credited from the authoritative Sunloc request ledger. The
-          // received-invoice loop below must NOT also add an UNLINKED direct-SAP invoice's qty for it —
-          // that invoice is this request's own SAP fulfilment which merely failed to stamp
-          // invoice_request_id back, so counting both double-counts (26ZD104 70/35, 26ZE101 59.50/29.75,
-          // 26X083 6/3). v47L's "unlinked ⇒ no request" assumption breaks exactly here.
+        // v48C (Ishan): split the credit by lifecycle. IN-FLIGHT requests (pending / sent /
+        // pending_reconciliation) count their full ASK — we must never re-offer quantity mid-flight.
+        // RECONCILED (completed) requests must count ACTUAL FULFILMENT, not the ask: ZD103 asked 43.75L
+        // but only 33.25L was invoiced/dispatched (multi-batch invoice 1823), and crediting the ask
+        // stranded the 10.5L residual at Balance 0. Reconciled asks are accumulated here and capped to the
+        // batch's actual-dispatched after the loops (finalise step below).
+        if (r.status === 'pending' || r.status === 'sent_to_sap' || r.status === 'pending_reconciliation') {
+          e._pendingAsk   = (e._pendingAsk   || 0) + (parseFloat(r.qty_lakhs) || 0);
+          e._pendingBoxes = (e._pendingBoxes || 0) + (parseInt(r.boxes, 10) || 0);
+          // v47U: this batch is credited from the Sunloc request ledger; the unlinked-invoice loop below
+          // must NOT also add a direct-SAP invoice's qty for it (double-count guard).
           e._reqCredited47u = true;
+        } else if (r.status === 'reconciled') {
+          e._reconciledAsk   = (e._reconciledAsk   || 0) + (parseFloat(r.qty_lakhs) || 0);
+          e._reconciledBoxes = (e._reconciledBoxes || 0) + (parseInt(r.boxes, 10) || 0);
+          e._hasReconciled = true;
+          e._reqCredited47u = true; // still suppress the unlinked-invoice double-count below
         }
       }
     }
@@ -6178,8 +6199,8 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
           // twice; the request is authoritative, so the unlinked fulfilment is skipped here. A genuinely
           // direct-SAP batch (no request at all — e.g. 26X082) is untouched and still counted here.
           if (e0 && !e0._reqCredited47u) {
-            e0.invoicedQty = (e0.invoicedQty || 0) + (parseFloat(r.total_qty_lakhs) || 0);
-            e0.invoicedBoxes = (e0.invoicedBoxes || 0) + (parseInt(r.total_boxes, 10) || 0);
+            e0._unlinkedQty   = (e0._unlinkedQty   || 0) + (parseFloat(r.total_qty_lakhs) || 0);
+            e0._unlinkedBoxes = (e0._unlinkedBoxes || 0) + (parseInt(r.total_boxes, 10) || 0);
           }
         }
         idToBatch[r.id] = _tgts47r[0];
@@ -6195,6 +6216,24 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
         e.scanningTruck = sess.truckNumber;
         e.scanCount = sess.scannedCount;
       }
+    }
+    // v48C (Ishan): finalise per-batch invoicedQty = in-flight asks + actual-fulfilled(reconciled) +
+    // unlinked direct-SAP. The reconciled portion is capped at the batch's ACTUAL dispatched (from the
+    // plan/actuals merge) so a partial fulfilment (ask > dispatched) leaves its residual re-dispatchable;
+    // boxes scale proportionally. When no dispatched figure is available yet, it falls back to the ask —
+    // i.e. the prior behaviour — so this can only ever free stranded residuals, never over-offer.
+    const _dispByBatch = _v48c_dispByBatch();
+    for (const [bn, e] of Object.entries(state)) {
+      let reconQ = e._reconciledAsk || 0, reconB = e._reconciledBoxes || 0;
+      if (e._hasReconciled) {
+        const disp = _dispByBatch[bn];
+        if (disp != null && disp > 0 && disp < reconQ) {
+          reconB = reconQ > 0 ? Math.round((disp / reconQ) * reconB) : 0;
+          reconQ = disp;
+        }
+      }
+      e.invoicedQty   = Math.round(((e._pendingAsk || 0) + reconQ + (e._unlinkedQty || 0)) * 100) / 100;
+      e.invoicedBoxes = (e._pendingBoxes || 0) + reconB + (e._unlinkedBoxes || 0);
     }
     window._v39_invoiceState = state;
     window._v39_invoiceStateLoadedAt = Date.now();

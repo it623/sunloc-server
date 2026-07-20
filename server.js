@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48B';
+const APP_BUILD = 'v48D';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -4854,7 +4854,9 @@ app.get('/api/invoice/requests', async (req, res) => {
     const wheres = [];
     const args = [];
     if (status) { wheres.push(pgPool ? `status = $${args.length+1}` : 'status = ?'); args.push(status); }
-    if (batch) { wheres.push(pgPool ? `batch_number = $${args.length+1}` : 'batch_number = ?'); args.push(batch); }
+    // v48C (Ishan #1, blast radius): same substring fix as /api/invoice/received — a multi-batch request
+    // key or a partial search must still match here (feeds the Invoice-State modal).
+    if (batch) { wheres.push(pgPool ? `batch_number ILIKE $${args.length+1}` : 'batch_number LIKE ?'); args.push('%' + batch + '%'); }
     const whereSql = wheres.length ? 'WHERE ' + wheres.join(' AND ') : '';
     let rows;
     if (pgPool) {
@@ -4885,7 +4887,10 @@ app.get('/api/invoice/received', async (req, res) => {
     const wheres = [];
     const args = [];
     if (status) { wheres.push(pgPool ? `dispatch_status = $${args.length+1}` : 'dispatch_status = ?'); args.push(status); }
-    if (batch) { wheres.push(pgPool ? `batch_number = $${args.length+1}` : 'batch_number = ?'); args.push(batch); }
+    // v48C (Ishan #1): multi-batch invoices store a concatenated batch_number ("26ZD103, 26ZD100"), and a
+    // partial like "26T" is never equal to a full number — an exact match therefore missed both. Substring
+    // match (like the customer filter) so "26ZD103" finds the multi-batch invoice and "26T" finds 26T0xx.
+    if (batch) { wheres.push(pgPool ? `batch_number ILIKE $${args.length+1}` : 'batch_number LIKE ?'); args.push('%' + batch + '%'); }
     if (customer) { wheres.push(pgPool ? `customer ILIKE $${args.length+1}` : 'customer LIKE ?'); args.push('%' + customer + '%'); }
     if (fromDate) { wheres.push(pgPool ? `invoice_date >= $${args.length+1}` : 'invoice_date >= ?'); args.push(fromDate); }
     if (toDate) { wheres.push(pgPool ? `invoice_date <= $${args.length+1}` : 'invoice_date <= ?'); args.push(toDate); }
@@ -5106,6 +5111,8 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
         const a = _dispAllocs[_i];
         const rid = _i === 0 ? recId : ('disprec_' + crypto.randomBytes(6).toString('hex'));
         const rmk = (remarks || '') + (a.flagged ? ' [v46H: batch line unresolved in invoice — needs re-allocation]' : '');
+        // v48D (Ishan): double-fire guard — skip this allocation if an identical record already exists.
+        if (await _isDuplicateDispatch(a.batch, inv.sap_doc_num || '', a.boxes, a.qty)) continue;
         if (pgPool) {
           await pgPool.query(
             `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
@@ -5585,6 +5592,10 @@ async function _applyRegularisation(inv, clean, who, ts, rsn) {
 
   let firstRecId = null;
   for (const c of clean) {
+    // v48D (Ishan): double-fire guard — skip this allocation if an identical record already exists (the
+    // ZF097/1692 exact-dupe originated on this regularise path). firstRecId is only set on a real insert,
+    // so the invoice→record link below still resolves to the surviving record.
+    if (await _isDuplicateDispatch(c.batch, inv.sap_doc_num || '', c.boxes, c.qty)) continue;
     const recId = 'disprec_' + crypto.randomBytes(6).toString('hex');
     if (!firstRecId) firstRecId = recId;
     const recRemarks = 'Regularised[inv:' + invId + ']: ' + rsn;
@@ -6062,6 +6073,11 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
       const _sLabels = Array.isArray(b.scannedLabels)
         ? JSON.stringify(b.scannedLabels.map(s => ({ labelId: s.labelId || null, boxNumber: (s.boxNumber != null ? s.boxNumber : null), batchNumber: s.batchNumber || inv.batch_number, size: s.size || null })))
         : '[]';
+      // v48D (Ishan): double-fire guard — skip this invoice's insert if an identical record already exists.
+      if (await _isDuplicateDispatch(inv.batch_number, inv.sap_doc_num || '', boxes, qty)) {
+        results.push({ invoiceId: invId, ok: true, skipped: true, reason: 'identical dispatch record already exists (duplicate suppressed)' });
+        continue;
+      }
       try {
         if (pgPool) {
           await pgPool.query(
@@ -6325,8 +6341,14 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
     const ts = new Date().toISOString();
     const dispatchRemarks = `DEEMED: ${reason}${remarks ? ' | ' + remarks : ''}`;
     // Insert dispatch record
+    // v48D (Ishan): a double-fire of this regularise must not create a 2nd identical record — the
+    // 26ZF097/1692 exact-dupe originated here. Skip the insert idempotently if one already exists; the
+    // rest of the flow (marking the invoice dispatched) still runs so a partial first fire self-heals.
+    const _dupDeemed = await _isDuplicateDispatch(inv.batch_number, inv.sap_doc_num || '', boxes, qtyLakhs);
     try {
-      if (pgPool) {
+      if (_dupDeemed) {
+        /* identical dispatch record already exists — suppress duplicate insert */
+      } else if (pgPool) {
         await pgPool.query(
           `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
@@ -14275,18 +14297,22 @@ app.get('/api/tracking/dispatch-period-summary', async (req, res) => {
       const [pin, dos, drec] = await Promise.all([
         pgPool.query(scanQ('packing','in'), [lo,hi]),
         pgPool.query(scanQ('dispatch','out'), [lo,hi]),
-        pgPool.query(`SELECT batch_number bn, COALESCE(SUM(boxes),0) boxes, COALESCE(SUM(qty),0) qty FROM tracking_dispatch_records WHERE ${pday('ts')} BETWEEN $1::date AND $2::date GROUP BY batch_number`, [lo,hi]),
+        pgPool.query(`SELECT batch_number bn, boxes, qty FROM tracking_dispatch_records WHERE ${pday('ts')} BETWEEN $1::date AND $2::date`, [lo,hi]),
       ]);
       pin.rows.forEach(r=>{ add(r.bn,'packInBoxes',r.boxes); add(r.bn,'packInQty',r.qty); });
       dos.rows.forEach(r=>{ add(r.bn,'dispOutBoxes',r.boxes); add(r.bn,'dispOutQty',r.qty); });
-      drec.rows.forEach(r=>{ add(r.bn,'dispOutBoxes',r.boxes); add(r.bn,'dispOutQty',r.qty); });
+      // v48D (Ishan): correct EXPORT dispatch records PER-RECORD on read. Old/pre-v46U rows stored capsule
+      // counts in `boxes` and THOUSAND (not LAKH) in `qty`, so summing raw inflated Report G's dispatch-out
+      // (the impossible 86508 boxes). _dispatchQtyBoxes recalibrates export qty (÷100) and derives boxes from
+      // qty/pack-size — the same rule applied at insert — while domestic/normal rows pass through unchanged.
+      drec.rows.forEach(r=>{ const c=_dispatchQtyBoxes(r.bn, r.qty, r.boxes); add(r.bn,'dispOutBoxes',c.boxes); add(r.bn,'dispOutQty',c.qty); });
     } else {
       const pday = col => `date(datetime(${col}, '-30 minutes'))`;
       const rev = `NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`;
       const scanQ = (dept,type) => `SELECT s.batch_number bn, COUNT(*) boxes, COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id WHERE s.dept='${dept}' AND s.type='${type}' AND ${rev} AND ${pday('s.ts')} BETWEEN ? AND ? GROUP BY s.batch_number`;
       db.prepare(scanQ('packing','in')).all(lo,hi).forEach(r=>{ add(r.bn,'packInBoxes',r.boxes); add(r.bn,'packInQty',r.qty); });
       db.prepare(scanQ('dispatch','out')).all(lo,hi).forEach(r=>{ add(r.bn,'dispOutBoxes',r.boxes); add(r.bn,'dispOutQty',r.qty); });
-      db.prepare(`SELECT batch_number bn, COALESCE(SUM(boxes),0) boxes, COALESCE(SUM(qty),0) qty FROM tracking_dispatch_records WHERE ${pday('ts')} BETWEEN ? AND ? GROUP BY batch_number`).all(lo,hi).forEach(r=>{ add(r.bn,'dispOutBoxes',r.boxes); add(r.bn,'dispOutQty',r.qty); });
+      db.prepare(`SELECT batch_number bn, boxes, qty FROM tracking_dispatch_records WHERE ${pday('ts')} BETWEEN ? AND ?`).all(lo,hi).forEach(r=>{ const c=_dispatchQtyBoxes(r.bn, r.qty, r.boxes); add(r.bn,'dispOutBoxes',c.boxes); add(r.bn,'dispOutQty',c.qty); });
     }
     res.json({ ok:true, from:lo, to:hi, batches: out });
   } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
@@ -15653,6 +15679,13 @@ app.post('/api/tracking/dispatch-record', async (req, res) => {
     const batchNumber = record.batchNumber||record.batch_number;
     const vehicleNo = record.vehicleNo||record.vehicle_no||null;
     const invoiceNo = record.invoiceNo||record.invoice_no||null;
+    // v48D (Ishan): ON CONFLICT(id) only stops a same-id resend; a double-fire that generates a NEW id
+    // for the same logical dispatch would still duplicate. Skip idempotently if an identical record
+    // (same batch + invoice + boxes + qty) already exists.
+    if (await _isDuplicateDispatch(batchNumber, invoiceNo, record.boxes, record.qty)) {
+      const totalQty = await _recomputeDispatchActuals(batchNumber, vehicleNo, invoiceNo);
+      return res.json({ok:true, skipped:true, totalQty});
+    }
     if (pgPool) {
       await pgPool.query(`INSERT INTO tracking_dispatch_records (id,batch_number,customer,qty,boxes,vehicle_no,invoice_no,remarks,ts,"by") VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
         [record.id, batchNumber, record.customer||null, record.qty, record.boxes, vehicleNo, invoiceNo, record.remarks||null, record.ts, record.by||null]);
@@ -16478,6 +16511,96 @@ app.post('/api/tracking/reconcile-wip-clear', async (req, res) => {
     res.json({ ok:true, scansDeleted, wasteDeleted });
   } catch(err) {
     console.error('[reconcile-wip-clear]', err.message);
+    res.status(500).json({ ok:false, error: err.message });
+  }
+});
+
+// v48D (Ishan): idempotency guard — true if an identical dispatch record already exists (same
+// batch_number + invoice_no + boxes + rounded qty). A single invoice never legitimately produces two
+// identical records for a batch, so a match means a double-fire (double-click / retry). Called before
+// the interactive dispatch inserts so the exact-dupe glitch cannot recur. Cross-invoice re-bills are
+// unaffected (different invoice_no). Never throws — a guard error must not block a real dispatch.
+async function _isDuplicateDispatch(batch_number, invoice_no, boxes, qty) {
+  try {
+    if (!batch_number) return false;
+    const b = parseInt(boxes, 10) || 0;
+    const q = Math.round((parseFloat(qty) || 0) * 100) / 100;
+    if (pgPool) {
+      const r = await pgPool.query(
+        `SELECT 1 FROM tracking_dispatch_records WHERE batch_number = $1 AND COALESCE(invoice_no,'') = COALESCE($2,'') AND boxes = $3 AND ROUND(qty::numeric,2) = $4 LIMIT 1`,
+        [batch_number, invoice_no || '', b, q]);
+      return (r.rowCount || 0) > 0;
+    }
+    const r = db.prepare(`SELECT 1 FROM tracking_dispatch_records WHERE batch_number = ? AND COALESCE(invoice_no,'') = COALESCE(?,'') AND boxes = ? AND ROUND(qty,2) = ? LIMIT 1`).get(batch_number, invoice_no || '', b, q);
+    return !!r;
+  } catch (_e) { return false; }
+}
+
+// ═══ v48D (Ishan): dispatch-duplicate REPAIR (Pass A only) — DRY-RUN by default ════════════════
+// Removes exact same-invoice double-inserts from tracking_dispatch_records: identical (batch_number,
+// invoice_no, boxes, qty). A single invoice never legitimately produces two identical records for a
+// batch, so these are pure system double-saves (double-click / retry — e.g. 26U021/1793, 26ZF097/1692
+// inserted ms apart). Keeps the earliest by ts; flags the rest.
+// NB: cross-invoice cases (same batch/qty under DIFFERENT invoice numbers) are LEFT ALONE — they are
+// legitimate business (SAP invoice cancelled + re-billed, or customer return + re-bill) and must not be
+// auto-repaired. Recurrence of the exact-dupe glitch is prevented at write time by _isDuplicateDispatch.
+// Default = DRY-RUN (writes nothing): returns candidate ids + per-batch rollup + totals. ?apply=passA
+// deletes the flagged ids in a transaction, AFTER logging every deleted row to audit_log. Admin only.
+app.post('/api/tracking/repair-dispatch-duplicates', async (req, res) => {
+  try {
+    const apply = String((req.query && req.query.apply) || (req.body && req.body.apply) || '').trim(); // '' | 'passA'
+    const who = (req.body && req.body.by) || 'admin';
+    const qk = pgPool ? 'ROUND(qty::numeric,2)' : 'ROUND(qty,2)'; // round so float noise can't split an identical dispatch
+
+    const passASql = `
+      WITH dup AS (
+        SELECT id, batch_number, invoice_no, boxes, qty, ts,
+          ROW_NUMBER() OVER (PARTITION BY batch_number, invoice_no, boxes, ${qk} ORDER BY ts, id) AS rn
+        FROM tracking_dispatch_records
+      )
+      SELECT id, batch_number, invoice_no, boxes, qty, ts FROM dup WHERE rn > 1`;
+
+    const passA = pgPool ? (await pgPool.query(passASql)).rows : db.prepare(passASql).all();
+
+    const byBatch = {}; let boxes = 0, qty = 0;
+    for (const r of passA) {
+      const b = parseInt(r.boxes,10)||0, q = parseFloat(r.qty)||0;
+      boxes += b; qty += q;
+      const e = byBatch[r.batch_number] = byBatch[r.batch_number] || { batch:r.batch_number, records:0, boxes:0, qty:0 };
+      e.records++; e.boxes += b; e.qty += q;
+    }
+    Object.values(byBatch).forEach(e => e.qty = Math.round(e.qty*100)/100);
+    const A = { count: passA.length, boxesRemoved: boxes, qtyRemoved: Math.round(qty*100)/100,
+                ids: passA.map(r=>r.id), perBatch: Object.values(byBatch), records: passA };
+
+    if (!apply) return res.json({ ok:true, mode:'dryrun', wroteNothing:true, passA:A });
+    if (apply !== 'passA') return res.status(400).json({ ok:false, error:"apply must be 'passA' (omit for dry-run). Cross-invoice cases are not auto-repaired." });
+    if (!A.ids.length) return res.json({ ok:true, mode:'passA', deleted:0, note:'no candidates' });
+    const auditDetails = JSON.stringify({ pass:'passA', count:A.count, boxesRemoved:A.boxesRemoved, qtyRemoved:A.qtyRemoved, records:A.records });
+
+    let deleted = 0;
+    if (pgPool) {
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+        await client.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','DISPATCH_DUP_REPAIR',$2)`, [who, auditDetails]);
+        const del = await client.query(`DELETE FROM tracking_dispatch_records WHERE id = ANY($1)`, [A.ids]);
+        deleted = del.rowCount || 0;
+        await client.query('COMMIT');
+      } catch(e) { try { await client.query('ROLLBACK'); } catch(_){}; throw e; }
+      finally { client.release(); }
+    } else {
+      const tx = db.transaction(() => {
+        db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','DISPATCH_DUP_REPAIR',?)`).run(who, auditDetails);
+        const ph = A.ids.map(()=>'?').join(',');
+        const del = db.prepare(`DELETE FROM tracking_dispatch_records WHERE id IN (${ph})`).run(...A.ids);
+        deleted = del.changes || 0;
+      });
+      tx();
+    }
+    res.json({ ok:true, mode:'passA', deleted, boxesRemoved:A.boxesRemoved, qtyRemoved:A.qtyRemoved });
+  } catch(err) {
+    console.error('[repair-dispatch-duplicates]', err.message);
     res.status(500).json({ ok:false, error: err.message });
   }
 });
