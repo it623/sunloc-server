@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v47Z';
+const APP_BUILD = 'v48';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -14253,6 +14253,44 @@ if (typeof process !== 'undefined' && !process.env.SUNLOC_DISABLE_BG_JOBS) {
 // scans could show only the ~7 still cached (26ZD104). The COUNTS were always correct (scan-summary); only
 // the list was short. This returns every NON-REVERSED scan for the batch so the drill-down can show all of
 // them. Same reversal filter as scan-summary. Read-only; nothing else depends on it.
+// v48 (Ishan #3): per-batch PERIOD pack-in and dispatch-out, aggregated server-side over the FULL
+// tracking_scans + tracking_dispatch_records — so the Per-Batch Pack In->Dispatch Out summary is correct on
+// first view and honestly date-scoped, instead of relying on the browser's recency-windowed scan cache
+// (which under-counted the period and left the lifetime DISP OUT unscoped → the impossible 52,150 L).
+// Date filter uses the PRODUCTION DAY (ts - 30 min → UTC date = 6 AM IST cut), identical to client _istDayKey.
+// Pack-in qty reuses _v47gScanQtySql (per-box label sum); dispatch-out = out-scans + dispatch records, the
+// same two sources _v40_dispatchedBoxes/_v40_dispatchedLakhs combine on the client.
+app.get('/api/tracking/dispatch-period-summary', async (req, res) => {
+  const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from||'')) ? String(req.query.from) : null;
+  const to   = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to||''))   ? String(req.query.to)   : null;
+  if (!from || !to) return res.status(400).json({ ok:false, error:'from & to (YYYY-MM-DD) required' });
+  const lo = from <= to ? from : to, hi = from <= to ? to : from;
+  const out = {};
+  const add = (bn, k, v) => { if(!bn) return; if(!out[bn]) out[bn]={packInBoxes:0,packInQty:0,dispOutBoxes:0,dispOutQty:0}; out[bn][k]+=(Number(v)||0); };
+  try {
+    if (pgPool) {
+      const pday = col => `((LEFT(${col},19))::timestamp - interval '30 minutes')::date`;
+      const rev = `NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`;
+      const scanQ = (dept,type) => `SELECT s.batch_number bn, COUNT(*) boxes, COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id WHERE s.dept='${dept}' AND s.type='${type}' AND ${rev} AND ${pday('s.ts')} BETWEEN $1::date AND $2::date GROUP BY s.batch_number`;
+      const [pin, dos, drec] = await Promise.all([
+        pgPool.query(scanQ('packing','in'), [lo,hi]),
+        pgPool.query(scanQ('dispatch','out'), [lo,hi]),
+        pgPool.query(`SELECT batch_number bn, COALESCE(SUM(boxes),0) boxes, COALESCE(SUM(qty),0) qty FROM tracking_dispatch_records WHERE ${pday('ts')} BETWEEN $1::date AND $2::date GROUP BY batch_number`, [lo,hi]),
+      ]);
+      pin.rows.forEach(r=>{ add(r.bn,'packInBoxes',r.boxes); add(r.bn,'packInQty',r.qty); });
+      dos.rows.forEach(r=>{ add(r.bn,'dispOutBoxes',r.boxes); add(r.bn,'dispOutQty',r.qty); });
+      drec.rows.forEach(r=>{ add(r.bn,'dispOutBoxes',r.boxes); add(r.bn,'dispOutQty',r.qty); });
+    } else {
+      const pday = col => `date(datetime(${col}, '-30 minutes'))`;
+      const rev = `NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`;
+      const scanQ = (dept,type) => `SELECT s.batch_number bn, COUNT(*) boxes, COALESCE(SUM(${_v47gScanQtySql('s','l')}),0) qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id=s.label_id WHERE s.dept='${dept}' AND s.type='${type}' AND ${rev} AND ${pday('s.ts')} BETWEEN ? AND ? GROUP BY s.batch_number`;
+      db.prepare(scanQ('packing','in')).all(lo,hi).forEach(r=>{ add(r.bn,'packInBoxes',r.boxes); add(r.bn,'packInQty',r.qty); });
+      db.prepare(scanQ('dispatch','out')).all(lo,hi).forEach(r=>{ add(r.bn,'dispOutBoxes',r.boxes); add(r.bn,'dispOutQty',r.qty); });
+      db.prepare(`SELECT batch_number bn, COALESCE(SUM(boxes),0) boxes, COALESCE(SUM(qty),0) qty FROM tracking_dispatch_records WHERE ${pday('ts')} BETWEEN ? AND ? GROUP BY batch_number`).all(lo,hi).forEach(r=>{ add(r.bn,'dispOutBoxes',r.boxes); add(r.bn,'dispOutQty',r.qty); });
+    }
+    res.json({ ok:true, from:lo, to:hi, batches: out });
+  } catch (e) { res.status(500).json({ ok:false, error:e.message }); }
+});
 app.get('/api/tracking/batch-scans/:batch', async (req, res) => {
   try {
     const batch = String(req.params.batch || '').trim();

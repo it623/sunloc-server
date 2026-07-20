@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v47Z</p>
+      <p>Planning Suite v3.0 · build v48</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -10772,22 +10772,42 @@ function dispatchRowObj(p) {
     'Size': p.size || '',
     'PTD/UP': p.packing || '',
     'Zone': p.zone || '',
-    'Qty (Lakhs)': fmt(p.qty),
-    'Boxes': p.boxes || '',
-    'Packed (Lakhs)': fmt(p.packedQty || 0),
+    'Qty (Lakhs)': Math.round((p.qty||0)*100)/100,
+    'Boxes': p.boxes || 0,
+    'Packed (Lakhs)': Math.round((p.packedQty||0)*100)/100,
     'Packed Boxes': p.packedBoxes || 0,
-    'Dispatched (Lakhs)': fmt(p.actualDispatched || 0),
+    'Dispatched (Lakhs)': Math.round((p.actualDispatched||0)*100)/100,
     'Planned Dispatch Date': p.plannedDate ? fmtDate(p.plannedDate) : 'Pending',
     'Date Status': p.dateManuallySet ? 'Manual' : (p.tentative ? 'Tentative' : 'Confirmed'),
-    'Balance (Lakhs)': fmt((p.qty || 0) - (p.actualDispatched || 0)),
+    'Balance (Lakhs)': Math.round(((p.qty||0)-(p.actualDispatched||0))*100)/100,
     'Status': p.status || '',
     'Remarks': p.remarks || ''
   };
 }
 
 // 1. FULL DISPATCH PLAN (existing — updated with tentative col)
+// v48 (Ishan #2): Dispatch Plan exports honour the on-screen quarter/month filter (production-start
+// month) so they are month-scoped — or quarter-scoped when "All months (whole quarter)" is selected —
+// instead of dumping every legacy plan. _v48ScopedPlans mirrors _truckPlanInScope but reads the order-view
+// (_pov*) filter that drives the header; _v48OrderInScope does the same for the order-based tracker export.
+function _v48ScopedPlans(){
+  const q = (typeof _povActiveQuarter==='function') ? _povActiveQuarter() : _truckActiveQuarter();
+  const mo = window._povProdMonth || 'all';
+  return (state.dispatchPlans||[]).filter(pl => _truckPlanScopeTest(pl, q, mo));
+}
+function _v48OrderInScope(ord){
+  const q = (typeof _povActiveQuarter==='function') ? _povActiveQuarter() : _truckActiveQuarter();
+  const mo = window._povProdMonth || 'all';
+  const ref = (ord && (ord.startDate || ord.endDate)) || '';
+  if(!ref) return q === _truckCurrentQuarter();
+  const d = new Date(ref); if(isNaN(d.getTime())) return q === _truckCurrentQuarter();
+  const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  if(_truckQStart(ym) !== q) return false;
+  if(mo && mo!=='all' && ym !== mo) return false;
+  return true;
+}
 function exportDispatchPlan() {
-  const plans = state.dispatchPlans
+  const plans = _v48ScopedPlans()
     .slice()
     .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
   const rows = plans.map(p => dispatchRowObj(p));
@@ -10799,9 +10819,9 @@ function exportDispatchPlan() {
   const tDisp = plans.reduce((s,p)=>s+(p.actualDispatched||0),0);
   rows.push({
     'Customer':'TOTAL','Batch No':'','PC Code':'','Colour':'','Size':'','PTD/UP':'','Zone':'',
-    'Qty (Lakhs)': fmt(tQty), 'Boxes': tBox, 'Packed (Lakhs)': fmt(tPkQ), 'Packed Boxes': tPkB,
-    'Dispatched (Lakhs)': fmt(tDisp),
-    'Planned Dispatch Date':'','Date Status':'', 'Balance (Lakhs)': fmt(tQty - tDisp),
+    'Qty (Lakhs)': Math.round(tQty*100)/100, 'Boxes': tBox, 'Packed (Lakhs)': Math.round(tPkQ*100)/100, 'Packed Boxes': tPkB,
+    'Dispatched (Lakhs)': Math.round(tDisp*100)/100,
+    'Planned Dispatch Date':'','Date Status':'', 'Balance (Lakhs)': Math.round((tQty-tDisp)*100)/100,
     'Status': `${plans.filter(p=>p.status==='dispatched').length}/${plans.length} dispatched`, 'Remarks':''
   });
   const wb = XLSX.utils.book_new();
@@ -10814,7 +10834,7 @@ function exportDispatchPlan() {
 function exportCustomerWise() {
   if (document.getElementById('export-menu')) document.getElementById('export-menu').style.display = 'none';
   const _activeIds = getActiveDispatchOrderIds(); // v41ZC: match dispatch-plan scope
-  const _scoped = state.dispatchPlans.filter(p => !p.productionOrderId || _activeIds.has(p.productionOrderId));
+  const _scoped = _v48ScopedPlans().filter(p => !p.productionOrderId || _activeIds.has(p.productionOrderId));
   const customers = [...new Set(_scoped.map(p => p.customer).filter(Boolean))].sort();
   if (customers.length === 0) { alert('No dispatch plans found.'); return; }
 
@@ -10856,7 +10876,7 @@ function exportCustomerWise() {
 function exportZoneWise() {
   if (document.getElementById('export-menu')) document.getElementById('export-menu').style.display = 'none';
   const _activeIdsZ = getActiveDispatchOrderIds(); // v41ZC: match dispatch-plan scope
-  const _scopedZ = state.dispatchPlans.filter(p => !p.productionOrderId || _activeIdsZ.has(p.productionOrderId));
+  const _scopedZ = _v48ScopedPlans().filter(p => !p.productionOrderId || _activeIdsZ.has(p.productionOrderId));
   const zones = [...new Set(_scopedZ.map(p => p.zone).filter(Boolean))].sort();
   if (zones.length === 0) { alert('No dispatch plans found.'); return; }
 
@@ -10918,7 +10938,7 @@ function exportZoneWise() {
 // 4. PENDING DISPATCH SUMMARY — only undispatched orders
 function exportPendingDispatch() {
   if (document.getElementById('export-menu')) document.getElementById('export-menu').style.display = 'none';
-  const pending = state.dispatchPlans
+  const pending = _v48ScopedPlans()
     .filter(p => p.status !== 'dispatched')
     .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
 
@@ -10957,7 +10977,7 @@ function exportPendingDispatch() {
 function exportFullOrderTracker() {
   if (document.getElementById('export-menu')) document.getElementById('export-menu').style.display = 'none';
   const rows = state.orders
-    .filter(o => !o.deleted)
+    .filter(o => !o.deleted && _v48OrderInScope(o))
     .sort((a,b) => new Date(a.startDate) - new Date(b.startDate))
     .map(ord => {
       const dp = state.dispatchPlans.find(d => d.productionOrderId === ord.id);

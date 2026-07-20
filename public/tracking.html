@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v47Z</title>
+<title>Sunloc Tracking Suite v1.0 · build v48</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47Z</p>
+      <p>Tracking Suite v1.0 · build v48</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v47Z</p>
+      <p>Tracking Suite v1.0 · build v48</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9897,12 +9897,81 @@ function renderReportG(){
     _scrollIntoReportIfFirstView('G');
   }
 }
+// v48 (Ishan #4): "Packed & Awaiting Dispatch" report - per-batch detail behind Report D's "Packing (FG
+// awaiting dispatch)" figure. Shows the SCANNED packed-not-dispatched only (Report G balance): qty =
+// pack-in - dispatched (L); boxes = packing scan-in - dispatch scan-out. The UNSCANNED remainder lives in
+// Report F, by design, so this ties to Report D's 1,239 boxes / 1,682.75 L (not the 595/769.6 unscanned).
+window._v48PkgScans = window._v48PkgScans || {};
+function _v48PackedAwaitingRows(batches){
+  const out = [];
+  for (const b of (batches||[])){
+    const bn = b.batchNumber; if(!bn) continue;
+    const wip = getBatchWIPBreakdown(bn) || {};
+    const qty = Math.round((wip.packedNotDisp||0)*100)/100;
+    if (qty <= 0.005) continue;
+    const boxes = Math.max(0, ((_ss(bn,'packing').in)||0) - (_v40_dispatchedBoxes(bn)||0)); // v48: net of ALL dispatched (scan-out + admin-regularise), matching Report D top table + the qty
+    out.push({ batchNumber:bn, customer:(b.customer||'-'), colour:(b.colour||'-'), size:(b.size!=null?b.size:'-'), pcCode:(b.pcCode||'-'), qty, boxes });
+  }
+  out.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'')); // v48: chronological batch order, like Report B
+  return out;
+}
+async function _v48TogglePkgRow(bn){
+  const wasOpen = window._v48PkgExpanded===bn;
+  window._v48PkgExpanded = wasOpen?null:bn;
+  renderReportD();
+  if(!wasOpen && !window._v48PkgScans[bn]){
+    try{ const r=await fetch('/api/tracking/batch-scans/'+encodeURIComponent(bn)); const j=await r.json().catch(()=>null);
+      if(j&&j.ok&&Array.isArray(j.scans)){ window._v48PkgScans[bn]=j.scans; if(window._v48PkgExpanded===bn) renderReportD(); } }catch(e){}
+  }
+}
+function _v48RenderPackedAwaiting(batches){
+  const rows = _v48PackedAwaitingRows(batches);
+  const tQ = Math.round(rows.reduce((s,r)=>s+r.qty,0)*100)/100;
+  const tB = rows.reduce((s,r)=>s+r.boxes,0);
+  const body = rows.map(r=>{
+    const open = window._v48PkgExpanded===r.batchNumber;
+    const full = window._v48PkgScans[r.batchNumber];
+    const _dispOut48 = full ? new Set(full.filter(s=>s.dept==='dispatch'&&s.type==='out').map(s=>String(s.labelNumber))) : null;
+    const pkgBoxes = full ? full.filter(s=>s.dept==='packing'&&s.type==='in').map(s=>s.labelNumber).filter(x=>x!=null && !_dispOut48.has(String(x))) : null;
+    const detail = open ? `<tr><td colspan="7" style="background:var(--surface2);padding:8px 12px;font-size:11px;font-family:var(--mono)">${pkgBoxes?('Packed boxes ('+pkgBoxes.length+'): '+pkgBoxes.join(', ')):'⏳ Loading box numbers…'}</td></tr>` : '';
+    return `<tr style="border-bottom:1px solid var(--border)">
+      <td style="padding:5px 8px">${r.customer}</td>
+      <td style="padding:5px 8px;font-family:var(--mono);font-weight:600">${r.batchNumber}</td>
+      <td style="padding:5px 8px">${r.colour}</td>
+      <td style="padding:5px 8px;text-align:center">${r.size}</td>
+      <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${r.qty.toFixed(2)}L</td>
+      <td style="padding:5px 8px;text-align:right;font-family:var(--mono);cursor:pointer" onclick="_v48TogglePkgRow(\'${r.batchNumber}\')" title="Click for box numbers">${r.boxes} <span style="font-size:9px;color:var(--text3)">${open?'▾':'▸'}</span></td>
+      <td style="padding:5px 8px;font-family:var(--mono)">${r.pcCode}</td>
+    </tr>${detail}`;
+  }).join('');
+  return `<div class="mb-16"><div class="card-title">📦 Packed & Awaiting Dispatch <span class="text-dim text-sm">— ${rows.length} batches · scanned FG not yet dispatched (Report G balance)</span>
+      <button class="btn btn-secondary btn-sm" style="float:right" onclick="_v48ExportPackedAwaiting()">📤 Export Excel</button></div>
+    <div class="tbl-wrap tbl-sticky"><table><thead><tr>
+      <th style="text-align:left;padding:6px 8px">Customer</th><th style="text-align:left;padding:6px 8px">Batch</th>
+      <th style="text-align:left;padding:6px 8px">Colour</th><th style="text-align:center;padding:6px 8px">Size</th>
+      <th style="text-align:right;padding:6px 8px">Quantity (L)</th><th style="text-align:right;padding:6px 8px">Boxes Packed</th>
+      <th style="text-align:left;padding:6px 8px">PC Code</th></tr></thead>
+      <tbody>${body}</tbody>
+      <tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2)"><td colspan="4" style="padding:6px 8px">TOTAL · ${rows.length}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tQ.toFixed(2)}L</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tB}</td><td></td></tr></tfoot>
+    </table></div></div>`;
+}
+function _v48ExportPackedAwaiting(){
+  const batches = getTrkMonthBatches(true).filter(b=>!b.deleted && b.batchNumber);
+  const rows = _v48PackedAwaitingRows(batches).map(r=>({ 'Customer':r.customer,'Batch':r.batchNumber,'Colour':r.colour,'Size':r.size,'Quantity (L)':r.qty,'Boxes Packed':r.boxes,'PC Code':r.pcCode }));
+  const tQ = Math.round(rows.reduce((s,r)=>s+(r['Quantity (L)']||0),0)*100)/100;
+  const tB = rows.reduce((s,r)=>s+(r['Boxes Packed']||0),0);
+  rows.push({ 'Customer':'TOTAL','Batch':'','Colour':'','Size':'','Quantity (L)':tQ,'Boxes Packed':tB,'PC Code':'' });
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Packed Awaiting Dispatch');
+  XLSX.writeFile(wb, `Sunloc_Packed_Awaiting_Dispatch_${new Date().toISOString().slice(0,10)}.xlsx`);
+}
 function _v41_renderReportGInner(){
   const md = _v41_useMonthAttributed ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
   const allMonthBatches = getTrkMonthBatches(true).filter(b=>!b.deleted && b.batchNumber).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   // v41ZC: filter state (machine uses normMcId so MC.30 / mc30 / "MC 30" all match)
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
   const gSize = (window._rptGSize!=null?String(window._rptGSize):''); // v45ZY item 5
+  if (gSize === '__pkgawait__') return _v48RenderPackedAwaiting(allMonthBatches); // v48 #4
   const gCust = window._rptGCustomer||''; // v45ZL item 1: customer search
   // v45ZY items 4+5: the stage-wise WIP matrix now renders for a Customer, a PC Code OR a Size
   // selection (previously customer-only). _mxScope is the label shown in its title.
@@ -10168,6 +10237,7 @@ function _v41_renderReportGInner(){
         <label style="font-size:11px">Size</label>
         <select onchange="window._rptGSize=this.value;renderReportD()">
           <option value="">All Sizes</option>
+          <option value="__pkgawait__" ${gSize==='__pkgawait__'?'selected':''}>📦 Packed & Awaiting Dispatch</option>
           ${gAllSizes.map(s=>`<option value="${s}" ${gSize===s?'selected':''}>Size ${s}</option>`).join('')}
         </select>
       </div>
@@ -13654,6 +13724,20 @@ function renderReportK(targetId) {
     fromDate = _istDayKey(d.toISOString());
   }
 
+  // v48 (Ishan #3): pull per-batch PERIOD pack-in/dispatch-out from the server (aggregated over FULL data),
+  // so the period columns are correct on FIRST view and the DISP OUT column is honestly date-scoped instead
+  // of showing the lifetime total (the impossible 52,150 L). 'all' mode = lifetime, so no fetch needed.
+  const _isAllDates48 = (dateMode === 'all');
+  const _perKey48 = fromDate + '|' + toDate;
+  if (!_isAllDates48 && (window._v48PeriodCache && window._v48PeriodCache.key) !== _perKey48 && window._v48PeriodFetching !== _perKey48) {
+    window._v48PeriodFetching = _perKey48;
+    fetch('/api/tracking/dispatch-period-summary?from=' + encodeURIComponent(fromDate) + '&to=' + encodeURIComponent(toDate))
+      .then(r=>r.json()).then(j=>{ if(j&&j.ok) window._v48PeriodCache={key:_perKey48,data:j.batches||{}}; window._v48PeriodFetching=null; if(document.getElementById(containerId)) renderReportK(containerId); })
+      .catch(()=>{ window._v48PeriodFetching=null; });
+  }
+  const _perData48 = (!_isAllDates48 && window._v48PeriodCache && window._v48PeriodCache.key===_perKey48) ? window._v48PeriodCache.data : null;
+  const _perLoading48 = (!_isAllDates48 && !_perData48);
+
   // Aggregate Pack In scans (dept='packing', type='in') and Dispatch Out scans
   // (dept='dispatch', type='out') per batch. Keep arrays of timestamps for drill-down.
   // v40 Phase 18.14: scan timestamp arrays still come from state.scans (used only for
@@ -13720,13 +13804,15 @@ function renderReportK(targetId) {
     // v47W (Ishan #3): once a batch's full scan history is loaded (on drill-down expand), use it for the
     // period window too, so "Pack In (Period)" agrees with the now-complete drill-down list. Batches not yet
     // expanded keep the windowed state.scans approximation.
-    const _pkWinSrc = (window._v47wFullScans || {})[bn]
-      ? (window._v47wFullScans[bn]).filter(s => s.dept === 'packing' && s.type === 'in')
-      : d.packInScans;
-    const packInWindowBoxes = _pkWinSrc.filter(s => {
-      const k = _istDayKey(s.ts); return k && k >= fromDate && k <= toDate;
-    }).length;
-    const packInWindowQty = _pkWinSrc.filter(s => { const k=_istDayKey(s.ts); return k && k>=fromDate && k<=toDate; }).reduce((a,s)=>a+_boxLakh(s,size),0);  // v47G: per-box sum over the windowed pack-in scans
+    // v48 (Ishan #3): PERIOD pack-in + dispatch-out from the server aggregation (full data → correct on
+    // first view). 'all' mode = lifetime. DISP OUT is shown PERIOD-scoped for a date range (fixes the
+    // 52,150 L); the status/balance math below still uses the LIFETIME dispOutBoxes/Qty, so batch state
+    // (closed/partial/stale) is unchanged.
+    const _pd48 = _perData48 ? (_perData48[bn] || {packInBoxes:0,packInQty:0,dispOutBoxes:0,dispOutQty:0}) : null;
+    const packInWindowBoxes = _isAllDates48 ? packInBoxes : (_pd48 ? Math.round(_pd48.packInBoxes) : 0);
+    const packInWindowQty   = _isAllDates48 ? packInQty   : (_pd48 ? _pd48.packInQty   : 0);
+    const dispOutShownBoxes = _isAllDates48 ? dispOutBoxes : (_pd48 ? Math.round(_pd48.dispOutBoxes) : 0);
+    const dispOutShownQty   = _isAllDates48 ? dispOutQty   : (_pd48 ? _pd48.dispOutQty   : 0);
     // Days in inventory: lastDispOut − firstPackIn (if both exist)
     let daysInInv = null;
     if (firstPackIn && lastDispOut) {
@@ -13760,7 +13846,7 @@ function renderReportK(targetId) {
       firstDispOut, lastDispOut,
       packInBoxes, packInQty,
       packInWindowBoxes, packInWindowQty,
-      dispOutBoxes, dispOutQty,
+      dispOutBoxes, dispOutQty, dispOutShownBoxes, dispOutShownQty,
       daysInInv,
       balanceQty: packInQty - dispOutQty,
       status, statusColor,
@@ -13796,8 +13882,11 @@ function renderReportK(targetId) {
   rows.forEach(r => {
     totalPackInWindowBoxes += r.packInWindowBoxes; totalPackInWindowQty += r.packInWindowQty;
     totalPackInBoxes += r.packInBoxes; totalPackInQty += r.packInQty;
-    totalDispOutBoxes += r.dispOutBoxes; totalDispOutQty += r.dispOutQty;
+    totalDispOutBoxes += r.dispOutShownBoxes; totalDispOutQty += r.dispOutShownQty;
   });
+  // v48 (Ishan #3): stash the EXACT rendered rows so the Excel export mirrors the on-screen table
+  // (screen = Excel by construction), instead of the old parallel windowed re-derivation.
+  window._v48ReportKRows = rows; window._v48ReportKIsAll = _isAllDates48;
 
   // Date selector + quick filters
   const quickBtn = (mode, label) =>
@@ -13815,7 +13904,7 @@ function renderReportK(targetId) {
   el.innerHTML = `
     <div class="card mb-16" style="border-top:4px solid #0891b2">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-        <div class="card-title" style="margin-bottom:0">📅 Per-Batch Pack In → Dispatch Out Summary</div>
+        <div class="card-title" style="margin-bottom:0">📅 Per-Batch Pack In → Dispatch Out Summary${_perLoading48?' <span style="font-size:11px;font-weight:400;color:var(--accent3)">⏳ loading period…</span>':''}</div>
         <button class="btn btn-secondary btn-sm" onclick="exportReportK()">📥 Export Excel</button>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
@@ -13884,7 +13973,7 @@ function renderReportK(targetId) {
                   <td class="td-mono text-right">${r.packInBoxes} bx<br><span style="font-size:10px;color:var(--text3)">${fmt(r.packInQty)} L</span></td>
                   ${dateMode!=='all' ? `<td class="td-mono text-right" style="color:#0891b2">${r.packInWindowBoxes} bx<br><span style="font-size:10px;color:var(--text3)">${fmt(r.packInWindowQty)} L</span></td>` : ''}
                   <td class="td-mono text-sm">${r.lastDispOut || '—'}${r.firstDispOut && r.firstDispOut !== r.lastDispOut ? ' (from '+r.firstDispOut+')' : ''}</td>
-                  <td class="td-mono text-right green">${r.dispOutBoxes} bx<br><span style="font-size:10px;color:var(--text3)">${fmt(r.dispOutQty)} L</span></td>
+                  <td class="td-mono text-right green">${r.dispOutShownBoxes} bx<br><span style="font-size:10px;color:var(--text3)">${fmt(r.dispOutShownQty)} L</span></td>
                   <td class="td-mono text-right">${r.daysInInv == null ? '—' : r.daysInInv + 'd'}</td>
                   <td class="td-mono text-right fw-bold ${r.balanceQty>0?'amber':(r.balanceQty<0?'red':'')}">${fmt(r.balanceQty)}</td>
                   <td class="text-center"><span style="background:${r.statusColor};color:white;padding:2px 8px;border-radius:3px;font-size:10px;font-weight:700;text-transform:uppercase">${statusLabel}</span></td>
@@ -14006,93 +14095,40 @@ function _v40_renderReportKDetail(r) {
 }
 
 function exportReportK() {
-  // v40 Phase 18.10: Export the rebuilt per-batch summary + drill-down detail to Excel.
-  // Two sheets: "Batch Summary" (one row per batch) + "Scan Detail" (every scan event).
-  const filters = window._reportKFilters;
-  const dateMode = window._reportKDateRangeMode;
-  const selectedDate = window._reportKDate;
-  let fromDate, toDate;
-  if (dateMode === 'all') { fromDate = '0000-00-00'; toDate = '9999-99-99'; }
-  else if (dateMode === 'single') { fromDate = toDate = selectedDate; }
-  else {
-    const daysBack = dateMode === '7d' ? 7 : (dateMode === '15d' ? 15 : 30);
-    toDate = today();
-    const d = new Date(); d.setDate(d.getDate() - daysBack + 1);
-    fromDate = _istDayKey(d.toISOString());
-  }
-  // Aggregate same as renderReportK
-  const byBatch = {};
-  state.scans.forEach(s => {
-    if (!s.ts || !s.batchNumber) return;
-    const bn = s.batchNumber;
-    if (!byBatch[bn]) byBatch[bn] = { packInScans: [], dispatchOutScans: [] };
-    if (s.dept === 'packing' && s.type === 'in') byBatch[bn].packInScans.push(s);
-    else if (s.dept === 'dispatch' && s.type === 'out') byBatch[bn].dispatchOutScans.push(s);
-  });
-  const summary = []; const detail = [];
-  Object.entries(byBatch).forEach(([bn, d]) => {
-    const b = getBatch(bn);
-    const size = b?.size || '0';
-    d.packInScans.sort((a, b) => (a.ts||'').localeCompare(b.ts||''));
-    d.dispatchOutScans.sort((a, b) => (a.ts||'').localeCompare(b.ts||''));
-    const firstPackIn = _istDayKey(d.packInScans[0]?.ts) || '';
-    const lastDispOut = _istDayKey(d.dispatchOutScans[d.dispatchOutScans.length-1]?.ts) || '';
-    const packInBoxes = d.packInScans.length;
-    const dispOutBoxes = d.dispatchOutScans.length;
-    const packInQty = d.packInScans.reduce((a,s)=>a+_boxLakh(s,size),0);        // v47G: per-box label sum
-    const dispOutQty = d.dispatchOutScans.reduce((a,s)=>a+_boxLakh(s,size),0);  // v47G: per-box label sum
-    // date range filter
-    const dateRef = lastDispOut || firstPackIn;
-    if (dateMode !== 'all' && (dateRef < fromDate || dateRef > toDate)) return;
-    // other filters
-    if (filters.customer && !(b?.customer||'').toLowerCase().includes(filters.customer.toLowerCase())) return;
-    if (filters.batch && !bn.toLowerCase().includes(filters.batch.toLowerCase())) return;
-    if (filters.pcCode && !(b?.pcCode||'').toLowerCase().includes(filters.pcCode.toLowerCase())) return;
-    let daysInInv = null;
-    if (firstPackIn && lastDispOut) daysInInv = Math.max(0, Math.floor((new Date(lastDispOut) - new Date(firstPackIn)) / 86400000));
-    else if (firstPackIn) daysInInv = Math.max(0, Math.floor((new Date(today()) - new Date(firstPackIn)) / 86400000));
-    let status = 'in_progress';
-    if (dispOutBoxes >= packInBoxes && packInBoxes > 0) status = 'closed';
-    else if (dispOutBoxes > 0 && dispOutBoxes < packInBoxes) status = 'partial';
-    else if (packInBoxes > 0 && dispOutBoxes === 0 && daysInInv > 15) status = 'stale_15d';
-    else if (packInBoxes > 0 && dispOutBoxes === 0 && daysInInv > 7) status = 'stale_7d';
-    summary.push({
-      'Batch': bn,
-      'Customer': b?.customer || '',
-      'PC Code': b?.pcCode || '',
-      'Size': size,
-      'Colour': b?.colour || '',
-      'Pack In Date': firstPackIn,
-      'Pack In Boxes': packInBoxes,
-      'Pack In (L)': fmt(packInQty),
-      'Dispatch Out Date': lastDispOut || '',
-      'Dispatch Out Boxes': dispOutBoxes,
-      'Dispatch Out (L)': fmt(dispOutQty),
-      'Days In Inventory': daysInInv == null ? '' : daysInInv,
-      'Balance (L)': fmt(packInQty - dispOutQty),
-      'Status': status,
-    });
-    d.packInScans.forEach(s => detail.push({
-      'Batch': bn,
-      'Customer': b?.customer || '',
-      'Event': 'Pack In',
-      'Box/Label': s.boxNumber || s.labelId || '',
-      'Timestamp': s.ts || '',
-    }));
-    d.dispatchOutScans.forEach(s => detail.push({
-      'Batch': bn,
-      'Customer': b?.customer || '',
-      'Event': 'Dispatch Out',
-      'Box/Label': s.boxNumber || s.labelId || '',
-      'Timestamp': s.ts || '',
-    }));
-  });
-  summary.sort((a, b) => (b['Dispatch Out Date'] || b['Pack In Date'] || '').localeCompare(a['Dispatch Out Date'] || a['Pack In Date'] || ''));
+  // v48 (Ishan #3): export the EXACT rows the summary just rendered (stashed at render time), so the Excel
+  // mirrors the on-screen table by construction - same period scoping, same dispatch source (scan-out +
+  // records), numeric cells for sum/average. Replaces the old parallel windowed re-derivation (which missed
+  // dispatch records + 'range' mode and never matched the screen).
+  const rows = window._v48ReportKRows || [];
+  const isAll = !!window._v48ReportKIsAll;
+  if (!rows.length) { alert('Nothing to export - the summary is empty for the current filters.'); return; }
+  const r2 = v => Math.round((Number(v)||0)*100)/100;
+  const mk = r => {
+    const o = {
+      'Batch': r.batchNo||'', 'Customer': r.customer||'', 'PC Code': r.pcCode||'',
+      'Size': r.size!=null?r.size:'', 'Colour': r.colour||'',
+      'Pack In Date': r.firstPackIn||'', 'Pack In Boxes': r.packInBoxes||0, 'Pack In Qty (L)': r2(r.packInQty),
+    };
+    if (!isAll) { o['Pack In (Period) Boxes'] = r.packInWindowBoxes||0; o['Pack In (Period) Qty (L)'] = r2(r.packInWindowQty); }
+    o['Dispatch Out Date'] = r.lastDispOut||'';
+    o['Dispatch Out Boxes'] = r.dispOutShownBoxes||0;
+    o['Dispatch Out Qty (L)'] = r2(r.dispOutShownQty);
+    o['Days In Inventory'] = (r.daysInInv!=null?r.daysInInv:'');
+    o['Balance (L)'] = r2(r.balanceQty);
+    o['Status'] = (r.status||'').replace(/_/g,' ');
+    return o;
+  };
+  const out = rows.map(mk);
+  const sumN = k => out.reduce((s,x)=>s+(Number(x[k])||0),0);
+  const total = { 'Batch':'TOTAL','Customer':'','PC Code':'','Size':'','Colour':'',
+    'Pack In Date':'', 'Pack In Boxes': sumN('Pack In Boxes'), 'Pack In Qty (L)': r2(sumN('Pack In Qty (L)')) };
+  if (!isAll) { total['Pack In (Period) Boxes'] = sumN('Pack In (Period) Boxes'); total['Pack In (Period) Qty (L)'] = r2(sumN('Pack In (Period) Qty (L)')); }
+  total['Dispatch Out Date']=''; total['Dispatch Out Boxes']=sumN('Dispatch Out Boxes'); total['Dispatch Out Qty (L)']=r2(sumN('Dispatch Out Qty (L)'));
+  total['Days In Inventory']=''; total['Balance (L)']=r2(sumN('Balance (L)')); total['Status']='';
+  out.push(total);
   const wb = XLSX.utils.book_new();
-  if (summary.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(summary), 'Batch Summary');
-  else XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet([['No batch activity in selected period']]), 'Empty');
-  if (detail.length) XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(detail), 'Scan Detail');
-  XLSX.writeFile(wb, `Sunloc_Report_K_Per_Batch_${fromDate}_to_${toDate}.xlsx`);
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out), 'Pack In - Dispatch Out');
+  XLSX.writeFile(wb, `Sunloc_Dispatch_Summary_${today()}.xlsx`);
 }
 
 // ═══════════════════════════════════════════════════════
