@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48A';
+const APP_BUILD = 'v48B';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -16356,6 +16356,128 @@ app.post('/api/tracking/reconcile-wip', async (req, res) => {
     res.json({ ok:true, ts, mode });
   } catch(err) {
     console.error('[reconcile-wip]', err.message);
+    res.status(500).json({ ok:false, error: err.message });
+  }
+});
+
+// ═══ v48B (Ishan): per-DEPARTMENT WIP reconciliation (Report Z tool) ═══════════════════════════
+// Fixes "phantom" department WIP created when boxes were scanned INTO packing (Admin ID) WITHOUT the
+// prior-dept scan-OUT — e.g. PI shows residual WIP even though the material is already in packing. The
+// fix records the MISSING scan(s) as synthetic recon scans (label_id 'recon-%', qty in Lakhs) which
+// flow through EVERY WIP path (Reports B/D/Z) via _v47gScanQtySql with NO frozen-formula change, and are
+// A-Grade-neutral for post-inspection stages. Two dispositions:
+//   movepack — the δ physically reached packing. Record a recon scan-OUT at the stuck dept AND every
+//              downstream production dept, so the telescoping breakdown pushes δ all the way to FG.
+//              Pre-AIM additionally records an AIM scan-IN (δ becomes inspected good ⇒ A-Grade +δ);
+//              Transit records a packing scan-IN. PI / Printing / unprinted-AIM are A-Grade-neutral.
+//   scrap    — the δ was lost. Record salvage/remelt wastage at the dept's leg (A-Grade % drops).
+// Timestamped into the batch's production month so A-Grade attribution stays correct. Atomic. Reversible
+// via /reconcile-wip-clear. The single-dept /reconcile-wip endpoint above is left untouched.
+app.post('/api/tracking/reconcile-wip-dept', async (req, res) => {
+  try {
+    const { batchNumber, dept, delta, disposition, wasteType, isPrinted, month, reason, reconciledBy } = req.body;
+    const d = Math.round(parseFloat(delta||0) * 100) / 100;
+    const DEPTS = ['preaim','aim','printing','pi','transit'];
+    if (!batchNumber || !DEPTS.includes(dept)) return res.status(400).json({ ok:false, error:'batchNumber and a valid dept (preaim|aim|printing|pi|transit) required' });
+    if (!(d > 0)) return res.status(400).json({ ok:false, error:'delta must be > 0' });
+    if (disposition !== 'movepack' && disposition !== 'scrap') return res.status(400).json({ ok:false, error:"disposition must be 'movepack' or 'scrap'" });
+    const printed = !!isPrinted;
+
+    // Timestamp inside the target production month (1s before the 6AM cutoff) — same rule as reconcile-wip.
+    let ts;
+    if (/^\d{4}-\d{2}$/.test(String(month||''))) {
+      const { end } = _v41_monthWindow(month);
+      const endDate = new Date(end.replace(' ','T')); endDate.setSeconds(endDate.getSeconds() - 1);
+      const pad = n => String(n).padStart(2,'0');
+      ts = `${endDate.getFullYear()}-${pad(endDate.getMonth()+1)}-${pad(endDate.getDate())} ${pad(endDate.getHours())}:${pad(endDate.getMinutes())}:${pad(endDate.getSeconds())}`;
+    } else { ts = new Date().toISOString(); }
+    const genId = () => Math.random().toString(36).slice(2,10) + Date.now().toString(36);
+    const who = reconciledBy || 'admin';
+
+    // Build the recon operations. prodStages = every production dept the material must exit to reach packing.
+    const prodStages = printed ? ['aim','printing','pi'] : ['aim'];
+    let scans = [];   // [{dept,type}] synthetic recon scans
+    let waste = null; // {dept,type} write-off
+    if (disposition === 'scrap') {
+      // Loss written off as wastage on the dept's leg. Pre-AIM & AIM losses live on the AIM leg;
+      // a Transit loss belongs to the last production stage.
+      const wDept = (dept === 'preaim' || dept === 'aim') ? 'aim'
+                  : (dept === 'transit') ? prodStages[prodStages.length - 1] : dept;
+      waste = { dept: wDept, type: (wasteType === 'remelt' ? 'remelt' : 'salvage') };
+    } else { // movepack
+      if (dept === 'transit') {
+        scans = [{ dept:'packing', type:'in' }];                       // reached packing → packing scan-IN
+      } else if (dept === 'preaim') {
+        scans = [{ dept:'aim', type:'in' }, ...prodStages.map(s => ({ dept:s, type:'out' }))]; // inspected good, then out to packing
+      } else {
+        const start = prodStages.indexOf(dept);                        // aim / printing / pi
+        scans = (start < 0 ? [] : prodStages.slice(start)).map(s => ({ dept:s, type:'out' }));
+      }
+    }
+
+    const auditDetails = JSON.stringify({ batchNumber, dept, disposition, delta:d, wasteType: waste?waste.type:null, scans, isPrinted:printed, month:month||null, reason:reason||'', ts });
+
+    if (pgPool) {
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+        for (const s of scans) {
+          await client.query(
+            `INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,qty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`,
+            [genId(), 'recon-'+genId(), batchNumber, s.dept, s.type, ts, `recon:${who}`, d]
+          );
+        }
+        if (waste) {
+          await client.query(
+            `INSERT INTO tracking_wastage (id,batch_number,dept,type,qty,ts,"by") VALUES ($1,$2,$3,$4,$5,$6,$7) ON CONFLICT(id) DO NOTHING`,
+            [genId(), batchNumber, waste.dept, waste.type, d, ts, `recon:${who}`]
+          );
+        }
+        await client.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','WIP_RECONCILE_DEPT',$2)`, [who, auditDetails]);
+        await client.query('COMMIT');
+      } catch(e) { try { await client.query('ROLLBACK'); } catch(_){}; throw e; }
+      finally { client.release(); }
+    } else {
+      const insS = db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,qty) VALUES (?,?,?,?,?,?,?,?)`);
+      const insW = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by) VALUES (?,?,?,?,?,?,?)`);
+      const insA = db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','WIP_RECONCILE_DEPT',?)`);
+      const tx = db.transaction(() => {
+        for (const s of scans) insS.run(genId(), 'recon-'+genId(), batchNumber, s.dept, s.type, ts, `recon:${who}`, d);
+        if (waste) insW.run(genId(), batchNumber, waste.dept, waste.type, d, ts, `recon:${who}`);
+        insA.run(who, auditDetails);
+      });
+      tx();
+    }
+    res.json({ ok:true, ts, dept, disposition, delta:d, scansWritten:scans.length, wroteWasteoff:!!waste });
+  } catch(err) {
+    console.error('[reconcile-wip-dept]', err.message);
+    res.status(500).json({ ok:false, error: err.message });
+  }
+});
+
+// v48B: undo — remove ALL per-dept WIP reconciliations for a batch (synthetic recon scans + recon:
+// write-offs from this tool / the single-dept reconcile-wip). Real label scans are never touched
+// (recon-% / by 'recon:%' only), restoring the batch's raw scan-derived department WIP.
+app.post('/api/tracking/reconcile-wip-clear', async (req, res) => {
+  try {
+    const { batchNumber, reconciledBy } = req.body;
+    if (!batchNumber) return res.status(400).json({ ok:false, error:'batchNumber required' });
+    const who = reconciledBy || 'admin';
+    let scansDeleted = 0, wasteDeleted = 0;
+    if (pgPool) {
+      const r1 = await pgPool.query(`DELETE FROM tracking_scans WHERE batch_number=$1 AND label_id LIKE 'recon-%'`, [batchNumber]);
+      const r2 = await pgPool.query(`DELETE FROM tracking_wastage WHERE batch_number=$1 AND "by" LIKE 'recon:%'`, [batchNumber]);
+      scansDeleted = r1.rowCount || 0; wasteDeleted = r2.rowCount || 0;
+      await pgPool.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','WIP_RECONCILE_CLEAR',$2)`, [who, JSON.stringify({ batchNumber, scansDeleted, wasteDeleted })]);
+    } else {
+      const r1 = db.prepare(`DELETE FROM tracking_scans WHERE batch_number=? AND label_id LIKE 'recon-%'`).run(batchNumber);
+      const r2 = db.prepare(`DELETE FROM tracking_wastage WHERE batch_number=? AND by LIKE 'recon:%'`).run(batchNumber);
+      scansDeleted = r1.changes || 0; wasteDeleted = r2.changes || 0;
+      db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','WIP_RECONCILE_CLEAR',?)`).run(who, JSON.stringify({ batchNumber, scansDeleted, wasteDeleted }));
+    }
+    res.json({ ok:true, scansDeleted, wasteDeleted });
+  } catch(err) {
+    console.error('[reconcile-wip-clear]', err.message);
     res.status(500).json({ ok:false, error: err.message });
   }
 });

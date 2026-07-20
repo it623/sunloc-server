@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v48A</title>
+<title>Sunloc Tracking Suite v1.0 · build v48B</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48A</p>
+      <p>Tracking Suite v1.0 · build v48B</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48A</p>
+      <p>Tracking Suite v1.0 · build v48B</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -10557,7 +10557,11 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
     const wip = getBatchWIPBreakdown(b.batchNumber);
     const totalWIP = wip ? (wip.totalWIP||0) : 0;
     const packWIP  = wip ? (wip.packWIP||0)  : 0;   // FG awaiting dispatch
-    const isOpen = (b.status!=='closed') || totalWIP>0.005 || packWIP>0.005 || !!_reconOverride(b.batchNumber);
+    // v48B (Ishan): dept-WIP breakdown sum. In the phantom case (boxes scanned into packing without the
+    // prior-dept scan-OUT) the transit leg clamps negative and the breakdown OVER-sums totalWIP — a closed
+    // batch can carry dept WIP while totalWIP≈0. Include such batches so admin can reconcile the phantom.
+    const breakdownSum = wip ? ((wip.preAIM||0)+(wip.aimWIP||0)+(wip.printWIP||0)+(wip.piWIP||0)+(wip.toPackTransit||0)) : 0;
+    const isOpen = (b.status!=='closed') || totalWIP>0.005 || breakdownSum>0.005 || packWIP>0.005 || !!_reconOverride(b.batchNumber);
     return { b, wip, totalWIP, packWIP, isOpen, age:_ageOf(b) };
   }).filter(x=>x.isOpen && !_isRetired(x.b.batchNumber));
 
@@ -10603,7 +10607,7 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
       <td class="td-mono amber">${totalWIP>0.005?fmt(totalWIP)+'L':'—'}</td>
       <td class="text-sm" style="color:var(--text3)">${wipDetail||'—'}</td>
       <td class="td-mono green">${packWIP>0.005?fmt(packWIP)+'L':'—'}</td>
-      <td><button class="btn btn-sm" style="background:${_reconOverride(b.batchNumber)?'#0e7490':'#be123c'};color:#fff;font-size:11px" onclick="_v41_openReconcileModal('${b.batchNumber}','${b.isPrinted?'printed':'unprinted'}')">${_reconOverride(b.batchNumber)?'Edit reconcile':'Reconcile'}</button></td>
+      <td><button class="btn btn-sm" style="background:${_reconOverride(b.batchNumber)?'#0e7490':'#be123c'};color:#fff;font-size:11px" onclick="_v41_openReconcileModal('${b.batchNumber}','${b.isPrinted?'printed':'unprinted'}')">${_reconOverride(b.batchNumber)?'Edit reconcile':'Reconcile'}</button>${wipDetail?`<button class="btn btn-sm" style="background:#0e7490;color:#fff;font-size:11px;margin-top:4px" onclick="_v48bOpenWipDeptModal('${b.batchNumber}')" title="Reconcile department-wise WIP (fix phantom WIP left by packing scan-ins without prior scan-outs)">Dept WIP</button>`:''}</td>
     </tr>`;
   }).join('');
 
@@ -10783,6 +10787,139 @@ async function _v41_clearReconcile(batchNo){
     closeModal();
     await loadReconcileOverridesTrk();
     if(typeof _v41_clearAgradeMonthCache==='function') _v41_clearAgradeMonthCache();
+    renderReportZ();
+  }catch(e){ toast('Network error: '+e.message,'#dc2626'); }
+}
+
+// ═══ v48B (Ishan): per-DEPARTMENT WIP reconciliation modal (Report Z) ═══════════════════════════
+// Admin corrects phantom department WIP (boxes scanned into packing without the prior-dept scan-OUT).
+// Per dept: set the corrected WIP (or click Zero) and choose disposition — "Moved to packing" (records
+// the missing recon scan-out(s); A-Grade-neutral for PI/Printing/unprinted-AIM, raises A-Grade for
+// Pre-AIM / printed-AIM) or "Scrapped" (salvage write-off; A-Grade % drops). Reversible via Clear.
+// No frozen formula is touched — corrections flow entirely through recon scans / wastage.
+async function _v48bReloadSummaries(){
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)});
+    const j = await r.json();
+    if(j && j.summary){ state.scanSummary = j.summary; if(j.wastage) state.wastageSummary = j.wastage; }
+  }catch(e){ /* keep existing summaries on failure */ }
+  if(typeof _v41_clearAgradeMonthCache==='function') _v41_clearAgradeMonthCache();
+}
+
+function _v48bDeriveImpact(key, cur, neutral){
+  const el = document.getElementById('wd-impact-'+key); if(!el) return;
+  const raw = parseFloat(document.getElementById('wd-val-'+key)?.value);
+  const corrected = isNaN(raw) ? cur : raw;
+  const disp = document.getElementById('wd-disp-'+key)?.value || 'movepack';
+  const delta = Math.round((cur - corrected)*100)/100;
+  if(delta <= 0.005){ el.innerHTML = '<span style="color:var(--text3)">No change (corrected ≥ current WIP)</span>'; return; }
+  if(disp==='scrap'){
+    el.innerHTML = `<span style="color:#b45309">Scrap ${fmt(delta)}L → salvage write-off; A-Grade % will drop.</span>`;
+  } else if(neutral){
+    el.innerHTML = `<span style="color:#16a34a">Move ${fmt(delta)}L to packing; A-Grade unchanged.</span>`;
+  } else {
+    el.innerHTML = `<span style="color:#0e7490">Move ${fmt(delta)}L to packing as good output; A-Grade +${fmt(delta)}L.</span>`;
+  }
+}
+
+function _v48bOpenWipDeptModal(batchNo){
+  if(currentDept!=='admin'){ toast('Admin only','#dc2626'); return; }
+  const b = getBatch(batchNo) || {batchNumber:batchNo};
+  const wip = getBatchWIPBreakdown(batchNo) || {};
+  const printed = !!b.isPrinted;
+  const f = n => Math.round((n||0)*100)/100;
+  // Pre-AIM and (for printed batches) AIM are NOT A-Grade-neutral on a move-to-packing; the rest are.
+  const depts = [
+    { key:'preaim',   label:'Pre-AIM (Unsorted)',      wip:wip.preAIM,        neutral:false },
+    { key:'aim',      label:'AIM Dept',                 wip:wip.aimWIP,         neutral:!printed },
+    printed ? { key:'printing', label:'Printing',       wip:wip.printWIP,       neutral:true } : null,
+    printed ? { key:'pi',       label:'Print Inspection', wip:wip.piWIP,        neutral:true } : null,
+    { key:'transit',  label:'Transit to Packing',       wip:wip.toPackTransit,  neutral:true },
+  ].filter(Boolean).filter(d => (d.wip||0) > 0.005);
+
+  if(!depts.length){ toast('No department WIP to reconcile on this batch','#0e7490'); return; }
+
+  const rowHtml = d => {
+    const cur = f(d.wip);
+    return `<div style="border:1px solid var(--border);border-radius:6px;padding:10px 12px;margin-bottom:8px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:6px">
+        <b>${d.label}</b><span class="td-mono amber">Current WIP: ${cur}L</span>
+      </div>
+      <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end">
+        <div style="flex:1;min-width:120px">
+          <label style="font-size:10px;color:var(--text3)">Corrected WIP (Lakhs)</label>
+          <input type="number" id="wd-val-${d.key}" class="form-control" value="${cur}" step="0.01" min="0" max="${cur}"
+                 oninput="_v48bDeriveImpact('${d.key}',${cur},${d.neutral?1:0})">
+        </div>
+        <button class="btn btn-sm" style="background:#334155;color:#fff" onclick="document.getElementById('wd-val-${d.key}').value='0';_v48bDeriveImpact('${d.key}',${cur},${d.neutral?1:0})">Zero</button>
+        <div style="min-width:160px">
+          <label style="font-size:10px;color:var(--text3)">Disposition</label>
+          <select id="wd-disp-${d.key}" class="form-control" onchange="_v48bDeriveImpact('${d.key}',${cur},${d.neutral?1:0})">
+            <option value="movepack">Moved to packing (good)</option>
+            <option value="scrap">Scrapped (salvage)</option>
+          </select>
+        </div>
+        <button class="btn btn-sm btn-danger" onclick="_v48bApplyWipDept('${batchNo}','${d.key}')">Apply</button>
+      </div>
+      <div id="wd-impact-${d.key}" style="font-size:11px;margin-top:6px"></div>
+    </div>`;
+  };
+
+  openModal(`Reconcile Department WIP — ${batchNo}`, 'Correct phantom department WIP from your records', `
+    <div style="font-size:12px;color:var(--text3);margin-bottom:10px">
+      For each department, set the <b>corrected WIP</b> (or click <b>Zero</b>) and choose what happened to the difference.
+      <b>Moved to packing</b> records the material left the department — A-Grade-neutral for Print Inspection, Printing and
+      unprinted AIM; Pre-AIM and printed-AIM count it as good output (A-Grade rises). <b>Scrapped</b> writes it off as
+      salvage (A-Grade % drops). Entries land in the batch's production month and are reversible below.
+    </div>
+    ${depts.map(rowHtml).join('')}
+    <div style="font-size:11px;color:var(--text3);margin-top:4px">Each Apply is audit-logged and reflected across Reports B, D and Z.</div>
+  `, [
+    { label:'Close', cls:'btn-secondary', fn:'closeModal()' },
+    { label:'↩ Clear ALL WIP reconciliations', cls:'btn-ghost', fn:`_v48bClearWipRecon('${batchNo}')` },
+  ]);
+  depts.forEach(d=>_v48bDeriveImpact(d.key, f(d.wip), d.neutral?1:0));
+}
+
+async function _v48bApplyWipDept(batchNo, key){
+  const b = getBatch(batchNo) || {batchNumber:batchNo};
+  const wip = getBatchWIPBreakdown(batchNo) || {};
+  const curMap = { preaim:wip.preAIM, aim:wip.aimWIP, printing:wip.printWIP, pi:wip.piWIP, transit:wip.toPackTransit };
+  const cur = Math.round((curMap[key]||0)*100)/100;
+  const raw = parseFloat(document.getElementById('wd-val-'+key)?.value);
+  const corrected = isNaN(raw) ? cur : Math.max(0, raw);
+  const delta = Math.round((cur - corrected)*100)/100;
+  if(delta <= 0.005){ toast('No change to apply','#0e7490'); return; }
+  const disp = document.getElementById('wd-disp-'+key)?.value || 'movepack';
+  // production month for correct A-Grade attribution (batch start), else the selected report month
+  const month = (b.startDate||b.orderStartDate) ? String(b.startDate||b.orderStartDate).slice(0,7) : _trkSelectedMonth;
+  const body = { batchNumber:batchNo, dept:key, delta, disposition:disp, wasteType:'salvage',
+                 isPrinted:!!b.isPrinted, month, reason:'Report Z department-WIP reconcile',
+                 reconciledBy:(currentUser&&currentUser.username)||currentDept||'admin' };
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/reconcile-wip-dept',{
+      method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body), signal:AbortSignal.timeout(15000) });
+    const j = await r.json();
+    if(!j.ok){ toast('Failed: '+(j.error||'error'),'#dc2626'); return; }
+    toast(`${key==='preaim'?'Pre-AIM':key.toUpperCase()} WIP reconciled (${fmt(delta)}L)`,'#16a34a');
+    await _v48bReloadSummaries();
+    closeModal();
+    renderReportZ();
+  }catch(e){ toast('Network error: '+e.message,'#dc2626'); }
+}
+
+async function _v48bClearWipRecon(batchNo){
+  if(!confirm(`Clear ALL WIP reconciliations for ${batchNo}?\n\nRemoves every department-WIP reconciliation entry (moved-to-packing and scrap) made for this batch, restoring its raw scan-derived department WIP.`)) return;
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/reconcile-wip-clear',{
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({batchNumber:batchNo, reconciledBy:(currentUser&&currentUser.username)||currentDept||'admin'}),
+      signal:AbortSignal.timeout(15000) });
+    const j = await r.json();
+    if(!j.ok){ toast('Failed: '+(j.error||'error'),'#dc2626'); return; }
+    toast(`Cleared (${j.scansDeleted} scan${j.scansDeleted===1?'':'s'}, ${j.wasteDeleted} write-off${j.wasteDeleted===1?'':'s'})`,'#16a34a');
+    await _v48bReloadSummaries();
+    closeModal();
     renderReportZ();
   }catch(e){ toast('Network error: '+e.message,'#dc2626'); }
 }
