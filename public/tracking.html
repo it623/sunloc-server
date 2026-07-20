@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v48</title>
+<title>Sunloc Tracking Suite v1.0 · build v48A</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48</p>
+      <p>Tracking Suite v1.0 · build v48A</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48</p>
+      <p>Tracking Suite v1.0 · build v48A</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9592,6 +9592,13 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   const filterPc      = window._rptHPc     || '';
   const filterColour  = window._rptHColour  || '';
   const filterCust    = window._rptHCustomer || ''; // v45ZL item 1
+  const filterFloor   = window._rptHFloor   || ''; // v48A (Ishan #4): '' | 'gf' | 'ffsf'
+
+  // v48A (Ishan #4): canonical GF vs FF/SF split — SAME set Report B/D use (FLOORS.FF + FLOORS.SF
+  // machines, normalised). A machine not in this set (incl. unknown/'-') buckets to GF, matching the
+  // Report B default. Classifier over a row's machineId.
+  const _ffsfSetH = new Set([...(FLOORS.FF?.machines||[]),...(FLOORS.SF?.machines||[])].map(normMcId));
+  const _rowIsFfsf = r => _ffsfSetH.has(normMcId(r.machineId));
 
   // Rows for active tab
   let tabRows = gapRows;
@@ -9601,6 +9608,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   if(filterMachine) tabRows = tabRows.filter(r=>normMcId(r.machineId)===normMcId(filterMachine));
   if(filterPc)      tabRows = tabRows.filter(r=>r.pcCode===filterPc);
   if(filterColour)  tabRows = tabRows.filter(r=>r.colour===filterColour);
+  if(filterFloor)   tabRows = tabRows.filter(r=> filterFloor==='ffsf' ? _rowIsFfsf(r) : !_rowIsFfsf(r));
 
   // Dropdown options for filters in active tab scope
   const scopeRows = activeTab==='all' ? gapRows : gapRows.filter(r=>r.transKey===activeTab);
@@ -9624,7 +9632,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
   // Tab bar
   const tabBar = `
     <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:16px;border-bottom:2px solid var(--border);padding-bottom:10px">
-      <div onclick="window._rptHTab='all';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';renderReportF()"
+      <div onclick="window._rptHTab='all';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';window._rptHFloor='';renderReportF()"
         style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:2px solid ${activeTab==='all'?'#7c3aed':'var(--border)'};background:${activeTab==='all'?'rgba(124,58,237,0.1)':'var(--surface2)'};color:${activeTab==='all'?'#7c3aed':'var(--text2)'}">
         All Transitions
         <span style="margin-left:6px;background:#7c3aed;color:#fff;font-size:10px;padding:1px 6px;border-radius:8px">${gapRows.length}</span>
@@ -9632,7 +9640,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       ${allTransitions.map(tk=>{
         const s=summaryMap[tk]||{count:0,totalGap:0,totalQty:0};
         const isActive=activeTab===tk;
-        return `<div onclick="window._rptHTab='${tk}';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';renderReportF()"
+        return `<div onclick="window._rptHTab='${tk}';window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';window._rptHFloor='';renderReportF()"
           style="padding:6px 14px;border-radius:6px;font-size:12px;font-weight:700;cursor:pointer;border:2px solid ${isActive?'#7c3aed':'var(--border)'};background:${isActive?'rgba(124,58,237,0.1)':'var(--surface2)'};color:${isActive?'#7c3aed':'var(--text2)'}">
           ${tk.replace('AIM Inspection','AIM').replace('Print Inspection','PI')}
           <span style="margin-left:6px;background:${isActive?'#7c3aed':'var(--text3)'};color:#fff;font-size:10px;padding:1px 6px;border-radius:8px">${s.count}</span>
@@ -9679,6 +9687,14 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
           ${allColoursH.map(c=>`<option value="${c}" ${filterColour===c?'selected':''}>${c}</option>`).join('')}
         </select>
       </div>
+      <div class="form-group" style="margin-bottom:0">
+        <label style="font-size:11px">Floor</label>
+        <select onchange="window._rptHFloor=this.value;renderReportF()">
+          <option value="" ${filterFloor===''?'selected':''}>All Floors</option>
+          <option value="gf" ${filterFloor==='gf'?'selected':''}>Ground (GF)</option>
+          <option value="ffsf" ${filterFloor==='ffsf'?'selected':''}>First + Second (FF/SF)</option>
+        </select>
+      </div>
     </div>`;
 
   // v45ZA (confirmed by Ishan): the red gap count is now clickable — expands an inline detail row
@@ -9690,6 +9706,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
     .map((r,_i)=>{ const _rid='hgapbx-'+_i; return `<tr style="background:rgba(220,38,38,0.03)">
       <td class="td-bold td-mono">${r.batch}</td>
       <td class="text-sm">${r.customer}</td>
+      <td class="text-sm">${r.colour}</td>
       <td class="td-mono">${r.machineId}</td>
       <td class="td-mono">${r.size}</td>
       <td class="text-sm" style="color:#7c3aed;font-weight:600">${r.from}</td>
@@ -9700,7 +9717,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
           onclick="_rptH_toggleGapBoxes('${r.batch}','${r.fromKey}','${r.toKey}','${_rid}')">${r.gap}${r.extraIn>0?` <span style="color:#b45309" title="${r.extraIn} box(es) scanned IN at ${r.to} without an OUT scan at ${r.from} — this offset made the old count-net smaller than the real per-box gap">⚠</span>`:''} <span style="font-size:9px">▾</span></td>
       <td class="td-mono" style="color:var(--accent4)">${fmt(r.gapQty)}L</td>
     </tr>
-    <tr id="${_rid}" class="hidden"><td colspan="10" style="background:rgba(220,38,38,0.05);padding:8px 14px"><span class="text-sm text-muted">Loading box numbers…</span></td></tr>`; }).join('');
+    <tr id="${_rid}" class="hidden"><td colspan="11" style="background:rgba(220,38,38,0.05);padding:8px 14px"><span class="text-sm text-muted">Loading box numbers…</span></td></tr>`; }).join('');
 
   // v41ZB: totals across the filtered tab rows
   const _hOut = tabRows.reduce((s,r)=>s+(r.fromOut||0),0);
@@ -9727,14 +9744,14 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
          ?`<div class="card-title mb-8">Batch-wise Detail (largest gaps first) — ${tabRows.length} row${tabRows.length!==1?'s':''}</div>
            <div class="tbl-wrap tbl-sticky"><table>
              <thead><tr>
-               <th>Batch</th><th>Customer</th><th>M/C</th><th>Size</th>
+               <th>Batch</th><th>Customer</th><th>Colour</th><th>M/C</th><th>Size</th>
                <th>From Dept</th><th>To Dept</th>
                <th>Scanned OUT</th><th>Scanned IN</th>
                <th>Gap (Boxes)</th><th>Gap (L)</th>
              </tr></thead>
              <tbody>${detailRows}</tbody>
              <tfoot><tr style="background:var(--surface2);font-weight:800">
-               <td colspan="6" class="text-right" style="padding-right:8px">TOTAL (${tabRows.length})</td>
+               <td colspan="7" class="text-right" style="padding-right:8px">TOTAL (${tabRows.length})</td>
                <td class="td-mono">${_hOut}</td><td class="td-mono">${_hIn}</td>
                <td class="td-mono" style="color:var(--accent4)">${_hGap}</td>
                <td class="td-mono" style="color:var(--accent4)">${fmt(_hGapQ)}L</td>
@@ -9745,7 +9762,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
     }
     <div style="margin-top:16px;display:flex;gap:10px">
       <button class="btn btn-secondary btn-sm" onclick="exportReportH()">📥 Export Excel</button>
-      <button class="btn btn-ghost btn-sm" onclick="window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';renderReportF()">✕ Clear Filters</button>
+      <button class="btn btn-ghost btn-sm" onclick="window._rptHBatch='';window._rptHMachine='';window._rptHPc='';window._rptHColour='';window._rptHCustomer='';window._rptHFloor='';renderReportF()">✕ Clear Filters</button>
       <button class="btn btn-ghost btn-sm" onclick="renderReportF()" style="margin-left:auto">🔄 Refresh</button>
     </div>
   </div>`;
@@ -9764,7 +9781,7 @@ function exportReportH(){
   const getTransitions=(batch)=>batch.isPrinted
     ?[['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
     :[['aim','packing'],['packing','dispatch']];
-  const rows=[['Batch','Customer','Machine','Size','From Dept','To Dept','Scanned OUT','Scanned IN','Gap (Boxes)','Gap (L)']];
+  const rows=[['Batch','Customer','Colour','Machine','Size','From Dept','To Dept','Scanned OUT','Scanned IN','Gap (Boxes)','Gap (L)']];
   batches.forEach(b=>{
     getTransitions(b).forEach(([from,to])=>{
       const fromOut = hasScanSummary()
@@ -9784,7 +9801,7 @@ function exportReportH(){
         : (_srvE && _srvE.gapQty != null)
             ? _srvE.gapQty
             : Math.max(0, _scanLakhs(b.batchNumber, from, 'out', b.size) - _scanLakhs(b.batchNumber, to, 'in', b.size));
-      if(gap>0) rows.push([b.batchNumber,b.customer||'',b.machineId||'',b.size,DEPT_LABELS[from]||from,DEPT_LABELS[to]||to,fromOut,toIn,gap,parseFloat(fmt(gapQtyL))]);
+      if(gap>0) rows.push([b.batchNumber,b.customer||'',b.colour||'',b.machineId||'',b.size,DEPT_LABELS[from]||from,DEPT_LABELS[to]||to,fromOut,toIn,gap,parseFloat(fmt(gapQtyL))]);
     });
   });
   if(typeof XLSX!=='undefined'){
@@ -9971,7 +9988,25 @@ function _v41_renderReportGInner(){
   // v41ZC: filter state (machine uses normMcId so MC.30 / mc30 / "MC 30" all match)
   const gB = window._rptGBatch||'', gM = window._rptGMachine||'', gP = window._rptGPc||'', gC = window._rptGColour||'';
   const gSize = (window._rptGSize!=null?String(window._rptGSize):''); // v45ZY item 5
-  if (gSize === '__pkgawait__') return _v48RenderPackedAwaiting(allMonthBatches); // v48 #4
+  if (gSize === '__pkgawait__') {
+    // v48A (Ishan #3): the former early `return` handed the HTML back to a caller that invokes this
+    // function only for its DOM side-effect (it injects at the end) — so the markup was built and
+    // discarded, leaving only Report D's top summary. Inject through the SAME compose path the normal
+    // path uses, and keep a small view switch so the Size dropdown isn't stranded on this view.
+    const _el = document.getElementById('report-output');
+    if (_el) {
+      const _switch = `<div class="card" style="padding:10px 14px;margin-bottom:0">
+        <label style="font-size:11px;font-weight:600;margin-right:6px">View</label>
+        <select onchange="window._rptGSize=this.value;renderReportD()" style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px">
+          <option value="__pkgawait__" selected>📦 Packed &amp; Awaiting Dispatch</option>
+          <option value="">← Back to Batch-wise A-Grade</option>
+        </select></div>`;
+      const _pkgHtml = _switch + _v48RenderPackedAwaiting(allMonthBatches);
+      if (window._v41_composingD) _el.insertAdjacentHTML('beforeend', _pkgHtml);
+      else _el.innerHTML = _pkgHtml;
+    }
+    return;
+  }
   const gCust = window._rptGCustomer||''; // v45ZL item 1: customer search
   // v45ZY items 4+5: the stage-wise WIP matrix now renders for a Customer, a PC Code OR a Size
   // selection (previously customer-only). _mxScope is the label shown in its title.
@@ -13857,11 +13892,23 @@ function renderReportK(targetId) {
   // Apply date filter to Dispatch Out date (so "dispatched this period")
   // For 'all' mode, no date filter; for batches with no dispatch yet, include if Pack In falls in range
   if (dateMode !== 'all') {
-    rows = rows.filter(r => {
-      if (r.lastDispOut) return r.lastDispOut >= fromDate && r.lastDispOut <= toDate;
-      if (r.firstPackIn) return r.firstPackIn >= fromDate && r.firstPackIn <= toDate;
-      return false;
-    });
+    if (_perData48) {
+      // v48A (Ishan #2A): authoritative in-window membership. A batch appears only if the SERVER period
+      // aggregation — the SAME source that fills the Pack-In(Period)/Disp-Out columns — reports real
+      // activity inside [fromDate,toDate]. This closes the leak where the row universe (every scanSummary
+      // key) was date-filtered against the recency-windowed state.scans (a DIFFERENT source), letting
+      // 0-box and no-pack-in-in-range rows through. Rows with in-window disp-out but no in-window pack-in
+      // (e.g. packed in June, dispatched in July) are legitimate and kept; only true 0/0-window rows drop.
+      rows = rows.filter(r => (r.packInWindowBoxes > 0 || r.dispOutShownBoxes > 0
+                               || r.packInWindowQty > 0.005 || r.dispOutShownQty > 0.005));
+    } else {
+      // period aggregation not loaded yet — provisional windowed filter until the fetch resolves & re-renders
+      rows = rows.filter(r => {
+        if (r.lastDispOut) return r.lastDispOut >= fromDate && r.lastDispOut <= toDate;
+        if (r.firstPackIn) return r.firstPackIn >= fromDate && r.firstPackIn <= toDate;
+        return false;
+      });
+    }
   }
   // Other filters
   if (filters.customer) rows = rows.filter(r => (r.customer||'').toLowerCase().includes(filters.customer.toLowerCase()));

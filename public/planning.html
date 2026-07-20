@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v48</p>
+      <p>Planning Suite v3.0 · build v48A</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -10785,6 +10785,34 @@ function dispatchRowObj(p) {
   };
 }
 
+// v48A (Ishan #1): shared subtotal/total row in the EXACT dispatchRowObj column schema, with every
+// numeric cell a real NUMBER (not fmt()'s toFixed STRING) so all columns stay summable in Excel —
+// the standing rule that every exported sheet share one format/logic. Used for per-zone ZONE TOTAL
+// rows, the Zone Summary sheet's per-zone subtotals, and the grand TOTAL.
+function _dispatchColWidths() {
+  // matches the 17 dispatchRowObj columns in order
+  return [18,14,10,14,8,8,14,12,8,14,12,16,16,12,14,18,20].map(w=>({wch:w}));
+}
+function _dispatchTotalRow(customerLabel, zone, plans) {
+  const r2 = x => Math.round((x||0)*100)/100;
+  const sum = f => (plans||[]).reduce((s,p)=>s+(Number(f(p))||0),0);
+  const dispatched = (plans||[]).filter(p=>p.status==='dispatched').length;
+  const sQ = sum(p=>p.qty), sD = sum(p=>p.actualDispatched);
+  return {
+    'Customer': customerLabel, 'Batch No': '', 'PC Code': '', 'Colour': '', 'Size': '', 'PTD/UP': '',
+    'Zone': zone || '',
+    'Qty (Lakhs)': r2(sQ),
+    'Boxes': sum(p=>p.boxes),
+    'Packed (Lakhs)': r2(sum(p=>p.packedQty)),
+    'Packed Boxes': sum(p=>p.packedBoxes),
+    'Dispatched (Lakhs)': r2(sD),
+    'Planned Dispatch Date': '', 'Date Status': '',
+    'Balance (Lakhs)': r2(sQ - sD),
+    'Status': `${dispatched}/${(plans||[]).length} dispatched`,
+    'Remarks': ''
+  };
+}
+
 // 1. FULL DISPATCH PLAN (existing — updated with tentative col)
 // v48 (Ishan #2): Dispatch Plan exports honour the on-screen quarter/month filter (production-start
 // month) so they are month-scoped — or quarter-scoped when "All months (whole quarter)" is selected —
@@ -10889,47 +10917,33 @@ function exportZoneWise() {
 
     const rows = plans.map(p => dispatchRowObj(p));
 
-    // Zone summary row
-    const totalQty = plans.reduce((s,p) => s + (p.qty||0), 0);
-    const totalBoxes = plans.reduce((s,p) => s + (p.boxes||0), 0);
-    const totalDispatched = plans.reduce((s,p) => s + (p.actualDispatched||0), 0);
-    rows.push({
-      'Customer': 'ZONE TOTAL', 'Batch No': '', 'PC Code': '', 'Colour': '', 'Size': '', 'PTD/UP': '',
-      'Zone': zone, 'Qty (Lakhs)': fmt(totalQty), 'Boxes': totalBoxes,
-      'Planned Dispatch Date': '', 'Date Status': '',
-      'Dispatched (Lakhs)': fmt(totalDispatched),
-      'Balance (Lakhs)': fmt(totalQty - totalDispatched),
-      'Status': `${plans.filter(p=>p.status==='dispatched').length}/${plans.length} dispatched`,
-      'Remarks': ''
-    });
+    // v48A (Ishan #1): ZONE TOTAL row via the shared numeric helper — includes Packed (L)/Packed Boxes
+    // and every numeric cell is a real number (summable), same schema as the data rows above.
+    rows.push(_dispatchTotalRow('ZONE TOTAL', zone, plans));
 
     const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = [18,14,10,14,8,8,14,12,8,20,12,16,14,12,20].map(w=>({wch:w}));
+    ws['!cols'] = _dispatchColWidths();
     const sheetName = zone.slice(0,31).replace(/[:\\/?*\[\]]/g,'_');
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
   });
 
-  // Summary sheet — one row per zone
-  const summaryRows = zones.map(zone => {
-    const plans = state.dispatchPlans.filter(p => p.zone === zone);
-    const totalQty = plans.reduce((s,p) => s + (p.qty||0), 0);
-    const totalDispatched = plans.reduce((s,p) => s + (p.actualDispatched||0), 0);
-    const nextDispatch = plans.filter(p=>p.status!=='dispatched' && p.plannedDate)
-      .sort((a,b)=>new Date(a.plannedDate)-new Date(b.plannedDate))[0];
-    return {
-      'Zone': zone,
-      'Total Orders': plans.length,
-      'Dispatched Orders': plans.filter(p=>p.status==='dispatched').length,
-      'Pending Orders': plans.filter(p=>p.status!=='dispatched').length,
-      'Total Qty (L)': fmt(totalQty),
-      'Dispatched (L)': fmt(totalDispatched),
-      'Balance (L)': fmt(totalQty - totalDispatched),
-      'Next Dispatch Date': nextDispatch ? fmtDate(nextDispatch.plannedDate) : '-',
-      'Next Dispatch Status': nextDispatch ? (nextDispatch.tentative ? 'Tentative' : 'Confirmed') : '-'
-    };
+  // v48A (Ishan #1): Zone Summary is now MONTH/QUARTER-SCOPED (was raw state.dispatchPlans — the leak
+  // that made it disagree with the per-zone tabs) and follows the SAME format as the individual sheets:
+  // every zone's order rows stacked, a ZONE TOTAL subtotal after each, and a GRAND TOTAL at the end —
+  // all in the dispatchRowObj column schema, Packed (L)/Packed Boxes included, all columns summable.
+  const summaryRows = [];
+  zones.forEach(zone => {
+    const plans = _scopedZ
+      .filter(p => p.zone === zone)
+      .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
+    if (plans.length === 0) return;
+    plans.forEach(p => summaryRows.push(dispatchRowObj(p)));
+    summaryRows.push(_dispatchTotalRow(`ZONE TOTAL — ${zone}`, zone, plans));
   });
+  const _allZoned = _scopedZ.filter(p => p.zone && zones.includes(p.zone));
+  summaryRows.push(_dispatchTotalRow('GRAND TOTAL', '', _allZoned));
   const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
-  summaryWs['!cols'] = [16,14,16,14,14,14,14,20,14].map(w=>({wch:w}));
+  summaryWs['!cols'] = _dispatchColWidths();
   XLSX.utils.book_append_sheet(wb, summaryWs, 'Zone Summary');
 
   XLSX.writeFile(wb, `Sunloc_Zone_Dispatch_${new Date().toISOString().slice(0,10)}.xlsx`);
