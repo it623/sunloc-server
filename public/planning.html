@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v48K</p>
+      <p>Planning Suite v3.0 · build v48M</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -3711,7 +3711,7 @@ function renderOrderRow(ord, idx, mc) {
       ${ord.poType==='verbal'?'<span class="tag" style="background:rgba(240,165,0,0.1);color:var(--accent);font-size:10px">VERBAL</span> ':''}${ord.poNumber||'-'}
       ${ord.batchNumber?`<br><span class="text-dim text-sm" style="cursor:pointer;text-decoration:underline dotted" title="Open batch tracking" onclick="event.stopPropagation();openBatchTracking('${(ord.batchNumber||'').replace(/'/g,'')}')">${ord.batchNumber}</span>`:''}
     </td>
-    <td style="position:sticky;left:128px;z-index:2;background:var(--surface2,#0f2a20);font-weight:500;box-shadow:2px 0 4px rgba(0,0,0,0.1)">${isWO
+    <td style="position:sticky;left:128px;z-index:2;background:var(--surface2,#0f2a20);font-weight:500;box-shadow:2px 0 4px rgba(0,0,0,0.1)">${(isWO && !ord.woCustomerAssignedAt)
       ? '<span style="color:var(--accent3);font-style:italic;font-size:12px">W/O — pending</span>'
       : (ord.shipTo||ord.customer||'-') + (ord.billTo && ord.billTo !== (ord.shipTo||ord.customer)
           ? '<br><span style="font-size:11px;color:var(--text3);font-weight:400">Bill To: ' + ord.billTo + '</span>'
@@ -14959,6 +14959,7 @@ const _v40_CHECK_TYPE_LABELS = {
   qty_mismatch_dpr_inspected:  'DPR vs Inspected mismatch',
   dispatch_batch_customer_conflict: 'Batch → multiple customers',
   qty_mismatch_aim_packed:     'AIM vs Packed loss',
+  invoiced_exceeds_packed:     'Invoiced > Packed',
   upstream_missing_scan:       'Missing upstream scan',
   upstream_timestamp_inversion:'Timestamp inversion',
   wastage_exceeds_input:       'Wastage exceeds input',
