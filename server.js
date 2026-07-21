@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48D';
+const APP_BUILD = 'v48G';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3690,16 +3690,29 @@ async function _doRefreshSapInvoices() {
               let pendingReqsFull;
               if (pgPool) {
                 const r3 = await pgPool.query(
-                  `SELECT id, qty_lakhs, batch_number FROM invoice_requests WHERE sap_doc_entry=$1 AND status='pending_reconciliation' ORDER BY created_at ASC`,
+                  `SELECT id, qty_lakhs, batch_number, pc_code FROM invoice_requests WHERE sap_doc_entry=$1 AND status='pending_reconciliation' ORDER BY created_at ASC`,
                   [soDocEntry]
                 );
                 pendingReqsFull = r3.rows;
               } else {
-                pendingReqsFull = db.prepare(`SELECT id, qty_lakhs, batch_number FROM invoice_requests WHERE sap_doc_entry=? AND status='pending_reconciliation' ORDER BY created_at ASC`).all(soDocEntry);
+                pendingReqsFull = db.prepare(`SELECT id, qty_lakhs, batch_number, pc_code FROM invoice_requests WHERE sap_doc_entry=? AND status='pending_reconciliation' ORDER BY created_at ASC`).all(soDocEntry);
               }
               // Mark all matching pending_reconciliation rows as reconciled (first-come-first-served).
               // Note: in practice these should already have been matched via batchUdf, but this is the safety net.
               for (const pr of pendingReqsFull) {
+                // v48G (Ishan): PC-CODE GATE — the strongest discriminator. This invoice LINE is for item
+                // `line.ItemCode` (which IS the PC code); a request whose pc_code differs is a DIFFERENT
+                // product and cannot be this line's request, even when it shares the Sales Order and its qty
+                // happens to fall in the recon band. This is exactly the mis-link seen live: a 26Y059 invoice
+                // with a BLANK batch UDF (slipped the v47R gate) reconciled a 26T079 request whose 14L slipped
+                // the v47L qty band. When the line has no ItemCode, fall through to the existing gates (no
+                // regression). One SO is one customer and the PC encodes size/colour, so PC + FIFO suffice.
+                const _linePc48g = String(line.ItemCode || '').trim();
+                const _prPc48g   = String(pr.pc_code || '').trim();
+                if (_linePc48g && _prPc48g && _linePc48g !== _prPc48g) {
+                  console.log(`[v48G PC-gate] SO ${soDocEntry}: request ${pr.id} (PC ${_prPc48g}) left PENDING — invoice line item ${_linePc48g} differs`);
+                  continue;
+                }
                 // v47R (C fix — 26X083): batch-token gate. If the arriving invoice carries a NON-BLANK batch
                 // list that does NOT include this request's batch as an exact token, it cannot be this
                 // request's invoice — leave it pending. A blank batch UDF still falls through to the qty-band
@@ -5863,11 +5876,16 @@ app.post('/api/invoice/cancel-request', async (req, res) => {
     if (!['pending', 'sent_to_sap', 'pending_reconciliation'].includes(reqRow.status)) {
       return res.status(409).json({ ok: false, error: `Request status is '${reqRow.status}' — only an in-flight (pending) request can be cancelled.` });
     }
-    // Refuse if a SAP invoice is already linked to this request (SAP has created it → reconcile, don't cancel).
+    // v48E (Ishan): block cancel ONLY if a linked SAP invoice is genuinely for THIS request's batch. The
+    // reconciliation had mis-linked invoices of OTHER batches (e.g. 26Y059 invoices linked to 26T079
+    // requests — likely a SAP DocEntry collision), which left those requests un-cancellable AND invisible
+    // under their own batch. If the only linked invoice is for a different batch, allow the cancel so admin
+    // can clear the stuck request. An empty request batch keeps the old (block-on-any-link) behaviour.
+    const _rbn = (reqRow.batch_number || '').toString().trim();
     let recv;
-    if (pgPool) recv = (await pgPool.query(`SELECT 1 FROM invoices_received WHERE invoice_request_id=$1 LIMIT 1`, [requestId])).rows[0];
-    else        recv = db.prepare(`SELECT 1 FROM invoices_received WHERE invoice_request_id=? LIMIT 1`).get(requestId);
-    if (recv) return res.status(409).json({ ok: false, error: 'A SAP invoice is already linked to this request — cannot cancel; reconcile it instead.' });
+    if (pgPool) recv = (await pgPool.query(`SELECT 1 FROM invoices_received WHERE invoice_request_id=$1 AND ($2='' OR batch_number ILIKE '%'||$2||'%') LIMIT 1`, [requestId, _rbn])).rows[0];
+    else        recv = db.prepare(`SELECT 1 FROM invoices_received WHERE invoice_request_id=? AND (?='' OR batch_number LIKE '%'||?||'%') LIMIT 1`).get(requestId, _rbn, _rbn);
+    if (recv) return res.status(409).json({ ok: false, error: 'A SAP invoice for this batch is already linked to this request — cannot cancel; reconcile it instead.' });
     const who = (req.headers['x-sunloc-user'] || role || 'unknown').toString();
     if (pgPool) await pgPool.query(`UPDATE invoice_requests SET status='cancelled', updated_at=NOW()::text WHERE id=$1`, [requestId]);
     else        db.prepare(`UPDATE invoice_requests SET status='cancelled', updated_at=datetime('now') WHERE id=?`).run(requestId);
@@ -5875,6 +5893,40 @@ app.post('/api/invoice/cancel-request', async (req, res) => {
     res.json({ ok: true, requestId, batchNumber: reqRow.batch_number });
   } catch (err) {
     console.error('[cancel-request]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// v48G (Ishan): READ-ONLY preview of invoice↔request MIS-LINKS. For every linked invoice, compare the
+// linked request's pc_code against the invoice's line item codes (payload DocumentLines[].ItemCode). A
+// request whose PC isn't on any invoice line is mis-linked — the SO-share reconciliation error the new
+// PC-gate prevents going forward. Writes nothing; lets IT/admin see the scope (incl. the stuck T079/ZF107).
+app.get('/api/tracking/preview-invoice-mislinks', async (req, res) => {
+  try {
+    const sel = `SELECT ir.sap_doc_num, ir.batch_number AS invoice_batch, ir.invoice_request_id, ir.payload_json,
+                        req.batch_number AS request_batch, req.pc_code AS request_pc, req.status AS request_status
+                 FROM invoices_received ir JOIN invoice_requests req ON req.id = ir.invoice_request_id`;
+    const rows = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+    const mislinks = [];
+    for (const r of rows) {
+      const reqPc = String(r.request_pc || '').trim();
+      if (!reqPc) continue; // can't judge a mis-link without a request PC
+      let linePcs = [];
+      try {
+        const p = r.payload_json ? JSON.parse(r.payload_json) : null;
+        linePcs = ((p && p.DocumentLines) || []).map(l => String(l.ItemCode || '').trim()).filter(Boolean);
+      } catch (_e) {}
+      if (linePcs.length && !linePcs.includes(reqPc)) {
+        mislinks.push({
+          request_id: r.invoice_request_id, request_batch: r.request_batch, request_pc: reqPc,
+          request_status: r.request_status, invoice_doc_num: r.sap_doc_num, invoice_batch: r.invoice_batch,
+          invoice_line_pcs: Array.from(new Set(linePcs))
+        });
+      }
+    }
+    res.json({ ok: true, mode: 'preview', wroteNothing: true, count: mislinks.length, mislinks });
+  } catch (err) {
+    console.error('[preview-invoice-mislinks]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });

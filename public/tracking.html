@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v48D</title>
+<title>Sunloc Tracking Suite v1.0 · build v48G</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48D</p>
+      <p>Tracking Suite v1.0 · build v48G</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48D</p>
+      <p>Tracking Suite v1.0 · build v48G</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -14025,6 +14025,13 @@ function renderReportK(targetId) {
       _detail: d,  // retained for drill-down
     };
   });
+
+  // v48F (Ishan): exclude batches that were NEVER packed in (zero LIFETIME pack-in) from the pack-in↔
+  // dispatch reconciliation. These carry a dispatch record but no pack-in — phantom/legacy/corrupt rows
+  // (e.g. 25T113's impossible 5200 L, uncorrected export capsule counts, pre-system dispatches) with
+  // nothing to reconcile against; they only dragged the balance negative and showed as 0-box leak rows.
+  // Display-only — no data is deleted, and batches with any real pack-in are untouched.
+  rows = rows.filter(r => (r.packInBoxes > 0 || r.packInQty > 0.005));
 
   // Apply date filter to Dispatch Out date (so "dispatched this period")
   // For 'all' mode, no date filter; for batches with no dispatch yet, include if Pack In falls in range
