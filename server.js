@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48H';
+const APP_BUILD = 'v48I';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3477,6 +3477,31 @@ async function _doRefreshSapInvoices() {
         }
       }
     } catch (e) { console.warn('[SAP] invoice match error:', e.message); }
+    // v48I (Ishan): PC-CONSISTENCY GUARD on the batch-UDF match above. SAP's header U_SunlocBatch can be
+    // WRONG — e.g. it named 26ZE107 while the invoice's line is item 2877 (= 26ZA060) — linking the invoice
+    // to the wrong batch's request BEFORE the PC-gated line-based SO pass runs. That's the mis-link that
+    // recurred after un-link + re-pull. If the UDF-matched request's PC isn't on any invoice line, reject the
+    // match (invReqId→null) so the invoice falls through to the line-based, PC-gated reconciliation. The bulk
+    // fetch omits lines, so enrich them here when the UDF matched but lines are absent.
+    if (invReqId) {
+      try {
+        if (!inv.DocumentLines || !inv.DocumentLines.length) {
+          const full = await sap.getInvoice(inv.DocEntry);
+          if (full && full.ok && full.invoice && Array.isArray(full.invoice.DocumentLines)) inv.DocumentLines = full.invoice.DocumentLines;
+        }
+        const _linePcs48i = new Set((inv.DocumentLines || []).map(l => String(l.ItemCode || '').trim()).filter(Boolean));
+        if (_linePcs48i.size) {
+          let _mpc;
+          if (pgPool) _mpc = (await pgPool.query(`SELECT pc_code FROM invoice_requests WHERE id=$1`, [invReqId])).rows[0];
+          else        _mpc = db.prepare(`SELECT pc_code FROM invoice_requests WHERE id=?`).get(invReqId);
+          const _reqPc48i = String((_mpc && _mpc.pc_code) || '').trim();
+          if (_reqPc48i && !_linePcs48i.has(_reqPc48i)) {
+            console.log(`[v48I PC-guard] DocEntry ${inv.DocEntry}: UDF-matched request ${invReqId} (PC ${_reqPc48i}) REJECTED — invoice lines [${Array.from(_linePcs48i).join(',')}] differ`);
+            invReqId = null; source = 'direct_sap';
+          }
+        }
+      } catch (e) { console.warn('[v48I PC-guard]', e.message); }
+    }
     // v44S Issue 4: the bulk fetchRecentInvoices omits DocumentLines (B1 SL can reject $select on the
     // lines collection), so a DIRECT-SAP invoice (no linked Sunloc request) arrives with no line
     // detail — leaving PC / Size / Colour blank and Qty 0 in Report H / Generated Invoices. Pull the
