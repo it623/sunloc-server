@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48G';
+const APP_BUILD = 'v48H';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -5927,6 +5927,80 @@ app.get('/api/tracking/preview-invoice-mislinks', async (req, res) => {
     res.json({ ok: true, mode: 'preview', wroteNothing: true, count: mislinks.length, mislinks });
   } catch (err) {
     console.error('[preview-invoice-mislinks]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// v48H (Ishan): REPAIR the existing invoice↔request mis-links (dry-run by default). Un-links each wrong
+// pairing — resets the mis-linked request to pending_reconciliation and reverts its invoice to unlinked
+// (direct_sap) — so the now PC-gated poller re-reconciles them correctly on the next "Re-pull from SAP".
+// Only requests at pending/sent/pending_reconciliation/reconciled are touched (never a further-advanced
+// status). Physical dispatch records are NEVER modified; each entry reports the batch's dispatch qty so
+// already-dispatched batches are visible. ?apply=unlink performs it atomically, audit-logged.
+app.post('/api/tracking/repair-invoice-mislinks', async (req, res) => {
+  try {
+    const apply = String((req.query && req.query.apply) || (req.body && req.body.apply) || '').trim(); // '' | 'unlink'
+    const who = (req.body && req.body.by) || 'admin';
+    const sel = `SELECT ir.id AS inv_id, ir.sap_doc_num, ir.batch_number AS invoice_batch, ir.invoice_request_id, ir.payload_json,
+                        req.batch_number AS request_batch, req.pc_code AS request_pc, req.status AS request_status
+                 FROM invoices_received ir JOIN invoice_requests req ON req.id = ir.invoice_request_id`;
+    const rows = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+    const _touchable = new Set(['pending','sent_to_sap','pending_reconciliation','reconciled']);
+    const items = [];
+    for (const r of rows) {
+      const reqPc = String(r.request_pc || '').trim(); if (!reqPc) continue;
+      let linePcs = [];
+      try { const p = r.payload_json ? JSON.parse(r.payload_json) : null; linePcs = ((p && p.DocumentLines) || []).map(l => String(l.ItemCode || '').trim()).filter(Boolean); } catch (_e) {}
+      if (linePcs.length && !linePcs.includes(reqPc)) {
+        const dq = pgPool
+          ? (await pgPool.query(`SELECT COALESCE(SUM(qty),0) q, COUNT(*) n FROM tracking_dispatch_records WHERE batch_number=$1`, [r.request_batch])).rows[0]
+          : db.prepare(`SELECT COALESCE(SUM(qty),0) q, COUNT(*) n FROM tracking_dispatch_records WHERE batch_number=?`).get(r.request_batch);
+        items.push({
+          request_id: r.invoice_request_id, request_batch: r.request_batch, request_pc: reqPc, request_status: r.request_status,
+          invoice_id: r.inv_id, invoice_doc_num: r.sap_doc_num, invoice_batch: r.invoice_batch, invoice_line_pcs: Array.from(new Set(linePcs)),
+          batch_dispatched_qty: Math.round((parseFloat(dq.q) || 0) * 100) / 100, batch_dispatch_records: parseInt(dq.n, 10) || 0,
+          willUnlink: _touchable.has(String(r.request_status || ''))
+        });
+      }
+    }
+    if (!apply) return res.json({ ok: true, mode: 'dryrun', wroteNothing: true, count: items.length, willUnlink: items.filter(i => i.willUnlink).length, mislinks: items });
+    if (apply !== 'unlink') return res.status(400).json({ ok: false, error: "apply must be 'unlink' (omit for dry-run)" });
+    const todo = items.filter(i => i.willUnlink);
+    if (!todo.length) return res.json({ ok: true, mode: 'unlink', unlinked: 0, note: 'no touchable mislinks' });
+
+    let unlinked = 0;
+    const doUnlink = async (exec) => {
+      for (const it of todo) {
+        await exec.req(it.request_id);
+        await exec.inv(it.invoice_id);
+        unlinked++;
+      }
+    };
+    const auditDetails = JSON.stringify({ count: todo.length, items: todo });
+    if (pgPool) {
+      const client = await pgPool.connect();
+      try {
+        await client.query('BEGIN');
+        await doUnlink({
+          req: id => client.query(`UPDATE invoice_requests SET status='pending_reconciliation', reconciled_with_invoice_id=NULL, sap_response_doc_num=NULL, sap_response_doc_entry=NULL, sap_response_irn=NULL, reconciled_at=NULL, updated_at=NOW()::TEXT WHERE id=$1`, [id]),
+          inv: id => client.query(`UPDATE invoices_received SET invoice_request_id=NULL, source='direct_sap' WHERE id=$1`, [id]),
+        });
+        await client.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','INVOICE_MISLINK_UNLINK',$2)`, [who, auditDetails]);
+        await client.query('COMMIT');
+      } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {}; throw e; }
+      finally { client.release(); }
+    } else {
+      const uReq = db.prepare(`UPDATE invoice_requests SET status='pending_reconciliation', reconciled_with_invoice_id=NULL, sap_response_doc_num=NULL, sap_response_doc_entry=NULL, sap_response_irn=NULL, reconciled_at=NULL, updated_at=datetime('now') WHERE id=?`);
+      const uInv = db.prepare(`UPDATE invoices_received SET invoice_request_id=NULL, source='direct_sap' WHERE id=?`);
+      const tx = db.transaction(() => {
+        for (const it of todo) { uReq.run(it.request_id); uInv.run(it.invoice_id); unlinked++; }
+        db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','INVOICE_MISLINK_UNLINK',?)`).run(who, auditDetails);
+      });
+      tx();
+    }
+    res.json({ ok: true, mode: 'unlink', unlinked, note: 'Now press "Re-pull from SAP" so the PC-gated poller re-reconciles each invoice to its correct request.' });
+  } catch (err) {
+    console.error('[repair-invoice-mislinks]', err.message);
     res.status(500).json({ ok: false, error: err.message });
   }
 });
