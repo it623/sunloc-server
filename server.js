@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48J';
+const APP_BUILD = 'v48K';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -5974,66 +5974,151 @@ app.get('/api/tracking/preview-invoice-mislinks', async (req, res) => {
 // already-dispatched batches are visible. ?apply=unlink performs it atomically, audit-logged.
 app.post('/api/tracking/repair-invoice-mislinks', async (req, res) => {
   try {
-    const apply = String((req.query && req.query.apply) || (req.body && req.body.apply) || '').trim(); // '' | 'unlink'
+    const apply = String((req.query && req.query.apply) || (req.body && req.body.apply) || '').trim(); // '' | 'unlink' | 'repair'
     const who = (req.body && req.body.by) || 'admin';
-    const sel = `SELECT ir.id AS inv_id, ir.sap_doc_num, ir.batch_number AS invoice_batch, ir.invoice_request_id, ir.payload_json,
+    const _touchable = new Set(['pending','sent_to_sap','pending_reconciliation','reconciled']);
+    // Parse the distinct line PCs (SAP ItemCodes) off an invoice payload — the correctness signal used by both passes.
+    const _linePcsOf = (payload) => {
+      try { const p = payload ? JSON.parse(payload) : null; return Array.from(new Set(((p && p.DocumentLines) || []).map(l => String(l.ItemCode || '').trim()).filter(Boolean))); }
+      catch (_e) { return []; }
+    };
+    const _dispatchOf = async (batch) => {
+      const q = pgPool
+        ? (await pgPool.query(`SELECT COALESCE(SUM(qty),0) q, COUNT(*) n FROM tracking_dispatch_records WHERE batch_number=$1`, [batch])).rows[0]
+        : db.prepare(`SELECT COALESCE(SUM(qty),0) q, COUNT(*) n FROM tracking_dispatch_records WHERE batch_number=?`).get(batch);
+      return { q: Math.round((parseFloat(q.q) || 0) * 100) / 100, n: parseInt(q.n, 10) || 0 };
+    };
+    const items = [];
+    const seen = new Set(); // dedupe key: request_id|invoice_id
+
+    // ── Pass 1 — INVOICE-anchored (v44N): an invoice linked to a request whose PC isn't on any invoice line.
+    //    Unchanged detection from v48J; each hit is an 'unlink' item (reset request → pending_reconciliation, free invoice).
+    const selInv = `SELECT ir.id AS inv_id, ir.sap_doc_num, ir.batch_number AS invoice_batch, ir.invoice_request_id, ir.payload_json,
                         req.batch_number AS request_batch, req.pc_code AS request_pc, req.status AS request_status
                  FROM invoices_received ir JOIN invoice_requests req ON req.id = ir.invoice_request_id`;
-    const rows = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
-    const _touchable = new Set(['pending','sent_to_sap','pending_reconciliation','reconciled']);
-    const items = [];
-    for (const r of rows) {
+    const invRows = pgPool ? (await pgPool.query(selInv)).rows : db.prepare(selInv).all();
+    for (const r of invRows) {
       const reqPc = String(r.request_pc || '').trim(); if (!reqPc) continue;
-      let linePcs = [];
-      try { const p = r.payload_json ? JSON.parse(r.payload_json) : null; linePcs = ((p && p.DocumentLines) || []).map(l => String(l.ItemCode || '').trim()).filter(Boolean); } catch (_e) {}
+      const linePcs = _linePcsOf(r.payload_json);
       if (linePcs.length && !linePcs.includes(reqPc)) {
-        const dq = pgPool
-          ? (await pgPool.query(`SELECT COALESCE(SUM(qty),0) q, COUNT(*) n FROM tracking_dispatch_records WHERE batch_number=$1`, [r.request_batch])).rows[0]
-          : db.prepare(`SELECT COALESCE(SUM(qty),0) q, COUNT(*) n FROM tracking_dispatch_records WHERE batch_number=?`).get(r.request_batch);
+        const dq = await _dispatchOf(r.request_batch);
+        seen.add(`${r.invoice_request_id}|${r.inv_id}`);
         items.push({
+          pass: 'invoice', reqAction: 'unlink', invAction: 'null',
           request_id: r.invoice_request_id, request_batch: r.request_batch, request_pc: reqPc, request_status: r.request_status,
-          invoice_id: r.inv_id, invoice_doc_num: r.sap_doc_num, invoice_batch: r.invoice_batch, invoice_line_pcs: Array.from(new Set(linePcs)),
-          batch_dispatched_qty: Math.round((parseFloat(dq.q) || 0) * 100) / 100, batch_dispatch_records: parseInt(dq.n, 10) || 0,
+          invoice_id: r.inv_id, invoice_doc_num: r.sap_doc_num, invoice_batch: r.invoice_batch, invoice_line_pcs: linePcs,
+          batch_dispatched_qty: dq.q, batch_dispatch_records: dq.n,
+          reason: 'Invoice is linked to this request, but the request PC is not on any invoice line.',
+          willAct: _touchable.has(String(r.request_status || '')),
+          // kept for backward-compatible eyeballing of prior tooling
           willUnlink: _touchable.has(String(r.request_status || ''))
         });
       }
     }
-    if (!apply) return res.json({ ok: true, mode: 'dryrun', wroteNothing: true, count: items.length, willUnlink: items.filter(i => i.willUnlink).length, mislinks: items });
-    if (apply !== 'unlink') return res.status(400).json({ ok: false, error: "apply must be 'unlink' (omit for dry-run)" });
-    const todo = items.filter(i => i.willUnlink);
-    if (!todo.length) return res.json({ ok: true, mode: 'unlink', unlinked: 0, note: 'no touchable mislinks' });
 
-    let unlinked = 0;
-    const doUnlink = async (exec) => {
-      for (const it of todo) {
-        await exec.req(it.request_id);
-        await exec.inv(it.invoice_id);
-        unlinked++;
+    // ── Pass 2 — REQUEST-anchored (v48K): a request reconciled to an invoice whose lines don't carry the request PC.
+    //    Pass 1 can't see these when the invoice is (correctly) linked to a DIFFERENT request or to nobody, because the
+    //    invoice→request join never lands on the offending request. We walk the other direction here.
+    //    Branch is deliberately conservative:
+    //      • invoice is provably a DIFFERENT request's (that request's PC IS on the invoice) → this one over-requested → CANCEL (request only; invoice untouched).
+    //      • invoice orphaned / self-linked here → detach this request (→ pending_reconciliation) so a re-pull can re-pair; free invoice only if it self-links here.
+    //      • rightful owner not PC-verifiable (other PC absent, or dangling link) → REVIEW only; never auto-acted.
+    const selReq = `SELECT req.id AS request_id, req.batch_number AS request_batch, req.pc_code AS request_pc,
+                           req.status AS request_status, req.qty_lakhs AS request_qty,
+                           ir.id AS inv_id, ir.sap_doc_num, ir.batch_number AS invoice_batch,
+                           ir.invoice_request_id AS inv_backlink, ir.payload_json,
+                           other.id AS other_id, other.pc_code AS other_pc, other.batch_number AS other_batch, other.status AS other_status
+                    FROM invoice_requests req
+                    JOIN invoices_received ir ON ir.id = req.reconciled_with_invoice_id
+                    LEFT JOIN invoice_requests other ON other.id = ir.invoice_request_id AND other.id <> req.id
+                    WHERE req.reconciled_with_invoice_id IS NOT NULL`;
+    const reqRows = pgPool ? (await pgPool.query(selReq)).rows : db.prepare(selReq).all();
+    for (const r of reqRows) {
+      if (!_touchable.has(String(r.request_status || ''))) continue;
+      const reqPc = String(r.request_pc || '').trim(); if (!reqPc) continue;
+      if (seen.has(`${r.request_id}|${r.inv_id}`)) continue; // already surfaced by Pass 1
+      const linePcs = _linePcsOf(r.payload_json);
+      if (!linePcs.length || linePcs.includes(reqPc)) continue; // no lines to judge, or PC matches → correct link, never flag
+      const backlink = (r.inv_backlink == null || String(r.inv_backlink).trim() === '') ? null : String(r.inv_backlink).trim();
+      const otherPc = String(r.other_pc || '').trim();
+      let reqAction, invAction, reason;
+      if (backlink && backlink !== r.request_id) {
+        if (r.other_id && otherPc && linePcs.includes(otherPc)) {
+          reqAction = 'cancel'; invAction = 'keep';
+          reason = `Invoice belongs to request ${r.other_id} (PC ${otherPc}, batch ${r.other_batch || '?'}) whose PC is on the invoice; this request over-requested. Cancel this request; invoice left intact.`;
+        } else {
+          reqAction = 'review'; invAction = 'keep';
+          reason = `Request PC ${reqPc} not on invoice; invoice is linked to ${backlink} but that owner isn't PC-verified — manual review before any change.`;
+        }
+      } else {
+        reqAction = 'unlink'; invAction = (backlink === r.request_id) ? 'null' : 'keep';
+        reason = 'Request reconciled to an invoice whose lines lack the request PC; detaching so a re-pull can re-pair.';
       }
-    };
-    const auditDetails = JSON.stringify({ count: todo.length, items: todo });
+      const dq = await _dispatchOf(r.request_batch);
+      items.push({
+        pass: 'request', reqAction, invAction,
+        request_id: r.request_id, request_batch: r.request_batch, request_pc: reqPc, request_status: r.request_status,
+        request_qty: Math.round((parseFloat(r.request_qty) || 0) * 100) / 100,
+        invoice_id: r.inv_id, invoice_doc_num: r.sap_doc_num, invoice_batch: r.invoice_batch, invoice_line_pcs: linePcs,
+        invoice_backlink: backlink, other_request_id: r.other_id || null, other_request_pc: otherPc || null,
+        batch_dispatched_qty: dq.q, batch_dispatch_records: dq.n,
+        reason, willAct: reqAction !== 'review'
+      });
+    }
+
+    const _willUnlink = items.filter(i => i.willAct && i.reqAction === 'unlink').length;
+    const _willCancel = items.filter(i => i.willAct && i.reqAction === 'cancel').length;
+    const _willReview = items.filter(i => i.reqAction === 'review').length;
+    if (!apply) return res.json({ ok: true, mode: 'dryrun', wroteNothing: true, count: items.length, willUnlink: _willUnlink, willCancel: _willCancel, willReview: _willReview, mislinks: items });
+    if (apply !== 'unlink' && apply !== 'repair') return res.status(400).json({ ok: false, error: "apply must be 'unlink' (invoice-anchored only, backward-compatible) or 'repair' (full v48K cleanup incl. PC-verified cancels); omit for dry-run" });
+
+    // apply=unlink → backward-compatible: Pass-1 invoice-anchored unlinks only (byte-identical behaviour to v48J).
+    // apply=repair  → full: Pass-1 unlinks + Pass-2 unlinks + Pass-2 PC-verified cancels. 'review' items are NEVER auto-acted.
+    const todo = items.filter(i => {
+      if (!i.willAct) return false;
+      if (apply === 'unlink') return i.pass === 'invoice' && i.reqAction === 'unlink';
+      return true;
+    });
+    if (!todo.length) return res.json({ ok: true, mode: apply, unlinked: 0, cancelled: 0, note: 'nothing actionable for this mode' });
+
+    let unlinked = 0, cancelled = 0;
+    const auditDetails = JSON.stringify({ mode: apply, count: todo.length, items: todo });
     if (pgPool) {
       const client = await pgPool.connect();
       try {
         await client.query('BEGIN');
-        await doUnlink({
-          req: id => client.query(`UPDATE invoice_requests SET status='pending_reconciliation', reconciled_with_invoice_id=NULL, sap_response_doc_num=NULL, sap_response_doc_entry=NULL, sap_response_irn=NULL, reconciled_at=NULL, updated_at=NOW()::TEXT WHERE id=$1`, [id]),
-          inv: id => client.query(`UPDATE invoices_received SET invoice_request_id=NULL, source='direct_sap' WHERE id=$1`, [id]),
-        });
-        await client.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','INVOICE_MISLINK_UNLINK',$2)`, [who, auditDetails]);
+        const exec = {
+          unlinkReq: id => client.query(`UPDATE invoice_requests SET status='pending_reconciliation', reconciled_with_invoice_id=NULL, sap_response_doc_num=NULL, sap_response_doc_entry=NULL, sap_response_irn=NULL, reconciled_at=NULL, updated_at=NOW()::TEXT WHERE id=$1`, [id]),
+          cancel:    id => client.query(`UPDATE invoice_requests SET status='cancelled', reconciled_with_invoice_id=NULL, sap_response_doc_num=NULL, sap_response_doc_entry=NULL, sap_response_irn=NULL, reconciled_at=NULL, updated_at=NOW()::TEXT WHERE id=$1`, [id]),
+          unlinkInv: id => client.query(`UPDATE invoices_received SET invoice_request_id=NULL, source='direct_sap' WHERE id=$1`, [id]),
+        };
+        for (const it of todo) {
+          if (it.reqAction === 'cancel') { await exec.cancel(it.request_id); cancelled++; }
+          else { await exec.unlinkReq(it.request_id); unlinked++; }
+          if (it.invAction === 'null') await exec.unlinkInv(it.invoice_id);
+        }
+        await client.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','INVOICE_MISLINK_REPAIR',$2)`, [who, auditDetails]);
         await client.query('COMMIT');
       } catch (e) { try { await client.query('ROLLBACK'); } catch (_) {}; throw e; }
       finally { client.release(); }
     } else {
       const uReq = db.prepare(`UPDATE invoice_requests SET status='pending_reconciliation', reconciled_with_invoice_id=NULL, sap_response_doc_num=NULL, sap_response_doc_entry=NULL, sap_response_irn=NULL, reconciled_at=NULL, updated_at=datetime('now') WHERE id=?`);
+      const uCancel = db.prepare(`UPDATE invoice_requests SET status='cancelled', reconciled_with_invoice_id=NULL, sap_response_doc_num=NULL, sap_response_doc_entry=NULL, sap_response_irn=NULL, reconciled_at=NULL, updated_at=datetime('now') WHERE id=?`);
       const uInv = db.prepare(`UPDATE invoices_received SET invoice_request_id=NULL, source='direct_sap' WHERE id=?`);
       const tx = db.transaction(() => {
-        for (const it of todo) { uReq.run(it.request_id); uInv.run(it.invoice_id); unlinked++; }
-        db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','INVOICE_MISLINK_UNLINK',?)`).run(who, auditDetails);
+        for (const it of todo) {
+          if (it.reqAction === 'cancel') { uCancel.run(it.request_id); cancelled++; }
+          else { uReq.run(it.request_id); unlinked++; }
+          if (it.invAction === 'null') uInv.run(it.invoice_id);
+        }
+        db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','INVOICE_MISLINK_REPAIR',?)`).run(who, auditDetails);
       });
       tx();
     }
-    res.json({ ok: true, mode: 'unlink', unlinked, note: 'Now press "Re-pull from SAP" so the PC-gated poller re-reconciles each invoice to its correct request.' });
+    const _note = apply === 'repair'
+      ? 'Repair applied. If any request was reset to pending_reconciliation, press "Re-pull from SAP" so the PC-gated poller re-pairs it to its correct invoice.'
+      : 'Now press "Re-pull from SAP" so the PC-gated poller re-reconciles each invoice to its correct request.';
+    res.json({ ok: true, mode: apply, unlinked, cancelled, note: _note });
   } catch (err) {
     console.error('[repair-invoice-mislinks]', err.message);
     res.status(500).json({ ok: false, error: err.message });
