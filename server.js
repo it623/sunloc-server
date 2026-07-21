@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48I';
+const APP_BUILD = 'v48J';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3938,11 +3938,21 @@ async function _doRefreshSapInvoices() {
             // (so_doc_num), the cache-independent key. The DocEntry path needs the indent cache to
             // resolve the SO number, but the cache prunes completed SOs, so it fails at reconcile
             // time; the so_doc_num match (recorded on the request at creation) reconciles regardless.
+            // v48J (Ishan): line PCs of THIS invoice, for the PC-gate below (the retry pass matched purely
+            // by Sales Order and re-mislinked on every re-pull — the third ungated path after v48G/v48I).
+            const _retryLinePcs48j = new Set(((payload && payload.DocumentLines) || []).map(l => String(l.ItemCode || '').trim()).filter(Boolean));
             const req = await pgPool.query(
-              `SELECT id, batch_number, boxes, qty_lakhs FROM invoice_requests WHERE (sap_doc_entry=$1 OR so_doc_num=$2) AND status='pending_reconciliation' ORDER BY created_at ASC`,
+              `SELECT id, batch_number, boxes, qty_lakhs, pc_code FROM invoice_requests WHERE (sap_doc_entry=$1 OR so_doc_num=$2) AND status='pending_reconciliation' ORDER BY created_at ASC`,
               [soDocEntry, String(soNum)]
             );
             for (const pr of req.rows) {
+              // v48J: PC-gate — skip a request whose PC isn't on any invoice line (a different product that
+              // merely shares the Sales Order). Falls through when the invoice has no line item codes.
+              const _prPc48j = String(pr.pc_code || '').trim();
+              if (_retryLinePcs48j.size && _prPc48j && !_retryLinePcs48j.has(_prPc48j)) {
+                console.log(`[v48J retry PC-gate] SO ${soDocEntry}: request ${pr.id} (PC ${_prPc48j}) left PENDING — invoice lines [${Array.from(_retryLinePcs48j).join(',')}] differ`);
+                continue;
+              }
               const recId = `inv_${iv.sap_doc_entry}`;
               const boxes = (pr.boxes && parseInt(pr.boxes) > 0) ? parseInt(pr.boxes) : (iv.total_boxes || 0);
               const qty   = (pr.qty_lakhs && parseFloat(pr.qty_lakhs) > 0) ? parseFloat(pr.qty_lakhs) : (iv.total_qty_lakhs || 0);
