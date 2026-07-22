@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48R';
+const APP_BUILD = 'v48S';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3568,15 +3568,86 @@ async function _v48r_batchProfiles(tokens) {
   return out;
 }
 
+// v48S: plausibility ceiling for a payload-less invoice's HEADER total (Lakhs).
+// Some legacy rows carry raw thousands in total_qty_lakhs (e.g. 37500 for 375L), a
+// known pre-existing corruption. A real capsule invoice never approaches this bar, so
+// anything above it is refused rather than imported as authoritative. Confirmed by Ishan.
+const _V48S_MAX_CREDIBLE_INVOICE_L = 1000;
+
+// v48S: corroborating evidence for a proposed batch attribution.
+// Returns { pcConflict, custConflict, detail } — the CALLER decides how much weight
+// each carries, because the same contradiction means different things per layer:
+//   • Layer 1 (explicit line batch tag): a PC contradiction means the tag itself is
+//     suspect — one batch has exactly one PC. Invoice 9035 line 4 tags batch 26V083
+//     while carrying PC 2085, where 26V083 is PC 2270 (confirmed by Ishan as a SAP
+//     tagging error). That line must NOT be credited to 26V083.
+//     A customer-only difference is NOT treated as a contradiction there: a
+//     re-customered batch legitimately ships to a different customer than the one on
+//     its labels, so flagging that would reject good data.
+//   • Layer 3 (PC inference): there is no explicit tag, so a customer difference is
+//     the only thing standing between a real match and a coincidental PC collision
+//     across two customers' batches on one bulk invoice — it must flag.
+// v48S also fixes a v48R gating bug: the customer comparison used to be conditional on
+// the batch having NO card code, so a batch WITH a card code facing an invoice with a
+// BLANK card code was never compared at all. It is now an independent fallback.
+function _v48s_corroborate(batch, pc, row, profiles) {
+  const out = { pcConflict: false, custConflict: false, detail: '' };
+  const p = profiles[_v48r_norm(batch)];
+  if (!p) return out;                       // batch unknown to us — no evidence either way
+  const parts = [];
+  if (p.pc && pc && _v48r_norm(p.pc) !== _v48r_norm(pc)) {
+    out.pcConflict = true;
+    parts.push(`line PC ${pc} but batch ${batch} is PC ${p.pc}`);
+  }
+  const invCard = _v48r_norm(row && row.card_code);
+  const invCust = _v48r_norm(row && row.customer);
+  if (p.cardCode && invCard && _v48r_norm(p.cardCode) !== invCard) {
+    out.custConflict = true;
+    parts.push(`invoice card code ${row.card_code} but batch ${batch} belongs to ${p.cardCode}`);
+  } else if (p.customer && invCust && _v48r_norm(p.customer) !== invCust) {
+    out.custConflict = true;
+    parts.push(`invoice customer ${row.customer} but batch ${batch} belongs to ${p.customer}`);
+  }
+  out.detail = parts.join('; ');
+  return out;
+}
+
 // Pure function — no I/O. Returns one allocation object per invoice LINE.
 function _v48r_attribute(inv, row, profiles) {
   const lines = (inv && inv.DocumentLines) || [];
   const keyTokens = String((row && row.batch_number) || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
   const keyUpper = keyTokens.map(t => t.toUpperCase());
-  const invCard = _v48r_norm(row && row.card_code);
-  const invCust = _v48r_norm(row && row.customer);
+  // v48S: the invoice-side customer/card values now live inside _v48s_corroborate,
+  // which is the single place both L1 and L3 consult.
   const singleLine = lines.length === 1;
   const out = [];
+
+  // ── v48S: PAYLOAD-LESS INVOICES ────────────────────────────────────────────
+  // The bulk SAP fetch is lean and omits DocumentLines, so 171 stored invoices
+  // (115,472 L) have a payload but no line array. v48R emitted nothing for these,
+  // which would have DELETED their quantity the moment a consumer read the new
+  // table. A SINGLE-batch invoice needs no lines at all — its whole header total
+  // belongs to that one batch by construction — so it is recovered from the header.
+  // Multi-batch and batch-less ones have nothing to split on and are flagged.
+  if (!lines.length) {
+    const q = Math.round((parseFloat(row && row.total_qty_lakhs) || 0) * 100) / 100;
+    const hdr = {
+      invoice_id: row.id, sap_doc_entry: row.sap_doc_entry || null, sap_doc_num: row.sap_doc_num || null,
+      line_num: -1,                                   // -1 = header-derived, not a real SAP line
+      pc_code: String((row && row.pc_code) || '').trim(),
+      qty_lakhs: q, boxes: parseInt(row && row.total_boxes, 10) || 0,
+    };
+    const flagHdr = (reason) => out.push({ ...hdr, batch_number: null, method: 'unattributed', status: 'needs_manual', reason });
+    if (!keyTokens.length)      flagHdr('invoice has no DocumentLines and no batch key');
+    else if (keyTokens.length > 1) flagHdr(`invoice has no DocumentLines and covers ${keyTokens.length} batches — nothing to split on`);
+    else if (!(q > 0))          flagHdr('invoice has no DocumentLines and no usable header total');
+    else if (q > _V48S_MAX_CREDIBLE_INVOICE_L)
+      flagHdr(`header total ${q}L exceeds the ${_V48S_MAX_CREDIBLE_INVOICE_L}L plausibility ceiling — suspected raw-thousands corruption, not imported`);
+    else
+      out.push({ ...hdr, batch_number: keyTokens[0], method: 'header_single', status: 'attributed', reason: 'no DocumentLines — whole header total of a single-batch invoice' });
+    return out;
+  }
+
   for (let idx = 0; idx < lines.length; idx++) {
     const l = lines[idx] || {};
     const lineNum = (l.LineNum != null && Number.isFinite(parseInt(l.LineNum, 10))) ? parseInt(l.LineNum, 10) : idx;
@@ -3593,9 +3664,23 @@ function _v48r_attribute(inv, row, profiles) {
     // L1 — the line names its own batch
     const lineBatches = _v48r_lineBatchTokens(l);
     if (lineBatches.length === 1) {
+      // v48S: an explicit tag still outranks every inference, but only while the rest of
+      // the line agrees with it. A PC contradiction means the tag is self-inconsistent —
+      // one batch has exactly one PC — so this is conflicting evidence, not explicit
+      // evidence, and per option (c) it is flagged rather than guessed at.
+      const corr = _v48s_corroborate(lineBatches[0], pc, row, profiles);
+      if (corr.pcConflict) {
+        flag(`line explicitly tags batch ${lineBatches[0]} but the tag is contradicted — ${corr.detail} — suspected SAP tagging error, manual allocation required`);
+        continue;
+      }
+      const notes = [];
+      if (!keyUpper.includes(lineBatches[0].toUpperCase())) notes.push('line batch is absent from the invoice header batch key');
+      // A customer difference alone does NOT block: a re-customered batch legitimately
+      // ships to someone other than the customer on its labels. Recorded, not refused.
+      if (corr.custConflict) notes.push(`customer differs (${corr.detail}) — possible re-customer, attributed on the explicit line tag`);
       out.push({
         ...base, batch_number: lineBatches[0], method: 'line_batch', status: 'attributed',
-        reason: keyUpper.includes(lineBatches[0].toUpperCase()) ? null : 'line batch is absent from the invoice header batch key',
+        reason: notes.length ? notes.join('; ') : null,
       });
       continue;
     }
@@ -3615,11 +3700,13 @@ function _v48r_attribute(inv, row, profiles) {
       return p && p.pc && _v48r_norm(p.pc) === _v48r_norm(pc);
     });
     if (matches.length === 1) {
-      const p = profiles[matches[0].toUpperCase()] || {};
-      const cardMismatch = !!(p.cardCode && invCard && _v48r_norm(p.cardCode) !== invCard);
-      const custMismatch = !!(!p.cardCode && p.customer && invCust && _v48r_norm(p.customer) !== invCust);
-      if (cardMismatch || custMismatch) {
-        flag(`PC ${pc} matches ${matches[0]}, but that batch belongs to ${p.customer || p.cardCode} while this invoice is for ${row.customer || row.card_code} — customer guard`);
+      // v48S: same corroboration helper as L1, but here a customer difference DOES block.
+      // There is no explicit tag on this line — the batch is inferred purely from a PC
+      // match, so a differing customer means the PC very likely collided across two
+      // customers' batches on one bulk invoice rather than identifying the right batch.
+      const corr = _v48s_corroborate(matches[0], pc, row, profiles);
+      if (corr.custConflict) {
+        flag(`PC ${pc} matches ${matches[0]}, but ${corr.detail} — customer guard, manual allocation required`);
       } else {
         out.push({ ...base, batch_number: matches[0], method: 'pc_unique', status: 'attributed', reason: null });
       }
@@ -3684,9 +3771,10 @@ async function _v48r_recomputeInvoice(row, payload) {
     try { inv = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || null); }
     catch (e) { inv = null; }
   }
-  if (!inv || !Array.isArray(inv.DocumentLines) || !inv.DocumentLines.length) {
-    return { ok: false, error: 'no DocumentLines in payload', invoiceId: row.id };
-  }
+  // v48S: a payload WITHOUT DocumentLines is no longer skipped — _v48r_attribute
+  // recovers a single-batch invoice from its header total. Only an unreadable
+  // payload aborts here.
+  if (!inv) return { ok: false, error: 'payload unreadable', invoiceId: row.id };
   const tokens = String(row.batch_number || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
   const profiles = await _v48r_batchProfiles(tokens);
   const allocs = _v48r_attribute(inv, row, profiles);
@@ -3702,7 +3790,7 @@ async function _v48r_recomputeAll({ dryRun = true, limit = 0, batch = '' } = {})
   if (batch) { wheres.push(pgPool ? `batch_number ILIKE $${args.length + 1}` : `batch_number LIKE ?`); args.push('%' + batch + '%'); }
   const lim = (limit && limit > 0) ? ` LIMIT ${parseInt(limit, 10)}` : '';
   const sql = `SELECT id, sap_doc_entry, sap_doc_num, batch_number, customer, card_code, total_boxes,
-                      total_qty_lakhs, source, payload_json
+                      total_qty_lakhs, pc_code, source, payload_json
                FROM invoices_received WHERE ${wheres.join(' AND ')} ORDER BY invoice_date DESC${lim}`;
   let rows;
   if (pgPool) rows = (await pgPool.query(sql, args)).rows;
@@ -3712,18 +3800,20 @@ async function _v48r_recomputeAll({ dryRun = true, limit = 0, batch = '' } = {})
   const perBatchAfter = {};                            // batch → attributed Lakhs
   const flagged = [];
   let invoicesProcessed = 0, linesTotal = 0, linesAttributed = 0, linesFlagged = 0, noPayload = 0, written = 0;
+  let headerDerived = 0;   // v48S: single-batch invoices recovered from their header total
 
   for (const row of rows) {
     let inv;
     try { inv = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : row.payload_json; }
     catch (e) { inv = null; }
-    if (!inv || !Array.isArray(inv.DocumentLines) || !inv.DocumentLines.length) { noPayload++; continue; }
+    if (!inv) { noPayload++; continue; }                       // v48S: only UNREADABLE payloads are skipped
     const allocs = _v48r_attribute(inv, row, profiles);
     invoicesProcessed++;
     for (const a of allocs) {
       linesTotal++;
       if (a.status === 'attributed' && a.batch_number) {
         linesAttributed++;
+        if (a.method === 'header_single') headerDerived++;
         const k = a.batch_number;
         perBatchAfter[k] = Math.round(((perBatchAfter[k] || 0) + (a.qty_lakhs || 0)) * 100) / 100;
       } else {
@@ -3755,7 +3845,7 @@ async function _v48r_recomputeAll({ dryRun = true, limit = 0, batch = '' } = {})
 
   return {
     ok: true, dryRun, invoicesScanned: rows.length, invoicesProcessed, noPayload,
-    linesTotal, linesAttributed, linesFlagged, written,
+    linesTotal, linesAttributed, linesFlagged, headerDerived, written,
     batchesChanged: deltas.length, deltas, flagged,
   };
 }
@@ -4025,7 +4115,7 @@ async function _doRefreshSapInvoices() {
         await _v48r_recomputeInvoice({
           id: recId, sap_doc_entry: inv.DocEntry, sap_doc_num: String(inv.DocNum || ''),
           batch_number: _b48r, customer: inv.CardName || '', card_code: inv.CardCode || '',
-          total_boxes: totalBoxes,
+          total_boxes: totalBoxes, total_qty_lakhs: totalQtyLakhs, pc_code: pcCode,   // v48S: header path needs these
         }, inv);
       } catch (e) { console.warn('[v48R] attribution skipped for DocEntry ' + inv.DocEntry + ':', e && e.message); }
 
@@ -6998,9 +7088,18 @@ app.post('/api/invoice/:id/allocate', async (req, res) => {
     let payload = {};
     try { payload = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {}); } catch (e) { payload = {}; }
     const lines = payload.DocumentLines || [];
-    const line = lines.find((l, i) => ((l && l.LineNum != null) ? parseInt(l.LineNum, 10) : i) === lineNum);
-    if (!line) return res.status(404).json({ ok: false, error: `line ${lineNum} not found on this invoice` });
-    const lineQty = parseFloat((((parseFloat(line.Quantity) || 0) * _sapUomScale(line))).toFixed(3));
+    // v48S: line_num -1 addresses a payload-less invoice's HEADER total (no SAP line exists),
+    // so the target to match is the invoice total rather than a line quantity.
+    let line = null, lineQty = 0;
+    if (lineNum === -1) {
+      lineQty = Math.round((parseFloat(row.total_qty_lakhs) || 0) * 100) / 100;
+      line = { ItemCode: row.pc_code || '' };
+      if (!(lineQty > 0)) return res.status(400).json({ ok: false, error: 'invoice has no usable header total to allocate' });
+    } else {
+      line = lines.find((l, i) => ((l && l.LineNum != null) ? parseInt(l.LineNum, 10) : i) === lineNum);
+      if (!line) return res.status(404).json({ ok: false, error: `line ${lineNum} not found on this invoice` });
+      lineQty = parseFloat((((parseFloat(line.Quantity) || 0) * _sapUomScale(line))).toFixed(3));
+    }
     const sum = Math.round(allocations.reduce((s, a) => s + (parseFloat(a.qty_lakhs) || 0), 0) * 100) / 100;
     if (Math.abs(sum - lineQty) > 0.01) {
       return res.status(400).json({ ok: false, error: `allocations sum to ${sum}L but line ${lineNum} is ${lineQty}L — they must match exactly` });

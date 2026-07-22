@@ -1,0 +1,2960 @@
+﻿{
+    "ok":  true,
+    "dryRun":  true,
+    "invoicesScanned":  622,
+    "invoicesProcessed":  451,
+    "noPayload":  171,
+    "linesTotal":  783,
+    "linesAttributed":  776,
+    "linesFlagged":  7,
+    "written":  0,
+    "batchesChanged":  479,
+    "deltas":  [
+                   {
+                       "batch":  "26ZB065",
+                       "before":  37500,
+                       "after":  0,
+                       "delta":  -37500
+                   },
+                   {
+                       "batch":  "26ZC044",
+                       "before":  6000,
+                       "after":  0,
+                       "delta":  -6000
+                   },
+                   {
+                       "batch":  "26ZA051",
+                       "before":  4550,
+                       "after":  0,
+                       "delta":  -4550
+                   },
+                   {
+                       "batch":  "26ZC084",
+                       "before":  0,
+                       "after":  175,
+                       "delta":  175
+                   },
+                   {
+                       "batch":  "26ZH076",
+                       "before":  15.75,
+                       "after":  165.75,
+                       "delta":  150
+                   },
+                   {
+                       "batch":  "25T113",
+                       "before":  0,
+                       "after":  104,
+                       "delta":  104
+                   },
+                   {
+                       "batch":  "26ZF060",
+                       "before":  0,
+                       "after":  103.5,
+                       "delta":  103.5
+                   },
+                   {
+                       "batch":  "25ZG151",
+                       "before":  0,
+                       "after":  100,
+                       "delta":  100
+                   },
+                   {
+                       "batch":  "26O032",
+                       "before":  148.75,
+                       "after":  49,
+                       "delta":  -99.75
+                   },
+                   {
+                       "batch":  "26ZB051",
+                       "before":  0,
+                       "after":  82,
+                       "delta":  82
+                   },
+                   {
+                       "batch":  "26ZB052",
+                       "before":  0,
+                       "after":  78,
+                       "delta":  78
+                   },
+                   {
+                       "batch":  "26ZB50",
+                       "before":  0,
+                       "after":  76,
+                       "delta":  76
+                   },
+                   {
+                       "batch":  "26ZC060",
+                       "before":  0,
+                       "after":  75,
+                       "delta":  75
+                   },
+                   {
+                       "batch":  "26ZC064",
+                       "before":  0,
+                       "after":  75,
+                       "delta":  75
+                   },
+                   {
+                       "batch":  "26ZC082",
+                       "before":  10,
+                       "after":  84,
+                       "delta":  74
+                   },
+                   {
+                       "batch":  "26A063",
+                       "before":  71.75,
+                       "after":  0,
+                       "delta":  -71.75
+                   },
+                   {
+                       "batch":  "26ZC045",
+                       "before":  0,
+                       "after":  70,
+                       "delta":  70
+                   },
+                   {
+                       "batch":  "26Z054",
+                       "before":  68.25,
+                       "after":  0,
+                       "delta":  -68.25
+                   },
+                   {
+                       "batch":  "26Y045",
+                       "before":  68.25,
+                       "after":  0,
+                       "delta":  -68.25
+                   },
+                   {
+                       "batch":  "26ZF061",
+                       "before":  0,
+                       "after":  66.5,
+                       "delta":  66.5
+                   },
+                   {
+                       "batch":  "26ZB074",
+                       "before":  0,
+                       "after":  66,
+                       "delta":  66
+                   },
+                   {
+                       "batch":  "26ZH051",
+                       "before":  0,
+                       "after":  64.5,
+                       "delta":  64.5
+                   },
+                   {
+                       "batch":  "26ZG126",
+                       "before":  0,
+                       "after":  63.75,
+                       "delta":  63.75
+                   },
+                   {
+                       "batch":  "26V021",
+                       "before":  63.65,
+                       "after":  0,
+                       "delta":  -63.65
+                   },
+                   {
+                       "batch":  "26ZG083",
+                       "before":  0,
+                       "after":  62.5,
+                       "delta":  62.5
+                   },
+                   {
+                       "batch":  "26U007",
+                       "before":  0,
+                       "after":  62,
+                       "delta":  62
+                   },
+                   {
+                       "batch":  "26ZC088",
+                       "before":  0,
+                       "after":  60,
+                       "delta":  60
+                   },
+                   {
+                       "batch":  "26ZB072",
+                       "before":  0,
+                       "after":  60,
+                       "delta":  60
+                   },
+                   {
+                       "batch":  "26W048",
+                       "before":  57.4,
+                       "after":  0,
+                       "delta":  -57.4
+                   },
+                   {
+                       "batch":  "26ZH050",
+                       "before":  0,
+                       "after":  56.25,
+                       "delta":  56.25
+                   },
+                   {
+                       "batch":  "26ZG087",
+                       "before":  0,
+                       "after":  55,
+                       "delta":  55
+                   },
+                   {
+                       "batch":  "26ZD086",
+                       "before":  54.25,
+                       "after":  0,
+                       "delta":  -54.25
+                   },
+                   {
+                       "batch":  "26ZE084",
+                       "before":  52.5,
+                       "after":  0,
+                       "delta":  -52.5
+                   },
+                   {
+                       "batch":  "26ZE078",
+                       "before":  52.5,
+                       "after":  0,
+                       "delta":  -52.5
+                   },
+                   {
+                       "batch":  "26ZH046",
+                       "before":  0,
+                       "after":  52.5,
+                       "delta":  52.5
+                   },
+                   {
+                       "batch":  "26W018",
+                       "before":  0,
+                       "after":  52.5,
+                       "delta":  52.5
+                   },
+                   {
+                       "batch":  "26T069",
+                       "before":  0,
+                       "after":  52.5,
+                       "delta":  52.5
+                   },
+                   {
+                       "batch":  "26ZD095",
+                       "before":  0,
+                       "after":  52.5,
+                       "delta":  52.5
+                   },
+                   {
+                       "batch":  "26ZB073",
+                       "before":  0,
+                       "after":  52,
+                       "delta":  52
+                   },
+                   {
+                       "batch":  "26ZF076",
+                       "before":  103.5,
+                       "after":  51.75,
+                       "delta":  -51.75
+                   },
+                   {
+                       "batch":  "26N019",
+                       "before":  103.5,
+                       "after":  51.75,
+                       "delta":  -51.75
+                   },
+                   {
+                       "batch":  "26ZF097",
+                       "before":  51.75,
+                       "after":  103.5,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26ZF098",
+                       "before":  51.75,
+                       "after":  103.5,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26ZF078",
+                       "before":  51.75,
+                       "after":  0,
+                       "delta":  -51.75
+                   },
+                   {
+                       "batch":  "26ZF080",
+                       "before":  51.75,
+                       "after":  0,
+                       "delta":  -51.75
+                   },
+                   {
+                       "batch":  "26ZF087",
+                       "before":  51.75,
+                       "after":  0,
+                       "delta":  -51.75
+                   },
+                   {
+                       "batch":  "26N018",
+                       "before":  51.75,
+                       "after":  0,
+                       "delta":  -51.75
+                   },
+                   {
+                       "batch":  "26ZF067",
+                       "before":  51.75,
+                       "after":  0,
+                       "delta":  -51.75
+                   },
+                   {
+                       "batch":  "26ZF090",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26ZF092",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26N022",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26N023",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26N026",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26ZF093",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26ZF089",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26ZF084",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "26ZF085",
+                       "before":  0,
+                       "after":  51.75,
+                       "delta":  51.75
+                   },
+                   {
+                       "batch":  "25T114",
+                       "before":  0,
+                       "after":  51,
+                       "delta":  51
+                   },
+                   {
+                       "batch":  "26ZD100",
+                       "before":  33.25,
+                       "after":  84,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26Z059",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26ZE067",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26Z058",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26ZD083",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26O025",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26W028",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26W046",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26ZD080",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26ZD073",
+                       "before":  50.75,
+                       "after":  0,
+                       "delta":  -50.75
+                   },
+                   {
+                       "batch":  "26ZD096",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26Z064",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26ZD094",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26Z063",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26ZD092",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "29ZD090",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26ZA063",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26ZD084",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26ZD085",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26ZE092",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26W050",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26Z062",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26Z061",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "26ZE075",
+                       "before":  0,
+                       "after":  50.75,
+                       "delta":  50.75
+                   },
+                   {
+                       "batch":  "25T97",
+                       "before":  0,
+                       "after":  50.25,
+                       "delta":  50.25
+                   },
+                   {
+                       "batch":  "25ZG145",
+                       "before":  40,
+                       "after":  90,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG108",
+                       "before":  50,
+                       "after":  0,
+                       "delta":  -50
+                   },
+                   {
+                       "batch":  "26ZB050",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZC053",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26U072",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26U015",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZB004",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG085",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZC089",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZB084",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG174",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG153",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG157",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG146",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG149",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG020",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG004",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG005",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG156",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25P119",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG162",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG175",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG173",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG158",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG160",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG161",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG006",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG007",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG010",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG152",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25P125",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25ZG150",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25P120",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "25P124",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZG082",
+                       "before":  0,
+                       "after":  50,
+                       "delta":  50
+                   },
+                   {
+                       "batch":  "26ZH059",
+                       "before":  480,
+                       "after":  529.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZH065",
+                       "before":  281.25,
+                       "after":  330.75,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZH066",
+                       "before":  0,
+                       "after":  49.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZH067",
+                       "before":  0,
+                       "after":  49.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZH070",
+                       "before":  0,
+                       "after":  49.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZH071",
+                       "before":  0,
+                       "after":  49.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZF088",
+                       "before":  0,
+                       "after":  49.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZH056",
+                       "before":  0,
+                       "after":  49.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZH057",
+                       "before":  0,
+                       "after":  49.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26ZH058",
+                       "before":  0,
+                       "after":  49.5,
+                       "delta":  49.5
+                   },
+                   {
+                       "batch":  "26V025",
+                       "before":  49,
+                       "after":  0,
+                       "delta":  -49
+                   },
+                   {
+                       "batch":  "26ZE086",
+                       "before":  0,
+                       "after":  49,
+                       "delta":  49
+                   },
+                   {
+                       "batch":  "26ZD088",
+                       "before":  0,
+                       "after":  49,
+                       "delta":  49
+                   },
+                   {
+                       "batch":  "26ZG106",
+                       "before":  49.6,
+                       "after":  1.25,
+                       "delta":  -48.35
+                   },
+                   {
+                       "batch":  "26Z057",
+                       "before":  47.25,
+                       "after":  0,
+                       "delta":  -47.25
+                   },
+                   {
+                       "batch":  "26ZE094",
+                       "before":  0,
+                       "after":  47.25,
+                       "delta":  47.25
+                   },
+                   {
+                       "batch":  "26ZE080",
+                       "before":  52.5,
+                       "after":  7,
+                       "delta":  -45.5
+                   },
+                   {
+                       "batch":  "26ZF077",
+                       "before":  45,
+                       "after":  0,
+                       "delta":  -45
+                   },
+                   {
+                       "batch":  "26ZH044",
+                       "before":  0,
+                       "after":  45,
+                       "delta":  45
+                   },
+                   {
+                       "batch":  "25ZD187",
+                       "before":  0,
+                       "after":  45,
+                       "delta":  45
+                   },
+                   {
+                       "batch":  "26H032",
+                       "before":  0,
+                       "after":  45,
+                       "delta":  45
+                   },
+                   {
+                       "batch":  "26H037",
+                       "before":  0,
+                       "after":  45,
+                       "delta":  45
+                   },
+                   {
+                       "batch":  "26H036",
+                       "before":  47.15,
+                       "after":  3,
+                       "delta":  -44.15
+                   },
+                   {
+                       "batch":  "26X042",
+                       "before":  44,
+                       "after":  0,
+                       "delta":  -44
+                   },
+                   {
+                       "batch":  "26ZB075",
+                       "before":  0,
+                       "after":  44,
+                       "delta":  44
+                   },
+                   {
+                       "batch":  "26ZE064",
+                       "before":  43.75,
+                       "after":  0,
+                       "delta":  -43.75
+                   },
+                   {
+                       "batch":  "26F080",
+                       "before":  43.75,
+                       "after":  0,
+                       "delta":  -43.75
+                   },
+                   {
+                       "batch":  "26W060",
+                       "before":  0,
+                       "after":  43.75,
+                       "delta":  43.75
+                   },
+                   {
+                       "batch":  "26ZA068",
+                       "before":  0,
+                       "after":  43.75,
+                       "delta":  43.75
+                   },
+                   {
+                       "batch":  "26ZA064",
+                       "before":  0,
+                       "after":  43.75,
+                       "delta":  43.75
+                   },
+                   {
+                       "batch":  "26ZG084",
+                       "before":  0,
+                       "after":  43.75,
+                       "delta":  43.75
+                   },
+                   {
+                       "batch":  "26ZG107",
+                       "before":  42.5,
+                       "after":  0,
+                       "delta":  -42.5
+                   },
+                   {
+                       "batch":  "26H031",
+                       "before":  660,
+                       "after":  702,
+                       "delta":  42
+                   },
+                   {
+                       "batch":  "26H038",
+                       "before":  0,
+                       "after":  42,
+                       "delta":  42
+                   },
+                   {
+                       "batch":  "26ZG110",
+                       "before":  41.95,
+                       "after":  0,
+                       "delta":  -41.95
+                   },
+                   {
+                       "batch":  "26ZC080",
+                       "before":  0,
+                       "after":  41.5,
+                       "delta":  41.5
+                   },
+                   {
+                       "batch":  "26W056",
+                       "before":  17.5,
+                       "after":  57.75,
+                       "delta":  40.25
+                   },
+                   {
+                       "batch":  "26ZD102",
+                       "before":  0,
+                       "after":  40.25,
+                       "delta":  40.25
+                   },
+                   {
+                       "batch":  "26ZA062",
+                       "before":  0,
+                       "after":  40.25,
+                       "delta":  40.25
+                   },
+                   {
+                       "batch":  "26ZB064",
+                       "before":  8,
+                       "after":  48,
+                       "delta":  40
+                   },
+                   {
+                       "batch":  "26ZG075",
+                       "before":  0,
+                       "after":  40,
+                       "delta":  40
+                   },
+                   {
+                       "batch":  "26ZG081",
+                       "before":  0,
+                       "after":  40,
+                       "delta":  40
+                   },
+                   {
+                       "batch":  "26ZB063",
+                       "before":  0,
+                       "after":  40,
+                       "delta":  40
+                   },
+                   {
+                       "batch":  "26ZC087",
+                       "before":  0,
+                       "after":  40,
+                       "delta":  40
+                   },
+                   {
+                       "batch":  "26ZG122",
+                       "before":  0,
+                       "after":  40,
+                       "delta":  40
+                   },
+                   {
+                       "batch":  "26ZH062",
+                       "before":  10.5,
+                       "after":  49.5,
+                       "delta":  39
+                   },
+                   {
+                       "batch":  "26Y053",
+                       "before":  21,
+                       "after":  59.5,
+                       "delta":  38.5
+                   },
+                   {
+                       "batch":  "26ZE108",
+                       "before":  12.25,
+                       "after":  49.5,
+                       "delta":  37.25
+                   },
+                   {
+                       "batch":  "26Y052",
+                       "before":  10.5,
+                       "after":  47.25,
+                       "delta":  36.75
+                   },
+                   {
+                       "batch":  "26ZA056",
+                       "before":  36.75,
+                       "after":  0,
+                       "delta":  -36.75
+                   },
+                   {
+                       "batch":  "26ZB049",
+                       "before":  0,
+                       "after":  36,
+                       "delta":  36
+                   },
+                   {
+                       "batch":  "26H033",
+                       "before":  0,
+                       "after":  36,
+                       "delta":  36
+                   },
+                   {
+                       "batch":  "26ZC065",
+                       "before":  0,
+                       "after":  36,
+                       "delta":  36
+                   },
+                   {
+                       "batch":  "26ZE085",
+                       "before":  35,
+                       "after":  0,
+                       "delta":  -35
+                   },
+                   {
+                       "batch":  "26V065",
+                       "before":  35,
+                       "after":  0,
+                       "delta":  -35
+                   },
+                   {
+                       "batch":  "26ZD101",
+                       "before":  0,
+                       "after":  35,
+                       "delta":  35
+                   },
+                   {
+                       "batch":  "26V082",
+                       "before":  0,
+                       "after":  35,
+                       "delta":  35
+                   },
+                   {
+                       "batch":  "26V081",
+                       "before":  0,
+                       "after":  35,
+                       "delta":  35
+                   },
+                   {
+                       "batch":  "26X065",
+                       "before":  34.8,
+                       "after":  0,
+                       "delta":  -34.8
+                   },
+                   {
+                       "batch":  "26ZH040",
+                       "before":  0,
+                       "after":  34.5,
+                       "delta":  34.5
+                   },
+                   {
+                       "batch":  "26ZH072",
+                       "before":  0,
+                       "after":  33.75,
+                       "delta":  33.75
+                   },
+                   {
+                       "batch":  "26ZH063",
+                       "before":  0,
+                       "after":  33.75,
+                       "delta":  33.75
+                   },
+                   {
+                       "batch":  "26ZD081",
+                       "before":  33.25,
+                       "after":  0,
+                       "delta":  -33.25
+                   },
+                   {
+                       "batch":  "26ZD108",
+                       "before":  0,
+                       "after":  33.25,
+                       "delta":  33.25
+                   },
+                   {
+                       "batch":  "26ZD103",
+                       "before":  0,
+                       "after":  33.25,
+                       "delta":  33.25
+                   },
+                   {
+                       "batch":  "26ZB080",
+                       "before":  0,
+                       "after":  33,
+                       "delta":  33
+                   },
+                   {
+                       "batch":  "26ZC079",
+                       "before":  0,
+                       "after":  32.7,
+                       "delta":  32.7
+                   },
+                   {
+                       "batch":  "26ZF065",
+                       "before":  0,
+                       "after":  32.2,
+                       "delta":  32.2
+                   },
+                   {
+                       "batch":  "26X067",
+                       "before":  32,
+                       "after":  0,
+                       "delta":  -32
+                   },
+                   {
+                       "batch":  "26ZE090",
+                       "before":  35,
+                       "after":  66.5,
+                       "delta":  31.5
+                   },
+                   {
+                       "batch":  "26Z070",
+                       "before":  0,
+                       "after":  31.5,
+                       "delta":  31.5
+                   },
+                   {
+                       "batch":  "26ZF066",
+                       "before":  0,
+                       "after":  31.5,
+                       "delta":  31.5
+                   },
+                   {
+                       "batch":  "26S014",
+                       "before":  0,
+                       "after":  31.5,
+                       "delta":  31.5
+                   },
+                   {
+                       "batch":  "26ZE107",
+                       "before":  0,
+                       "after":  31.5,
+                       "delta":  31.5
+                   },
+                   {
+                       "batch":  "26T075",
+                       "before":  0,
+                       "after":  31.5,
+                       "delta":  31.5
+                   },
+                   {
+                       "batch":  "26ZA060",
+                       "before":  37.25,
+                       "after":  6.05,
+                       "delta":  -31.2
+                   },
+                   {
+                       "batch":  "26ZB081",
+                       "before":  0,
+                       "after":  31,
+                       "delta":  31
+                   },
+                   {
+                       "batch":  "26ZB079",
+                       "before":  0,
+                       "after":  31,
+                       "delta":  31
+                   },
+                   {
+                       "batch":  "26Y044",
+                       "before":  42,
+                       "after":  11.5,
+                       "delta":  -30.5
+                   },
+                   {
+                       "batch":  "26X068",
+                       "before":  33.25,
+                       "after":  3,
+                       "delta":  -30.25
+                   },
+                   {
+                       "batch":  "26ZG013",
+                       "before":  5.5,
+                       "after":  35.5,
+                       "delta":  30
+                   },
+                   {
+                       "batch":  "26H028",
+                       "before":  0,
+                       "after":  30,
+                       "delta":  30
+                   },
+                   {
+                       "batch":  "26ZB083",
+                       "before":  0,
+                       "after":  30,
+                       "delta":  30
+                   },
+                   {
+                       "batch":  "26ZB076",
+                       "before":  0,
+                       "after":  30,
+                       "delta":  30
+                   },
+                   {
+                       "batch":  "26W068",
+                       "before":  0,
+                       "after":  29.75,
+                       "delta":  29.75
+                   },
+                   {
+                       "batch":  "26ZD105",
+                       "before":  0,
+                       "after":  29.75,
+                       "delta":  29.75
+                   },
+                   {
+                       "batch":  "26ZE093",
+                       "before":  21,
+                       "after":  49,
+                       "delta":  28
+                   },
+                   {
+                       "batch":  "26ZE081",
+                       "before":  28,
+                       "after":  0,
+                       "delta":  -28
+                   },
+                   {
+                       "batch":  "26ZE106",
+                       "before":  0,
+                       "after":  28,
+                       "delta":  28
+                   },
+                   {
+                       "batch":  "26ZC083",
+                       "before":  0,
+                       "after":  28,
+                       "delta":  28
+                   },
+                   {
+                       "batch":  "26N025",
+                       "before":  51.75,
+                       "after":  78.75,
+                       "delta":  27
+                   },
+                   {
+                       "batch":  "26ZF091",
+                       "before":  31.5,
+                       "after":  4.5,
+                       "delta":  -27
+                   },
+                   {
+                       "batch":  "26ZF011",
+                       "before":  0,
+                       "after":  27,
+                       "delta":  27
+                   },
+                   {
+                       "batch":  "26V083",
+                       "before":  28,
+                       "after":  54.25,
+                       "delta":  26.25
+                   },
+                   {
+                       "batch":  "26ZD093",
+                       "before":  26.25,
+                       "after":  52.5,
+                       "delta":  26.25
+                   },
+                   {
+                       "batch":  "26P042",
+                       "before":  26.25,
+                       "after":  52.5,
+                       "delta":  26.25
+                   },
+                   {
+                       "batch":  "26O033",
+                       "before":  71.75,
+                       "after":  45.5,
+                       "delta":  -26.25
+                   },
+                   {
+                       "batch":  "26ZE079",
+                       "before":  26.25,
+                       "after":  0,
+                       "delta":  -26.25
+                   },
+                   {
+                       "batch":  "26Z071",
+                       "before":  0,
+                       "after":  26.25,
+                       "delta":  26.25
+                   },
+                   {
+                       "batch":  "26ZE105",
+                       "before":  0,
+                       "after":  26.25,
+                       "delta":  26.25
+                   },
+                   {
+                       "batch":  "26U075",
+                       "before":  0,
+                       "after":  26,
+                       "delta":  26
+                   },
+                   {
+                       "batch":  "26P041",
+                       "before":  0,
+                       "after":  25.6,
+                       "delta":  25.6
+                   },
+                   {
+                       "batch":  "26ZH054",
+                       "before":  0,
+                       "after":  25.5,
+                       "delta":  25.5
+                   },
+                   {
+                       "batch":  "26ZF082",
+                       "before":  25.4,
+                       "after":  0,
+                       "delta":  -25.4
+                   },
+                   {
+                       "batch":  "26ZC067",
+                       "before":  25,
+                       "after":  0,
+                       "delta":  -25
+                   },
+                   {
+                       "batch":  "26Y058",
+                       "before":  12.25,
+                       "after":  36.75,
+                       "delta":  24.5
+                   },
+                   {
+                       "batch":  "26ZE095",
+                       "before":  24.5,
+                       "after":  49,
+                       "delta":  24.5
+                   },
+                   {
+                       "batch":  "26Y060",
+                       "before":  0,
+                       "after":  24.5,
+                       "delta":  24.5
+                   },
+                   {
+                       "batch":  "26W063",
+                       "before":  0,
+                       "after":  24.5,
+                       "delta":  24.5
+                   },
+                   {
+                       "batch":  "26T061",
+                       "before":  0,
+                       "after":  24.5,
+                       "delta":  24.5
+                   },
+                   {
+                       "batch":  "26V043",
+                       "before":  0,
+                       "after":  24,
+                       "delta":  24
+                   },
+                   {
+                       "batch":  "26X082",
+                       "before":  19,
+                       "after":  42,
+                       "delta":  23
+                   },
+                   {
+                       "batch":  "26U097",
+                       "before":  23,
+                       "after":  0,
+                       "delta":  -23
+                   },
+                   {
+                       "batch":  "26Y051",
+                       "before":  45.5,
+                       "after":  68.25,
+                       "delta":  22.75
+                   },
+                   {
+                       "batch":  "26ZA058",
+                       "before":  22.75,
+                       "after":  0,
+                       "delta":  -22.75
+                   },
+                   {
+                       "batch":  "25ZD186",
+                       "before":  0,
+                       "after":  22.75,
+                       "delta":  22.75
+                   },
+                   {
+                       "batch":  "26ZG131",
+                       "before":  0,
+                       "after":  22.5,
+                       "delta":  22.5
+                   },
+                   {
+                       "batch":  "26W057",
+                       "before":  0,
+                       "after":  21.7,
+                       "delta":  21.7
+                   },
+                   {
+                       "batch":  "26V070",
+                       "before":  5.25,
+                       "after":  26.25,
+                       "delta":  21
+                   },
+                   {
+                       "batch":  "26W055",
+                       "before":  26.25,
+                       "after":  47.25,
+                       "delta":  21
+                   },
+                   {
+                       "batch":  "26V049",
+                       "before":  0,
+                       "after":  21,
+                       "delta":  21
+                   },
+                   {
+                       "batch":  "26T010",
+                       "before":  0,
+                       "after":  21,
+                       "delta":  21
+                   },
+                   {
+                       "batch":  "26Z065",
+                       "before":  0,
+                       "after":  21,
+                       "delta":  21
+                   },
+                   {
+                       "batch":  "26ZE082",
+                       "before":  0,
+                       "after":  21,
+                       "delta":  21
+                   },
+                   {
+                       "batch":  "26ZG089",
+                       "before":  20.8,
+                       "after":  0,
+                       "delta":  -20.8
+                   },
+                   {
+                       "batch":  "26X076",
+                       "before":  8.25,
+                       "after":  29,
+                       "delta":  20.75
+                   },
+                   {
+                       "batch":  "26X064",
+                       "before":  40,
+                       "after":  20,
+                       "delta":  -20
+                   },
+                   {
+                       "batch":  "26ZG074",
+                       "before":  0,
+                       "after":  20,
+                       "delta":  20
+                   },
+                   {
+                       "batch":  "26ZG014",
+                       "before":  0,
+                       "after":  20,
+                       "delta":  20
+                   },
+                   {
+                       "batch":  "26ZC086",
+                       "before":  0,
+                       "after":  20,
+                       "delta":  20
+                   },
+                   {
+                       "batch":  "26X078",
+                       "before":  0,
+                       "after":  20,
+                       "delta":  20
+                   },
+                   {
+                       "batch":  "26X079",
+                       "before":  0,
+                       "after":  20,
+                       "delta":  20
+                   },
+                   {
+                       "batch":  "26X080",
+                       "before":  0,
+                       "after":  20,
+                       "delta":  20
+                   },
+                   {
+                       "batch":  "26U132",
+                       "before":  0,
+                       "after":  20,
+                       "delta":  20
+                   },
+                   {
+                       "batch":  "26ZG056",
+                       "before":  0,
+                       "after":  20,
+                       "delta":  20
+                   },
+                   {
+                       "batch":  "26Z060",
+                       "before":  28,
+                       "after":  47.25,
+                       "delta":  19.25
+                   },
+                   {
+                       "batch":  "26W051",
+                       "before":  19.25,
+                       "after":  0,
+                       "delta":  -19.25
+                   },
+                   {
+                       "batch":  "26P037",
+                       "before":  19.25,
+                       "after":  0,
+                       "delta":  -19.25
+                   },
+                   {
+                       "batch":  "26P035",
+                       "before":  21,
+                       "after":  1.75,
+                       "delta":  -19.25
+                   },
+                   {
+                       "batch":  "26W066",
+                       "before":  0,
+                       "after":  19.25,
+                       "delta":  19.25
+                   },
+                   {
+                       "batch":  "25ZE175",
+                       "before":  0,
+                       "after":  19.25,
+                       "delta":  19.25
+                   },
+                   {
+                       "batch":  "26T076",
+                       "before":  0,
+                       "after":  19.25,
+                       "delta":  19.25
+                   },
+                   {
+                       "batch":  "26X075",
+                       "before":  0,
+                       "after":  19.2,
+                       "delta":  19.2
+                   },
+                   {
+                       "batch":  "26ZG088",
+                       "before":  20,
+                       "after":  1.25,
+                       "delta":  -18.75
+                   },
+                   {
+                       "batch":  "26ZG109",
+                       "before":  18.75,
+                       "after":  0,
+                       "delta":  -18.75
+                   },
+                   {
+                       "batch":  "26ZB077",
+                       "before":  0,
+                       "after":  18.35,
+                       "delta":  18.35
+                   },
+                   {
+                       "batch":  "26ZF012",
+                       "before":  0,
+                       "after":  18,
+                       "delta":  18
+                   },
+                   {
+                       "batch":  "26H025",
+                       "before":  0,
+                       "after":  18,
+                       "delta":  18
+                   },
+                   {
+                       "batch":  "26V080",
+                       "before":  0,
+                       "after":  17.95,
+                       "delta":  17.95
+                   },
+                   {
+                       "batch":  "26Y046",
+                       "before":  40.25,
+                       "after":  22.75,
+                       "delta":  -17.5
+                   },
+                   {
+                       "batch":  "26V061",
+                       "before":  29.75,
+                       "after":  12.25,
+                       "delta":  -17.5
+                   },
+                   {
+                       "batch":  "26ZG115",
+                       "before":  8.75,
+                       "after":  26.25,
+                       "delta":  17.5
+                   },
+                   {
+                       "batch":  "26ZE061",
+                       "before":  17.5,
+                       "after":  0,
+                       "delta":  -17.5
+                   },
+                   {
+                       "batch":  "26ZD082",
+                       "before":  17.5,
+                       "after":  0,
+                       "delta":  -17.5
+                   },
+                   {
+                       "batch":  "26Y043",
+                       "before":  36.75,
+                       "after":  19.25,
+                       "delta":  -17.5
+                   },
+                   {
+                       "batch":  "26ZA057",
+                       "before":  52.5,
+                       "after":  35,
+                       "delta":  -17.5
+                   },
+                   {
+                       "batch":  "26P010",
+                       "before":  0,
+                       "after":  17.5,
+                       "delta":  17.5
+                   },
+                   {
+                       "batch":  "26Y037",
+                       "before":  0,
+                       "after":  17.5,
+                       "delta":  17.5
+                   },
+                   {
+                       "batch":  "26U073",
+                       "before":  0,
+                       "after":  17.45,
+                       "delta":  17.45
+                   },
+                   {
+                       "batch":  "26ZB082",
+                       "before":  0,
+                       "after":  17,
+                       "delta":  17
+                   },
+                   {
+                       "batch":  "26X081",
+                       "before":  0,
+                       "after":  17,
+                       "delta":  17
+                   },
+                   {
+                       "batch":  "26U134",
+                       "before":  0,
+                       "after":  17,
+                       "delta":  17
+                   },
+                   {
+                       "batch":  "26V066",
+                       "before":  22.75,
+                       "after":  6.5,
+                       "delta":  -16.25
+                   },
+                   {
+                       "batch":  "26U",
+                       "before":  15.75,
+                       "after":  0,
+                       "delta":  -15.75
+                   },
+                   {
+                       "batch":  "26Z072",
+                       "before":  0,
+                       "after":  15.75,
+                       "delta":  15.75
+                   },
+                   {
+                       "batch":  "26T080",
+                       "before":  0,
+                       "after":  15.75,
+                       "delta":  15.75
+                   },
+                   {
+                       "batch":  "25ZA30",
+                       "before":  0,
+                       "after":  15.75,
+                       "delta":  15.75
+                   },
+                   {
+                       "batch":  "26T067",
+                       "before":  0,
+                       "after":  15.6,
+                       "delta":  15.6
+                   },
+                   {
+                       "batch":  "26ZG112",
+                       "before":  7.5,
+                       "after":  22.5,
+                       "delta":  15
+                   },
+                   {
+                       "batch":  "26ZG104",
+                       "before":  15,
+                       "after":  0,
+                       "delta":  -15
+                   },
+                   {
+                       "batch":  "26P017",
+                       "before":  0,
+                       "after":  15,
+                       "delta":  15
+                   },
+                   {
+                       "batch":  "26Y038",
+                       "before":  14,
+                       "after":  0,
+                       "delta":  -14
+                   },
+                   {
+                       "batch":  "26T054",
+                       "before":  14,
+                       "after":  0,
+                       "delta":  -14
+                   },
+                   {
+                       "batch":  "26W047",
+                       "before":  14,
+                       "after":  0,
+                       "delta":  -14
+                   },
+                   {
+                       "batch":  "26ZD069",
+                       "before":  14,
+                       "after":  0,
+                       "delta":  -14
+                   },
+                   {
+                       "batch":  "26W039",
+                       "before":  14,
+                       "after":  0,
+                       "delta":  -14
+                   },
+                   {
+                       "batch":  "26U117",
+                       "before":  0,
+                       "after":  14,
+                       "delta":  14
+                   },
+                   {
+                       "batch":  "26ZF064",
+                       "before":  0,
+                       "after":  13.5,
+                       "delta":  13.5
+                   },
+                   {
+                       "batch":  "26U122",
+                       "before":  5,
+                       "after":  18,
+                       "delta":  13
+                   },
+                   {
+                       "batch":  "26X069",
+                       "before":  26,
+                       "after":  13,
+                       "delta":  -13
+                   },
+                   {
+                       "batch":  "26X060",
+                       "before":  0,
+                       "after":  13,
+                       "delta":  13
+                   },
+                   {
+                       "batch":  "26ZG077",
+                       "before":  23.75,
+                       "after":  11.25,
+                       "delta":  -12.5
+                   },
+                   {
+                       "batch":  "26ZG105",
+                       "before":  12.5,
+                       "after":  0,
+                       "delta":  -12.5
+                   },
+                   {
+                       "batch":  "26X066",
+                       "before":  15,
+                       "after":  2.65,
+                       "delta":  -12.35
+                   },
+                   {
+                       "batch":  "26V050",
+                       "before":  7.2,
+                       "after":  19.45,
+                       "delta":  12.25
+                   },
+                   {
+                       "batch":  "26ZD079",
+                       "before":  14,
+                       "after":  26.25,
+                       "delta":  12.25
+                   },
+                   {
+                       "batch":  "26ZG103",
+                       "before":  12.05,
+                       "after":  0,
+                       "delta":  -12.05
+                   },
+                   {
+                       "batch":  "26U017",
+                       "before":  0,
+                       "after":  12,
+                       "delta":  12
+                   },
+                   {
+                       "batch":  "26S011",
+                       "before":  0,
+                       "after":  12,
+                       "delta":  12
+                   },
+                   {
+                       "batch":  "26U131",
+                       "before":  0,
+                       "after":  12,
+                       "delta":  12
+                   },
+                   {
+                       "batch":  "26U128",
+                       "before":  0,
+                       "after":  12,
+                       "delta":  12
+                   },
+                   {
+                       "batch":  "26U133",
+                       "before":  0,
+                       "after":  12,
+                       "delta":  12
+                   },
+                   {
+                       "batch":  "26ZG125",
+                       "before":  0,
+                       "after":  11.5,
+                       "delta":  11.5
+                   },
+                   {
+                       "batch":  "26N029",
+                       "before":  0,
+                       "after":  11.25,
+                       "delta":  11.25
+                   },
+                   {
+                       "batch":  "26ZG098",
+                       "before":  15.35,
+                       "after":  4.15,
+                       "delta":  -11.2
+                   },
+                   {
+                       "batch":  "26ZB078",
+                       "before":  0,
+                       "after":  11,
+                       "delta":  11
+                   },
+                   {
+                       "batch":  "26X073",
+                       "before":  16,
+                       "after":  26.9,
+                       "delta":  10.9
+                   },
+                   {
+                       "batch":  "26V077",
+                       "before":  2.55,
+                       "after":  13.05,
+                       "delta":  10.5
+                   },
+                   {
+                       "batch":  "26V026",
+                       "before":  10.5,
+                       "after":  0,
+                       "delta":  -10.5
+                   },
+                   {
+                       "batch":  "26T060",
+                       "before":  10.5,
+                       "after":  0,
+                       "delta":  -10.5
+                   },
+                   {
+                       "batch":  "26T082",
+                       "before":  0,
+                       "after":  10.5,
+                       "delta":  10.5
+                   },
+                   {
+                       "batch":  "25S191",
+                       "before":  0,
+                       "after":  10.5,
+                       "delta":  10.5
+                   },
+                   {
+                       "batch":  "26ZH073",
+                       "before":  0,
+                       "after":  10.5,
+                       "delta":  10.5
+                   },
+                   {
+                       "batch":  "26ZH075",
+                       "before":  0,
+                       "after":  10.5,
+                       "delta":  10.5
+                   },
+                   {
+                       "batch":  "26T073",
+                       "before":  0,
+                       "after":  10.5,
+                       "delta":  10.5
+                   },
+                   {
+                       "batch":  "26V073",
+                       "before":  0,
+                       "after":  10.5,
+                       "delta":  10.5
+                   },
+                   {
+                       "batch":  "26V078",
+                       "before":  0,
+                       "after":  10.5,
+                       "delta":  10.5
+                   },
+                   {
+                       "batch":  "26V072",
+                       "before":  1.75,
+                       "after":  12.05,
+                       "delta":  10.3
+                   },
+                   {
+                       "batch":  "26U113",
+                       "before":  18,
+                       "after":  7.7,
+                       "delta":  -10.3
+                   },
+                   {
+                       "batch":  "26T059",
+                       "before":  10.1,
+                       "after":  0,
+                       "delta":  -10.1
+                   },
+                   {
+                       "batch":  "26ZC066",
+                       "before":  10,
+                       "after":  0,
+                       "delta":  -10
+                   },
+                   {
+                       "batch":  "26X057",
+                       "before":  24,
+                       "after":  14,
+                       "delta":  -10
+                   },
+                   {
+                       "batch":  "26ZC090",
+                       "before":  0,
+                       "after":  10,
+                       "delta":  10
+                   },
+                   {
+                       "batch":  "26ZC029",
+                       "before":  0,
+                       "after":  10,
+                       "delta":  10
+                   },
+                   {
+                       "batch":  "26ZB026",
+                       "before":  0,
+                       "after":  10,
+                       "delta":  10
+                   },
+                   {
+                       "batch":  "26U021",
+                       "before":  0,
+                       "after":  10,
+                       "delta":  10
+                   },
+                   {
+                       "batch":  "26U115",
+                       "before":  0,
+                       "after":  10,
+                       "delta":  10
+                   },
+                   {
+                       "batch":  "26V079",
+                       "before":  0,
+                       "after":  9.9,
+                       "delta":  9.9
+                   },
+                   {
+                       "batch":  "26ZE102",
+                       "before":  0,
+                       "after":  9.75,
+                       "delta":  9.75
+                   },
+                   {
+                       "batch":  "26W058",
+                       "before":  11.6,
+                       "after":  21,
+                       "delta":  9.4
+                   },
+                   {
+                       "batch":  "26ZH064",
+                       "before":  10.8,
+                       "after":  1.5,
+                       "delta":  -9.3
+                   },
+                   {
+                       "batch":  "26zh064",
+                       "before":  0,
+                       "after":  9.3,
+                       "delta":  9.3
+                   },
+                   {
+                       "batch":  "26U103",
+                       "before":  9,
+                       "after":  0,
+                       "delta":  -9
+                   },
+                   {
+                       "batch":  "26X087",
+                       "before":  0,
+                       "after":  9,
+                       "delta":  9
+                   },
+                   {
+                       "batch":  "26U130",
+                       "before":  0,
+                       "after":  9,
+                       "delta":  9
+                   },
+                   {
+                       "batch":  "26ZH074",
+                       "before":  0,
+                       "after":  9,
+                       "delta":  9
+                   },
+                   {
+                       "batch":  "26ZF059",
+                       "before":  0,
+                       "after":  9,
+                       "delta":  9
+                   },
+                   {
+                       "batch":  "26T074",
+                       "before":  14,
+                       "after":  22.75,
+                       "delta":  8.75
+                   },
+                   {
+                       "batch":  "26Y048",
+                       "before":  18.45,
+                       "after":  9.7,
+                       "delta":  -8.75
+                   },
+                   {
+                       "batch":  "26ZA06",
+                       "before":  12.25,
+                       "after":  3.5,
+                       "delta":  -8.75
+                   },
+                   {
+                       "batch":  "26ZD071",
+                       "before":  8.75,
+                       "after":  0,
+                       "delta":  -8.75
+                   },
+                   {
+                       "batch":  "26V059",
+                       "before":  42,
+                       "after":  33.25,
+                       "delta":  -8.75
+                   },
+                   {
+                       "batch":  "25H22",
+                       "before":  0,
+                       "after":  8.75,
+                       "delta":  8.75
+                   },
+                   {
+                       "batch":  "26O019",
+                       "before":  0,
+                       "after":  8.75,
+                       "delta":  8.75
+                   },
+                   {
+                       "batch":  "26ZG132",
+                       "before":  0,
+                       "after":  8.75,
+                       "delta":  8.75
+                   },
+                   {
+                       "batch":  "26ZA067",
+                       "before":  0,
+                       "after":  8.75,
+                       "delta":  8.75
+                   },
+                   {
+                       "batch":  "26W059",
+                       "before":  28,
+                       "after":  36.35,
+                       "delta":  8.35
+                   },
+                   {
+                       "batch":  "26ZB094",
+                       "before":  0,
+                       "after":  8.25,
+                       "delta":  8.25
+                   },
+                   {
+                       "batch":  "26ZA053",
+                       "before":  78.2,
+                       "after":  70,
+                       "delta":  -8.2
+                   },
+                   {
+                       "batch":  "26U129",
+                       "before":  0,
+                       "after":  8,
+                       "delta":  8
+                   },
+                   {
+                       "batch":  "26U119",
+                       "before":  0,
+                       "after":  8,
+                       "delta":  8
+                   },
+                   {
+                       "batch":  "26ZG096",
+                       "before":  27.9,
+                       "after":  20,
+                       "delta":  -7.9
+                   },
+                   {
+                       "batch":  "26ZC069",
+                       "before":  7.9,
+                       "after":  0,
+                       "delta":  -7.9
+                   },
+                   {
+                       "batch":  "26V063",
+                       "before":  8.75,
+                       "after":  1.15,
+                       "delta":  -7.6
+                   },
+                   {
+                       "batch":  "26ZG097",
+                       "before":  0,
+                       "after":  7.5,
+                       "delta":  7.5
+                   },
+                   {
+                       "batch":  "26T072",
+                       "before":  5.25,
+                       "after":  12.25,
+                       "delta":  7
+                   },
+                   {
+                       "batch":  "26P040",
+                       "before":  7,
+                       "after":  0,
+                       "delta":  -7
+                   },
+                   {
+                       "batch":  "26O036",
+                       "before":  0,
+                       "after":  7,
+                       "delta":  7
+                   },
+                   {
+                       "batch":  "26P044",
+                       "before":  0,
+                       "after":  7,
+                       "delta":  7
+                   },
+                   {
+                       "batch":  "25S187",
+                       "before":  0,
+                       "after":  7,
+                       "delta":  7
+                   },
+                   {
+                       "batch":  "26V068",
+                       "before":  0,
+                       "after":  7,
+                       "delta":  7
+                   },
+                   {
+                       "batch":  "26ZB062",
+                       "before":  6.25,
+                       "after":  0,
+                       "delta":  -6.25
+                   },
+                   {
+                       "batch":  "26U104",
+                       "before":  7,
+                       "after":  1,
+                       "delta":  -6
+                   },
+                   {
+                       "batch":  "26ZH047",
+                       "before":  0,
+                       "after":  6,
+                       "delta":  6
+                   },
+                   {
+                       "batch":  "26X047",
+                       "before":  0,
+                       "after":  6,
+                       "delta":  6
+                   },
+                   {
+                       "batch":  "26U120",
+                       "before":  0,
+                       "after":  6,
+                       "delta":  6
+                   },
+                   {
+                       "batch":  "26Y056",
+                       "before":  19.25,
+                       "after":  24.5,
+                       "delta":  5.25
+                   },
+                   {
+                       "batch":  "26T071",
+                       "before":  5.25,
+                       "after":  10.5,
+                       "delta":  5.25
+                   },
+                   {
+                       "batch":  "26P039",
+                       "before":  1.65,
+                       "after":  6.9,
+                       "delta":  5.25
+                   },
+                   {
+                       "batch":  "26P038",
+                       "before":  19.25,
+                       "after":  14,
+                       "delta":  -5.25
+                   },
+                   {
+                       "batch":  "26T063",
+                       "before":  3.5,
+                       "after":  8.75,
+                       "delta":  5.25
+                   },
+                   {
+                       "batch":  "26T051",
+                       "before":  5.25,
+                       "after":  0,
+                       "delta":  -5.25
+                   },
+                   {
+                       "batch":  "26S015",
+                       "before":  0,
+                       "after":  5.25,
+                       "delta":  5.25
+                   },
+                   {
+                       "batch":  "26W033",
+                       "before":  0,
+                       "after":  5.25,
+                       "delta":  5.25
+                   },
+                   {
+                       "batch":  "26ZD044",
+                       "before":  0,
+                       "after":  5.25,
+                       "delta":  5.25
+                   },
+                   {
+                       "batch":  "26W044",
+                       "before":  0,
+                       "after":  5.1,
+                       "delta":  5.1
+                   },
+                   {
+                       "batch":  "26ZG123",
+                       "before":  5.02,
+                       "after":  10.04,
+                       "delta":  5.02
+                   },
+                   {
+                       "batch":  "26T078",
+                       "before":  27.75,
+                       "after":  22.75,
+                       "delta":  -5
+                   },
+                   {
+                       "batch":  "26ZG080",
+                       "before":  7.5,
+                       "after":  2.5,
+                       "delta":  -5
+                   },
+                   {
+                       "batch":  "26U114",
+                       "before":  5,
+                       "after":  0,
+                       "delta":  -5
+                   },
+                   {
+                       "batch":  "26U101",
+                       "before":  5,
+                       "after":  0,
+                       "delta":  -5
+                   },
+                   {
+                       "batch":  "26U030",
+                       "before":  0,
+                       "after":  5,
+                       "delta":  5
+                   },
+                   {
+                       "batch":  "26ZC056",
+                       "before":  0,
+                       "after":  5,
+                       "delta":  5
+                   },
+                   {
+                       "batch":  "26ZA052",
+                       "before":  5.25,
+                       "after":  10.15,
+                       "delta":  4.9
+                   },
+                   {
+                       "batch":  "26X088",
+                       "before":  0,
+                       "after":  4.8,
+                       "delta":  4.8
+                   },
+                   {
+                       "batch":  "26ZG135-A",
+                       "before":  0,
+                       "after":  4.7,
+                       "delta":  4.7
+                   },
+                   {
+                       "batch":  "26U116",
+                       "before":  18,
+                       "after":  22.65,
+                       "delta":  4.65
+                   },
+                   {
+                       "batch":  "26V058",
+                       "before":  4.5,
+                       "after":  0,
+                       "delta":  -4.5
+                   },
+                   {
+                       "batch":  "26ZF033",
+                       "before":  0,
+                       "after":  4.5,
+                       "delta":  4.5
+                   },
+                   {
+                       "batch":  "26ZF058",
+                       "before":  0,
+                       "after":  4.5,
+                       "delta":  4.5
+                   },
+                   {
+                       "batch":  "26V064",
+                       "before":  42,
+                       "after":  37.55,
+                       "delta":  -4.45
+                   },
+                   {
+                       "batch":  "26ZG120",
+                       "before":  13.75,
+                       "after":  18,
+                       "delta":  4.25
+                   },
+                   {
+                       "batch":  "26ZE091",
+                       "before":  32,
+                       "after":  28,
+                       "delta":  -4
+                   },
+                   {
+                       "batch":  "26U112",
+                       "before":  10,
+                       "after":  6,
+                       "delta":  -4
+                   },
+                   {
+                       "batch":  "26X084",
+                       "before":  0,
+                       "after":  4,
+                       "delta":  4
+                   },
+                   {
+                       "batch":  "26U077",
+                       "before":  0,
+                       "after":  4,
+                       "delta":  4
+                   },
+                   {
+                       "batch":  "26U118",
+                       "before":  0,
+                       "after":  4,
+                       "delta":  4
+                   },
+                   {
+                       "batch":  "26ZF096",
+                       "before":  13.5,
+                       "after":  17.4,
+                       "delta":  3.9
+                   },
+                   {
+                       "batch":  "26W053",
+                       "before":  10.5,
+                       "after":  7,
+                       "delta":  -3.5
+                   },
+                   {
+                       "batch":  "26P033",
+                       "before":  3.5,
+                       "after":  0,
+                       "delta":  -3.5
+                   },
+                   {
+                       "batch":  "26ZD068",
+                       "before":  3.5,
+                       "after":  0,
+                       "delta":  -3.5
+                   },
+                   {
+                       "batch":  "26P036",
+                       "before":  3.5,
+                       "after":  0,
+                       "delta":  -3.5
+                   },
+                   {
+                       "batch":  "26T081",
+                       "before":  0,
+                       "after":  3.5,
+                       "delta":  3.5
+                   },
+                   {
+                       "batch":  "26O015",
+                       "before":  0,
+                       "after":  3.5,
+                       "delta":  3.5
+                   },
+                   {
+                       "batch":  "26ZE004",
+                       "before":  0,
+                       "after":  3.5,
+                       "delta":  3.5
+                   },
+                   {
+                       "batch":  "26W049",
+                       "before":  0,
+                       "after":  3.5,
+                       "delta":  3.5
+                   },
+                   {
+                       "batch":  "26ZB086",
+                       "before":  0.8,
+                       "after":  3.8,
+                       "delta":  3
+                   },
+                   {
+                       "batch":  "26X070",
+                       "before":  17,
+                       "after":  20,
+                       "delta":  3
+                   },
+                   {
+                       "batch":  "25ZC165",
+                       "before":  0,
+                       "after":  3,
+                       "delta":  3
+                   },
+                   {
+                       "batch":  "25B29",
+                       "before":  0,
+                       "after":  3,
+                       "delta":  3
+                   },
+                   {
+                       "batch":  "25X186",
+                       "before":  0,
+                       "after":  3,
+                       "delta":  3
+                   },
+                   {
+                       "batch":  "26U027",
+                       "before":  0,
+                       "after":  3,
+                       "delta":  3
+                   },
+                   {
+                       "batch":  "25A61",
+                       "before":  0,
+                       "after":  3,
+                       "delta":  3
+                   },
+                   {
+                       "batch":  "26U099",
+                       "before":  0,
+                       "after":  3,
+                       "delta":  3
+                   },
+                   {
+                       "batch":  "26ZG100",
+                       "before":  5.35,
+                       "after":  2.5,
+                       "delta":  -2.85
+                   },
+                   {
+                       "batch":  "26ZF032",
+                       "before":  0,
+                       "after":  2.75,
+                       "delta":  2.75
+                   },
+                   {
+                       "batch":  "26U081",
+                       "before":  0,
+                       "after":  2.65,
+                       "delta":  2.65
+                   },
+                   {
+                       "batch":  "26S020",
+                       "before":  0,
+                       "after":  2.5,
+                       "delta":  2.5
+                   },
+                   {
+                       "batch":  "26ZF030",
+                       "before":  0,
+                       "after":  2.25,
+                       "delta":  2.25
+                   },
+                   {
+                       "batch":  "26X072",
+                       "before":  10,
+                       "after":  12,
+                       "delta":  2
+                   },
+                   {
+                       "batch":  "26ZC062",
+                       "before":  2,
+                       "after":  0,
+                       "delta":  -2
+                   },
+                   {
+                       "batch":  "26ZB039",
+                       "before":  0,
+                       "after":  2,
+                       "delta":  2
+                   },
+                   {
+                       "batch":  "26V007",
+                       "before":  0,
+                       "after":  2,
+                       "delta":  2
+                   },
+                   {
+                       "batch":  "26X026",
+                       "before":  0,
+                       "after":  2,
+                       "delta":  2
+                   },
+                   {
+                       "batch":  "25ZB42",
+                       "before":  0,
+                       "after":  2,
+                       "delta":  2
+                   },
+                   {
+                       "batch":  "26ZB047",
+                       "before":  0,
+                       "after":  2,
+                       "delta":  2
+                   },
+                   {
+                       "batch":  "26ZC054",
+                       "before":  0,
+                       "after":  2,
+                       "delta":  2
+                   },
+                   {
+                       "batch":  "26T041",
+                       "before":  1.75,
+                       "after":  0,
+                       "delta":  -1.75
+                   },
+                   {
+                       "batch":  "25P039",
+                       "before":  1.75,
+                       "after":  0,
+                       "delta":  -1.75
+                   },
+                   {
+                       "batch":  "26ZE018",
+                       "before":  0,
+                       "after":  1.75,
+                       "delta":  1.75
+                   },
+                   {
+                       "batch":  "26U024",
+                       "before":  0,
+                       "after":  1.75,
+                       "delta":  1.75
+                   },
+                   {
+                       "batch":  "26S012",
+                       "before":  0,
+                       "after":  1.75,
+                       "delta":  1.75
+                   },
+                   {
+                       "batch":  "26T022",
+                       "before":  0,
+                       "after":  1.75,
+                       "delta":  1.75
+                   },
+                   {
+                       "batch":  "26W022",
+                       "before":  0,
+                       "after":  1.75,
+                       "delta":  1.75
+                   },
+                   {
+                       "batch":  "26V054",
+                       "before":  0,
+                       "after":  1.75,
+                       "delta":  1.75
+                   },
+                   {
+                       "batch":  "26T049",
+                       "before":  0,
+                       "after":  1.75,
+                       "delta":  1.75
+                   },
+                   {
+                       "batch":  "26U049",
+                       "before":  0,
+                       "after":  1.5,
+                       "delta":  1.5
+                   },
+                   {
+                       "batch":  "26ZH036",
+                       "before":  0,
+                       "after":  1.5,
+                       "delta":  1.5
+                   },
+                   {
+                       "batch":  "26ZD070",
+                       "before":  0,
+                       "after":  1.5,
+                       "delta":  1.5
+                   },
+                   {
+                       "batch":  "26ZB060",
+                       "before":  0,
+                       "after":  1.3,
+                       "delta":  1.3
+                   },
+                   {
+                       "batch":  "26ZG102",
+                       "before":  15,
+                       "after":  16.25,
+                       "delta":  1.25
+                   },
+                   {
+                       "batch":  "26Z110",
+                       "before":  0,
+                       "after":  1.25,
+                       "delta":  1.25
+                   },
+                   {
+                       "batch":  "26ZG079",
+                       "before":  0,
+                       "after":  1.25,
+                       "delta":  1.25
+                   },
+                   {
+                       "batch":  "26V076",
+                       "before":  11.6,
+                       "after":  10.5,
+                       "delta":  -1.1
+                   },
+                   {
+                       "batch":  "26U068",
+                       "before":  0,
+                       "after":  1,
+                       "delta":  1
+                   },
+                   {
+                       "batch":  "26ZB041",
+                       "before":  0,
+                       "after":  1,
+                       "delta":  1
+                   },
+                   {
+                       "batch":  "26X023",
+                       "before":  0,
+                       "after":  1,
+                       "delta":  1
+                   },
+                   {
+                       "batch":  "26U093",
+                       "before":  0,
+                       "after":  1,
+                       "delta":  1
+                   },
+                   {
+                       "batch":  "26U067",
+                       "before":  0,
+                       "after":  1,
+                       "delta":  1
+                   },
+                   {
+                       "batch":  "26U098",
+                       "before":  0,
+                       "after":  1,
+                       "delta":  1
+                   },
+                   {
+                       "batch":  "26U083",
+                       "before":  0,
+                       "after":  1,
+                       "delta":  1
+                   },
+                   {
+                       "batch":  "26ZH024",
+                       "before":  0.75,
+                       "after":  0,
+                       "delta":  -0.75
+                   },
+                   {
+                       "batch":  "26R005",
+                       "before":  0,
+                       "after":  0.75,
+                       "delta":  0.75
+                   },
+                   {
+                       "batch":  "26ZH037",
+                       "before":  0,
+                       "after":  0.75,
+                       "delta":  0.75
+                   },
+                   {
+                       "batch":  "26V020",
+                       "before":  0,
+                       "after":  0.7,
+                       "delta":  0.7
+                   },
+                   {
+                       "batch":  "26U025",
+                       "before":  0,
+                       "after":  0.65,
+                       "delta":  0.65
+                   },
+                   {
+                       "batch":  "26U089",
+                       "before":  0,
+                       "after":  0.65,
+                       "delta":  0.65
+                   },
+                   {
+                       "batch":  "26ZB030",
+                       "before":  0,
+                       "after":  0.65,
+                       "delta":  0.65
+                   },
+                   {
+                       "batch":  "26ZB003",
+                       "before":  0,
+                       "after":  0.65,
+                       "delta":  0.65
+                   },
+                   {
+                       "batch":  "26ZB044",
+                       "before":  0,
+                       "after":  0.65,
+                       "delta":  0.65
+                   },
+                   {
+                       "batch":  "26U047",
+                       "before":  0,
+                       "after":  0.6,
+                       "delta":  0.6
+                   },
+                   {
+                       "batch":  "26X053",
+                       "before":  0,
+                       "after":  0.6,
+                       "delta":  0.6
+                   },
+                   {
+                       "batch":  "26X062",
+                       "before":  0,
+                       "after":  0.55,
+                       "delta":  0.55
+                   },
+                   {
+                       "batch":  "26ZB029",
+                       "before":  0,
+                       "after":  0.55,
+                       "delta":  0.55
+                   },
+                   {
+                       "batch":  "26ZB008",
+                       "before":  0,
+                       "after":  0.5,
+                       "delta":  0.5
+                   },
+                   {
+                       "batch":  "25X40",
+                       "before":  0,
+                       "after":  0.5,
+                       "delta":  0.5
+                   },
+                   {
+                       "batch":  "26U053",
+                       "before":  0,
+                       "after":  0.45,
+                       "delta":  0.45
+                   },
+                   {
+                       "batch":  "26U043",
+                       "before":  0,
+                       "after":  0.45,
+                       "delta":  0.45
+                   },
+                   {
+                       "batch":  "25A63",
+                       "before":  0,
+                       "after":  0.45,
+                       "delta":  0.45
+                   },
+                   {
+                       "batch":  "26ZC009",
+                       "before":  0,
+                       "after":  0.4,
+                       "delta":  0.4
+                   },
+                   {
+                       "batch":  "26ZB024",
+                       "before":  0,
+                       "after":  0.3,
+                       "delta":  0.3
+                   }
+               ],
+    "flagged":  [
+                    {
+                        "invoice":  "1888",
+                        "invoiceId":  "inv_45045",
+                        "line":  0,
+                        "pc":  "SCRAP0021",
+                        "qty":  0.1,
+                        "batchKey":  "..., ..",
+                        "customer":  "DEV INDUSTRIAL CORPORATION",
+                        "reason":  "line carries 2 batch identifiers"
+                    },
+                    {
+                        "invoice":  "1890",
+                        "invoiceId":  "inv_45047",
+                        "line":  0,
+                        "pc":  "SCRAP0021",
+                        "qty":  0.1,
+                        "batchKey":  "....., ..",
+                        "customer":  "DEV INDUSTRIAL CORPORATION",
+                        "reason":  "line carries 2 batch identifiers"
+                    },
+                    {
+                        "invoice":  "1891",
+                        "invoiceId":  "inv_45049",
+                        "line":  1,
+                        "pc":  "SCRAP0021",
+                        "qty":  0.1,
+                        "batchKey":  "...., ..",
+                        "customer":  "DEV INDUSTRIAL CORPORATION",
+                        "reason":  "line carries 2 batch identifiers"
+                    },
+                    {
+                        "invoice":  "1887",
+                        "invoiceId":  "inv_45044",
+                        "line":  0,
+                        "pc":  "SCRAP0021",
+                        "qty":  0.1,
+                        "batchKey":  "..., ..",
+                        "customer":  "DEV INDUSTRIAL CORPORATION",
+                        "reason":  "line carries 2 batch identifiers"
+                    },
+                    {
+                        "invoice":  "1789",
+                        "invoiceId":  "inv_44938",
+                        "line":  0,
+                        "pc":  "",
+                        "qty":  0,
+                        "batchKey":  "...., ..",
+                        "customer":  "SUNIL HEALTHCARE LIMITED",
+                        "reason":  "line carries 2 batch identifiers"
+                    },
+                    {
+                        "invoice":  "10103",
+                        "invoiceId":  "inv_44939",
+                        "line":  0,
+                        "pc":  "",
+                        "qty":  0,
+                        "batchKey":  "...., ..",
+                        "customer":  "SUNIL HEALTHCARE LIMITED",
+                        "reason":  "line carries 2 batch identifiers"
+                    },
+                    {
+                        "invoice":  "10003",
+                        "invoiceId":  "inv_44940",
+                        "line":  0,
+                        "pc":  "",
+                        "qty":  0,
+                        "batchKey":  "...., ..",
+                        "customer":  "SUNIL HEALTHCARE LIMITED",
+                        "reason":  "line carries 2 batch identifiers"
+                    }
+                ]
+}
