@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48P';
+const APP_BUILD = 'v48R';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1255,6 +1255,42 @@ const MIGRATIONS = [
     name: 'dispatch_records_scanned_labels',
     sql: `ALTER TABLE tracking_dispatch_records ADD COLUMN scanned_labels_json TEXT;`
   },
+  {
+    // v48R (confirmed by Ishan): PER-BATCH INVOICE ATTRIBUTION.
+    // invoices_received stores ONE joined batch key ("26W063, 26T081") and ONE total qty, with no
+    // per-batch breakdown. Every consumer that needs "how much of THIS batch is invoiced" therefore
+    // reconstructs it by guesswork, and each reconstruction has needed its own patch (v47L, v47R,
+    // v47U, v48C, v48N, v48P). This table records the answer ONCE, per invoice LINE, so those
+    // consumers can read one authoritative number instead of six reconstructions.
+    // status='attributed'   → batch_number is trustworthy for tallying
+    // status='needs_manual' → line could NOT be attributed unambiguously; qty is NOT counted
+    //                          anywhere until a human allocates it (option (c), Ishan's call:
+    //                          never invent a split — FIFO/proportional both encode an assumption
+    //                          about consumption order that is not guaranteed to hold).
+    version: 52,
+    name: 'invoice_batch_alloc',
+    sql: `CREATE TABLE IF NOT EXISTS invoice_batch_alloc (
+      id TEXT PRIMARY KEY,
+      invoice_id TEXT NOT NULL,
+      sap_doc_entry INTEGER,
+      sap_doc_num TEXT,
+      line_num INTEGER NOT NULL,
+      batch_number TEXT,
+      pc_code TEXT,
+      qty_lakhs REAL NOT NULL DEFAULT 0,
+      boxes INTEGER NOT NULL DEFAULT 0,
+      method TEXT NOT NULL,
+      status TEXT NOT NULL DEFAULT 'attributed',
+      reason TEXT,
+      allocated_by TEXT,
+      created_at TEXT NOT NULL DEFAULT (datetime('now')),
+      updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_iba_inv_line ON invoice_batch_alloc(invoice_id, line_num);
+    CREATE INDEX IF NOT EXISTS idx_iba_batch ON invoice_batch_alloc(batch_number);
+    CREATE INDEX IF NOT EXISTS idx_iba_status ON invoice_batch_alloc(status);
+    CREATE INDEX IF NOT EXISTS idx_iba_invoice ON invoice_batch_alloc(invoice_id);`
+  },
 ];
 
 function runMigrations() {
@@ -2348,6 +2384,32 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_inv_recv_source ON invoices_received(source)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_inv_recv_req ON invoices_received(invoice_request_id)`);
 
+    // v48R: invoice_batch_alloc — per-LINE attribution of a received invoice to a batch.
+    // See MIGRATIONS v52 for the rationale. PG mirror of the same shape.
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS invoice_batch_alloc (
+        id TEXT PRIMARY KEY,
+        invoice_id TEXT NOT NULL,
+        sap_doc_entry INTEGER,
+        sap_doc_num TEXT,
+        line_num INTEGER NOT NULL,
+        batch_number TEXT,
+        pc_code TEXT,
+        qty_lakhs DOUBLE PRECISION NOT NULL DEFAULT 0,
+        boxes INTEGER NOT NULL DEFAULT 0,
+        method TEXT NOT NULL,
+        status TEXT NOT NULL DEFAULT 'attributed',
+        reason TEXT,
+        allocated_by TEXT,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iba_inv_line ON invoice_batch_alloc(invoice_id, line_num)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iba_batch ON invoice_batch_alloc(batch_number)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iba_status ON invoice_batch_alloc(status)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iba_invoice ON invoice_batch_alloc(invoice_id)`);
+
     // sap_config — single-row credentials + session state
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS sap_config (
@@ -3422,6 +3484,282 @@ function _lineDispatchForBatch(inv, batchNo) {
   return null;
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// v48R (confirmed by Ishan): PER-BATCH INVOICE ATTRIBUTION ENGINE
+//
+// ROOT CAUSE this replaces: invoices_received holds one joined batch key and one
+// total qty. Nothing records how much of a multi-batch invoice belongs to each
+// batch, so six different consumers each reconstruct it by guesswork (v47L, v47R,
+// v47U, v48C, v48N, v48P). This engine computes the answer ONCE, per invoice LINE,
+// and stores it in invoice_batch_alloc.
+//
+// LAYERED MATCHING — most explicit evidence first, never a guess:
+//   L1 line_batch   the LINE itself carries a batch identifier (U_Batch /
+//                   U_SunlocBatch / U_BatchNo / U_BatchNum / BatchNumbers[] / any
+//                   U_*batch UDF). Unambiguous; no tie-break can arise.
+//   L2 single_batch the invoice's batch key has exactly one token — the whole line
+//                   belongs to that batch by construction.
+//   L3 pc_unique    exactly ONE batch on this invoice has a PC equal to the line's
+//                   ItemCode, AND that batch's customer agrees with the invoice's.
+//                   The customer guard is load-bearing: bulk export invoice 9035
+//                   (ASIA NOOR, 8 batches) lists MANCARE's 26V083 in its key, and
+//                   without the guard a PC collision would have credited it.
+//   otherwise       status='needs_manual'. Per Ishan's explicit decision (option c),
+//                   NO proportional split and NO FIFO — both encode an assumption
+//                   about consumption order that is not guaranteed to hold, and a
+//                   silently-wrong allocation is worse than a flagged one. The qty
+//                   is counted NOWHERE until a human allocates it.
+//
+// SAFETY: this engine only ever writes to invoice_batch_alloc. It never touches
+// invoices_received, invoice_requests, tracking_* or any dispatch row. In v48R NO
+// consumer reads it — deploying this changes no user-visible number anywhere.
+// ─────────────────────────────────────────────────────────────────────────────
+function _v48r_norm(s) { return String(s == null ? '' : s).trim().toUpperCase(); }
+
+// Batch identifiers carried by a single DocumentLine. Same explicit fields as
+// _lineQtyForBatch / _lineDispatchForBatch — no inference from context.
+function _v48r_lineBatchTokens(l) {
+  const set = [];
+  if (!l || typeof l !== 'object') return set;
+  const push = v => {
+    const s = (v == null ? '' : String(v)).trim();
+    if (s && !set.some(x => x.toUpperCase() === s.toUpperCase())) set.push(s);
+  };
+  push(l.U_Batch); push(l.U_SunlocBatch); push(l.U_BatchNo); push(l.U_BatchNum);
+  if (Array.isArray(l.BatchNumbers)) for (const b of l.BatchNumbers) push(b && (b.BatchNumber || b.Batch));
+  for (const k of Object.keys(l)) { if (/^U_.*batch/i.test(k)) push(l[k]); }
+  return set;
+}
+
+// batch → { pc, customer, cardCode }. invoice_requests carries the card code (the
+// strongest customer key); tracking_labels is the floor's own record of what a batch
+// is and who it is for, and covers batches that were never requested through Sunloc.
+// tokens === null builds the map for every batch (used by the full rebuild).
+async function _v48r_batchProfiles(tokens) {
+  const want = Array.isArray(tokens) ? Array.from(new Set(tokens.map(_v48r_norm).filter(Boolean))) : null;
+  if (want && !want.length) return {};
+  const out = {};
+  const put = (b, pc, cust, card) => {
+    const k = _v48r_norm(b);
+    if (!k) return;
+    const e = out[k] || (out[k] = { pc: '', customer: '', cardCode: '' });
+    if (!e.pc && pc) e.pc = String(pc).trim();
+    if (!e.customer && cust) e.customer = String(cust).trim();
+    if (!e.cardCode && card) e.cardCode = String(card).trim();
+  };
+  try {
+    if (pgPool) {
+      const r1 = want
+        ? await pgPool.query(`SELECT batch_number, pc_code, customer, card_code FROM invoice_requests WHERE UPPER(batch_number) = ANY($1)`, [want])
+        : await pgPool.query(`SELECT batch_number, pc_code, customer, card_code FROM invoice_requests`);
+      for (const r of r1.rows) put(r.batch_number, r.pc_code, r.customer, r.card_code);
+      const r2 = want
+        ? await pgPool.query(`SELECT batch_number, pc_code, customer FROM tracking_labels WHERE UPPER(batch_number) = ANY($1)`, [want])
+        : await pgPool.query(`SELECT batch_number, pc_code, customer FROM tracking_labels`);
+      for (const r of r2.rows) put(r.batch_number, r.pc_code, r.customer, null);
+    } else {
+      const inSql = want ? ` WHERE UPPER(batch_number) IN (${want.map(() => '?').join(',')})` : '';
+      const a1 = db.prepare(`SELECT batch_number, pc_code, customer, card_code FROM invoice_requests${inSql}`).all(...(want || []));
+      for (const r of a1) put(r.batch_number, r.pc_code, r.customer, r.card_code);
+      const a2 = db.prepare(`SELECT batch_number, pc_code, customer FROM tracking_labels${inSql}`).all(...(want || []));
+      for (const r of a2) put(r.batch_number, r.pc_code, r.customer, null);
+    }
+  } catch (e) { console.warn('[v48R] batch profile load failed:', e && e.message); }
+  return out;
+}
+
+// Pure function — no I/O. Returns one allocation object per invoice LINE.
+function _v48r_attribute(inv, row, profiles) {
+  const lines = (inv && inv.DocumentLines) || [];
+  const keyTokens = String((row && row.batch_number) || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+  const keyUpper = keyTokens.map(t => t.toUpperCase());
+  const invCard = _v48r_norm(row && row.card_code);
+  const invCust = _v48r_norm(row && row.customer);
+  const singleLine = lines.length === 1;
+  const out = [];
+  for (let idx = 0; idx < lines.length; idx++) {
+    const l = lines[idx] || {};
+    const lineNum = (l.LineNum != null && Number.isFinite(parseInt(l.LineNum, 10))) ? parseInt(l.LineNum, 10) : idx;
+    const qty = parseFloat((((parseFloat(l.Quantity) || 0) * _sapUomScale(l))).toFixed(3));
+    let boxes = parseInt(l.U_NO_BOXES, 10);
+    if (!Number.isFinite(boxes) || boxes < 0) boxes = singleLine ? (parseInt(row && row.total_boxes, 10) || 0) : 0;
+    const pc = String(l.ItemCode || '').trim();
+    const base = {
+      invoice_id: row.id, sap_doc_entry: row.sap_doc_entry || null, sap_doc_num: row.sap_doc_num || null,
+      line_num: lineNum, pc_code: pc, qty_lakhs: qty, boxes,
+    };
+    const flag = (reason) => out.push({ ...base, batch_number: null, method: 'unattributed', status: 'needs_manual', reason });
+
+    // L1 — the line names its own batch
+    const lineBatches = _v48r_lineBatchTokens(l);
+    if (lineBatches.length === 1) {
+      out.push({
+        ...base, batch_number: lineBatches[0], method: 'line_batch', status: 'attributed',
+        reason: keyUpper.includes(lineBatches[0].toUpperCase()) ? null : 'line batch is absent from the invoice header batch key',
+      });
+      continue;
+    }
+    if (lineBatches.length > 1) { flag(`line carries ${lineBatches.length} batch identifiers`); continue; }
+
+    // L2 — the invoice covers exactly one batch
+    if (keyTokens.length === 1) {
+      out.push({ ...base, batch_number: keyTokens[0], method: 'single_batch', status: 'attributed', reason: null });
+      continue;
+    }
+    if (!keyTokens.length) { flag('invoice carries no batch key'); continue; }
+
+    // L3 — unique PC match among this invoice's batches, customer must agree
+    if (!pc) { flag('multi-batch invoice and this line has no ItemCode'); continue; }
+    const matches = keyTokens.filter(t => {
+      const p = profiles[t.toUpperCase()];
+      return p && p.pc && _v48r_norm(p.pc) === _v48r_norm(pc);
+    });
+    if (matches.length === 1) {
+      const p = profiles[matches[0].toUpperCase()] || {};
+      const cardMismatch = !!(p.cardCode && invCard && _v48r_norm(p.cardCode) !== invCard);
+      const custMismatch = !!(!p.cardCode && p.customer && invCust && _v48r_norm(p.customer) !== invCust);
+      if (cardMismatch || custMismatch) {
+        flag(`PC ${pc} matches ${matches[0]}, but that batch belongs to ${p.customer || p.cardCode} while this invoice is for ${row.customer || row.card_code} — customer guard`);
+      } else {
+        out.push({ ...base, batch_number: matches[0], method: 'pc_unique', status: 'attributed', reason: null });
+      }
+      continue;
+    }
+    flag(matches.length === 0
+      ? `no batch on this invoice has PC ${pc}`
+      : `${matches.length} batches on this invoice share PC ${pc} — manual allocation required`);
+  }
+  return out;
+}
+
+// Write allocations for one invoice. MANUAL rows are never overwritten: a human
+// allocation outranks anything the engine can derive, and survives every re-pull.
+async function _v48r_persist(invoiceId, allocs) {
+  const manual = new Set();
+  if (pgPool) {
+    const r = await pgPool.query(`SELECT line_num FROM invoice_batch_alloc WHERE invoice_id=$1 AND method='manual'`, [invoiceId]);
+    for (const x of r.rows) manual.add(parseInt(x.line_num, 10));
+    await pgPool.query(`DELETE FROM invoice_batch_alloc WHERE invoice_id=$1 AND method<>'manual'`, [invoiceId]);
+  } else {
+    for (const x of db.prepare(`SELECT line_num FROM invoice_batch_alloc WHERE invoice_id=? AND method='manual'`).all(invoiceId)) manual.add(parseInt(x.line_num, 10));
+    db.prepare(`DELETE FROM invoice_batch_alloc WHERE invoice_id=? AND method<>'manual'`).run(invoiceId);
+  }
+  let written = 0;
+  for (const a of allocs) {
+    if (manual.has(parseInt(a.line_num, 10))) continue;
+    const id = `alloc_${invoiceId}_${a.line_num}`;
+    if (pgPool) {
+      await pgPool.query(`
+        INSERT INTO invoice_batch_alloc (id, invoice_id, sap_doc_entry, sap_doc_num, line_num,
+          batch_number, pc_code, qty_lakhs, boxes, method, status, reason, allocated_by, created_at, updated_at)
+        VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,NULL,NOW()::TEXT,NOW()::TEXT)
+        ON CONFLICT (id) DO UPDATE SET
+          batch_number=EXCLUDED.batch_number, pc_code=EXCLUDED.pc_code, qty_lakhs=EXCLUDED.qty_lakhs,
+          boxes=EXCLUDED.boxes, method=EXCLUDED.method, status=EXCLUDED.status, reason=EXCLUDED.reason,
+          updated_at=NOW()::TEXT`,
+        [id, invoiceId, a.sap_doc_entry, a.sap_doc_num, a.line_num, a.batch_number, a.pc_code,
+         a.qty_lakhs, a.boxes, a.method, a.status, a.reason || null]);
+    } else {
+      db.prepare(`
+        INSERT INTO invoice_batch_alloc (id, invoice_id, sap_doc_entry, sap_doc_num, line_num,
+          batch_number, pc_code, qty_lakhs, boxes, method, status, reason, allocated_by, created_at, updated_at)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NULL,datetime('now'),datetime('now'))
+        ON CONFLICT(id) DO UPDATE SET
+          batch_number=excluded.batch_number, pc_code=excluded.pc_code, qty_lakhs=excluded.qty_lakhs,
+          boxes=excluded.boxes, method=excluded.method, status=excluded.status, reason=excluded.reason,
+          updated_at=datetime('now')`)
+        .run(id, invoiceId, a.sap_doc_entry, a.sap_doc_num, a.line_num, a.batch_number, a.pc_code,
+             a.qty_lakhs, a.boxes, a.method, a.status, a.reason || null);
+    }
+    written++;
+  }
+  return { written, manualPreserved: manual.size };
+}
+
+// Attribute ONE invoice row (payload optional — read from payload_json when omitted).
+async function _v48r_recomputeInvoice(row, payload) {
+  if (!row || !row.id) return { ok: false, error: 'no invoice row' };
+  let inv = payload;
+  if (!inv) {
+    try { inv = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || null); }
+    catch (e) { inv = null; }
+  }
+  if (!inv || !Array.isArray(inv.DocumentLines) || !inv.DocumentLines.length) {
+    return { ok: false, error: 'no DocumentLines in payload', invoiceId: row.id };
+  }
+  const tokens = String(row.batch_number || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+  const profiles = await _v48r_batchProfiles(tokens);
+  const allocs = _v48r_attribute(inv, row, profiles);
+  const res = await _v48r_persist(row.id, allocs);
+  return { ok: true, invoiceId: row.id, lines: allocs.length, ...res, allocations: allocs };
+}
+
+// Full rebuild across every stored invoice. DRY-RUN BY DEFAULT — computes and reports
+// without writing, so the before/after can be reviewed before anything is persisted.
+async function _v48r_recomputeAll({ dryRun = true, limit = 0, batch = '' } = {}) {
+  const wheres = [`payload_json IS NOT NULL`];
+  const args = [];
+  if (batch) { wheres.push(pgPool ? `batch_number ILIKE $${args.length + 1}` : `batch_number LIKE ?`); args.push('%' + batch + '%'); }
+  const lim = (limit && limit > 0) ? ` LIMIT ${parseInt(limit, 10)}` : '';
+  const sql = `SELECT id, sap_doc_entry, sap_doc_num, batch_number, customer, card_code, total_boxes,
+                      total_qty_lakhs, source, payload_json
+               FROM invoices_received WHERE ${wheres.join(' AND ')} ORDER BY invoice_date DESC${lim}`;
+  let rows;
+  if (pgPool) rows = (await pgPool.query(sql, args)).rows;
+  else        rows = db.prepare(sql).all(...args);
+
+  const profiles = await _v48r_batchProfiles(null);   // one map for the whole run
+  const perBatchAfter = {};                            // batch → attributed Lakhs
+  const flagged = [];
+  let invoicesProcessed = 0, linesTotal = 0, linesAttributed = 0, linesFlagged = 0, noPayload = 0, written = 0;
+
+  for (const row of rows) {
+    let inv;
+    try { inv = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : row.payload_json; }
+    catch (e) { inv = null; }
+    if (!inv || !Array.isArray(inv.DocumentLines) || !inv.DocumentLines.length) { noPayload++; continue; }
+    const allocs = _v48r_attribute(inv, row, profiles);
+    invoicesProcessed++;
+    for (const a of allocs) {
+      linesTotal++;
+      if (a.status === 'attributed' && a.batch_number) {
+        linesAttributed++;
+        const k = a.batch_number;
+        perBatchAfter[k] = Math.round(((perBatchAfter[k] || 0) + (a.qty_lakhs || 0)) * 100) / 100;
+      } else {
+        linesFlagged++;
+        flagged.push({
+          invoice: row.sap_doc_num, invoiceId: row.id, line: a.line_num, pc: a.pc_code,
+          qty: a.qty_lakhs, batchKey: row.batch_number, customer: row.customer, reason: a.reason,
+        });
+      }
+    }
+    if (!dryRun) { const r = await _v48r_persist(row.id, allocs); written += r.written; }
+  }
+
+  // BEFORE = today's reconstruction, i.e. what the integrity engine attributes precisely:
+  // a single-batch invoice's whole total to that batch, a multi-batch invoice to nothing.
+  const perBatchBefore = {};
+  for (const row of rows) {
+    const toks = String(row.batch_number || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
+    if (toks.length !== 1) continue;
+    const q = Math.round((parseFloat(row.total_qty_lakhs) || 0) * 100) / 100;
+    perBatchBefore[toks[0]] = Math.round(((perBatchBefore[toks[0]] || 0) + q) * 100) / 100;
+  }
+  const deltas = [];
+  for (const b of new Set([...Object.keys(perBatchBefore), ...Object.keys(perBatchAfter)])) {
+    const before = perBatchBefore[b] || 0, after = perBatchAfter[b] || 0;
+    if (Math.abs(after - before) > 0.001) deltas.push({ batch: b, before, after, delta: Math.round((after - before) * 100) / 100 });
+  }
+  deltas.sort((x, y) => Math.abs(y.delta) - Math.abs(x.delta));
+
+  return {
+    ok: true, dryRun, invoicesScanned: rows.length, invoicesProcessed, noPayload,
+    linesTotal, linesAttributed, linesFlagged, written,
+    batchesChanged: deltas.length, deltas, flagged,
+  };
+}
+
 // v45I #6: repopulate batch_number for already-pulled invoices that rendered blank because only the
 // header UDF was read at ingest time. Reads each blank row's STORED payload_json (no new SAP call)
 // and applies the same explicit-field extractor. One-shot (retried until it succeeds), then skipped.
@@ -3674,6 +4012,23 @@ async function _doRefreshSapInvoices() {
           else        db.prepare(`UPDATE invoices_received SET base_so_doc_num=? WHERE sap_doc_entry=? AND (base_so_doc_num IS NULL OR base_so_doc_num='')`).run(_baseSoNum, inv.DocEntry);
         }
       } catch (e) { console.warn('[v44ZC] set invoice base_so_doc_num:', e.message); }
+
+      // v48R: compute per-batch attribution for this invoice into invoice_batch_alloc.
+      // Fully guarded — attribution is a derived read-model, so a failure here must never
+      // break the invoice pull itself. Nothing reads these rows in v48R.
+      try {
+        let _b48r = batchForStore;
+        if (!_b48r) {                       // blank UDF: the upsert kept the stored key, so read it back
+          if (pgPool) _b48r = ((await pgPool.query(`SELECT batch_number FROM invoices_received WHERE id=$1`, [recId])).rows[0] || {}).batch_number || '';
+          else        _b48r = (db.prepare(`SELECT batch_number FROM invoices_received WHERE id=?`).get(recId) || {}).batch_number || '';
+        }
+        await _v48r_recomputeInvoice({
+          id: recId, sap_doc_entry: inv.DocEntry, sap_doc_num: String(inv.DocNum || ''),
+          batch_number: _b48r, customer: inv.CardName || '', card_code: inv.CardCode || '',
+          total_boxes: totalBoxes,
+        }, inv);
+      } catch (e) { console.warn('[v48R] attribution skipped for DocEntry ' + inv.DocEntry + ':', e && e.message); }
+
       if (invReqId) {
         try {
           if (pgPool) {
@@ -6543,6 +6898,142 @@ app.get('/api/invoice/:id/details', async (req, res) => {
       base_line: ln.BaseLine,
     }));
     res.json({ ok: true, header, lines, line_count: lines.length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// ─── v48R: per-batch invoice attribution — read + admin API ───────────────────
+// GET /api/invoice/allocations?batch=&invoice_id=&status=&limit=
+// Authoritative per-batch invoiced quantity. `totals` sums ONLY status='attributed'
+// rows — a needs_manual line is counted nowhere until a human allocates it.
+app.get('/api/invoice/allocations', async (req, res) => {
+  try {
+    const batch = (req.query.batch || '').toString().trim();
+    const invoiceId = (req.query.invoice_id || '').toString().trim();
+    const status = (req.query.status || '').toString().trim();
+    const limit = Math.min(parseInt(req.query.limit, 10) || 500, 5000);
+    const wheres = [], args = [];
+    if (batch)     { wheres.push(pgPool ? `UPPER(batch_number)=$${args.length + 1}` : `UPPER(batch_number)=?`); args.push(batch.toUpperCase()); }
+    if (invoiceId) { wheres.push(pgPool ? `invoice_id=$${args.length + 1}` : `invoice_id=?`); args.push(invoiceId); }
+    if (status)    { wheres.push(pgPool ? `status=$${args.length + 1}` : `status=?`); args.push(status); }
+    const whereSql = wheres.length ? 'WHERE ' + wheres.join(' AND ') : '';
+    const sql = `SELECT * FROM invoice_batch_alloc ${whereSql} ORDER BY sap_doc_num DESC, line_num ASC LIMIT ${limit}`;
+    let rows;
+    if (pgPool) rows = (await pgPool.query(sql, args)).rows;
+    else        rows = db.prepare(sql).all(...args);
+    const totals = {};
+    for (const r of rows) {
+      if (r.status !== 'attributed' || !r.batch_number) continue;
+      const e = totals[r.batch_number] || (totals[r.batch_number] = { qty: 0, boxes: 0, lines: 0 });
+      e.qty = Math.round((e.qty + (parseFloat(r.qty_lakhs) || 0)) * 100) / 100;
+      e.boxes += parseInt(r.boxes, 10) || 0;
+      e.lines++;
+    }
+    res.json({ ok: true, count: rows.length, allocations: rows, totals,
+               needsManual: rows.filter(r => r.status === 'needs_manual').length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/admin/invoice-attribution-preview?limit=&batch=
+// DRY-RUN ONLY — never writes. Returns per-batch BEFORE (today's reconstruction) vs
+// AFTER (per-line attribution) plus every line the engine refused to guess at.
+app.get('/api/admin/invoice-attribution-preview', async (req, res) => {
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const out = await _v48r_recomputeAll({
+      dryRun: true,
+      limit: parseInt(req.query.limit, 10) || 0,
+      batch: (req.query.batch || '').toString().trim(),
+    });
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/admin/invoice-attribution-rebuild   body: { apply: true }
+// Backfills invoice_batch_alloc from every stored payload. Dry-run unless apply===true.
+// Idempotent: re-running produces the same rows, and manual allocations are preserved.
+app.post('/api/admin/invoice-attribution-rebuild', async (req, res) => {
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const apply = (req.body && (req.body.apply === true || req.body.apply === 'true' || req.body.apply === 1));
+    const out = await _v48r_recomputeAll({
+      dryRun: !apply,
+      limit: parseInt((req.body && req.body.limit), 10) || 0,
+      batch: ((req.body && req.body.batch) || '').toString().trim(),
+    });
+    if (apply) console.log(`[v48R] attribution rebuild applied: ${out.written} allocation row(s) across ${out.invoicesProcessed} invoice(s), ${out.linesFlagged} line(s) need manual allocation`);
+    res.json(out);
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/invoice/:id/allocate
+// Manual allocation for a line the engine refused to guess at (Ishan's option (c)).
+// Body: { line_num: <int>, allocations: [ { batch_number, qty_lakhs, boxes? }, ... ] }
+// The allocations MUST sum to that line's own quantity — partial allocation would
+// silently lose quantity, which is the failure mode this whole build exists to end.
+// Rows are written with method='manual' and are never overwritten by the engine.
+app.post('/api/invoice/:id/allocate', async (req, res) => {
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const invId = req.params.id;
+    const lineNum = parseInt((req.body || {}).line_num, 10);
+    const allocations = ((req.body || {}).allocations) || [];
+    if (!Number.isFinite(lineNum)) return res.status(400).json({ ok: false, error: 'line_num is required' });
+    if (!Array.isArray(allocations) || !allocations.length) return res.status(400).json({ ok: false, error: 'allocations[] is required' });
+    for (const a of allocations) {
+      if (!a || !String(a.batch_number || '').trim()) return res.status(400).json({ ok: false, error: 'every allocation needs a batch_number' });
+      if (!Number.isFinite(parseFloat(a.qty_lakhs))) return res.status(400).json({ ok: false, error: 'every allocation needs a numeric qty_lakhs' });
+    }
+    let row;
+    if (pgPool) row = (await pgPool.query(`SELECT * FROM invoices_received WHERE id=$1`, [invId])).rows[0];
+    else        row = db.prepare(`SELECT * FROM invoices_received WHERE id=?`).get(invId);
+    if (!row) return res.status(404).json({ ok: false, error: 'invoice not found' });
+    let payload = {};
+    try { payload = typeof row.payload_json === 'string' ? JSON.parse(row.payload_json) : (row.payload_json || {}); } catch (e) { payload = {}; }
+    const lines = payload.DocumentLines || [];
+    const line = lines.find((l, i) => ((l && l.LineNum != null) ? parseInt(l.LineNum, 10) : i) === lineNum);
+    if (!line) return res.status(404).json({ ok: false, error: `line ${lineNum} not found on this invoice` });
+    const lineQty = parseFloat((((parseFloat(line.Quantity) || 0) * _sapUomScale(line))).toFixed(3));
+    const sum = Math.round(allocations.reduce((s, a) => s + (parseFloat(a.qty_lakhs) || 0), 0) * 100) / 100;
+    if (Math.abs(sum - lineQty) > 0.01) {
+      return res.status(400).json({ ok: false, error: `allocations sum to ${sum}L but line ${lineNum} is ${lineQty}L — they must match exactly` });
+    }
+    const who = (req.headers['x-sunloc-user'] || 'admin').toString();
+    // Replace any prior rows for this line (engine-derived or a previous manual allocation)
+    if (pgPool) await pgPool.query(`DELETE FROM invoice_batch_alloc WHERE invoice_id=$1 AND line_num=$2`, [invId, lineNum]);
+    else        db.prepare(`DELETE FROM invoice_batch_alloc WHERE invoice_id=? AND line_num=?`).run(invId, lineNum);
+    let seq = 0;
+    for (const a of allocations) {
+      const id = `alloc_${invId}_${lineNum}_m${seq++}`;
+      const qty = Math.round((parseFloat(a.qty_lakhs) || 0) * 1000) / 1000;
+      const bx = parseInt(a.boxes, 10) || 0;
+      const bn = String(a.batch_number).trim();
+      const pc = String(line.ItemCode || '').trim();
+      if (pgPool) {
+        await pgPool.query(`
+          INSERT INTO invoice_batch_alloc (id, invoice_id, sap_doc_entry, sap_doc_num, line_num,
+            batch_number, pc_code, qty_lakhs, boxes, method, status, reason, allocated_by, created_at, updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'manual','attributed',$10,$11,NOW()::TEXT,NOW()::TEXT)`,
+          [id, invId, row.sap_doc_entry, row.sap_doc_num, lineNum, bn, pc, qty, bx,
+           `manual allocation by ${who}`, who]);
+      } else {
+        db.prepare(`
+          INSERT INTO invoice_batch_alloc (id, invoice_id, sap_doc_entry, sap_doc_num, line_num,
+            batch_number, pc_code, qty_lakhs, boxes, method, status, reason, allocated_by, created_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,'manual','attributed',?,?,datetime('now'),datetime('now'))`)
+          .run(id, invId, row.sap_doc_entry, row.sap_doc_num, lineNum, bn, pc, qty, bx,
+               `manual allocation by ${who}`, who);
+      }
+    }
+    console.log(`[v48R] manual allocation: invoice ${row.sap_doc_num} line ${lineNum} (${lineQty}L) → ${allocations.map(a => a.batch_number + ' ' + a.qty_lakhs + 'L').join(', ')} by ${who}`);
+    res.json({ ok: true, invoiceId: invId, lineNum, lineQty, allocated: allocations.length, by: who });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
