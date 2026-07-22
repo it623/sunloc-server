@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48V';
+const APP_BUILD = 'v48W';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -12102,9 +12102,16 @@ app.post('/api/wo/propose-reconciliation', async (req, res) => {
       return res.status(403).json({ ok: false, error: 'Planning Manager or Admin required' });
     }
     if (!customer) return res.status(400).json({ ok: false, error: 'Customer name required' });
-    // v39 Phase 9c: partial SAP link guard — both or neither
-    if ((sapDocEntry && !sapDocNum) || (!sapDocEntry && sapDocNum)) {
-      return res.status(400).json({ ok: false, error: 'sapDocEntry and sapDocNum must both be provided, or both omitted' });
+    // v48W: the old rule demanded sapDocEntry and sapDocNum together, or neither. But sapDocEntry is
+    // SAP's INTERNAL key (e.g. 44985) which a planner has no way to know — they have the Sales Order
+    // NUMBER (e.g. 345). So supplying the SO number alone was rejected, planners submitted neither,
+    // and the W/O converted with its customer updated but no SAP link at all (live case: 26ZG136,
+    // reconciled to Windlas, left un-invoiceable). A DocNum on its own is sufficient downstream —
+    // the SAP reconcile matches on sapDocEntry preferred / poNumber fallback, and the invoice gate
+    // accepts any one of DocEntry, DocNum or PO. Only the reverse remains invalid: a bare internal
+    // DocEntry with no human-readable SO number.
+    if (sapDocEntry && !sapDocNum) {
+      return res.status(400).json({ ok: false, error: 'A Sales Order Number is required when a DocEntry is supplied' });
     }
     const id = `WORECON-${Date.now()}`;
     const billTo = req.body.billTo || '';
@@ -12163,10 +12170,11 @@ app.post('/api/wo/approve/:id', async (req, res) => {
         ord.woStatus = 'wo-reconciled';
         ord.woReconciledAt = now;
         ord.woReconciledBy = session.username;
-        // v39 Phase 9c: apply SAP refs from the reconciliation request, if present
-        if (request.sap_doc_entry) {
-          ord.sapDocEntry = request.sap_doc_entry;
-          ord.sapDocNum = request.sap_doc_num || '';
+        // v48W: apply whichever SAP ref the proposal carried. Previously gated on sap_doc_entry
+        // alone, so an SO-number-only reconciliation silently dropped the link.
+        if (request.sap_doc_entry || request.sap_doc_num) {
+          if (request.sap_doc_entry) ord.sapDocEntry = request.sap_doc_entry;
+          if (request.sap_doc_num)   ord.sapDocNum   = request.sap_doc_num;
         }
         // Update dispatch plans
         (planState.dispatchPlans || []).forEach(d => {
@@ -17215,20 +17223,36 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     const _PACK = {'0':1.5,'00':1.5,'000':1.5,'1':1.25,'2':1.0,'3':0.75,'4':0.5,'5':0.333};
     const boxesToLakhsServer = (boxes,size)=>{ const ps=_PACK[String(size)]||1; return (parseInt(boxes,10)||0)*ps; };
 
-    // SAP-finalized guard — a real SAP invoice document for this batch cannot be silently re-pointed.
-    let sapBlock = false, sapWhat = '';
-    if (pgPool) {
-      const ir = (await pgPool.query(`SELECT 1 FROM invoices_received WHERE batch_number=$1 LIMIT 1`,[batchNumber])).rows[0];
-      const rq = (await pgPool.query(`SELECT 1 FROM invoice_requests WHERE batch_number=$1 AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending')) LIMIT 1`,[batchNumber])).rows[0];
-      if (ir) { sapBlock=true; sapWhat='a SAP invoice has already been received'; }
-      else if (rq) { sapBlock=true; sapWhat='an invoice request has already been pushed to SAP'; }
-    } else {
-      const ir = db.prepare(`SELECT 1 FROM invoices_received WHERE batch_number=? LIMIT 1`).get(batchNumber);
-      const rq = db.prepare(`SELECT 1 FROM invoice_requests WHERE batch_number=? AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending')) LIMIT 1`).get(batchNumber);
-      if (ir) { sapBlock=true; sapWhat='a SAP invoice has already been received'; }
-      else if (rq) { sapBlock=true; sapWhat='an invoice request has already been pushed to SAP'; }
+    // ── v48W: SAP-FINALIZED GUARD, NOW MEASURED PER BOX (approved by Ishan) ──
+    // The rule is unchanged in intent: a box SAP has already invoiced cannot be silently re-pointed.
+    // What changed is its SCOPE. It used to trip if ANY invoice touched the batch, which froze the
+    // whole batch including boxes SAP had no claim on — live case 26T080, where 15.75L went out on
+    // invoice 1840 to Rohan Pharma and the REMAINING uninvoiced boxes could not then be split to
+    // G.K.PHARMA. Invoice requests record selected_labels, so the invoiced box set is knowable and
+    // the block now applies only to those specific boxes.
+    // A FULL re-customer still blocks on any SAP document — it moves every box, so any invoiced box
+    // is necessarily included. Only a PARTIAL split can proceed, and only over uninvoiced boxes.
+    let _sapDocs = [], _invoicedLabelIds = new Set(), _sapAny = false, _sapWhat = '';
+    {
+      const qIR = `SELECT sap_doc_num FROM invoices_received WHERE batch_number=$1`;
+      const qRQ = `SELECT id, selected_labels, sap_doc_entry, status FROM invoice_requests
+                   WHERE batch_number=$1 AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending'))`;
+      const irRows = pgPool ? (await pgPool.query(qIR, [batchNumber])).rows
+                            : db.prepare(qIR.replace(/\$1/g, '?')).all(batchNumber);
+      const rqRows = pgPool ? (await pgPool.query(qRQ, [batchNumber])).rows
+                            : db.prepare(qRQ.replace(/\$1/g, '?')).all(batchNumber);
+      if (irRows.length) { _sapAny = true; _sapWhat = 'a SAP invoice has already been received'; _sapDocs = irRows.map(r => r.sap_doc_num).filter(Boolean); }
+      else if (rqRows.length) { _sapAny = true; _sapWhat = 'an invoice request has already been pushed to SAP'; }
+      for (const r of rqRows) {
+        let ids = [];
+        try { ids = typeof r.selected_labels === 'string' ? JSON.parse(r.selected_labels) : (r.selected_labels || []); }
+        catch (e) { ids = []; }
+        if (Array.isArray(ids)) for (const id of ids) _invoicedLabelIds.add(String(id));
+      }
+      // A received invoice whose request we cannot resolve to specific labels leaves the invoiced box
+      // set UNKNOWN. Unknown must fail closed — we cannot prove the boxes being moved are free.
+      if (irRows.length && !_invoicedLabelIds.size) _sapWhat += ' (its boxes cannot be identified)';
     }
-    if (sapBlock) return res.json({ ok:false, sap_blocked:true, error:`Cannot re-customer ${batchNumber}: ${sapWhat}. Cancel that SAP document first, then retry.` });
 
     const planState = getPlanningState();
     const ord = (planState.orders||[]).find(o => o.batchNumber===batchNumber && !o.deleted);
@@ -17251,6 +17275,24 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     const nSplit = Math.max(0, parseInt(splitBoxes,10)||0);
     const doSplit = nSplit > 0 && nSplit < totalBoxes;     // full switch if 0 or ≥ total
     const doConvert = !!convertToPrinted && !wasPrinted;
+
+    // v48W: apply the SAP guard now that the boxes actually moving are known.
+    if (_sapAny) {
+      const _moving = doSplit ? labelSel.slice(totalBoxes - nSplit) : labelSel;
+      const _clash = _moving.filter(l => _invoicedLabelIds.has(String(l.id)));
+      const _unknown = !_invoicedLabelIds.size;              // invoiced box set unresolvable → fail closed
+      if (!doSplit || _clash.length || _unknown) {
+        const detail = !doSplit
+          ? 'a full re-customer moves every box, including the invoiced ones'
+          : (_clash.length
+              ? `${_clash.length} of the ${_moving.length} box(es) you are moving are already on that document`
+              : 'the invoiced boxes could not be identified, so this cannot be verified as safe');
+        return res.json({ ok:false, sap_blocked:true,
+          error:`Cannot re-customer ${batchNumber}: ${_sapWhat} — ${detail}. Cancel that SAP document first, then retry.`,
+          sapDocs: _sapDocs, movingBoxes: _moving.length, clashingBoxes: _clash.length });
+      }
+      console.log(`[v48W] re-customer split of ${batchNumber}: ${_moving.length} uninvoiced box(es) moving; ${_invoicedLabelIds.size} box(es) remain committed to SAP${_sapDocs.length ? ' (' + _sapDocs.join(', ') + ')' : ''}`);
+    }
 
     // Split safety: a pending invoice request references specific labels; moving boxes to a child batch
     // would leave its selected_labels stale. Block split until that pending request is resolved.

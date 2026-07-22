@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v48V</title>
+<title>Sunloc Tracking Suite v1.0 · build v48W</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48V</p>
+      <p>Tracking Suite v1.0 · build v48W</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48V</p>
+      <p>Tracking Suite v1.0 · build v48W</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1655,7 +1655,13 @@ function buildSidebar(){
       lastSection=item.section;
     }
     const alerts = getAlertCount(item.id==='aim'?'aim':item.id==='packing'?'packing':null);
-    const badge = item.id==='batch-tracker'&&state.alerts.length>0 ? `<span class="nav-badge">${state.alerts.length}</span>` : '';
+    // v48W: Invoice Allocation carries a count badge. Without it the queue is invisible — DM would
+    // only find it by going looking, and an unworked item means that batch's invoiced figure reads
+    // LOW and its balance reads HIGH, which is exactly the state that invites a double-invoice.
+    // Amber, not red: these are decisions to make, not failures.
+    let badge = item.id==='batch-tracker'&&state.alerts.length>0 ? `<span class="nav-badge">${state.alerts.length}</span>` : '';
+    if (item.id==='invoice-allocation' && _v48w_allocOpen > 0)
+      badge = `<span class="nav-badge amber" title="${_v48w_allocOpen} invoice line(s) awaiting allocation">${_v48w_allocOpen}</span>`;
     html+=`<div class="nav-item" id="nav-${item.id}" onclick="navigate('${item.id}')"><span class="icon">${item.icon}</span>${item.label}${badge}</div>`;
   });
   document.getElementById('sidebar-nav').innerHTML=html;
@@ -8158,6 +8164,21 @@ let _v39_invoiceListLastFilters = {};
 // guaranteed, and a silently-wrong allocation is worse than a visible one).
 // Grouped by what DM has to DO rather than by error type, biggest quantity at stake first.
 // ─────────────────────────────────────────────────────────────────────────────
+// v48W: open-item count behind the Invoice Allocation nav badge. Refreshed on load and after every
+// allocation; failure is silent and simply leaves the badge hidden rather than blocking the nav.
+var _v48w_allocOpen = 0;   // var: hoisted, so buildSidebar() can read it before this line executes
+async function _v48w_refreshAllocCount() {
+  try {
+    const r = await fetch('/api/invoice/allocation-totals');
+    const j = await r.json();
+    if (!j || !j.ok) return;
+    let n = j.openUnassigned || 0;
+    for (const k of Object.keys(j.needsManual || {})) n += j.needsManual[k];
+    _v48w_allocOpen = n;
+    if (typeof buildSidebar === 'function') buildSidebar();
+  } catch (e) { /* badge stays hidden */ }
+}
+
 async function renderInvoiceAllocation() {
   const el = document.getElementById('page-invoice-allocation');
   el.innerHTML = `<div class="phead"><h2>🧾 Invoice Allocation</h2>
@@ -8196,9 +8217,27 @@ async function renderInvoiceAllocation() {
       <div style="flex:1"></div>
       <button class="btn" onclick="renderInvoiceAllocation()">↻ Refresh</button>
     </div>`;
-  for (const g of (data.groups || [])) {
+  // v48W: DM can only resolve some of these himself. Mixing the rest into one list makes the screen
+  // read as a to-do list he is failing to clear, when most of it is upstream work (a SAP record to
+  // correct, or a repair command IT runs). Split so the actionable part is short and unambiguous.
+  const ACTIONABLE = new Set(['multi_tag_line', 'ambiguous_pc', 'inferred_batch_customer_mismatch', 'other']);
+  const _mine = (data.groups || []).filter(g => ACTIONABLE.has(g.category));
+  const _fyi  = (data.groups || []).filter(g => !ACTIONABLE.has(g.category));
+  const _sum  = gs => gs.reduce((t, g) => t + (g.qtyLakhs || 0), 0);
+
+  const section = (title, sub, gs) => {
+    if (!gs.length) return '';
+    let h = `<div style="margin:18px 0 8px;display:flex;align-items:baseline;gap:10px">
+      <b style="font-size:14px">${title}</b>
+      <span class="muted" style="font-size:12px">${sub}</span>
+      <span class="pill">${gs.reduce((t,g)=>t+g.count,0)} item(s) · ${_sum(gs).toFixed(2)} L</span></div>`;
+    for (const g of gs) h += groupCard(g);
+    return h;
+  };
+
+  function groupCard(g) {
     const meta = CAT[g.category] || CAT.other;
-    html += `<div class="card" style="margin-bottom:14px">
+    let html = `<div class="card" style="margin-bottom:14px">
       <div style="padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
         <span style="font-size:18px">${meta.icon}</span>
         <b>${meta.title}</b>
@@ -8225,8 +8264,17 @@ async function renderInvoiceAllocation() {
       <tr><td colspan="7" class="muted" style="font-size:11px;padding-top:0;border-top:0">${_v40_esc(it.reason || '')}</td></tr>`;
     }
     html += `</tbody></table></div>`;
+    return html;
   }
+
+  html += section('✏️ You can resolve these',
+                  'Allocate the quantity to the right batch — it counts nowhere until you do',
+                  _mine);
+  html += section('📋 For information — handled elsewhere',
+                  'Listed so the quantity is visible; the fix is upstream in SAP or a repair run by IT',
+                  _fyi);
   body.innerHTML = html;
+  _v48w_refreshAllocCount();
 }
 
 // Allocation dialog. The entered quantities MUST sum to the line's own quantity — a partial
@@ -8291,6 +8339,7 @@ async function _v48v_submitAllocate() {
     toast('Allocated', 'var(--green)');
     closeModal();
     renderInvoiceAllocation();
+    _v48w_refreshAllocCount();
   } catch (e) { toast(e.message, 'var(--red)'); }
 }
 
@@ -15801,6 +15850,7 @@ document.addEventListener('click',e=>{
 setInterval(()=>{
   checkAlerts();
   buildSidebar();
+  _v48w_refreshAllocCount();   // v48W: populate the Invoice Allocation badge on load
 },5*60*1000);
 
 // v40 Phase 18.14: Box-stages refresh every 5 minutes — keeps per-label stages
