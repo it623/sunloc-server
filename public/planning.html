@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v48U</p>
+      <p>Planning Suite v3.0 · build v48V</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6270,6 +6270,49 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
       if (_countUnlinked) for (const u of (e._unlinkedInvs || [])) { unlQ += u.qty; unlB += u.boxes; }
       e.invoicedQty   = Math.round(((e._pendingAsk || 0) + reconQ + unlQ) * 100) / 100;
       e.invoicedBoxes = (e._pendingBoxes || 0) + reconB + unlB;
+    }
+
+    // ── v48V: AUTHORITATIVE OVERLAY ────────────────────────────────────────────────
+    // Everything above this line is the RECONSTRUCTION stack (v47L → v47R → v47U → v48C → v48N):
+    // six successive attempts to infer, from request/invoice headers alone, how much of a
+    // multi-batch invoice belonged to each batch. invoice_batch_alloc now records that per LINE,
+    // so the inferred actual-invoice portion is replaced with the recorded one.
+    //
+    // WHAT IS AND IS NOT REPLACED — the distinction is load-bearing:
+    //   • reconQ + unlQ  (quantity on invoices SAP has actually issued)  → REPLACED. These are the
+    //     figures the reconstruction was guessing at.
+    //   • _pendingAsk    (in-flight requests Sunloc has raised but SAP has not yet invoiced)
+    //     → KEPT. No invoice exists yet, so there is nothing to allocate; dropping it would make
+    //     already-requested quantity look re-invoiceable and let DM double-invoice a batch.
+    // So: invoicedQty = pending ask + authoritative allocated.
+    //
+    // A needs_manual line is deliberately absent from the totals — its quantity is credited to no
+    // batch until a human allocates it. `_allocNeedsManual` carries that count so the UI can mark
+    // the figure provisional rather than silently understating it.
+    // FAIL-SAFE: if the endpoint is unreachable, the reconstruction above stands unchanged, so this
+    // can degrade to prior behaviour but never to a blank or zero tally.
+    try {
+      const _ar = await fetch('/api/invoice/allocation-totals');
+      const _aj = _ar.ok ? await _ar.json() : null;
+      if (_aj && _aj.ok && _aj.totals) {
+        window._v48v_allocTotals = _aj.totals;
+        window._v48v_allocNeedsManual = _aj.needsManual || {};
+        window._v48v_allocOpenUnassigned = _aj.openUnassigned || 0;
+        for (const [bn, e] of Object.entries(state)) {
+          const a = _aj.totals[bn];
+          const pendQ = e._pendingAsk || 0, pendB = e._pendingBoxes || 0;
+          if (a) {
+            e.invoicedQty   = Math.round((pendQ + (a.qty || 0)) * 100) / 100;
+            e.invoicedBoxes = pendB + (a.boxes || 0);
+          } else if (!pendQ && !(e._reconReqs || []).length && !(e._unlinkedInvs || []).length) {
+            e.invoicedQty = 0; e.invoicedBoxes = 0;   // no invoice, no ask → nothing invoiced
+          }
+          e._allocNeedsManual = (_aj.needsManual || {})[bn] || 0;
+          e._allocAuthoritative = !!a;
+        }
+      }
+    } catch (e) {
+      console.warn('[v48V] allocation totals unavailable — falling back to the reconstruction:', e.message);
     }
     window._v39_invoiceState = state;
     window._v39_invoiceStateLoadedAt = Date.now();

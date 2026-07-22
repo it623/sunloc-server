@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48U';
+const APP_BUILD = 'v48V';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -7240,12 +7240,26 @@ app.post('/api/admin/invoice-payload-repair', async (req, res) => {
   try {
     const apply = (req.body && (req.body.apply === true || req.body.apply === 'true' || req.body.apply === 1));
     const limit = Math.min(parseInt((req.body && req.body.limit), 10) || 50, 200);
-    // Only MULTI-batch payload-less invoices need SAP: single-batch ones are already recovered.
+    // v48V: scope widened after the first run cleared 20/20 with no failures.
+    //   multi   (default) — payload-less MULTI-batch: cannot be split without lines
+    //   flagged           — ALSO the batch-less and corrupt-header ones (9015-9019, 10002). Their
+    //                       stored header total is unusable (raw thousands) or their header names no
+    //                       batch, but the LINES carry real quantities with a UoM that _sapUomScale
+    //                       handles, and often their own batch tags — the same mechanism that
+    //                       resolved invoice 9035. Repairs the source instead of hand-editing PG.
+    //   all               — every payload-less invoice, replacing the 145 header-total estimates
+    //                       with real line data. Strictly better, ~40s of paced SAP calls.
+    const scope = String((req.body && req.body.scope) || 'multi').toLowerCase();
+    let scopeWhere;
+    if (scope === 'all')          scopeWhere = `1=1`;
+    else if (scope === 'flagged') scopeWhere = `(batch_number LIKE '%,%' OR COALESCE(batch_number,'')=''
+                                                 OR COALESCE(total_qty_lakhs,0) > ${_V48S_MAX_CREDIBLE_INVOICE_L})`;
+    else                          scopeWhere = `batch_number LIKE '%,%'`;
     const sql = `SELECT id, sap_doc_entry, sap_doc_num, batch_number, customer, card_code, total_boxes,
                         total_qty_lakhs, pc_code
                  FROM invoices_received
                  WHERE payload_json IS NOT NULL AND payload_json NOT LIKE '%DocumentLines%'
-                   AND batch_number LIKE '%,%' AND sap_doc_entry IS NOT NULL
+                   AND (${scopeWhere}) AND sap_doc_entry IS NOT NULL
                  ORDER BY invoice_date DESC LIMIT ${limit}`;
     const rows = pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
     const repaired = [], failed = [];
@@ -7266,7 +7280,7 @@ app.post('/api/admin/invoice-payload-repair', async (req, res) => {
       } catch (e) { failed.push({ invoice: row.sap_doc_num, error: (e && e.message) || 'SAP call failed' }); }
       await new Promise(r2 => setTimeout(r2, 250));    // pace the SAP calls
     }
-    res.json({ ok: true, dryRun: !apply, candidates: rows.length, repaired: repaired.length, failedCount: failed.length, repairedDetail: repaired, failed });
+    res.json({ ok: true, dryRun: !apply, scope, candidates: rows.length, repaired: repaired.length, failedCount: failed.length, repairedDetail: repaired, failed });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -7311,6 +7325,41 @@ app.get('/api/invoice/attribution-review', async (req, res) => {
     const ordered = Object.keys(groups).sort((x, y) => groups[y].qtyLakhs - groups[x].qtyLakhs)
       .map(k => ({ category: k, ...groups[k] }));
     res.json({ ok: true, openItems: rows.length, totalQtyLakhs: Math.round(totalQty * 100) / 100, groups: ordered });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/invoice/allocation-totals
+// v48V: the single authoritative per-batch invoiced figure, in ONE call, for the consumers that
+// used to reconstruct it (planning tally, Invoice button, integrity check, badges).
+// Sums status='attributed' only — a needs_manual line is counted nowhere until a human allocates
+// it, which is the whole point of the option-(c) design. `needsManual` reports, per batch, how many
+// lines are still awaiting a decision so the UI can mark the figure as provisional.
+app.get('/api/invoice/allocation-totals', async (req, res) => {
+  try {
+    const sql = `SELECT batch_number, status, SUM(qty_lakhs) AS qty, SUM(boxes) AS boxes, COUNT(*) AS n
+                 FROM invoice_batch_alloc
+                 WHERE batch_number IS NOT NULL AND batch_number <> ''
+                 GROUP BY batch_number, status`;
+    const rows = pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
+    const totals = {}, needsManual = {};
+    for (const r of rows) {
+      const b = r.batch_number;
+      if (r.status === 'attributed') {
+        const e = totals[b] || (totals[b] = { qty: 0, boxes: 0 });
+        e.qty = Math.round((e.qty + (parseFloat(r.qty) || 0)) * 100) / 100;
+        e.boxes += parseInt(r.boxes, 10) || 0;
+      } else if (r.status === 'needs_manual') {
+        needsManual[b] = (needsManual[b] || 0) + (parseInt(r.n, 10) || 0);
+      }
+    }
+    // Unattributed lines carry no batch, so they cannot be reported per batch — surface the count
+    // so the UI can tell DM that some quantity is unassigned somewhere.
+    const uSql = `SELECT COUNT(*) AS n FROM invoice_batch_alloc WHERE status='needs_manual' AND (batch_number IS NULL OR batch_number='')`;
+    const uRow = pgPool ? (await pgPool.query(uSql)).rows[0] : db.prepare(uSql).get();
+    res.json({ ok: true, totals, needsManual, openUnassigned: parseInt(uRow && uRow.n, 10) || 0,
+               batches: Object.keys(totals).length });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

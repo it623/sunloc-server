@@ -796,19 +796,52 @@ async function check_invoiced_exceeds_packed(ctx) {
       WHERE batch_number IS NOT NULL AND batch_number <> ''`);
   } catch (e) { return findings; } // table absent on older deployments
 
-  // Attribute received invoices per batch. Single-batch → full qty; multi-batch → noted only.
-  const perBatch = {}; // batch → { invoiced, invoices:[], multiBatch:[] }
-  const _e = (b) => (perBatch[b] || (perBatch[b] = { invoiced: 0, invoices: [], multiBatch: [] }));
-  for (const inv of invRows) {
-    const batches = String(inv.batch_number).split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
-    const qty = Math.round((parseFloat(inv.total_qty_lakhs) || 0) * 100) / 100;
-    if (batches.length === 1) {
-      const e = _e(batches[0]);
-      e.invoiced = Math.round((e.invoiced + qty) * 100) / 100;
-      e.invoices.push({ doc: inv.sap_doc_num, qty, source: inv.source });
-    } else if (batches.length > 1) {
-      // Multi-batch invoice: record presence for each listed batch, do not add an unverified number.
-      for (const b of batches) _e(b).multiBatch.push({ doc: inv.sap_doc_num, totalQty: qty, source: inv.source });
+  const perBatch = {}; // batch → { invoiced, invoices:[], multiBatch:[], needsManual }
+  const _e = (b) => (perBatch[b] || (perBatch[b] = { invoiced: 0, invoices: [], multiBatch: [], needsManual: 0 }));
+
+  // v48V: read the AUTHORITATIVE per-batch attribution. This check previously had to decline the
+  // multi-batch case entirely ("record presence, do not add an unverified number"), which meant a
+  // batch invoiced only through multi-batch invoices could never trigger it, however far over
+  // packed it went. invoice_batch_alloc now records the split per LINE, so those batches are
+  // finally covered. needs_manual lines are excluded — unallocated quantity is credited to no
+  // batch — and counted instead, so a finding can say the figure is still provisional.
+  let allocRows = [];
+  try {
+    allocRows = await _query(ctx, `
+      SELECT batch_number, status, SUM(qty_lakhs) AS qty, COUNT(*) AS n
+      FROM invoice_batch_alloc
+      WHERE batch_number IS NOT NULL AND batch_number <> ''
+      GROUP BY batch_number, status`);
+  } catch (e) { allocRows = []; }   // table absent (pre-v48R) → fall through to the legacy path
+
+  if (allocRows.length) {
+    for (const r of allocRows) {
+      const e = _e(r.batch_number);
+      if (r.status === 'attributed') e.invoiced = Math.round((e.invoiced + (parseFloat(r.qty) || 0)) * 100) / 100;
+      else if (r.status === 'needs_manual') e.needsManual += parseInt(r.n, 10) || 0;
+    }
+    // Keep the document list for the finding's raw_data, from the invoice headers.
+    for (const inv of invRows) {
+      const batches = String(inv.batch_number).split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+      const qty = Math.round((parseFloat(inv.total_qty_lakhs) || 0) * 100) / 100;
+      for (const b of batches) {
+        if (!perBatch[b]) continue;
+        if (batches.length === 1) perBatch[b].invoices.push({ doc: inv.sap_doc_num, qty, source: inv.source });
+        else perBatch[b].multiBatch.push({ doc: inv.sap_doc_num, totalQty: qty, source: inv.source });
+      }
+    }
+  } else {
+    // LEGACY PATH (unchanged): single-batch → full qty; multi-batch → noted only.
+    for (const inv of invRows) {
+      const batches = String(inv.batch_number).split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+      const qty = Math.round((parseFloat(inv.total_qty_lakhs) || 0) * 100) / 100;
+      if (batches.length === 1) {
+        const e = _e(batches[0]);
+        e.invoiced = Math.round((e.invoiced + qty) * 100) / 100;
+        e.invoices.push({ doc: inv.sap_doc_num, qty, source: inv.source });
+      } else if (batches.length > 1) {
+        for (const b of batches) _e(b).multiBatch.push({ doc: inv.sap_doc_num, totalQty: qty, source: inv.source });
+      }
     }
   }
 
@@ -844,6 +877,7 @@ async function check_invoiced_exceeds_packed(ctx) {
           excess,
           invoices: e.invoices,
           multiBatchInvoicesPresent: e.multiBatch,
+          linesAwaitingManualAllocation: e.needsManual || 0,   // v48V: figure may still be provisional
         },
       }));
     }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v48U</title>
+<title>Sunloc Tracking Suite v1.0 · build v48V</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -584,7 +584,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48U</p>
+      <p>Tracking Suite v1.0 · build v48V</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +615,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48U</p>
+      <p>Tracking Suite v1.0 · build v48V</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -677,6 +677,7 @@ input[type=number]{font-family:var(--mono)}
       <div id="page-dispatch" class="page"></div>
       <!-- v39 Phase 11: Generated Invoices history tab — read-only ledger of all SAP-received invoices -->
       <div id="page-generated-invoices" class="page"></div>
+      <div id="page-invoice-allocation" class="page"></div>
       <div id="page-batch-tracker" class="page"></div>
       <div id="page-reports" class="page"></div>
       <div id="page-search" class="page"></div>
@@ -744,8 +745,8 @@ const DEPT_LABELS = {
 };
 
 const DEPT_INFO = {
-  admin:    { label:'Admin',             role:'Administrator',     color:'#2563eb', pages:['dashboard','labels','aim','printing','pi','packing','dispatch','batch-tracker','reports','generated-invoices','settings'] },
-  planning: { label:'Planning',          role:'Planning Manager',  color:'#7c3aed', pages:['dashboard','labels','aim','printing','pi','packing','dispatch','batch-tracker','reports','generated-invoices','settings'] },
+  admin:    { label:'Admin',             role:'Administrator',     color:'#2563eb', pages:['dashboard','labels','aim','printing','pi','packing','dispatch','batch-tracker','reports','generated-invoices','invoice-allocation','settings'] },
+  planning: { label:'Planning',          role:'Planning Manager',  color:'#7c3aed', pages:['dashboard','labels','aim','printing','pi','packing','dispatch','batch-tracker','reports','generated-invoices','invoice-allocation','settings'] },
   // v37F: Reports access extended to all tracking + production users for operational
   // monitoring and verification (per post-deployment user request).
   labels:   { label:'Label Generation',  role:'Label Supervisor',  color:'#2563eb', pages:['labels','aim','batch-tracker','reports'] },
@@ -754,7 +755,7 @@ const DEPT_INFO = {
   pi:       { label:'Print Inspection',  role:'PI Operator',       color:'#ea580c', pages:['pi','batch-tracker','reports'] },
   packing:  { label:'Packing',           role:'Packing Operator',  color:'#059669', pages:['packing','batch-tracker','reports'] },
   // v39 Phase 11: dispatch role also gets generated-invoices view
-  dispatch: { label:'Dispatch',          role:'Dispatch Officer',  color:'#d97706', pages:['dispatch','packing','batch-tracker','reports','generated-invoices'] }
+  dispatch: { label:'Dispatch',          role:'Dispatch Officer',  color:'#d97706', pages:['dispatch','packing','batch-tracker','reports','generated-invoices','invoice-allocation'] }
 };
 
 const NAV_ITEMS = [
@@ -768,6 +769,7 @@ const NAV_ITEMS = [
   { id:'batch-tracker', icon:'🗺️', label:'Batch Tracker',    section:'Tracking' },
   { id:'reports',       icon:'📈', label:'Reports',          section:'Tracking' },
   { id:'generated-invoices', icon:'📑', label:'Generated Invoices', section:'Tracking' },
+  { id:'invoice-allocation', icon:'🧾', label:'Invoice Allocation', section:'Tracking' },   // v48V
   { id:'search',        icon:'🔍', label:'Search',           section:'Tracking' },
   { id:'settings',      icon:'⚙️',  label:'Settings',         section:'System' }
 ];
@@ -3743,6 +3745,7 @@ function renderPage(page){
     case 'packing': renderDeptScan('packing'); break;
     case 'dispatch': renderDispatch(); break;
     case 'generated-invoices': renderGeneratedInvoices(); break;  // v39 Phase 11
+    case 'invoice-allocation': renderInvoiceAllocation(); break;  // v48V
     case 'batch-tracker': renderBatchTracker(); break;
     case 'reports': renderReports(true); break;
     case 'search': renderTrackingSearch(); break;
@@ -3774,6 +3777,7 @@ function renderPageForce(page){
     case 'packing': renderDeptScan('packing'); break;
     case 'dispatch': renderDispatch(); break;
     case 'generated-invoices': renderGeneratedInvoices(); break;  // v39 Phase 11
+    case 'invoice-allocation': renderInvoiceAllocation(); break;  // v48V
     case 'batch-tracker': renderBatchTracker(); break;
     case 'reports': renderReports(true); break;
     case 'search': renderTrackingSearch(); break;
@@ -8146,6 +8150,150 @@ function _v40_jumpToInvoiceRegister(docNum, invoiceId) {
 let _v39_invoiceList = [];
 let _v39_invoiceListLastFilters = {};
 
+// ─────────────────────────────────────────────────────────────────────────────
+// v48V: INVOICE ALLOCATION — DM's work queue.
+// Every line the attribution engine could NOT resolve on its own lands here. Nothing is guessed:
+// an unresolved line's quantity is credited to NO batch until a human allocates it (Ishan's
+// option (c) — FIFO and proportional splits both assume a consumption order that is not
+// guaranteed, and a silently-wrong allocation is worse than a visible one).
+// Grouped by what DM has to DO rather than by error type, biggest quantity at stake first.
+// ─────────────────────────────────────────────────────────────────────────────
+async function renderInvoiceAllocation() {
+  const el = document.getElementById('page-invoice-allocation');
+  el.innerHTML = `<div class="phead"><h2>🧾 Invoice Allocation</h2>
+    <div class="pmeta">Invoice lines that need a human decision before their quantity counts against a batch</div></div>
+    <div id="ia-body" style="padding:16px"><div class="muted">Loading…</div></div>`;
+  const body = document.getElementById('ia-body');
+  let data;
+  try {
+    const r = await fetch('/api/invoice/attribution-review', { headers: { 'x-session-token': currentUser?.token || '' } });
+    data = await r.json();
+    if (!data.ok) throw new Error(data.error || 'failed');
+  } catch (e) {
+    body.innerHTML = `<div class="card" style="padding:16px;color:var(--red)">Could not load the allocation queue: ${_v40_esc(e.message)}</div>`;
+    return;
+  }
+  if (!data.openItems) {
+    body.innerHTML = `<div class="card" style="padding:24px;text-align:center">
+      <div style="font-size:32px">✅</div>
+      <div style="font-weight:700;margin-top:8px">Nothing awaiting allocation</div>
+      <div class="muted" style="margin-top:4px">Every invoice line is attributed to a batch.</div></div>`;
+    return;
+  }
+  const CAT = {
+    payload_less_multi: { icon:'🔄', title:'Invoice lines not yet fetched from SAP' },
+    corrupt_total:      { icon:'⚠️', title:'Invoice total looks corrupt' },
+    no_batch_key:       { icon:'❓', title:'Invoice names no batch' },
+    multi_tag_line:     { icon:'✂️', title:'Line names more than one batch' },
+    ambiguous_pc:       { icon:'⚖️', title:'Two batches share the same PC' },
+    inferred_batch_customer_mismatch: { icon:'👤', title:'Inferred batch, customer differs' },
+    other:              { icon:'•',  title:'Needs review' },
+  };
+  let html = `<div class="card" style="padding:12px 16px;margin-bottom:14px;display:flex;gap:24px;align-items:center;flex-wrap:wrap">
+      <div><div class="muted" style="font-size:11px">OPEN ITEMS</div><div style="font-size:22px;font-weight:800">${data.openItems}</div></div>
+      <div><div class="muted" style="font-size:11px">QUANTITY AWAITING ALLOCATION</div>
+           <div style="font-size:22px;font-weight:800">${(data.totalQtyLakhs||0).toFixed(2)} L</div></div>
+      <div style="flex:1"></div>
+      <button class="btn" onclick="renderInvoiceAllocation()">↻ Refresh</button>
+    </div>`;
+  for (const g of (data.groups || [])) {
+    const meta = CAT[g.category] || CAT.other;
+    html += `<div class="card" style="margin-bottom:14px">
+      <div style="padding:12px 16px;border-bottom:1px solid var(--line);display:flex;gap:10px;align-items:center;flex-wrap:wrap">
+        <span style="font-size:18px">${meta.icon}</span>
+        <b>${meta.title}</b>
+        <span class="pill">${g.count} item${g.count===1?'':'s'}</span>
+        <span class="pill">${(g.qtyLakhs||0).toFixed(2)} L</span>
+      </div>
+      <div style="padding:10px 16px;background:var(--bg2);font-size:12px">👉 ${_v40_esc(g.action)}</div>
+      <table class="tbl"><thead><tr>
+        <th>Invoice</th><th>Line</th><th>PC</th><th style="text-align:right">Qty (L)</th>
+        <th>Customer</th><th>Possible batches</th><th></th></tr></thead><tbody>`;
+    for (const it of g.items) {
+      const cands = (it.candidates || []);
+      html += `<tr>
+        <td><b>${_v40_esc(it.invoice || '—')}</b></td>
+        <td>${it.line === -1 ? '<span class="muted" title="derived from the invoice header, not a SAP line">header</span>' : it.line}</td>
+        <td>${_v40_esc(it.pc || '—')}</td>
+        <td style="text-align:right"><b>${(it.qtyLakhs||0).toFixed(2)}</b></td>
+        <td style="font-size:12px">${_v40_esc(it.customer || '—')}</td>
+        <td style="font-size:12px">${cands.length ? cands.map(c=>`<span class="pill">${_v40_esc(c)}</span>`).join(' ') : '<span class="muted">none listed</span>'}</td>
+        <td>${(it.qtyLakhs > 0)
+              ? `<button class="btn btn-sm" onclick="_v48v_openAllocate('${_v40_esc(it.invoiceId)}',${it.line},${it.qtyLakhs},${JSON.stringify(cands).replace(/"/g,'&quot;')})">Allocate</button>`
+              : '<span class="muted" style="font-size:11px">no quantity</span>'}</td>
+      </tr>
+      <tr><td colspan="7" class="muted" style="font-size:11px;padding-top:0;border-top:0">${_v40_esc(it.reason || '')}</td></tr>`;
+    }
+    html += `</tbody></table></div>`;
+  }
+  body.innerHTML = html;
+}
+
+// Allocation dialog. The entered quantities MUST sum to the line's own quantity — a partial
+// allocation would silently lose quantity, which is the failure this whole change exists to end.
+// The server enforces the same rule; this is only the earlier, friendlier refusal.
+let _v48v_alloc = null;   // { invoiceId, lineNum, lineQty }
+
+function _v48v_openAllocate(invoiceId, lineNum, lineQty, candidates) {
+  const cands = Array.isArray(candidates) ? candidates : [];
+  _v48v_alloc = { invoiceId, lineNum, lineQty: Number(lineQty) };
+  const rows = (cands.length ? cands : ['']).map((c, i) => `
+    <div class="ia-row" style="display:flex;gap:8px;margin-bottom:6px">
+      <input class="inp ia-batch" placeholder="Batch number" value="${_v40_esc(c)}" style="flex:2">
+      <input class="inp ia-qty" type="number" step="0.01" min="0" placeholder="Qty (L)" style="flex:1"
+             value="${(i === 0 && cands.length === 1) ? Number(lineQty).toFixed(2) : ''}">
+      <input class="inp ia-boxes" type="number" step="1" min="0" placeholder="Boxes" style="width:90px">
+    </div>`).join('');
+  openModal('Allocate invoice line',
+    `Invoice line total: ${Number(lineQty).toFixed(2)} L — the quantities below must add up to exactly this`,
+    `<div id="ia-rows">${rows}</div>
+     <button class="btn btn-sm" onclick="_v48v_addAllocRow()">+ Add a batch</button>
+     <div id="ia-sum" class="muted" style="margin-top:10px;font-size:12px"></div>`,
+    [ { label:'Cancel',   cls:'btn-ghost', fn:'closeModal()' },
+      { label:'Allocate', cls:'btn-primary', fn:'_v48v_submitAllocate()' } ]);
+}
+
+function _v48v_addAllocRow() {
+  const host = document.getElementById('ia-rows');
+  const d = document.createElement('div');
+  d.className = 'ia-row';
+  d.style = 'display:flex;gap:8px;margin-bottom:6px';
+  d.innerHTML = `<input class="inp ia-batch" placeholder="Batch number" style="flex:2">
+                 <input class="inp ia-qty" type="number" step="0.01" min="0" placeholder="Qty (L)" style="flex:1">
+                 <input class="inp ia-boxes" type="number" step="1" min="0" placeholder="Boxes" style="width:90px">`;
+  host.appendChild(d);
+}
+
+async function _v48v_submitAllocate() {
+  if (!_v48v_alloc) return;
+  const { invoiceId, lineNum, lineQty } = _v48v_alloc;
+  const allocations = [];
+  document.querySelectorAll('#ia-rows .ia-row').forEach(r => {
+    const b = r.querySelector('.ia-batch').value.trim();
+    const q = parseFloat(r.querySelector('.ia-qty').value);
+    const bx = parseInt(r.querySelector('.ia-boxes').value, 10) || 0;
+    if (b && Number.isFinite(q)) allocations.push({ batch_number: b, qty_lakhs: q, boxes: bx });
+  });
+  if (!allocations.length) { toast('Enter at least one batch and quantity', 'var(--red)'); return; }
+  const sum = Math.round(allocations.reduce((t, a) => t + a.qty_lakhs, 0) * 100) / 100;
+  if (Math.abs(sum - lineQty) > 0.01) {
+    toast(`Quantities add up to ${sum.toFixed(2)} L but the line is ${lineQty.toFixed(2)} L`, 'var(--red)');
+    return;
+  }
+  try {
+    const r = await fetch(`/api/invoice/${encodeURIComponent(invoiceId)}/allocate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '' },
+      body: JSON.stringify({ line_num: lineNum, allocations }),
+    });
+    const j = await r.json();
+    if (!j.ok) { toast(j.error || 'Allocation failed', 'var(--red)'); return; }
+    toast('Allocated', 'var(--green)');
+    closeModal();
+    renderInvoiceAllocation();
+  } catch (e) { toast(e.message, 'var(--red)'); }
+}
+
 async function renderGeneratedInvoices() {
   const el = document.getElementById('page-generated-invoices');
   if (!el) return;
@@ -10488,7 +10636,7 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
 
   const searchBar = `
     <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:6px">
-      <input type="text" id="rptz-search" placeholder="🔍 Batch / Customer / PC Code" value="${_esc(window._rptZSearch||'')}"
+      <input type="text" id="rptz-search" placeholder="🔍 Batch / Customer / PC Code" value="${_v40_esc(window._rptZSearch||'')}"
              oninput="window._rptZSearch=this.value;renderReportZ()"
              style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;min-width:200px;font-size:12px;flex:1;max-width:300px">
       <select onchange="window._rptZMachine=this.value;renderReportZ()" style="padding:6px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;background:var(--surface)">
@@ -10527,7 +10675,7 @@ function renderReportZ(){ window._activeReport = renderReportZ; if(window._v41_c
         <td class="td-mono">${fmt(gross)}L</td>
         <td class="td-mono green">${aGradeQty>0.005?fmt(aGradeQty)+'L':'—'}</td>
         <td class="td-mono amber">${gap>0.005?fmt(gap)+'L':'—'}</td>
-        <td class="text-sm" style="color:var(--text3)">${fmtDate(r.retired_at)} · ${_esc(r.retired_by||'—')}${r.reason?(' · '+_esc(r.reason)):''}</td>
+        <td class="text-sm" style="color:var(--text3)">${fmtDate(r.retired_at)} · ${_v40_esc(r.retired_by||'—')}${r.reason?(' · '+_v40_esc(r.reason)):''}</td>
         <td><button class="btn btn-sm btn-ghost" style="font-size:11px" onclick="_rptZUnretire('${r.batch_number}')">↩ Un-retire</button></td>
       </tr>`;
     }).join('');
@@ -10736,7 +10884,7 @@ function _v41_openReconcileModal(batchNo, stage){
     ${row('recon-wastage','Wastage (salvage + remelt)',curWastage,'','oninput="_v46qReconDeriveWip()"')}
     <div class="form-group">
       <label>Reason / note (audit)</label>
-      <input type="text" id="recon-reason" class="form-control" value="${ov&&ov.reason?_esc(ov.reason):''}" placeholder="e.g. Physically verified at changeover — corrected to actuals">
+      <input type="text" id="recon-reason" class="form-control" value="${ov&&ov.reason?_v40_esc(ov.reason):''}" placeholder="e.g. Physically verified at changeover — corrected to actuals">
     </div>
     <div style="font-size:11px;color:var(--text3)">Logged in the audit trail. A-Grade % is recomputed as A-Grade ÷ (A-Grade + Wastage).</div>
   `, [
