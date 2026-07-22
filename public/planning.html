@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v48M</p>
+      <p>Planning Suite v3.0 · build v48P</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -3711,7 +3711,7 @@ function renderOrderRow(ord, idx, mc) {
       ${ord.poType==='verbal'?'<span class="tag" style="background:rgba(240,165,0,0.1);color:var(--accent);font-size:10px">VERBAL</span> ':''}${ord.poNumber||'-'}
       ${ord.batchNumber?`<br><span class="text-dim text-sm" style="cursor:pointer;text-decoration:underline dotted" title="Open batch tracking" onclick="event.stopPropagation();openBatchTracking('${(ord.batchNumber||'').replace(/'/g,'')}')">${ord.batchNumber}</span>`:''}
     </td>
-    <td style="position:sticky;left:128px;z-index:2;background:var(--surface2,#0f2a20);font-weight:500;box-shadow:2px 0 4px rgba(0,0,0,0.1)">${(isWO && !ord.woCustomerAssignedAt)
+    <td style="position:sticky;left:128px;z-index:2;background:var(--surface2,#0f2a20);font-weight:500;box-shadow:2px 0 4px rgba(0,0,0,0.1)">${(isWO && !String(ord.shipTo||ord.customer||'').trim())
       ? '<span style="color:var(--accent3);font-style:italic;font-size:12px">W/O — pending</span>'
       : (ord.shipTo||ord.customer||'-') + (ord.billTo && ord.billTo !== (ord.shipTo||ord.customer)
           ? '<br><span style="font-size:11px;color:var(--text3);font-weight:400">Bill To: ' + ord.billTo + '</span>'
@@ -6155,16 +6155,27 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
           // v47U: this batch is credited from the Sunloc request ledger; the unlinked-invoice loop below
           // must NOT also add a direct-SAP invoice's qty for it (double-count guard).
           e._reqCredited47u = true;
+          e._hasInFlight = true;               // v48N: nothing received yet for this ask
         } else if (r.status === 'reconciled') {
           e._reconciledAsk   = (e._reconciledAsk   || 0) + (parseFloat(r.qty_lakhs) || 0);
           e._reconciledBoxes = (e._reconciledBoxes || 0) + (parseInt(r.boxes, 10) || 0);
           e._hasReconciled = true;
           e._reqCredited47u = true; // still suppress the unlinked-invoice double-count below
+          // v48N (confirmed by Ishan): a RECONCILED request is fulfilled by a real invoice — credit the
+          // invoice ACTUALLY received, not the ask. 26O037 asked 14.00L but reconciled to inv_45016
+          // (1861 = 10.50L), so the ask credited 14.00 and stranded a phantom 5.25L "Balance". The linked
+          // invoice is resolved in the finalise step (it is only known after the received-invoice loop).
+          (e._reconReqs = e._reconReqs || []).push({
+            invId: (r.reconciled_with_invoice_id == null ? '' : String(r.reconciled_with_invoice_id).trim()),
+            ask:   (parseFloat(r.qty_lakhs) || 0),
+            boxes: (parseInt(r.boxes, 10) || 0)
+          });
         }
       }
     }
     // Build invoiceId → batch_number lookup for scan-session mapping
     const idToBatch = {};
+    const _invById48n = {};   // v48N: id -> { qty, boxes, single } for reconciled-request resolution
     if (recvJ.ok) {
       for (const r of (recvJ.invoices || [])) {
         if (!r.batch_number) continue;
@@ -6198,11 +6209,16 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
           // A batch with a reconciled request + an unlinked SAP invoice of the same qty was being counted
           // twice; the request is authoritative, so the unlinked fulfilment is skipped here. A genuinely
           // direct-SAP batch (no request at all — e.g. 26X082) is untouched and still counted here.
-          if (e0 && !e0._reqCredited47u) {
-            e0._unlinkedQty   = (e0._unlinkedQty   || 0) + (parseFloat(r.total_qty_lakhs) || 0);
-            e0._unlinkedBoxes = (e0._unlinkedBoxes || 0) + (parseInt(r.total_boxes, 10) || 0);
-          }
+          // v48N: hold the direct-SAP invoice and decide in the finalise step. It is a DISTINCT invoice
+          // row from anything a request reconciled to, so once every reconciled request on this batch has
+          // been resolved to its own real invoice, counting it too is correct (26O037: 1861 + 1860 = 21.00L
+          // against 19.25L packed). The v47U suppression is kept for the ambiguous cases (in-flight ask
+          // outstanding, or a reconciled request whose invoice can't be resolved) where it could double-count.
+          if (e0) (e0._unlinkedInvs = e0._unlinkedInvs || []).push({
+            qty:(parseFloat(r.total_qty_lakhs)||0), boxes:(parseInt(r.total_boxes,10)||0)
+          });
         }
+        _invById48n[r.id] = { qty:(parseFloat(r.total_qty_lakhs)||0), boxes:(parseInt(r.total_boxes,10)||0), single:(_tgts47r.length === 1) };
         idToBatch[r.id] = _tgts47r[0];
       }
     }
@@ -6224,16 +6240,36 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
     // i.e. the prior behaviour — so this can only ever free stranded residuals, never over-offer.
     const _dispByBatch = _v48c_dispByBatch();
     for (const [bn, e] of Object.entries(state)) {
-      let reconQ = e._reconciledAsk || 0, reconB = e._reconciledBoxes || 0;
-      if (e._hasReconciled) {
-        const disp = _dispByBatch[bn];
-        if (disp != null && disp > 0 && disp < reconQ) {
-          reconB = reconQ > 0 ? Math.round((disp / reconQ) * reconB) : 0;
-          reconQ = disp;
+      // v48N: resolve each reconciled request to the invoice it ACTUALLY produced. Only an unambiguous
+      // single-batch invoice can be attributed whole to this batch; a multi-batch invoice (e.g. ZD103 /
+      // 1823) stays on the v48C ask + dispatched-cap path, which was built for exactly that case.
+      let reconQ = 0, reconB = 0, _askQ = 0, _askB = 0, _allResolved = !!e._hasReconciled;
+      const _seenInv = new Set();
+      for (const rq of (e._reconReqs || [])) {
+        const inv = rq.invId ? _invById48n[rq.invId] : null;
+        if (inv && inv.single && !_seenInv.has(rq.invId)) {
+          _seenInv.add(rq.invId);
+          reconQ += inv.qty; reconB += inv.boxes;
+        } else if (inv && inv.single) {
+          /* two requests on one invoice — already counted once; add nothing */
+        } else {
+          _askQ += rq.ask; _askB += rq.boxes; _allResolved = false;
         }
       }
-      e.invoicedQty   = Math.round(((e._pendingAsk || 0) + reconQ + (e._unlinkedQty || 0)) * 100) / 100;
-      e.invoicedBoxes = (e._pendingBoxes || 0) + reconB + (e._unlinkedBoxes || 0);
+      if (_askQ > 0) {                                   // v48C behaviour preserved for the ask fallback
+        const disp = _dispByBatch[bn];
+        if (disp != null && disp > 0 && disp < _askQ) {
+          _askB = _askQ > 0 ? Math.round((disp / _askQ) * _askB) : 0;
+          _askQ = disp;
+        }
+      }
+      reconQ += _askQ; reconB += _askB;
+      // Direct-SAP (unlinked) invoices: count them once the request ledger is unambiguous.
+      const _countUnlinked = !e._reqCredited47u || (!e._hasInFlight && _allResolved);
+      let unlQ = 0, unlB = 0;
+      if (_countUnlinked) for (const u of (e._unlinkedInvs || [])) { unlQ += u.qty; unlB += u.boxes; }
+      e.invoicedQty   = Math.round(((e._pendingAsk || 0) + reconQ + unlQ) * 100) / 100;
+      e.invoicedBoxes = (e._pendingBoxes || 0) + reconB + unlB;
     }
     window._v39_invoiceState = state;
     window._v39_invoiceStateLoadedAt = Date.now();

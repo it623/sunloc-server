@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48M';
+const APP_BUILD = 'v48P';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3757,7 +3757,16 @@ async function _doRefreshSapInvoices() {
                 // arriving invoice actually covers (within the recon band), at most ONE per invoice; every
                 // other request stays pending_reconciliation and visible to the SAP user.
                 const _prQtyL47l  = parseFloat(pr.qty_lakhs) || 0;
-                const _invQtyL47l = parseFloat(totalQtyLakhs) || 0;
+                // v48P (confirmed by Ishan): gate on THIS LINE's quantity, not the invoice TOTAL. v47L
+                // compared each request against the sum of every line, so any invoice covering MORE THAN
+                // ONE request failed for ALL of them — DocNum 1893 (57.75L = lines 31.50 + 26.25) left both
+                // 26Z070 and 26Z071 pending forever, the invoice stayed direct_sap and never became
+                // scannable. The v48G PC gate immediately above has already pinned this request to THIS
+                // line, so the line quantity is the correct and strictly TIGHTER basis — this narrows the
+                // net v47L was built to narrow, it does not widen it. Falls back to the invoice total when
+                // the line carries no usable quantity, so single-line invoices behave exactly as before.
+                const _lineQtyL48p = (parseFloat(lineQty) || 0) * _sapUomScale(line);
+                const _invQtyL47l = (_lineQtyL48p > 0) ? _lineQtyL48p : (parseFloat(totalQtyLakhs) || 0);
                 if (!(_invQtyL47l > 0 && _prQtyL47l >= _invQtyL47l * _RECON_UNDER && _prQtyL47l <= _invQtyL47l * _RECON_OVER)) {
                   console.log(`[v47L SO-gate] SO ${soDocEntry}: request ${pr.id} (${_prQtyL47l}L) left PENDING — invoice DocNum ${inv.DocNum} covers ${_invQtyL47l}L (outside recon band)`);
                   continue;
