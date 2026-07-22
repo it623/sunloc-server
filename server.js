@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48S';
+const APP_BUILD = 'v48T';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3539,32 +3539,69 @@ async function _v48r_batchProfiles(tokens) {
   const want = Array.isArray(tokens) ? Array.from(new Set(tokens.map(_v48r_norm).filter(Boolean))) : null;
   if (want && !want.length) return {};
   const out = {};
-  const put = (b, pc, cust, card) => {
+  const ent = b => {
     const k = _v48r_norm(b);
-    if (!k) return;
-    const e = out[k] || (out[k] = { pc: '', customer: '', cardCode: '' });
-    if (!e.pc && pc) e.pc = String(pc).trim();
-    if (!e.customer && cust) e.customer = String(cust).trim();
-    if (!e.cardCode && card) e.cardCode = String(card).trim();
+    if (!k) return null;
+    return out[k] || (out[k] = { pcs: [], customer: '', cardCode: '', custSrc: '' });
+  };
+  const addPc = (e, pc) => {
+    const v = String(pc == null ? '' : pc).trim();
+    if (!v || e.pcs.some(x => _v48r_norm(x) === _v48r_norm(v))) return;
+    e.pcs.push(v);
   };
   try {
+    // (1) invoice_requests FIRST — it records what was actually invoiced for the batch and
+    //     carries the card code, so it outranks the floor labels for customer identity.
     if (pgPool) {
       const r1 = want
         ? await pgPool.query(`SELECT batch_number, pc_code, customer, card_code FROM invoice_requests WHERE UPPER(batch_number) = ANY($1)`, [want])
         : await pgPool.query(`SELECT batch_number, pc_code, customer, card_code FROM invoice_requests`);
-      for (const r of r1.rows) put(r.batch_number, r.pc_code, r.customer, r.card_code);
-      const r2 = want
-        ? await pgPool.query(`SELECT batch_number, pc_code, customer FROM tracking_labels WHERE UPPER(batch_number) = ANY($1)`, [want])
-        : await pgPool.query(`SELECT batch_number, pc_code, customer FROM tracking_labels`);
-      for (const r of r2.rows) put(r.batch_number, r.pc_code, r.customer, null);
+      for (const r of r1.rows) {
+        const e = ent(r.batch_number); if (!e) continue;
+        addPc(e, r.pc_code);
+        if (!e.customer && r.customer) { e.customer = String(r.customer).trim(); e.custSrc = 'invoice_request'; }
+        if (!e.cardCode && r.card_code) e.cardCode = String(r.card_code).trim();
+      }
     } else {
       const inSql = want ? ` WHERE UPPER(batch_number) IN (${want.map(() => '?').join(',')})` : '';
-      const a1 = db.prepare(`SELECT batch_number, pc_code, customer, card_code FROM invoice_requests${inSql}`).all(...(want || []));
-      for (const r of a1) put(r.batch_number, r.pc_code, r.customer, r.card_code);
-      const a2 = db.prepare(`SELECT batch_number, pc_code, customer FROM tracking_labels${inSql}`).all(...(want || []));
-      for (const r of a2) put(r.batch_number, r.pc_code, r.customer, null);
+      for (const r of db.prepare(`SELECT batch_number, pc_code, customer, card_code FROM invoice_requests${inSql}`).all(...(want || []))) {
+        const e = ent(r.batch_number); if (!e) continue;
+        addPc(e, r.pc_code);
+        if (!e.customer && r.customer) { e.customer = String(r.customer).trim(); e.custSrc = 'invoice_request'; }
+        if (!e.cardCode && r.card_code) e.cardCode = String(r.card_code).trim();
+      }
     }
-  } catch (e) { console.warn('[v48R] batch profile load failed:', e && e.message); }
+    // (2) tracking_labels — the floor's own record.
+    //     v48T FIXES (all three found by reading the re-customer handler):
+    //       • voided + orange labels are EXCLUDED from the re-customer UPDATE, so they keep the
+    //         OLD customer forever. Reading them was importing known-stale identity.
+    //       • a batch can legitimately carry MORE THAN ONE pc_code (26ZH036 → 00015 ×5, 00204 ×21),
+    //         so we keep the full SET rather than whichever row happened to come back first.
+    //       • ordering by label count makes the primary PC deterministic instead of arbitrary.
+    const lblWhere = `COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`;
+    if (pgPool) {
+      const q = want
+        ? `SELECT batch_number, pc_code, customer, COUNT(*) AS n FROM tracking_labels
+           WHERE ${lblWhere} AND UPPER(batch_number) = ANY($1) GROUP BY 1,2,3 ORDER BY 1, n DESC`
+        : `SELECT batch_number, pc_code, customer, COUNT(*) AS n FROM tracking_labels
+           WHERE ${lblWhere} GROUP BY 1,2,3 ORDER BY 1, n DESC`;
+      const r2 = want ? await pgPool.query(q, [want]) : await pgPool.query(q);
+      for (const r of r2.rows) {
+        const e = ent(r.batch_number); if (!e) continue;
+        addPc(e, r.pc_code);
+        if (!e.customer && r.customer) { e.customer = String(r.customer).trim(); e.custSrc = 'label'; }
+      }
+    } else {
+      const inSql = want ? ` AND UPPER(batch_number) IN (${want.map(() => '?').join(',')})` : '';
+      const q = `SELECT batch_number, pc_code, customer, COUNT(*) AS n FROM tracking_labels
+                 WHERE ${lblWhere}${inSql} GROUP BY 1,2,3 ORDER BY 1, n DESC`;
+      for (const r of db.prepare(q).all(...(want || []))) {
+        const e = ent(r.batch_number); if (!e) continue;
+        addPc(e, r.pc_code);
+        if (!e.customer && r.customer) { e.customer = String(r.customer).trim(); e.custSrc = 'label'; }
+      }
+    }
+  } catch (e) { console.warn('[v48T] batch profile load failed:', e && e.message); }
   return out;
 }
 
@@ -3574,41 +3611,70 @@ async function _v48r_batchProfiles(tokens) {
 // anything above it is refused rather than imported as authoritative. Confirmed by Ishan.
 const _V48S_MAX_CREDIBLE_INVOICE_L = 1000;
 
-// v48S: corroborating evidence for a proposed batch attribution.
-// Returns { pcConflict, custConflict, detail } — the CALLER decides how much weight
-// each carries, because the same contradiction means different things per layer:
-//   • Layer 1 (explicit line batch tag): a PC contradiction means the tag itself is
-//     suspect — one batch has exactly one PC. Invoice 9035 line 4 tags batch 26V083
-//     while carrying PC 2085, where 26V083 is PC 2270 (confirmed by Ishan as a SAP
-//     tagging error). That line must NOT be credited to 26V083.
-//     A customer-only difference is NOT treated as a contradiction there: a
-//     re-customered batch legitimately ships to a different customer than the one on
-//     its labels, so flagging that would reject good data.
-//   • Layer 3 (PC inference): there is no explicit tag, so a customer difference is
-//     the only thing standing between a real match and a coincidental PC collision
-//     across two customers' batches on one bulk invoice — it must flag.
-// v48S also fixes a v48R gating bug: the customer comparison used to be conditional on
-// the batch having NO card code, so a batch WITH a card code facing an invoice with a
-// BLANK card code was never compared at all. It is now an independent fallback.
-function _v48s_corroborate(batch, pc, row, profiles) {
-  const out = { pcConflict: false, custConflict: false, detail: '' };
+// v48T: CUSTOMER IDENTITY NORMALISATION.
+// The v48S guard compared raw strings and so read pure formatting as contradiction:
+// "ARISTO PHARMACEUTICALS PVT LTD" vs "ARISTO PHARMACEUTICALS PVT.LTD.", and
+// "ASIA NOOR MEDICINE PRODUCTION CO" vs "...PRODUCTIONCOMPANY". Strip punctuation,
+// collapse spacing, and drop the legal-form suffixes that carry no identity, so only a
+// genuinely DIFFERENT company registers.
+// Self-contained so there is exactly one definition of customer identity in the codebase.
+function _v48t_custKey(v) {
+  const JUNK = new Set(['', '-', '--', 'W/O', 'WO', 'NA', 'N/A', 'NONE', 'UNASSIGNED', 'UNKNOWN', 'TBD']);
+  // longest first — 'PRIVATELIMITED' must be consumed before 'LIMITED'
+  const SUFFIX = ['PRIVATELIMITED', 'PVTLTD', 'INCORPORATED', 'CORPORATION', 'INTERNATIONAL',
+                  'COMPANY', 'LIMITED', 'PRIVATE', 'LTDA', 'CORP', 'LLP', 'LLC', 'INC',
+                  'LTD', 'PVT', 'CO'];
+  let x = String(v == null ? '' : v).toUpperCase().trim();
+  if (JUNK.has(x)) return '';
+  x = x.replace(/[.,'"()\-\/&]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (JUNK.has(x)) return '';
+  const full = x.replace(/\s+/g, '');
+  // Strip legal-form suffixes from the END of the COMPACTED name. Doing it on the compact
+  // form rather than on word boundaries is what makes "…PRODUCTION CO" and
+  // "…PRODUCTIONCOMPANY" resolve to the same identity — SAP drops the space, so a
+  // \b-anchored pattern never sees a boundary before COMPANY.
+  let k = full, changed = true;
+  while (changed) {
+    changed = false;
+    for (const t of SUFFIX) {
+      if (k.endsWith(t) && k.length - t.length >= 4) { k = k.slice(0, -t.length); changed = true; break; }
+    }
+  }
+  return k || full;
+}
+
+// v48T: corroborating evidence for a proposed batch attribution.
+//
+// WHY THE PC TEST IS NO LONGER BLOCKING — established by reading the re-customer handler
+// (POST /api/tracking/recustomer) rather than assumed:
+//   • Re-customer rewrites tracking_labels IN PLACE (customer, po_number, ship_to, bill_to)
+//     and is BLOCKED outright once a SAP invoice exists for the batch. So for any invoiced
+//     batch the label customer was current at invoice time — customer IS a sound signal.
+//   • But NOT ONE of the 22 UPDATE tracking_labels sites ever writes pc_code. It is
+//     write-once at label creation, so a batch that changes customer keeps its original PC
+//     forever — the label PC goes stale in exactly the situation this test probes.
+//   • A batch can also hold several valid PCs at once (26ZH036 → 00015 and 00204).
+// v48S treated a PC difference as proof of a bad tag and flagged 36 lines on that basis.
+// It is now recorded as ADVISORY only. Customer remains blocking, on normalised keys.
+function _v48t_corroborate(batch, pc, row, profiles) {
+  const out = { pcAdvisory: false, custConflict: false, pcNote: '', custNote: '' };
   const p = profiles[_v48r_norm(batch)];
   if (!p) return out;                       // batch unknown to us — no evidence either way
-  const parts = [];
-  if (p.pc && pc && _v48r_norm(p.pc) !== _v48r_norm(pc)) {
-    out.pcConflict = true;
-    parts.push(`line PC ${pc} but batch ${batch} is PC ${p.pc}`);
+  if (pc && p.pcs && p.pcs.length && !p.pcs.some(x => _v48r_norm(x) === _v48r_norm(pc))) {
+    out.pcAdvisory = true;
+    out.pcNote = `line PC ${pc} is not among batch ${batch}'s recorded PCs (${p.pcs.join(', ')}) — note only; pc_code is never updated on re-customer`;
   }
+  const invKey = _v48t_custKey(row && (row.customer || ''));
+  const batKey = _v48t_custKey(p.customer);
   const invCard = _v48r_norm(row && row.card_code);
-  const invCust = _v48r_norm(row && row.customer);
-  if (p.cardCode && invCard && _v48r_norm(p.cardCode) !== invCard) {
+  const batCard = _v48r_norm(p.cardCode);
+  if (batCard && invCard && batCard !== invCard) {
     out.custConflict = true;
-    parts.push(`invoice card code ${row.card_code} but batch ${batch} belongs to ${p.cardCode}`);
-  } else if (p.customer && invCust && _v48r_norm(p.customer) !== invCust) {
+    out.custNote = `invoice card code ${row.card_code} but batch ${batch} is ${p.cardCode}`;
+  } else if (batKey && invKey && batKey !== invKey) {
     out.custConflict = true;
-    parts.push(`invoice customer ${row.customer} but batch ${batch} belongs to ${p.customer}`);
+    out.custNote = `invoice customer ${row.customer} but batch ${batch} belongs to ${p.customer}`;
   }
-  out.detail = parts.join('; ');
   return out;
 }
 
@@ -3617,7 +3683,7 @@ function _v48r_attribute(inv, row, profiles) {
   const lines = (inv && inv.DocumentLines) || [];
   const keyTokens = String((row && row.batch_number) || '').split(/[\s,]+/).map(t => t.trim()).filter(Boolean);
   const keyUpper = keyTokens.map(t => t.toUpperCase());
-  // v48S: the invoice-side customer/card values now live inside _v48s_corroborate,
+  // v48T: the invoice-side customer/card values live inside _v48t_corroborate,
   // which is the single place both L1 and L3 consult.
   const singleLine = lines.length === 1;
   const out = [];
@@ -3661,23 +3727,28 @@ function _v48r_attribute(inv, row, profiles) {
     };
     const flag = (reason) => out.push({ ...base, batch_number: null, method: 'unattributed', status: 'needs_manual', reason });
 
+    // v48T: a ZERO-quantity line contributes nothing to any tally, so an ambiguity on it has no
+    // financial consequence. Recorded as 'ignored' (auditable) but kept OUT of the manual queue —
+    // three of v48S's flags were zero-qty SUNIL HEALTHCARE lines that would only have wasted DM's time.
+    if (!(qty > 0)) {
+      out.push({ ...base, batch_number: null, method: 'zero_qty', status: 'ignored', reason: 'line quantity is zero — nothing to attribute' });
+      continue;
+    }
+
     // L1 — the line names its own batch
     const lineBatches = _v48r_lineBatchTokens(l);
     if (lineBatches.length === 1) {
-      // v48S: an explicit tag still outranks every inference, but only while the rest of
-      // the line agrees with it. A PC contradiction means the tag is self-inconsistent —
-      // one batch has exactly one PC — so this is conflicting evidence, not explicit
-      // evidence, and per option (c) it is flagged rather than guessed at.
-      const corr = _v48s_corroborate(lineBatches[0], pc, row, profiles);
-      if (corr.pcConflict) {
-        flag(`line explicitly tags batch ${lineBatches[0]} but the tag is contradicted — ${corr.detail} — suspected SAP tagging error, manual allocation required`);
+      // v48T: an explicit SAP tag is the strongest evidence available and is overridden ONLY by a
+      // genuine cross-company contradiction. A PC difference no longer blocks — pc_code is never
+      // maintained after label creation, so it cannot disprove a tag (see _v48t_corroborate).
+      const corr = _v48t_corroborate(lineBatches[0], pc, row, profiles);
+      if (corr.custConflict) {
+        flag(`line explicitly tags batch ${lineBatches[0]} but ${corr.custNote} — different company, manual allocation required`);
         continue;
       }
       const notes = [];
       if (!keyUpper.includes(lineBatches[0].toUpperCase())) notes.push('line batch is absent from the invoice header batch key');
-      // A customer difference alone does NOT block: a re-customered batch legitimately
-      // ships to someone other than the customer on its labels. Recorded, not refused.
-      if (corr.custConflict) notes.push(`customer differs (${corr.detail}) — possible re-customer, attributed on the explicit line tag`);
+      if (corr.pcAdvisory) notes.push(corr.pcNote);
       out.push({
         ...base, batch_number: lineBatches[0], method: 'line_batch', status: 'attributed',
         reason: notes.length ? notes.join('; ') : null,
@@ -3695,18 +3766,18 @@ function _v48r_attribute(inv, row, profiles) {
 
     // L3 — unique PC match among this invoice's batches, customer must agree
     if (!pc) { flag('multi-batch invoice and this line has no ItemCode'); continue; }
-    const matches = keyTokens.filter(t => {
+    const matches = keyTokens.filter(t => {          // v48T: match against the batch's FULL PC set
       const p = profiles[t.toUpperCase()];
-      return p && p.pc && _v48r_norm(p.pc) === _v48r_norm(pc);
+      return p && p.pcs && p.pcs.some(x => _v48r_norm(x) === _v48r_norm(pc));
     });
     if (matches.length === 1) {
       // v48S: same corroboration helper as L1, but here a customer difference DOES block.
       // There is no explicit tag on this line — the batch is inferred purely from a PC
       // match, so a differing customer means the PC very likely collided across two
       // customers' batches on one bulk invoice rather than identifying the right batch.
-      const corr = _v48s_corroborate(matches[0], pc, row, profiles);
+      const corr = _v48t_corroborate(matches[0], pc, row, profiles);
       if (corr.custConflict) {
-        flag(`PC ${pc} matches ${matches[0]}, but ${corr.detail} — customer guard, manual allocation required`);
+        flag(`PC ${pc} matches ${matches[0]}, but ${corr.custNote} — customer guard, manual allocation required`);
       } else {
         out.push({ ...base, batch_number: matches[0], method: 'pc_unique', status: 'attributed', reason: null });
       }
@@ -3801,6 +3872,7 @@ async function _v48r_recomputeAll({ dryRun = true, limit = 0, batch = '' } = {})
   const flagged = [];
   let invoicesProcessed = 0, linesTotal = 0, linesAttributed = 0, linesFlagged = 0, noPayload = 0, written = 0;
   let headerDerived = 0;   // v48S: single-batch invoices recovered from their header total
+  let linesIgnored = 0;    // v48T: zero-qty lines
 
   for (const row of rows) {
     let inv;
@@ -3816,6 +3888,8 @@ async function _v48r_recomputeAll({ dryRun = true, limit = 0, batch = '' } = {})
         if (a.method === 'header_single') headerDerived++;
         const k = a.batch_number;
         perBatchAfter[k] = Math.round(((perBatchAfter[k] || 0) + (a.qty_lakhs || 0)) * 100) / 100;
+      } else if (a.status === 'ignored') {
+        linesIgnored++;                       // v48T: zero-qty — auditable, never in DM's queue
       } else {
         linesFlagged++;
         flagged.push({
@@ -3845,7 +3919,7 @@ async function _v48r_recomputeAll({ dryRun = true, limit = 0, batch = '' } = {})
 
   return {
     ok: true, dryRun, invoicesScanned: rows.length, invoicesProcessed, noPayload,
-    linesTotal, linesAttributed, linesFlagged, headerDerived, written,
+    linesTotal, linesAttributed, linesFlagged, linesIgnored, headerDerived, written,
     batchesChanged: deltas.length, deltas, flagged,
   };
 }
@@ -7133,6 +7207,96 @@ app.post('/api/invoice/:id/allocate', async (req, res) => {
     }
     console.log(`[v48R] manual allocation: invoice ${row.sap_doc_num} line ${lineNum} (${lineQty}L) → ${allocations.map(a => a.batch_number + ' ' + a.qty_lakhs + 'L').join(', ')} by ${who}`);
     res.json({ ok: true, invoiceId: invId, lineNum, lineQty, allocated: allocations.length, by: who });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/admin/invoice-payload-repair   body: { apply: true, limit?: n }
+// v48T: REPAIR AT SOURCE rather than parking work on DM.
+// The bulk SAP fetch is lean and omits DocumentLines. A single-batch invoice survives that
+// (v48S recovers it from the header total), but a MULTI-batch one cannot be split without
+// lines and would sit in DM's queue permanently — 20 such invoices exist. sap.getInvoice()
+// returns the full document, so those are refetched and stored, after which normal per-line
+// attribution applies and the queue entry disappears.
+// Dry-run unless apply===true. NEVER runs automatically: it makes outbound SAP calls, so it
+// stays operator-invoked and is rate-paced. Failures are collected, never thrown.
+app.post('/api/admin/invoice-payload-repair', async (req, res) => {
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const apply = (req.body && (req.body.apply === true || req.body.apply === 'true' || req.body.apply === 1));
+    const limit = Math.min(parseInt((req.body && req.body.limit), 10) || 50, 200);
+    // Only MULTI-batch payload-less invoices need SAP: single-batch ones are already recovered.
+    const sql = `SELECT id, sap_doc_entry, sap_doc_num, batch_number, customer, card_code, total_boxes,
+                        total_qty_lakhs, pc_code
+                 FROM invoices_received
+                 WHERE payload_json IS NOT NULL AND payload_json NOT LIKE '%DocumentLines%'
+                   AND batch_number LIKE '%,%' AND sap_doc_entry IS NOT NULL
+                 ORDER BY invoice_date DESC LIMIT ${limit}`;
+    const rows = pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
+    const repaired = [], failed = [];
+    for (const row of rows) {
+      if (!apply) { repaired.push({ invoice: row.sap_doc_num, docEntry: row.sap_doc_entry, batches: row.batch_number, qty: row.total_qty_lakhs, action: 'would refetch from SAP' }); continue; }
+      try {
+        const r = await sap.getInvoice(row.sap_doc_entry);
+        const inv = (r && (r.data || r.invoice || r)) || null;
+        const lines = inv && inv.DocumentLines;
+        if (!inv || !Array.isArray(lines) || !lines.length) { failed.push({ invoice: row.sap_doc_num, error: 'SAP returned no DocumentLines' }); continue; }
+        const payload = JSON.stringify(inv);
+        if (pgPool) await pgPool.query(`UPDATE invoices_received SET payload_json=$1 WHERE id=$2`, [payload, row.id]);
+        else        db.prepare(`UPDATE invoices_received SET payload_json=? WHERE id=?`).run(payload, row.id);
+        const att = await _v48r_recomputeInvoice(row, inv);
+        repaired.push({ invoice: row.sap_doc_num, docEntry: row.sap_doc_entry, lines: lines.length,
+                        attributed: (att.allocations || []).filter(a => a.status === 'attributed').length,
+                        stillFlagged: (att.allocations || []).filter(a => a.status === 'needs_manual').length });
+      } catch (e) { failed.push({ invoice: row.sap_doc_num, error: (e && e.message) || 'SAP call failed' }); }
+      await new Promise(r2 => setTimeout(r2, 250));    // pace the SAP calls
+    }
+    res.json({ ok: true, dryRun: !apply, candidates: rows.length, repaired: repaired.length, failedCount: failed.length, repairedDetail: repaired, failed });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// GET /api/invoice/attribution-review
+// v48T: DM'S WORK QUEUE. The raw flag list mixes items needing completely different actions,
+// so it is grouped by what DM actually has to DO, and each entry carries the context needed to
+// decide without going back to SAP. 'action' names the resolution; 'candidates' lists the
+// batches on that invoice a line could legitimately be allocated to.
+app.get('/api/invoice/attribution-review', async (req, res) => {
+  if (!_requireAdmin(req, res)) return;
+  try {
+    const sql = `SELECT a.*, i.batch_number AS invoice_batch_key, i.customer, i.total_qty_lakhs
+                 FROM invoice_batch_alloc a
+                 LEFT JOIN invoices_received i ON i.id = a.invoice_id
+                 WHERE a.status = 'needs_manual'
+                 ORDER BY a.qty_lakhs DESC`;
+    const rows = pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
+    const groups = {};
+    let totalQty = 0;
+    for (const r of rows) {
+      const why = String(r.reason || '');
+      let bucket, action;
+      if (/different company/.test(why))            { bucket = 'cross_company_tag';  action = 'Confirm whether the SAP batch tag is wrong, or the batch was legitimately sold to this customer'; }
+      else if (/batch identifiers/.test(why))       { bucket = 'multi_tag_line';     action = 'Line names more than one batch — split it across them with POST /api/invoice/:id/allocate'; }
+      else if (/share PC/.test(why))                { bucket = 'ambiguous_pc';       action = 'Two batches on this invoice share a PC — allocate the quantity manually'; }
+      else if (/covers \d+ batches/.test(why))      { bucket = 'payload_less_multi'; action = 'Run POST /api/admin/invoice-payload-repair to refetch the lines from SAP'; }
+      else if (/plausibility ceiling/.test(why))    { bucket = 'corrupt_total';      action = 'Header total is corrupt (raw thousands) — correct the invoice total, then re-run the rebuild'; }
+      else if (/no batch key/.test(why))            { bucket = 'no_batch_key';       action = 'Invoice carries no batch reference at all — identify the batch and allocate manually'; }
+      else                                          { bucket = 'other';              action = 'Review manually'; }
+      const g = groups[bucket] || (groups[bucket] = { count: 0, qtyLakhs: 0, action, items: [] });
+      const q = parseFloat(r.qty_lakhs) || 0;
+      g.count++; g.qtyLakhs = Math.round((g.qtyLakhs + q) * 100) / 100; totalQty += q;
+      g.items.push({
+        invoiceId: r.invoice_id, invoice: r.sap_doc_num, line: r.line_num,
+        pc: r.pc_code, qtyLakhs: q, customer: r.customer,
+        candidates: String(r.invoice_batch_key || '').split(/[\s,]+/).filter(Boolean),
+        reason: r.reason,
+      });
+    }
+    const ordered = Object.keys(groups).sort((x, y) => groups[y].qtyLakhs - groups[x].qtyLakhs)
+      .map(k => ({ category: k, ...groups[k] }));
+    res.json({ ok: true, openItems: rows.length, totalQtyLakhs: Math.round(totalQty * 100) / 100, groups: ordered });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
