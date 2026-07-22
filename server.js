@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48T';
+const APP_BUILD = 'v48U';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3738,17 +3738,31 @@ function _v48r_attribute(inv, row, profiles) {
     // L1 — the line names its own batch
     const lineBatches = _v48r_lineBatchTokens(l);
     if (lineBatches.length === 1) {
-      // v48T: an explicit SAP tag is the strongest evidence available and is overridden ONLY by a
-      // genuine cross-company contradiction. A PC difference no longer blocks — pc_code is never
-      // maintained after label creation, so it cannot disprove a tag (see _v48t_corroborate).
+      // ── v48U: AN EXPLICIT SAP TAG IS AUTHORITATIVE. NOTHING LOCAL OVERRIDES IT. ──
+      // Three successive attempts to second-guess the tag from our own reference data each
+      // failed against live data, and the reason is now clear: OUR data is messier than SAP's
+      // statement, so it has no standing to overrule it.
+      //   • v48S blocked on a PC difference → 36 false flags. pc_code is written once at label
+      //     creation and never updated (0 of 22 UPDATE tracking_labels sites touch it), so it
+      //     goes stale precisely when a batch changes hands.
+      //   • v48T blocked on a customer difference → 209 false flags. Live examples, all the SAME
+      //     customer recorded two ways: "K SHYAM TRADER" vs "K SHYAM TRADERS" (plural),
+      //     "ROHAN PHARMA PRIVATE LIMITED BADDI" vs "ROHAN PHARMA PRIVATE LTD" (branch suffix),
+      //     "ALKEM WELLNESS LIMITED" vs "ALKEM WELLNUS LTD." (spelling). No normalisation can
+      //     separate WELLNESS/WELLNUS from genuinely distinct companies without merging those too.
+      // So both contradictions are now recorded as ADVISORY and the tag is honoured. The guard
+      // survives only on L3 below, where the batch is INFERRED from a PC match and there is no
+      // SAP statement to defer to.
+      // CONSEQUENCE, ACCEPTED BY ISHAN: the one known bad tag (invoice 9035 line 4 → 26V083)
+      // is attributed, putting 26V083 at 54.25L against 40.25L packed. That is an
+      // invoiced-exceeds-packed exception, which is the right place for it — but note it stays
+      // RECORDED-NOT-SURFACED until the consumer flip, because check_invoiced_exceeds_packed
+      // still reads the old reconstruction and cannot see this table yet.
       const corr = _v48t_corroborate(lineBatches[0], pc, row, profiles);
-      if (corr.custConflict) {
-        flag(`line explicitly tags batch ${lineBatches[0]} but ${corr.custNote} — different company, manual allocation required`);
-        continue;
-      }
       const notes = [];
       if (!keyUpper.includes(lineBatches[0].toUpperCase())) notes.push('line batch is absent from the invoice header batch key');
       if (corr.pcAdvisory) notes.push(corr.pcNote);
+      if (corr.custConflict) notes.push(`${corr.custNote} — advisory only; the explicit SAP tag is authoritative`);
       out.push({
         ...base, batch_number: lineBatches[0], method: 'line_batch', status: 'attributed',
         reason: notes.length ? notes.join('; ') : null,
@@ -7277,7 +7291,7 @@ app.get('/api/invoice/attribution-review', async (req, res) => {
     for (const r of rows) {
       const why = String(r.reason || '');
       let bucket, action;
-      if (/different company/.test(why))            { bucket = 'cross_company_tag';  action = 'Confirm whether the SAP batch tag is wrong, or the batch was legitimately sold to this customer'; }
+      if (/customer guard/.test(why))               { bucket = 'inferred_batch_customer_mismatch'; action = 'Batch was inferred from a PC match but the customer differs — confirm the batch, then allocate manually'; }
       else if (/batch identifiers/.test(why))       { bucket = 'multi_tag_line';     action = 'Line names more than one batch — split it across them with POST /api/invoice/:id/allocate'; }
       else if (/share PC/.test(why))                { bucket = 'ambiguous_pc';       action = 'Two batches on this invoice share a PC — allocate the quantity manually'; }
       else if (/covers \d+ batches/.test(why))      { bucket = 'payload_less_multi'; action = 'Run POST /api/admin/invoice-payload-repair to refetch the lines from SAP'; }

@@ -49,6 +49,12 @@ const FIX_CATALOG = {
     role: 'role:tracking_packing,role:admin',
     action: 'Packed quantity differs from AIM scan-in beyond expected wastage. Investigate missing boxes between AIM and Packing.',
   },
+  invoiced_exceeds_packed: {
+    app: 'tracking',
+    page: 'generated-invoices',
+    role: 'role:admin,role:dispatch_manager',
+    action: 'Received SAP invoices for this batch exceed its packed quantity. Verify the invoices — likely a duplicate/over-invoice, or legacy stock billed beyond packed. Reconcile on the SAP side; legacy over-invoicing is acceptable but should be knowingly acknowledged here. This is an alert only — nothing is blocked.',
+  },
   upstream_missing_scan: {
     app: 'tracking',
     page: 'aim',
@@ -767,8 +773,87 @@ async function check_dispatch_batch_customer_conflict(ctx) {
   return findings;
 }
 
+// ────────────────────────────────────────────────────────────────
+// Check: Invoiced exceeds Packed (v48L, Ishan) — detect-only alert.
+//   Basis = packed (packing scan-in sum, same authoritative query as the
+//   reconciliation check). Fires strictly above 100% of packed, no tolerance.
+//   "Invoiced" = ACTUAL received SAP invoices attributed to the batch — NOT
+//   Planning's tally (which trusts the request's ask and can hide over-invoicing).
+//   Single-batch invoices are summed precisely. Multi-batch invoices are recorded
+//   in raw_data as present-but-unattributed (their per-line qty unit isn't verified
+//   here), so they surface for manual review without producing a guessed number.
+//   This check NEVER writes to any invoice / request / dispatch row — it only reads
+//   and raises a finding. Legacy over-invoicing still fires (by design: visible to
+//   all), it is never blocked.
+// ────────────────────────────────────────────────────────────────
+async function check_invoiced_exceeds_packed(ctx) {
+  const findings = [];
+  let invRows = [];
+  try {
+    invRows = await _query(ctx, `
+      SELECT sap_doc_num, batch_number, total_qty_lakhs, source
+      FROM invoices_received
+      WHERE batch_number IS NOT NULL AND batch_number <> ''`);
+  } catch (e) { return findings; } // table absent on older deployments
+
+  // Attribute received invoices per batch. Single-batch → full qty; multi-batch → noted only.
+  const perBatch = {}; // batch → { invoiced, invoices:[], multiBatch:[] }
+  const _e = (b) => (perBatch[b] || (perBatch[b] = { invoiced: 0, invoices: [], multiBatch: [] }));
+  for (const inv of invRows) {
+    const batches = String(inv.batch_number).split(/[\s,]+/).map(s => s.trim()).filter(Boolean);
+    const qty = Math.round((parseFloat(inv.total_qty_lakhs) || 0) * 100) / 100;
+    if (batches.length === 1) {
+      const e = _e(batches[0]);
+      e.invoiced = Math.round((e.invoiced + qty) * 100) / 100;
+      e.invoices.push({ doc: inv.sap_doc_num, qty, source: inv.source });
+    } else if (batches.length > 1) {
+      // Multi-batch invoice: record presence for each listed batch, do not add an unverified number.
+      for (const b of batches) _e(b).multiBatch.push({ doc: inv.sap_doc_num, totalQty: qty, source: inv.source });
+    }
+  }
+
+  for (const [batch, e] of Object.entries(perBatch)) {
+    if (e.invoiced <= 0) continue; // nothing precisely attributed (e.g. only multi-batch invoices)
+    // Packed = packing scan-in sum (authoritative; identical query to check_qty_reconciliation).
+    let packedQty = 0;
+    try {
+      const packRows = await _query(ctx, `
+        SELECT COALESCE(SUM(l.qty),0) AS total
+        FROM tracking_scans s
+        JOIN tracking_labels l ON l.id = s.label_id
+        WHERE s.batch_number=? AND s.dept='packing' AND s.type='in'
+          AND (l.voided IS NULL OR l.voided=0)`, [batch]);
+      packedQty = Math.round((parseFloat(packRows[0]?.total || 0)) * 100) / 100;
+    } catch (_e) { continue; }
+    if (packedQty <= 0) continue; // no packing basis to compare against (pure-legacy no-pack batch) — stays independent
+    if (e.invoiced > packedQty + 0.001) { // strictly above 100% of packed (epsilon guards float noise)
+      const excess = Math.round((e.invoiced - packedQty) * 100) / 100;
+      findings.push(_enrichFinding({
+        finding_key: _hashKey('invoiced_exceeds_packed', batch),
+        check_type: 'invoiced_exceeds_packed',
+        severity: 'warning',
+        batch_number: batch,
+        order_id: null,
+        machine_id: null,
+        day: null,
+        description: `Batch ${batch}: invoiced ${e.invoiced.toFixed(2)}L exceeds packed ${packedQty.toFixed(2)}L by ${excess.toFixed(2)}L — verify SAP invoices (possible duplicate/over-invoice, or legacy stock billed beyond packed).`,
+        raw_data: {
+          batchNumber: batch,
+          invoicedQty: e.invoiced,
+          packedQty,
+          excess,
+          invoices: e.invoices,
+          multiBatchInvoicesPresent: e.multiBatch,
+        },
+      }));
+    }
+  }
+  return findings;
+}
+
 const ALL_CHECKS = [
   { key: 'qty_reconciliation',     fn: check_qty_reconciliation },
+  { key: 'invoiced_exceeds_packed', fn: check_invoiced_exceeds_packed },
   { key: 'upstream_progression',   fn: check_upstream_progression },
   { key: 'wastage_exceeds_input',  fn: check_wastage_exceeds_input },
   { key: 'dpr_missing_day',        fn: check_dpr_missing_day },
