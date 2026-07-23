@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v48Y</p>
+      <p>Planning Suite v3.0 · build v48Z</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -900,6 +900,19 @@ const SYNC = (() => {
             if (ts && (_now - ts) < _protectWindow) _protectedPrintOrders[p.id] = p;
           });
         }
+        // v48Z: add every order that DIFFERS from the last synced snapshot. This is what catches the
+        // edits no mutation site stamped — the PTD/UP toggle among them. Additive only: entries
+        // already protected above keep their existing object, so no prior rule changes behaviour.
+        // GUARD: with no baseline yet (first sync of the session) EVERY order would look diverged,
+        // and stale localStorage would permanently beat the server. Divergence protection therefore
+        // only engages once a snapshot exists — i.e. after the first successful load or save.
+        // Until then behaviour is exactly as before this build.
+        const _divOrders = _v48zOrderSnap.size ? _v48z_diverged(state.orders, _v48zOrderSnap) : {};
+        const _divPrint  = _v48zPrintSnap.size ? _v48z_diverged(state.printOrders, _v48zPrintSnap) : {};
+        let _divAdded = 0;
+        for (const id in _divOrders) { if (!_protectedOrders[id]) { _protectedOrders[id] = _divOrders[id]; _divAdded++; } }
+        for (const id in _divPrint)  { if (!_protectedPrintOrders[id]) { _protectedPrintOrders[id] = _divPrint[id]; _divAdded++; } }
+        if (_divAdded) console.log('[v48Z] protected', _divAdded, 'order(s) that diverged from the last synced snapshot');
         // Take server state
         // Save local dailyPrinting before overwrite — merge after
         const _localDailyPrinting = JSON.parse(JSON.stringify(state.dailyPrinting || []));
@@ -991,6 +1004,11 @@ const SYNC = (() => {
           state.printOrders = (state.printOrders||[]).map(p => _protectedPrintOrders[p.id] || p);
           console.log('[Sync] Protected', Object.keys(_protectedPrintOrders).length, 'locally changed print orders from server overwrite');
         }
+        // v48Z: re-baseline AFTER the merge — but NOT for the orders we just protected. Their edits
+        // are still unsaved, so they must keep their old baseline and stay protected on every
+        // subsequent sync until the save lands. Re-baselining them here is what would make a change
+        // hold once and then revert on the next tick.
+        _v48z_capture(new Set([...Object.keys(_protectedOrders), ...Object.keys(_protectedPrintOrders)]));
         // Restore locally changed machine masters
         if (_savedMachineMaster) { state.machineMaster = _savedMachineMaster; console.log('[Sync] Protected machineMaster from server overwrite'); }
         if (_savedPrintMachineMaster) { state.printMachineMaster = _savedPrintMachineMaster; console.log('[Sync] Protected printMachineMaster from server overwrite'); }
@@ -1725,6 +1743,61 @@ let _retryTimer = null;
 let _lastServerSaveTime = 0;
 // Registry of locally changed order IDs — these are NEVER overwritten by server sync
 // Key: order id, Value: timestamp of local change
+// ─────────────────────────────────────────────────────────────────────────────
+// v48Z: DIVERGENCE-BASED EDIT PROTECTION.
+//
+// ROOT CAUSE THIS REPLACES: loadFromServer protects a local edit only if the mutating code
+// remembered to stamp _localOrderChanges[id]. The order-edit form — the one carrying PTD/UP,
+// customer, qty, zone and most other fields — NEVER stamps it. And state._savedAt only advances on
+// SAVE, so while an edit is unsaved `serverSavedAt >= localSavedAt` is true and the overwrite branch
+// runs. The edit is then replaced by the server's copy, which is the random revert planners see:
+// a successful save sets a 60s shield, so an edit survives if the save lands quickly and is lost if
+// the 30s idle auto-sync fires first. Same action, different outcome, purely on timing.
+//
+// Stamping is the flaw: it is opt-in, and one of the most-used paths opted out. Divergence is
+// DERIVED instead — we keep a snapshot of orders as last loaded-or-saved, and anything that differs
+// from it is by definition a local edit. No mutation site can forget, including ones written later.
+// This only ever WIDENS the protected set; every existing protection rule below is untouched.
+let _v48zOrderSnap = new Map();       // id -> JSON of the order as last synced
+let _v48zPrintSnap = new Map();
+// keepIds: ids whose PREVIOUS snapshot entry must be preserved rather than re-baselined.
+// This is load-bearing. After a server load we hold the local value for a protected order, but its
+// edit is still UNSAVED — so if we re-baselined it to that local value it would stop looking
+// diverged, lose protection on the very next 30s tick, and the server's stale value would win.
+// That is exactly the reported symptom: the change holds, then reverts a moment later. A protected
+// order therefore keeps its old baseline and stays protected until a successful SAVE re-baselines it.
+function _v48z_capture(keepIds) {
+  try {
+    const keep = keepIds instanceof Set ? keepIds : new Set(keepIds || []);
+    const nextO = new Map(), nextP = new Map();
+    (state.orders || []).forEach(o => {
+      if (!o || !o.id) return;
+      if (keep.has(o.id) && _v48zOrderSnap.has(o.id)) nextO.set(o.id, _v48zOrderSnap.get(o.id));
+      else nextO.set(o.id, JSON.stringify(o));
+    });
+    (state.printOrders || []).forEach(p => {
+      if (!p || !p.id) return;
+      if (keep.has(p.id) && _v48zPrintSnap.has(p.id)) nextP.set(p.id, _v48zPrintSnap.get(p.id));
+      else nextP.set(p.id, JSON.stringify(p));
+    });
+    _v48zOrderSnap = nextO;
+    _v48zPrintSnap = nextP;
+  } catch (e) { /* snapshot is an optimisation — never let it break a sync */ }
+}
+// Orders present locally that differ from the last synced snapshot. An order with no snapshot entry
+// is NEW locally and must also be protected, or a server load would delete it before it saves.
+function _v48z_diverged(list, snap) {
+  const out = {};
+  try {
+    (list || []).forEach(o => {
+      if (!o || !o.id) return;
+      const was = snap.get(o.id);
+      if (was === undefined || was !== JSON.stringify(o)) out[o.id] = o;
+    });
+  } catch (e) { /* fall through to the stamp-based protection alone */ }
+  return out;
+}
+
 let _localOrderChanges = {};
 // Registry of locally changed print order IDs
 let _localPrintOrderChanges = {};
@@ -1825,6 +1898,7 @@ async function saveState() {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
       _lastServerSaveTime = Date.now();
+      _v48z_capture();   // v48Z: local state is now identical to the server — new divergence baseline
     } else {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _scheduleRetry(toSave);
@@ -2175,6 +2249,7 @@ async function saveState() {
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
       _lastServerSaveTime = Date.now();
+      _v48z_capture();   // v48Z: local state is now identical to the server — new divergence baseline
       // Save to DEDICATED tables — permanent cross-device sync, never lost in JSON blob
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
@@ -4800,6 +4875,11 @@ function saveOrderModal(existingId, defaultMachine) {
     }
     const idx = state.orders.findIndex(o=>o.id===existingId);
     if (idx>=0) state.orders[idx] = ord;
+    // v48Z: the order-edit form never stamped the protection map, which is why edits made here
+    // (PTD/UP among them) were unprotected against a background server load. Divergence detection
+    // above is the structural fix; this stamp additionally covers the 30s silent-sync path, which
+    // consults the stamp map directly.
+    if (ord && ord.id) _localOrderChanges[ord.id] = Date.now();
     // v41ZE #3: detailed edit audit (re-add — did not land in v41ZD). Records what the order looks
     // like after the edit so the Audit Log shows real changes, not just "Saved planning state".
     auditLog('ORDER_EDITED', `${ord.machineId} · ${ord.batchNumber||ord.poNumber||ord.id} (${ord.customer||'—'}) · ${fmt(ord.qty||0)}L, size ${ord.size||'—'}, ${ord.zone||'—'}${ord.sapDocNum?`, SO# ${ord.sapDocNum}`:''}, status ${ord.status||'—'}`);
@@ -4842,6 +4922,7 @@ function saveOrderModal(existingId, defaultMachine) {
       }
     }
     state.orders.push(ord);
+    if (ord && ord.id) _localOrderChanges[ord.id] = Date.now();   // v48Z: protect a brand-new order too
     // v41ZE #3: detailed create audit (re-add — did not land in v41ZD).
     auditLog('ORDER_CREATED', `${ord.machineId} · ${ord.batchNumber||ord.poNumber||ord.id} (${ord.customer||'—'}) · ${fmt(ord.qty||0)}L, size ${ord.size||'—'}, ${ord.zone||'—'}${ord.sapDocNum?`, SO# ${ord.sapDocNum}`:''}, ${ord.poType||'—'}`);
   }
