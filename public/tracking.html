@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49</title>
+<title>Sunloc Tracking Suite v1.0 · build v49B</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49</p>
+      <p>Tracking Suite v1.0 · build v49B</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49</p>
+      <p>Tracking Suite v1.0 · build v49B</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -5950,6 +5950,14 @@ function openRecustomer(preBatch){
     </div>
     <div class="form-row cols-2">
       <div class="form-group"><label>PO Number</label><input type="text" id="rc-po" class="form-control" placeholder="(optional)"></div>
+      <!-- v49B: the SAP Sales Order belongs to the OLD customer and must not carry over. Optional,
+           because SAP may not have raised the new customer's SO yet — left blank, the old SO is
+           CLEARED rather than kept wrong, and the batch simply cannot be invoiced until a correct
+           one is attached. -->
+      <div class="form-group"><label>New SAP SO Number</label>
+        <input type="text" id="rc-so" class="form-control" placeholder="(optional — leave blank to clear the old SO)">
+        <div style="font-size:11px;color:var(--text3);margin-top:3px">The previous customer's SO is removed either way, so a wrong-customer invoice can't be raised.</div>
+      </div>
       <div class="form-group"><label>Reason *</label><input type="text" id="rc-reason" class="form-control" placeholder="Why re-customered?"></div>
     </div>
     <div class="form-row cols-2">
@@ -5991,6 +5999,7 @@ async function confirmRecustomer(){
   const newCustomer=(document.getElementById('rc-customer')?.value||'').trim();
   const newCardCode=(document.getElementById('rc-cardcode')?.value||'').trim();
   const newPoNumber=(document.getElementById('rc-po')?.value||'').trim();
+  const newSapDocNum=(document.getElementById('rc-so')?.value||'').trim();   // v49B
   const shipTo=(document.getElementById('rc-shipto')?.value||'').trim();
   const billTo=(document.getElementById('rc-billto')?.value||'').trim();
   const reason=(document.getElementById('rc-reason')?.value||'').trim();
@@ -6008,7 +6017,7 @@ async function confirmRecustomer(){
     const r=await fetch(serverUrl+'/api/tracking/recustomer',{
       method:'POST',
       headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},
-      body:JSON.stringify({batchNumber,newCustomer,newCardCode,newPoNumber,shipTo,billTo,reason,splitBoxes,convertToPrinted,printMatter,printType})
+      body:JSON.stringify({batchNumber,newCustomer,newCardCode,newPoNumber,shipTo,billTo,reason,splitBoxes,convertToPrinted,printMatter,printType,newSapDocNum})
     });
     const j=await r.json();
     if(j&&j.ok){

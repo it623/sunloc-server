@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49</p>
+      <p>Planning Suite v3.0 · build v49B</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -822,14 +822,16 @@ const SYNC = (() => {
       // last synced snapshot, plus any order with no snapshot entry (locally new).
       // If this cannot be computed the key is OMITTED, and the server falls back to replacing the
       // blob exactly as it did before — the fallback is the old behaviour, so nothing can regress.
-      let _changed;
+      let _changed, _fields;
       try {
         if (typeof _v48zOrderSnap !== 'undefined' && _v48zOrderSnap.size) {
-          _changed = Object.keys(_v48z_diverged(stateObj.orders, _v48zOrderSnap));
+          _fields  = _v49a_changedFields(stateObj.orders, _v48zOrderSnap);
+          _changed = Object.keys(_fields);
         }
-      } catch (e) { _changed = undefined; }
+      } catch (e) { _changed = undefined; _fields = undefined; }
       const _payload = { state: stateObj };
       if (Array.isArray(_changed)) _payload.changedOrderIds = _changed;
+      if (_fields && typeof _fields === 'object') _payload.changedOrderFields = _fields;   // v49A
       const r = await fetch(_url + '/api/planning/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
@@ -1799,6 +1801,33 @@ function _v48z_capture(keepIds) {
     _v48zPrintSnap = nextP;
   } catch (e) { /* snapshot is an optimisation — never let it break a sync */ }
 }
+// v49A: per-order list of the FIELD NAMES that differ from the snapshot.
+// v49 sent only which ORDERS changed, and the server then replaced the whole order object with the
+// client's. That object still carried whatever the client last loaded — so a planner editing a DATE
+// on 26P045 also pushed back its stale `customer: ROHAN PHARMA` and `recustomeredAt: null`, silently
+// undoing a re-customer done server-side. Both fields vanished together, which is exactly what the
+// live data showed. Reporting the changed FIELDS lets the server keep its own value for everything
+// the planner did not actually touch.
+function _v49a_changedFields(list, snap) {
+  const out = {};
+  try {
+    (list || []).forEach(o => {
+      if (!o || !o.id) return;
+      const was = snap.get(o.id);
+      if (was === undefined) { out[o.id] = '*'; return; }        // locally new → whole object is the client's
+      let base;
+      try { base = JSON.parse(was); } catch (e) { out[o.id] = '*'; return; }
+      const fields = [];
+      const keys = new Set([...Object.keys(base || {}), ...Object.keys(o)]);
+      for (const k of keys) {
+        if (JSON.stringify(base[k]) !== JSON.stringify(o[k])) fields.push(k);
+      }
+      if (fields.length) out[o.id] = fields;
+    });
+  } catch (e) { return {}; }
+  return out;
+}
+
 // Orders present locally that differ from the last synced snapshot. An order with no snapshot entry
 // is NEW locally and must also be protected, or a server load would delete it before it saves.
 function _v48z_diverged(list, snap) {

@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49';
+const APP_BUILD = 'v49B';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -8875,6 +8875,8 @@ app.post('/api/planning/state', async (req, res) => {
         const curOrders = (cur && Array.isArray(cur.orders)) ? cur.orders : null;
         if (curOrders && curOrders.length) {
           const changed = new Set(_chg.map(String));
+          const _fldRaw = req.body && req.body.changedOrderFields;
+          const _fldMap = (_fldRaw && typeof _fldRaw === 'object' && !Array.isArray(_fldRaw)) ? _fldRaw : null;
           const clientById = new Map();
           for (const o of state.orders) if (o && o.id) clientById.set(String(o.id), o);
           const merged = [];
@@ -8884,15 +8886,26 @@ app.post('/api/planning/state', async (req, res) => {
             const id = String(srv.id);
             seen.add(id);
             const cli = clientById.get(id);
-            if (cli && changed.has(id)) merged.push(cli);        // planner genuinely edited it
-            else if (cli) merged.push(srv);                       // untouched → server wins
-            else merged.push(srv);                                // client never had it → keep it
+            if (!cli) { merged.push(srv); continue; }              // client never had it → keep server's
+            if (!changed.has(id)) { merged.push(srv); continue; }  // untouched → server wins
+            // v49A: FIELD-LEVEL merge. v49 replaced the whole order object here, so a planner who
+            // edited only a date also pushed back their stale `customer` and wiped a server-side
+            // re-customer — observed live on 26P044/26P045, where customer AND recustomeredAt
+            // disappeared together. Now only the fields the planner actually changed are taken.
+            const flds = _fldMap && _fldMap[id];
+            if (flds === '*' || !Array.isArray(flds)) { merged.push(cli); continue; }  // locally new / no detail → whole object
+            const out = { ...srv };
+            for (const k of flds) {
+              if (Object.prototype.hasOwnProperty.call(cli, k)) out[k] = cli[k];
+              else delete out[k];                                  // planner removed the field
+            }
+            merged.push(out);
           }
           // Orders the client has that the server does not: brand-new locally. Keep them.
           for (const [id, cli] of clientById) if (!seen.has(id)) merged.push(cli);
           const _kept = merged.length - state.orders.length;
           state.orders = merged;
-          console.log(`[v49] selective merge: ${changed.size} client-changed order(s) applied, ${merged.length} total${_kept ? ` (${_kept >= 0 ? '+' : ''}${_kept} vs client blob)` : ''}`);
+          console.log(`[v49A] selective merge (${_fldMap ? 'field-level' : 'order-level'}): ${changed.size} client-changed order(s), ${merged.length} total${_kept ? ` (${_kept >= 0 ? '+' : ''}${_kept} vs client blob)` : ''}`);
         }
       } catch (e) {
         console.warn('[v49] selective merge skipped, saving blob as sent:', e && e.message);
@@ -17511,7 +17524,15 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     if (!session) return res.status(401).json({ ok:false, error:'Not authenticated' });
     if (session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin required' });
     const { batchNumber, newCustomer, newCardCode, newPoNumber, shipTo, billTo, reason,
-            splitBoxes, convertToPrinted, printMatter, printType } = req.body;
+            splitBoxes, convertToPrinted, printMatter, printType, newSapDocNum } = req.body;
+    // v49B (confirmed by Ishan): the SAP Sales Order belongs to the OLD customer, so after a
+    // re-customer it must not stay attached — 26P045 moved to K Shyam while still carrying Rohan's
+    // SO 285, which would have invoiced the wrong customer's order. The split path already cleared
+    // the child's refs; the full-switch path never did.
+    // Optional by design: if the new customer's SO is supplied it is applied, and if it is not
+    // (common — SAP may not have raised it yet) the refs are CLEARED rather than left wrong. A batch
+    // with no SO simply cannot be invoiced until a correct one is attached, which is the safe state.
+    const _newSO = (newSapDocNum == null ? '' : String(newSapDocNum)).trim();
     if (!batchNumber || !newCustomer) return res.status(400).json({ ok:false, error:'batchNumber and newCustomer required' });
     const ts = new Date().toISOString();
     const _PACK = {'0':1.5,'00':1.5,'000':1.5,'1':1.25,'2':1.0,'3':0.75,'4':0.5,'5':0.333};
@@ -17632,7 +17653,9 @@ app.post('/api/tracking/recustomer', async (req, res) => {
         status: (ord?.status==='closed' ? 'running' : (ord?.status||'running')),
         deleted: false, recustomeredFrom: oldCustomer, recustomerSplitFrom: batchNumber,
         recustomeredAt: ts, recustomeredBy: session.username,
-        sapDocEntry: null, sapDocNum: '', _localEditedAt: Date.now()
+        sapDocEntry: null, sapDocNum: _newSO,          // v49B: new customer's SO if supplied, else blank
+        cardCode: newCardCode || undefined,
+        _localEditedAt: Date.now()
       };
       delete child.woStatus;
       planState.orders.push(child);
@@ -17659,6 +17682,12 @@ app.post('/api/tracking/recustomer', async (req, res) => {
         ord.recustomeredFrom = ord.customer || oldCustomer;
         ord.customer = newCustomer;
         if (newPoNumber) ord.poNumber = newPoNumber;
+        // v49B: retire the previous customer's SO. sapDocEntry is SAP's internal key which no
+        // operator can know, so it is always cleared and left for the reconcile path to resolve.
+        ord.prevSapDocNum = ord.sapDocNum || '';
+        ord.sapDocNum   = _newSO;
+        ord.sapDocEntry = null;
+        if (newCardCode) ord.cardCode = newCardCode;   // v49B: was passed to invoice_requests only
         if (doConvert) { ord.isPrinted = true; if (ord.status==='closed') { ord.status='running'; ord.reopenedForConvert=true; } } // re-enter printing chain
         ord.recustomeredAt = ts; ord.recustomeredBy = session.username; ord._localEditedAt = Date.now();
         (planState.dispatchPlans||[]).forEach(d => { if (d.batchNumber===batchNumber || d.productionOrderId===ord.id) { d.customer=newCustomer; if(newPoNumber) d.poNumber=newPoNumber; } });
