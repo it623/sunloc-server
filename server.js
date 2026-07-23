@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48X';
+const APP_BUILD = 'v48Y';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -3750,6 +3750,17 @@ function _v48r_attribute(inv, row, profiles) {
       continue;
     }
 
+    // v48Y (confirmed by Ishan): SCRAP lines are a scrap/adjustment posting, not batch quantity
+    // awaiting assignment to a batch. Left in the queue they were its entire permanent residue —
+    // 4 lines totalling 0.4 L — which trains DM to ignore a badge that is always lit. Recorded as
+    // 'ignored' so they stay auditable, but kept out of the work queue, so a badge appearing again
+    // actually means something.
+    if (/^SCRAP/i.test(pc)) {
+      out.push({ ...base, batch_number: null, method: 'scrap_line', status: 'ignored',
+                 reason: `scrap/adjustment line (${pc}) — not batch quantity, excluded from the allocation queue` });
+      continue;
+    }
+
     // L1 — the line names its own batch
     const lineBatches = _v48r_lineBatchTokens(l);
     if (lineBatches.length === 1) {
@@ -6029,7 +6040,7 @@ async function _v48x_reconcileByAllocation(reqRow) {
     proposal: cands.map(c => ({
       invoiceId: c.invoice_id, docNum: c.inv_doc_num, sapDocEntry: c.sap_doc_entry,
       qty: c.qty_lakhs, boxes: c.boxes, line: c.line_num, allocationId: c.id,
-      dispatchStatus: c.dispatch_status, via: 'allocation',
+      dispatchStatus: c.dispatch_status, via: 'allocation', askQty: reqQty,
       note: inBand.length ? `${inBand.length} allocations match this quantity` : `allocation qty ${c.qty_lakhs}L is outside the tolerance band for an ask of ${reqQty}L`,
     })),
   };
@@ -6056,7 +6067,9 @@ async function _fallbackReconcileRequest(reqRow) {
   return {
     proposal: cands.map(c => ({
       invoiceId: c.id, docNum: c.sap_doc_num, sapDocEntry: c.sap_doc_entry,
-      qty: c.total_qty_lakhs, boxes: c.total_boxes, dispatchStatus: c.dispatch_status
+      qty: c.total_qty_lakhs, boxes: c.total_boxes, dispatchStatus: c.dispatch_status,
+      via: 'invoice_header', askQty: reqQty,     // v48Y: header candidates carry no allocation row,
+      note: 'whole-invoice total — no per-line allocation available for this invoice',
     }))
   };
 }
@@ -7528,6 +7541,70 @@ app.get('/api/invoice/allocation-totals', async (req, res) => {
     } catch (e) { linked = []; }
     res.json({ ok: true, totals, needsManual, openUnassigned: parseInt(uRow && uRow.n, 10) || 0,
                linkedRequestIds: linked, batches: Object.keys(totals).length });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+// POST /api/invoice/request/:id/accept-proposal
+// v48Y (confirmed by Ishan): resolve a request whose invoice arrived at a DIFFERENT quantity.
+//
+// GOVERNING RULE — the invoice is the financial fact; the request is only an intent. When they
+// disagree the INVOICED quantity always wins and the request is closed at that figure. This handles
+// both directions with one action:
+//   • invoice < request (live case 26X085: 2.0L invoiced against a 3.0L ask) — the request closes at
+//     2.0L and the 1.0L difference returns to available-to-invoice on that batch, so the residual can
+//     still be billed later. Nothing is silently written off.
+//   • invoice > request — closes at the invoice, and if that exceeds packed the invoiced_exceeds_packed
+//     check fires, which is the correct outcome rather than something to suppress here.
+// Sunloc cannot edit a SAP invoice (it raises Delivery Notes; the SAP user converts them), so
+// "correct the invoice" is deliberately NOT offered — it is not an action this system can perform.
+//
+// A reason is REQUIRED only when the divergence falls outside the same 0.99–1.15 tolerance band the
+// automatic matcher uses; inside the band this is simply the auto-reconcile a human triggered early.
+// Either way it is audit-logged with both quantities.
+app.post('/api/invoice/request/:id/accept-proposal', async (req, res) => {
+  const session = _v41_requireInvoiceRole(req, res);
+  if (!session) return;
+  try {
+    const reqId = req.params.id;
+    const allocationId = ((req.body || {}).allocationId || '').toString().trim();
+    const reason = ((req.body || {}).reason || '').toString().trim();
+    if (!allocationId) return res.status(400).json({ ok: false, error: 'allocationId is required' });
+
+    const rq = pgPool ? (await pgPool.query(`SELECT * FROM invoice_requests WHERE id=$1`, [reqId])).rows[0]
+                      : db.prepare(`SELECT * FROM invoice_requests WHERE id=?`).get(reqId);
+    if (!rq) return res.status(404).json({ ok: false, error: 'request not found' });
+    if (rq.status !== 'pending_reconciliation') return res.status(400).json({ ok: false, error: `request is ${rq.status}, not awaiting reconciliation` });
+
+    const aSql = `SELECT a.*, i.customer AS inv_customer, i.sap_doc_num AS inv_doc_num, i.dispatch_status
+                  FROM invoice_batch_alloc a JOIN invoices_received i ON i.id = a.invoice_id
+                  WHERE a.id = $1`;
+    const alloc = pgPool ? (await pgPool.query(aSql, [allocationId])).rows[0]
+                         : db.prepare(aSql.replace(/\$1/g, '?')).get(allocationId);
+    if (!alloc) return res.status(404).json({ ok: false, error: 'allocation not found' });
+    if (alloc.invoice_request_id) return res.status(409).json({ ok: false, error: `that invoice line is already reconciled against request ${alloc.invoice_request_id}` });
+    if (alloc.status !== 'attributed') return res.status(400).json({ ok: false, error: 'that invoice line is not attributed to a batch yet' });
+
+    const askQty = parseFloat(rq.qty_lakhs) || 0;
+    const invQty = parseFloat(alloc.qty_lakhs) || 0;
+    const inBand = askQty > 0 && invQty >= askQty * _RECON_UNDER && invQty <= askQty * _RECON_OVER;
+    if (!inBand && !reason) {
+      return res.status(400).json({ ok: false, needsReason: true, askQty, invoicedQty: invQty,
+        error: `Invoiced ${invQty}L against a request for ${askQty}L — outside tolerance, so a reason is required.` });
+    }
+    const ok = await _applyAllocationReconcile(rq, alloc);
+    if (!ok) return res.status(409).json({ ok: false, error: 'that invoice line was claimed by another request just now — reopen the list and retry' });
+
+    const note = `manual accept by ${session.username}: request ${askQty}L closed at invoiced ${invQty}L (invoice ${alloc.inv_doc_num})${reason ? ' — ' + reason : ''}`;
+    try {
+      if (pgPool) await pgPool.query(`UPDATE invoice_batch_alloc SET reason=$1, allocated_by=$2 WHERE id=$3`, [note, session.username, alloc.id]);
+      else db.prepare(`UPDATE invoice_batch_alloc SET reason=?, allocated_by=? WHERE id=?`).run(note, session.username, alloc.id);
+    } catch (e) { /* annotation only */ }
+    logAudit(session.username, session.role, 'invoice', 'RECON_MANUAL_ACCEPT', note);
+    console.log(`[v48Y] ${note}`);
+    res.json({ ok: true, requestId: reqId, allocationId: alloc.id, askQty, invoicedQty: invQty,
+               difference: Math.round((invQty - askQty) * 100) / 100, inBand, reasonRecorded: reason || null });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

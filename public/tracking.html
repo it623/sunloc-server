@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v48X</title>
+<title>Sunloc Tracking Suite v1.0 · build v48Y</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -159,6 +159,12 @@ input[type=number]{font-family:var(--mono)}
 .modal-overlay{position:fixed;inset:0;background:rgba(15,23,42,.4);backdrop-filter:blur(4px);z-index:500;display:none;align-items:center;justify-content:center}
 .modal-overlay.show{display:flex}
 .modal{background:var(--surface);border-radius:var(--r);padding:24px;max-width:580px;width:90%;max-height:85vh;overflow-y:auto;box-shadow:var(--shadow-lg);border:1px solid var(--border)}
+/* v48Y: opt-in wide modal. The pending-reconciliation table is 8 columns and was being squeezed
+   into 580px, which produced a horizontal scrollbar and clipped the Action column so the Cancel
+   button could not be reached without scrolling sideways. Opt-in via _v48y_modalWide() so every
+   other modal in this file keeps its original width. */
+.modal.wide{max-width:1180px}
+@media (max-width:1240px){ .modal.wide{max-width:96vw} }
 .modal-title{font-size:16px;font-weight:700;color:var(--text);margin-bottom:4px}
 .modal-sub{font-size:12px;color:var(--text3);margin-bottom:20px}
 .modal-footer{display:flex;gap:8px;justify-content:flex-end;flex-wrap:wrap;margin-top:20px;padding-top:16px;border-top:1px solid var(--border)}
@@ -584,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48X</p>
+      <p>Tracking Suite v1.0 · build v48Y</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -615,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v48X</p>
+      <p>Tracking Suite v1.0 · build v48Y</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1707,7 +1713,16 @@ function openModal(title,sub,body,footer){
   document.getElementById('modal-overlay').classList.add('show');
 }
 
-function closeModal(){ document.getElementById('modal-overlay').classList.remove('show'); }
+function closeModal(){
+  document.getElementById('modal-overlay').classList.remove('show');
+  const _b = document.getElementById('modal-box');
+  if (_b) _b.classList.remove('wide');     // v48Y: never leak the wide modifier to the next modal
+}
+// v48Y: call immediately BEFORE openTrackingModal/openModal for a table-heavy modal.
+function _v48y_modalWide(on) {
+  const b = document.getElementById('modal-box');
+  if (b) b.classList.toggle('wide', !!on);
+}
 document.getElementById('modal-overlay').addEventListener('click',e=>{ if(e.target===e.currentTarget) closeModal(); });
 
 // ═══════════════════════════════════════════════════════
@@ -6735,6 +6750,75 @@ async function _v47wCancelRequest(requestId, batchNumber){
     alert('Could not cancel: ' + e.message);
   }
 }
+// ─────────────────────────────────────────────────────────────────────────────
+// v48Y: SURFACE THE MATCH PROPOSAL.
+// The server has always computed _fallbackProposal — the candidate invoice(s) for a request it
+// could not auto-clear, and why the match failed — and the UI simply never rendered it. So for
+// 26X085 the system already knew invoice 1846 was the likely counterpart and that 2.0L ≠ 3.0L,
+// and told nobody. This renders it and gives DM the one action Sunloc can actually perform.
+// Sunloc cannot edit a SAP invoice, so "correct the invoice" is not offered — the choice is to
+// accept the invoiced figure, cancel the request, or leave it for a supplementary invoice.
+// ─────────────────────────────────────────────────────────────────────────────
+function _v48y_proposalRow(it) {
+  const props = it._fallbackProposal || [];
+  if (!props.length) return '';
+  const ask = parseFloat(it.qty_lakhs) || 0;
+  const cells = props.map(p => {
+    const inv = parseFloat(p.qty) || 0;
+    const diff = Math.round((inv - ask) * 100) / 100;
+    const canAccept = !!p.allocationId;          // only a per-line allocation can be accepted
+    const diffTxt = diff === 0 ? 'matches'
+      : `${diff > 0 ? '+' : ''}${diff.toFixed(2)} L vs the request`;
+    const colour = diff === 0 ? 'var(--text3)' : (diff < 0 ? '#b45309' : '#b91c1c');
+    return `<div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:5px 0">
+      <span style="font-family:var(--mono);font-weight:600">Invoice ${_v40_esc(String(p.docNum||'—'))}</span>
+      <span style="font-family:var(--mono)">${inv.toFixed(2)} L</span>
+      <span style="font-size:11px;color:${colour};font-weight:600">${diffTxt}</span>
+      ${p.note ? `<span style="font-size:11px;color:var(--text3)">· ${_v40_esc(p.note)}</span>` : ''}
+      ${canAccept
+        ? `<button onclick="_v48yAccept('${_v40_esc(it.id)}','${_v40_esc(p.allocationId)}',${ask},${inv},'${_v40_esc(String(p.docNum||''))}')"
+             style="background:rgba(16,185,129,0.12);color:#047857;border:1px solid rgba(16,185,129,0.35);border-radius:4px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer">
+             Accept ${inv.toFixed(2)} L</button>`
+        : `<span style="font-size:11px;color:var(--text3)">no per-line allocation — cannot accept automatically</span>`}
+    </div>`;
+  }).join('');
+  return `<tr style="border-bottom:1px solid var(--border);background:rgba(99,102,241,0.04)">
+    <td colspan="8" style="padding:6px 14px 8px">
+      <div style="font-size:11px;color:var(--text3);margin-bottom:2px">Likely match found — the invoiced quantity is what will be recorded:</div>
+      ${cells}
+    </td></tr>`;
+}
+
+async function _v48yAccept(reqId, allocationId, askQty, invQty, docNum) {
+  const diff = Math.round((invQty - askQty) * 100) / 100;
+  // Mirror of the server's band. Inside it this is just the auto-match triggered early; outside it
+  // the divergence is real and must be explained, so the reason is mandatory (Ishan's call).
+  const inBand = askQty > 0 && invQty >= askQty * 0.99 && invQty <= askQty * 1.15;
+  let reason = '';
+  if (!inBand) {
+    reason = (prompt(
+      `Invoice ${docNum} is ${invQty.toFixed(2)} L against a request for ${askQty.toFixed(2)} L (${diff > 0 ? '+' : ''}${diff.toFixed(2)} L).\n\n` +
+      `The request will close at the INVOICED quantity. ` +
+      (diff < 0 ? `The ${Math.abs(diff).toFixed(2)} L difference stays available to invoice on this batch.\n\n` : `\n`) +
+      `Reason for the difference (required):`, '') || '').trim();
+    if (!reason) return;                      // cancelled or left blank — do nothing
+  } else if (!confirm(`Close this request at the invoiced ${invQty.toFixed(2)} L from invoice ${docNum}?`)) {
+    return;
+  }
+  let baseUrl = ''; try { baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
+  try {
+    const r = await fetch(baseUrl + `/api/invoice/request/${encodeURIComponent(reqId)}/accept-proposal`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '' },
+      body: JSON.stringify({ allocationId, reason }),
+    });
+    const j = await r.json();
+    if (!j.ok) { alert('Could not accept: ' + (j.error || 'failed')); return; }
+    closeModal();
+    await _v41_openPendingReconciliationModal();
+  } catch (e) { alert('Could not accept: ' + e.message); }
+}
+
 async function _v41_openPendingReconciliationModal() {
   await _v41_fetchPendingReconciliationCount();
   const items = window._v41_pendingReconciliation || [];
@@ -6750,7 +6834,7 @@ async function _v41_openPendingReconciliationModal() {
           <span><strong>${items.length}</strong> request${items.length!==1?'s':''} awaiting reconciliation</span>
           <span style="font-family:var(--mono)">${tBoxes} boxes · ${tQty.toFixed(2)} L</span>
         </div>
-        <div style="max-height:55vh;overflow:auto;border:1px solid var(--border);border-radius:6px"><table style="width:100%;border-collapse:collapse;font-size:12px">
+        <div style="border:1px solid var(--border);border-radius:6px"><table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:auto">
         <thead style="background:var(--surface2);position:sticky;top:0;z-index:2">
           <tr style="border-bottom:2px solid var(--border)">
             <th style="text-align:left;padding:6px 8px">Batch</th>
@@ -6762,7 +6846,7 @@ async function _v41_openPendingReconciliationModal() {
             <th style="text-align:center;padding:6px 8px">Status</th>
             <th style="text-align:center;padding:6px 8px">Action</th>
           </tr></thead>
-        <tbody>${items.map(it => `<tr style="border-bottom:1px solid var(--border)">
+        <tbody>${items.map(it => `<tr style="border-bottom:${(it._fallbackProposal||[]).length?'0':'1px solid var(--border)'}">
           <td style="padding:5px 8px;font-family:var(--mono);font-weight:600">${it.batch_number||'—'}</td>
           <td style="padding:5px 8px">${it.customer||'—'}</td>
           <td style="padding:5px 8px;font-family:var(--mono)">${it.po_number||it.sap_doc_entry||'—'}</td>
@@ -6771,10 +6855,11 @@ async function _v41_openPendingReconciliationModal() {
           <td style="padding:5px 8px;text-align:center;font-size:11px;color:var(--text3)">${(it.created_at||'').slice(0,16)}</td>
           <td style="padding:5px 8px;text-align:center">${it.is_overdispatch_approved ? '<span style="background:rgba(245,158,11,0.15);color:#d97706;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⚠️ Over 115%</span>' : '<span style="background:rgba(99,102,241,0.15);color:#4f46e5;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⏳ Awaiting SAP</span>'}</td>
           <td style="padding:5px 8px;text-align:center">${it.id ? `<button onclick="_v47wCancelRequest('${it.id}','${(it.batch_number||'').replace(/'/g,"\\'")}')" style="background:rgba(220,38,38,0.1);color:#dc2626;border:1px solid rgba(220,38,38,0.35);border-radius:4px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer">Cancel</button>` : '—'}</td>
-        </tr>`).join('')}</tbody>
+        </tr>${_v48y_proposalRow(it)}`).join('')}</tbody>
         <tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2);position:sticky;bottom:0"><td colspan="3" style="padding:6px 8px">TOTAL · ${items.length}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tQty.toFixed(2)}</td><td style="padding:6px 8px;text-align:right;font-family:var(--mono)">${tBoxes}</td><td colspan="3"></td></tr></tfoot>
       </table></div>`;
       })();
+  _v48y_modalWide(true);
   openTrackingModal('⏳ Invoices Pending SAP Reconciliation', `
     <div style="padding:8px 0">
       <div style="background:rgba(99,102,241,0.08);border:1px solid rgba(99,102,241,0.2);border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:11px;line-height:1.6;color:var(--text2)">
