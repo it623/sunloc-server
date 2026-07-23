@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48W';
+const APP_BUILD = 'v48X';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1291,6 +1291,18 @@ const MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_iba_status ON invoice_batch_alloc(status);
     CREATE INDEX IF NOT EXISTS idx_iba_invoice ON invoice_batch_alloc(invoice_id);`
   },
+  {
+    // v48X: PER-BATCH REQUEST LINK.
+    // invoices_received.invoice_request_id holds ONE request per invoice, but a multi-batch invoice
+    // legitimately fulfils SEVERAL requests — invoice 1893 covers both 26Z070 (31.5L) and 26Z071
+    // (26.25L), and 1832 covers 26W063 and 26T081. With only one slot, the first request to claim an
+    // invoice locks the others out, so they sit on "Awaiting SAP Invoice" forever even though their
+    // invoice has arrived. The link belongs at the allocation (per-line/per-batch) level.
+    version: 53,
+    name: 'invoice_batch_alloc_request_link',
+    sql: `ALTER TABLE invoice_batch_alloc ADD COLUMN invoice_request_id TEXT;
+    CREATE INDEX IF NOT EXISTS idx_iba_req ON invoice_batch_alloc(invoice_request_id);`
+  },
 ];
 
 function runMigrations() {
@@ -2409,6 +2421,9 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iba_batch ON invoice_batch_alloc(batch_number)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iba_status ON invoice_batch_alloc(status)`);
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iba_invoice ON invoice_batch_alloc(invoice_id)`);
+    // v48X: per-batch request link (see MIGRATIONS v53)
+    try { await pgPool.query(`ALTER TABLE invoice_batch_alloc ADD COLUMN IF NOT EXISTS invoice_request_id TEXT`); } catch (e) { console.warn('[v48X PG] add invoice_request_id:', e.message); }
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_iba_req ON invoice_batch_alloc(invoice_request_id)`);
 
     // sap_config — single-row credentials + session state
     await pgPool.query(`
@@ -4205,6 +4220,7 @@ async function _doRefreshSapInvoices() {
           batch_number: _b48r, customer: inv.CardName || '', card_code: inv.CardCode || '',
           total_boxes: totalBoxes, total_qty_lakhs: totalQtyLakhs, pc_code: pcCode,   // v48S: header path needs these
         }, inv);
+        await _v48x_sweepInvoiceRequests(recId);   // v48X: clear any request this invoice now satisfies
       } catch (e) { console.warn('[v48R] attribution skipped for DocEntry ' + inv.DocEntry + ':', e && e.message); }
 
       if (invReqId) {
@@ -5884,9 +5900,150 @@ async function _applyFallbackReconcile(reqRow, inv) {
 
 // Request-side: evaluate one pending request. Returns {reconciled:true} on a clean single auto-match,
 // {proposal:[...]} when ambiguous (multiple candidates or qty out of band), or null when no match.
+// ─────────────────────────────────────────────────────────────────────────────
+// v48X: ALLOCATION-BASED RECONCILIATION
+//
+// The header matcher (_orphanInvoicesForRequest) compares a PER-BATCH request against the WHOLE
+// invoice: exact batch_number string, exact customer string, and the invoice's total quantity.
+// A multi-batch invoice can never satisfy it —
+//   • its key is "26Z070, 26Z071", which never equals "26Z070";
+//   • its total (57.75L) is far outside the ±tolerance band around a single batch's ask (31.5L);
+//   • and once one request claims it, invoices_received.invoice_request_id is spent.
+// So live requests sat on "Awaiting SAP Invoice" with their invoice already received and dispatched.
+//
+// invoice_batch_alloc already records the answer per LINE: 1893 line 0 → 26Z070 31.5, line 1 →
+// 26Z071 26.25, 1832 line 1 → 26T081 3.5. Matching against those rows instead of the header
+// resolves all three, and the per-allocation link means one invoice can satisfy several requests.
+//
+// The safety shape of the old matcher is preserved exactly: single unambiguous candidate,
+// the same _RECON_UNDER/_RECON_OVER quantity band, and anything ambiguous is proposed, not applied.
+// ─────────────────────────────────────────────────────────────────────────────
+async function _allocationsForRequest(reqRow) {
+  const batch = (reqRow.batch_number || '').trim();
+  if (!batch) return [];
+  // Unclaimed, attributed allocations for this batch, on an invoice that has actually been dispatched.
+  const sql = `SELECT a.*, i.customer AS inv_customer, i.card_code AS inv_card_code,
+                      i.sap_doc_num AS inv_doc_num, i.dispatch_status
+               FROM invoice_batch_alloc a
+               JOIN invoices_received i ON i.id = a.invoice_id
+               WHERE a.invoice_request_id IS NULL
+                 AND a.status = 'attributed'
+                 AND i.dispatch_status = 'dispatched'
+                 AND UPPER(TRIM(a.batch_number)) = UPPER(TRIM($1))
+               ORDER BY i.invoice_date ASC, a.line_num ASC`;
+  const rows = pgPool ? (await pgPool.query(sql, [batch])).rows
+                      : db.prepare(sql.replace(/\$1/g, '?')).all(batch);
+  // NO CUSTOMER FILTER — deliberate, and the third time this lesson has been learned here.
+  // The plan for this build assumed _v48t_custKey would reconcile "ALKEM WELLNUS LTD." (request)
+  // with "ALKEM WELLNESS LIMITED" (invoice 1893). It does not: the normaliser collapses punctuation,
+  // spacing and legal suffixes, but WELLNUS vs WELLNESS is a spelling difference in the core name,
+  // so filtering on it would have excluded the very rows this build exists to match. v48T already
+  // established that these names are too messy to refuse on (209 false flags); the same applies here.
+  // THE BATCH NUMBER IS THE STRONG KEY: an allocation for 26Z070 can only be that physical batch,
+  // and a pending request for 26Z070 is for the same one. Safety comes from the quantity band and
+  // the single-unambiguous-candidate rule below, not from string-matching company names.
+  // Differences are still RECORDED on the reconcile log line for audit.
+  return rows;
+}
+
+// Link ONE allocation row to the request and mark the request reconciled.
+// Deliberately does NOT touch invoices_received.invoice_request_id or source: that column holds a
+// single request and a multi-batch invoice legitimately serves several, so overwriting it would
+// evict whichever request got there first. It is left as the legacy per-invoice field.
+// Guards on both sides keep this idempotent and race-safe.
+async function _applyAllocationReconcile(reqRow, alloc) {
+  if (pgPool) {
+    const r = await pgPool.query(
+      `UPDATE invoice_batch_alloc SET invoice_request_id=$1, updated_at=NOW()::TEXT
+        WHERE id=$2 AND invoice_request_id IS NULL`, [reqRow.id, alloc.id]);
+    if (!r.rowCount) return false;                // another request claimed it first
+    await pgPool.query(
+      `UPDATE invoice_requests
+          SET status='reconciled', sap_response_doc_num=$1, sap_response_doc_entry=$2,
+              reconciled_at=NOW()::TEXT, reconciled_with_invoice_id=$3, updated_at=NOW()::TEXT
+        WHERE id=$4 AND status='pending_reconciliation'`,
+      [String(alloc.inv_doc_num || ''), alloc.sap_doc_entry || null, alloc.invoice_id, reqRow.id]);
+  } else {
+    const r = db.prepare(`UPDATE invoice_batch_alloc SET invoice_request_id=?, updated_at=datetime('now')
+                           WHERE id=? AND invoice_request_id IS NULL`).run(reqRow.id, alloc.id);
+    if (!r.changes) return false;
+    db.prepare(`UPDATE invoice_requests
+                   SET status='reconciled', sap_response_doc_num=?, sap_response_doc_entry=?,
+                       reconciled_at=datetime('now'), reconciled_with_invoice_id=?, updated_at=datetime('now')
+                 WHERE id=? AND status='pending_reconciliation'`)
+      .run(String(alloc.inv_doc_num || ''), alloc.sap_doc_entry || null, alloc.invoice_id, reqRow.id);
+  }
+  const _cd = (_v48t_custKey(reqRow.customer || '') && _v48t_custKey(alloc.inv_customer || '')
+               && _v48t_custKey(reqRow.customer) !== _v48t_custKey(alloc.inv_customer))
+    ? ` [customer differs: request "${reqRow.customer}" vs invoice "${alloc.inv_customer}"]` : '';
+  console.log(`[v48X] reconciled request ${reqRow.id} (${reqRow.batch_number} ${reqRow.qty_lakhs}L) against invoice ${alloc.inv_doc_num} line ${alloc.line_num} (${alloc.qty_lakhs}L)${_cd}`);
+  return true;
+}
+
+// Invoice-side sweep: when an invoice arrives (or is repaired) its allocations may satisfy requests
+// that are still waiting. Guarded and best-effort — reconciliation must never break the invoice pull.
+async function _v48x_sweepInvoiceRequests(invoiceId) {
+  try {
+    const bSql = `SELECT DISTINCT batch_number FROM invoice_batch_alloc
+                   WHERE invoice_id=$1 AND status='attributed' AND invoice_request_id IS NULL
+                     AND batch_number IS NOT NULL AND batch_number <> ''`;
+    const bRows = pgPool ? (await pgPool.query(bSql, [invoiceId])).rows
+                         : db.prepare(bSql.replace(/\$1/g, '?')).all(invoiceId);
+    let cleared = 0;
+    for (const b of bRows) {
+      const rSql = `SELECT * FROM invoice_requests
+                     WHERE status='pending_reconciliation'
+                       AND UPPER(TRIM(batch_number)) = UPPER(TRIM($1))
+                     ORDER BY created_at ASC`;
+      const reqs = pgPool ? (await pgPool.query(rSql, [b.batch_number])).rows
+                          : db.prepare(rSql.replace(/\$1/g, '?')).all(b.batch_number);
+      for (const rq of reqs) {
+        const r = await _v48x_reconcileByAllocation(rq);
+        if (r && r.reconciled) cleared++;
+      }
+    }
+    if (cleared) console.log(`[v48X] invoice ${invoiceId}: cleared ${cleared} pending request(s) via allocation match`);
+    return cleared;
+  } catch (e) { console.warn('[v48X sweep]', e && e.message); return 0; }
+}
+
+// Returns { reconciled } | { proposal } | null — same contract as the header fallback.
+async function _v48x_reconcileByAllocation(reqRow) {
+  const reqQty = parseFloat(reqRow.qty_lakhs) || 0;
+  if (!(reqQty > 0)) return null;
+  let cands;
+  try { cands = await _allocationsForRequest(reqRow); }
+  catch (e) { console.warn('[v48X alloc-recon]', e && e.message); return null; }   // table absent → header path
+  if (!cands.length) return null;
+  const inBand = cands.filter(c => {
+    const q = parseFloat(c.qty_lakhs) || 0;
+    return q >= reqQty * _RECON_UNDER && q <= reqQty * _RECON_OVER;
+  });
+  if (inBand.length === 1) {
+    const ok = await _applyAllocationReconcile(reqRow, inBand[0]);
+    if (ok) return { reconciled: true, invoiceId: inBand[0].invoice_id, allocationId: inBand[0].id };
+    return null;
+  }
+  // Nothing in band, or several equally plausible — never guess. Surface for a human.
+  return {
+    proposal: cands.map(c => ({
+      invoiceId: c.invoice_id, docNum: c.inv_doc_num, sapDocEntry: c.sap_doc_entry,
+      qty: c.qty_lakhs, boxes: c.boxes, line: c.line_num, allocationId: c.id,
+      dispatchStatus: c.dispatch_status, via: 'allocation',
+      note: inBand.length ? `${inBand.length} allocations match this quantity` : `allocation qty ${c.qty_lakhs}L is outside the tolerance band for an ask of ${reqQty}L`,
+    })),
+  };
+}
+
 async function _fallbackReconcileRequest(reqRow) {
   if (!reqRow || reqRow.status !== 'pending_reconciliation') return null;
+  // v48X: try the per-batch allocation match first — it is strictly more precise than the header
+  // match (a real line quantity for THIS batch, rather than a whole-invoice total). The header path
+  // below is retained unchanged for invoices with no allocation rows.
+  const byAlloc = await _v48x_reconcileByAllocation(reqRow);
+  if (byAlloc && byAlloc.reconciled) return byAlloc;
   const cands = await _orphanInvoicesForRequest(reqRow);
+  if (!cands.length && byAlloc && byAlloc.proposal) return byAlloc;
   if (!cands.length) return null;
   const reqQty = parseFloat(reqRow.qty_lakhs) || 0;
   if (cands.length === 1 && reqQty > 0) {
@@ -7274,6 +7431,7 @@ app.post('/api/admin/invoice-payload-repair', async (req, res) => {
         if (pgPool) await pgPool.query(`UPDATE invoices_received SET payload_json=$1 WHERE id=$2`, [payload, row.id]);
         else        db.prepare(`UPDATE invoices_received SET payload_json=? WHERE id=?`).run(payload, row.id);
         const att = await _v48r_recomputeInvoice(row, inv);
+        await _v48x_sweepInvoiceRequests(row.id);   // v48X
         repaired.push({ invoice: row.sap_doc_num, docEntry: row.sap_doc_entry, lines: lines.length,
                         attributed: (att.allocations || []).filter(a => a.status === 'attributed').length,
                         stillFlagged: (att.allocations || []).filter(a => a.status === 'needs_manual').length });
@@ -7358,8 +7516,18 @@ app.get('/api/invoice/allocation-totals', async (req, res) => {
     // so the UI can tell DM that some quantity is unassigned somewhere.
     const uSql = `SELECT COUNT(*) AS n FROM invoice_batch_alloc WHERE status='needs_manual' AND (batch_number IS NULL OR batch_number='')`;
     const uRow = pgPool ? (await pgPool.query(uSql)).rows[0] : db.prepare(uSql).get();
+    // v48X: request IDs already covered by an allocation. planning.html must NOT also count these
+    // as in-flight asks — the quantity would be counted twice (once as the ask, once as the
+    // allocated line), understating what is still available to invoice on a partly-invoiced batch.
+    const lSql = `SELECT DISTINCT invoice_request_id FROM invoice_batch_alloc
+                   WHERE invoice_request_id IS NOT NULL AND status='attributed'`;
+    let linked = [];
+    try {
+      const lRows = pgPool ? (await pgPool.query(lSql)).rows : db.prepare(lSql).all();
+      linked = lRows.map(r => r.invoice_request_id).filter(Boolean);
+    } catch (e) { linked = []; }
     res.json({ ok: true, totals, needsManual, openUnassigned: parseInt(uRow && uRow.n, 10) || 0,
-               batches: Object.keys(totals).length });
+               linkedRequestIds: linked, batches: Object.keys(totals).length });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

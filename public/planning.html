@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v48W</p>
+      <p>Planning Suite v3.0 · build v48X</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6152,6 +6152,10 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
         if (r.status === 'pending' || r.status === 'sent_to_sap' || r.status === 'pending_reconciliation') {
           e._pendingAsk   = (e._pendingAsk   || 0) + (parseFloat(r.qty_lakhs) || 0);
           e._pendingBoxes = (e._pendingBoxes || 0) + (parseInt(r.boxes, 10) || 0);
+          // v48X: remember each ask individually. An ask whose invoice has ALREADY arrived and been
+          // allocated must not be added on top of that allocation — see the overlay below.
+          (e._pendingAskRows = e._pendingAskRows || []).push({
+            id: r.id, qty: parseFloat(r.qty_lakhs) || 0, boxes: parseInt(r.boxes, 10) || 0 });
           // v47U: this batch is credited from the Sunloc request ledger; the unlinked-invoice loop below
           // must NOT also add a direct-SAP invoice's qty for it (double-count guard).
           e._reqCredited47u = true;
@@ -6298,9 +6302,23 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
         window._v48v_allocTotals = _aj.totals;
         window._v48v_allocNeedsManual = _aj.needsManual || {};
         window._v48v_allocOpenUnassigned = _aj.openUnassigned || 0;
+        // v48X: a request that is still 'pending_reconciliation' but whose invoice has already been
+        // received and attributed appears BOTH as an in-flight ask and as an allocated line. Adding
+        // them double-counts: on a partly-invoiced batch that understates the remaining quantity and
+        // wrongly blocks further invoicing (packed 50, allocated 20, same ask 20 → 10 remaining
+        // instead of 30). Net off any ask already linked to an allocation.
+        const _linked = new Set(_aj.linkedRequestIds || []);
         for (const [bn, e] of Object.entries(state)) {
           const a = _aj.totals[bn];
-          const pendQ = e._pendingAsk || 0, pendB = e._pendingBoxes || 0;
+          const _rows = e._pendingAskRows || [];
+          const _open = _rows.filter(r => !_linked.has(r.id));
+          const pendQ = _rows.length
+            ? Math.round(_open.reduce((t, r) => t + r.qty, 0) * 100) / 100
+            : (e._pendingAsk || 0);
+          const pendB = _rows.length
+            ? _open.reduce((t, r) => t + r.boxes, 0)
+            : (e._pendingBoxes || 0);
+          e._askCoveredByAlloc = _rows.length - _open.length;
           if (a) {
             e.invoicedQty   = Math.round((pendQ + (a.qty || 0)) * 100) / 100;
             e.invoicedBoxes = pendB + (a.boxes || 0);
