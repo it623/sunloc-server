@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v48Z</p>
+      <p>Planning Suite v3.0 · build v49</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -815,10 +815,25 @@ const SYNC = (() => {
   async function push(stateObj) {
     if (!_url || !stateObj) return { ok: false };
     try {
+      // v49: tell the server WHICH orders this client actually changed, so it can merge instead of
+      // replacing the whole blob. Without this a planner who edited one date silently reverts every
+      // server-side write made since their page loaded — a re-customer, a W/O reconcile, anything.
+      // The list is the same divergence v48Z computes for edit protection: orders differing from the
+      // last synced snapshot, plus any order with no snapshot entry (locally new).
+      // If this cannot be computed the key is OMITTED, and the server falls back to replacing the
+      // blob exactly as it did before — the fallback is the old behaviour, so nothing can regress.
+      let _changed;
+      try {
+        if (typeof _v48zOrderSnap !== 'undefined' && _v48zOrderSnap.size) {
+          _changed = Object.keys(_v48z_diverged(stateObj.orders, _v48zOrderSnap));
+        }
+      } catch (e) { _changed = undefined; }
+      const _payload = { state: stateObj };
+      if (Array.isArray(_changed)) _payload.changedOrderIds = _changed;
       const r = await fetch(_url + '/api/planning/state', {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ state: stateObj }),
+        body: JSON.stringify(_payload),
         signal: AbortSignal.timeout(30000)
       });
       if (r.ok) {

@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v48Z';
+const APP_BUILD = 'v49';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -8849,6 +8849,55 @@ app.post('/api/planning/state', async (req, res) => {
   try {
     const { state } = req.body;
     if (!state) return res.status(400).json({ ok: false, error: 'No state provided' });
+
+    // ── v49: SELECTIVE ORDER MERGE — protect SERVER-side writes from a stale client blob ──
+    //
+    // ROOT CAUSE THIS FIXES: planning state is one blob and this endpoint replaced it wholesale.
+    // A server-side subsystem writes an order — re-customer sets ord.customer, creates the split
+    // child and reduces the parent; W/O reconcile writes sapDocEntry/sapDocNum — and then ANY
+    // planner whose page loaded before that change saves anything at all, pushing their entire
+    // stale blob back and silently undoing it. Live case: 26P044/26P045 were re-customered to
+    // K Shyam Traders, the labels updated correctly, and Label Generation kept showing Rohan
+    // Pharma because the planning order had been overwritten by a planner's stale copy.
+    //
+    // The client already knows exactly which orders it changed — v48Z derives it by comparing
+    // against the last synced snapshot — so it now sends that list. Orders IN the list take the
+    // client's version; every other order keeps whatever the server currently holds.
+    //
+    // NO-REGRESSION GUARANTEE: if the list is absent (any other caller, an older cached client,
+    // an import, a restore) this block is skipped entirely and the endpoint replaces wholesale
+    // exactly as before. Only the orders array is merged; every other key in the blob is
+    // untouched by this logic.
+    const _chg = req.body && req.body.changedOrderIds;
+    if (Array.isArray(_chg) && Array.isArray(state.orders)) {
+      try {
+        const cur = await getPlanningStateAsync();
+        const curOrders = (cur && Array.isArray(cur.orders)) ? cur.orders : null;
+        if (curOrders && curOrders.length) {
+          const changed = new Set(_chg.map(String));
+          const clientById = new Map();
+          for (const o of state.orders) if (o && o.id) clientById.set(String(o.id), o);
+          const merged = [];
+          const seen = new Set();
+          for (const srv of curOrders) {
+            if (!srv || !srv.id) { merged.push(srv); continue; }
+            const id = String(srv.id);
+            seen.add(id);
+            const cli = clientById.get(id);
+            if (cli && changed.has(id)) merged.push(cli);        // planner genuinely edited it
+            else if (cli) merged.push(srv);                       // untouched → server wins
+            else merged.push(srv);                                // client never had it → keep it
+          }
+          // Orders the client has that the server does not: brand-new locally. Keep them.
+          for (const [id, cli] of clientById) if (!seen.has(id)) merged.push(cli);
+          const _kept = merged.length - state.orders.length;
+          state.orders = merged;
+          console.log(`[v49] selective merge: ${changed.size} client-changed order(s) applied, ${merged.length} total${_kept ? ` (${_kept >= 0 ? '+' : ''}${_kept} vs client blob)` : ''}`);
+        }
+      } catch (e) {
+        console.warn('[v49] selective merge skipped, saving blob as sent:', e && e.message);
+      }
+    }
 
     // Background order merge — runs AFTER response is sent so planning_state save is never blocked
     // With 300+ orders, sequential queries timed out and prevented planning_state from saving
