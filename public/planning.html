@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49B</p>
+      <p>Planning Suite v3.0 · build v49C</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -6452,6 +6452,23 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
           }
           e._allocNeedsManual = (_aj.needsManual || {})[bn] || 0;
           e._allocAuthoritative = !!a;
+          // v49C: the STATE half of the v48V flip. v48V repointed the QUANTITY at invoice_batch_alloc
+          // but left hasReceived / docNum / dispatchStatus on the reconstruction above, which cannot
+          // reach a batch whose invoice carries a multi-batch key — the key is used as a single batch
+          // name (deliberate, v47R) and matches no batch row. Result: correct balances beside a badge
+          // frozen on "Awaiting SAP Invoice" (26ZD109, 26ZD110, 26Z069, 26ZE100). Fill the flags from
+          // the same per-line attribution the quantity already trusts.
+          // ORDER MATTERS: the linked/unlinked loop above wins wherever it ran — every field here is
+          // gap-filling only, so v47R's bulk-invoice protection and the linked path are both untouched.
+          const _st49c = (_aj.invState || {})[bn];
+          if (a && _st49c && !e.hasReceived) {
+            e.hasReceived    = true;
+            e.docNum         = e.docNum         || _st49c.docNum         || null;
+            e.dispatchStatus = e.dispatchStatus || _st49c.dispatchStatus || null;
+            e.dispatchedAt   = e.dispatchedAt   || _st49c.dispatchedAt   || null;
+            e.vehicleNo      = e.vehicleNo      || _st49c.vehicleNo      || null;
+            e.invoiceId      = e.invoiceId      || _st49c.invoiceId      || null;
+          }
         }
       }
     } catch (e) {
@@ -9914,6 +9931,15 @@ function _v44r_stallBadge(p) {
   const EPS = 0.01;
   // invoiced-but-not-dispatched (boxes committed, not physically out) — the key "finish the dispatch" nudge
   if (f.invQty != null) {
+    // v49C (confirmed by Ishan): OVER-INVOICED takes precedence over both nudges below and replaces
+    // them outright. Neither is actionable once invoiced exceeds packed — "to dispatch" would ask the
+    // floor for stock that was never packed (live: 26ZE101 offered 28.00L against 7 remaining boxes,
+    // 57.75L invoiced vs 42.00L packed), and "to invoice" is already negative so it never rendered.
+    // The excess is the only fact anyone can act on, and until now it appeared nowhere on the row.
+    const over49c = Math.round((f.invQty - f.packedQty) * 100) / 100;
+    if (over49c >= EPS) {
+      return `<span title="Invoiced ${fmt(f.invQty)}L against ${fmt(f.packedQty)}L packed — excess ${fmt(over49c)}L. Verify the SAP invoices for this batch; nothing is blocked." style="display:inline-block;margin-left:4px;background:rgba(220,38,38,0.14);color:#dc2626;border:1px solid rgba(220,38,38,0.35);padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">⚠ ${fmt(over49c)}L over-invoiced</span>`;
+    }
     const undisp = Math.round((f.invQty - f.dispQty) * 100) / 100;
     if (undisp >= EPS) {
       return `<span title="${fmt(undisp)}L invoiced but not yet scanned out — physical dispatch is pending" style="display:inline-block;margin-left:4px;background:rgba(255,171,0,0.14);color:#ffab00;border:1px solid rgba(255,171,0,0.3);padding:1px 5px;border-radius:3px;font-size:9px;font-weight:700">⏳ ${fmt(undisp)}L to dispatch</span>`;
@@ -10035,6 +10061,17 @@ function _v40_isInvoiceEligible(p, ord) {
   const invoicedQty = (invState && invState.invoicedQty) || 0;
   const remainingQty = Math.round((packedOut - invoicedQty) * 100) / 100;
   const anyInvoiced = !!(invState && (invState.hasPending || invState.hasReceived));
+  // v49C: a NEGATIVE remainder is not the same condition as a satisfied one. Both previously fell
+  // into the branch below and returned an identical "Fully invoiced" row, so an over-invoiced batch
+  // was indistinguishable from a cleanly closed one — the state was not hidden by accident, there
+  // was simply no branch for it. Eligibility is unchanged (still not invoiceable); this only gives
+  // the renderer something to say.
+  if (anyInvoiced && remainingQty <= -0.01) {
+    const excessQty = Math.round((invoicedQty - packedOut) * 100) / 100;
+    return { eligible: false,
+             reason: `Over-invoiced by ${excessQty.toFixed(2)}L — ${invoicedQty.toFixed(2)}L invoiced against ${packedOut.toFixed(2)}L packed`,
+             alreadyInvoiced: true, state: 'over_invoiced', remainingQty: 0, excessQty };
+  }
   if (anyInvoiced && remainingQty < 0.01) {
     // Fully invoiced — packed quantity is entirely accounted for.
     return { eligible: false, reason: invState.hasReceived ? 'Fully invoiced' : 'Delivery already sent', alreadyInvoiced: true, state: invState.hasReceived ? 'invoiced' : 'pending', remainingQty: 0 };
@@ -10126,7 +10163,7 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
     } else {
       return `<span title="${elig.reason}" style="display:inline-flex;align-items:center;padding:3px 6px;background:rgba(0,0,0,0.05);border-radius:3px;font-size:11px;color:var(--text3);opacity:0.6">
         <input type="checkbox" disabled style="margin-right:4px">
-        ${elig.alreadyInvoiced ? (elig.state==='invoiced'?'Invoiced':'Sent') : 'N/A'}
+        ${elig.alreadyInvoiced ? (elig.state==='over_invoiced'?'Over-inv':(elig.state==='invoiced'?'Invoiced':'Sent')) : 'N/A'}
       </span>`;
     }
   }
@@ -10172,7 +10209,27 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
     const _invd = Math.round((invState.invoicedQty || 0) * 100) / 100;
     const _remQ = Math.round((_pkd - _invd) * 100) / 100;
     const _bd = ` · Packed ${_pkd.toFixed(2)}L / Invoiced ${_invd.toFixed(2)}L / Balance ${_remQ.toFixed(2)}L`;
-    const _badge = `<button class="btn btn-ghost btn-sm" title="${tooltip}${_bd}" onclick="_v39_showInvoiceState('${batch}')" style="color:${color}">${status}</button>`;
+    // v49C: UNALLOCATED LINES. A needs_manual line is credited to no batch, so a batch whose invoice
+    // could not be attributed shows the same "⏳ Awaiting SAP Invoice" as one with no invoice at all —
+    // the exact symptom DM reported, from a different cause. v48V computed `_allocNeedsManual` "so the
+    // UI can mark the figure provisional" but nothing ever rendered it: tracking surfaces the queue and
+    // a nav count, planning showed nothing and gave no pointer to where it is resolved. Say it on the
+    // row and name the destination. Alert only; the badge and any balance button still render.
+    const _nm49c = parseInt(invState._allocNeedsManual, 10) || 0;
+    const _nmB = _nm49c > 0
+      ? `<button class="btn btn-ghost btn-sm" title="${_nm49c} invoice line(s) for this batch could not be matched to a batch automatically, so their quantity is counted against no batch and the figures above are provisional. Resolve in Tracking → Invoice Allocation." onclick="_v39_showInvoiceState('${batch}')" style="color:#f59e0b;font-weight:700;font-size:11px;margin-left:4px">⚠ ${_nm49c} line${_nm49c > 1 ? 's' : ''} unallocated</button>`
+      : '';
+    const _badge = `<button class="btn btn-ghost btn-sm" title="${tooltip}${_bd}" onclick="_v39_showInvoiceState('${batch}')" style="color:${color}">${status}</button>` + _nmB;
+    // v49C: invoiced beyond packed. Previously _remQ went negative, the >= 0.01 test below failed,
+    // and the row rendered the bare badge — visually identical to a cleanly fully-invoiced batch, so
+    // 26ZE101's 15.75L excess was invisible at the point of work while sitting unread as one of 351
+    // integrity warnings. State it on the row instead. Alert only; nothing is blocked.
+    if (_remQ <= -0.01) {
+      const _ex49c = Math.round((_invd - _pkd) * 100) / 100;
+      const _exMsg = `Over-invoiced: ${_invd.toFixed(2)}L invoiced against ${_pkd.toFixed(2)}L packed — excess ${_ex49c.toFixed(2)}L. Verify the SAP invoices for this batch.`;
+      const _exBadge = `<button class="btn btn-ghost btn-sm" title="${_exMsg}" onclick="_v39_showInvoiceState('${batch}')" style="color:#dc2626;font-weight:700;font-size:11px;margin-left:4px">⚠ ${_ex49c.toFixed(2)}L over-invoiced</button>`;
+      return _badge + _exBadge;
+    }
     if (_remQ >= 0.01) {
       // v44ZF Issue 3: accept the PO/reference field as the SO link here too (see _hasSO note below),
       // so the balance-invoice button appears for PO-linked manual orders instead of the "needs SAP SO" hint.

@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49B';
+const APP_BUILD = 'v49C';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -7539,8 +7539,51 @@ app.get('/api/invoice/allocation-totals', async (req, res) => {
       const lRows = pgPool ? (await pgPool.query(lSql)).rows : db.prepare(lSql).all();
       linked = lRows.map(r => r.invoice_request_id).filter(Boolean);
     } catch (e) { linked = []; }
+    // v49C: per-batch INVOICE STATE, from the same authoritative per-line attribution.
+    // WHY: planning.html attributes an UNLINKED invoice to its batch_number key AS STORED — that is
+    // deliberate (v47R), so bulk invoice 9038 could not stamp 26X082 as dispatched. The side effect is
+    // that a multi-batch key ("26ZD109, 26ZD110") matches no batch row, leaving hasReceived / docNum /
+    // dispatchStatus unreachable for every batch on such an invoice. Those rows then sit on
+    // "Awaiting SAP Invoice" forever even after the request reconciles, because _applyAllocationReconcile
+    // deliberately does not write invoices_received.invoice_request_id (live: 26ZD109, 26ZD110, 26Z069,
+    // 26ZE100 — all with correct quantities and a stuck badge). v48V flipped the QUANTITY consumer to
+    // invoice_batch_alloc but left the STATE flags on the reconstruction; this supplies the other half.
+    // Deriving state per LINE is exactly as safe as the quantity already is, and does not reopen v47R:
+    // a bulk invoice's lines each name their own batch, so nothing is attributed by guesswork.
+    // Precedence within a batch: a dispatched invoice wins, else the most recent invoice_date.
+    const sSql = `SELECT a.batch_number, i.id AS invoice_id, i.sap_doc_num, i.sap_invoice_no,
+                         i.dispatch_status, i.dispatched_at, i.vehicle_no, i.invoice_date
+                    FROM invoice_batch_alloc a
+                    JOIN invoices_received i ON i.id = a.invoice_id
+                   WHERE a.status = 'attributed'
+                     AND a.batch_number IS NOT NULL AND a.batch_number <> ''`;
+    const invState = {};
+    try {
+      const sRows = pgPool ? (await pgPool.query(sSql)).rows : db.prepare(sSql).all();
+      const _rank = (d) => (d === 'dispatched' || d === 'deemed_dispatched') ? 2 : (d === 'partial' ? 1 : 0);
+      for (const r of sRows) {
+        const b = r.batch_number;
+        const cand = {
+          invoiceId: r.invoice_id,
+          docNum: r.sap_doc_num || r.sap_invoice_no || null,
+          dispatchStatus: r.dispatch_status || null,
+          dispatchedAt: r.dispatched_at || null,
+          vehicleNo: r.vehicle_no || null,
+          _r: _rank(r.dispatch_status),
+          _d: String(r.invoice_date || ''),
+        };
+        const cur = invState[b];
+        if (!cur || cand._r > cur._r || (cand._r === cur._r && cand._d > cur._d)) invState[b] = cand;
+      }
+      for (const b of Object.keys(invState)) { delete invState[b]._r; delete invState[b]._d; }
+    } catch (e) {
+      // Additive overlay only — totals above remain valid without it, so a failure here degrades to
+      // prior behaviour rather than breaking the endpoint.
+      console.warn('[v49C] per-batch invoice state unavailable:', e.message);
+    }
+
     res.json({ ok: true, totals, needsManual, openUnassigned: parseInt(uRow && uRow.n, 10) || 0,
-               linkedRequestIds: linked, batches: Object.keys(totals).length });
+               linkedRequestIds: linked, invState, batches: Object.keys(totals).length });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
