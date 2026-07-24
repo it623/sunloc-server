@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49E';
+const APP_BUILD = 'v49F';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1508,6 +1508,47 @@ async function _consolidatePlanningStateRows() {
       }
     }
   } catch (e) { console.warn('[v46D] planning_state consolidation skipped:', e.message); }
+}
+
+// ── v49F (confirmed by Ishan — "re-customer is authoritative and sticky") ──────────────────────
+// Root cause of "the re-customer doesn't stick": every production_orders merge writer builds its
+// result as { ...clientOrder, <named guarded fields> }. Two consequences, both live on 26P044/26P045:
+//   A. FIELD LOSS — recustomeredFrom/At/By are on neither the guarded list nor the client blob, so
+//      they were erased on the next sync. Exactly ONE order table-wide still carried the marker.
+//   B. CUSTOMER REVERT — the guard was `_staleWrite = dbUpdated > clientEdit + 5000`, a race. A tab
+//      with a fresh _localEditedAt beat a day-old server write and pushed the OLD customer back.
+//      Both batches were stamped 24-Jul 07:22:40.123485 to the microsecond by one bulk push, ~19h
+//      after their re-customer. tracking_labels — which no client blob touches — stayed correct.
+// The rule now: once an order carries recustomeredAt, `customer` and the re-customer provenance come
+// from the DB unconditionally. No time comparison — that race IS the bug. This removes no planner
+// control: the order modal has no `customer` input (fo-customer writes shipTo), so customer is only
+// ever set by SAP import, W/O approval, Re-customer and the reconcile banner. shipTo/billTo remain
+// freely planner-editable under the existing rules.
+// SAP (option A): a client must not restore the Sales Order the re-customer deliberately retired —
+// `sapDocNum` uses ||-chaining, which reads the cleared '' as absent and falls back to the client's
+// old value, re-attaching the previous customer's SO. Only that exact retired value is rejected; any
+// other SO a planner enters passes through normally.
+function _v49f_rcLock(merged, dbData) {
+  try {
+    if (!merged || !dbData || dbData.recustomeredAt == null) return merged;
+    const out = { ...merged };
+    if (dbData.customer != null) {
+      if (String(out.customer||'').trim() !== String(dbData.customer||'').trim()) {
+        console.log(`[v49F] re-customer lock: ${out.batchNumber||out.id} customer "${out.customer}" -> "${dbData.customer}" (client push rejected)`);
+      }
+      out.customer = dbData.customer;
+    }
+    for (const k of ['recustomeredFrom','recustomeredAt','recustomeredBy','recustomerSplitFrom','prevSapDocNum']) {
+      if (dbData[k] != null) out[k] = dbData[k];
+    }
+    const _prevSO = String(dbData.prevSapDocNum == null ? '' : dbData.prevSapDocNum).trim();
+    if (_prevSO && String(out.sapDocNum == null ? '' : out.sapDocNum).trim() === _prevSO) {
+      console.log(`[v49F] re-customer lock: ${out.batchNumber||out.id} retired SO ${_prevSO} restore blocked`);
+      out.sapDocNum   = String(dbData.sapDocNum == null ? '' : dbData.sapDocNum);
+      out.sapDocEntry = dbData.sapDocEntry != null ? dbData.sapDocEntry : null;
+    }
+    return out;
+  } catch (e) { console.warn('[v49F] rcLock skipped:', e && e.message); return merged; }
 }
 
 function getPlanningState() {
@@ -7922,6 +7963,7 @@ app.post('/api/orders/upsert', async (req, res) => {
     if (preserved) {
       console.log(`[v41x upsert] Preserved DB status on ${ord.id} (client="${ord.status}" → DB="${finalStatus}", stale write blocked)`);
     }
+    mergedOrd = _v49f_rcLock(mergedOrd, exData);   // v49F: re-customer is authoritative
     const json = JSON.stringify(mergedOrd);
     if (pgPool) {
       await pgPool.query(`
@@ -8395,6 +8437,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           endDate:   ord.endDate   || exData.endDate   || null,
         };
       }
+      mergedOrd = _v49f_rcLock(mergedOrd, exData);   // v49F: re-customer is authoritative
       const json = JSON.stringify(mergedOrd);
       mergedList.push({ row: mergedOrd, json, finalStatus, finalDeleted });
     }
@@ -8936,13 +8979,16 @@ app.post('/api/planning/state', async (req, res) => {
             // re-customer — observed live on 26P044/26P045, where customer AND recustomeredAt
             // disappeared together. Now only the fields the planner actually changed are taken.
             const flds = _fldMap && _fldMap[id];
-            if (flds === '*' || !Array.isArray(flds)) { merged.push(cli); continue; }  // locally new / no detail → whole object
+            // v49F: the whole-object fallback is kept (a locally-new order has no server copy to merge
+            // against), but the re-customer lock is re-applied so a missing field map can never
+            // wholesale-revert a re-customered order the way it did on 26P044/26P045.
+            if (flds === '*' || !Array.isArray(flds)) { merged.push(_v49f_rcLock(cli, srv)); continue; }  // locally new / no detail → whole object
             const out = { ...srv };
             for (const k of flds) {
               if (Object.prototype.hasOwnProperty.call(cli, k)) out[k] = cli[k];
               else delete out[k];                                  // planner removed the field
             }
-            merged.push(out);
+            merged.push(_v49f_rcLock(out, srv));   // v49F: re-customer is authoritative
           }
           // Orders the client has that the server does not: brand-new locally. Keep them.
           for (const [id, cli] of clientById) if (!seen.has(id)) merged.push(cli);
@@ -9115,7 +9161,7 @@ app.post('/api/planning/state', async (req, res) => {
                 endDate:   ex.endDate   || ord.endDate   || null,
               };
             }
-            return mergedOrd;
+            return _v49f_rcLock(mergedOrd, ex);   // v49F: re-customer is authoritative
           }));
 
           const CHUNK = 500;
