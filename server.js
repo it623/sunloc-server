@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49D';
+const APP_BUILD = 'v49E';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -10662,6 +10662,113 @@ app.post('/api/admin/repair-printed-labels', async (req, res) => {
   }
 });
 
+// ── v49E (confirmed by Ishan): BACKFILL the ship-to / bill-to residue left by every re-customer done
+// before this build. /api/tracking/recustomer wrote ord.customer and never touched shipTo/billTo, so
+// the OLD customer's name survived on both fields while `customer` held the new one. Every display
+// prefers shipTo, so those batches kept showing the previous customer.
+//
+// Qualifying test — a record is touched ONLY when all three hold:
+//   1. the order was re-customered            (recustomeredFrom present)
+//   2. shipTo and/or billTo STILL equal recustomeredFrom  (i.e. untouched residue)
+//   3. customer holds the NEW name            (customer !== recustomeredFrom)
+// Action: blank the matching field(s). Nothing else on the record changes.
+//
+// Deliberately NOT touched:
+//   · anything a planner has typed since the re-customer — if the field is any value other than the
+//     old name it is left exactly as it is. This is what protects a genuine third-party ship-to.
+//   · orders never re-customered, where a differing bill-to is a real commercial arrangement
+//   · split PARENTS, which keep customer A legitimately — they carry no recustomeredFrom, so test 1
+//     already excludes them; test 3 is a second guard.
+// Both stores are covered with the same test: the planning order (blob + production_orders) and
+// tracking_labels.ship_to/bill_to for that batch.
+// Dry-run by default — returns the full before/after list and writes nothing. {"confirm":true} writes.
+// Idempotent: once blanked, a field no longer equals recustomeredFrom, so a re-run matches nothing.
+app.post('/api/admin/repair-recustomer-shipto', async (req, res) => {
+  try {
+    const confirm = !!(req.body && req.body.confirm);
+    const only = Array.isArray(req.body && req.body.batches) ? req.body.batches.filter(Boolean).map(String) : [];
+    if (!pgPool) return res.status(400).json({ ok:false, error:'repair supported on Postgres only' });
+    const norm = v => String(v == null ? '' : v).trim().toLowerCase();
+
+    const plan = await getPlanningStateAsync();
+    const orders = (plan && Array.isArray(plan.orders)) ? plan.orders : [];
+    const candidates = [];
+    for (const o of orders) {
+      if (!o || o.deleted) continue;
+      if (only.length && !only.includes(String(o.batchNumber||''))) continue;
+      const rf = norm(o.recustomeredFrom);
+      if (!rf) continue;                       // test 1 — never re-customered (also excludes split parents)
+      const cust = norm(o.customer);
+      if (!cust || cust === rf) continue;      // test 3 — customer must already hold the NEW name
+      const shipHit = norm(o.shipTo) === rf;   // test 2 — per field, residue only
+      const billHit = norm(o.billTo) === rf;
+      if (!shipHit && !billHit) continue;
+      candidates.push({ id:o.id, batchNumber:o.batchNumber||'', customer:o.customer||'',
+        recustomeredFrom:o.recustomeredFrom||'',
+        shipTo:{ before:o.shipTo||'', after: shipHit ? '' : (o.shipTo||''), cleared:shipHit },
+        billTo:{ before:o.billTo||'', after: billHit ? '' : (o.billTo||''), cleared:billHit } });
+    }
+
+    // Labels carrying the same residue, counted per batch under the identical test.
+    for (const c of candidates) {
+      c.labels = { shipToRows:0, billToRows:0 };
+      if (!c.batchNumber) continue;
+      const lr = await pgPool.query(
+        `SELECT COUNT(*) FILTER (WHERE LOWER(TRIM(COALESCE(ship_to,''))) = LOWER(TRIM($2)))::int AS ship_rows,
+                COUNT(*) FILTER (WHERE LOWER(TRIM(COALESCE(bill_to,''))) = LOWER(TRIM($2)))::int AS bill_rows
+         FROM tracking_labels WHERE batch_number=$1 AND COALESCE(voided,0)=0`,
+        [c.batchNumber, c.recustomeredFrom]);
+      c.labels = { shipToRows: lr.rows[0]?.ship_rows || 0, billToRows: lr.rows[0]?.bill_rows || 0 };
+    }
+
+    if (!confirm) {
+      return res.json({ ok:true, dryRun:true, ordersMatched:candidates.length,
+        labelRowsShipTo: candidates.reduce((a,c)=>a+(c.labels.shipToRows||0),0),
+        labelRowsBillTo: candidates.reduce((a,c)=>a+(c.labels.billToRows||0),0),
+        candidates,
+        note:'Dry-run — nothing written. Re-POST with {"confirm":true} to blank the fields listed above.' });
+    }
+
+    // ── LIVE. Blob first, then production_orders per touched order, then the labels.
+    let ordersWritten = 0, labelRowsWritten = 0;
+    const byId = new Set(candidates.map(c=>c.id));
+    for (const o of orders) {
+      if (!byId.has(o.id)) continue;
+      const c = candidates.find(x=>x.id===o.id);
+      if (c.shipTo.cleared) o.shipTo = '';
+      if (c.billTo.cleared) o.billTo = '';
+      o._localEditedAt = Date.now();          // server write must win the client staleness guard
+    }
+    await savePlanningState(plan);
+    _planningStateCache = plan; _planningStateCacheTime = Date.now();
+    for (const c of candidates) {
+      const o = orders.find(x=>x.id===c.id);
+      if (!o) continue;
+      await pgPool.query(
+        `INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+         VALUES ($1,$2,$3,$4,$5,false,NOW()::TEXT)
+         ON CONFLICT(id) DO UPDATE SET data_json=$2, machine_id=$3, batch_number=$4, status=$5, deleted=false, updated_at=NOW()::TEXT`,
+        [o.id, JSON.stringify(o), o.machineId||null, o.batchNumber, o.status||'running']);
+      ordersWritten++;
+      if (!c.batchNumber) continue;
+      const u = await pgPool.query(
+        `UPDATE tracking_labels
+            SET ship_to = CASE WHEN LOWER(TRIM(COALESCE(ship_to,''))) = LOWER(TRIM($2)) THEN NULL ELSE ship_to END,
+                bill_to = CASE WHEN LOWER(TRIM(COALESCE(bill_to,''))) = LOWER(TRIM($2)) THEN NULL ELSE bill_to END
+          WHERE batch_number=$1 AND COALESCE(voided,0)=0
+            AND (LOWER(TRIM(COALESCE(ship_to,''))) = LOWER(TRIM($2)) OR LOWER(TRIM(COALESCE(bill_to,''))) = LOWER(TRIM($2)))`,
+        [c.batchNumber, c.recustomeredFrom]);
+      labelRowsWritten += (u.rowCount || 0);
+    }
+    try { logAudit('system','admin','tracking','RECUSTOMER_SHIPTO_BACKFILL', JSON.stringify({ orders:ordersWritten, labelRows:labelRowsWritten, batches:candidates.map(c=>c.batchNumber) }), req.ip); } catch(e) {}
+    console.log(`[v49E] recustomer ship/bill backfill: ${ordersWritten} order(s), ${labelRowsWritten} label row(s)`);
+    res.json({ ok:true, dryRun:false, ordersWritten, labelRowsWritten, candidates });
+  } catch (err) {
+    console.error('[repair-recustomer-shipto]', err.message);
+    res.status(500).json({ ok:false, error: err.message });
+  }
+});
+
 // v45Z (confirmed by Ishan): REPAIR existing export-invoice quantities written before the UoM fix.
 // For every invoices_received row whose payload_json lines include a THOUSAND-UoM line, recompute
 // total_qty_lakhs with the per-line scale; where the linked tracking_dispatch_records row still
@@ -17690,10 +17797,10 @@ app.post('/api/tracking/recustomer', async (req, res) => {
       // Re-batch the moved labels + ALL their scans to the child (in place — no void/mint, ids preserved).
       for (const l of moveLabels) {
         if (pgPool) {
-          await pgPool.query(`UPDATE tracking_labels SET batch_number=$1, customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE id=$6`, [childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id]);
+          await pgPool.query(`UPDATE tracking_labels SET batch_number=$1, customer=$2, po_number=COALESCE($3,po_number), ship_to=$4, bill_to=$5, printed=0, printed_at=NULL, qr_data=NULL WHERE id=$6`, [childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id]);
           await pgPool.query(`UPDATE tracking_scans SET batch_number=$1 WHERE label_id=$2`, [childBatch, l.id]);
         } else {
-          db.prepare(`UPDATE tracking_labels SET batch_number=?, customer=?, po_number=COALESCE(?,po_number), ship_to=COALESCE(?,ship_to), bill_to=COALESCE(?,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE id=?`).run(childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id);
+          db.prepare(`UPDATE tracking_labels SET batch_number=?, customer=?, po_number=COALESCE(?,po_number), ship_to=?, bill_to=?, printed=0, printed_at=NULL, qr_data=NULL WHERE id=?`).run(childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id);
           db.prepare(`UPDATE tracking_scans SET batch_number=? WHERE label_id=?`).run(childBatch, l.id);
         }
       }
@@ -17701,7 +17808,12 @@ app.post('/api/tracking/recustomer', async (req, res) => {
       const parentActual = parseFloat(ord?.actualProd || ord?.actualQty || 0);
       const child = {
         ...(ord||{}), id: childBatch, batchNumber: childBatch, customer: newCustomer,
-        shipTo: shipTo||newCustomer, billTo: billTo||'', poNumber: newPoNumber||'',
+        // v49E (confirmed by Ishan): the child is CLEARED, not pre-filled. shipTo defaulted to
+        // newCustomer, which put a guessed address line where the planner's real ship-to belongs.
+        // Blank makes every display fall back to `customer` — the field re-customer writes
+        // correctly — and leaves the planner an obviously-empty field to complete. The PARENT is
+        // untouched: it keeps customer A, so its own ship/bill remain valid.
+        shipTo: shipTo||'', billTo: billTo||'', poNumber: newPoNumber||'',
         qty: +boxesToLakhsServer(nSplit, size).toFixed(4), totalBoxes: nSplit,
         actualProd: +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
         actualQty:  +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
@@ -17726,17 +17838,26 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     } else {
       // ── FULL switch: in-place customer/address/PO update + forced reprint on the original batch.
       if (pgPool) {
-        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=COALESCE($4,ship_to), bill_to=COALESCE($5,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
+        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=$4, bill_to=$5, printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
         await pgPool.query(`UPDATE tracking_dispatch_records SET customer=$2 WHERE batch_number=$1`, [batchNumber, newCustomer]);
         await pgPool.query(`UPDATE invoice_requests SET customer=$2, card_code=COALESCE($3,card_code), po_number=COALESCE($4,po_number), updated_at=NOW()::TEXT WHERE batch_number=$1 AND status='pending' AND sap_doc_entry IS NULL`, [batchNumber, newCustomer, newCardCode||null, newPoNumber||null]);
       } else {
-        db.prepare(`UPDATE tracking_labels SET customer=?, po_number=COALESCE(?,po_number), ship_to=COALESCE(?,ship_to), bill_to=COALESCE(?,bill_to), printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=? AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`).run(newCustomer, newPoNumber||null, shipTo||null, billTo||null, batchNumber);
+        db.prepare(`UPDATE tracking_labels SET customer=?, po_number=COALESCE(?,po_number), ship_to=?, bill_to=?, printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=? AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`).run(newCustomer, newPoNumber||null, shipTo||null, billTo||null, batchNumber);
         db.prepare(`UPDATE tracking_dispatch_records SET customer=? WHERE batch_number=?`).run(newCustomer, batchNumber);
         db.prepare(`UPDATE invoice_requests SET customer=?, card_code=COALESCE(?,card_code), po_number=COALESCE(?,po_number), updated_at=datetime('now') WHERE batch_number=? AND status='pending' AND sap_doc_entry IS NULL`).run(newCustomer, newCardCode||null, newPoNumber||null, batchNumber);
       }
       if (ord) {
         ord.recustomeredFrom = ord.customer || oldCustomer;
         ord.customer = newCustomer;
+        // v49E (confirmed by Ishan): the full switch wrote ord.customer and never touched shipTo/billTo,
+        // so the OLD customer's name survived on both — and since every display prefers shipTo
+        // (planning renders `ord.shipTo || ord.customer`, ZPL the same), the batch went on showing the
+        // previous customer everywhere except Label Generation, which happens to read customer first.
+        // 26P045 is the evidence: customer K SHYAM TRADER with shipTo and billTo both ROHAN PHARMA
+        // PRIVATE LTD. Assign the supplied values, or BLANK when none are given — blanking is what makes
+        // both fields fall back to `customer`, which is already correct. No copying, no guessing.
+        ord.shipTo = shipTo || '';
+        ord.billTo = billTo || '';
         if (newPoNumber) ord.poNumber = newPoNumber;
         // v49B: retire the previous customer's SO. sapDocEntry is SAP's internal key which no
         // operator can know, so it is always cleared and left for the reconcile path to resolve.

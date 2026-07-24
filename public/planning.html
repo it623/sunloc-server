@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49D</p>
+      <p>Planning Suite v3.0 · build v49E</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -3714,8 +3714,13 @@ async function _reconcileCustomerMismatch(idx) {
   if (!ord) { alert('Order no longer in state. Refresh and try again.'); return; }
   if (!confirm(`Update batch ${m.batchNumber}:\n\nFrom: ${ord.customer || ord.shipTo}\nTo:   ${m.labelCustomer}\n\nThis will update the Production Planning record to match the labels.\nProceed?`)) return;
   ord.customer = m.labelCustomer;
-  ord.shipTo   = m.labelCustomer;
-  // billTo stays as-is unless user manually re-edits
+  // v49E (confirmed by Ishan): CLEAR both rather than copying the label customer into shipTo and
+  // leaving billTo alone. Copying re-created the same residue this banner exists to remove — a stale
+  // billTo from the previous customer survived every reconcile, and shipTo held a guessed value the
+  // planner never entered. Blank makes both fall back to `customer`, which this line has just set
+  // correctly, and leaves the planner an empty field to fill per normal practice.
+  ord.shipTo   = '';
+  ord.billTo   = '';
   _localOrderChanges[ord.id] = Date.now();
   ord._localEditedAt = Date.now(); // v47 Point 1: fresh stamp so this customer change wins the server staleness guard
   saveState();
