@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49C</title>
+<title>Sunloc Tracking Suite v1.0 · build v49D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49C</p>
+      <p>Tracking Suite v1.0 · build v49D</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49C</p>
+      <p>Tracking Suite v1.0 · build v49D</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9769,10 +9769,22 @@ function _rptB_wipBoxChips(batchNo, dept){
   // month-scoped. Fallback to the current-stage view only when the month set isn't loaded.
   const _md = (typeof _v41_useMonthAttributed!=='undefined' && _v41_useMonthAttributed) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
   const serials = (_md && _md.wipBoxes && (_md.wipBoxes[batchNo]||{})[dept]) || null;
+  // v49D (confirmed by Ishan): the WIP COUNT is now net of PI remelt while this list stays the physical
+  // set, so length no longer equals the count - deliberately, because which boxes were remelted is not
+  // recorded anywhere. State it instead of leaving the reader to notice N chips under a smaller heading.
+  // It resolves itself once the remaining good boxes are scanned out.
+  let _note49d = '';
+  const _w49d = (_md && _md.wastage && (_md.wastage[batchNo]||{})[dept]) || null;
+  const _rem49d = (dept === 'pi' && _w49d) ? (parseFloat(_w49d.remelt) || 0) : 0;
+  if (_rem49d > 0) {
+    const _ps49d = PACK_SIZES[String((getLabelsByBatch(batchNo)[0] || {}).size)] || 0;
+    const _rb49d = _ps49d > 0 ? Math.round(_rem49d / _ps49d) : 0;
+    if (_rb49d > 0) _note49d = '<div class="text-sm" style="margin-bottom:6px;padding:5px 8px;border-radius:4px;background:rgba(255,171,0,0.10);color:#d97706;border:1px solid rgba(255,171,0,0.28)">\u26a0 ' + _rb49d + ' box' + (_rb49d>1?'es':'') + ' (' + _rem49d.toFixed(2) + 'L) remelted at PI and never scanned out. The WIP count is net of these; which physical boxes they are is not recorded, so every box still scanned in is listed below. This resolves once the remaining good boxes are scanned out.</div>';
+  }
   if (serials) {
     if(!serials.length) return '<span class="text-sm text-muted">No boxes in WIP at this department for this month.</span>';
     const chips = serials.map(box=>`<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(8,145,178,0.1);border:1px solid rgba(8,145,178,0.35);color:#0e7490">${box}</span>`).join('');
-    return `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${serials.length}</b> box${serials.length>1?'es':''} in WIP at ${DEPT_LABELS[dept]||dept} (this month):</div>${chips}`;
+    return _note49d + `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${serials.length}</b> box${serials.length>1?'es':''} in WIP at ${DEPT_LABELS[dept]||dept} (this month):</div>${chips}`;
   }
   const labels = getLabelsByBatch(batchNo).filter(l=>!_isSpecimenLabel(l) && getBoxCurrentStage(l.id)===dept)
     .sort((a,b)=>Math.abs(a.labelNumber||0)-Math.abs(b.labelNumber||0));
@@ -9781,7 +9793,7 @@ function _rptB_wipBoxChips(batchNo, dept){
     const box = l.isExcess ? ('E-'+(l.excessNum||Math.abs(l.labelNumber||0))) : String(Math.abs(l.labelNumber||0));
     return `<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(8,145,178,0.1);border:1px solid rgba(8,145,178,0.35);color:#0e7490${l.voided?';opacity:0.5;text-decoration:line-through':''}"${l.isPartial?' title="Partial box"':''}>${box}</span>`;
   }).join('');
-  return `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${labels.length}</b> box${labels.length>1?'es':''} currently in WIP at ${DEPT_LABELS[dept]||dept}:</div>${chips}`;
+  return _note49d + `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${labels.length}</b> box${labels.length>1?'es':''} currently in WIP at ${DEPT_LABELS[dept]||dept}:</div>${chips}`;
 }
 function _rptB_toggleWipBoxes(batchNo, dept, rowId){
   const tr = document.getElementById(rowId);
@@ -11598,13 +11610,38 @@ function _rptBRow(batchNo, dept, U){
   // and _rptB_wipBoxChips renders the SAME list, so clicking N always shows those N boxes. Falls back to
   // the frozen net formula only when the month set isn't loaded (e.g. Excel export without the cache).
   const _wipSet = (_bMd && _bMd.wipBoxes && (_bMd.wipBoxes[batchNo]||{})[dept]) || null;
-  const wip = _wipSet ? _wipSet.length : Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes));
+  // v49D (confirmed by Ishan): PI is split away from Printing, which netted nothing on the month-set path
+  // and so reported phantom WIP for every batch carrying PI wastage.
+  //   QTY  - base is the ACTUAL summed quantity of the labels still in the dept (server wipQtys), not
+  //          box-count x nominal pack size. Nominal overstates any batch whose last box is a partial
+  //          (generateLabels isPartialLast), which is routine. Salvage AND remelt are both subtracted:
+  //          on July data the floor records PI salvage as a wastage row while the labels keep their full
+  //          quantity (26ZE101: printing scan-out is exactly 33 x 1.75 = 57.75L with 0.52L salvage
+  //          logged), so the wastage row is the only record of it and must come off here.
+  //   BOXES - remelt only. Salvage takes material OUT of boxes that remain physically present and keep
+  //          travelling; remelt destroys whole boxes that are never scanned out and would otherwise sit
+  //          in the WIP set forever. Rounded at nominal pack size.
+  // NOT changed: getBatchWIPBreakdown and getBatchAGrade already subtract PI salvage and stay as they
+  // are, so July figures are untouched. If the floor later amends label quantities at PI to carry
+  // salvage, all three sites double-count and must be revisited together - that is the August spec.
+  // Printing and AIM are untouched here.
+  const _piSal49d     = (dept === 'pi' && hasWastage) ? (w.salvage || 0) : 0;
+  const _piRem49d     = (dept === 'pi' && hasWastage) ? (w.remelt || 0) : 0;
+  const _piRemBox49d  = _piRem49d > 0 ? Math.round(_piRem49d / ps) : 0;
+  const _rawRemain49d = _wipSet ? _wipSet.length : Math.max(0, inn - out);
+  const _piWipQty49d  = (dept === 'pi' && _bMd && _bMd.wipQtys)
+    ? ((_bMd.wipQtys[batchNo] || {})[dept]) : null;
+  const wip = dept === 'pi'
+    ? Math.max(0, _rawRemain49d - _piRemBox49d)
+    : (_wipSet ? _wipSet.length : Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes)));
   // v46E (confirmed by Ishan): AIM Dept WIP (qty) nets remelt — Scan In − Remelt − Scan Out — so
   // Report B/D reconcile with Report E and getBatchWIPBreakdown. WIP boxes stay the physical inn−out
-  // count. Printing/PI keep box-rounded wastage netting (via wip) unchanged.
+  // count. Printing keeps box-rounded wastage netting (via wip); PI is handled above (v49D).
   const wipQty = dept==='aim'
-    ? Math.max(0, innQty - w.remelt - outQty)   // v47G: per-box Scan-In − Remelt − Scan-Out
-    : boxToLakh(wip,_bSize45y);                  // printing/PI keep the frozen box-net WIP qty
+    ? Math.max(0, innQty - w.remelt - outQty)
+    : dept==='pi'
+      ? Math.max(0, (_piWipQty49d != null ? _piWipQty49d : boxToLakh(_rawRemain49d,_bSize45y)) - _piSal49d - _piRem49d)
+      : boxToLakh(wip,_bSize45y);
   const grossProd = _bMd
     ? ((batchNo in (_bMd.monthGross||{})) ? (parseFloat(_bMd.monthGross[batchNo])||0)
        : (((parseFloat(batch?.actualProd)||0) === 0 && _trkProdStartMonth(batch||{})===_trkSelectedMonth) ? _reconGross(batch) : 0))

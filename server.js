@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49C';
+const APP_BUILD = 'v49D';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -16052,6 +16052,7 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
     // or absorbed into the re-printed last label that scans out (printed), and remelt is phased out — so
     // scan-in − scan-out is the whole story at the box level. Same window (start/end) as the counts above.
     const wipBoxes = {};
+    const wipQtys  = {};   // v49D: actual label-qty sum per batch/dept for the same WIP set
     try {
       let wrows;
       if (pgPool) {
@@ -16064,7 +16065,7 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
              SELECT DISTINCT label_id, dept FROM tracking_scans
              WHERE type='out' AND label_id NOT LIKE 'recon-%'
            )
-           SELECT l.batch_number, i.dept, l.label_number, l.is_orange, l.is_excess
+           SELECT l.batch_number, i.dept, l.label_number, l.is_orange, l.is_excess, l.qty, l.size
            FROM ins i
            JOIN tracking_labels l ON l.id = i.label_id
            LEFT JOIN outs o ON o.label_id = i.label_id AND o.dept = i.dept
@@ -16081,7 +16082,7 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
              SELECT DISTINCT label_id, dept FROM tracking_scans
              WHERE type='out' AND label_id NOT LIKE 'recon-%'
            )
-           SELECT l.batch_number, i.dept, l.label_number, l.is_orange, l.is_excess
+           SELECT l.batch_number, i.dept, l.label_number, l.is_orange, l.is_excess, l.qty, l.size
            FROM ins i
            JOIN tracking_labels l ON l.id = i.label_id
            LEFT JOIN outs o ON o.label_id = i.label_id AND o.dept = i.dept
@@ -16097,12 +16098,24 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
         if (!wipBoxes[bn]) wipBoxes[bn] = {};
         if (!wipBoxes[bn][r.dept]) wipBoxes[bn][r.dept] = [];
         wipBoxes[bn][r.dept].push((Number(r.is_excess) || num < 0) ? ('E-' + Math.abs(num)) : String(Math.abs(num)));
+        // v49D (confirmed by Ishan): ACTUAL quantity of the boxes still in the department, summed from
+        // the label rows themselves rather than box-count x nominal pack size. PI salvage is taken out
+        // of boxes that are already scanned in, and the floor records it by amending those labels down
+        // (a part-box cannot travel to packing any other way). Nominal sizing cannot see that amendment,
+        // so Report B's PI leg reported the pre-salvage figure. Falls back to nominal only when a label
+        // carries no qty. Parallel to wipBoxes — the array shape is untouched, so every existing consumer
+        // (count, chip list, sort) is unaffected.
+        const _ps49d = { '00':0.75, '0':1.00, '1':1.25, '2':1.75, '3':2.25, '4':3.00 }[String(r.size)] || 0;
+        const _q49d = (r.qty === null || r.qty === undefined || !Number.isFinite(Number(r.qty)))
+          ? _ps49d : Number(r.qty);
+        if (!wipQtys[bn]) wipQtys[bn] = {};
+        wipQtys[bn][r.dept] = Math.round(((wipQtys[bn][r.dept] || 0) + _q49d) * 100) / 100;
       });
       Object.values(wipBoxes).forEach(byDept => Object.values(byDept).forEach(arr =>
         arr.sort((a,b)=> (parseInt(String(a).replace(/\D/g,''),10)||0) - (parseInt(String(b).replace(/\D/g,''),10)||0))));
     } catch(e) { console.warn('[agrade-by-month] wipBoxes query failed:', e.message); }
 
-    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross, monthMachine, splitFamilies: _splitFamsForClient, wipBoxes });
+    res.json({ ok:true, month:ym, window:{ start, end }, summary, wastage, crossMonth, monthGross, monthMachine, splitFamilies: _splitFamsForClient, wipBoxes, wipQtys });
   } catch(err) {
     console.error('[agrade-by-month]', err.message);
     res.status(500).json({ ok:false, error: err.message });
