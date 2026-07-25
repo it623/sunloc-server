@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49F';
+const APP_BUILD = 'v49G';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1528,6 +1528,119 @@ async function _consolidatePlanningStateRows() {
 // `sapDocNum` uses ||-chaining, which reads the cleared '' as absent and falls back to the client's
 // old value, re-attaching the previous customer's SO. Only that exact retired value is rejected; any
 // other SO a planner enters passes through normally.
+// ── v49G (confirmed by Ishan — option B) ─────────────────────────────────────────────────────
+// The status guard has flipped genuine closes back to "running". Root cause, evidenced in the deploy
+// logs (`[v41x upsert] ... client="closed" -> DB="running", stale write blocked`): the guard decides
+// staleness with `dbUpdated > clientEdit + 5000`, comparing two clocks that are NOT comparable.
+// `dbUpdated` (production_orders.updated_at) is bumped by EVERY writer — the DPR poller, the v45R
+// tracking-reconcile sweep, other planners — while `clientEdit` (_localEditedAt) moves only when THIS
+// planner edits. So seconds after any background write, the planner's real close reads as "stale" and
+// the guard restores the DB's running. The close silently vanishes; refresh shows running again. The
+// query proves the wreckage: 26ZB101 had status=running, manualEndDate=true, closedDate set — a
+// self-contradictory row, because status was reverted independently of the fields a close writes.
+//
+// Fix: an EXPLICIT manual status decision by the planner carries intent that a timestamp race must not
+// override. A close is explicit when the incoming order asserts closedDate/manualEndDate; a reopen when
+// it clears them while carrying a fresh edit stamp. When intent is present, the client's status wins and
+// status+closedDate+manualEndDate are written as ONE set, so the record can never again disagree with
+// itself. The timestamp guard stays for everything else (a background path still can't regress a status
+// nobody deliberately changed).
+//
+// Option B (DPR gate preserved): a batch flagged "Close in DPR first" — has production (actualProd>0)
+// and is NOT in dpr_batch_closed — must still be closed THROUGH DPR. An explicit direct close on such a
+// batch is REFUSED (status held) and surfaced, rather than silently reverted. Non-gated batches close
+// normally on explicit intent. _v49gDprClosedSet is warmed once per request (mirrors _grossByBatch).
+let _v49gDprClosedSet = null;
+// v49G option (ii): batches that have a reopen-log row AND are currently open (no dpr_batch_closed row)
+// — i.e. legitimately reopened via the guarded path and awaiting their single round-trip re-close.
+// A direct Planning close on one of THESE is allowed (and cascades to re-close DPR) instead of being
+// refused by the DPR-first gate. Once re-closed it gains a dpr_batch_closed row and drops out of this
+// set, so the exemption covers exactly one re-close, never permanently disarms the gate on the batch.
+let _v49gReopenedOpenSet = null;
+async function _v49gWarmReopenedOpen() {
+  const set = new Set();
+  try {
+    let rows;
+    const q = `SELECT r.order_id, r.batch_number FROM dpr_batch_reopen_log r
+               LEFT JOIN dpr_batch_closed c ON c.order_id = r.order_id
+               WHERE c.order_id IS NULL`;
+    if (pgPool) rows = (await pgPool.query(q)).rows;
+    else rows = db.prepare(`SELECT r.order_id, r.batch_number FROM dpr_batch_reopen_log r
+               LEFT JOIN dpr_batch_closed c ON c.order_id = r.order_id
+               WHERE c.order_id IS NULL`).all();
+    for (const r of (rows || [])) {
+      if (r.order_id)     set.add('id:'    + r.order_id);
+      if (r.batch_number) set.add('batch:' + String(r.batch_number).trim().toLowerCase());
+    }
+  } catch (e) { console.warn('[v49G] reopened-open warm failed:', e && e.message); }
+  _v49gReopenedOpenSet = set;
+  return set;
+}
+function _v49gIsReopenedOpen(ord) {
+  if (!_v49gReopenedOpenSet) return false;
+  if (ord.id && _v49gReopenedOpenSet.has('id:' + ord.id)) return true;
+  if (ord.batchNumber && _v49gReopenedOpenSet.has('batch:' + String(ord.batchNumber).trim().toLowerCase())) return true;
+  return false;
+}
+async function _v49gWarmDprClosed() {
+  const set = new Set();
+  try {
+    let rows;
+    if (pgPool) rows = (await pgPool.query('SELECT order_id, batch_number FROM dpr_batch_closed')).rows;
+    else rows = db.prepare('SELECT order_id, batch_number FROM dpr_batch_closed').all();
+    for (const r of (rows || [])) {
+      if (r.order_id)    set.add('id:'    + r.order_id);
+      if (r.batch_number) set.add('batch:' + String(r.batch_number).trim().toLowerCase());
+    }
+  } catch (e) { console.warn('[v49G] DPR-closed warm failed:', e && e.message); }
+  _v49gDprClosedSet = set;
+  return set;
+}
+function _v49gIsDprClosed(ord) {
+  if (!_v49gDprClosedSet) return false;
+  if (ord.id && _v49gDprClosedSet.has('id:' + ord.id)) return true;
+  if (ord.batchNumber && _v49gDprClosedSet.has('batch:' + String(ord.batchNumber).trim().toLowerCase())) return true;
+  return false;
+}
+// Does the incoming client order assert an explicit CLOSE? (planner ticked/closed it)
+function _v49gExplicitClose(cli) {
+  return String(cli && cli.status) === 'closed' && !!(cli.closedDate || cli.manualEndDate);
+}
+// Does it assert an explicit REOPEN? (was closed, planner set it running and stamped the edit)
+// The client's changeOrderStatus sets status=running + closedDate=null + a fresh _localEditedAt but
+// does NOT clear manualEndDate, so we key on those three signals; the override then clears manualEndDate.
+function _v49gExplicitReopen(cli, dbStatus) {
+  return String(cli && cli.status) === 'running' && String(dbStatus) === 'closed'
+      && !cli.closedDate && !!(cli && cli._localEditedAt);
+}
+// Central decision. Returns { status, override, refusedDprGate } or null when no explicit intent
+// (caller then falls back to the existing timestamp guard, unchanged).
+// override, when true, means "write status + closedDate + manualEndDate together from the client".
+function _v49gStatusIntent(cli, dbStatus) {
+  if (_v49gExplicitClose(cli)) {
+    if (_v49gIsDprClosed(cli)) {
+      // already DPR-closed — an explicit close is consistent, let it through
+      return { status: 'closed', override: true, refusedDprGate: false };
+    }
+    // v49G option (ii): a batch reopened via the guarded path and still open may be re-closed from
+    // Planning (its single round-trip). Allow it AND signal the DPR-close cascade so all three apps
+    // re-close together. Not permanent — once re-closed it leaves _v49gReopenedOpenSet.
+    if (_v49gIsReopenedOpen(cli)) {
+      return { status: 'closed', override: true, refusedDprGate: false, cascadeDprClose: true };
+    }
+    const gated = (parseFloat(cli.actualProd || 0) > 0);   // has production but not DPR-closed → gated
+    if (gated) {
+      console.log(`[v49G] DPR-gate: direct close on ${cli.batchNumber||cli.id} refused — close in DPR first`);
+      return { status: dbStatus || 'running', override: false, refusedDprGate: true };
+    }
+    return { status: 'closed', override: true, refusedDprGate: false };
+  }
+  if (_v49gExplicitReopen(cli, dbStatus)) {
+    return { status: 'running', override: true, refusedDprGate: false };
+  }
+  return null;
+}
+
 function _v49f_rcLock(merged, dbData) {
   try {
     if (!merged || !dbData || dbData.recustomeredAt == null) return merged;
@@ -7874,6 +7987,8 @@ app.post('/api/orders/upsert', async (req, res) => {
   try {
     const ord = req.body;
     if (!ord || !ord.id) return res.status(400).json({ ok: false, error: 'id required' });
+    await _v49gWarmDprClosed();   // v49G: DPR-closed set for the option-B close gate
+    await _v49gWarmReopenedOpen();   // v49G option (ii): reopened-and-open set for the single re-close exemption
 
     // v41x FIX: apply the same conflict-resolution guard as /api/orders/upsert-bulk and
     // POST /api/planning/state. The single-order upsert was unconditionally overwriting
@@ -7886,6 +8001,8 @@ app.post('/api/orders/upsert', async (req, res) => {
     let finalActualProd = ord.actualProd || 0;
     let mergedOrd = ord;
     let preserved = false;
+    let _v49gDprRefused = false;   // v49G: hoisted so the response can report the DPR-gate refusal
+    let _v49gCascadeDprClose = false;   // v49G option (ii): re-close of a reopened batch must re-close DPR
     let existing = null;
     try {
       if (pgPool) {
@@ -7900,8 +8017,23 @@ app.post('/api/orders/upsert', async (req, res) => {
       try { exData = typeof existing.data_json === 'string' ? JSON.parse(existing.data_json) : (existing.data_json || {}); } catch(e) {}
       const clientEdit = parseInt(ord._localEditedAt || 0);
       const dbUpdated  = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
+      let _v49gOverride = false;
       if (existing.status && ord.status && existing.status !== ord.status) {
-        if (dbUpdated > clientEdit + 5000) {
+        // v49G: an explicit planner close/reopen wins over the timestamp race (option B honours the
+        // DPR gate). Only when there is NO explicit intent do we fall back to the old staleness guard.
+        const _intent = _v49gStatusIntent(ord, existing.status);
+        if (_intent) {
+          finalStatus = _intent.status;
+          if (_intent.refusedDprGate) { preserved = true; _v49gDprRefused = true; }
+          if (_intent.cascadeDprClose) { _v49gCascadeDprClose = true; }
+          if (_intent.override) {
+            _v49gOverride = true;
+            // status + closedDate + manualEndDate move as one set so the row can't self-contradict
+            ord.status = _intent.status;
+            if (_intent.status === 'closed') { ord.manualEndDate = true; ord.closedDate = ord.closedDate || new Date().toISOString(); }
+            else { ord.manualEndDate = false; ord.closedDate = null; }
+          }
+        } else if (dbUpdated > clientEdit + 5000) {
           finalStatus = existing.status;
           preserved = true;
         }
@@ -7942,7 +8074,10 @@ app.post('/api/orders/upsert', async (req, res) => {
         startDate:       hasManualDate ? exData.startDate   : ord.startDate,
         endDate:         hasManualDate ? exData.endDate     : ord.endDate,
         manualStartDate: exData.manualStartDate || ord.manualStartDate,
-        manualEndDate:   exData.manualEndDate   || ord.manualEndDate,
+        // v49G: on an explicit status override, manualEndDate/closedDate follow the client's decision
+        // (a reopen CLEARS them); otherwise the existing DB-wins behaviour is unchanged.
+        manualEndDate:   _v49gOverride ? (ord.manualEndDate || false) : (exData.manualEndDate || ord.manualEndDate),
+        closedDate:      _v49gOverride ? (ord.closedDate || null)     : (ord.closedDate != null ? ord.closedDate : (exData.closedDate || null)),
         // v47E (confirmed by Ishan): SAP refs + PO are now STAMP-AWARE. A stale client still cannot
         // blank/revert them (DB wins), but a FRESH stamped edit — e.g. a planner correcting a wrong
         // Sales Order Number — wins, so corrections hold instead of bouncing back to the old value.
@@ -7982,7 +8117,27 @@ app.post('/api/orders/upsert', async (req, res) => {
         status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
         .run(mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null, finalStatus, finalDeleted?1:0);
     }
-    res.json({ ok: true, preserved, savedAt: new Date().toISOString() });
+    // v49G option (ii): a re-close of a legitimately-reopened batch cascades to DPR — write the
+    // dpr_batch_closed row so DPR and Tracking re-close together with Planning. This is the second
+    // leg of the round-trip; the once-only reopen guard means the batch can't reopen again after this.
+    if (_v49gCascadeDprClose && finalStatus === 'closed') {
+      try {
+        const _cb = mergedOrd.batchNumber || null;
+        if (pgPool) {
+          await pgPool.query(
+            `INSERT INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
+             VALUES ($1,$2,NOW(),$3,$4) ON CONFLICT(order_id) DO UPDATE SET closed_at=NOW()`,
+            [mergedOrd.id, _cb, 'planning-cascade', 'Re-closed from Planning after reopen (v49G cascade)']);
+        } else {
+          db.prepare(`INSERT OR REPLACE INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
+             VALUES (?,?,datetime('now'),?,?)`).run(mergedOrd.id, _cb, 'planning-cascade', 'Re-closed from Planning after reopen (v49G cascade)');
+        }
+        console.log(`[v49G] cascade: re-close of reopened batch ${_cb||mergedOrd.id} written to dpr_batch_closed`);
+      } catch (e) { console.warn('[v49G] DPR-close cascade failed:', e && e.message); }
+    }
+    res.json({ ok: true, preserved, dprGateRefused: !!_v49gDprRefused,
+               dprGateMessage: _v49gDprRefused ? 'Close in DPR first' : undefined,
+               savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -8264,6 +8419,8 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
   try {
     const { orders } = req.body;
     if (!Array.isArray(orders)) return res.status(400).json({ ok: false, error: 'orders array required' });
+    await _v49gWarmDprClosed();   // v49G: DPR-closed set for the option-B close gate
+    await _v49gWarmReopenedOpen();   // v49G option (ii): reopened-and-open set for the single re-close exemption
 
     // v41w FIX: this endpoint is called on every page load (loadState migration push) AND
     // whenever a client wants to sync. Previously it unconditionally overwrote DB.status with
@@ -8332,6 +8489,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
       let finalDeleted = ord.deleted || false;
       let finalActualProd = ord.actualProd || 0;
       let mergedOrd = ord;
+      let _v49gOverride2 = false;   // v49G: explicit status override for this order
       const existing = existingMap[ord.id];
       if (existing) {
         let exData = {};
@@ -8347,8 +8505,24 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         const _dbIsRunningOrClosed = existing.status === 'running' || existing.status === 'closed';
         const _clientIsRunningOrClosed = ord.status === 'running' || ord.status === 'closed';
 
+        // v49G: an EXPLICIT planner close/reopen must win here first — this branch (the old "PERMANENT
+        // STATUS PROTECTION") preserved DB status unconditionally when it differed, which is precisely
+        // what discarded genuine closes (log: client="closed" -> DB="running", stale write blocked).
+        // Option B: a DPR-gated batch is still refused rather than silently reverted.
+        const _intent2 = _v49gStatusIntent(ord, existing.status);
+        if (_intent2) {
+          finalStatus = _intent2.status;
+          if (_intent2.refusedDprGate) {
+            preservedCount++;
+            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status, dprGateRefused: true });
+          } else if (_intent2.override) {
+            _v49gOverride2 = true;
+            ord.status = _intent2.status;
+            if (_intent2.status === 'closed') { ord.manualEndDate = true; ord.closedDate = ord.closedDate || new Date().toISOString(); }
+            else { ord.manualEndDate = false; ord.closedDate = null; }
+          }
         // If DB already has running/closed — preserve it always, client cannot overwrite
-        if (_dbIsRunningOrClosed && ord.status !== existing.status) {
+        } else if (_dbIsRunningOrClosed && ord.status !== existing.status) {
           finalStatus = existing.status;
           preservedCount++;
           preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
@@ -8421,7 +8595,9 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           startDate:       hasManualDate ? exData.startDate   : ord.startDate,
           endDate:         hasManualDate ? exData.endDate     : ord.endDate,
           manualStartDate: exData.manualStartDate || ord.manualStartDate,
-          manualEndDate:   exData.manualEndDate   || ord.manualEndDate,
+          // v49G: an explicit status override lets the client's manualEndDate/closedDate win (reopen clears them)
+          manualEndDate:   _v49gOverride2 ? (ord.manualEndDate || false) : (exData.manualEndDate || ord.manualEndDate),
+          closedDate:      _v49gOverride2 ? (ord.closedDate || null)     : (ord.closedDate != null ? ord.closedDate : (exData.closedDate || null)),
           // v47E (confirmed by Ishan): stamp-aware SAP refs + PO — stale can't blank, fresh edit wins.
           sapDocEntry: _staleWrite ? (exData.sapDocEntry || ord.sapDocEntry || null) : (ord.sapDocEntry || exData.sapDocEntry || null),
           sapDocNum:   _staleWrite ? (exData.sapDocNum   || ord.sapDocNum   || '')   : (ord.sapDocNum   || exData.sapDocNum   || ''),
@@ -8935,6 +9111,8 @@ app.post('/api/planning/state', async (req, res) => {
   try {
     const { state } = req.body;
     if (!state) return res.status(400).json({ ok: false, error: 'No state provided' });
+    await _v49gWarmDprClosed();   // v49G: DPR-closed set for the option-B close gate
+    await _v49gWarmReopenedOpen();   // v49G option (ii): reopened-and-open set for the single re-close exemption
 
     // ── v49: SELECTIVE ORDER MERGE — protect SERVER-side writes from a stale client blob ──
     //
@@ -9226,8 +9404,23 @@ app.post('/api/planning/state', async (req, res) => {
             const clientEdit = parseInt(ord._localEditedAt || 0);
             const dbUpdated  = dbRow.updated_at ? new Date(dbRow.updated_at).getTime() : 0;
             let result = ord;
-            // Status: DB wins if meaningfully newer
-            if (dbRow.status && ord.status && dbRow.status !== ord.status && dbUpdated > clientEdit + 5000) {
+            // v49G: explicit planner close/reopen wins over the timestamp guard; DPR-gated closes are
+            // refused (status held to DB) rather than silently reverted (option B).
+            const _intent3 = _v49gStatusIntent(ord, dbRow.status);
+            if (_intent3) {
+              if (_intent3.refusedDprGate) {
+                result = { ...result, status: dbRow.status };
+                blobPreservedCount++;
+                preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber || null, machineId: ord.machineId || null, clientStatus: ord.status, dbStatus: dbRow.status, dprGateRefused: true });
+              } else if (_intent3.override) {
+                if (_intent3.status === 'closed') {
+                  result = { ...result, status: 'closed', manualEndDate: true, closedDate: (ord.closedDate || new Date().toISOString()) };
+                } else {
+                  result = { ...result, status: 'running', manualEndDate: false, closedDate: null };
+                }
+              }
+            // Status: DB wins if meaningfully newer (no explicit intent)
+            } else if (dbRow.status && ord.status && dbRow.status !== ord.status && dbUpdated > clientEdit + 5000) {
               result = { ...result, status: dbRow.status };
               blobPreservedCount++;
               preservedOrders.push({
@@ -11282,11 +11475,16 @@ app.post('/api/dpr/batch-reopen', async (req, res) => {
     if (!closedRow) return res.status(409).json({ ok: false, error: 'Batch is not currently closed in DPR.' });
     if (reopenRow)  return res.status(409).json({ ok: false, error: 'This batch has already been reopened once and cannot be reopened again. Contact Admin.' });
 
-    // Same-IST-day guard: the close date (IST) must equal today (IST).
+    // v49G: 2-day reopen window (was same-day). A batch may be reopened on the day it was closed
+    // OR the following IST calendar day — i.e. the IST-day difference must be 0 or 1. Once-only guard
+    // above is unchanged; this only widens the time window.
     const closeDayIST = _istYMD(closedRow.closed_at);
     const todayIST    = _istYMD(new Date().toISOString());
-    if (closeDayIST && todayIST && closeDayIST !== todayIST) {
-      return res.status(409).json({ ok: false, error: `Reopen window expired. A batch can only be reopened on the same day it was closed (closed ${closeDayIST}, today ${todayIST}). Contact Admin.` });
+    if (closeDayIST && todayIST) {
+      const _dayDiff = Math.round((Date.parse(todayIST) - Date.parse(closeDayIST)) / 86400000);
+      if (!(Number.isFinite(_dayDiff) && _dayDiff >= 0 && _dayDiff <= 1)) {
+        return res.status(409).json({ ok: false, error: `Reopen window expired. A batch can be reopened within 2 days of closing (closed ${closeDayIST}, today ${todayIST}). Contact Admin.` });
+      }
     }
 
     // Perform: record the reopen (blocks future reopens) then delete the closed row.

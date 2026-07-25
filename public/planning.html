@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49F</p>
+      <p>Planning Suite v3.0 · build v49G</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2289,6 +2289,18 @@ async function saveState() {
           // Force a re-render so the user sees the correction immediately
           try { if (typeof render === 'function') render(); } catch(e) {}
         }
+        // v49G: if any correction was a DPR-gate refusal (a close on a batch with production that isn't
+        // DPR-closed yet), tell the planner plainly instead of the batch just quietly staying open.
+        try {
+          const _gated = preserved.filter(p => p && p.dprGateRefused);
+          if (_gated.length > 0) {
+            const _names = _gated.map(p => p.batchNumber || p.id).join(', ');
+            const _plural = _gated.length > 1;
+            const _msg = `${_names}: Close in DPR first — ${_plural?'these batches have':'this batch has'} production recorded, so ${_plural?'they':'it'} must be closed in DPR before being closed in Planning.`;
+            if (typeof toast === 'function') toast(_msg, '#c77700', 7000);
+            else alert('⚠️ ' + _msg);
+          }
+        } catch(e) {}
       }
       try { localStorage.setItem('sunloc_state', JSON.stringify(toSave)); } catch(e) {}
       _pendingSave = null;
@@ -4024,6 +4036,13 @@ function changeOrderStatus(ordId, machineId, newStatus) {
   } else {
     ord.closedDate = null;
   }
+  // v49G option A cascade: reopening a CLOSED batch in Planning must also reopen it in DPR (Route 1 —
+  // through the guarded endpoint, so the once-only + 2-day window are honoured in one place). If the
+  // endpoint refuses (already reopened, or window expired), revert locally and tell the planner why.
+  if (_prevStatus === 'closed' && newStatus === 'running') {
+    _v49gReopenViaDpr(ord, _prevStatus, machineId);
+    return;  // _v49gReopenViaDpr finishes the save/render on success, or reverts on refusal
+  }
   // v37E PL1: protect this local change from being overwritten by next server sync
   _localOrderChanges[ordId] = Date.now();
   recalcMachineSchedule(machineId);
@@ -5145,8 +5164,75 @@ async function _pushOrderOnce(ord){
       method:'POST', headers:{'Content-Type':'application/json'},
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
-    return !!(r && r.ok);
+    if (!(r && r.ok)) return false;
+    // v49G: the server refuses a direct close on a batch that has production but isn't yet DPR-closed
+    // (option B). Surface it so the planner isn't left wondering why the batch stayed open, and revert
+    // the local order to match the server so the two don't diverge.
+    try {
+      const _j = await r.clone().json();
+      if (_j && _j.dprGateRefused) _v49gHandleDprGateRefused(ord);
+    } catch(e) {}
+    return true;
   } catch(e){ return false; }
+}
+// v49G option A cascade (Route 1): drive a Planning reopen through the guarded DPR reopen endpoint.
+// On success the batch is live in all three apps and we complete the local save/render. On refusal
+// (already reopened once, or the 2-day window expired) we revert the local status and tell the planner.
+async function _v49gReopenViaDpr(ord, prevStatus, machineId) {
+  const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
+  const _revert = (msg) => {
+    ord.status = prevStatus;                 // back to closed
+    ord.closedDate = ord.closedDate || new Date();
+    try { render(); } catch(e) {}
+    if (typeof toast === 'function') toast(msg, '#c77700', 8000);
+    else alert('⚠️ ' + msg);
+  };
+  if (!_url) { _revert('Reopen needs a server connection. Please retry when online.'); return; }
+  try {
+    const r = await fetch(_url + '/api/dpr/batch-reopen', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ orderId: ord.id, batchNumber: ord.batchNumber || null,
+                             reopenedBy: (typeof currentUser === 'object' && currentUser && currentUser.username) || 'Planner' }),
+      signal: AbortSignal.timeout(8000)
+    });
+    let j = {}; try { j = await r.json(); } catch(e) {}
+    if (r.ok && j && j.ok) {
+      // reopened in DPR too — persist the Planning status and refresh
+      _localOrderChanges[ord.id] = Date.now();
+      recalcMachineSchedule(machineId);
+      upsertOrderToDB(ord);
+      saveState();
+      auditLog('ORDER_STATUS', `${machineId} · ${ord.batchNumber||ord.poNumber||ord.id} (${ord.customer||'—'}) reopened (DPR cascade)`);
+      render();
+      if (typeof toast === 'function') toast(`${ord.batchNumber||ord.id}: reopened in Planning, DPR and Tracking.`, '#2e7d32', 5000);
+    } else {
+      const _bn = ord.batchNumber || ord.id;
+      _revert(`${_bn}: ${ (j && j.error) || 'Reopen was refused.' }`);
+    }
+  } catch (e) {
+    _revert(`${ord.batchNumber||ord.id}: reopen failed (${e && e.message ? e.message : 'network error'}). Batch left closed.`);
+  }
+}
+
+// v49G option (ii): reconcile local state with a server DPR-gate refusal and tell the planner in plain terms.
+function _v49gHandleDprGateRefused(pushedOrd) {
+  try {
+    const live = state.orders.find(o => o.id === (pushedOrd && pushedOrd.id));
+    if (live && live.status === 'closed') {
+      // the server kept it running/pending; mirror that locally and drop the stale close stamps
+      live.status = 'running';
+      live.closedDate = null;
+      live.manualEndDate = false;
+      if (typeof _localOrderChanges === 'object') delete _localOrderChanges[live.id];
+      try { render(); } catch(e) {}
+    }
+    const _bn = (live && (live.batchNumber || live.poNumber)) || (pushedOrd && (pushedOrd.batchNumber || pushedOrd.poNumber)) || 'This batch';
+    if (typeof toast === 'function') {
+      toast(`${_bn}: Close in DPR first — this batch has production recorded, so it must be closed in DPR before it can be closed in Planning.`, '#c77700', 7000);
+    } else {
+      alert(`⚠️ ${_bn} — Close in DPR first\n\nThis batch has production recorded against it, so it must be closed in DPR before it can be closed in Planning.\n\nClose it in the DPR module, then close it here.`);
+    }
+  } catch(e) {}
 }
 let _flushingPendingOrders = false;
 async function flushPendingOrders(){
