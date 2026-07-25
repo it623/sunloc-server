@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49J';
+const APP_BUILD = 'v49M';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1575,6 +1575,18 @@ async function _v49gWarmReopenedOpen() {
   } catch (e) { console.warn('[v49G] reopened-open warm failed:', e && e.message); }
   _v49gReopenedOpenSet = set;
   return set;
+}
+// v49K (confirmed by Ishan): the v41z 2-per-machine running limit counts any order whose status field
+// is 'running'. A batch closed in DPR whose closure did not propagate to `status` ("lost in transit")
+// still reads running, inflates the machine count past 2, and makes v41z downgrade a GENUINELY running
+// order to pending — the status flip the planner sees. Fix: an order that is closed in DPR
+// (dpr_batch_closed has a row) must NOT count toward the running limit, regardless of its stale status.
+// Uses the already-warmed _v49gDprClosedSet. Row shape here is {id, batch_number} or an order object.
+function _v49kCountsAsRunning(id, row) {
+  if (!row || row.status !== 'running' || row.deleted) return false;
+  const probe = { id: id != null ? id : row.id, batchNumber: row.batch_number || row.batchNumber };
+  if (_v49gIsDprClosed(probe)) return false;   // DPR-closed ghost — do not count
+  return true;
 }
 function _v49gIsReopenedOpen(ord) {
   if (!_v49gReopenedOpenSet) return false;
@@ -8463,7 +8475,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
     const dbRunningPerMachine = {};
     const _dbRunningOrderIds = {};
     const _allRunningRows = Object.entries(existingMap)
-      .filter(([, row]) => row && row.status === 'running' && !row.deleted)
+      .filter(([id, row]) => _v49kCountsAsRunning(id, row))   // v49K: DPR-closed ghosts don't count
       .sort((a, b) => {
         const ta = a[1].updated_at ? new Date(a[1].updated_at).getTime() : 0;
         const tb = b[1].updated_at ? new Date(b[1].updated_at).getTime() : 0;
@@ -8814,6 +8826,7 @@ app.post('/api/machines/master', async (req, res) => {
 // GET full planning state — uses direct pg pool for large JSON
 app.get('/api/planning/state', async (req, res) => {
   try {
+    await _v49gWarmDprClosed();   // v49K: DPR-closed set for the running-count exclusion + ghost correction
     // v45N: the tracking app requests ?reconcile=1 so blob status is reconciled DB-authoritatively
     // even when the blob was re-saved with a stale 'pending' AFTER the DB went 'running' (the v45
     // month-rollover case — batches active in DPR/production_orders but sitting 'pending' in the blob,
@@ -8892,6 +8905,15 @@ app.get('/api/planning/state', async (req, res) => {
             o.deleted = true;
             reconciledCount++;
             return;
+          }
+          // v49K (confirmed by Ishan): a ghost that is 'running' in the blob but CLOSED in DPR
+          // ("lost in transit" closure) must be corrected to 'closed'. This is not an auto-revert to
+          // pending — it promotes a stale-running order to its true, DPR-authoritative closed state, so
+          // it stops inflating the v41z running count and causing real running orders to be downgraded.
+          if (o.status === 'running' && _v49gIsDprClosed({ id: o.id, batchNumber: o.batchNumber })) {
+            o.status = 'closed';
+            reconciledCount++;
+            console.log(`[v49K GET reconcile] ${o.batchNumber||o.id} is DPR-closed but blob said running — corrected to closed`);
           }
           const dbUpd = dbO._dbUpdatedAt ? new Date(dbO._dbUpdatedAt).getTime() : 0;
           // Only override if DB is meaningfully newer than blob's last save (30s grace) AND statuses differ.
@@ -9216,7 +9238,7 @@ app.post('/api/planning/state', async (req, res) => {
           const dbRunningPerMachine = {};
           const _bgRunningOrderIds = {};
           const _bgAllRunning = Object.entries(existingMap)
-            .filter(([, o]) => o && o.status === 'running' && o.machineId && !o.deleted)
+            .filter(([id, o]) => o && o.machineId && _v49kCountsAsRunning(id, o))   // v49K: DPR-closed ghosts don't count
             .sort((a, b) => {
               const ta = a[1].updated_at ? new Date(a[1].updated_at).getTime() : 0;
               const tb = b[1].updated_at ? new Date(b[1].updated_at).getTime() : 0;
@@ -9491,7 +9513,7 @@ app.post('/api/planning/state', async (req, res) => {
       const _blobRunningPerMC = {};
       // First pass: count running per machine (sort by _localEditedAt desc — newest protected first)
       const _blobRunning = state.orders
-        .filter(o => o && o.status === 'running' && o.machineId && !o.deleted)
+        .filter(o => o && o.machineId && _v49kCountsAsRunning(o.id, o))   // v49K: DPR-closed ghosts don't count
         .sort((a, b) => (parseInt(b._localEditedAt||0)) - (parseInt(a._localEditedAt||0)));
       const _blobAllowedIds = new Set();
       for (const o of _blobRunning) {

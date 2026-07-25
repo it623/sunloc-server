@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49J</title>
+<title>Sunloc Tracking Suite v1.0 · build v49M</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49J</p>
+      <p>Tracking Suite v1.0 · build v49M</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49J</p>
+      <p>Tracking Suite v1.0 · build v49M</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2920,12 +2920,23 @@ function getBatchWIPBreakdown(batchNo, opts){
   // v44F Issue#1: admin reconciliation override — authoritative typed totals replace scan-derived WIP.
   const _ovW = _reconOverride(batchNo);
   if(_ovW && !_raw){
-    const g=_ovW.gross||0, pk=_ovW.packing||0, w=_reconWip(_ovW), ws=_ovW.wastage||0; /* v46Q: derived, not stale stored wip */
-    // v47Y: keep the frozen remainder ONLY in totalWIP here (shown as "Frozen WIP (unpacked)" on the
-    // batch-level Report D, which sums the stage buckets separately into "WIP + packed"). The stage-wise
-    // SUMMARY relocation to PI/Printing/AIM is done via _rptBRow (Report B primitive), not this function,
-    // so no double-count.
-    return { grossProd:g, aimIn:0, aimOut:0, packIn:pk, packOut:pk, preAIM:0, aimWIP:0, printWIP:0,
+    const g=_ovW.gross||0, ws=_ovW.wastage||0;
+    // v49M (confirmed by Ishan): the reconciled unpacked remainder self-cures at the STAGE WHERE IT SITS
+    // (_v47yReconStage), against that stage's own clearing event — NOT universally against packing.
+    // v49L wrongly capped by packing, which would have held an AIM-parked remainder (e.g. 26ZC091) all
+    // the way until packing though it clears the moment it is scanned in at AIM. Correct: AIM clears on
+    // scan-IN (avail − aimIn); PI/printing clear on scan-OUT (avail − stageOut). This keeps Report D /
+    // Batch Tracker / Planning identical to Report B — one model — and clears each remainder at its true
+    // stage. Gross / A-Grade / wastage stay authoritative from the override; only this WIP self-cures.
+    const _availLive = Math.max(0, g - ws);
+    const _stage = _v47yReconStage(batchNo);
+    const _stageProgress = (_stage === 'aim')
+      ? _scanLakhs(batchNo,'aim','in', batch.size)
+      : _scanLakhs(batchNo,_stage,'out', batch.size);
+    const _frozenRaw = _reconWip(_ovW);
+    const w = Math.min(_frozenRaw, Math.max(0, _availLive - _stageProgress));   // self-curing remainder
+    const _pkDisp = _scanLakhs(batchNo,'packing','in', batch.size) || (_ovW.packing||0);
+    return { grossProd:g, aimIn:0, aimOut:0, packIn:_pkDisp, packOut:_pkDisp, preAIM:0, aimWIP:0, printWIP:0,
              piWIP:0, toPackTransit:0, packWIP:0, packedNotDisp:0, totalWIP:w,
              wAIM:{salvage:ws,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, reconciled:true };
   }
@@ -11712,8 +11723,32 @@ function _rptBRow(batchNo, dept, U){
     // AIM). Park it ONLY on that stage's row, 0 elsewhere — so a batch that has cleared AIM shows 0 AIM
     // production WIP and its remainder surfaces at PI/Printing. AIM as the derived stage keeps it on the
     // production leg; deeper stages carry it on the dept-WIP leg. Replaces v46M's "always park on AIM".
-    const _frozen47y=_isRetired(batchNo)?0:_reconWip(_rcOv);
+    // v49K (confirmed by Ishan): the frozen remainder must SELF-CURE as material moves. v47Y froze the
+    // AMOUNT at reconcile time (from ov.packing) and never re-derived it, so Report B kept showing e.g.
+    // 4L WIP on 26ZC091 long after the material was scanned in — while Report E, which derives unscanned
+    // WIP live (avail − scanIn), correctly showed 0. Fix: cap the frozen remainder by the CURRENT
+    // unscanned WIP at its stage, so once scan-in ≥ available the WIP falls to 0 across every report,
+    // matching Report E. The override stays authoritative for gross/A-grade/wastage; only this live WIP
+    // leg follows real scans.
+    // v49M (confirmed by Ishan): self-cure the frozen remainder at the STAGE WHERE IT IS PARKED, against
+    // THAT stage's own clearing event — not universally against packing. The remainder sits at
+    // _v47yReconStage (aim / pi / printing). It clears when the material moves past that stage:
+    //   • parked at AIM     → clears as it is SCANNED IN at AIM  (avail − aimIn). This is 26ZC091: its
+    //                         remainder was unscanned-at-AIM, so once aimIn ≥ avail it is 0 — packing is
+    //                         irrelevant to it. (v49L wrongly held it until packing; corrected here.)
+    //   • parked at PI/print→ clears as it is SCANNED OUT of that stage (moved onward): avail − stageOut.
+    // A remainder that legitimately sits at packing (batch reconciled with FG already at the pack dock)
+    // still clears against packing.in via the same avail-minus-stage-progress shape. Override stays
+    // authoritative for gross/A-grade/wastage; only this WIP leg follows real scans, stage-appropriately.
+    const _frozen47yRaw=_isRetired(batchNo)?0:_reconWip(_rcOv);
     const _stage47y=_v47yReconStage(batchNo);
+    const _availLive = Math.max(0, (_rcOv.gross!=null?_rcOv.gross:grossProd) - (_rcOv.wastage||0));
+    // progress past the parked stage: AIM clears on scan-IN; deeper stages clear on scan-OUT
+    const _stageProgress = (_stage47y === 'aim')
+      ? aimInQty
+      : _scanLakhs(batchNo, _stage47y, 'out', _bSize45y);
+    const _liveUnscanned = Math.max(0, _availLive - _stageProgress);
+    const _frozen47y = Math.min(_frozen47yRaw, _liveUnscanned);
     if (dept === _stage47y && _frozen47y > 0.005) {
       if (_stage47y === 'aim') { _prodWip=_frozen47y; _wip=0; _wipQty=0; }
       else { _prodWip=0; _wip=0; _wipQty=_frozen47y; }
