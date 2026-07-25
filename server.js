@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49G';
+const APP_BUILD = 'v49H';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1617,6 +1617,11 @@ function _v49gExplicitReopen(cli, dbStatus) {
 // (caller then falls back to the existing timestamp guard, unchanged).
 // override, when true, means "write status + closedDate + manualEndDate together from the client".
 function _v49gStatusIntent(cli, dbStatus) {
+  // v49H: only act on an actual TRANSITION. A batch that is already closed (or already running) and is
+  // merely being re-saved as part of a routine bulk sync sends the same status it already has — that is
+  // NOT a close/reopen action and must never touch the DPR gate. Without this, a normal save of the
+  // whole order set flagged every not-yet-DPR-closed batch at once (the ~200-batch orange banner).
+  if (String(cli && cli.status) === String(dbStatus)) return null;
   if (_v49gExplicitClose(cli)) {
     if (_v49gIsDprClosed(cli)) {
       // already DPR-closed — an explicit close is consistent, let it through
