@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49H';
+const APP_BUILD = 'v49J';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -17803,6 +17803,57 @@ app.get('/api/tracking/scans', async (req, res) => {
       res.json({ ok: true, scans });
     }
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ── v49J (confirmed by Ishan): scan re-point on label regeneration / damaged reprint ─────────────
+// Root cause: regeneratePartialLabel and the damaged-reprint path both VOID the old label and mint a
+// NEW label id for the same physical box. Plain voidLabel preserves the scans (does not reverse them),
+// but they stay pointed at the now-voided old id — so the box's IN/OUT scans orphan: the recent-scan
+// list shows batch/? and Batch Tracker drops the box from its count. Evidenced live on 26ZC105 box 29
+// (scans on dead id mrzsfvlhdg0d8; box reissued as mrzsfmc5hpr5j) and 26ZD114 box 7.
+//
+// Fix (option 1a, confirmed): when the box is regenerated/reprinted, move ALL of its scans (every dept,
+// IN and OUT) from the old label id to the new one in a single UPDATE, so the box keeps its full scan
+// history under the label the physical material now carries. Nothing else changes — no scan is created,
+// deleted, or revalued; only tracking_scans.label_id is repointed on rows that already exist.
+//
+// Guard: mirror the label-void dispatch rule. If the box already has a 'dispatch' scan it has shipped —
+// its old label id is referenced by dispatch/invoice records, so the re-point is REFUSED rather than
+// corrupting a shipped box. The caller surfaces the message; the scans stay on the old id.
+app.post('/api/tracking/relabel-repoint', async (req, res) => {
+  try {
+    const { batchNumber, fromLabelId, toLabelId } = req.body || {};
+    if (!batchNumber || !fromLabelId || !toLabelId) {
+      return res.status(400).json({ ok: false, error: 'batchNumber, fromLabelId and toLabelId are required' });
+    }
+    if (fromLabelId === toLabelId) {
+      return res.json({ ok: true, moved: 0, note: 'from and to are the same id — nothing to move' });
+    }
+    if (pgPool) {
+      const disp = await pgPool.query(
+        `SELECT 1 FROM tracking_scans WHERE label_id=$1 AND dept='dispatch' LIMIT 1`, [fromLabelId]);
+      if (disp.rows[0]) {
+        return res.json({ ok: false, dispatch_blocked: true, error: 'Box already dispatched — scans not re-pointed. Handle via dispatch, not regeneration.' });
+      }
+      const upd = await pgPool.query(
+        `UPDATE tracking_scans SET label_id=$1 WHERE batch_number=$2 AND label_id=$3`,
+        [toLabelId, batchNumber, fromLabelId]);
+      console.log(`[v49J] relabel-repoint: ${upd.rowCount||0} scan(s) moved ${fromLabelId} -> ${toLabelId} (batch ${batchNumber})`);
+      return res.json({ ok: true, moved: upd.rowCount || 0 });
+    } else {
+      const disp = db.prepare(`SELECT 1 FROM tracking_scans WHERE label_id=? AND dept='dispatch' LIMIT 1`).get(fromLabelId);
+      if (disp) {
+        return res.json({ ok: false, dispatch_blocked: true, error: 'Box already dispatched — scans not re-pointed. Handle via dispatch, not regeneration.' });
+      }
+      const info = db.prepare(`UPDATE tracking_scans SET label_id=? WHERE batch_number=? AND label_id=?`)
+        .run(toLabelId, batchNumber, fromLabelId);
+      console.log(`[v49J] relabel-repoint: ${info.changes||0} scan(s) moved ${fromLabelId} -> ${toLabelId} (batch ${batchNumber})`);
+      return res.json({ ok: true, moved: info.changes || 0 });
+    }
+  } catch (err) {
+    console.error('[relabel-repoint]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 app.post('/api/tracking/label-update', async (req, res) => {

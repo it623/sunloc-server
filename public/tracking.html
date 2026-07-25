@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49H</title>
+<title>Sunloc Tracking Suite v1.0 · build v49J</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49H</p>
+      <p>Tracking Suite v1.0 · build v49J</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49H</p>
+      <p>Tracking Suite v1.0 · build v49J</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2720,7 +2720,34 @@ function regeneratePartialLabel(labelId, newQty){
   newLabel.qrData = generateQRData(newLabel);
   state.labels.push(newLabel);
   saveLocal();
+  // v49J: the box keeps the same number but moves to a new label id; carry its existing scans across so
+  // they don't orphan (recent-scan "/?", box dropped from Batch Tracker). Push the new label first so
+  // the destination id exists server-side, then re-point. Fire-and-forget with operator feedback; a
+  // dispatched box is refused server-side and the scans simply stay put.
+  _v49jRepointScans(old.batchNumber, old.id, newLabel.id, newLabel);
   return newLabel;
+}
+
+// v49J: ensure the new label exists on the server, then move the box's scans from oldId to newId.
+async function _v49jRepointScans(batchNumber, fromLabelId, toLabelId, newLabel){
+  try {
+    const _url = (typeof serverUrl !== 'undefined' && serverUrl) || localStorage.getItem('sunloc_server_url');
+    if (!_url) return;                       // offline — blob sync will carry the label; repoint retried on next regen
+    if (newLabel) {
+      // make sure the destination label is persisted before repointing scans onto it
+      try { await fetch(_url + '/api/tracking/labels', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels:[newLabel]})}); } catch(e) {}
+    }
+    const r = await fetch(_url + '/api/tracking/relabel-repoint', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ batchNumber, fromLabelId, toLabelId })
+    });
+    const j = await r.json().catch(()=>({}));
+    if (j && j.dispatch_blocked) {
+      if (typeof toast === 'function') toast('This box was already dispatched — its scan history was left on the original label.', '#c77700', 6000);
+    } else if (j && j.ok && j.moved > 0) {
+      if (typeof toast === 'function') toast(`Scan history carried over (${j.moved} scan${j.moved>1?'s':''}).`, 'var(--green)', 3500);
+    }
+  } catch(e) { /* non-fatal: label still regenerated; scans repoint on a later sync/regen */ }
 }
 
 // ═══════════════════════════════════════════════════════
@@ -4721,6 +4748,10 @@ function confirmDamagedReprint(labelId){
     saveLocal();
     pushToServer('/api/tracking/labels',{labels:[newLabel]});
     pushToServer('/api/tracking/reprint-log',{log:reprintLog});
+    // v49J: same material, new label (confirmed by Ishan) — the box's scans follow the material to the
+    // new label id so they don't orphan. The new box number now owns the history, which is correct
+    // because the physical material carries the new label.
+    _v49jRepointScans(label.batchNumber, labelId, newLabel.id, newLabel);
     closeModal();
     alert(`✅ Label voided and replacement Label #${newLabel.labelNumber} generated.\nReason: ${reason}\nLogged for audit.`);
     renderPage(currentPage);
