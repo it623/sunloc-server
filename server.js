@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49M';
+const APP_BUILD = 'v49N';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -8020,6 +8020,8 @@ app.post('/api/orders/upsert', async (req, res) => {
     let preserved = false;
     let _v49gDprRefused = false;   // v49G: hoisted so the response can report the DPR-gate refusal
     let _v49gCascadeDprClose = false;   // v49G option (ii): re-close of a reopened batch must re-close DPR
+    let _v49nLimitRefused = false;   // v49N: 2-order-limit promotion refusal, reported to the client
+    let _v49nOccupying = [];         // v49N: the batches occupying the machine's 2 running slots
     let existing = null;
     try {
       if (pgPool) {
@@ -8053,6 +8055,36 @@ app.post('/api/orders/upsert', async (req, res) => {
         } else if (dbUpdated > clientEdit + 5000) {
           finalStatus = existing.status;
           preserved = true;
+        }
+        // v49N (confirmed by Ishan): 2-order limit as a PROMOTION GATE on the single-order path too.
+        // This endpoint had NO limit at all — the modal/dropdown promotion was always accepted here and
+        // a later sweep (bulk/bg-merge downgrade, now removed) silently undid it: the flip the planner
+        // saw. Now the decision happens ONCE, at the moment of the action, loudly. Reopens are untouched
+        // (they route through _v49gStatusIntent above, from status closed). v45X exemption kept: a batch
+        // with real production re-promotes freely.
+        if (finalStatus === 'running' && existing.status !== 'running' && existing.status !== 'closed'
+            && ord.machineId && !_orderHasActuals(ord) && !_orderHasActuals(exData)) {
+          try {
+            let _rr;
+            if (pgPool) {
+              _rr = (await pgPool.query(
+                `SELECT id, batch_number FROM production_orders
+                  WHERE machine_id=$1 AND status='running' AND COALESCE(deleted,false)=false AND id<>$2`,
+                [ord.machineId, ord.id])).rows;
+            } else {
+              _rr = db.prepare(
+                `SELECT id, batch_number FROM production_orders
+                  WHERE machine_id=? AND status='running' AND COALESCE(deleted,0)=0 AND id<>?`)
+                .all(ord.machineId, ord.id);
+            }
+            const _occ = (_rr || []).filter(r => _v49kCountsAsRunning(r.id, { id: r.id, status: 'running', deleted: false, batch_number: r.batch_number }));
+            if (_occ.length >= 2) {
+              finalStatus = existing.status || 'pending';
+              _v49nLimitRefused = true;
+              _v49nOccupying = _occ.map(r => r.batch_number || r.id).slice(0, 4);
+              console.log(`[v49N] 2-order limit: promotion of ${ord.batchNumber||ord.id} on MC ${ord.machineId} refused — running: ${_v49nOccupying.join(', ')}`);
+            }
+          } catch (e) { console.warn('[v49N] limit gate skipped:', e && e.message); }
         }
       }
       if (exData.deleted || existing.deleted) finalDeleted = true;
@@ -8153,6 +8185,8 @@ app.post('/api/orders/upsert', async (req, res) => {
       } catch (e) { console.warn('[v49G] DPR-close cascade failed:', e && e.message); }
     }
     res.json({ ok: true, preserved, dprGateRefused: !!_v49gDprRefused,
+      limitRefused: !!_v49nLimitRefused, heldStatus: _v49nLimitRefused ? finalStatus : undefined,
+      occupying: _v49nLimitRefused ? _v49nOccupying : undefined,
                dprGateMessage: _v49gDprRefused ? 'Close in DPR first' : undefined,
                savedAt: new Date().toISOString() });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -8490,15 +8524,20 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         _dbRunningOrderIds[machineId].push(rowId);
       }
     });
-    // ACTIVE ENFORCEMENT: if DB already has 3+ running on a machine, downgrade the newest ones
-    const _forcePendingIds = new Set();
+    // v49N (confirmed by Ishan): the ACTIVE ENFORCEMENT that downgraded "the newest ones" is REMOVED.
+    // Root cause of the status flips that survived v49K/M: this slice(2) protected the two OLDEST
+    // DB rows — including ghosts the planner believes closed (e.g. a v49G DPR-gate-refused close held
+    // at running) — and downgraded the planner's freshly-set running/upcoming batches. The blob-save
+    // site protected the NEWEST two, so the two enforcers fought each other and the status oscillated
+    // forever. New rule: NO code path ever writes a status the planner did not ask for. The 2-order
+    // limit survives as a PROMOTION GATE below (refuse-and-surface, same pattern as the DPR gate).
+    const _mcRunNames = {};   // machineId -> batch numbers currently counted running (for the message)
     Object.entries(_dbRunningOrderIds).forEach(([machineId, ids]) => {
-      if (ids.length > 2) {
-        ids.slice(2).forEach(id => {
-          _forcePendingIds.add(id);
-          console.log('[v41z upsert-bulk] MC ' + machineId + ' has ' + ids.length + ' running — downgrading ' + id + ' to pending (2-order limit)');
-        });
-      }
+      _mcRunNames[machineId] = ids.map(id => {
+        const row = existingMap[id];
+        if (row && row.batch_number) return row.batch_number;
+        try { const d = typeof row.data_json === 'string' ? JSON.parse(row.data_json) : row.data_json; return (d && d.batchNumber) || id; } catch(e) { return id; }
+      });
     });
     for (const ord of orders) {
       if (!ord.id) continue;
@@ -8543,22 +8582,28 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           finalStatus = existing.status;
           preservedCount++;
           preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
-        // If client is setting running/closed — always accept (user action)
+        // If client is setting running/closed — accept (user action), EXCEPT a running promotion on a
+        // machine whose 2 slots are already occupied: v49N refuses it and names the occupants, instead
+        // of accepting now and having a later sweep silently downgrade it (the flip). v45X exemption
+        // kept: a batch with real production re-promotes freely — that is a resume, not a new start.
         } else if (_clientIsRunningOrClosed && !_dbIsRunningOrClosed) {
-          finalStatus = ord.status;
-          if (ord.status === 'running' && !_alreadyRunningInDB && ord.machineId) {
-            dbRunningPerMachine[ord.machineId] = (dbRunningPerMachine[ord.machineId] || 0) + 1;
+          const _v49nPromo = ord.status === 'running' && !_alreadyRunningInDB && ord.machineId;
+          if (_v49nPromo && (dbRunningPerMachine[ord.machineId] || 0) >= 2
+              && !_orderHasActuals(ord) && !_orderHasActuals(exData)) {
+            finalStatus = existing.status || 'pending';
+            preservedCount++;
+            preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null,
+              clientStatus: ord.status, dbStatus: finalStatus, limitRefused: true,
+              occupying: (_mcRunNames[ord.machineId] || []).slice(0, 4) });
+            console.log(`[v49N] 2-order limit: promotion of ${ord.batchNumber||ord.id} on MC ${ord.machineId} refused — running: ${(_mcRunNames[ord.machineId]||[]).join(', ')}`);
+          } else {
+            finalStatus = ord.status;
+            if (_v49nPromo) {
+              dbRunningPerMachine[ord.machineId] = (dbRunningPerMachine[ord.machineId] || 0) + 1;
+              if (!_mcRunNames[ord.machineId]) _mcRunNames[ord.machineId] = [];
+              _mcRunNames[ord.machineId].push(ord.batchNumber || ord.id);
+            }
           }
-        // 2-order limit: only applies to running, never to closed
-        } else if (_forcePendingIds.has(ord.id) && ord.status === 'running' && existing.status !== 'closed') {
-          finalStatus = 'pending';
-          preservedCount++;
-          preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: 'pending' });
-        } else {
-        const _wouldExceedLimit = ord.status === 'running' && !_alreadyRunningInDB && _machineRunCount >= 2;
-        if (_wouldExceedLimit) {
-          finalStatus = 'pending';
-          preservedCount++;
         } else if (existing.status && ord.status && existing.status !== ord.status) {
           if (dbUpdated > clientEdit + 5000) {
             finalStatus = existing.status;
@@ -8567,7 +8612,6 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           }
           // else: client wins
         }
-        } // end 2-order limit else
         // Deleted is sticky once true — never resurrect a deleted order
         if ((exData.deleted || existing.deleted) && !ord.deleted) {
           finalDeleted = true;
@@ -8990,21 +9034,11 @@ app.get('/api/planning/state', async (req, res) => {
           // Genuinely missing order — recover it
           state.orders = state.orders || [];
           const { _dbStatus, _dbUpdatedAt, ...cleanOrd } = dbOrd;
-          // CRITICAL: Enforce max 2 IN PRODUCTION per machine
-          // v45X (confirmed by Ishan): the limit gates NEW promotions only — never demote an order
-          // with real production (actuals>0). Demotion hid a mid-production batch from the Tracking
-          // label view (26ZF104) after the June→July carry-forward spike.
-          if (cleanOrd.status === 'running' && cleanOrd.machineId) {
-            const runningOnMachine = state.orders.filter(o => o.machineId === cleanOrd.machineId && o.status === 'running' && !o.deleted).length;
-            if (runningOnMachine >= 2 && !_orderHasActuals(cleanOrd)) {
-              cleanOrd.status = 'pending';
-              console.log(`[State] Recovered ${cleanOrd.batchNumber} on ${cleanOrd.machineId} — downgraded to pending (2-order limit)`);
-            } else {
-              console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
-            }
-          } else {
-            console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId}`);
-          }
+          // v49N (confirmed by Ishan): recover with the order's TRUE status — the old demotion wrote
+          // 'pending' into the blob for a DB-running order, which PERMANENT STATUS PROTECTION then
+          // restored to running on the next merge: another oscillation vector. An over-limit machine
+          // now simply shows 3 running so the planner closes the right one; nothing is rewritten.
+          console.log(`[State] Recovered missing order: ${cleanOrd.batchNumber} on ${cleanOrd.machineId} (status ${cleanOrd.status||'pending'})`);
           state.orders.push(cleanOrd);
           stateOrderById.set(dbOrd.id, cleanOrd);
           if (dbOrd.batchNumber && dbOrd.machineId) stateOrderByBatchMc.set(bmKey, cleanOrd);
@@ -9252,18 +9286,14 @@ app.post('/api/planning/state', async (req, res) => {
           // ACTIVE ENFORCEMENT: downgrade newest orders on machines already over limit
           // v45X (confirmed by Ishan): skip orders with real production — the limit gates NEW
           // promotions, not batches that already ran (DPR gate ⇒ actuals imply it WAS running).
-          const _bgForcePendingIds = new Set();
+          // v49N (confirmed by Ishan): the slice(2) downgrade is REMOVED — it protected the two OLDEST
+          // running rows (including ghosts, e.g. DPR-gate-refused closes still held running) and
+          // silently downgraded the planner's freshly-set batches, which is the flip that survived
+          // v49K/M. The 2-order limit now acts only as a promotion gate (refuse-and-surface) in the
+          // accept branch below; no code path writes a status the planner did not ask for.
+          const _bgMcRunNames = {};
           Object.entries(_bgRunningOrderIds).forEach(([machineId, ids]) => {
-            if (ids.length > 2) {
-              ids.slice(2).forEach(id => {
-                if (_orderHasActuals(existingMap[id])) {
-                  console.log('[v41z bg-merge] MC ' + machineId + ' over limit but ' + id + ' has actuals — NOT downgrading (v45X guard)');
-                  return;
-                }
-                _bgForcePendingIds.add(id);
-                console.log('[v41z bg-merge] MC ' + machineId + ' has ' + ids.length + ' running — downgrading ' + id + ' to pending (2-order limit)');
-              });
-            }
+            _bgMcRunNames[machineId] = ids.map(id => (existingMap[id] && existingMap[id].batchNumber) || id);
           });
 
           // v40 P18.14i Fix 1: status merge — client wins.
@@ -9297,16 +9327,22 @@ app.post('/api/planning/state', async (req, res) => {
                 // DB has running/closed — preserve it, client cannot change it
                 finalStatus = ex.status;
               } else if (_bgClientProtected && !_bgDbProtected) {
-                // Client setting running/closed — accept it (user action)
-                finalStatus = ord.status;
-              } else if (_bgForcePendingIds.has(ord.id) && ord.status === 'running' && ex.status !== 'closed') {
-                finalStatus = 'pending';
-              } else {
-              // v45X (confirmed by Ishan): an order with actuals already ran — re-promotion is not a
-              // "new" start and must not be blocked/demoted by the 2-order limit.
-              const wouldExceedLimit = ord.status === 'running' && !alreadyRunningInDB && machineRunCount >= 2 && !_orderHasActuals(ord);
-              if (wouldExceedLimit) {
-                finalStatus = 'pending';
+                // Client setting running/closed — accept it (user action), EXCEPT a running promotion
+                // beyond the machine's 2 slots: v49N holds DB status (the blob pre-save gate has already
+                // reverted + surfaced this to the planner; this is defense-in-depth for other callers).
+                // v45X exemption kept: a batch with actuals re-promotes freely.
+                const _v49nBgPromo = ord.status === 'running' && !alreadyRunningInDB && ord.machineId;
+                if (_v49nBgPromo && machineRunCount >= 2 && !_orderHasActuals(ord) && !_orderHasActuals(ex)) {
+                  finalStatus = ex.status || 'pending';
+                  console.log(`[v49N bg-merge] 2-order limit: promotion of ${ord.batchNumber||ord.id} on MC ${ord.machineId} held at '${finalStatus}' — running: ${(_bgMcRunNames[ord.machineId]||[]).join(', ')}`);
+                } else {
+                  finalStatus = ord.status;
+                  if (_v49nBgPromo) {
+                    dbRunningPerMachine[ord.machineId] = (dbRunningPerMachine[ord.machineId] || 0) + 1;
+                    if (!_bgMcRunNames[ord.machineId]) _bgMcRunNames[ord.machineId] = [];
+                    _bgMcRunNames[ord.machineId].push(ord.batchNumber || ord.id);
+                  }
+                }
               } else if (ex.status && ord.status && ex.status !== ord.status) {
                 // Protect running/closed from being reverted
                 const clientIsProtected = ord.status === 'running' || ord.status === 'closed';
@@ -9327,7 +9363,6 @@ app.post('/api/planning/state', async (req, res) => {
               } else {
                 finalStatus = ord.status || ex.status || 'pending';
               }
-              } // end _bgForcePendingIds else
               const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming blob older than DB by >5s
               mergedOrd = {
                 ...ord,
@@ -9425,6 +9460,18 @@ app.post('/api/planning/state', async (req, res) => {
             try { exData = r.data_json ? (typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json) : {}; } catch(e) {}
             dbMap[r.id] = { ...r, _exData: exData };
           });
+          // v49N: machine slot occupancy from the DB (authoritative), for the promotion gate below.
+          // Excludes DPR-closed ghosts (v49K rule) so a batch closed in DPR never blocks a slot.
+          const _v49nMcCount = {};
+          const _v49nMcNames = {};
+          Object.values(dbMap).forEach(r => {
+            const _mc = r._exData && r._exData.machineId;
+            if (!_mc) return;
+            if (!_v49kCountsAsRunning(r.id, { id: r.id, status: r.status, deleted: r.deleted, batchNumber: r._exData.batchNumber })) return;
+            _v49nMcCount[_mc] = (_v49nMcCount[_mc] || 0) + 1;
+            if (!_v49nMcNames[_mc]) _v49nMcNames[_mc] = [];
+            _v49nMcNames[_mc].push(r._exData.batchNumber || r.id);
+          });
           state.orders = state.orders.map(ord => {
             const dbRow = dbMap[ord.id];
             if (!dbRow) return ord;
@@ -9457,6 +9504,31 @@ app.post('/api/planning/state', async (req, res) => {
                 clientStatus: ord.status,
                 dbStatus: dbRow.status,
               });
+            // v49N: 2-order limit as a PROMOTION GATE — a fresh pending→running promotion on a machine
+            // whose 2 slots are occupied is refused HERE, before the blob is written, and surfaced by
+            // name. Replaces the removed v41z downgrade sweeps, which silently un-set the planner's
+            // choice later (the flip). Reopens are handled by _v49gStatusIntent above (from closed).
+            // v45X exemption kept: a batch with real production re-promotes freely.
+            } else if (result.status === 'running' && dbRow.status !== 'running' && dbRow.status !== 'closed'
+                && ord.machineId && (_v49nMcCount[ord.machineId] || 0) >= 2
+                && !_orderHasActuals(ord) && !_orderHasActuals(dbRow._exData)) {
+              result = { ...result, status: dbRow.status || 'pending' };
+              blobPreservedCount++;
+              preservedOrders.push({
+                id: ord.id,
+                batchNumber: ord.batchNumber || null,
+                machineId: ord.machineId || null,
+                clientStatus: 'running',
+                dbStatus: dbRow.status || 'pending',
+                limitRefused: true,
+                occupying: (_v49nMcNames[ord.machineId] || []).slice(0, 4),
+              });
+              console.log(`[v49N blob-save] 2-order limit: promotion of ${ord.batchNumber||ord.id} on MC ${ord.machineId} refused — running: ${(_v49nMcNames[ord.machineId]||[]).join(', ')}`);
+            } else if (result.status === 'running' && dbRow.status !== 'running' && dbRow.status !== 'closed' && ord.machineId) {
+              // accepted promotion — occupy a slot so a second promotion in the same save counts it
+              _v49nMcCount[ord.machineId] = (_v49nMcCount[ord.machineId] || 0) + 1;
+              if (!_v49nMcNames[ord.machineId]) _v49nMcNames[ord.machineId] = [];
+              _v49nMcNames[ord.machineId].push(ord.batchNumber || ord.id);
             }
             // Deleted is sticky
             if (dbRow.deleted && !result.deleted) {
@@ -9506,45 +9578,12 @@ app.post('/api/planning/state', async (req, res) => {
       }
     }
 
-    // v41z FINAL FIX: Enforce 2-order limit directly in the blob before saving.
-    // This stops stale browsers from re-corrupting the blob with 3+ running orders.
-    // Also adds downgraded orders to preservedOrders so client clears _localOrderChanges.
-    if (state.orders && state.orders.length > 0) {
-      const _blobRunningPerMC = {};
-      // First pass: count running per machine (sort by _localEditedAt desc — newest protected first)
-      const _blobRunning = state.orders
-        .filter(o => o && o.machineId && _v49kCountsAsRunning(o.id, o))   // v49K: DPR-closed ghosts don't count
-        .sort((a, b) => (parseInt(b._localEditedAt||0)) - (parseInt(a._localEditedAt||0)));
-      const _blobAllowedIds = new Set();
-      for (const o of _blobRunning) {
-        const cnt = _blobRunningPerMC[o.machineId] || 0;
-        if (cnt < 2) {
-          _blobAllowedIds.add(o.id);
-          _blobRunningPerMC[o.machineId] = cnt + 1;
-        }
-      }
-      let blobLimitDowngraded = 0;
-      state.orders = state.orders.map(o => {
-        // NEVER downgrade closed orders — only running orders subject to 2-order limit
-        if (o && o.status === 'running' && o.machineId && !o.deleted && !_blobAllowedIds.has(o.id)) {
-          blobLimitDowngraded++;
-          console.log(`[v41z blob-save] MC ${o.machineId} over limit — downgrading ${o.batchNumber||o.id} to pending`);
-          preservedOrders.push({
-            id: o.id,
-            batchNumber: o.batchNumber || null,
-            machineId: o.machineId || null,
-            clientStatus: 'running',
-            dbStatus: 'pending',
-          });
-          return { ...o, status: 'pending' };
-        }
-        // CLOSED orders are permanent — never touch them
-        return o;
-      });
-      if (blobLimitDowngraded > 0) {
-        console.log(`[v41z blob-save] Downgraded ${blobLimitDowngraded} over-limit running orders to pending`);
-      }
-    }
+    // v49N (confirmed by Ishan): the v41z blob-side 2-order downgrade is REMOVED. It protected the
+    // two NEWEST-edited running orders while the DB-side sweeps protected the two OLDEST rows — the
+    // two enforcers disagreed, so a downgraded ghost was restored by PERMANENT STATUS PROTECTION on
+    // the next merge and the planner's batch was downgraded again on the next save: the oscillation
+    // that survived v49K/M. The limit is now enforced ONCE, as a promotion gate in the v41w pre-save
+    // check above (refuse-and-surface); no sweep ever rewrites statuses behind the planner's back.
 
     // v46A merge-guard (confirmed by Ishan; root cause of the 26ZC094/095 churn): the planning blob is
     // full-state last-write-wins, so a stale client session saving after another session created new

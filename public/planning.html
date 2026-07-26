@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49M</p>
+      <p>Planning Suite v3.0 · build v49N</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2272,6 +2272,13 @@ async function saveState() {
         // and they must never be changed automatically by any process.
         preserved.forEach(p => {
           if (p.id) {
+            // v49N: a limit-refused promotion is a FINAL server decision — drop the local protection
+            // stamp so this client doesn't keep re-pushing the refused running status (toast loop).
+            if (p.limitRefused) {
+              delete _localOrderChanges[p.id];
+              console.log('[v49N] Cleared local protection for ' + (p.batchNumber||p.id) + ' — promotion refused (2 running slots occupied)');
+              return;
+            }
             const isRunningOrClosed = p.clientStatus === 'running' || p.clientStatus === 'closed';
             const isServerDowngradeToPending = p.dbStatus === 'pending' && p.clientStatus === 'running';
             if (isServerDowngradeToPending && !isRunningOrClosed) {
@@ -2299,6 +2306,16 @@ async function saveState() {
             const _msg = `${_names}: Close in DPR first — ${_plural?'these batches have':'this batch has'} production recorded, so ${_plural?'they':'it'} must be closed in DPR before being closed in Planning.`;
             if (typeof toast === 'function') toast(_msg, '#c77700', 7000);
             else alert('⚠️ ' + _msg);
+          }
+          // v49N: surface limit-refused promotions by name, with the occupying batches
+          const _limited = preserved.filter(p => p && p.limitRefused);
+          if (_limited.length > 0) {
+            const _msgs = _limited.slice(0, 3).map(p => {
+              const _occ = (Array.isArray(p.occupying) && p.occupying.length) ? p.occupying.join(', ') : 'two batches';
+              return `${p.batchNumber||p.id}: MC ${p.machineId||''} already has 2 in production (${_occ}) — close one first.`;
+            }).join('\n');
+            if (typeof toast === 'function') toast(_msgs, '#c77700', 8000);
+            else alert('⚠️ ' + _msgs);
           }
         } catch(e) {}
       }
@@ -5171,6 +5188,7 @@ async function _pushOrderOnce(ord){
     try {
       const _j = await r.clone().json();
       if (_j && _j.dprGateRefused) _v49gHandleDprGateRefused(ord);
+      if (_j && _j.limitRefused) _v49nHandleLimitRefused(ord, _j);
     } catch(e) {}
     return true;
   } catch(e){ return false; }
@@ -5215,6 +5233,26 @@ async function _v49gReopenViaDpr(ord, prevStatus, machineId) {
 }
 
 // v49G option (ii): reconcile local state with a server DPR-gate refusal and tell the planner in plain terms.
+// v49N: the server refused a pending→running promotion because the machine's 2 running slots are
+// occupied. Mirror the server's held status locally, drop the local protection stamp (so the client
+// stops re-pushing the refused promotion), and tell the planner WHICH batches hold the slots.
+function _v49nHandleLimitRefused(pushedOrd, resp) {
+  try {
+    const live = state.orders.find(o => o.id === (pushedOrd && pushedOrd.id));
+    const _held = (resp && resp.heldStatus) || 'pending';
+    if (live && live.status === 'running') {
+      live.status = _held;
+      if (typeof _localOrderChanges === 'object') delete _localOrderChanges[live.id];
+      try { render(); } catch(e) {}
+    }
+    const _bn = (live && live.batchNumber) || (pushedOrd && pushedOrd.batchNumber) || 'This batch';
+    const _mc = (live && live.machineId) || (pushedOrd && pushedOrd.machineId) || '';
+    const _occ = (resp && Array.isArray(resp.occupying) && resp.occupying.length) ? resp.occupying.join(', ') : 'two batches';
+    const _msg = `${_bn}: MC ${_mc} already has 2 batches in production (${_occ}). Close one of them first, then set ${_bn} to In Production.`;
+    if (typeof toast === 'function') toast(_msg, '#c77700', 8000);
+    else alert('⚠️ ' + _msg);
+  } catch(e) {}
+}
 function _v49gHandleDprGateRefused(pushedOrd) {
   try {
     const live = state.orders.find(o => o.id === (pushedOrd && pushedOrd.id));
