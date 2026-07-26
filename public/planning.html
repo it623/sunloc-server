@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49N</p>
+      <p>Planning Suite v3.0 · build v49P</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2260,6 +2260,12 @@ async function saveState() {
             deletedCount++;
           } else if (c.dbStatus && c.dbStatus !== o.status) {
             patched = { ...patched, status: c.dbStatus };
+            // v49P: if the server refused/undid a close, the lingering closedDate + manualEndDate made
+            // every subsequent autosave look like a brand-new explicit close (the 26G018 30s refusal
+            // loop). Clear them so this client stops replaying the refused close.
+            if (c.dbStatus !== 'closed' && (patched.closedDate || patched.manualEndDate)) {
+              patched = { ...patched, closedDate: null, manualEndDate: false };
+            }
             correctedCount++;
           }
           return patched;
@@ -2277,6 +2283,13 @@ async function saveState() {
             if (p.limitRefused) {
               delete _localOrderChanges[p.id];
               console.log('[v49N] Cleared local protection for ' + (p.batchNumber||p.id) + ' — promotion refused (2 running slots occupied)');
+              return;
+            }
+            // v49P: a DPR-gate-refused close is also a FINAL server decision — re-protecting the refused
+            // value made this client replay it forever (26G018 every 30s in the live log). Drop protection.
+            if (p.dprGateRefused) {
+              delete _localOrderChanges[p.id];
+              console.log('[v49P] Cleared local protection for ' + (p.batchNumber||p.id) + ' — close refused by DPR gate');
               return;
             }
             const isRunningOrClosed = p.clientStatus === 'running' || p.clientStatus === 'closed';
@@ -5263,6 +5276,11 @@ function _v49gHandleDprGateRefused(pushedOrd) {
       live.manualEndDate = false;
       if (typeof _localOrderChanges === 'object') delete _localOrderChanges[live.id];
       try { render(); } catch(e) {}
+    } else if (live && (live.closedDate || live.manualEndDate)) {
+      // v49P: status already reverted but stale close stamps linger — clear them so autosaves stop
+      // re-asserting the refused close every cycle
+      live.closedDate = null;
+      live.manualEndDate = false;
     }
     const _bn = (live && (live.batchNumber || live.poNumber)) || (pushedOrd && (pushedOrd.batchNumber || pushedOrd.poNumber)) || 'This batch';
     if (typeof toast === 'function') {

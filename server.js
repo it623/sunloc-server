@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49N';
+const APP_BUILD = 'v49P';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1615,15 +1615,25 @@ function _v49gIsDprClosed(ord) {
   return false;
 }
 // Does the incoming client order assert an explicit CLOSE? (planner ticked/closed it)
+// v49P (confirmed by Ishan): an explicit close must be FRESH — the planner clicked it recently.
+// Without this, a stale tab replaying closed+closedDate on every ~30s autosave was treated as a
+// brand-new explicit close forever: the DPR gate refused 26G018/26ZB102 every 30s for 70+ minutes
+// (log-proven), spamming the planner with toasts and churning statuses. A stale replay now has NO
+// intent and falls to the normal preservation guards, silently.
+const _V49P_FRESH_MS = 10 * 60 * 1000;   // 10 minutes
+function _v49pFresh(cli) {
+  const t = parseInt((cli && cli._localEditedAt) || 0);
+  return t > 0 && (Date.now() - t) < _V49P_FRESH_MS;
+}
 function _v49gExplicitClose(cli) {
-  return String(cli && cli.status) === 'closed' && !!(cli.closedDate || cli.manualEndDate);
+  return String(cli && cli.status) === 'closed' && !!(cli.closedDate || cli.manualEndDate) && _v49pFresh(cli);
 }
 // Does it assert an explicit REOPEN? (was closed, planner set it running and stamped the edit)
 // The client's changeOrderStatus sets status=running + closedDate=null + a fresh _localEditedAt but
 // does NOT clear manualEndDate, so we key on those three signals; the override then clears manualEndDate.
 function _v49gExplicitReopen(cli, dbStatus) {
   return String(cli && cli.status) === 'running' && String(dbStatus) === 'closed'
-      && !cli.closedDate && !!(cli && cli._localEditedAt);
+      && !cli.closedDate && _v49pFresh(cli);   // v49P: reopen must be fresh too — no stale replays
 }
 // Central decision. Returns { status, override, refusedDprGate } or null when no explicit intent
 // (caller then falls back to the existing timestamp guard, unchanged).
@@ -3167,6 +3177,14 @@ function _sapUomScale(line) {
   return isThousand ? 0.01 : 1;
 }
 
+// v49P: canonical stringify (sorted keys) for change detection — the bg merge was rewriting ALL
+// ~986 rows with updated_at=NOW() every ~50s even when nothing changed, which made EVERY timestamp
+// guard in the system (v41w 5s, GET-reconcile 30s, upsert staleness) compare against a clock that is
+// always "now" — the systemic enabler behind the status ping-pong. Unchanged rows are now skipped.
+function _v49pStable(o) {
+  return JSON.stringify(o, (k, v) => (v && typeof v === 'object' && !Array.isArray(v))
+    ? Object.keys(v).sort().reduce((a, kk) => { a[kk] = v[kk]; return a; }, {}) : v);
+}
 function _orderHasActuals(o) {
   if (!o) return false;
   const b = o.batchNumber;
@@ -8577,11 +8595,25 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
             if (_intent2.status === 'closed') { ord.manualEndDate = true; ord.closedDate = ord.closedDate || new Date().toISOString(); }
             else { ord.manualEndDate = false; ord.closedDate = null; }
           }
-        // If DB already has running/closed — preserve it always, client cannot overwrite
+        // If DB already has running/closed — preserve it, client cannot overwrite…
+        // v49P (confirmed by Ishan; log-proven): …EXCEPT a FRESH explicit demote running→pending. The
+        // protection exists to stop AUTOMATIC/stale rewrites, but it also blocked the planner: a DPR-Open
+        // batch could not be closed (DPR gate, correctly) NOR demoted (this branch) — it was stuck In
+        // Production forever (26ZG154/155) and every attempt "flipped back". A fresh planner demote is a
+        // deliberate user action, exactly like a promotion. Closed stays sacred — reopen path only.
         } else if (_dbIsRunningOrClosed && ord.status !== existing.status) {
+          if (existing.status === 'running' && ord.status === 'pending' && _v49pFresh(ord)) {
+            finalStatus = 'pending';
+            if (ord.machineId && dbRunningPerMachine[ord.machineId]) {
+              dbRunningPerMachine[ord.machineId]--;   // vacated a slot for later promotions in this payload
+              if (_mcRunNames[ord.machineId]) _mcRunNames[ord.machineId] = _mcRunNames[ord.machineId].filter(n => n !== (ord.batchNumber || ord.id));
+            }
+            console.log(`[v49P] explicit demote accepted: ${ord.batchNumber||ord.id} running → pending`);
+          } else {
           finalStatus = existing.status;
           preservedCount++;
           preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
+          }
         // If client is setting running/closed — accept (user action), EXCEPT a running promotion on a
         // machine whose 2 slots are already occupied: v49N refuses it and names the occupants, instead
         // of accepting now and having a later sweep silently downgrade it (the flip). v45X exemption
@@ -8939,6 +8971,12 @@ app.get('/api/planning/state', async (req, res) => {
         // background-merge timing) AND the status differs, prefer the DB status. This catches
         // the "close succeeded in table but blob save failed" stale-blob case.
         let reconciledCount = 0;
+        // v49P (confirmed by Ishan; log-proven root cause of the ~20-batch churn): v49K corrected the
+        // BLOB only — production_orders stayed 'running', so every client save rebuilt the blob from
+        // client+table (both running) and the same cohort was "corrected" again on every GET
+        // (26ZG152/153, 26G017, 26ZH084, 26ZA075 ×62 in one 2-hour log). The DPR-authoritative close
+        // must land in the TABLE too, once, so the whole system agrees and the churn ends.
+        const _v49pTableCloseIds = [];
         const dbById = new Map();
         dbOrders.forEach(o => dbById.set(o.id, o));
         (state.orders||[]).forEach(o => {
@@ -8954,9 +8992,13 @@ app.get('/api/planning/state', async (req, res) => {
           // ("lost in transit" closure) must be corrected to 'closed'. This is not an auto-revert to
           // pending — it promotes a stale-running order to its true, DPR-authoritative closed state, so
           // it stops inflating the v41z running count and causing real running orders to be downgraded.
-          if (o.status === 'running' && _v49gIsDprClosed({ id: o.id, batchNumber: o.batchNumber })) {
+          if (o.status === 'running' && _v49gIsDprClosed({ id: o.id, batchNumber: o.batchNumber })
+              && !_v49gIsReopenedOpen(o)) {
             o.status = 'closed';
+            o.closedDate = o.closedDate || o.endDate || new Date().toISOString();
+            o.manualEndDate = true;
             reconciledCount++;
+            _v49pTableCloseIds.push({ id: o.id, batchNumber: o.batchNumber || null, ord: o });
             console.log(`[v49K GET reconcile] ${o.batchNumber||o.id} is DPR-closed but blob said running — corrected to closed`);
           }
           const dbUpd = dbO._dbUpdatedAt ? new Date(dbO._dbUpdatedAt).getTime() : 0;
@@ -8969,6 +9011,7 @@ app.get('/api/planning/state', async (req, res) => {
           // protection still prevents any auto-revert of a real physical status.
           const _passTsGuard = _trkReconcile ? true : (dbUpd > blobSavedAt + 30000);
           if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && _passTsGuard && !blobStatusIsProtected) {
+            console.log(`[v41z GET reconcile] ${o.batchNumber||o.id}: blob '${o.status}' -> DB '${dbO._dbStatus}'`);   // v49P: name it
             o.status = dbO._dbStatus;
             reconciledCount++;
           }
@@ -8991,6 +9034,24 @@ app.get('/api/planning/state', async (req, res) => {
             reconciledCount++;
           }
         });
+        // v49P: land the DPR-authoritative closes in production_orders so table+blob+client all agree
+        // from the next save onward. Idempotent — once status='closed' in the table, the v49K branch
+        // stops matching. Uses the ALREADY-corrected order object so data_json carries the close too.
+        if (_v49pTableCloseIds.length > 0) {
+          try {
+            for (const t of _v49pTableCloseIds) {
+              if (pgPool) {
+                await pgPool.query(
+                  `UPDATE production_orders SET status='closed', data_json=$2, updated_at=NOW()::TEXT WHERE id=$1 AND status='running'`,
+                  [t.id, JSON.stringify(t.ord)]);
+              } else {
+                db.prepare(`UPDATE production_orders SET status='closed', data_json=?, updated_at=datetime('now') WHERE id=? AND status='running'`)
+                  .run(JSON.stringify(t.ord), t.id);
+              }
+            }
+            console.log(`[v49P GET reconcile] DPR-authoritative close written to production_orders for ${_v49pTableCloseIds.length} batch(es): ${_v49pTableCloseIds.map(t=>t.batchNumber||t.id).slice(0,25).join(', ')}`);
+          } catch(e) { console.warn('[v49P GET reconcile] table close write failed:', e.message); }
+        }
         if (reconciledCount > 0) {
           console.log(`[v41z GET reconcile] Updated ${reconciledCount} blob order(s) with newer DB status (stale-blob recovery)`);
           // v41z: kick off a deferred background blob update to make the fix permanent.
@@ -9324,8 +9385,14 @@ app.post('/api/planning/state', async (req, res) => {
               const _bgDbProtected = ex.status === 'running' || ex.status === 'closed';
               const _bgClientProtected = ord.status === 'running' || ord.status === 'closed';
               if (_bgDbProtected && ord.status !== ex.status) {
-                // DB has running/closed — preserve it, client cannot change it
-                finalStatus = ex.status;
+                // DB has running/closed — preserve it, client cannot change it…
+                // v49P: …except a FRESH explicit planner demote running→pending (see bulk-upsert note).
+                if (ex.status === 'running' && ord.status === 'pending' && _v49pFresh(ord)) {
+                  finalStatus = 'pending';
+                  if (ord.machineId && dbRunningPerMachine[ord.machineId]) dbRunningPerMachine[ord.machineId]--;
+                } else {
+                  finalStatus = ex.status;
+                }
               } else if (_bgClientProtected && !_bgDbProtected) {
                 // Client setting running/closed — accept it (user action), EXCEPT a running promotion
                 // beyond the machine's 2 slots: v49N holds DB status (the blob pre-save gate has already
@@ -9404,9 +9471,18 @@ app.post('/api/planning/state', async (req, res) => {
             return _v49f_rcLock(mergedOrd, ex);   // v49F: re-customer is authoritative
           }));
 
+          // v49P: write only rows whose merged content actually differs from the stored row.
+          const _writeList = mergedList.filter(m => {
+            const ex = existingMap[m.id];
+            if (!ex) return true;                       // brand-new row
+            try { return _v49pStable(m) !== _v49pStable(ex); } catch(e) { return true; }
+          });
+          if (_writeList.length !== mergedList.length) {
+            console.log(`[v49P bg-merge] ${mergedList.length - _writeList.length}/${mergedList.length} rows unchanged — skipped (updated_at preserved)`);
+          }
           const CHUNK = 500;
-          for (let i = 0; i < mergedList.length; i += CHUNK) {
-            const chunk = mergedList.slice(i, i + CHUNK);
+          for (let i = 0; i < _writeList.length; i += CHUNK) {
+            const chunk = _writeList.slice(i, i + CHUNK);
             const vals = [];
             const params = [];
             chunk.forEach((m, idx) => {
@@ -9423,7 +9499,7 @@ app.post('/api/planning/state', async (req, res) => {
                 updated_at=NOW()::TEXT
             `, params);
           }
-          console.log(`[State] Background merged ${orders.length} orders into production_orders (batched)`);
+          console.log(`[State] Background merged ${orders.length} orders into production_orders (${_writeList.length} written, batched)`);
           // v45S: collapse any (batch_number, machine_id) duplicate this id-keyed merge may have created.
           await _v45s_collapseDuplicateOrders();
         } catch(e) { console.warn('[State] Background order merge failed:', e.message); }
@@ -9494,6 +9570,9 @@ app.post('/api/planning/state', async (req, res) => {
                 }
               }
             // Status: DB wins if meaningfully newer (no explicit intent)
+            // v49P: a FRESH explicit demote running→pending is a user action — never preserved over.
+            } else if (dbRow.status === 'running' && ord.status === 'pending' && _v49pFresh(ord)) {
+              // keep the client's pending in the blob; the bg merge accepts it into the table (E2b)
             } else if (dbRow.status && ord.status && dbRow.status !== ord.status && dbUpdated > clientEdit + 5000) {
               result = { ...result, status: dbRow.status };
               blobPreservedCount++;
@@ -9570,7 +9649,8 @@ app.post('/api/planning/state', async (req, res) => {
             return result;
           });
           if (blobPreservedCount > 0) {
-            console.log(`[v41w blob-save] Preserved DB status on ${blobPreservedCount}/${state.orders.length} orders before blob write`);
+            const _v49pNames = preservedOrders.slice(-blobPreservedCount).map(p => `${p.batchNumber||p.id} ${p.clientStatus}->${p.dbStatus}`).slice(0, 12).join(', ');
+            console.log(`[v41w blob-save] Preserved DB status on ${blobPreservedCount}/${state.orders.length} orders before blob write: ${_v49pNames}`);   // v49P: name them
           }
         }
       } catch (e) {
