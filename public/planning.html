@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49S</p>
+      <p>Planning Suite v3.0 · build v49T</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -11995,12 +11995,15 @@ function orderInMonth(ord, ym) {
   if (!ord.startDate && !ord.endDate) return ord.status !== 'closed';
   const start = ord.startDate ? new Date(ord.startDate) : null;
   const end   = ord.endDate   ? new Date(ord.endDate)   : null;
-  const closed = ord.closedDate ? new Date(ord.closedDate) : null;
-  // Include if: start in month, OR end in month, OR spans across month, OR closed in month
+  // v49T (confirmed by Ishan): month membership keys on PRODUCTION dates only — start in month, end
+  // in month, or spanning it. The old "closed-in-month" branch admitted any order whose closedDate
+  // fell in the month regardless of when it was produced; the July-2026 cleanup wave (dozens of
+  // Apr–Jun batches administratively closed on 26–27 Jul) flooded the July view through it. A batch
+  // manufactured Apr–Jun without spanning into July must not appear in July irrespective of when it
+  // was closed. Unclosed carry-forward below is unchanged: an open order stays visible until closed.
   if (start && start >= mStart && start <= mEnd) return true;
   if (end   && end   >= mStart && end   <= mEnd) return true;
   if (start && end   && start < mStart && end > mEnd) return true; // spans
-  if (closed && closed >= mStart && closed <= mEnd) return true;
   // Unclosed carry-forward: show if order started before month end and not yet closed
   if (ord.status !== 'closed' && start && start <= mEnd) return true;
   return false;
