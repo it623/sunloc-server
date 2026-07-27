@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49P';
+const APP_BUILD = 'v49S';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1686,6 +1686,24 @@ function _v49f_rcLock(merged, dbData) {
       console.log(`[v49F] re-customer lock: ${out.batchNumber||out.id} retired SO ${_prevSO} restore blocked`);
       out.sapDocNum   = String(dbData.sapDocNum == null ? '' : dbData.sapDocNum);
       out.sapDocEntry = dbData.sapDocEntry != null ? dbData.sapDocEntry : null;
+    }
+    // v49S (confirmed by Ishan): shipTo/billTo residue guard. Planning's order modal pre-fills
+    // fo-customer from ord.shipTo || ord.customer, so ANY modal save from a stale tab — even one
+    // editing only a date — re-pushed the OLD customer as shipTo, re-contaminating re-customered
+    // orders (26P044/045, 26Z075) and forcing manual DB cleanup each time. Rule: an incoming
+    // shipTo/billTo equal to recustomeredFrom is rejected back to the DB value — reject-to-DB, not
+    // blank-to-empty, so a DELIBERATE old-party ship-to set via the server-side Re-customer modal
+    // (which bypasses this lock and lands in the DB) survives untouched: incoming matches DB and
+    // nothing changes. All other shipTo/billTo edits remain freely editable (v49F contract).
+    const _rf = String(dbData.recustomeredFrom == null ? '' : dbData.recustomeredFrom).trim().toLowerCase();
+    if (_rf) {
+      for (const k of ['shipTo', 'billTo']) {
+        if (String(out[k] == null ? '' : out[k]).trim().toLowerCase() === _rf
+            && String(dbData[k] == null ? '' : dbData[k]).trim().toLowerCase() !== _rf) {
+          console.log(`[v49S] re-customer lock: ${out.batchNumber||out.id} ${k} "${out[k]}" -> "${dbData[k] != null ? dbData[k] : ''}" (old-party residue rejected)`);
+          out[k] = dbData[k] != null ? dbData[k] : '';
+        }
+      }
     }
     return out;
   } catch (e) { console.warn('[v49F] rcLock skipped:', e && e.message); return merged; }
@@ -8070,6 +8088,9 @@ app.post('/api/orders/upsert', async (req, res) => {
             if (_intent.status === 'closed') { ord.manualEndDate = true; ord.closedDate = ord.closedDate || new Date().toISOString(); }
             else { ord.manualEndDate = false; ord.closedDate = null; }
           }
+        } else if (ord.status === 'closed' && (ord.closedDate || ord.manualEndDate) && existing.status !== 'closed') {
+          // v49R: stale historical close — hold DB status silently, never signal a correction
+          finalStatus = existing.status;
         } else if (dbUpdated > clientEdit + 5000) {
           finalStatus = existing.status;
           preserved = true;
@@ -8609,6 +8630,11 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
               if (_mcRunNames[ord.machineId]) _mcRunNames[ord.machineId] = _mcRunNames[ord.machineId].filter(n => n !== (ord.batchNumber || ord.id));
             }
             console.log(`[v49P] explicit demote accepted: ${ord.batchNumber||ord.id} running → pending`);
+          } else if (ord.status === 'closed' && (ord.closedDate || ord.manualEndDate) && !_v49pFresh(ord)) {
+            // v49R: stale HISTORICAL close vs table running — hold DB silently, emit NO correction.
+            // The correction entry is what made the client un-close the order and clear its
+            // closedDate (the month-scoping flood). The blob keeps the close (R1a).
+            finalStatus = existing.status;
           } else {
           finalStatus = existing.status;
           preservedCount++;
@@ -8637,7 +8663,13 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
             }
           }
         } else if (existing.status && ord.status && existing.status !== ord.status) {
-          if (dbUpdated > clientEdit + 5000) {
+          // v49R: a stale client 'closed' with a closedDate is a historical fact — hold the DB status
+          // SILENTLY (no preservedOrders entry). Emitting the entry made the client patch the order
+          // open and clear its closedDate (the month-scoping flood). The blob keeps the close (R1a);
+          // v45S heals the table at boot.
+          if (ord.status === 'closed' && (ord.closedDate || ord.manualEndDate)) {
+            finalStatus = existing.status;
+          } else if (dbUpdated > clientEdit + 5000) {
             finalStatus = existing.status;
             preservedCount++;
             preservedOrders.push({ id: ord.id, batchNumber: ord.batchNumber||null, machineId: ord.machineId||null, clientStatus: ord.status, dbStatus: existing.status });
@@ -8992,7 +9024,7 @@ app.get('/api/planning/state', async (req, res) => {
           // ("lost in transit" closure) must be corrected to 'closed'. This is not an auto-revert to
           // pending — it promotes a stale-running order to its true, DPR-authoritative closed state, so
           // it stops inflating the v41z running count and causing real running orders to be downgraded.
-          if (o.status === 'running' && _v49gIsDprClosed({ id: o.id, batchNumber: o.batchNumber })
+          if ((o.status === 'running' || o.status === 'pending') && _v49gIsDprClosed({ id: o.id, batchNumber: o.batchNumber })
               && !_v49gIsReopenedOpen(o)) {
             o.status = 'closed';
             o.closedDate = o.closedDate || o.endDate || new Date().toISOString();
@@ -9009,10 +9041,15 @@ app.get('/api/planning/state', async (req, res) => {
           // v45N: tracking (reconcile=1) skips the timestamp guard so a blob 'pending' that the DB
           // has flipped to 'running' surfaces even if the blob was saved later — the running/closed
           // protection still prevents any auto-revert of a real physical status.
-          const _passTsGuard = _trkReconcile ? true : (dbUpd > blobSavedAt + 30000);
+          const _passTsGuard = _trkReconcile ? true : (dbUpd > blobSavedAt + 30000)
+                             || dbO._dbStatus === 'closed';   // v49R: table 'closed' is authoritative — heal the blob regardless of timestamps
           if (dbO._dbStatus && o.status && dbO._dbStatus !== o.status && _passTsGuard && !blobStatusIsProtected) {
             console.log(`[v41z GET reconcile] ${o.batchNumber||o.id}: blob '${o.status}' -> DB '${dbO._dbStatus}'`);   // v49P: name it
             o.status = dbO._dbStatus;
+            if (dbO._dbStatus === 'closed' && !o.closedDate) {   // v49R: carry the close stamp so month scoping places it
+              o.closedDate = dbO.closedDate || o.endDate || dbO.endDate || null;
+              if (o.closedDate) o.manualEndDate = true;
+            }
             reconciledCount++;
           }
           // v45B: production_orders is authoritative for the reconciled gross — Tracking's label cap
@@ -9042,10 +9079,10 @@ app.get('/api/planning/state', async (req, res) => {
             for (const t of _v49pTableCloseIds) {
               if (pgPool) {
                 await pgPool.query(
-                  `UPDATE production_orders SET status='closed', data_json=$2, updated_at=NOW()::TEXT WHERE id=$1 AND status='running'`,
+                  `UPDATE production_orders SET status='closed', data_json=$2, updated_at=NOW()::TEXT WHERE id=$1 AND status<>'closed'`,
                   [t.id, JSON.stringify(t.ord)]);
               } else {
-                db.prepare(`UPDATE production_orders SET status='closed', data_json=?, updated_at=datetime('now') WHERE id=? AND status='running'`)
+                db.prepare(`UPDATE production_orders SET status='closed', data_json=?, updated_at=datetime('now') WHERE id=? AND status<>'closed'`)
                   .run(JSON.stringify(t.ord), t.id);
               }
             }
@@ -9573,6 +9610,14 @@ app.post('/api/planning/state', async (req, res) => {
             // v49P: a FRESH explicit demote running→pending is a user action — never preserved over.
             } else if (dbRow.status === 'running' && ord.status === 'pending' && _v49pFresh(ord)) {
               // keep the client's pending in the blob; the bg merge accepts it into the table (E2b)
+            // v49R (confirmed by Ishan; root cause of the month-scoping flood): the v49P freshness rule
+            // stripped HISTORICAL closes of their explicit-close intent, so this staleness guard began
+            // rewriting the blob's real closes back to a stale table 'running'/'pending' — un-closing
+            // months of history and flooding every month view via orderInMonth's carry-forward rule.
+            // A blob 'closed' with a closedDate is a recorded historical fact: the staleness guard must
+            // NEVER reverse it. (Fresh closes still route through the DPR gate above, unchanged.)
+            } else if (ord.status === 'closed' && (ord.closedDate || ord.manualEndDate) && dbRow.status !== 'closed') {
+              // keep the blob's close; v45S (boot) and the v49K/E1 reconcile heal the table side
             } else if (dbRow.status && ord.status && dbRow.status !== ord.status && dbUpdated > clientEdit + 5000) {
               result = { ...result, status: dbRow.status };
               blobPreservedCount++;

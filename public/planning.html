@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49P</p>
+      <p>Planning Suite v3.0 · build v49S</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2260,10 +2260,11 @@ async function saveState() {
             deletedCount++;
           } else if (c.dbStatus && c.dbStatus !== o.status) {
             patched = { ...patched, status: c.dbStatus };
-            // v49P: if the server refused/undid a close, the lingering closedDate + manualEndDate made
-            // every subsequent autosave look like a brand-new explicit close (the 26G018 30s refusal
-            // loop). Clear them so this client stops replaying the refused close.
-            if (c.dbStatus !== 'closed' && (patched.closedDate || patched.manualEndDate)) {
+            // v49P: a REFUSED close's lingering stamps made every autosave replay it (the 26G018 loop).
+            // v49R (confirmed by Ishan): clear the stamps ONLY for a DPR-gate refusal — clearing them on
+            // every plain status correction destroyed historical closedDates and un-closed months of
+            // history (the month-scoping flood).
+            if (c.dprGateRefused && c.dbStatus !== 'closed' && (patched.closedDate || patched.manualEndDate)) {
               patched = { ...patched, closedDate: null, manualEndDate: false };
             }
             correctedCount++;
@@ -9024,20 +9025,32 @@ function truckHasProdMonth(truck, ym) {
 // remove its committed boxes from the free-binning pool so remaining boxes lay AROUND it.
 function _buildLockedTrucks(activeLocks, zone, cap) {
   return activeLocks.map(l => {
+    // v49R (confirmed by Ishan): the frozen manifest must still NET DISPATCHED boxes. The free-pool
+    // binner already nets (planned − dispatched), but a lot dispatched AFTER truck lock — scan-out OR
+    // admin regularise/deemed (26X084 / 26Z074) — kept rendering here at its full frozen allocation.
+    // Rule: a lot whose plan is 'dispatched' drops out entirely; otherwise its allocation is reduced
+    // by the lot's dispatched boxes (capped at the allocation). Truck totals recompute from what's
+    // left. Invoice generation is untouched — it bills packed − already-invoiced per batch.
     const orders = (l.manifest||[]).map(m => {
       const dp = state.dispatchPlans.find(p => p.id === m.planId) || {};
       const allocBoxes = parseInt(m.allocatedBoxes,10)||0;
+      if (dp && dp.status === 'dispatched') return null;                       // fully dispatched lot
+      const dispBoxes = Math.round(parseFloat(dp && dp._dispatchedBoxes || 0));
+      const netBoxes = Math.max(0, allocBoxes - Math.min(allocBoxes, dispBoxes));
+      if (netBoxes <= 0 && allocBoxes > 0) return null;                        // allocation fully dispatched
+      const _ratio = allocBoxes > 0 ? (netBoxes / allocBoxes) : 1;
+      const _allocQty = (m.allocatedQty != null) ? parseFloat(m.allocatedQty) : parseFloat(dp.qty || 0);
       return {
         ...dp,
         id: m.planId,
         batchNumber: m.batchNumber || dp.batchNumber,
-        boxes: allocBoxes,
+        boxes: netBoxes,
         _originalBoxes: parseInt(dp.boxes||allocBoxes,10),
-        qty: (m.allocatedQty != null) ? m.allocatedQty : dp.qty,
-        packedBoxes: allocBoxes,   // committed boxes are packed-and-loaded
+        qty: isNaN(_allocQty) ? dp.qty : _allocQty * _ratio,
+        packedBoxes: netBoxes,   // committed boxes are packed-and-loaded
         _locked: true,
       };
-    });
+    }).filter(Boolean);
     const totalBoxes = orders.reduce((s,o)=>s+(parseInt(o.boxes||0,10)),0);
     return {
       truckNumber: parseInt(l.truckNumber,10) || 1,
