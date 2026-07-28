@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49W</title>
+<title>Sunloc Tracking Suite v1.0 · build v49X</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49W</p>
+      <p>Tracking Suite v1.0 · build v49X</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49W</p>
+      <p>Tracking Suite v1.0 · build v49X</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1847,7 +1847,17 @@ async function pullFromServer(force){
     const scansChanged   = !!force || !_ver || !_lv || (_ver.scans&&_lv.scans ? (_ver.scans.count!==_lv.scans.count || _ver.scans.maxTs!==_lv.scans.maxTs) : true) || state.scans.length===0;
     const wastageChanged = !!force || !_ver || !_lv || (_ver.wastage&&_lv.wastage ? (_ver.wastage.count!==_lv.wastage.count || (_ver.wastage.qtySum!==undefined && _ver.wastage.qtySum!==_lv.wastage.qtySum)) : true) || !(state.wastage&&state.wastage.length); // v45Z: qtySum catches edits
     const dispatchChanged= !!force || !_ver || !_lv || (_ver.dispatch&&_lv.dispatch ? (_ver.dispatch.count!==_lv.dispatch.count) : true);
-    const _ssNeed = scansChanged || wastageChanged || !hasScanSummary(); // v45Z: wastageSummary (reports' _sw) must refresh on edits too
+    // v49X (root cause of "DPR gross correction doesn't reflect in Reports B/D/E"): a closed-batch
+    // gross-override — or a reopen→edit→re-close of the DPR actuals — changes neither scans nor
+    // wastage, so the gates above never fired and state.grossSummary kept the stale pre-correction
+    // gross on every device. The server signature now covers batch_gross_override + production_actuals;
+    // any DPR correction flips it, re-pulls scan-summary (whose grossByBatch is override-aware) and
+    // clears the month-attribution cache so month-mode gross refetches too.
+    const grossChanged   = !!force || !_ver || !_lv
+      || (_ver.override&&_lv.override ? (_ver.override.count!==_lv.override.count || _ver.override.grossSum!==_lv.override.grossSum) : true)
+      || (_ver.dprGross&&_lv.dprGross ? (_ver.dprGross.count!==_lv.dprGross.count || _ver.dprGross.qtySum!==_lv.dprGross.qtySum) : true);
+    if (grossChanged && !force && _lv && typeof _v41_clearAgradeMonthCache==='function') _v41_clearAgradeMonthCache();
+    const _ssNeed = scansChanged || wastageChanged || grossChanged || !hasScanSummary(); // v45Z: wastageSummary (reports' _sw) must refresh on edits too; v49X: DPR gross corrections too
     const _bsNeed = scansChanged || dispatchChanged || !_bsMap || Object.keys(_bsMap||{}).length===0;
     const _wNeed  = wastageChanged;
     // STEP 2: Load all labels — with retry so a single slow/timed-out fetch never leaves the
@@ -1998,6 +2008,8 @@ async function pullFromServer(force){
           // Reports D & E read this so Gross Prod shows the DPR-entered quantity for EVERY batch,
           // independent of whether the planning order's injected actualProd happened to be populated.
           state.grossSummary = sj.grossByBatch || {};
+          // v49X: override metadata (who/when/why) — every report flags DPR-corrected batches (OVR badge)
+          state.grossOverrides = sj.grossOverrides || {};
           // v41 P19.6 (deep-audit fix): scan/wastage data just refreshed → the month-attributed
           // A-Grade windowed cache is now stale. Clear it so the next report render re-fetches
           // fresh windowed data, keeping month-attributed reports as live as cumulative ones.
@@ -2846,6 +2858,18 @@ function _reconBadge(on, title){
   if(!on) return '';
   const t = (title || 'Reconciled — admin-overridden figures take precedence across all reports; hover a value for its original').replace(/"/g,'&quot;');
   return ` <span class="badge" style="font-size:8px;background:#0e7490;color:#fff;cursor:help" title="${t}">RECONCILED</span>`;
+}
+// v49X (confirmed by Ishan — "the change must flow through … with a requisite flag"): amber OVR badge
+// on every report row whose gross is a deliberate DPR closed-batch correction (batch_gross_override).
+// Metadata arrives with scan-summary (state.grossOverrides = { bn: {gross, by, at, reason} }).
+function _ovrBadge(bn){
+  const o = state.grossOverrides && state.grossOverrides[bn];
+  if(!o) return '';
+  const t = (`DPR gross corrected to ${(+o.gross||0).toFixed(2)}L`
+    + (o.by ? ` by ${o.by}` : '') + (o.at ? ` (${String(o.at).slice(0,16)})` : '')
+    + (o.reason ? ` — ${o.reason}` : '')
+    + `. Correction flows to Gross, WIP and all reports.`).replace(/"/g,'&quot;');
+  return ` <span class="badge" style="font-size:8px;background:#b45309;color:#fff;cursor:help" title="${t}">OVR</span>`;
 }
 // v47Y (confirmed by Ishan): derive the stage where a reconciled batch's FROZEN (unpacked) remainder
 // physically sits, from the live scan trail. The override stays authoritative for the AMOUNT
@@ -10524,7 +10548,7 @@ function _v41_renderReportGInner(){
     const _rt = _reconTips(b.batchNumber), _rc = !!_rt;   // v46N: reconcile badge + per-cell originals (also shown in Report D)
 
     return `<tr ${overInspected||noGross?'style="background:rgba(220,38,38,0.04)"':''}>
-      <td class="td-bold td-mono">${b.batchNumber}${_reconBadge(_rc,_rt&&_rt.title)}${alertFlag}${crossFlag}</td>
+      <td class="td-bold td-mono">${b.batchNumber}${_reconBadge(_rc,_rt&&_rt.title)}${_ovrBadge(b.batchNumber)}${alertFlag}${crossFlag}</td>
       <td class="text-sm">${b.customer||'—'}</td>
       <td class="text-sm">${b.colour||'—'}</td>
       <td class="td-mono">${b.size}</td>
@@ -11991,7 +12015,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       const _cfBadge45 = (_isCarryFwd45 && !R.retired) ? ' <span class="badge" style="font-size:8px;background:#f59e0b;color:#fff" title="Carry-forward — produced in a prior month (or ghost); still holding WIP this month, not this month\'s production">◄ CARRY-FWD</span>' : '';
       if (_isAimDept) {
         html+=`<tr>
-          <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired (as-is-where-is) — WIP excluded per v44 rule; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+          <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired (as-is-where-is) — WIP excluded per v44 rule; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_ovrBadge(batchNo)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
           <td class="text-sm">${batch?.customer||'-'}</td>
           <td class="text-sm">${batch?.colour||'-'}</td>
           <td class="td-mono text-sm">${batch?.pcCode||'-'}</td>
@@ -12008,7 +12032,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td></td><td colspan="9"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
       } else {
         html+=`<tr>
-        <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
+        <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_ovrBadge(batchNo)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
         <td class="text-sm">${batch?.customer||'-'}</td>
         <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
         <td class="td-mono">${inn} <span class="text-muted">(${fmt(innQty)}L)</span></td>
@@ -12161,7 +12185,7 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
     rows.forEach(r=>{
       const b=r.b, _rc=!!_reconOverride(b.batchNumber), _rt=_reconTips(b.batchNumber);
       html+=`<tr>
-        <td class="td-bold td-mono">${b.batchNumber}${_reconBadge(_rc,_rt&&_rt.title)}</td>
+        <td class="td-bold td-mono">${b.batchNumber}${_reconBadge(_rc,_rt&&_rt.title)}${_ovrBadge(b.batchNumber)}</td>
         <td class="text-sm">${b.customer||'-'}</td>
         <td class="td-mono">${b.size}</td>
         <td class="td-mono text-sm">${b.pcCode||'-'}</td>
@@ -12464,7 +12488,7 @@ function _v41_renderReportAInner(){
 
     html+=`<div class="mb-20" style="border-bottom:1px solid var(--border);padding-bottom:16px">
       <div class="flex justify-between mb-8">
-        <div class="fw-bold">${b.batchNumber}${_reconBadge(!!_reconOverride(b.batchNumber),(_reconTips(b.batchNumber)||{}).title)} — ${b.customer||''} | ${b.machineId} | Size ${b.size}</div>
+        <div class="fw-bold">${b.batchNumber}${_reconBadge(!!_reconOverride(b.batchNumber),(_reconTips(b.batchNumber)||{}).title)}${_ovrBadge(b.batchNumber)} — ${b.customer||''} | ${b.machineId} | Size ${b.size}</div>
         <span class="badge ${ag.pct>=95?'badge-green':ag.pct>=90?'badge-amber':'badge-red'}">${fmt(ag.pct,1)}% A-Grade</span>
       </div>
       <div class="grid-4 mb-8">
@@ -12940,7 +12964,7 @@ function _v41_renderReportEInnerBody(){
         return `<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}" data-pp-num="${r._agNum||0}" data-pp-den="${r._agDen||0}" data-aim-num="${r._aimAGrade||0}" data-aim-den="${r._aimInspNew||0}">
         <td class="sticky-col" style="left:0;min-width:70px;border-right:1px solid #d4b896">${r.machine}</td>
         <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
-        <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}${_reconBadge(!!_reconOverride(r.batchNo),(_reconTips(r.batchNo)||{}).title)}</td>
+        <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}${_reconBadge(!!_reconOverride(r.batchNo),(_reconTips(r.batchNo)||{}).title)}${_ovrBadge(r.batchNo)}</td>
         <td class="sticky-col" style="left:210px;min-width:180px;border-right:2px solid #d4b896">${r.customer||'—'}</td>
         <td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td><td style="white-space:nowrap;font-size:11px">${r.startDate?new Date(r.startDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td><td style="white-space:nowrap;font-size:11px">${r.endDate?new Date(r.endDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
         <td>${fmtN(r._plannedQty)}</td><td>${fmtN(r._grossProd)}</td>
@@ -13262,7 +13286,7 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
           return `<tr data-search="${[r.batchNo,r.customer,r.pcCode,r.colour,r.machine].filter(Boolean).join(' ').toLowerCase()}" style="border-bottom:1px solid #f0e6d6">
           <td style="padding:5px 6px;font-weight:600;color:#0891b2">${r.machine}</td>
           <td style="padding:5px 6px">${r.floor}</td>
-          <td style="padding:5px 6px;font-weight:600">${r.batchNo}</td>
+          <td style="padding:5px 6px;font-weight:600">${r.batchNo}${_ovrBadge(r.batchNo)}</td>
           <td style="padding:5px 6px">${r.customer||'—'}</td>
           <td style="padding:5px 4px">${r.pcCode||'—'}</td>
           <td style="padding:5px 4px">${r.colour||'—'}</td>

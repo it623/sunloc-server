@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49W';
+const APP_BUILD = 'v49X';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -16442,7 +16442,17 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
       for (const bn of Object.keys(_grossOverride || {})) grossByBatch[bn] = _grossOverride[bn];
     }
 
-    res.json({ ok: true, summary, wastage, dispatched, grossByBatch, asof: asof||null });
+    // v49X: ship the override metadata so every report can flag DPR-corrected batches (OVR badge)
+    // with who/when/why on hover. Tiny table; full-row read is cheap and always current.
+    let grossOverrides = {};
+    try {
+      let _ovr;
+      if (pgPool) _ovr = (await pgPool.query('SELECT batch_number, gross_lakhs, reason, updated_by, updated_at FROM batch_gross_override')).rows;
+      else _ovr = db.prepare('SELECT batch_number, gross_lakhs, reason, updated_by, updated_at FROM batch_gross_override').all();
+      for (const r of (_ovr || [])) if (r.batch_number) grossOverrides[r.batch_number] = {
+        gross: parseFloat(r.gross_lakhs) || 0, by: r.updated_by || '', at: r.updated_at || '', reason: r.reason || '' };
+    } catch(_) {}
+    res.json({ ok: true, summary, wastage, dispatched, grossByBatch, grossOverrides, asof: asof||null });
   } catch(err) {
     console.error('[scan-summary]', err.message);
     res.status(500).json({ ok: false, error: err.message });
@@ -16631,8 +16641,12 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
         // (a) DPR-Edit override propagates to month mode, for batches that already have a month slice
         //     (a deliberate correction of THIS month's produced batch). Does not manufacture new month
         //     rows for override-only batches — a carry-forward batch with no current-month DPR stays out.
+        // v49X: the split-family skip below belonged to the v47M BLOB-override path (removed in
+        // v47T). batch_gross_override is the deliberate DPR-Edit correction — TOP authority per
+        // v47S — so it must also beat the apportioned family slice (26ZC095-A: override 28.00 was
+        // invisible in month mode because the skip blocked it). "Only where a month slice already
+        // exists" still holds — no new month rows are manufactured for carry-forward batches.
         for (const _bn of Object.keys(_grossOverride || {})) {
-          if (_splitB47m.has(_bn)) continue;
           if (Object.prototype.hasOwnProperty.call(monthGross, _bn)) monthGross[_bn] = _grossOverride[_bn];
         }
         // (v47T) blob-fill loop removed: the planning blob no longer participates in month-scoped gross.
@@ -16786,12 +16800,28 @@ app.get('/api/tracking/sync-version', async (req, res) => {
       : 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(qty),0), 3) AS qtysum FROM tracking_wastage';
     const wst = await one(wstSql);
     const dsp = await one('SELECT COUNT(*) AS count FROM tracking_dispatch_records');
+    // v49X (root cause of "DPR correction doesn't reflect in Reports B/D/E"): the signature covered
+    // scans/wastage/labels/dispatch but NOT the DPR gross itself. A closed-batch gross-override (or a
+    // reopen→edit→re-close of production_actuals) changed neither scans nor wastage, so _ssNeed never
+    // fired, scan-summary was never re-fetched, and every device's state.grossSummary kept the stale
+    // pre-correction gross indefinitely (masked only when an unrelated scan flipped the version) —
+    // the exact v45Z wastage-edit lesson, one table over. Two new signature blocks close both paths.
+    const ovrSql = pgPool
+      ? 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(gross_lakhs),0)::numeric, 3) AS grosssum FROM batch_gross_override'
+      : 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(gross_lakhs),0), 3) AS grosssum FROM batch_gross_override';
+    const ovr = await one(ovrSql);
+    const dprSql = pgPool
+      ? 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(qty_lakhs),0)::numeric, 3) AS qtysum FROM production_actuals'
+      : 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(qty_lakhs),0), 3) AS qtysum FROM production_actuals';
+    const dpr = await one(dprSql);
     res.json({
       ok: true,
       labels:   { count: parseInt(lab.count || 0, 10), voided: parseInt(lab.voided || 0, 10), printed: parseInt(lab.printed || 0, 10) },
       scans:    { count: parseInt(scn.count || 0, 10), maxTs: scn.maxts || scn.maxTs || null },
       wastage:  { count: parseInt(wst.count || 0, 10), qtySum: parseFloat(wst.qtysum || wst.qtySum || 0) },
-      dispatch: { count: parseInt(dsp.count || 0, 10) }
+      dispatch: { count: parseInt(dsp.count || 0, 10) },
+      override: { count: parseInt(ovr.count || 0, 10), grossSum: parseFloat(ovr.grosssum || ovr.grossSum || 0) },
+      dprGross: { count: parseInt(dpr.count || 0, 10), qtySum: parseFloat(dpr.qtysum || dpr.qtySum || 0) }
     });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -17558,6 +17588,15 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
     }
     const grossProdMap = {};
     prodActuals.forEach(r => { if(r.batch_number) grossProdMap[r.batch_number.toUpperCase()] = parseFloat(r.gross_prod||0); });
+    // v49X: batch_gross_override (the deliberate DPR-Edit correction) is authoritative over the raw
+    // actuals sum — same precedence as effectiveGross(). Applied only to batches already in the map
+    // (windowed calls stay windowed for absent batches; a batch present in the window has its full
+    // recent history here, so the corrected cumulative gross is the right value). This feeds the
+    // planning live A-Grade feed and the server wipLakhs, so corrected gross flows into WIP too.
+    try { for (const _bn of Object.keys(_grossOverride || {})) {
+      const _u = String(_bn).toUpperCase();
+      if (Object.prototype.hasOwnProperty.call(grossProdMap, _u)) grossProdMap[_u] = _grossOverride[_bn] || 0;
+    } } catch(_) {}
 
     // Build per-batch summary
     const batches = {};
