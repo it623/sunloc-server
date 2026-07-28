@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49V';
+const APP_BUILD = 'v49W';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -8220,6 +8220,7 @@ app.post('/api/orders/upsert', async (req, res) => {
           db.prepare(`INSERT OR REPLACE INTO dpr_batch_closed (order_id, batch_number, closed_at, closed_by, notes)
              VALUES (?,?,datetime('now'),?,?)`).run(mergedOrd.id, _cb, 'planning-cascade', 'Re-closed from Planning after reopen (v49G cascade)');
         }
+        _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
         console.log(`[v49G] cascade: re-close of reopened batch ${_cb||mergedOrd.id} written to dpr_batch_closed`);
       } catch (e) { console.warn('[v49G] DPR-close cascade failed:', e && e.message); }
     }
@@ -11612,6 +11613,7 @@ app.post('/api/dpr/batch-close', async (req, res) => {
 
     // Refresh actuals cache after flush+close
     try { await warmActualsCache(); } catch {}
+    _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
 
     res.json({ ok: true });
   } catch (err) {
@@ -11627,6 +11629,7 @@ app.delete('/api/dpr/batch-close/:orderId', async (req, res) => {
     } else {
       db.prepare('DELETE FROM dpr_batch_closed WHERE order_id = ?').run(req.params.orderId);
     }
+    _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     res.json({ ok: true });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -11691,6 +11694,7 @@ app.post('/api/dpr/batch-reopen', async (req, res) => {
         VALUES (?, ?, ?, datetime('now'), ?)`).run(orderId, batchNumber || closedRow.batch_number || null, closedRow.closed_at || null, reopenedBy || null);
       db.prepare('DELETE FROM dpr_batch_closed WHERE order_id=?').run(orderId);
     }
+    _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     res.json({ ok: true, reopenedAt: new Date().toISOString() });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -11783,6 +11787,7 @@ app.post('/api/batch/retire', async (req, res) => {
     }
     await loadRetiredBatches();
     try { await warmPlanningCache(); } catch (e) {}
+    _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     console.log(`[retire] ${retired} batch(es) retired by ${by}`);
     res.json({ ok: true, retired });
   } catch (err) { console.error('[retire] error', err.message); res.status(500).json({ ok: false, error: err.message }); }
@@ -11815,6 +11820,7 @@ app.post('/api/batch/unretire', async (req, res) => {
     }
     await loadRetiredBatches();
     try { await warmPlanningCache(); } catch (e) {}
+    _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     console.log(`[retire] ${restored} batch(es) un-retired`);
     res.json({ ok: true, restored });
   } catch (err) { console.error('[unretire] error', err.message); res.status(500).json({ ok: false, error: err.message }); }
@@ -11915,66 +11921,111 @@ app.get('/api/dpr/batch-closed', async (req, res) => {
 
 // GET /api/dpr/closed-batches — machine-wise list of all closed batches with planned vs actual DPR gross.
 // One row per closed production order. "Actual DPR Gross" = override (if set) else SUM(production_actuals).
+//
+// v49W (root cause of the chronic slow-load AND the 28-Jul "operation timed out"): every GET
+// re-fetched the FULL planning blob from PG and JSON.parse'd it (ignoring the in-memory cache the
+// 30s planning polling keeps warm), then made three MORE sequential pool round-trips. Under
+// peak-hour pool saturation (max 10 connections, 10s acquisition timeout, heavy actuals GROUP-BYs
+// + blob reads/writes from every device's auto-sync) those four queued acquisitions exceeded the
+// client's 20s abort — the same contention class as the v41ZM incident. Now the payload is built
+// once and served from memory: fresh cache serves instantly with zero DB touches; a stale cache
+// still serves instantly (flagged stale:true) while a single-flight background rebuild refreshes;
+// only a fully cold server awaits a build — and the build itself is cheap now (cache-first planning
+// read + three small keyed scans). Writers that change the payload (batch close / reopen / retire /
+// unretire / gross-override / v49G planning re-close cascade) invalidate the cache generation, so
+// corrections and closes reflect on the very next fetch.
+let _closedBatchesCache = null;
+let _closedBatchesCacheTime = 0;
+let _closedBatchesBuilding = null;   // in-flight build promise (single-flight)
+let _closedBatchesGen = 0;           // bumped on invalidation; stale in-flight builds refuse to commit
+const CLOSED_BATCHES_TTL_MS = 45000;
+function _invalidateClosedBatchesCache() {
+  _closedBatchesCache = null; _closedBatchesCacheTime = 0;
+  _closedBatchesGen++; _closedBatchesBuilding = null;   // drop any pre-write in-flight build
+}
+async function _buildClosedBatchesPayload() {
+  // Keep the gross maps warm (backgrounded + 60s-throttled inside; never blocks this build).
+  warmActualsCache().catch(()=>{});
+  await loadGrossOverrides();
+  // v49W: cache-first planning read — the 30s planning polling keeps _planningStateCache warm, so
+  // re-fetching the multi-MB blob per request was pure waste and the dominant chronic cost here.
+  const ps = (_planningStateCache && Array.isArray(_planningStateCache.orders) && (Date.now() - _planningStateCacheTime) < 60000)
+    ? _planningStateCache : await getPlanningStateAsync();
+  const orders = (ps.orders || []).filter(o => o && !o.deleted);
+
+  // closed set from dpr_batch_closed (keyed by order_id and batch_number) + closed_at lookup
+  let closedRows;
+  if (pgPool) closedRows = (await pgPool.query('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed')).rows;
+  else closedRows = db.prepare('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed').all();
+  const closedById = new Map(), closedByBatch = new Map();
+  for (const c of (closedRows || [])) {
+    if (c.order_id) closedById.set(c.order_id, c);
+    if (c.batch_number) closedByBatch.set(c.batch_number, c);
+  }
+
+  // override metadata (reason/by/at) for display
+  let ovRows;
+  if (pgPool) ovRows = (await pgPool.query('SELECT batch_number, gross_lakhs, reason, updated_by, updated_at FROM batch_gross_override')).rows;
+  else ovRows = db.prepare('SELECT batch_number, gross_lakhs, reason, updated_by, updated_at FROM batch_gross_override').all();
+  const ovByBatch = new Map((ovRows || []).map(r => [r.batch_number, r]));
+
+  const out = [];
+  for (const o of orders) {
+    const cRow = closedById.get(o.id) || closedByBatch.get(o.batchNumber);
+    const isClosed = !!cRow || o.status === 'closed';
+    if (!isClosed) continue;
+    const ov = ovByBatch.get(o.batchNumber) || null;
+    const rawGross = _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, o.batchNumber)
+      ? _grossByBatch[o.batchNumber] : effectiveGross(o.batchNumber);
+    out.push({
+      orderId: o.id,
+      batchNumber: o.batchNumber || '',
+      machineId: o.machineId || '',
+      size: (o.size != null ? String(o.size) : ''),
+      colour: o.colour || o.color || '',
+      pcCode: o.pcCode || '',
+      customer: o.customer || '',
+      startDate: o.startDate || '',
+      endDate: o.endDate || '',
+      plannedGross: parseFloat(o.grossQty || 0) || 0,
+      rawDprGross: parseFloat(rawGross || 0) || 0,                 // pure SUM(production_actuals)
+      actualGross: effectiveGross(o.batchNumber),                 // override (if any) else raw sum
+      hasOverride: !!ov,
+      overrideReason: ov ? (ov.reason || '') : '',
+      overrideBy: ov ? (ov.updated_by || '') : '',
+      overrideAt: ov ? (ov.updated_at || '') : '',
+      closedAt: cRow ? (cRow.closed_at || '') : '',
+      status: o.status || ''
+    });
+  }
+  // Machine then batch ordering (report is grouped/filtered client-side)
+  out.sort((a,b) => (a.machineId||'').localeCompare(b.machineId||'') || (a.batchNumber||'').localeCompare(b.batchNumber||''));
+  return { ok: true, batches: out };
+}
+function _refreshClosedBatchesCache() {
+  if (_closedBatchesBuilding) return _closedBatchesBuilding;
+  const gen = _closedBatchesGen;
+  const p = _buildClosedBatchesPayload()
+    .then(payload => {
+      if (gen === _closedBatchesGen) { _closedBatchesCache = payload; _closedBatchesCacheTime = Date.now(); }
+      return payload;
+    })
+    .finally(() => { if (_closedBatchesBuilding === p) _closedBatchesBuilding = null; });
+  _closedBatchesBuilding = p;
+  return p;
+}
 app.get('/api/dpr/closed-batches', async (req, res) => {
   try {
-    // v41ZK: do NOT await the heavy actuals aggregation here — this is an on-demand report and the
-    // client aborts at 12s. warmActualsCache() blocked long enough on the production DB to time the
-    // request out ("Failed to load closed batches: The operation timed out"). The gross maps are kept
-    // warm by the startup warm + planning/state polling, so we read them as-is and only await the
-    // cheap single-row override refresh below for correctness.
-    warmActualsCache().catch(()=>{});
-    await loadGrossOverrides();
-    const ps = await getPlanningStateAsync();
-    const orders = (ps.orders || []).filter(o => o && !o.deleted);
-
-    // closed set from dpr_batch_closed (keyed by order_id and batch_number) + closed_at lookup
-    let closedRows;
-    if (pgPool) closedRows = (await pgPool.query('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed')).rows;
-    else closedRows = db.prepare('SELECT order_id, batch_number, closed_at, closed_by FROM dpr_batch_closed').all();
-    const closedById = new Map(), closedByBatch = new Map();
-    for (const c of (closedRows || [])) {
-      if (c.order_id) closedById.set(c.order_id, c);
-      if (c.batch_number) closedByBatch.set(c.batch_number, c);
+    const age = Date.now() - _closedBatchesCacheTime;
+    if (_closedBatchesCache && age < CLOSED_BATCHES_TTL_MS) return res.json(_closedBatchesCache);
+    if (_closedBatchesCache) {
+      // stale: serve instantly, refresh in the background (single-flight)
+      _refreshClosedBatchesCache().catch(e => console.error('[closed-batches] background rebuild:', e.message));
+      return res.json(Object.assign({}, _closedBatchesCache, { stale: true }));
     }
-
-    // override metadata (reason/by/at) for display
-    let ovRows;
-    if (pgPool) ovRows = (await pgPool.query('SELECT batch_number, gross_lakhs, reason, updated_by, updated_at FROM batch_gross_override')).rows;
-    else ovRows = db.prepare('SELECT batch_number, gross_lakhs, reason, updated_by, updated_at FROM batch_gross_override').all();
-    const ovByBatch = new Map((ovRows || []).map(r => [r.batch_number, r]));
-
-    const out = [];
-    for (const o of orders) {
-      const cRow = closedById.get(o.id) || closedByBatch.get(o.batchNumber);
-      const isClosed = !!cRow || o.status === 'closed';
-      if (!isClosed) continue;
-      const ov = ovByBatch.get(o.batchNumber) || null;
-      const rawGross = _grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, o.batchNumber)
-        ? _grossByBatch[o.batchNumber] : effectiveGross(o.batchNumber);
-      out.push({
-        orderId: o.id,
-        batchNumber: o.batchNumber || '',
-        machineId: o.machineId || '',
-        size: (o.size != null ? String(o.size) : ''),
-        colour: o.colour || o.color || '',
-        pcCode: o.pcCode || '',
-        customer: o.customer || '',
-        startDate: o.startDate || '',
-        endDate: o.endDate || '',
-        plannedGross: parseFloat(o.grossQty || 0) || 0,
-        rawDprGross: parseFloat(rawGross || 0) || 0,                 // pure SUM(production_actuals)
-        actualGross: effectiveGross(o.batchNumber),                 // override (if any) else raw sum
-        hasOverride: !!ov,
-        overrideReason: ov ? (ov.reason || '') : '',
-        overrideBy: ov ? (ov.updated_by || '') : '',
-        overrideAt: ov ? (ov.updated_at || '') : '',
-        closedAt: cRow ? (cRow.closed_at || '') : '',
-        status: o.status || ''
-      });
-    }
-    // Machine then batch ordering (report is grouped/filtered client-side)
-    out.sort((a,b) => (a.machineId||'').localeCompare(b.machineId||'') || (a.batchNumber||'').localeCompare(b.batchNumber||''));
-    res.json({ ok: true, batches: out });
+    // cold (first hit after boot or after an invalidating write): await the build
+    const payload = await _refreshClosedBatchesCache();
+    res.json(payload);
   } catch (err) {
     console.error('[closed-batches]', err.message);
     res.status(500).json({ ok: false, error: err.message });
@@ -12011,6 +12062,7 @@ app.post('/api/dpr/gross-override', async (req, res) => {
     }
     await loadGrossOverrides();                 // refresh override map → effectiveGross() picks it up immediately
     _planningStateCacheTime = 0;                // force planning state cache to re-serve with new gross
+    _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     try { logAudit(by, userRole || '', 'dpr', 'DPR_GROSS_OVERRIDE', `Set batch ${batchNumber} gross → ${g}L. ${reasonStr}`, req.ip); } catch {}
     res.json({ ok: true, batchNumber, actualGross: effectiveGross(batchNumber) });
   } catch (err) {
@@ -12028,6 +12080,7 @@ app.delete('/api/dpr/gross-override/:batchNumber', async (req, res) => {
     else db.prepare('DELETE FROM batch_gross_override WHERE batch_number=?').run(bn);
     await loadGrossOverrides();
     _planningStateCacheTime = 0;
+    _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     try { logAudit(by, '', 'dpr', 'DPR_GROSS_OVERRIDE_CLEAR', `Cleared gross override for batch ${bn}`, req.ip); } catch {}
     res.json({ ok: true, batchNumber: bn, actualGross: effectiveGross(bn) });
   } catch (err) {
@@ -19148,6 +19201,9 @@ app.listen(PORT, () => {
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
+    // v49W: pre-build the closed-batches report cache once the warms above have had a moment to
+    // land, so even the first click after a deploy/restart serves from memory.
+    setTimeout(() => { try { _refreshClosedBatchesCache().catch(()=>{}); } catch(_) {} }, 15000);
     // v45S: repair production_orders identity — collapse (batch_number, machine_id) duplicates and
     // close blob-closed orphan 'running' rows left behind by the historical id-keyed sync/close.
     // Idempotent and soft; runs once per boot after tables exist and the blob is reachable.

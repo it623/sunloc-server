@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v49V</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v49W</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -4640,17 +4640,36 @@ function go(page){
 }
 
 // ═══ v41ZI Item 6: DPR Closed-Batches report + batch-level gross override ═══
-async function renderClosedBatches(){
+async function renderClosedBatches(_isRetry){
   const cont = document.getElementById('closed-batches-container');
   if(!cont) return;
   if(!serverUrl){ cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Server not available — closed batches load from the server.</p>'; return; }
   cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Loading closed batches…</p>';
   try{
-    const r = await fetch(serverUrl+'/api/dpr/closed-batches',{signal:AbortSignal.timeout(20000)});
+    // v49W: the server now serves this from an in-memory cache (instant when warm). 45s abort covers
+    // the one cold build after a restart; stale:true means a background rebuild is refreshing — render
+    // what we got and silently swap in the fresh copy shortly after.
+    const r = await fetch(serverUrl+'/api/dpr/closed-batches',{signal:AbortSignal.timeout(45000)});
     const j = await r.json();
     if(!j.ok){ cont.innerHTML = '<p style="color:var(--red)">Failed to load: '+(j.error||'error')+'</p>'; return; }
     window._closedBatches = j.batches || [];
-  }catch(e){ cont.innerHTML = '<p style="color:var(--red)">Failed to load closed batches: '+e.message+'</p>'; return; }
+    if(j.stale && !window._cbStaleRefetch){
+      window._cbStaleRefetch = true;
+      setTimeout(async ()=>{ try{
+        const r2 = await fetch(serverUrl+'/api/dpr/closed-batches',{signal:AbortSignal.timeout(45000)});
+        const j2 = await r2.json();
+        if(j2.ok && !j2.stale){ window._closedBatches = j2.batches || []; _cbRender(); }
+      }catch(_){/* keep the stale copy */} finally{ window._cbStaleRefetch = false; } }, 6000);
+    }
+  }catch(e){
+    if(!_isRetry){ // v49W: one silent retry — rides out a transient DB-pool spike
+      cont.innerHTML = '<p style="color:var(--t3);font-size:12px">Server busy — retrying…</p>';
+      setTimeout(()=>renderClosedBatches(true), 5000);
+      return;
+    }
+    cont.innerHTML = '<p style="color:var(--red)">Failed to load closed batches: '+e.message+'</p>';
+    return;
+  }
 
   window._cbFilters = window._cbFilters || {machineId:'',size:'',colour:'',pcCode:'',customer:'',q:'',dateFrom:'',dateTo:''};
   _cbRender();
