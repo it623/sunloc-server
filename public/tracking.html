@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49X</title>
+<title>Sunloc Tracking Suite v1.0 · build v49Y</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49X</p>
+      <p>Tracking Suite v1.0 · build v49Y</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49X</p>
+      <p>Tracking Suite v1.0 · build v49Y</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2844,9 +2844,13 @@ function _reconOverride(bn){ return bn ? (window._reconOverrides[String(bn).toUp
 // it means fully-packed ⇒ 0 automatically, and a genuine unpacked remainder still shows. This is exactly
 // the frozen WIP identity (Gross − Wastage − PackIn). Falls back to the stored `wip` only when Gross or
 // Packing wasn't provided in the override (partial override), so nothing is lost.
-function _reconWip(ov){
+function _reconWip(ov, bn){
   if(!ov) return 0;
-  if(ov.gross!=null && ov.packing!=null) return Math.max(0, (ov.gross||0) - (ov.packing||0) - (ov.wastage||0));
+  // v49Y: the remainder derives from the EFFECTIVE gross — DPR closed-batch correction (top authority)
+  // when present, else the reconcile record's gross. A correction that raises gross raises the unpacked
+  // remainder (and vice versa), so WIP collateral follows the correction across every report.
+  const _g = (bn!=null && _dprOvrGross(bn)!=null) ? _dprOvrGross(bn) : ov.gross;
+  if(_g!=null && ov.packing!=null) return Math.max(0, (_g||0) - (ov.packing||0) - (ov.wastage||0));
   return ov.wip||0;
 }
 // v46M: render an overridden report value with its pre-override (raw) figure surfaced on hover.
@@ -2870,6 +2874,19 @@ function _ovrBadge(bn){
     + (o.reason ? ` — ${o.reason}` : '')
     + `. Correction flows to Gross, WIP and all reports.`).replace(/"/g,'&quot;');
   return ` <span class="badge" style="font-size:8px;background:#b45309;color:#fff;cursor:help" title="${t}">OVR</span>`;
+}
+// v49Y (Ishan, 28-Jul post-v49X): the DPR closed-batch gross override is TOP authority (v47S) — it must
+// beat the tracking RECONCILE override's gross too. 26ZC096/097 exposed the inversion: both carry a
+// reconcile override whose (now stale) gross was applied AFTER / over the corrected DPR gross, so they
+// alone stayed on the old figure while un-reconciled batches updated. This helper is the single
+// authoritative read of the DPR correction; every recon-gross site defers to it. A-Grade / wastage from
+// the reconcile record remain authoritative — only GROSS authority transfers, and the reconciled frozen
+// WIP remainder re-derives from the corrected gross (collateral updates, still self-curing per v49M).
+function _dprOvrGross(bn){
+  const o = state.grossOverrides && state.grossOverrides[bn];
+  if(!o) return null;
+  const g = +o.gross;
+  return (isFinite(g) && g >= 0) ? g : null;
 }
 // v47Y (confirmed by Ishan): derive the stage where a reconciled batch's FROZEN (unpacked) remainder
 // physically sits, from the live scan trail. The override stays authoritative for the AMOUNT
@@ -2912,6 +2929,8 @@ function _reconGross(b){
   // The DPR closed-batch editor sets b.grossOverride (e.g. 26ZC094 → 8.90) and that value already flows to
   // Planning / Report D / Batch Tracker; Report B lagged because it read only the reconcile override or the
   // raw split production (25.50), producing a phantom Production WIP. Now every report shares one gross.
+  const _dg = _dprOvrGross(b.batchNumber);          // v49Y: authoritative DPR correction map (v49X metadata)
+  if(_dg!=null) return _dg;
   const go = (b.grossOverride==null || b.grossOverride==='') ? NaN : Number(b.grossOverride);
   if(!isNaN(go) && go>=0) return go;
   const o=_reconOverride(b.batchNumber); if(o&&o.gross!=null) return o.gross;
@@ -2944,7 +2963,8 @@ function getBatchWIPBreakdown(batchNo, opts){
   // v44F Issue#1: admin reconciliation override — authoritative typed totals replace scan-derived WIP.
   const _ovW = _reconOverride(batchNo);
   if(_ovW && !_raw){
-    const g=_ovW.gross||0, ws=_ovW.wastage||0;
+    // v49Y: DPR closed-batch correction (top authority, v47S) beats the reconcile record's gross.
+    const g=(_dprOvrGross(batchNo)!=null?_dprOvrGross(batchNo):(_ovW.gross||0)), ws=_ovW.wastage||0;
     // v49M (confirmed by Ishan): the reconciled unpacked remainder self-cures at the STAGE WHERE IT SITS
     // (_v47yReconStage), against that stage's own clearing event — NOT universally against packing.
     // v49L wrongly capped by packing, which would have held an AIM-parked remainder (e.g. 26ZC091) all
@@ -2957,7 +2977,7 @@ function getBatchWIPBreakdown(batchNo, opts){
     const _stageProgress = (_stage === 'aim')
       ? _scanLakhs(batchNo,'aim','in', batch.size)
       : _scanLakhs(batchNo,_stage,'out', batch.size);
-    const _frozenRaw = _reconWip(_ovW);
+    const _frozenRaw = _reconWip(_ovW, batchNo);   // v49Y: remainder from effective (DPR-corrected) gross
     const w = Math.min(_frozenRaw, Math.max(0, _availLive - _stageProgress));   // self-curing remainder
     const _pkDisp = _scanLakhs(batchNo,'packing','in', batch.size) || (_ovW.packing||0);
     return { grossProd:g, aimIn:0, aimOut:0, packIn:_pkDisp, packOut:_pkDisp, preAIM:0, aimWIP:0, printWIP:0,
@@ -3069,7 +3089,7 @@ function getBatchAGrade(batchNo, stage, opts){
   const _ovA = (opts && opts.raw) ? null : _reconOverride(batchNo);
   if(_ovA){
     const a=_ovA.aGrade||0, ws=_ovA.wastage||0, denom=a+ws;
-    return { inspected:a+ws, aGrade:a, pct: denom>0?(a/denom*100):0, salvage:ws, remelt:0, wip:_reconWip(_ovA), reconciled:true }; /* v46Q */
+    return { inspected:a+ws, aGrade:a, pct: denom>0?(a/denom*100):0, salvage:ws, remelt:0, wip:_reconWip(_ovA, batchNo), reconciled:true }; /* v46Q; v49Y: bn → effective gross */
   }
 
   const useSummary = hasScanSummary();
@@ -3187,7 +3207,7 @@ function _v41_agradeFor(batchNo, stage, opts){
   // v44F Issue#1: reconciliation override wins over both cumulative and month-attributed A-Grade.
   // v46N: raw skips the override to expose the pre-override figure for the hover tooltip.
   const _ov = (opts && opts.raw) ? null : _reconOverride(batchNo);
-  if(_ov){ const a=_ov.aGrade||0, ws=_ov.wastage||0, d=a+ws; return {inspected:a+ws,aGrade:a,pct:d>0?(a/d*100):0,salvage:ws,remelt:0,wip:(_isRetired(batchNo)?0:_reconWip(_ov)),reconciled:true}; } /* v46R: retired ⇒ 0 WIP */
+  if(_ov){ const a=_ov.aGrade||0, ws=_ov.wastage||0, d=a+ws; return {inspected:a+ws,aGrade:a,pct:d>0?(a/d*100):0,salvage:ws,remelt:0,wip:(_isRetired(batchNo)?0:_reconWip(_ov, batchNo)),reconciled:true}; } /* v46R: retired ⇒ 0 WIP; v49Y: bn → effective gross */
   if (_v41_useMonthAttributed) {
     const md = _v41_agradeMonthCache[_trkSelectedMonth];
     if (md) {
@@ -11369,7 +11389,7 @@ function _v41_renderReportFInner(){
   ])].filter(Boolean).filter(bn=>!_isRetired(bn))
      // v46M (confirmed by Ishan): a batch reconciled to 0 WIP is fully accounted — its transition gap is
      // resolved, so it drops out of Dept Handover Gaps (same as retired). Reconciled-to-nonzero WIP stays.
-     .filter(bn=>{ const _o=_reconOverride(bn); return !(_o && _reconWip(_o)<=0.005); }); // v44F Issue#2 + v46Q: derived reconcile WIP
+     .filter(bn=>{ const _o=_reconOverride(bn); return !(_o && _reconWip(_o, bn)<=0.005); }); // v44F Issue#2 + v46Q: derived reconcile WIP; v49Y: bn → effective gross
 
   // Machine filter
   if(filterMachine){
@@ -11751,7 +11771,7 @@ function _rptBRow(batchNo, dept, U){
   if(_rcOv){
     _reconOrig = { grossProd, prodWip:_prodWipRaw, wip, wipQty, wastage:(w?w.total:0),
                    aimSalvage:(aimWaste?aimWaste.salvage:0), avail:Math.max(0,grossProd-(aimWaste?aimWaste.salvage:0)) };
-    if(_rcOv.gross!=null) _gross=_rcOv.gross;
+    if(_rcOv.gross!=null && _dprOvrGross(batchNo)==null) _gross=_rcOv.gross;   // v49Y: DPR correction (already in grossProd via _reconGross) is top authority
     // v47Y (confirmed by Ishan): the frozen remainder AMOUNT stays Gross−Packed−Wastage; its LOCATION is
     // the scan-trail-derived stage (_v47yReconStage — printed: PI→Printing→AIM deepest-first; unprinted:
     // AIM). Park it ONLY on that stage's row, 0 elsewhere — so a batch that has cleared AIM shows 0 AIM
@@ -11774,9 +11794,9 @@ function _rptBRow(batchNo, dept, U){
     // A remainder that legitimately sits at packing (batch reconciled with FG already at the pack dock)
     // still clears against packing.in via the same avail-minus-stage-progress shape. Override stays
     // authoritative for gross/A-grade/wastage; only this WIP leg follows real scans, stage-appropriately.
-    const _frozen47yRaw=_isRetired(batchNo)?0:_reconWip(_rcOv);
+    const _frozen47yRaw=_isRetired(batchNo)?0:_reconWip(_rcOv, batchNo);   // v49Y: remainder from effective gross
     const _stage47y=_v47yReconStage(batchNo);
-    const _availLive = Math.max(0, (_rcOv.gross!=null?_rcOv.gross:grossProd) - (_rcOv.wastage||0));
+    const _availLive = Math.max(0, _gross - (_rcOv.wastage||0));   // v49Y: effective gross (identical pre-correction; DPR-corrected when overridden)
     // progress past the parked stage: AIM clears on scan-IN; deeper stages clear on scan-OUT
     const _stageProgress = (_stage47y === 'aim')
       ? aimInQty
@@ -12655,7 +12675,7 @@ function _v41_renderReportEInnerBody(){
     // gross, so Report E shows the typed Gross — precedence across A–G. (A-Grade already overrides via
     // _v41_agradeFor.) Physical scan counts below stay raw.
     const _rcE = _reconOverride(b.batchNumber);
-    if (_rcE && _rcE.gross != null) grossProd = _rcE.gross;
+    if (_rcE && _rcE.gross != null && _dprOvrGross(b.batchNumber)==null) grossProd = _rcE.gross;   // v49Y: DPR correction is top authority
     const useSS = hasScanSummary();
     // Fallback dataset used when scan-summary API hasn't loaded — covers all 5 fallback ternaries below
     const scansForBatch = state.scans.filter(s=>s.batchNumber===b.batchNumber);
