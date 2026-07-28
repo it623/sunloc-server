@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49T</title>
+<title>Sunloc Tracking Suite v1.0 · build v49U</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49T</p>
+      <p>Tracking Suite v1.0 · build v49U</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49T</p>
+      <p>Tracking Suite v1.0 · build v49U</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -5074,14 +5074,22 @@ function renderDeptScan(dept){
           ? _rsRows
           : state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30)
         ).map(s=>{
-        const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
+        // v49U (confirmed by Ishan): WIP-reconcile synthetic scans (label_id 'recon-…', operator
+        // 'recon:<admin>') are DELIBERATE admin adjustments — the endpoint stamps them at the month
+        // WINDOW END (e.g. a July reconcile writes 01-Aug 05:59:59 under the 6 AM cut) so attribution
+        // lands in the right month, and they reference no physical label. They were rendering as
+        // "26X049/?" with a future timestamp — indistinguishable from corruption. Label them instead.
+        const _sLid = s.labelId||s.label_id||'';
+        const _sOp  = s.operator||s.by||'';
+        const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:');
+        const lbl=_isRecon?null:state.labels.find(l=>l.id===_sLid);
         // Fallback: if label not in state, try matching by batch+labelNumber from scan, or show box from scan qty
         const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):'?'));
         // v45T #2.3: resolve Customer/Colour/Size from the batch master for every dept's table
         const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{};
-        return `<tr>
-        <td class="td-mono text-sm">${fmtDateTime(s.ts)}</td>
-        <td class="td-bold td-mono">${s.batchNumber}/<span style="color:var(--accent)">${boxNum}</span></td>
+        return `<tr${_isRecon?' style="background:rgba(124,58,237,0.05)"':''}>
+        <td class="td-mono text-sm">${fmtDateTime(s.ts)}${_isRecon?' <span style="font-size:9px;color:#7c3aed" title="Timestamp is the month-window end so this adjustment is attributed to the reconciled month — not a real scan time">(month-end)</span>':''}</td>
+        <td class="td-bold td-mono">${s.batchNumber}/${_isRecon?`<span class="badge" style="background:rgba(124,58,237,0.12);color:#7c3aed;border:1px solid rgba(124,58,237,0.35);font-size:9px" title="Synthetic movement created by admin WIP reconciliation — no physical box label">⚙ RECON</span>`:`<span style="color:var(--accent)">${boxNum}</span>`}</td>
         <td class="text-sm">${_rsB.customer||'—'}</td>
         <td class="text-sm">${_rsB.colour||'—'}</td>
         <td class="text-sm">${_rsB.size!=null?_rsB.size:'—'}</td>
