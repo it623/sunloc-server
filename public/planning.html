@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49ZC</p>
+      <p>Planning Suite v3.0 · build v49ZD</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -5228,7 +5228,20 @@ async function _v49gReopenViaDpr(ord, prevStatus, machineId) {
       signal: AbortSignal.timeout(8000)
     });
     let j = {}; try { j = await r.json(); } catch(e) {}
-    if (r.ok && j && j.ok) {
+    // v49ZD: admin planners may override the once-only / 2-day guards (confirmed, audited server-side)
+    if (!(r.ok && j && j.ok) && j && j.canAdminOverride
+        && (typeof currentUser === 'object' && currentUser && currentUser.role === 'admin')
+        && confirm(`${j.error}\n\nADMIN OVERRIDE: reopen ${ord.batchNumber || ord.id} anyway?\n\nRecorded in the audit log.`)) {
+      try {
+        const r2 = await fetch(_url + '/api/dpr/batch-reopen', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ orderId: ord.id, batchNumber: ord.batchNumber || null,
+                                 reopenedBy: (currentUser && currentUser.username) || 'Admin', adminOverride: true, userRole: 'admin' }),
+          signal: AbortSignal.timeout(8000) });
+        try { j = await r2.json(); } catch(e) { j = {}; }
+        if (r2.ok && j && j.ok) { /* fall through to the success path below via the re-check */ }
+      } catch(e) {}
+    }
+    if (j && j.ok) {
       // reopened in DPR too — persist the Planning status and refresh
       _localOrderChanges[ord.id] = Date.now();
       recalcMachineSchedule(machineId);

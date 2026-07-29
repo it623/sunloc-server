@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v49ZC</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v49ZD</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1955,18 +1955,32 @@ async function reopenBatchInDPR(orderId, batchNumber){
   }
   // Same-day (IST) check on the client for immediate feedback (server re-checks authoritatively).
   const closeDay = info.closedAt ? _localYMD(new Date(info.closedAt)) : today();
+  let _admOv = false;   // v49ZD: admin may override the window + once-only guards (confirmed, audited)
   if(closeDay !== today()){
-    alert(`Reopen window expired.\n\nA batch can only be reopened on the same day it was closed (closed ${closeDay}, today ${today()}).\n\nContact Admin to reopen older batches.`); return;
+    if(dprUser?.role === 'admin'){
+      if(!confirm(`Reopen window has expired (closed ${closeDay}).\n\nADMIN OVERRIDE: reopen ${batchNumber} anyway?\n\nThis bypasses the 2-day window and the once-only rule, and is recorded in the audit log.`)) return;
+      _admOv = true;
+    } else {
+      alert(`Reopen window expired.\n\nA batch can only be reopened on the same day it was closed (closed ${closeDay}, today ${today()}).\n\nContact Admin to reopen older batches.`); return;
+    }
   }
   if(!confirm(`Reopen batch ${batchNumber} in DPR?\n\n⚠️ This is your ONE allowed reopen for this batch — it cannot be reopened again today or later.\n\nUse this only if the batch was closed by mistake. After reopening you can enter/correct data, then close it again.`)) return;
   if(serverUrl){
     try{
       const r=await fetch(serverUrl+'/api/dpr/batch-reopen',{
         method:'POST', headers:{'Content-Type':'application/json'},
-        body:JSON.stringify({orderId,batchNumber,reopenedBy:dprUser.username||dprUser.role}),
+        body:JSON.stringify({orderId,batchNumber,reopenedBy:dprUser.username||dprUser.role,adminOverride:_admOv,userRole:dprUser?.role||''}),
         signal:AbortSignal.timeout(6000)
       });
-      const j=await r.json();
+      let j=await r.json();
+      // v49ZD: server refused (once-only / window) but the caller is admin — offer a confirmed override retry
+      if(!j.ok && j.canAdminOverride && dprUser?.role==='admin' && !_admOv){
+        if(confirm(`${j.error}\n\nADMIN OVERRIDE: reopen ${batchNumber} anyway?\n\nRecorded in the audit log.`)){
+          const r2=await fetch(serverUrl+'/api/dpr/batch-reopen',{method:'POST',headers:{'Content-Type':'application/json'},
+            body:JSON.stringify({orderId,batchNumber,reopenedBy:dprUser.username||dprUser.role,adminOverride:true,userRole:'admin'}),signal:AbortSignal.timeout(6000)});
+          j=await r2.json();
+        }
+      }
       if(!j.ok){ alert('Could not reopen: '+(j.error||'server error')); return; }
     }catch{ alert('Could not reach server. Please check connection.'); return; }
   }

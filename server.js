@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49ZC';
+const APP_BUILD = 'v49ZD';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -11667,20 +11667,25 @@ app.post('/api/dpr/batch-reopen', async (req, res) => {
     }
 
     if (!closedRow) return res.status(409).json({ ok: false, error: 'Batch is not currently closed in DPR.' });
-    if (reopenRow)  return res.status(409).json({ ok: false, error: 'This batch has already been reopened once and cannot be reopened again. Contact Admin.' });
+    // v49ZD (confirmed by Ishan): ADMIN can override BOTH guards — the once-only rule and the 2-day
+    // window. Non-admin behaviour unchanged; both refusals now carry canAdminOverride so admin
+    // clients can offer a confirmed override retry. Every override is audited.
+    const _admOv = (req.body && req.body.adminOverride === true && req.body.userRole === 'admin');
+    if (reopenRow && !_admOv) return res.status(409).json({ ok: false, canAdminOverride: true, error: 'This batch has already been reopened once and cannot be reopened again. Contact Admin.' });
 
     // v49G: 2-day reopen window (was same-day). A batch may be reopened on the day it was closed
     // OR the following IST calendar day — i.e. the IST-day difference must be 0 or 1. Once-only guard
     // above is unchanged; this only widens the time window.
     const closeDayIST = _istYMD(closedRow.closed_at);
     const todayIST    = _istYMD(new Date().toISOString());
-    if (closeDayIST && todayIST) {
+    if (closeDayIST && todayIST && !_admOv) {
       const _dayDiff = Math.round((Date.parse(todayIST) - Date.parse(closeDayIST)) / 86400000);
       if (!(Number.isFinite(_dayDiff) && _dayDiff >= 0 && _dayDiff <= 1)) {
-        return res.status(409).json({ ok: false, error: `Reopen window expired. A batch can be reopened within 2 days of closing (closed ${closeDayIST}, today ${todayIST}). Contact Admin.` });
+        return res.status(409).json({ ok: false, canAdminOverride: true, error: `Reopen window expired. A batch can be reopened within 2 days of closing (closed ${closeDayIST}, today ${todayIST}). Contact Admin.` });
       }
     }
 
+    if (_admOv) { try { logAudit((req.body && req.body.reopenedBy) || 'admin', 'admin', 'dpr', 'DPR_REOPEN_ADMIN_OVERRIDE', `Admin override reopen: ${batchNumber || closedRow.batch_number || orderId} (bypassed once-only/2-day guards)`); } catch(_) {} }
     // Perform: record the reopen (blocks future reopens) then delete the closed row.
     if (pgPool) {
       await pgPool.query(

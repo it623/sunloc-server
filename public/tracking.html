@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49ZC</title>
+<title>Sunloc Tracking Suite v1.0 · build v49ZD</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZC</p>
+      <p>Tracking Suite v1.0 · build v49ZD</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZC</p>
+      <p>Tracking Suite v1.0 · build v49ZD</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4909,7 +4909,19 @@ function renderDeptScan(dept){
   // occurs during sorting against GROSS production — the frozen Production WIP formula already
   // deducts AIM wastage from the pre-scan bucket — so for AIM any batch with DPR gross qualifies.
   // Printing/PI keep the scan-in gate (material only arrives there via scans).
-  const wastageBatches = activeBatches.filter(b=>_deptInCount(b.batchNumber)>0 || (dept==='aim' && (_grossFor(b.batchNumber,b)||0)>0));
+  // v49ZD (confirmed by Ishan): DECOUPLE the wastage dropdown from production/planning close —
+  // DPR close means production finished; inspection continues downstream as part of the WIP journey.
+  // Eligibility = presence at THIS dept (cumulative scan-in, or wastage already recorded here; AIM
+  // additionally by produced gross for pre-scan salvage), regardless of batch status — until the
+  // batch is STAGE-CLOSED here (Batch Stage Closure below), at which point it drops off this list.
+  const wastageBatches = getTrkMonthBatches().filter(b=>{
+    if(b.deleted || !b.batchNumber) return false;
+    if(isStageComplete(b.batchNumber, dept)) return false;
+    if((_ss(b.batchNumber,dept).in||0) > 0) return true;
+    if((getTotalWastage(b.batchNumber,dept).total||0) > 0) return true;
+    if(dept==='aim' && (_grossFor(b.batchNumber,b)||0) > 0) return true;
+    return false;
+  }).sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
   // v44J #6: closure list filtered to batches with activity at THIS dept (scan-in OR scan-out OR
   // wastage). inCount/outCount use state.scans exactly as the row math below — so hiding all-zero
   // rows changes NO displayed number and NO close-action logic; it only removes the clutter rows.
