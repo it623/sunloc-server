@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v49Z</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v49ZC</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1675,7 +1675,15 @@ async function _dprPushRaw(fl,d,data){
             const names = [...new Set(deleted.map(rr => rr.batchNumber||rr.orderId||'?'))].join(', ');
             lines.push(`• Deleted order${deleted.length>1?'s':''}: ${names}`);
           }
-          alert(`⚠️ All other entries saved. The following batch entries were skipped:\n\n${lines.join('\n')}`);
+          // v49ZA (confirmed by Ishan; Rahul's 15-Jul MC20 correction): a rejected save must NEVER look
+          // saved. The old dismissable alert() was missed — the operator's screen showed the typed
+          // (client-side) figures while the server had restored the closed batch's ORIGINAL rows, so
+          // Plant Report "didn't update". Replaced with a BLOCKING modal: names every rejected batch,
+          // states the exact remedy per class, and requires explicit acknowledgement. The remedy text
+          // reflects the real paths: 2-day once-only reopen window; expired ⇒ Admin force-entry (per-run
+          // FORCE toggle, audited) for dated-row corrections, or the Closed Batches gross override for
+          // batch totals (which cannot date-attribute — Plant Report needs the dated rows fixed).
+          _dprShowRejectionModal(lines, closedBatches.length > 0);
         }
       }catch(_){}
       setSyncBadge('synced'); return true;
@@ -1685,6 +1693,40 @@ async function _dprPushRaw(fl,d,data){
     console.warn('[DPR] save failed:',e?.message);
     setSyncBadge('offline'); return false;
   }
+}
+// v49ZA: blocking rejection modal — the save partially succeeded; the listed rows were REFUSED and
+// their previous server values restored. Requires explicit acknowledgement (no outside-click close).
+function _dprShowRejectionModal(lines, hasClosed){
+  try { const old = document.getElementById('dpr-reject-modal'); if (old) old.remove(); } catch(_){}
+  const wrap = document.createElement('div');
+  wrap.id = 'dpr-reject-modal';
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.55);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+  const closedHelp = hasClosed ? `
+      <div style="margin-top:10px;padding:10px 12px;background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;font-size:12px;line-height:1.5">
+        <b>How to correct a CLOSED batch:</b><br>
+        1. <b>Within 2 days of closing</b> — Reopen the batch (once only), edit the entry, re-close.<br>
+        2. <b>Reopen window expired</b> — an <b>Admin</b> must use the per-run <b>FORCE</b> toggle on that
+        batch's entry row and re-save (audited as DPR_FORCE_ENTRY_CLOSED). This fixes the dated shift
+        rows, so the Plant Report, daily averages and all Tracking reports update.<br>
+        3. The <b>Closed Batches → Edit (override)</b> corrects the <b>batch total</b> only — it cannot be
+        attributed to a date/shift, so the Plant Report intentionally keeps the as-entered daily figures.
+      </div>` : '';
+  wrap.innerHTML = `
+    <div style="background:#fff;border-radius:10px;max-width:560px;width:100%;box-shadow:0 20px 60px rgba(0,0,0,.35);overflow:hidden">
+      <div style="background:#b91c1c;color:#fff;padding:12px 16px;font-weight:800;font-size:14px;letter-spacing:.5px">⛔ SOME ENTRIES WERE NOT SAVED</div>
+      <div style="padding:14px 16px;font-size:13px;line-height:1.55;color:#1f2937">
+        <div>All other entries saved successfully. The server <b>refused</b> the rows below and
+        <b>restored their previous values</b> — the figures you typed for these batches are
+        <b>NOT recorded</b>, and the Plant Report / reports will not reflect them:</div>
+        <div style="margin-top:10px;padding:10px 12px;background:#fee2e2;border:1px solid #ef4444;border-radius:6px;font-size:12px;white-space:pre-line">${lines.map(l=>l.replace(/</g,'&lt;')).join('\n')}</div>
+        ${closedHelp}
+      </div>
+      <div style="padding:12px 16px;border-top:1px solid #e5e7eb;text-align:right">
+        <button onclick="document.getElementById('dpr-reject-modal').remove()"
+          style="background:#b91c1c;color:#fff;border:none;border-radius:6px;padding:9px 22px;font-weight:700;font-size:13px;cursor:pointer">I understand — these rows were NOT saved</button>
+      </div>
+    </div>`;
+  document.body.appendChild(wrap);
 }
 async function pushToServer(fl,d,data){
   // Stamp local save time so fetchDayFromServer can compare freshness
@@ -4770,7 +4812,7 @@ function _cbRenderRows(){
       <td class="mono">${b.pcCode||'—'}</td>
       <td>${b.customer||'—'}</td>
       <td class="mono" style="white-space:nowrap">${fmtDt(b.startDate)}</td>
-      <td class="mono" style="white-space:nowrap">${fmtDt(b.endDate)}</td>
+      <td class="mono" style="white-space:nowrap">${fmtDt(b.endDate)}${b.endShift?` <span style="font-size:9px;font-weight:700;background:#e2e8f0;color:#334155;border-radius:3px;padding:1px 4px" title="Closing shift — shift of the last production entry">${String(b.endShift).replace(/</g,'&lt;')} Shift</span>`:''}</td>
       <td class="mono">${fmtL(b.plannedGross)}</td>
       <td class="mono" style="${ov?'color:#f0c060;font-weight:700':''}">${fmtL(b.actualGross)}${badge}</td>
       <td style="white-space:nowrap">${canEdit?`<button onclick="editClosedGross('${bn}')" title="Correct the DPR gross for this batch" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--accent);border-radius:3px;padding:2px 7px;cursor:pointer">✎ Edit</button>${ov?` <button onclick="clearClosedGross('${bn}')" title="Revert to the DPR-entered sum" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--red);border-radius:3px;padding:2px 7px;cursor:pointer">↺</button>`:''}`:'<span style="color:var(--t3);font-size:11px">—</span>'}</td>

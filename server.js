@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49Z';
+const APP_BUILD = 'v49ZC';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -11946,6 +11946,9 @@ function _invalidateClosedBatchesCache() {
 async function _buildClosedBatchesPayload() {
   // Keep the gross maps warm (backgrounded + 60s-throttled inside; never blocks this build).
   warmActualsCache().catch(()=>{});
+  // v49ZB: the Start/End columns anchor to ACTUAL production dates (below) — on a truly cold
+  // instance the date maps may not exist yet, so await one warm rather than serving planned dates.
+  if (!_firstProdByBatch || !_lastProdByBatch) { try { await warmActualsCache(); } catch(_){} }
   await loadGrossOverrides();
   // v49W: cache-first planning read — the 30s planning polling keeps _planningStateCache warm, so
   // re-fetching the multi-MB blob per request was pure waste and the dominant chronic cost here.
@@ -11962,6 +11965,20 @@ async function _buildClosedBatchesPayload() {
     if (c.order_id) closedById.set(c.order_id, c);
     if (c.batch_number) closedByBatch.set(c.batch_number, c);
   }
+
+  // v49ZB(b): closing shift — the shift of each batch's LAST production row. Lexical MAX of
+  // "YYYY-MM-DD|shift" gives the last date's latest shift (A<B<C sorts correctly); one keyed
+  // aggregate per (background/cold) rebuild, self-contained here so no shared warm path changes.
+  const lastShiftByBatch = {};
+  try {
+    let _lsRows;
+    if (pgPool) _lsRows = (await pgPool.query("SELECT batch_number, MAX(date::text || '|' || COALESCE(shift,'')) AS ds FROM production_actuals WHERE batch_number IS NOT NULL GROUP BY batch_number")).rows;
+    else _lsRows = db.prepare("SELECT batch_number, MAX(date || '|' || COALESCE(shift,'')) AS ds FROM production_actuals WHERE batch_number IS NOT NULL GROUP BY batch_number").all();
+    for (const r of (_lsRows || [])) {
+      const ds = String(r.ds || ''); const i = ds.indexOf('|');
+      if (r.batch_number && i > 0) lastShiftByBatch[r.batch_number] = ds.slice(i + 1);
+    }
+  } catch(_) {}
 
   // override metadata (reason/by/at) for display
   let ovRows;
@@ -11985,8 +12002,15 @@ async function _buildClosedBatchesPayload() {
       colour: o.colour || o.color || '',
       pcCode: o.pcCode || '',
       customer: o.customer || '',
-      startDate: o.startDate || '',
-      endDate: o.endDate || '',
+      // v49ZB (Ishan, 26ZE116/117): Start/End show the ACTUAL production window — MIN/MAX
+      // production_actuals dates (the same v45W/X dprFirstDate/dprLastDate anchor Planning uses for
+      // closed batches) — falling back to the planner's dates only when no actuals exist. Previously
+      // these columns showed the PLANNED window, so any batch that overran or underran its plan
+      // (ZE116 ran 25–27 Jul, showed 25–26; ZE117 ran 27–28, showed 27–27) displayed wrong dates
+      // and the Start From/To filters matched the wrong rows.
+      startDate: (_firstProdByBatch && _firstProdByBatch[o.batchNumber]) || o.startDate || '',
+      endDate:   (_lastProdByBatch  && _lastProdByBatch[o.batchNumber])  || o.endDate   || '',
+      endShift:  lastShiftByBatch[o.batchNumber] || '',   // v49ZB(b): shift that closed the batch (last production row's shift)
       plannedGross: parseFloat(o.grossQty || 0) || 0,
       rawDprGross: parseFloat(rawGross || 0) || 0,                 // pure SUM(production_actuals)
       actualGross: effectiveGross(o.batchNumber),                 // override (if any) else raw sum

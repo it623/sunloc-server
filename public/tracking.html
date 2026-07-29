@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49Z</title>
+<title>Sunloc Tracking Suite v1.0 · build v49ZC</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49Z</p>
+      <p>Tracking Suite v1.0 · build v49ZC</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49Z</p>
+      <p>Tracking Suite v1.0 · build v49ZC</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2882,6 +2882,13 @@ function _ovrBadge(bn){
 // authoritative read of the DPR correction; every recon-gross site defers to it. A-Grade / wastage from
 // the reconcile record remain authoritative — only GROSS authority transfers, and the reconciled frozen
 // WIP remainder re-derives from the corrected gross (collateral updates, still self-curing per v49M).
+// v49ZC (confirmed by Ishan): DISPLAY-ONLY date anchor for Reports E & B/G — CLOSED batches show
+// their ACTUAL production window (v45W/X dprFirstDate/dprLastDate, injected by planning/state) with
+// the planner's dates as fallback; running batches keep planned dates (the end is a projection).
+// Deliberately display-layer only: stored startDate/endDate — and therefore month membership
+// (getTrkMonthBatches / strict start-month) — are untouched, exactly as agreed.
+function _dispStart49zc(b){ return (b && b.status==='closed' && b.dprFirstDate) ? b.dprFirstDate : (b ? (b.startDate||null) : null); }
+function _dispEnd49zc(b){ return (b && b.status==='closed' && b.dprLastDate) ? b.dprLastDate : (b ? (b.endDate||null) : null); }
 function _dprOvrGross(bn){
   const o = state.grossOverrides && state.grossOverrides[bn];
   if(!o) return null;
@@ -12197,7 +12204,7 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
   if(fPC)     rows=rows.filter(r=>_like(r.b.pcCode,fPC));
   if(fColour) rows=rows.filter(r=>_like(r.b.colour,fColour));
   const _inRange=(d,from,to)=>{ if(!from&&!to) return true; if(!d) return false; const t=new Date(d).getTime(); if(from && t<new Date(from).getTime())return false; if(to && t>new Date(to+'T23:59:59').getTime())return false; return true; };
-  if(fSF||fST) rows=rows.filter(r=>_inRange(r.b.startDate,fSF,fST)); // v46Q: single Prod-Start range; month handled by the dropdown
+  if(fSF||fST) rows=rows.filter(r=>_inRange(_dispStart49zc(r.b),fSF,fST)); // v46Q range; v49ZC: filters match the DISPLAYED (actual-for-closed) date
   if(fType==='short')  rows=rows.filter(r=>r.deviation<0);
   else if(fType==='excess') rows=rows.filter(r=>r.deviation>0);
   rows.sort((a,b)=>_v44zk_batchCmp(a.b.batchNumber,b.b.batchNumber));
@@ -12246,8 +12253,8 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
         <td class="td-mono">${b.size}</td>
         <td class="td-mono text-sm">${b.pcCode||'-'}</td>
         <td class="text-sm">${b.colour||'-'}</td>
-        <td class="td-mono" style="white-space:nowrap;font-size:11px">${_d(b.startDate)}</td>
-        <td class="td-mono" style="white-space:nowrap;font-size:11px">${_d(b.endDate)}</td>
+        <td class="td-mono" style="white-space:nowrap;font-size:11px">${_d(_dispStart49zc(b))}</td>
+        <td class="td-mono" style="white-space:nowrap;font-size:11px">${_d(_dispEnd49zc(b))}</td>
         <td class="td-mono">${fmt(r.planned)}</td>
         <td class="td-mono">${_rcvCell(fmt(r.packed), _rt&&_rt.packed, _rc)}</td>
         <td class="td-mono">${_rcvCell(fmt(r.agWip), _rt&&_rt.wip, _rc)}</td>
@@ -12878,7 +12885,7 @@ function _v41_renderReportEInnerBody(){
     // (AIM A-Grade + AIM Salvage) — that % is ag.pct per row; the subtotals aggregate _agNum/_agDen.
     // 26ZD104: Print Rej = 1.82% × 49.00 = 0.89; % = (52.5 − 0.89 − 3.75) ÷ (52.5 + 2.2) = 87.5%.
     const _printRejDPL45h = printingTD * (_printSalPct / 100);
-    rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,startDate:b.startDate||null,endDate:b.endDate||null,
+    rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,startDate:_dispStart49zc(b),endDate:_dispEnd49zc(b),   // v49ZC: closed ⇒ actual window (display-only)
       isPrinted: b.isPrinted,  // v37H: used by table render to distinguish PTD vs UP for column display
       plannedQty:b.qty||0, _plannedQty:b.qty||0,
       grossProd:fmt(grossProd),_grossProd:grossProd,
