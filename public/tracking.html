@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49Y</title>
+<title>Sunloc Tracking Suite v1.0 · build v49Z</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49Y</p>
+      <p>Tracking Suite v1.0 · build v49Z</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49Y</p>
+      <p>Tracking Suite v1.0 · build v49Z</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2901,6 +2901,44 @@ function _v47yReconStage(batchNo){
   if (_ss(batchNo,'printing').in > 0 || _ss(batchNo,'printing').out > 0) return 'printing';
   return 'aim';
 }
+// v49Z (confirmed by Ishan; 26ZG141/142): SPLIT the reconciled frozen remainder by ACTUAL scan
+// positions instead of parking it wholesale at the deepest touched stage (v47Y), which misplaced a
+// mid-flow batch — 141 had 45.30L physically in Printing + 5.00L at PI, yet the whole 50.30L sat on
+// PI while Printing showed 0 and the customer stage matrix showed nothing. Allocation is deepest-
+// first, each bucket capped by its LIVE scan capacity, total capped by the frozen remainder
+// (effective gross − reconciled packing − wastage, DPR-override-aware via _reconWip). HELD legs
+// (prod/aim/printing/pi) render on report rows; TRANSIT legs (aimT/piT/packT) are the slice of the
+// remainder already represented by the LIVE handover-gap legs in Reports D/E — they consume the
+// remainder here so nothing double-counts, and render through those existing gap displays. The v49M
+// self-cure is now intrinsic: every capacity is a live scan difference, so as material moves the
+// buckets follow it, and remainder that outruns all live positions (packed beyond the reconciled
+// packing figure) simply allocates nowhere — 0, exactly the v49K/M behaviour, with no special cases.
+// Single-stage batches (26ZC091-class) produce identical numbers to v47Y/v49M by construction.
+function _v47ySplit(batchNo, ov){
+  const b = getBatch(batchNo) || {};
+  const sz = b.size;
+  const g  = (_dprOvrGross(batchNo)!=null) ? _dprOvrGross(batchNo) : (ov.gross||0);
+  const ws = ov.wastage||0;
+  let rem = _isRetired(batchNo) ? 0 : _reconWip(ov, batchNo);
+  const L = (d,t)=>_scanLakhs(batchNo,d,t,sz);
+  const aIn=L('aim','in'), aOut=L('aim','out'), pIn=L('printing','in'), pOut=L('printing','out'),
+        iIn=L('pi','in'), iOut=L('pi','out'), kIn=L('packing','in');
+  const take = c => { const t=Math.min(rem, Math.max(0,c)); rem-=t; return t; };
+  const packT = take(iOut - kIn);                                  // pi→packing transit (live gap leg)
+  const pi    = take(iIn - iOut);                                  // held at PI (dept leg)
+  const piT   = take(pOut - iIn);                                  // printing→pi transit (live gap leg)
+  const printing = take(pIn - pOut);                               // held at Printing (dept leg)
+  const aimT  = take(aOut - (b.isPrinted ? pIn : kIn));            // aim→next transit (live gap leg)
+  // Reconciled wastage carries no recorded location — net it where it can physically sit: first
+  // inside the AIM dept slice (post-scan-in salvage/remelt lives within in − out), any residue
+  // against the unscanned leg (pre-box salvage). Nets exactly once; conservation holds either way.
+  const aimHeldRaw = Math.max(0, aIn - aOut);
+  const wsAtAim = Math.min(ws, aimHeldRaw);
+  const aim   = take(aimHeldRaw - wsAtAim);                        // held in AIM dept (dept leg)
+  const prod  = take(g - aIn - (ws - wsAtAim));                    // unscanned at AIM (production leg)
+  return { prod, aim, printing, pi, aimT, piT, packT,
+           total: prod + aim + printing + pi + aimT + piT + packT };
+}
 // v47Y: FROZEN badge — marks a reconciled batch's frozen (unpacked) remainder so it reads as distinct from
 // ordinary live WIP. Small tag + tooltip; renders only when `on`.
 function _frozenBadge(on, title){
@@ -2972,16 +3010,18 @@ function getBatchWIPBreakdown(batchNo, opts){
     // scan-IN (avail − aimIn); PI/printing clear on scan-OUT (avail − stageOut). This keeps Report D /
     // Batch Tracker / Planning identical to Report B — one model — and clears each remainder at its true
     // stage. Gross / A-Grade / wastage stay authoritative from the override; only this WIP self-cures.
-    const _availLive = Math.max(0, g - ws);
-    const _stage = _v47yReconStage(batchNo);
-    const _stageProgress = (_stage === 'aim')
-      ? _scanLakhs(batchNo,'aim','in', batch.size)
-      : _scanLakhs(batchNo,_stage,'out', batch.size);
-    const _frozenRaw = _reconWip(_ovW, batchNo);   // v49Y: remainder from effective (DPR-corrected) gross
-    const w = Math.min(_frozenRaw, Math.max(0, _availLive - _stageProgress));   // self-curing remainder
+    // v49Z (confirmed by Ishan): stage buckets from the scan-position SPLIT (_v47ySplit) — the
+    // customer stage matrix and every breakdown consumer now place the frozen remainder where the
+    // boxes physically are (26ZG141: 45.30L Printing + 5.00L PI), instead of a single collapsed
+    // total with empty stage cells. Bucket mapping mirrors the matrix footnote — each dept cell
+    // already includes its inbound in-transit boxes; pi→packing (and aim→packing for unprinted)
+    // transit rides the Packing column. Total = allocated sum = the self-cured remainder.
+    const sp = _v47ySplit(batchNo, _ovW);
     const _pkDisp = _scanLakhs(batchNo,'packing','in', batch.size) || (_ovW.packing||0);
-    return { grossProd:g, aimIn:0, aimOut:0, packIn:_pkDisp, packOut:_pkDisp, preAIM:0, aimWIP:0, printWIP:0,
-             piWIP:0, toPackTransit:0, packWIP:0, packedNotDisp:0, totalWIP:w,
+    return { grossProd:g, aimIn:0, aimOut:0, packIn:_pkDisp, packOut:_pkDisp, preAIM:sp.prod,
+             aimWIP:sp.aim, printWIP:sp.printing + (batch.isPrinted ? sp.aimT : 0),
+             piWIP:sp.pi + sp.piT, toPackTransit:sp.packT + (batch.isPrinted ? 0 : sp.aimT),
+             packWIP:0, packedNotDisp:0, totalWIP:sp.total,
              wAIM:{salvage:ws,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, reconciled:true };
   }
   const sz = batch.size;
@@ -11794,20 +11834,16 @@ function _rptBRow(batchNo, dept, U){
     // A remainder that legitimately sits at packing (batch reconciled with FG already at the pack dock)
     // still clears against packing.in via the same avail-minus-stage-progress shape. Override stays
     // authoritative for gross/A-grade/wastage; only this WIP leg follows real scans, stage-appropriately.
-    const _frozen47yRaw=_isRetired(batchNo)?0:_reconWip(_rcOv, batchNo);   // v49Y: remainder from effective gross
-    const _stage47y=_v47yReconStage(batchNo);
-    const _availLive = Math.max(0, _gross - (_rcOv.wastage||0));   // v49Y: effective gross (identical pre-correction; DPR-corrected when overridden)
-    // progress past the parked stage: AIM clears on scan-IN; deeper stages clear on scan-OUT
-    const _stageProgress = (_stage47y === 'aim')
-      ? aimInQty
-      : _scanLakhs(batchNo, _stage47y, 'out', _bSize45y);
-    const _liveUnscanned = Math.max(0, _availLive - _stageProgress);
-    const _frozen47y = Math.min(_frozen47yRaw, _liveUnscanned);
-    if (dept === _stage47y && _frozen47y > 0.005) {
-      if (_stage47y === 'aim') { _prodWip=_frozen47y; _wip=0; _wipQty=0; }
-      else { _prodWip=0; _wip=0; _wipQty=_frozen47y; }
-      _frozenHere = true;
-    } else { _prodWip=0; _wip=0; _wipQty=0; }
+    // v49Z (confirmed by Ishan): frozen remainder SPLIT by actual scan positions — each dept row
+    // carries exactly what physically sits in that dept (in − out capacity, allocation capped by the
+    // remainder); unscanned residue stays on AIM's production leg. Transit slices render via the live
+    // handover-gap legs (consumed inside _v47ySplit — no double count). Self-cure intrinsic.
+    const _sp47z = _v47ySplit(batchNo, _rcOv);
+    if (dept==='aim')            { _prodWip=_sp47z.prod; _wip=0; _wipQty=_sp47z.aim; }
+    else if (dept==='printing')  { _prodWip=0; _wip=0; _wipQty=_sp47z.printing; }
+    else if (dept==='pi')        { _prodWip=0; _wip=0; _wipQty=_sp47z.pi; }
+    else                         { _prodWip=0; _wip=0; _wipQty=0; }
+    _frozenHere = (_prodWip + _wipQty) > 0.005;
     const _ovWaste=_rcOv.wastage||0; _w={total:_ovWaste,salvage:_ovWaste,remelt:0}; _aimWaste={salvage:_ovWaste,remelt:0};
   }
   const statusKey = _closed ? 'closed' : ((_wip>0 || _frozenHere) ? 'indept' : (out>0 ? 'leftdept' : '')); // v47Y: frozen remainder here ⇒ In Dept
