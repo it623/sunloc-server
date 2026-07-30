@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49ZG</title>
+<title>Sunloc Tracking Suite v1.0 · build v49ZH</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZG</p>
+      <p>Tracking Suite v1.0 · build v49ZH</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZG</p>
+      <p>Tracking Suite v1.0 · build v49ZH</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -5326,23 +5326,30 @@ function _exuRender(){
       </div>`).join('')}
     </div>`:'';
   const rows=d.batches.map(b=>{
+    // v49ZH (confirmed by Ishan): only ACTIONABLE batches render — SAP-blocked batches and batches
+    // with zero eligible boxes cannot be reversed, so they are dropped from the view entirely.
+    if (b.sapBlocked || !b.boxes.length) return '';
     const sel=window._exuSel[b.batchNumber]||{};
     const nSel=b.boxes.filter(x=>sel[x.labelId]).length;
     const open=!!window._exuOpen[b.batchNumber];
     const f=window._exuF[b.batchNumber]||{};
-    const blockedNote=b.sapBlocked?`<div class="text-sm" style="color:var(--accent4)">🔒 ${b.sapWhy}</div>`:'';
-    const pendNote=b.pendingBoxes?`<div class="text-sm text-muted">${b.pendingBoxes} box(es) already on a pending request (excluded)</div>`:'';
-    return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
-      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
-        <span class="td-mono td-bold">${b.batchNumber}</span>
-        <span class="text-sm">${b.customer||'—'}</span>
-        <span class="td-mono text-sm">${b.boxes.length} eligible box(es) · ${(b.boxes.length*b.packSize).toFixed(2)}L</span>
-        <span class="td-mono text-sm" style="color:var(--accent)">${nSel?`selected: ${nSel} (${(nSel*b.packSize).toFixed(2)}L)`:''}</span>
-        <button class="btn btn-sm btn-secondary" style="margin-left:auto" onclick="_exuToggle('${b.batchNumber}')">${open?'▲ Hide boxes':'▼ Select boxes'}</button>
-      </div>
-      ${blockedNote}${pendNote}
-      ${open?`
-      <div style="margin-top:8px">
+    // v49ZH: build-time visibility from the persisted filter (v49ZF _cloF pattern) so the 30s sync
+    // re-render keeps the filtered view; typing filters DOM-only via _exuFilt (no focus loss).
+    const _ef=window._exuFilt||{};
+    const _vis=(!_ef.b||(b.batchNumber||'').toLowerCase().includes(_ef.b))
+             &&(!_ef.c||(b.customer||'').toLowerCase().includes(_ef.c));
+    const _attrs=`class="exu-row" data-b="${(b.batchNumber||'').toLowerCase()}" data-c="${(b.customer||'').toLowerCase().replace(/"/g,'&quot;')}"${_vis?'':' style="display:none"'}`;
+    const pendNote=b.pendingBoxes?` <span class="badge badge-amber" title="Excluded from selection below">${b.pendingBoxes} on pending req</span>`:'';
+    const main=`<tr ${_attrs}>
+      <td class="td-bold td-mono">${b.batchNumber}</td>
+      <td class="text-sm">${b.customer||'—'}${pendNote}</td>
+      <td class="td-mono">${b.boxes.length}</td>
+      <td class="td-mono">${(b.boxes.length*b.packSize).toFixed(2)}L</td>
+      <td class="td-mono" style="color:var(--accent)">${nSel?`${nSel} (${(nSel*b.packSize).toFixed(2)}L)`:'—'}</td>
+      <td><button class="btn btn-sm btn-secondary" onclick="_exuToggle('${b.batchNumber}')">${open?'▲ Hide':'▼ Select boxes'}</button></td>
+    </tr>`;
+    const detail=open?`<tr ${_attrs}><td colspan="6" style="background:var(--surface)">
+      <div style="padding:8px 4px">
         <label class="text-sm" style="display:inline-flex;gap:6px;align-items:center;margin-bottom:6px"><input type="checkbox" ${nSel===b.boxes.length&&b.boxes.length?'checked':''} onchange="_exuAll('${b.batchNumber}',this.checked)"> Select all</label>
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:4px;max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px">
           ${b.boxes.map(x=>`<label class="text-sm td-mono" style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" ${sel[x.labelId]?'checked':''} onchange="_exuBox('${b.batchNumber}','${x.labelId}',this.checked)"> #${x.labelNumber}</label>`).join('')}
@@ -5352,10 +5359,51 @@ function _exuRender(){
           <input id="exu-reason-${b.batchNumber}" placeholder="Reason (required)" value="${(f.reason||'').replace(/"/g,'&quot;')}" oninput="(window._exuF['${b.batchNumber}']=window._exuF['${b.batchNumber}']||{}).reason=this.value" style="width:280px;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
           <button class="btn btn-sm btn-warning" ${nSel?'':'disabled'} onclick="_exuPropose('${b.batchNumber}')">Propose ${nSel||''} box(es) → Unprinted</button>
         </div>
-      </div>`:''}
-    </div>`;
+      </div>
+    </td></tr>`:'';
+    return main+detail;
   }).join('');
-  body.innerHTML = pendHtml + recentHtml + (rows||'<div class="text-sm text-muted">No batches with eligible (unprinted, un-invoiced) boxes at Printing.</div>');
+  const _actN=(d.batches||[]).filter(b=>!b.sapBlocked&&b.boxes.length>0).length;
+  const _ef2=window._exuFilt||{};
+  const tableHtml=_actN?`
+    <div class="flex gap-8 mb-8" style="flex-wrap:wrap;align-items:center">
+      <input id="exu-f-b" placeholder="Batch…" value="${(_ef2.b||'').replace(/"/g,'&quot;')}" oninput="_exuFilt()" style="width:130px;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
+      <input id="exu-f-c" placeholder="Customer…" value="${(_ef2.c||'').replace(/"/g,'&quot;')}" oninput="_exuFilt()" style="width:170px;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
+      <button class="btn btn-sm btn-secondary" onclick="_exuFiltClear()">✕ Clear</button>
+      <span id="exu-count" class="text-sm text-muted" style="margin-left:auto">${_actN} batch${_actN!==1?'es':''}</span>
+    </div>
+    <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table id="exu-tbl">
+      <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Customer</th><th>Eligible Boxes</th><th>Qty</th><th>Selected</th><th>Action</th></tr></thead>
+      <tbody>${rows}</tbody>
+    </table></div>`:'<div class="text-sm text-muted">No batches with eligible (unprinted, un-invoiced) boxes at Printing.</div>';
+  body.innerHTML = pendHtml + recentHtml + tableHtml;
+  _exuFilt(true); // seed count without re-reading inputs
+}
+// v49ZH: DOM-only filter (no re-render → no focus loss); values persist in window._exuFilt so the
+// 30s auto-sync re-render rebuilds the same filtered view. seed=true skips reading the inputs
+// (used right after render, when the inputs already carry the persisted values).
+function _exuFilt(seed){
+  if(seed!==true){
+    window._exuFilt={ b:(document.getElementById('exu-f-b')?.value||'').trim().toLowerCase(),
+                      c:(document.getElementById('exu-f-c')?.value||'').trim().toLowerCase() };
+  }
+  const F=window._exuFilt||{};
+  const rows=document.querySelectorAll('#exu-tbl tbody tr.exu-row');
+  const seen=new Set(); let vis=0;
+  rows.forEach(tr=>{
+    const ok=(!F.b||tr.dataset.b.includes(F.b))&&(!F.c||tr.dataset.c.includes(F.c));
+    tr.style.display=ok?'':'none';
+    if(ok&&!seen.has(tr.dataset.b)){ seen.add(tr.dataset.b); vis++; }
+  });
+  const total=new Set([...rows].map(tr=>tr.dataset.b)).size;
+  const el=document.getElementById('exu-count');
+  if(el) el.textContent=(F.b||F.c)?`Showing ${vis} / ${total}`:`${total} batch${total!==1?'es':''}`;
+}
+function _exuFiltClear(){
+  window._exuFilt={};
+  const b=document.getElementById('exu-f-b'), c=document.getElementById('exu-f-c');
+  if(b)b.value=''; if(c)c.value='';
+  _exuFilt(true);
 }
 function _exuToggle(bn){ window._exuOpen[bn]=!window._exuOpen[bn]; _exuRender(); }
 function _exuBox(bn,id,on){ const s=window._exuSel[bn]=window._exuSel[bn]||{}; if(on)s[id]=true; else delete s[id]; _exuRender(); }
