@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49ZH';
+const APP_BUILD = 'v49ZJ';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1625,17 +1625,34 @@ function _v49gIsReopenedOpen(ord) {
 }
 async function _v49gWarmDprClosed() {
   const set = new Set();
+  const atMap = new Map();   // v49ZJ: key → closed_at, for the 48h post-close label window anchor
   try {
     let rows;
-    if (pgPool) rows = (await pgPool.query('SELECT order_id, batch_number FROM dpr_batch_closed')).rows;
-    else rows = db.prepare('SELECT order_id, batch_number FROM dpr_batch_closed').all();
+    if (pgPool) rows = (await pgPool.query('SELECT order_id, batch_number, closed_at FROM dpr_batch_closed')).rows;
+    else rows = db.prepare('SELECT order_id, batch_number, closed_at FROM dpr_batch_closed').all();
     for (const r of (rows || [])) {
       if (r.order_id)    set.add('id:'    + r.order_id);
       if (r.batch_number) set.add('batch:' + String(r.batch_number).trim().toLowerCase());
+      if (r.closed_at) {
+        if (r.order_id)     atMap.set('id:'    + r.order_id, r.closed_at);
+        if (r.batch_number) atMap.set('batch:' + String(r.batch_number).trim().toLowerCase(), r.closed_at);
+      }
     }
   } catch (e) { console.warn('[v49G] DPR-closed warm failed:', e && e.message); }
   _v49gDprClosedSet = set;
+  _v49gDprClosedAt = atMap;
   return set;
+}
+// v49ZJ: the DPR close moment for an order, if known (null when the map isn't warmed or no row).
+// This is the authoritative "production complete" timestamp — the anchor for the 48h post-close
+// label-generation window (confirmed by Ishan: labels stay generatable for 48h after DPR closes).
+let _v49gDprClosedAt = null;
+function _v49gDprClosedAtFor(ord) {
+  if (!_v49gDprClosedAt || !ord) return null;
+  if (ord.id && _v49gDprClosedAt.has('id:' + ord.id)) return _v49gDprClosedAt.get('id:' + ord.id);
+  if (ord.batchNumber && _v49gDprClosedAt.has('batch:' + String(ord.batchNumber).trim().toLowerCase()))
+    return _v49gDprClosedAt.get('batch:' + String(ord.batchNumber).trim().toLowerCase());
+  return null;
 }
 function _v49gIsDprClosed(ord) {
   if (!_v49gDprClosedSet) return false;
@@ -8869,6 +8886,7 @@ app.get('/api/orders/all', async (req, res) => {
       else if (_grossByBatch && Object.prototype.hasOwnProperty.call(_grossByBatch, bn)) o.actualProd = _grossByBatch[bn] || 0;
       if (_firstProdByBatch && _firstProdByBatch[bn]) o.dprFirstDate = _firstProdByBatch[bn]; // v45W
       if (_lastProdByBatch  && _lastProdByBatch[bn])  o.dprLastDate  = _lastProdByBatch[bn];  // v45X
+      { const _dca = _v49gDprClosedAtFor(o); if (_dca) o.dprClosedAt = _dca; }               // v49ZJ
     }
     res.json({ ok: true, orders: rows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -9081,7 +9099,12 @@ app.get('/api/planning/state', async (req, res) => {
           if ((o.status === 'running' || o.status === 'pending') && _v49gIsDprClosed({ id: o.id, batchNumber: o.batchNumber })
               && !_v49gIsReopenedOpen(o)) {
             o.status = 'closed';
-            o.closedDate = o.closedDate || o.endDate || new Date().toISOString();
+            // v49ZJ (confirmed by Ishan — 48h label-window fix): stamp closedDate from the ACTUAL
+            // DPR close moment, never the planner's endDate. The old `|| o.endDate` fallback dated
+            // the close days/weeks in the past for over-run batches, so canGenerateLabels' 48h
+            // post-close window was already expired the instant the batch closed — the root cause of
+            // "labels blocked immediately after DPR close" since the DPR-first gate went in.
+            o.closedDate = o.closedDate || _v49gDprClosedAtFor(o) || new Date().toISOString();
             o.manualEndDate = true;
             reconciledCount++;
             _v49pTableCloseIds.push({ id: o.id, batchNumber: o.batchNumber || null, ord: o });
@@ -9286,6 +9309,10 @@ app.get('/api/planning/state', async (req, res) => {
         // v45X: expose the LAST actual DPR production date — the cascade anchors a complete
         // order's end date to it (reality-driven ends; +ceil day convention unchanged).
         if (bn != null && _lastProdByBatch && _lastProdByBatch[bn]) ord.dprLastDate = _lastProdByBatch[bn];
+        // v49ZJ: expose the DPR close moment — tracking anchors the 48h post-close label window on
+        // it (dprClosedAt > closedDate > endDate), so batches already mis-stamped with a planned
+        // endDate by the old v49K fallback also get the correct window without data repair.
+        { const _dca = _v49gDprClosedAtFor(ord); if (_dca) ord.dprClosedAt = _dca; }
       }
     }
 

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49ZH</title>
+<title>Sunloc Tracking Suite v1.0 · build v49ZJ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZH</p>
+      <p>Tracking Suite v1.0 · build v49ZJ</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZH</p>
+      <p>Tracking Suite v1.0 · build v49ZJ</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2559,7 +2559,10 @@ function canGenerateLabels(batchNo, requestedBoxes){
   if(!batch) return {ok:false,msg:'Batch not found'};
   // Block label generation if batch is closed AND more than 2 days since close date
   if(batch.status === 'closed'){
-    const closedAt = batch.closedDate || batch.endDate;
+    // v49ZJ (confirmed by Ishan): the 48h window anchors on the ACTUAL DPR close moment
+    // (dprClosedAt, injected by planning/state) — closedDate/endDate only as fallbacks. Cures
+    // batches whose blob closedDate was mis-stamped with the planned endDate by the old v49K path.
+    const closedAt = batch.dprClosedAt || batch.closedDate || batch.endDate;
     if(closedAt){
       const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
       if(daysSinceClosed > 2){
@@ -4314,7 +4317,7 @@ function renderLabels(){
       // Label Supervisor couldn't see 26ZD101/26ZE101 was the 2-day window hiding produced-then-closed
       // batches. Show them by production reality (month-scoped via getTrkMonthBatches), same as admin.
       if((parseFloat(b.actualProd||b.actualQty)||0) > 0) return true;
-      const closedAt = b.closedDate || b.endDate;
+      const closedAt = b.dprClosedAt || b.closedDate || b.endDate; // v49ZJ: DPR close anchors the 48h window
       if(!closedAt) return false;
       const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
       return daysSinceClosed <= 2;
@@ -4678,7 +4681,7 @@ function openLabelGen(preselect){
       // can generate/relabel it. Fixes 26ZB085: visible in the admin list but missing from this dropdown
       // because the dropdown still used the stale 2-day window with no produced-batch exception.
       if((parseFloat(b.actualProd||b.actualQty)||0) > 0) return true;
-      const closedAt = b.closedDate || b.endDate;
+      const closedAt = b.dprClosedAt || b.closedDate || b.endDate; // v49ZJ: DPR close anchors the 48h window
       if(!closedAt) return false;
       const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
       return daysSinceClosed <= 2;
@@ -5135,8 +5138,13 @@ function renderDeptScan(dept){
     </table></div>`:''}
   </div>`:''}
 
-  ${dept!=='packing'?`
-  <!-- BATCH CLOSURE -->
+  ${(dept!=='packing'&&dept!=='printing')?`
+  <!-- BATCH CLOSURE — v49ZJ (confirmed by Ishan): the closure card is DISPENSED WITH at PRINTING.
+       With the excess-unprint flow live, every box scanned into Printing either scans OUT in normal
+       course or is carved to an unprinted child via a reversed scan-IN — so a printing-stage close
+       adds nothing to material flow or WIP. Downstream PI gating never depended on stage closure
+       (_isPrematureScan keys on prev-dept scan-OUTs), so removal opens no scan path. Existing
+       printing closures remain honoured wherever isStageComplete is read; AIM and PI keep the card. -->
   <div class="card mb-16">
     <div class="card-title">✅ Batch Stage Closure</div>
     <div class="text-sm text-muted mb-12">Close a batch at this stage once all boxes have been scanned OUT.</div>
@@ -5255,7 +5263,11 @@ function renderDeptScan(dept){
         const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:');
         const lbl=_isRecon?null:state.labels.find(l=>l.id===_sLid);
         // Fallback: if label not in state, try matching by batch+labelNumber from scan, or show box from scan qty
-        const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):'?'));
+        // v49ZJ (confirmed by Ishan): excess boxes show their LABEL NOMENCLATURE (E-1, E-2 …), not a
+        // bare absolute number — Math.abs() was stripping the E-series convention (excess labels are
+        // stored with negative labelNumbers). Uses the canonical _boxDisplayId; the no-label fallback
+        // applies the same negative→E- rule to the scan's own labelNumber.
+        const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '?';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?('E-'+Math.abs(_ni)):String(Math.abs(_ni||0));})();
         // v45T #2.3: resolve Customer/Colour/Size from the batch master for every dept's table
         const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{};
         return `<tr${_isRecon?' style="background:rgba(124,58,237,0.05)"':''}>
@@ -7856,9 +7868,15 @@ function _v39_onBoxScanned(raw) {
     return;
   }
   // Validate duplicate (same labelId or same batch+boxNumber)
+  // v49ZJ (confirmed by Ishan — the multi-batch scan-out blocker): the boxNumber clause compared
+  // box numbers WITHOUT the batch, so on a multi-batch invoice (26ZB104 boxes 1..6 + 26X101 boxes
+  // 1..3) every second-batch box collided with the first batch's same number and was rejected
+  // "Already scanned" — the second batch could never scan out. The comment always said
+  // "same batch+boxNumber"; the code now does too. Same-batch duplicates still reject.
   const dup = sp.scanned.find(s =>
     (parsed.labelId && s.labelId === parsed.labelId) ||
-    (parsed.boxNumber && s.boxNumber === parsed.boxNumber)
+    (parsed.boxNumber && s.boxNumber === parsed.boxNumber
+      && (!parsed.batchNumber || !s.batchNumber || s.batchNumber === parsed.batchNumber))
   );
   if (dup) {
     _v39_setMismatchMsg(`⚠️ Already scanned: ${parsed.batchNumber || ''}-${parsed.boxNumber || parsed.labelId}. Ignored.`);
@@ -7877,10 +7895,20 @@ function _v39_onBoxScanned(raw) {
   let lineMatch = null;
   if (sp.strictMode && sp.expectedByLine && sp.expectedByLine.size > 0) {
     // Derive the scanned box's PC code:
+    //   0. v49ZJ (confirmed by Ishan — multi-batch invoice scan-out): use the SCANNED BOX's own
+    //      batch → planning pc_code first. The old step 1 used the INVOICE-level pc_code for every
+    //      scan, so on a multi-batch invoice (e.g. 26ZB104 [0431] + 26X101 [0002]) ALL boxes were
+    //      attributed to the first line; once that line hit its ceiling the second batch's boxes
+    //      were REJECTED ("Line already at full count") while its own line sat empty — the second
+    //      batch could never scan out. Per-batch derivation routes each box to its own line.
+    //      Single-batch invoices are unchanged (batch pc_code == invoice pc_code).
     //   1. Use invoice's own pc_code field (most reliable — one PC code per Sunloc batch)
     //   2. Fall back to the label-embedded size field if present
+    const _scanBatchPc49zj = ((getBatch(parsed.batchNumber || '') || {}).pcCode || '').trim();
     const scanPcCode = (inv.pc_code || '').trim();
-    if (scanPcCode && sp.expectedByLine.has(scanPcCode)) {
+    if (_scanBatchPc49zj && sp.expectedByLine.has(_scanBatchPc49zj)) {
+      lineMatch = _scanBatchPc49zj;
+    } else if (scanPcCode && sp.expectedByLine.has(scanPcCode)) {
       lineMatch = scanPcCode;
     } else if (sp.expectedByLine.size === 1) {
       // Single-line invoice — any scan that passed batch+dup+overflow gates belongs to that line
