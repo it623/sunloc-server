@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49ZF';
+const APP_BUILD = 'v49ZG';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1302,6 +1302,35 @@ const MIGRATIONS = [
     name: 'invoice_batch_alloc_request_link',
     sql: `ALTER TABLE invoice_batch_alloc ADD COLUMN invoice_request_id TEXT;
     CREATE INDEX IF NOT EXISTS idx_iba_req ON invoice_batch_alloc(invoice_request_id);`
+  },
+  {
+    // v49ZG: EXCESS-CAPSULE UNPRINT FLOW (confirmed by Ishan).
+    // AIM over-sends unprinted capsules to Printing on PTD batches (55L sent vs 50L order); the
+    // printing manager prints only the order qty, so the excess must convert to an UNPRINTED child
+    // batch (colour stock, customer optional) instead of blocking inventory as "printed". The
+    // Printing Manager PROPOSES (selecting the physically-unprinted boxes — printing scan-IN, no
+    // scan-OUT); the Planning Manager or Admin APPROVES; approval executes through the proven
+    // re-customer split internals (child order + label/scan rebatch + v44C scan-reversal ledger).
+    version: 54,
+    name: 'excess_unprint_requests',
+    sql: `CREATE TABLE IF NOT EXISTS excess_unprint_requests (
+      id TEXT PRIMARY KEY,
+      batch_number TEXT NOT NULL,
+      selected_labels TEXT NOT NULL,
+      boxes INTEGER NOT NULL DEFAULT 0,
+      qty_lakhs REAL NOT NULL DEFAULT 0,
+      new_customer TEXT,
+      reason TEXT,
+      proposed_by TEXT NOT NULL,
+      proposed_at TEXT NOT NULL DEFAULT (datetime('now')),
+      status TEXT NOT NULL DEFAULT 'pending',
+      decided_by TEXT,
+      decided_at TEXT,
+      decision_reason TEXT,
+      child_batch_number TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_exu_status ON excess_unprint_requests(status);
+    CREATE INDEX IF NOT EXISTS idx_exu_batch ON excess_unprint_requests(batch_number);`
   },
 ];
 
@@ -2792,6 +2821,30 @@ async function ensurePostgresTables() {
       await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_wo_split_lines_child ON wo_split_lines(child_batch_number)`);
     } catch (e) { console.warn('[v40 P18.15 PG] wo_split tables:', e.message); }
     // ─── end v40 Phase 18.15 tables ────────────────────────────────
+
+    // ─── v49ZG: Excess-Unprint requests table (PG) ─────────────────
+    try {
+      await pgPool.query(`
+        CREATE TABLE IF NOT EXISTS excess_unprint_requests (
+          id TEXT PRIMARY KEY,
+          batch_number TEXT NOT NULL,
+          selected_labels TEXT NOT NULL,
+          boxes INTEGER NOT NULL DEFAULT 0,
+          qty_lakhs REAL NOT NULL DEFAULT 0,
+          new_customer TEXT,
+          reason TEXT,
+          proposed_by TEXT NOT NULL,
+          proposed_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+          status TEXT NOT NULL DEFAULT 'pending',
+          decided_by TEXT,
+          decided_at TEXT,
+          decision_reason TEXT,
+          child_batch_number TEXT
+        );
+      `);
+      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_exu_status ON excess_unprint_requests(status)`);
+      await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_exu_batch ON excess_unprint_requests(batch_number)`);
+    } catch (e) { console.warn('[v49ZG PG] excess_unprint_requests:', e.message); }
 
     // ─── v40 Phase 18.17: Data Integrity Dashboard tables (PG) ───
     try {
@@ -16843,6 +16896,12 @@ app.get('/api/tracking/sync-version', async (req, res) => {
       ? 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(qty_lakhs),0)::numeric, 3) AS qtysum FROM production_actuals'
       : 'SELECT COUNT(*) AS count, ROUND(COALESCE(SUM(qty_lakhs),0), 3) AS qtysum FROM production_actuals';
     const dpr = await one(dprSql);
+    // v49ZG (v49X lesson, one table over): an excess-unprint approval posts scan REVERSALS and
+    // re-batches existing scans — neither changes tracking_scans count nor max(ts), so the scans
+    // signature alone would leave every other device's scan-summary (whose queries exclude
+    // reversed scans) permanently stale. The reversal ledger joins the signature; any conversion
+    // flips it and the clients re-pull scan-summary + box-stages.
+    const rev = await one('SELECT COUNT(*) AS count FROM tracking_scan_reversals');
     res.json({
       ok: true,
       labels:   { count: parseInt(lab.count || 0, 10), voided: parseInt(lab.voided || 0, 10), printed: parseInt(lab.printed || 0, 10) },
@@ -16850,7 +16909,8 @@ app.get('/api/tracking/sync-version', async (req, res) => {
       wastage:  { count: parseInt(wst.count || 0, 10), qtySum: parseFloat(wst.qtysum || wst.qtySum || 0) },
       dispatch: { count: parseInt(dsp.count || 0, 10) },
       override: { count: parseInt(ovr.count || 0, 10), grossSum: parseFloat(ovr.grosssum || ovr.grossSum || 0) },
-      dprGross: { count: parseInt(dpr.count || 0, 10), qtySum: parseFloat(dpr.qtysum || dpr.qtySum || 0) }
+      dprGross: { count: parseInt(dpr.count || 0, 10), qtySum: parseFloat(dpr.qtysum || dpr.qtySum || 0) },
+      reversals:{ count: parseInt(rev.count || 0, 10) }
     });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -18548,6 +18608,364 @@ app.get('/api/tracking/recustomer-log', async (req, res) => {
     res.json({ ok:true, log: rows });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
+
+// ═════════════════════════════════════════════════════════════════════════════════════
+// v49ZG: EXCESS-CAPSULE UNPRINT FLOW (confirmed by Ishan 29-30 Jul)
+// Business case: AIM over-sends unprinted capsules to Printing on a PTD batch (e.g. 55L sent
+// vs 50L order). The printing manager prints only the order qty; the excess boxes are
+// physically unprinted and must convert to an UNPRINTED child batch — colour stock,
+// dispatchable to any customer — instead of blocking inventory as "printed".
+// Design (option C): re-customer split machinery in the missing REVERSE direction.
+//   PROPOSER  = Printing Manager (tracking_printing session) or admin, from the Printing dept
+//               page: selects excess boxes. ELIGIBILITY is system-proof of "physically
+//               unprinted": a live (non-reversed) printing scan-IN and NO live printing
+//               scan-OUT, plus the v48W per-box SAP-finalized guard (an invoiced box cannot
+//               be silently re-pointed; an unresolvable invoiced-box set fails CLOSED).
+//   APPROVER  = planning_manager or admin, from Planning → Reconciliation (card mirrors the
+//               W/O Split pending-approval card).
+//   APPROVAL  = executes via the proven re-customer split internals (/api/tracking/recustomer
+//               v44C): allocate child suffix, re-map the selected labels + their scans to the
+//               child, create the child as a genuine UP order (isPrinted:false — the point),
+//               reduce the parent proportionally, post tracking_scan_reversals rows for the
+//               child's printing scan-INs (v44C ledger: history preserved, every summary
+//               already excludes reversed scans — convertToPrinted is the existing mirror),
+//               clear SAP refs on the child (v49B rule), recustomer_log snapshot (which the
+//               family-attribution consumers already read), savePlanningState (v46D canonical
+//               writer). Parent Printing WIP falls automatically via live scan positions
+//               (v49Z split) — NO adjustment entries anywhere.
+//   CUSTOMER  = OPTIONAL (per Ishan): a customer-less child is COLOUR STOCK, assigned later
+//               via a normal re-customer.
+//   PACK SIZE = system-canonical _V44ZJ_PACK_SIZES (same table as client PACK_SIZES, W/O
+//               split, scan-lakhs) so the child qty matches its own boxes' scan quantities.
+//               (The recustomer endpoint's local _PACK table diverges from this — flagged to
+//               Ishan; NOT changed here.)
+// ═════════════════════════════════════════════════════════════════════════════════════
+
+// Eligible boxes for excess-unprint at Printing: non-voided, non-orange labels of the batch
+// with a live printing scan-IN and no live printing scan-OUT ("live" = not in the v44C
+// reversal ledger). Same SQL on PG and SQLite (COALESCE flag pattern used throughout).
+async function _exuEligibleRows(batchNumber) {
+  const filter = batchNumber ? (pgPool ? ` AND l.batch_number=$1` : ` AND l.batch_number=?`) : '';
+  const sql = `SELECT l.batch_number, l.id AS label_id, l.label_number, l.size, l.customer
+    FROM tracking_labels l
+    WHERE COALESCE(l.voided,0)=0 AND COALESCE(l.is_orange,0)=0${filter}
+      AND EXISTS (SELECT 1 FROM tracking_scans s WHERE s.label_id=l.id AND s.dept='printing' AND s.type='in'
+                  AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id))
+      AND NOT EXISTS (SELECT 1 FROM tracking_scans s2 WHERE s2.label_id=l.id AND s2.dept='printing' AND s2.type='out'
+                  AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r2 WHERE r2.reversed_scan_id=s2.id))`;
+  const args = batchNumber ? [batchNumber] : [];
+  return pgPool ? (await pgPool.query(sql, args)).rows
+                : db.prepare(sql.replace(/\$1/g, '?')).all(...args);
+}
+
+// v48W per-box SAP guard for a batch (reused rule, reused fail-closed semantics): returns
+// { blocked, why, invoicedIds:Set } — blocked=true means the WHOLE batch is untouchable
+// (an invoice exists whose box set cannot be resolved). Otherwise invoicedIds are the
+// specific boxes SAP has a claim on; those boxes are simply not eligible.
+async function _exuSapGuard(batchNumber) {
+  const qIR = `SELECT sap_doc_num FROM invoices_received WHERE batch_number=$1`;
+  const qRQ = `SELECT id, selected_labels, sap_doc_entry, status FROM invoice_requests
+               WHERE batch_number=$1 AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending'))`;
+  const irRows = pgPool ? (await pgPool.query(qIR, [batchNumber])).rows
+                        : db.prepare(qIR.replace(/\$1/g, '?')).all(batchNumber);
+  const rqRows = pgPool ? (await pgPool.query(qRQ, [batchNumber])).rows
+                        : db.prepare(qRQ.replace(/\$1/g, '?')).all(batchNumber);
+  const invoicedIds = new Set();
+  for (const r of rqRows) {
+    let ids = [];
+    try { ids = typeof r.selected_labels === 'string' ? JSON.parse(r.selected_labels) : (r.selected_labels || []); }
+    catch (e) { ids = []; }
+    if (Array.isArray(ids)) for (const id of ids) invoicedIds.add(String(id));
+  }
+  // Unknown invoiced-box set must fail CLOSED (v48W): a received invoice we cannot resolve to
+  // specific labels means we cannot prove any box is free.
+  if (irRows.length && !invoicedIds.size) {
+    return { blocked: true, why: 'a SAP invoice exists for this batch and its boxes cannot be identified', invoicedIds };
+  }
+  return { blocked: false, why: '', invoicedIds };
+}
+
+// Label ids already committed to another PENDING excess-unprint request (no double-proposal).
+async function _exuPendingLabelIds(batchNumber, excludeReqId) {
+  const rows = pgPool
+    ? (await pgPool.query(`SELECT id, selected_labels FROM excess_unprint_requests WHERE batch_number=$1 AND status='pending'`, [batchNumber])).rows
+    : db.prepare(`SELECT id, selected_labels FROM excess_unprint_requests WHERE batch_number=? AND status='pending'`).all(batchNumber);
+  const out = new Set();
+  for (const r of rows) {
+    if (excludeReqId && r.id === excludeReqId) continue;
+    let ids = []; try { ids = JSON.parse(r.selected_labels || '[]'); } catch (e) { ids = []; }
+    for (const id of ids) out.add(String(id));
+  }
+  return out;
+}
+
+// GET /api/printing/excess-unprint/eligible — batches with eligible boxes (for the Printing card).
+app.get('/api/printing/excess-unprint/eligible', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.query?.token);
+    if (!session || !['tracking_printing','planning_manager','admin'].includes(session.role))
+      return res.status(403).json({ ok:false, error:'Printing / Planning Manager / Admin required' });
+    const rows = await _exuEligibleRows(null);
+    // Group by batch; apply SAP guard + pending-request exclusion per batch.
+    const byBatch = {};
+    for (const r of rows) (byBatch[r.batch_number] = byBatch[r.batch_number] || []).push(r);
+    const planState = getPlanningState();
+    const batches = [];
+    for (const bn of Object.keys(byBatch)) {
+      const ord = (planState.orders||[]).find(o => o.batchNumber===bn && !o.deleted);
+      if (!ord || !ord.isPrinted) continue;            // only PTD parents — a UP batch has nothing to unprint
+      const guard = await _exuSapGuard(bn);
+      const pendingIds = await _exuPendingLabelIds(bn, null);
+      const boxes = guard.blocked ? [] : byBatch[bn].filter(r => !guard.invoicedIds.has(String(r.label_id)) && !pendingIds.has(String(r.label_id)));
+      if (!boxes.length && !guard.blocked && !pendingIds.size) continue;
+      const size = ord.size || byBatch[bn][0]?.size || '2';
+      const ps = _V44ZJ_PACK_SIZES[String(size)] || 1;
+      batches.push({
+        batchNumber: bn, customer: ord.customer||'', size, packSize: ps,
+        sapBlocked: guard.blocked, sapWhy: guard.why,
+        pendingBoxes: pendingIds.size,
+        boxes: boxes.map(b => ({ labelId: String(b.label_id), labelNumber: b.label_number })).sort((a,b)=>{
+          const na=parseInt(a.labelNumber,10)||0, nb=parseInt(b.labelNumber,10)||0; return na-nb;
+        })
+      });
+    }
+    batches.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||''));
+    res.json({ ok:true, batches });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// POST /api/printing/excess-unprint/propose — Printing Manager proposes; server re-derives eligibility.
+app.post('/api/printing/excess-unprint/propose', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session || !['tracking_printing','admin'].includes(session.role))
+      return res.status(403).json({ ok:false, error:'Printing Manager or Admin required' });
+    const { batchNumber, labelIds, newCustomer, reason } = req.body || {};
+    const ids = Array.isArray(labelIds) ? labelIds.map(String).filter(Boolean) : [];
+    if (!batchNumber || !ids.length) return res.status(400).json({ ok:false, error:'batchNumber and labelIds required' });
+    if (!reason || !String(reason).trim()) return res.status(400).json({ ok:false, error:'Reason required' });
+
+    const planState = getPlanningState();
+    const ord = (planState.orders||[]).find(o => o.batchNumber===batchNumber && !o.deleted);
+    if (!ord) return res.status(404).json({ ok:false, error:`No active order for ${batchNumber}` });
+    if (!ord.isPrinted) return res.status(400).json({ ok:false, error:`${batchNumber} is already an UNPRINTED batch — nothing to convert` });
+
+    const guard = await _exuSapGuard(batchNumber);
+    if (guard.blocked) return res.json({ ok:false, sap_blocked:true, error:`Cannot propose for ${batchNumber}: ${guard.why}. Cancel that SAP document first.` });
+
+    const eligible = await _exuEligibleRows(batchNumber);
+    const eligibleIds = new Set(eligible.map(r => String(r.label_id)));
+    const pendingIds = await _exuPendingLabelIds(batchNumber, null);
+    const bad = ids.filter(id => !eligibleIds.has(id) || guard.invoicedIds.has(id) || pendingIds.has(id));
+    if (bad.length) {
+      return res.status(409).json({ ok:false, error:`${bad.length} of ${ids.length} selected box(es) are not eligible (already printed out, SAP-committed, or on another pending request). Refresh and reselect.`, ineligible: bad });
+    }
+    if (ids.length >= eligible.length && eligibleIds.size === ids.length) {
+      // Carving EVERY held box is allowed only when some boxes have printed out (a residual
+      // exists elsewhere); if literally all the batch's printing-held boxes are selected AND the
+      // batch has no printed-out boxes, this is a full conversion of a batch that never printed —
+      // still legitimate (order cancelled at printing), so no block; the parent just goes to 0 held.
+    }
+    const size = ord.size || eligible[0]?.size || '2';
+    const ps = _V44ZJ_PACK_SIZES[String(size)] || 1;
+    const qty = +(ids.length * ps).toFixed(4);
+    const reqId = `exu-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+    const ts = new Date().toISOString();
+    const row = [reqId, batchNumber, JSON.stringify(ids), ids.length, qty, (newCustomer||'').trim(), String(reason).trim(), session.username, ts];
+    if (pgPool) await pgPool.query(`INSERT INTO excess_unprint_requests (id,batch_number,selected_labels,boxes,qty_lakhs,new_customer,reason,proposed_by,proposed_at,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,'pending')`, row);
+    else db.prepare(`INSERT INTO excess_unprint_requests (id,batch_number,selected_labels,boxes,qty_lakhs,new_customer,reason,proposed_by,proposed_at,status) VALUES (?,?,?,?,?,?,?,?,?,'pending')`).run(...row);
+    try { logAudit(session.username, session.role, 'tracking', 'EXCESS_UNPRINT_PROPOSE', JSON.stringify({ id:reqId, batch_number:batchNumber, boxes:ids.length, qty, newCustomer:newCustomer||'', reason }), req.ip); } catch(e) {}
+    res.json({ ok:true, id: reqId, batchNumber, boxes: ids.length, qtyLakhs: qty });
+  } catch(err) { console.error('[v49ZG] exu propose:', err); res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// GET /api/printing/excess-unprint/pending — pending first (all roles below see all), plus recent decisions.
+app.get('/api/printing/excess-unprint/pending', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.query?.token);
+    if (!session || !['tracking_printing','planning_manager','admin'].includes(session.role))
+      return res.status(403).json({ ok:false, error:'Printing / Planning Manager / Admin required' });
+    const pend = pgPool
+      ? (await pgPool.query(`SELECT * FROM excess_unprint_requests WHERE status='pending' ORDER BY proposed_at DESC`)).rows
+      : db.prepare(`SELECT * FROM excess_unprint_requests WHERE status='pending' ORDER BY proposed_at DESC`).all();
+    const done = pgPool
+      ? (await pgPool.query(`SELECT * FROM excess_unprint_requests WHERE status<>'pending' ORDER BY decided_at DESC LIMIT 10`)).rows
+      : db.prepare(`SELECT * FROM excess_unprint_requests WHERE status<>'pending' ORDER BY decided_at DESC LIMIT 10`).all();
+    res.json({ ok:true, requests: pend, recent: done });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// POST /api/printing/excess-unprint/reject/:id — planning_manager/admin, reason required.
+app.post('/api/printing/excess-unprint/reject/:id', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session || !['planning_manager','admin'].includes(session.role))
+      return res.status(403).json({ ok:false, error:'Planning Manager or Admin required' });
+    const reason = (req.body?.reason||'').trim();
+    if (!reason) return res.status(400).json({ ok:false, error:'Rejection reason required' });
+    const reqId = req.params.id, ts = new Date().toISOString();
+    const cur = pgPool
+      ? (await pgPool.query(`SELECT status FROM excess_unprint_requests WHERE id=$1`, [reqId])).rows[0]
+      : db.prepare(`SELECT status FROM excess_unprint_requests WHERE id=?`).get(reqId);
+    if (!cur) return res.status(404).json({ ok:false, error:'Request not found' });
+    if (cur.status !== 'pending') return res.status(400).json({ ok:false, error:`Already ${cur.status}` });
+    if (pgPool) await pgPool.query(`UPDATE excess_unprint_requests SET status='rejected', decided_by=$2, decided_at=$3, decision_reason=$4 WHERE id=$1`, [reqId, session.username, ts, reason]);
+    else db.prepare(`UPDATE excess_unprint_requests SET status='rejected', decided_by=?, decided_at=?, decision_reason=? WHERE id=?`).run(session.username, ts, reason, reqId);
+    try { logAudit(session.username, session.role, 'planning', 'EXCESS_UNPRINT_REJECT', JSON.stringify({ id:reqId, reason }), req.ip); } catch(e) {}
+    res.json({ ok:true, id: reqId, status:'rejected' });
+  } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
+});
+
+// POST /api/printing/excess-unprint/approve/:id — planning_manager/admin. Re-validates eligibility
+// (boxes may have printed out or been invoiced since the proposal — any drift is a LOUD 409, no
+// partial execution), then executes the conversion through the re-customer split internals.
+app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session || !['planning_manager','admin'].includes(session.role))
+      return res.status(403).json({ ok:false, error:'Planning Manager or Admin required' });
+    const reqId = req.params.id;
+    const request = pgPool
+      ? (await pgPool.query(`SELECT * FROM excess_unprint_requests WHERE id=$1`, [reqId])).rows[0]
+      : db.prepare(`SELECT * FROM excess_unprint_requests WHERE id=?`).get(reqId);
+    if (!request) return res.status(404).json({ ok:false, error:'Request not found' });
+    if (request.status !== 'pending') return res.status(400).json({ ok:false, error:`Already ${request.status}` });
+    let ids = []; try { ids = JSON.parse(request.selected_labels||'[]').map(String); } catch(e) { ids = []; }
+    if (!ids.length) return res.status(400).json({ ok:false, error:'Request has no boxes' });
+    const batchNumber = request.batch_number;
+    const newCustomer = (request.new_customer||'').trim();
+    const ts = new Date().toISOString();
+
+    const planState = await getPlanningStateAsync();
+    const ord = (planState.orders||[]).find(o => o.batchNumber===batchNumber && !o.deleted);
+    if (!ord) return res.status(404).json({ ok:false, error:`Parent order ${batchNumber} no longer exists` });
+
+    // ── RESUME detection (wo/split v44ZU pattern): a prior approval attempt may have executed the
+    // conversion but crashed before marking the request approved. child_batch_number is stamped on
+    // the request BEFORE execution, so a stamped request whose child order already exists resumes
+    // idempotently instead of double-reducing the parent.
+    let childBatch = request.child_batch_number || null;
+    const _resuming = !!(childBatch && (planState.orders||[]).find(o => o.batchNumber===childBatch && !o.deleted));
+
+    // ── Re-validate eligibility NOW (skip when resuming — the labels already moved to the child).
+    if (!_resuming) {
+      const guard = await _exuSapGuard(batchNumber);
+      if (guard.blocked) return res.status(409).json({ ok:false, error:`Cannot approve: ${guard.why}. Cancel that SAP document first.` });
+      const eligible = await _exuEligibleRows(batchNumber);
+      const eligibleIds = new Set(eligible.map(r => String(r.label_id)));
+      const bad = ids.filter(id => !eligibleIds.has(id) || guard.invoicedIds.has(id));
+      if (bad.length) {
+        return res.status(409).json({ ok:false, error:`${bad.length} of ${ids.length} box(es) are no longer eligible (printed out or SAP-committed since the proposal). Reject this request and re-propose with current boxes.`, ineligible: bad });
+      }
+    }
+
+    // ── Allocate the child suffix (same single-letter allocator as re-customer split) and stamp it
+    //    on the request BEFORE any mutation, so a crash mid-way resumes to the SAME child.
+    if (!childBatch) {
+      const used = new Set();
+      (planState.orders||[]).forEach(o=>{ if(!o.deleted && o.batchNumber && o.batchNumber.length===batchNumber.length+1 && o.batchNumber.startsWith(batchNumber)){ const s=o.batchNumber.slice(batchNumber.length); if(/^[A-Z]$/.test(s)) used.add(s); }});
+      let suffix='Z'; for(let i=65;i<=90;i++){ const c=String.fromCharCode(i); if(!used.has(c)){ suffix=c; break; } }
+      childBatch = `${batchNumber}${suffix}`;
+      if (pgPool) await pgPool.query(`UPDATE excess_unprint_requests SET child_batch_number=$2 WHERE id=$1`, [reqId, childBatch]);
+      else db.prepare(`UPDATE excess_unprint_requests SET child_batch_number=? WHERE id=?`).run(childBatch, reqId);
+    }
+
+    // ── Re-batch the selected labels + ALL their scans to the child (recustomer pattern: in place,
+    //    ids preserved; printed flag reset forces label reprint under the child batch number).
+    //    Customer: newCustomer when supplied, else BLANK — a customer-less child is colour stock
+    //    (v49E lesson: blank, never guess).
+    const labRows = pgPool
+      ? (await pgPool.query(`SELECT id, size FROM tracking_labels WHERE batch_number IN ($1,$2) AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`, [batchNumber, childBatch])).rows
+      : db.prepare(`SELECT id, size FROM tracking_labels WHERE batch_number IN (?,?) AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`).all(batchNumber, childBatch);
+    const parentBoxesBefore = labRows.length;           // parent+child family (child empty pre-move, has our boxes on resume)
+    for (const id of ids) {
+      if (pgPool) {
+        await pgPool.query(`UPDATE tracking_labels SET batch_number=$1, customer=$2, printed=0, printed_at=NULL, qr_data=NULL WHERE id=$3`, [childBatch, newCustomer, id]);
+        await pgPool.query(`UPDATE tracking_scans SET batch_number=$1 WHERE label_id=$2`, [childBatch, id]);
+      } else {
+        db.prepare(`UPDATE tracking_labels SET batch_number=?, customer=?, printed=0, printed_at=NULL, qr_data=NULL WHERE id=?`).run(childBatch, newCustomer, id);
+        db.prepare(`UPDATE tracking_scans SET batch_number=? WHERE label_id=?`).run(childBatch, id);
+      }
+    }
+
+    // ── Reverse the child's printing scans via the v44C ledger (mirror of convertToPrinted, which
+    //    reverses packing scans). Eligible boxes have only printing 'in' scans; the dept filter
+    //    catches any stray. Idempotent by 'rev-'||scan id.
+    const rvReason = `Excess→Unprinted (${batchNumber}→${childBatch})`;
+    let reversedScans = 0;
+    if (pgPool) {
+      const r = await pgPool.query(`INSERT INTO tracking_scan_reversals (id, reversed_scan_id, batch_number, label_id, dept, type, reason, by_user, ts) SELECT 'rev-'||s.id, s.id, s.batch_number, s.label_id, s.dept, s.type, $2, $3, $4 FROM tracking_scans s WHERE s.batch_number=$1 AND s.dept='printing' AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [childBatch, rvReason, session.username, ts]);
+      reversedScans = r.rowCount||0;
+    } else {
+      const r = db.prepare(`INSERT OR IGNORE INTO tracking_scan_reversals (id, reversed_scan_id, batch_number, label_id, dept, type, reason, by_user, ts) SELECT 'rev-'||s.id, s.id, s.batch_number, s.label_id, s.dept, s.type, ?, ?, ? FROM tracking_scans s WHERE s.batch_number=? AND s.dept='printing'`).run(rvReason, session.username, ts, childBatch);
+      reversedScans = r.changes||0;
+    }
+
+    // ── Child order: genuine UP order (isPrinted:false — the conversion), colour stock when no
+    //    customer, SAP refs cleared (v49B), proportional actualProd (recustomer-split math).
+    //    Parent reduced proportionally, guarded against double-reduction on resume.
+    const nSplit = ids.length;
+    const size = ord.size || '2';
+    const ps = _V44ZJ_PACK_SIZES[String(size)] || 1;
+    const totalBoxes = parseInt(ord.totalBoxes) || parentBoxesBefore || nSplit;
+    const parentActual = parseFloat(ord.actualProd || ord.actualQty || 0);
+    let child = (planState.orders||[]).find(o => o.batchNumber===childBatch && !o.deleted);
+    if (!child) {
+      child = {
+        ...(ord||{}), id: childBatch, batchNumber: childBatch, customer: newCustomer,
+        shipTo: '', billTo: '', poNumber: '',
+        qty: +(nSplit * ps).toFixed(4), totalBoxes: nSplit,
+        actualProd: +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
+        actualQty:  +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
+        isPrinted: false,
+        status: (ord.status==='closed' ? 'running' : (ord.status||'running')),
+        deleted: false, recustomeredFrom: ord.customer||'', excessUnprintFrom: batchNumber,
+        excessUnprintReqId: reqId,
+        recustomeredAt: ts, recustomeredBy: session.username,
+        sapDocEntry: null, sapDocNum: '',
+        _localEditedAt: Date.now()
+      };
+      delete child.woStatus;
+      planState.orders.push(child);
+    }
+    if (!Array.isArray(ord.excessUnprintReqIds)) ord.excessUnprintReqIds = [];
+    if (!ord.excessUnprintReqIds.includes(reqId)) {
+      const residual = Math.max(0, totalBoxes - nSplit);
+      if (ord.qty != null && totalBoxes > 0) ord.qty = +(parseFloat(ord.qty) * (residual/totalBoxes)).toFixed(4);
+      ord.totalBoxes = residual;
+      ord.excessUnprintReqIds.push(reqId);
+      ord._localEditedAt = Date.now();
+    }
+
+    // ── Persist planning state + production_orders (v46D canonical writer + cache refresh).
+    await savePlanningState(planState);
+    _planningStateCache = planState; _planningStateCacheTime = Date.now();
+    const writeOrd = async (o) => {
+      if (!o) return; const oj = JSON.stringify(o);
+      if (pgPool) await pgPool.query(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at) VALUES ($1,$2,$3,$4,$5,false,NOW()::TEXT) ON CONFLICT(id) DO UPDATE SET data_json=$2, machine_id=$3, batch_number=$4, status=$5, deleted=false, updated_at=NOW()::TEXT`, [o.id, oj, o.machineId||null, o.batchNumber, o.status||'running']);
+      else db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at) VALUES (?,?,?,?,?,0,datetime('now')) ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json, machine_id=excluded.machine_id, batch_number=excluded.batch_number, status=excluded.status, deleted=0, updated_at=datetime('now')`).run(o.id, oj, o.machineId||null, o.batchNumber, o.status||'running');
+    };
+    await writeOrd(ord);
+    await writeOrd(child);
+
+    // ── recustomer_log snapshot (family-attribution consumers already read child_batch_number +
+    //    split_boxes from this table) + request approved + audit.
+    const before = { batchNumber, customer: ord.recustomeredFrom||ord.customer||'', isPrinted: true, totalBoxes: totalBoxes, poNumber: ord.poNumber||'' };
+    const after  = { batchNumber: childBatch, childBatch, customer: newCustomer, isPrinted: false, boxes: nSplit, convertedToUnprinted: true, reversedPrintingScans: reversedScans };
+    try {
+      const logId = `rc-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
+      const row = [logId, batchNumber, childBatch, 'excess-unprint', ord.customer||'', newCustomer, ord.poNumber||'', '', '', '', '', nSplit, totalBoxes, 0, nSplit, JSON.stringify(before), JSON.stringify(after), request.reason||'', session.username, ts];
+      if (pgPool) await pgPool.query(`INSERT INTO recustomer_log (id,batch_number,child_batch_number,action_type,from_customer,to_customer,from_po,to_po,card_code,ship_to,bill_to,split_boxes,total_boxes,converted_to_printed,labels_affected,before_json,after_json,reason,by_user,ts) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, row);
+      else db.prepare(`INSERT INTO recustomer_log (id,batch_number,child_batch_number,action_type,from_customer,to_customer,from_po,to_po,card_code,ship_to,bill_to,split_boxes,total_boxes,converted_to_printed,labels_affected,before_json,after_json,reason,by_user,ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...row);
+    } catch(e) { console.warn('[v49ZG] recustomer_log:', e.message); }
+    if (pgPool) await pgPool.query(`UPDATE excess_unprint_requests SET status='approved', decided_by=$2, decided_at=$3 WHERE id=$1`, [reqId, session.username, ts]);
+    else db.prepare(`UPDATE excess_unprint_requests SET status='approved', decided_by=?, decided_at=? WHERE id=?`).run(session.username, ts, reqId);
+    try { logAudit(session.username, session.role, 'planning', 'EXCESS_UNPRINT_APPROVE', JSON.stringify({ id:reqId, batch_number:batchNumber, child:childBatch, boxes:nSplit, reversed:reversedScans, newCustomer, resumed:_resuming }), req.ip); } catch(e) {}
+
+    res.json({ ok:true, id:reqId, batchNumber, childBatch, boxes:nSplit, qtyLakhs:+(nSplit*ps).toFixed(4), reversedPrintingScans:reversedScans, customer:newCustomer||'(colour stock — assign via Re-customer)', resumed:_resuming });
+  } catch(err) { console.error('[v49ZG] exu approve:', err); res.status(500).json({ ok:false, error:err.message }); }
+});
+// ═══ end v49ZG ═══════════════════════════════════════════════════════════════════════
 
 // ── Wastage — save salvage/remelt records ─────────────────────
 // Lets admin resolve residual WIP on a batch at month changeover with an explicit

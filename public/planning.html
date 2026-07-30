@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49ZF</p>
+      <p>Planning Suite v3.0 · build v49ZG</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -13881,9 +13881,10 @@ async function renderReconciliation() {
   let woPendingRequests = [], woHistory = [];
   // v40 P18.15: also load wo-split pending + history
   let woSplitPending = [], woSplitHistory = [];
+  let exuPending = [], exuRecent = []; // v49ZG: excess-unprint proposals (Printing → unprinted child)
   if (serverUrl) {
     try {
-      const [r1, r2, r3, r4, r5, rSp, rSh] = await Promise.all([
+      const [r1, r2, r3, r4, r5, rSp, rSh, rEx] = await Promise.all([
         fetch(serverUrl+'/api/temp-batches/active', {signal:AbortSignal.timeout(5000)}),
         currentUser?.role==='admin' ? fetch(serverUrl+'/api/reconciliation/pending', {headers:{'x-session-token':currentUser.token||''}, signal:AbortSignal.timeout(5000)}) : Promise.resolve(null),
         fetch(serverUrl+'/api/reconciliation/history', {headers:{'x-session-token':currentUser.token||''}, signal:AbortSignal.timeout(5000)}),
@@ -13891,7 +13892,9 @@ async function renderReconciliation() {
         fetch(serverUrl+'/api/wo/history', {headers:{'x-session-token':currentUser.token||''}, signal:AbortSignal.timeout(5000)}),
         // v40 P18.15: pending splits — admin sees all, planner sees their own
         fetch(serverUrl+'/api/wo/split/pending', {headers:{'x-session-token':currentUser?.token||''}, signal:AbortSignal.timeout(5000)}).catch(()=>null),
-        fetch(serverUrl+'/api/wo/split/history', {headers:{'x-session-token':currentUser?.token||''}, signal:AbortSignal.timeout(5000)}).catch(()=>null)
+        fetch(serverUrl+'/api/wo/split/history', {headers:{'x-session-token':currentUser?.token||''}, signal:AbortSignal.timeout(5000)}).catch(()=>null),
+        // v49ZG: excess-unprint proposals (server role-gates to planning_manager/admin here)
+        fetch(serverUrl+'/api/printing/excess-unprint/pending', {headers:{'x-session-token':currentUser?.token||''}, signal:AbortSignal.timeout(5000)}).catch(()=>null)
       ]);
       const j1 = await r1.json(); if(j1.ok) tempBatches = j1.batches;
       if(r2){ const j2 = await r2.json(); if(j2.ok) pendingRequests = j2.requests; }
@@ -13900,6 +13903,7 @@ async function renderReconciliation() {
       if(r5){ const j5 = await r5.json(); if(j5.ok) woHistory = j5.requests.slice(0,20); }
       if(rSp){ try { const jSp = await rSp.json(); if(jSp?.ok) woSplitPending = jSp.requests; } catch(e){} }
       if(rSh){ try { const jSh = await rSh.json(); if(jSh?.ok) woSplitHistory = jSh.requests.slice(0,20); } catch(e){} }
+      if(rEx){ try { const jEx = await rEx.json(); if(jEx?.ok){ exuPending = jEx.requests||[]; exuRecent = (jEx.recent||[]).slice(0,10); } } catch(e){} }
     } catch(e) { content.innerHTML = `<div class="alert alert-warn">⚠️ Could not load data: ${e.message}</div>`; return; }
   }
 
@@ -14099,6 +14103,45 @@ async function renderReconciliation() {
           </div>
         </div>`;
       }).join('')}
+    </div>
+    ` : ''}
+
+    ${exuPending.length > 0 || exuRecent.length > 0 ? `
+    <div class="card mb-4">
+      <div class="card-title" style="color:var(--accent3)">
+        ${['admin','planning_manager'].includes(currentUser?.role) ? '🔔 Excess → Unprinted — Pending Approval' : '⏳ Excess → Unprinted Proposals'}
+      </div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:12px">
+        Printing Manager proposals to convert physically-unprinted excess boxes (scanned into Printing, never printed out) into an <b>unprinted child batch</b>. Approving creates the child order, rebatches the selected labels/scans, and reverses their printing scan-INs — the parent's Printing WIP falls by exactly the carved quantity. A child with no customer is <b>colour stock</b>, assignable later via Re-customer.
+      </div>
+      ${exuPending.map(r=>`
+        <div style="background:var(--surface3);border-radius:8px;padding:14px;margin-bottom:12px;border-left:3px solid rgba(255,171,0,0.5)">
+          <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
+            <div>
+              <span class="text-mono fw-bold" style="color:var(--accent3)">${r.id}</span>
+              <span style="font-size:12px;color:var(--text3);margin-left:10px">Batch: <strong style="color:var(--accent2)">${r.batch_number}</strong> · Proposed by ${r.proposed_by} on ${(r.proposed_at||'').slice(0,16)}</span>
+            </div>
+            ${['admin','planning_manager'].includes(currentUser?.role) ? `<div style="display:flex;gap:8px">
+              <button class="btn btn-success btn-sm" onclick="approveExcessUnprint('${r.id}')">✅ Approve</button>
+              <button class="btn btn-danger btn-sm" onclick="rejectExcessUnprint('${r.id}')">✗ Reject</button>
+            </div>` : '<span style="font-size:11px;color:var(--text3);font-style:italic">Awaiting Planning Manager / Admin</span>'}
+          </div>
+          <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(170px,1fr));gap:8px;font-size:12px">
+            <div><span style="color:var(--text3)">Boxes:</span> <strong>${r.boxes}</strong></div>
+            <div><span style="color:var(--text3)">Quantity:</span> <strong>${(parseFloat(r.qty_lakhs)||0).toFixed(2)} L</strong></div>
+            <div><span style="color:var(--text3)">New customer:</span> <strong>${r.new_customer||'— (colour stock)'}</strong></div>
+            <div style="grid-column:1/-1"><span style="color:var(--text3)">Reason:</span> ${r.reason||'—'}</div>
+          </div>
+        </div>`).join('')}
+      ${exuRecent.length ? `
+      <div style="font-size:12px;color:var(--text3);margin:8px 0 4px;font-weight:600">Recent decisions</div>
+      ${exuRecent.map(r=>`<div style="font-size:12px;display:flex;flex-wrap:wrap;gap:10px;border-bottom:1px dashed var(--border);padding:4px 2px">
+        <span class="text-mono">${r.batch_number}</span><span>${r.boxes} box(es) · ${(parseFloat(r.qty_lakhs)||0).toFixed(2)}L</span>
+        <span class="badge ${r.status==='approved'?'badge-completed':'badge-red'}">${(r.status||'').toUpperCase()}</span>
+        ${r.status==='approved'&&r.child_batch_number?`<span>child <strong class="text-mono">${r.child_batch_number}</strong></span>`:''}
+        ${r.status==='rejected'&&r.decision_reason?`<span style="color:var(--text3)">${r.decision_reason}</span>`:''}
+        <span style="color:var(--text3);margin-left:auto">${r.decided_by||''} ${(r.decided_at||'').slice(0,16)}</span>
+      </div>`).join('')}` : ''}
     </div>
     ` : ''}
 
@@ -14340,6 +14383,48 @@ async function rejectWoSplit(reqId) {
     });
     const j = await r.json();
     if (j.ok) { alert('Split request rejected.'); renderReconciliation(); }
+    else alert('Error: '+j.error);
+  } catch(e) { alert('Server error: '+e.message); }
+}
+
+// v49ZG: Planning Manager / Admin approves an excess-unprint proposal — executes the conversion
+// (child UP order + label/scan rebatch + printing scan-IN reversals) through the server.
+async function approveExcessUnprint(reqId) {
+  if (!confirm(`Approve excess-unprint ${reqId}?\n\nThis will:\n• Create an UNPRINTED child batch (colour stock if no customer was named)\n• Rebatch the selected labels and their scan history to the child\n• Reverse their printing scan-INs (v44C ledger — history preserved)\n• Reduce the parent proportionally; its Printing WIP falls by the carved quantity\n\nThis cannot be undone.`)) return;
+  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  try {
+    const r = await fetch(serverUrl+'/api/printing/excess-unprint/approve/'+reqId, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},
+      body: JSON.stringify({}),
+      signal: AbortSignal.timeout(20000)
+    });
+    const j = await r.json();
+    if (j.ok) {
+      alert(`✅ Approved!\n\nChild batch: ${j.childBatch}\n${j.boxes} box(es) · ${j.qtyLakhs}L → UNPRINTED\nCustomer: ${j.customer}\n${j.reversedPrintingScans} printing scan(s) reversed.`);
+      auditLog('EXCESS_UNPRINT_APPROVED', `Approved ${reqId} — ${j.batchNumber} → ${j.childBatch}, ${j.boxes} box(es)`);
+      if (typeof SYNC !== 'undefined' && SYNC.loadFromServer) await SYNC.loadFromServer().catch(()=>{});
+      renderReconciliation();
+    } else {
+      alert('⚠️ Error approving: ' + (j.error||'Unknown'));
+    }
+  } catch(e) { alert('Server error: '+e.message); }
+}
+
+// v49ZG: reject with reason.
+async function rejectExcessUnprint(reqId) {
+  const reason = prompt('Reason for rejecting this excess-unprint proposal (required):');
+  if (!reason) return;
+  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  try {
+    const r = await fetch(serverUrl+'/api/printing/excess-unprint/reject/'+reqId, {
+      method:'POST',
+      headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},
+      body: JSON.stringify({reason}),
+      signal: AbortSignal.timeout(5000)
+    });
+    const j = await r.json();
+    if (j.ok) { alert('Proposal rejected.'); renderReconciliation(); }
     else alert('Error: '+j.error);
   } catch(e) { alert('Server error: '+e.message); }
 }
@@ -15355,17 +15440,30 @@ async function _v40_taskBannerTick() {
     const j = await r.json();
     if (!j.ok) return;
     _v40_myTasks = j.tasks || [];
+    // v49ZG: excess-unprint approvals ride the banner for the Planning Manager — they see pending
+    // conversion proposals the moment they open the app, mirroring how split approvals surface.
+    let _exuN = 0;
+    if (currentUser.role === 'planning_manager') {
+      try {
+        const rx = await fetch(serverUrl + '/api/printing/excess-unprint/pending', {
+          headers:{'x-session-token': currentUser?.token||''}, signal: AbortSignal.timeout(5000) });
+        const jx = await rx.json();
+        if (jx && jx.ok) _exuN = (jx.requests||[]).length;
+      } catch(e) {}
+    }
     const banner = document.getElementById('v40-task-banner');
     const textEl = document.getElementById('v40-task-banner-text');
     if (!banner || !textEl) return;
-    if (_v40_myTasks.length === 0) {
+    if (_v40_myTasks.length === 0 && _exuN === 0) {
       banner.style.display = 'none';
       return;
     }
     const critCount = _v40_myTasks.filter(t => t.severity === 'critical').length;
-    const summary = critCount > 0
+    let summary = _v40_myTasks.length === 0 ? ''
+      : critCount > 0
       ? `<strong>${_v40_myTasks.length} task(s)</strong> assigned to you — including <strong style="color:#dc2626">${critCount} critical</strong>`
       : `<strong>${_v40_myTasks.length} task(s)</strong> assigned to you by Admin`;
+    if (_exuN > 0) summary += `${summary?' · ':''}<strong>${_exuN} Excess→Unprinted approval(s)</strong> pending on Reconciliation`;
     textEl.innerHTML = summary;
     banner.style.display = 'flex';
   } catch(e) { /* silent — banner just stays as-is */ }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49ZF</title>
+<title>Sunloc Tracking Suite v1.0 · build v49ZG</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZF</p>
+      <p>Tracking Suite v1.0 · build v49ZG</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZF</p>
+      <p>Tracking Suite v1.0 · build v49ZG</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1857,8 +1857,14 @@ async function pullFromServer(force){
       || (_ver.override&&_lv.override ? (_ver.override.count!==_lv.override.count || _ver.override.grossSum!==_lv.override.grossSum) : true)
       || (_ver.dprGross&&_lv.dprGross ? (_ver.dprGross.count!==_lv.dprGross.count || _ver.dprGross.qtySum!==_lv.dprGross.qtySum) : true);
     if (grossChanged && !force && _lv && typeof _v41_clearAgradeMonthCache==='function') _v41_clearAgradeMonthCache();
-    const _ssNeed = scansChanged || wastageChanged || grossChanged || !hasScanSummary(); // v45Z: wastageSummary (reports' _sw) must refresh on edits too; v49X: DPR gross corrections too
-    const _bsNeed = scansChanged || dispatchChanged || !_bsMap || Object.keys(_bsMap||{}).length===0;
+    // v49ZG (v49X lesson, one table over): an excess-unprint approval posts scan REVERSALS and
+    // re-batches existing scans — neither changes the scans count/maxTs signature, so without this
+    // gate the scan-summary (which excludes reversed scans server-side) and box-stages map would
+    // stay stale on every other device until an unrelated scan flipped the version.
+    const reversalsChanged = !!force || !_ver || !_lv
+      || (_ver.reversals&&_lv.reversals ? (_ver.reversals.count!==_lv.reversals.count) : true);
+    const _ssNeed = scansChanged || wastageChanged || grossChanged || reversalsChanged || !hasScanSummary(); // v45Z: wastageSummary (reports' _sw) must refresh on edits too; v49X: DPR gross corrections too; v49ZG: reversals too
+    const _bsNeed = scansChanged || dispatchChanged || reversalsChanged || !_bsMap || Object.keys(_bsMap||{}).length===0; // v49ZG: reversals move box positions too
     const _wNeed  = wastageChanged;
     // STEP 2: Load all labels — with retry so a single slow/timed-out fetch never leaves the
     // client label cache empty (which showed as "Labels Generated: 0", empty label table, empty
@@ -5192,6 +5198,18 @@ function renderDeptScan(dept){
     </table></div>
   </div>`:''}
 
+  ${dept==='printing'?`
+  <!-- v49ZG: EXCESS → UNPRINTED (confirmed by Ishan) — propose conversion of physically-unprinted
+       excess boxes (printing scan-IN, never scan-OUT, not SAP-committed) into an UNPRINTED child
+       batch (colour stock; customer optional). Planning Manager / Admin approves on Planning →
+       Reconciliation. Approval reverses the printing scan-INs via the v44C ledger, so the parent's
+       Printing WIP falls automatically via live scan positions — no adjustment entries. -->
+  <div class="card mb-16" id="exu-card">
+    <div class="card-title">🔁 Excess → Unprinted</div>
+    <div class="text-sm text-muted mb-12">Select excess boxes held at Printing (scanned IN, never printed OUT) to convert into an <b>unprinted child batch</b>. Customer is optional — a customer-less child is colour stock, assignable later via Re-customer. Proposals go to the Planning Manager for approval.</div>
+    <div id="exu-body" class="text-sm text-muted">Loading eligible boxes…</div>
+  </div>`:''}
+
   <!-- RECENT SCANS -->
   <div class="card">
     <div class="card-title">Recent Scans — ${cfg.label}</div>
@@ -5255,7 +5273,120 @@ function renderDeptScan(dept){
     </table></div>
   </div>
   ${dept==='packing'?_renderPackingLedgerCard():''}`;
+  if(dept==='printing'&&typeof _exuLoad==='function') setTimeout(_exuLoad,0); // v49ZG: async card fill
 }
+
+// ═══ v49ZG: EXCESS → UNPRINTED card (Printing dept page) ═══════════════════════════════
+// Server is the single source of eligibility (/api/printing/excess-unprint/eligible re-derives
+// "printing scan-IN, no scan-OUT, not reversed, not SAP-committed, not on another pending
+// request" on every call). Selections / inputs / expanded state persist in window._exu* so the
+// 30s auto-sync re-render never loses the manager's in-progress selection (the v49ZF _cloF
+// pattern). Propose posts the selected label ids; the server re-validates before storing.
+window._exuSel  = window._exuSel  || {};   // batch → {labelId:true}
+window._exuOpen = window._exuOpen || {};   // batch → expanded?
+window._exuF    = window._exuF    || {};   // batch → {cust, reason}
+window._exuData = window._exuData || { batches:[], pending:[], recent:[] };
+async function _exuLoad(){
+  const body=document.getElementById('exu-body'); if(!body) return;
+  try{
+    const hdr={'x-session-token':currentUser?.token||''};
+    const [rE,rP]=await Promise.all([
+      fetch(serverUrl+'/api/printing/excess-unprint/eligible',{headers:hdr,signal:AbortSignal.timeout(15000)}),
+      fetch(serverUrl+'/api/printing/excess-unprint/pending',{headers:hdr,signal:AbortSignal.timeout(10000)})
+    ]);
+    const jE=await rE.json(), jP=await rP.json();
+    if(!jE.ok){ body.innerHTML=`<span style="color:var(--accent4)">⚠ ${jE.error||'Could not load eligible boxes'}</span>`; return; }
+    window._exuData={ batches:jE.batches||[], pending:(jP&&jP.ok?jP.requests:[])||[], recent:(jP&&jP.ok?jP.recent:[])||[] };
+    _exuRender();
+  }catch(e){ if(body) body.innerHTML=`<span style="color:var(--accent4)">⚠ ${e.message}</span>`; }
+}
+function _exuRender(){
+  const body=document.getElementById('exu-body'); if(!body) return;
+  const d=window._exuData;
+  const pendHtml=d.pending.length?`
+    <div style="margin-bottom:14px">
+      <div class="text-sm" style="font-weight:600;margin-bottom:6px">⏳ Awaiting Planning Manager approval</div>
+      ${d.pending.map(r=>`<div style="display:flex;flex-wrap:wrap;gap:10px;align-items:center;border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:6px">
+        <span class="td-mono td-bold">${r.batch_number}</span>
+        <span class="td-mono">${r.boxes} box(es) · ${(parseFloat(r.qty_lakhs)||0).toFixed(2)}L</span>
+        <span>${r.new_customer?`→ <b>${r.new_customer}</b>`:'<span class="badge badge-gray" title="No customer — child will be colour stock, assignable later via Re-customer">Colour stock</span>'}</span>
+        <span class="text-sm text-muted">${r.reason||''}</span>
+        <span class="badge badge-amber" style="margin-left:auto">PENDING · ${r.proposed_by} ${(r.proposed_at||'').slice(0,16)}</span>
+      </div>`).join('')}
+    </div>`:'';
+  const recentHtml=d.recent.length?`
+    <div style="margin-bottom:14px">
+      <div class="text-sm" style="font-weight:600;margin-bottom:6px">Recent decisions</div>
+      ${d.recent.map(r=>`<div class="text-sm" style="display:flex;flex-wrap:wrap;gap:10px;border-bottom:1px dashed var(--border);padding:4px 2px">
+        <span class="td-mono">${r.batch_number}</span><span>${r.boxes} box(es)</span>
+        <span class="badge ${r.status==='approved'?'badge-green':'badge-red'}">${(r.status||'').toUpperCase()}</span>
+        ${r.status==='approved'&&r.child_batch_number?`<span>child <b class="td-mono">${r.child_batch_number}</b></span>`:''}
+        ${r.status==='rejected'&&r.decision_reason?`<span class="text-muted">${r.decision_reason}</span>`:''}
+        <span class="text-muted" style="margin-left:auto">${r.decided_by||''} ${(r.decided_at||'').slice(0,16)}</span>
+      </div>`).join('')}
+    </div>`:'';
+  const rows=d.batches.map(b=>{
+    const sel=window._exuSel[b.batchNumber]||{};
+    const nSel=b.boxes.filter(x=>sel[x.labelId]).length;
+    const open=!!window._exuOpen[b.batchNumber];
+    const f=window._exuF[b.batchNumber]||{};
+    const blockedNote=b.sapBlocked?`<div class="text-sm" style="color:var(--accent4)">🔒 ${b.sapWhy}</div>`:'';
+    const pendNote=b.pendingBoxes?`<div class="text-sm text-muted">${b.pendingBoxes} box(es) already on a pending request (excluded)</div>`:'';
+    return `<div style="border:1px solid var(--border);border-radius:8px;padding:10px 12px;margin-bottom:8px">
+      <div style="display:flex;flex-wrap:wrap;gap:12px;align-items:center">
+        <span class="td-mono td-bold">${b.batchNumber}</span>
+        <span class="text-sm">${b.customer||'—'}</span>
+        <span class="td-mono text-sm">${b.boxes.length} eligible box(es) · ${(b.boxes.length*b.packSize).toFixed(2)}L</span>
+        <span class="td-mono text-sm" style="color:var(--accent)">${nSel?`selected: ${nSel} (${(nSel*b.packSize).toFixed(2)}L)`:''}</span>
+        <button class="btn btn-sm btn-secondary" style="margin-left:auto" onclick="_exuToggle('${b.batchNumber}')">${open?'▲ Hide boxes':'▼ Select boxes'}</button>
+      </div>
+      ${blockedNote}${pendNote}
+      ${open?`
+      <div style="margin-top:8px">
+        <label class="text-sm" style="display:inline-flex;gap:6px;align-items:center;margin-bottom:6px"><input type="checkbox" ${nSel===b.boxes.length&&b.boxes.length?'checked':''} onchange="_exuAll('${b.batchNumber}',this.checked)"> Select all</label>
+        <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:4px;max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px">
+          ${b.boxes.map(x=>`<label class="text-sm td-mono" style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" ${sel[x.labelId]?'checked':''} onchange="_exuBox('${b.batchNumber}','${x.labelId}',this.checked)"> #${x.labelNumber}</label>`).join('')}
+        </div>
+        <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
+          <input id="exu-cust-${b.batchNumber}" placeholder="New customer (optional — blank = colour stock)" value="${(f.cust||'').replace(/"/g,'&quot;')}" oninput="(window._exuF['${b.batchNumber}']=window._exuF['${b.batchNumber}']||{}).cust=this.value" style="width:280px;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
+          <input id="exu-reason-${b.batchNumber}" placeholder="Reason (required)" value="${(f.reason||'').replace(/"/g,'&quot;')}" oninput="(window._exuF['${b.batchNumber}']=window._exuF['${b.batchNumber}']||{}).reason=this.value" style="width:280px;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
+          <button class="btn btn-sm btn-warning" ${nSel?'':'disabled'} onclick="_exuPropose('${b.batchNumber}')">Propose ${nSel||''} box(es) → Unprinted</button>
+        </div>
+      </div>`:''}
+    </div>`;
+  }).join('');
+  body.innerHTML = pendHtml + recentHtml + (rows||'<div class="text-sm text-muted">No batches with eligible (unprinted, un-invoiced) boxes at Printing.</div>');
+}
+function _exuToggle(bn){ window._exuOpen[bn]=!window._exuOpen[bn]; _exuRender(); }
+function _exuBox(bn,id,on){ const s=window._exuSel[bn]=window._exuSel[bn]||{}; if(on)s[id]=true; else delete s[id]; _exuRender(); }
+function _exuAll(bn,on){ const b=(window._exuData.batches||[]).find(x=>x.batchNumber===bn); if(!b)return; window._exuSel[bn]={}; if(on)b.boxes.forEach(x=>window._exuSel[bn][x.labelId]=true); _exuRender(); }
+async function _exuPropose(bn){
+  const b=(window._exuData.batches||[]).find(x=>x.batchNumber===bn); if(!b)return;
+  const sel=window._exuSel[bn]||{}; const ids=b.boxes.filter(x=>sel[x.labelId]).map(x=>x.labelId);
+  if(!ids.length){ alert('Select at least one box.'); return; }
+  const f=window._exuF[bn]||{};
+  const reason=(f.reason||'').trim();
+  if(!reason){ alert('Reason is required.'); return; }
+  const cust=(f.cust||'').trim();
+  if(!confirm(`Propose ${ids.length} box(es) of ${bn} (${(ids.length*b.packSize).toFixed(2)}L) → UNPRINTED child batch${cust?` for ${cust}`:' (colour stock — no customer)'}?\n\nThe Planning Manager must approve before anything changes.`)) return;
+  try{
+    const r=await fetch(serverUrl+'/api/printing/excess-unprint/propose',{method:'POST',
+      headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},
+      body:JSON.stringify({batchNumber:bn,labelIds:ids,newCustomer:cust,reason}),
+      signal:AbortSignal.timeout(15000)});
+    const j=await r.json();
+    if(j.ok){
+      alert(`✅ Proposal ${j.id} submitted — ${j.boxes} box(es), ${j.qtyLakhs}L.\nAwaiting Planning Manager approval on Planning → Reconciliation.`);
+      window._exuSel[bn]={}; window._exuF[bn]={}; window._exuOpen[bn]=false;
+      trkAuditLog('EXCESS_UNPRINT_PROPOSE',`${bn}: ${j.boxes} box(es) proposed → unprinted`);
+      _exuLoad();
+    } else {
+      alert('⚠️ '+(j.error||'Proposal failed'));
+      _exuLoad(); // refresh — eligibility may have drifted
+    }
+  }catch(e){ alert('Server error: '+e.message); }
+}
+// ═══ end v49ZG card ═════════════════════════════════════════════════════════════════════
 
 // v44K #7: Recent-scans server-side filter (date range / batch / IN-OUT). Fetches the read-only
 // /api/tracking/scans-filtered endpoint (capped 5000, newest first) and repaints the dept page.
