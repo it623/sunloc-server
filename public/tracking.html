@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49ZD</title>
+<title>Sunloc Tracking Suite v1.0 · build v49ZF</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZD</p>
+      <p>Tracking Suite v1.0 · build v49ZF</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZD</p>
+      <p>Tracking Suite v1.0 · build v49ZF</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2889,6 +2889,32 @@ function _ovrBadge(bn){
 // (getTrkMonthBatches / strict start-month) — are untouched, exactly as agreed.
 function _dispStart49zc(b){ return (b && b.status==='closed' && b.dprFirstDate) ? b.dprFirstDate : (b ? (b.startDate||null) : null); }
 function _dispEnd49zc(b){ return (b && b.status==='closed' && b.dprLastDate) ? b.dprLastDate : (b ? (b.endDate||null) : null); }
+// v49ZF (Ishan): Batch Stage Closure filter bar — batch / customer text + status select. Values
+// persist in window._cloF per dept so the 30s sync re-render keeps the filter; typing filters via
+// DOM only (no re-render → no focus loss). Footer totals stay full-list; the count shows X / Y.
+window._cloF = window._cloF || {};
+function _cloLive(dept){
+  const f = window._cloF[dept] = {
+    b: (document.getElementById('clo-f-b-'+dept)?.value || '').trim().toLowerCase(),
+    c: (document.getElementById('clo-f-c-'+dept)?.value || '').trim().toLowerCase(),
+    s: (document.getElementById('clo-f-s-'+dept)?.value || '')
+  };
+  let shown = 0, total = 0;
+  document.querySelectorAll('#clo-tbl-'+dept+' tr.clo-row').forEach(row=>{
+    total++;
+    const ok = (!f.b || (row.dataset.b||'').includes(f.b))
+            && (!f.c || (row.dataset.c||'').includes(f.c))
+            && (!f.s || row.dataset.s === f.s);
+    row.style.display = ok ? '' : 'none';
+    if(ok) shown++;
+  });
+  const cnt = document.getElementById('clo-count-'+dept);
+  if(cnt) cnt.textContent = (f.b||f.c||f.s) ? `Showing ${shown} / ${total}` : `${total} batch${total!==1?'es':''}`;
+}
+function _cloClear(dept){
+  ['clo-f-b-','clo-f-c-','clo-f-s-'].forEach(p=>{ const el=document.getElementById(p+dept); if(el) el.value=''; });
+  _cloLive(dept);
+}
 function _dprOvrGross(bn){
   const o = state.grossOverrides && state.grossOverrides[bn];
   if(!o) return null;
@@ -4925,12 +4951,20 @@ function renderDeptScan(dept){
   // v44J #6: closure list filtered to batches with activity at THIS dept (scan-in OR scan-out OR
   // wastage). inCount/outCount use state.scans exactly as the row math below — so hiding all-zero
   // rows changes NO displayed number and NO close-action logic; it only removes the clutter rows.
-  const _clo = activeBatches.map(b=>{
-    const inCount  = state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='in').length;
-    const outCount = state.scans.filter(s=>s.batchNumber===b.batchNumber&&s.dept===dept&&s.type==='out').length;
+  // v49ZE (Ishan, post-v49ZD review): the closure list must use the SAME cumulative-presence rule as
+  // the wastage dropdown above — the old windowed state.scans counts hid every batch whose dept scans
+  // predated the local scan window (only 26Z077 listed at PI while 72 batches sat In-Dept), and would
+  // have mis-stated the balance test for old batches. Membership, box counts, the balance/unaccounted
+  // math and the footer totals now all use _deptInCount/_deptOutCount (cumulative summary first,
+  // windowed fallback — defined above). Stage-CLOSED batches remain listed with their ✅ Closed badge
+  // (unlike the dropdown, which drops them once closed) so closure history stays visible here.
+  const _clo = getTrkMonthBatches().filter(b=>!b.deleted&&b.batchNumber).map(b=>{
+    const inCount  = _deptInCount(b.batchNumber);
+    const outCount = _deptOutCount(b.batchNumber);
     const w = getTotalWastage(b.batchNumber,dept);
     return {b,inCount,outCount,w};
-  }).filter(r=>r.inCount>0||r.outCount>0||r.w.total>0);
+  }).filter(r=>r.inCount>0||r.outCount>0||r.w.total>0)
+    .sort((a,b)=>(a.b.batchNumber||'').localeCompare(b.b.batchNumber||''));
   // v44K #7: Recent-scans server-side filter (date range / batch / IN-OUT) for Printing,
   // Print Inspection and Packing. Default (no filter) still shows the latest 30 from state.scans.
   const _useRsFilter = (dept==='aim'||dept==='printing'||dept==='pi'||dept==='packing'); // v45T #2.2: AIM gets the same filter bar
@@ -5100,7 +5134,16 @@ function renderDeptScan(dept){
   <div class="card mb-16">
     <div class="card-title">✅ Batch Stage Closure</div>
     <div class="text-sm text-muted mb-12">Close a batch at this stage once all boxes have been scanned OUT.</div>
-    <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table>
+    <div class="flex gap-8 mb-8" style="flex-wrap:wrap;align-items:center">
+      <input id="clo-f-b-${dept}" placeholder="Batch…" value="${((window._cloF[dept]||{}).b||'').replace(/"/g,'&quot;')}" oninput="_cloLive('${dept}')" style="width:130px;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
+      <input id="clo-f-c-${dept}" placeholder="Customer…" value="${((window._cloF[dept]||{}).c||'').replace(/"/g,'&quot;')}" oninput="_cloLive('${dept}')" style="width:170px;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
+      <select id="clo-f-s-${dept}" onchange="_cloLive('${dept}')" style="padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
+        ${(()=>{const cur=(window._cloF[dept]||{}).s||'';return [['','All statuses'],['ready','Ready to Close'],['unacc','Boxes unaccounted'],['over','Over-scanned'],['noscan','No scans'],['closed','Closed']].map(([v,l])=>`<option value="${v}"${cur===v?' selected':''}>${l}</option>`).join('');})()}
+      </select>
+      <button class="btn btn-sm btn-secondary" onclick="_cloClear('${dept}')">✕ Clear</button>
+      <span id="clo-count-${dept}" class="text-sm text-muted" style="margin-left:auto">${_clo.length} batch${_clo.length!==1?'es':''}</span>
+    </div>
+    <div class="tbl-wrap" style="max-height:420px;overflow:auto"><table id="clo-tbl-${dept}">
       <thead style="position:sticky;top:0;z-index:3;background:var(--surface2)"><tr><th>Batch</th><th>Customer</th><th>Scan IN</th><th>Scan OUT</th><th>A-Grade</th><th>Wastage</th><th>Status</th><th>Action</th></tr></thead>
       <tbody>
       ${_clo.map(({b,inCount,outCount,w})=>{
@@ -5120,7 +5163,14 @@ function renderDeptScan(dept){
         const canClose=balanced&&!closed&&(currentDept==='admin'||balanced);
         const balanceShortfall=inCount-accountedBoxes; // positive = unaccounted boxes remain
         const alerts=state.alerts.filter(a=>a.batchNumber===b.batchNumber&&a.dept===dept&&!_isRetired(a.batchNumber)).length;
-        return `<tr>
+        // v49ZF: status key + data attrs for the filter bar; build-time display honours the
+        // persisted filter so the 30s sync re-render doesn't reset the view mid-use.
+        const _sk = closed?'closed' : inCount===0?'noscan' : balanced?'ready' : (balanceShortfall>0?'unacc':'over');
+        const _cf = window._cloF[dept]||{};
+        const _vis = (!_cf.b || (b.batchNumber||'').toLowerCase().includes(_cf.b))
+                  && (!_cf.c || (b.customer||'').toLowerCase().includes(_cf.c))
+                  && (!_cf.s || _sk === _cf.s);
+        return `<tr class="clo-row" data-b="${(b.batchNumber||'').toLowerCase()}" data-c="${(b.customer||'').toLowerCase().replace(/"/g,'&quot;')}" data-s="${_sk}"${_vis?'':' style="display:none"'}>
           <td class="td-bold td-mono">${b.batchNumber}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
           <td class="text-sm">${b.customer||'-'}</td>
           <td class="td-mono">${inCount} <span class="text-muted">(${fmt(inQty)}L)</span></td>
