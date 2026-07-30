@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49ZJ';
+const APP_BUILD = 'v49ZK';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -7398,6 +7398,57 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
   }
 });
 
+// v49ZK (confirmed by Ishan — invoice 1968: expected 9 vs 27 physical boxes, 18+9):
+// For a MULTI-batch invoice, invoices_received.total_boxes is stamped from ONE fulfilled
+// invoice_request (the v44O "authoritative boxes" rule predates multi-request invoices), so the
+// scan-out over-count gate cut off after the first batch's worth — the second batch could never
+// scan out. The per-batch truth lives in the v48R attribution engine: overlay the EXPECTED box
+// count from clean alloc rows at READ time (pending-scan-out + invoice details). Boxes per alloc
+// line = recorded boxes (U_NO_BOXES) when present, else ceil(qty ÷ pack size of that batch) — the
+// SAME derivation _dispatchQtyBoxes already applies at dispatch, so expected and dispatched agree.
+// Overlay ONLY when every attributed line resolves and none needs manual allocation; otherwise the
+// stored value stands unchanged. Single-batch invoices are never touched. Also stamps
+// row.alloc_boxes = { batch: boxes } so the scan-out modal can show the per-batch expectation.
+async function _mbAllocExpected(rows) {
+  try {
+    const multi = (rows || []).filter(r => r && String(r.batch_number || '').split(/[\s,]+/).filter(Boolean).length >= 2);
+    if (!multi.length) return;
+    const ids = multi.map(r => r.id);
+    let allocs;
+    if (pgPool) {
+      allocs = (await pgPool.query(
+        `SELECT invoice_id, batch_number, qty_lakhs, boxes, status FROM invoice_batch_alloc WHERE invoice_id = ANY($1)`, [ids])).rows;
+    } else {
+      const ph = ids.map(() => '?').join(',');
+      allocs = db.prepare(`SELECT invoice_id, batch_number, qty_lakhs, boxes, status FROM invoice_batch_alloc WHERE invoice_id IN (${ph})`).all(...ids);
+    }
+    if (!allocs || !allocs.length) return;
+    const st = await getPlanningStateAsync().catch(() => null);
+    const sizeByBatch = {};
+    for (const o of ((st && st.orders) || [])) if (o && o.batchNumber && !o.deleted) sizeByBatch[o.batchNumber] = String(o.size || '');
+    const byInv = {};
+    for (const a of allocs) (byInv[a.invoice_id] = byInv[a.invoice_id] || []).push(a);
+    for (const row of multi) {
+      const list = byInv[row.id];
+      if (!list || !list.length) continue;
+      let ok = true, sum = 0; const perBatch = {};
+      for (const a of list) {
+        if (a.status === 'ignored') continue;                       // zero-qty lines (v48T) contribute nothing
+        if (a.status !== 'attributed' || !a.batch_number) { ok = false; break; }  // manual queue → stored value stands
+        let bx = parseInt(a.boxes, 10) || 0;
+        if (!(bx > 0)) {
+          const ps = _V44ZJ_PACK_SIZES[sizeByBatch[a.batch_number]] || 0;
+          const q = parseFloat(a.qty_lakhs) || 0;
+          if (q > 0 && ps > 0) bx = Math.ceil(q / ps);              // same rule as _dispatchQtyBoxes
+          else { ok = false; break; }                                // size unknown → cannot derive → no overlay
+        }
+        sum += bx; perBatch[a.batch_number] = (perBatch[a.batch_number] || 0) + bx;
+      }
+      if (ok && sum > 0) { row.total_boxes = sum; row.alloc_boxes = perBatch; }
+    }
+  } catch (e) { console.warn('[v49ZK] alloc expected overlay:', e && e.message); }
+}
+
 // GET /api/invoice/pending-scan-out — list invoices ready for the Scan Out
 // activity. Returns invoices_received where dispatch_status='pending' and
 // either source='sunloc' or (source='direct_sap' AND admin_approved_at IS NOT NULL).
@@ -7426,6 +7477,7 @@ app.get('/api/invoice/pending-scan-out', async (req, res) => {
          LIMIT ?`
       ).all(limit);
     }
+    await _mbAllocExpected(rows);   // v49ZK: multi-batch expected-boxes overlay (single-batch untouched)
     // v40 Phase 18.5: enrich each invoice with truck_number looked up from
     // dispatch_plans by batch_number. Falls back to null if no plan found.
     const batchNumbers = [...new Set(rows.map(r => r.batch_number).filter(Boolean))];
@@ -7482,6 +7534,7 @@ app.get('/api/invoice/:id/details', async (req, res) => {
       row = db.prepare(`SELECT * FROM invoices_received WHERE id=?`).get(id);
     }
     if (!row) return res.status(404).json({ ok: false, error: 'invoice not found' });
+    await _mbAllocExpected([row]);   // v49ZK: corrected expected boxes in the detail view too
     // Parse the SAP payload — payload_json holds the full SAP Invoice response
     let payload = {};
     try {

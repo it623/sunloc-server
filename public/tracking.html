@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49ZJ</title>
+<title>Sunloc Tracking Suite v1.0 · build v49ZK</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZJ</p>
+      <p>Tracking Suite v1.0 · build v49ZK</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZJ</p>
+      <p>Tracking Suite v1.0 · build v49ZK</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -7812,7 +7812,7 @@ function _v39_buildScanOutModalBody() {
         <div style="color:var(--text3)">DocEntry:</div><div style="font-family:var(--mono)">${inv.sap_doc_entry}</div>
         <div style="color:var(--text3)">Customer:</div><div style="font-weight:600">${inv.customer || '—'}</div>
         <div style="color:var(--text3)">Batch:</div><div style="font-family:var(--mono)">${inv.batch_number}</div>
-        <div style="color:var(--text3)">Expected:</div><div style="font-weight:700">${inv.total_boxes || 0} boxes</div>
+        <div style="color:var(--text3)">Expected:</div><div style="font-weight:700">${inv.total_boxes || 0} boxes${inv.alloc_boxes?` <span style="font-weight:400;font-size:11px;color:var(--text3)" title="v49ZK: per-batch expectation from the invoice's line attribution — scan all of them">(${Object.entries(inv.alloc_boxes).map(([b,n])=>`${b} — ${n}`).join(' · ')})</span>`:''}</div>
       </div>
     </div>
     <div style="margin-bottom:12px">
