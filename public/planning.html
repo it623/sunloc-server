@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v49ZK</p>
+      <p>Planning Suite v3.0 · build v50A</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -562,6 +562,7 @@ input[type="file"] { display:none; }
     <div class="nav-item" id="nav-audit-log" style="display:none" onclick="navigate('audit-log')"><span class="icon">📋</span> Audit Log</div>
     <div class="nav-item" id="nav-admin-users" style="display:none" onclick="navigate('admin-users')"><span class="icon">👥</span> Admin · Users</div>
     <div class="nav-item" id="nav-data-integrity" style="display:none" onclick="navigate('data-integrity')"><span class="icon">🩺</span> Data Integrity</div>
+    <div class="nav-item" id="nav-access-control" style="display:none" onclick="navigate('access-control')"><span class="icon">🛡️</span> Access Control</div>
     <div class="nav-item" onclick="navigate('settings')"><span class="icon">⚙️</span> Settings</div>
   </div>
 
@@ -3379,6 +3380,7 @@ function _renderImmediate() {
     'audit-log': () => { if(typeof renderAuditLog==='function') renderAuditLog(); },
     'admin-users': () => { if(typeof renderAdminUsers==='function') renderAdminUsers(); },  // v40 P18.16
     'data-integrity': () => { if(typeof renderDataIntegrity==='function') renderDataIntegrity(); },  // v40 P18.17
+    'access-control': () => { if(typeof renderAccessControl==='function') renderAccessControl(); },  // v50
     'settings': renderSettings,
   };
   const titles = {
@@ -3401,6 +3403,7 @@ function _renderImmediate() {
     'sap-config':'SAP Configuration (Admin)',
     'admin-users':'Admin · User Management',
     'data-integrity':'Data Integrity Dashboard',
+    'access-control':'Access Control (Admin)',
     'settings':'Settings',
   };
   document.getElementById('page-title').textContent = titles[state.currentPage] || '';
@@ -14957,11 +14960,18 @@ async function doLogin() {
   try {
     const r = await fetch(serverUrl + '/api/auth/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ username: role, pin, app: 'planning' }),
+      body: JSON.stringify({ username: role, pin, app: 'planning', deviceToken: (localStorage.getItem('sunloc_device_token')||'') }),
       signal: AbortSignal.timeout(5000)
     });
-    const j = await r.json();
+    let j = await r.json();
+    if (j.deviceToken) { try { localStorage.setItem('sunloc_device_token', j.deviceToken); } catch(e){} }
+    if (!j.ok && j.held && j.approvalId) {
+      // v50 access gate: held for live admin approval (enforce mode) — poll until resolved.
+      j = await _acHoldPollPlan(j, errEl);
+      if (!j) return;
+    }
     if (!j.ok) { errEl.textContent = j.error || 'Invalid PIN'; return; }
+    if (j.deviceToken) { try { localStorage.setItem('sunloc_device_token', j.deviceToken); } catch(e){} }
     currentUser = { username: j.username, role: j.role, token: j.token };
     sessionStorage.setItem('plan_session', JSON.stringify(currentUser));
     applyRoleRestrictions();
@@ -14988,6 +14998,30 @@ async function doLogin() {
   }
 }
 
+// v50: held-login poller (async variant for planning's await-style doLogin). Resolves with the
+// issued-session JSON on approval, or null after showing denial/timeout in errEl.
+async function _acHoldPollPlan(held, errEl){
+  if (held.deviceToken) { try { localStorage.setItem('sunloc_device_token', held.deviceToken); } catch(e){} }
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
+  errEl.textContent = '⏳ Awaiting admin approval — approve this device in Planning → Access Control on an admin session. This screen continues automatically.';
+  const started = Date.now();
+  while (Date.now() - started < 15.5*60*1000) {
+    await new Promise(res => setTimeout(res, 5000));
+    try {
+      const r = await fetch(serverUrl + '/api/access/login-status', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ approvalId: held.approvalId, deviceToken: held.deviceToken || (localStorage.getItem('sunloc_device_token')||'') }),
+        signal: AbortSignal.timeout(8000)
+      });
+      const s = await r.json();
+      if (s.ok) return s;
+      if (s.denied) { errEl.textContent = s.error || 'Access denied by administrator.'; return null; }
+    } catch(e) { /* keep polling */ }
+  }
+  errEl.textContent = 'Approval timed out (15 min). Please try logging in again.';
+  return null;
+}
+
 function applyRoleRestrictions() {
   if (!currentUser) return;
   const allowed = PLAN_ROLE_NAV[currentUser.role];
@@ -15003,6 +15037,9 @@ function applyRoleRestrictions() {
   // v40 P18.17: Show Data Integrity nav only for admin
   const integrityNav = document.getElementById('nav-data-integrity');
   if (integrityNav) integrityNav.style.display = currentUser.role === 'admin' ? '' : 'none';
+  // v50: Access Control nav — admin only
+  const acNav = document.getElementById('nav-access-control');
+  if (acNav) acNav.style.display = currentUser.role === 'admin' ? '' : 'none';
   if (!allowed) {
     // Admin or unrecognised role — show all nav items
     document.querySelectorAll('.nav-item').forEach(el => el.style.display = '');
@@ -16111,6 +16148,149 @@ async function _v40_runIntegrityScanNow() {
 }
 
 // ─── end v40 P18.17: Data Integrity Dashboard ───────────────────
+
+// ═══ v50 ACCESS CONTROL TAB (Admin) ═══════════════════════════════
+// The single surface for the in-app access gate: live held-login queue (Approve once / Approve
+// always / Deny), self-populating device register (rename / approve / revoke / deny), and the
+// trusted-sites (IP) editor. Auto-refreshes every 10s while open. All verdicts land in audit_log.
+let _acPollTimer = null;
+function renderAccessControl() {
+  if (currentUser?.role !== 'admin') { navigate('production'); return; }
+  document.getElementById('topbar-actions').innerHTML = `
+    <button class="btn btn-secondary btn-sm" onclick="loadAccessControl()">🔄 Refresh</button>`;
+  document.getElementById('content').innerHTML = `
+    <div id="ac-mode-banner"></div>
+    <div class="card">
+      <div class="card-title">⏳ Pending Login Approvals</div>
+      <div id="ac-pending"><div style="color:var(--text3);padding:16px">Loading...</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">💻 Device Register</div>
+      <div style="font-size:12px;color:var(--text3);margin-bottom:8px">Every login registers its browser/device here automatically. Approve the ones that should work off-site; Revoke returns a device to pending (it will re-queue on its next off-site login); Deny refuses it permanently.</div>
+      <div id="ac-devices"><div style="color:var(--text3);padding:16px">Loading...</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">📍 Trusted Sites (on-site IPs — logins from these are always free)</div>
+      <div id="ac-sites"><div style="color:var(--text3);padding:16px">Loading...</div></div>
+      <div class="form-row cols-3" style="margin-top:10px;align-items:end">
+        <div class="form-group"><label>Label</label><input type="text" id="ac-site-label" placeholder="e.g. Mumbai Office"></div>
+        <div class="form-group"><label>IP or CIDR</label><input type="text" id="ac-site-cidr" placeholder="a.b.c.d or a.b.c.d/29"></div>
+        <div class="form-group"><button class="btn btn-primary btn-sm" onclick="acSiteAdd()">➕ Add Site</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">🕘 Recent Decisions</div>
+      <div id="ac-recent"><div style="color:var(--text3);padding:16px">Loading...</div></div>
+    </div>`;
+  loadAccessControl();
+  if (_acPollTimer) clearInterval(_acPollTimer);
+  _acPollTimer = setInterval(() => {
+    if (state.currentPage !== 'access-control') { clearInterval(_acPollTimer); _acPollTimer = null; return; }
+    loadAccessControl();
+  }, 10000);
+}
+
+function _acFmtTs(t){ if(!t) return '—'; try{ const d=new Date(t); return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});}catch(e){return String(t);} }
+function _acStatusChip(st){
+  const m = { approved:['#16a34a','APPROVED'], pending:['#d97706','PENDING'], denied:['#dc2626','DENIED'],
+              approved_once:['#16a34a','APPROVED ONCE'], approved_always:['#16a34a','APPROVED ALWAYS'],
+              expired:['#6b7280','EXPIRED'], used:['#2563eb','USED'] };
+  const [c,t] = m[st] || ['#6b7280', String(st||'?').toUpperCase()];
+  return `<span style="display:inline-block;padding:1px 8px;border-radius:10px;font-size:10px;font-weight:700;color:#fff;background:${c}">${t}</span>`;
+}
+
+async function loadAccessControl() {
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
+  if (!serverUrl || !currentUser?.token) return;
+  try {
+    const r = await fetch(`${serverUrl}/api/access/state`, { headers:{'x-session-token': currentUser.token}, signal: AbortSignal.timeout(8000) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'load failed');
+    window._acState = j;
+    const banner = document.getElementById('ac-mode-banner');
+    if (banner) banner.innerHTML = j.mode === 'enforce'
+      ? `<div class="alert alert-warning" style="margin-bottom:12px"><b>🔒 ENFORCING</b> — off-site logins from unapproved devices are held for your approval below (15-min timeout). On-site (trusted IPs) and approved devices log in freely.</div>`
+      : `<div class="alert alert-info" style="margin-bottom:12px"><b>👁️ MONITOR ONLY</b> — nothing is blocked. Every login is registered and audited below so the device list self-populates. Once you have approved the devices that belong, IT flips <code>ACCESS_GATE_MODE=enforce</code> on Railway and the IP + device rules activate together.</div>`;
+    const pe = document.getElementById('ac-pending');
+    if (pe) pe.innerHTML = (j.pending||[]).length === 0
+      ? `<div style="color:var(--text3);padding:12px">No pending requests${j.mode!=='enforce' ? ' (queue is active only in enforce mode)' : ''}.</div>`
+      : `<div class="tbl-wrap"><table><thead><tr><th>Requested</th><th>User</th><th>App</th><th>Device</th><th>IP</th><th style="min-width:250px">Decision</th></tr></thead><tbody>` +
+        j.pending.map(p => {
+          const dev = (j.devices||[]).find(d => d.id === p.device_id);
+          return `<tr>
+            <td>${_acFmtTs(p.requested_at)}</td>
+            <td class="td-bold">${p.username}</td>
+            <td>${p.app}</td>
+            <td class="td-mono" title="${p.device_id}">${dev?.label || p.device_id.slice(0,8)}</td>
+            <td class="td-mono">${p.ip||'—'}</td>
+            <td>
+              <button class="btn btn-sm" style="background:#16a34a;color:#fff" onclick="acApprove('${p.id}',0)">✓ Once</button>
+              <button class="btn btn-sm" style="background:#15803d;color:#fff" onclick="acApprove('${p.id}',1)">✓✓ Always</button>
+              <button class="btn btn-sm" style="background:#dc2626;color:#fff" onclick="acDeny('${p.id}')">✗ Deny</button>
+            </td></tr>`;
+        }).join('') + `</tbody></table></div>`;
+    const de = document.getElementById('ac-devices');
+    if (de) de.innerHTML = (j.devices||[]).length === 0
+      ? `<div style="color:var(--text3);padding:12px">No devices registered yet — the register fills automatically as people log in.</div>`
+      : `<div class="tbl-wrap tbl-sticky" style="max-height:360px;overflow:auto"><table><thead><tr><th>Label</th><th>Status</th><th>Last User</th><th>App</th><th>Last Seen</th><th>Last IP</th><th style="min-width:230px">Actions</th></tr></thead><tbody>` +
+        j.devices.map(d => `<tr>
+            <td><input type="text" value="${(d.label||'').replace(/"/g,'&quot;')}" placeholder="${d.id.slice(0,8)}…" style="width:130px;font-size:12px" onchange="acDeviceAction('${d.id}','rename',this.value)"></td>
+            <td>${_acStatusChip(d.status)}</td>
+            <td>${d.username||'—'}</td>
+            <td>${d.app||'—'}</td>
+            <td>${_acFmtTs(d.last_seen)}</td>
+            <td class="td-mono">${d.last_ip||'—'}</td>
+            <td>
+              ${d.status!=='approved'?`<button class="btn btn-sm" style="background:#16a34a;color:#fff" onclick="acDeviceAction('${d.id}','approve')">✓ Approve</button>`:''}
+              ${d.status==='approved'?`<button class="btn btn-sm btn-ghost" onclick="acDeviceAction('${d.id}','revoke')">↩ Revoke</button>`:''}
+              ${d.status!=='denied'?`<button class="btn btn-sm" style="background:#dc2626;color:#fff" onclick="acDeviceAction('${d.id}','deny')">✗ Deny</button>`:`<button class="btn btn-sm btn-ghost" onclick="acDeviceAction('${d.id}','revoke')">↩ Un-deny</button>`}
+            </td></tr>`).join('') + `</tbody></table></div>`;
+    const se = document.getElementById('ac-sites');
+    if (se) se.innerHTML = `<div class="tbl-wrap"><table><thead><tr><th>Label</th><th>IP / CIDR</th><th>Added</th><th></th></tr></thead><tbody>` +
+      (j.sites||[]).map(x => `<tr><td class="td-bold">${x.label}</td><td class="td-mono">${x.cidr}</td><td>${_acFmtTs(x.created_at)}</td>
+        <td><button class="btn btn-sm" style="background:#dc2626;color:#fff" onclick="acSiteDelete('${x.id}','${x.label.replace(/'/g,'')}')">🗑</button></td></tr>`).join('') +
+      `</tbody></table></div>`;
+    const re = document.getElementById('ac-recent');
+    if (re) re.innerHTML = (j.recent||[]).length === 0
+      ? `<div style="color:var(--text3);padding:12px">No decisions yet.</div>`
+      : `<div class="tbl-wrap"><table><thead><tr><th>Requested</th><th>User</th><th>App</th><th>IP</th><th>Outcome</th><th>By</th><th>At</th></tr></thead><tbody>` +
+        j.recent.map(p => `<tr><td>${_acFmtTs(p.requested_at)}</td><td>${p.username}</td><td>${p.app}</td><td class="td-mono">${p.ip||'—'}</td><td>${_acStatusChip(p.status)}</td><td>${p.resolved_by||'—'}</td><td>${_acFmtTs(p.resolved_at)}</td></tr>`).join('') +
+        `</tbody></table></div>`;
+  } catch(e) {
+    const pe = document.getElementById('ac-pending');
+    if (pe) pe.innerHTML = `<div style="color:var(--accent4);padding:12px">Could not load: ${e.message}</div>`;
+  }
+}
+
+async function _acPost(path, body) {
+  let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {} if(!serverUrl && window.location.hostname !== 'localhost') serverUrl = window.location.origin;
+  const r = await fetch(serverUrl + path, {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(Object.assign({ token: currentUser.token }, body)),
+    signal: AbortSignal.timeout(8000)
+  });
+  const j = await r.json();
+  if (!j.ok) { alert('❌ ' + (j.error || 'Action failed')); return false; }
+  return true;
+}
+async function acApprove(id, always){ if (await _acPost('/api/access/approve', { approvalId:id, always })) loadAccessControl(); }
+async function acDeny(id){ if (await _acPost('/api/access/deny', { approvalId:id })) loadAccessControl(); }
+async function acDeviceAction(deviceId, action, label){
+  if (action==='deny' && !confirm('Permanently deny this device? It will be refused at login until un-denied.')) { loadAccessControl(); return; }
+  if (await _acPost('/api/access/device', { deviceId, action, label })) loadAccessControl();
+}
+async function acSiteAdd(){
+  const label = document.getElementById('ac-site-label')?.value.trim();
+  const cidr  = document.getElementById('ac-site-cidr')?.value.trim();
+  if (!label || !cidr) { alert('Enter both a label and an IP/CIDR.'); return; }
+  if (await _acPost('/api/access/site', { action:'add', label, cidr })) loadAccessControl();
+}
+async function acSiteDelete(id, label){
+  if (!confirm(`Remove trusted site "${label}"? Logins from that IP will then need an approved device (once enforcement is on).`)) return;
+  if (await _acPost('/api/access/site', { action:'delete', id })) loadAccessControl();
+}
+// ─── end v50 Access Control tab ─────────────────────────────────
+
 
 // Add audit-log to router
 const _origRender = render;

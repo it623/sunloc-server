@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v49ZK';
+const APP_BUILD = 'v50A';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1332,6 +1332,48 @@ const MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_exu_status ON excess_unprint_requests(status);
     CREATE INDEX IF NOT EXISTS idx_exu_batch ON excess_unprint_requests(batch_number);`
   },
+  {
+    // v50 ACCESS CONTROL (confirmed by Ishan; agreed A+B design, Layer-2 in-app gate).
+    // trusted_sites: seeded with Alwar (2 WANs) + Delhi static IPs; self-service editable from the
+    // Planning → Access Control tab. devices: self-populating register — every login upserts the
+    // device; status is TEXT 'pending'|'approved'|'denied'. login_approvals: the held-login queue
+    // (enforce mode only). Statuses are TEXT enums; no boolean columns (house rule: never boolean
+    // literals in SQL). Tables are also created by the PG bootstrap below, so this is SQLite's path.
+    version: 55,
+    name: 'access_control',
+    sql: `CREATE TABLE IF NOT EXISTS trusted_sites (
+      id TEXT PRIMARY KEY,
+      label TEXT NOT NULL,
+      cidr TEXT NOT NULL UNIQUE,
+      created_at TEXT NOT NULL DEFAULT (datetime('now'))
+    );
+    CREATE TABLE IF NOT EXISTS access_devices (
+      id TEXT PRIMARY KEY,
+      label TEXT,
+      username TEXT,
+      app TEXT,
+      status TEXT NOT NULL DEFAULT 'pending',
+      first_seen TEXT NOT NULL DEFAULT (datetime('now')),
+      last_seen TEXT,
+      last_ip TEXT,
+      approved_by TEXT,
+      approved_at TEXT
+    );
+    CREATE TABLE IF NOT EXISTS login_approvals (
+      id TEXT PRIMARY KEY,
+      device_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      role TEXT NOT NULL,
+      app TEXT NOT NULL,
+      ip TEXT,
+      requested_at TEXT NOT NULL DEFAULT (datetime('now')),
+      status TEXT NOT NULL DEFAULT 'pending',
+      resolved_by TEXT,
+      resolved_at TEXT
+    );
+    CREATE INDEX IF NOT EXISTS idx_la_status ON login_approvals(status);
+    CREATE INDEX IF NOT EXISTS idx_la_device ON login_approvals(device_id);`
+  },
 ];
 
 function runMigrations() {
@@ -1969,6 +2011,47 @@ async function ensurePostgresTables() {
       )
     `);
 
+    // v50 ACCESS CONTROL — PG copies of the migration-55 tables (idempotent; SQLite gets them via
+    // migration 55). TEXT-status enums, no boolean columns.
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS trusted_sites (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        cidr TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS access_devices (
+        id TEXT PRIMARY KEY,
+        label TEXT,
+        username TEXT,
+        app TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        first_seen TEXT NOT NULL DEFAULT NOW()::TEXT,
+        last_seen TEXT,
+        last_ip TEXT,
+        approved_by TEXT,
+        approved_at TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS login_approvals (
+        id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        role TEXT NOT NULL,
+        app TEXT NOT NULL,
+        ip TEXT,
+        requested_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        resolved_by TEXT,
+        resolved_at TEXT
+      )
+    `);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_la_status ON login_approvals(status)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_la_device ON login_approvals(device_id)`);
+
     // temp_batches
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS temp_batches (
@@ -2365,6 +2448,47 @@ async function ensurePostgresTables() {
         ts TEXT NOT NULL DEFAULT NOW()::TEXT
       )
     `);
+
+    // v50 ACCESS CONTROL — PG copies of the migration-55 tables (idempotent; SQLite gets them via
+    // migration 55). TEXT-status enums, no boolean columns.
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS trusted_sites (
+        id TEXT PRIMARY KEY,
+        label TEXT NOT NULL,
+        cidr TEXT NOT NULL UNIQUE,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS access_devices (
+        id TEXT PRIMARY KEY,
+        label TEXT,
+        username TEXT,
+        app TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        first_seen TEXT NOT NULL DEFAULT NOW()::TEXT,
+        last_seen TEXT,
+        last_ip TEXT,
+        approved_by TEXT,
+        approved_at TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS login_approvals (
+        id TEXT PRIMARY KEY,
+        device_id TEXT NOT NULL,
+        username TEXT NOT NULL,
+        role TEXT NOT NULL,
+        app TEXT NOT NULL,
+        ip TEXT,
+        requested_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        status TEXT NOT NULL DEFAULT 'pending',
+        resolved_by TEXT,
+        resolved_at TEXT
+      )
+    `);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_la_status ON login_approvals(status)`);
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_la_device ON login_approvals(device_id)`);
 
     // temp_batches
     // v37H: schema now matches SQLite (was missing colour/pc_code/colour_confirmed)
@@ -12409,6 +12533,185 @@ function logAudit(username, role, app, action, details, ip) {
   } catch(e) { console.error('Audit log error:', e.message); }
 }
 
+// ═══════════════════════════════════════════════════════════════
+// v50 ACCESS CONTROL (confirmed by Ishan — agreed Layer-2 in-app gate of the A+B design).
+// Rule: on-site (trusted IP) → free; approved device → free; unknown device → held for live admin
+// approval (Approve once / Approve always / Deny) in Planning → Access Control; denied → refused.
+// MODES: 'monitor' (DEFAULT — every verdict is computed, audited and the device register
+// self-populates, but NOTHING is ever blocked; week-1 rollout per Ishan) | 'enforce' (env flip once
+// the approved-device list is curated; IP rule + device rule activate together).
+// The gate wraps /api/auth/login ONLY (both duplicate route copies); sessions/health/static
+// assets are untouched. Gate errors FAIL OPEN (a broken gate must never lock the plant out).
+// ═══════════════════════════════════════════════════════════════
+const ACCESS_GATE_MODE   = String(process.env.ACCESS_GATE_MODE || 'monitor').toLowerCase() === 'enforce' ? 'enforce' : 'monitor';
+const SUNLOC_EDGE_SECRET = process.env.SUNLOC_EDGE_SECRET || '';   // dormant unless IT sets it (Cloudflare Transform Rule header)
+const SUNLOC_DEVICE_SECRET = process.env.SUNLOC_DEVICE_SECRET || 'sunloc_v50_device_hmac_default'; // HMAC key for device tokens
+const AC_HELD_TIMEOUT_MS = 15 * 60 * 1000;   // held login expires after 15 minutes (agreed default)
+
+// Client IP: CF-Connecting-IP is trusted ONLY when the edge secret is configured AND presented
+// (i.e. the request provably came through Cloudflare). Otherwise first X-Forwarded-For hop
+// (Railway's proxy prepends the client), falling back to the socket. ::ffff: v4-mapped prefix stripped.
+function _acClientIp(req) {
+  try {
+    if (SUNLOC_EDGE_SECRET && req.headers['x-sunloc-edge'] === SUNLOC_EDGE_SECRET && req.headers['cf-connecting-ip']) {
+      return String(req.headers['cf-connecting-ip']).trim().replace(/^::ffff:/i, '');
+    }
+    const xff = String(req.headers['x-forwarded-for'] || '').split(',')[0].trim();
+    return (xff || req.ip || req.socket?.remoteAddress || '').replace(/^::ffff:/i, '');
+  } catch (e) { return ''; }
+}
+
+function _acIp4(s) {
+  s = String(s || '').replace(/^::ffff:/i, '').trim();
+  const m = s.match(/^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/);
+  if (!m) return null;
+  let v = 0;
+  for (let k = 1; k <= 4; k++) { const o = parseInt(m[k], 10); if (o > 255) return null; v = (v * 256) + o; }
+  return v >>> 0;
+}
+// cidr accepts 'a.b.c.d' (treated /32) or 'a.b.c.d/nn'. IPv4 only — both sites are v4 statics.
+function _acIpMatchesCidr(ip, cidr) {
+  const i = _acIp4(ip); if (i === null) return false;
+  const parts = String(cidr || '').trim().split('/');
+  const b = _acIp4(parts[0]); if (b === null) return false;
+  const bits = parts.length > 1 ? parseInt(parts[1], 10) : 32;
+  if (!Number.isFinite(bits) || bits < 0 || bits > 32) return false;
+  if (bits === 0) return true;
+  const mask = (0xFFFFFFFF << (32 - bits)) >>> 0;
+  return ((i & mask) >>> 0) === ((b & mask) >>> 0);
+}
+
+// Trusted-sites cache (60s TTL; invalidated on every editor write) — keeps the 5-conn pool calm.
+let _acSitesCache = null, _acSitesCacheAt = 0;
+async function _acTrustedSites() {
+  if (_acSitesCache && (Date.now() - _acSitesCacheAt) < 60000) return _acSitesCache;
+  let rows;
+  if (pgPool) rows = (await pgPool.query('SELECT id,label,cidr,created_at FROM trusted_sites ORDER BY label ASC')).rows;
+  else rows = db.prepare('SELECT id,label,cidr,created_at FROM trusted_sites ORDER BY label ASC').all();
+  _acSitesCache = rows || []; _acSitesCacheAt = Date.now();
+  return _acSitesCache;
+}
+function _acInvalidateSites() { _acSitesCache = null; _acSitesCacheAt = 0; }
+
+// Seed the two sites' static IPs (Ishan, 31 Jul: Alwar 59.98.151.81 + 103.162.178.74; Delhi
+// 122.161.34.131). ON-CONFLICT no-op — the editor owns the list after first boot.
+async function _acSeedTrustedSites() {
+  const seeds = [
+    ['ac_site_alwar1', 'Alwar Factory — WAN 1', '59.98.151.81'],
+    ['ac_site_alwar2', 'Alwar Factory — WAN 2', '103.162.178.74'],
+    ['ac_site_delhi',  'Delhi Office',          '122.161.34.131'],
+  ];
+  try {
+    for (const [id, label, cidr] of seeds) {
+      if (pgPool) await pgPool.query('INSERT INTO trusted_sites (id,label,cidr) VALUES ($1,$2,$3) ON CONFLICT (cidr) DO NOTHING', [id, label, cidr]);
+      else db.prepare('INSERT INTO trusted_sites (id,label,cidr) VALUES (?,?,?) ON CONFLICT (cidr) DO NOTHING').run(id, label, cidr);
+    }
+    _acInvalidateSites();
+    console.log(`[v50] Access gate: mode=${ACCESS_GATE_MODE}, trusted sites seeded (Alwar x2 + Delhi)`);
+  } catch (e) { console.warn('[v50] trusted_sites seed failed:', e?.message); }
+}
+
+// Device token = '<uuid>.<hmac32>' — HMAC prevents forging an approved device id. Delivered as an
+// HttpOnly cookie AND in the login JSON (client keeps a localStorage backup for scanner browsers
+// that clear cookies). Clearing both simply re-queues the device once.
+function _acSignDevice(id) {
+  return id + '.' + crypto.createHmac('sha256', SUNLOC_DEVICE_SECRET).update(String(id)).digest('hex').slice(0, 32);
+}
+function _acVerifyDevice(token) {
+  try {
+    const s = String(token || ''); const dot = s.lastIndexOf('.');
+    if (dot <= 0) return null;
+    const id = s.slice(0, dot);
+    if (!/^[A-Za-z0-9-]{8,64}$/.test(id)) return null;
+    const want = crypto.createHmac('sha256', SUNLOC_DEVICE_SECRET).update(id).digest('hex').slice(0, 32);
+    const got = s.slice(dot + 1);
+    if (got.length !== want.length) return null;
+    let diff = 0; for (let k = 0; k < want.length; k++) diff |= want.charCodeAt(k) ^ got.charCodeAt(k);
+    return diff === 0 ? id : null;
+  } catch (e) { return null; }
+}
+function _acCookieToken(req) {
+  try {
+    const c = String(req.headers.cookie || '').split(';').map(s => s.trim()).find(s => s.startsWith('sunloc_device='));
+    return c ? decodeURIComponent(c.slice('sunloc_device='.length)) : '';
+  } catch (e) { return ''; }
+}
+function _acSetCookie(res, token) {
+  try { res.setHeader('Set-Cookie', `sunloc_device=${encodeURIComponent(token)}; Path=/; Max-Age=157680000; HttpOnly; SameSite=Lax`); } catch (e) {}
+}
+
+async function _acUpsertDevice(id, username, appName, ip) {
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  if (pgPool) {
+    const r = await pgPool.query('SELECT * FROM access_devices WHERE id=$1', [id]);
+    if (r.rows[0]) {
+      await pgPool.query('UPDATE access_devices SET last_seen=$1, last_ip=$2, username=$3, app=$4 WHERE id=$5', [ts, ip, username, appName, id]);
+      return r.rows[0];
+    }
+    await pgPool.query('INSERT INTO access_devices (id,username,app,status,first_seen,last_seen,last_ip) VALUES ($1,$2,$3,$4,$5,$5,$6) ON CONFLICT (id) DO NOTHING', [id, username, appName, 'pending', ts, ip]);
+    return { id, status: 'pending' };
+  }
+  const row = db.prepare('SELECT * FROM access_devices WHERE id=?').get(id);
+  if (row) {
+    db.prepare('UPDATE access_devices SET last_seen=?, last_ip=?, username=?, app=? WHERE id=?').run(ts, ip, username, appName, id);
+    return row;
+  }
+  db.prepare('INSERT INTO access_devices (id,username,app,status,first_seen,last_seen,last_ip) VALUES (?,?,?,?,?,?,?)').run(id, username, appName, 'pending', ts, ts, ip);
+  return { id, status: 'pending' };
+}
+
+// Create (or refresh) the pending held-login row for a device+user+app. Reuses an existing pending
+// row younger than the timeout so the queue never floods with duplicates while an operator retries.
+async function _acCreateApproval(deviceId, user, appName, ip) {
+  const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  if (pgPool) {
+    const r = await pgPool.query("SELECT id, requested_at FROM login_approvals WHERE device_id=$1 AND username=$2 AND app=$3 AND status='pending' ORDER BY requested_at DESC LIMIT 1", [deviceId, user.username, appName]);
+    if (r.rows[0] && (Date.now() - new Date(r.rows[0].requested_at).getTime()) < AC_HELD_TIMEOUT_MS) return r.rows[0].id;
+    const id = crypto.randomUUID();
+    await pgPool.query('INSERT INTO login_approvals (id,device_id,username,role,app,ip,requested_at,status) VALUES ($1,$2,$3,$4,$5,$6,$7,$8)', [id, deviceId, user.username, user.role, appName, ip, ts, 'pending']);
+    return id;
+  }
+  const row = db.prepare("SELECT id, requested_at FROM login_approvals WHERE device_id=? AND username=? AND app=? AND status='pending' ORDER BY requested_at DESC LIMIT 1").get(deviceId, user.username, appName);
+  if (row && (Date.now() - new Date(row.requested_at).getTime()) < AC_HELD_TIMEOUT_MS) return row.id;
+  const id = crypto.randomUUID();
+  db.prepare('INSERT INTO login_approvals (id,device_id,username,role,app,ip,requested_at,status) VALUES (?,?,?,?,?,?,?,?)').run(id, deviceId, user.username, user.role, appName, ip, ts, 'pending');
+  return id;
+}
+
+// THE GATE. Runs after PIN validation inside /api/auth/login (both route copies). Returns null to
+// continue the normal session issue, or {handled:true} when it has already answered (403/202 —
+// enforce mode only). Every login (both modes) upserts the device register and audits the verdict.
+async function _acGateCheck(req, res, user, appName) {
+  try {
+    const ip = _acClientIp(req);
+    let devId = _acVerifyDevice(req.body?.deviceToken || _acCookieToken(req));
+    let minted = false;
+    if (!devId) { devId = crypto.randomUUID(); minted = true; }
+    const token = _acSignDevice(devId);
+    const dev = await _acUpsertDevice(devId, user.username, appName, ip);
+    const sites = await _acTrustedSites();
+    const onsite = sites.some(s => _acIpMatchesCidr(ip, s.cidr));
+    const status = String(dev?.status || 'pending');
+    const verdict = onsite ? 'onsite' : (status === 'approved' ? 'device' : (status === 'denied' ? 'denied' : 'held'));
+    logAudit(user.username, user.role, appName, 'ACCESS_GATE', `${ACCESS_GATE_MODE} verdict=${verdict} ip=${ip || '?'} device=${devId.slice(0, 8)}${minted ? ' (new)' : ''}`, ip);
+    _acSetCookie(res, token);
+    req._acDeviceToken = token;
+    if (ACCESS_GATE_MODE !== 'enforce') return null;               // MONITOR: never block
+    if (verdict === 'onsite' || verdict === 'device') return null;
+    if (verdict === 'denied') {
+      res.status(403).json({ ok: false, error: 'This device has been denied access. Contact your administrator.', deviceToken: token });
+      return { handled: true };
+    }
+    const approvalId = await _acCreateApproval(devId, user, appName, ip);
+    res.status(202).json({ ok: false, held: true, approvalId, deviceToken: token, error: 'Awaiting admin approval' });
+    return { handled: true };
+  } catch (e) {
+    try { logAudit(user.username, user.role, appName, 'ACCESS_GATE', 'gate-error (failed open): ' + (e?.message || e), ''); } catch (_) {}
+    return null;   // FAIL OPEN — the gate must never lock the plant out
+  }
+}
+
+
 // POST /api/auth/login
 app.post('/api/auth/login', async (req, res) => {
   try {
@@ -12427,6 +12730,10 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(403).json({ ok: false, error: 'Account is disabled. Contact your administrator.' });
     }
     if (user.pin_hash !== hashPin(pin)) return res.status(401).json({ ok: false, error: 'Invalid PIN' });
+    // v50 ACCESS GATE: verdict after credential check. Monitor mode always falls through (register
+    // + audit only); enforce mode may answer 403 (denied device) or 202 (held for admin approval).
+    const _gate = await _acGateCheck(req, res, user, appName);
+    if (_gate && _gate.handled) return;
     const token = generateToken();
     const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T',' ').slice(0,19);
     if (pgPool) {
@@ -12436,7 +12743,7 @@ app.post('/api/auth/login', async (req, res) => {
       db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
     }
     logAudit(user.username, user.role, appName, 'LOGIN', 'Successful login', req.ip);
-    res.json({ ok: true, token, username: user.username, role: user.role });
+    res.json({ ok: true, token, username: user.username, role: user.role, deviceToken: req._acDeviceToken || undefined });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -12455,6 +12762,193 @@ app.get('/api/auth/login-users', async (req, res) => {
       .filter(r => r.is_active !== 0 && r.is_active !== false)
       .map(r => ({ username: r.username, role: r.role }));
     res.json({ ok: true, users });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+
+// ═══ v50 ACCESS CONTROL — API ═══════════════════════════════════
+
+// POST /api/access/login-status — PUBLIC poll for a held login (enforce mode). The caller proves
+// device possession with its signed deviceToken; on approval this endpoint ISSUES the session
+// (mirrors the login success shape) and marks the approval 'used' so approve-once grants exactly
+// one session. Pending rows expire to 'expired' after the 15-minute timeout.
+app.post('/api/access/login-status', async (req, res) => {
+  try {
+    const { approvalId, deviceToken } = req.body || {};
+    const devId = _acVerifyDevice(deviceToken);
+    if (!approvalId || !devId) return res.status(400).json({ ok: false, denied: true, error: 'Invalid request' });
+    let row;
+    if (pgPool) row = (await pgPool.query('SELECT * FROM login_approvals WHERE id=$1', [approvalId])).rows[0];
+    else row = db.prepare('SELECT * FROM login_approvals WHERE id=?').get(approvalId);
+    if (!row || row.device_id !== devId) return res.status(404).json({ ok: false, denied: true, error: 'Approval not found' });
+    if (row.status === 'pending') {
+      if ((Date.now() - new Date(row.requested_at).getTime()) > AC_HELD_TIMEOUT_MS) {
+        const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+        if (pgPool) await pgPool.query("UPDATE login_approvals SET status='expired', resolved_at=$1 WHERE id=$2 AND status='pending'", [ts, approvalId]);
+        else db.prepare("UPDATE login_approvals SET status='expired', resolved_at=? WHERE id=? AND status='pending'").run(ts, approvalId);
+        return res.json({ ok: false, denied: true, error: 'Approval timed out (15 min). Please try logging in again.' });
+      }
+      return res.status(202).json({ ok: false, held: true });
+    }
+    if (row.status === 'denied' || row.status === 'expired') return res.json({ ok: false, denied: true, error: 'Access was not approved.' });
+    if (row.status === 'approved_once' || row.status === 'approved_always') {
+      // Issue the session for the credentialed user captured at request time, then consume the row.
+      const token = generateToken();
+      const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T', ' ').slice(0, 19);
+      let user;
+      if (pgPool) user = (await pgPool.query('SELECT * FROM app_users WHERE username=$1 AND app=$2', [row.username, row.app])).rows[0];
+      else user = db.prepare('SELECT * FROM app_users WHERE username=? AND app=?').get(row.username, row.app);
+      if (!user) return res.json({ ok: false, denied: true, error: 'User no longer exists' });
+      if (pgPool) {
+        await pgPool.query('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES ($1,$2,$3,$4,$5,$6) ON CONFLICT(token) DO NOTHING', [token, user.id, user.username, user.role, row.app, expires]);
+        await pgPool.query("UPDATE login_approvals SET status='used' WHERE id=$1", [approvalId]);
+      } else {
+        db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, row.app, expires);
+        db.prepare("UPDATE login_approvals SET status='used' WHERE id=?").run(approvalId);
+      }
+      logAudit(user.username, user.role, row.app, 'LOGIN', `Successful login (held-approval ${row.status} by ${row.resolved_by || '?'})`, row.ip);
+      return res.json({ ok: true, token, username: user.username, role: user.role, deviceToken });
+    }
+    return res.json({ ok: false, denied: true, error: 'Approval already used. Please log in again.' });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Admin guard: any role==='admin' session (Planning is the home surface, but Track_Admin/DPR_Admin
+// tokens are equally admin). Token via body or x-session-token header.
+function _acAdmin(req) {
+  const token = req.body?.token || req.headers['x-session-token'];
+  const s = verifyToken(token);
+  return (s && s.role === 'admin') ? s : null;
+}
+
+// GET /api/access/state — everything the Access Control tab renders in one call.
+app.get('/api/access/state', async (req, res) => {
+  try {
+    const s = _acAdmin(req);
+    if (!s) return res.status(403).json({ ok: false, error: 'Admin only' });
+    const sites = await _acTrustedSites();
+    let devices, pending, recent;
+    if (pgPool) {
+      devices = (await pgPool.query('SELECT * FROM access_devices ORDER BY last_seen DESC NULLS LAST LIMIT 500')).rows;
+      pending = (await pgPool.query("SELECT * FROM login_approvals WHERE status='pending' ORDER BY requested_at DESC LIMIT 100")).rows;
+      recent  = (await pgPool.query("SELECT * FROM login_approvals WHERE status<>'pending' ORDER BY COALESCE(resolved_at, requested_at) DESC LIMIT 25")).rows;
+    } else {
+      devices = db.prepare('SELECT * FROM access_devices ORDER BY last_seen DESC LIMIT 500').all();
+      pending = db.prepare("SELECT * FROM login_approvals WHERE status='pending' ORDER BY requested_at DESC LIMIT 100").all();
+      recent  = db.prepare("SELECT * FROM login_approvals WHERE status<>'pending' ORDER BY COALESCE(resolved_at, requested_at) DESC LIMIT 25").all();
+    }
+    // Sweep stale pendings to expired so the queue self-cleans even if nobody polls them.
+    const nowMs = Date.now();
+    pending = (pending || []).filter(p => (nowMs - new Date(p.requested_at).getTime()) <= AC_HELD_TIMEOUT_MS);
+    res.json({ ok: true, mode: ACCESS_GATE_MODE, edgeSecretSet: !!SUNLOC_EDGE_SECRET, heldTimeoutMin: AC_HELD_TIMEOUT_MS / 60000, sites, devices, pending, recent });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/access/approve {approvalId, always:0|1} — approve a held login. always=1 also flips the
+// device to permanently approved. POST /api/access/deny {approvalId} — denies THIS request only
+// (device stays pending and will re-queue); permanent denial is a device-registry action.
+app.post('/api/access/approve', async (req, res) => {
+  try {
+    const s = _acAdmin(req);
+    if (!s) return res.status(403).json({ ok: false, error: 'Admin only' });
+    const { approvalId } = req.body || {};
+    const always = parseInt(req.body?.always, 10) === 1;
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    const newStatus = always ? 'approved_always' : 'approved_once';
+    let row;
+    if (pgPool) {
+      const r = await pgPool.query("UPDATE login_approvals SET status=$1, resolved_by=$2, resolved_at=$3 WHERE id=$4 AND status='pending' RETURNING *", [newStatus, s.username, ts, approvalId]);
+      row = r.rows[0];
+    } else {
+      db.prepare("UPDATE login_approvals SET status=?, resolved_by=?, resolved_at=? WHERE id=? AND status='pending'").run(newStatus, s.username, ts, approvalId);
+      row = db.prepare('SELECT * FROM login_approvals WHERE id=?').get(approvalId);
+    }
+    if (!row) return res.status(404).json({ ok: false, error: 'Approval not found or already resolved' });
+    if (always) {
+      if (pgPool) await pgPool.query("UPDATE access_devices SET status='approved', approved_by=$1, approved_at=$2 WHERE id=$3", [s.username, ts, row.device_id]);
+      else db.prepare("UPDATE access_devices SET status='approved', approved_by=?, approved_at=? WHERE id=?").run(s.username, ts, row.device_id);
+    }
+    logAudit(s.username, s.role, 'planning', 'ACCESS_APPROVE', `${newStatus} for ${row.username}/${row.app} device=${String(row.device_id).slice(0, 8)} ip=${row.ip || '?'}`, req.ip);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/access/deny', async (req, res) => {
+  try {
+    const s = _acAdmin(req);
+    if (!s) return res.status(403).json({ ok: false, error: 'Admin only' });
+    const { approvalId } = req.body || {};
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    let row;
+    if (pgPool) {
+      const r = await pgPool.query("UPDATE login_approvals SET status='denied', resolved_by=$1, resolved_at=$2 WHERE id=$3 AND status='pending' RETURNING *", [s.username, ts, approvalId]);
+      row = r.rows[0];
+    } else {
+      db.prepare("UPDATE login_approvals SET status='denied', resolved_by=?, resolved_at=? WHERE id=? AND status='pending'").run(s.username, ts, approvalId);
+      row = db.prepare('SELECT * FROM login_approvals WHERE id=?').get(approvalId);
+    }
+    if (!row) return res.status(404).json({ ok: false, error: 'Approval not found or already resolved' });
+    logAudit(s.username, s.role, 'planning', 'ACCESS_DENY', `Denied ${row.username}/${row.app} device=${String(row.device_id).slice(0, 8)} ip=${row.ip || '?'}`, req.ip);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/access/device {deviceId, action:'approve'|'revoke'|'deny'|'rename', label}
+// revoke → back to 'pending' (re-queues on next off-site login); deny → permanently refused.
+app.post('/api/access/device', async (req, res) => {
+  try {
+    const s = _acAdmin(req);
+    if (!s) return res.status(403).json({ ok: false, error: 'Admin only' });
+    const { deviceId, action, label } = req.body || {};
+    if (!deviceId || !action) return res.status(400).json({ ok: false, error: 'deviceId and action required' });
+    const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+    if (action === 'rename') {
+      if (pgPool) await pgPool.query('UPDATE access_devices SET label=$1 WHERE id=$2', [String(label || '').slice(0, 80), deviceId]);
+      else db.prepare('UPDATE access_devices SET label=? WHERE id=?').run(String(label || '').slice(0, 80), deviceId);
+    } else if (action === 'approve' || action === 'revoke' || action === 'deny') {
+      const st = action === 'approve' ? 'approved' : (action === 'deny' ? 'denied' : 'pending');
+      if (pgPool) await pgPool.query('UPDATE access_devices SET status=$1, approved_by=$2, approved_at=$3 WHERE id=$4', [st, s.username, ts, deviceId]);
+      else db.prepare('UPDATE access_devices SET status=?, approved_by=?, approved_at=? WHERE id=?').run(st, s.username, ts, deviceId);
+    } else {
+      return res.status(400).json({ ok: false, error: 'Unknown action' });
+    }
+    logAudit(s.username, s.role, 'planning', 'ACCESS_DEVICE', `${action} device=${String(deviceId).slice(0, 8)}${action === 'rename' ? ` label="${label}"` : ''}`, req.ip);
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/access/site {action:'add'|'delete', label, cidr, id} — trusted-IP self-service editor.
+app.post('/api/access/site', async (req, res) => {
+  try {
+    const s = _acAdmin(req);
+    if (!s) return res.status(403).json({ ok: false, error: 'Admin only' });
+    const { action } = req.body || {};
+    if (action === 'add') {
+      const label = String(req.body.label || '').trim().slice(0, 80);
+      const cidr = String(req.body.cidr || '').trim();
+      if (!label || !cidr) return res.status(400).json({ ok: false, error: 'label and cidr required' });
+      const parts = cidr.split('/');
+      if (_acIp4(parts[0]) === null || (parts.length > 1 && !(parseInt(parts[1], 10) >= 0 && parseInt(parts[1], 10) <= 32))) {
+        return res.status(400).json({ ok: false, error: 'Invalid IP/CIDR — use a.b.c.d or a.b.c.d/nn' });
+      }
+      const id = crypto.randomUUID();
+      if (pgPool) await pgPool.query('INSERT INTO trusted_sites (id,label,cidr) VALUES ($1,$2,$3) ON CONFLICT (cidr) DO NOTHING', [id, label, cidr]);
+      else db.prepare('INSERT INTO trusted_sites (id,label,cidr) VALUES (?,?,?) ON CONFLICT (cidr) DO NOTHING').run(id, label, cidr);
+      logAudit(s.username, s.role, 'planning', 'ACCESS_SITE', `Added trusted site "${label}" ${cidr}`, req.ip);
+    } else if (action === 'delete') {
+      const id = String(req.body.id || '');
+      let row;
+      if (pgPool) row = (await pgPool.query('SELECT * FROM trusted_sites WHERE id=$1', [id])).rows[0];
+      else row = db.prepare('SELECT * FROM trusted_sites WHERE id=?').get(id);
+      if (!row) return res.status(404).json({ ok: false, error: 'Site not found' });
+      if (pgPool) await pgPool.query('DELETE FROM trusted_sites WHERE id=$1', [id]);
+      else db.prepare('DELETE FROM trusted_sites WHERE id=?').run(id);
+      logAudit(s.username, s.role, 'planning', 'ACCESS_SITE', `Deleted trusted site "${row.label}" ${row.cidr}`, req.ip);
+    } else {
+      return res.status(400).json({ ok: false, error: 'Unknown action' });
+    }
+    _acInvalidateSites();
+    res.json({ ok: true });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -14866,6 +15360,10 @@ app.post('/api/auth/login', async (req, res) => {
       return res.status(403).json({ ok: false, error: 'Account is disabled. Contact your administrator.' });
     }
     if (user.pin_hash !== hashPin(pin)) return res.status(401).json({ ok: false, error: 'Invalid PIN' });
+    // v50 ACCESS GATE: verdict after credential check. Monitor mode always falls through (register
+    // + audit only); enforce mode may answer 403 (denied device) or 202 (held for admin approval).
+    const _gate = await _acGateCheck(req, res, user, appName);
+    if (_gate && _gate.handled) return;
     const token = generateToken();
     const expires = new Date(Date.now() + 8 * 60 * 60 * 1000).toISOString().replace('T',' ').slice(0,19);
     if (pgPool) {
@@ -14875,7 +15373,7 @@ app.post('/api/auth/login', async (req, res) => {
       db.prepare('INSERT INTO app_sessions (token,user_id,username,role,app,expires_at) VALUES (?,?,?,?,?,?)').run(token, user.id, user.username, user.role, appName, expires);
     }
     logAudit(user.username, user.role, appName, 'LOGIN', 'Successful login', req.ip);
-    res.json({ ok: true, token, username: user.username, role: user.role });
+    res.json({ ok: true, token, username: user.username, role: user.role, deviceToken: req._acDeviceToken || undefined });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -19762,6 +20260,7 @@ app.listen(PORT, () => {
   // the big ensurePostgresTables() aborts partway through.
   ensureCriticalPostgresTables().then(() => ensurePostgresTables()).then(()=>{
     _consolidatePlanningStateRows().catch(e => console.warn('[v46D] consolidation boot invocation failed:', e?.message)); // v46D: collapse planning_state to single canonical row
+    _acSeedTrustedSites().catch(e => console.warn('[v50] access seed boot invocation failed:', e?.message)); // v50: seed Alwar+Delhi trusted IPs
     _v47h_repairPrintedFlag().catch(e => console.warn('[v47H] printed-flag repair boot invocation failed:', e?.message)); // v47H: mark scanned-but-unflagged labels printed
     _v47l_repairFalseReconcile().catch(e => console.warn('[v47L] false-reconcile repair boot invocation failed:', e?.message)); // v47L: un-stick SO-pass false reconciles
     warmPlanningCache();

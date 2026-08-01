@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v49ZK</title>
+<title>Sunloc Tracking Suite v1.0 · build v50A</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZK</p>
+      <p>Tracking Suite v1.0 · build v50A</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v49ZK</p>
+      <p>Tracking Suite v1.0 · build v50A</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1446,12 +1446,9 @@ function doLogin(){
     document.getElementById('login-err').classList.remove('hidden');
     return;
   }
-  fetch(serverUrl + '/api/auth/login', {
-    method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ username, pin, app: 'tracking' }),
-    signal: AbortSignal.timeout(8000)
-  }).then(r=>r.json()).then(j=>{
-    if (j.ok) {
+  // v50 access gate: attach this browser's device token; persist the one the server returns.
+  const _acOnOk = (j) => {
+      if (j.deviceToken) { try { localStorage.setItem('sunloc_device_token', j.deviceToken); } catch(e){} }
       currentDept = selectedDeptForLogin;
       sessionStorage.setItem('trk_dept', currentDept);
       sessionStorage.setItem('trk_token', j.token);
@@ -1462,7 +1459,23 @@ function doLogin(){
       document.getElementById('app').style.display='flex';
       initApp();
       trkAuditLog('LOGIN', `Logged into Tracking as: ${currentDept} (${j.username})`);
+  };
+  fetch(serverUrl + '/api/auth/login', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ username, pin, app: 'tracking', deviceToken: (localStorage.getItem('sunloc_device_token')||'') }),
+    signal: AbortSignal.timeout(8000)
+  }).then(r=>r.json()).then(j=>{
+    if (j.ok) {
+      _acOnOk(j);
+    } else if (j.held && j.approvalId) {
+      // v50: off-site unknown device (enforce mode) — held for live admin approval; poll until
+      // approved/denied/15-min timeout. Approval issues the session via /api/access/login-status.
+      _acHoldPoll(j, _acOnOk, (msg)=>{
+        document.getElementById('login-err').textContent = msg;
+        document.getElementById('login-err').classList.remove('hidden');
+      });
     } else {
+      if (j.deviceToken) { try { localStorage.setItem('sunloc_device_token', j.deviceToken); } catch(e){} }
       document.getElementById('login-err').textContent = j.error || 'Invalid PIN';
       document.getElementById('login-err').classList.remove('hidden');
       document.getElementById('login-pin').value='';
@@ -1472,6 +1485,27 @@ function doLogin(){
     document.getElementById('login-err').textContent = 'Cannot reach server: ' + e.message;
     document.getElementById('login-err').classList.remove('hidden');
   });
+}
+
+// v50: shared held-login poller. Shows the waiting message, polls every 5s, hands the issued
+// session to onOk exactly as a normal login success, or surfaces denial/timeout via onErr.
+function _acHoldPoll(held, onOk, onErr){
+  if (held.deviceToken) { try { localStorage.setItem('sunloc_device_token', held.deviceToken); } catch(e){} }
+  onErr('⏳ Awaiting admin approval — ask your administrator to approve this device in Planning → Access Control. This screen will continue automatically once approved.');
+  const started = Date.now();
+  const iv = setInterval(async ()=>{
+    if (Date.now() - started > 15.5*60*1000){ clearInterval(iv); onErr('Approval timed out (15 min). Please try logging in again.'); return; }
+    try{
+      const r = await fetch(serverUrl + '/api/access/login-status', {
+        method:'POST', headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({ approvalId: held.approvalId, deviceToken: held.deviceToken || (localStorage.getItem('sunloc_device_token')||'') }),
+        signal: AbortSignal.timeout(8000)
+      });
+      const s = await r.json();
+      if (s.ok){ clearInterval(iv); onOk(s); }
+      else if (s.denied){ clearInterval(iv); onErr(s.error || 'Access denied by administrator.'); }
+    }catch(e){ /* stay polling */ }
+  }, 5000);
 }
 
 document.getElementById('login-pin').addEventListener('keydown',e=>{ if(e.key==='Enter') doLogin(); });
@@ -3335,7 +3369,15 @@ function _v41_getBatchAGradeMonth(batchNo, stage, md){
   // attributes NOTHING to this month — this is the whole point of month-attribution. A May-
   // produced carry-forward batch viewed in June must show zero June A-Grade, not its cumulative.
   const hasAny = Object.keys(s).length || Object.keys(w).length;
-  if(!hasAny) return { inspected:0, aGrade:0, salvage:0, remelt:0, wip:0, pct:0, crossMonth:false, _noActivity:true };
+  // v50A (confirmed by Ishan — Aug boundary review): the zero-activity result MUST also carry
+  // aimIn/aimOut = 0. Report E reads `agAim.aimIn != null ? agAim.aimIn : _scanLakhs(...)`; without
+  // these keys a carry-forward batch with no activity in the window fell through to the CUMULATIVE
+  // per-box sum, so its month row showed lifetime Scan-In/Scan-Out against a correctly-zero Gross
+  // (26T089 in Aug: Scan-In 17.50 / AIM Run 15.75 = its July scans). Gross, wastage, A-Grade and both
+  // WIP legs already clamped to 0, so only those two display columns and their subtotals were wrong —
+  // no WIP or A-Grade was ever double counted. Batches WITH partial window activity were already
+  // windowed correctly (the branches below) and are untouched.
+  if(!hasAny) return { inspected:0, aGrade:0, salvage:0, remelt:0, wip:0, pct:0, crossMonth:false, aimIn:0, aimOut:0, _noActivity:true };
 
   if(stage==='unprinted'){
     const aim = dep('aim'); const wA = was('aim');
@@ -3468,92 +3510,61 @@ function generateZPL(label, batch){
 ^XZ`;
   }
 
-  // ── MAIN WHITE LABEL ──────────────────────────────────────────
-  // PW=800 (100mm), LL=1200 (150mm) — matches label stock
-  // Content fills Y=50 to Y=1180 (full label height)
-  // 5 data rows x 116 dots (14.5mm each) — large, clear text
-
-  const D  = isTemp||isWO ? 42 : 0;
-  const hBand = isTemp
-    ? `^FO10,${136+D}^GB780,42,42^FS\n^CF0,24\n^FR^FO10,${146+D}^FB780,1,0,C^FD** TEMP BATCH - REPLACEMENT REQUIRED **^FS`
-    : isWO
-    ? `^FO10,${136+D}^GB780,42,42^FS\n^CF0,24\n^FR^FO10,${146+D}^FB780,1,0,C^FDWITHOUT ORDER - CUSTOMER TO BE ASSIGNED^FS`
-    : '';
-  const oBorder = isTemp
-    ? `^FO4,4^GB792,1192,5^FS\n^FO9,9^GB782,1182,2^FS\n`
-    : isWO ? `^FO4,4^GB792,1192,4^FS\n` : '';
-
-  const custY = 140 + D;
-  const tTop  = 180 + D;
-  const RH    = 78;             // 6 rows × 78 = 468 — fits with QR space below
-  const tBot  = tTop + RH*6;   // 6 rows
-  const expY  = tBot + 8;
-  const ruleY = tBot + 46;
-  const qrY   = ruleY + 10;    // QR starts here
-  const qRelY = qrY + 180;     // Q RELEASED text Y
-  const sigY  = qrY + 60;      // SIGNATURE line Y
-  const botY  = 1180;          // fixed bottom rule
-  // PC Code: check label, passed batch, and fresh getBatch lookup (_b already resolved above)
+  // ── v50 WHITE LABEL — PRE-PRINTED BOPP STOCK (replaces the thermal-drawn white label) ──────
+  // IT-calibrated ZPL for the new pre-printed BOPP roll (102mm x 150mm, 203dpi, HPRT HT800):
+  // branding, frames, field key-tabs, expiry line, Q·RELEASE stamp and footer are pre-printed by
+  // the converter; this ZPL overprints ONLY the variable data. All white-label scenarios flow
+  // through unchanged upstream derivation: TEMP/W-O warnings ride the CUSTOMER line (customerText),
+  // re-customer via label.shipTo/billTo, split/partial via label.qty (v45U label-own-qty rule),
+  // excess via containerNo E-n/n (v44F live denominator), specimen blanks QTY+CONTAINER (v44ZN).
+  // Orange label above is UNTOUCHED. SHIFT_X/Y per-printer registration is set in Settings.
   const pcCode = (label.pcCode || batch?.pcCode || _b?.pcCode || '').toString();
 
+  // ── PRE-PRINTED BOPP STOCK ZPL (102mm x 150mm, 203dpi) ──────────────
+  // Calibrated for HPRT HT800 on pre-printed BOPP label stock.
+  // SHIFT_X / SHIFT_Y allow fine registration per-printer via Settings.
+  const cName = (customerText||'').toString();
+  const cL1   = cName.length > 42 ? cName.slice(0,42) : cName;
+  const cL2   = (!isTemp && !isWO && billTo && billTo !== shipTo) ? billTo.slice(0,42) : '';
+
+  const SHIFT_Y = parseInt(localStorage.getItem('sunloc_label_shift_y') || '0', 10);
+  const SHIFT_X = parseInt(localStorage.getItem('sunloc_label_shift_x') || '0', 10);
+  const _y = n => Math.max(0, n + SHIFT_Y);
+  const _x = n => Math.max(0, n + SHIFT_X);
+
+  // Auto font-size tiers
+  const _custFont = cL1.length > 35 ? '28,26' : cL1.length > 28 ? '32,30' : cL1.length > 20 ? '36,34' : '40,38';
+  const _capFont  = (colourCap||'').length  > 8 ? ((colourCap||'').length  > 14 ? '24,22' : '28,26') : '38,36';
+  const _bodyFont = (colourBody||'').length > 8 ? ((colourBody||'').length > 14 ? '24,22' : '28,26') : '38,36';
+  const _t = (val, max) => { const s = String(val||''); return s.length > max ? s.slice(0, max) : s; };
+
+  const qtyTxt       = _isSpec ? '' : pieces.toLocaleString('en-IN');
+  const containerNew = _isSpec ? '' : containerNo;
+  const grossWt      = String(label.grossWt || batch?.grossWt || '');
+  const nettWt       = String(label.nettWt  || batch?.nettWt  || '');
+
   return `^XA
-^CI28
-^PW800
+^PR4
+~SD22
+^PW816
 ^LL1200
-^MMT
-^PON
 ^LH0,0
-${oBorder}
-^CF0,46
-^FO10,50^FB780,1,0,C^FDSUNIL HEALTHCARE LIMITED^FS
-^CF0,30
-^FO10,102^FB780,1,0,C^FDHARD GELATIN CAPSULE SHELLS I.P.^FS
-^FO10,${136+D}^GB780,2,2^FS
-${hBand}
-^CF0,26
-^FO10,${custY}^FDCUSTOMER NAME :  ${customerText}^FS
-^FO10,${tTop-4}^GB780,2,2^FS
-
-^FO10,${tTop}^GB390,${RH*6+2},2^FS
-^FO404,${tTop}^GB386,${RH*6+2},2^FS
-^FO10,${tTop+RH}^GB390,2,2^FS
-^FO10,${tTop+RH*2}^GB390,2,2^FS
-^FO10,${tTop+RH*3}^GB390,2,2^FS
-^FO10,${tTop+RH*4}^GB390,2,2^FS
-^FO10,${tTop+RH*5}^GB390,2,2^FS
-^FO404,${tTop+RH}^GB386,2,2^FS
-^FO404,${tTop+RH*2}^GB386,2,2^FS
-^FO404,${tTop+RH*3}^GB386,2,2^FS
-^FO404,${tTop+RH*4}^GB386,2,2^FS
-^FO404,${tTop+RH*5}^GB386,2,2^FS
-
-^CF0,26
-^FO18,${tTop+10}^FDQUANTITY    :  ${piecesTxt}^FS
-^FO18,${tTop+RH+10}^FDSIZE              :  ${label.size}^FS
-^FO18,${tTop+RH*2+10}^FDCOLOUR CAP :  ${colourCap}^FS
-^FO18,${tTop+RH*3+10}^FDCOLOUR BODY:  ${colourBody}^FS
-^FO18,${tTop+RH*4+10}^FDPRINTED       :^FS
-^FO18,${tTop+RH*5+10}^FDPC CODE    :  ${pcCode}^FS
-
-^FO412,${tTop+10}^FDBATCH NO.  :  ${batchNo}^FS
-^FO412,${tTop+RH+10}^FDCONTAINER:  ${containerTxt}^FS
-^FO412,${tTop+RH*2+10}^FDGROSS WT.:^FS
-^FO412,${tTop+RH*3+10}^FDNETT WT.  :^FS
-^FO412,${tTop+RH*4+10}^FDMFG DATE:  ${mfgDate}^FS
-
-^FO10,${tBot}^GB780,2,2^FS
-^CF0,20
-^FO10,${expY}^FDEXPIRY AFTER 5 YEARS FROM MFG DATE. DRUG MFG RAJ-867, DT 08.12.1981^FS
-^FO10,${ruleY}^GB780,2,2^FS
-
-^FO10,${qrY}^BQN,2,9^FDLA,${label.qrData}^FS
-^CF0,28
-^FO260,${qRelY}^FB300,1,0,C^FDQ RELEASED^FS
-^FO580,${sigY}^GB200,2,2^FS
-^CF0,22
-^FO580,${sigY+10}^FB200,1,0,C^FDSIGNATURE^FS
-
-^FO10,${botY}^GB780,3,3^FS
+^MNY
+^PON
+^CI28
+^FO${_x(282)},${_y(169)}^A0N,${_custFont}^FD${_t(cL1,42)}^FS
+^FO${_x(282)},${_y(200)}^A0N,30,28^FD${_t(cL2,42)}^FS
+^FO${_x(283)},${_y(303)}^A0N,38,36^FD${_t(qtyTxt,12)}^FS
+^FO${_x(641)},${_y(303)}^A0N,38,36^FD${_t(batchNo,10)}^FS
+^FO${_x(315)},${_y(409)}^A0N,38,36^FD${_t(label.size,10)}^FS
+^FO${_x(660)},${_y(406)}^A0N,38,36^FD${_t(containerNew,10)}^FS
+^FO${_x(283)},${_y(534)}^A0N,${_capFont}^FD${_t(colourCap,20)}^FS
+^FO${_x(664)},${_y(516)}^A0N,38,36^FD${_t(grossWt,10)}^FS
+^FO${_x(283)},${_y(632)}^A0N,${_bodyFont}^FD${_t(colourBody,20)}^FS
+^FO${_x(664)},${_y(632)}^A0N,38,36^FD${_t(nettWt,10)}^FS
+^FO${_x(299)},${_y(790)}^A0N,38,36^FD${_t(pcCode,10)}^FS
+^FO${_x(635)},${_y(766)}^A0N,38,36^FD${_t(mfgDate,10)}^FS
+^FO${_x(77)},${_y(903)}^BQN,2,5^FDLA,${label.qrData}^FS
 ^XZ`;
 }
 
@@ -12212,6 +12223,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
 
   let html=`<div class="card">
     <div class="section-title mb-12">Report B — Department-wise WIP</div>
+    ${_v41_agradeToggleHtml('renderReportB')}
     <div class="form-row cols-4 mb-16" style="max-width:920px">
       <div class="form-group" style="margin-bottom:0">
         <label style="font-size:11px">Filter by Department</label>
@@ -15994,6 +16006,18 @@ function renderSettings(){
       </div>
       <div class="text-sm text-muted mb-8">Leave blank to download ZPL files. Install Zebra Browser Print for direct printing.</div>
       <button class="btn btn-primary btn-sm" onclick="savePrinterUrl()">Save</button>
+      <div class="form-row cols-2" style="margin-top:12px">
+        <div class="form-group">
+          <label>Label Shift X (dots)</label>
+          <input type="number" id="s-shift-x" step="1" value="${parseInt(localStorage.getItem('sunloc_label_shift_x')||'0',10)}">
+        </div>
+        <div class="form-group">
+          <label>Label Shift Y (dots)</label>
+          <input type="number" id="s-shift-y" step="1" value="${parseInt(localStorage.getItem('sunloc_label_shift_y')||'0',10)}">
+        </div>
+      </div>
+      <div class="text-sm text-muted mb-8">v50: fine registration for the pre-printed BOPP white label — nudges ALL overprinted fields together per printer. 8 dots = 1&nbsp;mm. +X = right, +Y = down. Orange labels unaffected.</div>
+      <button class="btn btn-primary btn-sm" onclick="saveLabelShift()">Save Registration</button>
     </div>
     <div class="card">
       <div class="card-title">📦 Pack Size Master</div>
@@ -16212,6 +16236,16 @@ function savePrinterUrl(){
   const url=document.getElementById('s-printer')?.value.trim()||'';
   localStorage.setItem('sunloc_printer_url',url);
   alert(url?'✅ Printer URL saved.':'✅ ZPL download mode activated.');
+}
+
+// v50: per-printer registration for the pre-printed BOPP white label. Stored per browser/terminal
+// (localStorage) since each terminal drives its own printer; read live by generateZPL.
+function saveLabelShift(){
+  const x = parseInt(document.getElementById('s-shift-x')?.value, 10);
+  const y = parseInt(document.getElementById('s-shift-y')?.value, 10);
+  localStorage.setItem('sunloc_label_shift_x', String(Number.isFinite(x) ? x : 0));
+  localStorage.setItem('sunloc_label_shift_y', String(Number.isFinite(y) ? y : 0));
+  alert('✅ Label registration saved (X=' + (Number.isFinite(x)?x:0) + ', Y=' + (Number.isFinite(y)?y:0) + ' dots). Applies to the next print from this terminal.');
 }
 
 // v37I.1: Settings persistence for FG Stock Aging thresholds.
