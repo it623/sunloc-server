@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v50A</title>
+<title>Sunloc Tracking Suite v1.0 · build v50B</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50A</p>
+      <p>Tracking Suite v1.0 · build v50B</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50A</p>
+      <p>Tracking Suite v1.0 · build v50B</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -980,12 +980,13 @@ function getProdMonthBatches(excludeRetired){
     if (b.deleted) return false;
     if (excludeRetired && _isRetired(b.batchNumber)) return false;
     if (pm === 'ALL') return true;
-    return _trkProdStartMonth(b) === pm;   // strict: produced in the selected month, no carry-forward
+    // v50B: same cohort rule as getTrkMonthBatches — start month, else planning month, else first scan.
+    return _v50bCohortMonth(b) === pm;
   });
 }
 function _trkProdMonthOptions(){
   const set = new Set();
-  (state.batches||[]).forEach(b => { if (b.deleted) return; const m = _trkProdStartMonth(b); if (m) set.add(m); });
+  (state.batches||[]).forEach(b => { if (b.deleted) return; const m = _v50bCohortMonth(b); if (m) set.add(m); });   // v50B cohort month
   return [...set].sort().reverse();   // newest first
 }
 function _trkProdMonthDropdownHtml(){
@@ -1006,26 +1007,39 @@ function setTrkProdMonthFilter(v){
   window._trkProdMonthFilter = v;
   try { if (typeof window._activeReport === 'function') window._activeReport(); } catch(e){}
 }
+// v50B COHORT MEMBERSHIP (confirmed by Ishan): a batch belongs to exactly ONE month — the month its
+// production STARTED — and stays there until dispatch, however long it runs. Every carry-forward
+// branch of the old rule is gone: an unclosed July batch no longer also appears in August, so the
+// same material can never be counted in two months and the frozen reconciled remainder has one home.
+// Batches with NO production dates are attributed to their PLANNING month (see _v50bCohortMonth)
+// instead of appearing in every month; ghosts/retired rows with no batch record fall back to the
+// month of their first scan so they stay visible rather than silently vanishing.
+function _v50bCohortMonth(b) {
+  if (!b) return '';
+  const start = b.startDate || b.orderStartDate;
+  if (start) { const d = new Date(start); if (!isNaN(d.getTime())) return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+  // No production dates → planning month (planMonth/month on the order blob), then first scan.
+  const pm = b.planMonth || b.month || b.planningMonth;
+  if (pm && /^\d{4}-\d{2}$/.test(String(pm))) return String(pm);
+  if (pm) { const d = new Date(pm); if (!isNaN(d.getTime())) return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
+  return _v50bFirstScanMonth(b.batchNumber);
+}
+// Month of the batch's first scan — the fallback bucket for dateless orders and ghost rows.
+function _v50bFirstScanMonth(batchNo) {
+  if (!batchNo) return '';
+  let earliest = null;
+  (state.scans||[]).forEach(sc => { if (sc.batchNumber===batchNo && sc.ts && (!earliest || sc.ts < earliest)) earliest = sc.ts; });
+  const fs = (state.scanSummary && state.scanSummary[batchNo] && state.scanSummary[batchNo].firstScan) || null;
+  if (fs && (!earliest || fs < earliest)) earliest = fs;
+  if (!earliest) return '';
+  const d = new Date(earliest);
+  return isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
 function getTrkMonthBatches(excludeRetired) {
   return state.batches.filter(b => {
     if (b.deleted) return false;
     if (excludeRetired && _isRetired(b.batchNumber)) return false; // v41ZZ: drop retired from operational reports (A/B/C/F/G)
-    // Use order start/end dates from batch metadata
-    const start = b.startDate || b.orderStartDate;
-    const end   = b.endDate   || b.orderEndDate;
-    const [y, m] = _trkSelectedMonth.split('-').map(Number);
-    const mStart = new Date(y, m-1, 1);
-    const mEnd   = new Date(y, m, 0, 23, 59, 59);
-    if (!start && !end) return true; // no dates = always show
-    const s = start ? new Date(start) : null;
-    const e = end   ? new Date(end)   : null;
-    if (s && s >= mStart && s <= mEnd) return true;
-    if (e && e >= mStart && e <= mEnd) return true;
-    if (s && e && s < mStart && e > mEnd) return true; // spans
-    if (!e && s && s <= mEnd) return true; // open-ended, started on or before month end
-    // Carry-forward: unclosed batch that started before month end — still show even if end date passed
-    if (b.status !== 'closed' && s && s <= mEnd) return true;
-    return false;
+    return _v50bCohortMonth(b) === _trkSelectedMonth;
   });
 }
 function fmt(n,d=2){ return n==null?'-':(+n).toFixed(d) }
@@ -2658,7 +2672,7 @@ function originalNormalBoxMax(batchNo, batch){
   return totals.length ? Math.min(...totals) : lakhToBox(b.qty, b.size);
 }
 
-function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nettWt){
+function generateLabels(batchNo, count, isPartialLast, partialQty){
   const batch = getBatch(batchNo);
   if(!batch) return [];
   const ps = PACK_SIZES[String(batch.size)] || 1;
@@ -2694,7 +2708,6 @@ function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nett
       poNumber:batch.poNumber, machineId:batch.machineId,
       startDate:batch.startDate||null, printMatter:batch.printMatter||batch.printingMatter||null,
       isPrinted:batch.isPrinted||false,
-      grossWt: grossWt||'', nettWt: nettWt||'',
       generated:now(), printed:false, voided:false, printedAt:null,
       qrData: '' // filled after
     };
@@ -2722,7 +2735,6 @@ function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nett
       poNumber:batch.poNumber, machineId:batch.machineId,
       startDate:batch.startDate||null, printMatter:batch.printMatter||batch.printingMatter||null,
       isPrinted:batch.isPrinted||false,
-      grossWt: grossWt||'', nettWt: nettWt||'',
       generated:now(), printed:false, voided:false, printedAt:null,
       qrData: ''
     };
@@ -3299,7 +3311,27 @@ function getBatchAGrade(batchNo, stage, opts){
 let _v41_agradeMonthCache = {};   // { 'YYYY-MM': { summary, wastage, crossMonth, window } }
 let _v41_useMonthAttributed = true; // toggle — default ON so monthly reports lock A-Grade to production month
 
+// ═══ v50B COHORT MODEL (confirmed by Ishan, 1 Aug) ═══════════════════════════
+// A month is no longer a WINDOW ON EVENTS (scans counted by when they happened, 6 AM boundary); it
+// is a COHORT OF MATERIAL — the batches whose production STARTED in that month, followed all the way
+// to dispatch. Gross freezes when the month's production ends; every downstream figure (scans,
+// wastage, A-Grade, WIP, packing) counts LIFETIME, whenever it happens. So July's bins drain and
+// cascade to zero even though the scans occur in August, and July's A-Grade keeps updating on the
+// SAME frozen formulas as more of the cohort is inspected.
+// Consequence: carry-forward is gone. Every batch lives in exactly one month, so nothing is double
+// counted across months and the frozen reconciled remainder can no longer appear in two views.
+// IMPLEMENTATION: cohort figures ARE lifetime figures, which is precisely what the long-standing
+// ∑ Cumulative code path already computes. So rather than rewriting ~30 consumer sites across
+// Reports A/B/C/D/E/F/G, we simply never populate the windowed month cache: every
+// `_v41_agradeMonthCache[_trkSelectedMonth]` read yields undefined, each `_bMd`/`md` falls to null,
+// and each consumer takes its existing, well-exercised cumulative branch. Month scoping then comes
+// purely from the batch universe (getTrkMonthBatches / getProdMonthBatches below).
+// The server's agrade-by-month endpoint is untouched and simply goes unused in month mode; flipping
+// _V50B_COHORT to false restores the v50A windowed behaviour exactly.
+const _V50B_COHORT = true;
+
 async function _v41_fetchAgradeMonth(ym){
+  if (_V50B_COHORT) return null;   // v50B: cohort mode never uses the windowed cache
   if (_v41_agradeMonthCache[ym]) return _v41_agradeMonthCache[ym];
   try {
     const r = await fetch(serverUrl + '/api/tracking/agrade-by-month?month=' + encodeURIComponent(ym), { signal: AbortSignal.timeout(20000) });
@@ -3337,7 +3369,8 @@ function _v41_agradeFor(batchNo, stage, opts){
 }
 // Ensure windowed data for the selected month is loaded (call before a report's batch loop).
 async function _v41_ensureAgradeMonthLoaded(){
-  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (_V50B_COHORT) return null;   // v50B: cohort mode never uses the windowed cache
+  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
     await _v41_fetchAgradeMonth(_trkSelectedMonth);
   }
 }
@@ -3350,7 +3383,7 @@ function _v41_agradeToggleHtml(reRenderFn){
     <span style="font-size:11px;font-weight:700;color:var(--text)">A-Grade:</span>
     <button onclick="_v41_useMonthAttributed=true;_v41_clearAgradeMonthCache();${reRenderFn}()" style="font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;border:1px solid ${on?'#16a34a':'var(--border)'};background:${on?'rgba(22,163,74,0.15)':'transparent'};color:${on?'#16a34a':'var(--text3)'};font-weight:${on?'700':'400'}">📅 Month of Production</button>
     <button onclick="_v41_useMonthAttributed=false;${reRenderFn}()" style="font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;border:1px solid ${!on?'var(--accent)':'var(--border)'};background:${!on?'rgba(96,165,250,0.15)':'transparent'};color:${!on?'var(--accent)':'var(--text3)'};font-weight:${!on?'700':'400'}">∑ Cumulative</button>
-    <span style="font-size:9px;color:var(--text3)">${on?`Sliced at 6 AM, 1st of next month — A-Grade for ${_trkSelectedMonth} production only`:'All-time cumulative'}</span>
+    <span style="font-size:9px;color:var(--text3)">${on?`${_trkSelectedMonth} production cohort — tracked through to dispatch (figures keep updating as this month's batches progress)`:'All months — live floor position'}</span>
   </div>`;
 }
 
@@ -4624,21 +4657,11 @@ function viewLabel(labelId){
 function editLabelQty(labelId){
   const l = state.labels.find(x=>x.id===labelId);
   if(!l) return;
-  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0), 'Change qty, gross/nett wt. Updated values will print on the label when reprinted.', `
+  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0), 'Change qty only. Updated qty will print on the label when reprinted.', `
     <div class="form-group">
       <label>Current Qty: <strong>${fmt(l.qty)}L</strong></label>
       <input type="number" id="edit-qty-input" value="${l.qty}" min="0.01" step="0.01" style="font-size:16px;font-weight:700;margin-top:8px" />
       <div style="font-size:11px;color:var(--text3);margin-top:4px">Enter new quantity in Lakhs</div>
-    </div>
-    <div class="form-row cols-2">
-      <div class="form-group">
-        <label>Gross Wt (kg)</label>
-        <input type="number" id="edit-gross-wt-input" value="${l.grossWt||''}" step="0.01" placeholder="e.g. 25.50" />
-      </div>
-      <div class="form-group">
-        <label>Nett Wt (kg)</label>
-        <input type="number" id="edit-nett-wt-input" value="${l.nettWt||''}" step="0.01" placeholder="e.g. 25.00" />
-      </div>
     </div>
   `, [
     {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'},
@@ -4649,19 +4672,15 @@ function editLabelQty(labelId){
 function saveLabelQtyEdit(labelId){
   const newQty = parseFloat(document.getElementById('edit-qty-input')?.value);
   if(!newQty || newQty <= 0) { alert('Please enter a valid quantity'); return; }
-  const newGrossWt = document.getElementById('edit-gross-wt-input')?.value||'';
-  const newNettWt = document.getElementById('edit-nett-wt-input')?.value||'';
   const l = state.labels.find(x=>x.id===labelId);
   if(!l) return;
   l.qty = newQty;
-  l.grossWt = newGrossWt;
-  l.nettWt = newNettWt;
   l.printed = false;
   saveLocal();
-  pushToServer('/api/tracking/label-update', {labelId, qty: newQty, grossWt: newGrossWt, nettWt: newNettWt});
+  pushToServer('/api/tracking/label-update', {labelId, qty: newQty});
   closeModal();
   renderLabels();
-  toast('✅ Qty/weights updated — label marked for reprint', 'var(--green)', 3000);
+  toast('✅ Qty updated — label marked for reprint', 'var(--green)', 3000);
 }
 
 function unprintedOrangeBatch(batchNumber){
@@ -4744,16 +4763,6 @@ function openLabelGen(preselect){
       <label>Partial Box Qty (Lakhs)</label>
       <input type="number" id="lg-partial-qty" step="0.01" placeholder="e.g. 0.75">
     </div>
-    <div class="form-row cols-2">
-      <div class="form-group">
-        <label>Gross Wt (kg)</label>
-        <input type="number" id="lg-gross-wt" step="0.01" placeholder="e.g. 25.50">
-      </div>
-      <div class="form-group">
-        <label>Nett Wt (kg)</label>
-        <input type="number" id="lg-nett-wt" step="0.01" placeholder="e.g. 25.00">
-      </div>
-    </div>
   `,[
     {label:'Cancel',cls:'btn-secondary',fn:'closeModal()'},
     {label:'Generate Labels',cls:'btn-primary',fn:'confirmLabelGen()'}
@@ -4799,10 +4808,8 @@ function confirmLabelGen(){
     const count=parseInt(document.getElementById('lg-count')?.value)||0;
     const isPartial=document.getElementById('lg-partial')?.checked;
     const partialQty=parseFloat(document.getElementById('lg-partial-qty')?.value)||0;
-    const grossWt=document.getElementById('lg-gross-wt')?.value||'';
-    const nettWt=document.getElementById('lg-nett-wt')?.value||'';
     if(!batchNo||count<1){alert('Please select a batch and enter quantity.');return;}
-    const labels=generateLabels(batchNo,count,isPartial,partialQty,grossWt,nettWt);
+    const labels=generateLabels(batchNo,count,isPartial,partialQty);
     if(labels.length){
       closeModal();
       alert(`✅ ${labels.length} label(s) generated for batch ${batchNo}.`);
@@ -10612,13 +10619,13 @@ function renderReportD(){ window._activeReport = renderReportD;
   // any G-section filter/toggle re-renders the whole merged Report D (see renderReportG).
   window._v41_composingD = true;
   // v41 P19.6 (Q1): warm month-attributed cache, then render (fallback to cumulative on fetch fail).
-  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
     _v41_ensureAgradeMonthLoaded().then(()=>{ _v41_renderReportDInner(); _v41_renderReportGInner(); });
     return;
   }
   _v41_renderReportDInner();
   // Second section: batch-wise & cumulative A-Grade (former Report G), appended below.
-  if (_v41_useMonthAttributed) { _v41_fetchAgradeMonth(_trkSelectedMonth).then(()=>{ _v41_renderReportGInner(); }); }
+  if (!_V50B_COHORT && _v41_useMonthAttributed) { _v41_fetchAgradeMonth(_trkSelectedMonth).then(()=>{ _v41_renderReportGInner(); }); }
   else { _v41_renderReportGInner(); }
 }
 // v41ZF: NEW Report G = Daily Scan In/Out Movement (former Report K) as the primary view, with the
@@ -10971,9 +10978,9 @@ function _v41_renderReportGInner(){
 
     <div style="display:flex;align-items:center;gap:10px;margin-bottom:12px;padding:8px 12px;background:var(--surface2);border-radius:4px;border-left:3px solid #16a34a;flex-wrap:wrap">
       <span style="font-size:12px;font-weight:700;color:var(--text)">A-Grade attribution:</span>
-      <button onclick="_v41_useMonthAttributed=true;_v41_clearAgradeMonthCache();renderReportD()" style="font-size:11px;padding:4px 10px;border-radius:4px;cursor:pointer;border:1px solid ${_v41_useMonthAttributed?'#16a34a':'var(--border)'};background:${_v41_useMonthAttributed?'rgba(22,163,74,0.15)':'transparent'};color:${_v41_useMonthAttributed?'#16a34a':'var(--text3)'};font-weight:${_v41_useMonthAttributed?'700':'400'}">📅 Month of Production (6 AM cut)</button>
+      <button onclick="_v41_useMonthAttributed=true;_v41_clearAgradeMonthCache();renderReportD()" style="font-size:11px;padding:4px 10px;border-radius:4px;cursor:pointer;border:1px solid ${_v41_useMonthAttributed?'#16a34a':'var(--border)'};background:${_v41_useMonthAttributed?'rgba(22,163,74,0.15)':'transparent'};color:${_v41_useMonthAttributed?'#16a34a':'var(--text3)'};font-weight:${_v41_useMonthAttributed?'700':'400'}">📅 Month of Production (cohort)</button>
       <button onclick="_v41_useMonthAttributed=false;renderReportD()" style="font-size:11px;padding:4px 10px;border-radius:4px;cursor:pointer;border:1px solid ${!_v41_useMonthAttributed?'var(--accent)':'var(--border)'};background:${!_v41_useMonthAttributed?'rgba(96,165,250,0.15)':'transparent'};color:${!_v41_useMonthAttributed?'var(--accent)':'var(--text3)'};font-weight:${!_v41_useMonthAttributed?'700':'400'}">∑ Live Cumulative</button>
-      <span style="font-size:10px;color:var(--text3)">${_v41_useMonthAttributed?`Showing A-Grade for production inspected within ${_trkSelectedMonth} (scans up to 6 AM on the 1st of next month). ⇄ = batch spans boundary.`:'Showing all-time cumulative A-Grade per batch (not month-sliced).'}</span>
+      <span style="font-size:10px;color:var(--text3)">${_v41_useMonthAttributed?`Showing the ${_trkSelectedMonth} production cohort — every batch that started production this month, followed to dispatch. Gross freezes when the month's production ends; scans, wastage, A-Grade and WIP keep updating on the same frozen formulas as the cohort progresses.`:'Showing all months — live cumulative position per batch.'}</span>
     </div>
 
     <div class="kpi-grid mb-16">
@@ -11175,7 +11182,7 @@ function exportReportG(){
       'Customer': b.customer||'',
       'Size': b.size,
       'Type': b.isPrinted?'PTD':'UP',
-      'A-Grade Basis': md ? (`Production month ${_trkSelectedMonth} (6 AM cut)`) : 'Live cumulative',
+      'A-Grade Basis': _v41_useMonthAttributed ? (`Production cohort ${_trkSelectedMonth} (tracked to dispatch)`) : 'All months — live cumulative',
       'Cross-Month': (ag && ag.crossMonth) ? 'YES — spans boundary' : '',
       'Gross Production (L)': fmt(grossProd),
       'Inspected (L)': fmt(ag.inspected),
@@ -11779,7 +11786,7 @@ function _v41_renderReportFInner(){
   // under-scan box totals disagreed by exactly the prior-month activity on carry-forward batches
   // (the 49 vs 39 gap). Falls back to cumulative until the window is cached — same as B/D first paint.
   const _fMd = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
-  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
     _v41_fetchAgradeMonth(_trkSelectedMonth).then(md => { if (md && window._activeReport===renderReportF) renderReportF(); });
   }
   const _fIsCurMonth = _trkSelectedMonth === today().slice(0,7);
@@ -12002,7 +12009,13 @@ function _v44zk_batchCmp(a, b) {
 function _rptBUniverse(){
   const _bMd = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
   const _bIsCurMonth = _trkSelectedMonth === today().slice(0,7);
-  const monthBatchNos = new Set(getProdMonthBatches(true).map(b=>b.batchNumber).filter(Boolean));
+  // v50B (confirmed by Ishan): ∑ Cumulative now means ALL MONTHS — the true floor position in one
+  // screen — instead of lifetime figures narrowed to one month's cohort (which returned an empty
+  // table whenever the month's own batches had no scans yet). Month of Production stays cohort-scoped.
+  const _cumAll50b = _V50B_COHORT && !_v41_useMonthAttributed;
+  const monthBatchNos = new Set((_cumAll50b
+      ? state.batches.filter(b => !b.deleted && !_isRetired(b.batchNumber))
+      : getProdMonthBatches(true)).map(b=>b.batchNumber).filter(Boolean));
   const _ghostMc45y = {};
   const _retiredRows45z = new Set();
   if (_bMd) {
@@ -12210,7 +12223,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   // on June-started batches, and gross not matching July DPR. If the month window isn't cached
   // yet, kick the fetch and re-render when it lands (first paint shows cumulative, same as D).
   const _bMd = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
-  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
     _v41_fetchAgradeMonth(_trkSelectedMonth).then(md => { if (md && window._activeReport===renderReportB) renderReportB(); });
   }
   const _bIsCurMonth = _trkSelectedMonth === today().slice(0,7);
@@ -12726,7 +12739,7 @@ function _v41_renderReportDInner(){
     </tbody>
     <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono text-right">${_totBoxes}</td><td class="td-mono text-right">${fmt(_totQtyL)}</td><td class="td-mono text-right">${_totUnsB>0?_totUnsB:'—'}</td><td class="td-mono text-right">${_totUnsL>0?fmt(_totUnsL):'—'}</td><td class="td-mono text-right">${fmt(_grandWip)}</td><td class="td-mono text-right">${_grandWip>0?'100.0':'0'}%</td></tr></tfoot>
   </table></div>
-  <div class="text-sm text-muted mt-8" style="font-size:11px">💡 <b>Unscanned</b> = boxes scanned out of the prior stage but not yet scanned IN here (Report F handover gap). <b>AIM (GF / FF-SF)</b> split by floor like Report B; scanned WIP + Production WIP (Gross − AIM wastage − AIM scan-in) reconcile to Report B. Printing/PI scanned = Report B (in − out − stage wastage). <b>Packing</b> = Report G balance (packed-not-dispatched — falls as trucks leave) + unscanned-into-packing from Report F. TOTAL = all boxes not yet dispatched ≤ Gross Production (${fmt(totalGross)}L). ${_gapSrv?'':'<span style="color:#b45309">Loading handover-gap data…</span>'}</div>`;
+  <div class="text-sm text-muted mt-8" style="font-size:11px">💡 <b>Unscanned</b> = boxes scanned out of the prior stage but not yet scanned IN here (Report F handover gap). <b>AIM (GF / FF-SF)</b> split by floor like Report B; scanned WIP + Production WIP (Gross − AIM wastage − AIM scan-in) reconcile to Report B. Printing/PI scanned = Report B (in − out − stage wastage). <b>Packing</b> = Report G balance (packed-not-dispatched — falls as trucks leave) + unscanned-into-packing from Report F. v50B: this is the <b>${_trkSelectedMonth} cohort</b> — each bin drains and cascades into the next as boxes are scanned on (whenever that happens), so TOTAL falls to 0 once the month's material is fully dispatched. TOTAL = all boxes not yet dispatched ≤ Gross Production (${fmt(totalGross)}L). ${_gapSrv?'':'<span style="color:#b45309">Loading handover-gap data…</span>'}</div>`;
   })()}
   <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportD()">📥 Export Excel</button></div>`;
   _captureReportScroll();
@@ -12736,7 +12749,7 @@ _scrollIntoReportIfFirstView('D');
 
 function renderReportA(){ window._activeReport = renderReportA; if(window._v41_composingD)window._v41_composingD=false;
   // v41 P19.6 (Q1): warm month-attributed cache, then render (fallback to cumulative on fetch fail).
-  if (_v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
     _v41_ensureAgradeMonthLoaded().then(()=>_v41_renderReportAInner());
     return;
   }
@@ -12958,7 +12971,7 @@ function renderReportE(){ window._activeReport = renderReportE; if(window._v41_c
   // v45E: a specific date → fetch the cumulative-through-date snapshot from the server, then render.
   if (_d && !(_d in _rptE_asofCache)) { _rptE_fetchAsof(_d).then(()=>_v41_renderReportEInner()); return; }
   // month-attributed warm only applies to the cumulative (no-date) view
-  if (!_d && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (!_d && !_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
     _v41_ensureAgradeMonthLoaded().then(()=>_v41_renderReportEInner());
     return;
   }
