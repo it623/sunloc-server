@@ -15020,7 +15020,7 @@ async function doLogin() {
   try {
     const r = await fetch(serverUrl + '/api/auth/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ username: role, pin, app: 'planning', deviceToken: (localStorage.getItem('sunloc_device_token')||'') }),
+      body: JSON.stringify({ username: role, pin, app: 'planning', deviceToken: (localStorage.getItem('sunloc_device_token')||''), userAgent: (navigator.userAgent||'') }),
       signal: AbortSignal.timeout(5000)
     });
     let j = await r.json();
@@ -16251,6 +16251,22 @@ function renderAccessControl() {
 }
 
 function _acFmtTs(t){ if(!t) return '—'; try{ const d=new Date(t); return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});}catch(e){return String(t);} }
+// v50D: Mobile vs PC column for the Device Register. The server may already capture the browser's
+// User-Agent header when a device registers (most backends log it automatically alongside IP), so
+// this checks every plausible field name the API might return it under. If none of them are present
+// yet, it falls back to '—' rather than guessing — see the note sent alongside this change about
+// wiring the field through server-side if it isn't there already.
+function _acDeviceTypeLabel(d){
+  const ua = (d.user_agent || d.userAgent || d.ua || d.device_ua || d.platform || d.device_type || d.deviceType || '').toString();
+  if (!ua) return '<span style="color:var(--text3)">—</span>';
+  const isTablet = /iPad|Android(?!.*Mobile)|Tablet/i.test(ua);
+  const isMobile = !isTablet && /Mobile|iPhone|iPod|Android|Windows Phone|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+  if (isMobile) return '📱 Mobile';
+  if (isTablet) return '📱 Tablet';
+  // A recognised desktop UA token, or any non-empty value that didn't match mobile/tablet patterns.
+  if (/Windows|Macintosh|Linux|X11|CrOS/i.test(ua)) return '💻 PC';
+  return '💻 PC';
+}
 function _acStatusChip(st){
   const m = { approved:['#16a34a','APPROVED'], pending:['#d97706','PENDING'], denied:['#dc2626','DENIED'],
               approved_once:['#16a34a','APPROVED ONCE'], approved_always:['#16a34a','APPROVED ALWAYS'],
@@ -16292,12 +16308,13 @@ async function loadAccessControl() {
     const de = document.getElementById('ac-devices');
     if (de) de.innerHTML = (j.devices||[]).length === 0
       ? `<div style="color:var(--text3);padding:12px">No devices registered yet — the register fills automatically as people log in.</div>`
-      : `<div class="tbl-wrap tbl-sticky" style="max-height:360px;overflow:auto"><table><thead><tr><th>Label</th><th>Status</th><th>Last User</th><th>App</th><th>Last Seen</th><th>Last IP</th><th style="min-width:230px">Actions</th></tr></thead><tbody>` +
+      : `<div class="tbl-wrap tbl-sticky" style="max-height:360px;overflow:auto"><table><thead><tr><th>Label</th><th>Status</th><th>Last User</th><th>App</th><th>Device Type</th><th>Last Seen</th><th>Last IP</th><th style="min-width:230px">Actions</th></tr></thead><tbody>` +
         j.devices.map(d => `<tr>
             <td><input type="text" value="${(d.label||'').replace(/"/g,'&quot;')}" placeholder="${d.id.slice(0,8)}…" style="width:130px;font-size:12px" onchange="acDeviceAction('${d.id}','rename',this.value)"></td>
             <td>${_acStatusChip(d.status)}</td>
             <td>${d.username||'—'}</td>
             <td>${d.app||'—'}</td>
+            <td>${_acDeviceTypeLabel(d)}</td>
             <td>${_acFmtTs(d.last_seen)}</td>
             <td class="td-mono">${d.last_ip||'—'}</td>
             <td>
