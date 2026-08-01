@@ -2658,7 +2658,7 @@ function originalNormalBoxMax(batchNo, batch){
   return totals.length ? Math.min(...totals) : lakhToBox(b.qty, b.size);
 }
 
-function generateLabels(batchNo, count, isPartialLast, partialQty){
+function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nettWt){
   const batch = getBatch(batchNo);
   if(!batch) return [];
   const ps = PACK_SIZES[String(batch.size)] || 1;
@@ -2694,6 +2694,7 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
       poNumber:batch.poNumber, machineId:batch.machineId,
       startDate:batch.startDate||null, printMatter:batch.printMatter||batch.printingMatter||null,
       isPrinted:batch.isPrinted||false,
+      grossWt: grossWt||'', nettWt: nettWt||'',
       generated:now(), printed:false, voided:false, printedAt:null,
       qrData: '' // filled after
     };
@@ -2721,6 +2722,7 @@ function generateLabels(batchNo, count, isPartialLast, partialQty){
       poNumber:batch.poNumber, machineId:batch.machineId,
       startDate:batch.startDate||null, printMatter:batch.printMatter||batch.printingMatter||null,
       isPrinted:batch.isPrinted||false,
+      grossWt: grossWt||'', nettWt: nettWt||'',
       generated:now(), printed:false, voided:false, printedAt:null,
       qrData: ''
     };
@@ -4622,11 +4624,21 @@ function viewLabel(labelId){
 function editLabelQty(labelId){
   const l = state.labels.find(x=>x.id===labelId);
   if(!l) return;
-  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0), 'Change qty only. Updated qty will print on the label when reprinted.', `
+  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0), 'Change qty, gross/nett wt. Updated values will print on the label when reprinted.', `
     <div class="form-group">
       <label>Current Qty: <strong>${fmt(l.qty)}L</strong></label>
       <input type="number" id="edit-qty-input" value="${l.qty}" min="0.01" step="0.01" style="font-size:16px;font-weight:700;margin-top:8px" />
       <div style="font-size:11px;color:var(--text3);margin-top:4px">Enter new quantity in Lakhs</div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group">
+        <label>Gross Wt (kg)</label>
+        <input type="number" id="edit-gross-wt-input" value="${l.grossWt||''}" step="0.01" placeholder="e.g. 25.50" />
+      </div>
+      <div class="form-group">
+        <label>Nett Wt (kg)</label>
+        <input type="number" id="edit-nett-wt-input" value="${l.nettWt||''}" step="0.01" placeholder="e.g. 25.00" />
+      </div>
     </div>
   `, [
     {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'},
@@ -4637,15 +4649,19 @@ function editLabelQty(labelId){
 function saveLabelQtyEdit(labelId){
   const newQty = parseFloat(document.getElementById('edit-qty-input')?.value);
   if(!newQty || newQty <= 0) { alert('Please enter a valid quantity'); return; }
+  const newGrossWt = document.getElementById('edit-gross-wt-input')?.value||'';
+  const newNettWt = document.getElementById('edit-nett-wt-input')?.value||'';
   const l = state.labels.find(x=>x.id===labelId);
   if(!l) return;
   l.qty = newQty;
+  l.grossWt = newGrossWt;
+  l.nettWt = newNettWt;
   l.printed = false;
   saveLocal();
-  pushToServer('/api/tracking/label-update', {labelId, qty: newQty});
+  pushToServer('/api/tracking/label-update', {labelId, qty: newQty, grossWt: newGrossWt, nettWt: newNettWt});
   closeModal();
   renderLabels();
-  toast('✅ Qty updated — label marked for reprint', 'var(--green)', 3000);
+  toast('✅ Qty/weights updated — label marked for reprint', 'var(--green)', 3000);
 }
 
 function unprintedOrangeBatch(batchNumber){
@@ -4728,6 +4744,16 @@ function openLabelGen(preselect){
       <label>Partial Box Qty (Lakhs)</label>
       <input type="number" id="lg-partial-qty" step="0.01" placeholder="e.g. 0.75">
     </div>
+    <div class="form-row cols-2">
+      <div class="form-group">
+        <label>Gross Wt (kg)</label>
+        <input type="number" id="lg-gross-wt" step="0.01" placeholder="e.g. 25.50">
+      </div>
+      <div class="form-group">
+        <label>Nett Wt (kg)</label>
+        <input type="number" id="lg-nett-wt" step="0.01" placeholder="e.g. 25.00">
+      </div>
+    </div>
   `,[
     {label:'Cancel',cls:'btn-secondary',fn:'closeModal()'},
     {label:'Generate Labels',cls:'btn-primary',fn:'confirmLabelGen()'}
@@ -4773,8 +4799,10 @@ function confirmLabelGen(){
     const count=parseInt(document.getElementById('lg-count')?.value)||0;
     const isPartial=document.getElementById('lg-partial')?.checked;
     const partialQty=parseFloat(document.getElementById('lg-partial-qty')?.value)||0;
+    const grossWt=document.getElementById('lg-gross-wt')?.value||'';
+    const nettWt=document.getElementById('lg-nett-wt')?.value||'';
     if(!batchNo||count<1){alert('Please select a batch and enter quantity.');return;}
-    const labels=generateLabels(batchNo,count,isPartial,partialQty);
+    const labels=generateLabels(batchNo,count,isPartial,partialQty,grossWt,nettWt);
     if(labels.length){
       closeModal();
       alert(`✅ ${labels.length} label(s) generated for batch ${batchNo}.`);
