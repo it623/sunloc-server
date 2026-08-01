@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50B';
+const APP_BUILD = 'v50E';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -1382,6 +1382,17 @@ const MIGRATIONS = [
     name: 'access_devices_user_agent',
     sql: `ALTER TABLE access_devices ADD COLUMN user_agent TEXT;`
   },
+  {
+    // v50E: per-box label weights (average kg/lakh, net kg, gross kg). PG gets the same three
+    // columns via the idempotent labelColumns ALTER block above.
+    version: 57,
+    name: 'tracking_labels_weights',
+    sql: `
+      ALTER TABLE tracking_labels ADD COLUMN avg_wt REAL;
+      ALTER TABLE tracking_labels ADD COLUMN nett_wt REAL;
+      ALTER TABLE tracking_labels ADD COLUMN gross_wt REAL;
+    `
+  },
 ];
 
 function runMigrations() {
@@ -2297,7 +2308,12 @@ async function ensurePostgresTables() {
     const labelColumns = [
       'wo_status TEXT', 'ship_to TEXT', 'bill_to TEXT',
       'is_excess INTEGER DEFAULT 0', 'excess_num INTEGER',
-      'excess_total INTEGER', 'normal_total INTEGER', 'qr_data TEXT', 'voided_by TEXT'
+      'excess_total INTEGER', 'normal_total INTEGER', 'qr_data TEXT', 'voided_by TEXT',
+      // v50E: per-box weights. Until now grossWt/nettWt existed ONLY in the client blob — never
+      // stored, never returned by labels-all, and pullFromServer replaces state.labels wholesale,
+      // so every weight an operator typed was wiped on the next label sync. Persisting them here is
+      // what makes the printed weight survive a refresh or a different device.
+      'avg_wt REAL', 'nett_wt REAL', 'gross_wt REAL'
     ];
     for (const col of labelColumns) {
       const colName = col.split(' ')[0];
@@ -17516,6 +17532,14 @@ app.get('/api/tracking/sync-version', async (req, res) => {
 
 // ── Labels lookup by batchNumber (scanning fallback) ──
 // ── Save new labels to PostgreSQL directly ──────────────────
+// v50E: coerce a client weight field ('11.175' | 11.175 | '' | null) to a REAL or NULL. Anything
+// non-numeric or <=0 stores NULL so a blank never lands as 0 kg on a printed label.
+function _v50eWtNum(v){
+  if (v === null || v === undefined || v === '') return null;
+  const n = parseFloat(v);
+  return (Number.isFinite(n) && n > 0) ? n : null;
+}
+
 app.post('/api/tracking/labels', async (req, res) => {
   try {
     const { labels } = req.body;
@@ -17581,8 +17605,9 @@ app.post('/api/tracking/labels', async (req, res) => {
             (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,
              customer,colour,pc_code,po_number,machine_id,printing_matter,generated,
              printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,
-             is_excess,excess_num,excess_total,normal_total)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
+             is_excess,excess_num,excess_total,normal_total,
+             avg_wt,nett_wt,gross_wt)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29)
           ON CONFLICT (id) DO UPDATE SET
             batch_number=EXCLUDED.batch_number, label_number=EXCLUDED.label_number,
             qty=EXCLUDED.qty, is_partial=EXCLUDED.is_partial,
@@ -17592,7 +17617,12 @@ app.post('/api/tracking/labels', async (req, res) => {
             voided_at=EXCLUDED.voided_at, voided_by=EXCLUDED.voided_by,
             qr_data=EXCLUDED.qr_data, pc_code=EXCLUDED.pc_code,
             is_excess=EXCLUDED.is_excess, excess_num=EXCLUDED.excess_num,
-            excess_total=EXCLUDED.excess_total, normal_total=EXCLUDED.normal_total`,
+            excess_total=EXCLUDED.excess_total, normal_total=EXCLUDED.normal_total,
+            -- v50E: COALESCE so a re-push that carries no weights (e.g. an old cached client, or the
+            -- orange/backfill paths) can never blank a weight the operator already entered.
+            avg_wt=COALESCE(EXCLUDED.avg_wt, tracking_labels.avg_wt),
+            nett_wt=COALESCE(EXCLUDED.nett_wt, tracking_labels.nett_wt),
+            gross_wt=COALESCE(EXCLUDED.gross_wt, tracking_labels.gross_wt)`,
           [l.id, l.batchNumber||l.batch_number,
            // v46Y: orange labels store in the dedicated high range (BASE+box#); non-orange store the box#.
            _labelNumForStore(l),
@@ -17602,7 +17632,8 @@ app.post('/api/tracking/labels', async (req, res) => {
            l.generated||new Date().toISOString(),
            l.printed?1:0, l.printedAt||null, l.voided?1:0, l.voidReason||null,
            l.voidedAt||null, l.voidedBy||null, l.qrData||null,
-           l.isExcess?1:0, l.excessNum||null, l.excessTotal||null, l.normalTotal||null]
+           l.isExcess?1:0, l.excessNum||null, l.excessTotal||null, l.normalTotal||null,
+           _v50eWtNum(l.avgWt), _v50eWtNum(l.nettWt), _v50eWtNum(l.grossWt)]
         );
       }
     } else {
@@ -17610,8 +17641,9 @@ app.post('/api/tracking/labels', async (req, res) => {
         (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,
          customer,colour,pc_code,po_number,machine_id,printing_matter,generated,
          printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,
-         is_excess,excess_num,excess_total,normal_total)
-        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
+         is_excess,excess_num,excess_total,normal_total,
+         avg_wt,nett_wt,gross_wt)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
       labelsToWrite.forEach(l => stmt.run(
         l.id, l.batchNumber||l.batch_number, _labelNumForStore(l),
         l.size, l.qty, l.isPartial?1:0, l.isOrange?1:0, l.parentLabelId||null,
@@ -17620,7 +17652,8 @@ app.post('/api/tracking/labels', async (req, res) => {
         l.generated||new Date().toISOString(),
         l.printed?1:0, l.printedAt||null, l.voided?1:0, l.voidReason||null,
         l.voidedAt||null, l.voidedBy||null, l.qrData||null,
-        l.isExcess?1:0, l.excessNum||null, l.excessTotal||null, l.normalTotal||null
+        l.isExcess?1:0, l.excessNum||null, l.excessTotal||null, l.normalTotal||null,
+        _v50eWtNum(l.avgWt), _v50eWtNum(l.nettWt), _v50eWtNum(l.grossWt)
       ));
     }
     res.json({ ok: true, saved: labelsToWrite.length, skipped: skipped.length, duplicates: skipped });
@@ -17657,8 +17690,8 @@ app.get('/api/tracking/labels', async (req, res) => {
 // label list / dashboard / print queue need.
 app.get('/api/tracking/labels-all', async (req, res) => {
   try {
-    const COLS = `id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total`;
-    const m=r=>({id:r.id,batchNumber:r.batch_number,labelNumber:r.label_number,size:r.size,qty:r.qty,isPartial:!!r.is_partial,isOrange:!!r.is_orange,parentLabelId:r.parent_label_id||null,customer:r.customer||'',colour:r.colour||'',pcCode:r.pc_code||'',poNumber:r.po_number||'',machineId:r.machine_id||'',printingMatter:r.printing_matter||'',generated:r.generated,printed:!!r.printed,printedAt:r.printed_at||null,voided:!!r.voided,voidReason:r.void_reason||'',voidedAt:r.voided_at||null,voidedBy:r.voided_by||null,woStatus:r.wo_status||null,shipTo:r.ship_to||'',billTo:r.bill_to||'',isExcess:!!r.is_excess,excessNum:r.excess_num||null,excessTotal:r.excess_total||null,normalTotal:r.normal_total||null});
+    const COLS = `id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total,avg_wt,nett_wt,gross_wt`;   // v50E: weights
+    const m=r=>({id:r.id,batchNumber:r.batch_number,labelNumber:r.label_number,size:r.size,qty:r.qty,isPartial:!!r.is_partial,isOrange:!!r.is_orange,parentLabelId:r.parent_label_id||null,customer:r.customer||'',colour:r.colour||'',pcCode:r.pc_code||'',poNumber:r.po_number||'',machineId:r.machine_id||'',printingMatter:r.printing_matter||'',generated:r.generated,printed:!!r.printed,printedAt:r.printed_at||null,voided:!!r.voided,voidReason:r.void_reason||'',voidedAt:r.voided_at||null,voidedBy:r.voided_by||null,woStatus:r.wo_status||null,shipTo:r.ship_to||'',billTo:r.bill_to||'',isExcess:!!r.is_excess,excessNum:r.excess_num||null,excessTotal:r.excess_total||null,normalTotal:r.normal_total||null,avgWt:r.avg_wt==null?'':String(r.avg_wt),nettWt:r.nett_wt==null?'':String(r.nett_wt),grossWt:r.gross_wt==null?'':String(r.gross_wt)});   // v50E: weights survive the labels-all replace
     if(pgPool){const r=await pgPool.query(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`);res.json({ok:true,labels:r.rows.map(m)});}
     else{const labels=db.prepare(`SELECT ${COLS} FROM tracking_labels ORDER BY generated DESC`).all();res.json({ok:true,labels:labels.map(m)});}
   }catch(err){res.status(500).json({ok:false,error:err.message});}
@@ -18840,6 +18873,26 @@ app.post('/api/tracking/label-update', async (req, res) => {
         await pgPool.query('UPDATE tracking_labels SET qty = $1, printed = 0 WHERE id = $2', [qty, labelId]);
       } else {
         db.prepare('UPDATE tracking_labels SET qty = ?, printed = 0 WHERE id = ?').run(qty, labelId);
+      }
+    }
+    // v50E: weights are updated INDEPENDENTLY of the branches above, so the printed-flag path
+    // (v45Y — five fallback print routes depend on it) and the qty path keep their exact behaviour.
+    // Only the fields actually supplied are written; omitted ones are left untouched.
+    {
+      const _wSet = [];
+      const _wVal = [];
+      const _add = (col, val) => { if (val !== undefined) { _wSet.push(col); _wVal.push(_v50eWtNum(val)); } };
+      _add('avg_wt',   req.body.avgWt);
+      _add('nett_wt',  req.body.nettWt);
+      _add('gross_wt', req.body.grossWt);
+      if (_wSet.length) {
+        if (pgPool) {
+          const assigns = _wSet.map((c, i) => `${c} = $${i+1}`).join(', ');
+          await pgPool.query(`UPDATE tracking_labels SET ${assigns} WHERE id = $${_wSet.length+1}`, [..._wVal, labelId]);
+        } else {
+          const assigns = _wSet.map(c => `${c} = ?`).join(', ');
+          db.prepare(`UPDATE tracking_labels SET ${assigns} WHERE id = ?`).run(..._wVal, labelId);
+        }
       }
     }
     res.json({ ok: true });

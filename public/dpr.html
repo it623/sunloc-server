@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50B</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50E</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -3199,16 +3199,35 @@ function destroyChart(id){ if(chartInstances[id]){chartInstances[id].destroy();d
 function newChart(id,cfg){ destroyChart(id); const c=document.getElementById(id); if(!c)return; chartInstances[id]=new Chart(c,cfg); }
 
 // Helper: restrict a date input to selected DPR month
+// ═══ v50E REPORT DATE RANGE (confirmed by Ishan — option A, 1 Aug) ═══════════
+// The report date pickers used to be hard-clamped to the month in the header selector, so the
+// calendar greyed out every day of the previous month and July data was unreachable from the Plant
+// Report unless the operator first found the small month dropdown. They now span the SAME range the
+// month picker offers (past 12 months + current + 1 ahead), and each report scopes itself to the
+// month of the date actually picked (see _v50eScopeMonth). The header month selector is deliberately
+// NOT changed by picking a date — Data Entry stays anchored to it, so nothing about entering or
+// saving a DPR moves, and the month lock (grace / locked) is untouched.
+function _v50eRangeBounds() {
+  const now = dprCurrentYM();
+  const [ny, nm] = now.split('-').map(Number);
+  const minD = _localYMD(new Date(ny, nm - 1 - 12, 1));   // first day, 12 months back
+  const maxD = _localYMD(new Date(ny, nm + 1, 0));        // last day of next month
+  return { minD, maxD };
+}
+// The month a report should scope to = the month of the date on screen, falling back to the header
+// selector when there is no date yet.
+function _v50eScopeMonth(dateStr) {
+  const d = String(dateStr || '');
+  return /^\d{4}-\d{2}/.test(d) ? d.slice(0, 7) : _dprSelectedMonth;
+}
 function restrictDateToMonth(inputId) {
   const input = document.getElementById(inputId);
   if (!input) return;
-  const [y, m] = _dprSelectedMonth.split('-').map(Number);
-  const minD = `${_dprSelectedMonth}-01`;
-  const maxD = _localYMD(new Date(y, m, 0)); // v41k local
+  const { minD, maxD } = _v50eRangeBounds();
   input.min = minD;
   input.max = maxD;
-  if (input.value < minD || input.value > maxD) {
-    input.value = _dprSelectedMonth === dprCurrentYM() ? today() : minD;
+  if (input.value && (input.value < minD || input.value > maxD)) {
+    input.value = today();
   }
 }
 
@@ -4067,7 +4086,7 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
       const allD = [...new Set(Object.values(allDatesMap||{}).flat())].filter(d => d && d <= selectedDate).sort();
       return allD.length ? allD[0] : selectedDate;
     }
-    return _dprSelectedMonth + '-01';
+    return _v50eScopeMonth(selectedDate) + '-01';   // v50E: scope follows the date on screen
   })();
   const _daysInclusive = (a, b) => {
     // inclusive whole-day count between YYYY-MM-DD a..b (b>=a), else 1
@@ -4083,7 +4102,7 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
   //   parsedCache[fl][d]      = parsed day object (reused below)
   //   floorDateProd[fl][d]    = total floor production that day (for floor/plant active-day counts)
   // It also reduces localStorage churn, which helps the Plant Report's load time (#5).
-  const _scopeFilter = d => _dprCumulativeMode ? (d <= selectedDate) : (d >= _dprSelectedMonth + '-01' && d <= selectedDate);
+  const _scopeFilter = d => _dprCumulativeMode ? (d <= selectedDate) : (d >= _v50eScopeMonth(selectedDate) + '-01' && d <= selectedDate);   // v50E
   const parsedCache = {};
   const floorDateProd = {};
   Object.keys(FLOORS).forEach(fl => {
@@ -4293,7 +4312,7 @@ async function renderPlantReport(){
   let _serverCum45x = null;
   if (serverUrl) {
     try {
-      const _scopeFrom45x = _dprCumulativeMode ? '' : (_dprSelectedMonth + '-01');
+      const _scopeFrom45x = _dprCumulativeMode ? '' : (_v50eScopeMonth(selectedDate) + '-01');   // v50E
       const cr = await fetch(serverUrl + '/api/dpr/plant-cum?to=' + selectedDate + (_scopeFrom45x ? ('&from=' + _scopeFrom45x) : ''), { signal: AbortSignal.timeout(8000) });
       if (cr.ok) { const cj = await cr.json(); if (cj && cj.ok && cj.machines) _serverCum45x = cj.machines; }
     } catch(e) { console.warn('[plant-report] server cum unavailable — falling back to local grid:', e?.message); }
@@ -4304,7 +4323,7 @@ async function renderPlantReport(){
   // under-counted. Sync the full scope range from the server first so the cumulative is complete.
   // v45X: only needed for the FALLBACK path — with server cum in hand, skip the heavy range sync.
   if (serverUrl && !_serverCum45x) {
-    const _scopeFrom = _dprCumulativeMode ? '2000-01-01' : (_dprSelectedMonth + '-01');
+    const _scopeFrom = _dprCumulativeMode ? '2000-01-01' : (_v50eScopeMonth(selectedDate) + '-01');   // v50E
     // v41ZF #1: wrap with a hard timeout. If syncDateRangeFromServer hangs (slow/large range), the
     // report previously could sit on "Loading" indefinitely — which presents exactly as "doesn't
     // show up". Time-box it; the cumulative still renders from whatever is already cached locally.
@@ -4417,6 +4436,7 @@ async function renderPlantReport(){
   el.innerHTML = `
     <div style="font-size:11px;color:var(--t3);font-weight:700;margin-bottom:8px;font-family:var(--fc);letter-spacing:.5px;display:flex;align-items:center;gap:12px;flex-wrap:wrap">
       <span>📅 Daily: <strong style="color:var(--t1)">${selectedDate}</strong></span>
+      ${_v50eScopeMonth(selectedDate) !== _dprSelectedMonth ? `<span style="background:#0e7490;color:#fff;border-radius:3px;padding:1px 6px;font-size:10px;font-weight:800" title="You are viewing a month other than the one in the header selector. Cumulative totals below cover this month only; Data Entry still follows the header month.">VIEWING ${new Date(_v50eScopeMonth(selectedDate)+'-01T00:00:00').toLocaleString('default',{month:'short',year:'numeric'}).toUpperCase()}</span>` : ''}
       <span>📊 ${cumLabel}</span>
       <span>All quantities in Lakhs (L)</span>
       ${sourceNote}
@@ -4479,7 +4499,7 @@ async function exportPlantReport(){
   let _serverCum45x = null;
   if (serverUrl) {
     try {
-      const _scopeFrom45x = _dprCumulativeMode ? '' : (_dprSelectedMonth + '-01');
+      const _scopeFrom45x = _dprCumulativeMode ? '' : (_v50eScopeMonth(selectedDate) + '-01');   // v50E
       const cr = await fetch(serverUrl + '/api/dpr/plant-cum?to=' + selectedDate + (_scopeFrom45x ? ('&from=' + _scopeFrom45x) : ''), { signal: AbortSignal.timeout(8000) });
       if (cr.ok) { const cj = await cr.json(); if (cj && cj.ok && cj.machines) _serverCum45x = cj.machines; }
     } catch(e) {}

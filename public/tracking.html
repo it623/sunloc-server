@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v50B</title>
+<title>Sunloc Tracking Suite v1.0 · build v50E</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50B</p>
+      <p>Tracking Suite v1.0 · build v50E</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50B</p>
+      <p>Tracking Suite v1.0 · build v50E</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -727,6 +727,56 @@ input[type=number]{font-family:var(--mono)}
 // ═══════════════════════════════════════════════════════
 
 const PACK_SIZES = { '00':0.75, '0':1.00, '1':1.25, '2':1.75, '3':2.25, '4':3.00 };
+
+// ═══ v50E LABEL WEIGHTS (confirmed by Ishan, 1 Aug — Rahul Yadav's Gross & Net Wt. table) ═══
+// Net Wt (kg) = AVERAGE WEIGHT (kg per LAKH capsules) × that label's own quantity in lakhs.
+// Gross Wt (kg) = Net Wt + the packing (carton) tare for the order's packing material.
+// Verified against every row of the table: #00 0.75L×12.5 = 9.375 → 11.175 / 11.375; #0 1.00L×9.8 =
+// 9.800 → 11.600 / 11.800; #1 1.25L×7.9 = 9.875; #2 1.75L×6.5 = 11.375; #3 2.25L×5.2 = 11.700;
+// #4 3.00L×4.0 = 12.000; and the partial case #0 0.30L×9.8 = 2.940 → 4.740 / 4.940.
+// The AVERAGE WEIGHT is ALWAYS the operator's actual weighed figure — the standard below is only a
+// prefill so the common case is one keystroke. Sizes 5 / 0EL / 0SEL have no published standard, so
+// they prefill blank and the operator must enter the actual (Ishan: the operator enters the actual
+// weight anyway, so those sizes wire into the same flow).
+// The computation deliberately uses the LABEL's stored qty, not PACK_SIZES — so a partial box, an
+// excess box or an amended qty all weigh correctly with no second rule.
+const AVG_WT_STD_KG_PER_LAKH = { '00':12.5, '0':9.8, '1':7.9, '2':6.5, '3':5.2, '4':4.0, '5':null, '0EL':null, '0SEL':null };
+// Packing (carton) tare in kg. Source is the order's Packing field in Planning, which the Planning
+// Manager sets on every order (mandatory in New Order; v50C added it to the SAP-assign flow too).
+const PACK_TARE_KG = { '3 Ply':1.8, '3 Ply with HDCL':2.0, '5 Ply':2.0 };
+
+function _v50eStdAvgWt(size){
+  const v = AVG_WT_STD_KG_PER_LAKH[String(size==null?'':size).trim()];
+  return (typeof v === 'number' && isFinite(v) && v > 0) ? v : null;
+}
+// Tare for a batch's packing material. Returns null when Planning has no packing (or an unrecognised
+// legacy value) — the caller must then BLOCK and name the batch rather than assume a carton weight.
+function _v50eTareFor(batch){
+  const raw = String((batch && batch.packing) || '').trim();
+  if (!raw) return null;
+  if (Object.prototype.hasOwnProperty.call(PACK_TARE_KG, raw)) return PACK_TARE_KG[raw];
+  const hit = Object.keys(PACK_TARE_KG).find(k => k.toLowerCase() === raw.toLowerCase());
+  return hit ? PACK_TARE_KG[hit] : null;
+}
+function _v50eRound3(n){ return Math.round((Number(n)+Number.EPSILON)*1000)/1000; }
+function _v50eNetWt(avgWt, qtyLakhs){
+  const a = parseFloat(avgWt), q = parseFloat(qtyLakhs);
+  if(!isFinite(a) || a <= 0 || !isFinite(q) || q <= 0) return null;
+  return _v50eRound3(a * q);
+}
+function _v50eGrossWt(netWt, tare){
+  const n = parseFloat(netWt), t = parseFloat(tare);
+  if(!isFinite(n) || n <= 0 || !isFinite(t)) return null;
+  return _v50eRound3(n + t);
+}
+function _v50eFmtWt(n){ return (n==null || n==='' || !isFinite(parseFloat(n))) ? '' : parseFloat(n).toFixed(3); }
+// Both weights for one box, from an average weight and that box's qty. Returns nulls when either
+// input is unusable so the caller can refuse instead of printing a wrong figure.
+function _v50eWeighBox(avgWt, qtyLakhs, tare){
+  const net = _v50eNetWt(avgWt, qtyLakhs);
+  const gross = _v50eGrossWt(net, tare);
+  return { avgWt: (net==null?null:parseFloat(avgWt)), nettWt: net, grossWt: gross };
+}
 
 const FLOORS = {
   GF: { label:'Ground Floor', machines:['MC.20','MC.21','MC.22','MC.29','MC.30','MC.31','MC.32','MC.33','MC.34'] },
@@ -1014,7 +1064,30 @@ function setTrkProdMonthFilter(v){
 // Batches with NO production dates are attributed to their PLANNING month (see _v50bCohortMonth)
 // instead of appearing in every month; ghosts/retired rows with no batch record fall back to the
 // month of their first scan so they stay visible rather than silently vanishing.
+// v50C (confirmed by Ishan): ONE-TIME COHORT-START EXCEPTION. The mandatory 6 AM batch-change rule
+// only came in on 1 Aug, and the data is trustworthy from July onward. Batches that started BEFORE
+// July but were still running into July would otherwise sit in June's cohort — a month whose data
+// Ishan has confirmed is not accurate — taking their July production with them. So any batch whose
+// natural cohort month is earlier than _V50C_COHORT_START but which was still in production during
+// that month or later is ABSORBED into it. July therefore holds the whole straddling batch (its full
+// lifetime gross, June portion included) and June drops it — no batch is ever in two cohorts.
+// From August the plain start-month rule governs, aided by the enforced changeover.
+const _V50C_COHORT_START = '2026-07';
+function _v50cLastProdMonth(b) {
+  const last = b.dprLastDate || b.endDate || b.orderEndDate || b.dprFirstDate || b.startDate || b.orderStartDate;
+  if (!last) return '';
+  const d = new Date(last);
+  return isNaN(d.getTime()) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+}
 function _v50bCohortMonth(b) {
+  const m = _v50bCohortMonthRaw(b);
+  if (m && m < _V50C_COHORT_START) {
+    const lastM = _v50cLastProdMonth(b);
+    if (lastM && lastM >= _V50C_COHORT_START) return _V50C_COHORT_START;   // absorbed into July
+  }
+  return m;
+}
+function _v50bCohortMonthRaw(b) {
   if (!b) return '';
   const start = b.startDate || b.orderStartDate;
   if (start) { const d = new Date(start); if (!isNaN(d.getTime())) return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`; }
@@ -2487,7 +2560,10 @@ function autoGenerateOrangeLabel(label, batch){
     id:uid(), batchNumber:batch.batchNumber, labelNumber:'OL-'+label.labelNumber,
     size:label.size, qty:label.qty, isOrange:true, parentLabelId:label.id,
     printingMatter:batch.printMatter||batch.printingMatter||'', customer:batch.customer,
-    colour:batch.colour, generated:now(), printed:false, voided:false, qrData:''
+    colour:batch.colour, generated:now(), printed:false, voided:false, qrData:'',
+    // v50E: an orange (damaged-box reprint) label is the SAME physical box as its parent, so it
+    // inherits the parent's weighed figures rather than reprinting blank weights.
+    avgWt:label.avgWt||'', nettWt:label.nettWt||'', grossWt:label.grossWt||''
   };
   orangeLabel.qrData = generateQRData(orangeLabel);
   state.labels.push(orangeLabel);
@@ -2672,7 +2748,11 @@ function originalNormalBoxMax(batchNo, batch){
   return totals.length ? Math.min(...totals) : lakhToBox(b.qty, b.size);
 }
 
-function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nettWt){
+// v50E: `weights` is an OPTIONAL array aligned to the boxes of this run — weights[i] =
+// {avgWt,nettWt,grossWt} for box i. Per-Box mode supplies one entry per box; Per-Run mode supplies
+// the same computed entry for every box. When it is absent the legacy grossWt/nettWt run-level
+// values are used verbatim, so any other caller keeps its exact previous behaviour.
+function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nettWt, weights){
   const batch = getBatch(batchNo);
   if(!batch) return [];
   const ps = PACK_SIZES[String(batch.size)] || 1;
@@ -2694,6 +2774,12 @@ function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nett
   for(let i=0;i<count;i++){
     const isLast = i===count-1 && isPartialLast;
     const qty = isLast ? (partialQty||ps) : ps;
+    // v50E: this box's weighed figures. Falls back to the run-level values when no weights array
+    // was supplied (legacy path), so nothing changes for callers that don't use the new flow.
+    const _w50e = (Array.isArray(weights) && weights[i]) ? weights[i] : null;
+    const _avgW = _w50e ? _v50eFmtWt(_w50e.avgWt)   : '';
+    const _netW = _w50e ? _v50eFmtWt(_w50e.nettWt)  : (nettWt||'');
+    const _grsW = _w50e ? _v50eFmtWt(_w50e.grossWt) : (grossWt||'');
     const label = {
       id:uid(), batchNumber:batchNo,
       // labelNumber: for normal = sequential 1..N, for excess = negative to distinguish
@@ -2708,7 +2794,7 @@ function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nett
       poNumber:batch.poNumber, machineId:batch.machineId,
       startDate:batch.startDate||null, printMatter:batch.printMatter||batch.printingMatter||null,
       isPrinted:batch.isPrinted||false,
-      grossWt: grossWt||'', nettWt: nettWt||'',
+      grossWt: _grsW, nettWt: _netW, avgWt: _avgW,   // v50E: per-box weighed figures
       generated:now(), printed:false, voided:false, printedAt:null,
       qrData: '' // filled after
     };
@@ -2736,7 +2822,11 @@ function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nett
       poNumber:batch.poNumber, machineId:batch.machineId,
       startDate:batch.startDate||null, printMatter:batch.printMatter||batch.printingMatter||null,
       isPrinted:batch.isPrinted||false,
-      grossWt: grossWt||'', nettWt: nettWt||'',
+      // v50E: the specimen carries the FIRST box's weights (it is the batch's master/BPR label and
+      // prints on the same stock); its quantity/container are blanked at print time as before.
+      grossWt: (Array.isArray(weights)&&weights[0]) ? _v50eFmtWt(weights[0].grossWt) : (grossWt||''),
+      nettWt:  (Array.isArray(weights)&&weights[0]) ? _v50eFmtWt(weights[0].nettWt)  : (nettWt||''),
+      avgWt:   (Array.isArray(weights)&&weights[0]) ? _v50eFmtWt(weights[0].avgWt)   : '',
       generated:now(), printed:false, voided:false, printedAt:null,
       qrData: ''
     };
@@ -2926,13 +3016,22 @@ function _reconBadge(on, title){
 // on every report row whose gross is a deliberate DPR closed-batch correction (batch_gross_override).
 // Metadata arrives with scan-summary (state.grossOverrides = { bn: {gross, by, at, reason} }).
 function _ovrBadge(bn){
+  // v50D: absorbed straddlers show a JUL-SLICE chip wherever a batch badge renders (8 sites), so a
+  // July-dated-gross row is never silently different from its neighbours.
+  let _js50d = '';
+  try {
+    const _b50d = getBatch(bn);
+    if (_b50d && _v50dIsAbsorbed(_b50d) && _v50dJulGross && Object.prototype.hasOwnProperty.call(_v50dJulGross, bn)) {
+      _js50d = ` <span class="badge" style="font-size:8px;background:#0e7490;color:#fff;cursor:help" title="Started before July and ran into it, so it sits in the July cohort. Gross shown is the JULY-DATED DPR slice only (its June production is excluded); scans and WIP are lifetime, so the Unscanned leg may read 0.">JUL-SLICE</span>`;
+    }
+  } catch(e) {}
   const o = state.grossOverrides && state.grossOverrides[bn];
-  if(!o) return '';
+  if(!o) return _js50d;
   const t = (`DPR gross corrected to ${(+o.gross||0).toFixed(2)}L`
     + (o.by ? ` by ${o.by}` : '') + (o.at ? ` (${String(o.at).slice(0,16)})` : '')
     + (o.reason ? ` — ${o.reason}` : '')
     + `. Correction flows to Gross, WIP and all reports.`).replace(/"/g,'&quot;');
-  return ` <span class="badge" style="font-size:8px;background:#b45309;color:#fff;cursor:help" title="${t}">OVR</span>`;
+  return ` <span class="badge" style="font-size:8px;background:#b45309;color:#fff;cursor:help" title="${t}">OVR</span>` + _js50d;
 }
 // v49Y (Ishan, 28-Jul post-v49X): the DPR closed-batch gross override is TOP authority (v47S) — it must
 // beat the tracking RECONCILE override's gross too. 26ZC096/097 exposed the inversion: both carry a
@@ -3064,6 +3163,21 @@ function _reconGross(b){
   const go = (b.grossOverride==null || b.grossOverride==='') ? NaN : Number(b.grossOverride);
   if(!isNaN(go) && go>=0) return go;
   const o=_reconOverride(b.batchNumber); if(o&&o.gross!=null) return o.gross;
+  // v50C (confirmed by Ishan — 26ZG135 / 26ZG135-A phantom WIP): before the planning blob, read the
+  // AUTHORITATIVE server per-batch DPR sum (state.grossSummary = effectiveGross → _grossByBatch, with
+  // the v46K W/O-split apportionment ALREADY applied parent→children). The blob's actualProd carries
+  // the UN-apportioned family total on BOTH parent and child (36.75 each), so a split family showed
+  // its gross twice and the child carried a phantom Production WIP of 31.75L. Report E never had this
+  // because it reads _grossFor (the same map); Report B only surfaced it once v50B stopped supplying
+  // the server-apportioned monthGross. This makes Report B/E/D share ONE gross source by construction
+  // — the standing formula-uniformity rule. Absent key → blob, exactly as before.
+  // v50D: absorbed pre-July straddler → JULY-DATED gross slice (see _v50dIsAbsorbed above).
+  if (_v50dJulGross && _v50dIsAbsorbed(b) && Object.prototype.hasOwnProperty.call(_v50dJulGross, b.batchNumber)) {
+    return parseFloat(_v50dJulGross[b.batchNumber]) || 0;
+  }
+  if (state.grossSummary && Object.prototype.hasOwnProperty.call(state.grossSummary, b.batchNumber)) {
+    return state.grossSummary[b.batchNumber] || 0;
+  }
   return b.actualProd||b.actualQty||0;
 }
 async function loadReconcileOverridesTrk(){
@@ -3332,8 +3446,42 @@ let _v41_useMonthAttributed = true; // toggle — default ON so monthly reports 
 // _V50B_COHORT to false restores the v50A windowed behaviour exactly.
 const _V50B_COHORT = true;
 
+// ═══ v50D JULY-SLICE GROSS (confirmed by Ishan) ═══════════════════════════════
+// v50C absorbs pre-July straddlers into the July cohort so June (whose data predates the software
+// being trusted) doesn't hold them. But a cohort normally carries its batch's WHOLE lifetime gross,
+// which pushed July above the ~9548L Ishan tracks. For ABSORBED batches ONLY, gross is therefore the
+// JULY-DATED DPR slice (exactly what July showed before v50B) instead of lifetime — every other
+// batch keeps its full cohort gross. Source is the existing agrade-by-month monthGross map, which is
+// already split-family apportioned, so no new server work and no new attribution rule.
+// KNOWN, ACCEPTED CONSEQUENCE (explained to Ishan): an absorbed batch then has July-sliced gross but
+// LIFETIME scans, so its Unscanned WIP leg (Gross − Salvage − ScanIn) can clamp to 0 where June-made
+// boxes are already scanned. Departmental WIP is scan-to-scan and untouched, so the drain-and-cascade
+// behaviour is unaffected. Affected rows carry a JUL-SLICE chip so this is never invisible.
+let _v50dJulGross = null;   // null = not yet loaded; {} = loaded/failed (never retried in a loop)
+function _v50dIsAbsorbed(b){
+  if (!_V50B_COHORT || !b) return false;
+  const raw = _v50bCohortMonthRaw(b);
+  if (!raw || raw >= _V50C_COHORT_START) return false;
+  const lastM = _v50cLastProdMonth(b);
+  return !!(lastM && lastM >= _V50C_COHORT_START);
+}
+function _v50dNeedJulSlice(){
+  return _V50B_COHORT && _v41_useMonthAttributed && _trkSelectedMonth === _V50C_COHORT_START && _v50dJulGross === null;
+}
+async function _v50dEnsureJulSlice(){
+  if (!_v50dNeedJulSlice()) return _v50dJulGross;
+  try {
+    const r = await fetch(serverUrl + '/api/tracking/agrade-by-month?month=' + encodeURIComponent(_V50C_COHORT_START), { signal: AbortSignal.timeout(20000) });
+    const j = r.ok ? await r.json() : null;
+    _v50dJulGross = (j && j.ok && j.monthGross) ? j.monthGross : {};
+  } catch(e){
+    console.warn('[v50D] July-slice gross fetch failed:', e.message);
+    _v50dJulGross = {};   // fail soft: absorbed rows fall back to lifetime gross
+  }
+  return _v50dJulGross;
+}
 async function _v41_fetchAgradeMonth(ym){
-  if (_V50B_COHORT) return null;   // v50B: cohort mode never uses the windowed cache
+  if (_V50B_COHORT) return await _v50dEnsureJulSlice();   // v50D: cohort mode pulls ONLY the July slice
   if (_v41_agradeMonthCache[ym]) return _v41_agradeMonthCache[ym];
   try {
     const r = await fetch(serverUrl + '/api/tracking/agrade-by-month?month=' + encodeURIComponent(ym), { signal: AbortSignal.timeout(20000) });
@@ -3371,8 +3519,8 @@ function _v41_agradeFor(batchNo, stage, opts){
 }
 // Ensure windowed data for the selected month is loaded (call before a report's batch loop).
 async function _v41_ensureAgradeMonthLoaded(){
-  if (_V50B_COHORT) return null;   // v50B: cohort mode never uses the windowed cache
-  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (_V50B_COHORT) return await _v50dEnsureJulSlice();   // v50D: cohort mode pulls ONLY the July slice
+  if (_v50dNeedJulSlice() || (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth])) {
     await _v41_fetchAgradeMonth(_trkSelectedMonth);
   }
 }
@@ -4659,41 +4807,63 @@ function viewLabel(labelId){
 function editLabelQty(labelId){
   const l = state.labels.find(x=>x.id===labelId);
   if(!l) return;
-  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0), 'Change qty, gross/nett wt. Updated values will print on the label when reprinted.', `
+  // v50E: weights follow the same single rule as generation — enter the weighed average, Net and
+  // Gross are derived from THIS label's qty and the order's packing tare. For a label created
+  // before v50E the average is back-derived from its stored Net (net ÷ qty) so nothing is lost.
+  const _b50e = getBatch(l.batchNumber);
+  const _tare50e = _v50eTareFor(_b50e);
+  window._v50eEditTare = _tare50e;   // read by _v50eEditWtPreview while the modal is open
+  const _avg50e = (l.avgWt && parseFloat(l.avgWt) > 0) ? _v50eFmtWt(l.avgWt)
+    : ((parseFloat(l.nettWt) > 0 && parseFloat(l.qty) > 0) ? _v50eFmtWt(parseFloat(l.nettWt)/parseFloat(l.qty))
+    : (_v50eStdAvgWt(l.size) != null ? String(_v50eStdAvgWt(l.size)) : ''));
+  openModal('Edit Label Qty — #'+Math.abs(l.labelNumber||0), 'Change qty / average weight. Net and Gross are recalculated and will print on the label when reprinted.', `
     <div class="form-group">
       <label>Current Qty: <strong>${fmt(l.qty)}L</strong></label>
-      <input type="number" id="edit-qty-input" value="${l.qty}" min="0.01" step="0.01" style="font-size:16px;font-weight:700;margin-top:8px" />
+      <input type="number" id="edit-qty-input" value="${l.qty}" min="0.01" step="0.01" oninput="_v50eEditWtPreview()" style="font-size:16px;font-weight:700;margin-top:8px" />
       <div style="font-size:11px;color:var(--text3);margin-top:4px">Enter new quantity in Lakhs</div>
     </div>
-    <div class="form-row cols-2">
-      <div class="form-group">
-        <label>Gross Wt (kg)</label>
-        <input type="number" id="edit-gross-wt-input" value="${l.grossWt||''}" step="0.01" placeholder="e.g. 25.50" />
-      </div>
-      <div class="form-group">
-        <label>Nett Wt (kg)</label>
-        <input type="number" id="edit-nett-wt-input" value="${l.nettWt||''}" step="0.01" placeholder="e.g. 25.00" />
-      </div>
+    <div class="form-group">
+      <label>Average Wt (kg per lakh)</label>
+      <input type="number" id="edit-avg-wt-input" value="${_avg50e}" step="0.001" oninput="_v50eEditWtPreview()" placeholder="${_v50eStdAvgWt(l.size)!=null?_v50eStdAvgWt(l.size):'e.g. 9.8'}" />
+      <div style="font-size:11px;color:var(--text3);margin-top:4px">${_tare50e==null?'<span style="color:var(--amber)">⚠️ Packing not set in Planning for this batch — Gross Wt cannot be recalculated.</span>':`Packing <b>${_b50e.packing}</b> — tare ${_v50eFmtWt(_tare50e)} kg`}</div>
     </div>
+    <div id="edit-wt-preview" class="alert alert-info" style="font-size:12px"></div>
   `, [
     {label:'Cancel', cls:'btn-secondary', fn:'closeModal()'},
     {label:'✏️ Save & Mark for Reprint', cls:'btn-primary', fn:`saveLabelQtyEdit('${labelId}')`}
   ]);
+  setTimeout(_v50eEditWtPreview, 40);   // v50E: seed the Net/Gross preview
 }
 
+// v50E: live Net/Gross preview inside the edit modal — identical arithmetic to generation.
+function _v50eEditWtPreview(labelId){
+  const host = document.getElementById('edit-wt-preview');
+  if(!host) return;
+  const qty = parseFloat(document.getElementById('edit-qty-input')?.value);
+  const avg = document.getElementById('edit-avg-wt-input')?.value;
+  const tare = window._v50eEditTare;
+  const w = _v50eWeighBox(avg, qty, tare);
+  host.innerHTML = (w.nettWt==null)
+    ? '<span style="color:var(--amber)">Enter a valid qty and average weight to calculate Net / Gross.</span>'
+    : `Net <b>${_v50eFmtWt(w.nettWt)}</b> kg${w.grossWt==null?' · <span style="color:var(--amber)">Gross needs the packing material</span>':` · Gross <b>${_v50eFmtWt(w.grossWt)}</b> kg`}`;
+}
 function saveLabelQtyEdit(labelId){
   const newQty = parseFloat(document.getElementById('edit-qty-input')?.value);
   if(!newQty || newQty <= 0) { alert('Please enter a valid quantity'); return; }
-  const newGrossWt = document.getElementById('edit-gross-wt-input')?.value||'';
-  const newNettWt = document.getElementById('edit-nett-wt-input')?.value||'';
   const l = state.labels.find(x=>x.id===labelId);
   if(!l) return;
+  // v50E: derive both weights from the average and the (possibly amended) qty.
+  const newAvgWt = document.getElementById('edit-avg-wt-input')?.value||'';
+  const _w = _v50eWeighBox(newAvgWt, newQty, _v50eTareFor(getBatch(l.batchNumber)));
+  const newNettWt  = _v50eFmtWt(_w.nettWt);
+  const newGrossWt = _v50eFmtWt(_w.grossWt);
   l.qty = newQty;
+  l.avgWt = _w.nettWt==null ? '' : _v50eFmtWt(newAvgWt);
   l.grossWt = newGrossWt;
   l.nettWt = newNettWt;
   l.printed = false;
   saveLocal();
-  pushToServer('/api/tracking/label-update', {labelId, qty: newQty, grossWt: newGrossWt, nettWt: newNettWt});
+  pushToServer('/api/tracking/label-update', {labelId, qty: newQty, avgWt: l.avgWt, grossWt: newGrossWt, nettWt: newNettWt});
   closeModal();
   renderLabels();
   toast('✅ Qty/weights updated — label marked for reprint', 'var(--green)', 3000);
@@ -4777,34 +4947,164 @@ function openLabelGen(preselect){
     </div>
     <div id="lg-partial-row" class="form-group hidden">
       <label>Partial Box Qty (Lakhs)</label>
-      <input type="number" id="lg-partial-qty" step="0.01" placeholder="e.g. 0.75">
+      <input type="number" id="lg-partial-qty" step="0.01" oninput="_v50eRenderWtBlock()" placeholder="e.g. 0.75">
     </div>
-    <div class="form-row cols-2">
-      <div class="form-group">
-        <label>Gross Wt (kg)</label>
-        <input type="number" id="lg-gross-wt" step="0.01" placeholder="e.g. 25.50">
-      </div>
-      <div class="form-group">
-        <label>Nett Wt (kg)</label>
-        <input type="number" id="lg-nett-wt" step="0.01" placeholder="e.g. 25.00">
-      </div>
-    </div>
+    <!-- v50E: Net/Gross weights are now DERIVED from the operator's average weight and each box's
+         own quantity, instead of two free-typed numbers applied to the whole run. -->
+    <div id="lg-wt-block"></div>
   `,[
     {label:'Cancel',cls:'btn-secondary',fn:'closeModal()'},
     {label:'Generate Labels',cls:'btn-primary',fn:'confirmLabelGen()'}
   ]);
+  window._v50eWtMode = 'run';       // v50E: default = one average weight for the whole run
+  window._v50eBoxAvg  = {};         // v50E: per-box average weights typed in Per-Box mode
+  setTimeout(_v50eRenderWtBlock, 60);
   if(preselect) setTimeout(updateLabelGenInfo,100);
+}
+
+// ═══ v50E WEIGHT ENTRY (confirmed by Ishan) ══════════════════════════════════
+// The AIM operator picks how the average weight is captured:
+//   Per Run   — one weighed average applies to every box of this run (the common case).
+//   Per Box   — a row per box, each with its own weighed average (Rahul's "entered manually for
+//               every box prior to label printing").
+// Either way Net = avg × that box's own qty and Gross = Net + the order's packing tare, so a
+// partial last box is always weighed on its real quantity, never on the full pack size.
+function _v50eSetWtMode(mode){
+  window._v50eWtMode = (mode === 'box') ? 'box' : 'run';
+  _v50eRenderWtBlock();
+}
+function _v50eOnBoxAvg(i, val){
+  if(!window._v50eBoxAvg) window._v50eBoxAvg = {};
+  window._v50eBoxAvg[i] = val;
+  _v50eRefreshBoxRow(i);
+}
+// The boxes this run will create: index → qty in lakhs (last box partial when ticked).
+function _v50eRunBoxes(){
+  const batchNo = document.getElementById('lg-batch')?.value;
+  const batch = batchNo ? getBatch(batchNo) : null;
+  const count = parseInt(document.getElementById('lg-count')?.value) || 0;
+  const isPartial = !!document.getElementById('lg-partial')?.checked;
+  const partialQty = parseFloat(document.getElementById('lg-partial-qty')?.value) || 0;
+  const ps = batch ? (PACK_SIZES[String(batch.size)] || 1) : 1;
+  const out = [];
+  for(let i=0;i<count;i++){
+    const isLast = (i === count-1) && isPartial;
+    out.push({ i, qty: isLast ? (partialQty || ps) : ps, partial: isLast });
+  }
+  return { batch, boxes: out, ps };
+}
+function _v50eRunAvgValue(){
+  const el = document.getElementById('lg-avg-wt');
+  return el ? el.value : '';
+}
+// The weights this run will stamp, or a reason it cannot be computed. Single source of truth for
+// both the live preview and the Generate action, so what the operator sees is exactly what prints.
+function _v50eComputeRunWeights(){
+  const { batch, boxes } = _v50eRunBoxes();
+  if(!batch) return { ok:false, reason:'Select a batch first.', weights:[] };
+  if(!boxes.length) return { ok:false, reason:'Enter the number of boxes.', weights:[] };
+  const tare = _v50eTareFor(batch);
+  if(tare == null){
+    return { ok:false, noTare:true, weights:[],
+      reason:`Packing material is not set on order ${batch.batchNumber||''} in Planning, so the carton tare is unknown and Gross Wt cannot be calculated. Ask the Planning Manager to set Packing (3 Ply / 3 Ply with HDCL / 5 Ply) on this order.` };
+  }
+  const perRun = window._v50eWtMode !== 'box';
+  const weights = [];
+  for(const b of boxes){
+    const raw = perRun ? _v50eRunAvgValue() : ((window._v50eBoxAvg||{})[b.i] ?? '');
+    const w = _v50eWeighBox(raw, b.qty, tare);
+    if(w.nettWt == null || w.grossWt == null){
+      return { ok:false, weights:[],
+        reason: perRun ? 'Enter the average weight (kg per lakh) for this run.'
+                       : `Enter the average weight for box ${b.i+1}.` };
+    }
+    weights.push(w);
+  }
+  return { ok:true, weights, tare };
+}
+function _v50eRefreshBoxRow(i){
+  const { batch, boxes } = _v50eRunBoxes();
+  const box = boxes.find(b => b.i === i);
+  const cell = document.getElementById('v50e-box-out-'+i);
+  if(!cell || !box || !batch) return;
+  const tare = _v50eTareFor(batch);
+  const w = _v50eWeighBox((window._v50eBoxAvg||{})[i] ?? '', box.qty, tare);
+  cell.innerHTML = (w.nettWt==null)
+    ? '<span style="color:var(--text3)">—</span>'
+    : `<span class="td-mono">${_v50eFmtWt(w.nettWt)}</span> / <span class="td-mono" style="font-weight:700">${w.grossWt==null?'—':_v50eFmtWt(w.grossWt)}</span>`;
+  const sum = document.getElementById('v50e-wt-summary');
+  if(sum) sum.innerHTML = _v50eSummaryHtml();
+}
+function _v50eSummaryHtml(){
+  const r = _v50eComputeRunWeights();
+  if(!r.ok) return `<span style="color:var(--amber)">⚠️ ${r.reason}</span>`;
+  const net = r.weights.reduce((s,w)=>s+(w.nettWt||0),0);
+  const gross = r.weights.reduce((s,w)=>s+(w.grossWt||0),0);
+  return `✅ ${r.weights.length} box(es) — total Net <b>${_v50eFmtWt(net)}</b> kg · total Gross <b>${_v50eFmtWt(gross)}</b> kg (tare ${_v50eFmtWt(r.tare)} kg/box)`;
+}
+function _v50eRenderWtBlock(){
+  const host = document.getElementById('lg-wt-block');
+  if(!host) return;
+  const { batch, boxes } = _v50eRunBoxes();
+  if(!batch){ host.innerHTML = `<div class="text-sm text-muted">Select a batch to enter weights.</div>`; return; }
+  const tare = _v50eTareFor(batch);
+  const std  = _v50eStdAvgWt(batch.size);
+  const perRun = window._v50eWtMode !== 'box';
+  const packLine = (tare == null)
+    ? `<div class="alert alert-danger" style="margin:0 0 8px">⚠️ <b>Packing not set in Planning</b> for ${batch.batchNumber||''} — carton tare unknown, so Gross Wt cannot be calculated. Ask the Planning Manager to set Packing on this order, then reopen this screen.</div>`
+    : `<div class="text-sm text-muted" style="margin-bottom:8px">📦 Packing <b>${batch.packing}</b> — tare <b>${_v50eFmtWt(tare)} kg</b> per box · Size <b>${batch.size}</b>${std!=null?` · standard avg wt <b>${std} kg/lakh</b>`:` · <span style="color:var(--amber)">no standard for size ${batch.size} — enter the weighed average</span>`}</div>`;
+  const modeBar = `<div style="display:flex;gap:6px;align-items:center;margin-bottom:8px;flex-wrap:wrap">
+      <span style="font-size:11px;font-weight:700;color:var(--text2)">Average weight:</span>
+      <button type="button" onclick="_v50eSetWtMode('run')" style="font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;border:1px solid ${perRun?'var(--accent)':'var(--border)'};background:${perRun?'rgba(96,165,250,0.15)':'transparent'};color:${perRun?'var(--accent)':'var(--text3)'};font-weight:${perRun?'700':'400'}">Per Run</button>
+      <button type="button" onclick="_v50eSetWtMode('box')" style="font-size:10px;padding:3px 8px;border-radius:4px;cursor:pointer;border:1px solid ${!perRun?'var(--accent)':'var(--border)'};background:${!perRun?'rgba(96,165,250,0.15)':'transparent'};color:${!perRun?'var(--accent)':'var(--text3)'};font-weight:${!perRun?'700':'400'}">Per Box</button>
+      <span style="font-size:9px;color:var(--text3)">${perRun?'One weighed average for every box of this run':'A weighed average for each box individually'}</span>
+    </div>`;
+  let body = '';
+  if(perRun){
+    const cur = (document.getElementById('lg-avg-wt')?.value) ?? (std!=null?String(std):'');
+    const rows = boxes.map(b=>{
+      const w = _v50eWeighBox(cur, b.qty, tare);
+      return `<tr><td class="td-mono">${b.i+1}${b.partial?' <span class="badge badge-amber">PARTIAL</span>':''}</td><td class="td-mono">${fmt(b.qty)}</td><td class="td-mono">${w.nettWt==null?'—':_v50eFmtWt(w.nettWt)}</td><td class="td-mono fw-bold">${w.grossWt==null?'—':_v50eFmtWt(w.grossWt)}</td></tr>`;
+    }).join('');
+    body = `<div class="form-group">
+        <label>Average Wt (kg per lakh) *</label>
+        <input type="number" id="lg-avg-wt" step="0.001" value="${cur}" oninput="_v50eRenderWtBlock()" placeholder="${std!=null?std:'e.g. 9.8'}">
+        <div style="font-size:10px;color:var(--text3);margin-top:3px">Weighed average for this run. Net = avg × box qty; Gross = Net + packing tare.</div>
+      </div>
+      ${boxes.length?`<div class="tbl-wrap" style="max-height:180px;overflow:auto"><table><thead><tr><th>Box</th><th>Qty (L)</th><th>Net (kg)</th><th>Gross (kg)</th></tr></thead><tbody>${rows}</tbody></table></div>`:''}`;
+  } else {
+    const rows = boxes.map(b=>{
+      const cur = (window._v50eBoxAvg||{})[b.i] ?? (std!=null?String(std):'');
+      if(window._v50eBoxAvg && window._v50eBoxAvg[b.i]===undefined && std!=null) window._v50eBoxAvg[b.i]=String(std);
+      const w = _v50eWeighBox(cur, b.qty, tare);
+      const out = (w.nettWt==null) ? '<span style="color:var(--text3)">—</span>'
+        : `<span class="td-mono">${_v50eFmtWt(w.nettWt)}</span> / <span class="td-mono" style="font-weight:700">${w.grossWt==null?'—':_v50eFmtWt(w.grossWt)}</span>`;
+      return `<tr><td class="td-mono">${b.i+1}${b.partial?' <span class="badge badge-amber">PARTIAL</span>':''}</td><td class="td-mono">${fmt(b.qty)}</td>
+        <td><input type="number" step="0.001" value="${cur}" oninput="_v50eOnBoxAvg(${b.i}, this.value)" style="width:92px;font-size:12px" placeholder="${std!=null?std:'avg'}"></td>
+        <td id="v50e-box-out-${b.i}">${out}</td></tr>`;
+    }).join('');
+    body = boxes.length
+      ? `<div class="tbl-wrap" style="max-height:240px;overflow:auto"><table><thead><tr><th>Box</th><th>Qty (L)</th><th>Avg Wt (kg/lakh)</th><th>Net / Gross (kg)</th></tr></thead><tbody>${rows}</tbody></table></div>`
+      : `<div class="text-sm text-muted">Enter the number of boxes to weigh them individually.</div>`;
+  }
+  host.innerHTML = `<div class="form-group" style="border:1px solid var(--border);border-radius:6px;padding:10px">
+      <label style="font-size:11px;font-weight:700">⚖️ Net &amp; Gross Weight</label>
+      ${packLine}${modeBar}${body}
+      <div id="v50e-wt-summary" style="font-size:11px;margin-top:8px">${_v50eSummaryHtml()}</div>
+    </div>`;
 }
 
 function togglePartial(){
   const checked=document.getElementById('lg-partial')?.checked;
   const row=document.getElementById('lg-partial-row');
   if(row) row.classList.toggle('hidden',!checked);
+  _v50eRenderWtBlock();   // v50E: last box's qty changed → its weights change
 }
 
 function updateLabelGenInfo(){
   const batchNo=document.getElementById('lg-batch')?.value;
   const count=parseInt(document.getElementById('lg-count')?.value)||0;
+  _v50eRenderWtBlock();   // v50E: batch/box-count changed → re-derive the weight rows
   const infoEl=document.getElementById('lg-info');
   const dailyEl=document.getElementById('lg-daily-rem');
   if(!batchNo||!infoEl) return;
@@ -4834,10 +5134,14 @@ function confirmLabelGen(){
     const count=parseInt(document.getElementById('lg-count')?.value)||0;
     const isPartial=document.getElementById('lg-partial')?.checked;
     const partialQty=parseFloat(document.getElementById('lg-partial-qty')?.value)||0;
-    const grossWt=document.getElementById('lg-gross-wt')?.value||'';
-    const nettWt=document.getElementById('lg-nett-wt')?.value||'';
     if(!batchNo||count<1){alert('Please select a batch and enter quantity.');return;}
-    const labels=generateLabels(batchNo,count,isPartial,partialQty,grossWt,nettWt);
+    // v50E: weights are DERIVED and mandatory — refuse loudly rather than print a blank or a
+    // guessed weight. The same computation feeds the on-screen preview, so there is one rule.
+    const _wr = _v50eComputeRunWeights();
+    if(!_wr.ok){ alert('⚠️ Cannot generate labels yet.\n\n'+_wr.reason); return; }
+    const grossWt=_v50eFmtWt(_wr.weights[0].grossWt);
+    const nettWt =_v50eFmtWt(_wr.weights[0].nettWt);
+    const labels=generateLabels(batchNo,count,isPartial,partialQty,grossWt,nettWt,_wr.weights);
     if(labels.length){
       closeModal();
       alert(`✅ ${labels.length} label(s) generated for batch ${batchNo}.`);
@@ -4858,11 +5162,13 @@ function viewBatchLabels(batchNo){
   });
   openModal(`Labels — ${batchNo}`,`${labels.length} labels | ${batch?.customer||''} | Size ${batch?.size}`,`
     <div class="tbl-wrap"><table>
-      <thead><tr><th>#</th><th>Qty (L)</th><th>Status</th><th>Generated</th><th>Printed</th><th>Actions</th></tr></thead>
+      <thead><tr><th>#</th><th>Qty (L)</th><th>Net (kg)</th><th>Gross (kg)</th><th>Status</th><th>Generated</th><th>Printed</th><th>Actions</th></tr></thead>
       <tbody>
       ${labels.map(l=>`<tr>
         <td class="td-mono fw-bold">${_isSpecimenLabel(l)?`<span style="color:#2563eb">SPECIMEN</span>`:l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}/${state.labels.filter(x=>x.batchNumber===l.batchNumber&&!x.voided&&!x.isOrange&&x.isExcess).length||l.excessTotal||1}</span>`:`${Math.abs(l.labelNumber||0)}/${l.normalTotal||'?'}`}${l.isPartial?' <span class="badge badge-amber">PARTIAL</span>':''}${l.batchNumber&&l.batchNumber.startsWith('TEMP-')?'<span class="badge" style="background:rgba(255,64,96,0.12);color:#ff4060;border:1px solid rgba(255,64,96,0.35);font-size:9px;margin-left:3px">⚠️ TEMP</span>':l.woStatus&&l.woStatus==='wo'?'<span class="badge" style="background:rgba(255,171,0,0.12);color:#C55A11;border:1px solid rgba(255,171,0,0.35);font-size:9px;margin-left:3px">🔶 W/O</span>':''}</td>
         <td class="td-mono">${_isSpecimenLabel(l)?'—':fmt(l.qty)}</td>
+        <td class="td-mono">${l.nettWt?_v50eFmtWt(l.nettWt):'<span style="color:var(--text3)">—</span>'}</td>
+        <td class="td-mono">${l.grossWt?_v50eFmtWt(l.grossWt):'<span style="color:var(--text3)">—</span>'}</td>
         <td>${l.voided?'<span class="badge badge-red">VOIDED</span>':l.printed?'<span class="badge badge-green">Printed</span>':'<span class="badge badge-gray">Not Printed</span>'}</td>
         <td class="td-mono text-sm">${fmtDateTime(l.generated)}</td>
         <td class="td-mono text-sm">${l.printedAt?fmtDateTime(l.printedAt):'-'}</td>
@@ -4871,7 +5177,7 @@ function viewBatchLabels(batchNo){
           ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-danger" onclick="adminVoidBox('${l.id}')">Void</button>`:''}\n          ${!l.voided&&currentDept==='admin'?`<button class="btn btn-sm btn-warning" onclick="openDamagedReprint('${l.id}')">🔄 Reprint</button>`:''}
           ${l.isPartial&&!l.voided?`<button class="btn btn-sm btn-warning" onclick="openRegenPartial('${l.id}')">Regen</button>`:''}
         </td>
-      </tr>`).join('')||'<tr><td colspan="6" class="text-center text-muted">No labels</td></tr>'}
+      </tr>`).join('')||'<tr><td colspan="8" class="text-center text-muted">No labels</td></tr>'}
       </tbody>
     </table></div>
   `,[{label:'Close',cls:'btn-secondary',fn:'closeModal()'}]);
@@ -10647,13 +10953,13 @@ function renderReportD(){ window._activeReport = renderReportD;
   // any G-section filter/toggle re-renders the whole merged Report D (see renderReportG).
   window._v41_composingD = true;
   // v41 P19.6 (Q1): warm month-attributed cache, then render (fallback to cumulative on fetch fail).
-  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (_v50dNeedJulSlice() || (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth])) {
     _v41_ensureAgradeMonthLoaded().then(()=>{ _v41_renderReportDInner(); _v41_renderReportGInner(); });
     return;
   }
   _v41_renderReportDInner();
   // Second section: batch-wise & cumulative A-Grade (former Report G), appended below.
-  if (!_V50B_COHORT && _v41_useMonthAttributed) { _v41_fetchAgradeMonth(_trkSelectedMonth).then(()=>{ _v41_renderReportGInner(); }); }
+  if (_v50dNeedJulSlice() || (!_V50B_COHORT && _v41_useMonthAttributed)) { _v41_fetchAgradeMonth(_trkSelectedMonth).then(()=>{ _v41_renderReportGInner(); }); }
   else { _v41_renderReportGInner(); }
 }
 // v41ZF: NEW Report G = Daily Scan In/Out Movement (former Report K) as the primary view, with the
@@ -11814,7 +12120,7 @@ function _v41_renderReportFInner(){
   // under-scan box totals disagreed by exactly the prior-month activity on carry-forward batches
   // (the 49 vs 39 gap). Falls back to cumulative until the window is cached — same as B/D first paint.
   const _fMd = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
-  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (_v50dNeedJulSlice() || (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth])) {
     _v41_fetchAgradeMonth(_trkSelectedMonth).then(md => { if (md && window._activeReport===renderReportF) renderReportF(); });
   }
   const _fIsCurMonth = _trkSelectedMonth === today().slice(0,7);
@@ -12251,7 +12557,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
   // on June-started batches, and gross not matching July DPR. If the month window isn't cached
   // yet, kick the fetch and re-render when it lands (first paint shows cumulative, same as D).
   const _bMd = (_v41_useMonthAttributed && _v41_agradeMonthCache[_trkSelectedMonth]) ? _v41_agradeMonthCache[_trkSelectedMonth] : null;
-  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (_v50dNeedJulSlice() || (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth])) {
     _v41_fetchAgradeMonth(_trkSelectedMonth).then(md => { if (md && window._activeReport===renderReportB) renderReportB(); });
   }
   const _bIsCurMonth = _trkSelectedMonth === today().slice(0,7);
@@ -12777,7 +13083,7 @@ _scrollIntoReportIfFirstView('D');
 
 function renderReportA(){ window._activeReport = renderReportA; if(window._v41_composingD)window._v41_composingD=false;
   // v41 P19.6 (Q1): warm month-attributed cache, then render (fallback to cumulative on fetch fail).
-  if (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (_v50dNeedJulSlice() || (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth])) {
     _v41_ensureAgradeMonthLoaded().then(()=>_v41_renderReportAInner());
     return;
   }
@@ -12999,7 +13305,7 @@ function renderReportE(){ window._activeReport = renderReportE; if(window._v41_c
   // v45E: a specific date → fetch the cumulative-through-date snapshot from the server, then render.
   if (_d && !(_d in _rptE_asofCache)) { _rptE_fetchAsof(_d).then(()=>_v41_renderReportEInner()); return; }
   // month-attributed warm only applies to the cumulative (no-date) view
-  if (!_d && !_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]) {
+  if (!_d && (_v50dNeedJulSlice() || (!_V50B_COHORT && _v41_useMonthAttributed && !_v41_agradeMonthCache[_trkSelectedMonth]))) {
     _v41_ensureAgradeMonthLoaded().then(()=>_v41_renderReportEInner());
     return;
   }
