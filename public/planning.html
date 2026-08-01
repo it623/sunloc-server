@@ -971,7 +971,9 @@ const SYNC = (() => {
         const _deletedByServer = new Set((serverState.orders||[]).filter(o=>o.deleted).map(o=>o.id));
         // Also track any locally deleted orders (in production_orders DB)
         state.orders = (state.orders||[]).map(o => {
-          if (_deletedByServer.has(o.id)) return { ...o, deleted: true };
+          if (_deletedByServer.has(o.id)) { _clearTombstone(o.id); return { ...o, deleted: true }; }
+          // v50B: server hasn't confirmed the delete yet — trust the local tombstone in the meantime.
+          if (_isTombstoned(o.id)) return { ...o, deleted: true };
           return o;
         });
         // Restore locally changed orders — they win over server
@@ -1197,6 +1199,10 @@ const SYNC = (() => {
 
     // Remove permanently blacklisted orders from state
     state.orders = (state.orders||[]).filter(o => !(o.batchNumber==='26V049' && (o.customer||'').includes('SHYAM')));
+    // v50B: 26X013 (ALENCURE) has been deleted repeatedly but kept resurrecting — see the tombstone
+    // fix above for the root cause. Blacklisted immediately here too, same pattern as 26V049, so it
+    // disappears on THIS load without waiting for a fresh delete to lay down a tombstone.
+    state.orders = (state.orders||[]).filter(o => !(o.batchNumber==='26X013' && (o.customer||'').includes('ALENCURE')));
 
     // ALWAYS: Merge production orders from dedicated table — each order is permanent
     try {
@@ -1212,9 +1218,12 @@ const SYNC = (() => {
           // overwritten by planning_state blob on any reload or sync
           state.orders = (state.orders||[]).map(o => {
             const dbOrd = dbOrderMap[o.id];
+            // v50B: an order we deleted locally must stay gone even if this particular sync's
+            // DB copy hasn't caught up to deleted:true yet (retry queue still in flight).
+            if (_isTombstoned(o.id)) return null;
             if (!dbOrd) return o; // not in DB yet — keep local version
             // FIX 1: If deleted in DB — permanently remove
-            if (dbOrd.deleted) return null;
+            if (dbOrd.deleted) { _clearTombstone(o.id); return null; }
             // v41ZW: if the user edited this order recently (batch renumber / machine move / zone),
             // a stale server copy must NOT revert it — within the protection window the LOCAL
             // batch/machine/zone are the latest intent. Mirrors the print-order protection
@@ -1261,8 +1270,13 @@ const SYNC = (() => {
           const existingIds = new Set(state.orders.map(o=>o.id));
           ooj.orders.forEach(dbO => {
             if (dbO.deleted) return; // skip deleted
+            // v50B: this id was deleted locally and the server hasn't confirmed it yet — do NOT
+            // let this "add missing" pass resurrect it. This is the exact mechanism that kept
+            // bringing deleted batches (e.g. 26X013) back after every reload.
+            if (_isTombstoned(dbO.id)) return;
             // Skip permanently blacklisted orders
             if (dbO.batchNumber==='26V049' && (dbO.customer||'').includes('SHYAM')) return;
+            if (dbO.batchNumber==='26X013' && (dbO.customer||'').includes('ALENCURE')) return;
             // Add if not already present
             if (!existingIds.has(dbO.id)) {
               // Mark as coming from DB — these already have print orders in dedicated table
@@ -1844,6 +1858,35 @@ function _v48z_diverged(list, snap) {
 }
 
 let _localOrderChanges = {};
+// v50B (fixes recurring "deleted order comes back" reports, e.g. 26X013 on MC24): deletion used
+// to be tracked ONLY in the in-memory _localOrderChanges map above, which resets to {} on every
+// page reload. If the server hadn't yet processed the delete (slow tunnel, retry still queued,
+// or the tab was closed before flushPendingOrders finished) the very next load's "Add any orders
+// in DB not yet in local state" merge saw a DB row that still said deleted:false and added it
+// straight back — the order (and its batch number) resurrected under the user's nose. This
+// tombstone list is persisted in localStorage, survives reloads, and is checked by every merge
+// path below so a locally-deleted order stays gone until the server genuinely confirms it.
+const _DELETED_TOMBSTONE_KEY = 'sunloc_deleted_order_ids';
+function _loadDeletedTombstones(){ try { return JSON.parse(localStorage.getItem(_DELETED_TOMBSTONE_KEY)||'{}')||{}; } catch(e){ return {}; } }
+function _saveDeletedTombstones(m){ try { localStorage.setItem(_DELETED_TOMBSTONE_KEY, JSON.stringify(m)); } catch(e){} }
+let _deletedOrderTombstones = _loadDeletedTombstones();
+function _markOrderDeletedLocally(id){
+  if (!id) return;
+  _deletedOrderTombstones[id] = Date.now();
+  _saveDeletedTombstones(_deletedOrderTombstones);
+}
+// Tombstones older than this are dropped — by then the server delete has long since landed (or the
+// retry queue gave up asking), so keeping them forever would only grow localStorage unboundedly.
+const _TOMBSTONE_MAX_AGE_MS = 30*24*60*60*1000; // 30 days
+function _isTombstoned(id){
+  const ts = _deletedOrderTombstones[id];
+  if (!ts) return false;
+  if ((Date.now()-ts) > _TOMBSTONE_MAX_AGE_MS) { delete _deletedOrderTombstones[id]; _saveDeletedTombstones(_deletedOrderTombstones); return false; }
+  return true;
+}
+function _clearTombstone(id){
+  if (_deletedOrderTombstones[id]) { delete _deletedOrderTombstones[id]; _saveDeletedTombstones(_deletedOrderTombstones); }
+}
 // Registry of locally changed print order IDs
 let _localPrintOrderChanges = {};
 // v41ZC #2.1/2.2: merge server print-orders with local state WITHOUT clobbering a freshly-assigned
@@ -2582,7 +2625,7 @@ function autoGenBatchNumber(machineId) {
 
 function getMachineOrders(machineId) {
   return state.orders
-    .filter(o=>o.machineId===machineId && !o.deleted && !(o.batchNumber==='26V049' && (o.customer||'').includes('SHYAM')))
+    .filter(o=>o.machineId===machineId && !o.deleted && !(o.batchNumber==='26V049' && (o.customer||'').includes('SHYAM')) && !(o.batchNumber==='26X013' && (o.customer||'').includes('ALENCURE')))
     .sort((a,b)=>{
       // Primary: sort by serial number in batch number (e.g. 26N50 → 50)
       const getSerial = o => {
@@ -4150,6 +4193,7 @@ function deleteOrder(ordId, machineId) {
     // Also mark deleted in upsert as fallback
     ord.deleted = true; _localOrderChanges[ordId] = Date.now(); upsertOrderToDB(ord);
   }
+  _markOrderDeletedLocally(ordId);
   state.orders = state.orders.filter(o=>o.id!==ordId);
   state.printOrders = state.printOrders.filter(p=>p.productionOrderId!==ordId);
   // v41ZT Issue 4: drop dispatch plans tied to this order locally too (by direct link or, for
@@ -6090,6 +6134,17 @@ function _v39_openAssignModal(idx) {
       <label>Print Matter ${u.printMatter ? '<span style="color:var(--accent3);font-size:10px">🔗 from SAP</span>' : ''}</label>
       <input type="text" id="v39-assign-matter" class="form-control" value="${(u.printMatter||'').replace(/"/g,'&quot;')}" placeholder="e.g. OMEE D">
     </div>
+    <!-- v50C: Packing (box/carton material) is separate from Printed/Unprinted and was missing from
+         this SAP-driven flow — orders assigned here previously saved with no packing value, unlike
+         the manual New Order form where it's mandatory. Same option set as fo-packing for consistency. -->
+    <div class="form-group"><label>📦 Packing *</label>
+      <select id="v39-assign-packing" class="form-control">
+        <option value="" selected>— Select —</option>
+        <option value="3 Ply">3 Ply</option>
+        <option value="3 Ply with HDCL">3 Ply with HDCL</option>
+        <option value="5 Ply">5 Ply</option>
+      </select>
+    </div>
     <!-- v41e (issue 3): zone drives domestic vs export dispatch; not reliably in SAP, so set here. -->
     <div class="form-group"><label>Zone *</label>
       <select id="v39-assign-zone" class="form-control">
@@ -6125,6 +6180,7 @@ async function _v39_confirmAssign() {
   // v41e: planner-set print status (SAP UDF empty) + zone.
   const assignPrinted = document.getElementById('v39-assign-printed')?.value === '1';
   const assignMatter  = (document.getElementById('v39-assign-matter')?.value || '').trim();
+  const assignPacking = document.getElementById('v39-assign-packing')?.value || '';
   const assignZone    = document.getElementById('v39-assign-zone')?.value || '';
   if (!machineId) { toast('Pick a machine', 'var(--red)'); return; }
   if (!(qty > 0)) { toast('Enter a positive quantity', 'var(--red)'); return; }
@@ -6133,6 +6189,7 @@ async function _v39_confirmAssign() {
     return;
   }
   if (!startDateStr) { toast('Pick a start date', 'var(--red)'); return; }
+  if (!assignPacking) { if (typeof toast==='function') toast('Pick a packing type', 'var(--red)'); else alert('Please pick a packing type'); return; }
   if (!assignZone) { if (typeof toast==='function') toast('Pick a zone', 'var(--red)'); else alert('Please pick a zone'); return; }
   // Max-2 In-Production check (same as saveOrderModal hard block)
   if (statusChoice === 'running') {
@@ -6186,7 +6243,10 @@ async function _v39_confirmAssign() {
     // v41z2 FIX: if SAP due date is in the past, use startDate to avoid past end dates
     endDate: (u.dueDate && new Date(u.dueDate) >= new Date(startDateStr)) ? new Date(u.dueDate).toISOString().slice(0,10) : startDateStr,
     manualEndDate: false,
-    packing: assignPrinted ? 'PTD' : 'UP',
+    // v50C: was previously hardcoded to 'PTD'/'UP' here — duplicating the separate isPrinted flag
+    // and leaving this order's actual box-packing type unset. Manual (New Order) orders already
+    // store the real packing material in this field via fo-packing; SAP-assigned orders now do too.
+    packing: assignPacking,
     zone: assignZone,
     containerRef: '',
     remarks: `Auto-created from SAP indent DocEntry ${u.docEntry}`,
@@ -14960,7 +15020,7 @@ async function doLogin() {
   try {
     const r = await fetch(serverUrl + '/api/auth/login', {
       method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ username: role, pin, app: 'planning', deviceToken: (localStorage.getItem('sunloc_device_token')||'') }),
+      body: JSON.stringify({ username: role, pin, app: 'planning', deviceToken: (localStorage.getItem('sunloc_device_token')||''), userAgent: (navigator.userAgent||'') }),
       signal: AbortSignal.timeout(5000)
     });
     let j = await r.json();
@@ -16191,6 +16251,22 @@ function renderAccessControl() {
 }
 
 function _acFmtTs(t){ if(!t) return '—'; try{ const d=new Date(t); return d.toLocaleDateString('en-IN',{day:'2-digit',month:'short'})+' '+d.toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit'});}catch(e){return String(t);} }
+// v50D: Mobile vs PC column for the Device Register. The server may already capture the browser's
+// User-Agent header when a device registers (most backends log it automatically alongside IP), so
+// this checks every plausible field name the API might return it under. If none of them are present
+// yet, it falls back to '—' rather than guessing — see the note sent alongside this change about
+// wiring the field through server-side if it isn't there already.
+function _acDeviceTypeLabel(d){
+  const ua = (d.user_agent || d.userAgent || d.ua || d.device_ua || d.platform || d.device_type || d.deviceType || '').toString();
+  if (!ua) return '<span style="color:var(--text3)">—</span>';
+  const isTablet = /iPad|Android(?!.*Mobile)|Tablet/i.test(ua);
+  const isMobile = !isTablet && /Mobile|iPhone|iPod|Android|Windows Phone|BlackBerry|IEMobile|Opera Mini/i.test(ua);
+  if (isMobile) return '📱 Mobile';
+  if (isTablet) return '📱 Tablet';
+  // A recognised desktop UA token, or any non-empty value that didn't match mobile/tablet patterns.
+  if (/Windows|Macintosh|Linux|X11|CrOS/i.test(ua)) return '💻 PC';
+  return '💻 PC';
+}
 function _acStatusChip(st){
   const m = { approved:['#16a34a','APPROVED'], pending:['#d97706','PENDING'], denied:['#dc2626','DENIED'],
               approved_once:['#16a34a','APPROVED ONCE'], approved_always:['#16a34a','APPROVED ALWAYS'],
@@ -16232,12 +16308,13 @@ async function loadAccessControl() {
     const de = document.getElementById('ac-devices');
     if (de) de.innerHTML = (j.devices||[]).length === 0
       ? `<div style="color:var(--text3);padding:12px">No devices registered yet — the register fills automatically as people log in.</div>`
-      : `<div class="tbl-wrap tbl-sticky" style="max-height:360px;overflow:auto"><table><thead><tr><th>Label</th><th>Status</th><th>Last User</th><th>App</th><th>Last Seen</th><th>Last IP</th><th style="min-width:230px">Actions</th></tr></thead><tbody>` +
+      : `<div class="tbl-wrap tbl-sticky" style="max-height:360px;overflow:auto"><table><thead><tr><th>Label</th><th>Status</th><th>Last User</th><th>App</th><th>Device Type</th><th>Last Seen</th><th>Last IP</th><th style="min-width:230px">Actions</th></tr></thead><tbody>` +
         j.devices.map(d => `<tr>
             <td><input type="text" value="${(d.label||'').replace(/"/g,'&quot;')}" placeholder="${d.id.slice(0,8)}…" style="width:130px;font-size:12px" onchange="acDeviceAction('${d.id}','rename',this.value)"></td>
             <td>${_acStatusChip(d.status)}</td>
             <td>${d.username||'—'}</td>
             <td>${d.app||'—'}</td>
+            <td>${_acDeviceTypeLabel(d)}</td>
             <td>${_acFmtTs(d.last_seen)}</td>
             <td class="td-mono">${d.last_ip||'—'}</td>
             <td>

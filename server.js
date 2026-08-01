@@ -1374,6 +1374,14 @@ const MIGRATIONS = [
     CREATE INDEX IF NOT EXISTS idx_la_status ON login_approvals(status);
     CREATE INDEX IF NOT EXISTS idx_la_device ON login_approvals(device_id);`
   },
+  {
+    // v50D: Device Register needed a Mobile/PC column in Planning → Access Control. The browser's
+    // User-Agent header (sent automatically on every request, no client change required) is captured
+    // on each login/upsert and rendered client-side into Mobile/Tablet/PC by _acDeviceTypeLabel.
+    version: 56,
+    name: 'access_devices_user_agent',
+    sql: `ALTER TABLE access_devices ADD COLUMN user_agent TEXT;`
+  },
 ];
 
 function runMigrations() {
@@ -2035,6 +2043,7 @@ async function ensurePostgresTables() {
         approved_at TEXT
       )
     `);
+    try { await pgPool.query(`ALTER TABLE access_devices ADD COLUMN IF NOT EXISTS user_agent TEXT`); } catch(e) { console.warn('[v50D PG] add user_agent:', e.message); }
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS login_approvals (
         id TEXT PRIMARY KEY,
@@ -2473,6 +2482,7 @@ async function ensurePostgresTables() {
         approved_at TEXT
       )
     `);
+    try { await pgPool.query(`ALTER TABLE access_devices ADD COLUMN IF NOT EXISTS user_agent TEXT`); } catch(e) { console.warn('[v50D PG] add user_agent:', e.message); }
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS login_approvals (
         id TEXT PRIMARY KEY,
@@ -12640,23 +12650,29 @@ function _acSetCookie(res, token) {
   try { res.setHeader('Set-Cookie', `sunloc_device=${encodeURIComponent(token)}; Path=/; Max-Age=157680000; HttpOnly; SameSite=Lax`); } catch (e) {}
 }
 
-async function _acUpsertDevice(id, username, appName, ip) {
+async function _acUpsertDevice(id, username, appName, ip, userAgent) {
   const ts = new Date().toISOString().replace('T', ' ').slice(0, 19);
+  const ua = (userAgent || '').toString().slice(0, 300);
   if (pgPool) {
     const r = await pgPool.query('SELECT * FROM access_devices WHERE id=$1', [id]);
     if (r.rows[0]) {
-      await pgPool.query('UPDATE access_devices SET last_seen=$1, last_ip=$2, username=$3, app=$4 WHERE id=$5', [ts, ip, username, appName, id]);
+      // v50D: only overwrite user_agent when we actually have one this request — never blank out
+      // a previously-captured value on a request that happens to lack the header.
+      await pgPool.query(
+        'UPDATE access_devices SET last_seen=$1, last_ip=$2, username=$3, app=$4, user_agent=COALESCE(NULLIF($6,\'\'), user_agent) WHERE id=$5',
+        [ts, ip, username, appName, id, ua]
+      );
       return r.rows[0];
     }
-    await pgPool.query('INSERT INTO access_devices (id,username,app,status,first_seen,last_seen,last_ip) VALUES ($1,$2,$3,$4,$5,$5,$6) ON CONFLICT (id) DO NOTHING', [id, username, appName, 'pending', ts, ip]);
+    await pgPool.query('INSERT INTO access_devices (id,username,app,status,first_seen,last_seen,last_ip,user_agent) VALUES ($1,$2,$3,$4,$5,$5,$6,$7) ON CONFLICT (id) DO NOTHING', [id, username, appName, 'pending', ts, ip, ua]);
     return { id, status: 'pending' };
   }
   const row = db.prepare('SELECT * FROM access_devices WHERE id=?').get(id);
   if (row) {
-    db.prepare('UPDATE access_devices SET last_seen=?, last_ip=?, username=?, app=? WHERE id=?').run(ts, ip, username, appName, id);
+    db.prepare('UPDATE access_devices SET last_seen=?, last_ip=?, username=?, app=?, user_agent=COALESCE(NULLIF(?,\'\'), user_agent) WHERE id=?').run(ts, ip, username, appName, ua, id);
     return row;
   }
-  db.prepare('INSERT INTO access_devices (id,username,app,status,first_seen,last_seen,last_ip) VALUES (?,?,?,?,?,?,?)').run(id, username, appName, 'pending', ts, ts, ip);
+  db.prepare('INSERT INTO access_devices (id,username,app,status,first_seen,last_seen,last_ip,user_agent) VALUES (?,?,?,?,?,?,?,?)').run(id, username, appName, 'pending', ts, ts, ip, ua);
   return { id, status: 'pending' };
 }
 
@@ -12688,7 +12704,11 @@ async function _acGateCheck(req, res, user, appName) {
     let minted = false;
     if (!devId) { devId = crypto.randomUUID(); minted = true; }
     const token = _acSignDevice(devId);
-    const dev = await _acUpsertDevice(devId, user.username, appName, ip);
+    // v50D: the HTTP header is present on every request from every app (planning/tracking/dpr) with
+    // no client change needed; req.body.userAgent (sent by newer Planning builds) is only a fallback
+    // for any path where the header itself got stripped by a proxy.
+    const userAgent = (req.headers['user-agent'] || req.body?.userAgent || '').toString();
+    const dev = await _acUpsertDevice(devId, user.username, appName, ip, userAgent);
     const sites = await _acTrustedSites();
     const onsite = sites.some(s => _acIpMatchesCidr(ip, s.cidr));
     const status = String(dev?.status || 'pending');
