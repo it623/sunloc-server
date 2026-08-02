@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50E</p>
+      <p>Planning Suite v3.0 · build v50F</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1310,14 +1310,56 @@ const SYNC = (() => {
             // 4. Stable final tie-break by id so the result never changes between refreshes.
             return String(cand.id||'') < String(cur.id||'');
           };
+          // v50F (root cause of Shrikant's "26G022 is disappear", 1 Aug): this dedupe used to COLLAPSE
+          // two DIFFERENT orders that happened to share batch+machine into one, silently discarding
+          // the loser from the planner's view while its row stayed alive in production_orders. Batch
+          // numbers are allocated client-side as max+1 over the LOCAL blob, so two planners — or one
+          // stale device — can hand the same serial to two genuinely different orders; the merge then
+          // made one of them vanish with no trace. A silently wrong roster is worse than a visible
+          // one needing attention, so a TRUE collision (different order ids) now KEEPS BOTH rows and
+          // flags them. Only same-id duplicates — the real double-entry this dedupe was written for —
+          // still collapse via _better().
           const batchMcMap = new Map();
+          const _dupKeys50f = new Set();
           state.orders.forEach(o => {
             if (!o.batchNumber || !o.machineId) { batchMcMap.set(o.id, o); return; }
             const key = `${o.batchNumber}__${o.machineId}`;
             const existing = batchMcMap.get(key);
+            if (existing && existing.id !== o.id) {
+              // DIFFERENT orders sharing one batch+machine. Never collapse them — keep every record
+              // and decide only which one OWNS the canonical key.
+              const _exDel = !!existing.deleted, _oDel = !!o.deleted;
+              if (!_exDel && !_oDel) {
+                // Both live → a true collision. Flag both; the planner renumbers one.
+                _dupKeys50f.add(key);
+                batchMcMap.set(`${key}__dup__${o.id}`, o);
+                return;
+              }
+              if (_exDel && !_oDel) {
+                // v50F: a DELETED order must never shadow a live one. _better() has no
+                // deleted-awareness, so with equal actualProd it fell through to the id tie-break and
+                // could keep the deleted record — dropping the live order from the planner's view.
+                // The live order takes the key; the deleted row is retained under its own key so the
+                // tombstone logic still sees it (no resurrection either way).
+                batchMcMap.set(`${key}__del__${existing.id}`, existing);
+                batchMcMap.set(key, o);
+                return;
+              }
+              // existing is live and `o` is deleted, or both are deleted → `o` never displaces it.
+              batchMcMap.set(`${key}__del__${o.id}`, o);
+              return;
+            }
             if (_better(o, existing)) batchMcMap.set(key, o);
           });
           state.orders = Array.from(batchMcMap.values());
+          // Mark every participant so the row can render a ⚠ DUPLICATE BATCH badge and the planner
+          // can renumber one. Recomputed from scratch each merge, so resolving it clears the flag.
+          window._v50fDupBatchKeys = _dupKeys50f;
+          state.orders.forEach(o => {
+            const k = (o.batchNumber && o.machineId) ? `${o.batchNumber}__${o.machineId}` : '';
+            o._dupBatch = !!(k && _dupKeys50f.has(k));
+          });
+          if (_dupKeys50f.size) console.warn('[v50F] duplicate batch numbers kept visible:', [..._dupKeys50f]);
           // State updated silently — no auto-render to prevent screen flipping
           console.log('[Orders] Merged', ooj.orders.length, 'orders from dedicated table');
         }
@@ -2606,6 +2648,28 @@ function machineToAlpha(mcId) {
   throw new Error(`Batch nomenclature not defined for MC${num}. Spec caps at MC52.`);
 }
 
+// ═══ v50F SERVER-SEEDED BATCH ALLOCATION (confirmed by Ishan, 2 Aug) ═══════
+// autoGenBatchNumber is max(serial)+1 over the LOCAL orders blob, so a device whose blob is stale —
+// or two planners entering orders at the same moment — hand the SAME serial to two different orders
+// (Shrikant, 1 Aug: 26G022/26G023). /api/planning/next-batch-number computes the serial from
+// production_orders UNION the saved blob, which every device shares. The cache is refreshed when the
+// New Order modal opens; the generator then takes whichever is HIGHER, local or server, so it can
+// only ever move a number forward — a serial is never re-issued, and an offline device still works
+// off its local maximum exactly as before.
+window._v50fSrvNext = window._v50fSrvNext || {};
+async function _v50fRefreshNextBatch(machineId){
+  if (!machineId) return null;
+  try {
+    const r = await fetch('/api/planning/next-batch-number?machineId=' + encodeURIComponent(machineId),
+                          { signal: AbortSignal.timeout(8000) });
+    const j = r.ok ? await r.json() : null;
+    if (j && j.ok && typeof j.maxSerial === 'number') {
+      window._v50fSrvNext[machineId] = { maxSerial: j.maxSerial, batchNumber: j.batchNumber, at: Date.now() };
+      return window._v50fSrvNext[machineId];
+    }
+  } catch(e) { console.warn('[v50F] batch allocator unreachable — using local maximum:', e.message); }
+  return null;
+}
 function autoGenBatchNumber(machineId) {
   const yy = new Date().getFullYear().toString().slice(2);
   const alpha = machineToAlpha(machineId);
@@ -2617,7 +2681,12 @@ function autoGenBatchNumber(machineId) {
       const m = o.batchNumber.match(/^\d{2}[A-Z]+([0-9]+)$/);
       return m ? parseInt(m[1]) : 0;
     });
-  const nextSerial = existing.length > 0 ? Math.max(...existing) + 1 : 1;
+  let nextSerial = existing.length > 0 ? Math.max(...existing) + 1 : 1;
+  // v50F: never go BELOW what the server knows is already taken (stale-blob protection).
+  const _srv50f = window._v50fSrvNext && window._v50fSrvNext[machineId];
+  if (_srv50f && typeof _srv50f.maxSerial === 'number' && _srv50f.maxSerial + 1 > nextSerial) {
+    nextSerial = _srv50f.maxSerial + 1;
+  }
   // v41 P19.2 Fix 6D: pad serial to 3 digits (26Y42 → 26Y042). Existing 2-digit batches
   // are NOT renamed (would break label/RFID traceability) — only NEW batch numbers are padded.
   return yy + alpha + String(nextSerial).padStart(3, '0');
@@ -3922,7 +3991,7 @@ function renderOrderRow(ord, idx, mc) {
     <td class="text-mono" style="position:sticky;left:28px;z-index:2;background:var(--surface2,#0f2a20);white-space:nowrap;box-shadow:2px 0 4px rgba(0,0,0,0.1)">
       ${woBadge}${sapLinkBadge}
       ${ord.poType==='verbal'?'<span class="tag" style="background:rgba(240,165,0,0.1);color:var(--accent);font-size:10px">VERBAL</span> ':''}${ord.poNumber||'-'}
-      ${ord.batchNumber?`<br><span class="text-dim text-sm" style="cursor:pointer;text-decoration:underline dotted" title="Open batch tracking" onclick="event.stopPropagation();openBatchTracking('${(ord.batchNumber||'').replace(/'/g,'')}')">${ord.batchNumber}</span>`:''}
+      ${ord.batchNumber?`<br><span class="text-dim text-sm" style="cursor:pointer;text-decoration:underline dotted" title="Open batch tracking" onclick="event.stopPropagation();openBatchTracking('${(ord.batchNumber||'').replace(/'/g,'')}')">${ord.batchNumber}</span>`:''}${ord._dupBatch?`<br><span class="tag" style="background:rgba(192,57,43,0.15);color:#c0392b;font-size:9px;font-weight:800;cursor:pointer" title="Another live order on this machine carries the same batch number. Both orders are kept — click to renumber this one from the next free serial." onclick="event.stopPropagation();_v50fRenumberByIdV50f('${ord.id}')">⚠ DUPLICATE BATCH</span>`:''}
     </td>
     <td style="position:sticky;left:128px;z-index:2;background:var(--surface2,#0f2a20);font-weight:500;box-shadow:2px 0 4px rgba(0,0,0,0.1)">${(isWO && !String(ord.shipTo||ord.customer||'').trim())
       ? '<span style="color:var(--accent3);font-style:italic;font-size:12px">W/O — pending</span>'
@@ -4452,6 +4521,9 @@ function isPcColourLocked(ord) {
 function showAddOrderModal(machineId, existingOrder) {
   const isEdit = !!existingOrder;
   const ord = existingOrder || {machineId, isPrinted:false, poType:'po', size:'', status:'pending'};
+  // v50F: warm the authoritative allocator for this machine while the planner fills the form, so the
+  // batch number generated at save can't collide with one another device has already committed.
+  if (!isEdit) { _v50fRefreshNextBatch(ord.machineId || machineId); }
 
   // Get PC codes for size
   const pcList = ord.size ? (state.pcCodes[ord.size] || []) : [];
@@ -5250,6 +5322,7 @@ async function _pushOrderOnce(ord){
       const _j = await r.clone().json();
       if (_j && _j.dprGateRefused) _v49gHandleDprGateRefused(ord);
       if (_j && _j.limitRefused) _v49nHandleLimitRefused(ord, _j);
+      if (_j && _j.batchConflict) _v50fHandleBatchConflict(ord, _j.batchConflict);   // v50F
     } catch(e) {}
     return true;
   } catch(e){ return false; }
@@ -5326,6 +5399,59 @@ function _v49nHandleLimitRefused(pushedOrd, resp) {
     if (typeof toast === 'function') toast(_msg, '#c77700', 8000);
     else alert('⚠️ ' + _msg);
   } catch(e) {}
+}
+// v50F: the server found this batch number already held by a DIFFERENT live order. Both orders are
+// real and both are kept — what's wrong is the number. Tell the planner loudly, name the occupant,
+// and offer to renumber this one from the authoritative allocator. Never silently accept the clash
+// (the old behaviour), and never delete either order.
+function _v50fHandleBatchConflict(pushedOrd, conflict) {
+  try {
+    const live = state.orders.find(o => o.id === (pushedOrd && pushedOrd.id)) || pushedOrd || {};
+    if (live) live._dupBatch = true;
+    const _bn = conflict.batchNumber || live.batchNumber || 'that batch number';
+    const _who = [conflict.customer, conflict.colour].filter(Boolean).join(' / ') || 'another order';
+    const _mc = conflict.machineId || live.machineId || '';
+    const _msg = `⚠️ Batch number ${_bn} is already used by ${_who}${_mc ? ' on ' + _mc : ''}.\n\n`
+      + `Your order has been saved so nothing is lost, but two orders now share one batch number — `
+      + `labels, scans and DPR entries cannot be told apart until one is renumbered.\n\n`
+      + `Renumber this order now?`;
+    try { render(); } catch(e) {}
+    if (confirm(_msg)) { _v50fRenumberConflicted(live); }
+    else if (typeof toast === 'function') {
+      toast(`${_bn} is duplicated — renumber from the order's Edit screen when convenient.`, '#c0392b', 9000);
+    }
+  } catch(e) { console.warn('[v50F] conflict handler:', e && e.message); }
+}
+// Row-badge entry point: resolve the order by id from live state (planning.html has no getOrder()).
+function _v50fRenumberByIdV50f(orderId){
+  const o = (state.orders || []).find(x => x && x.id === orderId);
+  if (!o) { alert('Order not found — refresh and try again.'); return; }
+  if (!confirm(`Renumber ${o.batchNumber || 'this order'} to the next free batch number on ${o.machineId}?`)) return;
+  _v50fRenumberConflicted(o);
+}
+// Ask the server for the next free serial on this machine and apply it to the conflicted order.
+async function _v50fRenumberConflicted(ord) {
+  try {
+    const nx = await _v50fRefreshNextBatch(ord.machineId);
+    if (!nx || !nx.batchNumber) {
+      alert('Could not reach the batch-number allocator. Please set a batch number manually on this order.');
+      return;
+    }
+    const oldBn = ord.batchNumber;
+    ord.batchNumber = nx.batchNumber;
+    ord._dupBatch = false;
+    ord._localEditedAt = Date.now();
+    // Reserve it locally too, so a second conflict in the same session can't reuse the same serial
+    // before the server cache refreshes.
+    window._v50fSrvNext[ord.machineId] = { maxSerial: (nx.maxSerial || 0) + 1, batchNumber: null, at: Date.now() };
+    saveState();
+    try { await _pushOrderOnce(ord); } catch(e) {}
+    try { render(); } catch(e) {}
+    if (typeof toast === 'function') toast(`Renumbered ${oldBn} → ${ord.batchNumber}`, '#1a7f37', 7000);
+  } catch(e) {
+    console.warn('[v50F] renumber failed:', e && e.message);
+    alert('Renumber failed — please set the batch number manually on this order.');
+  }
 }
 function _v49gHandleDprGateRefused(pushedOrd) {
   try {

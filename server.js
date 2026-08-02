@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50E';
+const APP_BUILD = 'v50F';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -8309,6 +8309,62 @@ app.get('/api/invoice/pending-direct-sap-approval', async (req, res) => {
 // ── Production Orders — dedicated table, each order is its own permanent row ──
 
 // POST /api/orders/upsert — save single order permanently (never lost)
+// ═══ v50F SERVER-AUTHORITATIVE BATCH NUMBER (confirmed by Ishan, 2 Aug) ═══
+// Batch numbers were allocated purely client-side: autoGenBatchNumber takes max(serial)+1 over the
+// LOCAL orders blob. Two planners entering orders at the same time — or one device whose blob is a
+// few seconds stale — therefore hand the SAME serial to two different orders, and nothing in the
+// database refuses it (production_orders.batch_number has no unique constraint). That is the first
+// half of Shrikant's 26G022/26G023 report; the second half was the client merge silently discarding
+// one of the colliding orders (fixed in planning.html).
+//
+// This endpoint computes the next serial from production_orders — the authoritative store every
+// device shares — UNION the current planning blob, so an order that exists in only one of the two
+// still blocks its serial. Read-only and cheap; it reserves nothing, so a crashed client leaks no
+// numbers. The client falls back to its local calculation when this is unreachable (offline), and
+// says so, rather than blocking order entry.
+function _v50fMachineAlpha(mcId) {
+  const num = parseInt(String(mcId).replace(/[^0-9]/g, '')) || 0;
+  if (num >= 1 && num <= 26)  return String.fromCharCode(64 + num);
+  if (num >= 27 && num <= 52) return 'Z' + String.fromCharCode(64 + (num - 26));
+  return null;   // spec caps at MC52 — mirrors machineToAlpha's throw, reported as an error
+}
+app.get('/api/planning/next-batch-number', async (req, res) => {
+  try {
+    const machineId = String(req.query.machineId || '').trim();
+    if (!machineId) return res.status(400).json({ ok: false, error: 'machineId required' });
+    const alpha = _v50fMachineAlpha(machineId);
+    if (!alpha) return res.status(400).json({ ok: false, error: `Batch nomenclature not defined for ${machineId} (spec caps at MC52)` });
+    const yy = new Date().getFullYear().toString().slice(2);
+    const prefix = yy + alpha;
+    const re = new RegExp('^' + prefix + '([0-9]+)$');
+    let maxSerial = 0;
+    const consider = (bn) => {
+      if (!bn) return;
+      const m = String(bn).trim().match(re);
+      if (m) { const n = parseInt(m[1], 10); if (n > maxSerial) maxSerial = n; }
+    };
+    // (a) the authoritative table — every device's committed orders, deleted ones INCLUDED so a
+    //     deleted batch's serial is never handed out twice (traceability: labels may exist).
+    try {
+      let rows;
+      if (pgPool) rows = (await pgPool.query(`SELECT batch_number FROM production_orders WHERE batch_number LIKE $1`, [prefix + '%'])).rows;
+      else        rows = db.prepare(`SELECT batch_number FROM production_orders WHERE batch_number LIKE ?`).all(prefix + '%');
+      for (const r of (rows || [])) consider(r.batch_number);
+    } catch (e) { console.warn('[v50F next-batch] table read failed:', e.message); }
+    // (b) the planning blob — an order saved to the blob but not yet flushed to the table.
+    try {
+      const st = await getPlanningStateAsync();
+      for (const o of ((st && st.orders) || [])) consider(o && o.batchNumber);
+    } catch (e) { console.warn('[v50F next-batch] blob read failed:', e.message); }
+    const nextSerial = maxSerial + 1;
+    res.json({ ok: true, machineId, prefix, maxSerial,
+               batchNumber: prefix + String(nextSerial).padStart(3, '0') });
+  } catch (err) {
+    console.error('[v50F next-batch-number]', err.message);
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 app.post('/api/orders/upsert', async (req, res) => {
   try {
     const ord = req.body;
@@ -8340,6 +8396,39 @@ app.post('/api/orders/upsert', async (req, res) => {
         existing = db.prepare(`SELECT data_json, status, deleted, updated_at FROM production_orders WHERE id=?`).get(ord.id);
       }
     } catch(e) {}
+    // v50F: BATCH-NUMBER COLLISION GUARD. production_orders has no unique constraint on
+    // batch_number and allocation is client-side (max+1 over a possibly-stale local blob), so two
+    // planners can hand one serial to two different orders. Detected here, at the moment of the
+    // write, and REPORTED — never silently accepted (the old behaviour let the collision through and
+    // the client merge then made one order disappear from Planning while its row lived on).
+    // The row is still written: refusing the save would lose the planner's typed work, and the order
+    // is real — what it needs is a different number. The client shows the conflict and offers to
+    // renumber from the authoritative allocator.
+    let _v50fBatchConflict = null;
+    try {
+      const _bn50f = ord.batchNumber && String(ord.batchNumber).trim();
+      if (_bn50f && !ord.deleted) {
+        let _cRows;
+        if (pgPool) _cRows = (await pgPool.query(
+          `SELECT id, machine_id, status, data_json FROM production_orders
+            WHERE batch_number = $1 AND id <> $2 AND COALESCE(deleted,false) = false`, [_bn50f, ord.id])).rows;
+        else _cRows = db.prepare(
+          `SELECT id, machine_id, status, data_json FROM production_orders
+            WHERE batch_number = ? AND id <> ? AND COALESCE(deleted,0) = 0`).all(_bn50f, ord.id);
+        if (_cRows && _cRows.length) {
+          const _c = _cRows[0];
+          let _cd = {};
+          try { _cd = typeof _c.data_json === 'string' ? JSON.parse(_c.data_json) : (_c.data_json || {}); } catch(_) {}
+          _v50fBatchConflict = { batchNumber: _bn50f, existingId: _c.id, machineId: _c.machine_id || null,
+                                 status: _c.status || null, customer: _cd.customer || '', colour: _cd.colour || '' };
+          console.warn(`[v50F] batch-number collision: ${_bn50f} already held by order ${_c.id} (${_cd.customer || 'no customer'}) — incoming order ${ord.id} saved and flagged`);
+          try { logAudit(ord.lastEditedBy || ord.createdBy || 'planning', 'planning_manager', 'planning',
+            'BATCH_NUMBER_CONFLICT',
+            `${_bn50f} claimed by order ${ord.id} (${ord.customer || ''}) but already held by ${_c.id} (${_cd.customer || ''}) on ${_c.machine_id || '?'}`); } catch(_) {}
+        }
+      }
+    } catch (e) { console.warn('[v50F] collision check skipped:', e.message); }
+
     if (existing) {
       let exData = {};
       try { exData = typeof existing.data_json === 'string' ? JSON.parse(existing.data_json) : (existing.data_json || {}); } catch(e) {}
@@ -8498,6 +8587,7 @@ app.post('/api/orders/upsert', async (req, res) => {
       } catch (e) { console.warn('[v49G] DPR-close cascade failed:', e && e.message); }
     }
     res.json({ ok: true, preserved, dprGateRefused: !!_v49gDprRefused,
+      batchConflict: _v50fBatchConflict || undefined,   // v50F: same serial held by another live order
       limitRefused: !!_v49nLimitRefused, heldStatus: _v49nLimitRefused ? finalStatus : undefined,
       occupying: _v49nLimitRefused ? _v49nOccupying : undefined,
                dprGateMessage: _v49gDprRefused ? 'Close in DPR first' : undefined,
@@ -14140,6 +14230,14 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
       const child = {
         ...parent,
         id: childId,
+        // v50F (root cause of the 26ZG135 / 26ZH079 phantom WIP, confirmed on live data 2 Aug):
+        // the child is cloned from the parent, which silently carried the parent's grossOverride —
+        // the PLANNER's manual Gross Qty for the WHOLE pre-split batch. Both rows then valued
+        // themselves at the family total (36.75 / 54.62) while their apportioned actuals were
+        // 31.75+5 and 3.75+50.25, so each showed the other's share as phantom Production WIP.
+        // A child has its own qty and its own apportioned actual; a plan figure for the batch it
+        // was carved out of does not describe it. Cleared explicitly, never inherited.
+        grossOverride: null,
         batchNumber: L.child_batch_number,
         customer: L.customer,
         shipTo: L.customer,
@@ -14200,6 +14298,11 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
         parent.closedDate = now;
         parent._localEditedAt = Date.now();
       }
+      // v50F: the parent's grossOverride describes the WHOLE pre-split batch, which no longer
+      // exists — its qty and actual have just been reduced to the residual. Leaving it would make
+      // the parent value itself at the family total (26ZG135: 36.75 against 31.75 residual actual).
+      // Cleared on both branches; the DPR-derived sum and any batch_gross_override still apply.
+      parent.grossOverride = null;
       parent.woSplitRequestId = reqId;
       }
 

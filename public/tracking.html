@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v50E</title>
+<title>Sunloc Tracking Suite v1.0 · build v50F</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50E</p>
+      <p>Tracking Suite v1.0 · build v50F</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50E</p>
+      <p>Tracking Suite v1.0 · build v50F</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -743,7 +743,10 @@ const PACK_SIZES = { '00':0.75, '0':1.00, '1':1.25, '2':1.75, '3':2.25, '4':3.00
 const AVG_WT_STD_KG_PER_LAKH = { '00':12.5, '0':9.8, '1':7.9, '2':6.5, '3':5.2, '4':4.0, '5':null, '0EL':null, '0SEL':null };
 // Packing (carton) tare in kg. Source is the order's Packing field in Planning, which the Planning
 // Manager sets on every order (mandatory in New Order; v50C added it to the SAP-assign flow too).
-const PACK_TARE_KG = { '3 Ply':1.8, '3 Ply with HDCL':2.0, '5 Ply':2.0 };
+// v50F (Rahul Yadav, 2 Aug — SUPERSEDES the emailed table for two materials): 5 Ply and the HDCL
+// sheet vary box to box and sheet to sheet, so their allowance is raised from 2.000 to 2.400 kg.
+// 3 Ply is unchanged at 1.800 and its column of the original table still holds verbatim.
+const PACK_TARE_KG = { '3 Ply':1.8, '3 Ply with HDCL':2.4, '5 Ply':2.4 };
 
 function _v50eStdAvgWt(size){
   const v = AVG_WT_STD_KG_PER_LAKH[String(size==null?'':size).trim()];
@@ -1224,11 +1227,13 @@ function _scanLakhs(batchNo, dept, type, size){
 // v41ZI Item 4: cumulative DPR gross for a batch — prefer the authoritative server map
 // (state.grossSummary = override → pure SUM(production_actuals) per batch_number) and fall back to
 // the planning order's injected actualProd/actualQty only when the map hasn't loaded for this batch.
+// v50F: delegates to the single gross authority (_v50fGross, defined with _reconGross below), so
+// Reports D/E/G value a batch exactly as Report B does. Gains two tiers it never had: the deliberate
+// DPR correction (which state.grossSummary already reflects server-side, so no change in value) and
+// the v50D July slice for absorbed straddlers — the tier v50D added to _reconGross only, which is
+// why Report D's Gross Production carried absorbed batches' JUNE production while Report B did not.
 function _grossFor(batchNo, b) {
-  if (state.grossSummary && Object.prototype.hasOwnProperty.call(state.grossSummary, batchNo)) {
-    return state.grossSummary[batchNo] || 0;
-  }
-  return (b && (b.actualProd || b.actualQty)) || 0;
+  return _v50fGross(batchNo, b);
 }
 
 // v40 Phase 18.14: combined-source dispatch helpers.
@@ -3152,33 +3157,52 @@ function _reconTips(bn){
     gross:_t(w.grossProd), inspected:_t(a.inspected), aGrade:_t(a.aGrade), salvage:_t(a.salvage),
     remelt:_t(a.remelt), packed:_t(w.packIn), wip:_t(w.totalWIP), pct:_t(a.pct,'%') };
 }
+// ═══ v50F SINGLE GROSS AUTHORITY (confirmed by Ishan, 2 Aug) ═══════════════
+// One function decides what "gross production" means for a batch. Report B (via _reconGross) and
+// Reports D/E/G (via _grossFor) both delegate here, so they cannot drift apart again — the standing
+// formula-uniformity rule, enforced structurally rather than by remembering to edit both.
+//
+// PRECEDENCE, highest first:
+//   1. batch_gross_override  — the deliberate DPR closed-batch correction (v47S/v49X). Top authority.
+//   2. JUL-SLICE             — an absorbed pre-July straddler is valued on its July-dated DPR slice
+//                              (v50D). Self-disabling: _v50dIsAbsorbed only fires while the selected
+//                              month IS the cohort-start month, so from August this tier is inert.
+//   3. state.grossSummary    — the AUTHORITATIVE server per-batch DPR sum (effectiveGross →
+//                              _grossByBatch) with W/O-split apportionment already applied
+//                              parent→children.
+//   4. blob actualProd       — same server figure as (3), carried on the order; the fallback when a
+//                              batch is missing from the summary map.
+//
+// DELIBERATELY REMOVED in v50F — the blob `grossOverride` tier.
+// That field is the PLANNER's manual Gross Qty entry in New Order (fo-gross-override, consumed by
+// calcOrderSchedule) — a PLANNED quantity, not produced material. v46Z read it as actual gross
+// because the pre-v47T DPR editor also wrote it; since v47T the DPR correction lives in
+// batch_gross_override (tier 1), leaving this tier legacy and actively harmful:
+//   • the W/O-split child is created as {...parent}, so it INHERITED the parent's override —
+//     26ZG135 and 26ZG135-A both read 36.75 (the family total) while the apportioned truth was
+//     31.75 / 5, and each row showed the other's share as phantom Production WIP;
+//   • 26ZH079 read 54.62 (planned) against 3.75 actually produced — 49.77L of pure phantom.
+// Gross Production means produced, so a batch with no DPR entry is 0, not its plan. Verified against
+// live data 2 Aug: batch_gross_override empty for both families, so tier 1 does not mask this.
+function _v50fGross(batchNo, b){
+  const _dg = _dprOvrGross(batchNo);
+  if(_dg!=null) return _dg;                                   // (1) deliberate DPR correction
+  if (b && _v50dJulGross && _v50dIsAbsorbed(b) && Object.prototype.hasOwnProperty.call(_v50dJulGross, batchNo)) {
+    return parseFloat(_v50dJulGross[batchNo]) || 0;           // (2) absorbed straddler → July slice
+  }
+  if (state.grossSummary && Object.prototype.hasOwnProperty.call(state.grossSummary, batchNo)) {
+    return state.grossSummary[batchNo] || 0;                  // (3) authoritative apportioned DPR sum
+  }
+  return (b && (b.actualProd || b.actualQty)) || 0;           // (4) same figure carried on the order
+}
 function _reconGross(b){
   if(!b) return 0;
-  // v46Z (confirmed by Ishan): precedence DPR gross override → tracking reconcile override → raw actualProd.
-  // The DPR closed-batch editor sets b.grossOverride (e.g. 26ZC094 → 8.90) and that value already flows to
-  // Planning / Report D / Batch Tracker; Report B lagged because it read only the reconcile override or the
-  // raw split production (25.50), producing a phantom Production WIP. Now every report shares one gross.
-  const _dg = _dprOvrGross(b.batchNumber);          // v49Y: authoritative DPR correction map (v49X metadata)
+  // The admin reconcile override sits between the DPR correction and the DPR-derived sum: it is an
+  // explicit human decision about this batch, but it must never beat a deliberate DPR correction.
+  const _dg = _dprOvrGross(b.batchNumber);
   if(_dg!=null) return _dg;
-  const go = (b.grossOverride==null || b.grossOverride==='') ? NaN : Number(b.grossOverride);
-  if(!isNaN(go) && go>=0) return go;
   const o=_reconOverride(b.batchNumber); if(o&&o.gross!=null) return o.gross;
-  // v50C (confirmed by Ishan — 26ZG135 / 26ZG135-A phantom WIP): before the planning blob, read the
-  // AUTHORITATIVE server per-batch DPR sum (state.grossSummary = effectiveGross → _grossByBatch, with
-  // the v46K W/O-split apportionment ALREADY applied parent→children). The blob's actualProd carries
-  // the UN-apportioned family total on BOTH parent and child (36.75 each), so a split family showed
-  // its gross twice and the child carried a phantom Production WIP of 31.75L. Report E never had this
-  // because it reads _grossFor (the same map); Report B only surfaced it once v50B stopped supplying
-  // the server-apportioned monthGross. This makes Report B/E/D share ONE gross source by construction
-  // — the standing formula-uniformity rule. Absent key → blob, exactly as before.
-  // v50D: absorbed pre-July straddler → JULY-DATED gross slice (see _v50dIsAbsorbed above).
-  if (_v50dJulGross && _v50dIsAbsorbed(b) && Object.prototype.hasOwnProperty.call(_v50dJulGross, b.batchNumber)) {
-    return parseFloat(_v50dJulGross[b.batchNumber]) || 0;
-  }
-  if (state.grossSummary && Object.prototype.hasOwnProperty.call(state.grossSummary, b.batchNumber)) {
-    return state.grossSummary[b.batchNumber] || 0;
-  }
-  return b.actualProd||b.actualQty||0;
+  return _v50fGross(b.batchNumber, b);
 }
 async function loadReconcileOverridesTrk(){
   try{
@@ -5180,7 +5204,52 @@ function viewBatchLabels(batchNo){
       </tr>`).join('')||'<tr><td colspan="8" class="text-center text-muted">No labels</td></tr>'}
       </tbody>
     </table></div>
-  `,[{label:'Close',cls:'btn-secondary',fn:'closeModal()'}]);
+  `,[{label:'Close',cls:'btn-secondary',fn:'closeModal()'},
+     {label:'⚖️ Recalculate Weights', cls:'btn-warning', fn:`_v50fRecalcWeights('${batchNo}')`}]);
+}
+
+// v50F: re-derive Net/Gross for this batch's UNPRINTED labels from each label's stored average
+// weight and the CURRENT packing tare. Needed because Rahul revised the 5 Ply and 3 Ply-with-HDCL
+// allowance from 2.000 to 2.400 kg (2 Aug), so labels generated under v50E on those materials carry
+// a gross 0.4 kg light. Deliberately skips printed and voided labels — a printed label is a physical
+// document already on a box; correcting it silently would put the system out of step with the floor.
+// Labels with no stored average are left alone (nothing to re-derive from) and reported.
+function _v50fRecalcWeights(batchNo){
+  const batch = getBatch(batchNo);
+  const tare = _v50eTareFor(batch);
+  if (tare == null) {
+    alert(`⚠️ Packing material is not set on ${batchNo} in Planning, so the carton tare is unknown and weights cannot be recalculated.`);
+    return;
+  }
+  const cands = state.labels.filter(l => l.batchNumber === batchNo && !l.voided && !l.printed);
+  if (!cands.length) { alert('No unprinted labels on this batch — nothing to recalculate.'); return; }
+  let changed = 0, skipped = 0;
+  const preview = [];
+  for (const l of cands) {
+    const avg = (l.avgWt && parseFloat(l.avgWt) > 0) ? parseFloat(l.avgWt)
+      : ((parseFloat(l.nettWt) > 0 && parseFloat(l.qty) > 0) ? parseFloat(l.nettWt) / parseFloat(l.qty) : null);
+    if (avg == null) { skipped++; continue; }
+    const w = _v50eWeighBox(avg, l.qty, tare);
+    if (w.grossWt == null) { skipped++; continue; }
+    const newG = _v50eFmtWt(w.grossWt), newN = _v50eFmtWt(w.nettWt);
+    if (newG !== String(l.grossWt || '') || newN !== String(l.nettWt || '')) {
+      preview.push({ l, newG, newN, avg, oldG: l.grossWt || '—' });
+      changed++;
+    }
+  }
+  if (!changed) { alert(`✅ All ${cands.length} unprinted label(s) already match the current tare (${_v50eFmtWt(tare)} kg).`); return; }
+  const sample = preview.slice(0, 5).map(p => `  #${Math.abs(p.l.labelNumber||0)}: gross ${p.oldG} → ${p.newG}`).join('\n');
+  if (!confirm(`Recalculate ${changed} unprinted label(s) on ${batchNo} at tare ${_v50eFmtWt(tare)} kg?\n\n${sample}${preview.length>5?`\n  …and ${preview.length-5} more`:''}\n\n${skipped?`${skipped} label(s) have no stored average weight and will be left unchanged.\n\n`:''}Printed labels are never changed.`)) return;
+  for (const p of preview) {
+    p.l.avgWt   = _v50eFmtWt(p.avg);
+    p.l.nettWt  = p.newN;
+    p.l.grossWt = p.newG;
+    pushToServer('/api/tracking/label-update', { labelId: p.l.id, avgWt: p.l.avgWt, nettWt: p.newN, grossWt: p.newG });
+  }
+  saveLocal();
+  alert(`✅ ${changed} label(s) recalculated at tare ${_v50eFmtWt(tare)} kg.${skipped?` ${skipped} skipped (no stored average).`:''}`);
+  closeModal();
+  renderPage(currentPage);
 }
 
 function openRegenPartial(labelId){
