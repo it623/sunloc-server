@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v50F</title>
+<title>Sunloc Tracking Suite v1.0 · build v50G</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50F</p>
+      <p>Tracking Suite v1.0 · build v50G</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50F</p>
+      <p>Tracking Suite v1.0 · build v50G</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1002,6 +1002,10 @@ function updateTrkMonthBadge() {
 
 function onTrkMonthChange(ym) {
   _trkSelectedMonth = ym;
+  // v50G: the Production-Month filter follows the header month, so every report opens on the month
+  // the user just picked. Without this, changing the header month left the report universe pinned to
+  // whatever the dropdown last held (or 'ALL'), and Report D disagreed with its own banner.
+  window._trkProdMonthFilter = ym;
   updateTrkMonthBadge();
   // Clear any cached report output so reports re-render fresh for new month
   const rOut = document.getElementById('report-output');
@@ -1015,11 +1019,17 @@ function onTrkMonthChange(ym) {
 }
 
 // Filter batches by selected month (production order active in that month)
-// v45H: Production-Month filter for Reports B/C/F — INDEPENDENT of the top month picker (which keeps
-// driving A/D/G + A-Grade attribution). Filters batches by PRODUCTION START month
-// (b.startDate||b.orderStartDate — the same "belongs to" rule as the planning quarter scope). Default
-// 'ALL' shows every batch. Batch-SELECTION only: per-batch WIP is unchanged, no carry-forward.
-window._trkProdMonthFilter = window._trkProdMonthFilter || 'ALL';
+// v45H: Production-Month filter for Reports B/C/F.
+// v50G (Ishan, 3 Aug — Report D wrong until Report B was visited): this filter used to be INDEPENDENT
+// of the header month picker and defaulted to 'ALL'. Report D's stage table reads its AIM/Printing/PI
+// universe from here (via _rptBUniverse) but scoped its Packing row to _trkSelectedMonth — so on first
+// open the same table mixed TWO month rules: every batch ever for AIM/Printing/PI, the selected month
+// for Packing. That is why July and August both opened showing an identical AIM-GF 270 boxes / 382.78L
+// and only corrected once Report B's dropdown was touched, which set this filter.
+// Under the v50B cohort model a batch belongs to exactly one month, so a second, independent month
+// source is now a defect. It defaults to — and follows — the header month (see onTrkMonthChange), and
+// remains available in Reports B/C/D/F as an explicit override ('All months' or another month).
+window._trkProdMonthFilter = window._trkProdMonthFilter || _trkSelectedMonth;
 function _trkProdStartMonth(b){
   const start = b.startDate || b.orderStartDate;
   if (!start) return '';
@@ -1028,7 +1038,9 @@ function _trkProdStartMonth(b){
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 }
 function getProdMonthBatches(excludeRetired){
-  const pm = window._trkProdMonthFilter || 'ALL';
+  // v50G: fall back to the HEADER month, never to 'ALL' — an unset filter used to silently widen
+  // every report to all months, which is the defect this build removes.
+  const pm = window._trkProdMonthFilter || _trkSelectedMonth || 'ALL';
   return state.batches.filter(b => {
     if (b.deleted) return false;
     if (excludeRetired && _isRetired(b.batchNumber)) return false;
@@ -1040,6 +1052,12 @@ function getProdMonthBatches(excludeRetired){
 function _trkProdMonthOptions(){
   const set = new Set();
   (state.batches||[]).forEach(b => { if (b.deleted) return; const m = _v50bCohortMonth(b); if (m) set.add(m); });   // v50B cohort month
+  // v50G: always offer the header month and whatever the filter currently holds, even if no batch sits
+  // in it yet — otherwise the <select> would fall back to showing 'All months' while the filter really
+  // held that month, which is precisely the kind of silent mismatch this build is removing.
+  if (typeof _trkSelectedMonth === 'string' && _trkSelectedMonth) set.add(_trkSelectedMonth);
+  const cur = window._trkProdMonthFilter;
+  if (cur && cur !== 'ALL') set.add(cur);
   return [...set].sort().reverse();   // newest first
 }
 function _trkProdMonthDropdownHtml(){
@@ -13035,8 +13053,13 @@ function _v45sTopTableData(){
   _rptBDeptSet('pi', U).forEach(bn => { const R=_rptBRow(bn,'pi',U); stageWIP['pi']+=R.wip; stageQtyL['pi']+=R.wipQty; if(R.frozenHere)_stageFrozen['pi']=true; });
   // Packing scanned + Report F handover gaps iterate the production-month batch list (unchanged —
   // Report F printing/PI/packing unscanned already reconcile and must NOT be disturbed).
-  const _topBatches = state.batches
-    .filter(b => !b.deleted && b.batchNumber && !_isRetired(b.batchNumber) && _trkProdStartMonth(b) === _trkSelectedMonth);
+  // v50G: Packing (and the Report F handover gaps below) used _trkProdStartMonth — the RAW start month
+  // — while the AIM/Printing/PI rows above used the shared universe. Two month rules in one table:
+  // a straddler absorbed into July by v50C counted at AIM but not at Packing. Both now read the SAME
+  // universe U, so every row of the stage table describes one batch set by construction.
+  const _topBatches = [...U.monthBatchNos]
+    .map(bn => getBatch(bn))
+    .filter(b => b && !b.deleted && b.batchNumber && !_isRetired(b.batchNumber));
   _topBatches.forEach(b => {
     const bn = b.batchNumber, bsz = b.size;
     // Packing scanned = Report G balance (packed-not-dispatched, lifetime by nature).

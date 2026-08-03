@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50F</p>
+      <p>Planning Suite v3.0 · build v50G</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -3726,6 +3726,13 @@ function renderProduction() {
     let avgActualProd = null;
     if (dprActualRate && dprActualRate.distinctDays > 0) {
       avgActualProd = dprActualRate.avgPerDay; // authoritative — direct from DPR
+    } else if (mc.cap > 0) {
+      // v50G (Ishan's decision 2, 2 Aug): with no COMPLETED production day this month — the 1st, or
+      // the morning after a month rolls over — show the machine's configured STANDARD rate. That is
+      // already what calcOrderSchedule falls back to for effectiveCap, so header and scheduling now
+      // agree instead of the header quoting a closed-order estimate the schedule never used. It
+      // switches to the real DPR average the moment day 1 completes, then refines daily.
+      avgActualProd = mc.cap;
     } else {
       // Fallback: closed orders actualProd / daysNeeded
       const closedOrders = orders.filter(o => o.status === 'closed' && (o.actualProd || o.actualQty));
@@ -3735,15 +3742,18 @@ function renderProduction() {
         avgActualProd = totalDays > 0 ? totalActual / totalDays : null;
       }
     }
+    const _isStd50g = !(dprActualRate && dprActualRate.distinctDays > 0) && mc.cap > 0;   // v50G
     const avgProdTooltip = dprActualRate
-      ? `title="DPR total: ${fmt(dprActualRate.totalQty)}L across ${dprActualRate.distinctDays} days"`
-      : 'title="Estimated from closed orders (no DPR data yet)"';
+      ? `title="DPR total: ${fmt(dprActualRate.totalQty)}L across ${dprActualRate.distinctDays} completed production day(s) — the day in progress is excluded so a part-entered day cannot drag the rate down"`
+      : (_isStd50g
+          ? 'title="Machine standard rate — no completed production day yet this month. Switches to the DPR average once the first full day is in."'
+          : 'title="Estimated from closed orders (no DPR data yet)"');
 
     const liveAGHtml = liveAGPct != null
       ? `<span class="text-sm" style="color:${liveAGPct>=93?'var(--accent3)':'var(--accent4)'}">Live A-Grade: <strong>${fmt(liveAGPct,1)}%</strong></span>`
       : '';
     const avgProdHtml = avgActualProd != null
-      ? `<span class="text-dim text-sm" ${avgProdTooltip}>Avg Actual: <strong style="color:var(--accent2)">${fmt(avgActualProd,1)}L/day</strong>${dprActualRate?'<span style="font-size:9px;color:var(--accent);margin-left:3px">DPR</span>':'<span style="font-size:9px;color:var(--text3);margin-left:3px">est</span>'}</span>`
+      ? `<span class="text-dim text-sm" ${avgProdTooltip}>Avg Actual: <strong style="color:var(--accent2)">${fmt(avgActualProd,1)}L/day</strong>${dprActualRate?'<span style="font-size:9px;color:var(--accent);margin-left:3px">DPR</span>':(_isStd50g?'<span style="font-size:9px;color:var(--text3);margin-left:3px">STD</span>':'<span style="font-size:9px;color:var(--text3);margin-left:3px">est</span>')}</span>`
       : '';
     html += `
       <div class="mc-panel mb-4" data-size="${mc.size}">

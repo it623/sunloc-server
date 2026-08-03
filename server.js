@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50F';
+const APP_BUILD = 'v50G';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -11226,17 +11226,32 @@ app.get('/api/dpr/plant-cum', async (req, res) => {
         ? db.prepare(`SELECT machine_id, date, COALESCE(SUM(qty_lakhs),0) AS day_total FROM production_actuals WHERE date <= ? AND date >= ? GROUP BY machine_id, date`).all(to, from)
         : db.prepare(`SELECT machine_id, date, COALESCE(SUM(qty_lakhs),0) AS day_total FROM production_actuals WHERE date <= ? GROUP BY machine_id, date`).all(to);
     }
+    // v50G (confirmed by Ishan, 2 Aug): CUM TOTAL stays a true cumulative — every producing day up
+    // to the date on screen, today included. The DAILY AVERAGE, though, must divide only by
+    // COMPLETED production days, so avgTotal/avgDays/avgDates carry the same sums restricted to days
+    // at or before the last completed production day. Purely ADDITIVE — total/days/dates keep their
+    // exact previous meaning, so nothing else that reads this endpoint changes.
+    // Viewing a PAST date is unaffected: the cutoff only bites when the date on screen is the day in
+    // progress, because avgTo = min(to, cutoff).
+    const _cut50g = _v50gLastCompletedProdDay();
+    const _avgTo  = (to && to < _cut50g) ? to : _cut50g;
     const machines = {};
     for (const r of rows) {
       const mid = r.machine_id; if (!mid) continue;
       const v = parseFloat(r.day_total) || 0;
       if (v <= 0) continue; // days-with-production only — mirrors the client's cumDays rule
-      if (!machines[mid]) machines[mid] = { total: 0, days: 0, dates: [] };
+      if (!machines[mid]) machines[mid] = { total: 0, days: 0, dates: [], avgTotal: 0, avgDays: 0, avgDates: [] };
+      const _d = String(r.date).slice(0, 10);
       machines[mid].total = parseFloat((machines[mid].total + v).toFixed(2));
       machines[mid].days += 1;
-      machines[mid].dates.push(String(r.date).slice(0, 10));
+      machines[mid].dates.push(_d);
+      if (_d <= _avgTo) {
+        machines[mid].avgTotal = parseFloat((machines[mid].avgTotal + v).toFixed(2));
+        machines[mid].avgDays += 1;
+        machines[mid].avgDates.push(_d);
+      }
     }
-    res.json({ ok: true, from, to, machines });
+    res.json({ ok: true, from, to, machines, avgTo: _avgTo, prodDayCutoff: _cut50g });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -12508,6 +12523,31 @@ app.get('/api/dpr/:floor/:date', async (req, res) => {
   }
 });
 
+// ═══ v50G PRODUCTION-DAY AVERAGE RULE (confirmed by Ishan, 2 Aug) ═══════════
+// A daily average must divide by COMPLETED production days only. The day in progress has just one
+// or two shifts entered, so counting it as a full day drags the average down and then walks it back
+// up as B and C are keyed in — on 2 Aug MC30 read 19.60 (39.20 ÷ 2) when the true rate from the one
+// completed day was 29.40. That average is not cosmetic: Planning divides remaining gross by it in
+// calcOrderSchedule (effectiveCap), so every order's duration and end date moved with it.
+//
+// A production day runs 06:00 → 06:00 IST (C shift belongs to the day it started, which is why the
+// DPR entry screen rolls the date back for a night-shift operator). So the day in progress is the
+// IST date, or the previous date when it is before 06:00 IST; the last COMPLETED day is the one
+// before that. Computed from an explicit +05:30 offset rather than the server clock, because
+// Railway runs UTC and a naive new Date() would roll the cutoff a day early every night.
+//
+// When no completed day exists in the window — the 1st of a month — the machine simply drops out of
+// the map and Planning falls back to the machine's configured standard rate, then picks up the real
+// average from day 2 onward and refines it daily (Ishan's decision 2).
+function _v50gLastCompletedProdDay() {
+  const _p = n => String(n).padStart(2, '0');
+  const now = new Date();
+  const ist = new Date(now.getTime() + (330 + now.getTimezoneOffset()) * 60000);
+  if (ist.getHours() < 6) ist.setDate(ist.getDate() - 1);   // still inside the previous production day
+  ist.setDate(ist.getDate() - 1);                            // step back off the day in progress
+  return `${ist.getFullYear()}-${_p(ist.getMonth() + 1)}-${_p(ist.getDate())}`;
+}
+
 // GET /api/actuals/machine-summary — total qty and distinct days per machine (for Planning avg daily rate)
 app.get('/api/actuals/machine-summary', async (req, res) => {
   try {
@@ -12529,10 +12569,17 @@ app.get('/api/actuals/machine-summary', async (req, res) => {
     // shifted the all-time average off the July figure Ishan compares against (MC30 25.6 vs DPR 25.84).
     // Fix: default the window to the current month, matching DPR "This Month" day-for-day. Optional
     // from/to query params override it (kept for flexibility); planning calls it with none → current month.
+    // v50G (confirmed by Ishan, 2 Aug): the window now ENDS at the last COMPLETED production day,
+    // not today. Today has only the shifts entered so far, and counting it as a whole day pulled the
+    // rate down (MC30 19.60 instead of 29.40) and with it every order's duration. The month start is
+    // taken from the production day in progress, so the window doesn't jump at midnight UTC.
     const _pad = n => String(n).padStart(2, '0');
+    const _cut50g = _v50gLastCompletedProdDay();          // e.g. '2026-08-01' while 2 Aug is running
     const _now = new Date();
-    const _defFrom = `${_now.getFullYear()}-${_pad(_now.getMonth() + 1)}-01`;
-    const _defTo   = `${_now.getFullYear()}-${_pad(_now.getMonth() + 1)}-${_pad(_now.getDate())}`;
+    const _ist50g = new Date(_now.getTime() + (330 + _now.getTimezoneOffset()) * 60000);
+    if (_ist50g.getHours() < 6) _ist50g.setDate(_ist50g.getDate() - 1);
+    const _defFrom = `${_ist50g.getFullYear()}-${_pad(_ist50g.getMonth() + 1)}-01`;
+    const _defTo   = _cut50g;
     const _isDate = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
     const winFrom = _isDate(req.query.from) ? String(req.query.from).slice(0, 10) : _defFrom;
     const winTo   = _isDate(req.query.to)   ? String(req.query.to).slice(0, 10)   : _defTo;

@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50F</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50G</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -4103,6 +4103,20 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
   //   floorDateProd[fl][d]    = total floor production that day (for floor/plant active-day counts)
   // It also reduces localStorage churn, which helps the Plant Report's load time (#5).
   const _scopeFilter = d => _dprCumulativeMode ? (d <= selectedDate) : (d >= _v50eScopeMonth(selectedDate) + '-01' && d <= selectedDate);   // v50E
+  // v50G (confirmed by Ishan): the DAILY AVERAGE divides by COMPLETED production days only. The day
+  // in progress holds just the shifts entered so far, so counting it as a whole day drags the average
+  // down and walks it back up as B and C are keyed in. Production days run 06:00→06:00, so before
+  // 06:00 the day in progress is still yesterday. CUM TOTAL is untouched — it stays a true cumulative.
+  const _avgTo50g = (() => {
+    const now = new Date();
+    const d = new Date(now);
+    if (now.getHours() < 6) d.setDate(d.getDate() - 1);   // still inside the previous production day
+    d.setDate(d.getDate() - 1);                            // step back off the day in progress
+    const cut = _localYMD(d);
+    return (selectedDate && selectedDate < cut) ? selectedDate : cut;   // a past date is fully complete
+  })();
+  const _isCompleted50g = d => d <= _avgTo50g;
+  window._avgTo50gLabel = _avgTo50g;   // read by the cumulative label (renderPlantReport/export)
   const parsedCache = {};
   const floorDateProd = {};
   Object.keys(FLOORS).forEach(fl => {
@@ -4135,7 +4149,9 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
       const _flDates = new Set();
       (flData.machines || []).forEach(mc => {
         const sc = serverCum[mc.id];
-        ((sc && sc.dates) || []).forEach(d => { _flDates.add(d); _plantDates.add(d); });
+        // v50G: the floor/plant average divides by COMPLETED production days, so the day-set comes
+        // from avgDates. Pre-v50G payloads have no avgDates → fall back to dates (old behaviour).
+        (((sc && sc.avgDates) || (sc && sc.dates) || [])).forEach(d => { _flDates.add(d); _plantDates.add(d); });
       });
       floorProdDays[fl] = _flDates.size;
     });
@@ -4143,7 +4159,7 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
   Object.keys(FLOORS).forEach(fl => {
     let cnt = 0;
     Object.entries(floorDateProd[fl]).forEach(([d, v]) => {
-      if (v > 0.0001) { cnt++; _plantDates.add(d); }
+      if (v > 0.0001 && _isCompleted50g(d)) { cnt++; _plantDates.add(d); }   // v50G
     });
     floorProdDays[fl] = cnt;
   });
@@ -4180,10 +4196,16 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
     // v45X: authoritative path — per-machine cumulative straight from production_actuals
     // (server), matching Report B's month gross. Grid-blob loop kept as offline fallback.
     let cumTotal=0, cumDays=0;
+    // v50G: avgTotal/avgDays = the same sums over COMPLETED production days only (server, additive).
+    let avgTotal50g=0, avgDays50g=0;
     if (serverCum) {
       const _sc45x = serverCum[mc.id];
       cumTotal = _sc45x ? (parseFloat(_sc45x.total) || 0) : 0;
       cumDays  = _sc45x ? (parseInt(_sc45x.days, 10) || 0) : 0;
+      // Fall back to the full figures on a pre-v50G server payload, so behaviour degrades to the old
+      // rule rather than to zero.
+      avgTotal50g = (_sc45x && _sc45x.avgTotal != null) ? (parseFloat(_sc45x.avgTotal) || 0) : cumTotal;
+      avgDays50g  = (_sc45x && _sc45x.avgDays  != null) ? (parseInt(_sc45x.avgDays, 10) || 0) : cumDays;
     } else {
     const flDates = (allDatesMap[fl] || []).filter(_scopeFilter);
     flDates.forEach(d => {
@@ -4196,16 +4218,22 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
         if (m) dayProd += mcTotalProd(migrateMachineData(m));
       });
       dayProd = parseFloat(dayProd.toFixed(2));
-      if (dayProd > 0) { cumTotal += dayProd; cumDays++; }
+      if (dayProd > 0) {
+        cumTotal += dayProd; cumDays++;
+        if (_isCompleted50g(d)) { avgTotal50g += dayProd; avgDays50g++; }   // v50G
+      }
     });
     }
     cumTotal = parseFloat(cumTotal.toFixed(2));
+    avgTotal50g = parseFloat(avgTotal50g.toFixed(2));
     // v41ZG #3: average over days this machine ACTUALLY produced (days-with-data), not elapsed
     // calendar days. "Average production" = mean output on the days the machine ran. cumDays is the
     // count of those days. (For a range where every day has data, this equals elapsed days.)
-    const cumAvg = cumDays > 0 ? parseFloat((cumTotal / cumDays).toFixed(2)) : 0;
+    // v50G: completed production days only (see _avgTo50g). CUM TOTAL still shows every day.
+    const cumAvg = avgDays50g > 0 ? parseFloat((avgTotal50g / avgDays50g).toFixed(2)) : 0;
 
-    return { ...mc, dailyTgt, dayA, dayB, dayC, dayTotal, vsTarget, cumTotal, cumDays, cumAvg };
+    return { ...mc, dailyTgt, dayA, dayB, dayC, dayTotal, vsTarget, cumTotal, cumDays,
+             cumAvg, avgTotal: avgTotal50g, avgDays: avgDays50g };
   });
 
   const totals = rows.reduce((acc, r) => {
@@ -4215,12 +4243,13 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
     acc.dayC     += r.dayC;
     acc.dayTotal += r.dayTotal;
     acc.cumTotal += r.cumTotal;
+    acc.avgTotal += (r.avgTotal || 0);   // v50G: completed-day basis
     return acc;
-  }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0});
+  }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0,avgTotal:0});
   totals.cumDays  = plantProdDays;
   totals.vsTarget = parseFloat((totals.dayTotal - totals.dailyTgt).toFixed(2));
-  // v41ZG #3: plant average daily production = plant cumulative ÷ days the plant produced.
-  totals.cumAvg   = plantProdDays > 0 ? parseFloat((totals.cumTotal / plantProdDays).toFixed(2)) : 0;
+  // v50G: plant average = production on COMPLETED days ÷ those days. CUM TOTAL still counts today.
+  totals.cumAvg   = plantProdDays > 0 ? parseFloat((totals.avgTotal / plantProdDays).toFixed(2)) : 0;
 
   // v41ZC #3: per-floor subtotals (floor-wise production summed, shown before the grand total).
   const floorTotals = {};
@@ -4229,14 +4258,14 @@ function buildPlantReportRows(selectedDate, floorDataMap, allDatesMap, serverCum
     if (!fRows.length) return;
     const ft = fRows.reduce((acc,r)=>{
       acc.dailyTgt+=r.dailyTgt; acc.dayA+=r.dayA; acc.dayB+=r.dayB; acc.dayC+=r.dayC;
-      acc.dayTotal+=r.dayTotal; acc.cumTotal+=r.cumTotal;
+      acc.dayTotal+=r.dayTotal; acc.cumTotal+=r.cumTotal; acc.avgTotal+=(r.avgTotal||0);   // v50G
       return acc;
-    }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0});
-    ['dailyTgt','dayA','dayB','dayC','dayTotal','cumTotal'].forEach(k=>ft[k]=parseFloat(ft[k].toFixed(2)));
+    }, {dailyTgt:0,dayA:0,dayB:0,dayC:0,dayTotal:0,cumTotal:0,avgTotal:0});
+    ['dailyTgt','dayA','dayB','dayC','dayTotal','cumTotal','avgTotal'].forEach(k=>ft[k]=parseFloat(ft[k].toFixed(2)));
     ft.cumDays  = floorProdDays[fl] || 0;
     ft.vsTarget = parseFloat((ft.dayTotal - ft.dailyTgt).toFixed(2));
-    // v41ZG #3: floor average daily production = floor cumulative ÷ days that floor produced.
-    ft.cumAvg   = ft.cumDays > 0 ? parseFloat((ft.cumTotal/ft.cumDays).toFixed(2)) : 0;
+    // v50G: floor average = production on COMPLETED days ÷ those days.
+    ft.cumAvg   = ft.cumDays > 0 ? parseFloat((ft.avgTotal/ft.cumDays).toFixed(2)) : 0;
     ft.label    = FLOORS[fl]?.label || fl;
     floorTotals[fl] = ft;
   });
@@ -4354,9 +4383,14 @@ async function renderPlantReport(){
   // v41ZG #3: the DAYS column / averages now divide by days that actually had production (active
   // days), per machine/floor/plant — not elapsed calendar days. Label reflects the plant's active days.
   const _daysWithData = allDates.length;
+  // v50G: say plainly that the average divides by COMPLETED days and that the day in progress is
+  // excluded — otherwise CUM TOTAL ÷ DAYS won't reconcile with DAILY AVG on screen and it reads as a
+  // bug. CUM TOTAL deliberately still includes today's shifts.
+  const _inProgress50g = (typeof window._avgTo50gLabel === 'string') ? window._avgTo50gLabel : null;
   const cumLabel = totals.cumDays > 0
-    ? `Cumulative up to ${selectedDate} · avg over ${totals.cumDays} production day${totals.cumDays!==1?'s':''}`
-    : 'No cumulative data yet';
+    ? `Cumulative up to ${selectedDate} · avg over ${totals.cumDays} completed production day${totals.cumDays!==1?'s':''}`
+      + (_inProgress50g && _inProgress50g < selectedDate ? ` · ${selectedDate} in progress, excluded from the average` : '')
+    : (selectedDate ? `Cumulative up to ${selectedDate} · no completed production day yet — average unavailable` : 'No cumulative data yet');
 
   const sourceNote = serverFetched
     ? `<span style="color:var(--green);font-family:var(--mono);font-size:9px">🟢 Live from server</span>`
