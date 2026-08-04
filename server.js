@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50K';
+const APP_BUILD = 'v50L';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -8532,7 +8532,6 @@ app.post('/api/orders/upsert', async (req, res) => {
         else if (_hasSum45t) finalActualProd = _grossByBatch[_bn45t] || 0;
         else                 finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
       }
-      const hasManualDate = exData.manualEndDate || exData.manualStartDate;
       const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming client older than DB by >5s
       mergedOrd = {
         ...ord,
@@ -8546,11 +8545,18 @@ app.post('/api/orders/upsert', async (req, res) => {
         billTo:        _staleWrite && exData.billTo        != null ? exData.billTo        : ord.billTo,
         grossOverride: _staleWrite && exData.grossOverride != null ? exData.grossOverride : ord.grossOverride,
         woStatus:      _staleWrite && exData.woStatus      != null ? exData.woStatus      : ord.woStatus,
+        // ═══ v50L BATCH-NUMBER / MACHINE STALENESS GUARD (confirmed by Ishan, 4 Aug) ═══════════════
+        // ROOT CAUSE of "27Z079 re-flipped after the 26Z079 fix": batchNumber and machineId were
+        // written UNGUARDED from the incoming order, so any stale tab's routine sync re-imposed the
+        // old batch number into production_orders (the v50I intent stamp gates only the downstream
+        // CASCADE, never the column itself), and every client re-adopted it from the table once local
+        // protection decayed. Same staleness rule as colour/customer. This asymmetry is also why the
+        // 25ZC110→26ZC110 rename stuck (no stale holder pushed it back) while 27Z079 kept flipping.
+        batchNumber: _staleWrite && exData.batchNumber != null ? exData.batchNumber : ord.batchNumber,
+        machineId:   _staleWrite && exData.machineId   != null ? exData.machineId   : ord.machineId,
         status: finalStatus,
         deleted: finalDeleted,
         actualProd: finalActualProd,
-        startDate:       hasManualDate ? exData.startDate   : ord.startDate,
-        endDate:         hasManualDate ? exData.endDate     : ord.endDate,
         manualStartDate: exData.manualStartDate || ord.manualStartDate,
         // v49G: on an explicit status override, manualEndDate/closedDate follow the client's decision
         // (a reopen CLEARS them); otherwise the existing DB-wins behaviour is unchanged.
@@ -8569,8 +8575,17 @@ app.post('/api/orders/upsert', async (req, res) => {
         packing:  ord.packing  || exData.packing  || null,
         zone:     ord.zone     || exData.zone     || null,
         pcCode:    ord.pcCode    || exData.pcCode    || null,
-        startDate: ord.startDate || exData.startDate || null,
-        endDate:   ord.endDate   || exData.endDate   || null,
+        // ═══ v50L STAMP-AWARE DATES (confirmed by Ishan, 4 Aug — ZA078/ZA079 month flips) ═══════════
+        // This literal previously declared startDate/endDate TWICE: an earlier hasManualDate freeze
+        // pair, silently SHADOWED by this unconditional client-wins pair (last key wins in JS). The
+        // live behaviour was therefore "client dates always win" — so any stale tab's routine sync
+        // overwrote a corrected date in production_orders, and the 30s client table-merge then pulled
+        // the stale date back onto every screen once local protection decayed. Cohort month derives
+        // from startDate, which is how ZA078/ZA079 kept snapping back to July. The dead freeze pair
+        // is removed; this single surviving pair now follows the same _localEditedAt staleness rule
+        // as colour/customer: a FRESH stamped edit lands, a stale push keeps the stored dates.
+        startDate: _staleWrite ? (exData.startDate || ord.startDate || null) : (ord.startDate || exData.startDate || null),
+        endDate:   _staleWrite ? (exData.endDate   || ord.endDate   || null) : (ord.endDate   || exData.endDate   || null),
       };
     }
     if (preserved) {
@@ -9155,8 +9170,6 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           else if (_hasSum45t) finalActualProd = _grossByBatch[_bn45t] || 0;
           else                 finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
         }
-        // Preserve manual date flags from DB if set
-        const hasManualDate = exData.manualEndDate || exData.manualStartDate;
         const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming client older than DB by >5s
         mergedOrd = {
           ...ord,
@@ -9169,11 +9182,12 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           billTo:        _staleWrite && exData.billTo        != null ? exData.billTo        : ord.billTo,
           grossOverride: _staleWrite && exData.grossOverride != null ? exData.grossOverride : ord.grossOverride,
           woStatus:      _staleWrite && exData.woStatus      != null ? exData.woStatus      : ord.woStatus,
+          // v50L: stale tab can no longer re-impose an old batch number / machine — see single-upsert note (27Z079).
+          batchNumber: _staleWrite && exData.batchNumber != null ? exData.batchNumber : ord.batchNumber,
+          machineId:   _staleWrite && exData.machineId   != null ? exData.machineId   : ord.machineId,
           status: finalStatus,
           deleted: finalDeleted,
           actualProd: finalActualProd,
-          startDate:       hasManualDate ? exData.startDate   : ord.startDate,
-          endDate:         hasManualDate ? exData.endDate     : ord.endDate,
           manualStartDate: exData.manualStartDate || ord.manualStartDate,
           // v49G: an explicit status override lets the client's manualEndDate/closedDate win (reopen clears them)
           manualEndDate:   _v49gOverride2 ? (ord.manualEndDate || false) : (exData.manualEndDate || ord.manualEndDate),
@@ -9189,8 +9203,12 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           packing:  ord.packing  || exData.packing  || null,
           zone:     ord.zone     || exData.zone     || null,
           pcCode:    ord.pcCode    || exData.pcCode    || null,
-          startDate: ord.startDate || exData.startDate || null,
-          endDate:   ord.endDate   || exData.endDate   || null,
+          // v50L: this literal declared dates twice — a hasManualDate freeze pair shadowed by this
+          // unconditional client-wins pair, so a stale tab's bulk sync overwrote corrected dates in
+          // production_orders (THE date-revert vector for ZA078/ZA079). Dead pair removed; the single
+          // surviving pair is now stamp-aware — see the single-upsert note.
+          startDate: _staleWrite ? (exData.startDate || ord.startDate || null) : (ord.startDate || exData.startDate || null),
+          endDate:   _staleWrite ? (exData.endDate   || ord.endDate   || null) : (ord.endDate   || exData.endDate   || null),
         };
       }
       mergedOrd = _v49f_rcLock(mergedOrd, exData);   // v49F: re-customer is authoritative
@@ -9802,6 +9820,49 @@ app.post('/api/planning/state', async (req, res) => {
         console.warn('[v49] selective merge skipped, saving blob as sent:', e && e.message);
       }
     }
+    // ═══ v50L CONSERVATIVE MERGE FOR LIST-LESS SAVES (confirmed by Ishan, 4 Aug) ══════════════════
+    // THE WHOLESALE HOLE: v49A's selective merge only runs when the client sends changedOrderIds —
+    // by its own design note, "if the list is absent (an older cached client...) the endpoint
+    // replaces wholesale exactly as before." A planner tab still running cached pre-v48Z
+    // planning.html auto-saves its FULL stale blob every ~30s, reverting dates, batch renames and
+    // every other correction made since that tab loaded — all at once. This is the engine behind
+    // "confirmed fixed, then regresses again" across unrelated fields.
+    // A list-less save is now merged CONSERVATIVELY per order: the server's copy wins unless the
+    // client's copy carries a strictly newer _localEditedAt (a genuine edit made in that tab, even a
+    // stale one, still lands). Orders only the client has are kept (locally new); orders only the
+    // server has are kept (a legacy tab that never loaded them cannot delete them).
+    // ESCAPE HATCH: req.body.wholesale === true restores the full replace for deliberate
+    // whole-state writers (restore/import tooling). Current clients always send changedOrderIds and
+    // are untouched by this block.
+    else if (req.body.wholesale !== true && Array.isArray(state.orders)) {
+      try {
+        const cur = await getPlanningStateAsync();
+        const curOrders = (cur && Array.isArray(cur.orders)) ? cur.orders : null;
+        if (curOrders && curOrders.length) {
+          const cliById = new Map();
+          for (const o of state.orders) if (o && o.id) cliById.set(String(o.id), o);
+          const merged = [];
+          const seen = new Set();
+          let cliWon = 0;
+          for (const srv of curOrders) {
+            if (!srv || !srv.id) { merged.push(srv); continue; }
+            const id = String(srv.id);
+            seen.add(id);
+            const cli = cliById.get(id);
+            if (!cli) { merged.push(srv); continue; }               // client never had it → keep server's
+            const ct = parseInt(cli._localEditedAt || 0);
+            const st = parseInt(srv._localEditedAt || 0);
+            if (ct > st) { merged.push(_v49f_rcLock(cli, srv)); cliWon++; }   // genuine newer edit in that tab
+            else merged.push(srv);                                  // server's copy is current — protect it
+          }
+          for (const [id, cli] of cliById) if (!seen.has(id)) merged.push(cli);   // locally new → keep
+          state.orders = merged;
+          console.log(`[v50L] list-less save (legacy/stale client): conservative merge — ${cliWon} client order(s) newer, ${merged.length} total (wholesale replace refused)`);
+        }
+      } catch (e) {
+        console.warn('[v50L] conservative merge skipped, saving blob as sent:', e && e.message);
+      }
+    }
 
     // Background order merge — runs AFTER response is sent so planning_state save is never blocked
     // With 300+ orders, sequential queries timed out and prevented planning_state from saving
@@ -9821,13 +9882,21 @@ app.post('/api/planning/state', async (req, res) => {
 
           // Fetch ALL existing records in ONE query — no N+1
           const ids = orders.map(o => o.id);
+          // v50L: also fetch the ROW's updated_at. The staleness guards below compared against
+          // ex.updated_at, but `ex` is parsed data_json which rarely embeds that field — so
+          // dbUpdated was usually 0, _staleWrite always false, and every guard in this merge was
+          // effectively CLIENT-WINS (a stale blob could re-impose old colour/customer/dates/batch).
+          // The authoritative column value now backfills the parsed object.
           const existing = await pgPool.query(
-            `SELECT id, data_json FROM production_orders WHERE id = ANY($1)`, [ids]
+            `SELECT id, data_json, updated_at FROM production_orders WHERE id = ANY($1)`, [ids]
           );
           const existingMap = {};
           existing.rows.forEach(r => {
-            try { existingMap[r.id] = typeof r.data_json === 'string'
-              ? JSON.parse(r.data_json) : r.data_json; } catch(e) {}
+            try {
+              const _o = typeof r.data_json === 'string' ? JSON.parse(r.data_json) : r.data_json;
+              if (_o && !_o.updated_at && r.updated_at) _o.updated_at = r.updated_at;   // v50L
+              existingMap[r.id] = _o;
+            } catch(e) {}
           });
 
           // CRITICAL: Count running orders per machine from DB — authoritative 2-order limit
@@ -9877,7 +9946,6 @@ app.post('/api/planning/state', async (req, res) => {
             const ex = existingMap[ord.id];
             let mergedOrd = ord;
             if (ex) {
-              const hasManualDate = ex.manualEndDate || ex.manualStartDate;
               const clientEdit = parseInt(ord._localEditedAt || 0);
               const dbUpdated  = ex.updated_at ? new Date(ex.updated_at).getTime() : 0;
               let finalStatus;
@@ -9944,8 +10012,9 @@ app.post('/api/planning/state', async (req, res) => {
                 billTo:        _staleWrite && ex.billTo        != null ? ex.billTo        : ord.billTo,
                 grossOverride: _staleWrite && ex.grossOverride != null ? ex.grossOverride : ord.grossOverride,
                 woStatus:      _staleWrite && ex.woStatus      != null ? ex.woStatus      : ord.woStatus,
-                startDate:       hasManualDate ? ex.startDate   : ord.startDate,
-                endDate:         hasManualDate ? ex.endDate     : ord.endDate,
+                // v50L: stale blob can no longer re-impose an old batch number / machine — see upsert note (27Z079).
+                batchNumber: _staleWrite && ex.batchNumber != null ? ex.batchNumber : ord.batchNumber,
+                machineId:   _staleWrite && ex.machineId   != null ? ex.machineId   : ord.machineId,
                 manualEndDate:   ex.manualEndDate   || ord.manualEndDate,
                 manualStartDate: ex.manualStartDate || ord.manualStartDate,
                 status: finalStatus,
@@ -9966,8 +10035,14 @@ app.post('/api/planning/state', async (req, res) => {
                 zone:     ex.zone     || ord.zone     || null,
                 packing:  ex.packing  || ord.packing  || null,
                 pcCode:    ex.pcCode    || ord.pcCode    || null,
-                startDate: ex.startDate || ord.startDate || null,
-                endDate:   ex.endDate   || ord.endDate   || null,
+                // v50L: dates here were DB-ALWAYS (shadowing an earlier dead freeze pair), so a date
+                // amendment saved through the blob could never reach production_orders via this merge —
+                // and this merge RACED the fresh single-order upsert from the same save, sometimes
+                // re-imposing the old dates seconds after the upsert landed the correction (why fixes
+                // "stuck" sometimes and reverted other times). Now stamp-aware like every other field:
+                // a fresh stamped blob order carries its dates through; a stale blob keeps the DB's.
+                startDate: _staleWrite ? (ex.startDate || ord.startDate || null) : (ord.startDate || ex.startDate || null),
+                endDate:   _staleWrite ? (ex.endDate   || ord.endDate   || null) : (ord.endDate   || ex.endDate   || null),
               };
             }
             return _v49f_rcLock(mergedOrd, ex);   // v49F: re-customer is authoritative

@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50K</p>
+      <p>Planning Suite v3.0 · build v50L</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -4989,11 +4989,26 @@ function saveOrderModal(existingId, defaultMachine) {
   // v50I: remember the batch number this edit STARTED from, so the server can tell a deliberate
   // rename from an incidental difference (see _v50hRenameIntent below).
   const _bnBefore50i = _existing ? String(_existing.batchNumber || '').trim() : '';
+  // v50L: same intent pattern for DATES — the form always carries a start value and prefills the
+  // end value, so a manual flag must key on whether THIS edit CHANGED the date vs what was loaded,
+  // not on mere field presence. Deliberate change → manual (planner authority — wins over the DPR
+  // anchor and every merge layer); untouched → the existing flag is preserved.
+  const _sdBefore50l = (_existing && _existing.startDate) ? toDateInput(_existing.startDate) : '';
+  const _edBefore50l = (_existing && _existing.endDate)   ? toDateInput(_existing.endDate)   : '';
+  const _sdNow50l = document.getElementById('fo-startdate')?.value || '';
   const _sapDocEntryRaw = document.getElementById('fo-sap-docentry')?.value || '';
   const _sapDocEntryNum = _sapDocEntryRaw ? parseInt(_sapDocEntryRaw, 10) : null;
   const _sapDocNumStr = (document.getElementById('fo-sap-docnum')?.value || '').trim();
 
+  // ═══ v50L PRESERVE-THE-ORDER EDIT (confirmed by Ishan, 4 Aug) ═══════════════════════════════════
+  // This form used to REBUILD the order object from scratch, silently DROPPING every field it didn't
+  // enumerate — manualStartDate, closedDate, dprFirstDate/dprLastDate, recustomeredAt among them.
+  // Losing manualStartDate meant a deliberately amended start date carried no manual flag, so the
+  // merge layers treated it as fair game and the stale table date won back the screen — one leg of
+  // the ZA078/ZA079 "pinned to July" loop. The edit now STARTS from the existing order and overrides
+  // only what the form owns; unknown and future fields survive an edit untouched.
   const ord = {
+    ...(_existing || {}),
     _v50iBnBefore: _bnBefore50i,   // v50I: batch number as loaded into this form (rename detection)
     id: existingId || uid(),
     machineId,
@@ -5023,7 +5038,14 @@ function saveOrderModal(existingId, defaultMachine) {
     daysNeeded,
     startDate,
     endDate,
-    manualEndDate: !!manualEndDateVal,
+    // v50L: manual-date INTENT (see _sdBefore50l above). Changed this edit → manual; untouched →
+    // preserve the existing flag; end cleared → back to auto-calc.
+    manualStartDate: existingId
+      ? ((_sdNow50l && _sdNow50l !== _sdBefore50l) ? true : !!(_existing && _existing.manualStartDate))
+      : false,
+    manualEndDate: manualEndDateVal
+      ? (existingId ? ((manualEndDateVal !== _edBefore50l) ? true : !!(_existing && _existing.manualEndDate)) : true)
+      : false,
     packing: document.getElementById('fo-packing')?.value,
     zone: document.getElementById('fo-zone')?.value,
     containerRef: document.getElementById('fo-containerref')?.value || '',
@@ -5084,6 +5106,7 @@ function saveOrderModal(existingId, defaultMachine) {
   } else {
     ord.splitDispatch = false; // small orders / exports never split
     ord.splitRatio = null;
+    delete ord._needsSplitPrompt;   // v50L: _existing is spread into ord now — never carry a stale prompt flag
   }
 
   // v41d: if the split choice changed, clear this order's existing UNDISPATCHED auto dispatch
