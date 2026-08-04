@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50G</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50H</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -5430,6 +5430,7 @@ async function doDprLogin() {
 // ═══════════════════════════════════════════════════════════════
 
 let _v40_myTasks = [];
+let _v40_taskMonth = 'all';   // v50H: month filter for the integrity-task list
 let _v40_myTasksTimer = null;
 
 function _v40_esc(s) {
@@ -5509,12 +5510,28 @@ function _v40_taskRowHtml(t){
     ${action}${noteHtml}
   </div>`;
 }
+// v50H (Rahul, 3 Aug — "required month wise to solve all task in per days"): 20 critical tasks in
+// one undifferentiated list is unworkable on the floor. The task row carries no production date, so
+// the month is the month the task was RAISED (assigned_at) — stated plainly in the UI so nobody
+// reads it as the production month.
+function _v40_taskMonthOf(t){
+  const d = String((t && (t.assigned_at || t.created_at)) || '');
+  return /^\d{4}-\d{2}/.test(d) ? d.slice(0,7) : '';
+}
+function _v40_taskMonthOptions(){
+  const set = new Set();
+  (_v40_myTasks||[]).forEach(t => { const m = _v40_taskMonthOf(t); if (m) set.add(m); });
+  return [...set].sort().reverse();
+}
 function _v40_renderTaskRows(){
   const box = document.getElementById('v40-task-list'); if (!box) return;
   const q = (_v40_taskBatchQ||'').trim().toUpperCase();
   let list = _v40_myTasks.slice().sort(_v40_taskCmp);
   if (_v40_taskSev !== 'all') list = list.filter(t => t.severity === _v40_taskSev);
+  if (_v40_taskMonth !== 'all') list = list.filter(t => _v40_taskMonthOf(t) === _v40_taskMonth);   // v50H
   if (q) list = list.filter(t => String(t.batch_number||'').toUpperCase().includes(q));
+  const _cnt = document.getElementById('v40-task-count');
+  if (_cnt) _cnt.textContent = `${list.length} of ${_v40_myTasks.length} task(s) shown`;   // v50H
   box.innerHTML = list.length
     ? list.map(_v40_taskRowHtml).join('')
     : '<div style="font-size:12px;color:var(--t3);padding:18px;text-align:center">No tasks match the current filter.</div>';
@@ -5523,13 +5540,22 @@ function _v40_showMyTasks() {
   if (_v40_myTasks.length === 0) { alert('No tasks pending.'); return; }
   const sevOpts = [['all','All severities'],['critical','🔴 Critical'],['warning','🟡 Warning'],['info','🔵 Info']]
     .map(([v,l])=>`<option value="${v}"${v===_v40_taskSev?' selected':''}>${l}</option>`).join('');
+  // v50H: month raised — newest first, with an explicit "all months" escape hatch.
+  const monthOpts = [`<option value="all"${_v40_taskMonth==='all'?' selected':''}>All months raised</option>`]
+    .concat(_v40_taskMonthOptions().map(m => {
+      const [y,mo] = m.split('-').map(Number);
+      const label = new Date(y, mo-1, 1).toLocaleString('default',{month:'short',year:'numeric'});
+      return `<option value="${m}"${m===_v40_taskMonth?' selected':''}>Raised ${label}</option>`;
+    })).join('');
   openModal('🩺 Your Integrity Tasks',
     `<div style="padding:8px 0">
       <div style="font-size:11px;color:var(--t3);margin-bottom:10px;line-height:1.5">Admin has flagged the following data integrity issues that need your attention. Fix them via the suggested app/page; the next scan (within 60 min) will auto-clear tasks whose underlying issue is resolved.</div>
       <div style="display:flex;gap:8px;margin-bottom:12px;flex-wrap:wrap">
         <input id="v40-task-batchq" placeholder="Filter by batch…" value="${_v40_esc(_v40_taskBatchQ)}" oninput="_v40_taskBatchQ=this.value;_v40_renderTaskRows()" style="flex:1;min-width:140px;padding:6px 8px;border:1px solid var(--b);border-radius:6px;font-size:12px;font-family:var(--fm)">
         <select onchange="_v40_taskSev=this.value;_v40_renderTaskRows()" style="padding:6px 8px;border:1px solid var(--b);border-radius:6px;font-size:12px">${sevOpts}</select>
+        <select onchange="_v40_taskMonth=this.value;_v40_renderTaskRows()" style="padding:6px 8px;border:1px solid var(--b);border-radius:6px;font-size:12px" title="Month the task was raised">${monthOpts}</select>
       </div>
+      <div id="v40-task-count" style="font-size:11px;color:var(--t3);margin-bottom:8px"></div>
       <div id="v40-task-list"></div>
     </div>`,
     [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);

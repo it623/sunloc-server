@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v50G</title>
+<title>Sunloc Tracking Suite v1.0 · build v50H</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50G</p>
+      <p>Tracking Suite v1.0 · build v50H</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50G</p>
+      <p>Tracking Suite v1.0 · build v50H</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3211,7 +3211,15 @@ function _v50fGross(batchNo, b){
   if (state.grossSummary && Object.prototype.hasOwnProperty.call(state.grossSummary, batchNo)) {
     return state.grossSummary[batchNo] || 0;                  // (3) authoritative apportioned DPR sum
   }
-  return (b && (b.actualProd || b.actualQty)) || 0;           // (4) same figure carried on the order
+  // v50H (Ishan, 4 Aug): the summary is the complete set of batches with DPR production (a
+  // batch_gross_override injects its key too). So once it is LOADED, a batch missing from it has
+  // produced nothing and its gross is 0. Falling through to the blob's actualProd showed a stale
+  // figure as production long after DPR said 0.00 — 26U136 read 5.00L with no DPR entry at all, and
+  // 26ZA078 read 22.85L that had actually been keyed against 26ZA079, double-counting the family.
+  // The blob remains the fallback only BEFORE the summary loads, so a cold screen still shows a
+  // figure rather than a misleading zero.
+  if (state.grossSummary && Object.keys(state.grossSummary).length) return 0;
+  return (b && (b.actualProd || b.actualQty)) || 0;           // (4) pre-load fallback only
 }
 function _reconGross(b){
   if(!b) return 0;

@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50G</p>
+      <p>Planning Suite v3.0 · build v50H</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1230,7 +1230,22 @@ const SYNC = (() => {
             // (_PRINT_PROTECT_MS) and the actualProd protection at the live-A-grade merge. Without
             // this, a renumbered batch or a moved machine snapped back to the old value on next sync.
             const _editTs = _localOrderChanges[o.id];
-            const _protd  = _editTs && (Date.now() - _editTs) < _ORDER_PROTECT_MS;
+            // v50H (ROOT CAUSE of the batch-number flip — Ishan, 4 Aug): this merge protected an edit
+            // ONLY via the opt-in _localOrderChanges stamp, with a 5-minute window. v48Z had already
+            // established that stamping is unreliable — "the order-edit form NEVER stamps it" — and
+            // added divergence-based protection, but only to the planning_state blob merge above.
+            // This merge never consulted it, so a corrected batch number was reverted to the stale
+            // dbOrd value on the very next 30s sync and then SAVED BACK, re-asserting the wrong value
+            // (27Z079 carried the newest updated_at of every row in the live table — the loop writing
+            // itself in). An order that differs from its last-synced snapshot is by definition a local
+            // edit and is now protected here too, until a successful save re-baselines it.
+            const _snap50h = _v48zOrderSnap.size ? _v48zOrderSnap.get(o.id) : undefined;
+            let _div50h = false;
+            if (_v48zOrderSnap.size) {
+              try { _div50h = (_snap50h === undefined) || (_snap50h !== JSON.stringify(o)); }
+              catch (e) { _div50h = false; }   // never let the snapshot break a sync
+            }
+            const _protd  = _div50h || (_editTs && (Date.now() - _editTs) < _ORDER_PROTECT_MS);
             // v44ZZ: a planner gross-override (excess→DPR reconcile) is explicit intent and MUST survive
             // the 30s dedicated-table merge. grossQty/grossOverride were NOT in the protected list, so
             // every auto-sync reverted the override back to the auto-calc gross. Take the override from

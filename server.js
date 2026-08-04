@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50G';
+const APP_BUILD = 'v50H';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -8405,6 +8405,7 @@ app.post('/api/orders/upsert', async (req, res) => {
     // is real — what it needs is a different number. The client shows the conflict and offers to
     // renumber from the authoritative allocator.
     let _v50fBatchConflict = null;
+    let _v50hRenamed = null;   // v50H: {from,to} when a rename cascaded downstream
     try {
       const _bn50f = ord.batchNumber && String(ord.batchNumber).trim();
       if (_bn50f && !ord.deleted) {
@@ -8567,6 +8568,52 @@ app.post('/api/orders/upsert', async (req, res) => {
         status=excluded.status,deleted=excluded.deleted,updated_at=datetime('now')`)
         .run(mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null, finalStatus, finalDeleted?1:0);
     }
+    // ═══ v50H BATCH-RENAME CASCADE (confirmed by Ishan, 4 Aug) ═══════════════
+    // Renaming a batch used to move production_orders (+ print_orders on the rebatch path) and NOTHING
+    // else. Labels, scans and DPR rows kept the OLD number, so correcting 25ZC110 → 26ZC110 would have
+    // stranded 17 already-scanned boxes under a batch that no longer exists — the rename would simply
+    // relocate the problem. The downstream rows now move with the order, in the same request.
+    // Guards, all three required before anything moves:
+    //   • the collision check above found no other live order on the NEW number (never merge two
+    //     batches' labels together);
+    //   • no other live order still holds the OLD number (otherwise its rows would be dragged along);
+    //   • the order is not being deleted.
+    // production_actuals moves by ORDER_ID, not by batch number, so only this order's DPR rows move.
+    try {
+      const _oldBn50h = existing ? String(existing.batch_number || '').trim() : '';
+      const _newBn50h = String(mergedOrd.batchNumber || '').trim();
+      if (_oldBn50h && _newBn50h && _oldBn50h !== _newBn50h && !_v50fBatchConflict && !finalDeleted) {
+        let _oldOwners;
+        if (pgPool) _oldOwners = (await pgPool.query(
+          `SELECT id FROM production_orders WHERE batch_number=$1 AND id<>$2 AND COALESCE(deleted,false)=false`,
+          [_oldBn50h, mergedOrd.id])).rows;
+        else _oldOwners = db.prepare(
+          `SELECT id FROM production_orders WHERE batch_number=? AND id<>? AND COALESCE(deleted,0)=0`)
+          .all(_oldBn50h, mergedOrd.id);
+        if (_oldOwners && _oldOwners.length) {
+          console.warn(`[v50H] rename ${_oldBn50h}→${_newBn50h} NOT cascaded: ${_oldOwners.length} other live order(s) still hold ${_oldBn50h}`);
+        } else {
+          if (pgPool) {
+            await pgPool.query(`UPDATE tracking_labels     SET batch_number=$1 WHERE batch_number=$2`, [_newBn50h, _oldBn50h]);
+            await pgPool.query(`UPDATE tracking_scans      SET batch_number=$1 WHERE batch_number=$2`, [_newBn50h, _oldBn50h]);
+            await pgPool.query(`UPDATE production_actuals  SET batch_number=$1 WHERE order_id=$2`,      [_newBn50h, mergedOrd.id]);
+            await pgPool.query(`UPDATE print_orders        SET batch_number=$1 WHERE production_order_id=$2`, [_newBn50h, mergedOrd.id]);
+          } else {
+            db.prepare(`UPDATE tracking_labels    SET batch_number=? WHERE batch_number=?`).run(_newBn50h, _oldBn50h);
+            db.prepare(`UPDATE tracking_scans     SET batch_number=? WHERE batch_number=?`).run(_newBn50h, _oldBn50h);
+            db.prepare(`UPDATE production_actuals SET batch_number=? WHERE order_id=?`).run(_newBn50h, mergedOrd.id);
+            db.prepare(`UPDATE print_orders       SET batch_number=? WHERE production_order_id=?`).run(_newBn50h, mergedOrd.id);
+          }
+          _v50hRenamed = { from: _oldBn50h, to: _newBn50h };
+          _actualsCacheTime = 0;   // v50H: force the next warm to re-sum under the NEW batch number
+          console.log(`[v50H] batch rename cascaded ${_oldBn50h} → ${_newBn50h} (labels, scans, DPR rows, print orders)`);
+          try { logAudit(mergedOrd.lastEditedBy || mergedOrd.createdBy || 'planning', 'planning_manager',
+            'planning', 'BATCH_RENAMED',
+            `${_oldBn50h} → ${_newBn50h} on order ${mergedOrd.id} (${mergedOrd.machineId||'?'}) — labels, scans, DPR rows and print orders moved`); } catch(_) {}
+        }
+      }
+    } catch (e) { console.warn('[v50H] rename cascade skipped:', e.message); }
+
     // v49G option (ii): a re-close of a legitimately-reopened batch cascades to DPR — write the
     // dpr_batch_closed row so DPR and Tracking re-close together with Planning. This is the second
     // leg of the round-trip; the once-only reopen guard means the batch can't reopen again after this.
@@ -8588,6 +8635,7 @@ app.post('/api/orders/upsert', async (req, res) => {
     }
     res.json({ ok: true, preserved, dprGateRefused: !!_v49gDprRefused,
       batchConflict: _v50fBatchConflict || undefined,   // v50F: same serial held by another live order
+      batchRenamed: _v50hRenamed || undefined,          // v50H: downstream rows moved with the rename
       limitRefused: !!_v49nLimitRefused, heldStatus: _v49nLimitRefused ? finalStatus : undefined,
       occupying: _v49nLimitRefused ? _v49nOccupying : undefined,
                dprGateMessage: _v49gDprRefused ? 'Close in DPR first' : undefined,
