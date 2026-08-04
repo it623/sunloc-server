@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50H</p>
+      <p>Planning Suite v3.0 · build v50K</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1274,9 +1274,15 @@ const SYNC = (() => {
               dprFirstDate: (dbOrd.dprFirstDate != null ? dbOrd.dprFirstDate : o.dprFirstDate), // v45W
               dprLastDate:  (dbOrd.dprLastDate  != null ? dbOrd.dprLastDate  : o.dprLastDate),  // v45X
               mismatchFlag: dbOrd.mismatchFlag !== undefined ? dbOrd.mismatchFlag : o.mismatchFlag,
-              // Keep manual dates from either source
-              startDate:       (o.manualStartDate || o.manualEndDate) ? o.startDate   : dbOrd.startDate,
-              endDate:         (o.manualStartDate || o.manualEndDate) ? o.endDate     : dbOrd.endDate,
+              // Keep manual dates from either source.
+              // v50I (Ishan, 4 Aug — 26ZA078's corrected dates would not stick): dates were protected
+              // ONLY by the manualStartDate/manualEndDate flags, not by _protd. An edit made through a
+              // path that doesn't set those flags was overwritten by dbOrd on the next 30s sync — the
+              // same flip v50H fixed for the batch number, still live for dates. Since the batch's
+              // COHORT MONTH is derived from startDate, that also pinned ZA078 to July no matter how
+              // often the date was corrected. Dates now follow the same rule as batchNumber/machineId.
+              startDate:       (_protd || o.manualStartDate || o.manualEndDate) ? o.startDate   : dbOrd.startDate,
+              endDate:         (_protd || o.manualStartDate || o.manualEndDate) ? o.endDate     : dbOrd.endDate,
               manualStartDate: o.manualStartDate || dbOrd.manualStartDate,
               manualEndDate:   o.manualEndDate   || dbOrd.manualEndDate,
             };
@@ -4980,11 +4986,15 @@ function saveOrderModal(existingId, defaultMachine) {
 
   // v39 Phase 7: Read Sales Order Number from form
   const _existing = existingId ? state.orders.find(o=>o.id===existingId) : null;
+  // v50I: remember the batch number this edit STARTED from, so the server can tell a deliberate
+  // rename from an incidental difference (see _v50hRenameIntent below).
+  const _bnBefore50i = _existing ? String(_existing.batchNumber || '').trim() : '';
   const _sapDocEntryRaw = document.getElementById('fo-sap-docentry')?.value || '';
   const _sapDocEntryNum = _sapDocEntryRaw ? parseInt(_sapDocEntryRaw, 10) : null;
   const _sapDocNumStr = (document.getElementById('fo-sap-docnum')?.value || '').trim();
 
   const ord = {
+    _v50iBnBefore: _bnBefore50i,   // v50I: batch number as loaded into this form (rename detection)
     id: existingId || uid(),
     machineId,
     woStatus: document.querySelector('input[name="fo-wotype"]:checked')?.value === 'wo' ? 'wo' : (existingId ? (_existing?.woStatus||'normal') : 'normal'),
@@ -5463,6 +5473,7 @@ async function _v50fRenumberConflicted(ord) {
       return;
     }
     const oldBn = ord.batchNumber;
+    ord._v50iBnBefore = oldBn;   // v50I: deliberate rename — authorise the downstream cascade
     ord.batchNumber = nx.batchNumber;
     ord._dupBatch = false;
     ord._localEditedAt = Date.now();
@@ -7421,7 +7432,17 @@ function _v40_renderConsolidatedApprovalModalBody() {
             `<input type="number" step="0.001" min="0" value="${it.qtyLakhs.toFixed(3)}" id="v40-conf-qty-${idx}" oninput="_v47zRecalcInvBoxes(${idx})" style="width:70px;text-align:right;background:var(--surface3);border:1px solid var(--border);border-radius:3px;padding:2px 4px;font-family:var(--mono);font-size:11px">`}
         </td>
         <td style="padding:5px 8px;text-align:center;font-family:var(--mono);font-size:11px">${it.truckNumber || '—'}</td>
-      </tr>`;
+      </tr>${(() => {
+        // v50J (Ishan, 4 Aug — DM's 26ZA077 failure): the server ALREADY returns the exact reason per
+        // batch (missing Sales Order, SO not in the indent cache, SO/customer mismatch, over-dispatch,
+        // or the SAP error itself), but this table rendered only "Failed" and threw the reason away, so
+        // the one piece of information needed to act on it never reached the screen. Now shown inline.
+        const _r50j = results ? results.find(r => r && r.batchNumber === it.batchNumber) : null;
+        if (!_r50j || _r50j.ok || !_r50j.error) return '';
+        const _esc50j = String(_r50j.error).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;');
+        return `<tr><td colspan="8" style="padding:4px 8px 8px 8px;background:rgba(220,38,38,0.06);border-bottom:1px solid rgba(220,38,38,0.15)">
+          <span style="font-size:11px;color:#7c2d2d"><strong>Why it failed:</strong> ${_esc50j}</span></td></tr>`;
+      })()}`;
   }).join('');
   // Footer summary
   const totalBoxes = items.reduce((s, i) => s + i.boxes, 0);
@@ -7441,7 +7462,7 @@ function _v40_renderConsolidatedApprovalModalBody() {
         <strong>${failCount===0?'✅ All invoice requests processed':okCount===0?'❌ All requests failed':'⚠️ Partial: '+okCount+' succeeded, '+failCount+' failed'}</strong><br>
         ${preLinkedCount > 0 ? `<span style="color:#0e7490"><strong>🔗 ${preLinkedCount}</strong> pre-linked to existing SAP invoice${preLinkedCount!==1?'s':''} — these batches are already in the Invoice Queue for Scan Out.</span><br>` : ''}
         ${loggedCount > 0 ? `<span style="color:#047857"><strong>✅ ${loggedCount}</strong> logged to Pending Reconciliation — SAP user creates each invoice in SAP manually; Sunloc's 5-min poller reconciles automatically.</span><br>` : ''}
-        ${failCount > 0 ? `<span style="color:#7c2d2d">Failures preserved as 'failed' in invoice_requests for audit.</span>` : ''}
+        ${failCount > 0 ? `<span style="color:#7c2d2d">The reason for each failure is shown under its row. Note: a batch rejected BEFORE it reached SAP (missing/unknown Sales Order, SO–customer mismatch, over-dispatch) writes no invoice_requests row — there is nothing to retry or cancel, just correct the order and generate again.</span>` : ''}
       </div>`;
   } else {
     footerHtml = `

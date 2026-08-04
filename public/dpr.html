@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50H</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50K</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1633,6 +1633,11 @@ async function _dprPushRaw(fl,d,data){
       headers:{'Content-Type':'application/json','X-User-Role':(dprUser?.role||'')},
       body:JSON.stringify({
         floor:fl,date:d,data,actuals,
+        // v50K: declare the machines THIS floor view is authoritative for. The server replaces only
+        // these, so a machine this client never loaded keeps its rows — and a machine that IS on
+        // screen but left blank is still cleared, because it is in scope. Without this, a stale or
+        // partially-loaded tab silently wiped the whole floor-day (GF, 03-Aug).
+        machinesInScope: (FLOORS[fl]?.machines || []).map(mc => mc.id),
         // v40 P18.14i Fix 2: send user context for gate check + audit log
         userRole: dprUser?.role || '',
         userName: dprUser?.username || dprUser?.name || '',

@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50H';
+const APP_BUILD = 'v50K';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -5444,6 +5444,33 @@ app.get('/api/sap/dismissed-indents', async (req, res) => {
 //   5. Return { ok, request_id, sap_response, status }
 // Idempotency: each call creates a new request. Caller is responsible for
 //   guarding against double-submit on the client side.
+// ═══ v50K NON-DESTRUCTIVE FLOOR-DAY SAVE (confirmed by Ishan, 4 Aug) ═══════
+// A DPR floor-day save used to run DELETE FROM production_actuals WHERE floor AND date, then
+// re-insert whatever the client sent. That is a FULL REPLACE of the whole floor for that day, so any
+// browser saving with a stale or partially-loaded view silently erased every machine it did not know
+// about. On 2026-08-03 that took out MC22 and MC29–34 on the Ground Floor; the surviving rows were
+// exactly the set the last saving client happened to hold.
+// The save is now scoped: only machines the payload is actually AUTHORITATIVE for are replaced. A
+// machine the client never loaded keeps its rows. A machine the client did load but left blank IS in
+// scope, so a deliberate correction to zero still erases as intended.
+// If the payload carries no machines at all, nothing is deleted — a blank save can no longer wipe a
+// floor-day. That case is logged rather than silently honoured.
+function _v50kScopeMachines(data, extraScope) {
+  const scope = new Set();
+  const shifts = (data && data.shifts) || {};
+  for (const shiftData of Object.values(shifts)) {
+    for (const mcId of Object.keys((shiftData && shiftData.machines) || {})) {
+      if (mcId) scope.add(String(mcId));
+    }
+  }
+  // The client may also declare the machines it had on screen, so a machine cleared to blank is
+  // still replaced even if it drops out of the shift map entirely.
+  for (const mcId of (Array.isArray(extraScope) ? extraScope : [])) {
+    if (mcId) scope.add(String(mcId));
+  }
+  return [...scope];
+}
+
 app.post('/api/invoice/request', async (req, res) => {
   try {
     const body = req.body || {};
@@ -8550,7 +8577,9 @@ app.post('/api/orders/upsert', async (req, res) => {
       console.log(`[v41x upsert] Preserved DB status on ${ord.id} (client="${ord.status}" → DB="${finalStatus}", stale write blocked)`);
     }
     mergedOrd = _v49f_rcLock(mergedOrd, exData);   // v49F: re-customer is authoritative
-    const json = JSON.stringify(mergedOrd);
+    // v50I: the rename-intent stamp is transient — read by the cascade below, never stored.
+    const { _v50iBnBefore: _drop50i, ...mergedForJson50i } = mergedOrd;
+    const json = JSON.stringify(mergedForJson50i);
     if (pgPool) {
       await pgPool.query(`
         INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
@@ -8582,7 +8611,21 @@ app.post('/api/orders/upsert', async (req, res) => {
     try {
       const _oldBn50h = existing ? String(existing.batch_number || '').trim() : '';
       const _newBn50h = String(mergedOrd.batchNumber || '').trim();
-      if (_oldBn50h && _newBn50h && _oldBn50h !== _newBn50h && !_v50fBatchConflict && !finalDeleted) {
+      // v50I (CORRECTION to v50H — Ishan, 4 Aug): v50H cascaded on ANY difference between the incoming
+      // batch number and the stored one. That was wrong. /api/orders/upsert is called by every routine
+      // 30s sync, so a client holding a stale batch number — exactly what the v50H divergence
+      // protection now keeps alive longer — would push it, look like a rename, and drag that order's
+      // DPR rows, labels and scans onto the OLD number. A rename must be an ACT, not a difference.
+      // The client stamps _v50iBnBefore with the batch number its edit started from; the cascade runs
+      // only when that matches what the database currently holds — i.e. this client saw the current
+      // value and deliberately changed it. Any other difference still SAVES the order but touches
+      // nothing downstream, and is logged so the mismatch can be inspected.
+      const _intent50i = String(mergedOrd._v50iBnBefore || '').trim();
+      const _deliberate50i = !!_intent50i && _intent50i === _oldBn50h;
+      if (_oldBn50h && _newBn50h && _oldBn50h !== _newBn50h && !_deliberate50i) {
+        console.warn(`[v50I] batch difference ${_oldBn50h}→${_newBn50h} on order ${mergedOrd.id} NOT treated as a rename (no matching intent stamp) — downstream rows untouched`);
+      }
+      if (_oldBn50h && _newBn50h && _oldBn50h !== _newBn50h && _deliberate50i && !_v50fBatchConflict && !finalDeleted) {
         let _oldOwners;
         if (pgPool) _oldOwners = (await pgPool.query(
           `SELECT id FROM production_orders WHERE batch_number=$1 AND id<>$2 AND COALESCE(deleted,false)=false`,
@@ -10841,7 +10884,14 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
           if (!floor || !date || !data) continue;
           await client.query(`INSERT INTO dpr_records (floor, date, data_json) VALUES ($1, $2, $3) ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW()`, [floor, date, JSON.stringify(data)]);
           // Extract actuals from DPR data
-          await client.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2', [floor, date]);
+          // v50K: same scoping as the single-day save — a bulk import must not erase machines it
+          // does not carry.
+          const _bScope50k = _v50kScopeMachines(data, null);
+          if (_bScope50k.length === 0) {
+            console.warn(`[v50K bulk] ${floor} ${date}: no machines in payload — nothing deleted`);
+          } else {
+            await client.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2 AND machine_id = ANY($3::text[])', [floor, date, _bScope50k]);
+          }
           const shifts = data.shifts || {};
           for (const [shiftName, shiftData] of Object.entries(shifts)) {
             if (!shiftData.machines) continue;
@@ -10944,8 +10994,19 @@ app.post('/api/dpr/save', async (req, res) => {
         _preDeleteActuals = _snap.rows || [];
       } catch (e) { console.warn('[v43 #1] pre-delete snapshot failed:', e.message); }
 
-      // Delete old actuals for this floor+date, then re-insert
-      await pgPool.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2', [floor, date]);
+      // v50K: replace only the machines this payload is authoritative for (see _v50kScopeMachines).
+      const _scope50k = _v50kScopeMachines(data, req.body && req.body.machinesInScope);
+      if (_scope50k.length === 0) {
+        console.warn(`[v50K] ${floor} ${date}: payload carries no machines — nothing deleted (a blank save can no longer wipe a floor-day)`);
+      } else {
+        const _before50k = _preDeleteActuals.length;
+        await pgPool.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2 AND machine_id = ANY($3::text[])', [floor, date, _scope50k]);
+        const _kept50k = _preDeleteActuals.filter(r => _scope50k.indexOf(String(r.machine_id)) === -1);
+        if (_kept50k.length) {
+          const _keptMcs = [...new Set(_kept50k.map(r => r.machine_id))];
+          console.log(`[v50K] ${floor} ${date}: preserved ${_kept50k.length} row(s) on ${_keptMcs.length} machine(s) not in this payload — ${_keptMcs.join(', ')} (was ${_before50k} rows before)`);
+        }
+      }
 
       // v41h FIX (issues 1 & 2): build the gate status map from the AUTHORITATIVE production_orders
       // table — that is where changeOrderStatus → upsertOrderToDB writes the planner's "In Production"
@@ -11187,7 +11248,14 @@ app.post('/api/dpr/save', async (req, res) => {
       let _preDeleteActualsSq = [];
       try { _preDeleteActualsSq = db.prepare('SELECT order_id, batch_number, machine_id, shift, run_index, qty_lakhs, floor FROM production_actuals WHERE floor = ? AND date = ?').all(floor, date) || []; }
       catch (e) { console.warn('[v43 #1 SQLite] pre-delete snapshot failed:', e.message); }
-      db.prepare('DELETE FROM production_actuals WHERE floor = ? AND date = ?').run(floor, date);
+      // v50K: scoped delete (SQLite has no ANY(array) — expand placeholders).
+      const _sScope50k = _v50kScopeMachines(data, req.body && req.body.machinesInScope);
+      if (_sScope50k.length === 0) {
+        console.warn(`[v50K] ${floor} ${date}: payload carries no machines — nothing deleted`);
+      } else {
+        db.prepare(`DELETE FROM production_actuals WHERE floor = ? AND date = ? AND machine_id IN (${_sScope50k.map(()=>'?').join(',')})`)
+          .run(floor, date, ..._sScope50k);
+      }
       const upsert = db.prepare(`INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET order_id=excluded.order_id, batch_number=excluded.batch_number, qty_lakhs=excluded.qty_lakhs, synced_at=datetime('now')`);
       const rows = (actuals && actuals.length > 0)
         ? actuals.filter(a => a.qty > 0 && _gateSq(a.orderId, a.batchNumber, a.machineId, a.shift, a.qty))
