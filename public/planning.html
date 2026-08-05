@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50T</p>
+      <p>Planning Suite v3.0 · build v50U</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1758,7 +1758,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50T' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50U' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2106,7 +2106,12 @@ function toDateInput(d) {
   if (!d) return '';
   const dt = d instanceof Date ? d : new Date(d);
   if (isNaN(dt)) return '';
-  return dt.toISOString().slice(0,10);
+  // v50U (5 Aug — Edit Order showed 31/07 while the card showed 01-Aug): cascade-written dates are
+  // serialized as IST-midnight ("…T18:30:00Z"), and slicing the UTC day rendered them ONE DAY
+  // BEHIND every IST display. The planner opened a batch reading 01-Aug and the form said 31 July —
+  // and the day-skewed baseline then corrupted the v50L changed-date detection. Slice the LOCAL
+  // day: the form now always shows exactly what the card shows.
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 function today() { return new Date(new Date().toDateString()); }
@@ -2548,7 +2553,12 @@ function toDateInput(d) {
   if (!d) return '';
   const dt = d instanceof Date ? d : new Date(d);
   if (isNaN(dt)) return '';
-  return dt.toISOString().slice(0,10);
+  // v50U (5 Aug — Edit Order showed 31/07 while the card showed 01-Aug): cascade-written dates are
+  // serialized as IST-midnight ("…T18:30:00Z"), and slicing the UTC day rendered them ONE DAY
+  // BEHIND every IST display. The planner opened a batch reading 01-Aug and the form said 31 July —
+  // and the day-skewed baseline then corrupted the v50L changed-date detection. Slice the LOCAL
+  // day: the form now always shows exactly what the card shows.
+  return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}-${String(dt.getDate()).padStart(2,'0')}`;
 }
 function uid() { return Date.now().toString(36) + Math.random().toString(36).slice(2,6); }
 function today() { return new Date(new Date().toDateString()); }
@@ -5022,7 +5032,10 @@ function saveOrderModal(existingId, defaultMachine) {
     // Do not return — allow save to proceed
   }
 
-  const startDate = new Date(document.getElementById('fo-startdate')?.value || today());
+  // v50U: parse the date input as LOCAL midnight (new Date('YYYY-MM-DD') is UTC-midnight, which
+  // stored dates 5.5h out of phase with the cascade's IST-midnight values — mixed serializations).
+  const _parseLocalDay50u = (s) => { const m = String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? new Date(+m[1], +m[2]-1, +m[3]) : new Date(s); };
+  const startDate = _parseLocalDay50u(document.getElementById('fo-startdate')?.value || today());
 
   // Fix 2: Validate start date sequencing — warn if this order starts before previous order ends
   const _dateCheckToday = new Date().toISOString().slice(0,10);
@@ -5047,7 +5060,7 @@ function saveOrderModal(existingId, defaultMachine) {
 
   // Use manual End Date if entered, otherwise auto-calculate from qty + machine speed
   const manualEndDateVal = document.getElementById('fo-enddate')?.value;
-  const endDate = manualEndDateVal ? new Date(manualEndDateVal) : calcEndDate(startDate, daysNeeded);
+  const endDate = manualEndDateVal ? _parseLocalDay50u(manualEndDateVal) : calcEndDate(startDate, daysNeeded);   // v50U: local midnight
 
   const size = document.getElementById('fo-size')?.value;
   // If PC Code / Colour is locked — always keep original values, ignore any DOM value
@@ -5449,7 +5462,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50T'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50U'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8530,7 +8543,8 @@ async function savePrintModal(existingId) {
     const machineId = document.getElementById('fp-machine')?.value;
     const pm = machineId ? getPrintMachine(machineId) : null;
     const qty = parseFloat(document.getElementById('fp-qty')?.value) || 0;
-    const startDate = new Date(document.getElementById('fp-startdate')?.value || today());
+    const _pld50u = (s) => { const m = String(s||'').match(/^(\d{4})-(\d{2})-(\d{2})$/); return m ? new Date(+m[1], +m[2]-1, +m[3]) : new Date(s); };
+    const startDate = _pld50u(document.getElementById('fp-startdate')?.value || today());   // v50U: local midnight
     const endDate = pm && qty ? calcEndDate(startDate, qty/pm.cap) : null;
     const ord = {
       id: existingId || uid(),
