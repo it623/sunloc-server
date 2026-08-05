@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50P</p>
+      <p>Planning Suite v3.0 · build v50R</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2767,7 +2767,16 @@ function recalcMachineScheduleQuiet(machineId) {
       const _td = new Date(today());
       if (ord.endDate   && !isNaN(new Date(ord.endDate))   && new Date(ord.endDate)   > _td) ord.endDate   = new Date(_td);
       if (ord.startDate && !isNaN(new Date(ord.startDate)) && new Date(ord.startDate) > _td) ord.startDate = new Date(_td);
-      if (ord.startDate && ord.endDate && new Date(ord.startDate) > new Date(ord.endDate)) ord.startDate = new Date(ord.endDate);
+      // v50R (5 Aug — ZA078/ZA079 ground truth via Railway SQL): the blob held start = 01 Aug IST
+      // (amended, survived) but end = 25 Jul IST (amendment reverted before v50P), and this coherence
+      // rule then snapped the START back down to the stale end on every recalc — the last flip engine.
+      // When the planner has corrected the start (manualStartDate), the start is authoritative and the
+      // stale END heals UP to it — keeping the batch in its amended cohort month. Unflagged closed
+      // orders normalize exactly as before.
+      if (ord.startDate && ord.endDate && new Date(ord.startDate) > new Date(ord.endDate)) {
+        if (ord.manualStartDate) ord.endDate = new Date(ord.startDate);
+        else ord.startDate = new Date(ord.endDate);
+      }
       // Advance cursor through closed orders so next order starts right after
       if (ord.endDate && !isNaN(new Date(ord.endDate))) {
         const closedEnd = new Date(ord.endDate);
@@ -2906,7 +2915,16 @@ function recalcMachineSchedule(machineId) {
       const _td = new Date(today());
       if (ord.endDate   && !isNaN(new Date(ord.endDate))   && new Date(ord.endDate)   > _td) ord.endDate   = new Date(_td);
       if (ord.startDate && !isNaN(new Date(ord.startDate)) && new Date(ord.startDate) > _td) ord.startDate = new Date(_td);
-      if (ord.startDate && ord.endDate && new Date(ord.startDate) > new Date(ord.endDate)) ord.startDate = new Date(ord.endDate);
+      // v50R (5 Aug — ZA078/ZA079 ground truth via Railway SQL): the blob held start = 01 Aug IST
+      // (amended, survived) but end = 25 Jul IST (amendment reverted before v50P), and this coherence
+      // rule then snapped the START back down to the stale end on every recalc — the last flip engine.
+      // When the planner has corrected the start (manualStartDate), the start is authoritative and the
+      // stale END heals UP to it — keeping the batch in its amended cohort month. Unflagged closed
+      // orders normalize exactly as before.
+      if (ord.startDate && ord.endDate && new Date(ord.startDate) > new Date(ord.endDate)) {
+        if (ord.manualStartDate) ord.endDate = new Date(ord.startDate);
+        else ord.startDate = new Date(ord.endDate);
+      }
       // Advance cursor through closed orders so next order starts right after
       if (ord.endDate && !isNaN(new Date(ord.endDate))) {
         const closedEnd = new Date(ord.endDate);
