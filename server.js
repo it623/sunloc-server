@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50R';
+const APP_BUILD = 'v50S';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -9431,6 +9431,11 @@ app.get('/api/planning/state', async (req, res) => {
     // CRITICAL: deep clone before mutating — never modify the cached object directly
     // Direct mutation corrupts the cache and causes order count drops (194→175 bug)
     const state = JSON.parse(JSON.stringify(rawState));
+    // v50S: pristine per-order snapshot taken BEFORE any reconcile mutation. The deferred persist
+    // below no longer writes a wholesale state snapshot (see the block replaced at the persist
+    // point) — it diffs post-reconcile orders against this map and re-applies ONLY the changed
+    // fields onto a freshly re-read blob.
+    const _preSnap50s = new Map((state.orders || []).filter(o => o && o.id).map(o => [String(o.id), JSON.stringify(o)]));
 
     // PERMANENT FIX: Recover orders MISSING from planning_state using production_orders table
     // planning_state is SOURCE OF TRUTH for status/dates/all fields
@@ -9585,26 +9590,64 @@ app.get('/api/planning/state', async (req, res) => {
           // Without this, every GET re-does the same reconciliation forever. The setImmediate
           // ensures the response goes out first; the rewrite uses the already-reconciled state.
           if (pgPool) {
-            // v45X FIX: serialize NOW, not inside setImmediate. The deferred callback captured the
-            // live `state` object, which this handler keeps mutating AFTER scheduling the write —
-            // notably the v45R tracking-only running-force pass. Deferred stringify persisted those
-            // label-view-only mutations into the blob (observed as 3 running orders on one machine).
-            // Freezing the JSON here persists exactly the v41z status corrections and nothing later.
-            const jsonForBlobWrite = JSON.stringify(state);
-            setImmediate(async () => {
-              try {
-                const json = jsonForBlobWrite;
-                const existing = await pgPool.query('SELECT id FROM planning_state ORDER BY id DESC LIMIT 1') /* v46B: newest row — match GET */;
-                if (existing.rows[0]) {
-                  await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [json, existing.rows[0].id]);
-                  // Update cache so subsequent reads see the corrected state (parse the frozen
-                  // snapshot — do NOT reference the live, later-mutated `state` object)
-                  _planningStateCache = JSON.parse(jsonForBlobWrite);
-                  _planningStateCacheTime = Date.now();
-                  console.log(`[v41z GET reconcile] Persisted ${reconciledCount} status correction(s) back to blob — won't re-reconcile`);
+            // ═══ v50S SURGICAL DEFERRED PERSIST (5 Aug — ZA079 reverting while ZA078 held) ═══════════
+            // ROOT CAUSE, final layer: this block used to freeze a WHOLESALE JSON.stringify(state)
+            // snapshot and UPDATE planning_state with it in a deferred callback. `state` was read
+            // (possibly from the 30s cache) BEFORE any concurrent POST save — so a planner amendment
+            // landing in that window was ERASED WHOLESALE, server-side, invisible to every client
+            // guard. ZA078's day-old correction lived in every snapshot and survived; ZA079's
+            // minutes-old one sat inside the race window on every GET and was wiped each time —
+            // dates AND the amended gross together, exactly as observed.
+            // Now: diff the reconciled orders against the pristine _preSnap50s (field-level), then in
+            // the deferred callback RE-READ the newest blob and re-apply ONLY those reconcile-owned
+            // field deltas. Concurrent saves keep everything the reconcile didn't explicitly change.
+            // (v45X's freeze-early guarantee is preserved: deltas are computed HERE, so later passes
+            // like the v45R tracking-only running-force still never persist.)
+            const _deltas50s = [];
+            try {
+              for (const o of (state.orders || [])) {
+                if (!o || !o.id) continue;
+                const pre = _preSnap50s.get(String(o.id));
+                const postJ = JSON.stringify(o);
+                if (pre === postJ) continue;
+                if (pre === undefined) { _deltas50s.push({ id: String(o.id), insert: JSON.parse(postJ) }); continue; }
+                const preO = JSON.parse(pre);
+                const fields = {};
+                const keys = new Set([...Object.keys(preO), ...Object.keys(o)]);
+                for (const k of keys) {
+                  const a = preO[k] === undefined ? null : preO[k];
+                  const b = o[k]    === undefined ? null : o[k];
+                  if (JSON.stringify(a) !== JSON.stringify(b)) fields[k] = o[k] === undefined ? null : o[k];
                 }
-              } catch(e) {
-                console.warn('[v41z GET reconcile] Deferred blob write failed:', e.message);
+                if (Object.keys(fields).length) _deltas50s.push({ id: String(o.id), fields });
+              }
+            } catch (e) { console.warn('[v50S] delta computation failed — skipping persist:', e.message); }
+            if (_deltas50s.length > 0) setImmediate(async () => {
+              try {
+                const r2 = await pgPool.query('SELECT id, state_json FROM planning_state ORDER BY id DESC LIMIT 1') /* v46B: newest row — match GET */;
+                if (!r2.rows[0]) return;
+                const cur = JSON.parse(r2.rows[0].state_json);   // CURRENT blob — includes any save that landed since our read
+                cur.orders = cur.orders || [];
+                const byId = new Map(cur.orders.map((o, i) => [String(o && o.id), i]));
+                let applied = 0;
+                for (const d of _deltas50s) {
+                  const idx = byId.get(d.id);
+                  if (d.insert) { if (idx === undefined) { cur.orders.push(d.insert); applied++; } continue; }
+                  if (idx === undefined) continue;
+                  const tgt = cur.orders[idx];
+                  for (const k of Object.keys(d.fields)) {
+                    if (d.fields[k] === null && !(k in (JSON.parse(_preSnap50s.get(d.id) || '{}')))) continue;
+                    tgt[k] = d.fields[k];
+                  }
+                  applied++;
+                }
+                if (!applied) return;
+                await pgPool.query('UPDATE planning_state SET state_json = $1, saved_at = NOW() WHERE id = $2', [JSON.stringify(cur), r2.rows[0].id]);
+                _planningStateCache = cur;
+                _planningStateCacheTime = Date.now();
+                console.log(`[v50S GET reconcile] surgically persisted ${applied} order correction(s) onto the CURRENT blob (wholesale snapshot write removed — lost-update race closed)`);
+              } catch (e) {
+                console.warn('[v50S GET reconcile] Deferred surgical persist failed:', e.message);
               }
             });
           }
