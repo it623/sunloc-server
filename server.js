@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50L';
+const APP_BUILD = 'v50N';
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -6603,12 +6603,23 @@ function _v44zj_lakhToBox(lakhs, size) {
 // box number is still recoverable as (stored − BASE), and orange labels are keyed by id everywhere that
 // matters, so nothing else depends on their raw number.
 const _ORANGE_NUM_BASE = 1000000;
+// v50M (QA finding, 4 Aug — 26ZB108): the orange child of an EXCESS box stored as BASE+ABS(n) collided
+// with the routine box's orange (excess parents carry NEGATIVE numbers, so ABS(-2)=2 mapped both to
+// 1000002) and the v41y dup guard refused it. Excess oranges now live in their own range: still
+// INTEGER-safe, still recoverable (stored − EXCESS base = excess number), disjoint from routine
+// oranges (1.0M..1.5M) and from real box numbers. The n<0 fallback also catches an older cached
+// tracking tab that pushes an orange without the inherited isExcess flag.
+const _ORANGE_EXCESS_NUM_BASE = 1500000;
 const _labelNumForStore = (l) => {
   const raw = (l && (l.labelNumber ?? l.label_number));
   if (raw == null) return null;
   const n = parseInt(String(raw).replace(/^OL-/i, ''), 10);
   if (isNaN(n)) return null;
-  return (l && l.isOrange) ? (_ORANGE_NUM_BASE + Math.abs(n)) : n;
+  if (l && l.isOrange) {
+    const _exOrange = !!(l.isExcess || l.is_excess) || n < 0;   // v50M
+    return (_exOrange ? _ORANGE_EXCESS_NUM_BASE : _ORANGE_NUM_BASE) + Math.abs(n);
+  }
+  return n;
 };
 // v46U (confirmed by Ishan): server replica of the planning app's isExportZone (planning.html). Export
 // SAP lines use UoM "THOUSAND" (qty in thousands → ×0.01 to Lakhs); those orders carry an export zone.
@@ -9781,6 +9792,34 @@ app.post('/api/planning/state', async (req, res) => {
         const curOrders = (cur && Array.isArray(cur.orders)) ? cur.orders : null;
         if (curOrders && curOrders.length) {
           const changed = new Set(_chg.map(String));
+          // ═══ v50M STALE-CLAIM GUARD (confirmed by Ishan, 4 Aug — ZA078/ZA079 still flipping on v50L) ══
+          // changedOrderIds is DIVERGENCE from the tab's last-synced snapshot, not proof of a user edit.
+          // The 30s dedicated-table merge rewrites local orders (actualProd, dprLastDate, status
+          // reconciliation), so an IDLE tab's copies drift from their snapshot, get claimed as
+          // "changed" on its next auto-save, and this merge then took the tab's STALE dates/batch
+          // number at face value — reverting Shrikant's fresh amendment minutes after it was made.
+          // Every genuine edit path stamps _localEditedAt; drift does not. So for the planner-authority
+          // fields below, a claimed order only overrides the server's copy when the claiming client's
+          // stamp is at least as fresh as the server copy's stamp. Everything else (status intent, qty,
+          // new fields) flows exactly as before.
+          const _v50mPROT = ['startDate','endDate','manualStartDate','manualEndDate','batchNumber','machineId','customer','shipTo','billTo','colour','grossOverride','woStatus'];
+          const _v50mGuard = (mergedCli, srvOrd, cliOrig) => {
+            try {
+              const ct = parseInt((cliOrig || mergedCli)._localEditedAt || 0);
+              const st = parseInt(srvOrd._localEditedAt || 0);
+              if (!(st > ct)) return mergedCli;   // client copy as fresh or fresher — take it as-is
+              const out2 = { ...mergedCli };
+              let kept = 0;
+              for (const k of _v50mPROT) {
+                const sv = srvOrd[k] === undefined ? null : srvOrd[k];
+                const cv = out2[k]   === undefined ? null : out2[k];
+                if (JSON.stringify(sv) !== JSON.stringify(cv)) { out2[k] = srvOrd[k]; kept++; }
+              }
+              out2._localEditedAt = srvOrd._localEditedAt;   // carry the newer stamp forward
+              if (kept) console.log(`[v50M] stale claim guarded: ${mergedCli.batchNumber || mergedCli.id} — ${kept} planner field(s) kept from the fresher server copy`);
+              return out2;
+            } catch (e) { return mergedCli; }
+          };
           const _fldRaw = req.body && req.body.changedOrderFields;
           const _fldMap = (_fldRaw && typeof _fldRaw === 'object' && !Array.isArray(_fldRaw)) ? _fldRaw : null;
           const clientById = new Map();
@@ -9802,13 +9841,13 @@ app.post('/api/planning/state', async (req, res) => {
             // v49F: the whole-object fallback is kept (a locally-new order has no server copy to merge
             // against), but the re-customer lock is re-applied so a missing field map can never
             // wholesale-revert a re-customered order the way it did on 26P044/26P045.
-            if (flds === '*' || !Array.isArray(flds)) { merged.push(_v49f_rcLock(cli, srv)); continue; }  // locally new / no detail → whole object
+            if (flds === '*' || !Array.isArray(flds)) { merged.push(_v49f_rcLock(_v50mGuard(cli, srv, cli), srv)); continue; }  // locally new / no detail → whole object (v50M stamp-guarded)
             const out = { ...srv };
             for (const k of flds) {
               if (Object.prototype.hasOwnProperty.call(cli, k)) out[k] = cli[k];
               else delete out[k];                                  // planner removed the field
             }
-            merged.push(_v49f_rcLock(out, srv));   // v49F: re-customer is authoritative
+            merged.push(_v49f_rcLock(_v50mGuard(out, srv, cli), srv));   // v49F: re-customer is authoritative; v50M: stale claims can't override planner fields
           }
           // Orders the client has that the server does not: brand-new locally. Keep them.
           for (const [id, cli] of clientById) if (!seen.has(id)) merged.push(cli);
@@ -10351,11 +10390,15 @@ app.post('/api/tracking/orange-backfill', async (req, res) => {
     if (pgPool) {
       const r = await pgPool.query(
         `INSERT INTO tracking_labels (id, batch_number, label_number, size, qty, is_orange, parent_label_id,
-                                      customer, colour, pc_code, printing_matter, generated, printed, voided)
+                                      customer, colour, pc_code, printing_matter, generated, printed, voided,
+                                      is_excess, excess_num, excess_total, normal_total)
          SELECT 'ol-'||p.id, p.batch_number,
-                ${_ORANGE_NUM_BASE} + ABS(CASE WHEN p.label_number::text ~ '^-?[0-9]+$' THEN p.label_number::integer ELSE 0 END),
+                /* v50M: excess parents (negative numbers) map into the dedicated excess-orange range */
+                (CASE WHEN COALESCE(p.is_excess,0)=1 OR (p.label_number::text ~ '^-' ) THEN ${_ORANGE_EXCESS_NUM_BASE} ELSE ${_ORANGE_NUM_BASE} END)
+                + ABS(CASE WHEN p.label_number::text ~ '^-?[0-9]+$' THEN p.label_number::integer ELSE 0 END),
                 p.size, p.qty, 1, p.id,
-                p.customer, p.colour, p.pc_code, p.printing_matter, $2, 0, 0
+                p.customer, p.colour, p.pc_code, p.printing_matter, $2, 0, 0,
+                COALESCE(p.is_excess,0), p.excess_num, p.excess_total, p.normal_total
          FROM tracking_labels p
          WHERE p.batch_number = $1 AND COALESCE(p.is_orange,0)=0 AND COALESCE(p.voided,0)=0
            AND EXISTS (SELECT 1 FROM tracking_scans s
@@ -10377,9 +10420,18 @@ app.post('/api/tracking/orange-backfill', async (req, res) => {
                             WHERE o.parent_label_id = p.id AND o.is_orange=1 AND COALESCE(o.voided,0)=0)`).all(batchNumber);
       const ins = db.prepare(
         `INSERT OR IGNORE INTO tracking_labels (id, batch_number, label_number, size, qty, is_orange, parent_label_id,
-                                                customer, colour, pc_code, printing_matter, generated, printed, voided)
-         VALUES (?,?,?,?,?,1,?,?,?,?,?,?,0,0)`);
-      parents.forEach(p => { const info = ins.run('ol-'+p.id, p.batch_number, _ORANGE_NUM_BASE + Math.abs(parseInt(p.label_number,10)||0), p.size, p.qty, p.id, p.customer, p.colour, p.pc_code, p.printing_matter, ts); created += info.changes; });
+                                                customer, colour, pc_code, printing_matter, generated, printed, voided,
+                                                is_excess, excess_num, excess_total, normal_total)
+         VALUES (?,?,?,?,?,1,?,?,?,?,?,?,0,0,?,?,?,?)`);
+      parents.forEach(p => {
+        const _pn = parseInt(p.label_number, 10) || 0;
+        const _pex = Number(p.is_excess) === 1 || _pn < 0;   // v50M: excess parent → excess-orange range
+        const info = ins.run('ol-'+p.id, p.batch_number,
+          (_pex ? _ORANGE_EXCESS_NUM_BASE : _ORANGE_NUM_BASE) + Math.abs(_pn),
+          p.size, p.qty, p.id, p.customer, p.colour, p.pc_code, p.printing_matter, ts,
+          _pex ? 1 : 0, p.excess_num ?? null, p.excess_total ?? null, p.normal_total ?? null);
+        created += info.changes;
+      });
     }
     res.json({ ok: true, created, batchNumber });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }

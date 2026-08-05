@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v50L</title>
+<title>Sunloc Tracking Suite v1.0 · build v50N</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/qrcodejs/1.0.0/qrcode.min.js"></script>
 <style>
@@ -590,7 +590,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50L</p>
+      <p>Tracking Suite v1.0 · build v50N</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -621,7 +621,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v50L</p>
+      <p>Tracking Suite v1.0 · build v50N</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2584,6 +2584,15 @@ function autoGenerateOrangeLabel(label, batch){
     size:label.size, qty:label.qty, isOrange:true, parentLabelId:label.id,
     printingMatter:batch.printMatter||batch.printingMatter||'', customer:batch.customer,
     colour:batch.colour, generated:now(), printed:false, voided:false, qrData:'',
+    // v50M (QA finding, 4 Aug — 26ZB108): an orange child of an EXCESS box (main label E-2/2) did NOT
+    // inherit the excess identity, so it rendered as a ROUTINE container ("1000002/10") and its
+    // server number (BASE+ABS(-2) = 1000002) collided with routine box 2's orange — the dup guard then
+    // refused it ("already generated for main Label 2/10"). The orange child now carries the parent's
+    // excess fields: it renders E-n/n exactly like its box, and the server stores it in a dedicated
+    // excess-orange number range so it can never collide with a routine orange.
+    isExcess: !!label.isExcess, excessNum: label.isExcess ? (label.excessNum ?? null) : null,
+    excessTotal: label.isExcess ? (label.excessTotal ?? null) : null,
+    normalTotal: label.normalTotal ?? null,
     // v50E: an orange (damaged-box reprint) label is the SAME physical box as its parent, so it
     // inherits the parent's weighed figures rather than reprinting blank weights.
     avgWt:label.avgWt||'', nettWt:label.nettWt||'', grossWt:label.grossWt||''
@@ -3711,8 +3720,13 @@ function generateZPL(label, batch){
   // labels generated in separate runs all show the correct total (E-1/2, E-2/2) on (re)print,
   // instead of the per-run frozen excessTotal that produced E-1/1 then E-2/2.
   const _exTotLive = state.labels.filter(x=>x.batchNumber===batchNo && !x.voided && !x.isOrange && x.isExcess).length;
+  // v50M: excess oranges loaded from the server carry numeric labelNumber in the dedicated excess
+  // range (1,500,000 + n) — recover n when excessNum wasn't persisted, so the container always
+  // renders as E-n/n and never as a raw range number.
+  const _exN = (label.excessNum != null) ? label.excessNum
+             : (_num >= 1500000 ? _num - 1500000 : _num);
   const containerNo = label.isExcess
-    ? `E-${label.excessNum}/${_exTotLive || label.excessTotal || 1}`
+    ? `E-${_exN}/${_exTotLive || label.excessTotal || 1}`
     : (normTot !== '?' ? `${_num}/${normTot}` : String(_num));
 
   // v44ZN Req 2: the specimen/master (BPR) label is the identical white label EXCEPT it carries no

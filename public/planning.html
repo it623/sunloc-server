@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50L</p>
+      <p>Planning Suite v3.0 · build v50N</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1246,6 +1246,15 @@ const SYNC = (() => {
               catch (e) { _div50h = false; }   // never let the snapshot break a sync
             }
             const _protd  = _div50h || (_editTs && (Date.now() - _editTs) < _ORDER_PROTECT_MS);
+            // v50M (confirmed by Ishan, 4 Aug — ZA078/ZA079 flipped again on v50L): divergence is NOT
+            // proof of a local edit. This very merge mutates local orders every 30s (actualProd,
+            // dprLastDate, status), so an idle tab's copy diverges from its snapshot and _protd then
+            // "protected" the tab's STALE batch number and dates against a colleague's fresh correction
+            // arriving via the table — locking the stale values in locally and feeding them back to the
+            // blob as a claimed change. When the DB copy carries a strictly NEWER edit stamp than the
+            // local copy, the protection yields for planner-authority fields: fresh local edits keep a
+            // fresh stamp and remain fully protected.
+            const _srvNewer50m = parseInt(dbOrd._localEditedAt || 0) > parseInt(o._localEditedAt || 0);
             // v44ZZ: a planner gross-override (excess→DPR reconcile) is explicit intent and MUST survive
             // the 30s dedicated-table merge. grossQty/grossOverride were NOT in the protected list, so
             // every auto-sync reverted the override back to the auto-calc gross. Take the override from
@@ -1262,8 +1271,9 @@ const SYNC = (() => {
               grossOverride: _ovEff,
               grossQty:      (_ovEff != null) ? _ovEff : (_protd ? o.grossQty : dbOrd.grossQty),
               // v41ZW: preserve recent local batch/machine/zone edits against stale server data
-              batchNumber: _protd ? o.batchNumber : dbOrd.batchNumber,
-              machineId:   _protd ? o.machineId   : dbOrd.machineId,
+              // v50M: …unless the server copy is provably fresher (see _srvNewer50m above)
+              batchNumber: (_protd && !_srvNewer50m) ? o.batchNumber : dbOrd.batchNumber,
+              machineId:   (_protd && !_srvNewer50m) ? o.machineId   : dbOrd.machineId,
               zone:        _protd ? (o.zone !== undefined ? o.zone : dbOrd.zone) : (dbOrd.zone !== undefined ? dbOrd.zone : o.zone),
               // DB is authoritative for these user-set fields:
               status:       dbOrd.status      || o.status,
@@ -1281,10 +1291,11 @@ const SYNC = (() => {
               // same flip v50H fixed for the batch number, still live for dates. Since the batch's
               // COHORT MONTH is derived from startDate, that also pinned ZA078 to July no matter how
               // often the date was corrected. Dates now follow the same rule as batchNumber/machineId.
-              startDate:       (_protd || o.manualStartDate || o.manualEndDate) ? o.startDate   : dbOrd.startDate,
-              endDate:         (_protd || o.manualStartDate || o.manualEndDate) ? o.endDate     : dbOrd.endDate,
-              manualStartDate: o.manualStartDate || dbOrd.manualStartDate,
-              manualEndDate:   o.manualEndDate   || dbOrd.manualEndDate,
+              startDate:       (!_srvNewer50m && (_protd || o.manualStartDate || o.manualEndDate)) ? o.startDate : dbOrd.startDate,
+              endDate:         (!_srvNewer50m && (_protd || o.manualStartDate || o.manualEndDate)) ? o.endDate   : dbOrd.endDate,
+              manualStartDate: _srvNewer50m ? (dbOrd.manualStartDate !== undefined ? dbOrd.manualStartDate : o.manualStartDate) : (o.manualStartDate || dbOrd.manualStartDate),
+              manualEndDate:   _srvNewer50m ? (dbOrd.manualEndDate   !== undefined ? dbOrd.manualEndDate   : o.manualEndDate)   : (o.manualEndDate   || dbOrd.manualEndDate),
+              _localEditedAt:  _srvNewer50m ? dbOrd._localEditedAt : (o._localEditedAt || dbOrd._localEditedAt),   // v50M: carry the newer stamp so drift can't re-claim
             };
           }).filter(Boolean);
           // Add any orders in DB not yet in local state — always add, never block
@@ -5040,8 +5051,15 @@ function saveOrderModal(existingId, defaultMachine) {
     endDate,
     // v50L: manual-date INTENT (see _sdBefore50l above). Changed this edit → manual; untouched →
     // preserve the existing flag; end cleared → back to auto-calc.
+    // v50N (rule confirmed by Ishan, 5 Aug): a deliberate START change pins the date (manualStartDate)
+    // ONLY when the batch already has production or is closed — i.e. the planner is correcting
+    // recorded reality (ZA078/ZA079). Before production, planner dates are GUIDANCE: the change saves
+    // and is stamp-protected against stale tabs, but stays unflagged so the v45W DPR anchor reclaims
+    // the start the moment actual production begins.
     manualStartDate: existingId
-      ? ((_sdNow50l && _sdNow50l !== _sdBefore50l) ? true : !!(_existing && _existing.manualStartDate))
+      ? ((_sdNow50l && _sdNow50l !== _sdBefore50l)
+          ? !!(_existing && ((_existing.actualProd || _existing.actualQty || 0) > 0 || _existing.dprFirstDate || _existing.status === 'closed'))
+          : !!(_existing && _existing.manualStartDate))
       : false,
     manualEndDate: manualEndDateVal
       ? (existingId ? ((manualEndDateVal !== _edBefore50l) ? true : !!(_existing && _existing.manualEndDate)) : true)
@@ -9272,12 +9290,19 @@ function _dsChoose(choice, orderId) {
 function getPlanProdMonth(p) {
   if (!p) return '';
   const ord = state.orders.find(o => o.id === p.productionOrderId);
+  // v50M (month slices didn't sum to the quarter): when the linked order is GONE (archived/cleaned),
+  // this fell straight through to plannedDate — the DISPATCH month — silently re-bucketing an
+  // orphaned plan's boxes into whichever month its truck was scheduled, so July-produced ready boxes
+  // surfaced under a later month slice and July + August no longer added up to "All months".
+  // autoGenerateDispatchPlans now stamps p.prodMonthYm while the order is still resolvable; the
+  // stamp is preferred over plannedDate so an orphan keeps its true production month forever.
   const ref = (ord && ord.startDate) ? ord.startDate
             : (ord && ord.endDate)   ? ord.endDate
+            : p.prodMonthYm          ? null
             : p.plannedDate || '';
-  if (!ref) return '';
+  if (!ref) return p.prodMonthYm || '';
   const d = new Date(ref);
-  if (isNaN(d.getTime())) return '';
+  if (isNaN(d.getTime())) return p.prodMonthYm || '';
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 }
 function prodMonthLabel(ym) {
@@ -9352,7 +9377,11 @@ function _truckActiveQuarter(){ return window._truckProdQuarter || (window._truc
 function _truckPlanScopeTest(p, q, mo){                  // pure: test plan p against an EXPLICIT quarter/month scope
   const ym = getPlanProdMonth(p);                       // production START month (option A)
   if (q === 'prior') return !!ym && _truckQStart(ym) < _TRUCK_FLOOR_Q;   // historical bucket: produced before Q2
-  if (!ym) return q === _truckCurrentQuarter();          // no production date → show only in the current quarter
+  // v50M: a DATELESS plan used to pass EVERY month narrow (this early-return ran before the month
+  // check), double-counting its boxes across July AND August AND All — one of the two reasons the
+  // month slices didn't partition the quarter. It now shows under All months and the CURRENT month
+  // only, so each box lives in exactly one month slice.
+  if (!ym) return q === _truckCurrentQuarter() && (!mo || mo === 'all' || mo === currentYM());
   if (_truckQStart(ym) !== q) return false;              // wrong quarter
   if (mo && mo !== 'all' && ym !== mo) return false;     // month-within-quarter narrow
   return true;
@@ -9382,7 +9411,7 @@ function _povPlanInScope(p){
   const q  = _povActiveQuarter();
   const mo = window._povProdMonth || 'all';
   if (q === 'prior') return !!ym && _truckQStart(ym) < _TRUCK_FLOOR_Q;   // historical: produced before Q2
-  if (!ym) return q === _truckCurrentQuarter();          // no production date → current quarter only
+  if (!ym) return q === _truckCurrentQuarter() && (mo === 'all' || mo === currentYM());   // v50M: one month slice only (see _truckPlanScopeTest)
   if (_truckQStart(ym) !== q) return false;
   if (mo !== 'all' && ym !== mo) return false;           // month-within-quarter narrow
   return true;
@@ -9775,6 +9804,21 @@ function autoGenerateDispatchPlans() {
   const existingDPOrderIds = new Set(
     state.dispatchPlans.filter(p => !p.isAuto).map(p => p.productionOrderId).filter(Boolean)
   );
+  // v50M: stamp every plan's production month while its order is still resolvable, so a later
+  // archive/cleanup of the order can't re-bucket the plan by dispatch date (see getPlanProdMonth).
+  // Runs on the normal auto-generate cadence — cheap, idempotent, self-healing as dates are amended.
+  try {
+    const _byId50m = new Map(state.orders.map(o => [o.id, o]));
+    (state.dispatchPlans || []).forEach(p => {
+      if (!p || !p.productionOrderId) return;
+      const _o = _byId50m.get(p.productionOrderId);
+      const _ref = (_o && _o.startDate) ? _o.startDate : (_o && _o.endDate) ? _o.endDate : null;
+      if (!_ref) return;
+      const _d = new Date(_ref);
+      if (isNaN(_d.getTime())) return;
+      p.prodMonthYm = `${_d.getFullYear()}-${String(_d.getMonth()+1).padStart(2,'0')}`;
+    });
+  } catch (e) { /* stamping must never break plan generation */ }
   // Also collect auto plans to avoid duplicating them
   const existingAutoIds = new Set(
     state.dispatchPlans.filter(p => p.isAuto).map(p => p.productionOrderId).filter(Boolean)
