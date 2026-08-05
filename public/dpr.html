@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50S</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v50T</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -925,6 +925,26 @@ let curFloor = 'GF';
 let targets = JSON.parse(localStorage.getItem('dpr_targets')||'{}');
 let activeOrders = {}; // {machineId: [{id, batchNumber, customer, poNumber}]}
 let dprClosedBatches = {}; // {orderId: {closedAt, closedBy}} — batches closed in DPR
+// ═══ v50S-DPR RUN-CLOSURE RESOLVER (Rahul, 5 Aug — 26ZD119 closed but Data Entry kept asking) ═════
+// Data Entry decided "closed" from dpr_batch_closed rows ONLY (by order id, exact-string batch
+// fallback), while the Closed Batches tab derives closure from order STATUS — two authorities. A
+// batch closed under a different order id (blob↔DB id mismatch), via the DPR-complete auto-close,
+// or with a batch-number case/space mismatch showed ✅ in Closed Batches yet kept the pink 🔒 Close
+// prompt in Data Entry. One resolver now answers everywhere Data Entry asks: dpr_batch_closed by
+// id → dpr_batch_closed by normalized batch number → planning order status 'closed' (by id, then
+// by batch number). _dprOrderById/_dprOrderByBn include closed orders (v41ZN #3), so status is
+// always at hand even though the dropdown rightly hides closed orders.
+function _isRunClosed50s(orderId, batchNumber){
+  try{
+    if (orderId && dprClosedBatches[orderId]) return true;
+    const bn = batchNumber ? String(batchNumber).trim().toUpperCase() : '';
+    if (bn && Object.values(dprClosedBatches).some(cb => cb && cb.batchNumber && String(cb.batchNumber).trim().toUpperCase() === bn)) return true;
+    if (orderId && window._dprOrderById && window._dprOrderById[orderId] && window._dprOrderById[orderId].status === 'closed') return true;
+    if (bn && window._dprOrderByBn && window._dprOrderByBn[bn] && window._dprOrderByBn[bn].status === 'closed') return true;
+    if (bn && window._dprStatusClosedBns && window._dprStatusClosedBns.has(bn)) return true;   // v50T: production_orders authority
+  }catch(e){}
+  return false;
+}
 // Sanitize server URL — strip any file path and trailing slashes
 function sanitizeServerUrl(url) {
   if (!url) return '';
@@ -1878,7 +1898,11 @@ async function fetchActiveOrders(){
       // v41ZN #3: full order lookup (INCLUDING closed) — closed orders stay out of the dropdown above,
       // but the inline Gross/Prod/Rem summary should still show on every saved run, so resolve from this.
       window._dprOrderById = {};
-      j.orders.forEach(o=>{ if(o && o.id) window._dprOrderById[o.id]=o; });
+      window._dprOrderByBn = {};   // v50S-DPR: batch-number lookup (incl. CLOSED) for run-closure resolution
+      j.orders.forEach(o=>{
+        if(o && o.id) window._dprOrderById[o.id]=o;
+        if(o && o.batchNumber) window._dprOrderByBn[String(o.batchNumber).trim().toUpperCase()]=o;
+      });
       // Cache locally
       localStorage.setItem('dpr_active_orders',JSON.stringify(activeOrders));
       // Orders synced silently — toast only on manual sync button click
@@ -1915,6 +1939,9 @@ async function fetchClosedBatches(){
     if(j.ok && j.closed){
       dprClosedBatches={};
       j.closed.forEach(c=>{ dprClosedBatches[c.order_id]={closedAt:c.closed_at,closedBy:c.closed_by,batchNumber:c.batch_number,alreadyReopened:!!c.alreadyReopened}; });
+      // v50T: server-supplied status-closed batch numbers (production_orders authority) — closure
+      // no longer depends on the order still being present in the planning order feed (26ZD119).
+      window._dprStatusClosedBns = new Set((j.statusClosedBns || []).map(b => String(b).trim().toUpperCase()));
       // v41l: track which orders have already used their one reopen (persisted server-side).
       window._dprReopenedOrderIds = new Set(j.reopenedOrderIds || []);
     }
@@ -2520,7 +2547,7 @@ function renderShifts(){
         if(matchedOrder && run.orderId !== matchedOrder.id) run.orderId = matchedOrder.id;
         // If saved batch is not in activeOrders — only refresh, never show pending orders
         const orphanOpt = (run.batchNumber && !matchedOrder)
-          ? `<option value="${run.orderId||run.batchNumber}" selected disabled>[saved] ${run.batchNumber}</option>`
+          ? `<option value="${run.orderId||run.batchNumber}" selected disabled>${_isRunClosed50s(run.orderId, run.batchNumber) ? '\u2713 [CLOSED] ' : '[saved] '}${run.batchNumber}</option>`
           : '';
         // If orphan detected — refresh active orders from server (order may now be running)
         if(run.batchNumber && !matchedOrder && serverUrl){
@@ -2609,17 +2636,21 @@ function renderShifts(){
           <div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap">
             <button onclick="addRun('${sh}','${mc.id}')" style="padding:2px 8px;background:transparent;border:1px dashed var(--b2);border-radius:3px;color:var(--t3);font-size:10px;font-family:var(--fc);letter-spacing:.5px;cursor:pointer" title="Add another batch/colour change run">+ Add Run</button>
             ${runs.filter(r=>r.orderId||r.batchNumber).map(r=>{
-              // Match closed status by orderId OR batchNumber
-              const isClosed=dprClosedBatches[r.orderId]||
-                (r.batchNumber&&Object.values(dprClosedBatches).find(cb=>cb.batchNumber===r.batchNumber));
+              // v50S-DPR: closure resolved by the single resolver (dpr_batch_closed OR planning
+              // status 'closed') — matches the Closed Batches tab's authority, so a closed batch
+              // can never show the pink Close prompt again.
+              const isClosed=_isRunClosed50s(r.orderId, r.batchNumber);
               // Resolve orderId from activeOrders if not set (fallback by batchNumber)
               const resolvedOrderId=r.orderId||(activeOrders[mc.id]||[]).find(o=>o.batchNumber===r.batchNumber)?.id||'';
               if(isClosed){
                 // v41l (point 1): offer a one-time same-day reopen button next to the closed badge.
-                const _ci = (typeof isClosed==='object') ? isClosed : dprClosedBatches[resolvedOrderId];
+                const _ci = dprClosedBatches[r.orderId] || dprClosedBatches[resolvedOrderId]
+                  || (r.batchNumber && Object.values(dprClosedBatches).find(cb=>cb&&cb.batchNumber&&String(cb.batchNumber).trim().toUpperCase()===String(r.batchNumber).trim().toUpperCase()));
                 const _closeDay = _ci && _ci.closedAt ? _localYMD(new Date(_ci.closedAt)) : today();
                 const _usedReopen = (_ci && _ci.alreadyReopened) || (window._dprReopenedOrderIds && window._dprReopenedOrderIds.has(resolvedOrderId));
-                const _canReopen = !_usedReopen && _closeDay===today() && resolvedOrderId;
+                // v50S-DPR: reopen only where a genuine dpr_batch_closed row exists (_ci) — a batch
+                // closed via planning status has no same-day DPR reopen; that path goes through Admin.
+                const _canReopen = !!_ci && !_usedReopen && _closeDay===today() && resolvedOrderId;
                 const _reopenBtn = _canReopen
                   ? `<button onclick="reopenBatchInDPR('${resolvedOrderId}','${r.batchNumber||''}')" style="margin-left:5px;padding:2px 8px;background:rgba(240,165,0,0.12);border:1px solid rgba(240,165,0,0.5);border-radius:3px;color:var(--amber);font-size:10px;font-family:var(--fc);cursor:pointer" title="Reopen this batch (one-time, same day only)">🔓 Reopen</button>`
                   : '';

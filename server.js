@@ -16,7 +16,28 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50S';
+const APP_BUILD = 'v50T';
+// ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
+// Every server path that can change a watched batch's planner fields calls _v50tAudit before
+// writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
+// wrote, what changed, the client's edit stamp and build, and whether a claim list was present —
+// no more archaeology. Watchlist via env SUNLOC_AUDIT_BATCHES (comma-separated), default the two
+// batches under investigation. Cheap: string compare + one log line, only for watched batches.
+const _v50tWatch = new Set(String(process.env.SUNLOC_AUDIT_BATCHES || '26ZA078,26ZA079').split(',').map(s => s.trim().toUpperCase()).filter(Boolean));
+function _v50tAudit(route, before, after, extra) {
+  try {
+    const bn = String((after && after.batchNumber) || (before && before.batchNumber) || '').trim().toUpperCase();
+    if (!bn || !_v50tWatch.has(bn)) return;
+    const FIELDS = ['startDate', 'endDate', 'batchNumber', 'machineId', 'status', 'manualStartDate', 'manualEndDate', 'grossOverride'];
+    const diffs = [];
+    for (const k of FIELDS) {
+      const a = before ? before[k] : undefined, b = after ? after[k] : undefined;
+      if (JSON.stringify(a === undefined ? null : a) !== JSON.stringify(b === undefined ? null : b)) diffs.push(`${k}: ${JSON.stringify(a)} → ${JSON.stringify(b)}`);
+    }
+    if (!diffs.length) return;
+    console.log(`[v50T AUDIT] ${bn} via ${route} | stamp=${(after && after._localEditedAt) || (before && before._localEditedAt) || '-'} | ${diffs.join(' ; ')}${extra ? ' | ' + extra : ''}`);
+  } catch (e) { /* audit must never break a write */ }
+}
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
 // valued at its label's actual qty (tracking_labels.qty — partial-aware, the NOT-NULL source of
@@ -82,6 +103,21 @@ const PORT = process.env.PORT || 3000;
 
 app.use(cors());
 app.use(express.json({ limit: '10mb' }));
+// ═══ v50T HTML CACHE KILL (5 Aug — Railway logs prove a pre-v48Z planning.html STILL live on the
+// floor: "[v50L] list-less save (legacy/stale client)" fired twice in a 5-minute window). With
+// Cloudflare fronting the domain and express.static's default caching, deployed HTML does not
+// reliably reach browsers — a permanently MIXED-VERSION fleet, which is why every fix "held on one
+// machine and not another" throughout the ZA078/ZA079 saga. App shells are now no-store (browsers
+// AND the CDN must revalidate every load); static assets keep normal caching.
+app.use((req, res, next) => {
+  const p = (req.path || '').toLowerCase();
+  if (p === '/' || p.endsWith('.html')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
+    res.setHeader('Expires', '0');
+  }
+  next();
+});
 app.use(express.static(path.join(__dirname, 'public')));
 
 // ─── Database — Dual Mode ──────────────────────────────────────
@@ -8602,6 +8638,7 @@ app.post('/api/orders/upsert', async (req, res) => {
     if (preserved) {
       console.log(`[v41x upsert] Preserved DB status on ${ord.id} (client="${ord.status}" → DB="${finalStatus}", stale write blocked)`);
     }
+    _v50tAudit('POST /api/orders/upsert', exData, mergedOrd, `clientBuild=${(req.get && req.get('x-sunloc-build')) || '-'}`);   // v50T
     mergedOrd = _v49f_rcLock(mergedOrd, exData);   // v49F: re-customer is authoritative
     // v50I: the rename-intent stamp is transient — read by the cascade below, never stored.
     const { _v50iBnBefore: _drop50i, ...mergedForJson50i } = mergedOrd;
@@ -9223,6 +9260,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
         };
       }
       mergedOrd = _v49f_rcLock(mergedOrd, exData);   // v49F: re-customer is authoritative
+      _v50tAudit('POST /api/orders/upsert-bulk', exData, mergedOrd, `clientBuild=${(req.get && req.get('x-sunloc-build')) || '-'}`);   // v50T
       const json = JSON.stringify(mergedOrd);
       mergedList.push({ row: mergedOrd, json, finalStatus, finalDeleted });
     }
@@ -9635,10 +9673,12 @@ app.get('/api/planning/state', async (req, res) => {
                   if (d.insert) { if (idx === undefined) { cur.orders.push(d.insert); applied++; } continue; }
                   if (idx === undefined) continue;
                   const tgt = cur.orders[idx];
+                  const _pre50t = JSON.parse(JSON.stringify(tgt));   // v50T audit baseline
                   for (const k of Object.keys(d.fields)) {
                     if (d.fields[k] === null && !(k in (JSON.parse(_preSnap50s.get(d.id) || '{}')))) continue;
                     tgt[k] = d.fields[k];
                   }
+                  _v50tAudit('v50S GET-reconcile surgical persist', _pre50t, tgt, `fields=${Object.keys(d.fields).join('+')}`);
                   applied++;
                 }
                 if (!applied) return;
@@ -9884,13 +9924,19 @@ app.post('/api/planning/state', async (req, res) => {
             // v49F: the whole-object fallback is kept (a locally-new order has no server copy to merge
             // against), but the re-customer lock is re-applied so a missing field map can never
             // wholesale-revert a re-customered order the way it did on 26P044/26P045.
-            if (flds === '*' || !Array.isArray(flds)) { merged.push(_v49f_rcLock(_v50mGuard(cli, srv, cli), srv)); continue; }  // locally new / no detail → whole object (v50M stamp-guarded)
+            if (flds === '*' || !Array.isArray(flds)) {
+              const _g50tw = _v49f_rcLock(_v50mGuard(cli, srv, cli), srv);
+              _v50tAudit('v49A claim (whole-object)', srv, _g50tw, `cliStamp=${cli._localEditedAt||'-'}`);   // v50T
+              merged.push(_g50tw); continue;
+            }  // locally new / no detail → whole object (v50M stamp-guarded)
             const out = { ...srv };
             for (const k of flds) {
               if (Object.prototype.hasOwnProperty.call(cli, k)) out[k] = cli[k];
               else delete out[k];                                  // planner removed the field
             }
-            merged.push(_v49f_rcLock(_v50mGuard(out, srv, cli), srv));   // v49F: re-customer is authoritative; v50M: stale claims can't override planner fields
+            { const _g50t = _v49f_rcLock(_v50mGuard(out, srv, cli), srv);
+              _v50tAudit('v49A claim (field-level)', srv, _g50t, `flds=${Array.isArray(flds)?flds.join('+'):'*'} cliStamp=${cli._localEditedAt||'-'}`);   // v50T
+              merged.push(_g50t); }
           }
           // Orders the client has that the server does not: brand-new locally. Keep them.
           for (const [id, cli] of clientById) if (!seen.has(id)) merged.push(cli);
@@ -9934,7 +9980,7 @@ app.post('/api/planning/state', async (req, res) => {
             if (!cli) { merged.push(srv); continue; }               // client never had it → keep server's
             const ct = parseInt(cli._localEditedAt || 0);
             const st = parseInt(srv._localEditedAt || 0);
-            if (ct > st) { merged.push(_v49f_rcLock(cli, srv)); cliWon++; }   // genuine newer edit in that tab
+            if (ct > st) { _v50tAudit('v50L conservative merge (client newer)', srv, cli, `ct=${ct} st=${st}`); merged.push(_v49f_rcLock(cli, srv)); cliWon++; }   // genuine newer edit in that tab
             else merged.push(srv);                                  // server's copy is current — protect it
           }
           for (const [id, cli] of cliById) if (!seen.has(id)) merged.push(cli);   // locally new → keep
@@ -10126,6 +10172,7 @@ app.post('/api/planning/state', async (req, res) => {
                 startDate: _staleWrite ? (ex.startDate || ord.startDate || null) : (ord.startDate || ex.startDate || null),
                 endDate:   _staleWrite ? (ex.endDate   || ord.endDate   || null) : (ord.endDate   || ex.endDate   || null),
               };
+              _v50tAudit('bg-merge (POST /api/planning/state)', ex, mergedOrd, `staleWrite=${_staleWrite}`);   // v50T
             }
             return _v49f_rcLock(mergedOrd, ex);   // v49F: re-customer is authoritative
           }));
@@ -12586,7 +12633,20 @@ app.get('/api/dpr/batch-closed', async (req, res) => {
     const reopenedSet = new Set((reopened || []).map(r => r.order_id));
     // Annotate each closed row with whether this batch has already used its one reopen.
     rows = (rows || []).map(r => ({ ...r, alreadyReopened: reopenedSet.has(r.order_id) }));
-    res.json({ ok: true, closed: rows, reopenedOrderIds: Array.from(reopenedSet) });
+    // v50T (Rahul, 5 Aug — 26ZD119 still pink while 26ZG163 green on v50S): the client resolver's
+    // status leg reads the planning order feed, which can MISS a closed order entirely (dropped
+    // from the blob / id churn). production_orders is the durable authority — return every
+    // status-closed batch number so Data Entry closure never depends on blob presence at all.
+    let statusClosedBns = [];
+    try {
+      if (pgPool) {
+        const sc = await pgPool.query(`SELECT DISTINCT UPPER(TRIM(COALESCE(data_json::jsonb->>'batchNumber', batch_number))) AS bn FROM production_orders WHERE status='closed' AND COALESCE(data_json::jsonb->>'batchNumber', batch_number) IS NOT NULL`);
+        statusClosedBns = sc.rows.map(r => r.bn).filter(Boolean);
+      } else {
+        statusClosedBns = db.prepare(`SELECT DISTINCT batch_number AS bn FROM production_orders WHERE status='closed' AND batch_number IS NOT NULL`).all().map(r => String(r.bn).trim().toUpperCase()).filter(Boolean);
+      }
+    } catch (e) { console.warn('[v50T] statusClosedBns skipped:', e.message); }
+    res.json({ ok: true, closed: rows, reopenedOrderIds: Array.from(reopenedSet), statusClosedBns });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
