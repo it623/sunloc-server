@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50N</p>
+      <p>Planning Suite v3.0 · build v50P</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -2802,7 +2802,22 @@ function recalcMachineScheduleQuiet(machineId) {
     // Determine start date (v41ZD #2 / v41ZM #5 anchoring unchanged). Compute the FRACTIONAL start
     // _startFrac, store its floored calendar date.
     let _startFrac;
-    if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
+    // ═══ v50P MANUAL-DATE AUTHORITY IN THE CASCADE (confirmed by Ishan, 5 Aug) ═══════════════════
+    // THE ACTUAL ENGINE of the ZA078/ZA079 flips, across every build since the amendments began:
+    // this cascade REGENERATES a non-closed started order's dates on every recalc in every tab —
+    // start from the cursor (line below) then the v45W DPR anchor, end from v45X/projection.
+    // manualStartDate only skipped the v45W anchor AFTER the cursor had already overwritten the
+    // date, and manualEndDate was never consulted at all — so a planner's amendment was recomputed
+    // away within seconds, with no merge layer involved (the v41ZC "uniform cascade including
+    // manually-edited" spec conflicts with the manual-date rule confirmed 5 Aug and yields to it).
+    // Under v50N the manual flags arise ONLY from a deliberate post-production/closed correction,
+    // so honouring them here is exactly the confirmed rule: guidance dates still cascade uniformly;
+    // corrections of recorded reality are planner-authoritative. The cursor still advances through
+    // a manual-dated order so successors follow it.
+    const _manStart50p = !!ord.manualStartDate && ord.startDate && !isNaN(new Date(ord.startDate));
+    if (_manStart50p) {
+      _startFrac = new Date(ord.startDate);              // planner-corrected start is authoritative
+    } else if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
       const histStart = new Date(ord.startDate);
       _startFrac = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
     } else if (cursor) {
@@ -2841,8 +2856,15 @@ function recalcMachineScheduleQuiet(machineId) {
     let _endAnchored45x = false;
     let _endFrac;
     if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
+      // v50P: a COMPLETE run's end normally anchors to the last DPR date (v45X) — but when the
+      // planner has deliberately corrected the recorded end (manualEndDate, settable only
+      // post-production under v50N intent rules), the correction is authoritative over the DPR
+      // anchor, per the 5 Aug rule. Incomplete runs are untouched: their end stays projected —
+      // DPR/cascade remain definitive during production.
+      const _manEnd50p = !!ord.manualEndDate && ord.endDate && !isNaN(new Date(ord.endDate));
       const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
-      if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
+      if (_manEnd50p) { const _me50p = new Date(ord.endDate); ord.endDate = _v47xFloorDay(_me50p); _endFrac = _me50p; _endAnchored45x = true; }
+      else if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
       else { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
     } else {
       _endFrac = new Date(_startFrac.getTime() + fracDays * 86400000);
@@ -2914,7 +2936,22 @@ function recalcMachineSchedule(machineId) {
     // v41ZD #2: in-production order keeps its historical start only if it's already >= cursor;
     // otherwise it is pushed forward so it can't overlap the previous order on the same machine.
     let _startFrac;
-    if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
+    // ═══ v50P MANUAL-DATE AUTHORITY IN THE CASCADE (confirmed by Ishan, 5 Aug) ═══════════════════
+    // THE ACTUAL ENGINE of the ZA078/ZA079 flips, across every build since the amendments began:
+    // this cascade REGENERATES a non-closed started order's dates on every recalc in every tab —
+    // start from the cursor (line below) then the v45W DPR anchor, end from v45X/projection.
+    // manualStartDate only skipped the v45W anchor AFTER the cursor had already overwritten the
+    // date, and manualEndDate was never consulted at all — so a planner's amendment was recomputed
+    // away within seconds, with no merge layer involved (the v41ZC "uniform cascade including
+    // manually-edited" spec conflicts with the manual-date rule confirmed 5 Aug and yields to it).
+    // Under v50N the manual flags arise ONLY from a deliberate post-production/closed correction,
+    // so honouring them here is exactly the confirmed rule: guidance dates still cascade uniformly;
+    // corrections of recorded reality are planner-authoritative. The cursor still advances through
+    // a manual-dated order so successors follow it.
+    const _manStart50p = !!ord.manualStartDate && ord.startDate && !isNaN(new Date(ord.startDate));
+    if (_manStart50p) {
+      _startFrac = new Date(ord.startDate);              // planner-corrected start is authoritative
+    } else if (hasProduction && ord.startDate && !isNaN(new Date(ord.startDate))) {
       const histStart = new Date(ord.startDate);
       _startFrac = cursor ? new Date(cursor) : histStart; // v41ZM #5: anchor to predecessor end — no gaps/overlaps
     } else if (cursor) {
@@ -2949,8 +2986,15 @@ function recalcMachineSchedule(machineId) {
     let _endAnchored45x = false;
     let _endFrac;
     if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
+      // v50P: a COMPLETE run's end normally anchors to the last DPR date (v45X) — but when the
+      // planner has deliberately corrected the recorded end (manualEndDate, settable only
+      // post-production under v50N intent rules), the correction is authoritative over the DPR
+      // anchor, per the 5 Aug rule. Incomplete runs are untouched: their end stays projected —
+      // DPR/cascade remain definitive during production.
+      const _manEnd50p = !!ord.manualEndDate && ord.endDate && !isNaN(new Date(ord.endDate));
       const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
-      if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
+      if (_manEnd50p) { const _me50p = new Date(ord.endDate); ord.endDate = _v47xFloorDay(_me50p); _endFrac = _me50p; _endAnchored45x = true; }
+      else if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
       else { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
     } else {
       _endFrac = new Date(_startFrac.getTime() + fracDays * 86400000);
