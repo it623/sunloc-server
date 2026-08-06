@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50W</p>
+      <p>Planning Suite v3.0 · build v50X</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1767,7 +1767,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50W' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50X' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5480,7 +5480,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50W'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50X'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -9381,6 +9381,22 @@ function _dsChoose(choice, orderId) {
 // v41d: production month of a dispatch plan/order, used by the Truck View month filter.
 // Derived from the linked production order's startDate (when production began). Falls back to
 // the plan's plannedDate if no order/startDate is available. Returns 'YYYY-MM' or '' if unknown.
+// v50X (confirmed by Ishan): the prodMonthYm stamp is normalized to strict 'YYYY-MM' before it is
+// ever returned. ROOT CAUSE of "All months > Jul + Aug with Sep EMPTY": a malformed persisted stamp
+// (full date '2026-09-15' / unpadded '2026-9', written before the padded v50M writer and never
+// re-written because the stamp writer skips orphans) passed _truckQStart's quarter parse but equalled
+// NO month key — so the plan appeared under "All months (whole quarter)" ONLY, and the month slices
+// could never sum to the quarter. Normalizing at the single derivation point restores the partition
+// for every consumer (zone cards, truck scope, order-view scope, prod-month dropdown, data-prodmonth):
+// each plan lives in exactly one month slice, or — if the stamp is unparseable — behaves as dateless
+// (All + current month, the v50M rule).
+function _normYm50x(v) {
+  const m = /^(\d{4})-(\d{1,2})/.exec(String(v == null ? '' : v).trim());
+  if (!m) return '';
+  const mo = parseInt(m[2], 10);
+  if (!(mo >= 1 && mo <= 12)) return '';
+  return `${m[1]}-${String(mo).padStart(2, '0')}`;
+}
 function getPlanProdMonth(p) {
   if (!p) return '';
   const ord = state.orders.find(o => o.id === p.productionOrderId);
@@ -9394,9 +9410,9 @@ function getPlanProdMonth(p) {
             : (ord && ord.endDate)   ? ord.endDate
             : p.prodMonthYm          ? null
             : p.plannedDate || '';
-  if (!ref) return p.prodMonthYm || '';
+  if (!ref) return _normYm50x(p.prodMonthYm);   // v50X: never return a raw stamp
   const d = new Date(ref);
-  if (isNaN(d.getTime())) return p.prodMonthYm || '';
+  if (isNaN(d.getTime())) return _normYm50x(p.prodMonthYm);   // v50X: never return a raw stamp
   return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
 }
 function prodMonthLabel(ym) {

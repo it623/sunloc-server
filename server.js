@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50W';
+const APP_BUILD = 'v50X';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -51,8 +51,17 @@ function _v47gPackCaseSql(s) {
   return `CASE ${s}.size WHEN '00' THEN 0.75 WHEN '0' THEN 1.00 WHEN '1' THEN 1.25 `
        + `WHEN '2' THEN 1.75 WHEN '3' THEN 2.25 WHEN '4' THEN 3.00 ELSE 0 END`;
 }
+// v50X (confirmed by Ishan): scrap-disposition per-box recon outs (operator 'recon-scrap:%') are
+// valued at ZERO here. They exist only to clear the physical box from every WIP box set / box count
+// (in==out coherence) after a Report Z dept reconcile writes the loss off as wastage — the wastage
+// row is the sole quantity record, so letting the label's qty flow here would double-count the loss
+// AND wrongly inflate AIMOut (A-Grade numerator). Movepack per-box outs carry operator 'recon:%'
+// with qty NULL and deliberately fall through to the label-qty branch — packed-good output is real
+// output. Single authority: scan-summary, agrade-summary, agrade-by-month and dispatch-period all
+// inherit this uniformly.
 function _v47gScanQtySql(s, l) {
-  return `CASE WHEN ${s}.label_id LIKE 'recon-%' THEN COALESCE(${s}.qty,0) `
+  return `CASE WHEN ${s}.operator LIKE 'recon-scrap:%' THEN 0 `
+       + `WHEN ${s}.label_id LIKE 'recon-%' THEN COALESCE(${s}.qty,0) `
        + `ELSE COALESCE(${l}.qty, ${_v47gPackCaseSql(s)}) END`;
 }
 
@@ -12333,6 +12342,12 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
     // fallback. This is the literal "5 boxes scanned out but not in → 4×1L + 1×0.5L = 4.5L" figure, and
     // it is derived from the SAME box set as the count, so the Boxes and (L) columns can never disagree.
     // DISTINCT (bn,label,qty) collapses any double scan-out so each gap label is counted/summed once.
+    // v50X: per-box recon outs (movepack 'recon:%', scrap 'recon-scrap:%') are EXCLUDED from the gap
+    // out-selection. A dept reconcile is the accounting closure for that material — movepack means it
+    // verifiably reached packing (its packing-in usually already exists), scrap means it went to the
+    // melt pot — so neither may resurface as phantom "in transit" gap boxes. The extraIn side is left
+    // as-is on purpose: recon per-box outs DO satisfy its missing-out probe, which is exactly how the
+    // 26ZG132-style "packing-in without PI-out" extraIn heals after a movepack reconcile.
     const gapSql = `
       SELECT bn, COUNT(*) AS gap, COALESCE(SUM(qty),0) AS gap_qty FROM (
         SELECT DISTINCT s.batch_number AS bn, s.label_id AS lid,
@@ -12340,6 +12355,7 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
           FROM tracking_scans s
           LEFT JOIN tracking_labels l ON l.id = s.label_id
          WHERE s.dept = $1 AND s.type = 'out' AND s.label_id NOT LIKE 'recon-%'
+           AND COALESCE(s.operator,'') NOT LIKE 'recon:%' AND COALESCE(s.operator,'') NOT LIKE 'recon-scrap:%'
            AND s.batch_number IS NOT NULL AND s.batch_number <> ''
            AND NOT EXISTS (SELECT 1 FROM tracking_scans t
                             WHERE t.label_id = s.label_id AND t.dept = $2 AND t.type = 'in')
@@ -17803,7 +17819,7 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
         sq(`SELECT s.batch_number, s.dept, s.type,
               COUNT(*) FILTER (WHERE s.label_id NOT LIKE 'recon-%') AS box_cnt,
               COALESCE(SUM(s.qty) FILTER (WHERE s.label_id LIKE 'recon-%'),0) AS recon_qty,
-              COALESCE(SUM(CASE WHEN s.label_id NOT LIKE 'recon-%' THEN COALESCE(l.qty, ${_v47gPackCaseSql('s')}) ELSE 0 END),0) AS real_qty
+              COALESCE(SUM(CASE WHEN s.operator LIKE 'recon-scrap:%' THEN 0 WHEN s.label_id NOT LIKE 'recon-%' THEN COALESCE(l.qty, ${_v47gPackCaseSql('s')}) ELSE 0 END),0) AS real_qty
             FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id
             WHERE s.ts >= $1 AND s.ts < $2
             GROUP BY s.batch_number, s.dept, s.type`, [start, end]),
@@ -17820,7 +17836,7 @@ app.get('/api/tracking/agrade-by-month', async (req, res) => {
       scanRows    = sq(`SELECT s.batch_number, s.dept, s.type,
                           SUM(CASE WHEN s.label_id NOT LIKE 'recon-%' THEN 1 ELSE 0 END) AS box_cnt,
                           COALESCE(SUM(CASE WHEN s.label_id LIKE 'recon-%' THEN s.qty ELSE 0 END),0) AS recon_qty,
-                          COALESCE(SUM(CASE WHEN s.label_id NOT LIKE 'recon-%' THEN COALESCE(l.qty, ${_v47gPackCaseSql('s')}) ELSE 0 END),0) AS real_qty
+                          COALESCE(SUM(CASE WHEN s.operator LIKE 'recon-scrap:%' THEN 0 WHEN s.label_id NOT LIKE 'recon-%' THEN COALESCE(l.qty, ${_v47gPackCaseSql('s')}) ELSE 0 END),0) AS real_qty
                         FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id
                         WHERE s.ts >= ? AND s.ts < ?
                         GROUP BY s.batch_number, s.dept, s.type`, [start, end]);
@@ -20303,6 +20319,67 @@ app.post('/api/tracking/reconcile-wip', async (req, res) => {
 //   scrap    — the δ was lost. Record salvage/remelt wastage at the dept's leg (A-Grade % drops).
 // Timestamped into the batch's production month so A-Grade attribution stays correct. Atomic. Reversible
 // via /reconcile-wip-clear. The single-dept /reconcile-wip endpoint above is left untouched.
+// ═══ v50X PER-BOX WIP CLEARING (confirmed by Ishan, 6 Aug — 26ZG132 phantom PI WIP) ═══════════════
+// The v48B qty-blob balanced the QTY ledger but could never remove the physical boxes from the v47B
+// wipBoxes set (recon-% excluded on both sides by design), so Report B kept WIP BOXES / WIP QTY alive
+// forever after a dept reconcile. A dept reconcile now clears THE ENTIRE STUCK LOT at that dept
+// (Ishan: whole set, regardless of entered delta):
+//   movepack — one synthetic OUT per stuck REAL label (operator 'recon:who', qty NULL → the v47G
+//              resolver values it at the label's own qty: verified-packed material is real output, so
+//              at AIM it counts into AIMOut exactly as the blob's qty already did). If delta exceeds
+//              the set's qty, the residual (unscanned portion) is written as the classic recon blob.
+//              Downstream stages keep blob outs, now at moved = max(delta, setQty).
+//   scrap    — one synthetic OUT per stuck REAL label with operator 'recon-scrap:who', qty 0; the
+//              v47G authority values these at ZERO so no quantity leaks into AIMOut or any scan sum —
+//              the wastage row (unchanged) remains the sole qty record and A-Grade drops per the
+//              frozen formulas. Box counts turn coherent (in == out ⇒ WIP 0).
+// The stuck set mirrors the wipBoxes display filters verbatim (voided=0, orange twins out, specimen
+// label_number 0/NULL out, excess kept) so exactly what Report B shows is what gets cleared. All-time
+// (not month-windowed): clearing is physical reality, and the any-time outs CTE clears every month's
+// set. Idempotent: a re-run finds an empty set. Undo via /reconcile-wip-clear (extended for both
+// operator patterns). preaim/transit paths are untouched (no dept box set exists for them).
+const _V50X_PACK = { '00':0.75, '0':1.00, '1':1.25, '2':1.75, '3':2.25, '4':3.00 };
+async function _v50xStuckBoxes(batchNumber, dept) {
+  const sql = pgPool
+    ? `SELECT l.id AS label_id, l.label_number, l.is_orange, l.qty, l.size
+         FROM (SELECT DISTINCT label_id FROM tracking_scans
+                WHERE batch_number=$1 AND dept=$2 AND type='in' AND label_id NOT LIKE 'recon-%') i
+         JOIN tracking_labels l ON l.id = i.label_id
+        WHERE COALESCE(l.voided,0)=0
+          AND NOT EXISTS (SELECT 1 FROM tracking_scans o
+                           WHERE o.label_id = i.label_id AND o.dept=$2 AND o.type='out')`
+    : `SELECT l.id AS label_id, l.label_number, l.is_orange, l.qty, l.size
+         FROM (SELECT DISTINCT label_id FROM tracking_scans
+                WHERE batch_number=? AND dept=? AND type='in' AND label_id NOT LIKE 'recon-%') i
+         JOIN tracking_labels l ON l.id = i.label_id
+        WHERE COALESCE(l.voided,0)=0
+          AND NOT EXISTS (SELECT 1 FROM tracking_scans o
+                           WHERE o.label_id = i.label_id AND o.dept=? AND o.type='out')`;
+  let rows;
+  if (pgPool) rows = (await pgPool.query(sql, [batchNumber, dept])).rows;
+  else rows = db.prepare(sql).all(batchNumber, dept, dept);
+  const out = [];
+  for (const r of (rows || [])) {
+    if (Number(r.is_orange)) continue;                       // orange twin — not a separate physical box
+    const num = Number(r.label_number);
+    if (!Number.isFinite(num) || num === 0) continue;        // specimen sentinel (0/NULL)
+    const q = (r.qty === null || r.qty === undefined || !Number.isFinite(Number(r.qty)))
+      ? (_V50X_PACK[String(r.size)] || 0) : Number(r.qty);
+    out.push({ labelId: r.label_id, qty: q });
+  }
+  return out;
+}
+// Pure arithmetic (unit-tested verbatim): whole-lot clearing per Ishan — setQty is the stuck boxes'
+// actual label-qty sum; residual is the unscanned portion of delta beyond the boxes; moved is the
+// total quantity the reconcile pushes downstream (never less than either).
+function _v50xMoveMath(delta, boxQtys) {
+  const r2 = x => Math.round(x * 100) / 100;
+  const setQty = r2((boxQtys || []).reduce((a, q) => a + (Number(q) || 0), 0));
+  const residual = Math.max(0, r2((Number(delta) || 0) - setQty));
+  const moved = r2(Math.max(Number(delta) || 0, setQty));
+  return { setQty, residual, moved };
+}
+
 app.post('/api/tracking/reconcile-wip-dept', async (req, res) => {
   try {
     const { batchNumber, dept, delta, disposition, wasteType, isPrinted, month, reason, reconciledBy } = req.body;
@@ -20326,26 +20403,41 @@ app.post('/api/tracking/reconcile-wip-dept', async (req, res) => {
 
     // Build the recon operations. prodStages = every production dept the material must exit to reach packing.
     const prodStages = printed ? ['aim','printing','pi'] : ['aim'];
-    let scans = [];   // [{dept,type}] synthetic recon scans
-    let waste = null; // {dept,type} write-off
+    let scans = [];    // [{dept,type,qty}] synthetic recon qty-blob scans (label_id 'recon-%')
+    let boxOuts = [];  // v50X: [{dept,labelId,qty,operator}] per-box outs against REAL stuck labels
+    let waste = null;  // {dept,type} write-off
+    // v50X: enumerate the stuck lot ONCE for the depts that carry a box set. Whole-set clearing.
+    const _setDept50x = (dept === 'aim' || dept === 'printing' || dept === 'pi');
+    const stuck = _setDept50x ? await _v50xStuckBoxes(batchNumber, dept) : [];
+    let mm = null;
     if (disposition === 'scrap') {
       // Loss written off as wastage on the dept's leg. Pre-AIM & AIM losses live on the AIM leg;
       // a Transit loss belongs to the last production stage.
       const wDept = (dept === 'preaim' || dept === 'aim') ? 'aim'
                   : (dept === 'transit') ? prodStages[prodStages.length - 1] : dept;
       waste = { dept: wDept, type: (wasteType === 'remelt' ? 'remelt' : 'salvage') };
+      // v50X: clear the stuck boxes with zero-valued scrap-marker outs (see _v47gScanQtySql).
+      boxOuts = stuck.map(b => ({ dept, labelId: b.labelId, qty: 0, operator: `recon-scrap:${who}` }));
     } else { // movepack
       if (dept === 'transit') {
-        scans = [{ dept:'packing', type:'in' }];                       // reached packing → packing scan-IN
+        scans = [{ dept:'packing', type:'in', qty:d }];                // reached packing → packing scan-IN
       } else if (dept === 'preaim') {
-        scans = [{ dept:'aim', type:'in' }, ...prodStages.map(s => ({ dept:s, type:'out' }))]; // inspected good, then out to packing
+        scans = [{ dept:'aim', type:'in', qty:d }, ...prodStages.map(s => ({ dept:s, type:'out', qty:d }))]; // inspected good, then out to packing
       } else {
-        const start = prodStages.indexOf(dept);                        // aim / printing / pi
-        scans = (start < 0 ? [] : prodStages.slice(start)).map(s => ({ dept:s, type:'out' }));
+        // aim / printing / pi — v50X: the stuck dept clears PER BOX (label-qty flows via the v47G
+        // resolver, qty NULL on the row); only the unscanned residual keeps a blob. Downstream stages
+        // stay blob-only at moved = max(delta, setQty) so the telescoping qty still reaches FG and no
+        // phantom box ever appears at a stage the boxes did not individually scan through.
+        const start = prodStages.indexOf(dept);
+        mm = _v50xMoveMath(d, stuck.map(b => b.qty));
+        boxOuts = stuck.map(b => ({ dept, labelId: b.labelId, qty: null, operator: `recon:${who}` }));
+        if (mm.residual > 0) scans.push({ dept, type:'out', qty: mm.residual });
+        if (start >= 0) prodStages.slice(start + 1).forEach(s => scans.push({ dept:s, type:'out', qty: mm.moved }));
       }
     }
 
-    const auditDetails = JSON.stringify({ batchNumber, dept, disposition, delta:d, wasteType: waste?waste.type:null, scans, isPrinted:printed, month:month||null, reason:reason||'', ts });
+    const auditDetails = JSON.stringify({ batchNumber, dept, disposition, delta:d, wasteType: waste?waste.type:null, scans, isPrinted:printed, month:month||null, reason:reason||'', ts,
+      clearedBoxes: boxOuts.length, setQty: mm ? mm.setQty : (boxOuts.length ? Math.round(stuck.reduce((a,b)=>a+b.qty,0)*100)/100 : 0), residual: mm ? mm.residual : 0, moved: mm ? mm.moved : null });
 
     if (pgPool) {
       const client = await pgPool.connect();
@@ -20354,7 +20446,14 @@ app.post('/api/tracking/reconcile-wip-dept', async (req, res) => {
         for (const s of scans) {
           await client.query(
             `INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,qty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8) ON CONFLICT(id) DO NOTHING`,
-            [genId(), 'recon-'+genId(), batchNumber, s.dept, s.type, ts, `recon:${who}`, d]
+            [genId(), 'recon-'+genId(), batchNumber, s.dept, s.type, ts, `recon:${who}`, s.qty]
+          );
+        }
+        // v50X: per-box outs against the REAL stuck labels — these are what clear the wipBoxes set.
+        for (const b of boxOuts) {
+          await client.query(
+            `INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,qty) VALUES ($1,$2,$3,$4,'out',$5,$6,$7) ON CONFLICT(id) DO NOTHING`,
+            [genId(), b.labelId, batchNumber, b.dept, ts, b.operator, b.qty]
           );
         }
         if (waste) {
@@ -20372,13 +20471,15 @@ app.post('/api/tracking/reconcile-wip-dept', async (req, res) => {
       const insW = db.prepare(`INSERT OR IGNORE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by) VALUES (?,?,?,?,?,?,?)`);
       const insA = db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','WIP_RECONCILE_DEPT',?)`);
       const tx = db.transaction(() => {
-        for (const s of scans) insS.run(genId(), 'recon-'+genId(), batchNumber, s.dept, s.type, ts, `recon:${who}`, d);
+        for (const s of scans) insS.run(genId(), 'recon-'+genId(), batchNumber, s.dept, s.type, ts, `recon:${who}`, s.qty);
+        // v50X: per-box outs against the REAL stuck labels — these are what clear the wipBoxes set.
+        for (const b of boxOuts) insS.run(genId(), b.labelId, batchNumber, b.dept, 'out', ts, b.operator, b.qty);
         if (waste) insW.run(genId(), batchNumber, waste.dept, waste.type, d, ts, `recon:${who}`);
         insA.run(who, auditDetails);
       });
       tx();
     }
-    res.json({ ok:true, ts, dept, disposition, delta:d, scansWritten:scans.length, wroteWasteoff:!!waste });
+    res.json({ ok:true, ts, dept, disposition, delta:d, scansWritten:scans.length, clearedBoxes:boxOuts.length, wroteWasteoff:!!waste });
   } catch(err) {
     console.error('[reconcile-wip-dept]', err.message);
     res.status(500).json({ ok:false, error: err.message });
@@ -20395,12 +20496,15 @@ app.post('/api/tracking/reconcile-wip-clear', async (req, res) => {
     const who = reconciledBy || 'admin';
     let scansDeleted = 0, wasteDeleted = 0;
     if (pgPool) {
-      const r1 = await pgPool.query(`DELETE FROM tracking_scans WHERE batch_number=$1 AND label_id LIKE 'recon-%'`, [batchNumber]);
+      // v50X: also remove the per-box recon outs (real label ids, operator 'recon:%' / 'recon-scrap:%')
+      // so undo restores the raw scan-derived box sets exactly. Real floor scans are never touched —
+      // only these operator patterns are ever written by the reconcile tools.
+      const r1 = await pgPool.query(`DELETE FROM tracking_scans WHERE batch_number=$1 AND (label_id LIKE 'recon-%' OR operator LIKE 'recon:%' OR operator LIKE 'recon-scrap:%')`, [batchNumber]);
       const r2 = await pgPool.query(`DELETE FROM tracking_wastage WHERE batch_number=$1 AND "by" LIKE 'recon:%'`, [batchNumber]);
       scansDeleted = r1.rowCount || 0; wasteDeleted = r2.rowCount || 0;
       await pgPool.query(`INSERT INTO audit_log (username,role,app,action,details) VALUES ($1,'admin','tracking','WIP_RECONCILE_CLEAR',$2)`, [who, JSON.stringify({ batchNumber, scansDeleted, wasteDeleted })]);
     } else {
-      const r1 = db.prepare(`DELETE FROM tracking_scans WHERE batch_number=? AND label_id LIKE 'recon-%'`).run(batchNumber);
+      const r1 = db.prepare(`DELETE FROM tracking_scans WHERE batch_number=? AND (label_id LIKE 'recon-%' OR operator LIKE 'recon:%' OR operator LIKE 'recon-scrap:%')`).run(batchNumber);
       const r2 = db.prepare(`DELETE FROM tracking_wastage WHERE batch_number=? AND by LIKE 'recon:%'`).run(batchNumber);
       scansDeleted = r1.changes || 0; wasteDeleted = r2.changes || 0;
       db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','WIP_RECONCILE_CLEAR',?)`).run(who, JSON.stringify({ batchNumber, scansDeleted, wasteDeleted }));
