@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50U</p>
+      <p>Planning Suite v3.0 · build v50W</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1255,6 +1255,10 @@ const SYNC = (() => {
             // local copy, the protection yields for planner-authority fields: fresh local edits keep a
             // fresh stamp and remain fully protected.
             const _srvNewer50m = parseInt(dbOrd._localEditedAt || 0) > parseInt(o._localEditedAt || 0);
+            // v50V: date-authority comparison — +1 local newer, -1 server newer, 0 tie/absent (fall through)
+            const _oDA50v = parseInt(o._v50vDateEditAt || 0), _dbDA50v = parseInt(dbOrd._v50vDateEditAt || 0);
+            const _dAuth50v = (o.manualStartDate || o.manualEndDate || dbOrd.manualStartDate || dbOrd.manualEndDate)
+              ? (_oDA50v > _dbDA50v ? 1 : _dbDA50v > _oDA50v ? -1 : 0) : 0;
             // v44ZZ: a planner gross-override (excess→DPR reconcile) is explicit intent and MUST survive
             // the 30s dedicated-table merge. grossQty/grossOverride were NOT in the protected list, so
             // every auto-sync reverted the override back to the auto-calc gross. Take the override from
@@ -1291,8 +1295,13 @@ const SYNC = (() => {
               // same flip v50H fixed for the batch number, still live for dates. Since the batch's
               // COHORT MONTH is derived from startDate, that also pinned ZA078 to July no matter how
               // often the date was corrected. Dates now follow the same rule as batchNumber/machineId.
-              startDate:       (!_srvNewer50m && (_protd || o.manualStartDate || o.manualEndDate)) ? o.startDate : dbOrd.startDate,
-              endDate:         (!_srvNewer50m && (_protd || o.manualStartDate || o.manualEndDate)) ? o.endDate   : dbOrd.endDate,
+              // v50V: on a planner-corrected order, the side holding the NEWER date-authority token
+              // owns the dates — a laundered general stamp can no longer flip them (ZA079, 6 Aug).
+              startDate:       (_dAuth50v === 1) ? o.startDate : (_dAuth50v === -1) ? dbOrd.startDate
+                               : ((!_srvNewer50m && (_protd || o.manualStartDate || o.manualEndDate)) ? o.startDate : dbOrd.startDate),
+              endDate:         (_dAuth50v === 1) ? o.endDate : (_dAuth50v === -1) ? dbOrd.endDate
+                               : ((!_srvNewer50m && (_protd || o.manualStartDate || o.manualEndDate)) ? o.endDate   : dbOrd.endDate),
+              _v50vDateEditAt: Math.max(parseInt(o._v50vDateEditAt||0), parseInt(dbOrd._v50vDateEditAt||0)) || undefined,
               manualStartDate: _srvNewer50m ? (dbOrd.manualStartDate !== undefined ? dbOrd.manualStartDate : o.manualStartDate) : (o.manualStartDate || dbOrd.manualStartDate),
               manualEndDate:   _srvNewer50m ? (dbOrd.manualEndDate   !== undefined ? dbOrd.manualEndDate   : o.manualEndDate)   : (o.manualEndDate   || dbOrd.manualEndDate),
               _localEditedAt:  _srvNewer50m ? dbOrd._localEditedAt : (o._localEditedAt || dbOrd._localEditedAt),   // v50M: carry the newer stamp so drift can't re-claim
@@ -1758,7 +1767,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50U' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50W' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5139,6 +5148,15 @@ function saveOrderModal(existingId, defaultMachine) {
     manualEndDate: manualEndDateVal
       ? (existingId ? ((manualEndDateVal !== _edBefore50l) ? true : !!(_existing && _existing.manualEndDate)) : true)
       : false,
+    // ═══ v50V DATE-AUTHORITY TOKEN (6 Aug — ZA079 flipped 35 min after a held amendment) ══════════
+    // The audit proved the mechanism: guards keep old VALUES but the incoming STAMP rides the
+    // {...ord} spread, and any inline edit (Actual Prod spinner etc.) freshly stamps a tab's whole
+    // local order — stale dates included. A fresh stamp on stale dates then beats every stamp-based
+    // guard. Dates therefore get their own token, minted ONLY here on a deliberate date change:
+    // no other write path can move dates on a planner-corrected order, however fresh its stamp.
+    _v50vDateEditAt: ((_sdNow50l && _sdNow50l !== _sdBefore50l) || (manualEndDateVal && manualEndDateVal !== _edBefore50l))
+      ? Date.now()
+      : ((_existing && _existing._v50vDateEditAt) || null),
     packing: document.getElementById('fo-packing')?.value,
     zone: document.getElementById('fo-zone')?.value,
     containerRef: document.getElementById('fo-containerref')?.value || '',
@@ -5462,7 +5480,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50U'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50W'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;

@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50U';
+const APP_BUILD = 'v50W';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -7839,6 +7839,68 @@ app.get('/api/invoice/allocations', async (req, res) => {
   }
 });
 
+// ═══ v50W (Ishan, 6 Aug — Report E Dispatch Detail tab) ═══════════════════════════════════════════
+// GET /api/invoice/batch-dispatch-detail — per (batch, invoice) dispatch attribution from Generated
+// Invoices, in one round-trip: (1) invoice_batch_alloc rows joined to their invoice for date/number
+// (the multi-batch attribution table); (2) single-batch invoices with no alloc rows, attributed
+// whole; (3) multi-batch invoices with no alloc rows — one row per named batch with qty NULL,
+// surfaced honestly as unattributed rather than guessed.
+app.get('/api/invoice/batch-dispatch-detail', async (req, res) => {
+  try {
+    const out = [];
+    if (pgPool) {
+      const leg1 = await pgPool.query(`
+        SELECT a.batch_number AS batch, i.invoice_date,
+               COALESCE(NULLIF(i.sap_invoice_no,''), NULLIF(a.sap_doc_num,''), i.sap_doc_num::text) AS invoice_no,
+               a.qty_lakhs
+        FROM invoice_batch_alloc a JOIN invoices_received i ON i.id = a.invoice_id
+        WHERE a.status = 'attributed' AND a.batch_number IS NOT NULL AND a.batch_number <> ''`);
+      leg1.rows.forEach(r => out.push(r));
+      const leg2 = await pgPool.query(`
+        SELECT i.batch_number AS batch, i.invoice_date,
+               COALESCE(NULLIF(i.sap_invoice_no,''), i.sap_doc_num::text) AS invoice_no,
+               i.total_qty_lakhs AS qty_lakhs
+        FROM invoices_received i
+        WHERE i.batch_number IS NOT NULL AND i.batch_number <> '' AND POSITION(',' IN i.batch_number) = 0
+          AND NOT EXISTS (SELECT 1 FROM invoice_batch_alloc a2 WHERE a2.invoice_id = i.id)`);
+      leg2.rows.forEach(r => out.push(r));
+      const leg3 = await pgPool.query(`
+        SELECT i.batch_number, i.invoice_date,
+               COALESCE(NULLIF(i.sap_invoice_no,''), i.sap_doc_num::text) AS invoice_no
+        FROM invoices_received i
+        WHERE i.batch_number LIKE '%,%'
+          AND NOT EXISTS (SELECT 1 FROM invoice_batch_alloc a2 WHERE a2.invoice_id = i.id)`);
+      leg3.rows.forEach(r => String(r.batch_number).split(',').map(s => s.trim()).filter(Boolean)
+        .forEach(bn => out.push({ batch: bn, invoice_date: r.invoice_date, invoice_no: r.invoice_no, qty_lakhs: null })));
+    } else {
+      db.prepare(`SELECT a.batch_number AS batch, i.invoice_date,
+                    COALESCE(NULLIF(i.sap_invoice_no,''), NULLIF(a.sap_doc_num,''), i.sap_doc_num) AS invoice_no,
+                    a.qty_lakhs
+                  FROM invoice_batch_alloc a JOIN invoices_received i ON i.id = a.invoice_id
+                  WHERE a.status='attributed' AND a.batch_number IS NOT NULL AND a.batch_number <> ''`)
+        .all().forEach(r => out.push(r));
+      db.prepare(`SELECT i.batch_number AS batch, i.invoice_date,
+                    COALESCE(NULLIF(i.sap_invoice_no,''), i.sap_doc_num) AS invoice_no,
+                    i.total_qty_lakhs AS qty_lakhs
+                  FROM invoices_received i
+                  WHERE i.batch_number IS NOT NULL AND i.batch_number <> '' AND INSTR(i.batch_number, ',') = 0
+                    AND NOT EXISTS (SELECT 1 FROM invoice_batch_alloc a2 WHERE a2.invoice_id = i.id)`)
+        .all().forEach(r => out.push(r));
+      db.prepare(`SELECT i.batch_number, i.invoice_date,
+                    COALESCE(NULLIF(i.sap_invoice_no,''), i.sap_doc_num) AS invoice_no
+                  FROM invoices_received i
+                  WHERE INSTR(i.batch_number, ',') > 0
+                    AND NOT EXISTS (SELECT 1 FROM invoice_batch_alloc a2 WHERE a2.invoice_id = i.id)`)
+        .all().forEach(r => String(r.batch_number).split(',').map(s => s.trim()).filter(Boolean)
+          .forEach(bn => out.push({ batch: bn, invoice_date: r.invoice_date, invoice_no: r.invoice_no, qty_lakhs: null })));
+    }
+    out.sort((a, b) => String(a.batch).localeCompare(String(b.batch)) || String(a.invoice_date || '').localeCompare(String(b.invoice_date || '')));
+    res.json({ ok: true, count: out.length, rows: out });
+  } catch (err) {
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
 // GET /api/admin/invoice-attribution-preview?limit=&batch=
 // DRY-RUN ONLY — never writes. Returns per-batch BEFORE (today's reconstruction) vs
 // AFTER (per-line attribution) plus every line the engine refused to guess at.
@@ -8580,6 +8642,17 @@ app.post('/api/orders/upsert', async (req, res) => {
         else                 finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
       }
       const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming client older than DB by >5s
+      // ═══ v50V DATE AUTHORITY + STAMP INTEGRITY (6 Aug — ZA079 flipped via laundered stamps) ══════
+      // (a) On a planner-corrected order (manual flags), dates move ONLY when the incoming order
+      //     carries a NEWER _v50vDateEditAt token — minted solely by a deliberate modal date edit.
+      //     An inline quick-edit stamps the whole order fresh but mints no token, so its stale
+      //     ridden dates can no longer overwrite a correction, however fresh its general stamp.
+      // (b) When this write is stale, the row KEEPS ITS OWN stored _localEditedAt — a stale push
+      //     can no longer launder a fresh stamp onto old values, which was defeating every guard.
+      const _rowDA50v = parseInt(exData._v50vDateEditAt || 0);
+      const _ordDA50v = parseInt(ord._v50vDateEditAt || 0);
+      const _dateFlagged50v = !!(exData.manualStartDate || exData.manualEndDate || ord.manualStartDate || ord.manualEndDate);
+      const _dateAuth50v = _ordDA50v > _rowDA50v;   // incoming deliberate date edit is newer
       mergedOrd = {
         ...ord,
         // v47 Point 1 (confirmed by Ishan): planner-owned fields were written UNGUARDED here, so a stale
@@ -8631,8 +8704,14 @@ app.post('/api/orders/upsert', async (req, res) => {
         // from startDate, which is how ZA078/ZA079 kept snapping back to July. The dead freeze pair
         // is removed; this single surviving pair now follows the same _localEditedAt staleness rule
         // as colour/customer: a FRESH stamped edit lands, a stale push keeps the stored dates.
-        startDate: _staleWrite ? (exData.startDate || ord.startDate || null) : (ord.startDate || exData.startDate || null),
-        endDate:   _staleWrite ? (exData.endDate   || ord.endDate   || null) : (ord.endDate   || exData.endDate   || null),
+        startDate: _dateFlagged50v
+          ? (_dateAuth50v ? (ord.startDate || exData.startDate || null) : (exData.startDate || ord.startDate || null))
+          : (_staleWrite ? (exData.startDate || ord.startDate || null) : (ord.startDate || exData.startDate || null)),
+        endDate:   _dateFlagged50v
+          ? (_dateAuth50v ? (ord.endDate   || exData.endDate   || null) : (exData.endDate   || ord.endDate   || null))
+          : (_staleWrite ? (exData.endDate   || ord.endDate   || null) : (ord.endDate   || exData.endDate   || null)),
+        _v50vDateEditAt: Math.max(_ordDA50v, _rowDA50v) || null,
+        _localEditedAt: _staleWrite ? (exData._localEditedAt || ord._localEditedAt) : ord._localEditedAt,   // v50V (b): no stamp laundering
       };
     }
     if (preserved) {
@@ -9219,6 +9298,11 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           else                 finalActualProd = Math.max(ord.actualProd || 0, exData.actualProd || 0);
         }
         const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming client older than DB by >5s
+        // v50V: date authority + stamp integrity — see the single-upsert note (ZA079, 6 Aug).
+        const _rowDA50v = parseInt(exData._v50vDateEditAt || 0);
+        const _ordDA50v = parseInt(ord._v50vDateEditAt || 0);
+        const _dateFlagged50v = !!(exData.manualStartDate || exData.manualEndDate || ord.manualStartDate || ord.manualEndDate);
+        const _dateAuth50v = _ordDA50v > _rowDA50v;
         mergedOrd = {
           ...ord,
           // v47 Point 1: same stale-tab guard as the single upsert — the bulk sync pushes ALL of a tab's
@@ -9255,8 +9339,14 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
           // unconditional client-wins pair, so a stale tab's bulk sync overwrote corrected dates in
           // production_orders (THE date-revert vector for ZA078/ZA079). Dead pair removed; the single
           // surviving pair is now stamp-aware — see the single-upsert note.
-          startDate: _staleWrite ? (exData.startDate || ord.startDate || null) : (ord.startDate || exData.startDate || null),
-          endDate:   _staleWrite ? (exData.endDate   || ord.endDate   || null) : (ord.endDate   || exData.endDate   || null),
+          startDate: _dateFlagged50v
+            ? (_dateAuth50v ? (ord.startDate || exData.startDate || null) : (exData.startDate || ord.startDate || null))
+            : (_staleWrite ? (exData.startDate || ord.startDate || null) : (ord.startDate || exData.startDate || null)),
+          endDate:   _dateFlagged50v
+            ? (_dateAuth50v ? (ord.endDate   || exData.endDate   || null) : (exData.endDate   || ord.endDate   || null))
+            : (_staleWrite ? (exData.endDate   || ord.endDate   || null) : (ord.endDate   || exData.endDate   || null)),
+          _v50vDateEditAt: Math.max(_ordDA50v, _rowDA50v) || null,
+          _localEditedAt: _staleWrite ? (exData._localEditedAt || ord._localEditedAt) : ord._localEditedAt,   // v50V: no stamp laundering
         };
       }
       mergedOrd = _v49f_rcLock(mergedOrd, exData);   // v49F: re-customer is authoritative
@@ -9890,6 +9980,18 @@ app.post('/api/planning/state', async (req, res) => {
             try {
               const ct = parseInt((cliOrig || mergedCli)._localEditedAt || 0);
               const st = parseInt(srvOrd._localEditedAt || 0);
+              // v50V: on a planner-corrected order, the DATE PAIR follows the date-authority token
+              // regardless of the general stamps — a quick-edit's fresh stamp can no longer carry
+              // stale ridden dates through this merge (the exact ZA079 flip of 6 Aug).
+              const _cliDA = parseInt((cliOrig || mergedCli)._v50vDateEditAt || 0);
+              const _srvDA = parseInt(srvOrd._v50vDateEditAt || 0);
+              const _flagged = !!(srvOrd.manualStartDate || srvOrd.manualEndDate || mergedCli.manualStartDate || mergedCli.manualEndDate);
+              if (_flagged && _srvDA > _cliDA) {
+                mergedCli = { ...mergedCli, startDate: srvOrd.startDate, endDate: srvOrd.endDate,
+                  manualStartDate: srvOrd.manualStartDate, manualEndDate: srvOrd.manualEndDate,
+                  _v50vDateEditAt: srvOrd._v50vDateEditAt };
+                console.log(`[v50V] date authority held: ${mergedCli.batchNumber || mergedCli.id} — claim's dates replaced by server's (srvDA=${_srvDA} > cliDA=${_cliDA})`);
+              }
               if (!(st > ct)) return mergedCli;   // client copy as fresh or fresher — take it as-is
               const out2 = { ...mergedCli };
               let kept = 0;
@@ -10128,7 +10230,10 @@ app.post('/api/planning/state', async (req, res) => {
               } else {
                 finalStatus = ord.status || ex.status || 'pending';
               }
-              const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000); // v47 Point 1: incoming blob older than DB by >5s
+              const _staleWrite = (dbUpdated > (clientEdit || 0) + 5000);
+              // v50V: date authority — see the single-upsert note (ZA079, 6 Aug).
+              const _dateFlagged50vB = !!(ex.manualStartDate || ex.manualEndDate || ord.manualStartDate || ord.manualEndDate);
+              const _dateAuth50vB = parseInt(ord._v50vDateEditAt||0) > parseInt(ex._v50vDateEditAt||0); // v47 Point 1: incoming blob older than DB by >5s
               mergedOrd = {
                 ...ord,
                 // v47 Point 1: THE primary revert vector — a stale tab's ~30s full-blob auto-save reaches
@@ -10169,8 +10274,14 @@ app.post('/api/planning/state', async (req, res) => {
                 // re-imposing the old dates seconds after the upsert landed the correction (why fixes
                 // "stuck" sometimes and reverted other times). Now stamp-aware like every other field:
                 // a fresh stamped blob order carries its dates through; a stale blob keeps the DB's.
-                startDate: _staleWrite ? (ex.startDate || ord.startDate || null) : (ord.startDate || ex.startDate || null),
-                endDate:   _staleWrite ? (ex.endDate   || ord.endDate   || null) : (ord.endDate   || ex.endDate   || null),
+                startDate: _dateFlagged50vB
+                  ? (_dateAuth50vB ? (ord.startDate || ex.startDate || null) : (ex.startDate || ord.startDate || null))
+                  : (_staleWrite ? (ex.startDate || ord.startDate || null) : (ord.startDate || ex.startDate || null)),
+                endDate:   _dateFlagged50vB
+                  ? (_dateAuth50vB ? (ord.endDate   || ex.endDate   || null) : (ex.endDate   || ord.endDate   || null))
+                  : (_staleWrite ? (ex.endDate   || ord.endDate   || null) : (ord.endDate   || ex.endDate   || null)),
+                _v50vDateEditAt: Math.max(parseInt(ord._v50vDateEditAt||0), parseInt(ex._v50vDateEditAt||0)) || null,
+                _localEditedAt: _staleWrite ? (ex._localEditedAt || ord._localEditedAt) : ord._localEditedAt,   // v50V: no stamp laundering
               };
               _v50tAudit('bg-merge (POST /api/planning/state)', ex, mergedOrd, `staleWrite=${_staleWrite}`);   // v50T
             }
