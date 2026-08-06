@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50X</p>
+      <p>Planning Suite v3.0 · build v50Y</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1767,7 +1767,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50X' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50Y' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5480,7 +5480,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50X'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50Y'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -7093,12 +7093,32 @@ async function _v39_submitInvoiceRequest() {
       remarks,
       createdBy: currentUser?.username || currentUser?.role || 'unknown',
     };
-    const r = await fetch(baseUrl + '/api/invoice/request', {
+    let r = await fetch(baseUrl + '/api/invoice/request', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
     });
-    const j = await r.json();
+    let j = await r.json();
+    // v50Y (confirmed by Ishan — confirm option): an identical ask is already in flight. Show the DM
+    // exactly what is pending and resubmit only on a conscious confirm — this is what stops the
+    // 6-Aug double-submissions (26ZE120 ×2, 26ZG162 ×2) while still allowing a genuinely repeated lot.
+    if (!j.ok && j.error === 'duplicate_request_pending') {
+      const goAhead = confirm(`⚠️ ${j.message}\n\nRaise this request ANYWAY as a second, separate ask?\n\n(If this is the same physical lot, press Cancel and use the existing request — SAP just needs to invoice it.)`);
+      if (goAhead) {
+        r = await fetch(baseUrl + '/api/invoice/request', {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json' },
+          body: JSON.stringify({ ...body, confirmDuplicate: true }),
+        });
+        j = await r.json();
+      } else {
+        closeModal();
+        toast('Request not raised — an identical ask is already pending.', '#f59e0b', 4000);
+        await _v39_loadInvoiceState();
+        render();
+        return;
+      }
+    }
     closeModal();
     if (j.ok) {
       // v41r: distinct toast for pre-link vs newly-logged
@@ -7386,7 +7406,11 @@ async function _v39_submitTruckInvoices() {
         }),
       });
       const j = await r.json();
-      results.push({ batch: p.batchNumber, ok: j.ok, error: j.error, docNum: j.sap_response?.docNum });
+      // v50Y: in the bulk truck loop a duplicate is skipped (no per-batch confirm mid-loop) and
+      // reported distinctly so the DM sees which batches already had an identical ask in flight.
+      results.push({ batch: p.batchNumber, ok: j.ok,
+        error: (j.error === 'duplicate_request_pending') ? 'skipped — identical request already pending' : j.error,
+        docNum: j.sap_response?.docNum });
     } catch (e) {
       results.push({ batch: p.batchNumber, ok: false, error: e.message });
     }

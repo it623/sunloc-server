@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50X';
+const APP_BUILD = 'v50Y';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -4951,7 +4951,7 @@ async function _doRefreshSapInvoices() {
   try {
     if (pgPool) {
       const unmatched = await pgPool.query(
-        `SELECT iv.id, iv.sap_doc_entry, iv.sap_invoice_no, iv.total_boxes, iv.total_qty_lakhs, iv.payload_json
+        `SELECT iv.id, iv.sap_doc_entry, iv.sap_invoice_no, iv.total_boxes, iv.total_qty_lakhs, iv.payload_json, iv.batch_number
          FROM invoices_received iv
          WHERE iv.invoice_request_id IS NULL AND iv.source = 'direct_sap'`
       );
@@ -4986,7 +4986,18 @@ async function _doRefreshSapInvoices() {
               `SELECT id, batch_number, boxes, qty_lakhs, pc_code FROM invoice_requests WHERE (sap_doc_entry=$1 OR so_doc_num=$2) AND status='pending_reconciliation' ORDER BY created_at ASC`,
               [soDocEntry, String(soNum)]
             );
+            // v50Y (confirmed by Ishan — the 26T090 mis-credit): PARITY GATES for the retry pass.
+            // This pass carried only the v48J PC gate, and the bulk pull is LEAN (no DocumentLines),
+            // so the PC set was empty and the gate disarmed — every pending request sharing the SO
+            // was reconciled in one sweep, no batch-token check, no quantity band, no cap. Now it
+            // enforces the same three gates as the main SO pass (v47R batch tokens, v47L/v48P qty
+            // band — per matching line when the payload has lines, invoice total when lean) and
+            // reconciles AT MOST ONE request per invoice; everything else stays visibly pending.
+            const _retryLines50y = ((payload && payload.DocumentLines) || []);
+            const _invBatchTokens50y = String(iv.batch_number || '').split(/[\s,]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
+            let _retryPaired50y = 0;
             for (const pr of req.rows) {
+              if (_retryPaired50y >= 1) break;   // v50Y: one request per invoice, like the main pass
               // v48J: PC-gate — skip a request whose PC isn't on any invoice line (a different product that
               // merely shares the Sales Order). Falls through when the invoice has no line item codes.
               const _prPc48j = String(pr.pc_code || '').trim();
@@ -4994,6 +5005,32 @@ async function _doRefreshSapInvoices() {
                 console.log(`[v48J retry PC-gate] SO ${soDocEntry}: request ${pr.id} (PC ${_prPc48j}) left PENDING — invoice lines [${Array.from(_retryLinePcs48j).join(',')}] differ`);
                 continue;
               }
+              // v50Y batch-token gate (v47R parity): a non-blank invoice batch list that omits this
+              // request's batch means this cannot be its invoice.
+              const _prBatchUp50y = String(pr.batch_number || '').trim().toUpperCase();
+              if (_invBatchTokens50y.length && _prBatchUp50y && !_invBatchTokens50y.includes(_prBatchUp50y)) {
+                console.log(`[v50Y retry batch-gate] SO ${soDocEntry}: request ${pr.id} (batch ${_prBatchUp50y}) left PENDING — invoice ${iv.sap_invoice_no} batch list omits it`);
+                continue;
+              }
+              // v50Y qty band (v47L/v48P parity): the request's quantity must be what this invoice —
+              // or, when line detail exists, the PC-matching line — actually covers.
+              const _prQty50y = parseFloat(pr.qty_lakhs) || 0;
+              let _cover50y = parseFloat(iv.total_qty_lakhs) || 0;
+              if (_retryLines50y.length) {
+                const _pcNorm50y = s => String(s == null ? '' : s).trim().replace(/^0+(?=\d)/, '');
+                const _ln = _prPc48j
+                  ? _retryLines50y.find(l => _pcNorm50y(l.ItemCode) === _pcNorm50y(_prPc48j))
+                  : (_retryLines50y.length === 1 ? _retryLines50y[0] : null);
+                if (_ln) {
+                  const _lq = (parseFloat(_ln.Quantity) || 0) * _sapUomScale(_ln);
+                  if (_lq > 0) _cover50y = _lq;
+                }
+              }
+              if (!(_cover50y > 0 && _prQty50y >= _cover50y * _RECON_UNDER && _prQty50y <= _cover50y * _RECON_OVER)) {
+                console.log(`[v50Y retry qty-gate] SO ${soDocEntry}: request ${pr.id} (${_prQty50y}L) left PENDING — invoice ${iv.sap_invoice_no} covers ${_cover50y}L (outside recon band)`);
+                continue;
+              }
+              _retryPaired50y++;
               const recId = `inv_${iv.sap_doc_entry}`;
               const boxes = (pr.boxes && parseInt(pr.boxes) > 0) ? parseInt(pr.boxes) : (iv.total_boxes || 0);
               const qty   = (pr.qty_lakhs && parseFloat(pr.qty_lakhs) > 0) ? parseFloat(pr.qty_lakhs) : (iv.total_qty_lakhs || 0);
@@ -5023,9 +5060,15 @@ async function _doRefreshSapInvoices() {
   // is enriched at most once; the backlog drains over a few cycles then steady-state is ~0.
   try {
     if (pgPool) {
+      // v50Y (confirmed by Ishan — option A): 0-box direct-SAP invoices. The lean pull carries no
+      // box count, this pass filled qty but never boxes, and the regularise path then wrote 0-box
+      // dispatch records the truck plan can never net. Rows with qty but no boxes now (re-)enter the
+      // enrichment queue so total_boxes is derived from per-line qty × size (lakhToBox) — existing
+      // stuck invoices self-heal over the bounded cycles.
       const need = await pgPool.query(
         `SELECT id, sap_doc_entry FROM invoices_received
          WHERE (pc_code IS NULL OR pc_code='')
+            OR (COALESCE(total_boxes,0)=0 AND COALESCE(total_qty_lakhs,0)>0)
          ORDER BY fetched_at DESC NULLS LAST LIMIT 40`
       );
       for (const row of need.rows) {
@@ -5047,14 +5090,32 @@ async function _doRefreshSapInvoices() {
             if (!pc) pc = itemCode;
           }
           const qtyL = lines.reduce((s, l) => s + (parseFloat(l.Quantity) || 0), 0);
+          // v50Y: derive boxes per line — line qty at the line's own size (ItemCode → pc master),
+          // falling back to the header size resolved above. Zero stays zero only when nothing resolves.
+          let boxesL = 0;
+          try {
+            for (const l of lines) {
+              const _lq = parseFloat(l.Quantity) || 0;
+              if (_lq <= 0) continue;
+              let _lsz = '';
+              const _lic = String(l.ItemCode || '').trim();
+              if (_lic) {
+                const _pr = (await pgPool.query(`SELECT size FROM pc_codes WHERE code=$1 LIMIT 1`, [_lic])).rows[0];
+                if (_pr && _pr.size) _lsz = _pr.size;
+                if (!_lsz) { const _pm = _pcMasterLookup(_lic); if (_pm && _pm.size) _lsz = _pm.size; }
+              }
+              boxesL += _v44zj_lakhToBox(_lq, _lsz || sz || null);
+            }
+          } catch (e) { boxesL = 0; }
           await pgPool.query(
             `UPDATE invoices_received SET
                pc_code=COALESCE(NULLIF($1,''), pc_code),
                size=COALESCE(NULLIF($2,''), size),
                colour=COALESCE(NULLIF($3,''), colour),
-               total_qty_lakhs=CASE WHEN $4::numeric>0 THEN $4 ELSE total_qty_lakhs END
-             WHERE id=$5`,
-            [pc, sz, col, qtyL, row.id]
+               total_qty_lakhs=CASE WHEN $4::numeric>0 THEN $4 ELSE total_qty_lakhs END,
+               total_boxes=CASE WHEN COALESCE(total_boxes,0)=0 AND $5::integer>0 THEN $5 ELSE total_boxes END
+             WHERE id=$6`,
+            [pc, sz, col, qtyL, boxesL, row.id]
           );
           console.log(`[SAP] v44P enriched line-detail for inv DocEntry=${row.sap_doc_entry} (pc=${pc||'?'})`);
         } catch (e) { /* per-row: skip and continue */ }
@@ -5528,6 +5589,36 @@ app.post('/api/invoice/request', async (req, res) => {
     // SAP DocEntry is mandatory (per v39 spec — no SAP ref = can't invoice)
     if (!body.sapDocEntry) {
       return res.status(400).json({ ok: false, error: 'sapDocEntry required — cannot trigger SAP invoice without source SO reference' });
+    }
+    // v50Y (confirmed by Ishan — confirm option): DUPLICATE-REQUEST GUARD. The 6-Aug morning showed
+    // DM double-submissions (26ZE120 twice in the same second, 26ZG162 twice) and a wrong-SO retry
+    // on 26T090 — each duplicate is a second in-flight ask the poller can mis-reconcile. A new
+    // request for the SAME batch with the SAME quantity (±0.005L) while one is already in flight is
+    // refused with 409 duplicate_request_pending; the client shows the existing ask and the DM can
+    // consciously resubmit with confirmDuplicate:true (a genuinely repeated equal-qty lot exists).
+    if (!body.confirmDuplicate) {
+      try {
+        const _dq = parseFloat(body.qtyLakhs) || 0;
+        let _dup;
+        if (pgPool) {
+          _dup = (await pgPool.query(
+            `SELECT id, qty_lakhs, boxes, so_doc_num, created_at FROM invoice_requests
+              WHERE batch_number=$1 AND status IN ('pending','sent_to_sap','pending_reconciliation')
+                AND ABS(COALESCE(qty_lakhs,0) - $2::numeric) < 0.005
+              ORDER BY created_at DESC LIMIT 1`, [body.batchNumber, _dq])).rows[0];
+        } else {
+          _dup = db.prepare(
+            `SELECT id, qty_lakhs, boxes, so_doc_num, created_at FROM invoice_requests
+              WHERE batch_number=? AND status IN ('pending','sent_to_sap','pending_reconciliation')
+                AND ABS(COALESCE(qty_lakhs,0) - ?) < 0.005
+              ORDER BY created_at DESC LIMIT 1`).get(body.batchNumber, _dq);
+        }
+        if (_dup) {
+          return res.status(409).json({ ok: false, error: 'duplicate_request_pending',
+            message: `An identical invoice request for ${body.batchNumber} (${parseFloat(_dup.qty_lakhs).toFixed(2)}L / ${_dup.boxes || 0} boxes, SO ${_dup.so_doc_num || '—'}) is already in flight since ${_dup.created_at}.`,
+            existing: { id: _dup.id, qtyLakhs: parseFloat(_dup.qty_lakhs) || 0, boxes: _dup.boxes || 0, soDocNum: _dup.so_doc_num || null, createdAt: _dup.created_at } });
+        }
+      } catch (e) { console.warn('[v50Y dup-guard]', e.message); }
     }
     // v41 P19.3: Invoice flow rework — NO SAP push.
     // Sunloc no longer creates Deliveries in SAP. Instead, this endpoint:
@@ -6824,6 +6915,25 @@ function _v46k_applyGrossApportionment(map, families) {
 // the truck binner / lot-status consumer net correctly. Used by both the HTTP handler and the
 // historical auto-pair reconcile.
 async function _applyRegularisation(inv, clean, who, ts, rsn) {
+  // v50Y (confirmed by Ishan — option A): boxes fallback at the single choke point every caller
+  // (regularise UI, allocation apply, auto-pair) passes through. A clean entry with qty but no
+  // boxes gets boxes derived via lakhToBox at the batch's size (print_orders → tracking_labels),
+  // so a 0-box dispatch record — which the truck plan can never net — is never written again.
+  for (const c of (clean || [])) {
+    if ((parseInt(c.boxes, 10) || 0) > 0 || !((parseFloat(c.qty) || 0) > 0)) continue;
+    let _sz = null;
+    try {
+      let r;
+      if (pgPool) r = (await pgPool.query(`SELECT size FROM print_orders WHERE batch_number=$1 LIMIT 1`, [c.batch])).rows[0];
+      else        r = db.prepare(`SELECT size FROM print_orders WHERE batch_number=? LIMIT 1`).get(c.batch);
+      if (!r || !r.size) {
+        if (pgPool) r = (await pgPool.query(`SELECT size FROM tracking_labels WHERE batch_number=$1 AND size IS NOT NULL AND size <> '' LIMIT 1`, [c.batch])).rows[0];
+        else        r = db.prepare(`SELECT size FROM tracking_labels WHERE batch_number=? AND size IS NOT NULL AND size <> '' LIMIT 1`).get(c.batch);
+      }
+      _sz = r ? r.size : null;
+    } catch (e) { _sz = null; }
+    c.boxes = _v44zj_lakhToBox(parseFloat(c.qty) || 0, _sz);
+  }
   const invId = inv.id;
   const joinedBatches = clean.map(c => c.batch).join(', ');
   const likePat = 'Regularised[inv:' + invId + ']%';
