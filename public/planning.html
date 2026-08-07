@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v50Y</p>
+      <p>Planning Suite v3.0 · build v51</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1767,7 +1767,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v50Y' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5480,7 +5480,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v50Y'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -5667,6 +5667,24 @@ async function flushPendingOrders(){
 }
 
 async function upsertOrderToDB(ord) {
+  // v51 (confirmed by Ishan — 26G024): colour gap-fill. Orders created from older indent imports
+  // (or before the PC master carried the code) sit with a blank colour even though the PC master
+  // knows it — the modal even displays "21355 — BLUE/BLUE" in the PC dropdown while COLOUR stays
+  // empty. Any save now fills a blank colour from the PC master, so the field self-heals on the
+  // next edit. (The disappearing manual entries were the /api/orders/upsert 500s — fixed server-side
+  // in v51 — this closes the remaining blank-colour gap.)
+  try {
+    if (ord && !String(ord.colour || '').trim() && ord.pcCode && state.pcCodes) {
+      const _pc51 = String(ord.pcCode).trim();
+      outer51:
+      for (const sz of Object.keys(state.pcCodes)) {
+        for (const p of (state.pcCodes[sz] || [])) {
+          if (String(p.c) === _pc51 && p.n) { ord.colour = p.n; break outer51; }
+        }
+      }
+    }
+  } catch (e) {}
+
   if (!ord || !ord.id) return;
   // queue the LATEST version FIRST (latest-wins) so a failed save is never lost
   const _token = Date.now() + ':' + Math.random().toString(36).slice(2,8);

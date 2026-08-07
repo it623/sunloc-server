@@ -620,7 +620,9 @@ async function check_temp_batch_overdue(ctx) {
   const findings = [];
   let tempRows = [];
   try {
-    tempRows = await _query(ctx, `SELECT id, machine_id, date FROM temp_batches WHERE reconciled = 0 OR reconciled IS NULL`);
+    // v51: the table has no `reconciled` column (it has reconciled_at/reconciled_by/status) — this
+    // check has thrown hourly into the pg log since it shipped. Unreconciled = no reconciled_at yet.
+    tempRows = await _query(ctx, `SELECT id, machine_id, date FROM temp_batches WHERE reconciled_at IS NULL AND status <> 'reconciled'`);
   } catch (e) { /* tolerate older deployments without the column */ }
   const today = new Date();
   for (const t of tempRows) {
@@ -674,9 +676,9 @@ async function check_invoice_no_dispatch(ctx) {
   let rows = [];
   try {
     rows = await _query(ctx, `
-      SELECT i.id, i.doc_num, i.customer, i.batch_number, i.received_at, i.status
+      SELECT i.id, i.sap_doc_num AS doc_num, i.batch_number, i.fetched_at AS received_at, i.dispatch_status AS status
       FROM invoices_received i
-      WHERE i.status NOT IN ('dispatched','cancelled') AND i.received_at < ?
+      WHERE COALESCE(i.dispatch_status,'pending') NOT IN ('dispatched','cancelled') AND i.fetched_at < ?
     `, [new Date(Date.now() - 48 * 3600000).toISOString()]);
   } catch (e) { /* invoices_received absent on older deployments */ }
   for (const inv of rows) {

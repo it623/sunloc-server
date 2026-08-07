@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v50Y';
+const APP_BUILD = 'v51';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -1729,6 +1729,25 @@ function _v49gIsReopenedOpen(ord) {
   if (ord.batchNumber && _v49gReopenedOpenSet.has('batch:' + String(ord.batchNumber).trim().toLowerCase())) return true;
   return false;
 }
+// v51: attempt to (re)create the unique indexes ON CONFLICT depends on. CREATE TABLE IF NOT
+// EXISTS never retrofits a PRIMARY KEY onto a pre-existing table, and the 6-Aug evidence (every
+// orders upsert 500ing; dispatch_plans at 3153 rows for ~890 live plans — duplicate ids
+// accumulating) points exactly there. Guarded: failure (e.g. duplicates still present) only warns,
+// and the v51 fallback writer keeps saves working meanwhile. IT runs the one-time dedupe SQL from
+// the build letter, after which these take and the native ON CONFLICT path resumes.
+async function _v51EnsureUpsertIndexes() {
+  if (!pgPool) return;
+  for (const [tbl, ix] of [['production_orders','ux_production_orders_id'], ['dispatch_plans','ux_dispatch_plans_id']]) {
+    try {
+      await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS ${ix} ON ${tbl}(id)`);
+      console.log(`[v51] unique index ensured: ${ix}`);
+    } catch (e) {
+      console.warn(`[v51] could not ensure ${ix} on ${tbl}: ${e.message} — run the dedupe SQL from the v51 letter`);
+    }
+  }
+}
+setTimeout(() => { _v51EnsureUpsertIndexes().catch(()=>{}); }, 5000);
+
 async function _v49gWarmDprClosed() {
   const set = new Set();
   const atMap = new Map();   // v49ZJ: key → closed_at, for the 48h post-close label window anchor
@@ -3818,7 +3837,11 @@ async function _doRefreshSapIndents() {
   const indents = r.indents || [];
   let upserted = 0;
   for (const ind of indents) {
-    const totalQty = (ind.DocumentLines || []).reduce((sum, l) => sum + (parseFloat(l.Quantity) || 0), 0);
+    // v51 (confirmed by Ishan — export invoices x100): the indent total seeds
+    // sales_order_consumption.original_qty_lakhs, which the 115% over-dispatch gate compares
+    // against Lakh-denominated requests. Raw thousand-UoM export lines made that gate ~100x too
+    // permissive; the single UoM authority now applies here too.
+    const totalQty = (ind.DocumentLines || []).reduce((sum, l) => sum + ((parseFloat(l.Quantity) || 0) * _sapUomScale(l)), 0);
     const totalLines = (ind.DocumentLines || []).length;
     const payload = JSON.stringify(ind);
     try {
@@ -4944,6 +4967,11 @@ async function _doRefreshSapInvoices() {
     }
   } catch {}
 
+  // v51: batch-exact pass first — a single-token batch column with an in-band pending request is
+  // the strongest signal an invoice carries; when it fires, the retry pass below has nothing left
+  // to guess at for that invoice.
+  try { await _v51BatchExactPass(); } catch (e) { console.warn('[v51 batch-exact] wrapper:', e.message); }
+
   // v44N RETRY PASS: For invoices already stored in invoices_received (fetched before the
   // DocumentLines fix) that still have no invoice_request_id, try to match them against
   // pending_reconciliation requests via the Comments field ("Based On Sales Orders <SO_DocEntry>").
@@ -5089,13 +5117,16 @@ async function _doRefreshSapInvoices() {
             }
             if (!pc) pc = itemCode;
           }
-          const qtyL = lines.reduce((s, l) => s + (parseFloat(l.Quantity) || 0), 0);
+          // v51 (confirmed by Ishan — export invoices x100): line quantities pass through the
+          // _sapUomScale authority (thousand-UoM lines /100 into Lakhs). This raw sum was where
+          // 188L export invoices became 18800L; the same scale now applies to the boxes derivation.
+          const qtyL = lines.reduce((s, l) => s + ((parseFloat(l.Quantity) || 0) * _sapUomScale(l)), 0);
           // v50Y: derive boxes per line — line qty at the line's own size (ItemCode → pc master),
           // falling back to the header size resolved above. Zero stays zero only when nothing resolves.
           let boxesL = 0;
           try {
             for (const l of lines) {
-              const _lq = parseFloat(l.Quantity) || 0;
+              const _lq = (parseFloat(l.Quantity) || 0) * _sapUomScale(l);   // v51: UoM-scaled
               if (_lq <= 0) continue;
               let _lsz = '';
               const _lic = String(l.ItemCode || '').trim();
@@ -7152,7 +7183,7 @@ app.post('/api/invoice/reconcile-regularised-multibatch', async (req, res) => {
         const allocs = [];
         for (const L of lines) {
           const item = _normPc(L.ItemCode);
-          const qty  = parseFloat(L.Quantity) || 0;
+          const qty  = (parseFloat(L.Quantity) || 0) * _sapUomScale(L);   // v51: export thousand-UoM lines scale to Lakhs
           const matches = realBatches.filter(t => tokInfo[t] && _normPc(tokInfo[t].pc_code) !== '' && _normPc(tokInfo[t].pc_code) === item && !used.has(t));
           if (matches.length !== 1) { ambiguous = `line ItemCode ${L.ItemCode || '—'} matched ${matches.length} unused batch(es)`; break; }
           const tk = matches[0]; used.add(tk);
@@ -8842,14 +8873,36 @@ app.post('/api/orders/upsert', async (req, res) => {
     const { _v50iBnBefore: _drop50i, ...mergedForJson50i } = mergedOrd;
     const json = JSON.stringify(mergedForJson50i);
     if (pgPool) {
-      await pgPool.query(`
-        INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
-        VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
-        ON CONFLICT(id) DO UPDATE SET
-          data_json=$2, machine_id=$3, batch_number=$4,
-          status=$5, deleted=$6, updated_at=NOW()::TEXT
-      `, [mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null,
-          finalStatus, finalDeleted]);
+      // v51 SELF-HEALING WRITE: the 6-Aug systemic 500s came from this INSERT throwing on every
+      // call (leading theory: the live table predates the PRIMARY KEY — CREATE TABLE IF NOT EXISTS
+      // never retrofits constraints, and ON CONFLICT(id) errors with 42P10 when no unique index
+      // matches). The save must never die on that: fall back to a manual UPDATE→INSERT upsert so
+      // planner edits persist regardless, and log the original error loudly so the constraint can
+      // be repaired (startup also attempts CREATE UNIQUE INDEX; IT has the one-time repair SQL).
+      try {
+        await pgPool.query(`
+          INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)
+          ON CONFLICT(id) DO UPDATE SET
+            data_json=$2, machine_id=$3, batch_number=$4,
+            status=$5, deleted=$6, updated_at=NOW()::TEXT
+        `, [mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null,
+            finalStatus, finalDeleted]);
+      } catch (e1) {
+        console.error(`[v51 upsert fallback] ON CONFLICT path failed for ${mergedOrd.id}: ${e1.message} — using UPDATE→INSERT`);
+        const _u = await pgPool.query(
+          `UPDATE production_orders SET data_json=$2, machine_id=$3, batch_number=$4,
+                  status=$5, deleted=$6, updated_at=NOW()::TEXT WHERE id=$1`,
+          [mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null,
+           finalStatus, finalDeleted]);
+        if (!_u.rowCount) {
+          await pgPool.query(
+            `INSERT INTO production_orders (id, data_json, machine_id, batch_number, status, deleted, updated_at)
+             VALUES ($1,$2,$3,$4,$5,$6,NOW()::TEXT)`,
+            [mergedOrd.id, json, mergedOrd.machineId||null, mergedOrd.batchNumber||null,
+             finalStatus, finalDeleted]);
+        }
+      }
     } else {
       db.prepare(`INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
         VALUES (?,?,?,?,?,?,datetime('now'))
@@ -8944,7 +8997,12 @@ app.post('/api/orders/upsert', async (req, res) => {
       occupying: _v49nLimitRefused ? _v49nOccupying : undefined,
                dprGateMessage: _v49gDprRefused ? 'Close in DPR first' : undefined,
                savedAt: new Date().toISOString() });
-  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch(err) {
+    // v51: the server logged NOTHING on an upsert failure — every 6-Aug 500 was invisible in the
+    // deploy logs. Full stack now, always.
+    console.error('[v51 upsert 500]', err && err.stack || err);
+    res.status(500).json({ ok: false, error: err.message });
+  }
 });
 
 // ─────────────────────────────────────────────────────────────────
@@ -9519,7 +9577,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
       console.log(`[v41w upsert-bulk] Preserved DB status on ${preservedCount}/${orders.length} orders (stale client write blocked)`);
     }
     res.json({ ok: true, count: orders.length, preservedCount, preservedOrders, savedAt: new Date().toISOString() });
-  } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
+  } catch(err) { console.error('[v51 upsert-bulk 500]', err && err.stack || err); res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // GET /api/orders/all — get all orders from dedicated table
@@ -11337,7 +11395,25 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
           if (_bScope50k.length === 0) {
             console.warn(`[v50K bulk] ${floor} ${date}: no machines in payload — nothing deleted`);
           } else {
-            await client.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2 AND machine_id = ANY($3::text[])', [floor, date, _bScope50k]);
+            // v51 (4-Aug GF A-shift wipe): delete at (machine, SHIFT) grain, and only for shifts the
+            // payload actually carries with data. v50K protected machines absent from the payload;
+            // a machine PRESENT with an empty A-shift (a client that loaded from local cache before
+            // the server answered) still wiped that shift's server rows on save. A shift with no
+            // qty>0 run in the payload no longer deletes anything — existing entries survive.
+            const _pairs51 = [];
+            for (const [_sn51, _sd51] of Object.entries(data.shifts || {})) {
+              for (const [_mid51, _md51] of Object.entries((_sd51 && _sd51.machines) || {})) {
+                const _runs51 = _md51.runs || [{ qty: _md51.prod }];
+                if (_runs51.some(r => (parseFloat(r && r.qty) || 0) > 0)) _pairs51.push(_mid51 + '||' + _sn51);
+              }
+            }
+            if (_pairs51.length === 0) {
+              console.warn(`[v51 shift-guard bulk] ${floor} ${date}: no shift in payload carries data — nothing deleted`);
+            } else {
+              await client.query(
+                `DELETE FROM production_actuals WHERE floor = $1 AND date = $2
+                  AND (machine_id || '||' || shift) = ANY($3::text[])`, [floor, date, _pairs51]);
+            }
           }
           const shifts = data.shifts || {};
           for (const [shiftName, shiftData] of Object.entries(shifts)) {
@@ -11447,7 +11523,20 @@ app.post('/api/dpr/save', async (req, res) => {
         console.warn(`[v50K] ${floor} ${date}: payload carries no machines — nothing deleted (a blank save can no longer wipe a floor-day)`);
       } else {
         const _before50k = _preDeleteActuals.length;
-        await pgPool.query('DELETE FROM production_actuals WHERE floor = $1 AND date = $2 AND machine_id = ANY($3::text[])', [floor, date, _scope50k]);
+        // v51 (4-Aug GF A-shift wipe): the machine-grain delete let a client whose payload carried a
+        // machine with an EMPTY shift (loaded from local cache before the server answered) wipe that
+        // shift's server rows. Deletion now happens at (machine, shift) grain, only for shifts this
+        // payload actually carries with qty>0 rows — a shift the payload is silent on survives.
+        const _pairs51 = [...new Set((actuals || [])
+          .filter(a => a && (parseFloat(a.qty) || 0) > 0 && _scope50k.indexOf(String(a.machineId)) !== -1)
+          .map(a => String(a.machineId) + '||' + String(a.shift)))];
+        if (_pairs51.length === 0) {
+          console.warn(`[v51 shift-guard] ${floor} ${date}: no shift in payload carries data — nothing deleted`);
+        } else {
+          await pgPool.query(
+            `DELETE FROM production_actuals WHERE floor = $1 AND date = $2
+              AND (machine_id || '||' || shift) = ANY($3::text[])`, [floor, date, _pairs51]);
+        }
         const _kept50k = _preDeleteActuals.filter(r => _scope50k.indexOf(String(r.machine_id)) === -1);
         if (_kept50k.length) {
           const _keptMcs = [...new Set(_kept50k.map(r => r.machine_id))];
@@ -11700,8 +11789,17 @@ app.post('/api/dpr/save', async (req, res) => {
       if (_sScope50k.length === 0) {
         console.warn(`[v50K] ${floor} ${date}: payload carries no machines — nothing deleted`);
       } else {
-        db.prepare(`DELETE FROM production_actuals WHERE floor = ? AND date = ? AND machine_id IN (${_sScope50k.map(()=>'?').join(',')})`)
-          .run(floor, date, ..._sScope50k);
+        // v51: (machine, shift)-grain delete — see PG path rationale.
+        const _sPairs51 = [...new Set((actuals || [])
+          .filter(a => a && (parseFloat(a.qty) || 0) > 0 && _sScope50k.indexOf(String(a.machineId)) !== -1)
+          .map(a => String(a.machineId) + '||' + String(a.shift)))];
+        if (_sPairs51.length === 0) {
+          console.warn(`[v51 shift-guard] ${floor} ${date}: no shift in payload carries data — nothing deleted`);
+        } else {
+          db.prepare(`DELETE FROM production_actuals WHERE floor = ? AND date = ?
+              AND (machine_id || '||' || shift) IN (${_sPairs51.map(()=>'?').join(',')})`)
+            .run(floor, date, ..._sPairs51);
+        }
       }
       const upsert = db.prepare(`INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET order_id=excluded.order_id, batch_number=excluded.batch_number, qty_lakhs=excluded.qty_lakhs, synced_at=datetime('now')`);
       const rows = (actuals && actuals.length > 0)
@@ -20449,6 +20547,52 @@ app.post('/api/tracking/reconcile-wip', async (req, res) => {
 // set. Idempotent: a re-run finds an empty set. Undo via /reconcile-wip-clear (extended for both
 // operator patterns). preaim/transit paths are untouched (no dept box set exists for them).
 const _V50X_PACK = { '00':0.75, '0':1.00, '1':1.25, '2':1.75, '3':2.25, '4':3.00 };
+// v51 BATCH-EXACT MATCHING PASS (confirmed by Ishan — 26ZB108). A direct-SAP invoice whose
+// batch_number column carries EXACTLY ONE batch token, with a pending request on that same batch,
+// could still never reconcile when the payload had neither line BaseEntry nor a "Based On Sales
+// Orders" comment — no existing pass had anything to match on (ZB108: request sap_doc_entry 25941,
+// invoice payload silent, so both SO passes were blind while the batch column said 26ZB108 all
+// along). This pass matches on the batch itself, under the same discipline as the v50Y retry
+// gates: single batch token only (multi-batch invoices stay with allocation), quantity inside the
+// recon band, at most one request per invoice, oldest pending request first.
+async function _v51BatchExactPass() {
+  if (!pgPool) return 0;
+  let paired = 0;
+  try {
+    const cand = await pgPool.query(
+      `SELECT id, sap_invoice_no, sap_doc_entry, batch_number, total_qty_lakhs, total_boxes
+         FROM invoices_received
+        WHERE invoice_request_id IS NULL AND source = 'direct_sap'
+          AND COALESCE(batch_number,'') <> '' AND batch_number NOT LIKE '%,%' AND batch_number NOT LIKE '% %'`);
+    for (const iv of cand.rows) {
+      const bn = String(iv.batch_number).trim().toUpperCase();
+      const req = await pgPool.query(
+        `SELECT id, qty_lakhs FROM invoice_requests
+          WHERE UPPER(batch_number) = $1 AND status = 'pending_reconciliation'
+          ORDER BY created_at ASC`, [bn]);
+      if (!req.rows.length) continue;
+      const cover = parseFloat(iv.total_qty_lakhs) || 0;
+      const pr = req.rows.find(r => {
+        const q = parseFloat(r.qty_lakhs) || 0;
+        return cover > 0 && q >= cover * _RECON_UNDER && q <= cover * _RECON_OVER;
+      });
+      if (!pr) {
+        console.log(`[v51 batch-exact] invoice ${iv.sap_invoice_no} (${bn}, ${cover}L): pending request(s) exist but none inside the recon band — left visible`);
+        continue;
+      }
+      await pgPool.query(
+        `UPDATE invoice_requests SET status='reconciled', reconciled_with_invoice_id=$1,
+                sap_response_doc_num=$2, reconciled_at=NOW()::TEXT, updated_at=NOW()::TEXT
+          WHERE id=$3`, [iv.id, iv.sap_invoice_no || null, pr.id]);
+      await pgPool.query(
+        `UPDATE invoices_received SET invoice_request_id=$1, source='sunloc' WHERE id=$2`, [pr.id, iv.id]);
+      paired++;
+      console.log(`[v51 batch-exact] paired invoice ${iv.sap_invoice_no} → request ${pr.id} on ${bn}`);
+    }
+  } catch (e) { console.warn('[v51 batch-exact] pass failed:', e.message); }
+  return paired;
+}
+
 async function _v50xStuckBoxes(batchNumber, dept) {
   const sql = pgPool
     ? `SELECT l.id AS label_id, l.label_number, l.is_orange, l.qty, l.size
