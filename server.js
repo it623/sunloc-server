@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51C';
+const APP_BUILD = 'v51D';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -12500,6 +12500,79 @@ app.post('/api/admin/repair-export-invoice-qty', async (req, res) => {
 //
 // Dry-run by default; {"confirm":true} writes STALE_HEADER corrections only. tolPct overrides the
 // match tolerance (default 0.5%). Idempotent: a corrected header recomputes to the same value.
+// ═══ v51D OVER-INVOICED CONSOLIDATED VIEW (confirmed by Ishan) ═════════════════════════════════
+// One authoritative table of every batch invoiced beyond its packed quantity. The v49C badge shows
+// the state per-row in Planning; there was no single place to see ALL of them. Definition mirrors
+// v49C exactly (formula-uniformity): invoiced = received + in-flight pending requests; packed =
+// packing scan-IN lakhs (v47G label-qty valuation, reversal-filtered); excess = invoiced − packed
+// ≥ 0.01. Per-invoice batch attribution precedence (one source per invoice, no double counting):
+// (1) invoice_batch_alloc rows, (2) per-batch tracking_dispatch_records under the invoice's
+// number, (3) single-token batch column → whole invoice, (4) otherwise the invoice lands in the
+// `unattributed` list so nothing is silently dropped.
+app.get('/api/invoice/over-invoiced', async (req, res) => {
+  try {
+    if (!pgPool) return res.json({ ok: true, rows: [], unattributed: [] });
+    const packedRows = (await pgPool.query(
+      `SELECT s.batch_number, SUM(${_v47gScanQtySql('s','l')}) AS packed
+         FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id
+        WHERE s.dept='packing' AND s.type='in'
+          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)
+        GROUP BY s.batch_number`)).rows;
+    const allocRows = (await pgPool.query(
+      `SELECT invoice_id, batch_number, SUM(qty_lakhs) AS q FROM invoice_batch_alloc
+        WHERE COALESCE(batch_number,'') <> '' GROUP BY invoice_id, batch_number`)).rows;
+    const dispRows = (await pgPool.query(
+      `SELECT invoice_no, batch_number, SUM(qty) AS q FROM tracking_dispatch_records
+        WHERE COALESCE(invoice_no,'') <> '' AND COALESCE(batch_number,'') <> ''
+        GROUP BY invoice_no, batch_number`)).rows;
+    const pendRows = (await pgPool.query(
+      `SELECT batch_number, SUM(qty_lakhs) AS q FROM invoice_requests
+        WHERE status='pending_reconciliation' AND COALESCE(batch_number,'') <> ''
+        GROUP BY batch_number`)).rows;
+    const invs = (await pgPool.query(
+      `SELECT id, sap_invoice_no, sap_doc_num, customer, batch_number, total_qty_lakhs, source
+         FROM invoices_received`)).rows;
+
+    const packed = {}; packedRows.forEach(r => { if (r.batch_number) packed[r.batch_number.trim()] = parseFloat(r.packed)||0; });
+    const allocByInv = {}; allocRows.forEach(r => { (allocByInv[r.invoice_id] = allocByInv[r.invoice_id]||[]).push({ batch: String(r.batch_number).trim(), q: parseFloat(r.q)||0 }); });
+    const dispByNo = {}; dispRows.forEach(r => { const k = String(r.invoice_no).trim(); (dispByNo[k] = dispByNo[k]||[]).push({ batch: String(r.batch_number).trim(), q: parseFloat(r.q)||0 }); });
+
+    const perBatch = {}; const unattributed = [];
+    const add = (bn, invNo, q, customer) => {
+      const b = perBatch[bn] = perBatch[bn] || { batch: bn, customer: customer||'', received: 0, pending: 0, invoices: [] };
+      if (customer && !b.customer) b.customer = customer;
+      b.received += q; b.invoices.push({ no: invNo, qty: Math.round(q*100)/100 });
+    };
+    for (const iv of invs) {
+      const invNo = String(iv.sap_invoice_no || iv.sap_doc_num || iv.id).trim();
+      const total = parseFloat(iv.total_qty_lakhs)||0;
+      const alloc = allocByInv[iv.id];
+      if (alloc && alloc.length) { alloc.forEach(a => add(a.batch, invNo, a.q, iv.customer)); continue; }
+      const disp = dispByNo[String(iv.sap_invoice_no||'').trim()] || dispByNo[String(iv.sap_doc_num||'').trim()];
+      if (disp && disp.length) { disp.forEach(a => add(a.batch, invNo, a.q, iv.customer)); continue; }
+      const tokens = [...new Set(String(iv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(t=>/^\d+[A-Z]+\d+(-[A-Z0-9]+)?$/i.test(t)))];
+      if (tokens.length === 1) { add(tokens[0].toUpperCase(), invNo, total, iv.customer); continue; }
+      if (total > 0) unattributed.push({ invoice: invNo, qty: Math.round(total*100)/100, batches: tokens.join(', ') || '—', source: iv.source||'' });
+    }
+    pendRows.forEach(r => {
+      const bn = String(r.batch_number).trim().toUpperCase();
+      const b = perBatch[bn] = perBatch[bn] || { batch: bn, customer: '', received: 0, pending: 0, invoices: [] };
+      b.pending += parseFloat(r.q)||0;
+    });
+    const rows = [];
+    for (const b of Object.values(perBatch)) {
+      const pk = packed[b.batch] != null ? packed[b.batch] : (packed[b.batch.toUpperCase()] || 0);
+      const invoiced = Math.round((b.received + b.pending)*100)/100;
+      const excess = Math.round((invoiced - pk)*100)/100;
+      if (excess >= 0.01) rows.push({ batch: b.batch, customer: b.customer,
+        packed: Math.round(pk*100)/100, received: Math.round(b.received*100)/100,
+        pending: Math.round(b.pending*100)/100, invoiced, excess, invoices: b.invoices });
+    }
+    rows.sort((a,b) => b.excess - a.excess);
+    res.json({ ok: true, rows, unattributed });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.post('/api/admin/audit-export-invoice-headers', async (req, res) => {
   try {
     if (!pgPool) return res.status(400).json({ ok: false, error: 'PostgreSQL only' });

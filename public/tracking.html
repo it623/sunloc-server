@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51C</title>
+<title>Sunloc Tracking Suite v1.0 · build v51D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51C</p>
+      <p>Tracking Suite v1.0 · build v51D</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51C</p>
+      <p>Tracking Suite v1.0 · build v51D</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -7881,6 +7881,138 @@ async function _v41_closeInvoiceAsLegacy(invoiceId) {
   }
 }
 
+// ═══ v51D OVER-INVOICED CONSOLIDATED VIEW (confirmed by Ishan) ═════════════════════════════════
+// Toggle in Generated Invoices: one filterable, scrollable table of every batch whose invoiced
+// quantity (received + pending — the v49C definition) exceeds its packed quantity, served by
+// GET /api/invoice/over-invoiced (single server authority; the v49C badge and this table cannot
+// drift). Includes an Excel export styled like Report E's (v50W colour language).
+let _v51dOverInvRows = null, _v51dOverInvUnattr = null;
+async function _v51dToggleOverInv() {
+  window._giOverInv = !window._giOverInv;
+  const btn = document.getElementById('v51d-overinv-toggle');
+  if (window._giOverInv) {
+    if (btn) { btn.style.background = '#dc2626'; btn.style.color = '#fff'; btn.classList.remove('btn-secondary'); }
+    await _v51dLoadOverInv();
+  } else {
+    if (btn) { btn.style.background = ''; btn.style.color = ''; btn.classList.add('btn-secondary'); }
+    _v51dOverInvRows = null; _v51dOverInvUnattr = null;
+    _v39_renderInvoiceTable();
+    const st = document.getElementById('v39-gi-status-text');
+    if (st) st.textContent = `${_v39_invoiceList.length} invoice${_v39_invoiceList.length===1?'':'s'} loaded`;
+  }
+}
+async function _v51dLoadOverInv() {
+  const el = document.getElementById('v39-gi-table');
+  const st = document.getElementById('v39-gi-status-text');
+  if (el) el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3)">Loading over-invoiced batches…</div>';
+  try {
+    const r = await fetch(serverUrl + '/api/invoice/over-invoiced', { signal: AbortSignal.timeout(20000) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'unknown');
+    _v51dOverInvRows = j.rows || []; _v51dOverInvUnattr = j.unattributed || [];
+    if (st) st.textContent = `${_v51dOverInvRows.length} over-invoiced batch${_v51dOverInvRows.length===1?'':'es'}`;
+    _v51dRenderOverInv();
+  } catch (e) {
+    if (el) el.innerHTML = `<div style="padding:20px;text-align:center;color:var(--red)">Could not load: ${e.message}</div>`;
+  }
+}
+function _v51dRenderOverInv() {
+  const el = document.getElementById('v39-gi-table');
+  if (!el || !_v51dOverInvRows) return;
+  const fb = (document.getElementById('v51d-oi-fbatch')?.value || '').trim().toUpperCase();
+  const fc = (document.getElementById('v51d-oi-fcust')?.value || '').trim().toUpperCase();
+  const rows = _v51dOverInvRows.filter(r =>
+    (!fb || r.batch.toUpperCase().includes(fb)) &&
+    (!fc || (r.customer||'').toUpperCase().includes(fc)));
+  const tot = k => rows.reduce((a,r)=>a+(r[k]||0),0).toFixed(2);
+  const body = rows.map(r => `<tr>
+      <td class="td-mono fw-bold">${r.batch}</td>
+      <td>${r.customer||'—'}</td>
+      <td class="td-mono" style="text-align:right">${r.packed.toFixed(2)}</td>
+      <td class="td-mono" style="text-align:right" title="Received ${r.received.toFixed(2)}L + Pending ${r.pending.toFixed(2)}L">${r.invoiced.toFixed(2)}</td>
+      <td class="td-mono fw-bold" style="text-align:right;color:#dc2626">${r.excess.toFixed(2)}</td>
+      <td class="td-mono" style="font-size:10px">${(r.invoices||[]).map(i=>`${i.no} (${i.qty}L)`).join(', ')||'—'}</td>
+    </tr>`).join('');
+  const unattr = (_v51dOverInvUnattr && _v51dOverInvUnattr.length)
+    ? `<div style="margin-top:8px;font-size:11px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:6px 10px">
+         ${_v51dOverInvUnattr.length} invoice(s) could not be attributed to a single batch (multi-batch, no allocation) and are excluded from the sums above:
+         ${_v51dOverInvUnattr.map(u=>`${u.invoice} (${u.qty}L → ${u.batches})`).join('; ')}. Use the allocation / regularise tools to attribute them.</div>` : '';
+  el.innerHTML = `
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <b style="font-size:13px;color:#dc2626">🔺 Over-invoiced batches — invoiced beyond packed</b>
+      <input id="v51d-oi-fbatch" placeholder="Filter batch…" value="${fb}" oninput="_v51dRenderOverInv()" class="form-control" style="width:130px;padding:5px 8px;font-size:12px;font-family:var(--mono)">
+      <input id="v51d-oi-fcust" placeholder="Filter customer…" value="${fc}" oninput="_v51dRenderOverInv()" class="form-control" style="width:170px;padding:5px 8px;font-size:12px">
+      <button class="btn btn-sm btn-secondary" onclick="_v51dExportOverInv()">📤 Export Excel</button>
+      <span style="margin-left:auto;font-size:11px;color:var(--text3)">${rows.length} of ${_v51dOverInvRows.length} shown</span>
+    </div>
+    <div style="max-height:480px;overflow:auto">
+      <table style="width:100%">
+        <thead style="position:sticky;top:0;background:var(--bg2,#fff);z-index:1"><tr>
+          <th>BATCH</th><th>CUSTOMER</th><th style="text-align:right">PACKED (L)</th>
+          <th style="text-align:right" title="Received + pending requests (v49C definition)">INVOICED (L)</th>
+          <th style="text-align:right">EXCESS (L)</th><th>INVOICE #s (QTY)</th>
+        </tr></thead>
+        <tbody>${body || '<tr><td colspan="6" style="text-align:center;padding:16px;color:var(--text3)">No over-invoiced batches 🎉</td></tr>'}</tbody>
+        ${rows.length ? `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">
+          <td>TOTAL (${rows.length})</td><td></td>
+          <td class="td-mono" style="text-align:right">${tot('packed')}</td>
+          <td class="td-mono" style="text-align:right">${tot('invoiced')}</td>
+          <td class="td-mono" style="text-align:right;color:#dc2626">${tot('excess')}</td><td></td>
+        </tr></tfoot>` : ''}
+      </table>
+    </div>${unattr}`;
+}
+function _v51dExportOverInv() {
+  if (!_v51dOverInvRows) return;
+  const fb = (document.getElementById('v51d-oi-fbatch')?.value || '').trim().toUpperCase();
+  const fc = (document.getElementById('v51d-oi-fcust')?.value || '').trim().toUpperCase();
+  const rows = _v51dOverInvRows.filter(r =>
+    (!fb || r.batch.toUpperCase().includes(fb)) &&
+    (!fc || (r.customer||'').toUpperCase().includes(fc)));
+  const wb = XLSX.utils.book_new();
+  const HDR = ['BATCH','CUSTOMER','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)','EXCESS (L)','INVOICE #s (QTY)'];
+  const NC = HDR.length;
+  const aoa = []; const merges = []; const kinds = [];
+  const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
+  merges.push({s:{r:0,c:0},e:{r:0,c:NC-1}});
+  _push(['Over-invoiced Batches — invoiced beyond packed quantity'],'title');
+  merges.push({s:{r:1,c:0},e:{r:1,c:NC-1}});
+  _push([`Definition: invoiced (received + pending) − packed ≥ 0.01L  |  Generated ${new Date().toLocaleString()}`],'subtitle');
+  _push([],'spacer');
+  _push(HDR,'hdr');
+  rows.forEach(r => _push([r.batch, r.customer||'—', r.packed, r.received, r.pending, r.invoiced, r.excess,
+    (r.invoices||[]).map(i=>`${i.no} (${i.qty}L)`).join(', ')],'data'));
+  const s = k => rows.reduce((a,r)=>a+(r[k]||0),0);
+  _push([`TOTAL (${rows.length} batches)`,'',Math.round(s('packed')*100)/100,Math.round(s('received')*100)/100,
+    Math.round(s('pending')*100)/100,Math.round(s('invoiced')*100)/100,Math.round(s('excess')*100)/100,''],'grand');
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = merges;
+  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:50}];
+  const R = XLSX.utils.decode_range(ws['!ref']);
+  for(let r=R.s.r; r<=R.e.r; r++) for(let c=2; c<=6; c++){
+    const cell = ws[XLSX.utils.encode_cell({r,c})];
+    if(cell && cell.t==='n') cell.z = '0.00';
+  }
+  // v50W colour language (mirrors exportReportE): cyan header, pink total, thin borders, red excess.
+  try {
+    const _thin = { style:'thin', color:{ rgb:'9AA5B1' } };
+    const _bAll = { top:_thin, bottom:_thin, left:_thin, right:_thin };
+    const _set = (r, c, st) => { const a = XLSX.utils.encode_cell({r,c}); if(!ws[a]) ws[a] = { t:'s', v:'' }; ws[a].s = st; };
+    kinds.forEach((kind, r) => {
+      if (kind === 'title')    { _set(r, 0, { font:{ bold:true, sz:14 } }); return; }
+      if (kind === 'subtitle') { _set(r, 0, { font:{ italic:true, sz:10, color:{ rgb:'555555' } } }); return; }
+      if (kind === 'spacer')   return;
+      for (let c = 0; c < NC; c++) {
+        if (kind === 'hdr')        _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:'20FFFF' } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
+        else if (kind === 'grand') _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:'FC02FF' } }, border:_bAll });
+        else if (kind === 'data')  _set(r, c, { font:{ sz:10, ...(c===6?{ bold:true, color:{ rgb:'DC2626' } }:{}) }, border:_bAll });
+      }
+    });
+  } catch(_e) {}
+  XLSX.utils.book_append_sheet(wb, ws, 'Over-invoiced');
+  XLSX.writeFile(wb, `over-invoiced-${new Date().toISOString().slice(0,10)}.xlsx`);
+}
+
 // v41ZS: one-step admin regularisation for legacy / return / no-SO invoices. Optionally attach a
 // batch, then mark the invoice dispatched + legacy-closed (admin-approved) via a single endpoint.
 // No scan-out is performed and no scan counts are logged — label-less legacy/return stock has
@@ -8001,7 +8133,7 @@ async function _v44zjSubmitRegularise() {
   if (!_v44zjReg) return;
   let baseUrl = ''; try { baseUrl = serverUrl || (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
   if (!baseUrl) { alert('Server not connected'); return; }
-  const reason = (document.getElementById('v44zj-reason')?.value || _v44zjReg.reason || '').trim();
+  let reason = (document.getElementById('v44zj-reason')?.value || _v44zjReg.reason || '').trim();
   const allocations = [];
   for (const r of _v44zjReg.rows) {
     const batch = (r.batch||'').trim();
@@ -8012,6 +8144,21 @@ async function _v44zjSubmitRegularise() {
     allocations.push({ batch, qty, boxes });
   }
   if (!allocations.length) { alert('Add at least one batch allocation.'); return; }
+  // ═══ v51D W/O-INVOICED ANOMALY GUARD (confirmed by Ishan — 26W077) ═══════════════════════════
+  // A W/O batch (no customer order in the system) should not normally be invoiced — yet 26W077
+  // arrived invoiced via the Direct-SAP route and was then regularised with nothing flagging the
+  // contradiction. The admin is now warned BEFORE the dispatch records are written; the override
+  // remains available (physical goods did move) and is stamped into the audit reason.
+  try {
+    const _woB51d = allocations.map(a => a.batch).filter(b => { const _o = getBatch(b); return _o && _o.woStatus === 'wo'; });
+    if (_woB51d.length) {
+      const _inv51d = (_v39_invoiceList || []).find(i => i.id === _v44zjReg.invoiceId) || {};
+      const _route51d = String(_inv51d.source||'') === 'direct_sap' ? 'the Direct-SAP route' : 'SAP';
+      const _msg51d = `⚠ W/O ANOMALY\n\n${_woB51d.join(', ')} ${_woB51d.length>1?'are':'is'} marked W/O (no customer order) in the system, yet this invoice arrived through ${_route51d}.\n\nA W/O batch should not normally be invoiced — verify the batch/customer assignment before proceeding.\n\nOverride and regularise anyway?`;
+      if (!confirm(_msg51d)) return;
+      reason += ` [W/O-invoiced anomaly on ${_woB51d.join(', ')} — overridden by admin]`;
+    }
+  } catch(_e) {}
   try {
     const r = await fetch(baseUrl + '/api/invoice/' + encodeURIComponent(_v44zjReg.invoiceId) + '/regularise-dispatch', {
       method: 'POST',
@@ -9420,6 +9567,7 @@ async function renderGeneratedInvoices() {
         <button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v39_repullFromSap()" title="Force Sunloc to pull the latest invoices from SAP now (normally runs every 5 min)">🔄 Re-pull from SAP</button>
         <button class="btn btn-sm" style="background:#10b981;color:white;border:none" onclick="_v39_exportInvoicesCsv()">📥 Export CSV</button>
         <button id="v39-gi-realloc-toggle" class="btn btn-sm btn-secondary" onclick="_v44zjToggleNeedsRealloc()" title="Show only regularised invoices whose dispatch landed under a multi-batch (concatenated) key — these need re-allocation to drop from the truck plan.">⚠ Needs re-allocation</button>
+        <button id="v51d-overinv-toggle" class="btn btn-sm btn-secondary" onclick="_v51dToggleOverInv()" title="Show every over-invoiced batch in one table: invoiced (received + pending) exceeds packed quantity — the v49C definition, consolidated.">🔺 Over-invoiced</button>
         ${currentDept==='admin'?`<button class="btn btn-sm" style="background:#7c3aed;color:white;border:none" onclick="_v44zjReconcileMultibatch()" title="Auto-pair each multi-batch regularised invoice by matching invoice lines to batches by PC; rewrites clean per-batch records so the lots drop. Ambiguous ones are left for manual re-allocation.">🔧 Auto-pair reconcile</button>`:''}
         <span id="v39-gi-status-text" style="margin-left:auto;font-size:11px;color:var(--text3)"></span>
       </div>
@@ -9536,6 +9684,10 @@ function _v39_clearInvoiceFilters() {
   window._giNeedsRealloc = false;
   const _rt = document.getElementById('v39-gi-realloc-toggle');
   if (_rt) { _rt.style.background=''; _rt.style.color=''; _rt.classList.add('btn-secondary'); }
+  // v51D: over-invoiced toggle resets with the rest of the filters
+  window._giOverInv = false; _v51dOverInvRows = null; _v51dOverInvUnattr = null;
+  const _ot = document.getElementById('v51d-overinv-toggle');
+  if (_ot) { _ot.style.background=''; _ot.style.color=''; _ot.classList.add('btn-secondary'); }
   _v39_applyInvoiceFilters();
 }
 
@@ -9565,6 +9717,8 @@ async function _v39_repullFromSap() {
 function _v39_renderInvoiceTable() {
   const tableEl = document.getElementById('v39-gi-table');
   if (!tableEl) return;
+  // v51D: while the over-invoiced view is toggled on, background refreshes must not stomp it
+  if (window._giOverInv && _v51dOverInvRows) { _v51dRenderOverInv(); return; }
   const invoices = _v39_invoiceList || [];
   if (invoices.length === 0) {
     tableEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text3)">No invoices match current filters.</div>`;
