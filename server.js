@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51';
+const APP_BUILD = 'v51A';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -8716,8 +8716,13 @@ app.post('/api/orders/upsert', async (req, res) => {
       }
     } catch (e) { console.warn('[v50F] collision check skipped:', e.message); }
 
+    // v51A (ROOT CAUSE of every planning-save 500 since 4 Aug): exData was declared with `let`
+    // INSIDE this if-block, but the v50T audit call and the v49F re-customer lock reference it
+    // after the block closes — a ReferenceError on every single request, silently converted to a
+    // 500 by the outer catch (which logged nothing until v51). Hoisted to function scope; when no
+    // existing row is found it is simply the empty object both consumers already tolerate.
+    let exData = {};
     if (existing) {
-      let exData = {};
       try { exData = typeof existing.data_json === 'string' ? JSON.parse(existing.data_json) : (existing.data_json || {}); } catch(e) {}
       const clientEdit = parseInt(ord._localEditedAt || 0);
       const dbUpdated  = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
