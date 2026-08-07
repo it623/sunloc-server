@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51A';
+const APP_BUILD = 'v51C';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -1747,6 +1747,67 @@ async function _v51EnsureUpsertIndexes() {
   }
 }
 setTimeout(() => { _v51EnsureUpsertIndexes().catch(()=>{}); }, 5000);
+
+// ═══ v51C PRINT-ORDER GAP-FILL (confirmed by Ishan — 26Z080/26Z081/26ZE123) ═══════════════════
+// PTD orders auto-create their print order CLIENT-side at order creation; persistence rode the
+// planning save path, which 500'd on every call 4–7 Aug (the v51A exData bug). The orders
+// themselves survived via queued upsert retries, but their print orders evaporated — Maan Singh
+// could not punch printing entries for batches that were physically printing (confirmed 0 rows in
+// print_orders for all three). This server-side pass self-heals the gap: any live PTD order with
+// a batch number and no print order — matched by production_order_id AND batch_number, the dual
+// key the old (disabled) client auto-generator lacked and the reason it duplicated — gets an
+// Unassigned print order. start_date is stamped TODAY so the row lands in the current month's
+// Printing Plan view immediately (the v45Y month rule shows orders starting in the viewed month).
+// qty_to_print uses the formula-(f) fallback the client auto-create uses: qty × 1.01 × 1.01.
+// Scope: not deleted, isPrinted, has batchNumber, status running/pending/closed, and (running OR
+// started within 120 days) so ancient history never resurrects. PG-only, like the other passes.
+async function _v51cPrintOrderGapFill() {
+  if (!pgPool) return 0;
+  let created = 0;
+  try {
+    const poKeys = { ids: new Set(), batches: new Set() };
+    for (const r of (await pgPool.query(`SELECT production_order_id, batch_number FROM print_orders`)).rows) {
+      if (r.production_order_id) poKeys.ids.add(String(r.production_order_id));
+      if (r.batch_number) poKeys.batches.add(String(r.batch_number).trim().toUpperCase());
+    }
+    const ords = (await pgPool.query(`SELECT id, batch_number, deleted, data_json FROM production_orders`)).rows;
+    const now = Date.now();
+    for (const row of ords) {
+      let d; try { d = typeof row.data_json === 'string' ? JSON.parse(row.data_json) : (row.data_json || {}); } catch { continue; }
+      const isDel = !!(row.deleted && String(row.deleted) !== '0' && String(row.deleted) !== 'false') || !!d.deleted;
+      if (isDel || d.isPrinted !== true) continue;
+      const bn = String(d.batchNumber || row.batch_number || '').trim();
+      if (!bn) continue;
+      const st = String(d.status || '');
+      if (!['running', 'pending', 'closed'].includes(st)) continue;
+      if (st !== 'running') {
+        const ref = d.startDate || d.endDate;
+        if (!ref) continue;
+        const t = new Date(ref).getTime();
+        if (!Number.isFinite(t) || (now - t) > 120 * 86400000) continue;
+      }
+      if (poKeys.ids.has(String(row.id)) || poKeys.batches.has(bn.toUpperCase())) continue;
+      const qty = parseFloat(d.qty || d.orderQty || 0) || 0;
+      const id = 'pofill_' + crypto.randomBytes(6).toString('hex');
+      await pgPool.query(`
+        INSERT INTO print_orders (id,machine_id,customer,batch_number,pc_code,size,colour,
+          print_matter,print_type,qty_to_print,order_qty,printed_to_date,printed_to_date_manual,
+          start_date,end_date,status,zone,remarks,production_order_id,updated_at)
+        VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,'C',$8,$9,0,false,$10,NULL,'pending',$11,$12,$13,NOW()::TEXT)
+      `, [id, d.customer || null, bn, d.pcCode || null, d.size || null, d.colour || null,
+          d.printMatter || null, parseFloat((qty * 1.01 * 1.01).toFixed(3)), qty,
+          new Date().toISOString().slice(0, 10), d.zone || null,
+          'Auto-restored — print order was missing for this PTD batch', String(row.id)]);
+      poKeys.ids.add(String(row.id)); poKeys.batches.add(bn.toUpperCase());
+      created++;
+      console.log(`[v51C print-order gap-fill] created Unassigned print order for ${bn} (order ${row.id})`);
+      try { logAudit('SYSTEM', 'system', 'planning', 'PRINT_ORDER_GAPFILL', `Restored missing print order for PTD batch ${bn} (order ${row.id}, ${qty}L)`); } catch (_) {}
+    }
+  } catch (e) { console.warn('[v51C print-order gap-fill] pass failed:', e.message); }
+  return created;
+}
+setTimeout(() => { _v51cPrintOrderGapFill().catch(()=>{}); }, 15000);
+setInterval(() => { _v51cPrintOrderGapFill().catch(()=>{}); }, 10 * 60 * 1000);
 
 async function _v49gWarmDprClosed() {
   const set = new Set();
@@ -11446,6 +11507,11 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
       // Refresh actuals cache
       await warmActualsCache();
     }
+    // v51B: bulk imports get the same attribution as single-day saves (see /api/dpr/save)
+    try {
+      logAudit(req.body.userName || 'dpr', String(req.body.userRole || req.headers['x-user-role'] || ''), 'dpr', 'DPR_BULK_IMPORT',
+        `${records.length} record(s) — saved ${saved}, skipped ${skipped}, rejected ${_rejected.length}`, req.ip);
+    } catch (_) {}
     res.json({ ok: true, saved, skipped, rejected: _rejected });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -11832,6 +11898,25 @@ app.post('/api/dpr/save', async (req, res) => {
     // Refresh actuals cache so Planning sees new DPR data immediately (force — bypass throttle)
     _actualsCacheTime = 0; // bypass 60s throttle so save is visible immediately
     warmActualsCache().catch(e => console.warn('[DPR] cache warm failed:', e.message));
+    // v51B (confirmed by Ishan — the unattributable 4-Aug GF A-shift wipe): every DPR save now
+    // leaves an audit row. The wipe investigation dead-ended because this endpoint wrote NOTHING
+    // to audit_log (only force-entry/reopen/override paths did) and the re-entry overwrote all
+    // synced_at stamps — the actor was unknowable by design. The row records who saved, which
+    // floor/date, and exactly which (shift, machine-count) pairs carried data, so the next
+    // incident is attributable in one query. Audit failure must never fail the save.
+    try {
+      const _shifts51b = [];
+      for (const [_sn, _sd] of Object.entries((data && data.shifts) || {})) {
+        let _mc = 0;
+        for (const _md of Object.values((_sd && _sd.machines) || {})) {
+          const _runs = (_md && (_md.runs || [{ qty: _md.prod }])) || [];
+          if (_runs.some(r => (parseFloat(r && r.qty) || 0) > 0)) _mc++;
+        }
+        _shifts51b.push(`${_sn}:${_mc}`);
+      }
+      logAudit(req.body.userName || 'dpr', String(req.headers['x-user-role'] || ''), 'dpr', 'DPR_SAVE',
+        `${floor} ${date} — machines with data per shift [${_shifts51b.join(', ')}]`, req.ip);
+    } catch (_) {}
     // v40 P18.14i Fix 2: include any gate rejections so client can alert the operator
     const rejected = res._dprRejected || [];
     res.json({

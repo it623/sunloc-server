@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51AA</title>
+<title>Sunloc Tracking Suite v1.0 · build v51C</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51A</p>
+      <p>Tracking Suite v1.0 · build v51C</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51A</p>
+      <p>Tracking Suite v1.0 · build v51C</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2711,7 +2711,18 @@ function _hasSpecimen(batchNo){
 function _effGrossForCap(b){
   const ov = Number(b && b.grossOverride);
   const q  = Number((b && b.qty) || 0);
-  return (Number.isFinite(ov) && ov > 0) ? Math.max(ov, q) : q;
+  // v51B (confirmed by Ishan — Rahul's 26ZH092 block): the cap runs on GROSS, as it originally
+  // did. v45A's max(grossOverride, qty) silently collapsed to planned qty once v47T/v50F retired
+  // the blob's grossOverride as the reconcile carrier — ZH092 capped at 8.00L (11 boxes) while
+  // planning showed 12.20L gross, blocking labels for physically produced stock. The order's own
+  // grossQty (planning's gross figure — formula-derived, cascade/reconcile-updated) joins the max.
+  // The v45A edge holds: the cap can never shrink below planned qty, and the normal/excess split
+  // anchor (originalNormalBoxMax) is untouched.
+  const g  = Number((b && b.grossQty) || 0);
+  let base = q;
+  if (Number.isFinite(g)  && g  > base) base = g;
+  if (Number.isFinite(ov) && ov > base) base = ov;
+  return base;
 }
 
 function canGenerateLabels(batchNo, requestedBoxes){
@@ -2741,7 +2752,7 @@ function canGenerateLabels(batchNo, requestedBoxes){
   const alreadyGenerated = normalLabels.length + excessLabels.length;
   const remainingAllowed = maxTotalBoxes - alreadyGenerated;
 
-  if(requestedBoxes > remainingAllowed) return {ok:false, msg:`Only ${remainingAllowed} more labels allowed (max: ${maxTotalBoxes} boxes for ${fmt(_effGrossForCap(batch))}L planned). Amend planned qty in Planning to unlock more.`};
+  if(requestedBoxes > remainingAllowed) return {ok:false, msg:`Only ${remainingAllowed} more labels allowed (max: ${maxTotalBoxes} boxes for ${fmt(_effGrossForCap(batch))}L gross). Amend gross/planned qty in Planning to unlock more.`};
 
   // v43 #3: classify normal-vs-excess against the ORIGINAL planned box count, not the live qty.
   // Amending planned gross in Planning to regularise excess grows batch.qty (so the total cap above
@@ -4620,7 +4631,7 @@ function renderLabels(){
   <div class="section-header">
     <div><div class="section-title">Label Generation &amp; Print</div><div class="section-sub">Generate and print box labels — select a batch to see its print queue inline</div></div>
   </div>
-  <div class="alert alert-info">Labels are capped by: (1) order quantity in Planning — amend planned qty to unlock more, (2) daily machine target in boxes.</div>
+  <div class="alert alert-info">Labels are capped by: (1) gross quantity in Planning — amend gross/planned qty to unlock more, (2) daily machine target in boxes.</div>
 
   <!-- v47 Point 2: label-dashboard summary tiles — Salvage / Generated / Printed in Lakhs, across the active batches shown. Totals equal the sum of the per-row (L) figures. -->
   <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
