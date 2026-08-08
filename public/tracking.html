@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51E</title>
+<title>Sunloc Tracking Suite v1.0 · build v51F</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51E</p>
+      <p>Tracking Suite v1.0 · build v51F</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51E</p>
+      <p>Tracking Suite v1.0 · build v51F</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1504,7 +1504,7 @@ function checkAlerts(){
     if(hoursAgo(scan.ts) < ALERT_HOURS) continue;
     if(alertKey.has(scan.labelId+'|'+scan.dept)) continue;
     const lbl = state.labels.find(l=>l.id===scan.labelId);
-    const boxNo = lbl ? Math.abs(lbl.labelNumber||0) : (scan.labelNumber ? Math.abs(scan.labelNumber) : '?');
+    const boxNo = lbl ? _boxDisplayId(lbl) : (scan.labelNumber ? ((parseInt(scan.labelNumber)<0)?('E-'+Math.abs(parseInt(scan.labelNumber))):String(Math.abs(scan.labelNumber))) : '?');   // v51F: E-aware
     state.alerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, boxNo, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1), resolved:0 });
     alertKey.add(scan.labelId+'|'+scan.dept);
   }
@@ -6005,7 +6005,8 @@ function exportScansCsv(dept){
   const lines=[['Time','Batch','Box','Customer','Colour','Size','Qty (L)','Type'].join(',')]; // v45T #2.3
   rows.forEach(s=>{
     const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
-    const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):''));
+    // v51F: CSV export carries the same E-series nomenclature as the table
+    const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?('E-'+Math.abs(_ni)):String(Math.abs(_ni||0));})();
     const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{}; // v45T #2.3
     lines.push([esc(fmtDateTime(s.ts)),esc(s.batchNumber),esc(boxNum),esc(_rsB.customer||''),esc(_rsB.colour||''),esc(_rsB.size!=null?_rsB.size:''),esc(s.qty),esc((s.type||'').toUpperCase())].join(','));
   });
@@ -6121,7 +6122,7 @@ function processScanInput(dept,type){
     if(result.ok){
       zoneEl.className='scan-zone success';
       const warnHtml = result.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${result.warning}</div>` : '';
-      const _msg1=`✅ SCAN ${type.toUpperCase()} — ${result.label.batchNumber}/${Math.abs(result.label.labelNumber||0)} (${fmt(result.label.qty)}L)`;
+      const _msg1=`✅ SCAN ${type.toUpperCase()} — ${result.label.batchNumber}/${_boxDisplayId(result.label)} (${fmt(result.label.qty)}L)`;
       showScanFlash(result.label.batchNumber, Math.abs(result.label.labelNumber||0), fmt(result.label.qty), type);
       toast(_msg1,'#166534',3500);
       resultEl.innerHTML=`<div class="alert alert-success">${_msg1}</div>${warnHtml}`;
@@ -6144,7 +6145,7 @@ function processScanInput(dept,type){
     zoneEl.className='scan-zone success';
     const warnHtml = firstResult.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${firstResult.warning}</div>` : '';
     const orangeHtml = firstResult.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${firstResult.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${firstResult.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
-    const _msg2=`✅ SCAN ${type.toUpperCase()} — ${firstResult.label.batchNumber}/${Math.abs(firstResult.label.labelNumber||0)} (${fmt(firstResult.label.qty)}L)`;
+    const _msg2=`✅ SCAN ${type.toUpperCase()} — ${firstResult.label.batchNumber}/${_boxDisplayId(firstResult.label)} (${fmt(firstResult.label.qty)}L)`;
     showScanFlash(firstResult.label.batchNumber, Math.abs(firstResult.label.labelNumber||0), fmt(firstResult.label.qty), type);
     toast(_msg2,'#166534',3500);
     resultEl.innerHTML=`<div class="alert alert-success">${_msg2}</div>${warnHtml}${orangeHtml}`;
@@ -6210,7 +6211,7 @@ function processScanInput(dept,type){
         zoneEl.className='scan-zone success';
         const warnHtml = retry.warning ? `<div class="alert alert-warning mt-8" style="background:rgba(255,171,0,0.12);border:1px solid rgba(255,171,0,0.4);border-left:4px solid #C55A11;padding:8px 12px;font-size:13px">${retry.warning}</div>` : '';
         const orangeHtml = retry.newOrangeLabel ? `<div style="margin-top:10px;padding:10px 14px;background:rgba(234,88,12,0.12);border:2px solid var(--orange);border-radius:8px;display:flex;align-items:center;justify-content:space-between;gap:10px"><span style="font-size:13px;font-weight:600;color:var(--orange)">🟠 Orange label generated — Box ${retry.newOrangeLabel.labelNumber}</span><button class="btn btn-sm" style="background:var(--orange);color:#fff;white-space:nowrap" onclick="printLabel('${retry.newOrangeLabel.id}');this.textContent='✅ Sent'">🖨️ Print Now</button></div>` : '';
-        const _msg3=`✅ SCAN ${type.toUpperCase()} — ${retry.label.batchNumber}/${Math.abs(retry.label.labelNumber||0)} (${fmt(retry.label.qty)}L)`;
+        const _msg3=`✅ SCAN ${type.toUpperCase()} — ${retry.label.batchNumber}/${_boxDisplayId(retry.label)} (${fmt(retry.label.qty)}L)`;
         showScanFlash(retry.label.batchNumber, Math.abs(retry.label.labelNumber||0), fmt(retry.label.qty), type);
         toast(_msg3,'#166534',3500);
         resultEl.innerHTML=`<div class="alert alert-success">${_msg3}</div>${warnHtml}${orangeHtml}`;
@@ -17312,7 +17313,10 @@ async function refreshScans(){
     const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
     tbody.innerHTML=scans.map(s=>{
       const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
-      const boxNum=lbl?Math.abs(lbl.labelNumber||0):(s.labelNumber!=null?Math.abs(s.labelNumber):(s.label_number!=null?Math.abs(s.label_number):'?'));
+      // v51F (Rahul, 26ZE123 E-3/E-4): the LIVE refresh never got the v49ZJ fix — Math.abs stripped
+      // the E-series convention (excess labels store negative labelNumbers), so E-4 rendered as 4.
+      // Same canonical _boxDisplayId + negative→E- fallback as the filtered path.
+      const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '?';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?('E-'+Math.abs(_ni)):String(Math.abs(_ni||0));})();
       const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{}; // v45T #2.3
       return `<tr>
         <td class="td-mono text-sm">${fmtDateTime(s.ts)}</td>
