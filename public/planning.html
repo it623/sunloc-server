@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51G</p>
+      <p>Planning Suite v3.0 · build v51H</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1767,7 +1767,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51G' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51H' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -4968,9 +4968,9 @@ function saveOrderModal(existingId, defaultMachine) {
     document.getElementById('fo-batch')?.focus();
     return;
   }
-  const batchFormatOK = /^\d{2}[A-Z]+\d+(-[A-Z])?$/.test(batchVal);  // v47H (confirmed by Ishan): allow single-letter child suffix (-A), never -A1
+  const batchFormatOK = /^\d{2}[A-Z]+\d+(-?[A-Z])?$/.test(batchVal);  // v47H: single-letter child suffix, never -A1 · v51H (PM, 26ZE119A): suffix accepted with OR without hyphen — tracking's child-batch flows produce both forms (26ZH079-A, 26ZA076A), so entry validation must match what the system itself creates
   if (!batchFormatOK) {
-    alert(`⚠️ Checkpoint 1 Failed: Invalid Batch Number format.\n\nEntered: "${batchVal}"\n\nRequired: Start with 2 digits (year) + uppercase letters + digits\n\nValid examples: 26N013, 26ZH043, 26ZA001, 27B025\n\nNote: Must start with year digits (e.g. 26 or 27).\nNo test/dummy/random names allowed.`);
+    alert(`⚠️ Checkpoint 1 Failed: Invalid Batch Number format.\n\nEntered: "${batchVal}"\n\nRequired: Start with 2 digits (year) + uppercase letters + digits\nChild batches may end with a single letter suffix (26ZE119A or 26ZH079-A)\n\nValid examples: 26N013, 26ZH043, 26ZA001, 27B025, 26ZE119A\n\nNote: Must start with year digits (e.g. 26 or 27).\nNo test/dummy/random names allowed.`);
     document.getElementById('fo-batch')?.focus();
     return;
   }
@@ -5480,7 +5480,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51G'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51H'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -10656,7 +10656,9 @@ function renderDispatchRow(p) {
 
   return `<tr ${dataAttrs}>
     <td class="freeze-col-1" style="font-weight:500">${p.customer||'-'}${containerInfo}</td>
-    <td class="freeze-col-2 text-mono">${p.batchNumber||'-'}${lotBadge}</td>
+    <td class="freeze-col-2 text-mono">${p.batchNumber
+      ? `<span onclick="openBatchTracking('${p.batchNumber}')" style="cursor:pointer;text-decoration:underline;text-decoration-style:dotted;text-underline-offset:2px" title="Open batch tracking for ${p.batchNumber}">${p.batchNumber}</span>`
+      : '-'}${lotBadge}</td>
     <td class="freeze-col-3 text-mono text-accent">${p.pcCode||'-'}</td>
     <td class="freeze-col-4 text-mono text-dim">${month}</td>
     <td class="freeze-col-5">${fmtColour(p.colour)}</td>

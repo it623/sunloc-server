@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51G</title>
+<title>Sunloc Tracking Suite v1.0 · build v51H</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51G</p>
+      <p>Tracking Suite v1.0 · build v51H</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51G</p>
+      <p>Tracking Suite v1.0 · build v51H</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2728,6 +2728,7 @@ function _effGrossForCap(b){
 function canGenerateLabels(batchNo, requestedBoxes){
   const batch = getBatch(batchNo);
   if(!batch) return {ok:false,msg:'Batch not found'};
+  let _admLateClosed = null;   // v51H: set when ADMIN is printing outside the 48h post-closure window
   // Block label generation if batch is closed AND more than 2 days since close date
   if(batch.status === 'closed'){
     // v49ZJ (confirmed by Ishan): the 48h window anchors on the ACTUAL DPR close moment
@@ -2736,8 +2737,18 @@ function canGenerateLabels(batchNo, requestedBoxes){
     const closedAt = batch.dprClosedAt || batch.closedDate || batch.endDate;
     if(closedAt){
       const daysSinceClosed = (Date.now() - new Date(closedAt).getTime()) / 86400000;
+      // v51H (Admin, explicit): the 48h post-closure window stands for every operator role, but ADMIN
+      // must be able to print labels on a closed batch AT ANY TIME. Admin is no longer refused — the
+      // window becomes an advisory flag (adminLateClosed) that the Label Generation panel surfaces and
+      // generateLabels() confirms before writing, so a late print is deliberate and never silent.
+      // Every other cap (gross-derived box max, daily cap, E-series split) is unchanged for admin.
       if(daysSinceClosed > 2){
-        return {ok:false, msg:`Batch ${batchNo} is closed. Labels can only be generated within 2 days of closing (closed: ${fmtDate(closedAt)}).`};
+        if(typeof currentDept !== 'undefined' && currentDept === 'admin'){
+          // Flag and fall through — every other cap below still applies to admin unchanged.
+          _admLateClosed = { closedAt, days: Math.floor(daysSinceClosed) };
+        } else {
+          return {ok:false, msg:`Batch ${batchNo} is closed. Labels can only be generated within 2 days of closing (closed: ${fmtDate(closedAt)}).`};
+        }
       }
     }
   }
@@ -2769,7 +2780,8 @@ function canGenerateLabels(batchNo, requestedBoxes){
     if(requestedBoxes > todayRemaining) return {ok:false, msg:`Daily limit: ${dailyBoxTarget} boxes (${fmt(dailyTarget)}L target). ${todayRemaining} more allowed today.`};
   }
 
-  return {ok:true, maxTotal:maxTotalBoxes, remainingAllowed, isExcessRun};
+  return {ok:true, maxTotal:maxTotalBoxes, remainingAllowed, isExcessRun,
+          adminLateClosed: _admLateClosed || undefined};   // v51H: admin printing outside the 48h window — advisory, confirmed at generate
 }
 
 const _pendingLabelPush=[];
@@ -2805,6 +2817,12 @@ function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nett
   const ps = PACK_SIZES[String(batch.size)] || 1;
   const check = canGenerateLabels(batchNo, count);
   if(!check.ok) { alert(check.msg); return []; }
+  // v51H: ADMIN is allowed to print labels on a closed batch at any time, but never silently —
+  // an explicit confirmation makes the late print deliberate and it is written to the audit log.
+  if(check.adminLateClosed){
+    if(!confirm(`Batch ${batchNo} was closed ${check.adminLateClosed.days} day(s) ago (${fmtDate(check.adminLateClosed.closedAt)}), outside the normal 48-hour label window.\n\nADMIN: generate ${count} label(s) anyway?\n\nThis is recorded in the audit log.`)) return [];
+    try { trkAuditLog('LABEL_GEN_ADMIN_LATE_CLOSED', `${batchNo}: ${count} label(s) generated ${check.adminLateClosed.days}d after DPR close (${check.adminLateClosed.closedAt}) — admin override of the 48h window`); } catch(_) {}
+  }
 
   const newLabels = [];
   // Determine if this is an excess run
@@ -5194,6 +5212,10 @@ function updateLabelGenInfo(){
   else if(check.isExcessRun){
     infoEl.classList.add('alert-warning');
     infoEl.innerHTML=`⊕ <strong>EXCESS LABELS RUN</strong> — Original batch boxes fully labelled. These will print as <strong>E-N/M</strong> format (e.g. E-1/${check.remainingAllowed}). ${check.remainingAllowed} excess labels available.`;
+  }
+  else if(check.adminLateClosed){   // v51H: admin printing outside the 48h post-closure window
+    infoEl.classList.add('alert-warning');
+    infoEl.innerHTML=`⚠️ <strong>ADMIN — late print</strong>: batch closed ${check.adminLateClosed.days} day(s) ago (${fmtDate(check.adminLateClosed.closedAt)}), outside the 48-hour window. ${check.remainingAllowed} labels remaining; you will be asked to confirm.`;
   }
   else { infoEl.classList.add('alert-success'); infoEl.textContent=`✅ OK — ${check.remainingAllowed} labels remaining`; }
 }
@@ -7964,6 +7986,7 @@ function _v51dRenderOverInv() {
       <td class="td-mono fw-bold">${r.batch}</td>
       <td>${r.customer||'—'}</td>
       <td class="td-mono" style="text-align:center">${_pmLabel(r.prodMonth)}</td>
+      <td class="td-mono" style="text-align:right" title="Gross produced (DPR actuals) — production context for the packed-basis excess; a batch can be legitimately produced but not yet packed">${r.producedL != null ? r.producedL.toFixed(2) : '—'}</td>
       <td class="td-mono" style="text-align:right">${r.packed.toFixed(2)}</td>
       <td class="td-mono" style="text-align:right" title="Received ${r.received.toFixed(2)}L + Pending ${r.pending.toFixed(2)}L">${r.invoiced.toFixed(2)}</td>
       <td class="td-mono fw-bold" style="text-align:right;color:#dc2626">${r.excess.toFixed(2)}</td>
@@ -7997,13 +8020,15 @@ function _v51dRenderOverInv() {
         <thead style="position:sticky;top:0;background:var(--bg2,#fff);z-index:1"><tr>
           <th>BATCH</th><th>CUSTOMER</th>
           <th style="text-align:center" title="Month of production (batch start month)">PROD MONTH</th>
+          <th style="text-align:right" title="Gross produced (DPR actuals)">PRODUCED (L)</th>
           <th style="text-align:right">PACKED (L)</th>
           <th style="text-align:right" title="Received + pending requests (v49C definition)">INVOICED (L)</th>
           <th style="text-align:right">EXCESS (L)</th><th>INVOICE #s (QTY, DATE)</th>
         </tr></thead>
-        <tbody>${body || '<tr><td colspan="7" style="text-align:center;padding:16px;color:var(--text3)">No over-invoiced batches 🎉</td></tr>'}</tbody>
+        <tbody>${body || '<tr><td colspan="8" style="text-align:center;padding:16px;color:var(--text3)">No over-invoiced batches 🎉</td></tr>'}</tbody>
         ${rows.length ? `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">
           <td>TOTAL (${rows.length})</td><td></td><td></td>
+          <td class="td-mono" style="text-align:right">${rows.reduce((a,r)=>a+(r.producedL||0),0).toFixed(2)}</td>
           <td class="td-mono" style="text-align:right">${tot('packed')}</td>
           <td class="td-mono" style="text-align:right">${tot('invoiced')}</td>
           <td class="td-mono" style="text-align:right;color:#dc2626">${tot('excess')}</td><td></td>
@@ -8017,7 +8042,7 @@ function _v51dExportOverInv() {
   // month of production) and carries the new PROD MONTH column + per-invoice dates.
   const rows = _v51dFilteredOverInvRows();
   const wb = XLSX.utils.book_new();
-  const HDR = ['BATCH','CUSTOMER','PROD MONTH','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)','EXCESS (L)','INVOICE #s (QTY, DATE)'];
+  const HDR = ['BATCH','CUSTOMER','PROD MONTH','PRODUCED (L)','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)','EXCESS (L)','INVOICE #s (QTY, DATE)'];   // v51H: Produced = gross DPR actuals
   const NC = HDR.length;
   const aoa = []; const merges = []; const kinds = [];
   const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
@@ -8029,16 +8054,16 @@ function _v51dExportOverInv() {
   _push([`Definition: invoiced (received + pending) − packed ≥ 0.01L${_fltNote ? '  |  ' + _fltNote : ''}  |  Generated ${new Date().toLocaleString()}`],'subtitle');
   _push([],'spacer');
   _push(HDR,'hdr');
-  rows.forEach(r => _push([r.batch, r.customer||'—', r.prodMonth||'—', r.packed, r.received, r.pending, r.invoiced, r.excess,
+  rows.forEach(r => _push([r.batch, r.customer||'—', r.prodMonth||'—', (r.producedL != null ? r.producedL : '—'), r.packed, r.received, r.pending, r.invoiced, r.excess,
     (r.invoices||[]).map(i=>`${i.no} (${i.qty}L${i.date ? ', ' + _v51dOverInvDateFmt(i.date) : ''})`).join(', ')],'data'));
   const s = k => rows.reduce((a,r)=>a+(r[k]||0),0);
-  _push([`TOTAL (${rows.length} batches)`,'','',Math.round(s('packed')*100)/100,Math.round(s('received')*100)/100,
+  _push([`TOTAL (${rows.length} batches)`,'','',Math.round(rows.reduce((a,r)=>a+(r.producedL||0),0)*100)/100,Math.round(s('packed')*100)/100,Math.round(s('received')*100)/100,
     Math.round(s('pending')*100)/100,Math.round(s('invoiced')*100)/100,Math.round(s('excess')*100)/100,''],'grand');
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
-  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:56}];
+  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:56}];
   const R = XLSX.utils.decode_range(ws['!ref']);
-  for(let r=R.s.r; r<=R.e.r; r++) for(let c=3; c<=7; c++){
+  for(let r=R.s.r; r<=R.e.r; r++) for(let c=3; c<=8; c++){
     const cell = ws[XLSX.utils.encode_cell({r,c})];
     if(cell && cell.t==='n') cell.z = '0.00';
   }
@@ -8054,7 +8079,7 @@ function _v51dExportOverInv() {
       for (let c = 0; c < NC; c++) {
         if (kind === 'hdr')        _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:'20FFFF' } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
         else if (kind === 'grand') _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:'FC02FF' } }, border:_bAll });
-        else if (kind === 'data')  _set(r, c, { font:{ sz:10, ...(c===7?{ bold:true, color:{ rgb:'DC2626' } }:{}) }, border:_bAll });   // v51G: EXCESS shifted right by the PROD MONTH column
+        else if (kind === 'data')  _set(r, c, { font:{ sz:10, ...(c===8?{ bold:true, color:{ rgb:'DC2626' } }:{}) }, border:_bAll });   // v51H: EXCESS shifted right again by the PRODUCED column
       }
     });
   } catch(_e) {}
@@ -8146,7 +8171,7 @@ async function _v41zs_regulariseDispatch(invoiceId) {
   // unit), so a raw split would seed junk. Dedupe. SINGLE real batch → the whole invoice goes to it:
   // collapse to one prefilled row carrying the invoice totals (mirrors the server auto-pair). Clean
   // multi-batch (count matches the per-line rows) → positional prefill. Otherwise leave blank.
-  const batchTokens = [...new Set(String(inv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(t=>/^\d+[A-Z]+\d+$/i.test(t)))];
+  const batchTokens = [...new Set(String(inv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(t=>/^\d+[A-Z]+\d+(-?[A-Z][A-Z0-9]*)?$/i.test(t)))];   // v51H: accept child-suffix batch tokens (26ZE119A / 26ZH079-A)
   if (batchTokens.length === 1) {
     const b = batchTokens[0]; const bd = getBatch(b); const sz = bd ? bd.size : '';
     const qty = parseFloat(inv.total_qty_lakhs)||0;

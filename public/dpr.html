@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v51G</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v51H</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -938,6 +938,12 @@ function _isRunClosed50s(orderId, batchNumber){
   try{
     if (orderId && dprClosedBatches[orderId]) return true;
     const bn = batchNumber ? String(batchNumber).trim().toUpperCase() : '';
+    // v51H: a REOPENED batch (reopen-log row, no current dpr_batch_closed row) is OPEN — this
+    // overrides the v50T planning-status legs below, which stay 'closed' after a DPR reopen and
+    // would otherwise keep the green badge and withhold the 🔒 Close button, leaving a reopened
+    // batch impossible to re-close from Data Entry. The dpr_batch_closed legs above still win, so
+    // once the batch is re-closed it reads closed again immediately.
+    if (bn && window._dprReopenedOpenBns && window._dprReopenedOpenBns.has(bn)) return false;
     if (bn && Object.values(dprClosedBatches).some(cb => cb && cb.batchNumber && String(cb.batchNumber).trim().toUpperCase() === bn)) return true;
     if (orderId && window._dprOrderById && window._dprOrderById[orderId] && window._dprOrderById[orderId].status === 'closed') return true;
     if (bn && window._dprOrderByBn && window._dprOrderByBn[bn] && window._dprOrderByBn[bn].status === 'closed') return true;
@@ -1942,6 +1948,8 @@ async function fetchClosedBatches(){
       // v50T: server-supplied status-closed batch numbers (production_orders authority) — closure
       // no longer depends on the order still being present in the planning order feed (26ZD119).
       window._dprStatusClosedBns = new Set((j.statusClosedBns || []).map(b => String(b).trim().toUpperCase()));
+      // v51H: batches reopened and not yet re-closed — Data Entry treats these as open (see _isRunClosed50s).
+      window._dprReopenedOpenBns = new Set((j.reopenedOpenBns || []).map(b => String(b).trim().toUpperCase()));
       // v41l: track which orders have already used their one reopen (persisted server-side).
       window._dprReopenedOrderIds = new Set(j.reopenedOrderIds || []);
     }
@@ -1978,25 +1986,40 @@ async function closeBatchInDPR(orderId, batchNumber){
 
 // v41l (point 1): REOPEN an inadvertently-closed batch. One reopen per batch, same IST day only.
 // Server enforces both guards authoritatively; this gives immediate UX + audit logging.
-async function reopenBatchInDPR(orderId, batchNumber){
+async function reopenBatchInDPR(orderId, batchNumber, closedAtHint){
   if(!dprUser){ alert('Please log in to reopen a batch.'); return; }
-  const info = dprClosedBatches[orderId];
+  // v51H: dprClosedBatches only holds the CURRENT date's closed rows, so a reopen launched from the
+  // Closed Batches tab (any date, any month) had no local entry and was refused with a misleading
+  // "not currently closed". When the caller supplies the authoritative closed_at (the Closed Batches
+  // payload carries it), synthesize the local info — the server re-checks closure authoritatively.
+  const info = dprClosedBatches[orderId] || (closedAtHint ? { closedAt: closedAtHint, batchNumber } : null);
   if(!info){ alert(`Batch ${batchNumber} is not currently closed.`); return; }
+  // v51H: the once-only guard no longer hard-stops ADMIN — it becomes a confirmed, audited override
+  // (the server has allowed this since v49ZD; only the client was refusing before asking).
+  let _preAdmOv = false;
   if(info.alreadyReopened || (window._dprReopenedOrderIds && window._dprReopenedOrderIds.has(orderId))){
-    alert(`Batch ${batchNumber} has already been reopened once and cannot be reopened again.\n\nContact Admin if further changes are needed.`); return;
+    if(dprUser?.role === 'admin'){
+      if(!confirm(`Batch ${batchNumber} has already been reopened once.\n\nADMIN OVERRIDE: reopen it again anyway?\n\nRecorded in the audit log.`)) return;
+      _preAdmOv = true;
+    } else {
+      alert(`Batch ${batchNumber} has already been reopened once and cannot be reopened again.\n\nContact Admin if further changes are needed.`); return;
+    }
   }
   // Same-day (IST) check on the client for immediate feedback (server re-checks authoritatively).
   const closeDay = info.closedAt ? _localYMD(new Date(info.closedAt)) : today();
-  let _admOv = false;   // v49ZD: admin may override the window + once-only guards (confirmed, audited)
+  let _admOv = _preAdmOv;   // v49ZD: admin may override the window + once-only guards (confirmed, audited) · v51H: carries the once-only override decided above
   if(closeDay !== today()){
     if(dprUser?.role === 'admin'){
-      if(!confirm(`Reopen window has expired (closed ${closeDay}).\n\nADMIN OVERRIDE: reopen ${batchNumber} anyway?\n\nThis bypasses the 2-day window and the once-only rule, and is recorded in the audit log.`)) return;
+      // v51H: if admin already confirmed an override above (once-only), don't ask a second time.
+      if(!_admOv && !confirm(`Reopen window has expired (closed ${closeDay}).\n\nADMIN OVERRIDE: reopen ${batchNumber} anyway?\n\nThis bypasses the 2-day window and the once-only rule, and is recorded in the audit log.`)) return;
       _admOv = true;
     } else {
       alert(`Reopen window expired.\n\nA batch can only be reopened on the same day it was closed (closed ${closeDay}, today ${today()}).\n\nContact Admin to reopen older batches.`); return;
     }
   }
-  if(!confirm(`Reopen batch ${batchNumber} in DPR?\n\n⚠️ This is your ONE allowed reopen for this batch — it cannot be reopened again today or later.\n\nUse this only if the batch was closed by mistake. After reopening you can enter/correct data, then close it again.`)) return;
+  // v51H: admin overrides have already been confirmed above — don't show the misleading
+  // "ONE allowed reopen" warning to someone who is explicitly bypassing that rule.
+  if(!_admOv && !confirm(`Reopen batch ${batchNumber} in DPR?\n\n⚠️ This is your ONE allowed reopen for this batch — it cannot be reopened again today or later.\n\nUse this only if the batch was closed by mistake. After reopening you can enter/correct data, then close it again.`)) return;
   if(serverUrl){
     try{
       const r=await fetch(serverUrl+'/api/dpr/batch-reopen',{
@@ -2018,10 +2041,22 @@ async function reopenBatchInDPR(orderId, batchNumber){
   }
   // Locally: remove the closed mark and record the reopen so the button won't show again.
   delete dprClosedBatches[orderId];
+  // v51H: refresh the server-side closure feed so the reopened batch immediately reads as OPEN in
+  // Data Entry (reopenedOpenBns) — otherwise the stale statusClosedBns leg keeps the green badge
+  // and the 🔒 Close button stays hidden until the next periodic sync.
+  try { await fetchClosedBatches(); } catch(_) {}
   if(!window._dprReopenedOrderIds) window._dprReopenedOrderIds=new Set();
-  window._dprReopenedOrderIds.add(orderId);
-  dprAuditLog('BATCH_REOPEN', `Reopened batch ${batchNumber} (orderId ${orderId}) in DPR — one-time same-day reopen`);
+  // v51H: only the ONE-allowed non-admin reopen consumes the local marker. An admin override must not
+  // brick admin's own next reopen of the same batch in this session — admin has no once-only limit.
+  if(!_admOv) window._dprReopenedOrderIds.add(orderId);
+  dprAuditLog('BATCH_REOPEN', `Reopened batch ${batchNumber} (orderId ${orderId}) in DPR — ${_admOv?'ADMIN OVERRIDE (outside window / repeat reopen)':'one-time same-day reopen'}`);
   toast(`🔓 Batch ${batchNumber} reopened — you may now enter data`,'var(--amber)');
+  // v51H: refresh whichever view launched this — Closed Batches tab or the daily entry grid.
+  // Active tab derived from the DOM (same pattern the poller at the end of this file uses).
+  try {
+    const _pg = document.querySelector('.ntab.on')?.getAttribute('onclick')?.match(/go\('(\w+)'\)/)?.[1];
+    if(_pg === 'closed'){ renderClosedBatches(); return; }
+  } catch(_) {}
   renderShifts();
 }
 
@@ -2651,8 +2686,18 @@ function renderShifts(){
                 // v50S-DPR: reopen only where a genuine dpr_batch_closed row exists (_ci) — a batch
                 // closed via planning status has no same-day DPR reopen; that path goes through Admin.
                 const _canReopen = !!_ci && !_usedReopen && _closeDay===today() && resolvedOrderId;
+                // v51H (Admin, explicit): admin must be able to reopen a batch AT ANY TIME. The button
+                // used to render only inside the same-day + once-only window, so once the window passed
+                // the server's v49ZD admin-override path was unreachable from the UI — admin was locked
+                // out with no control to click. Admin now always gets the button (any closed batch with a
+                // resolvable order id); the override is confirmed in reopenBatchInDPR and audited server-
+                // side. Non-admin gating is unchanged.
+                const _isAdmDpr = dprUser?.role === 'admin';
+                const _admReopen = _isAdmDpr && !!resolvedOrderId && !_canReopen;
                 const _reopenBtn = _canReopen
                   ? `<button onclick="reopenBatchInDPR('${resolvedOrderId}','${r.batchNumber||''}')" style="margin-left:5px;padding:2px 8px;background:rgba(240,165,0,0.12);border:1px solid rgba(240,165,0,0.5);border-radius:3px;color:var(--amber);font-size:10px;font-family:var(--fc);cursor:pointer" title="Reopen this batch (one-time, same day only)">🔓 Reopen</button>`
+                  : _admReopen
+                  ? `<button onclick="reopenBatchInDPR('${resolvedOrderId}','${r.batchNumber||''}')" style="margin-left:5px;padding:2px 8px;background:rgba(139,92,246,0.12);border:1px solid rgba(139,92,246,0.5);border-radius:3px;color:#a78bfa;font-size:10px;font-family:var(--fc);cursor:pointer" title="ADMIN: reopen this batch (outside the normal window / already reopened) — confirmed and audited">🔓 Reopen (Admin)</button>`
                   : '';
                 return `<span style="padding:2px 8px;background:rgba(0,230,118,0.1);border:1px solid rgba(0,230,118,0.3);border-radius:3px;color:var(--green);font-size:10px;font-family:var(--fc)">✅ ${r.batchNumber||'Batch'} Closed in DPR</span>${_reopenBtn}`;
               }
@@ -4901,6 +4946,13 @@ function _cbFiltered(){
 function _cbRenderRows(){
   const tb = document.getElementById('cb-tbody'); if(!tb) return;
   const rows = _cbFiltered();
+  // v51H (Admin, explicit): reopen from HERE, not only from the dated entry grid. Admin should not have
+  // to navigate to the batch's production date to find the purple button — this tab already lists every
+  // closed batch with filters, so the same audited override lives on each row. Admin-only by design;
+  // operators keep the same-day in-grid reopen. Requires a real dpr_batch_closed row (closedAt).
+  const _cbAdmReopen = (b) => (dprUser?.role==='admin' && b.closedAt && b.orderId)
+    ? ` <button onclick="reopenBatchInDPR('${String(b.orderId).replace(/'/g,"\\'")}','${String(b.batchNumber||'').replace(/'/g,"\\'")}','${String(b.closedAt||'').replace(/'/g,"\\'")}')" title="ADMIN: reopen this batch for DPR entry (any date, confirmed and audited)" style="font-size:11px;border:1px solid rgba(139,92,246,0.6);background:transparent;color:#7c3aed;border-radius:3px;padding:2px 7px;cursor:pointer">🔓 Reopen</button>`
+    : '';
   const canEdit = !!dprUser; // floor Production Managers + Admin (all authenticated DPR users); every change is audited server-side
   const fmtL = v => (v||v===0) ? Number(v).toFixed(2) : '—';
   const fmtDt = d => { if(!d) return '—'; try{ return new Date(d).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}); }catch(_){ return d; } };
@@ -4919,7 +4971,7 @@ function _cbRenderRows(){
       <td class="mono" style="white-space:nowrap">${fmtDt(b.endDate)}${b.endShift?` <span style="font-size:9px;font-weight:700;background:#e2e8f0;color:#334155;border-radius:3px;padding:1px 4px" title="Closing shift — shift of the last production entry">${String(b.endShift).replace(/</g,'&lt;')} Shift</span>`:''}</td>
       <td class="mono">${fmtL(b.plannedGross)}</td>
       <td class="mono" style="${ov?'color:#f0c060;font-weight:700':''}">${fmtL(b.actualGross)}${badge}</td>
-      <td style="white-space:nowrap">${canEdit?`<button onclick="editClosedGross('${bn}')" title="Correct the DPR gross for this batch" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--accent);border-radius:3px;padding:2px 7px;cursor:pointer">✎ Edit</button>${ov?` <button onclick="clearClosedGross('${bn}')" title="Revert to the DPR-entered sum" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--red);border-radius:3px;padding:2px 7px;cursor:pointer">↺</button>`:''}`:'<span style="color:var(--t3);font-size:11px">—</span>'}</td>
+      <td style="white-space:nowrap">${canEdit?`<button onclick="editClosedGross('${bn}')" title="Correct the DPR gross for this batch" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--accent);border-radius:3px;padding:2px 7px;cursor:pointer">✎ Edit</button>${ov?` <button onclick="clearClosedGross('${bn}')" title="Revert to the DPR-entered sum" style="font-size:11px;border:1px solid var(--b2);background:transparent;color:var(--red);border-radius:3px;padding:2px 7px;cursor:pointer">↺</button>`:''}`:'<span style="color:var(--t3);font-size:11px">—</span>'}${_cbAdmReopen(b)}</td>
     </tr>`;
   }).join('') || `<tr><td colspan="11" style="text-align:center;color:var(--t3);padding:18px">No closed batches match the filters.</td></tr>`;
   // v41ZL #6: summation row

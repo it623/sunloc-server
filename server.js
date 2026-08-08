@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51G';
+const APP_BUILD = 'v51H';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -7203,7 +7203,7 @@ app.post('/api/invoice/reconcile-regularised-multibatch', async (req, res) => {
     //      and case-insensitively (SAP ItemCode '0043' vs stored '43'). Clean bijection → pair.
     //   4. Anything still ambiguous (multi-batch with no per-line detail, or same-PC duplicates) is
     //      SKIPPED with a reason — correctly left for manual re-allocation.
-    const BATCH_RE = /^\d+[A-Z]+\d+$/i;
+    const BATCH_RE = /^\d+[A-Z]+\d+(-?[A-Z])?$/i;   // v51H: accept single-letter child suffix, hyphen optional (26ZE119A / 26ZH079-A)
     const _normPc = (s) => String(s == null ? '' : s).trim().replace(/^0+(?=\d)/, '');
     // batch -> {pc_code, size} resolver: print_orders first, then tracking_labels (both batch-keyed)
     const _batchInfo = async (token) => {
@@ -12563,7 +12563,7 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
       if (alloc && alloc.length) { alloc.forEach(a => add(a.batch, invNo, a.q, iv.customer, iv.invoice_date)); continue; }
       const disp = dispByNo[String(iv.sap_invoice_no||'').trim()] || dispByNo[String(iv.sap_doc_num||'').trim()];
       if (disp && disp.length) { disp.forEach(a => add(a.batch, invNo, a.q, iv.customer, iv.invoice_date)); continue; }
-      const tokens = [...new Set(String(iv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(t=>/^\d+[A-Z]+\d+(-[A-Z0-9]+)?$/i.test(t)))];
+      const tokens = [...new Set(String(iv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(t=>/^\d+[A-Z]+\d+(-?[A-Z][A-Z0-9]*)?$/i.test(t)))];   // v51H: suffix hyphen-optional (26ZE119A)
       if (tokens.length === 1) { add(tokens[0].toUpperCase(), invNo, total, iv.customer, iv.invoice_date); continue; }
       if (total > 0) unattributed.push({ invoice: invNo, qty: Math.round(total*100)/100, batches: tokens.join(', ') || '—', source: iv.source||'' });
     }
@@ -12590,10 +12590,13 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
       const _bns = rows.map(r => r.batch);
       if (_bns.length) {
         const pmMap = {};
+        const prMap = {};   // v51H (Ishan): gross produced per batch, for the Produced column
         const pa = (await pgPool.query(
-          `SELECT batch_number, MIN(date) AS d0 FROM production_actuals
+          `SELECT batch_number, MIN(date) AS d0, SUM(qty_lakhs) AS g FROM production_actuals
             WHERE batch_number = ANY($1) AND COALESCE(date,'') <> '' GROUP BY batch_number`, [_bns])).rows;
-        pa.forEach(r => { if (r.batch_number && r.d0) pmMap[String(r.batch_number).trim().toUpperCase()] = String(r.d0).slice(0,7); });
+        pa.forEach(r => { if (r.batch_number) { const k = String(r.batch_number).trim().toUpperCase();
+          if (r.d0) pmMap[k] = String(r.d0).slice(0,7);
+          prMap[k] = Math.round((parseFloat(r.g)||0)*100)/100; } });
         const _missing = _bns.filter(bn => !pmMap[String(bn).trim().toUpperCase()]);
         if (_missing.length) {
           const po = (await pgPool.query(
@@ -12606,7 +12609,9 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
             } catch(_) {}
           }
         }
-        rows.forEach(r => { r.prodMonth = pmMap[String(r.batch).trim().toUpperCase()] || null; });
+        rows.forEach(r => { const k = String(r.batch).trim().toUpperCase();
+          r.prodMonth = pmMap[k] || null;
+          r.producedL = prMap[k] != null ? prMap[k] : null; });   // v51H: gross produced (DPR actuals) — E-context beside the packed-basis excess
       }
     } catch (e) { console.warn('[v51G over-invoiced prodMonth] failed:', e.message); }
     res.json({ ok: true, rows, unattributed });
@@ -13317,7 +13322,30 @@ app.get('/api/dpr/batch-closed', async (req, res) => {
         statusClosedBns = db.prepare(`SELECT DISTINCT batch_number AS bn FROM production_orders WHERE status='closed' AND batch_number IS NOT NULL`).all().map(r => String(r.bn).trim().toUpperCase()).filter(Boolean);
       }
     } catch (e) { console.warn('[v50T] statusClosedBns skipped:', e.message); }
-    res.json({ ok: true, closed: rows, reopenedOrderIds: Array.from(reopenedSet), statusClosedBns });
+    // v51H (Ishan, follow-up to the admin-reopen fix): a REOPENED batch is open — Data Entry must
+    // treat it as such. The v50T status leg reads production_orders.status='closed', which a DPR
+    // reopen deliberately does NOT flip, so after reopening, Data Entry still rendered the green
+    // "Closed in DPR" badge and withheld the 🔒 Close button — admin could edit shift rows (the save
+    // gate is dpr_batch_closed, which reopen deletes) but could not RE-CLOSE the batch afterwards.
+    // Return the batches that have a reopen-log row AND no current dpr_batch_closed row — the same
+    // "currently open after reopen" set the v49G direct-close allow list already uses — so the
+    // client resolver can override its status leg for exactly these. No planning status is written.
+    let reopenedOpenBns = [];
+    try {
+      const _closedBnSet = new Set((rows || []).map(r => String(r.batch_number || '').trim().toUpperCase()).filter(Boolean));
+      const _closedIdSet = new Set((rows || []).map(r => r.order_id).filter(Boolean));
+      let rl;
+      if (pgPool) rl = (await pgPool.query('SELECT order_id, batch_number FROM dpr_batch_reopen_log')).rows;
+      else        rl = db.prepare('SELECT order_id, batch_number FROM dpr_batch_reopen_log').all();
+      for (const r of (rl || [])) {
+        const bn = String(r.batch_number || '').trim().toUpperCase();
+        if (!bn) continue;
+        if (_closedBnSet.has(bn) || _closedIdSet.has(r.order_id)) continue;   // re-closed since
+        reopenedOpenBns.push(bn);
+      }
+      reopenedOpenBns = Array.from(new Set(reopenedOpenBns));
+    } catch (e) { console.warn('[v51H] reopenedOpenBns skipped:', e.message); }
+    res.json({ ok: true, closed: rows, reopenedOrderIds: Array.from(reopenedSet), statusClosedBns, reopenedOpenBns });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -20578,7 +20606,7 @@ async function _exuPendingLabelIds(batchNumber, excludeReqId) {
 app.get('/api/printing/excess-unprint/eligible', async (req, res) => {
   try {
     const session = verifyToken(req.headers['x-session-token'] || req.query?.token);
-    if (!session || !['tracking_printing','planning_manager','admin'].includes(session.role))
+    if (!session || !['tracking_printing','planning_manager','admin'].includes(String(session.role||'').trim().toLowerCase()))   // v51H: role compared normalised (case/whitespace-tolerant)
       return res.status(403).json({ ok:false, error:'Printing / Planning Manager / Admin required' });
     const rows = await _exuEligibleRows(null);
     // Group by batch; apply SAP guard + pending-request exclusion per batch.
@@ -20613,7 +20641,7 @@ app.get('/api/printing/excess-unprint/eligible', async (req, res) => {
 app.post('/api/printing/excess-unprint/propose', async (req, res) => {
   try {
     const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
-    if (!session || !['tracking_printing','admin'].includes(session.role))
+    if (!session || !['tracking_printing','admin'].includes(String(session.role||'').trim().toLowerCase()))   // v51H: role compared normalised
       return res.status(403).json({ ok:false, error:'Printing Manager or Admin required' });
     const { batchNumber, labelIds, newCustomer, reason } = req.body || {};
     const ids = Array.isArray(labelIds) ? labelIds.map(String).filter(Boolean) : [];
@@ -20658,7 +20686,7 @@ app.post('/api/printing/excess-unprint/propose', async (req, res) => {
 app.get('/api/printing/excess-unprint/pending', async (req, res) => {
   try {
     const session = verifyToken(req.headers['x-session-token'] || req.query?.token);
-    if (!session || !['tracking_printing','planning_manager','admin'].includes(session.role))
+    if (!session || !['tracking_printing','planning_manager','admin'].includes(String(session.role||'').trim().toLowerCase()))   // v51H: role compared normalised (case/whitespace-tolerant)
       return res.status(403).json({ ok:false, error:'Printing / Planning Manager / Admin required' });
     const pend = pgPool
       ? (await pgPool.query(`SELECT * FROM excess_unprint_requests WHERE status='pending' ORDER BY proposed_at DESC`)).rows
@@ -20674,7 +20702,7 @@ app.get('/api/printing/excess-unprint/pending', async (req, res) => {
 app.post('/api/printing/excess-unprint/reject/:id', async (req, res) => {
   try {
     const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
-    if (!session || !['planning_manager','admin'].includes(session.role))
+    if (!session || !['planning_manager','admin'].includes(String(session.role||'').trim().toLowerCase()))   // v51H: role compared normalised
       return res.status(403).json({ ok:false, error:'Planning Manager or Admin required' });
     const reason = (req.body?.reason||'').trim();
     if (!reason) return res.status(400).json({ ok:false, error:'Rejection reason required' });
@@ -20697,7 +20725,7 @@ app.post('/api/printing/excess-unprint/reject/:id', async (req, res) => {
 app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
   try {
     const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
-    if (!session || !['planning_manager','admin'].includes(session.role))
+    if (!session || !['planning_manager','admin'].includes(String(session.role||'').trim().toLowerCase()))   // v51H: role compared normalised
       return res.status(403).json({ ok:false, error:'Planning Manager or Admin required' });
     const reqId = req.params.id;
     const request = pgPool
