@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51D';
+const APP_BUILD = 'v51E';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -11666,6 +11666,10 @@ app.post('/api/dpr/save', async (req, res) => {
       const _isAdminCaller = (req.body.userRole === 'admin') || (req.headers['x-user-role'] === 'admin');
       const _forceEntry    = !!req.body.forceEntry;
       const _rejected = [];
+      // v51E: the v41ZR accumulated-production allow reads _grossByBatch/_actualsCache — on a cold
+      // instance those are empty and a legitimately-produced closed-status batch was silently
+      // rejected. Warm them before gating so the check is always authoritative.
+      if (!_grossByBatch || !_actualsCache) { try { await warmActualsCache(); } catch(_) {} }
 
       const actualsToSave = [];
       const _gateRow = (orderId, batchNumber, machineId, shift, qty) => {
@@ -11898,6 +11902,9 @@ app.post('/api/dpr/save', async (req, res) => {
     // Refresh actuals cache so Planning sees new DPR data immediately (force — bypass throttle)
     _actualsCacheTime = 0; // bypass 60s throttle so save is visible immediately
     warmActualsCache().catch(e => console.warn('[DPR] cache warm failed:', e.message));
+    // v51E: corrections to already-closed batches must reflect in Closed Batches / Report E on the
+    // next read, not after the cache TTL — invalidate the closed-batches payload on every save.
+    try { if (typeof _invalidateClosedBatchesCache === 'function') _invalidateClosedBatchesCache(); } catch(_) {}
     // v51B (confirmed by Ishan — the unattributable 4-Aug GF A-shift wipe): every DPR save now
     // leaves an audit row. The wipe investigation dead-ended because this endpoint wrote NOTHING
     // to audit_log (only force-entry/reopen/override paths did) and the re-entry overwrote all
@@ -11914,8 +11921,12 @@ app.post('/api/dpr/save', async (req, res) => {
         }
         _shifts51b.push(`${_sn}:${_mc}`);
       }
+      const _rejA = res._dprRejected || [];
+      const _rejTxt = _rejA.length
+        ? ` — REJECTED ${_rejA.length}: ` + _rejA.slice(0, 6).map(r => `${r.batchNumber||r.orderId||'?'}@${r.machineId||'?'}/${r.shift||'?'} (${String(r.reason||'').slice(0, 60)})`).join('; ')
+        : '';
       logAudit(req.body.userName || 'dpr', String(req.headers['x-user-role'] || ''), 'dpr', 'DPR_SAVE',
-        `${floor} ${date} — machines with data per shift [${_shifts51b.join(', ')}]`, req.ip);
+        `${floor} ${date} — machines with data per shift [${_shifts51b.join(', ')}]${_rejTxt}`.slice(0, 900), req.ip);
     } catch (_) {}
     // v40 P18.14i Fix 2: include any gate rejections so client can alert the operator
     const rejected = res._dprRejected || [];
@@ -12632,8 +12643,78 @@ app.post('/api/admin/audit-export-invoice-headers', async (req, res) => {
                            impliedIfThousands: parseFloat((stored * 0.01).toFixed(3)) });
       }
     }
+    // ═══ v51E DISPATCH-RECORD + BOXES PASS (confirmed by Ishan) ═════════════════════════════════
+    // The header pass above fixed invoices_received.total_qty_lakhs, but the tracking_dispatch_records
+    // written at ingest time still carry SAP thousands (Report E's DISPATCH column and the truck plan
+    // read these records — 26T075 showed 3150.00L dispatched), and record/invoice boxes carry SAP
+    // units (6000-style) or 0. For every invoice in the same direct-SAP set: if the SUM of its
+    // dispatch-record qtys ≈ 100× its (now corrected) header, each record is scaled ÷100 and its
+    // boxes recomputed from the batch's pack size; the invoice's total_boxes is rewritten as the sum.
+    // Same dry-run/confirm discipline; affected batches are recomputed after a confirmed run.
+    const _packMap51e = { '00':0.75, '0':1.00, '1':1.25, '2':1.75, '3':2.25, '4':3.00 };
+    const _sizeByBatch51e = {};
+    try {
+      for (const r of (await pgPool.query(`SELECT batch_number, data_json FROM production_orders WHERE batch_number IS NOT NULL`)).rows) {
+        try { const d = typeof r.data_json === 'string' ? JSON.parse(r.data_json) : (r.data_json||{});
+              if (d.size != null) _sizeByBatch51e[String(r.batch_number).trim().toUpperCase()] = String(d.size); } catch(_) {}
+      }
+    } catch(_) {}
+    const dispRows51e = [];
+    let dispToFix = 0, dispFixed = 0, invBoxesFixed = 0;
+    const _affected51e = new Set();
+    try {
+      const recRows = (await pgPool.query(
+        `SELECT id, batch_number, invoice_no, qty, boxes FROM tracking_dispatch_records
+          WHERE COALESCE(invoice_no,'') <> ''`)).rows.map(r => ({ ...r, qty: parseFloat(r.qty)||0, boxes: parseInt(r.boxes,10)||0 }));
+      const recByInv = {};
+      recRows.forEach(r => { const k = String(r.invoice_no).trim(); (recByInv[k] = recByInv[k]||[]).push(r); });
+      const hdrRows = (await pgPool.query(
+        `SELECT id, sap_doc_num, sap_invoice_no, total_qty_lakhs, payload_json FROM invoices_received
+          WHERE payload_json IS NOT NULL AND (invoice_request_id IS NULL OR invoice_request_id = '')`)).rows;
+      for (const h of hdrRows) {
+        let inv2; try { inv2 = typeof h.payload_json === 'string' ? JSON.parse(h.payload_json) : h.payload_json; } catch { continue; }
+        const lines2 = (inv2 && inv2.DocumentLines) || [];
+        if (!lines2.length || !lines2.some(l => _sapUomScale(l) < 1)) continue;   // thousand-marker set only
+        const hdrTotal = parseFloat(h.total_qty_lakhs) || 0;
+        if (hdrTotal <= 0) continue;
+        const recs = recByInv[String(h.sap_invoice_no||'').trim()] || recByInv[String(h.sap_doc_num||'').trim()];
+        if (!recs || !recs.length) continue;
+        const recSum = recs.reduce((s, r) => s + r.qty, 0);
+        // Only when the record-sum is ~100× the corrected header is this the stale-scale population.
+        if (!(recSum > hdrTotal * 50 && Math.abs(recSum / 100 - hdrTotal) <= Math.max(0.5, hdrTotal * 0.02))) continue;
+        for (const r of recs) {
+          const newQty = parseFloat((r.qty / 100).toFixed(3));
+          const sz = String(_sizeByBatch51e[String(r.batch_number||'').trim().toUpperCase()] ?? '').trim();
+          const pack = _packMap51e[sz] || 0;
+          const newBoxes = pack > 0 ? Math.ceil(newQty / pack - 1e-9) : r.boxes;
+          dispToFix++;
+          dispRows51e.push({ invoice: String(h.sap_invoice_no || h.sap_doc_num), batch: r.batch_number,
+                             qtyFrom: r.qty, qtyTo: newQty, boxesFrom: r.boxes, boxesTo: newBoxes });
+          if (confirm) {
+            await pgPool.query(`UPDATE tracking_dispatch_records SET qty=$1, boxes=$2 WHERE id=$3`, [newQty, newBoxes, r.id]);
+            dispFixed++; if (r.batch_number) _affected51e.add(String(r.batch_number).trim());
+          }
+        }
+        if (confirm) {
+          const totBoxes = recs.reduce((s, r) => {
+            const sz = String(_sizeByBatch51e[String(r.batch_number||'').trim().toUpperCase()] ?? '').trim();
+            const pack = _packMap51e[sz] || 0;
+            return s + (pack > 0 ? Math.ceil((r.qty / 100) / pack - 1e-9) : 0);
+          }, 0);
+          if (totBoxes > 0) { await pgPool.query(`UPDATE invoices_received SET total_boxes=$1 WHERE id=$2`, [totBoxes, h.id]); invBoxesFixed++; }
+        }
+      }
+      if (confirm && _affected51e.size) {
+        try { if (typeof _recomputeDispatchActuals === 'function') for (const bn of _affected51e) await _recomputeDispatchActuals(bn); } catch(_) {}
+        try { logAudit('SYSTEM','system','tracking','EXPORT_DISPATCH_RECORD_UOM_FIX', `Scaled ${dispFixed} dispatch record(s) ÷100 + boxes recomputed across ${_affected51e.size} batch(es); ${invBoxesFixed} invoice total_boxes rewritten`); } catch(_) {}
+      }
+    } catch (e) { console.warn('[v51E dispatch-record pass] failed:', e.message); }
+
     res.json({ ok: true, dryRun: !confirm, scope: 'direct_sap_only', tolPct: tolPct * 100,
                scanned, staleHeaders: { toFix: stale, updated: staleFixed, rows: staleRows.slice(0, 100) },
+               dispatchRecords: { toFix: dispToFix, updated: dispFixed, invoiceBoxesUpdated: invBoxesFixed,
+                 rows: dispRows51e.slice(0, 120),
+                 note: 'v51E: export dispatch records ÷100 + boxes from pack size; only invoices whose record-sum ≈ 100× the corrected header.' },
                suspectMissedMarker: { count: suspectRows.length, rows: suspectRows.slice(0, 100),
                  note: 'FLAG ONLY — not auto-fixed. Review each; if genuinely thousands, report the UoM field name so the resolver can be extended.' } });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -12912,11 +12993,16 @@ app.post('/api/dpr/batch-reopen', async (req, res) => {
          VALUES ($1,$2,$3,NOW(),$4) ON CONFLICT(order_id) DO NOTHING`,
         [orderId, batchNumber || closedRow.batch_number || null, closedRow.closed_at || null, reopenedBy || null]
       );
-      await pgPool.query('DELETE FROM dpr_batch_closed WHERE order_id=$1', [orderId]);
+      // v51E: clear by BOTH keys — the save gate blocks on order_id AND batch_number, so a stray
+      // closed-row for the same batch under another order id (duplicate-order artifact) would keep
+      // rejecting saves after a "successful" reopen. Reopening a batch means reopening THE batch.
+      await pgPool.query('DELETE FROM dpr_batch_closed WHERE order_id=$1 OR (COALESCE($2,\'\') <> \'\' AND batch_number=$2)', [orderId, batchNumber || closedRow.batch_number || null]);
     } else {
       db.prepare(`INSERT OR IGNORE INTO dpr_batch_reopen_log (order_id, batch_number, closed_at, reopened_at, reopened_by)
         VALUES (?, ?, ?, datetime('now'), ?)`).run(orderId, batchNumber || closedRow.batch_number || null, closedRow.closed_at || null, reopenedBy || null);
-      db.prepare('DELETE FROM dpr_batch_closed WHERE order_id=?').run(orderId);
+      const _bn51e = batchNumber || closedRow.batch_number || '';
+      if (_bn51e) db.prepare('DELETE FROM dpr_batch_closed WHERE order_id=? OR batch_number=?').run(orderId, _bn51e);
+      else db.prepare('DELETE FROM dpr_batch_closed WHERE order_id=?').run(orderId);
     }
     _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     res.json({ ok: true, reopenedAt: new Date().toISOString() });
