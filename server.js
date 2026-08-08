@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51F';
+const APP_BUILD = 'v51G';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -12541,7 +12541,7 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
         WHERE status='pending_reconciliation' AND COALESCE(batch_number,'') <> ''
         GROUP BY batch_number`)).rows;
     const invs = (await pgPool.query(
-      `SELECT id, sap_invoice_no, sap_doc_num, customer, batch_number, total_qty_lakhs, source
+      `SELECT id, sap_invoice_no, sap_doc_num, customer, batch_number, total_qty_lakhs, source, invoice_date
          FROM invoices_received`)).rows;
 
     const packed = {}; packedRows.forEach(r => { if (r.batch_number) packed[r.batch_number.trim()] = parseFloat(r.packed)||0; });
@@ -12549,20 +12549,22 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
     const dispByNo = {}; dispRows.forEach(r => { const k = String(r.invoice_no).trim(); (dispByNo[k] = dispByNo[k]||[]).push({ batch: String(r.batch_number).trim(), q: parseFloat(r.q)||0 }); });
 
     const perBatch = {}; const unattributed = [];
-    const add = (bn, invNo, q, customer) => {
+    // v51G (Ishan): each attributed invoice entry now carries its invoice_date (YYYY-MM-DD slice)
+    // so the consolidated view can show it and filter by an invoice-date range.
+    const add = (bn, invNo, q, customer, invDate) => {
       const b = perBatch[bn] = perBatch[bn] || { batch: bn, customer: customer||'', received: 0, pending: 0, invoices: [] };
       if (customer && !b.customer) b.customer = customer;
-      b.received += q; b.invoices.push({ no: invNo, qty: Math.round(q*100)/100 });
+      b.received += q; b.invoices.push({ no: invNo, qty: Math.round(q*100)/100, date: (invDate ? String(invDate).slice(0,10) : null) });
     };
     for (const iv of invs) {
       const invNo = String(iv.sap_invoice_no || iv.sap_doc_num || iv.id).trim();
       const total = parseFloat(iv.total_qty_lakhs)||0;
       const alloc = allocByInv[iv.id];
-      if (alloc && alloc.length) { alloc.forEach(a => add(a.batch, invNo, a.q, iv.customer)); continue; }
+      if (alloc && alloc.length) { alloc.forEach(a => add(a.batch, invNo, a.q, iv.customer, iv.invoice_date)); continue; }
       const disp = dispByNo[String(iv.sap_invoice_no||'').trim()] || dispByNo[String(iv.sap_doc_num||'').trim()];
-      if (disp && disp.length) { disp.forEach(a => add(a.batch, invNo, a.q, iv.customer)); continue; }
+      if (disp && disp.length) { disp.forEach(a => add(a.batch, invNo, a.q, iv.customer, iv.invoice_date)); continue; }
       const tokens = [...new Set(String(iv.batch_number||'').split(/[\s,]+/).map(t=>t.trim()).filter(t=>/^\d+[A-Z]+\d+(-[A-Z0-9]+)?$/i.test(t)))];
-      if (tokens.length === 1) { add(tokens[0].toUpperCase(), invNo, total, iv.customer); continue; }
+      if (tokens.length === 1) { add(tokens[0].toUpperCase(), invNo, total, iv.customer, iv.invoice_date); continue; }
       if (total > 0) unattributed.push({ invoice: invNo, qty: Math.round(total*100)/100, batches: tokens.join(', ') || '—', source: iv.source||'' });
     }
     pendRows.forEach(r => {
@@ -12580,6 +12582,33 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
         pending: Math.round(b.pending*100)/100, invoiced, excess, invoices: b.invoices });
     }
     rows.sort((a,b) => b.excess - a.excess);
+    // v51G (Ishan): production month per over-invoiced batch, for the month-of-production filter.
+    // Month-membership rule (frozen): a batch belongs wholly to its START month — production dates
+    // only. Authority: MIN(production_actuals.date); fallback for batches with no actuals rows: the
+    // production order's planned startDate. Batches resolving to neither carry prodMonth = null.
+    try {
+      const _bns = rows.map(r => r.batch);
+      if (_bns.length) {
+        const pmMap = {};
+        const pa = (await pgPool.query(
+          `SELECT batch_number, MIN(date) AS d0 FROM production_actuals
+            WHERE batch_number = ANY($1) AND COALESCE(date,'') <> '' GROUP BY batch_number`, [_bns])).rows;
+        pa.forEach(r => { if (r.batch_number && r.d0) pmMap[String(r.batch_number).trim().toUpperCase()] = String(r.d0).slice(0,7); });
+        const _missing = _bns.filter(bn => !pmMap[String(bn).trim().toUpperCase()]);
+        if (_missing.length) {
+          const po = (await pgPool.query(
+            `SELECT batch_number, data_json FROM production_orders WHERE batch_number = ANY($1)`, [_missing])).rows;
+          for (const r of po) {
+            try {
+              const d = typeof r.data_json === 'string' ? JSON.parse(r.data_json) : (r.data_json || {});
+              const sd = d.startDate || d.start_date || null;
+              if (sd) pmMap[String(r.batch_number).trim().toUpperCase()] = String(sd).slice(0,7);
+            } catch(_) {}
+          }
+        }
+        rows.forEach(r => { r.prodMonth = pmMap[String(r.batch).trim().toUpperCase()] || null; });
+      }
+    } catch (e) { console.warn('[v51G over-invoiced prodMonth] failed:', e.message); }
     res.json({ ok: true, rows, unattributed });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -12643,6 +12672,62 @@ app.post('/api/admin/audit-export-invoice-headers', async (req, res) => {
                            impliedIfThousands: parseFloat((stored * 0.01).toFixed(3)) });
       }
     }
+    // ═══ v51G HEADER-BOXES LEG (confirmed by Ishan — 9063/inv_45215) ════════════════════════════
+    // The v51E boxes rewrite lived only inside the dispatch-record branch below, so a PENDING
+    // direct-SAP invoice (no dispatch records yet) kept its stale SAP-unit total_boxes (9063:
+    // 34500 against ~330 real boxes), and the v50Y enrichment queue can't touch it either — its
+    // guard only fills boxes that are exactly 0. For every direct-SAP thousand-marker invoice,
+    // derive the expected box count per line (UoM-scaled line qty → lakhToBox at the line's own
+    // size — the v50Y derivation), and rewrite total_boxes ONLY on a magnitude anomaly
+    // (stored > derived × 50, the 100× family). Generated Invoices' TOTAL BOXES card sums these
+    // headers, so healing the rows heals the card. Same dry-run/confirm discipline.
+    const hdrBoxRows = [];
+    let hdrBoxToFix = 0, hdrBoxFixed = 0;
+    try {
+      const bhRows = (await pgPool.query(
+        `SELECT id, sap_doc_num, sap_invoice_no, total_boxes, size, payload_json
+           FROM invoices_received
+          WHERE payload_json IS NOT NULL AND (invoice_request_id IS NULL OR invoice_request_id = '')
+            AND COALESCE(total_boxes,0) > 0`)).rows;
+      const _szCache51g = {};
+      const _lineSize51g = async (itemCode) => {
+        const ic = String(itemCode || '').trim();
+        if (!ic) return '';
+        if (_szCache51g[ic] !== undefined) return _szCache51g[ic];
+        let sz = '';
+        try {
+          const pr = (await pgPool.query(`SELECT size FROM pc_codes WHERE code=$1 LIMIT 1`, [ic])).rows[0];
+          if (pr && pr.size) sz = pr.size;
+        } catch(_) {}
+        if (!sz) { try { const pm = _pcMasterLookup(ic); if (pm && pm.size) sz = pm.size; } catch(_) {} }
+        return (_szCache51g[ic] = sz);
+      };
+      for (const h of bhRows) {
+        let inv3; try { inv3 = typeof h.payload_json === 'string' ? JSON.parse(h.payload_json) : h.payload_json; } catch { continue; }
+        const lines3 = (inv3 && inv3.DocumentLines) || [];
+        if (!lines3.length || !lines3.some(l => _sapUomScale(l) < 1)) continue;   // thousand-marker set only
+        let derived = 0;
+        for (const l of lines3) {
+          const lq = (parseFloat(l.Quantity) || 0) * _sapUomScale(l);
+          if (lq <= 0) continue;
+          const lsz = (await _lineSize51g(l.ItemCode)) || h.size || null;
+          derived += _v44zj_lakhToBox(lq, lsz);
+        }
+        if (derived <= 0) continue;   // size unresolvable — never guess
+        const stored = parseInt(h.total_boxes, 10) || 0;
+        if (stored <= derived * 50) continue;   // only the unmistakable 100×-family anomaly
+        hdrBoxToFix++;
+        hdrBoxRows.push({ invoice: String(h.sap_invoice_no || h.sap_doc_num || h.id), boxesFrom: stored, boxesTo: derived });
+        if (confirm) {
+          await pgPool.query(`UPDATE invoices_received SET total_boxes=$1 WHERE id=$2`, [derived, h.id]);
+          hdrBoxFixed++;
+        }
+      }
+      if (confirm && hdrBoxFixed) {
+        try { logAudit('SYSTEM','system','tracking','EXPORT_INVOICE_HEADER_BOXES_FIX', `Rewrote total_boxes on ${hdrBoxFixed} record-less direct-SAP thousand-marker invoice(s) from per-line size derivation`); } catch(_) {}
+      }
+    } catch (e) { console.warn('[v51G header-boxes leg] failed:', e.message); }
+
     // ═══ v51E DISPATCH-RECORD + BOXES PASS (confirmed by Ishan) ═════════════════════════════════
     // The header pass above fixed invoices_received.total_qty_lakhs, but the tracking_dispatch_records
     // written at ingest time still carry SAP thousands (Report E's DISPATCH column and the truck plan
@@ -12712,6 +12797,8 @@ app.post('/api/admin/audit-export-invoice-headers', async (req, res) => {
 
     res.json({ ok: true, dryRun: !confirm, scope: 'direct_sap_only', tolPct: tolPct * 100,
                scanned, staleHeaders: { toFix: stale, updated: staleFixed, rows: staleRows.slice(0, 100) },
+               headerBoxes: { toFix: hdrBoxToFix, updated: hdrBoxFixed, rows: hdrBoxRows.slice(0, 120),
+                 note: 'v51G: record-less direct-SAP thousand-marker invoices — total_boxes rewritten from per-line size derivation when stored > derived × 50.' },
                dispatchRecords: { toFix: dispToFix, updated: dispFixed, invoiceBoxesUpdated: invBoxesFixed,
                  rows: dispRows51e.slice(0, 120),
                  note: 'v51E: export dispatch records ÷100 + boxes from pack size; only invoices whose record-sum ≈ 100× the corrected header.' },
@@ -19354,18 +19441,38 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
     // identical for the batches the planning view cares about, while cutting the rows scanned.
     const sinceRaw = (req.query.since || '').trim();
     const since = /^\d{4}-\d{2}-\d{2}$/.test(sinceRaw) ? sinceRaw : null;
+    // v51G (confirmed by Ishan — 26T077/26T088/26V092/26ZE116 false "over-invoiced"): the v41ZG
+    // window filtered per-SCAN (ts >= since), so a batch packed BEFORE the window but still being
+    // invoiced/dispatched today returned packing.inQty = 0 — Planning's dp.packedQty went to 0 and
+    // the v49C badge showed the full invoiced qty as excess (19.25L on 26T077 = its 11 packed boxes
+    // × 1.75, packed rendered as 0). Every 1st-of-month the window rolls and a fresh cohort breaks.
+    // The window now selects BATCHES (any scan / wastage / production / invoice-request activity
+    // since the date) and aggregates each selected batch's FULL history, so gross, scans and
+    // wastage stay mutually consistent per batch (WIP formula components share one basis) while
+    // long-dead batches are still excluded — the perf goal v41ZG actually intended.
     let scans, wastage, prodActuals;
     if (pgPool) {
-      const scanSql = since
-        ? `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.ts >= $1 GROUP BY s.batch_number, s.dept, s.type`
+      let batchSet = null;
+      if (since) {
+        const bs = await pgPool.query(
+          `SELECT DISTINCT batch_number FROM (
+             SELECT batch_number FROM tracking_scans WHERE ts >= $1
+             UNION SELECT batch_number FROM tracking_wastage WHERE ts >= $1
+             UNION SELECT batch_number FROM production_actuals WHERE date >= $1
+             UNION SELECT batch_number FROM invoice_requests WHERE COALESCE(updated_at, created_at) >= $1
+           ) t WHERE COALESCE(batch_number,'') <> ''`, [since]);
+        batchSet = bs.rows.map(r => r.batch_number);
+      }
+      const scanSql = batchSet
+        ? `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number = ANY($1) GROUP BY s.batch_number, s.dept, s.type`
         : `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type`;
-      const wasteSql = since
-        ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE ts >= $1 GROUP BY batch_number, dept, type'
+      const wasteSql = batchSet
+        ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE batch_number = ANY($1) GROUP BY batch_number, dept, type'
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
-      const prodSql = since
-        ? 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals WHERE date >= $1 GROUP BY batch_number'
+      const prodSql = batchSet
+        ? 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals WHERE batch_number = ANY($1) GROUP BY batch_number'
         : 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number';
-      const args = since ? [since] : [];
+      const args = batchSet ? [batchSet] : [];
       const [r1, r2, r3] = await Promise.all([
         pgPool.query(scanSql, args),
         pgPool.query(wasteSql, args),
@@ -19373,18 +19480,30 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       ]);
       scans = r1.rows; wastage = r2.rows; prodActuals = r3.rows;
     } else {
-      const scanSql = since
-        ? `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.ts >= ? GROUP BY s.batch_number, s.dept, s.type`
+      // v51G: same per-batch window as the PG branch (batch set → full-history aggregation).
+      let batchSet = null;
+      if (since) {
+        batchSet = db.prepare(
+          `SELECT DISTINCT batch_number FROM (
+             SELECT batch_number FROM tracking_scans WHERE ts >= ?
+             UNION SELECT batch_number FROM tracking_wastage WHERE ts >= ?
+             UNION SELECT batch_number FROM production_actuals WHERE date >= ?
+             UNION SELECT batch_number FROM invoice_requests WHERE COALESCE(updated_at, created_at) >= ?
+           ) t WHERE COALESCE(batch_number,'') <> ''`).all(since, since, since, since).map(r => r.batch_number);
+      }
+      const _ph = batchSet ? batchSet.map(() => '?').join(',') : '';
+      const scanSql = batchSet
+        ? `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number IN (${_ph || "''"}) GROUP BY s.batch_number, s.dept, s.type`
         : `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type`;
-      const wasteSql = since
-        ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE ts >= ? GROUP BY batch_number, dept, type'
+      const wasteSql = batchSet
+        ? `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE batch_number IN (${_ph || "''"}) GROUP BY batch_number, dept, type`
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
-      const prodSql = since
-        ? 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals WHERE date >= ? GROUP BY batch_number'
+      const prodSql = batchSet
+        ? `SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals WHERE batch_number IN (${_ph || "''"}) GROUP BY batch_number`
         : 'SELECT batch_number, SUM(qty_lakhs) as gross_prod FROM production_actuals GROUP BY batch_number';
-      scans = since ? db.prepare(scanSql).all(since) : db.prepare(scanSql).all();
-      wastage = since ? db.prepare(wasteSql).all(since) : db.prepare(wasteSql).all();
-      prodActuals = since ? db.prepare(prodSql).all(since) : db.prepare(prodSql).all();
+      scans = batchSet ? db.prepare(scanSql).all(...batchSet) : db.prepare(scanSql).all();
+      wastage = batchSet ? db.prepare(wasteSql).all(...batchSet) : db.prepare(wasteSql).all();
+      prodActuals = batchSet ? db.prepare(prodSql).all(...batchSet) : db.prepare(prodSql).all();
     }
     const grossProdMap = {};
     prodActuals.forEach(r => { if(r.batch_number) grossProdMap[r.batch_number.toUpperCase()] = parseFloat(r.gross_prod||0); });
@@ -19613,28 +19732,53 @@ app.post('/api/tracking/manual-dispatch', async (req, res) => {
     const { planId, batchNumber, customer, qty, boxes, by } = req.body || {};
     if (!planId || !batchNumber) return res.status(400).json({ ok:false, error:'planId and batchNumber required' });
     const recId   = 'MANUAL-' + planId;
-    const remarks = 'Manually dispatched — no invoice';
     const q   = parseFloat(qty)   || 0;
     const b   = parseInt(boxes,10) || 0;
     const who = by || 'planning';
     const ts  = new Date().toISOString();
+    // v51G (confirmed by Ishan — dispatch must never be double-counted): ✓ Dispatch used to write the
+    // FULL plan qty as a MANUAL record regardless of what the invoice/regularise flow (or legacy
+    // out-scans) had already dispatched for the batch — Report E and dispatch actuals then summed both
+    // (26T077: regularised 19.25L + MANUAL 20L = 39.25L against 19.25L packed). The remainder is now
+    // computed SERVER-SIDE after deleting this plan's own prior MANUAL row: record only
+    // max(0, requested − already dispatched via other records + out-scans); if nothing remains, mark
+    // only (no record). Recompute always runs so re-pressing ✓ Dispatch self-corrects the total.
+    let alreadyQ = 0, alreadyB = 0;
     if (pgPool) {
       await pgPool.query(`DELETE FROM tracking_dispatch_records WHERE id=$1`, [recId]);
-      await pgPool.query(
-        `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
-         VALUES ($1,$2,$3,$4,$5,'','',$6,$7,$8)`,
-        [recId, batchNumber, customer || '', q, b, remarks, ts, who]
-      );
+      const e1 = await pgPool.query(`SELECT COALESCE(SUM(qty),0) AS q, COALESCE(SUM(boxes),0) AS b FROM tracking_dispatch_records WHERE batch_number=$1`, [batchNumber]);
+      const e2 = await pgPool.query(`SELECT COALESCE(SUM(qty),0) AS q, COUNT(*) AS b FROM tracking_scans WHERE batch_number=$1 AND dept='dispatch' AND type='out'`, [batchNumber]);
+      alreadyQ = (parseFloat(e1.rows[0]?.q)||0) + (parseFloat(e2.rows[0]?.q)||0);
+      alreadyB = (parseFloat(e1.rows[0]?.b)||0) + (parseFloat(e2.rows[0]?.b)||0);
     } else {
       db.prepare(`DELETE FROM tracking_dispatch_records WHERE id=?`).run(recId);
-      db.prepare(
-        `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
-         VALUES (?,?,?,?,?,'','',?,?,?)`
-      ).run(recId, batchNumber, customer || '', q, b, remarks, ts, who);
+      const e1 = db.prepare(`SELECT COALESCE(SUM(qty),0) AS q, COALESCE(SUM(boxes),0) AS b FROM tracking_dispatch_records WHERE batch_number=?`).get(batchNumber);
+      const e2 = db.prepare(`SELECT COALESCE(SUM(qty),0) AS q, COUNT(*) AS b FROM tracking_scans WHERE batch_number=? AND dept='dispatch' AND type='out'`).get(batchNumber);
+      alreadyQ = (parseFloat(e1?.q)||0) + (parseFloat(e2?.q)||0);
+      alreadyB = (parseFloat(e1?.b)||0) + (parseFloat(e2?.b)||0);
+    }
+    const recQ = Math.max(0, Math.round((q - alreadyQ) * 1000) / 1000);
+    const recB = Math.max(0, b - Math.round(alreadyB));
+    const remarks = alreadyQ > 0
+      ? `Manually dispatched — no invoice (remainder; ${Math.round(alreadyQ*100)/100}L already dispatched)`
+      : 'Manually dispatched — no invoice';
+    if (recQ >= 0.005 || (recQ === 0 && alreadyQ === 0 && recB > 0)) {
+      if (pgPool) {
+        await pgPool.query(
+          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
+           VALUES ($1,$2,$3,$4,$5,'','',$6,$7,$8)`,
+          [recId, batchNumber, customer || '', recQ, recB, remarks, ts, who]
+        );
+      } else {
+        db.prepare(
+          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
+           VALUES (?,?,?,?,?,'','',?,?,?)`
+        ).run(recId, batchNumber, customer || '', recQ, recB, remarks, ts, who);
+      }
     }
     let totalQty = null;
     try { if (typeof _recomputeDispatchActuals === 'function') totalQty = await _recomputeDispatchActuals(batchNumber, null, null); } catch(e) {}
-    res.json({ ok:true, id: recId, totalQty });
+    res.json({ ok:true, id: recId, totalQty, recordedQty: recQ, alreadyDispatched: Math.round(alreadyQ*100)/100 });
   } catch(err) { res.status(500).json({ ok:false, error: err.message }); }
 });
 

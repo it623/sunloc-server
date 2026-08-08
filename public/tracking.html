@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51F</title>
+<title>Sunloc Tracking Suite v1.0 · build v51G</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51F</p>
+      <p>Tracking Suite v1.0 · build v51G</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51F</p>
+      <p>Tracking Suite v1.0 · build v51G</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -7917,22 +7917,61 @@ async function _v51dLoadOverInv() {
     if (el) el.innerHTML = `<div style="padding:20px;text-align:center;color:var(--red)">Could not load: ${e.message}</div>`;
   }
 }
+// v51G (Ishan): shared filter for the over-invoiced view — batch/customer text, invoice-DATE range
+// (a row shows when ANY of its attributed invoices falls in the range; the sums are NOT recomputed —
+// the server excess stays the single authority, out-of-range invoice chips are dimmed instead), and
+// month-of-production (filters batches by their start month, irrespective of invoice date).
+function _v51dOverInvFilters() {
+  return {
+    fb: (document.getElementById('v51d-oi-fbatch')?.value || '').trim().toUpperCase(),
+    fc: (document.getElementById('v51d-oi-fcust')?.value || '').trim().toUpperCase(),
+    df: (document.getElementById('v51d-oi-dfrom')?.value || '').trim(),
+    dt: (document.getElementById('v51d-oi-dto')?.value || '').trim(),
+    pm: (document.getElementById('v51d-oi-pmonth')?.value || '').trim(),
+  };
+}
+function _v51dOverInvInRange(i, df, dt) {
+  if (!df && !dt) return true;
+  if (!i.date) return false;               // undated invoice cannot satisfy an explicit range
+  if (df && i.date < df) return false;
+  if (dt && i.date > dt) return false;
+  return true;
+}
+function _v51dFilteredOverInvRows() {
+  const { fb, fc, df, dt, pm } = _v51dOverInvFilters();
+  return (_v51dOverInvRows || []).filter(r =>
+    (!fb || r.batch.toUpperCase().includes(fb)) &&
+    (!fc || (r.customer||'').toUpperCase().includes(fc)) &&
+    (!pm || (r.prodMonth || '') === pm) &&
+    ((!df && !dt) || (r.invoices||[]).some(i => _v51dOverInvInRange(i, df, dt))));
+}
+function _v51dOverInvDateFmt(d) {
+  if (!d) return '';
+  const p = String(d).slice(0,10).split('-');
+  return p.length === 3 ? `${p[2]}/${p[1]}/${p[0].slice(2)}` : d;
+}
 function _v51dRenderOverInv() {
   const el = document.getElementById('v39-gi-table');
   if (!el || !_v51dOverInvRows) return;
-  const fb = (document.getElementById('v51d-oi-fbatch')?.value || '').trim().toUpperCase();
-  const fc = (document.getElementById('v51d-oi-fcust')?.value || '').trim().toUpperCase();
-  const rows = _v51dOverInvRows.filter(r =>
-    (!fb || r.batch.toUpperCase().includes(fb)) &&
-    (!fc || (r.customer||'').toUpperCase().includes(fc)));
+  const { fb, fc, df, dt, pm } = _v51dOverInvFilters();
+  const rows = _v51dFilteredOverInvRows();
+  const _pmLabel = ym => { if (!ym) return '—'; const [y,m] = ym.split('-');
+    return new Date(parseInt(y,10), parseInt(m,10)-1, 1).toLocaleString('en-IN',{month:'short',year:'2-digit'}); };
+  const _pmOpts = [...new Set((_v51dOverInvRows||[]).map(r=>r.prodMonth).filter(Boolean))].sort().reverse()
+    .map(ym => `<option value="${ym}" ${pm===ym?'selected':''}>${_pmLabel(ym)}</option>`).join('');
   const tot = k => rows.reduce((a,r)=>a+(r[k]||0),0).toFixed(2);
   const body = rows.map(r => `<tr>
       <td class="td-mono fw-bold">${r.batch}</td>
       <td>${r.customer||'—'}</td>
+      <td class="td-mono" style="text-align:center">${_pmLabel(r.prodMonth)}</td>
       <td class="td-mono" style="text-align:right">${r.packed.toFixed(2)}</td>
       <td class="td-mono" style="text-align:right" title="Received ${r.received.toFixed(2)}L + Pending ${r.pending.toFixed(2)}L">${r.invoiced.toFixed(2)}</td>
       <td class="td-mono fw-bold" style="text-align:right;color:#dc2626">${r.excess.toFixed(2)}</td>
-      <td class="td-mono" style="font-size:10px">${(r.invoices||[]).map(i=>`${i.no} (${i.qty}L)`).join(', ')||'—'}</td>
+      <td class="td-mono" style="font-size:10px">${(r.invoices||[]).map(i=>{
+        const _in = _v51dOverInvInRange(i, df, dt);
+        const _dtxt = i.date ? `, ${_v51dOverInvDateFmt(i.date)}` : '';
+        return `<span style="${_in?'':'opacity:0.35'}" title="${_in?'':'Outside the selected invoice-date range'}">${i.no} (${i.qty}L${_dtxt})</span>`;
+      }).join(', ')||'—'}</td>
     </tr>`).join('');
   const unattr = (_v51dOverInvUnattr && _v51dOverInvUnattr.length)
     ? `<div style="margin-top:8px;font-size:11px;color:#92400e;background:#fef3c7;border:1px solid #fde68a;border-radius:6px;padding:6px 10px">
@@ -7943,19 +7982,28 @@ function _v51dRenderOverInv() {
       <b style="font-size:13px;color:#dc2626">🔺 Over-invoiced batches — invoiced beyond packed</b>
       <input id="v51d-oi-fbatch" placeholder="Filter batch…" value="${fb}" oninput="_v51dRenderOverInv()" class="form-control" style="width:130px;padding:5px 8px;font-size:12px;font-family:var(--mono)">
       <input id="v51d-oi-fcust" placeholder="Filter customer…" value="${fc}" oninput="_v51dRenderOverInv()" class="form-control" style="width:170px;padding:5px 8px;font-size:12px">
+      <span style="font-size:11px;color:var(--text3)">Inv. date</span>
+      <input id="v51d-oi-dfrom" type="date" value="${df}" onchange="_v51dRenderOverInv()" class="form-control" style="width:135px;padding:4px 6px;font-size:11px" title="Invoice date from">
+      <span style="font-size:11px;color:var(--text3)">→</span>
+      <input id="v51d-oi-dto" type="date" value="${dt}" onchange="_v51dRenderOverInv()" class="form-control" style="width:135px;padding:4px 6px;font-size:11px" title="Invoice date to">
+      <select id="v51d-oi-pmonth" onchange="_v51dRenderOverInv()" class="form-control" style="width:150px;padding:4px 6px;font-size:11px" title="Month of production — filters batches by their start month, irrespective of invoice date">
+        <option value="">All prod. months</option>${_pmOpts}
+      </select>
       <button class="btn btn-sm btn-secondary" onclick="_v51dExportOverInv()">📤 Export Excel</button>
       <span style="margin-left:auto;font-size:11px;color:var(--text3)">${rows.length} of ${_v51dOverInvRows.length} shown</span>
     </div>
     <div style="max-height:480px;overflow:auto">
       <table style="width:100%">
         <thead style="position:sticky;top:0;background:var(--bg2,#fff);z-index:1"><tr>
-          <th>BATCH</th><th>CUSTOMER</th><th style="text-align:right">PACKED (L)</th>
+          <th>BATCH</th><th>CUSTOMER</th>
+          <th style="text-align:center" title="Month of production (batch start month)">PROD MONTH</th>
+          <th style="text-align:right">PACKED (L)</th>
           <th style="text-align:right" title="Received + pending requests (v49C definition)">INVOICED (L)</th>
-          <th style="text-align:right">EXCESS (L)</th><th>INVOICE #s (QTY)</th>
+          <th style="text-align:right">EXCESS (L)</th><th>INVOICE #s (QTY, DATE)</th>
         </tr></thead>
-        <tbody>${body || '<tr><td colspan="6" style="text-align:center;padding:16px;color:var(--text3)">No over-invoiced batches 🎉</td></tr>'}</tbody>
+        <tbody>${body || '<tr><td colspan="7" style="text-align:center;padding:16px;color:var(--text3)">No over-invoiced batches 🎉</td></tr>'}</tbody>
         ${rows.length ? `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">
-          <td>TOTAL (${rows.length})</td><td></td>
+          <td>TOTAL (${rows.length})</td><td></td><td></td>
           <td class="td-mono" style="text-align:right">${tot('packed')}</td>
           <td class="td-mono" style="text-align:right">${tot('invoiced')}</td>
           <td class="td-mono" style="text-align:right;color:#dc2626">${tot('excess')}</td><td></td>
@@ -7965,32 +8013,32 @@ function _v51dRenderOverInv() {
 }
 function _v51dExportOverInv() {
   if (!_v51dOverInvRows) return;
-  const fb = (document.getElementById('v51d-oi-fbatch')?.value || '').trim().toUpperCase();
-  const fc = (document.getElementById('v51d-oi-fcust')?.value || '').trim().toUpperCase();
-  const rows = _v51dOverInvRows.filter(r =>
-    (!fb || r.batch.toUpperCase().includes(fb)) &&
-    (!fc || (r.customer||'').toUpperCase().includes(fc)));
+  // v51G: export honours the SAME filters as the view (batch, customer, invoice-date range,
+  // month of production) and carries the new PROD MONTH column + per-invoice dates.
+  const rows = _v51dFilteredOverInvRows();
   const wb = XLSX.utils.book_new();
-  const HDR = ['BATCH','CUSTOMER','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)','EXCESS (L)','INVOICE #s (QTY)'];
+  const HDR = ['BATCH','CUSTOMER','PROD MONTH','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)','EXCESS (L)','INVOICE #s (QTY, DATE)'];
   const NC = HDR.length;
   const aoa = []; const merges = []; const kinds = [];
   const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
   merges.push({s:{r:0,c:0},e:{r:0,c:NC-1}});
   _push(['Over-invoiced Batches — invoiced beyond packed quantity'],'title');
+  const { df: _xdf, dt: _xdt, pm: _xpm } = _v51dOverInvFilters();
+  const _fltNote = [(_xdf||_xdt) ? `Invoice date ${_xdf||'…'} → ${_xdt||'…'}` : '', _xpm ? `Prod. month ${_xpm}` : ''].filter(Boolean).join('  |  ');
   merges.push({s:{r:1,c:0},e:{r:1,c:NC-1}});
-  _push([`Definition: invoiced (received + pending) − packed ≥ 0.01L  |  Generated ${new Date().toLocaleString()}`],'subtitle');
+  _push([`Definition: invoiced (received + pending) − packed ≥ 0.01L${_fltNote ? '  |  ' + _fltNote : ''}  |  Generated ${new Date().toLocaleString()}`],'subtitle');
   _push([],'spacer');
   _push(HDR,'hdr');
-  rows.forEach(r => _push([r.batch, r.customer||'—', r.packed, r.received, r.pending, r.invoiced, r.excess,
-    (r.invoices||[]).map(i=>`${i.no} (${i.qty}L)`).join(', ')],'data'));
+  rows.forEach(r => _push([r.batch, r.customer||'—', r.prodMonth||'—', r.packed, r.received, r.pending, r.invoiced, r.excess,
+    (r.invoices||[]).map(i=>`${i.no} (${i.qty}L${i.date ? ', ' + _v51dOverInvDateFmt(i.date) : ''})`).join(', ')],'data'));
   const s = k => rows.reduce((a,r)=>a+(r[k]||0),0);
-  _push([`TOTAL (${rows.length} batches)`,'',Math.round(s('packed')*100)/100,Math.round(s('received')*100)/100,
+  _push([`TOTAL (${rows.length} batches)`,'','',Math.round(s('packed')*100)/100,Math.round(s('received')*100)/100,
     Math.round(s('pending')*100)/100,Math.round(s('invoiced')*100)/100,Math.round(s('excess')*100)/100,''],'grand');
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
-  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:50}];
+  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:56}];
   const R = XLSX.utils.decode_range(ws['!ref']);
-  for(let r=R.s.r; r<=R.e.r; r++) for(let c=2; c<=6; c++){
+  for(let r=R.s.r; r<=R.e.r; r++) for(let c=3; c<=7; c++){
     const cell = ws[XLSX.utils.encode_cell({r,c})];
     if(cell && cell.t==='n') cell.z = '0.00';
   }
@@ -8006,7 +8054,7 @@ function _v51dExportOverInv() {
       for (let c = 0; c < NC; c++) {
         if (kind === 'hdr')        _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:'20FFFF' } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
         else if (kind === 'grand') _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:'FC02FF' } }, border:_bAll });
-        else if (kind === 'data')  _set(r, c, { font:{ sz:10, ...(c===6?{ bold:true, color:{ rgb:'DC2626' } }:{}) }, border:_bAll });
+        else if (kind === 'data')  _set(r, c, { font:{ sz:10, ...(c===7?{ bold:true, color:{ rgb:'DC2626' } }:{}) }, border:_bAll });   // v51G: EXCESS shifted right by the PROD MONTH column
       }
     });
   } catch(_e) {}
@@ -13913,6 +13961,11 @@ function _v41_renderReportEInnerBody(){
   // Build table rows with machine subtotals and floor subtotals
   const fmtN = v => (v===0||v===undefined)?'—':parseFloat(v).toFixed(2);
   const sumRows = (arr, k) => arr.reduce((a,r)=>a+(r['_'+k]||0),0);
+  // v51G (confirmed by Ishan): BALANCE totals clamp negative (over-invoiced) rows to 0. A row's own
+  // negative stays visible in red as the over-invoice flag, but letting it SUBTRACT from the machine /
+  // floor / grand totals deflated the real pending balance by the over-invoiced sum. Totalling only —
+  // no per-row value changes, no other column touched.
+  const sumBal = arr => arr.reduce((a,r)=>a+Math.max(0, r._balance||0),0);
 
   function buildSubtotalRow(arr, label, style='background:#e8f5e9;color:#1a3a2e;font-weight:800') {
     const g         = sumRows(arr,'grossProd');
@@ -13955,7 +14008,7 @@ function _v41_renderReportEInnerBody(){
       <td>${fmtN(piOutSum)}</td><td>${fmtN(sumRows(arr,'piSalRem'))}</td><td>${fmtN(sumRows(arr,'piWip'))}</td><td><b>${printPct}</b></td>
       <td>${fmtN(sumRows(arr,'packingWip'))}</td><td><b>${fmtN(sumRows(arr,'consolWip'))}</b></td><td>${fmtN(sumRows(arr,'packingUP'))}</td><td>${fmtN(sumRows(arr,'packingPTD'))}</td>
       <td><b>${fmtN(sumRows(arr,'dispatch'))}</b></td>
-      <td><b>${fmtN(sumRows(arr,'balance'))}</b></td>
+      <td><b>${fmtN(sumBal(arr))}</b></td>
     </tr>`;
   }
 
@@ -14042,7 +14095,7 @@ function _v41_renderReportEInnerBody(){
     <td style="color:#fff">${fmtN(totalPrintOut)}</td><td style="color:#fff">${fmtN(sum('printRej'))}</td><td style="color:#fff">${fmtN(sum('printingWip'))}</td>
     <td style="color:#fff">${fmtN(totalPiOut)}</td><td style="color:#fff">${fmtN(sum('piSalRem'))}</td><td style="color:#fff">${fmtN(sum('piWip'))}</td><td style="color:#f0c060"><b>${printPctTotal}</b></td>
     <td style="color:#fff">${fmtN(sum('packingWip'))}</td><td style="color:#fff"><b>${fmtN(sum('consolWip'))}</b></td><td style="color:#fff">${fmtN(sum('packingUP'))}</td><td style="color:#fff">${fmtN(sum('packingPTD'))}</td>
-    <td style="color:#fff"><b>${fmtN(sum('dispatch'))}</b></td><td style="color:#fff"><b>${fmtN(sum('balance'))}</b></td>
+    <td style="color:#fff"><b>${fmtN(sum('dispatch'))}</b></td><td style="color:#fff"><b>${fmtN(sumBal(allFloorRows))}</b></td>
   </tr>` : '';
 
   const fullHtml = `<!DOCTYPE html>
@@ -16518,6 +16571,9 @@ function exportReportE(){
   // Subtotal/total rows — the SAME sums and % bases as the Full-View buildSubtotalRow:
   // AIM % = Σ A-Grade ÷ Σ (A-Grade+Sal+Rem); Post-Printing % = Σ agNum ÷ Σ agDen (v47H blend).
   const sum = (arr,k) => arr.reduce((a,r)=>a+(r['_'+k]||0),0);
+  // v51G: BALANCE totals clamp negative (over-invoiced) rows to 0 — same rule as the on-screen
+  // subtotals/grand total, applied here because the export sums independently of the render.
+  const sumBalX = arr => arr.reduce((a,r)=>a+Math.max(0, r._balance||0),0);
   const subtotalRow = (arr,label) => {
     const aimNum=sum(arr,'aimAGrade'), aimDen=sum(arr,'aimInspNew');
     const agNum=sum(arr,'agNum'), agDen=sum(arr,'agDen');
@@ -16526,7 +16582,7 @@ function exportReportE(){
       _n(sum(arr,'availScanIn')), _n(sum(arr,'aimScanIn')), _n(sum(arr,'unscannedWip')), _n(aimNum), (aimDen>0 ? _n(aimNum/aimDen*100) : '—'),
       _n(sum(arr,'aimScanOut')), _n(sum(arr,'deptWip')), _n(sum(arr,'wip')), _n(sum(arr,'printingTD')), _n(sum(arr,'printRej')), _n(sum(arr,'printingWip')),
       _n(sum(arr,'piInspect')), _n(sum(arr,'piSalRem')), _n(sum(arr,'piWip')), (agDen>0 ? _n(Math.max(0,agNum/agDen*100)) : '—'),
-      _n(sum(arr,'packingWip')), _n(sum(arr,'consolWip')), _n(sum(arr,'packingUP')), _n(sum(arr,'packingPTD')), _n(sum(arr,'dispatch')), _n(sum(arr,'balance'))];
+      _n(sum(arr,'packingWip')), _n(sum(arr,'consolWip')), _n(sum(arr,'packingUP')), _n(sum(arr,'packingPTD')), _n(sum(arr,'dispatch')), _n(sumBalX(arr))];
   };
   const _lblMerge = () => merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:8}});
   const floors = [...new Set(rows.map(r=>r.floor))];
