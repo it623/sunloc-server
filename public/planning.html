@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51L</p>
+      <p>Planning Suite v3.0 · build v51Q</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1659,6 +1659,8 @@ const SYNC = (() => {
           // Production Plan can show a "Dispatched (L)" column. This is the same dispatched-actuals
           // total the truck binner consumes (regularised + scan-out), keyed by clean batch.
           state._dispatchActualsQty = actualsMap;
+          state._dispatchActualsBoxes = actualsBoxesMap;   // v51N: cached so _v51nApplyDispatchActuals can re-derive
+          window._v51nActualsAppliedAt = Date.now();       // v51N: proves dispatch statuses are real, not defaults
           // v44R Phase 2 (SEQUENTIAL dispatched apportionment): a batch's per-batch dispatched total
           // is apportioned across its ordered lots SEQUENTIALLY (lot 1 fills to its planned amount
           // first, then lot 2 …) — mirroring the packed-box sequential allocation above. Without this
@@ -1780,7 +1782,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51L' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51Q' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -3749,7 +3751,8 @@ function renderProduction() {
         if (o.status === 'completed') return false;
         if (o.sapDocEntry || o.sapDocNum || (o.poNumber && String(o.poNumber).trim())) return false;   // v41ZE #1: SO#, DocEntry, OR PO/Reference number = linked (matches row badge + reconcile)
         // Skip pristine WO (no customer assigned yet — covered by reconciliation page)
-        if (o.woStatus === 'wo') return false;
+        if (_v51qAwaitingCustomer(o)) return false;   // v51Q: a W/O that already has a customer is a normal order
+        if (o.woStatus === 'wo' && _v51qHasRealCustomer(o)) { /* fall through — treat as reconciled */ }
         // Otherwise include if order has actual production activity or is in the active plan
         const hasActivity = (o.qty > 0) && (
           o.woStatus === 'wo-reconciled' ||
@@ -4038,10 +4041,31 @@ function fmtCustomer(obj) {
   return shipTo + ' (' + billTo + ')';
 }
 
+// ═══ v51Q "AWAITING CUSTOMER" — ONE PREDICATE (Ishan, 9 Aug — 26ZH079, 26ZH086, 26ZH087) ══════
+// A W/O is a batch planned WITHOUT a customer. Everything keyed off the raw flag `woStatus === 'wo'`
+// instead, and the two drifted apart: the W/O reconciliation approve sets 'wo-reconciled' when it
+// assigns a customer, but a customer arriving by any OTHER route — the order-edit form, a SAP
+// import, a split-assign that did not complete cleanly — leaves the flag at 'wo'. The order then has
+// a real customer AND a W/O chip, and still sits in "Section B — Awaiting Customer Split" asking to
+// be assigned a customer it already has. The customer CELL already tolerated this half-state
+// (`isWO && !customer ? 'W/O — pending' : customer`), which is why it went unnoticed for so long.
+// One predicate now decides it everywhere: a batch is awaiting a customer only if it is flagged W/O
+// AND genuinely has none. The chip, Section B, the banner count and the SAP-link guards all read it,
+// so they can no longer disagree.
+function _v51qHasRealCustomer(o) {
+  const c = String((o && (o.shipTo || o.customer)) || '').trim();
+  if (!c) return false;
+  const u = c.toUpperCase();
+  return u !== '-' && u !== 'TBD' && u !== 'W/O' && u !== 'W/O — PENDING' && u !== 'W/O - PENDING';
+}
+function _v51qAwaitingCustomer(o) {
+  return !!o && o.woStatus === 'wo' && !_v51qHasRealCustomer(o);
+}
+
 function renderOrderRow(ord, idx, mc) {
   const isClosed = ord.status === 'closed';
   const isRunning = ord.status === 'running';
-  const isWO = ord.woStatus === 'wo';
+  const isWO = _v51qAwaitingCustomer(ord);   // v51Q: chip only while genuinely customer-less
   const isWOReconciled = ord.woStatus === 'wo-reconciled';
   const statusBadge = `<select class="status-select" onchange="changeOrderStatus('${ord.id}','${mc.id}',this.value)" style="font-size:11px;padding:3px 6px;border-radius:4px;border:1px solid var(--border);background:var(--surface3);color:var(--text);cursor:pointer">
     <option value="pending" ${ord.status==='pending'?'selected':''}>Pending</option>
@@ -5493,7 +5517,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51L'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51Q'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -6621,7 +6645,7 @@ function _v39_showSapLinkList() {
     if (o.status === 'completed') return false;
     if (o.legacyClosed) return false; // v45T #1.1.3: SAP-link requirement waived by the one-time bulk close
     if (o.sapDocEntry || o.sapDocNum || (o.poNumber && String(o.poNumber).trim())) return false; // v41ZE #1: SO#, DocEntry, OR PO/Reference = linked
-    if (o.woStatus === 'wo') return false;
+    if (_v51qAwaitingCustomer(o)) return false;   // v51Q
     return (o.qty > 0) && (
       o.woStatus === 'wo-reconciled' ||
       o.poType === 'indent' ||
@@ -6714,7 +6738,7 @@ function _v45t_bulkCloseLegacySap() {
     if (o.status === 'completed') return false;
     if (o.legacyClosed) return false;
     if (o.sapDocEntry || o.sapDocNum || (o.poNumber && String(o.poNumber).trim())) return false;
-    if (o.woStatus === 'wo') return false;
+    if (_v51qAwaitingCustomer(o)) return false;   // v51Q
     return (o.qty > 0) && (
       o.woStatus === 'wo-reconciled' ||
       o.poType === 'indent' ||
@@ -9537,7 +9561,27 @@ function _truckQuarterMonths(qStart){ const [y,m]=qStart.split('-').map(Number);
 function _truckQNum(qStart){ const m=+qStart.split('-')[1]; return m===4?1:m===7?2:m===10?3:4; }
 function _truckQuarterLabel(qStart){ if(qStart==='prior') return 'Prior to Q2 (historical)'; const ms=_truckQuarterMonths(qStart); return `Q${_truckQNum(qStart)} · ${prodMonthLabel(ms[0])} – ${prodMonthLabel(ms[2])}`; }
 function _truckCurrentQuarter(){ return _truckQStart(currentYM()); }
-function _truckActiveQuarter(){ return window._truckProdQuarter || (window._truckProdQuarter = _truckCurrentQuarter()); } // default = current quarter
+// ═══ v51L UNIFIED DISPATCH SCOPE (confirmed by Ishan, 9 Aug) ════════════════════════════
+// Truck View and Order View used to carry SEPARATE quarter/month scopes (v45H, deliberately
+// independent). In practice that meant the month you last picked was not necessarily the month you
+// got: set Order View to July, switch to Truck View still on August, export — you got August. v51K
+// made exports follow the ACTIVE view, which removed the silent quarter-wide dump but left this
+// last-touched-vs-active ambiguity intact.
+// The two scopes are now ONE. Every setter writes both pairs through _v51lSetDispatchScope, and both
+// readers resolve from the same canonical values, so the Zone Readiness cards, Truck View, Order
+// View and every export can never disagree about the period on screen. Setting the month anywhere
+// sets it everywhere.
+// NOTE (deliberate, not an oversight): the Truck CALENDAR and CUSTOMER VIEW keep their own separate
+// quarter scopes (_calProdQuarter / _custProdQuarter). They are different pages with their own
+// headers and do not feed the dispatch exports.
+function _v51lSetDispatchScope(q, mo){
+  const _q = q || _truckCurrentQuarter();
+  const _m = (mo == null || mo === '') ? 'all' : mo;
+  window._truckProdQuarter = window._povProdQuarter = _q;
+  window._truckProdMonth   = window._povProdMonth   = _m;
+  return { q:_q, mo:_m };
+}
+function _truckActiveQuarter(){ return window._truckProdQuarter || (_v51lSetDispatchScope(_truckCurrentQuarter(), 'all').q); } // default = current quarter, mirrored to both pairs
 // Lot-level scope test used by buildTruckPlans (and the truck views).
 function _truckPlanScopeTest(p, q, mo){                  // pure: test plan p against an EXPLICIT quarter/month scope
   const ym = getPlanProdMonth(p);                       // production START month (option A)
@@ -9560,8 +9604,7 @@ function _truckQuarterOptions(){
   return [...present].filter(q=> q && q>=_TRUCK_FLOOR_Q).sort().reverse();
 }
 function setTruckProdQuarter(q){
-  window._truckProdQuarter = q;
-  window._truckProdMonth = 'all';                        // months differ per quarter → reset the month narrow
+  _v51lSetDispatchScope(q, 'all');                       // v51L: months differ per quarter → reset the month narrow, on BOTH views
   try { _renderImmediate(); } catch { try { renderDispatch(); } catch {} }
 }
 
@@ -9570,7 +9613,7 @@ function setTruckProdQuarter(q){
 // order-view source (zPlans), so the rows, the "X of Y" count, AND the TOTAL row all reflect the active
 // quarter. "Prior to Q2" is the historical bucket (no month sub-filter); it empties to 0 as its orders are
 // dispatched/closed and age out of the active-dispatch set.
-function _povActiveQuarter(){ return window._povProdQuarter || (window._povProdQuarter = _truckCurrentQuarter()); }
+function _povActiveQuarter(){ return _truckActiveQuarter(); }   // v51L: single canonical dispatch quarter
 function _povPlanInScope(p){
   const ym = getPlanProdMonth(p);                        // production START month (option A)
   const q  = _povActiveQuarter();
@@ -9587,8 +9630,8 @@ function _povQuarterOptions(){
   present.add(_truckCurrentQuarter());
   return [...present].filter(q=> q && q>=_TRUCK_FLOOR_Q).sort().reverse();
 }
-function setPovProdQuarter(q){ window._povProdQuarter=q; window._povProdMonth='all'; try{_renderImmediate();}catch{try{renderDispatch();}catch{}} }
-function setPovProdMonth(m){ window._povProdMonth=m; try{_renderImmediate();}catch{try{renderDispatch();}catch{}} }
+function setPovProdQuarter(q){ _v51lSetDispatchScope(q, 'all'); try{_renderImmediate();}catch{try{renderDispatch();}catch{}} }   // v51L: mirrored to Truck View
+function setPovProdMonth(m){ _v51lSetDispatchScope(_truckActiveQuarter(), m); try{_renderImmediate();}catch{try{renderDispatch();}catch{}} }   // v51L: mirrored to Truck View
 
 // Shared quarter <select> builder (used by Calendar + Customer View headers).
 function _truckQuarterDropdownHtml(activeQ, onchangeFn){
@@ -10227,10 +10270,29 @@ function autoGenerateMissingPrintOrders() {
 }
 
 
-function getActiveDispatchOrderIds() {
+// v51M (Ishan, 9 Aug — "the zone cards keep flipping, don't know which one is correct"): this
+// membership filter and the quarter/month scope filter above it ran off TWO DIFFERENT CLOCKS. The
+// cards scope plans by PRODUCTION month (July, say), but the plan set they scope was first narrowed
+// to orders still "active as of the HEADER month" (August). A July order that has closed is kept in
+// that window only while it still has an undispatched plan — so as dispatch/invoice state settles
+// (the async _v39_loadInvoiceState refresh re-renders the page), whole cohorts of July orders cross
+// the boundary and July's totals change underneath a filter the user never touched. That is exactly
+// the observed flip: BADDI July 1718/1718 (84 orders) one render, 1242/1242 (56 orders) the next,
+// with July + August still summing to All in BOTH states — the signature of a changing MEMBERSHIP
+// set rather than a re-bucketing. Passing the SELECTED scope's months makes the window agree with
+// the filter: a July-closed order is kept because it closed in July, independent of dispatch state.
+// Called with no argument everywhere else, the behaviour is byte-identical to before.
+function getActiveDispatchOrderIds(scopeMonths) {
+  const _months = Array.isArray(scopeMonths) && scopeMonths.length ? scopeMonths : null;
   const [_y, _m] = _selectedPlanMonth.split("-").map(Number);
   const mStart = new Date(_y, _m-1, 1);
   const mEnd   = new Date(_y, _m, 0, 23, 59, 59);
+  const _inScopeMonth = d => {
+    if (!d || isNaN(d)) return false;
+    if (!_months) return d >= mStart && d <= mEnd;
+    const ym = `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+    return _months.indexOf(ym) >= 0;
+  };
   // v41c FIX (April batches missing from dispatch plan): a CLOSED order that still has
   // undispatched boxes must remain visible in the dispatch plan no matter which month it was
   // closed in — otherwise a batch closed in April but not yet shipped disappears from the May
@@ -10252,15 +10314,79 @@ function getActiveDispatchOrderIds() {
       // Otherwise fall back to month-scoping (fully-dispatched orders age out after their month).
       const closed = o.closedDate ? new Date(o.closedDate) : null;
       const end    = o.endDate    ? new Date(o.endDate)    : null;
-      if (closed && closed >= mStart && closed <= mEnd) return true;
-      if (end    && end    >= mStart && end    <= mEnd)  return true;
+      if (_inScopeMonth(closed)) return true;   // v51M: scope months when supplied, header month otherwise
+      if (_inScopeMonth(end))    return true;
     }
     return false;
   }).map(o => o.id));
 }
 
 
+// ═══ v51N DISPATCH-STATUS NORMALISATION (Ishan, 9 Aug — "July should show 1242, not 1718") ═════
+// ROOT CAUSE of the zone-card flip, now traced to the render sequence rather than the filters:
+// renderDispatch paints IMMEDIATELY from whatever state.dispatchPlans currently holds, and only
+// THEN fires SYNC.loadTrackingStatus() in the background; when that resolves it re-renders. Before
+// it resolves, no lot has had its dispatched actuals applied, so nothing is marked 'dispatched',
+// every July order still looks like it has boxes to send, and the cards read 1718/1718. Seconds
+// later the actuals land, the fully-shipped July orders drop out, and the same cards read
+// 1242/1242. Both renders were internally consistent (July + August summed to All in each), which
+// is why neither looked obviously wrong — but only the SETTLED one is right: the Dispatch Plan
+// shows what remains to be sent.
+// v51M tried to stabilise this by widening the membership window to the selected quarter's months.
+// That was the wrong direction — it froze the numbers on the TRANSIENT figure by permanently
+// re-admitting already-dispatched orders. Reverted.
+// The transient is removed instead: dispatched status is re-derived synchronously from the cached
+// actuals map at the top of every dispatch render, so a freshly-pulled or freshly-merged plan set is
+// normalised BEFORE the cards are computed. Same arithmetic as the loadTrackingStatus block that
+// produced the map — sequential per-lot apportionment, manual dispatch never downgraded.
+function _v51nApplyDispatchActuals() {
+  const qtyMap = state._dispatchActualsQty;
+  if (!qtyMap) return false;                     // never loaded yet — caller shows the pending state
+  const boxMap = state._dispatchActualsBoxes || {};
+  const lots = {};
+  (state.dispatchPlans || []).forEach(dp => {
+    const bns = String(dp.batchNumber || '').split(',').map(b => b.trim()).filter(Boolean);
+    if (bns.length === 1 && qtyMap[bns[0]] !== undefined) (lots[bns[0]] = lots[bns[0]] || []).push(dp);
+  });
+  const alloc = {};
+  Object.keys(lots).forEach(bn => {
+    const L = lots[bn];
+    let remQty = qtyMap[bn] || 0, remBox = boxMap[bn] || 0;
+    L.forEach((dp, i) => {
+      const last = (i === L.length - 1);
+      const q = last ? Math.max(0, remQty) : Math.min(remQty, parseFloat(dp.qty || 0));
+      const b = last ? Math.max(0, remBox) : Math.min(remBox, parseInt(dp.boxes || 0, 10));
+      remQty -= q; remBox -= b;
+      alloc[dp.id] = { qty: q, boxes: b };
+    });
+  });
+  (state.dispatchPlans || []).forEach(dp => {
+    const bns = String(dp.batchNumber || '').split(',').map(b => b.trim()).filter(Boolean);
+    let aQty, aBox;
+    if (bns.length === 1) {
+      if (qtyMap[bns[0]] === undefined) return;
+      const a = alloc[dp.id] || { qty: qtyMap[bns[0]] || 0, boxes: boxMap[bns[0]] || 0 };
+      aQty = a.qty; aBox = a.boxes;
+    } else if (bns.length > 1) {
+      if (!bns.some(b => qtyMap[b] !== undefined)) return;
+      aQty = bns.reduce((t, b) => t + (qtyMap[b] || 0), 0);
+      aBox = bns.reduce((t, b) => t + (boxMap[b] || 0), 0);
+    } else return;
+    dp.actualDispatched = aQty;
+    dp._dispatchedBoxes = aBox;
+    dp._trackingDispatched = aQty;
+    if (dp.manuallyDispatched) dp.status = 'dispatched';
+    else if (dp.actualDispatched >= dp.qty) dp.status = 'dispatched';
+    else if (dp.actualDispatched > 0) dp.status = 'partial';
+    else if (dp.status === 'partial' || dp.status === 'dispatched') dp.status = 'pending';
+  });
+  return true;
+}
+
 function renderDispatch() {
+  // v51N: normalise dispatched status from the cached actuals BEFORE anything is counted, so the
+  // cards can never be painted from a plan set whose lots have not been settled yet.
+  const _v51nSettled = _v51nApplyDispatchActuals();
   // Refresh tracking data (packedQty) if stale — then re-render dispatch page
   const _trackingAge = Date.now() - (window._trackingLastLoaded || 0);
   if (_trackingAge > 30000) {
@@ -10307,6 +10433,11 @@ function renderDispatch() {
 
   // Filter dispatch plans by selected month via linked production order
   // Filter dispatch plans — only active orders (running/pending) + closed this month
+  // v51N: the v51M scope-months window is NOT passed here. It stabilised the flip on the WRONG
+  // number — it re-admitted July orders that were already fully dispatched, which the Dispatch Plan
+  // must never show. Header-month semantics restored: an order appears only while it still has boxes
+  // to send (or shipped so recently it is still worth seeing). The flip is killed at its real source
+  // instead — see _v51nApplyDispatchActuals above.
   const activeDispatchOrdIds = getActiveDispatchOrderIds();
   const allPlans = state.dispatchPlans.filter(p =>
     !p.productionOrderId || activeDispatchOrdIds.has(p.productionOrderId)
@@ -10339,6 +10470,18 @@ function renderDispatch() {
         ${ZONES.map(z=>{
           const zd = readyByZone[z];
           if (!zd || zd.total===0) return '';
+          // v51N: on the very first load there is no cached actuals map yet, so no lot has been
+          // settled and every count would read high. Show the zone with an explicit pending marker
+          // rather than a number that is about to change by itself — a figure the user cannot trust
+          // is worse than one that says it is not ready. Resolves within a second or two, when
+          // loadTrackingStatus lands and re-renders.
+          if (!_v51nSettled) return `<div class="mc-card" style="opacity:.65">
+            <div style="display:flex;justify-content:space-between;margin-bottom:6px">
+              <span class="text-mono text-sm fw-bold">${z}</span>
+              <span class="badge badge-pending">Loading…</span>
+            </div>
+            <div style="font-size:12px;color:var(--text3)">Waiting for dispatch actuals — counts settle in a moment.</div>
+          </div>`;
           const zoneCap = getTruckCapacity(z);
           const plannedBoxes = zd.total;
           const pct = Math.min(100,(zd.ready/plannedBoxes*100)).toFixed(0);
@@ -10392,7 +10535,14 @@ function renderDispatch() {
   const _povActiveZone = window._dispatchActiveZone || 'all';
 
   for (const z of ['all', ...zones]) {
-    const zPlans = (z==='all' ? plans : plans.filter(p=>(p.zone||'Unassigned')===z)).filter(_povPlanInScope);
+    // v51P (Ishan, 9 Aug): fully-dispatched lots are excluded here, as they already were from the
+    // Zone Readiness cards and the truck binner. The Dispatch Plan answers "what is still to go";
+    // a lot with nothing left to send was noise in the one view that still listed it, and it made
+    // Order View disagree with the cards sitting directly above it. Partially-dispatched lots stay
+    // — they still have a balance, which is the whole point of the two Balance columns.
+    const zPlans = (z==='all' ? plans : plans.filter(p=>(p.zone||'Unassigned')===z))
+                     .filter(p=>p.status!=='dispatched')
+                     .filter(_povPlanInScope);
     window._dispatchZonePlans[z] = zPlans;
     const totalQty = zPlans.reduce((s,p)=>s+p.qty,0);
     const dispatched = zPlans.reduce((s,p)=>s+(p.actualDispatched||0),0);
@@ -10917,7 +11067,7 @@ function _v39_renderInvoiceBtnForRow(p, ord) {
   const _hasSO = !!(sapDocEntry || (ord?.sapDocNum && String(ord.sapDocNum).trim()) || (ord?.poNumber && String(ord.poNumber).trim()));
   if (!_hasSO) {
     let reason, tooltip;
-    if (ord?.woStatus === 'wo') {
+    if (_v51qAwaitingCustomer(ord)) {   // v51Q: only a genuinely customer-less W/O is "awaiting reconciliation"
       reason  = '🔗 Awaiting Reconciliation';
       tooltip = 'Work Order — customer info not yet assigned. Use the Reconciliation page in Planning App to convert this to a real order with SAP refs.';
     } else if (ord?.woStatus === 'wo-reconciled') {
@@ -11142,7 +11292,7 @@ function renderTruckViewHTML(zones) {
 
 // v41d: set the Truck View production-month filter and re-render the dispatch page.
 function setTruckProdMonth(ym) {
-  window._truckProdMonth = ym;
+  _v51lSetDispatchScope(_truckActiveQuarter(), ym);   // v51L: mirrored to Order View
   try { _renderImmediate(); } catch { try { renderDispatch(); } catch {} }
   // Keep the Truck View tab active after re-render.
   setTimeout(() => {
@@ -11885,16 +12035,17 @@ function _buildDispatchSheet(groups, opts) {
 // nothing the export could see, _povProdMonth stayed at its 'all' default, and the file came out
 // QUARTER-wide every time. Two exports taken minutes apart differed by a whole month's orders
 // because only one of them had ever had the Order View selector touched.
-// The export now follows the scope of the view the user is actually looking at, so what is on
-// screen is what lands in the file. window._dispatchActiveView is set by switchDispatchViewTab
-// ('orders' | 'trucks'); Truck View is the default, hence the default branch.
+// v51L SUPERSEDES the v51K active-view resolution: the two scopes are now ONE (see
+// _v51lSetDispatchScope). Whichever selector the user touches — Truck View or Order View — sets the
+// same canonical quarter/month, so the export simply reads it. There is no longer any way for the
+// month on screen to differ from the month in the file, and no dependence on which tab happens to
+// be active. The reader is kept as a single named function so every export routes through one place.
 function _v51kDispatchScope() {
-  const viewIsOrders = (window._dispatchActiveView === 'orders');
-  const q  = viewIsOrders
-    ? ((typeof _povActiveQuarter === 'function') ? _povActiveQuarter() : _truckActiveQuarter())
-    : ((typeof _truckActiveQuarter === 'function') ? _truckActiveQuarter() : _povActiveQuarter());
-  const mo = viewIsOrders ? (window._povProdMonth || 'all') : (window._truckProdMonth || 'all');
-  return { q, mo, view: viewIsOrders ? 'Order View' : 'Truck View' };
+  return {
+    q:  _truckActiveQuarter(),
+    mo: (window._truckProdMonth || 'all'),
+    view: (window._dispatchActiveView === 'orders') ? 'Order View' : 'Truck View'   // label only
+  };
 }
 // Human-readable scope label — stamped into every dispatch export's subtitle row AND its filename,
 // so a file on someone's desktop can never again be ambiguous about what it covers.
@@ -11912,7 +12063,14 @@ function _v51kScopeSlug() {
 
 function _v48ScopedPlans(){
   const { q, mo } = _v51kDispatchScope();   // v51K: active view's scope, not always the Order View's
-  return (state.dispatchPlans||[]).filter(pl => _truckPlanScopeTest(pl, q, mo));
+  // v51P (Ishan, 9 Aug): fully-dispatched lots are excluded from every dispatch export, matching the
+  // Zone Readiness cards, the truck binner and Order View. Every surface now answers the same
+  // question — what is still to go — so a file can no longer show rows the screen it came from does
+  // not. Partially-dispatched lots are kept (they carry a real balance). The Pending Dispatch
+  // Summary already filtered this way, so it is unaffected.
+  return (state.dispatchPlans||[])
+    .filter(pl => pl.status !== 'dispatched')
+    .filter(pl => _truckPlanScopeTest(pl, q, mo));
 }
 function _v48OrderInScope(ord){
   const { q, mo } = _v51kDispatchScope();   // v51K: same active-view scope as _v48ScopedPlans
@@ -14451,6 +14609,16 @@ function _v51jYm(d) {
   const p = new Date(s);
   return isNaN(p) ? '' : `${p.getFullYear()}-${String(p.getMonth()+1).padStart(2,'0')}`;
 }
+// v51M: the months the active dispatch scope covers — [] when the scope is the whole quarter or the
+// historical bucket, in which case the caller keeps its existing header-month window.
+function _v51mScopeMonths() {
+  try {
+    const { q, mo } = _v51kDispatchScope();
+    if (q === 'prior') return [];
+    if (mo && mo !== 'all') return [mo];
+    return _truckQuarterMonths(q) || [];
+  } catch (e) { return []; }
+}
 function _reconActiveQ()  { return window._reconProdQuarter || (window._reconProdQuarter = _truckQStart(currentYM())); }
 function _reconActiveMo() { return window._reconProdMonth || 'all'; }
 // Pure scope test against an explicit quarter/month. A row with NO derivable month is never hidden —
@@ -14551,7 +14719,7 @@ async function renderReconciliation() {
   const isAdmin = currentUser?.role === 'admin';
   const isPlanManager = ['admin','planning_manager'].includes(currentUser?.role);
   // W/O orders awaiting customer assignment
-  const woOrdersAll = (state.orders||[]).filter(o => o.woStatus === 'wo'); // v41ZY FIX: include closed batches — split must happen even after production close
+  const woOrdersAll = (state.orders||[]).filter(_v51qAwaitingCustomer); // v41ZY FIX: include closed batches — split must happen even after production close · v51Q: only those genuinely awaiting a customer
   // v51J: apply the production-scope filter to BOTH clean-up tables. The unfiltered arrays stay in
   // scope so the "empty state" card and the "X of Y" counts still reason about the true totals —
   // an empty SCOPE must never render as "all batches reconciled".
@@ -15653,7 +15821,7 @@ async function checkPlanningTempAlerts(){
       }
       const machines = [...new Set(j.batches.map(b=>b.machine_id))];
       const maxDays = Math.max(...j.batches.map(b=>b.daysActive));
-      const woCount = (state.orders||[]).filter(o=>o.woStatus==='wo').length;
+      const woCount = (state.orders||[]).filter(_v51qAwaitingCustomer).length;   // v51Q
       const woText = woCount > 0 ? ` · ${woCount} W/O order${woCount>1?'s':''} awaiting customer` : '';
       banner.style.display = 'flex';
       banner.innerHTML = `⚠️ <strong style="color:var(--accent3)">${j.count} TEMP batch${j.count>1?'es':''} unreconciled</strong>

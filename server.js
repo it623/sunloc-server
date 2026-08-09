@@ -16,7 +16,23 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51L';
+const APP_BUILD = 'v51Q';
+// v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
+// — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
+// /api/health, so there was no way to tell from the running server which one was actually deployed.
+// A short hash of server.js + the three HTML apps is computed at boot and returned alongside the
+// build letter: two archives that differ in any byte now report different fingerprints, and the
+// letter alone is never again the only evidence of what is running.
+const BUILD_FINGERPRINT = (() => {
+  try {
+    const _c = require('crypto'), _f = require('fs'), _p = require('path');
+    const h = _c.createHash('sha256');
+    for (const rel of ['server.js', 'public/planning.html', 'public/dpr.html', 'public/tracking.html']) {
+      try { h.update(_f.readFileSync(_p.join(__dirname, rel))); } catch (_) { h.update('missing:' + rel); }
+    }
+    return h.digest('hex').slice(0, 12);
+  } catch (e) { return 'unavailable'; }
+})();
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -1844,9 +1860,14 @@ async function _v51jHealExuChildren() {
     const touched = [];
     for (const child of orders) {
       if (!child || child.deleted) continue;
-      if (!child.excessUnprintFrom) continue;      // not an excess-unprint child
-      if (child._v51jHealed) continue;             // already repaired — idempotent
-      const parent = byBatch.get(String(child.excessUnprintFrom).trim().toUpperCase());
+      // v51M (Ishan, 9 Aug): the heal originally keyed ONLY on excessUnprintFrom and therefore never
+      // touched the children that were actually reopened on the floor — 26ZE119A, 26H046A, 26P046A
+      // came from the RE-CUSTOMER SPLIT path (recustomerSplitFrom), which carried the identical
+      // force-open line. Both families are repaired here; the W/O-split path never had the defect.
+      const _srcBn = child.excessUnprintFrom || child.recustomerSplitFrom;
+      if (!_srcBn) continue;                       // not a split child
+      if (child._v51mHealed) continue;             // already repaired — idempotent
+      const parent = byBatch.get(String(_srcBn).trim().toUpperCase());
       if (!parent) continue;                       // parent gone — leave the child alone entirely
       let changed = false;
       // Gross: the parent's override never described the child. Cleared unconditionally (grossQty
@@ -1871,15 +1892,15 @@ async function _v51jHealExuChildren() {
       // edit made AFTER the split: only a token newer than the split stamp is the planner's own
       // correction of THIS child. Pre-v51J children carry no excessUnprintSplitAt, so recustomeredAt
       // (written at the same moment by the same endpoint) is the fallback anchor.
-      const _splitTs = Date.parse(child.excessUnprintSplitAt || child.recustomeredAt || '') || 0;
+      const _splitTs = Date.parse(child.excessUnprintSplitAt || child.recustomerSplitAt || child.recustomeredAt || '') || 0;
       const _dateTok = parseInt(child._v50vDateEditAt || 0) || 0;
       const _plannerOwned = _splitTs > 0 ? (_dateTok > _splitTs) : !!(_dateTok || child.manualStartDate || child.manualEndDate);
       if (!_plannerOwned) {
         if (String(child.startDate || '') !== String(parent.startDate || '')) { child.startDate = parent.startDate; changed = true; }
         if (String(child.endDate   || '') !== String(parent.endDate   || '')) { child.endDate   = parent.endDate;   changed = true; }
       }
-      if (!changed) { child._v51jHealed = true; continue; }   // nothing to fix — stamp and move on
-      child._v51jHealed = true;
+      if (!changed) { child._v51mHealed = true; continue; }   // nothing to fix — stamp and move on
+      child._v51mHealed = true;
       child._localEditedAt = Date.now();
       touched.push({ child, parent });
     }
@@ -1895,9 +1916,9 @@ async function _v51jHealExuChildren() {
         [child.id, j, child.machineId || null, child.batchNumber, child.status || 'running']
       );
       healed++;
-      console.log(`[v51J exu-child heal] ${child.batchNumber}: restored to parent ${parent.batchNumber} (status ${child.status}, ${child.startDate||'—'} → ${child.endDate||'—'}), gross cleared`);
+      console.log(`[v51M split-child heal] ${child.batchNumber}: restored to parent ${parent.batchNumber} (status ${child.status}, ${child.startDate||'—'} → ${child.endDate||'—'}), gross cleared`);
       try {
-        logAudit('SYSTEM', 'system', 'planning', 'EXU_CHILD_HEAL',
+        logAudit('SYSTEM', 'system', 'planning', 'SPLIT_CHILD_HEAL',
           `Split child ${child.batchNumber} restored to parent ${parent.batchNumber}: status=${child.status}, start=${child.startDate||'—'}, end=${child.endDate||'—'}, grossOverride cleared`);
       } catch (_) {}
     }
@@ -1905,6 +1926,68 @@ async function _v51jHealExuChildren() {
   return healed;
 }
 setTimeout(() => { _v51jHealExuChildren().catch(()=>{}); }, 20000);
+
+// ═══ v51Q W/O-FLAG HEAL (Ishan, 9 Aug — 26ZH079, 26ZH086, 26ZH087) ═══════════════════════
+// Companion to the client-side predicate. The reconciliation approve is the ONLY path that flips
+// woStatus 'wo' → 'wo-reconciled' when it assigns a customer; a customer arriving by any other route
+// leaves the flag stuck at 'wo'. The client fix stops those orders LOOKING like work orders, but the
+// stale flag keeps propagating — most visibly it disables the Ship To / Bill To / PO fields in the
+// order-edit form (the form locks them while woStatus === 'wo'), so the planner cannot correct the
+// very customer that is already there. This pass fixes the data: any live order flagged 'wo' that
+// carries a real customer is moved to 'wo-reconciled', exactly the value the approve path writes.
+// Its tracking labels are brought along too, mirroring that same approve path, so the two stores
+// agree. Deliberately narrow: only 'wo' → 'wo-reconciled', only with a genuine customer, never the
+// reverse, and idempotent — once moved, an order no longer matches.
+function _v51qRealCustomer(o) {
+  const c = String((o && (o.shipTo || o.customer)) || '').trim();
+  if (!c) return '';
+  const u = c.toUpperCase();
+  return (u === '-' || u === 'TBD' || u === 'W/O' || u === 'W/O — PENDING' || u === 'W/O - PENDING') ? '' : c;
+}
+async function _v51qHealWoFlags() {
+  if (!pgPool) return 0;
+  let healed = 0;
+  try {
+    const planState = await getPlanningStateAsync();
+    const orders = (planState && Array.isArray(planState.orders)) ? planState.orders : [];
+    if (!orders.length) return 0;
+    const touched = [];
+    for (const o of orders) {
+      if (!o || o.deleted) continue;
+      if (o.woStatus !== 'wo') continue;
+      const cust = _v51qRealCustomer(o);
+      if (!cust) continue;                      // genuinely still awaiting a customer — leave alone
+      o.woStatus = 'wo-reconciled';
+      o._localEditedAt = Date.now();
+      touched.push({ o, cust });
+    }
+    if (!touched.length) return 0;
+    await savePlanningState(planState);
+    _planningStateCache = planState; _planningStateCacheTime = Date.now();
+    for (const { o, cust } of touched) {
+      const j = JSON.stringify(o);
+      await pgPool.query(
+        `INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+         VALUES ($1,$2,$3,$4,$5,false,NOW()::TEXT)
+         ON CONFLICT(id) DO UPDATE SET data_json=$2, machine_id=$3, batch_number=$4, status=$5, deleted=false, updated_at=NOW()::TEXT`,
+        [o.id, j, o.machineId || null, o.batchNumber, o.status || 'running']
+      );
+      if (o.batchNumber) {
+        try { await pgPool.query(`UPDATE tracking_labels SET wo_status='wo-reconciled' WHERE batch_number=$1 AND wo_status='wo'`, [o.batchNumber]); }
+        catch (e) { console.warn('[v51Q wo-flag heal] labels skipped for', o.batchNumber, e.message); }
+      }
+      healed++;
+      console.log(`[v51Q wo-flag heal] ${o.batchNumber || o.id}: woStatus wo → wo-reconciled (customer: ${cust})`);
+      try {
+        logAudit('SYSTEM', 'system', 'planning', 'WO_FLAG_HEAL',
+          `${o.batchNumber || o.id} carried woStatus='wo' with customer '${cust}' — moved to wo-reconciled`);
+      } catch (_) {}
+    }
+  } catch (e) { console.warn('[v51Q wo-flag heal] pass failed:', e.message); }
+  return healed;
+}
+setTimeout(() => { _v51qHealWoFlags().catch(()=>{}); }, 25000);
+setInterval(() => { _v51qHealWoFlags().catch(()=>{}); }, 10 * 60 * 1000);
 setInterval(() => { _v51jHealExuChildren().catch(()=>{}); }, 10 * 60 * 1000);
 
 async function _v49gWarmDprClosed() {
@@ -15988,6 +16071,7 @@ app.delete('/api/temp-batches/by-date', async (req, res) => {
 // caller can show what was hidden.
 async function _v51jTempCoverage() {
   const spans = new Map();          // machineId → [{s,e}]
+  const env   = new Map();          // 'machineId|YYYY-MM' → {lo,hi} planned envelope for that month
   const actuals = new Set();        // 'machineId|YYYY-MM-DD'
   try {
     const planState = await getPlanningStateAsync();
@@ -16000,6 +16084,15 @@ async function _v51jTempCoverage() {
       const key = String(o.machineId);
       if (!spans.has(key)) spans.set(key, []);
       spans.get(key).push({ s, e: (_e < s ? s : _e) });
+      // v51M: per machine+month planned ENVELOPE — earliest start to latest end of that month's
+      // orders. See the coverage rule below for why the exact-span leg alone was not enough.
+      for (const _ym of new Set([s.slice(0,7), (_e < s ? s : _e).slice(0,7)])) {
+        const mk = `${key}|${_ym}`;
+        const cur = env.get(mk);
+        const lo = s, hi = (_e < s ? s : _e);
+        if (!cur) env.set(mk, { lo, hi });
+        else { if (lo < cur.lo) cur.lo = lo; if (hi > cur.hi) cur.hi = hi; }
+      }
     }
   } catch (e) { console.warn('[v51J temp coverage] plan spans skipped:', e.message); }
   try {
@@ -16020,6 +16113,17 @@ async function _v51jTempCoverage() {
       for (const sp of (spans.get(String(machineId)) || [])) {
         if (d >= sp.s && d <= sp.e) return true;
       }
+      // v51M THIRD LEG — PLANNED ENVELOPE (Ishan, 9 Aug: MC34 08-09, MC7 03/04/05/06-Jul, MC27 03-Jul
+      // all still showing while those machines demonstrably had planned orders). The exact-span leg
+      // misses two ordinary situations: a GAP between two consecutive orders on the same machine
+      // (the DPR page was opened on a changeover day), and a CLOSED order whose end date was pulled
+      // back to its last real production date (the v41ZO "never show a finished order ending in the
+      // future" rule), which shortens the stored span below the days actually worked. In both the
+      // machine plainly WAS under a planned schedule — which is the only thing a TEMP batch claims
+      // it was not. So a date inside the machine's planned envelope for its month (earliest start to
+      // latest end of that month's orders) counts as covered.
+      const _envM = env.get(`${machineId}|${d.slice(0,7)}`);
+      if (_envM && d >= _envM.lo && d <= _envM.hi) return true;
       return false;
     }
   };
@@ -16290,6 +16394,7 @@ app.get('/api/health', (req, res) => {
       ok: true,
       server: 'Sunloc Integrated Server v1.0',
       build: APP_BUILD,
+      fingerprint: BUILD_FINGERPRINT,   // v51M: distinguishes two archives sharing a build letter
       db: DB_PATH,
       planningSavedAt: planningRow?.saved_at || null,
       dprRecords: dprCount?.c || 0,
@@ -16298,7 +16403,7 @@ app.get('/api/health', (req, res) => {
     });
   } catch(err) {
     // Server is alive even if DB query fails (e.g. still warming up)
-    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: APP_BUILD, db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
+    res.json({ ok: true, server: 'Sunloc Integrated Server v1.0', build: APP_BUILD, fingerprint: BUILD_FINGERPRINT, db: DB_PATH, uptime: Math.floor(process.uptime())+'s', note: 'DB initialising: '+err.message });
   }
 });
 
@@ -20566,7 +20671,25 @@ app.post('/api/tracking/recustomer', async (req, res) => {
         actualProd: +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
         actualQty:  +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
         isPrinted: doConvert ? true : !!(ord?.isPrinted),
-        status: (ord?.status==='closed' ? 'running' : (ord?.status||'running')),
+        // ═══ v51M STATUS + DATE + GROSS INHERITANCE (Ishan, 9 Aug — 26ZE119A / 26H046A / 26P046A) ══
+        // THE SAME defect v51J fixed on the excess-unprint path, still live here — and this is the
+        // path that actually produced the reopened children on MC8/MC31. A split is a DIVISION of an
+        // order: it inherits the parent's status verbatim and keeps the parent's production window.
+        // Force-opening a closed parent's child put it back in the planning cascade, which re-anchors
+        // every non-closed order and pushes any past end date up to today — 26ZE119A ended 09-Aug
+        // against a parent that closed 01-Aug, and the child consumed a slot in the max-2
+        // In-Production limit. The split DATE is recorded separately (recustomerSplitAt) for the
+        // audit trail; it never becomes a production date.
+        status: (ord?.status || 'running'),
+        startDate: ord?.startDate, endDate: ord?.endDate,
+        closedDate: ord?.closedDate || null,
+        recustomerSplitAt: ts,
+        // v51M (v50F uniformity — third and last consumer of this pattern): the child is spread from
+        // the parent and silently carried the parent's grossOverride, the manual Gross Qty for the
+        // WHOLE pre-split batch, so a few-box child valued itself at the family total and showed the
+        // parent's share as phantom Production WIP. grossQty is nulled with it because the cascade's
+        // CLOSED branch only recomputes when grossQty is falsy.
+        grossOverride: null, grossQty: null,
         deleted: false, recustomeredFrom: oldCustomer, recustomerSplitFrom: batchNumber,
         recustomeredAt: ts, recustomeredBy: session.username,
         sapDocEntry: null, sapDocNum: _newSO,          // v49B: new customer's SO if supplied, else blank
