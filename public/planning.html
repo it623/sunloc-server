@@ -531,7 +531,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51H</p>
+      <p>Planning Suite v3.0 · build v51I</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1767,7 +1767,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51H' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51I' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5480,7 +5480,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51H'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51I'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -14341,7 +14341,16 @@ let _reconProposedOrder = null;
 
 async function renderReconciliation() {
   document.getElementById('topbar-actions').innerHTML = '';
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   const content = document.getElementById('content');
   content.innerHTML = '<div style="padding:40px;text-align:center;color:var(--text3)">Loading TEMP batches...</div>';
 
@@ -14378,6 +14387,10 @@ async function renderReconciliation() {
       if(rEx){ try { const jEx = await rEx.json(); if(jEx?.ok){ exuPending = jEx.requests||[]; exuRecent = (jEx.recent||[]).slice(0,10); } else { exuLoadErr = jEx?.error || ('HTTP '+rEx.status); } } catch(e){ exuLoadErr = e.message; } }
       else { exuLoadErr = 'request failed (network/timeout)'; }
     } catch(e) { content.innerHTML = `<div class="alert alert-warn">⚠️ Could not load data: ${e.message}</div>`; return; }
+  } else {
+    // v51H: if the server URL still cannot be resolved, say so — never render a page that merely
+    // LOOKS empty while every server-backed section was silently skipped.
+    exuLoadErr = 'server URL could not be resolved — set it in Settings';
   }
 
   _reconTempBatches = tempBatches;
@@ -14745,7 +14758,16 @@ async function proposeReconciliation() {
     const tb = _reconTempBatches.find(t=>t.id===tbId);
     return { tempBatchId: tbId, tempDate: tb?.date, boxes: tb?.label_count||0, actualLakhs: tb?.daily_cap_lakhs||0 };
   });
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   if (!serverUrl) { alert('Server not connected'); return; }
   try {
     const r = await fetch(serverUrl+'/api/reconciliation/propose', {
@@ -14764,7 +14786,16 @@ async function proposeReconciliation() {
 
 async function approveReconciliation(reqId) {
   if (!confirm(`Approve and execute reconciliation ${reqId}?\n\nThis will:\n• Migrate all TEMP batch labels to the real order\n• Migrate all WIP scan records\n• Update Planning actuals\n• Generate replacement labels for printing\n\nThis cannot be undone.`)) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   try {
     const r = await fetch(serverUrl+'/api/reconciliation/approve/'+reqId, {
       method:'POST', headers:{'Content-Type':'application/json', 'x-session-token':currentUser?.token||''},
@@ -14782,7 +14813,16 @@ async function approveReconciliation(reqId) {
 async function rejectReconciliation(reqId) {
   const reason = prompt('Reason for rejection (required):');
   if (!reason) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   try {
     const r = await fetch(serverUrl+'/api/reconciliation/reject/'+reqId, {
       method:'POST', headers:{'Content-Type':'application/json', 'x-session-token':currentUser?.token||''},
@@ -14796,7 +14836,16 @@ async function rejectReconciliation(reqId) {
 
 async function approveWOReconciliation(reqId) {
   if (!confirm(`Approve W/O reconciliation ${reqId}?\n\nThis will:\n• Add customer name to the order\n• Update all batch labels with customer name\n• Generate replacement labels for printing\n\nThis cannot be undone.`)) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   try {
     const r = await fetch(serverUrl+'/api/wo/approve/'+reqId, {
       method:'POST', headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},
@@ -14814,7 +14863,16 @@ async function approveWOReconciliation(reqId) {
 async function rejectWOReconciliation(reqId) {
   const reason = prompt('Reason for rejection (required):');
   if (!reason) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   try {
     const r = await fetch(serverUrl+'/api/wo/reject/'+reqId, {
       method:'POST', headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},
@@ -14829,7 +14887,16 @@ async function rejectWOReconciliation(reqId) {
 // v40 P18.15: Admin approves a WO split — server creates child orders + rebatches labels atomically
 async function approveWoSplit(reqId) {
   if (!confirm(`Approve WO split ${reqId}?\n\nThis will:\n• Create one child production order per customer line\n• Rebatch labels and scan history by box position (parent → child batch numbers)\n• Mark parent WO as 'wo-split' (or 'wo-split-partial' if residual remains)\n\nThis cannot be undone.`)) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   try {
     const r = await fetch(serverUrl+'/api/wo/split/approve/'+reqId, {
       method:'POST',
@@ -14855,7 +14922,16 @@ async function approveWoSplit(reqId) {
 async function rejectWoSplit(reqId) {
   const reason = prompt('Reason for rejecting this split (required):');
   if (!reason) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   try {
     const r = await fetch(serverUrl+'/api/wo/split/reject/'+reqId, {
       method:'POST',
@@ -14873,7 +14949,16 @@ async function rejectWoSplit(reqId) {
 // (child UP order + label/scan rebatch + printing scan-IN reversals) through the server.
 async function approveExcessUnprint(reqId) {
   if (!confirm(`Approve excess-unprint ${reqId}?\n\nThis will:\n• Create an UNPRINTED child batch (colour stock if no customer was named)\n• Rebatch the selected labels and their scan history to the child\n• Reverse their printing scan-INs (v44C ledger — history preserved)\n• Reduce the parent proportionally; its Printing WIP falls by the carved quantity\n\nThis cannot be undone.`)) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   try {
     const r = await fetch(serverUrl+'/api/printing/excess-unprint/approve/'+reqId, {
       method:'POST',
@@ -14897,7 +14982,16 @@ async function approveExcessUnprint(reqId) {
 async function rejectExcessUnprint(reqId) {
   const reason = prompt('Reason for rejecting this excess-unprint proposal (required):');
   if (!reason) return;
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   try {
     const r = await fetch(serverUrl+'/api/printing/excess-unprint/reject/'+reqId, {
       method:'POST',
@@ -15346,7 +15440,16 @@ setInterval(checkPlanningTempAlerts, 5*60*1000);
 setTimeout(checkPlanningTempAlerts, 2000);
 
 async function checkPlanningTempAlerts(){
-  const serverUrl = localStorage.getItem('sunloc_server_url')||'';
+  // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
+  // SHADOWED the global `serverUrl`, which resolves to location.origin when the localStorage key
+  // is unset — and on app.sunloc.co.in that key is normally unset. serverUrl was therefore '', the
+  // whole `if (serverUrl)` fetch block was skipped, and the page rendered only the sections built
+  // from local state (Section B). Nothing errored, so it looked like an empty queue. Same origin
+  // fallback as the global resolver — applied to every function that shadowed it, including the
+  // approve/reject handlers, which would otherwise have no-op'd on click for the same reason.
+  const serverUrl = (function(){ try { const u = localStorage.getItem('sunloc_server_url')||''; 
+    return u || (location.hostname !== 'localhost' ? location.origin : ''); }
+    catch(e){ return (location.hostname !== 'localhost' ? location.origin : ''); } })();
   if(!serverUrl) return;
   try{
     const r = await fetch(serverUrl+'/api/temp-batches/active',{signal:AbortSignal.timeout(4000)});
