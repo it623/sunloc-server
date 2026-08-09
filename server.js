@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51I';
+const APP_BUILD = 'v51L';
 // ═══ v50T WRITE AUDIT (5 Aug — the definitive tracer for the ZA078/ZA079 flip saga) ══════════════
 // Every server path that can change a watched batch's planner fields calls _v50tAudit before
 // writing. One amendment then produces a complete, ordered trace in the Railway logs: which route
@@ -1808,6 +1808,104 @@ async function _v51cPrintOrderGapFill() {
 }
 setTimeout(() => { _v51cPrintOrderGapFill().catch(()=>{}); }, 15000);
 setInterval(() => { _v51cPrintOrderGapFill().catch(()=>{}); }, 10 * 60 * 1000);
+
+// ═══ v51J EXCESS-UNPRINT CHILD HEAL (confirmed by Ishan — 9 Aug) ══════════════════════════════
+// Companion repair to the child-creation fix at the excess-unprint approve endpoint. Every child
+// created BEFORE this build was force-opened when its parent was closed, then drifted in the
+// planning cascade: end date pushed to today, month cohort moved to the current month, and a slot
+// consumed in the machine's max-2 In-Production limit (26U110A, 26U111A, 26H046A, 26ZE119A,
+// 26P046A). Each also carried the parent's grossOverride — the whole pre-split batch's manual gross
+// — so a 1-box child valued itself at the family total (26ZE119A: 22.10L). The code fix stops new
+// damage; only this pass repairs what is already written.
+//
+// A split is a division of an order, so the child is restored to the parent's status and production
+// window verbatim, and its inherited gross figures are cleared so they recompute from the child's
+// own qty. Deliberately NARROW and idempotent:
+//   • only orders carrying excessUnprintFrom (i.e. created by that endpoint)
+//   • only when the parent still exists and is not deleted
+//   • status/date restore ONLY when the child diverges from the parent AND the child carries no
+//     planner date-authority token (_v50vDateEditAt / manualStartDate / manualEndDate). A deliberate
+//     planner correction of a child outranks this repair — it is never overwritten.
+//   • _v51jHealed stamp so a healed child is never touched twice; the pass then no-ops forever.
+// Writes BOTH stores (planning_state via the v46D canonical writer, and production_orders — which
+// the client merge treats as authoritative for status), or the next sync would undo the repair.
+async function _v51jHealExuChildren() {
+  if (!pgPool) return 0;
+  let healed = 0;
+  try {
+    const planState = await getPlanningStateAsync();
+    const orders = (planState && Array.isArray(planState.orders)) ? planState.orders : [];
+    if (!orders.length) return 0;
+    const byBatch = new Map();
+    for (const o of orders) {
+      if (!o || o.deleted || !o.batchNumber) continue;
+      byBatch.set(String(o.batchNumber).trim().toUpperCase(), o);
+    }
+    const touched = [];
+    for (const child of orders) {
+      if (!child || child.deleted) continue;
+      if (!child.excessUnprintFrom) continue;      // not an excess-unprint child
+      if (child._v51jHealed) continue;             // already repaired — idempotent
+      const parent = byBatch.get(String(child.excessUnprintFrom).trim().toUpperCase());
+      if (!parent) continue;                       // parent gone — leave the child alone entirely
+      let changed = false;
+      // Gross: the parent's override never described the child. Cleared unconditionally (grossQty
+      // too, so the cascade's closed branch recomputes from the child's own qty — it only
+      // recalculates when grossQty is falsy).
+      if (child.grossOverride != null) { child.grossOverride = null; changed = true; }
+      if (child.grossQty != null)      { child.grossQty = null;      changed = true; }
+      // Status + production window: restore to the parent unless the planner has deliberately
+      // corrected this child's dates (v50V authority token or an explicit manual-date flag).
+      // Status is restored UNCONDITIONALLY. A split is a division of an order, so the child's
+      // status is the parent's — and a planner's DATE correction never authorises a closed batch to
+      // sit open. (This deliberately sits outside the date-authority guard below; folding it in
+      // would leave a reopened child open forever on any parent that had a corrected date.)
+      if ((parent.status || '') && child.status !== parent.status) { child.status = parent.status; changed = true; }
+      if (parent.status === 'closed' && String(child.closedDate || '') !== String(parent.closedDate || '')) {
+        child.closedDate = parent.closedDate || null; changed = true;
+      }
+      // Date authority: the child was spread from the parent at creation, so it INHERITED the
+      // parent's manualStartDate / manualEndDate / _v50vDateEditAt. Reading those flags naively
+      // would mean "planner owns this child" on exactly the parents that had corrected dates — and
+      // the restore would skip the children most in need of it. Ownership therefore requires a date
+      // edit made AFTER the split: only a token newer than the split stamp is the planner's own
+      // correction of THIS child. Pre-v51J children carry no excessUnprintSplitAt, so recustomeredAt
+      // (written at the same moment by the same endpoint) is the fallback anchor.
+      const _splitTs = Date.parse(child.excessUnprintSplitAt || child.recustomeredAt || '') || 0;
+      const _dateTok = parseInt(child._v50vDateEditAt || 0) || 0;
+      const _plannerOwned = _splitTs > 0 ? (_dateTok > _splitTs) : !!(_dateTok || child.manualStartDate || child.manualEndDate);
+      if (!_plannerOwned) {
+        if (String(child.startDate || '') !== String(parent.startDate || '')) { child.startDate = parent.startDate; changed = true; }
+        if (String(child.endDate   || '') !== String(parent.endDate   || '')) { child.endDate   = parent.endDate;   changed = true; }
+      }
+      if (!changed) { child._v51jHealed = true; continue; }   // nothing to fix — stamp and move on
+      child._v51jHealed = true;
+      child._localEditedAt = Date.now();
+      touched.push({ child, parent });
+    }
+    if (!touched.length) return 0;
+    await savePlanningState(planState);
+    _planningStateCache = planState; _planningStateCacheTime = Date.now();
+    for (const { child, parent } of touched) {
+      const j = JSON.stringify(child);
+      await pgPool.query(
+        `INSERT INTO production_orders (id,data_json,machine_id,batch_number,status,deleted,updated_at)
+         VALUES ($1,$2,$3,$4,$5,false,NOW()::TEXT)
+         ON CONFLICT(id) DO UPDATE SET data_json=$2, machine_id=$3, batch_number=$4, status=$5, deleted=false, updated_at=NOW()::TEXT`,
+        [child.id, j, child.machineId || null, child.batchNumber, child.status || 'running']
+      );
+      healed++;
+      console.log(`[v51J exu-child heal] ${child.batchNumber}: restored to parent ${parent.batchNumber} (status ${child.status}, ${child.startDate||'—'} → ${child.endDate||'—'}), gross cleared`);
+      try {
+        logAudit('SYSTEM', 'system', 'planning', 'EXU_CHILD_HEAL',
+          `Split child ${child.batchNumber} restored to parent ${parent.batchNumber}: status=${child.status}, start=${child.startDate||'—'}, end=${child.endDate||'—'}, grossOverride cleared`);
+      } catch (_) {}
+    }
+  } catch (e) { console.warn('[v51J exu-child heal] pass failed:', e.message); }
+  return healed;
+}
+setTimeout(() => { _v51jHealExuChildren().catch(()=>{}); }, 20000);
+setInterval(() => { _v51jHealExuChildren().catch(()=>{}); }, 10 * 60 * 1000);
 
 async function _v49gWarmDprClosed() {
   const set = new Set();
@@ -15869,6 +15967,64 @@ app.delete('/api/temp-batches/by-date', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ═══ v51J PHANTOM-TEMP SUPPRESSION (confirmed by Ishan — MC14 27-Jul, 9 Aug) ═══════════════
+// A TEMP batch is a SNAPSHOT: the DPR client calls /api/temp-batches/check the moment its page
+// opens, that route tests `status !== 'closed'` orders for the machine RIGHT NOW, and if none are
+// found a row is written for today. That row is then NEVER re-validated. So the moment a planner
+// backfills or regularises a real order covering that date — or the day's only order is later
+// closed — the row becomes a phantom that survives forever with daysActive climbing. The /active
+// listing filtered on nothing but a hardcoded April cutoff, which is why the reconciliation table
+// showed a July TEMP for MC14 while July's MC14 schedule holds a real order across that date.
+//
+// The listing now re-derives the condition against the CURRENT plan, on every read:
+//   PRIMARY  — a non-deleted order on that machine whose start..end span contains the TEMP's date
+//              (ANY status: a batch that has since been closed still proves the day was planned;
+//              open/closed is a snapshot property, date coverage is the durable fact).
+//   SECOND   — a production_actuals shift row for that machine and date attributed to a REAL batch
+//              (a TEMP batch's own actuals are keyed to the TEMP id and are excluded). Corroborates
+//              days where the order's stored span drifted but production demonstrably happened.
+// Suppression is a VIEW decision only — no row is deleted or mutated, so nothing is lost and a
+// genuinely unplanned day reappears the instant its cover is removed. Counts are returned so the
+// caller can show what was hidden.
+async function _v51jTempCoverage() {
+  const spans = new Map();          // machineId → [{s,e}]
+  const actuals = new Set();        // 'machineId|YYYY-MM-DD'
+  try {
+    const planState = await getPlanningStateAsync();
+    for (const o of ((planState && planState.orders) || [])) {
+      if (!o || o.deleted || !o.machineId) continue;
+      const s = o.startDate ? String(o.startDate).slice(0,10) : null;
+      const e = o.endDate   ? String(o.endDate).slice(0,10)   : s;
+      if (!s || !/^\d{4}-\d{2}-\d{2}$/.test(s)) continue;
+      const _e = (e && /^\d{4}-\d{2}-\d{2}$/.test(e)) ? e : s;
+      const key = String(o.machineId);
+      if (!spans.has(key)) spans.set(key, []);
+      spans.get(key).push({ s, e: (_e < s ? s : _e) });
+    }
+  } catch (e) { console.warn('[v51J temp coverage] plan spans skipped:', e.message); }
+  try {
+    const rows = pgPool
+      ? (await pgPool.query(`SELECT machine_id, date, batch_number FROM production_actuals WHERE COALESCE(qty_lakhs,0) > 0`)).rows
+      : db.prepare(`SELECT machine_id, date, batch_number FROM production_actuals WHERE COALESCE(qty_lakhs,0) > 0`).all();
+    for (const r of (rows || [])) {
+      const bn = String(r.batch_number || '').trim();
+      if (!bn || bn.toUpperCase().startsWith('TEMP-')) continue;   // TEMP's own actuals prove nothing
+      actuals.add(`${r.machine_id}|${String(r.date).slice(0,10)}`);
+    }
+  } catch (e) { console.warn('[v51J temp coverage] actuals leg skipped:', e.message); }
+  return {
+    covered(machineId, date) {
+      const d = String(date || '').slice(0,10);
+      if (!d) return false;
+      if (actuals.has(`${machineId}|${d}`)) return true;
+      for (const sp of (spans.get(String(machineId)) || [])) {
+        if (d >= sp.s && d <= sp.e) return true;
+      }
+      return false;
+    }
+  };
+}
+
 app.get('/api/temp-batches/active', async (req, res) => {
   try {
     let batches;
@@ -15882,8 +16038,19 @@ app.get('/api/temp-batches/active', async (req, res) => {
     const TEMP_CUTOFF = '2026-04-27';
     // Ignore TEMP batches created before April 25 2026
     const filtered = batches.filter(b => (b.created_at||b.date||'') >= TEMP_CUTOFF);
-    const enriched = filtered.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
-    res.json({ ok:true, batches: enriched, count: enriched.length });
+    // v51J: drop rows whose unplanned-day condition no longer holds (see _v51jTempCoverage above).
+    // Never let the coverage pass break the listing — on failure the table renders exactly as before.
+    let live = filtered, suppressed = 0;
+    try {
+      const cov = await _v51jTempCoverage();
+      live = filtered.filter(b => {
+        const phantom = cov.covered(b.machine_id, b.date);
+        if (phantom) suppressed++;
+        return !phantom;
+      });
+    } catch (e) { console.warn('[v51J temp-batches/active] coverage skipped:', e.message); live = filtered; }
+    const enriched = live.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
+    res.json({ ok:true, batches: enriched, count: enriched.length, suppressedPhantom: suppressed, rawActive: filtered.length });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
@@ -17213,8 +17380,19 @@ app.get('/api/temp-batches/active', async (req, res) => {
     const TEMP_CUTOFF = '2026-04-27';
     // Ignore TEMP batches created before April 25 2026
     const filtered = batches.filter(b => (b.created_at||b.date||'') >= TEMP_CUTOFF);
-    const enriched = filtered.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
-    res.json({ ok:true, batches: enriched, count: enriched.length });
+    // v51J: drop rows whose unplanned-day condition no longer holds (see _v51jTempCoverage above).
+    // Never let the coverage pass break the listing — on failure the table renders exactly as before.
+    let live = filtered, suppressed = 0;
+    try {
+      const cov = await _v51jTempCoverage();
+      live = filtered.filter(b => {
+        const phantom = cov.covered(b.machine_id, b.date);
+        if (phantom) suppressed++;
+        return !phantom;
+      });
+    } catch (e) { console.warn('[v51J temp-batches/active] coverage skipped:', e.message); live = filtered; }
+    const enriched = live.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
+    res.json({ ok:true, batches: enriched, count: enriched.length, suppressedPhantom: suppressed, rawActive: filtered.length });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
@@ -20821,7 +20999,33 @@ app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
         actualProd: +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
         actualQty:  +(totalBoxes>0 ? parentActual*nSplit/totalBoxes : 0).toFixed(3),
         isPrinted: false,
-        status: (ord.status==='closed' ? 'running' : (ord.status||'running')),
+        // ═══ v51J STATUS + DATE INHERITANCE (confirmed by Ishan, 9 Aug) ═══════════════════════════
+        // ROOT CAUSE of "split children landed as open orders in Planning": this line used to read
+        //   status: (ord.status==='closed' ? 'running' : (ord.status||'running'))
+        // — a closed parent's child was FORCE-OPENED. The planning cascade skips closed orders
+        // (recalcMachineScheduleQuiet: `if (ord.status === 'closed') … continue`) but re-anchors every
+        // non-closed one to the running machine cursor and pushes any past end date up to today
+        // (`if (!_endAnchored45x && endDate < todayD) endDate = today`). So each child immediately
+        // drifted to an end date of TODAY (26U110A 30-May→09-Aug, 26ZE119A 31-Jul→09-Aug against a
+        // parent ending 01-Aug), consumed a slot in the max-2 In-Production limit (26H046A on MC8),
+        // and re-cohorted months-old production into the current month.
+        // A split is a DIVISION of an order, not a new run: it inherits the parent's status verbatim
+        // and keeps the parent's production window unchanged. The split DATE is recorded separately
+        // (excessUnprintSplitAt) for the audit trail — it never becomes a production date.
+        status: (ord.status || 'running'),
+        startDate: ord.startDate, endDate: ord.endDate,
+        closedDate: ord.closedDate || null,
+        excessUnprintSplitAt: ts,
+        // v51J (v50F uniformity — the identical defect the W/O-split path fixed and this one never
+        // received): the child is spread from the parent, silently carrying the parent's
+        // grossOverride — the planner's manual Gross Qty for the WHOLE pre-split batch. A 1-box child
+        // then valued itself at the family total (26ZE119A: 22.10L against 1 box; 26H046A: 40.35L),
+        // showing the parent's share as phantom Production WIP. A child has its own qty and its own
+        // apportioned actual; a plan figure for the batch it was carved out of does not describe it.
+        // grossQty is nulled with it: the CLOSED branch of the cascade only recomputes when grossQty
+        // is falsy (`if (!ord.grossQty)`), so a stale inherited headline would otherwise survive the
+        // override being cleared and the child would still render the family total.
+        grossOverride: null, grossQty: null,
         deleted: false, recustomeredFrom: ord.customer||'', excessUnprintFrom: batchNumber,
         excessUnprintReqId: reqId,
         recustomeredAt: ts, recustomeredBy: session.username,

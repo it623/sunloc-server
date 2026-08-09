@@ -5,6 +5,11 @@
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>Sunloc Planning Suite v3.0</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<!-- v51K: the STYLED SheetJS build, loaded second so it overrides the plain global XLSX — exactly the
+     order tracking.html already uses for Report E. Without it, cell `.s` style objects are silently
+     dropped and every dispatch export ships unformatted. If this CDN fails the plain build above still
+     serves, so exports degrade to unstyled rather than breaking. -->
+<script src="https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js"></script>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Syne:wght@400;600;700;800&family=DM+Sans:wght@300;400;500;600&display=swap');
 
@@ -215,6 +220,14 @@ select.form-control { cursor:pointer; }
 .summary-table td:first-child { text-align:left; font-weight:700; color:var(--text); }
 .summary-table tr.total-row td { background:var(--surface3); font-weight:800; color:var(--accent); }
 .summary-table .highlight { color:var(--accent3); font-weight:800; }
+/* v51J: scrollable reconciliation tables (TEMP + W/O Split & Assign). The header background is
+   already opaque (#1a3a2e), so sticky headers need no extra fill. Vertical scroll is capped so a
+   130-row TEMP list no longer pushes every other section off the page. */
+.recon-scroll { overflow:auto; max-height:52vh; border:1px solid var(--border); border-radius:6px; }
+.recon-scroll .summary-table th { position:sticky; top:0; z-index:2; }
+.recon-filterbar { display:flex; flex-wrap:wrap; align-items:center; gap:8px; margin-bottom:10px; font-size:12px; }
+.recon-filterbar select { font-size:12px; padding:3px 8px; border:1px solid var(--border); border-radius:4px; background:var(--surface2); color:var(--text1); }
+.recon-filterbar .recon-count { color:var(--text3); margin-left:auto; font-family:var(--mono); font-size:11px; }
 
 /* MISC */
 .section-header { display:flex; align-items:center; justify-content:space-between; margin-bottom:16px; }
@@ -531,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51I</p>
+      <p>Planning Suite v3.0 · build v51L</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1767,7 +1780,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51I' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51L' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5480,7 +5493,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51I'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51L'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -11739,7 +11752,17 @@ function dispatchRowObj(p) {
     'Dispatched (Lakhs)': Math.round((p.actualDispatched||0)*100)/100,
     'Planned Dispatch Date': p.plannedDate ? fmtDate(p.plannedDate) : 'Pending',
     'Date Status': p.dateManuallySet ? 'Manual' : (p.tentative ? 'Tentative' : 'Confirmed'),
-    'Balance (Lakhs)': Math.round(((p.qty||0)-(p.actualDispatched||0))*100)/100,
+    // v51L (Ishan, 9 Aug): both balance columns now NAME THEIR BASIS in the header. With two balance
+    // columns side by side, a bare "Balance (Lakhs)" is ambiguous at a glance — and these files get
+    // read by DM without the person who exported them standing nearby.
+    'Balance Order−Disp (L)': Math.round(((p.qty||0)-(p.actualDispatched||0))*100)/100,
+    // v51K (Ishan, 9 Aug): second balance — PACKED less dispatched. The existing Balance answers
+    // "how much of the ORDER is still owed"; this answers "how much is physically packed and still
+    // sitting here". DM needs both: an order can show a large order-balance while nothing is packed
+    // to send, or a small one while packed stock is waiting. Deliberately NOT clamped at zero — a
+    // negative means more was dispatched than the system shows packed, which is an anomaly DM must
+    // see rather than have rounded away.
+    'Balance Packed−Disp (L)': Math.round(((p.packedQty||0)-(p.actualDispatched||0))*100)/100,
     'Status': p.status || '',
     'Remarks': p.remarks || ''
   };
@@ -11750,27 +11773,102 @@ function dispatchRowObj(p) {
 // the standing rule that every exported sheet share one format/logic. Used for per-zone ZONE TOTAL
 // rows, the Zone Summary sheet's per-zone subtotals, and the grand TOTAL.
 function _dispatchColWidths() {
-  // matches the 17 dispatchRowObj columns in order
-  return [18,14,10,14,8,8,14,12,8,14,12,16,16,12,14,18,20].map(w=>({wch:w}));
+  // matches the 18 dispatchRowObj columns in order (v51K: + packed balance; v51L: both
+  // balance columns explicitly named by their basis)
+  return [22,14,10,16,6,8,12,12,8,14,12,16,18,12,14,16,16,22].map(w=>({wch:w}));
 }
 function _dispatchTotalRow(customerLabel, zone, plans) {
   const r2 = x => Math.round((x||0)*100)/100;
   const sum = f => (plans||[]).reduce((s,p)=>s+(Number(f(p))||0),0);
   const dispatched = (plans||[]).filter(p=>p.status==='dispatched').length;
-  const sQ = sum(p=>p.qty), sD = sum(p=>p.actualDispatched);
+  const sQ = sum(p=>p.qty), sD = sum(p=>p.actualDispatched), sP = sum(p=>p.packedQty);
   return {
     'Customer': customerLabel, 'Batch No': '', 'PC Code': '', 'Colour': '', 'Size': '', 'PTD/UP': '',
     'Zone': zone || '',
     'Qty (Lakhs)': r2(sQ),
     'Boxes': sum(p=>p.boxes),
-    'Packed (Lakhs)': r2(sum(p=>p.packedQty)),
+    'Packed (Lakhs)': r2(sP),
     'Packed Boxes': sum(p=>p.packedBoxes),
     'Dispatched (Lakhs)': r2(sD),
     'Planned Dispatch Date': '', 'Date Status': '',
-    'Balance (Lakhs)': r2(sQ - sD),
+    'Balance Order−Disp (L)': r2(sQ - sD),
+    'Balance Packed−Disp (L)': r2(sP - sD),   // v51K: totals the same basis as the row column
     'Status': `${dispatched}/${(plans||[]).length} dispatched`,
     'Remarks': ''
   };
+}
+
+// ═══ v51K DISPATCH SHEET FORMATTER (Ishan, 9 Aug — "format like Report E") ═══════════════════════
+// Every dispatch export now goes through this one builder, so all of them share Report E's colour
+// language and structure instead of being bare json_to_sheet dumps: merged title + scope subtitle,
+// cyan column header, green band per group (zone / customer), thin-bordered data rows, shaded
+// subtotals and a pink GRAND TOTAL. Numeric columns carry a real 2-dp number format so they stay
+// summable in Excel. Styles are cell-level `.s` objects honoured by xlsx-js-style (loaded in the
+// head); if that CDN ever fails the plain build ignores them and the sheet still writes correctly.
+const _DISPATCH_HDR = ['Customer','Batch No','PC Code','Colour','Size','PTD/UP','Zone',
+  'Qty (Lakhs)','Boxes','Packed (Lakhs)','Packed Boxes','Dispatched (Lakhs)',
+  'Planned Dispatch Date','Date Status','Balance Order−Disp (L)','Balance Packed−Disp (L)','Status','Remarks'];
+const _DISPATCH_NUMCOLS = [7,8,9,10,11,14,15];   // indices into _DISPATCH_HDR that must be numeric
+// groups: [{ label, plans }] — rendered as band + rows + subtotal. Pass one group for a flat sheet.
+function _buildDispatchSheet(groups, opts) {
+  const o = opts || {};
+  const NC = _DISPATCH_HDR.length;
+  const aoa = [], kinds = [], merges = [];
+  const push = (row, kind) => { aoa.push(row); kinds.push(kind); };
+  const toArr = obj => _DISPATCH_HDR.map(h => (obj[h] === undefined || obj[h] === null) ? '' : obj[h]);
+  merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:NC-1} });
+  push([o.title || 'Sunloc — Dispatch Plan'], 'title');
+  merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:NC-1} });
+  push([`Scope: ${o.scopeLabel || _v51kScopeLabel()}  |  Generated ${new Date().toLocaleString()}`], 'subtitle');
+  push([], 'spacer');
+  push(_DISPATCH_HDR, 'hdr');
+  const all = [];
+  (groups || []).forEach(g => {
+    if (!g || !g.plans || !g.plans.length) return;
+    if (o.showBands !== false && g.label) {
+      merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:NC-1} });
+      push([`${g.label} — ${g.plans.length} order${g.plans.length!==1?'s':''}`], 'band');
+    }
+    g.plans.forEach(p => { push(toArr(dispatchRowObj(p)), 'data'); all.push(p); });
+    if (o.showSubtotals !== false) {
+      merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:6} });
+      push(toArr(_dispatchTotalRow(g.subtotalLabel || `${g.label} TOTAL`, g.zone || '', g.plans)), 'sub');
+      push([], 'spacer');
+    }
+  });
+  if (o.showGrand !== false && all.length) {
+    merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:6} });
+    push(toArr(_dispatchTotalRow(o.grandLabel || `GRAND TOTAL (${all.length} orders)`, '', all)), 'grand');
+  }
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = merges;
+  ws['!cols'] = _dispatchColWidths();
+  ws['!freeze'] = { xSplit:0, ySplit:4 };
+  const R = XLSX.utils.decode_range(ws['!ref']);
+  for (let r = R.s.r; r <= R.e.r; r++) for (const c of _DISPATCH_NUMCOLS) {
+    const cell = ws[XLSX.utils.encode_cell({r,c})];
+    if (cell && cell.t === 'n') cell.z = (c===8||c===10) ? '0' : '0.00';   // box counts are integers
+  }
+  try {
+    const _F = { HDR:'20FFFF', BAND:'21FF06', SUB:'F0F8F0', GRAND:'FC02FF' };
+    const _thin = { style:'thin', color:{ rgb:'9AA5B1' } };
+    const _bAll = { top:_thin, bottom:_thin, left:_thin, right:_thin };
+    const _set = (r,c,s) => { const a = XLSX.utils.encode_cell({r,c}); if(!ws[a]) ws[a] = { t:'s', v:'' }; ws[a].s = s; };
+    const _rt = c => (_DISPATCH_NUMCOLS.indexOf(c) >= 0) ? 'right' : 'left';
+    kinds.forEach((kind, r) => {
+      if (kind === 'title')    { _set(r,0,{ font:{ bold:true, sz:14 } }); return; }
+      if (kind === 'subtitle') { _set(r,0,{ font:{ italic:true, sz:10, color:{ rgb:'555555' } } }); return; }
+      if (kind === 'spacer')   return;
+      for (let c = 0; c < NC; c++) {
+        if (kind === 'hdr')        _set(r,c,{ font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
+        else if (kind === 'band')  _set(r,c,{ font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.BAND } }, border:_bAll });
+        else if (kind === 'sub')   _set(r,c,{ font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_F.SUB } }, border:_bAll, alignment:{ horizontal:_rt(c) } });
+        else if (kind === 'grand') _set(r,c,{ font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.GRAND } }, border:_bAll, alignment:{ horizontal:_rt(c) } });
+        else if (kind === 'data')  { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal:_rt(c) }, font:{ sz:10 } }; }
+      }
+    });
+  } catch(e) { console.warn('[v51K] dispatch style pass skipped:', e && e.message); }
+  return ws;
 }
 
 // 1. FULL DISPATCH PLAN (existing — updated with tentative col)
@@ -11778,14 +11876,46 @@ function _dispatchTotalRow(customerLabel, zone, plans) {
 // month) so they are month-scoped — or quarter-scoped when "All months (whole quarter)" is selected —
 // instead of dumping every legacy plan. _v48ScopedPlans mirrors _truckPlanInScope but reads the order-view
 // (_pov*) filter that drives the header; _v48OrderInScope does the same for the order-based tracker export.
+// ═══ v51K DISPATCH EXPORT SCOPE (confirmed by Ishan, 9 Aug) ══════════════════════════════════════
+// ROOT CAUSE of "the zone export ignores the month I selected": the Dispatch page carries TWO
+// INDEPENDENT quarter/month scopes. The dropdowns visible in TRUCK VIEW (and the Zone Readiness
+// cards above them) write window._truckProdQuarter / _truckProdMonth via setTruckProdQuarter /
+// setTruckProdMonth. The ORDER VIEW's own filter row writes window._povProdQuarter / _povProdMonth.
+// Every export read only the _pov pair — so with Truck View on screen, changing the month changed
+// nothing the export could see, _povProdMonth stayed at its 'all' default, and the file came out
+// QUARTER-wide every time. Two exports taken minutes apart differed by a whole month's orders
+// because only one of them had ever had the Order View selector touched.
+// The export now follows the scope of the view the user is actually looking at, so what is on
+// screen is what lands in the file. window._dispatchActiveView is set by switchDispatchViewTab
+// ('orders' | 'trucks'); Truck View is the default, hence the default branch.
+function _v51kDispatchScope() {
+  const viewIsOrders = (window._dispatchActiveView === 'orders');
+  const q  = viewIsOrders
+    ? ((typeof _povActiveQuarter === 'function') ? _povActiveQuarter() : _truckActiveQuarter())
+    : ((typeof _truckActiveQuarter === 'function') ? _truckActiveQuarter() : _povActiveQuarter());
+  const mo = viewIsOrders ? (window._povProdMonth || 'all') : (window._truckProdMonth || 'all');
+  return { q, mo, view: viewIsOrders ? 'Order View' : 'Truck View' };
+}
+// Human-readable scope label — stamped into every dispatch export's subtitle row AND its filename,
+// so a file on someone's desktop can never again be ambiguous about what it covers.
+function _v51kScopeLabel() {
+  const { q, mo, view } = _v51kDispatchScope();
+  if (q === 'prior') return `Prior to Q2 (historical) · ${view}`;
+  const qLbl = (typeof _truckQuarterLabel === 'function') ? _truckQuarterLabel(q) : q;
+  return `${qLbl} · ${mo === 'all' ? 'All months (whole quarter)' : prodMonthLabel(mo)} · ${view}`;
+}
+function _v51kScopeSlug() {
+  const { q, mo } = _v51kDispatchScope();
+  if (q === 'prior') return 'PriorToQ2';
+  return (mo === 'all') ? `Q${(typeof _truckQNum==='function'?_truckQNum(q):'')}-AllMonths` : mo;
+}
+
 function _v48ScopedPlans(){
-  const q = (typeof _povActiveQuarter==='function') ? _povActiveQuarter() : _truckActiveQuarter();
-  const mo = window._povProdMonth || 'all';
+  const { q, mo } = _v51kDispatchScope();   // v51K: active view's scope, not always the Order View's
   return (state.dispatchPlans||[]).filter(pl => _truckPlanScopeTest(pl, q, mo));
 }
 function _v48OrderInScope(ord){
-  const q = (typeof _povActiveQuarter==='function') ? _povActiveQuarter() : _truckActiveQuarter();
-  const mo = window._povProdMonth || 'all';
+  const { q, mo } = _v51kDispatchScope();   // v51K: same active-view scope as _v48ScopedPlans
   const ref = (ord && (ord.startDate || ord.endDate)) || '';
   if(!ref) return q === _truckCurrentQuarter();
   const d = new Date(ref); if(isNaN(d.getTime())) return q === _truckCurrentQuarter();
@@ -11798,23 +11928,15 @@ function exportDispatchPlan() {
   const plans = _v48ScopedPlans()
     .slice()
     .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
-  const rows = plans.map(p => dispatchRowObj(p));
-  // v47W (Ishan #5): append a TOTAL row so the sheet is summable (Qty / Boxes / Dispatched / Balance).
-  const tQty  = plans.reduce((s,p)=>s+(p.qty||0),0);
-  const tBox  = plans.reduce((s,p)=>s+(p.boxes||0),0);
-  const tPkQ  = plans.reduce((s,p)=>s+(p.packedQty||0),0);
-  const tPkB  = plans.reduce((s,p)=>s+(p.packedBoxes||0),0);
-  const tDisp = plans.reduce((s,p)=>s+(p.actualDispatched||0),0);
-  rows.push({
-    'Customer':'TOTAL','Batch No':'','PC Code':'','Colour':'','Size':'','PTD/UP':'','Zone':'',
-    'Qty (Lakhs)': Math.round(tQty*100)/100, 'Boxes': tBox, 'Packed (Lakhs)': Math.round(tPkQ*100)/100, 'Packed Boxes': tPkB,
-    'Dispatched (Lakhs)': Math.round(tDisp*100)/100,
-    'Planned Dispatch Date':'','Date Status':'', 'Balance (Lakhs)': Math.round((tQty-tDisp)*100)/100,
-    'Status': `${plans.filter(p=>p.status==='dispatched').length}/${plans.length} dispatched`, 'Remarks':''
-  });
+  if (!plans.length) { alert(`No dispatch plans in the current scope (${_v51kScopeLabel()}).`); return; }
+  // v51K: one shared Report-E-styled builder; the hand-rolled TOTAL row it used to append is now
+  // _dispatchTotalRow via the builder's grand total, so it can never drift from the row schema again.
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Dispatch Plan');
-  XLSX.writeFile(wb, `Sunloc_Dispatch_Plan_${new Date().toISOString().slice(0,10)}.xlsx`);
+  const ws = _buildDispatchSheet([{ label:'', plans }],
+    { title:'Sunloc — Dispatch Plan', showBands:false, showSubtotals:false,
+      grandLabel:`TOTAL (${plans.length} orders)` });
+  XLSX.utils.book_append_sheet(wb, ws, 'Dispatch Plan');
+  XLSX.writeFile(wb, `Sunloc_Dispatch_Plan_${_v51kScopeSlug()}_${new Date().toISOString().slice(0,10)}.xlsx`);
   if (document.getElementById('export-menu')) document.getElementById('export-menu').style.display = 'none';
 }
 
@@ -11833,28 +11955,15 @@ function exportCustomerWise() {
       .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
     if (plans.length === 0) return;
 
-    const rows = plans.map(p => dispatchRowObj(p));
-
-    // Summary row at bottom
-    const totalQty = plans.reduce((s,p) => s + (p.qty||0), 0);
-    const totalBoxes = plans.reduce((s,p) => s + (p.boxes||0), 0);
-    const totalDispatched = plans.reduce((s,p) => s + (p.actualDispatched||0), 0);
-    rows.push({
-      'Customer': 'TOTAL', 'Batch No': '', 'PC Code': '', 'Colour': '', 'Size': '', 'PTD/UP': '',
-      'Zone': '', 'Qty (Lakhs)': fmt(totalQty), 'Boxes': totalBoxes,
-      'Planned Dispatch Date': '', 'Date Status': '',
-      'Dispatched (Lakhs)': fmt(totalDispatched),
-      'Balance (Lakhs)': fmt(totalQty - totalDispatched),
-      'Status': `${plans.filter(p=>p.status==='dispatched').length}/${plans.length} dispatched`,
-      'Remarks': ''
-    });
-
+    // v51K: Report-E styling via the shared builder. The old hand-built TOTAL row wrote fmt() STRINGS
+    // into Qty/Dispatched/Balance (unsummable in Excel) and omitted Packed entirely — both fixed by
+    // routing through _dispatchTotalRow, which is the same numeric schema as the data rows.
     const wb = XLSX.utils.book_new();
-    const ws = XLSX.utils.json_to_sheet(rows);
-    // Column widths
-    ws['!cols'] = [18,14,10,14,8,8,14,12,8,20,12,16,14,12,20].map(w=>({wch:w}));
+    const ws = _buildDispatchSheet([{ label:'', plans }],
+      { title:`Sunloc — Dispatch Plan · ${cust}`, showBands:false, showSubtotals:false,
+        grandLabel:`TOTAL (${plans.length} orders)` });
     XLSX.utils.book_append_sheet(wb, ws, 'Dispatch Plan');
-    XLSX.writeFile(wb, `Sunloc_${cust.replace(/[^a-zA-Z0-9]/g,'_')}_Dispatch_${new Date().toISOString().slice(0,10)}.xlsx`);
+    XLSX.writeFile(wb, `Sunloc_${cust.replace(/[^a-zA-Z0-9]/g,'_')}_Dispatch_${_v51kScopeSlug()}_${new Date().toISOString().slice(0,10)}.xlsx`);
     exported++;
   });
   setTimeout(() => alert(`${exported} customer file(s) downloaded.`), 300);
@@ -11875,14 +11984,11 @@ function exportZoneWise() {
       .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
     if (plans.length === 0) return;
 
-    const rows = plans.map(p => dispatchRowObj(p));
-
-    // v48A (Ishan #1): ZONE TOTAL row via the shared numeric helper — includes Packed (L)/Packed Boxes
-    // and every numeric cell is a real number (summable), same schema as the data rows above.
-    rows.push(_dispatchTotalRow('ZONE TOTAL', zone, plans));
-
-    const ws = XLSX.utils.json_to_sheet(rows);
-    ws['!cols'] = _dispatchColWidths();
+    // v51K: per-zone sheet through the shared Report-E-styled builder (title + scope subtitle, cyan
+    // header, bordered rows, ZONE TOTAL as the pink grand-total band).
+    const ws = _buildDispatchSheet([{ label:'', plans, zone }],
+      { title:`Sunloc — Dispatch Plan · ${zone}`, showBands:false, showSubtotals:false,
+        grandLabel:'ZONE TOTAL' });
     const sheetName = zone.slice(0,31).replace(/[:\\/?*\[\]]/g,'_');
     XLSX.utils.book_append_sheet(wb, ws, sheetName);
   });
@@ -11891,22 +11997,17 @@ function exportZoneWise() {
   // that made it disagree with the per-zone tabs) and follows the SAME format as the individual sheets:
   // every zone's order rows stacked, a ZONE TOTAL subtotal after each, and a GRAND TOTAL at the end —
   // all in the dispatchRowObj column schema, Packed (L)/Packed Boxes included, all columns summable.
-  const summaryRows = [];
-  zones.forEach(zone => {
-    const plans = _scopedZ
-      .filter(p => p.zone === zone)
-      .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
-    if (plans.length === 0) return;
-    plans.forEach(p => summaryRows.push(dispatchRowObj(p)));
-    summaryRows.push(_dispatchTotalRow(`ZONE TOTAL — ${zone}`, zone, plans));
-  });
-  const _allZoned = _scopedZ.filter(p => p.zone && zones.includes(p.zone));
-  summaryRows.push(_dispatchTotalRow('GRAND TOTAL', '', _allZoned));
-  const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
-  summaryWs['!cols'] = _dispatchColWidths();
+  // v51K: Zone Summary keeps its stacked shape but gains the Report E banding — a green band per
+  // zone, shaded ZONE TOTAL after each, pink GRAND TOTAL at the end.
+  const summaryGroups = zones.map(zone => ({
+    label: zone, zone,
+    subtotalLabel: `ZONE TOTAL — ${zone}`,
+    plans: _scopedZ.filter(p => p.zone === zone).sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate))
+  })).filter(g => g.plans.length);
+  const summaryWs = _buildDispatchSheet(summaryGroups, { title:'Sunloc — Zone-wise Dispatch Summary' });
   XLSX.utils.book_append_sheet(wb, summaryWs, 'Zone Summary');
 
-  XLSX.writeFile(wb, `Sunloc_Zone_Dispatch_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `Sunloc_Zone_Dispatch_${_v51kScopeSlug()}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 // 4. PENDING DISPATCH SUMMARY — only undispatched orders
@@ -11918,33 +12019,19 @@ function exportPendingDispatch() {
 
   if (pending.length === 0) { alert('No pending dispatch orders found.'); return; }
 
-  const rows = pending.map(p => ({
-    ...dispatchRowObj(p),
-    'Days to Dispatch': p.plannedDate ? Math.ceil((new Date(p.plannedDate) - new Date()) / 86400000) : '-'
-  }));
-
-  // Group summary by zone
-  const zoneSummary = {};
-  pending.forEach(p => {
-    const z = p.zone || 'Unassigned';
-    if (!zoneSummary[z]) zoneSummary[z] = { count: 0, qty: 0 };
-    zoneSummary[z].count++;
-    zoneSummary[z].qty += (p.qty || 0);
-  });
-  const summaryRows = Object.entries(zoneSummary)
-    .sort((a,b) => b[1].qty - a[1].qty)
-    .map(([zone, d]) => ({ 'Zone': zone, 'Pending Orders': d.count, 'Pending Qty (L)': fmt(d.qty) }));
-
+  // v51K: grouped by zone through the shared Report-E-styled builder, so Pending matches every other
+  // dispatch export. The old free-floating 'Days to Dispatch' column is dropped rather than bolted
+  // onto the shared 18-column schema — the Planned Dispatch Date it was derived from is right there,
+  // and a per-sheet extra column is exactly what made these files disagree with one another before.
+  const pZones = [...new Set(pending.map(p => p.zone || 'Unassigned'))].sort();
+  const pGroups = pZones.map(zone => ({
+    label: zone, zone, subtotalLabel: `ZONE TOTAL — ${zone}`,
+    plans: pending.filter(p => (p.zone || 'Unassigned') === zone)
+  })).filter(g => g.plans.length);
   const wb = XLSX.utils.book_new();
-  const ws = XLSX.utils.json_to_sheet(rows);
-  ws['!cols'] = [18,14,10,14,8,8,14,12,8,20,12,16,14,12,20,12].map(w=>({wch:w}));
+  const ws = _buildDispatchSheet(pGroups, { title:'Sunloc — Pending Dispatch (undispatched orders)' });
   XLSX.utils.book_append_sheet(wb, ws, 'Pending Dispatch');
-
-  const summaryWs = XLSX.utils.json_to_sheet(summaryRows);
-  summaryWs['!cols'] = [16,14,14].map(w=>({wch:w}));
-  XLSX.utils.book_append_sheet(wb, summaryWs, 'Zone Summary');
-
-  XLSX.writeFile(wb, `Sunloc_Pending_Dispatch_${new Date().toISOString().slice(0,10)}.xlsx`);
+  XLSX.writeFile(wb, `Sunloc_Pending_Dispatch_${_v51kScopeSlug()}_${new Date().toISOString().slice(0,10)}.xlsx`);
 }
 
 // 5. FULL ORDER TRACKER — production + dispatch combined
@@ -12226,29 +12313,36 @@ function renderDispatchExport() {
 }
 
 function exportSingleZone(zone) {
+  // v51K: this per-zone button read RAW state.dispatchPlans — it ignored the quarter/month scope
+  // entirely and dumped every plan the zone ever had, disagreeing with the multi-sheet export beside
+  // it. Now scoped identically (_v48ScopedPlans) and styled identically (_buildDispatchSheet).
   const _monthOrdIds = getActiveDispatchOrderIds(); // v41ZC: match dispatch-plan scope
-  const rows = state.dispatchPlans
+  const plans = _v48ScopedPlans()
     .filter(p => p.zone === zone && (!p.productionOrderId || _monthOrdIds.has(p.productionOrderId)))
-    .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate))
-    .map(p => dispatchRowObj(p));
-  if (rows.length === 0) { alert('No data for ' + zone); return; }
+    .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate));
+  if (plans.length === 0) { alert(`No data for ${zone} in the current scope (${_v51kScopeLabel()}).`); return; }
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), zone.slice(0,31));
-  XLSX.writeFile(wb, `Dispatch_${zone}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  auditLog('EXPORT', `Exported dispatch plan for zone: ${zone}`);
+  const ws = _buildDispatchSheet([{ label:'', plans, zone }],
+    { title:`Sunloc — Dispatch Plan · ${zone}`, showBands:false, showSubtotals:false, grandLabel:'ZONE TOTAL' });
+  XLSX.utils.book_append_sheet(wb, ws, zone.slice(0,31).replace(/[:\\/?*\[\]]/g,'_'));
+  XLSX.writeFile(wb, `Dispatch_${zone}_${_v51kScopeSlug()}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  auditLog('EXPORT', `Exported dispatch plan for zone: ${zone} (${_v51kScopeLabel()})`);
 }
 
 function exportSingleCustomer(customer) {
+  // v51K: same unscoped-raw-state defect as exportSingleZone — now scoped and styled identically.
   const _monthOrdIds2 = getActiveDispatchOrderIds(); // v41ZC: match dispatch-plan scope
-  const rows = state.dispatchPlans
+  const plans = _v48ScopedPlans()
     .filter(p => p.customer === customer && (!p.productionOrderId || _monthOrdIds2.has(p.productionOrderId)))
-    .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate))
-    .map(p => dispatchRowObj(p));
-  if (rows.length === 0) { alert('No data for ' + customer); return; }
+    .sort((a,b) => new Date(a.plannedDate)-new Date(b.plannedDate));
+  if (plans.length === 0) { alert(`No data for ${customer} in the current scope (${_v51kScopeLabel()}).`); return; }
   const wb = XLSX.utils.book_new();
-  XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), customer.slice(0,31));
-  XLSX.writeFile(wb, `Dispatch_${customer.replace(/[^a-z0-9]/gi,'_')}_${new Date().toISOString().slice(0,10)}.xlsx`);
-  auditLog('EXPORT', `Exported dispatch plan for customer: ${customer}`);
+  const ws = _buildDispatchSheet([{ label:'', plans }],
+    { title:`Sunloc — Dispatch Plan · ${customer}`, showBands:false, showSubtotals:false,
+      grandLabel:`TOTAL (${plans.length} orders)` });
+  XLSX.utils.book_append_sheet(wb, ws, customer.slice(0,31).replace(/[:\\/?*\[\]]/g,'_'));
+  XLSX.writeFile(wb, `Dispatch_${customer.replace(/[^a-z0-9]/gi,'_')}_${_v51kScopeSlug()}_${new Date().toISOString().slice(0,10)}.xlsx`);
+  auditLog('EXPORT', `Exported dispatch plan for customer: ${customer} (${_v51kScopeLabel()})`);
 }
 
 // =============================
@@ -14339,6 +14433,66 @@ let _reconTempBatches = [];
 let _reconMappings = {}; // { tempBatchId: { orderId, boxes, actualLakhs } }
 let _reconProposedOrder = null;
 
+// ═══ v51J RECONCILIATION SCOPE FILTERS (confirmed by Ishan, 9 Aug) ═══════════════════════════════
+// The TEMP table and the W/O "Split & Assign" table (Section B) accumulate everything ever recorded,
+// including months of pre-adoption noise — the software only came into proper use in July 2026, so
+// anything produced before Q2 is unreliable and drowns the rows that actually need action.
+// These reuse the DISPATCH filter's quarter maths verbatim (_TRUCK_FLOOR_Q / _truckQStart /
+// _truckQuarterMonths / _truckQuarterLabel — Indian FY, Q2 = Jul–Sep 2026) so the two pages agree on
+// what a quarter is and the semantics are already familiar. "Prior to Q2 (historical)" is the
+// up-to-June clean-up bucket; the month narrow defaults to All, exactly like Dispatch.
+// Scope basis: TEMP rows key on the TEMP's own date; W/O orders key on production START date
+// (option A — the same basis the dispatch quarter filter uses).
+function _v51jYm(d) {
+  if (!d) return '';
+  if (d instanceof Date) return isNaN(d) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  const s = String(d);
+  if (/^\d{4}-\d{2}/.test(s)) return s.slice(0,7);
+  const p = new Date(s);
+  return isNaN(p) ? '' : `${p.getFullYear()}-${String(p.getMonth()+1).padStart(2,'0')}`;
+}
+function _reconActiveQ()  { return window._reconProdQuarter || (window._reconProdQuarter = _truckQStart(currentYM())); }
+function _reconActiveMo() { return window._reconProdMonth || 'all'; }
+// Pure scope test against an explicit quarter/month. A row with NO derivable month is never hidden —
+// on a clean-up screen an undated row is exactly the kind of thing that needs attention, so it shows
+// under every scope rather than vanishing silently (the opposite of the dispatch rule, on purpose).
+function _v51jReconInScope(ym) {
+  const q = _reconActiveQ(), mo = _reconActiveMo();
+  if (!ym) return true;
+  if (q === 'prior') return _truckQStart(ym) < _TRUCK_FLOOR_Q;
+  if (_truckQStart(ym) !== q) return false;
+  if (mo !== 'all' && ym !== mo) return false;
+  return true;
+}
+// Quarter options: every quarter ≥ FLOOR actually present across BOTH tables, plus the current
+// quarter, newest first, plus the historical bucket.
+function _v51jReconQuarterOptions(yms) {
+  const present = new Set();
+  (yms || []).forEach(ym => { if (ym) present.add(_truckQStart(ym)); });
+  present.add(_truckQStart(currentYM()));
+  return [...present].filter(q => q && q >= _TRUCK_FLOOR_Q).sort().reverse();
+}
+function _v51jReconFilterBar(yms, shownCount, totalCount, noun) {
+  const q = _reconActiveQ(), mo = _reconActiveMo();
+  const qOpts = _v51jReconQuarterOptions(yms)
+    .map(x => `<option value="${x}"${q===x?' selected':''}>${_truckQuarterLabel(x)}</option>`).join('')
+    + `<option value="prior"${q==='prior'?' selected':''}>Prior to Q2 (historical)</option>`;
+  const moOpts = (q === 'prior') ? '' :
+    `<select onchange="setReconProdMonth(this.value)">
+       <option value="all"${mo==='all'?' selected':''}>All months</option>
+       ${_truckQuarterMonths(q).map(m=>`<option value="${m}"${mo===m?' selected':''}>${prodMonthLabel(m)}</option>`).join('')}
+     </select>`;
+  return `<div class="recon-filterbar">
+    <span style="color:var(--text3)">Production scope:</span>
+    <select onchange="setReconProdQuarter(this.value)">${qOpts}</select>
+    ${moOpts}
+    ${q==='prior'?'<span style="color:var(--text3);font-size:11px">pre-adoption data — expect noise</span>':''}
+    <span class="recon-count">${shownCount} of ${totalCount} ${noun}</span>
+  </div>`;
+}
+function setReconProdQuarter(q) { window._reconProdQuarter = q; window._reconProdMonth = 'all'; renderReconciliation(); }
+function setReconProdMonth(m)   { window._reconProdMonth = m; renderReconciliation(); }
+
 async function renderReconciliation() {
   document.getElementById('topbar-actions').innerHTML = '';
   // v51H ROOT CAUSE (PM/Admin could not see Excess → Unprinted proposals): this local declaration
@@ -14397,7 +14551,16 @@ async function renderReconciliation() {
   const isAdmin = currentUser?.role === 'admin';
   const isPlanManager = ['admin','planning_manager'].includes(currentUser?.role);
   // W/O orders awaiting customer assignment
-  const woOrders = (state.orders||[]).filter(o => o.woStatus === 'wo'); // v41ZY FIX: include closed batches — split must happen even after production close
+  const woOrdersAll = (state.orders||[]).filter(o => o.woStatus === 'wo'); // v41ZY FIX: include closed batches — split must happen even after production close
+  // v51J: apply the production-scope filter to BOTH clean-up tables. The unfiltered arrays stay in
+  // scope so the "empty state" card and the "X of Y" counts still reason about the true totals —
+  // an empty SCOPE must never render as "all batches reconciled".
+  const tempBatchesAll = tempBatches;
+  const _tempYms = tempBatchesAll.map(tb => _v51jYm(tb.date)).filter(Boolean);
+  const _woYms   = woOrdersAll.map(o => _v51jYm(o.startDate)).filter(Boolean);
+  const _reconYms = [..._tempYms, ..._woYms];
+  tempBatches = tempBatchesAll.filter(tb => _v51jReconInScope(_v51jYm(tb.date)));
+  const woOrders = woOrdersAll.filter(o => _v51jReconInScope(_v51jYm(o.startDate)));
 
   content.innerHTML = `
     <!-- v51H (PM/Admin — proposals were invisible in practice): this approval queue used to render
@@ -14447,7 +14610,7 @@ async function renderReconciliation() {
     </div>
     ` : ''}
 
-    ${tempBatches.length === 0 && pendingRequests.length === 0 && woOrders.length === 0 && woPendingRequests.length === 0 ? `
+    ${tempBatchesAll.length === 0 && pendingRequests.length === 0 && woOrdersAll.length === 0 && woPendingRequests.length === 0 ? `
       <div class="card" style="text-align:center;padding:40px">
         <div style="font-size:32px;margin-bottom:12px">✅</div>
         <div style="font-size:16px;font-weight:600;color:var(--accent2)">All batches reconciled</div>
@@ -14455,11 +14618,12 @@ async function renderReconciliation() {
       </div>
     ` : ''}
 
-    ${tempBatches.length > 0 && isPlanManager ? `
+    ${tempBatchesAll.length > 0 && isPlanManager ? `
     <div class="card mb-4">
       <div class="card-title">⚠️ Active TEMP Batches — Awaiting Reconciliation</div>
-      <div style="font-size:12px;color:var(--text3);margin-bottom:16px">These machines are running without planned orders. Select TEMP batches and map them to a real order below.</div>
-      <div style="overflow-x:auto">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:10px">These machines are running without planned orders. Select TEMP batches and map them to a real order below.</div>
+      ${_v51jReconFilterBar(_reconYms, tempBatches.length, tempBatchesAll.length, 'TEMP batches')}
+      <div class="recon-scroll">
         <table class="summary-table">
           <thead><tr><th>Select</th><th>TEMP Batch ID</th><th>Machine</th><th>Size</th><th>Date</th><th>Cap (L)</th><th>Labels</th><th>Days Active</th></tr></thead>
           <tbody>
@@ -14473,6 +14637,7 @@ async function renderReconciliation() {
               <td class="text-mono">${tb.label_count}</td>
               <td><span class="badge ${tb.daysActive>3?'badge-red':'badge-pending'}">${tb.daysActive} day${tb.daysActive>1?'s':''}</span></td>
             </tr>`).join('')}
+            ${tempBatches.length === 0 ? `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:18px;font-weight:600">No TEMP batches in this production scope — ${tempBatchesAll.length} exist in other periods. Change the scope above to see them.</td></tr>` : ''}
           </tbody>
         </table>
       </div>
@@ -14541,11 +14706,12 @@ async function renderReconciliation() {
     </div>
     ` : ''}
 
-    ${woOrders.length > 0 && isPlanManager ? `
+    ${woOrdersAll.length > 0 && isPlanManager ? `
     <div class="card mb-4">
       <div class="card-title" style="color:var(--accent3)">🔶 Section B — W/O Orders Awaiting Customer Split</div>
-      <div style="font-size:12px;color:var(--text3);margin-bottom:16px">These orders were planned without a customer. Once one or more customer orders are received, click "Split & Assign" to break the WO into customer orders for approval.</div>
-      <div style="overflow-x:auto">
+      <div style="font-size:12px;color:var(--text3);margin-bottom:10px">These orders were planned without a customer. Once one or more customer orders are received, click "Split &amp; Assign" to break the WO into customer orders for approval.</div>
+      ${_v51jReconFilterBar(_reconYms, woOrders.length, woOrdersAll.length, 'W/O orders')}
+      <div class="recon-scroll">
         <table class="summary-table">
           <thead><tr><th>Batch</th><th>Size</th><th>Colour</th><th>PC Code</th><th>Qty (L)</th><th>Start Date</th><th>Status</th><th>Action</th></tr></thead>
           <tbody>
@@ -14559,6 +14725,7 @@ async function renderReconciliation() {
               <td><span class="badge" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.4);font-size:10px">🔶 W/O</span></td>
               <td><button class="btn btn-sm" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.3)" onclick="openAssignCustomerModal('${o.id}')">🔶 Split & Assign</button></td>
             </tr>`).join('')}
+            ${woOrders.length === 0 ? `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:18px;font-weight:600">No W/O orders in this production scope — ${woOrdersAll.length} exist in other periods. Change the scope above to see them.</td></tr>` : ''}
           </tbody>
         </table>
       </div>
