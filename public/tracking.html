@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51T</title>
+<title>Sunloc Tracking Suite v1.0 · build v51U</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51T</p>
+      <p>Tracking Suite v1.0 · build v51U</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51T</p>
+      <p>Tracking Suite v1.0 · build v51U</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2525,7 +2525,17 @@ function recordScan(labelId, dept, type, operator, parsed){
   // SCANS GO DIRECTLY TO SERVER — never to localStorage
   // Push to server, handle rejection (duplicate, upstream missing, blocked), refresh all devices immediately
   pushToServer('/api/tracking/scan',{scan}).then(result=>{
-    if(result && result.duplicate){
+    if(result && result.unknown_label){
+      // ═══ v51U: the scanned sticker names a label the server does not hold ═══════════════════
+      // Almost always a duplicate print: the box was labelled twice and this is the copy the server
+      // refused. Recording it would strand this box's history on a dead id — the 26Y065 box-18
+      // failure. Roll back, keep NOTHING locally, and tell the operator what to do with the sticker
+      // in his hand. No admin override is offered: forcing it through is precisely the harm.
+      state.scans=state.scans.filter(s=>s.id!==scan.id);
+      saveLocal();
+      alert(`⛔ This label is not in the system (${scan.batchNumber} / box ${label.labelNumber}).\n\nIt may be a duplicate print. Scan the original box label, or reprint the box from Label Generation.\n\nDo not use this sticker.`);
+      try{ trkAuditLog('SCAN_UNKNOWN_LABEL', `${scan.batchNumber} box ${label.labelNumber} — label id ${scan.labelId} not on server (${dept}:${type})`); }catch(_){}
+    } else if(result && result.duplicate){
       // Server rejected — another device already scanned this label
       state.scans=state.scans.filter(s=>s.id!==scan.id);
       // v46M (confirmed by Ishan): same wording as the client precheck (line ~2210). The two layers fire
@@ -2790,7 +2800,27 @@ async function pushLabelsToServer(labels,attempt=1){
   try{
     const r=await fetch(serverUrl+'/api/tracking/labels',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels}),signal:AbortSignal.timeout(15000)});
     const j=await r.json();
-    if(j.ok){const ids=new Set(labels.map(l=>l.id));for(let i=_pendingLabelPush.length-1;i>=0;i--){if(ids.has(_pendingLabelPush[i].id))_pendingLabelPush.splice(i,1);}try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e){}setSyncBadge('synced');}
+    // ═══ v51U: a REFUSED label is not a failed push — do not retry it, and do not keep it ══════
+    // The server refuses a label whose box already exists (duplicate print / double-click). Treating
+    // that as a network error retried it forever; worse, the ghost stayed in local state where it
+    // could be printed and scanned, which is exactly how 26Y065 box 18 acquired a second identity.
+    // Any refused label is purged from local state and from the pending queue, and the operator is
+    // told at the moment it happens.
+    const _dups = (j && Array.isArray(j.duplicates)) ? j.duplicates : [];
+    if(_dups.length){
+      const _dupIds = new Set(_dups.map(d=>String(d.id)));
+      for(let i=state.labels.length-1;i>=0;i--){ if(_dupIds.has(String(state.labels[i].id))) state.labels.splice(i,1); }
+      for(let i=_pendingLabelPush.length-1;i>=0;i--){ if(_dupIds.has(String(_pendingLabelPush[i].id))) _pendingLabelPush.splice(i,1); }
+      saveLocal();
+      try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e){}
+      const _one = _dups[0];
+      alert(_dups.length===1
+        ? `⛔ Box ${_one.labelNumber} of ${_one.batchNumber} was NOT saved — a label for this box already exists.\n\nUse the existing label. Do NOT apply the sticker just printed.`
+        : `⛔ ${_dups.length} labels were NOT saved — labels for these boxes already exist.\n\n${_dups.slice(0,8).map(d=>`• ${d.batchNumber} box ${d.labelNumber}`).join('\n')}\n\nUse the existing labels. Do NOT apply the stickers just printed.`);
+      try{ trkAuditLog('LABEL_DUP_REFUSED', _dups.map(d=>`${d.batchNumber}#${d.labelNumber}`).join(', ')); }catch(_){}
+      if(typeof renderPage==='function' && typeof currentPage!=='undefined') { try{ renderPage(currentPage); }catch(_){} }
+    }
+    if(j.ok || j.all_skipped){const ids=new Set(labels.map(l=>l.id));for(let i=_pendingLabelPush.length-1;i>=0;i--){if(ids.has(_pendingLabelPush[i].id))_pendingLabelPush.splice(i,1);}try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e){}setSyncBadge('synced');}
     else{throw new Error(j.error||'rejected');}
   }catch(e){labels.forEach(l=>{if(!_pendingLabelPush.find(p=>p.id===l.id))_pendingLabelPush.push(l);});try{localStorage.setItem('sunloc_pending_labels',JSON.stringify(_pendingLabelPush));}catch(e2){}if(attempt<=5)setTimeout(()=>pushLabelsToServer(_pendingLabelPush.slice(),attempt+1),Math.min(5000*attempt,60000));setSyncBadge('offline');}
 }
@@ -2905,6 +2935,24 @@ function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nett
   return newLabels;
 }
 
+// v51U: awaitable void. The fire-and-forget voidLabel below stays for callers that don't care, but
+// regeneration MUST know the old row is voided server-side before pushing the replacement —
+// otherwise the duplicate guard sees the old box still live and refuses the new label.
+async function voidLabelConfirmed(labelId, reason){
+  const label = state.labels.find(l=>l.id===labelId);
+  if(!label) return false;
+  label.voided=true; label.voidReason=reason; label.voidedAt=now(); label.voidedBy=currentDept;
+  saveLocal();
+  const _url = (typeof serverUrl !== 'undefined' && serverUrl) || localStorage.getItem('sunloc_server_url');
+  if(!_url) return false;                       // offline — caller must not repoint
+  try{
+    const r = await fetch(_url+'/api/tracking/label-void',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({labelId,reason,voidedBy:currentDept}),signal:AbortSignal.timeout(15000)});
+    const j = await r.json().catch(()=>({}));
+    return !!(j && j.ok !== false);
+  }catch(e){ return false; }
+}
+
 function voidLabel(labelId, reason){
   const label = state.labels.find(l=>l.id===labelId);
   if(!label) return false;
@@ -2937,19 +2985,29 @@ async function adminVoidBox(labelId){
   }catch(e){ toast('Void error: '+e.message); }
 }
 
-function regeneratePartialLabel(labelId, newQty){
+// ═══ v51U (Ishan, 10 Aug — 26Y065 box 18) ═══════════════════════════════════════════════════
+// This is where box 18 broke. voidLabel was fire-and-forget, so the replacement label reached the
+// server while the old row was still live; the duplicate guard refused it and answered ok:true; and
+// _v49jRepointScans then carried the box's whole AIM history onto an id that was never stored.
+// Now: the void is CONFIRMED first, and the repoint only runs once the replacement is verified as
+// stored. If either step fails the scans stay where they are — a box that keeps its history on the
+// old label is recoverable; a box whose history points at nothing is not.
+async function regeneratePartialLabel(labelId, newQty){
   const old = state.labels.find(l=>l.id===labelId);
   if(!old) return null;
-  voidLabel(labelId,'Partial box regeneration');
+  const _voided = await voidLabelConfirmed(labelId,'Partial box regeneration');
+  if(!_voided){
+    voidLabel(labelId,'Partial box regeneration');   // keep local state consistent
+    alert('⛔ Could not confirm the old label was voided on the server, so the box was NOT regenerated.\n\nThe box keeps its existing label and full scan history. Check the connection and try again.');
+    return null;
+  }
   const batch = getBatch(old.batchNumber);
   const newLabel = { ...old, id:uid(), qty:newQty, isPartial:true, generated:now(), printed:false, voided:false, qrData:'' };
   newLabel.qrData = generateQRData(newLabel);
   state.labels.push(newLabel);
   saveLocal();
-  // v49J: the box keeps the same number but moves to a new label id; carry its existing scans across so
-  // they don't orphan (recent-scan "/?", box dropped from Batch Tracker). Push the new label first so
-  // the destination id exists server-side, then re-point. Fire-and-forget with operator feedback; a
-  // dispatched box is refused server-side and the scans simply stay put.
+  // The box keeps its number but moves to a new label id; carry its scans across so they don't
+  // orphan. v51U makes this conditional on the new label actually existing server-side.
   _v49jRepointScans(old.batchNumber, old.id, newLabel.id, newLabel);
   return newLabel;
 }
@@ -2960,8 +3018,21 @@ async function _v49jRepointScans(batchNumber, fromLabelId, toLabelId, newLabel){
     const _url = (typeof serverUrl !== 'undefined' && serverUrl) || localStorage.getItem('sunloc_server_url');
     if (!_url) return;                       // offline — blob sync will carry the label; repoint retried on next regen
     if (newLabel) {
-      // make sure the destination label is persisted before repointing scans onto it
-      try { await fetch(_url + '/api/tracking/labels', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels:[newLabel]})}); } catch(e) {}
+      // ═══ v51U: VERIFY the destination was stored before moving anything onto it ═════════════
+      // The old code fired this POST inside try{}catch{} and discarded the response entirely, so a
+      // silently-refused label looked identical to a saved one. Now a refusal aborts the repoint and
+      // tells the operator, instead of orphaning the box's history.
+      let _saved = false;
+      try {
+        const pr = await fetch(_url + '/api/tracking/labels', {method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({labels:[newLabel]})});
+        const pj = await pr.json().catch(()=>({}));
+        const _wasSkipped = pj && Array.isArray(pj.duplicates) && pj.duplicates.some(d => String(d.id) === String(newLabel.id));
+        _saved = !!(pj && pj.ok !== false && !_wasSkipped);
+      } catch(e) { _saved = false; }
+      if (!_saved) {
+        if (typeof toast === 'function') toast('⛔ The replacement label was not saved — the box keeps its original label and scan history. Reprint from Label Generation.', '#c0392b', 8000);
+        return;                                  // ABORT: never repoint onto a label the server refused
+      }
     }
     const r = await fetch(_url + '/api/tracking/relabel-repoint', {
       method:'POST', headers:{'Content-Type':'application/json'},
@@ -5329,12 +5400,12 @@ function _v50fRecalcWeights(batchNo){
   renderPage(currentPage);
 }
 
-function openRegenPartial(labelId){
+async function openRegenPartial(labelId){
   const label=state.labels.find(l=>l.id===labelId);
   if(!label) return;
   const newQty=parseFloat(prompt(`Current qty: ${label.qty}L\nEnter corrected qty (Lakhs):`));
   if(!newQty||isNaN(newQty)||newQty<=0){alert('Invalid quantity.');return;}
-  const newLabel=regeneratePartialLabel(labelId,newQty);
+  const newLabel=await regeneratePartialLabel(labelId,newQty);   // v51U: void is confirmed first
   if(newLabel){alert(`✅ New label #${newLabel.labelNumber} generated with ${fmt(newQty)}L`);renderPage(currentPage);}
 }
 

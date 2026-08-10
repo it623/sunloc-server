@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51T';
+const APP_BUILD = 'v51U';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -19121,7 +19121,15 @@ app.post('/api/tracking/labels', async (req, res) => {
       console.warn(`[v41y label-dup] Skipped ${skipped.length} duplicate label(s):`, skipped.slice(0, 5).map(s => `${s.batchNumber}#${s.labelNumber}`).join(', '));
     }
     if (accepted.length === 0) {
-      return res.json({ ok: true, count: 0, skipped: skipped.length, duplicates: skipped });
+      // ═══ v51U: SAY SO OUT LOUD ══════════════════════════════════════════════════════════════
+      // This used to answer ok:true with the drop buried in a field nobody read. Every caller took
+      // it as "saved", printed the sticker, and scanned against a label the server had thrown away —
+      // the first link in the chain that produced 26Y065 box 18. ok is now FALSE when nothing was
+      // stored, so a caller has to notice, and the message is written for the operator at the gun.
+      return res.json({ ok: false, all_skipped: true, count: 0, skipped: skipped.length, duplicates: skipped,
+        error: skipped.length === 1
+          ? `Box ${skipped[0].labelNumber} of ${skipped[0].batchNumber} was not saved — a label for this box already exists. Use the existing label. Do not apply the sticker just printed.`
+          : `${skipped.length} labels were not saved — labels for these boxes already exist. Use the existing labels; do not apply the stickers just printed.` });
     }
     const labelsToWrite = accepted;
     if (pgPool) {
@@ -19560,6 +19568,27 @@ app.post('/api/tracking/scan', async (req, res) => {
     if(!scan || !scan.id) return res.status(400).json({ok:false,error:'Missing scan'});
     const labelId = scan.labelId||scan.label_id;
     const batchNumber = scan.batchNumber||scan.batch_number;
+
+    // ═══ v51U ORPHAN GUARD (Ishan, 10 Aug — 26Y065 box 18) ══════════════════════════════════
+    // A scan was accepted against ANY label_id, existing or not. That is how box 18's AIM history
+    // ended up on mscden9nt5s72 — a label the duplicate guard had silently refused to store — while
+    // the stored row mscddwgc7y86g sat at zero scans, rendering as "26Y065/?" and deadlocking every
+    // downstream gate. 200 label ids and 549 scans across the system are in that state.
+    //
+    // The rule: a scan must name a label the server actually holds. Refusing here is what makes the
+    // failure visible AT THE GUN, in the second it happens, instead of surfacing days later as a box
+    // QA cannot clear. 'recon-' ids are exempt — those are month-end reconciliation adjustments that
+    // reference no physical label by design (see _v47gScanQtySql and the recon rendering path).
+    if (labelId && !String(labelId).startsWith('recon-') && !String(scan.operator||'').startsWith('recon:')) {
+      const _lq = `SELECT label_number, COALESCE(voided,0) AS voided FROM tracking_labels WHERE id=$1`;
+      const _lr = pgPool ? (await pgPool.query(_lq, [labelId])).rows
+                         : db.prepare(_lq.replace('$1','?')).all(labelId);
+      if (!_lr.length) {
+        console.warn(`[v51U orphan-guard] refused ${scan.dept}:${scan.type} — label ${labelId} not found (batch ${batchNumber})`);
+        return res.json({ ok:false, unknown_label:true, labelId, batchNumber,
+          error:`This label is not in the system (${batchNumber||'unknown batch'}). It may be a duplicate print. Scan the original box label, or reprint the box from Label Generation.` });
+      }
+    }
     // HARD BLOCK: Unprinted batches can never be scanned at Printing or PI
     // Check planning state to get isPrinted for this batch
     let isPrintedBatch = true;  // default assumption (printed flow)
@@ -20401,6 +20430,107 @@ app.get('/api/tracking/scans', async (req, res) => {
 // Guard: mirror the label-void dispatch rule. If the box already has a 'dispatch' scan it has shipped —
 // its old label id is referenced by dispatch/invoice records, so the re-point is REFUSED rather than
 // corrupting a shipped box. The caller surfaces the message; the scans stay on the old id.
+// ═══ v51U ORPHANED-BOX-SCAN DETECTION + AUTO-HEAL (Ishan, 10 Aug) ═══════════════════════════
+// Before v51U a scan could name a label the server never stored. 200 label ids / 549 scans reached
+// that state. This finds them and, where the answer is unambiguous, reunites the box with its
+// history. Everything else is reported for admin review — never guessed at.
+//
+// THE HEAL RULE (deliberately narrow, confirmed with Ishan):
+//   within one batch — exactly ONE orphaned label id
+//                    — and exactly ONE non-voided label carrying ZERO scans
+//   → they are the same box; the orphan's scans move onto that label.
+// Zero scans is the tell. A real box that has been through any stage always has scans, so a label
+// sitting at zero next to a homeless scan trail in the same batch is the box those scans belong to.
+// Scan COUNT is never used as evidence beyond that: counts legitimately vary by stage (26Y065 had
+// boxes at 7, 6, 4 and 4), so "fewer scans than its neighbours" proves nothing and is not used.
+// 'recon-' ids are excluded throughout — they reference no physical label by design.
+// Specimen labels (label_number 0) are excluded as heal targets: they are BMR masters that are never
+// scanned, so their permanent zero-scan state would otherwise make them a false match every time.
+async function _v51uOrphanScan({ heal = false } = {}) {
+  const out = { orphans: [], healed: [], ambiguous: [], scanned: 0 };
+  if (!pgPool) return out;                       // pg-only; SQLite dev has no production orphans
+  const q = (sql, args) => pgPool.query(sql, args).then(r => r.rows);
+
+  const orphans = await q(
+    `SELECT s.batch_number, s.label_id, COUNT(*)::int AS scans,
+            MIN(s.ts) AS first_ts, MAX(s.ts) AS last_ts,
+            STRING_AGG(s.dept||':'||s.type, ', ' ORDER BY s.ts) AS trail
+       FROM tracking_scans s
+       LEFT JOIN tracking_labels l ON l.id = s.label_id
+      WHERE l.id IS NULL
+        AND s.label_id NOT LIKE 'recon-%'
+        AND COALESCE(s.operator,'') NOT LIKE 'recon:%'
+      GROUP BY s.batch_number, s.label_id`, []);
+  out.scanned = orphans.length;
+  if (!orphans.length) return out;
+
+  // group by batch — the heal rule is per batch
+  const byBatch = new Map();
+  for (const o of orphans) {
+    if (!byBatch.has(o.batch_number)) byBatch.set(o.batch_number, []);
+    byBatch.get(o.batch_number).push(o);
+  }
+
+  for (const [batch, list] of byBatch) {
+    // candidate targets: non-voided, non-specimen labels in this batch with zero scans
+    const cands = await q(
+      `SELECT l.id, l.label_number
+         FROM tracking_labels l
+        WHERE l.batch_number = $1
+          AND COALESCE(l.voided,0) = 0
+          AND COALESCE(l.label_number::text,'') <> '0'
+          AND NOT EXISTS (SELECT 1 FROM tracking_scans s WHERE s.label_id = l.id)`, [batch]);
+
+    const unambiguous = (list.length === 1 && cands.length === 1);
+    for (const o of list) {
+      const rec = { batch, labelId: o.label_id, scans: o.scans, trail: o.trail,
+                    firstTs: o.first_ts, lastTs: o.last_ts,
+                    candidates: cands.map(c => ({ id: c.id, box: c.label_number })) };
+      out.orphans.push(rec);
+      if (!unambiguous) { out.ambiguous.push(rec); continue; }
+      if (!heal) { rec.wouldHealTo = cands[0].id; continue; }
+      const upd = await pgPool.query(
+        `UPDATE tracking_scans SET label_id=$1 WHERE label_id=$2 AND batch_number=$3`,
+        [cands[0].id, o.label_id, batch]);
+      out.healed.push({ ...rec, healedTo: cands[0].id, healedBox: cands[0].label_number, moved: upd.rowCount || 0 });
+      console.log(`[v51U heal] ${batch}: ${upd.rowCount||0} scan(s) reunited — ${o.label_id} -> box ${cands[0].label_number} (${cands[0].id})`);
+    }
+  }
+  return out;
+}
+
+// GET  /api/tracking/orphan-scans        — dry run (report only, no writes)
+// POST /api/tracking/orphan-scans/heal   — apply the unambiguous reunions
+app.get('/api/tracking/orphan-scans', async (req, res) => {
+  try { res.json({ ok: true, ...(await _v51uOrphanScan({ heal: false })) }); }
+  catch (e) { console.error('[v51U orphan-scan]', e.message); res.status(500).json({ ok:false, error:e.message }); }
+});
+app.post('/api/tracking/orphan-scans/heal', async (req, res) => {
+  try {
+    const r = await _v51uOrphanScan({ heal: true });
+    try { await logAudit(req, 'ORPHAN_SCAN_HEAL', `${r.healed.length} box(es) reunited, ${r.ambiguous.length} left for review`); } catch (_) {}
+    res.json({ ok: true, ...r });
+  } catch (e) { console.error('[v51U orphan-heal]', e.message); res.status(500).json({ ok:false, error:e.message }); }
+});
+
+// POST /api/tracking/orphan-scans/reunite — admin confirms ONE ambiguous case by hand
+app.post('/api/tracking/orphan-scans/reunite', async (req, res) => {
+  try {
+    const { batchNumber, orphanLabelId, targetLabelId } = req.body || {};
+    if (!batchNumber || !orphanLabelId || !targetLabelId) {
+      return res.status(400).json({ ok:false, error:'batchNumber, orphanLabelId and targetLabelId are required' });
+    }
+    if (!pgPool) return res.status(400).json({ ok:false, error:'postgres only' });
+    const t = await pgPool.query(`SELECT label_number FROM tracking_labels WHERE id=$1 AND batch_number=$2`, [targetLabelId, batchNumber]);
+    if (!t.rows.length) return res.json({ ok:false, error:'Target label not found in that batch.' });
+    const upd = await pgPool.query(
+      `UPDATE tracking_scans SET label_id=$1 WHERE label_id=$2 AND batch_number=$3`,
+      [targetLabelId, orphanLabelId, batchNumber]);
+    try { await logAudit(req, 'ORPHAN_SCAN_REUNITE', `${batchNumber}: ${upd.rowCount||0} scan(s) ${orphanLabelId} -> box ${t.rows[0].label_number}`); } catch (_) {}
+    res.json({ ok:true, moved: upd.rowCount || 0, box: t.rows[0].label_number });
+  } catch (e) { console.error('[v51U reunite]', e.message); res.status(500).json({ ok:false, error:e.message }); }
+});
+
 app.post('/api/tracking/relabel-repoint', async (req, res) => {
   try {
     const { batchNumber, fromLabelId, toLabelId } = req.body || {};
@@ -20409,6 +20539,22 @@ app.post('/api/tracking/relabel-repoint', async (req, res) => {
     }
     if (fromLabelId === toLabelId) {
       return res.json({ ok: true, moved: 0, note: 'from and to are the same id — nothing to move' });
+    }
+    // ═══ v51U: the destination must EXIST before we move history onto it ══════════════════════
+    // v49J was built to stop scans orphaning during a relabel, and it moved them faithfully — to an
+    // address that was never stored. The labels POST had silently refused the replacement (duplicate
+    // guard, old row not yet voided) and returned ok:true, so the caller had no way to know. This is
+    // the second of the four v51U nets: whatever the client believes, the server will not point a
+    // box's scan history at a label it does not hold.
+    {
+      const _q = `SELECT 1 FROM tracking_labels WHERE id=$1`;
+      const _r = pgPool ? (await pgPool.query(_q, [toLabelId])).rows
+                        : db.prepare(_q.replace('$1','?')).all(toLabelId);
+      if (!_r.length) {
+        console.warn(`[v51U repoint-guard] refused ${fromLabelId} -> ${toLabelId}: destination label does not exist (batch ${batchNumber})`);
+        return res.json({ ok:false, missing_destination:true, toLabelId,
+          error:'The replacement label was not saved, so the scans were left on the original box. Reprint the box from Label Generation and try again.' });
+      }
     }
     if (pgPool) {
       const disp = await pgPool.query(

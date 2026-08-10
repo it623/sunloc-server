@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51T</p>
+      <p>Planning Suite v3.0 · build v51U</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1782,7 +1782,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51T' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51U' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5517,7 +5517,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51T'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51U'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -16552,16 +16552,67 @@ const _v40_CHECK_TYPE_LABELS = {
   over_production:             'Over-production',
   wo_unsplit_overdue:          'W/O overdue (unsplit)',
   temp_batch_overdue:          'TEMP batch overdue',
-  orphan_tracking_scan:        'Orphan scan',
+  orphan_tracking_scan:        'Orphaned box scans',
   invoice_no_dispatch:         'Invoice awaiting dispatch',
   labels_not_printed:          'Labels not printed',
   overlimit_running:           '>2 In Production',
   wo_split_child_missing:      'WO split child missing',
 };
 
+// ═══ v51U ORPHANED-BOX REUNION (Ishan, 10 Aug — 26Y065 box 18) ══════════════════════════════
+// A box whose scans point at a label that no longer exists renders as "26Y065/?", drops out of Batch
+// Tracker, and deadlocks its stage gates — QA sees "in production" with no ticks and cannot clear it.
+// This runs a DRY RUN first and shows exactly what would move before anything is written. Only the
+// unambiguous cases (one orphan + one zero-scan label in the batch) are auto-applied; everything else
+// stays in the findings list for per-box review, because guessing which box a scan belongs to
+// silently attributes one box's history to another.
+async function _v51u_healOrphans(){
+  try{
+    const _url = (typeof SERVER_URL!=='undefined'&&SERVER_URL) || (typeof serverUrl!=='undefined'&&serverUrl) || '';
+    const dr = await (await fetch(_url+'/api/tracking/orphan-scans')).json();
+    if(!dr.ok) { alert('Could not read orphaned boxes: '+(dr.error||'unknown error')); return; }
+    const heal = (dr.orphans||[]).filter(o=>o.wouldHealTo);
+    if(!(dr.orphans||[]).length){ alert('✅ No orphaned box scans found. Every scan points at a label that exists.'); return; }
+    if(!heal.length){
+      alert(`Found ${dr.orphans.length} orphaned box(es), but none can be identified automatically.\n\nThey stay in the findings list below for review — each needs the correct box confirmed by hand.`);
+      return;
+    }
+    const preview = heal.slice(0,12).map(o=>{
+      const c=(o.candidates||[])[0]||{};
+      return `• ${o.batch} — ${o.scans} scan(s) [${o.trail}] → box ${c.box}`;
+    }).join('\n');
+    const msg = `Reunite orphaned boxes with their scan history?\n\n`
+      + `${heal.length} box(es) can be identified with certainty:\n${preview}`
+      + (heal.length>12?`\n…and ${heal.length-12} more`:'')
+      + (dr.ambiguous&&dr.ambiguous.length?`\n\n${dr.ambiguous.length} further case(s) will NOT be touched — they stay in the findings list for manual review.`:'')
+      + `\n\nApply now?`;
+    if(!confirm(msg)) return;
+    const ap = await (await fetch(_url+'/api/tracking/orphan-scans/heal',{method:'POST',headers:{'Content-Type':'application/json'},body:'{}'})).json();
+    if(!ap.ok){ alert('Reunite failed: '+(ap.error||'unknown error')); return; }
+    const moved = (ap.healed||[]).reduce((s,h)=>s+(h.moved||0),0);
+    alert(`✅ ${ap.healed.length} box(es) reunited — ${moved} scan(s) restored.`
+      + (ap.ambiguous&&ap.ambiguous.length?`\n\n${ap.ambiguous.length} case(s) still need manual review; see the findings list.`:''));
+    _v40_runIntegrityScanNow();
+  }catch(e){ alert('Reunite error: '+e.message); }
+}
+
+// Per-finding manual reunion for an ambiguous case — admin names the box explicitly.
+async function _v51u_reunite(batchNumber, orphanLabelId, targetLabelId, box){
+  if(!confirm(`Move these scans onto box ${box} of ${batchNumber}?\n\nThis restores the box's history. It is logged for audit and can be reversed.`)) return;
+  try{
+    const _url = (typeof SERVER_URL!=='undefined'&&SERVER_URL) || (typeof serverUrl!=='undefined'&&serverUrl) || '';
+    const j = await (await fetch(_url+'/api/tracking/orphan-scans/reunite',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({batchNumber,orphanLabelId,targetLabelId})})).json();
+    if(!j.ok){ alert('Reunite failed: '+(j.error||'unknown error')); return; }
+    alert(`✅ ${j.moved} scan(s) restored to box ${j.box} of ${batchNumber}.`);
+    _v40_runIntegrityScanNow();
+  }catch(e){ alert('Reunite error: '+e.message); }
+}
+
 async function renderDataIntegrity() {
   if (currentUser?.role !== 'admin') { navigate('production'); return; }
   document.getElementById('topbar-actions').innerHTML = `
+    <button class="btn btn-secondary btn-sm" onclick="_v51u_healOrphans()">🔗 Reunite Orphaned Boxes</button>
     <button class="btn btn-secondary btn-sm" onclick="_v40_runIntegrityScanNow()">🔄 Run Scan Now</button>`;
   document.getElementById('content').innerHTML = `
     <div id="integrity-summary" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:12px;margin-bottom:16px"></div>
@@ -16764,6 +16815,12 @@ function _v40_renderIntegrityFindings() {
         <button class="btn btn-sm" style="padding:3px 10px;font-size:11px;background:rgba(148,163,184,0.15);color:#475569;margin-left:4px" onclick="_v40_ackFinding('${f.id}')">Ack 24h</button>
         ${(currentUser?.role==='admin' && f.batch_number && (f.check_type==='over_production' || f.check_type==='qty_mismatch_plan_dpr'))
           ? `<button class="btn btn-sm" style="padding:3px 10px;font-size:11px;background:rgba(34,197,94,0.15);color:#15803d;margin-left:4px;font-weight:700" title="Regularise: set planning gross to the authoritative DPR figure" onclick="_v45u_autoFix('${f.id}','${(f.batch_number||'').replace(/'/g,'')}')">⚡ Auto-fix</button>` : ''}
+        ${(()=>{ // v51U: reunite an orphaned box with its scan history, only where the box is identified
+          if(currentUser?.role!=='admin' || f.check_type!=='orphan_tracking_scan') return '';
+          let rd={}; try{ rd = typeof f.raw_data==='string'?JSON.parse(f.raw_data):(f.raw_data||{}); }catch(_){ return ''; }
+          if(!rd.autoHealable || !rd.targetLabelId) return '';
+          return `<button class="btn btn-sm" style="padding:3px 10px;font-size:11px;background:rgba(124,58,237,0.15);color:#6d28d9;margin-left:4px;font-weight:700" title="Restore these scans to box ${rd.targetBox}" onclick="_v51u_reunite('${(rd.batchNumber||'').replace(/'/g,'')}','${(rd.orphanLabelId||'').replace(/'/g,'')}','${(rd.targetLabelId||'').replace(/'/g,'')}','${rd.targetBox}')">🔗 Reunite → box ${rd.targetBox}</button>`;
+        })()}
       </td>
     </tr>`;
   }).join('');

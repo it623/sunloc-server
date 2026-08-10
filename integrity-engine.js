@@ -116,10 +116,10 @@ const FIX_CATALOG = {
     action: 'TEMP batch is older than 7 days. Reconcile it to a real order via the Reconciliation page.',
   },
   orphan_tracking_scan: {
-    app: 'tracking',
-    page: 'batch-tracker',
+    app: 'planning',
+    page: 'data-integrity',
     role: 'role:admin',
-    action: 'Scan references a label_id that does not exist. Admin-only data cleanup required.',
+    action: 'A box\'s scans point at a label that no longer exists, so the box shows as "?" and its stage gates deadlock. Where the box is identified, use Reunite to restore its history; otherwise review before acting.',
   },
   invoice_no_dispatch: {
     app: 'tracking',
@@ -646,23 +646,62 @@ async function check_temp_batch_overdue(ctx) {
 
 // ────────────────────────────────────────────────────────────────
 // Check 10: Orphan tracking_scans (label_id has no matching label row)
+//
+// v51U (Ishan, 10 Aug — 26Y065 box 18): this check has been firing correctly for months, but its
+// signal was buried. It counted EVERY label-less scan per batch, and the overwhelming majority are
+// 'recon-' month-end reconciliation adjustments that reference no physical label BY DESIGN — roughly
+// 1,800 of them against ~200 real orphans. A permanently-noisy warning is a warning nobody reads,
+// which is why a box stuck since 02-Aug reached QA before it reached us.
+//
+// Now: recon rows are excluded, and each finding is ONE orphaned box rather than a batch tally —
+// carrying its stage trail and, where the batch contains exactly one zero-scan label, the specific
+// box it belongs to. That makes the finding actionable: the admin sees "these scans belong to box
+// 18" and can reunite them, or let the auto-heal do it.
 // ────────────────────────────────────────────────────────────────
 async function check_orphan_tracking_scan(ctx) {
   const findings = [];
   const rows = await _query(ctx, `
-    SELECT s.batch_number, COUNT(*) AS orphan_count
+    SELECT s.batch_number, s.label_id, COUNT(*) AS orphan_count,
+           MIN(s.ts) AS first_ts,
+           STRING_AGG(s.dept||':'||s.type, ', ' ORDER BY s.ts) AS trail
     FROM tracking_scans s
     WHERE NOT EXISTS (SELECT 1 FROM tracking_labels l WHERE l.id = s.label_id)
-    GROUP BY s.batch_number
+      AND s.label_id NOT LIKE 'recon-%'
+      AND COALESCE(s.operator,'') NOT LIKE 'recon:%'
+    GROUP BY s.batch_number, s.label_id
   `);
+  // per-batch candidate targets: non-voided, non-specimen labels carrying zero scans
+  const cands = await _query(ctx, `
+    SELECT l.batch_number, l.id, l.label_number
+    FROM tracking_labels l
+    WHERE COALESCE(l.voided,0) = 0
+      AND COALESCE(l.label_number::text,'') <> '0'
+      AND NOT EXISTS (SELECT 1 FROM tracking_scans s WHERE s.label_id = l.id)
+  `);
+  const candsByBatch = new Map();
+  for (const c of cands) {
+    if (!candsByBatch.has(c.batch_number)) candsByBatch.set(c.batch_number, []);
+    candsByBatch.get(c.batch_number).push(c);
+  }
+  const orphansByBatch = new Map();
+  for (const r of rows) orphansByBatch.set(r.batch_number, (orphansByBatch.get(r.batch_number) || 0) + 1);
+
   for (const r of rows) {
+    const cand = candsByBatch.get(r.batch_number) || [];
+    const solo = (orphansByBatch.get(r.batch_number) === 1 && cand.length === 1);
+    const box  = solo ? cand[0].label_number : null;
     findings.push(_enrichFinding({
-      finding_key: _hashKey('orphan_tracking_scan', r.batch_number),
+      finding_key: _hashKey('orphan_tracking_scan', r.batch_number + '|' + r.label_id),
       check_type: 'orphan_tracking_scan',
-      severity: 'warning',
+      severity: solo ? 'warning' : 'critical',   // ambiguous cases need a human, so they rank higher
       batch_number: r.batch_number,
-      description: `Batch ${r.batch_number}: ${r.orphan_count} scan(s) reference label_ids that no longer exist`,
-      raw_data: { batchNumber: r.batch_number, orphanCount: r.orphan_count },
+      description: solo
+        ? `Batch ${r.batch_number}: ${r.orphan_count} scan(s) (${r.trail}) belong to box ${box} but reference a label that no longer exists — can be reunited automatically`
+        : `Batch ${r.batch_number}: ${r.orphan_count} scan(s) (${r.trail}) reference a label that no longer exists, and the box cannot be identified automatically — needs review`,
+      raw_data: { batchNumber: r.batch_number, orphanLabelId: r.label_id, orphanCount: r.orphan_count,
+                  trail: r.trail, firstTs: r.first_ts, autoHealable: solo,
+                  targetLabelId: solo ? cand[0].id : null, targetBox: box,
+                  candidates: cand.map(c => ({ id: c.id, box: c.label_number })) },
     }));
   }
   return findings;
