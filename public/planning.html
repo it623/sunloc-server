@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51Q</p>
+      <p>Planning Suite v3.0 · build v51S</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1782,7 +1782,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51Q' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51S' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5517,7 +5517,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51Q'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51S'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8053,10 +8053,20 @@ function renderPrinting() {
   // to the print order's OWN month signal (its start/end date, or current-month daily-printing
   // activity) so a broken link can never blank the plan.
   const monthOrdIds = new Set(getMonthOrders().map(o => o.id));
+  // v51S (Ishan, 9 Aug): a print order AWAITING ASSIGNMENT is never hidden by the month filter.
+  // A pending print order with no machine is work nobody has scheduled yet — if a month filter can
+  // hide it, it silently stops being anybody's job. This matters most for unprinted→printed
+  // conversions of OLD batches: a May batch converted in August has a closed May production order,
+  // so monthOrdIds never contains it in August, and if its own dates ever drift out of the selected
+  // month the row would vanish entirely. Once assigned to a machine it schedules normally and the
+  // usual month rules take over.
+  const _awaitingAssignment = p => (p.status === 'pending' || !p.status)
+    && !(p.machineId && p.machineId !== 'null' && p.machineId !== '');
   const printOrders = (state.printOrders || []).filter(p =>
     !p.productionOrderId
     || monthOrdIds.has(p.productionOrderId)
     || printOrderInSelectedMonth(p)
+    || _awaitingAssignment(p)
   );
 
   let html = `

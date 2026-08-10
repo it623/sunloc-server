@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51Q</title>
+<title>Sunloc Tracking Suite v1.0 · build v51S</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51Q</p>
+      <p>Tracking Suite v1.0 · build v51S</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51Q</p>
+      <p>Tracking Suite v1.0 · build v51S</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -6897,7 +6897,7 @@ function openRecustomer(preBatch){
           <div class="form-group" style="margin:0"><label>Print Matter</label><input type="text" id="rc-printmatter" class="form-control" placeholder="(optional)"></div>
           <div class="form-group" style="margin:0"><label>Print Type</label><input type="text" id="rc-printtype" class="form-control" placeholder="(optional)"></div>
         </div>
-        <div style="font-size:11px;color:var(--text3);margin-top:4px">Goods will be issued to Printing from Packing (packing reversed, history kept). Batch then appears in Printing for machine assignment and flows printing→PI→packing→dispatch.</div>
+        <div style="font-size:11px;color:var(--text3);margin-top:4px">Goods will be issued to Printing from Packing (packing reversed, history kept). The print order is dated by this conversion, so it appears in the CURRENT month's Printing Plan awaiting machine assignment (the batch's production window is stamped on it as a remark), then flows printing→PI→packing→dispatch. Same boxes are reprinted with the new customer; orange labels are generated fresh at PI. The production order stays CLOSED — moulding is finished, so no machine slot is taken.</div>
       </div>
     </div>
   `, [

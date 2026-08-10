@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51Q';
+const APP_BUILD = 'v51S';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -20652,9 +20652,16 @@ app.post('/api/tracking/recustomer', async (req, res) => {
         if (pgPool) {
           await pgPool.query(`UPDATE tracking_labels SET batch_number=$1, customer=$2, po_number=COALESCE($3,po_number), ship_to=$4, bill_to=$5, printed=0, printed_at=NULL, qr_data=NULL WHERE id=$6`, [childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id]);
           await pgPool.query(`UPDATE tracking_scans SET batch_number=$1 WHERE label_id=$2`, [childBatch, l.id]);
+          // v51R: the box's ORANGE child follows it. It is keyed by parent_label_id, so leaving it
+          // behind stranded an orange label on the parent batch pointing at a box that had moved,
+          // still carrying the old customer. Scans keyed to the orange label move with it.
+          await pgPool.query(`UPDATE tracking_labels SET batch_number=$1, customer=$2, po_number=COALESCE($3,po_number), ship_to=$4, bill_to=$5, printed=0, printed_at=NULL, qr_data=NULL WHERE parent_label_id=$6 AND COALESCE(is_orange,0)=1 AND COALESCE(voided,0)=0`, [childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id]);
+          await pgPool.query(`UPDATE tracking_scans SET batch_number=$1 WHERE label_id IN (SELECT id FROM tracking_labels WHERE parent_label_id=$2 AND COALESCE(is_orange,0)=1)`, [childBatch, l.id]);
         } else {
           db.prepare(`UPDATE tracking_labels SET batch_number=?, customer=?, po_number=COALESCE(?,po_number), ship_to=?, bill_to=?, printed=0, printed_at=NULL, qr_data=NULL WHERE id=?`).run(childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id);
           db.prepare(`UPDATE tracking_scans SET batch_number=? WHERE label_id=?`).run(childBatch, l.id);
+          db.prepare(`UPDATE tracking_labels SET batch_number=?, customer=?, po_number=COALESCE(?,po_number), ship_to=?, bill_to=?, printed=0, printed_at=NULL, qr_data=NULL WHERE parent_label_id=? AND COALESCE(is_orange,0)=1 AND COALESCE(voided,0)=0`).run(childBatch, newCustomer, newPoNumber||null, shipTo||null, billTo||null, l.id);
+          db.prepare(`UPDATE tracking_scans SET batch_number=? WHERE label_id IN (SELECT id FROM tracking_labels WHERE parent_label_id=? AND COALESCE(is_orange,0)=1)`).run(childBatch, l.id);
         }
       }
       // Create the child order (clone parent; customer B; proportional actualProd; active).
@@ -20708,12 +20715,20 @@ app.post('/api/tracking/recustomer', async (req, res) => {
       }
     } else {
       // ── FULL switch: in-place customer/address/PO update + forced reprint on the original batch.
+      // v51R (Ishan, 9 Aug — found while tracing the unprinted→printed conversion): ORANGE LABELS were
+      // excluded from this update by `COALESCE(is_orange,0)=0`, so a re-customer left every orange
+      // label on the batch showing the PREVIOUS customer. Harmless for the unprinted→printed case
+      // (an unprinted batch has no orange labels — they are minted at PI scan-in, and will now be
+      // minted fresh against the new customer), but a live defect for any re-customer of an
+      // already-printed batch. The is_orange exclusion is REMOVED here only: the labelSel box roster
+      // above deliberately keeps it, because orange labels are children of the white boxes and must
+      // never be counted as boxes in the split maths or the qty.
       if (pgPool) {
-        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=$4, bill_to=$5, printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
+        await pgPool.query(`UPDATE tracking_labels SET customer=$2, po_number=COALESCE($3,po_number), ship_to=$4, bill_to=$5, printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=$1 AND COALESCE(voided,0)=0`, [batchNumber, newCustomer, newPoNumber||null, shipTo||null, billTo||null]);
         await pgPool.query(`UPDATE tracking_dispatch_records SET customer=$2 WHERE batch_number=$1`, [batchNumber, newCustomer]);
         await pgPool.query(`UPDATE invoice_requests SET customer=$2, card_code=COALESCE($3,card_code), po_number=COALESCE($4,po_number), updated_at=NOW()::TEXT WHERE batch_number=$1 AND status='pending' AND sap_doc_entry IS NULL`, [batchNumber, newCustomer, newCardCode||null, newPoNumber||null]);
       } else {
-        db.prepare(`UPDATE tracking_labels SET customer=?, po_number=COALESCE(?,po_number), ship_to=?, bill_to=?, printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=? AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`).run(newCustomer, newPoNumber||null, shipTo||null, billTo||null, batchNumber);
+        db.prepare(`UPDATE tracking_labels SET customer=?, po_number=COALESCE(?,po_number), ship_to=?, bill_to=?, printed=0, printed_at=NULL, qr_data=NULL WHERE batch_number=? AND COALESCE(voided,0)=0`).run(newCustomer, newPoNumber||null, shipTo||null, billTo||null, batchNumber);   // v51R: orange included
         db.prepare(`UPDATE tracking_dispatch_records SET customer=? WHERE batch_number=?`).run(newCustomer, batchNumber);
         db.prepare(`UPDATE invoice_requests SET customer=?, card_code=COALESCE(?,card_code), po_number=COALESCE(?,po_number), updated_at=datetime('now') WHERE batch_number=? AND status='pending' AND sap_doc_entry IS NULL`).run(newCustomer, newCardCode||null, newPoNumber||null, batchNumber);
       }
@@ -20736,7 +20751,22 @@ app.post('/api/tracking/recustomer', async (req, res) => {
         ord.sapDocNum   = _newSO;
         ord.sapDocEntry = null;
         if (newCardCode) ord.cardCode = newCardCode;   // v49B: was passed to invoice_requests only
-        if (doConvert) { ord.isPrinted = true; if (ord.status==='closed') { ord.status='running'; ord.reopenedForConvert=true; } } // re-enter printing chain
+        // ═══ v51R CONVERT NO LONGER REOPENS THE ORDER (Ishan, 9 Aug) ═══════════════════════
+        // This used to also do: if (ord.status==='closed') { ord.status='running'; ord.reopenedForConvert=true; }
+        // "In Production" means one thing in this system — status==='running' on a machine — and it is
+        // exactly what the max-2 limit counts. Moulding is what occupies a machine; printing, PI and
+        // packing are downstream departments that do not. Reopening a finished batch to push it back
+        // through printing therefore claimed a moulding slot the batch was not using, AND — the more
+        // damaging half — put the order back into the planning date cascade, which re-anchors every
+        // non-closed order and pushes a past end date forward to today. A July batch converted in
+        // August would have had its production window rewritten to August and its month cohort moved:
+        // the same defect family as the split children fixed in v51J–v51M.
+        // The reopen was never needed. Printing Plan filters print orders on month membership or the
+        // print order's OWN dates (printOrderInSelectedMonth) — never on the production order's
+        // status. The <BATCH>-PRINT row created below carries the work, and now carries the dates to
+        // surface with it. The reopenedForConvert flag it used to set was written and never read
+        // anywhere, so nothing was compensating for the reopen either.
+        if (doConvert) { ord.isPrinted = true; ord.convertedToPrintedAt = ts; }   // production is done; printing is downstream
         ord.recustomeredAt = ts; ord.recustomeredBy = session.username; ord._localEditedAt = Date.now();
         (planState.dispatchPlans||[]).forEach(d => { if (d.batchNumber===batchNumber || d.productionOrderId===ord.id) { d.customer=newCustomer; if(newPoNumber) d.poNumber=newPoNumber; } });
       }
@@ -20754,12 +20784,28 @@ app.post('/api/tracking/recustomer', async (req, res) => {
       const poId = `${targetBatch}-PRINT`;
       const colour = ord?.colour || labelSel[0]?.colour || '';
       const qtyLakhs = boxesToLakhsServer((doSplit?nSplit:totalBoxes), size);
+      // ═══ v51S PRINT-ORDER DATES = CONVERSION DATE, NOT THE PRODUCTION WINDOW (Ishan, 9 Aug) ════
+      // v51R stamped the PRODUCTION window here and had it backwards. print_orders.start_date /
+      // end_date are the print order's own SCHEDULING dates — they are what
+      // printOrderInSelectedMonth() reads to decide which month's Printing Plan a row belongs to. So
+      // stamping a May batch's production window sent its print order to MAY's printing plan, when
+      // the printing work is being created in AUGUST and is what the floor has to schedule now.
+      // The print order is dated by the conversion: it enters the CURRENT month's plan awaiting
+      // machine assignment, and the planner sets the real printing dates when they assign it.
+      // end_date is left NULL — unscheduled, not a one-day job.
+      // The May production window is preserved as a REMARK stamp (below), which is what a production
+      // duration is on a print order: reference, not schedule.
+      const _poStart = String(ts).slice(0,10);
+      const _poEnd   = null;
+      const _prodWindow = (ord?.startDate || ord?.endDate)
+        ? `Converted from unprinted ${String(ts).slice(0,10)} · Production ${String(ord?.startDate||'?').slice(0,10)} → ${String(ord?.endDate||ord?.startDate||'?').slice(0,10)}`
+        : `Converted from unprinted ${String(ts).slice(0,10)}`;
       if (pgPool) {
-        await pgPool.query(`INSERT INTO print_orders (id, machine_id, customer, batch_number, pc_code, size, colour, print_matter, print_type, qty_to_print, order_qty, status, zone, production_order_id, updated_at) VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$9,'pending',$10,$11,NOW()::TEXT) ON CONFLICT(id) DO UPDATE SET customer=$2, batch_number=$3, print_matter=$7, print_type=$8, qty_to_print=$9, order_qty=$9, status='pending', updated_at=NOW()::TEXT`,
-          [poId, newCustomer, targetBatch, ord?.pcCode||null, size, colour, printMatter||null, printType||null, qtyLakhs, ord?.zone||null, (doSplit?childBatch:(ord?.id||targetBatch))]);
+        await pgPool.query(`INSERT INTO print_orders (id, machine_id, customer, batch_number, pc_code, size, colour, print_matter, print_type, qty_to_print, order_qty, status, zone, production_order_id, start_date, end_date, remarks, updated_at) VALUES ($1,NULL,$2,$3,$4,$5,$6,$7,$8,$9,$9,'pending',$10,$11,$12,$13,$14,NOW()::TEXT) ON CONFLICT(id) DO UPDATE SET customer=$2, batch_number=$3, print_matter=$7, print_type=$8, qty_to_print=$9, order_qty=$9, status='pending', start_date=$12, end_date=$13, remarks=COALESCE(NULLIF(print_orders.remarks,''),$14), updated_at=NOW()::TEXT`,
+          [poId, newCustomer, targetBatch, ord?.pcCode||null, size, colour, printMatter||null, printType||null, qtyLakhs, ord?.zone||null, (doSplit?childBatch:(ord?.id||targetBatch)), _poStart, _poEnd, _prodWindow]);
       } else {
-        db.prepare(`INSERT INTO print_orders (id, machine_id, customer, batch_number, pc_code, size, colour, print_matter, print_type, qty_to_print, order_qty, status, zone, production_order_id, updated_at) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,'pending',?,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET customer=excluded.customer, batch_number=excluded.batch_number, print_matter=excluded.print_matter, print_type=excluded.print_type, qty_to_print=excluded.qty_to_print, order_qty=excluded.order_qty, status='pending', updated_at=datetime('now')`)
-          .run(poId, newCustomer, targetBatch, ord?.pcCode||null, size, colour, printMatter||null, printType||null, qtyLakhs, qtyLakhs, ord?.zone||null, (doSplit?childBatch:(ord?.id||targetBatch)));
+        db.prepare(`INSERT INTO print_orders (id, machine_id, customer, batch_number, pc_code, size, colour, print_matter, print_type, qty_to_print, order_qty, status, zone, production_order_id, start_date, end_date, remarks, updated_at) VALUES (?,NULL,?,?,?,?,?,?,?,?,?,'pending',?,?,?,?,?,datetime('now')) ON CONFLICT(id) DO UPDATE SET customer=excluded.customer, batch_number=excluded.batch_number, print_matter=excluded.print_matter, print_type=excluded.print_type, qty_to_print=excluded.qty_to_print, order_qty=excluded.order_qty, status='pending', start_date=excluded.start_date, end_date=excluded.end_date, remarks=COALESCE(NULLIF(print_orders.remarks,''),excluded.remarks), updated_at=datetime('now')`)
+          .run(poId, newCustomer, targetBatch, ord?.pcCode||null, size, colour, printMatter||null, printType||null, qtyLakhs, qtyLakhs, ord?.zone||null, (doSplit?childBatch:(ord?.id||targetBatch)), _poStart, _poEnd, _prodWindow);
       }
       // Reverse the target's packing scans (ledger debit) — originals preserved; idempotent by id.
       const rvReason = `Re-customer→printed (${batchNumber}→${targetBatch})`;
