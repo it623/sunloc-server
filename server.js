@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51S';
+const APP_BUILD = 'v51T';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -16069,10 +16069,32 @@ app.delete('/api/temp-batches/by-date', async (req, res) => {
 // Suppression is a VIEW decision only — no row is deleted or mutated, so nothing is lost and a
 // genuinely unplanned day reappears the instant its cover is removed. Counts are returned so the
 // caller can show what was hidden.
+// ═══ v51T TEMP ALERTS FOLLOW DPR PRODUCTION (Ishan, 10 Aug — MC34 stopped) ═════════════════
+// A TEMP batch claims one thing: "this machine made capsules on this day without a planned batch."
+// The pass above tested only the SECOND half of that claim (was the day planned?) and never the
+// FIRST (were capsules made at all?). So a machine taken OUT of service accumulates a TEMP row for
+// every day the DPR page is opened against it — MC34, stopped, still firing on 09-Aug and 10-Aug.
+// Nothing was being manufactured, so there was nothing to reconcile.
+//
+// production_actuals is the authority: /api/dpr/save writes a row only for qty > 0, keyed
+// (machine_id, date, shift, run_index), and _gateRow lets TEMP-prefixed batches through
+// unconditionally — so batchless production reliably lands there tagged TEMP-<machine>-<date>.
+// That gives three states and only one of them is an alert:
+//   • no production row for (machine, date)        → machine idle        → SUPPRESS  (this leg)
+//   • row tagged to a TEMP batch                   → batchless output    → FIRE
+//   • row tagged to a real batch                   → covered            → SUPPRESS  (actuals leg)
+// Granularity is the DATE, because temp_batches carries no shift column — one row per machine per
+// day. Any shift with an entry makes the day productive.
+// Creation is deliberately NOT gated: the TEMP batch is the operator's only vehicle for recording
+// batchless production, so it must exist before the entry can be made. Suppression stays a VIEW
+// decision (the v51J precedent) — the row is written, hidden while the machine is idle, and appears
+// the instant a DPR entry lands against that machine and date.
 async function _v51jTempCoverage() {
   const spans = new Map();          // machineId → [{s,e}]
   const env   = new Map();          // 'machineId|YYYY-MM' → {lo,hi} planned envelope for that month
-  const actuals = new Set();        // 'machineId|YYYY-MM-DD'
+  const actuals = new Set();        // 'machineId|YYYY-MM-DD' — REAL-batch production
+  const anyProd = new Set();        // 'machineId|YYYY-MM-DD' — ANY production, TEMP-tagged included
+  let prodLegOk = false;            // false → the idle leg stays silent (fail open, never hide an alert)
   try {
     const planState = await getPlanningStateAsync();
     for (const o of ((planState && planState.orders) || [])) {
@@ -16101,14 +16123,24 @@ async function _v51jTempCoverage() {
       : db.prepare(`SELECT machine_id, date, batch_number FROM production_actuals WHERE COALESCE(qty_lakhs,0) > 0`).all();
     for (const r of (rows || [])) {
       const bn = String(r.batch_number || '').trim();
+      // v51T: EVERY qty>0 row proves the machine ran that day, whatever it was booked against —
+      // this is the idle test. The real-batch set below stays TEMP-free, because a TEMP batch's own
+      // actuals prove the day was worked but prove nothing about it being planned.
+      anyProd.add(`${r.machine_id}|${String(r.date).slice(0,10)}`);
       if (!bn || bn.toUpperCase().startsWith('TEMP-')) continue;   // TEMP's own actuals prove nothing
       actuals.add(`${r.machine_id}|${String(r.date).slice(0,10)}`);
     }
+    prodLegOk = true;   // v51T: the query returned, so an absent row genuinely means no production
   } catch (e) { console.warn('[v51J temp coverage] actuals leg skipped:', e.message); }
   return {
     covered(machineId, date) {
       const d = String(date || '').slice(0,10);
       if (!d) return false;
+      // v51T IDLE LEG — no DPR production of any kind on that machine and date means nothing was
+      // manufactured, so there is no batchless output to reconcile. Runs FIRST because it is the
+      // cheapest and most decisive test. Gated on prodLegOk so a failed actuals query can never
+      // silently hide every alert: if the query did not return, this leg does not fire at all.
+      if (prodLegOk && !anyProd.has(`${machineId}|${d}`)) return true;
       if (actuals.has(`${machineId}|${d}`)) return true;
       for (const sp of (spans.get(String(machineId)) || [])) {
         if (d >= sp.s && d <= sp.e) return true;
@@ -16125,6 +16157,14 @@ async function _v51jTempCoverage() {
       const _envM = env.get(`${machineId}|${d.slice(0,7)}`);
       if (_envM && d >= _envM.lo && d <= _envM.hi) return true;
       return false;
+    },
+    // v51T: was this row hidden purely because the machine produced nothing that day? Lets the
+    // listing report the two suppression reasons apart, so a stopped machine reads as stopped
+    // rather than as a silently vanished alert.
+    idle(machineId, date) {
+      const d = String(date || '').slice(0,10);
+      if (!d || !prodLegOk) return false;
+      return !anyProd.has(`${machineId}|${d}`);
     }
   };
 }
@@ -16144,17 +16184,25 @@ app.get('/api/temp-batches/active', async (req, res) => {
     const filtered = batches.filter(b => (b.created_at||b.date||'') >= TEMP_CUTOFF);
     // v51J: drop rows whose unplanned-day condition no longer holds (see _v51jTempCoverage above).
     // Never let the coverage pass break the listing — on failure the table renders exactly as before.
-    let live = filtered, suppressed = 0;
+    let live = filtered, suppressed = 0, suppressedIdle = 0;
+    const idleMachines = new Set();   // v51T: machines hidden purely for having produced nothing
     try {
       const cov = await _v51jTempCoverage();
       live = filtered.filter(b => {
         const phantom = cov.covered(b.machine_id, b.date);
-        if (phantom) suppressed++;
+        if (phantom) {
+          suppressed++;
+          // v51T: separate the two suppression reasons so an operations question ("MC34 has gone
+          // quiet — is that right?") has an answer. Idle = the machine produced nothing that day;
+          // the rest are the v51J/v51M phantoms, where the day demonstrably WAS planned.
+          if (cov.idle && cov.idle(b.machine_id, b.date)) { suppressedIdle++; idleMachines.add(b.machine_id); }
+        }
         return !phantom;
       });
     } catch (e) { console.warn('[v51J temp-batches/active] coverage skipped:', e.message); live = filtered; }
     const enriched = live.map(b => ({...b, daysActive: Math.floor((new Date(today)-new Date(b.date))/86400000)+1}));
-    res.json({ ok:true, batches: enriched, count: enriched.length, suppressedPhantom: suppressed, rawActive: filtered.length });
+    res.json({ ok:true, batches: enriched, count: enriched.length, suppressedPhantom: suppressed,
+               suppressedIdle, idleMachines: [...idleMachines], rawActive: filtered.length });
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
@@ -20563,27 +20611,15 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     // the block now applies only to those specific boxes.
     // A FULL re-customer still blocks on any SAP document — it moves every box, so any invoiced box
     // is necessarily included. Only a PARTIAL split can proceed, and only over uninvoiced boxes.
-    let _sapDocs = [], _invoicedLabelIds = new Set(), _sapAny = false, _sapWhat = '';
-    {
-      const qIR = `SELECT sap_doc_num FROM invoices_received WHERE batch_number=$1`;
-      const qRQ = `SELECT id, selected_labels, sap_doc_entry, status FROM invoice_requests
-                   WHERE batch_number=$1 AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending'))`;
-      const irRows = pgPool ? (await pgPool.query(qIR, [batchNumber])).rows
-                            : db.prepare(qIR.replace(/\$1/g, '?')).all(batchNumber);
-      const rqRows = pgPool ? (await pgPool.query(qRQ, [batchNumber])).rows
-                            : db.prepare(qRQ.replace(/\$1/g, '?')).all(batchNumber);
-      if (irRows.length) { _sapAny = true; _sapWhat = 'a SAP invoice has already been received'; _sapDocs = irRows.map(r => r.sap_doc_num).filter(Boolean); }
-      else if (rqRows.length) { _sapAny = true; _sapWhat = 'an invoice request has already been pushed to SAP'; }
-      for (const r of rqRows) {
-        let ids = [];
-        try { ids = typeof r.selected_labels === 'string' ? JSON.parse(r.selected_labels) : (r.selected_labels || []); }
-        catch (e) { ids = []; }
-        if (Array.isArray(ids)) for (const id of ids) _invoicedLabelIds.add(String(id));
-      }
-      // A received invoice whose request we cannot resolve to specific labels leaves the invoiced box
-      // set UNKNOWN. Unknown must fail closed — we cannot prove the boxes being moved are free.
-      if (irRows.length && !_invoicedLabelIds.size) _sapWhat += ' (its boxes cannot be identified)';
-    }
+    // ── v51T: identification and the claimed count now come from the shared resolver (see
+    // _v51tSapCommitment). The v48W fail-closed-on-unknown rule is replaced by the QUANTITY rule
+    // Ishan confirmed on 10 Aug: a partial invoice blocks only the boxes it actually owns, and the
+    // free remainder stays re-customerable.
+    const _sapC = await _v51tSapCommitment(batchNumber);
+    const _sapDocs = _sapC.sapDocs, _invoicedLabelIds = _sapC.committed;
+    const _sapAny = _sapC.sapAny;
+    let _sapWhat = _sapC.why;
+    if (_sapC.unidentified > 0) _sapWhat += ` (${_sapC.unidentified} of its ${_sapC.claimed} invoiced box(es) cannot be pinned to specific boxes)`;
 
     const planState = getPlanningState();
     const ord = (planState.orders||[]).find(o => o.batchNumber===batchNumber && !o.deleted);
@@ -20607,22 +20643,48 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     const doSplit = nSplit > 0 && nSplit < totalBoxes;     // full switch if 0 or ≥ total
     const doConvert = !!convertToPrinted && !wasPrinted;
 
-    // v48W: apply the SAP guard now that the boxes actually moving are known.
+    // ═══ v51T PARTIAL INVOICE BLOCKS ONLY ITS OWN BOXES (Ishan, 10 Aug — 26ZG135) ════════════
+    // v48W froze the entire batch whenever the invoiced box set could not be resolved. For a
+    // SAP-direct or admin-regularised invoice that set is NEVER resolvable — deemed scan-out writes
+    // an aggregate dispatch record and no per-box identity — so a 2-box invoice locked all 26 boxes
+    // of 26ZG135 and the PM could not move any of the free 24.
+    //
+    // The rule is now quantitative, as confirmed: a batch stays re-customerable up to its FREE
+    // remainder. Two quantities, from the shared resolver:
+    //   committed    — boxes we can positively name (Sunloc label set / invoice scan / dispatch scan)
+    //   unidentified — boxes SAP owns that we cannot name (claimed − committed), i.e. the deemed case
+    // freeBoxes = totalBoxes − |committed| − unidentified. That is the count of boxes guaranteed
+    // uninvoiced even in the worst arrangement, so a split of n ≤ freeBoxes always leaves the SAP
+    // document fully backed by boxes remaining on the parent.
+    //
+    // The moving boxes are drawn from the FREE POOL (highest box numbers first, preserving the old
+    // tail-first behaviour) rather than blindly off the end of the roster. Where the committed boxes
+    // are known — the DM-scanned case Ishan called out — this is exact: those boxes are stepped over
+    // and only free ones move. Where unidentified > 0 the arrangement is unknowable, so the count
+    // guarantee is what carries it; the shortfall is reported in the response and written to
+    // recustomer_log so the decision is auditable rather than silent.
+    //
+    // A FULL re-customer is unchanged: it moves every box, so any SAP claim necessarily includes
+    // invoiced ones and it still blocks outright.
+    const _freePool  = labelSel.filter(l => !_invoicedLabelIds.has(String(l.id)));
+    const _freeBoxes = Math.max(0, _freePool.length - _sapC.unidentified);
+    let _movingLabels = doSplit ? labelSel.slice(totalBoxes - nSplit) : labelSel;
     if (_sapAny) {
-      const _moving = doSplit ? labelSel.slice(totalBoxes - nSplit) : labelSel;
-      const _clash = _moving.filter(l => _invoicedLabelIds.has(String(l.id)));
-      const _unknown = !_invoicedLabelIds.size;              // invoiced box set unresolvable → fail closed
-      if (!doSplit || _clash.length || _unknown) {
+      if (doSplit) _movingLabels = _freePool.slice(Math.max(0, _freePool.length - nSplit));
+      const _clash = _movingLabels.filter(l => _invoicedLabelIds.has(String(l.id)));
+      if (!doSplit || nSplit > _freeBoxes || _clash.length) {
         const detail = !doSplit
           ? 'a full re-customer moves every box, including the invoiced ones'
-          : (_clash.length
-              ? `${_clash.length} of the ${_moving.length} box(es) you are moving are already on that document`
-              : 'the invoiced boxes could not be identified, so this cannot be verified as safe');
+          : (nSplit > _freeBoxes
+              ? `only ${_freeBoxes} of the ${totalBoxes} box(es) on this batch are free — ${_sapC.claimed} are committed to SAP. Reduce the split to ${_freeBoxes} box(es) or fewer`
+              : `${_clash.length} of the ${_movingLabels.length} box(es) you are moving are already on that document`);
         return res.json({ ok:false, sap_blocked:true,
-          error:`Cannot re-customer ${batchNumber}: ${_sapWhat} — ${detail}. Cancel that SAP document first, then retry.`,
-          sapDocs: _sapDocs, movingBoxes: _moving.length, clashingBoxes: _clash.length });
+          error:`Cannot re-customer ${batchNumber}: ${_sapWhat} — ${detail}.`,
+          sapDocs: _sapDocs, totalBoxes, freeBoxes: _freeBoxes, requestedBoxes: nSplit,
+          committedBoxes: _invoicedLabelIds.size, claimedBoxes: _sapC.claimed,
+          unidentifiedBoxes: _sapC.unidentified, movingBoxes: _movingLabels.length, clashingBoxes: _clash.length });
       }
-      console.log(`[v48W] re-customer split of ${batchNumber}: ${_moving.length} uninvoiced box(es) moving; ${_invoicedLabelIds.size} box(es) remain committed to SAP${_sapDocs.length ? ' (' + _sapDocs.join(', ') + ')' : ''}`);
+      console.log(`[v51T] re-customer split of ${batchNumber}: ${_movingLabels.length} free box(es) moving of ${_freeBoxes} available; committed=${_invoicedLabelIds.size} claimed=${_sapC.claimed} unidentified=${_sapC.unidentified}${_sapDocs.length ? ' (' + _sapDocs.join(', ') + ')' : ''}`);
     }
 
     // Split safety: a pending invoice request references specific labels; moving boxes to a child batch
@@ -20639,12 +20701,14 @@ app.post('/api/tracking/recustomer', async (req, res) => {
     let targetBatch = batchNumber, childBatch = null, targetLabelIds = labelSel.map(l=>l.id);
 
     if (doSplit) {
-      // Next free single-letter child suffix (A, B, C …) — like W/O split child batches.
-      const used = new Set();
-      (planState.orders||[]).forEach(o=>{ if(!o.deleted && o.batchNumber && o.batchNumber.length===batchNumber.length+1 && o.batchNumber.startsWith(batchNumber)){ const s=o.batchNumber.slice(batchNumber.length); if(/^[A-Z]$/.test(s)) used.add(s); }});
-      let suffix='Z'; for(let i=65;i<=90;i++){ const c=String.fromCharCode(i); if(!used.has(c)){ suffix=c; break; } }
-      childBatch = `${batchNumber}${suffix}`;
-      const moveLabels = labelSel.slice(totalBoxes - nSplit);   // last N boxes → child
+      // Next free single-letter child suffix (A, B, C …) — via the shared allocator (v51T).
+      childBatch = await _v51tNextChildBatch(batchNumber, planState);
+      if (!childBatch) return res.json({ ok:false, split_blocked:true,
+        error:`Cannot split ${batchNumber}: all 26 child suffixes (A–Z) are already in use.` });
+      // v51T: ONE canonical moving set. This used to re-slice the tail independently of the guard,
+      // so a guard that had just cleared a free-pool selection could still hand the split a
+      // different (possibly committed) set of boxes. _movingLabels is what the guard approved.
+      const moveLabels = _movingLabels;   // last N FREE boxes → child (tail-first over the free pool)
       targetLabelIds = moveLabels.map(l=>l.id);
       targetBatch = childBatch;
       // Re-batch the moved labels + ALL their scans to the child (in place — no void/mint, ids preserved).
@@ -20833,7 +20897,14 @@ app.post('/api/tracking/recustomer', async (req, res) => {
 
     // ── Before/after log (Addition 3) + audit.
     const labelCount = targetLabelIds.length;
-    const after = { batchNumber: targetBatch, childBatch, customer: newCustomer, isPrinted: doConvert?true:wasPrinted, boxes: doSplit?nSplit:totalBoxes, poNumber: newPoNumber||before.poNumber, convertedToPrinted: doConvert, reversedPackingScans: reversedScans };
+    const after = { batchNumber: targetBatch, childBatch, customer: newCustomer, isPrinted: doConvert?true:wasPrinted, boxes: doSplit?nSplit:totalBoxes, poNumber: newPoNumber||before.poNumber, convertedToPrinted: doConvert, reversedPackingScans: reversedScans,
+      // v51T: the SAP commitment picture at the moment of the move. unidentifiedBoxes > 0 means the
+      // split was permitted on the COUNT guarantee alone (a deemed / regularised invoice with no
+      // per-box identity), so the record must say so — that is the whole audit value of the change.
+      sapCommitment: { claimedBoxes: _sapC.claimed, committedBoxes: _invoicedLabelIds.size,
+                       unidentifiedBoxes: _sapC.unidentified, freeBoxes: _freeBoxes,
+                       movedBoxNumbers: (doSplit ? _movingLabels.map(l => l.label_number) : []),
+                       sapDocs: _sapDocs } };
     const actionType = doSplit ? (doConvert?'split+convert':'split') : (doConvert?'full+convert':'full');
     try {
       const logId = `rc-${Date.now()}-${Math.random().toString(36).slice(2,7)}`;
@@ -20908,28 +20979,138 @@ async function _exuEligibleRows(batchNumber) {
                 : db.prepare(sql.replace(/\$1/g, '?')).all(...args);
 }
 
-// v48W per-box SAP guard for a batch (reused rule, reused fail-closed semantics): returns
-// { blocked, why, invoicedIds:Set } — blocked=true means the WHOLE batch is untouchable
-// (an invoice exists whose box set cannot be resolved). Otherwise invoicedIds are the
-// specific boxes SAP has a claim on; those boxes are simply not eligible.
-async function _exuSapGuard(batchNumber) {
-  const qIR = `SELECT sap_doc_num FROM invoices_received WHERE batch_number=$1`;
-  const qRQ = `SELECT id, selected_labels, sap_doc_entry, status FROM invoice_requests
-               WHERE batch_number=$1 AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending'))`;
-  const irRows = pgPool ? (await pgPool.query(qIR, [batchNumber])).rows
-                        : db.prepare(qIR.replace(/\$1/g, '?')).all(batchNumber);
-  const rqRows = pgPool ? (await pgPool.query(qRQ, [batchNumber])).rows
-                        : db.prepare(qRQ.replace(/\$1/g, '?')).all(batchNumber);
-  const invoicedIds = new Set();
+// ═══ v51T SHARED SAP COMMITMENT RESOLVER (Ishan, 10 Aug — 26ZG135) ════════════════════════════
+// v48W resolved "which boxes has SAP claimed?" from ONE source: invoice_requests.selected_labels.
+// That source only exists for invoices Sunloc itself raised. A SAP-DIRECT invoice has no Sunloc
+// request, so the set came back empty, the fail-closed rule tripped, and the whole batch froze —
+// even when only a fraction of it was invoiced. Live case 26ZG135: 26 white boxes, SAP claiming 2,
+// and the PM could not move any of the free 24.
+//
+// Identification now runs in three layers, most precise first:
+//   L1  invoice_requests.selected_labels — the box set Sunloc sent to SAP.
+//   L2  invoice_scan_sessions.scanned_json — boxes physically scanned against an invoice on this
+//       batch. This is what covers a SAP-direct invoice that the DM scanned out normally.
+//   L3  non-reversed dispatch scans on the batch — a box that has physically left is committed no
+//       matter what raised the paperwork. Widest net, and it is the one Ishan named: "in the case
+//       that the boxes have been scanned out by DM, remaining boxes are free to re-customer."
+//
+// What the three layers CANNOT see is a deemed scan-out / admin regularisation: that path writes an
+// aggregate tracking_dispatch_records row and no per-box identity at all. So the resolver also
+// returns a CLAIMED COUNT, and the callers decide what to do with the shortfall:
+//   claimed = boxes SAP attributes to THIS batch, from invoice_batch_alloc (authoritative per batch,
+//             and the only thing that sees a multi-batch invoice whose header batch_number is a
+//             joined string that never equals this batch) falling back to invoices_received
+//             .total_boxes on an exact header match; floored by the boxes already recorded as
+//             physically dispatched, so a shipment with no matching invoice header still counts.
+//   unidentified = max(0, claimed − |committed|)  — boxes SAP owns that we cannot point at.
+// One resolver, one set of layers, both callers — the uniformity rule.
+async function _v51tSapCommitment(batchNumber) {
+  const committed = new Set();      // label ids we can positively name as committed
+  const sapDocs = [];
+  let sapAny = false, why = '';
+
+  const q = (sql, args) => pgPool ? pgPool.query(sql, args).then(r => r.rows)
+                                  : Promise.resolve(db.prepare(sql.replace(/\$\d+/g, '?')).all(...args));
+
+  const irRows = await q(`SELECT id, sap_doc_num, total_boxes FROM invoices_received WHERE batch_number=$1`, [batchNumber]);
+  const rqRows = await q(`SELECT id, selected_labels FROM invoice_requests
+                          WHERE batch_number=$1 AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending'))`, [batchNumber]);
+  if (irRows.length) { sapAny = true; why = 'a SAP invoice has already been received'; for (const r of irRows) if (r.sap_doc_num) sapDocs.push(r.sap_doc_num); }
+  else if (rqRows.length) { sapAny = true; why = 'an invoice request has already been pushed to SAP'; }
+
+  // L1 — the box set Sunloc pushed to SAP.
   for (const r of rqRows) {
     let ids = [];
     try { ids = typeof r.selected_labels === 'string' ? JSON.parse(r.selected_labels) : (r.selected_labels || []); }
     catch (e) { ids = []; }
-    if (Array.isArray(ids)) for (const id of ids) invoicedIds.add(String(id));
+    if (Array.isArray(ids)) for (const id of ids) committed.add(String(id));
   }
-  // Unknown invoiced-box set must fail CLOSED (v48W): a received invoice we cannot resolve to
-  // specific labels means we cannot prove any box is free.
-  if (irRows.length && !invoicedIds.size) {
+  // L2 — boxes scanned against an invoice on this batch (covers SAP-direct, DM-scanned).
+  try {
+    const ss = await q(`SELECT scanned_json FROM invoice_scan_sessions WHERE batch_number=$1`, [batchNumber]);
+    for (const r of ss) {
+      let arr = [];
+      try { arr = typeof r.scanned_json === 'string' ? JSON.parse(r.scanned_json) : (r.scanned_json || []); }
+      catch (e) { arr = []; }
+      if (Array.isArray(arr)) for (const it of arr) {
+        const id = (it && typeof it === 'object') ? (it.labelId || it.label_id || it.id) : it;
+        if (id) committed.add(String(id));
+      }
+    }
+  } catch (e) { console.warn('[v51T commitment] scan-session leg skipped:', e.message); }
+  // L3 — any box that has physically left the plant.
+  try {
+    const ds = await q(`SELECT DISTINCT s.label_id FROM tracking_scans s
+                        WHERE s.batch_number=$1 AND s.dept='dispatch'
+                          AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [batchNumber]);
+    for (const r of ds) if (r.label_id) committed.add(String(r.label_id));
+  } catch (e) { console.warn('[v51T commitment] dispatch-scan leg skipped:', e.message); }
+
+  // Claimed count — what SAP says it invoiced against THIS batch.
+  let claimed = 0;
+  try {
+    // status vocabulary written by _v48r_attribute is 'attributed' | 'needs_manual' | 'ignored';
+    // only an ATTRIBUTED line is a claim on this batch (the other two carry a NULL batch_number).
+    const al = await q(`SELECT COALESCE(SUM(boxes),0) AS n FROM invoice_batch_alloc WHERE batch_number=$1 AND status='attributed'`, [batchNumber]);
+    claimed = parseInt(al[0] && al[0].n, 10) || 0;
+  } catch (e) { console.warn('[v51T commitment] alloc leg skipped:', e.message); }
+  if (!claimed) for (const r of irRows) claimed += parseInt(r.total_boxes, 10) || 0;
+  // Floor by boxes already recorded as physically gone (deemed scan-outs land here and nowhere else).
+  try {
+    const dr = await q(`SELECT COALESCE(SUM(boxes),0) AS n FROM tracking_dispatch_records WHERE batch_number=$1`, [batchNumber]);
+    const gone = parseInt(dr[0] && dr[0].n, 10) || 0;
+    if (gone > claimed) claimed = gone;
+    if (gone > 0) sapAny = true;
+  } catch (e) { console.warn('[v51T commitment] dispatch-record leg skipped:', e.message); }
+
+  const unidentified = Math.max(0, claimed - committed.size);
+  return { sapAny, why, sapDocs, committed, claimed, unidentified, receivedCount: irRows.length };
+}
+
+// ═══ v51T SHARED CHILD-SUFFIX ALLOCATOR (Ishan, 10 Aug) ══════════════════════════════════════
+// Two call sites minted child batches with byte-identical inline copies of this loop — the
+// re-customer split and the excess-unprint approve — and both carried the same two defects:
+//
+//   1. The roster test was `batchNumber.length + 1`, which recognises 26ZG135A but NOT 26ZG135-A.
+//      Both spellings are valid batch identifiers here, so an existing hyphenated child left its
+//      letter looking free and the next split would mint the SAME child under a second spelling,
+//      scattering that child's labels and scans across two batch numbers.
+//   2. It read planState.orders only, and defaulted to 'Z' when every letter was taken — silently
+//      re-using an occupied suffix rather than refusing.
+//
+// One allocator now: both spellings claimed, the roster widened to the live label table (a child
+// whose order row was purged, or which exists only as re-batched labels, still owns its letter),
+// and exhaustion returns null so the caller refuses instead of colliding.
+async function _v51tNextChildBatch(batchNumber, planState) {
+  const re = new RegExp('^' + String(batchNumber).replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-?([A-Z])$');
+  const used = new Set();
+  const claim = bn => { const m = re.exec(String(bn || '').trim().toUpperCase()); if (m) used.add(m[1]); };
+  for (const o of ((planState && planState.orders) || [])) if (o && !o.deleted) claim(o.batchNumber);
+  try {
+    const kids = pgPool
+      ? (await pgPool.query(`SELECT DISTINCT batch_number FROM tracking_labels WHERE batch_number LIKE $1`, [batchNumber + '%'])).rows
+      : db.prepare(`SELECT DISTINCT batch_number FROM tracking_labels WHERE batch_number LIKE ?`).all(batchNumber + '%');
+    for (const r of kids) claim(r.batch_number);
+  } catch (e) { console.warn('[v51T child-suffix] label roster skipped:', e.message); }
+  for (let i = 65; i <= 90; i++) {
+    const c = String.fromCharCode(i);
+    if (!used.has(c)) return `${batchNumber}${c}`;
+  }
+  return null;   // all 26 taken — caller must refuse, never silently reuse
+}
+
+// v48W per-box SAP guard for a batch: returns { blocked, why, invoicedIds:Set }. v51T rebases the
+// identification on the shared three-layer resolver above — the excess-unprint POLICY is unchanged
+// (an unresolvable invoiced box set still fails closed here, because every eligible box is mid-print
+// and there is no quantity argument to fall back on), it simply now recognises SAP-direct and
+// DM-scanned boxes instead of seeing nothing and freezing the batch.
+async function _exuSapGuard(batchNumber) {
+  const c = await _v51tSapCommitment(batchNumber);
+  const invoicedIds = c.committed;
+  // Condition is byte-equivalent to v48W — a RECEIVED invoice with a wholly unresolvable box set
+  // fails closed. Only the resolution widened, so batches that used to freeze because their invoice
+  // was SAP-direct now resolve through L2/L3 and their free boxes become eligible again.
+  if (c.receivedCount && !invoicedIds.size) {
     return { blocked: true, why: 'a SAP invoice exists for this batch and its boxes cannot be identified', invoicedIds };
   }
   return { blocked: false, why: '', invoicedIds };
@@ -21112,10 +21293,8 @@ app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
     // ── Allocate the child suffix (same single-letter allocator as re-customer split) and stamp it
     //    on the request BEFORE any mutation, so a crash mid-way resumes to the SAME child.
     if (!childBatch) {
-      const used = new Set();
-      (planState.orders||[]).forEach(o=>{ if(!o.deleted && o.batchNumber && o.batchNumber.length===batchNumber.length+1 && o.batchNumber.startsWith(batchNumber)){ const s=o.batchNumber.slice(batchNumber.length); if(/^[A-Z]$/.test(s)) used.add(s); }});
-      let suffix='Z'; for(let i=65;i<=90;i++){ const c=String.fromCharCode(i); if(!used.has(c)){ suffix=c; break; } }
-      childBatch = `${batchNumber}${suffix}`;
+      childBatch = await _v51tNextChildBatch(batchNumber, planState);   // v51T: shared allocator
+      if (!childBatch) return res.status(409).json({ ok:false, error:`Cannot approve: all 26 child suffixes (A–Z) of ${batchNumber} are already in use.` });
       if (pgPool) await pgPool.query(`UPDATE excess_unprint_requests SET child_batch_number=$2 WHERE id=$1`, [reqId, childBatch]);
       else db.prepare(`UPDATE excess_unprint_requests SET child_batch_number=? WHERE id=?`).run(childBatch, reqId);
     }

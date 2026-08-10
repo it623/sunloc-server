@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51S</title>
+<title>Sunloc Tracking Suite v1.0 · build v51T</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51S</p>
+      <p>Tracking Suite v1.0 · build v51T</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51S</p>
+      <p>Tracking Suite v1.0 · build v51T</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -6945,7 +6945,19 @@ async function confirmRecustomer(){
       closeModal();
       toast(`Re-customered ${j.targetBatch||batchNumber}: ${j.from||'—'} → ${j.to} (${j.action}, ${j.labels} label(s)${j.convertedToPrinted?', → printed':''})`, 'var(--green)', 5500);
       setTimeout(()=>{ pullFromServer(true); }, 700);
-    } else if(j&&j.sap_blocked){ alert('⛔ '+j.error); }
+    } else if(j&&j.sap_blocked){
+      // v51T: the block is now quantitative, so tell the PM the number to type rather than leaving
+      // him to guess. freeBoxes is the count the server will accept; the committed/unidentified
+      // split explains WHY it is that number.
+      let _extra='';
+      if(typeof j.freeBoxes==='number'){
+        _extra = `\n\nBoxes on batch: ${j.totalBoxes}\nCommitted to SAP: ${j.claimedBoxes}`
+               + (j.unidentifiedBoxes>0 ? ` (${j.unidentifiedBoxes} could not be pinned to specific boxes — invoice was regularised, not scanned out)` : '')
+               + `\nFree to re-customer: ${j.freeBoxes}`
+               + (j.freeBoxes>0 ? `\n\nEnter ${j.freeBoxes} or fewer in "Split — boxes to switch".` : '');
+      }
+      alert('⛔ '+j.error+_extra);
+    }
     else if(j&&j.split_blocked){ alert('⛔ '+j.error); }
     else if(j&&j.convert_blocked){ alert('⛔ '+j.error); }
     else { alert('Re-customer failed: '+(j?.error||'server error')); }
@@ -10208,7 +10220,15 @@ function _v39_renderDirectSapBanner() {
     panel.innerHTML = '';
     return;
   }
-  const rows = pending.slice(0, 10).map(inv => {
+  // ═══ v51T DIRECT-SAP QUEUE IS SCROLLABLE (Ishan, 10 Aug) ═══════════════════════════════════
+  // The queue was never truncated by a missing scrollbar — it was truncated by slice(0,10), which
+  // rendered ten of the thirty-six fetched rows and then printed a footer telling the admin to go
+  // hunt for the rest in the main invoice list. There is no way to action an invoice you cannot
+  // see. Every fetched row is rendered now, inside a fixed-height scroll box with a sticky header,
+  // so the queue is worked from one place. The server already returns up to `limit` (100 requested,
+  // 500 hard cap), so the only real truncation left is that cap — the footer now reports THAT, and
+  // only when it actually bit.
+  const rows = pending.map(inv => {
     const fetchedAt = inv.fetched_at ? new Date(inv.fetched_at).toLocaleString() : '—';
     return `
       <tr style="border-bottom:1px solid rgba(139,92,246,0.15)">
@@ -10231,9 +10251,9 @@ function _v39_renderDirectSapBanner() {
         </div>
         <button class="btn btn-ghost btn-sm" onclick="_v39_loadDirectSapApprovalQueue()" style="font-size:11px">↻ Refresh</button>
       </div>
-      <div style="background:white;border-radius:4px;overflow:hidden">
+      <div style="background:white;border-radius:4px;overflow-y:auto;overflow-x:hidden;max-height:280px;border:1px solid rgba(139,92,246,0.18)">
         <table style="width:100%;border-collapse:collapse;font-size:12px">
-          <thead style="background:rgba(139,92,246,0.08)">
+          <thead style="background:#f3efff;position:sticky;top:0;z-index:2;box-shadow:0 1px 0 rgba(139,92,246,0.25)">
             <tr>
               <th style="padding:6px 8px;text-align:left;font-weight:700;font-size:11px">Sales Order Number</th>
               <th style="padding:6px 8px;text-align:left;font-weight:700;font-size:11px">Customer</th>
@@ -10246,7 +10266,9 @@ function _v39_renderDirectSapBanner() {
           <tbody>${rows}</tbody>
         </table>
       </div>
-      ${pending.length > 10 ? `<div style="font-size:11px;color:var(--text3);text-align:right;margin-top:6px">+${pending.length - 10} more — scroll the main invoice list to find them</div>` : ''}
+      <div style="font-size:11px;color:var(--text3);text-align:right;margin-top:6px">
+        ${pending.length} invoice${pending.length===1?'':'s'} listed${pending.length > 6 ? ' — scroll the box above for the rest' : ''}${pending.length >= 100 ? ' · request limit reached, approve some to reveal more' : ''}
+      </div>
     </div>`;
 }
 
