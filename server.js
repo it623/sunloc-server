@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51U';
+const APP_BUILD = 'v51V';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -6516,6 +6516,34 @@ app.post('/api/invoice/:id/approve-direct-sap', async (req, res) => {
   }
 });
 
+// ═══ v51V: normalise scanned box identities for storage on a dispatch record ════════════════════
+// Shape matches what the truck route has written since v46H #2, so every existing reader
+// (_v46i_boxDispatchStatus, openDispatchRecord's per-box summary, the Report G drill-down) consumes
+// both without a second code path. Entries with no resolvable box number are still kept — the label
+// id alone is a real audit trail — but only numbered boxes render in the box lists.
+// `splitByBatch` is true only for MULTI-batch invoices, where each record must take its own batch's
+// boxes; on a single-batch invoice every scanned box belongs to the one record, and we do NOT filter
+// on batchNumber there (a child-suffix spelling mismatch would otherwise silently drop the list).
+function _v51vBoxIdentities(scanned, batch, splitByBatch) {
+  if (!Array.isArray(scanned) || !scanned.length) return [];
+  const _norm = s => String(s || '').trim().toUpperCase().replace(/-/g, '');
+  const want = _norm(batch);
+  const out = [];
+  for (const s of scanned) {
+    if (!s) continue;
+    const bn = s.batchNumber || s.batch_number || batch;
+    if (splitByBatch && _norm(bn) !== want) continue;
+    out.push({
+      labelId: s.labelId || s.label_id || null,
+      boxNumber: (s.boxNumber != null && s.boxNumber !== '') ? s.boxNumber
+               : ((s.box_number != null && s.box_number !== '') ? s.box_number : null),
+      batchNumber: bn || batch,
+      size: s.size != null ? s.size : null,
+    });
+  }
+  return out;
+}
+
 // POST /api/invoice/:id/dispatch-out — complete the Scan Out activity for an
 // invoice. Called by the Tracking App's new Scan Out panel when:
 //   - all boxes expected on the invoice have been scanned, AND
@@ -6527,7 +6555,27 @@ app.post('/api/invoice/:id/approve-direct-sap', async (req, res) => {
 app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
   try {
     const invId = req.params.id;
-    const { vehicleNo, dispatchedBy, scannedLabelIds, remarks } = req.body || {};
+    const { vehicleNo, dispatchedBy, scannedLabelIds, scannedLabels, remarks } = req.body || {};
+
+    // ═══ v51V BOX IDENTITY (Ishan, 10 Aug — DM's dispatch scans invisible) ══════════════════════
+    // The DM scans every box out at dispatch, but this route destructured `scannedLabelIds` and used
+    // it for NOTHING. The box list died here, which is why Report G's drill-down showed "Dispatch
+    // Out Scans (0)" and the per-box chips were blank for every invoice-flow dispatch.
+    //
+    // We store the box identities on the dispatch RECORD (scanned_labels_json), exactly as the
+    // truck route has since v46H #2 — deliberately NOT as tracking_scans rows. _v40_dispatchedLakhs
+    // and _v40_dispatchedBoxes SUM scan-out rows + dispatch records, and ~20 further consumers
+    // (the scan-summary GROUP BY, _recomputeDispatchActuals, Report G's period aggregate, Flow B
+    // alerts, box-stages) count those rows too. Real scan rows would double-count in every one of
+    // them. Record-only means quantity does not move by a single capsule: Report D and Report E
+    // agree by construction, and there is nothing to exclude anywhere.
+    //
+    // Client sends `scannedLabels` (full objects). `scannedLabelIds` (bare ids) is still honoured so
+    // an un-refreshed browser degrades to id-only rather than losing the list again.
+    const _v51vScanned = Array.isArray(scannedLabels) && scannedLabels.length
+      ? scannedLabels
+      : (Array.isArray(scannedLabelIds) ? scannedLabelIds.map(id => ({ labelId: id })) : []);
+    let _v51vBoxesWritten = 0;   // total identities actually persisted → invoices_received.scanned_boxes
     // Load invoice
     let inv;
     if (pgPool) {
@@ -6591,19 +6639,25 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
         const a = _dispAllocs[_i];
         const rid = _i === 0 ? recId : ('disprec_' + crypto.randomBytes(6).toString('hex'));
         const rmk = (remarks || '') + (a.flagged ? ' [v46H: batch line unresolved in invoice — needs re-allocation]' : '');
+        // v51V: this allocation's own boxes. On a MULTI-batch invoice each record carries only the
+        // boxes scanned for ITS batch (scan entries carry batchNumber); on a single-batch invoice
+        // every scanned box belongs to the one record. Same shape the truck route writes.
+        const _lblsForBatch = _v51vBoxIdentities(_v51vScanned, a.batch, _dispAllocs.length > 1);
+        const _sLabels51v = JSON.stringify(_lblsForBatch);
         // v48D (Ishan): double-fire guard — skip this allocation if an identical record already exists.
         if (await _isDuplicateDispatch(a.batch, inv.sap_doc_num || '', a.boxes, a.qty)) continue;
+        _v51vBoxesWritten += _lblsForBatch.length;
         if (pgPool) {
           await pgPool.query(
-            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-            [rid, a.batch, inv.customer || '', a.qty, a.boxes, vehicleNo || '', inv.sap_doc_num || '', rmk, ts, dispatchedBy || 'unknown']
+            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by", scanned_labels_json)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [rid, a.batch, inv.customer || '', a.qty, a.boxes, vehicleNo || '', inv.sap_doc_num || '', rmk, ts, dispatchedBy || 'unknown', _sLabels51v]
           );
         } else {
           db.prepare(
-            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
-             VALUES (?,?,?,?,?,?,?,?,?,?)`
-          ).run(rid, a.batch, inv.customer || '', a.qty, a.boxes, vehicleNo || '', inv.sap_doc_num || '', rmk, ts, dispatchedBy || 'unknown');
+            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by, scanned_labels_json)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+          ).run(rid, a.batch, inv.customer || '', a.qty, a.boxes, vehicleNo || '', inv.sap_doc_num || '', rmk, ts, dispatchedBy || 'unknown', _sLabels51v);
         }
       }
     } catch (e) {
@@ -6611,15 +6665,18 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
     }
     // Mark invoice dispatched
     try {
+      // v51V: scanned_boxes has been DEFAULT 0 and written by nothing since the column was created,
+      // so "Scanned Boxes: 0 / 20" was hardcoded zero on every invoice ever dispatched. It now
+      // carries the count actually recorded. Not derived from total_boxes — a real count or nothing.
       if (pgPool) {
         await pgPool.query(
-          `UPDATE invoices_received SET dispatch_status='dispatched', dispatched_at=$1, dispatched_by=$2, vehicle_no=$3, dispatch_record_id=$4 WHERE id=$5`,
-          [ts, dispatchedBy || 'unknown', vehicleNo || '', recId, invId]
+          `UPDATE invoices_received SET dispatch_status='dispatched', dispatched_at=$1, dispatched_by=$2, vehicle_no=$3, dispatch_record_id=$4, scanned_boxes=$5 WHERE id=$6`,
+          [ts, dispatchedBy || 'unknown', vehicleNo || '', recId, _v51vBoxesWritten, invId]
         );
       } else {
         db.prepare(
-          `UPDATE invoices_received SET dispatch_status='dispatched', dispatched_at=?, dispatched_by=?, vehicle_no=?, dispatch_record_id=? WHERE id=?`
-        ).run(ts, dispatchedBy || 'unknown', vehicleNo || '', recId, invId);
+          `UPDATE invoices_received SET dispatch_status='dispatched', dispatched_at=?, dispatched_by=?, vehicle_no=?, dispatch_record_id=?, scanned_boxes=? WHERE id=?`
+        ).run(ts, dispatchedBy || 'unknown', vehicleNo || '', recId, _v51vBoxesWritten, invId);
       }
     } catch (e) {
       console.warn('[v39 P10a] invoice update failed (record was created):', e.message);
@@ -6645,6 +6702,16 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
     } catch (e) {
       console.warn('[v39 P10a] dispatch_plans annotate failed:', e.message);
     }
+    // ═══ v51V RESPONSE FIX (Ishan, 10 Aug — DM: "dispatch failed" after every batch) ═════════════
+    // `boxes` and `qty` were UNDECLARED here. v46H #4 replaced the old single `const qty` / `const
+    // boxes` with the per-batch _dispAllocs array and this line was never updated, so the handler
+    // threw ReferenceError on its LAST statement — after the dispatch record was written, the
+    // invoice marked dispatched, actuals recomputed and plans annotated. The outer catch turned a
+    // completed dispatch into HTTP 500 {ok:false}. The DM saw "❌ Dispatch failed" on every single
+    // dispatch; the success modal never opened, the queue never refreshed, and the scan session was
+    // never cleared (the DELETE only fires on j.ok). The work had always succeeded.
+    const boxes = _dispAllocs.reduce((s, a) => s + (parseInt(a.boxes) || 0), 0);
+    const qty   = _dispAllocs.reduce((s, a) => s + (parseFloat(a.qty) || 0), 0);
     res.json({
       ok: true,
       dispatch_record_id: recId,
@@ -6652,6 +6719,7 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
       batch_number: inv.batch_number,
       boxes,
       qty,
+      scanned_boxes: _v51vBoxesWritten,
       ts,
     });
   } catch (err) {
@@ -7921,9 +7989,10 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
       // the (already qty-counted) record. Deliberately NOT written as tracking_scans rows, because
       // _v40_dispatchedLakhs SUMS scan-out rows + dispatch records — separate scan rows would
       // DOUBLE-COUNT the dispatched quantity. Pending = packed box numbers − these dispatched ones.
-      const _sLabels = Array.isArray(b.scannedLabels)
-        ? JSON.stringify(b.scannedLabels.map(s => ({ labelId: s.labelId || null, boxNumber: (s.boxNumber != null ? s.boxNumber : null), batchNumber: s.batchNumber || inv.batch_number, size: s.size || null })))
-        : '[]';
+      // v51V: same normaliser the single-invoice route now uses, so both flows write one shape.
+      // splitByBatch=false — the truck client already filters st.scanned down to THIS invoice.
+      const _lbls51v = _v51vBoxIdentities(b.scannedLabels, inv.batch_number, false);
+      const _sLabels = JSON.stringify(_lbls51v);
       // v48D (Ishan): double-fire guard — skip this invoice's insert if an identical record already exists.
       if (await _isDuplicateDispatch(inv.batch_number, inv.sap_doc_num || '', boxes, qty)) {
         results.push({ invoiceId: invId, ok: true, skipped: true, reason: 'identical dispatch record already exists (duplicate suppressed)' });
@@ -7950,13 +8019,14 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
       try {
         if (pgPool) {
           await pgPool.query(
-            `UPDATE invoices_received SET dispatch_status='dispatched', dispatched_at=$1, dispatched_by=$2, vehicle_no=$3, dispatch_record_id=$4 WHERE id=$5`,
-            [ts, dispatchedBy, vehicleNo, recId, invId]
+            // v51V: real scanned-box count (was DEFAULT 0 forever — see the single-invoice route).
+            `UPDATE invoices_received SET dispatch_status='dispatched', dispatched_at=$1, dispatched_by=$2, vehicle_no=$3, dispatch_record_id=$4, scanned_boxes=$6 WHERE id=$5`,
+            [ts, dispatchedBy, vehicleNo, recId, invId, _lbls51v.length]
           );
         } else {
           db.prepare(
-            `UPDATE invoices_received SET dispatch_status='dispatched', dispatched_at=?, dispatched_by=?, vehicle_no=?, dispatch_record_id=? WHERE id=?`
-          ).run(ts, dispatchedBy, vehicleNo, recId, invId);
+            `UPDATE invoices_received SET dispatch_status='dispatched', dispatched_at=?, dispatched_by=?, vehicle_no=?, dispatch_record_id=?, scanned_boxes=? WHERE id=?`
+          ).run(ts, dispatchedBy, vehicleNo, recId, _lbls51v.length, invId);
         }
       } catch (e) {
         console.warn('[v40 P18.11] invoice update failed (record was created):', e.message);

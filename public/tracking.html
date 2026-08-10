@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51U</title>
+<title>Sunloc Tracking Suite v1.0 · build v51V</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51U</p>
+      <p>Tracking Suite v1.0 · build v51V</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51U</p>
+      <p>Tracking Suite v1.0 · build v51V</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -7380,6 +7380,12 @@ function _v46i_boxDispatchStatus(batchNo){
 function _v46i_boxStatusChip(batchNo){
   const s = _v46i_boxDispatchStatus(batchNo);
   if (!s.hasRecords && s.packed===0) return '';
+  // v51V (Ishan, 10 Aug): a record written BEFORE v51V carries no box identities, because the
+  // single-invoice dispatch route discarded them. Rendering that as "Dispatched boxes (0): —" read
+  // as "nothing went out", which is false — the boxes shipped, only the list wasn't kept. Say so.
+  if (s.hasRecords && s.dispatched.length === 0) {
+    return `<div style="font-size:11px;color:var(--text2);margin-top:4px;line-height:1.4"><span style="color:var(--text3)">📦 Dispatched box numbers not recorded</span> <span style="font-size:10px;color:var(--text3)">(dispatched before build v51V — quantities unaffected)</span></div>`;
+  }
   const outStr = s.dispatched.length ? s.dispatched.join(', ') : '—';
   const pendPart = s.packed>0
     ? ` · <span style="color:${s.pending>0?'#f59e0b':'var(--green)'}">⏳ Pending: <strong>${s.pending}</strong>${s.pending>0?` of ${s.packed} packed`:''}</span>`
@@ -7413,9 +7419,13 @@ function openDispatchRecord(batchNo){
   existingRecs.forEach(r => (r.scannedLabels || []).forEach(l => { if (l && l.boxNumber != null && l.boxNumber !== '') _dispBoxNums.push(l.boxNumber); }));
   const _packedBoxes = hasScanSummary() ? _ss(batchNo,'packing').in : (window._v40_boxCountsByBatch?.[batchNo]?.packing_in || 0);
   const _pendingOut = Math.max(0, _packedBoxes - _dispBoxNums.length);
+  // v51V: as in the chip — an existing record with no stored box numbers means the identities were
+  // never kept (pre-v51V single-invoice dispatch), NOT that no boxes left the floor.
   const perBoxSummary = _dispBoxNums.length
     ? `<div class="alert alert-info" style="font-size:11px;margin-bottom:8px">📦 <b>Box numbers scanned out (${_dispBoxNums.length}):</b> ${_dispBoxNums.slice().sort((a,b)=>(parseInt(a)||0)-(parseInt(b)||0)).join(', ')}${_packedBoxes>0?(_pendingOut>0?`<br>⏳ <b>${_pendingOut} box(es) pending scan-out</b> (packed ${_packedBoxes} − dispatched ${_dispBoxNums.length}).`:'<br>✓ All packed boxes dispatched.'):''}</div>`
-    : '';
+    : (existingRecs.length
+        ? `<div class="alert alert-info" style="font-size:11px;margin-bottom:8px">📦 <b>Box numbers not recorded</b> for the existing dispatch record(s) — these were dispatched before build v51V, which did not store the scanned box list. Quantities are unaffected.</div>`
+        : '');
 
   // Note if scan-out exceeds recorded (Flow B condition)
   const flowBNote = (availableToRecord > 0)
@@ -8885,6 +8895,16 @@ async function _v39_dispatchOut() {
       body: JSON.stringify({
         vehicleNo,
         dispatchedBy: currentDept || 'unknown',
+        // v51V (Ishan, 10 Aug): send the FULL box identities, not just label ids. The server stores
+        // these on the dispatch record (scanned_labels_json) so the DM's scan-out finally shows in
+        // the Report G drill-down and the per-box chips. scannedLabelIds kept for back-compat with
+        // an older server; harmless duplication, the server prefers scannedLabels when present.
+        scannedLabels: _v39_scanProgress.scanned.map(s => ({
+          labelId: s.labelId || null,
+          boxNumber: (s.boxNumber != null && s.boxNumber !== '') ? s.boxNumber : null,
+          batchNumber: s.batchNumber || inv.batch_number || '',
+          size: s.size != null ? s.size : null,
+        })),
         scannedLabelIds: _v39_scanProgress.scanned.map(s => s.labelId).filter(Boolean),
         remarks,
       }),
@@ -13110,7 +13130,14 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
     const hasWastage = dept==='aim'||dept==='printing'||dept==='pi';
     const _isAimDept = dept==='aim';
     const _aimHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Colour</th><th>PC</th><th>Gross Prod (L)</th><th>Wastage (L)</th><th>Avail. to Scan In (L)</th><th>Boxes IN</th><th>Production WIP (L)</th><th>Boxes OUT</th><th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
-    const _stdHead = `<thead><tr><th>Batch</th><th>Customer</th><th>Prod WIP (L)</th><th>Boxes IN</th><th>Boxes OUT</th>${hasWastage?'<th>Wastage (L)</th>':''}<th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
+    // v51V (Printing Manager, via Ishan): Colour and PC in Report B for PRINTING and PI. AIM GF and
+    // AIM FF/SF already carry both in _aimHead, so this brings the remaining two departments in line.
+    // The data was already resolved — Report B has had Search Colour / Search PC filters since v44Z;
+    // only the columns were missing. Report B renders aim/printing/pi only (Packing moved to Report G
+    // in v44P #9), so this flag is true for exactly the two departments asked for.
+    const _showCP = (dept==='printing' || dept==='pi');
+    const _cpHead = _showCP ? '<th>Colour</th><th>PC</th>' : '';
+    const _stdHead = `<thead><tr><th>Batch</th><th>Customer</th>${_cpHead}<th>Prod WIP (L)</th><th>Boxes IN</th><th>Boxes OUT</th>${hasWastage?'<th>Wastage (L)</th>':''}<th>WIP Boxes</th><th>WIP Qty (L)</th><th>Time in Dept</th><th>Status</th></tr></thead>`;
     // v44ZG Issue 4: split the AIM Inspection section by floor — GF batches and FF/SF batches as
     // two separately-titled groups (floor via getMachineFloor(machineId), the same source Report E
     // uses for its GF/FF/SF subtotals). FF and SF are combined into one group. Every other
@@ -13203,6 +13230,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         html+=`<tr>
         <td class="td-bold td-mono">${batchNo}${_retiredRows45z.has(batchNo)?' <span class="badge badge-gray" style="font-size:8px" title="Retired — WIP excluded; month gross shown for DPR parity">RETIRED</span>':''}${_reconBadge(_rc)}${_ovrBadge(batchNo)}${_cfBadge45}${alerts>0?` <span class="red-flag">🚩</span>`:''}</td>
         <td class="text-sm">${batch?.customer||'-'}</td>
+        ${_showCP?`<td class="text-sm">${batch?.colour||'-'}</td><td class="td-mono text-sm">${batch?.pcCode||'-'}</td>`:''}
         <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
         <td class="td-mono">${inn} <span class="text-muted">(${fmt(innQty)}L)</span></td>
         <td class="td-mono">${out} <span class="text-muted">(${fmt(outQty)}L)</span></td>
@@ -13211,7 +13239,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}${_frozenBadge(_fz)}</td>
         <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
         <td>${statusBadge}</td>
-      </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td></td><td colspan="${hasWastage?5:4}"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
+      </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td></td><td colspan="${(hasWastage?5:4)+(_showCP?2:0)}"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
       }
       _bIn+=inn; _bOut+=out; _bW+=w.total; _bWipBx+=wip; _bWipQ+=wipQty; _bProd+=prodWip; _bGross+=grossProd; _bAvail+=_avail; _bN++;
     });
@@ -13230,7 +13258,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         </tr>`;
       } else {
         html+=`<tr style="background:var(--surface2);font-weight:800">
-          <td>TOTAL (${_bN})</td><td></td>
+          <td>TOTAL (${_bN})</td><td></td>${_showCP?'<td></td><td></td>':''}
           <td class="td-mono">${_bProd>0?fmt(_bProd)+'L':'—'}</td>
           <td class="td-mono">${_bIn}</td><td class="td-mono">${_bOut}</td>
           ${hasWastage?`<td class="td-mono">${_bW>0?fmt(_bW)+'L':'—'}</td>`:''}
@@ -15925,7 +15953,32 @@ function _v40_renderReportKDetail(r) {
   // v47W (Ishan #3): prefer the FULL scan history (loaded on expand) over the windowed state.scans list.
   const _fullSc = (window._v47wFullScans || {})[r.batchNo];
   const _packInList  = _fullSc ? _fullSc.filter(s => s.dept === 'packing'  && s.type === 'in')  : d.packInScans;
-  const _dispOutList = _fullSc ? _fullSc.filter(s => s.dept === 'dispatch' && s.type === 'out') : d.dispatchOutScans;
+  const _dispOutScanList = _fullSc ? _fullSc.filter(s => s.dept === 'dispatch' && s.type === 'out') : d.dispatchOutScans;
+  // v51V (Ishan, 10 Aug — DM's dispatch scans invisible): a box scanned out through the INVOICE flow
+  // never produced a tracking_scans row — its identity lives on the dispatch record
+  // (scanned_labels_json), by design, so the quantity helpers can't double-count it. This panel only
+  // ever read scan rows, so those dispatches showed "Dispatch Out Scans (0)" however many boxes the
+  // DM scanned. Merge the record-carried identities in, de-duped against real scan rows by label id
+  // (a batch can legitimately have BOTH: legacy Dispatch-page scans and invoice-flow records).
+  // Display only — no quantity is derived from this list anywhere.
+  const _dispSeen51v = new Set(_dispOutScanList.map(s => s.labelId).filter(Boolean));
+  const _dispRecBoxes51v = [];
+  (state.dispatchRecs || []).forEach(rec => {
+    if (rec.batchNumber !== r.batchNo) return;
+    (rec.scannedLabels || []).forEach(l => {
+      if (!l) return;
+      if (l.labelId && _dispSeen51v.has(l.labelId)) return;   // already present as a real scan row
+      if (l.labelId) _dispSeen51v.add(l.labelId);
+      _dispRecBoxes51v.push({
+        labelId: l.labelId || null,
+        boxNumber: (l.boxNumber != null && l.boxNumber !== '') ? l.boxNumber : null,
+        ts: rec.ts,            // the record's dispatch time — the scan's own timestamp isn't kept
+        _fromRecord: true,     // drives the "on invoice" marker in the row
+        _invoiceNo: rec.invoiceNo || '',
+      });
+    });
+  });
+  const _dispOutList = _dispOutScanList.concat(_dispRecBoxes51v);
   const fmtTs = (ts) => {
     if (!ts) return '—';
     try { return new Date(ts).toLocaleString(); } catch (e) { return ts; }
@@ -15949,12 +16002,14 @@ function _v40_renderReportKDetail(r) {
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${_boxOf(s)}</td>
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${fmtTs(s.ts)}</td>
       </tr>`).join('');
+  // v51V: record-sourced rows carry an "inv" marker so the floor can tell a Dispatch-page scan from
+  // an invoice scan-out at a glance. Both are equally real; only the storage differs.
   const dispOutRows = _dispOutList.length === 0
     ? '<tr><td colspan="3" class="text-center text-muted" style="padding:8px">No Dispatch Out scans yet</td></tr>'
     : _dispOutList.map((s, i) => `
       <tr style="border-bottom:1px dotted var(--border)">
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px;color:var(--text3)">${i+1}</td>
-        <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${_boxOf(s)}</td>
+        <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${_boxOf(s)}${s._fromRecord?` <span style="font-size:9px;color:#0891b2;font-family:var(--font)" title="Scanned out on the invoice dispatch screen${s._invoiceNo?' — invoice '+s._invoiceNo:''}">inv</span>`:''}</td>
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${fmtTs(s.ts)}</td>
       </tr>`).join('');
   return `
@@ -16534,10 +16589,12 @@ function exportReportB(){
           'Time in Dept':timeText,'Status':statusText
         });
       } else {
-        const row={
-          'Batch':batchNo,'Customer':b?.customer||'','Prod WIP (L)':_n2(R.prodWip),
-          'Boxes IN':R.inn,'Boxes OUT':R.out
-        };
+        // v51V: screen parity — Printing and PI now carry Colour and PC on screen, so the export
+        // must too (every visible column is exported). Key order matches the on-screen column order.
+        const row={ 'Batch':batchNo,'Customer':b?.customer||'' };
+        if (dept==='printing' || dept==='pi') { row['Colour']=b?.colour||''; row['PC']=b?.pcCode||''; }
+        row['Prod WIP (L)']=_n2(R.prodWip);
+        row['Boxes IN']=R.inn; row['Boxes OUT']=R.out;
         if (R.hasWastage) row['Wastage (L)']=_n2(R.w.total);
         row['WIP Boxes']=R.wip; row['WIP Qty (L)']=_n2(R.wipQty);
         row['Time in Dept']=timeText; row['Status']=statusText;
