@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51W';
+const APP_BUILD = 'v51X';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -9761,9 +9761,24 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
       let finalActualProd = ord.actualProd || 0;
       let mergedOrd = ord;
       let _v49gOverride2 = false;   // v49G: explicit status override for this order
+      // ═══ v51X SCOPE FIX (Ishan, 11 Aug — every bulk save returning HTTP 500) ═══════════════════
+      // `exData` was declared with `let` INSIDE the `if (existing)` block below, but it is consumed
+      // AFTER that block closes — by _v49f_rcLock and _v50tAudit. A block-scoped `let` is invisible
+      // outside its block, so both lines threw `ReferenceError: exData is not defined` on the FIRST
+      // order of EVERY request, on both branches. This endpoint has therefore been returning 500 and
+      // writing NOTHING to production_orders since the two consumers were placed there (v50T).
+      //
+      // It went unnoticed because the planning blob save to planning_state is a SEPARATE path and
+      // kept working — the UI reads "Synced" while the dedicated table silently stops receiving bulk
+      // updates. That divergence is the likely reason 26ZG168 kept serving a stale startDate: the
+      // client's recalc almost certainly did run and save, and the save was rejected unseen.
+      //
+      // Declared once here, before `existing` is read. `{}` is exactly what the two consumers should
+      // receive when there is no prior row — _v49f_rcLock treats it as "no re-customer lock" and
+      // _v50tAudit as "no previous value" — so the no-existing-row path behaves as always intended.
+      let exData = {};
       const existing = existingMap[ord.id];
       if (existing) {
-        let exData = {};
         try { exData = typeof existing.data_json === 'string' ? JSON.parse(existing.data_json) : (existing.data_json || {}); } catch(e) {}
         const clientEdit = parseInt(ord._localEditedAt || 0);
         const dbUpdated  = existing.updated_at ? new Date(existing.updated_at).getTime() : 0;
