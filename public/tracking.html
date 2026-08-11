@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51V</title>
+<title>Sunloc Tracking Suite v1.0 · build v51W</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51V</p>
+      <p>Tracking Suite v1.0 · build v51W</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51V</p>
+      <p>Tracking Suite v1.0 · build v51W</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1143,6 +1143,16 @@ function getTrkMonthBatches(excludeRetired) {
 function fmt(n,d=2){ return n==null?'-':(+n).toFixed(d) }
 function fmtDate(d){ if(!d) return '-'; return new Date(d).toLocaleDateString('en-IN',{day:'2-digit',month:'short',year:'numeric',timeZone:'Asia/Kolkata'}) }
 function fmtTime(d){ if(!d) return '-'; return new Date(d).toLocaleTimeString('en-IN',{hour:'2-digit',minute:'2-digit',timeZone:'Asia/Kolkata'}) }
+// v51W (Ishan, 11 Aug): the Pending SAP Reconciliation modal printed `created_at.slice(0,16)` — a raw
+// slice of the stored UTC ISO string, with no conversion at all. A request raised at 12:00 IST read
+// "06:30". Everything user-facing is IST (fmtDate/fmtTime above), so this now goes through the same
+// timezone. Falls back to the raw string only if the value won't parse as a date.
+function _v51wIst(ts){
+  if(!ts) return '—';
+  const d = new Date(ts);
+  if(isNaN(d)) return String(ts).slice(0,16);
+  return d.toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Asia/Kolkata'});
+}
 function fmtDateTime(d){ if(!d) return '-'; return fmtDate(d)+' '+fmtTime(d) }
 function hoursAgo(ts){ return (Date.now()-new Date(ts).getTime())/3600000 }
 function boxToLakh(boxes, size){ const ps=PACK_SIZES[String(size)]; return ps ? boxes*ps : boxes; }
@@ -7875,7 +7885,7 @@ async function _v41_openPendingReconciliationModal() {
           <td style="padding:5px 8px;font-family:var(--mono)">${it.po_number||it.sap_doc_entry||'—'}</td>
           <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${parseFloat(it.qty_lakhs||0).toFixed(3)}</td>
           <td style="padding:5px 8px;text-align:right;font-family:var(--mono)">${it.boxes||0}</td>
-          <td style="padding:5px 8px;text-align:center;font-size:11px;color:var(--text3)">${(it.created_at||'').slice(0,16)}</td>
+          <td style="padding:5px 8px;text-align:center;font-size:11px;color:var(--text3)">${_v51wIst(it.created_at)}</td>
           <td style="padding:5px 8px;text-align:center">${it.is_overdispatch_approved ? '<span style="background:rgba(245,158,11,0.15);color:#d97706;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⚠️ Over 115%</span>' : '<span style="background:rgba(99,102,241,0.15);color:#4f46e5;padding:2px 6px;border-radius:3px;font-size:10px;font-weight:600">⏳ Awaiting SAP</span>'}</td>
           <td style="padding:5px 8px;text-align:center">${it.id ? `<button onclick="_v47wCancelRequest('${it.id}','${(it.batch_number||'').replace(/'/g,"\\'")}')" style="background:rgba(220,38,38,0.1);color:#dc2626;border:1px solid rgba(220,38,38,0.35);border-radius:4px;padding:3px 9px;font-size:11px;font-weight:600;cursor:pointer">Cancel</button>` : '—'}</td>
         </tr>${_v48y_proposalRow(it)}`).join('')}</tbody>

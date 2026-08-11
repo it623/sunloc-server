@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51V</p>
+      <p>Planning Suite v3.0 · build v51W</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1721,8 +1721,21 @@ const SYNC = (() => {
       if (dcRes.status==='fulfilled' && dcRes.value.ok) {
         const dcj = await dcRes.value.json();
         if (dcj.ok && dcj.closed) {
+          // v51W (Ishan, 11 Aug): index by BATCH NUMBER as well as order id. This map was keyed on
+          // order_id alone while the server's own closed-set (_v49gIsDprClosed) has always been
+          // dual-keyed on id OR batch — deliberately, because order ids churn (auto-created-from-SAP
+          // orders, re-creations, blob/DB id drift; v50T documents the same problem). A batch whose
+          // DPR closure was recorded under a different order id read "⏳ DPR Open" in Planning
+          // forever, and — because _v49kCountsAsRunning excludes DPR-closed ghosts — inflated what
+          // showed as running on the machine. The endpoint already returns batch_number on every
+          // row; the client was discarding it.
           window._dprClosedBatches = {};
-          dcj.closed.forEach(c => { window._dprClosedBatches[c.order_id] = { closedAt: c.closed_at, closedBy: c.closed_by }; });
+          window._dprClosedByBatch = {};
+          dcj.closed.forEach(c => {
+            const rec = { closedAt: c.closed_at, closedBy: c.closed_by, alreadyReopened: c.alreadyReopened };
+            if (c.order_id) window._dprClosedBatches[c.order_id] = rec;
+            if (c.batch_number) window._dprClosedByBatch[String(c.batch_number).trim().toUpperCase()] = rec;
+          });
         }
       }
     } catch(e) {}
@@ -1782,7 +1795,7 @@ function loadState() {
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
       if (_url && allOrders.length > 0) {
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51V' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51W' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2701,6 +2714,17 @@ function _v47xFloorDay(d) {
 // Machines 27-52 → "Z" + offset letter (e.g. MC33 → ZG, since 33-26=7 → G)
 // Machines 53+   → not supported; spec confirmed cap at MC52.
 // Previous v40 code used base-26 spreadsheet convention (33 → "AG") which was wrong.
+// v51W: single resolver for "is this order closed in DPR", mirroring the server's _v49gIsDprClosed.
+// Order id FIRST (exact), batch number SECOND (survives id churn). Every consumer goes through here
+// so the two keys can never drift apart again.
+function _v51wDprClosedFor(ord) {
+  if (!ord) return null;
+  if (ord.id && window._dprClosedBatches && window._dprClosedBatches[ord.id]) return window._dprClosedBatches[ord.id];
+  const bn = ord.batchNumber ? String(ord.batchNumber).trim().toUpperCase() : '';
+  if (bn && window._dprClosedByBatch && window._dprClosedByBatch[bn]) return window._dprClosedByBatch[bn];
+  return null;
+}
+
 function machineToAlpha(mcId) {
   const num = parseInt(String(mcId).replace(/[^0-9]/g,'')) || 1;
   if (num >= 1 && num <= 26) {
@@ -2898,7 +2922,15 @@ function recalcMachineScheduleQuiet(machineId) {
     const _acts45t = (ord.actualProd || ord.actualQty || 0);
     let _endAnchored45x = false;
     let _endFrac;
-    if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
+    // v51W (Ishan, 11 Aug — 26ZG168): the end anchor fired ONLY on actual >= planned gross, so a
+    // batch that finishes SHORT never anchored and kept a projected end date forever, even after it
+    // was closed in DPR. 26ZG168 is flagged Short 13.75L: on the old rule its end would have stayed
+    // projected for good. DPR closure is the definitive statement that production ENDED, whatever
+    // quantity it ended at, so closure now anchors the end exactly as reaching gross does. Complete
+    // runs are unchanged (they still anchor on quantity, so nothing waits for closure), and a manual
+    // end date stays authoritative over both per the 5 Aug rule.
+    const _dprClosed51w = !!_v51wDprClosedFor(ord);
+    if (hasProduction && ((sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) || _dprClosed51w)) {
       // v50P: a COMPLETE run's end normally anchors to the last DPR date (v45X) — but when the
       // planner has deliberately corrected the recorded end (manualEndDate, settable only
       // post-production under v50N intent rules), the correction is authoritative over the DPR
@@ -3037,7 +3069,15 @@ function recalcMachineSchedule(machineId) {
     const _acts45t = (ord.actualProd || ord.actualQty || 0);
     let _endAnchored45x = false;
     let _endFrac;
-    if (hasProduction && sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) {
+    // v51W (Ishan, 11 Aug — 26ZG168): the end anchor fired ONLY on actual >= planned gross, so a
+    // batch that finishes SHORT never anchored and kept a projected end date forever, even after it
+    // was closed in DPR. 26ZG168 is flagged Short 13.75L: on the old rule its end would have stayed
+    // projected for good. DPR closure is the definitive statement that production ENDED, whatever
+    // quantity it ended at, so closure now anchors the end exactly as reaching gross does. Complete
+    // runs are unchanged (they still anchor on quantity, so nothing waits for closure), and a manual
+    // end date stays authoritative over both per the 5 Aug rule.
+    const _dprClosed51w = !!_v51wDprClosedFor(ord);
+    if (hasProduction && ((sc.grossQty > 0 && _acts45t >= sc.grossQty - 1e-9) || _dprClosed51w)) {
       // v50P: a COMPLETE run's end normally anchors to the last DPR date (v45X) — but when the
       // planner has deliberately corrected the recorded end (manualEndDate, settable only
       // post-production under v50N intent rules), the correction is authoritative over the DPR
@@ -4117,7 +4157,7 @@ function renderOrderRow(ord, idx, mc) {
   const liveDispatched = (state._dispatchActualsQty && state._dispatchActualsQty[ord.batchNumber]) || 0;
   const aimProgress = (!ord.isPrinted && liveAimOut > 0 && ord.grossQty)
     ? `<div style="font-size:10px;color:var(--accent);margin-top:2px">AIM Out: ${fmt(liveAimOut)}L / ${fmt(ord.grossQty)}L planned</div>` : '';
-  const dprClosed = window._dprClosedBatches && ord.id ? window._dprClosedBatches[ord.id] : null;
+  const dprClosed = _v51wDprClosedFor(ord);
   // Temporary force-close window: 20-Apr-2026 to 22-Apr-2026 only
   // After 22-Apr-2026 reverts to normal automatically (dprClosed required)
   const _todayStr = new Date().toISOString().slice(0,10);
@@ -5517,7 +5557,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51V'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51W'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -10550,8 +10590,23 @@ function renderDispatch() {
     // a lot with nothing left to send was noise in the one view that still listed it, and it made
     // Order View disagree with the cards sitting directly above it. Partially-dispatched lots stay
     // — they still have a balance, which is the whole point of the two Balance columns.
+    // v51W (Ishan, 11 Aug — 26ZG163): v51P keyed this on PLAN STATUS, which flips to 'dispatched'
+    // the moment actualDispatched >= qty. That is an ORDER-quantity test, not a physical one. Order
+    // 278 was 20.00L and 21.25L got invoiced, so the lot was marked dispatched and dropped — while
+    // 3 of its 20 packed boxes were still on the floor with nowhere in the app to appear.
+    // Excess production beyond the ordered quantity is exactly the case that produces this.
+    // Now a lot leaves Order View only when there is genuinely nothing left to send: status
+    // dispatched AND no packed-but-undispatched box balance. Lots with a real balance stay, which
+    // is what the two Balance columns are for. Falls back to the status-only test when the tracking
+    // box figures haven't loaded, so a slow/failed tracking fetch can't flood the view.
+    const _v51wHasBoxBalance = (p) => {
+      if (p.packedBoxes == null) return false;                 // no tracking data — defer to status
+      const packed = parseInt(p.packedBoxes, 10) || 0;
+      const out    = Math.round(parseFloat(p._dispatchedBoxes || 0)) || 0;
+      return (packed - out) > 0;
+    };
     const zPlans = (z==='all' ? plans : plans.filter(p=>(p.zone||'Unassigned')===z))
-                     .filter(p=>p.status!=='dispatched')
+                     .filter(p=>p.status!=='dispatched' || _v51wHasBoxBalance(p))
                      .filter(_povPlanInScope);
     window._dispatchZonePlans[z] = zPlans;
     const totalQty = zPlans.reduce((s,p)=>s+p.qty,0);

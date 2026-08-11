@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51V';
+const APP_BUILD = 'v51W';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -3692,6 +3692,43 @@ let _grossByBatch = null;
 // distributed by _v46k_applyGrossApportionment, and overriding it re-inflated the parent's WIP
 // (regression on ZC095/ZG135/ZH079). Non-split batches (e.g. 26ZC094) still get the override.
 let _splitFamilyBatches = new Set();
+// ═══ v51W SERVER-SIDE DPR START ANCHOR (Ishan, 11 Aug — 26ZG168) ═══════════════════════════════
+// v45W anchors a started order's startDate to its first DPR production date, but ONLY inside the
+// client's recalc. Once a value is in the blob nothing re-derives it, so when the underlying DPR
+// data MOVES the stored date goes stale and stays stale. 26ZG168 held 2026-08-08T18:30:00.000Z —
+// IST midnight on 09-Aug, i.e. anchored against a dprFirstDate of 2026-08-09 — while MIN(date) is
+// now 2026-08-10. manualStartDate was false, so nothing was protecting it; it had simply been
+// written once and never revisited.
+//
+// This applies the same anchor on the way OUT, alongside the actualProd override that has lived on
+// these two endpoints since v45T. The stored blob is untouched — we only correct what we serve — so
+// a stale date self-corrects on the next load with no data repair and no client recalc required.
+//
+// Deliberately narrow: a manual start date is planner-authoritative (5 Aug rule) and never
+// overwritten, and an order with no DPR production is left entirely alone (its start is a plan, not
+// a record). Emits the same IST-midnight instant the client's `new Date('YYYY-MM-DDT00:00:00')`
+// produces, so server and client agree byte-for-byte — verified against 26ZG167, whose stored
+// 2026-08-07T18:30:00.000Z matches its dprFirstDate of 2026-08-08 exactly.
+const _V51W_IST_OFFSET_MS = 330 * 60000;
+function _v51wIstMidnightIso(ymd) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(String(ymd || ''));
+  if (!m) return null;
+  return new Date(Date.UTC(+m[1], +m[2] - 1, +m[3]) - _V51W_IST_OFFSET_MS).toISOString();
+}
+function _v51wAnchorStartToDpr(ord) {
+  try {
+    if (!ord || ord.manualStartDate) return;
+    const bn = ord.batchNumber;
+    if (bn == null) return;
+    const fd = _firstProdByBatch && _firstProdByBatch[bn];
+    if (!fd) return;                                   // no DPR production — leave the plan alone
+    const iso = _v51wIstMidnightIso(fd);
+    if (!iso) return;
+    if (ord.startDate === iso) return;                 // already correct — no churn
+    ord.startDate = iso;
+  } catch (_e) { /* never let a date fix break the orders feed */ }
+}
+
 let _firstProdByBatch = null; // v45W: batch → first DPR production date (YYYY-MM-DD)
 let _lastProdByBatch  = null; // v45X (confirmed by Ishan): batch → LAST DPR production date — anchors a complete order's end date to production reality instead of today()
 // v41ZI Item 6: per-batch admin/PM override of the DPR gross. When present it supersedes _grossByBatch.
@@ -6778,10 +6815,40 @@ app.get('/api/invoice/truck-scan-session/:truckNumber', async (req, res) => {
 const _RECON_OVER  = 1.15;   // 115% over-dispatch ceiling (matches dispatch tolerance)
 const _RECON_UNDER = 0.99;   // small float-rounding slack on the low side
 
+// ═══ v51W AGE GUARD (Ishan, 11 Aug — invoices 2017 and 2066 proposed against today's requests) ═══
+// A pending request can only be answered by an invoice raised ON OR AFTER the day it was created.
+// An invoice that already existed, was dispatched and was regularised BEFORE the request was even
+// raised cannot possibly be its counterpart. This function had no time constraint whatsoever, so
+// every dispatched, unlinked invoice on the same batch+customer qualified forever.
+//
+// This is not only a display problem. The caller auto-reconciles a lone in-band candidate WITHOUT
+// showing a proposal, so a repeat order to the same customer on the same batch could be closed
+// silently against a months-old invoice. The two Ishan caught were merely the ones whose quantities
+// disagreed loudly enough to surface.
+//
+// Compared at IST CALENDAR-DAY granularity, deliberately. invoice_date lands at 00:00 IST, so a
+// strict timestamp compare would reject a same-day invoice raised after a midday request — the
+// single most common legitimate case. Day granularity admits same-day and later, rejects earlier.
+function _v51wIstDayKey(ts) {
+  if (!ts) return null;
+  const d = new Date(ts);
+  if (isNaN(d)) return String(ts).slice(0, 10) || null;   // already a bare YYYY-MM-DD
+  // +5:30 then read the UTC calendar date == the IST calendar date.
+  return new Date(d.getTime() + 330 * 60000).toISOString().slice(0, 10);
+}
+function _v51wInvoiceNotBeforeRequest(inv, reqRow) {
+  const reqDay = _v51wIstDayKey(reqRow && reqRow.created_at);
+  if (!reqDay) return true;                       // no request date to compare — leave as before
+  const invDay = _v51wIstDayKey(inv && (inv.invoice_date || inv.fetched_at));
+  if (!invDay) return true;                       // undated invoice — don't silently drop it
+  return invDay >= reqDay;
+}
+
 async function _orphanInvoicesForRequest(reqRow) {
   const batch = reqRow.batch_number || '';
   const cust  = reqRow.customer || '';
   if (!batch.trim() || !cust.trim()) return [];
+  let rows;
   if (pgPool) {
     const r = await pgPool.query(
       `SELECT * FROM invoices_received
@@ -6792,16 +6859,26 @@ async function _orphanInvoicesForRequest(reqRow) {
         ORDER BY invoice_date ASC`,
       [batch, cust]
     );
-    return r.rows;
+    rows = r.rows;
+  } else {
+    rows = db.prepare(
+      `SELECT * FROM invoices_received
+        WHERE invoice_request_id IS NULL
+          AND dispatch_status='dispatched'
+          AND LOWER(TRIM(batch_number)) = LOWER(TRIM(?))
+          AND LOWER(TRIM(customer))     = LOWER(TRIM(?))
+        ORDER BY invoice_date ASC`
+    ).all(batch, cust);
   }
-  return db.prepare(
-    `SELECT * FROM invoices_received
-      WHERE invoice_request_id IS NULL
-        AND dispatch_status='dispatched'
-        AND LOWER(TRIM(batch_number)) = LOWER(TRIM(?))
-        AND LOWER(TRIM(customer))     = LOWER(TRIM(?))
-      ORDER BY invoice_date ASC`
-  ).all(batch, cust);
+  // v51W: filtered in JS, not SQL — the date columns are TEXT and hold mixed shapes (bare
+  // YYYY-MM-DD, full ISO), so a SQL cast would throw on the ragged ones. One shared predicate,
+  // applied identically here and on the allocation path below.
+  const kept = (rows || []).filter(inv => _v51wInvoiceNotBeforeRequest(inv, reqRow));
+  const dropped = (rows || []).length - kept.length;
+  if (dropped > 0) {
+    console.log(`[v51W age-guard] ${reqRow.batch_number}: ignored ${dropped} invoice(s) raised before the request was created`);
+  }
+  return kept;
 }
 
 async function _applyFallbackReconcile(reqRow, inv) {
@@ -6864,8 +6941,12 @@ async function _allocationsForRequest(reqRow) {
   const batch = (reqRow.batch_number || '').trim();
   if (!batch) return [];
   // Unclaimed, attributed allocations for this batch, on an invoice that has actually been dispatched.
+  // v51W: invoice_date / fetched_at selected so the age guard can be applied here too — invoice 2066
+  // reached Ishan's screen through THIS path (it offered an Accept button, which only an allocation
+  // row can), so guarding only the header path would have left half the hole open.
   const sql = `SELECT a.*, i.customer AS inv_customer, i.card_code AS inv_card_code,
-                      i.sap_doc_num AS inv_doc_num, i.dispatch_status
+                      i.sap_doc_num AS inv_doc_num, i.dispatch_status,
+                      i.invoice_date AS invoice_date, i.fetched_at AS fetched_at
                FROM invoice_batch_alloc a
                JOIN invoices_received i ON i.id = a.invoice_id
                WHERE a.invoice_request_id IS NULL
@@ -6873,8 +6954,12 @@ async function _allocationsForRequest(reqRow) {
                  AND i.dispatch_status = 'dispatched'
                  AND UPPER(TRIM(a.batch_number)) = UPPER(TRIM($1))
                ORDER BY i.invoice_date ASC, a.line_num ASC`;
-  const rows = pgPool ? (await pgPool.query(sql, [batch])).rows
-                      : db.prepare(sql.replace(/\$1/g, '?')).all(batch);
+  const _rowsRaw = pgPool ? (await pgPool.query(sql, [batch])).rows
+                          : db.prepare(sql.replace(/\$1/g, '?')).all(batch);
+  const rows = (_rowsRaw || []).filter(r => _v51wInvoiceNotBeforeRequest(r, reqRow));
+  if ((_rowsRaw || []).length - rows.length > 0) {
+    console.log(`[v51W age-guard alloc] ${batch}: ignored ${(_rowsRaw||[]).length - rows.length} allocation(s) on invoices raised before the request`);
+  }
   // NO CUSTOMER FILTER — deliberate, and the third time this lesson has been learned here.
   // The plan for this build assumed _v48t_custKey would reconcile "ALKEM WELLNUS LTD." (request)
   // with "ALKEM WELLNESS LIMITED" (invoice 1893). It does not: the normaliser collapses punctuation,
@@ -9922,6 +10007,7 @@ app.get('/api/orders/all', async (req, res) => {
       if (_firstProdByBatch && _firstProdByBatch[bn]) o.dprFirstDate = _firstProdByBatch[bn]; // v45W
       if (_lastProdByBatch  && _lastProdByBatch[bn])  o.dprLastDate  = _lastProdByBatch[bn];  // v45X
       { const _dca = _v49gDprClosedAtFor(o); if (_dca) o.dprClosedAt = _dca; }               // v49ZJ
+      _v51wAnchorStartToDpr(o);                                                              // v51W
     }
     res.json({ ok: true, orders: rows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -10389,6 +10475,7 @@ app.get('/api/planning/state', async (req, res) => {
         // v45X: expose the LAST actual DPR production date — the cascade anchors a complete
         // order's end date to it (reality-driven ends; +ceil day convention unchanged).
         if (bn != null && _lastProdByBatch && _lastProdByBatch[bn]) ord.dprLastDate = _lastProdByBatch[bn];
+        _v51wAnchorStartToDpr(ord);   // v51W: self-heal a stale stored startDate (26ZG168)
         // v49ZJ: expose the DPR close moment — tracking anchors the 48h post-close label window on
         // it (dprClosedAt > closedDate > endDate), so batches already mis-stamped with a planned
         // endDate by the old v49K fallback also get the correct window without data repair.
