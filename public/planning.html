@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51X</p>
+      <p>Planning Suite v3.0 · build v51Y</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1793,9 +1793,27 @@ function loadState() {
       }
       // Migrate all production orders to dedicated table
       const allOrders = (state.orders||[]).filter(o => !o.deleted);
-      if (_url && allOrders.length > 0) {
+      // ═══ v51Y MIGRATION GATE (Ishan, 11 Aug) ═══════════════════════════════════════════════════
+      // This block is labelled a one-time migration but fires from a setTimeout on EVERY page load,
+      // pushing every non-deleted order — ~1.1 MB, ~1200 orders — from every tab and every user.
+      // It was harmless only because the endpoint threw before doing any work (the v51X scope bug).
+      // Now that it succeeds, the routine path for reconciling orders into the dedicated table is
+      // already the bg-merge inside POST /api/planning/state, which does it incrementally and only
+      // for rows that changed. This full push is a cold-start safety net, not a per-load necessity.
+      //
+      // Kept, but at most once per browser per day. Server-side v51Y skips unchanged rows anyway, so
+      // even when it does run it writes only genuine differences. Marker is written BEFORE the fetch
+      // so a failure can't put it into a retry loop on every reload; the next day retries naturally.
+      const _mig51y = 'sunloc_bulk_migration_day';
+      const _today51y = new Date().toISOString().slice(0, 10);
+      let _skipMig51y = false;
+      try { _skipMig51y = localStorage.getItem(_mig51y) === _today51y; } catch (e) {}
+      if (_skipMig51y) {
+        console.log('[Orders] Bulk migration already run today — skipped (bg-merge keeps the table current)');
+      } else if (_url && allOrders.length > 0) {
+        try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51X' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51Y' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -5557,7 +5575,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51X'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51Y'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;

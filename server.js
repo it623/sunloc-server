@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51X';
+const APP_BUILD = 'v51Y';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -9700,19 +9700,19 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
     // at 500+ orders, the previous bulk-push was the slowest path on the server).
     let preservedCount = 0;
     const preservedOrders = [];  // v41y: track preserved orders to return to client
-    const mergedList = [];
+    let mergedList = [];
     const existingMap = {};
     try {
       const ids = orders.map(o => o && o.id).filter(Boolean);
       if (ids.length > 0) {
         if (pgPool) {
           const r = await pgPool.query(
-            `SELECT id, data_json, status, deleted, updated_at FROM production_orders WHERE id = ANY($1)`,
+            `SELECT id, data_json, machine_id, batch_number, status, deleted, updated_at FROM production_orders WHERE id = ANY($1)`,
             [ids]
           );
           r.rows.forEach(row => { existingMap[row.id] = row; });
         } else {
-          const stmt = db.prepare(`SELECT id, data_json, status, deleted, updated_at FROM production_orders WHERE id IN (${ids.map(()=>'?').join(',')})`);
+          const stmt = db.prepare(`SELECT id, data_json, machine_id, batch_number, status, deleted, updated_at FROM production_orders WHERE id IN (${ids.map(()=>'?').join(',')})`);
           stmt.all(...ids).forEach(row => { existingMap[row.id] = row; });
         }
       }
@@ -9947,6 +9947,47 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
       _v50tAudit('POST /api/orders/upsert-bulk', exData, mergedOrd, `clientBuild=${(req.get && req.get('x-sunloc-build')) || '-'}`);   // v50T
       const json = JSON.stringify(mergedOrd);
       mergedList.push({ row: mergedOrd, json, finalStatus, finalDeleted });
+    }
+    // ═══ v51Y DIRTY FILTER (Ishan, 11 Aug) ════════════════════════════════════════════════════════
+    // This endpoint rewrote EVERY row it was sent, unconditionally. bg-merge in POST
+    // /api/planning/state has had the v49P content-compare since v49P; this one never got it.
+    //
+    // It went unnoticed because the endpoint threw before reaching the write (the v51X scope bug), so
+    // the unconditional write never actually ran. v51X made it run — and the client fires this with
+    // ALL non-deleted orders on EVERY page load, from every tab.
+    //
+    // The cost is not throughput (v41w already chunks the inserts). It is `updated_at`: the write
+    // sets it to NOW() on every row, and `updated_at` is exactly what the conflict resolver reads
+    // (`dbUpdated`) to decide whether an incoming edit is stale. Bumping all ~1200 rows on every page
+    // load makes every row look server-fresh, so a second tab opening could start winning the
+    // _staleWrite comparison against a real edit made in the first. That is silent data loss.
+    //
+    // Same helper, same comparison and same log line bg-merge uses, so the two paths stay in step.
+    // A row is written only when its merged content actually differs; unchanged rows keep their
+    // timestamp untouched. A cold client still writes everything, because everything differs.
+    const _preFilter51y = mergedList.length;
+    mergedList = mergedList.filter(m => {
+      const ex = existingMap[m.row.id];
+      if (!ex) return true;                                   // brand-new row — always write
+      if (String(m.finalStatus) !== String(ex.status)) return true;
+      if (!!m.finalDeleted !== !!ex.deleted) return true;
+      // The write sets machine_id and batch_number as well, and BOTH are load-bearing columns —
+      // autoGenBatchNumber allocates the next batch from `SELECT batch_number ... LIKE prefix%`
+      // (a NULL column there could reissue a live batch number), the 2-per-machine limit reads
+      // machine_id, and backfillProductionActualsBatch repairs production_actuals.batch_number
+      // from this column, which feeds the v45W/v45X DPR date anchors. A row whose data_json is
+      // unchanged can still have a stale or NULL column, and the old unconditional write repaired
+      // that silently on every load. Compare every column the write touches, so skipping can never
+      // strand one. `== null` collapses null/undefined; both sides normalised to string otherwise.
+      const _col51y = (x) => (x == null ? '' : String(x));
+      if (_col51y(m.row.machineId)   !== _col51y(ex.machine_id))   return true;
+      if (_col51y(m.row.batchNumber) !== _col51y(ex.batch_number)) return true;
+      let exData51y = {};
+      try { exData51y = typeof ex.data_json === 'string' ? JSON.parse(ex.data_json) : (ex.data_json || {}); } catch(e) { return true; }
+      try { return _v49pStable(m.row) !== _v49pStable(exData51y); } catch(e) { return true; }
+    });
+    if (mergedList.length !== _preFilter51y) {
+      console.log(`[v51Y upsert-bulk] ${_preFilter51y - mergedList.length}/${_preFilter51y} rows unchanged — skipped (updated_at preserved)`);
     }
     // v41w PERF: batch the INSERTs into chunked multi-row upserts (same pattern as background
     // merge in POST /api/planning/state). At 500+ orders, sequential INSERTs starved the pool.
