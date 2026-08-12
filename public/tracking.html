@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51Y</title>
+<title>Sunloc Tracking Suite v1.0 · build v51ZA</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51Y</p>
+      <p>Tracking Suite v1.0 · build v51ZA</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51Y</p>
+      <p>Tracking Suite v1.0 · build v51ZA</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -816,7 +816,9 @@ const DEPT_INFO = {
   aim:      { label:'AIM',               role:'AIM Operator',      color:'#3b82f6', pages:['aim','batch-tracker','reports'] },
   printing: { label:'Printing',          role:'Print Operator',    color:'#8b5cf6', pages:['printing','pi','batch-tracker','reports'] },
   pi:       { label:'Print Inspection',  role:'PI Operator',       color:'#ea580c', pages:['pi','batch-tracker','reports'] },
-  packing:  { label:'Packing',           role:'Packing Operator',  color:'#059669', pages:['packing','batch-tracker','reports'] },
+  // v51Z (Ishan, 12 Aug): Report H retired — Generated Invoices is the single invoice view, so
+  // Packing joins Admin/Planning/Dispatch in seeing it (amount columns included, per Ishan).
+  packing:  { label:'Packing',           role:'Packing Operator',  color:'#059669', pages:['packing','batch-tracker','reports','generated-invoices'] },
   // v39 Phase 11: dispatch role also gets generated-invoices view
   dispatch: { label:'Dispatch',          role:'Dispatch Officer',  color:'#d97706', pages:['dispatch','packing','batch-tracker','reports','generated-invoices','invoice-allocation'] }
 };
@@ -9808,13 +9810,25 @@ async function _v39_applyInvoiceFilters() {
   const status   = document.getElementById('v39-gi-status')?.value || '';
   const batch    = document.getElementById('v39-gi-batch')?.value?.trim() || '';
   const customer = document.getElementById('v39-gi-customer')?.value?.trim() || '';
-  const fromDate = document.getElementById('v39-gi-from')?.value || '';
-  const toDate   = document.getElementById('v39-gi-to')?.value || '';
+  let fromDate = document.getElementById('v39-gi-from')?.value || '';   // v51Z: let — month default below
+  let toDate   = document.getElementById('v39-gi-to')?.value || '';     // v51Z: let — month default below
   // v41s Q2: line-detail filters
   const pcCode = document.getElementById('v39-gi-pc')?.value?.trim() || '';
   const size   = document.getElementById('v39-gi-size')?.value?.trim() || '';
   const colour = document.getElementById('v39-gi-colour')?.value?.trim() || '';
   _v39_invoiceListLastFilters = { status, batch, customer, fromDate, toDate, pcCode, size, colour };
+  // ═══ v51Z MONTH SCOPE + CAP (Ishan, 12 Aug — Report H consolidation) ═════════════════════════
+  // Generated Invoices ignored the Aug-2026 header selector entirely and hard-capped at 500 — the
+  // "500 invoices" tile was the cap being hit, not a real count, i.e. silent truncation. Now that
+  // this tab REPLACES Report H it inherits H's one virtue: scoped to the selected month by default.
+  // Explicit From/To from the user always win; the month bound applies only when both are blank.
+  // Limit raised to 1000 (the server-side ceiling). If a month ever exceeds 1000 invoices the
+  // count tile will read exactly 1000 — treat that as the signal to add pagination.
+  if (!fromDate && !toDate && /^\d{4}-\d{2}$/.test(_trkSelectedMonth || '')) {
+    const [_gy, _gm] = _trkSelectedMonth.split('-').map(Number);
+    fromDate = `${_gy}-${String(_gm).padStart(2,'0')}-01`;
+    toDate   = `${_gy}-${String(_gm).padStart(2,'0')}-${String(new Date(_gy, _gm, 0).getDate()).padStart(2,'0')}`;
+  }
   const params = new URLSearchParams();
   if (status)   params.set('status', status);
   if (batch)    params.set('batch', batch);
@@ -9824,7 +9838,7 @@ async function _v39_applyInvoiceFilters() {
   if (pcCode)   params.set('pc_code', pcCode);
   if (size)     params.set('size', size);
   if (colour)   params.set('colour', colour);
-  params.set('limit', '500');
+  params.set('limit', '1000');
   const statusText = document.getElementById('v39-gi-status-text');
   if (statusText) statusText.textContent = 'Loading...';
   try {
@@ -10935,12 +10949,16 @@ function renderReports(forceRebuild){
       <div class="text-sm text-muted">A header toggle switches between: <b>Daily Scan In / Out Movement</b> (per-day pack-in → dispatch-out movement per batch/customer), <b>FG Stock Aging Alerts</b> (labels packed but not received by dispatch within 7 days / 15 for export), and <b>Flow B Alerts</b> (admin-only legacy/recovery detector). (Former Reports J and K are now the views of this report.)</div>
       <button class="btn btn-sm mt-12" style="background:#0891b2;color:#fff" onclick="event.stopPropagation();renderReportG()">Generate →</button>
     </div>
-    <!-- v41ZF: Report L (SAP Invoice Ledger) renamed to Report H. -->
-    <div class="card cursor-pointer" onclick="renderReportH()" style="border-left:4px solid #0e7490;grid-column:span 2">
-      <div class="card-title" style="color:#0e7490">📋 Report H — SAP Invoice Ledger</div>
-      <div class="fw-bold mb-4">Sequential Invoice Register with Dispatch Status</div>
-      <div class="text-sm text-muted">Chronological list of all SAP invoices received during the selected month. Columns: Sales Order Number, date, customer, batch, boxes, qty, taxable amount, IGST, total, IRN, dispatch status, vehicle, dispatched-at. Totals row at bottom. Print-friendly + CSV export. Use for GST audits and monthly reconciliation.</div>
-      <button class="btn btn-sm mt-12" style="background:#0e7490;color:#fff">Generate Invoice Ledger →</button>
+    <!-- v41ZF: Report L (SAP Invoice Ledger) renamed to Report H.
+         v51Z (Ishan, 12 Aug): Report H RETIRED — it and Generated Invoices read the same
+         /api/invoice/received rows, and two views of one table drift (H was month-bounded, GI was
+         not and hit its 500 cap). Generated Invoices is now the single invoice view: month-scoped
+         to the header selector by default, cap raised, ledger export retained there. renderReportH
+         kept as a redirect so old bookmarks/dashboard links land somewhere sensible. -->
+    <div class="card cursor-pointer" onclick="navigate('generated-invoices')" style="border-left:4px solid #0e7490;grid-column:span 2;opacity:.85">
+      <div class="card-title" style="color:#0e7490">📋 Invoice Ledger → moved to Generated Invoices</div>
+      <div class="text-sm text-muted">The SAP Invoice Ledger (former Report H) is consolidated into the <b>Generated Invoices</b> tab — same data, one view. It now follows the month selected in the header, with all filters, dispatch status, totals and Excel export.</div>
+      <button class="btn btn-sm mt-12" style="background:#0e7490;color:#fff">Open Generated Invoices →</button>
     </div>
     <!-- v41 P19.6 (Q1/Q2): Report Z — Month Changeover / Open Items + WIP Reconciliation (admin only). Named Z to avoid collision with Dispatch Report K. -->
     ${currentDept==='admin'?`<div class="card cursor-pointer" onclick="renderReportZ()" style="border-left:4px solid #be123c;grid-column:span 2">
@@ -10965,15 +10983,10 @@ function renderReports(forceRebuild){
 // ledger's internal refresh/export wiring). The former Report H (Dept Handover Gaps) is the
 // "handover" view of Report F; its internal controls now call renderReportF() directly.
 function renderReportH(){
-  // v41ZG #2: renderReportL is async and has no scroll-into-view call, so Report H rendered at the
-  // bottom without the screen landing on it like other reports. Scroll once the ledger resolves.
-  const _p = renderReportL();
-  if (_p && typeof _p.then === 'function') {
-    _p.then(() => _scrollIntoReportIfFirstView('H')).catch(() => {});
-  } else {
-    _scrollIntoReportIfFirstView('H');
-  }
-  return _p;
+  // v51Z: Report H retired — consolidated into Generated Invoices (see the reports-page card).
+  // Redirect rather than delete: dashboard tiles and muscle memory still call renderReportH().
+  navigate('generated-invoices');
+  return null;
 }
 // v45ZB: batch-level per-box gap counts (server truth) backing the Report F header column, so the
 // header and the expanded box list always agree. 60s TTL; the view renders instantly from counts
@@ -12906,20 +12919,39 @@ function _rptBRow(batchNo, dept, U){
   const _piSal49d     = (dept === 'pi' && hasWastage) ? (w.salvage || 0) : 0;
   const _piRem49d     = (dept === 'pi' && hasWastage) ? (w.remelt || 0) : 0;
   const _piRemBox49d  = _piRem49d > 0 ? Math.round(_piRem49d / ps) : 0;
+  // ═══ v51Z PRINTING WASTAGE SOURCE (Ishan, 12 Aug) ════════════════════════════════════════════
+  // Printing wastage lives in the Planning Daily Printing Log — v44J made that the single source
+  // for the A-grade cascade, Report E and the frozen WIP formula (all net DPL% and IGNORE tracking
+  // printing salvage; see 3489). Report B was the one consumer never converted: it netted ONLY
+  // tracking-entered wastage, so its printing WIP stayed gross of DPL — which is why admin was
+  // reduced to hand-mirroring DPL lumpsums into the Tracking wastage tab (the Alkem 34L).
+  // Now identical to getBatchWIPBreakdown's printWIP (3472): net = in − out − DPL%×Print-TD −
+  // tracking remelt. Tracking printing SALVAGE is deliberately NOT netted — same exclusion as every
+  // other consumer — so the existing manual mirror entries cause no double-netting while they still
+  // exist; they are simply inert here and can be deleted after deploy. Remelt has no DPL
+  // counterpart and stays tracking-sourced. wipQty is qty-exact (in − out − deductions), no longer
+  // nominal box×packsize, so partial last boxes stop overstating.
+  const _dplPct51z = (dept === 'printing') ? ((window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0) : 0;
+  const _dplSal51z = (dept === 'printing') ? (outQty * (_dplPct51z / 100)) : 0;
+  const _prRem51z  = (dept === 'printing' && hasWastage) ? (w.remelt || 0) : 0;
   const _rawRemain49d = _wipSet ? _wipSet.length : Math.max(0, inn - out);
   const _piWipQty49d  = (dept === 'pi' && _bMd && _bMd.wipQtys)
     ? ((_bMd.wipQtys[batchNo] || {})[dept]) : null;
   const wip = dept === 'pi'
     ? Math.max(0, _rawRemain49d - _piRemBox49d)
-    : (_wipSet ? _wipSet.length : Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes)));
+    : dept === 'printing'
+      ? Math.max(0, inn - out - Math.round((_dplSal51z + _prRem51z) / ps))
+      : (_wipSet ? _wipSet.length : Math.max(0, inn - out - (dept==='aim' ? 0 : wastageBoxes)));
   // v46E (confirmed by Ishan): AIM Dept WIP (qty) nets remelt — Scan In − Remelt − Scan Out — so
   // Report B/D reconcile with Report E and getBatchWIPBreakdown. WIP boxes stay the physical inn−out
-  // count. Printing keeps box-rounded wastage netting (via wip); PI is handled above (v49D).
+  // count. Printing nets DPL salvage + tracking remelt (v51Z above); PI is handled above (v49D).
   const wipQty = dept==='aim'
     ? Math.max(0, innQty - w.remelt - outQty)
     : dept==='pi'
       ? Math.max(0, (_piWipQty49d != null ? _piWipQty49d : boxToLakh(_rawRemain49d,_bSize45y)) - _piSal49d - _piRem49d)
-      : boxToLakh(wip,_bSize45y);
+      : dept==='printing'
+        ? Math.max(0, innQty - outQty - _dplSal51z - _prRem51z)
+        : boxToLakh(wip,_bSize45y);
   const grossProd = _bMd
     ? ((batchNo in (_bMd.monthGross||{})) ? (parseFloat(_bMd.monthGross[batchNo])||0)
        : (((parseFloat(batch?.actualProd)||0) === 0 && _trkProdStartMonth(batch||{})===_trkSelectedMonth) ? _reconGross(batch) : 0))
@@ -12992,7 +13024,11 @@ function _rptBRow(batchNo, dept, U){
   // v46E: Available to Scan In = Gross − Salvage (salvage removed pre-box; remelt is post scan-in). Matches Report E.
   const _avail = Math.max(0, _gross - _aimWaste.salvage);
   const floor = _ffsfSet.has(normMcId(getBatch(batchNo)?.machineId || _ghostMc45y[batchNo])) ? 'ffsf' : 'gf';
-  return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, innQty, outQty, w:_w, wastageBoxes, wip:_wip, wipQty:_wipQty,
+  // v51Z: the dept's DISPLAYED wastage — printing shows what the WIP actually nets (DPL salvage +
+  // tracking remelt); tracking salvage at printing is inert everywhere and no longer shown as dept
+  // wastage. Other depts unchanged (their tracking entries remain the single source).
+  const _wDisp51z = (dept === 'printing' && !_rcOv) ? (_dplSal51z + _prRem51z) : (_w ? _w.total : 0);   // recon override stays authoritative (v46M)
+  return { batchNo, batch, size:_bSize45y, hasWastage, inn, out, innQty, outQty, w:_w, wDisp:_wDisp51z, wastageBoxes, wip:_wip, wipQty:_wipQty,
            grossProd:_gross, aimInBoxes, aimInQty, aimWaste:_aimWaste, prodWip:_prodWip, hrs, closed:_closed, statusKey,
            avail:_avail, floor, retired:_retiredRows45z.has(batchNo), reconciled:!!_rcOv, reconOrig:_reconOrig, frozenHere:_frozenHere };
 }
@@ -13192,7 +13228,7 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
       // values are all 0 (e.g. prior-month retired/carry-forward batches). Such rows add nothing to any
       // total, so hiding them de-clutters the month view. Any month activity keeps the row: month gross,
       // boxes in/out, WIP boxes, Production WIP, or dept wastage.
-      if (!(inn>0 || out>0 || wip>0 || grossProd>0.005 || prodWip>0.005 || (w && w.total>0.005))) return;
+      if (!(inn>0 || out>0 || wip>0 || grossProd>0.005 || prodWip>0.005 || (w && w.total>0.005) || R.wDisp>0.005)) return;   // v51Z: DPL-only wastage rows stay visible
       const alerts=state.alerts.filter(a=>a.batchNumber===batchNo&&a.dept===dept).length;
       // v44P #11: compute the stage status once — drives both the badge and the Status filter.
       const _closed = isStageComplete(batchNo,dept);
@@ -13244,14 +13280,14 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
         <td class="td-mono ${prodWip>0?'amber':''}">${_rcvCell(prodWip>0?fmt(prodWip)+'L':'—', 'was '+fmt(_ro.prodWip||0)+'L (computed)', _rc)}</td>
         <td class="td-mono">${inn} <span class="text-muted">(${fmt(innQty)}L)</span></td>
         <td class="td-mono">${out} <span class="text-muted">(${fmt(outQty)}L)</span></td>
-        ${hasWastage?`<td class="td-mono text-sm" style="color:var(--amber)">${_rcvCell(w.total>0?fmt(w.total)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>`:''}
+        ${hasWastage?`<td class="td-mono text-sm" style="color:var(--amber)"${dept==='printing'?' title="DPL salvage + Tracking remelt (the figure this WIP nets). Tracking-entered printing salvage is not counted anywhere — single source is the Daily Printing Log."':''}>${_rcvCell(R.wDisp>0?fmt(R.wDisp)+'L':'—', 'was '+fmt(_ro.wastage||0)+'L (computed)', _rc)}</td>`:''}
         <td class="td-mono fw-bold"${wip>0?` style="cursor:pointer" onclick="_rptB_toggleWipBoxes('${batchNo}','${dept}','rptb-${batchNo}-${dept}')" title="Click to see the box numbers in WIP"`:''}>${_rcvCell(String(wip), 'was '+(_ro.wip||0), _rc)}${wip>0?' <span style="font-size:9px;color:var(--text3)">▾</span>':''}</td>
         <td class="td-mono">${_rcvCell(fmt(wipQty), 'was '+fmt(_ro.wipQty||0), _rc)}${_frozenBadge(_fz)}</td>
         <td class="td-mono ${hrs>=48?'red':''}">${hrs.toFixed(0)}h</td>
         <td>${statusBadge}</td>
       </tr>${wip>0?`<tr id="rptb-${batchNo}-${dept}" class="hidden"><td></td><td colspan="${(hasWastage?5:4)+(_showCP?2:0)}"></td><td colspan="4" class="rptb-wipdetail" style="background:var(--surface2);padding:8px 12px"></td></tr>`:''}`;
       }
-      _bIn+=inn; _bOut+=out; _bW+=w.total; _bWipBx+=wip; _bWipQ+=wipQty; _bProd+=prodWip; _bGross+=grossProd; _bAvail+=_avail; _bN++;
+      _bIn+=inn; _bOut+=out; _bW+=R.wDisp; _bWipBx+=wip; _bWipQ+=wipQty; _bProd+=prodWip; _bGross+=grossProd; _bAvail+=_avail; _bN++;   // v51Z: totals sum the displayed (netted) wastage
     });
     if(_bN){
       if (_isAimDept) {
@@ -15989,6 +16025,25 @@ function _v40_renderReportKDetail(r) {
     });
   });
   const _dispOutList = _dispOutScanList.concat(_dispRecBoxes51v);
+  // ═══ v51Z PENDING BOXES (Ishan, 12 Aug) ════════════════════════════════════════════════════════
+  // Pack-In minus Dispatch-Out by label id = the boxes physically packed but not yet scanned out —
+  // exactly the 2-box remainder Ishan couldn't see on a partial dispatch. De-duped pack-ins (a box
+  // rescanned into packing appears once), matched against the SAME merged dispatch set rendered
+  // above (real scan rows + invoice-record boxes), so the three panels are consistent by
+  // construction: PackIn = DispatchOut + Pending, always. Display only.
+  const _pendSeen51z = new Set();
+  const _pendingList51z = [];
+  _packInList.forEach(s => {
+    if (!s || !s.labelId || _pendSeen51z.has(s.labelId)) return;
+    _pendSeen51z.add(s.labelId);
+    if (_dispSeen51v.has(s.labelId)) return;                  // already dispatched (either path)
+    _pendingList51z.push(s);
+  });
+  // Reliability is judged on UNIQUE boxes, not raw scan rows — a box rescanned into packing has two
+  // pack-in rows but is one box. Dispatched uniques = identified label ids + identity-less rows
+  // (pre-v51V records / bare scans), each of which can only be distinct physical boxes.
+  const _dispNoId51z = _dispOutList.filter(s => !s || !s.labelId).length;
+  const _pendExpected51z = Math.max(0, _pendSeen51z.size - (_dispSeen51v.size + _dispNoId51z));
   const fmtTs = (ts) => {
     if (!ts) return '—';
     try { return new Date(ts).toLocaleString(); } catch (e) { return ts; }
@@ -16022,8 +16077,22 @@ function _v40_renderReportKDetail(r) {
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${_boxOf(s)}${s._fromRecord?` <span style="font-size:9px;color:#0891b2;font-family:var(--font)" title="Scanned out on the invoice dispatch screen${s._invoiceNo?' — invoice '+s._invoiceNo:''}">inv</span>`:''}</td>
         <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${fmtTs(s.ts)}</td>
       </tr>`).join('');
+  // Pre-v51V dispatch records carry NO box identities, so for those batches the set difference
+  // would wrongly list already-shipped boxes as pending. Detect that case by count: if the identity
+  // maths doesn't reconcile (packIn − dispOut ≠ pending-by-identity), say so instead of lying.
+  const _pendReliable51z = _pendingList51z.length === _pendExpected51z;
+  const pendingRows51z = !_pendReliable51z
+    ? `<tr><td colspan="3" class="text-center text-muted" style="padding:8px">${_pendExpected51z} box(es) pending, but identities can't be listed — earlier dispatch(es) predate build v51V, which did not store scanned box numbers</td></tr>`
+    : (_pendingList51z.length === 0
+        ? '<tr><td colspan="3" class="text-center" style="padding:8px;color:#10b981">✓ All packed boxes dispatched</td></tr>'
+        : _pendingList51z.map((s, i) => `
+      <tr style="border-bottom:1px dotted var(--border)">
+        <td style="padding:4px 8px;font-family:var(--mono);font-size:11px;color:var(--text3)">${i+1}</td>
+        <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${_boxOf(s)}</td>
+        <td style="padding:4px 8px;font-family:var(--mono);font-size:11px">${fmtTs(s.ts)}</td>
+      </tr>`).join(''));
   return `
-    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+    <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px">
       <div>
         <div style="font-size:11px;font-weight:700;color:#0e7490;margin-bottom:6px">📥 Pack In Scans (${_packInList.length})</div>
         <table style="width:100%;border:1px solid var(--border);border-radius:4px;font-size:11px">
@@ -16040,6 +16109,15 @@ function _v40_renderReportKDetail(r) {
             <tr><th style="padding:4px 8px;text-align:left">#</th><th style="padding:4px 8px;text-align:left">Box / Label</th><th style="padding:4px 8px;text-align:left">Timestamp</th></tr>
           </thead>
           <tbody>${dispOutRows}</tbody>
+        </table>
+      </div>
+      <div>
+        <div style="font-size:11px;font-weight:700;color:${_pendReliable51z && _pendingList51z.length===0 ? '#10b981' : '#f59e0b'};margin-bottom:6px">⏳ Pending Dispatch (${_pendReliable51z ? _pendingList51z.length : _pendExpected51z})</div>
+        <table style="width:100%;border:1px solid var(--border);border-radius:4px;font-size:11px">
+          <thead style="background:var(--surface3)">
+            <tr><th style="padding:4px 8px;text-align:left">#</th><th style="padding:4px 8px;text-align:left">Box / Label</th><th style="padding:4px 8px;text-align:left">Packed At</th></tr>
+          </thead>
+          <tbody>${pendingRows51z}</tbody>
         </table>
       </div>
     </div>`;
@@ -16194,7 +16272,7 @@ function _v39_renderReportLTable() {
     <div class="card" style="border-top:4px solid #0e7490">
       <div class="section-header">
         <div>
-          <div class="section-title">📋 Report H — SAP Invoice Ledger</div>
+          <div class="section-title">📋 SAP Invoice Ledger (legacy view — use Generated Invoices)</div>
           <div class="section-sub">${_trkSelectedMonth} • ${invoices.length} invoice${invoices.length===1?'':'s'} ${filterCustomer||filterStatus?' (filtered)':''}</div>
         </div>
         <div style="display:flex;gap:8px">
@@ -16582,7 +16660,7 @@ function exportReportB(){
       const R = _rptBRow(batchNo, dept, U);   // v45ZW: SAME per-batch compute as the screen
       if(isAim && floorOnly && R.floor!==floorOnly) return;   // ghost-aware floor split (screen parity)
       // v45ZZ item 3 (screen parity): drop all-zero month rows (prior-month lifetime-scan batches).
-      if(!(R.inn>0 || R.out>0 || R.wip>0 || R.grossProd>0.005 || R.prodWip>0.005 || (R.w && R.w.total>0.005))) return;
+      if(!(R.inn>0 || R.out>0 || R.wip>0 || R.grossProd>0.005 || R.prodWip>0.005 || (R.w && R.w.total>0.005) || (R.wDisp||0)>0.005)) return;
       // v45ZZ item 4 (screen parity): "In Dept" filter = scanned WIP boxes OR Production WIP.
       if(_fStatus){ const _m = _fStatus==='indept' ? (R.wip>0||R.prodWip>0.005) : (R.statusKey===_fStatus); if(!_m) return; }
       const b = R.batch;
@@ -16605,7 +16683,7 @@ function exportReportB(){
         if (dept==='printing' || dept==='pi') { row['Colour']=b?.colour||''; row['PC']=b?.pcCode||''; }
         row['Prod WIP (L)']=_n2(R.prodWip);
         row['Boxes IN']=R.inn; row['Boxes OUT']=R.out;
-        if (R.hasWastage) row['Wastage (L)']=_n2(R.w.total);
+        if (R.hasWastage) row['Wastage (L)']=_n2(R.wDisp != null ? R.wDisp : R.w.total);   // v51Z: export = screen
         row['WIP Boxes']=R.wip; row['WIP Qty (L)']=_n2(R.wipQty);
         row['Time in Dept']=timeText; row['Status']=statusText;
         rows.push(row);
