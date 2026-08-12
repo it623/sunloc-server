@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51Z';
+const APP_BUILD = 'v51Y';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -1858,39 +1858,8 @@ async function _v51jHealExuChildren() {
       byBatch.set(String(o.batchNumber).trim().toUpperCase(), o);
     }
     const touched = [];
-    // ═══ v51Z TWIN GUARD (Ishan, 12 Aug — 26ZB106A/B) ════════════════════════════════════════════
-    // When the approve race (closed above by the atomic claim) fired twice, TWO live children
-    // claimed the same excessUnprintFrom parent, split moments apart — and this heal, finding both,
-    // divided the parent's actuals across them (18.15 → 16 + 2.15 + 0), crossing real material with
-    // a phantom. Defence in depth: if a parent has 2+ live excess-unprint children whose split
-    // timestamps sit within 60s of each other, they are twins from one human action, not two
-    // deliberate conversions. Skip the whole family, log loudly, touch nothing — an admin deletes
-    // the phantom and the next pass heals the survivor. Genuine multiple conversions of one parent
-    // (days apart) are unaffected.
-    const _twinSkip51z = new Set();
-    {
-      const _fams = new Map();
-      for (const o of orders) {
-        if (!o || o.deleted || !o.excessUnprintFrom) continue;
-        const k = String(o.excessUnprintFrom).trim().toUpperCase();
-        if (!_fams.has(k)) _fams.set(k, []);
-        _fams.get(k).push(o);
-      }
-      for (const [k, kids] of _fams) {
-        if (kids.length < 2) continue;
-        const times = kids.map(o => Date.parse(o.excessUnprintSplitAt || '') || 0).sort((a,b)=>a-b);
-        for (let i = 1; i < times.length; i++) {
-          if (times[i] && times[i-1] && (times[i] - times[i-1]) < 60000) {
-            kids.forEach(o => _twinSkip51z.add(String(o.batchNumber).trim().toUpperCase()));
-            console.error(`[v51Z twin-guard] ${k}: ${kids.length} live excess-unprint children split within 60s of each other (${kids.map(o=>o.batchNumber).join(', ')}) — heal SKIPPED for this family. One is likely a race phantom: delete it in Planning and the next pass heals the survivor.`);
-            break;
-          }
-        }
-      }
-    }
     for (const child of orders) {
       if (!child || child.deleted) continue;
-      if (child.batchNumber && _twinSkip51z.has(String(child.batchNumber).trim().toUpperCase())) continue;   // v51Z twin guard
       // v51M (Ishan, 9 Aug): the heal originally keyed ONLY on excessUnprintFrom and therefore never
       // touched the children that were actually reopened on the floor — 26ZE119A, 26H046A, 26P046A
       // came from the RE-CUSTOMER SPLIT path (recustomerSplitFrom), which carried the identical
@@ -13250,8 +13219,6 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
     if (!batch || !okDepts.includes(from) || !okDepts.includes(to)) {
       return res.status(400).json({ ok: false, error: 'batch, from, to required (valid depts)' });
     }
-    // v51Z: reversal-aware, matching the counts endpoint below — v45ZB's whole premise is that the
-    // header count and this expanded list agree, so they must share the same exclusions.
     const sql = `
       SELECT s.label_id, MAX(s.ts) AS out_ts,
              l.label_number, l.is_excess, l.excess_num, l.qty, l.voided
@@ -13259,12 +13226,10 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
         LEFT JOIN tracking_labels l ON l.id = s.label_id
        WHERE s.batch_number = $1 AND s.dept = $2 AND s.type = 'out'
          AND s.label_id NOT LIKE 'recon-%'
-         AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = s.id)
          AND NOT EXISTS (
            SELECT 1 FROM tracking_scans t
             WHERE t.label_id = s.label_id
-              AND t.dept = $3 AND t.type = 'in'
-              AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv2 WHERE rv2.reversed_scan_id = t.id))
+              AND t.dept = $3 AND t.type = 'in')
        GROUP BY s.label_id, l.label_number, l.is_excess, l.excess_num, l.qty, l.voided
        ORDER BY l.label_number NULLS LAST`;
     let rows;
@@ -13282,11 +13247,9 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
     const extraSql = `
       SELECT COUNT(DISTINCT t.label_id) AS n FROM tracking_scans t
        WHERE t.batch_number = $1 AND t.dept = $2 AND t.type = 'in' AND t.label_id NOT LIKE 'recon-%'
-         AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = t.id)
          AND NOT EXISTS (SELECT 1 FROM tracking_scans s
                           WHERE s.label_id = t.label_id
-                            AND s.dept = $3 AND s.type = 'out'
-                            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv2 WHERE rv2.reversed_scan_id = s.id))`;
+                            AND s.dept = $3 AND s.type = 'out')`;
     const reconSql = `
       SELECT COUNT(*) AS n FROM tracking_scans
        WHERE batch_number = $1 AND dept = $2 AND type = 'in' AND label_id LIKE 'recon-%'`;
@@ -13323,16 +13286,6 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
     // melt pot — so neither may resurface as phantom "in transit" gap boxes. The extraIn side is left
     // as-is on purpose: recon per-box outs DO satisfy its missing-out probe, which is exactly how the
     // 26ZG132-style "packing-in without PI-out" extraIn heals after a movepack reconcile.
-    // v51Z (Ishan, 12 Aug — 26ZB106B invisible in Report F): this endpoint never consulted
-    // tracking_scan_reversals, unlike every other scan aggregate (scan-summary, box-stages, recon).
-    // The excess-unprint approval (v49ZG) does not DELETE the printing scan-IN — it posts a REVERSAL
-    // row against it and leaves the original in tracking_scans. NOT EXISTS(printing in) therefore
-    // stayed false and the box silently dropped out of the aim→printing gap, even though the material
-    // is physically unprinted stock awaiting reprint. Ishan's control case proved the mechanism:
-    // ZG135B (re-customer split of an UNPRINTED parent — no scan-IN ever existed, nothing reversed)
-    // surfaced correctly; ZB106B (identical state reached VIA a reversal) vanished.
-    // Both legs fixed symmetrically: a reversed scan neither creates a gap (out-side) nor satisfies
-    // one (in-side probes), matching the 11244/12924 pattern used everywhere else.
     const gapSql = `
       SELECT bn, COUNT(*) AS gap, COALESCE(SUM(qty),0) AS gap_qty FROM (
         SELECT DISTINCT s.batch_number AS bn, s.label_id AS lid,
@@ -13342,10 +13295,8 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
          WHERE s.dept = $1 AND s.type = 'out' AND s.label_id NOT LIKE 'recon-%'
            AND COALESCE(s.operator,'') NOT LIKE 'recon:%' AND COALESCE(s.operator,'') NOT LIKE 'recon-scrap:%'
            AND s.batch_number IS NOT NULL AND s.batch_number <> ''
-           AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = s.id)
            AND NOT EXISTS (SELECT 1 FROM tracking_scans t
-                            WHERE t.label_id = s.label_id AND t.dept = $2 AND t.type = 'in'
-                              AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv2 WHERE rv2.reversed_scan_id = t.id))
+                            WHERE t.label_id = s.label_id AND t.dept = $2 AND t.type = 'in')
       ) g
       GROUP BY bn`;
     const extraSql = `
@@ -13353,10 +13304,8 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
         FROM tracking_scans t
        WHERE t.dept = $2 AND t.type = 'in' AND t.label_id NOT LIKE 'recon-%'
          AND t.batch_number IS NOT NULL AND t.batch_number <> ''
-         AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id = t.id)
          AND NOT EXISTS (SELECT 1 FROM tracking_scans s
-                          WHERE s.label_id = t.label_id AND s.dept = $1 AND s.type = 'out'
-                            AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv2 WHERE rv2.reversed_scan_id = s.id))
+                          WHERE s.label_id = t.label_id AND s.dept = $1 AND s.type = 'out')
        GROUP BY t.batch_number`;
     const transitions = {};
     for (const [from, to] of pairs) {
@@ -21657,15 +21606,6 @@ app.post('/api/printing/excess-unprint/reject/:id', async (req, res) => {
   } catch(err) { res.status(500).json({ ok:false, error:err.message }); }
 });
 
-// v51Z: restore a claimed request to 'pending' when the approve exits early after the atomic
-// claim, so a validation failure never strands the request in 'executing'.
-async function _v51zUnclaim(reqId) {
-  try {
-    if (pgPool) await pgPool.query(`UPDATE excess_unprint_requests SET status='pending' WHERE id=$1 AND status='executing'`, [reqId]);
-    else db.prepare(`UPDATE excess_unprint_requests SET status='pending' WHERE id=? AND status='executing'`).run(reqId);
-  } catch (e) { console.warn('[v51z unclaim]', reqId, e.message); }
-}
-
 // POST /api/printing/excess-unprint/approve/:id — planning_manager/admin. Re-validates eligibility
 // (boxes may have printed out or been invoiced since the proposal — any drift is a LOUD 409, no
 // partial execution), then executes the conversion through the re-customer split internals.
@@ -21680,32 +21620,15 @@ app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
       : db.prepare(`SELECT * FROM excess_unprint_requests WHERE id=?`).get(reqId);
     if (!request) return res.status(404).json({ ok:false, error:'Request not found' });
     if (request.status !== 'pending') return res.status(400).json({ ok:false, error:`Already ${request.status}` });
-    // ═══ v51Z ATOMIC CLAIM (Ishan, 12 Aug — 26ZB106A/B twins born 4 ms apart) ════════════════════
-    // The pending check above and the status='approved' write ~150 lines below left a window in
-    // which a double-submitted approval executed TWICE concurrently: both reads saw 'pending', both
-    // ran the conversion, and the suffix allocator (correctly refusing to reuse a taken letter)
-    // handed one execution A and the other B. The second execution's label/scan UPDATEs (keyed on
-    // label id) then moved everything onto B, leaving A a 16L phantom order with no labels — which
-    // the child-heal, finding two claimants, split the parent's 18.15L across (16 + 2.15 + 0).
-    // Claim the request atomically FIRST: exactly one caller flips pending→executing; the twin gets
-    // a clean 409 instead of a second child. Same v48D pattern as the duplicate-dispatch guard.
-    // On ANY failure after the claim, status is restored to 'pending' so the request isn't stranded
-    // (the pre-existing resume path via child_batch_number also still covers a hard crash).
-    {
-      const _claim = pgPool
-        ? (await pgPool.query(`UPDATE excess_unprint_requests SET status='executing' WHERE id=$1 AND status='pending'`, [reqId])).rowCount
-        : db.prepare(`UPDATE excess_unprint_requests SET status='executing' WHERE id=? AND status='pending'`).run(reqId).changes;
-      if (_claim !== 1) return res.status(409).json({ ok:false, error:'This request is already being executed — refresh to see the result.' });
-    }
     let ids = []; try { ids = JSON.parse(request.selected_labels||'[]').map(String); } catch(e) { ids = []; }
-    if (!ids.length) { await _v51zUnclaim(reqId); return res.status(400).json({ ok:false, error:'Request has no boxes' }); }
+    if (!ids.length) return res.status(400).json({ ok:false, error:'Request has no boxes' });
     const batchNumber = request.batch_number;
     const newCustomer = (request.new_customer||'').trim();
     const ts = new Date().toISOString();
 
     const planState = await getPlanningStateAsync();
     const ord = (planState.orders||[]).find(o => o.batchNumber===batchNumber && !o.deleted);
-    if (!ord) { await _v51zUnclaim(reqId); return res.status(404).json({ ok:false, error:`Parent order ${batchNumber} no longer exists` }); }
+    if (!ord) return res.status(404).json({ ok:false, error:`Parent order ${batchNumber} no longer exists` });
 
     // ── RESUME detection (wo/split v44ZU pattern): a prior approval attempt may have executed the
     // conversion but crashed before marking the request approved. child_batch_number is stamped on
@@ -21717,12 +21640,11 @@ app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
     // ── Re-validate eligibility NOW (skip when resuming — the labels already moved to the child).
     if (!_resuming) {
       const guard = await _exuSapGuard(batchNumber);
-      if (guard.blocked) { await _v51zUnclaim(reqId); return res.status(409).json({ ok:false, error:`Cannot approve: ${guard.why}. Cancel that SAP document first.` }); }
+      if (guard.blocked) return res.status(409).json({ ok:false, error:`Cannot approve: ${guard.why}. Cancel that SAP document first.` });
       const eligible = await _exuEligibleRows(batchNumber);
       const eligibleIds = new Set(eligible.map(r => String(r.label_id)));
       const bad = ids.filter(id => !eligibleIds.has(id) || guard.invoicedIds.has(id));
       if (bad.length) {
-        await _v51zUnclaim(reqId);
         return res.status(409).json({ ok:false, error:`${bad.length} of ${ids.length} box(es) are no longer eligible (printed out or SAP-committed since the proposal). Reject this request and re-propose with current boxes.`, ineligible: bad });
       }
     }
@@ -21731,7 +21653,7 @@ app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
     //    on the request BEFORE any mutation, so a crash mid-way resumes to the SAME child.
     if (!childBatch) {
       childBatch = await _v51tNextChildBatch(batchNumber, planState);   // v51T: shared allocator
-      if (!childBatch) { await _v51zUnclaim(reqId); return res.status(409).json({ ok:false, error:`Cannot approve: all 26 child suffixes (A–Z) of ${batchNumber} are already in use.` }); }
+      if (!childBatch) return res.status(409).json({ ok:false, error:`Cannot approve: all 26 child suffixes (A–Z) of ${batchNumber} are already in use.` });
       if (pgPool) await pgPool.query(`UPDATE excess_unprint_requests SET child_batch_number=$2 WHERE id=$1`, [reqId, childBatch]);
       else db.prepare(`UPDATE excess_unprint_requests SET child_batch_number=? WHERE id=?`).run(childBatch, reqId);
     }
@@ -21855,14 +21777,7 @@ app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
     try { logAudit(session.username, session.role, 'planning', 'EXCESS_UNPRINT_APPROVE', JSON.stringify({ id:reqId, batch_number:batchNumber, child:childBatch, boxes:nSplit, reversed:reversedScans, newCustomer, resumed:_resuming }), req.ip); } catch(e) {}
 
     res.json({ ok:true, id:reqId, batchNumber, childBatch, boxes:nSplit, qtyLakhs:+(nSplit*ps).toFixed(4), reversedPrintingScans:reversedScans, customer:newCustomer||'(colour stock — assign via Re-customer)', resumed:_resuming });
-  } catch(err) {
-    console.error('[v49ZG] exu approve:', err);
-    // v51Z: a throw after the atomic claim must not strand the request in 'executing' — restore it
-    // to 'pending'. The child_batch_number stamp (if reached) still guarantees a retry resumes onto
-    // the SAME child, so unclaiming cannot re-open the twin-child window this build closes.
-    try { await _v51zUnclaim(req.params.id); } catch(e) {}
-    res.status(500).json({ ok:false, error:err.message });
-  }
+  } catch(err) { console.error('[v49ZG] exu approve:', err); res.status(500).json({ ok:false, error:err.message }); }
 });
 // ═══ end v49ZG ═══════════════════════════════════════════════════════════════════════
 
