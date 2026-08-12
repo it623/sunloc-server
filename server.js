@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZA';
+const APP_BUILD = 'v51ZB';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -1868,6 +1868,7 @@ async function _v51jHealExuChildren() {
     // the phantom and the next pass heals the survivor. Genuine multiple conversions of one parent
     // (days apart) are unaffected.
     const _twinSkip51z = new Set();
+    const _v51zbDone = new Set();   // v51ZB: one actuals pass per family per heal run
     {
       const _fams = new Map();
       for (const o of orders) {
@@ -1891,6 +1892,57 @@ async function _v51jHealExuChildren() {
     for (const child of orders) {
       if (!child || child.deleted) continue;
       if (child.batchNumber && _twinSkip51z.has(String(child.batchNumber).trim().toUpperCase())) continue;   // v51Z twin guard
+      // ═══ v51ZB ACTUALPROD FROM BOX REALITY (Ishan, 12 Aug — 26ZB106B stuck at 2.15L) ═══════════
+      // The approve endpoint splits actualProd PROPORTIONALLY at creation. When the double-fire ran
+      // twice, execution 2 read the already-reduced parent, so the values landed crossed: phantom A
+      // took 16, real B took the 2.15 remainder, parent hit 0 — and NOTHING in the system ever
+      // rewrote a child's actualProd afterwards (this heal repaired gross/status/dates only, which
+      // is why deleting the phantom did not redistribute; a wrong prediction of mine, now fixed by
+      // making it true). Rule, deliberately narrow:
+      //   • excessUnprintFrom children only (re-customer splits keep their proportional math);
+      //   • anchored to DPR truth — production_actuals via _grossOverride/_grossByBatch on the
+      //     PARENT batch, where all the family's production physically sits;
+      //   • child actualProd = its own box quantity (child.qty, written from nSplit×packSize at
+      //     approval — 16 boxes → 16.00L), capped at family production;
+      //   • parent keeps the remainder, floored at 0 (18.15 − 16 = 2.15);
+      //   • if the children's box quantities EXCEED family production, the data needs a human —
+      //     loud log, no writes (mirrors the twin-guard philosophy);
+      //   • idempotent by construction: writes only when a stored value differs by >0.005, so a
+      //     converged family costs nothing every 10 minutes. Census 12-Aug: exactly one family
+      //     (26ZB106) matches on first pass.
+      if (child.excessUnprintFrom) {
+        const _pBn51zb = String(child.excessUnprintFrom).trim().toUpperCase();
+        if (!_v51zbDone.has(_pBn51zb)) {
+          _v51zbDone.add(_pBn51zb);
+          const _par51zb = byBatch.get(_pBn51zb);
+          const _prodTotal51zb = (_grossOverride && _grossOverride[_pBn51zb] != null) ? parseFloat(_grossOverride[_pBn51zb])
+                               : ((_grossByBatch && _grossByBatch[_pBn51zb] != null) ? parseFloat(_grossByBatch[_pBn51zb]) : null);
+          if (_par51zb && _prodTotal51zb != null && _prodTotal51zb > 0) {
+            const _sibs51zb = orders.filter(o => o && !o.deleted && o.excessUnprintFrom
+                              && String(o.excessUnprintFrom).trim().toUpperCase() === _pBn51zb
+                              && !_twinSkip51z.has(String(o.batchNumber||'').trim().toUpperCase()));
+            const _sum51zb = _sibs51zb.reduce((a,o)=>a + Math.min(parseFloat(o.qty)||0, _prodTotal51zb), 0);
+            if (_sum51zb - _prodTotal51zb > 0.005) {
+              console.error(`[v51ZB actuals] ${_pBn51zb}: children's box quantities (${_sum51zb.toFixed(2)}L) exceed family production (${_prodTotal51zb.toFixed(2)}L) — needs a human, nothing written.`);
+            } else {
+              for (const c of _sibs51zb) {
+                const _exp = +Math.min(parseFloat(c.qty)||0, _prodTotal51zb).toFixed(3);
+                if (Math.abs((parseFloat(c.actualProd)||0) - _exp) > 0.005) {
+                  console.log(`[v51ZB actuals] ${c.batchNumber}: actualProd ${(parseFloat(c.actualProd)||0).toFixed(2)} → ${_exp.toFixed(2)} (box reality)`);
+                  c.actualProd = _exp; c.actualQty = _exp; c._localEditedAt = Date.now();
+                  touched.push({ child: c, parent: _par51zb, _why: 'actuals' });
+                }
+              }
+              const _rem = +Math.max(0, _prodTotal51zb - _sum51zb).toFixed(3);
+              if (Math.abs((parseFloat(_par51zb.actualProd)||0) - _rem) > 0.005) {
+                console.log(`[v51ZB actuals] ${_pBn51zb} (parent): actualProd ${(parseFloat(_par51zb.actualProd)||0).toFixed(2)} → ${_rem.toFixed(2)} (remainder of ${_prodTotal51zb.toFixed(2)}L family production)`);
+                _par51zb.actualProd = _rem; _par51zb.actualQty = _rem; _par51zb._localEditedAt = Date.now();
+                touched.push({ child: _par51zb, parent: _par51zb, _why: 'actuals' });
+              }
+            }
+          }
+        }
+      }
       // v51M (Ishan, 9 Aug): the heal originally keyed ONLY on excessUnprintFrom and therefore never
       // touched the children that were actually reopened on the floor — 26ZE119A, 26H046A, 26P046A
       // came from the RE-CUSTOMER SPLIT path (recustomerSplitFrom), which carried the identical
@@ -1947,11 +1999,16 @@ async function _v51jHealExuChildren() {
         [child.id, j, child.machineId || null, child.batchNumber, child.status || 'running']
       );
       healed++;
-      console.log(`[v51M split-child heal] ${child.batchNumber}: restored to parent ${parent.batchNumber} (status ${child.status}, ${child.startDate||'—'} → ${child.endDate||'—'}), gross cleared`);
-      try {
-        logAudit('SYSTEM', 'system', 'planning', 'SPLIT_CHILD_HEAL',
-          `Split child ${child.batchNumber} restored to parent ${parent.batchNumber}: status=${child.status}, start=${child.startDate||'—'}, end=${child.endDate||'—'}, grossOverride cleared`);
-      } catch (_) {}
+      const _why51zb = (touched.find(t => t.child === child) || {})._why;
+      if (_why51zb === 'actuals') {
+        try { logAudit('SYSTEM', 'system', 'planning', 'EXU_ACTUALS_HEAL', `${child.batchNumber}: actualProd set to ${child.actualProd} (v51ZB box-reality rule)`); } catch (_) {}
+      } else {
+        console.log(`[v51M split-child heal] ${child.batchNumber}: restored to parent ${parent.batchNumber} (status ${child.status}, ${child.startDate||'—'} → ${child.endDate||'—'}), gross cleared`);
+        try {
+          logAudit('SYSTEM', 'system', 'planning', 'SPLIT_CHILD_HEAL',
+            `Split child ${child.batchNumber} restored to parent ${parent.batchNumber}: status=${child.status}, start=${child.startDate||'—'}, end=${child.endDate||'—'}, grossOverride cleared`);
+        } catch (_) {}
+      }
     }
   } catch (e) { console.warn('[v51J exu-child heal] pass failed:', e.message); }
   return healed;
