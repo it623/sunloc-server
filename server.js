@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZA';
+const APP_BUILD = 'v51ZC';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -6398,7 +6398,7 @@ app.get('/api/invoice/requests', async (req, res) => {
   try {
     const status = (req.query.status || '').toString();
     const batch = (req.query.batch || '').toString();
-    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 5000);   // v51ZC: GI shows ALL invoices
     const wheres = [];
     const args = [];
     if (status) { wheres.push(pgPool ? `status = $${args.length+1}` : 'status = ?'); args.push(status); }
@@ -6431,7 +6431,7 @@ app.get('/api/invoice/received', async (req, res) => {
     const pcCode = (req.query.pc_code || '').toString().trim();
     const size = (req.query.size || '').toString().trim();
     const colour = (req.query.colour || '').toString().trim();
-    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 1000);
+    const limit = Math.min(parseInt(req.query.limit, 10) || 200, 5000);   // v51ZC: GI shows ALL invoices
     const wheres = [];
     const args = [];
     if (status) { wheres.push(pgPool ? `dispatch_status = $${args.length+1}` : 'dispatch_status = ?'); args.push(status); }
@@ -13386,7 +13386,7 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
     const gapSql = `
       WITH rev AS MATERIALIZED (SELECT reversed_scan_id AS id FROM tracking_scan_reversals),
       live AS MATERIALIZED (
-        SELECT s.id, s.batch_number, s.label_id, s.dept, s.type, s.operator
+        SELECT s.id, s.batch_number, s.label_id, s.dept, s.type, s.operator, s.size   -- v51ZC: qty CASE needs s.size (Report D regression)
           FROM tracking_scans s
           LEFT JOIN rev ON rev.id = s.id
          WHERE rev.id IS NULL AND s.dept IN ($1, $2)

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51ZA</title>
+<title>Sunloc Tracking Suite v1.0 · build v51ZC</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZA</p>
+      <p>Tracking Suite v1.0 · build v51ZC</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZA</p>
+      <p>Tracking Suite v1.0 · build v51ZC</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -8077,6 +8077,21 @@ function _v51dOverInvDateFmt(d) {
   const p = String(d).slice(0,10).split('-');
   return p.length === 3 ? `${p[2]}/${p[1]}/${p[0].slice(2)}` : d;
 }
+// v51ZC (Ishan, 13 Aug): typing in the over-invoiced filters lost focus on EVERY keystroke — the
+// oninput re-render rebuilt the <input> elements themselves, so each letter required a fresh click.
+// Debounce 250ms, then re-render and put focus + caret back on the same field. Whole names now type
+// in one go; filtering behaviour itself is unchanged.
+let _v51zcOiTimer = null;
+function _v51zcOiInput(){
+  clearTimeout(_v51zcOiTimer);
+  _v51zcOiTimer = setTimeout(() => {
+    const el = document.activeElement;
+    const id = el && (el.id === 'v51d-oi-fbatch' || el.id === 'v51d-oi-fcust') ? el.id : null;
+    const pos = id ? el.selectionStart : 0;
+    _v51dRenderOverInv();
+    if (id) { const n = document.getElementById(id); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch(e){} } }
+  }, 250);
+}
 function _v51dRenderOverInv() {
   const el = document.getElementById('v39-gi-table');
   if (!el || !_v51dOverInvRows) return;
@@ -8108,8 +8123,8 @@ function _v51dRenderOverInv() {
   el.innerHTML = `
     <div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <b style="font-size:13px;color:#dc2626">🔺 Over-invoiced batches — invoiced beyond packed</b>
-      <input id="v51d-oi-fbatch" placeholder="Filter batch…" value="${fb}" oninput="_v51dRenderOverInv()" class="form-control" style="width:130px;padding:5px 8px;font-size:12px;font-family:var(--mono)">
-      <input id="v51d-oi-fcust" placeholder="Filter customer…" value="${fc}" oninput="_v51dRenderOverInv()" class="form-control" style="width:170px;padding:5px 8px;font-size:12px">
+      <input id="v51d-oi-fbatch" placeholder="Filter batch…" value="${fb}" oninput="_v51zcOiInput()" class="form-control" style="width:130px;padding:5px 8px;font-size:12px;font-family:var(--mono)">
+      <input id="v51d-oi-fcust" placeholder="Filter customer…" value="${fc}" oninput="_v51zcOiInput()" class="form-control" style="width:170px;padding:5px 8px;font-size:12px">
       <span style="font-size:11px;color:var(--text3)">Inv. date</span>
       <input id="v51d-oi-dfrom" type="date" value="${df}" onchange="_v51dRenderOverInv()" class="form-control" style="width:135px;padding:4px 6px;font-size:11px" title="Invoice date from">
       <span style="font-size:11px;color:var(--text3)">→</span>
@@ -9824,11 +9839,9 @@ async function _v39_applyInvoiceFilters() {
   // Explicit From/To from the user always win; the month bound applies only when both are blank.
   // Limit raised to 1000 (the server-side ceiling). If a month ever exceeds 1000 invoices the
   // count tile will read exactly 1000 — treat that as the signal to add pagination.
-  if (!fromDate && !toDate && /^\d{4}-\d{2}$/.test(_trkSelectedMonth || '')) {
-    const [_gy, _gm] = _trkSelectedMonth.split('-').map(Number);
-    fromDate = `${_gy}-${String(_gm).padStart(2,'0')}-01`;
-    toDate   = `${_gy}-${String(_gm).padStart(2,'0')}-${String(new Date(_gy, _gm, 0).getDate()).padStart(2,'0')}`;
-  }
+  // v51ZC (Ishan, 13 Aug): month-scope default REMOVED — Generated Invoices shows ALL invoices;
+  // the explicit From/To and other filters are the way to narrow. (The v51Z default was part of the
+  // Report H consolidation and was wrong for how this tab is actually used.)
   const params = new URLSearchParams();
   if (status)   params.set('status', status);
   if (batch)    params.set('batch', batch);
@@ -9838,7 +9851,7 @@ async function _v39_applyInvoiceFilters() {
   if (pcCode)   params.set('pc_code', pcCode);
   if (size)     params.set('size', size);
   if (colour)   params.set('colour', colour);
-  params.set('limit', '1000');
+  params.set('limit', '5000');   // v51ZC: all invoices; server ceiling raised to match
   const statusText = document.getElementById('v39-gi-status-text');
   if (statusText) statusText.textContent = 'Loading...';
   try {
