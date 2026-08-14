@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZC';
+const APP_BUILD = 'v51ZE';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -15331,12 +15331,18 @@ app.get('/api/audit/view', async (req, res) => {
     if (session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
     const limit = parseInt(req.query.limit) || 200;
     const app = req.query.app || session.app;
+    // v51ZD (Ishan): optional ?date=YYYY-MM-DD — that IST calendar day's entries (cap 1000).
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date||'')) ? req.query.date : null;
     let rows;
     if (pgPool) {
-      const r = await pgPool.query(`SELECT * FROM audit_log WHERE app=$1 ORDER BY ts DESC LIMIT $2`, [app, limit]);
+      const r = day
+        ? await pgPool.query(`SELECT * FROM audit_log WHERE app=$1 AND ((ts::timestamptz AT TIME ZONE 'Asia/Kolkata')::date = $2::date) ORDER BY ts DESC LIMIT 1000`, [app, day])
+        : await pgPool.query(`SELECT * FROM audit_log WHERE app=$1 ORDER BY ts DESC LIMIT $2`, [app, limit]);
       rows = r.rows;
     } else {
-      rows = db.prepare(`SELECT * FROM audit_log WHERE app = ? ORDER BY ts DESC LIMIT ?`).all(app, limit);
+      rows = day
+        ? db.prepare(`SELECT * FROM audit_log WHERE app = ? AND substr(ts,1,10) = ? ORDER BY ts DESC LIMIT 1000`).all(app, day)
+        : db.prepare(`SELECT * FROM audit_log WHERE app = ? ORDER BY ts DESC LIMIT ?`).all(app, limit);
     }
     res.json({ ok: true, logs: rows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -17330,12 +17336,18 @@ app.get('/api/audit/view', async (req, res) => {
     if (session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
     const limit = parseInt(req.query.limit) || 200;
     const app = req.query.app || session.app;
+    // v51ZD (Ishan): optional ?date=YYYY-MM-DD — that IST calendar day's entries (cap 1000).
+    const day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.date||'')) ? req.query.date : null;
     let rows;
     if (pgPool) {
-      const r = await pgPool.query(`SELECT * FROM audit_log WHERE app=$1 ORDER BY ts DESC LIMIT $2`, [app, limit]);
+      const r = day
+        ? await pgPool.query(`SELECT * FROM audit_log WHERE app=$1 AND ((ts::timestamptz AT TIME ZONE 'Asia/Kolkata')::date = $2::date) ORDER BY ts DESC LIMIT 1000`, [app, day])
+        : await pgPool.query(`SELECT * FROM audit_log WHERE app=$1 ORDER BY ts DESC LIMIT $2`, [app, limit]);
       rows = r.rows;
     } else {
-      rows = db.prepare(`SELECT * FROM audit_log WHERE app = ? ORDER BY ts DESC LIMIT ?`).all(app, limit);
+      rows = day
+        ? db.prepare(`SELECT * FROM audit_log WHERE app = ? AND substr(ts,1,10) = ? ORDER BY ts DESC LIMIT 1000`).all(app, day)
+        : db.prepare(`SELECT * FROM audit_log WHERE app = ? ORDER BY ts DESC LIMIT ?`).all(app, limit);
     }
     res.json({ ok: true, logs: rows });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }

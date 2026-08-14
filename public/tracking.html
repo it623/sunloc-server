@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51ZC</title>
+<title>Sunloc Tracking Suite v1.0 · build v51ZE</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZC</p>
+      <p>Tracking Suite v1.0 · build v51ZE</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZC</p>
+      <p>Tracking Suite v1.0 · build v51ZE</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3014,7 +3014,7 @@ async function regeneratePartialLabel(labelId, newQty){
     return null;
   }
   const batch = getBatch(old.batchNumber);
-  const newLabel = { ...old, id:uid(), qty:newQty, isPartial:true, generated:now(), printed:false, voided:false, qrData:'' };
+  const newLabel = { ...old, id:uid(), qty:newQty, isPartial:true, generated:now(), printed:false, voided:false, qrData:'', regeneratedAt: now(), regeneratedFrom: labelId };   // v51ZE: reprint stamp
   newLabel.qrData = generateQRData(newLabel);
   state.labels.push(newLabel);
   saveLocal();
@@ -4586,7 +4586,7 @@ function renderOrangePrintQueue(selBatch,selLabels,unprintedSel){
         <td style="padding:5px 6px;font-family:monospace;font-weight:700;color:var(--orange)">${Math.abs(l.labelNumber||0)}</td>
         <td style="padding:5px 6px;font-family:monospace">${fmt(l.qty)}</td>
         <td style="padding:5px 6px">${l.printed?'<span style="background:#22c55e22;color:#22c55e;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">✅ Printed</span>':'<span style="background:rgba(234,88,12,0.15);color:var(--orange);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600;border:1px solid rgba(234,88,12,0.4)">Pending</span>'}</td>
-        <td style="padding:5px 6px;font-size:10px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}</td>
+        <td style="padding:5px 6px;font-size:10px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}${l.regeneratedAt?` <span style="color:#b45309;font-weight:700" title="Reprinted (regenerated) ${fmtDateTime(l.regeneratedAt)} — replaces a voided earlier label">↻</span>`:''}</td>
         <td style="padding:5px 6px">${!l.printed?`<button style="background:var(--orange);color:#fff;border:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer" onclick="printLabel('${l.id}');selectOrangeBatch('${window._olSelBatch||l.batchNumber}')">🖨️ Print</button>`:`<button style="border:1px solid var(--border);background:none;border-radius:3px;padding:2px 8px;font-size:11px;cursor:pointer;color:var(--text2)" onclick="reprintOrangeLabel('${l.id}')">🔁 Reprint</button>`}</td>
       </tr>`).join('')}
     </tbody>
@@ -4665,7 +4665,7 @@ function renderPrintQueue(selBatch){
         <td style="padding:6px;font-weight:700;color:${l.voided?'#ef4444':'var(--accent)'};font-family:monospace">${_isSpecimenLabel(l)?`<span style="color:#2563eb">SPEC</span>`:l.isExcess?`<span style="color:#C55A11">E-${l.excessNum}</span>`:`<span style="${l.voided?'text-decoration:line-through;opacity:0.7':''}">${Math.abs(l.labelNumber||0)}</span>`}${l.voided?'<span style="font-size:8px;background:#ef4444;color:#fff;border-radius:3px;padding:1px 3px;margin-left:3px;letter-spacing:0.5px">VOID</span>':''}${l.isPartial?'<span style="font-size:9px;background:var(--accent2);color:#fff;border-radius:3px;padding:1px 3px;margin-left:2px">P</span>':''}</td>
         <td style="padding:6px;font-family:monospace">${_isSpecimenLabel(l)?'—':fmt(l.qty)}</td>
         <td style="padding:6px">${l.voided?'<span style="background:#ef444422;color:#ef4444;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">Voided</span>':l.printed?'<span style="background:#22c55e22;color:#22c55e;padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">✅ Printed</span>':'<span style="background:rgba(240,192,96,0.2);color:var(--accent2);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">Pending</span>'}</td>
-        <td style="padding:6px;font-size:10px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}</td>
+        <td style="padding:6px;font-size:10px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}${l.regeneratedAt?` <span style="color:#b45309;font-weight:700" title="Reprinted (regenerated) ${fmtDateTime(l.regeneratedAt)} — replaces a voided earlier label">↻</span>`:''}</td>
         <td style="padding:6px"><div style="display:flex;gap:3px;flex-wrap:nowrap;align-items:center">
           <button onclick="viewLabel('${l.id}')" title="View" style="padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:3px;background:none;cursor:pointer;color:var(--text2)">👁</button>
           ${!l.voided?`<button onclick="editLabelQty('${l.id}')" title="Edit" style="padding:2px 6px;font-size:11px;border:1px solid var(--accent);border-radius:3px;background:none;cursor:pointer;color:var(--accent)">✏️</button>`:''}
@@ -4876,7 +4876,7 @@ function renderLabels(){
                   :'<span style="background:rgba(240,192,96,0.2);color:var(--accent2);padding:1px 7px;border-radius:10px;font-size:10px;font-weight:600">Pending</span>'
               }
             </td>
-            <td style="padding:6px;font-size:10px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}</td>
+            <td style="padding:6px;font-size:10px;color:var(--text3);white-space:nowrap">${fmtDateTime(l.generated)}${l.regeneratedAt?` <span style="color:#b45309;font-weight:700" title="Reprinted (regenerated) ${fmtDateTime(l.regeneratedAt)} — replaces a voided earlier label">↻</span>`:''}</td>
             <td style="padding:6px">
               <div style="display:flex;gap:3px;flex-wrap:nowrap;align-items:center">
                 <button onclick="viewLabel('${l.id}')" title="View" style="padding:2px 6px;font-size:11px;border:1px solid var(--border);border-radius:3px;background:none;cursor:pointer;color:var(--text2)">👁</button>
@@ -4977,7 +4977,7 @@ function viewLabel(labelId){
       <div><span style="color:var(--text3)">Colour</span><div class="fw-bold">${l.colour||batch?.colour||'-'}</div></div>
       <div><span style="color:var(--text3)">Machine</span><div class="fw-bold td-mono">${l.machineId||batch?.machineId||'-'}</div></div>
       <div><span style="color:var(--text3)">Status</span><div class="fw-bold">${l.voided?'<span style="color:var(--red)">Voided</span>':l.printed?'<span style="color:var(--green)">✅ Printed</span>':'Pending'}</div></div>
-      <div><span style="color:var(--text3)">Generated</span><div class="fw-bold text-sm">${fmtDateTime(l.generated)}</div></div>
+      <div><span style="color:var(--text3)">Generated</span><div class="fw-bold text-sm">${fmtDateTime(l.generated)}${l.regeneratedAt?` <span style="color:#b45309;font-size:11px">(↻ reprinted ${fmtDateTime(l.regeneratedAt)})</span>`:''}</div></div>
       ${l.printed?'<div><span style="color:var(--text3)">Printed At</span><div class="fw-bold text-sm">'+fmtDateTime(l.printedAt)+'</div></div>':''}
       ${l.voided?'<div><span style="color:var(--text3)">Void Reason</span><div style="color:var(--red)">'+(l.voidReason||'-')+'</div></div>':''}
     </div>
@@ -9766,6 +9766,10 @@ async function renderGeneratedInvoices() {
         </div>
       </div>
       <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+        <select id="v39-gi-pm" class="form-control" style="width:auto;padding:5px 8px;font-size:12px" onchange="_v39_applyInvoiceFilters()" title="Month of production — filters invoices to batches produced in the selected cohort month (v50B attribution), whatever calendar month the invoice was raised in.">
+          <option value="">All prod. months</option>
+          ${[...new Set((state.batches||[]).filter(b=>!b.deleted).map(b=>_v50bCohortMonth(b)).filter(Boolean))].sort().reverse().map(m=>`<option value="${m}">${m}</option>`).join('')}
+        </select>
         <button class="btn btn-sm btn-secondary" onclick="_v39_applyInvoiceFilters()">↻ Refresh</button>
         <button class="btn btn-sm btn-secondary" onclick="_v39_clearInvoiceFilters()">✕ Clear filters</button>
         <button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v39_repullFromSap()" title="Force Sunloc to pull the latest invoices from SAP now (normally runs every 5 min)">🔄 Re-pull from SAP</button>
@@ -9857,6 +9861,13 @@ async function _v39_applyInvoiceFilters() {
   try {
     const r = await fetch(serverUrl + '/api/invoice/received?' + params.toString(), { signal: AbortSignal.timeout(10000) });
     const j = await r.json();
+    // v51ZE (Ishan): production-month filter — keep invoices whose batch field contains ANY batch
+    // attributed (v50B cohort) to the selected month. Multi-batch invoices match on any listed batch.
+    const _pm51ze = document.getElementById('v39-gi-pm')?.value || '';
+    if (_pm51ze && j && j.ok && Array.isArray(j.invoices)) {
+      const _bm = {}; (state.batches||[]).forEach(b=>{ if(!b.deleted&&b.batchNumber) _bm[String(b.batchNumber).trim().toUpperCase()]=_v50bCohortMonth(b)||''; });
+      j.invoices = j.invoices.filter(inv => String(inv.batch_number||'').split(',').some(x => _bm[x.trim().toUpperCase()] === _pm51ze));
+    }
     if (j.ok) {
       _v39_invoiceList = j.invoices || [];
       // v44T Point 2: client-side SO / Invoice No. narrowing over the loaded set. Matches the
@@ -9891,7 +9902,7 @@ async function _v39_applyInvoiceFilters() {
 
 function _v39_clearInvoiceFilters() {
   ['v39-gi-status','v39-gi-batch','v39-gi-customer','v39-gi-from','v39-gi-to',
-   'v39-gi-sono','v39-gi-pc','v39-gi-size','v39-gi-colour'].forEach(id => {
+   'v39-gi-sono','v39-gi-pc','v39-gi-size','v39-gi-colour','v39-gi-pm'].forEach(id => {
     const el = document.getElementById(id);
     if (el) el.value = '';
   });
@@ -14452,8 +14463,32 @@ function applySearch(q){
   // Remove old filtered total row if exists
   const oldFT=document.getElementById('filtered-total-row');
   if(oldFT) oldFT.remove();
+  document.querySelectorAll('.v51ze-mc-sub').forEach(r=>r.remove());
 
   if(visibleRows.length===0) return;
+
+  // v51ZE (Ishan): the filtered view hid every machine subtotal and left only one grand FILTERED
+  // TOTAL. Rebuild per-machine subtotal rows over the VISIBLE rows — every numeric column summed,
+  // including Balance (col 33) — inserted after each machine's last visible row.
+  const _mcGroups51ze = {};
+  visibleRows.forEach(row=>{ const mc=row.cells[0]?.textContent?.trim()||'—'; (_mcGroups51ze[mc]=_mcGroups51ze[mc]||[]).push(row); });
+  Object.entries(_mcGroups51ze).forEach(([mc,rowsMc])=>{
+    const tr2=document.createElement('tr');
+    tr2.className='v51ze-mc-sub';
+    tr2.style.cssText='background:#f0f8f0;color:#1a3a2e;font-weight:800;font-size:11px';
+    const lc=document.createElement('td'); lc.colSpan=9; lc.style.cssText='text-align:right;padding-right:8px';
+    lc.textContent=mc+' SUBTOTAL ('+rowsMc.length+')'; tr2.appendChild(lc);
+    for(let ci=9; ci<nCols; ci++){
+      const td=document.createElement('td');
+      if(numCols.includes(ci)){
+        let v=0; rowsMc.forEach(r=>{ v += parseFloat(r.cells[ci]?.textContent?.replace('%','').replace('—',''))||0; });
+        td.textContent=v?v.toFixed(2):'—';
+      } else td.textContent='—';
+      tr2.appendChild(td);
+    }
+    const last=rowsMc[rowsMc.length-1];
+    last.parentNode.insertBefore(tr2, last.nextSibling);
+  });
 
   // Build filtered total row
   const tr=document.createElement('tr');
@@ -15817,7 +15852,11 @@ function renderReportK(targetId) {
 
   // Apply date filter to Dispatch Out date (so "dispatched this period")
   // For 'all' mode, no date filter; for batches with no dispatch yet, include if Pack In falls in range
-  if (dateMode !== 'all') {
+  // v51ZD (Ishan): Stale 7d/15d = packed and NOT moved — by definition no in-window activity, so the
+  // window-membership filter below removed every stale row and the buttons showed nothing. When a
+  // stale status is selected, skip the window filter; the status itself is the (age-based) criterion.
+  const _staleSel51zd = filters.status === 'stale_7d' || filters.status === 'stale_15d';
+  if (dateMode !== 'all' && !_staleSel51zd) {
     if (_perData48) {
       // v48A (Ishan #2A): authoritative in-window membership. A batch appears only if the SERVER period
       // aggregation — the SAME source that fills the Pack-In(Period)/Disp-Out columns — reports real
@@ -15841,6 +15880,11 @@ function renderReportK(targetId) {
   if (filters.batch) rows = rows.filter(r => (r.batchNo||'').toLowerCase().includes(filters.batch.toLowerCase()));
   if (filters.pcCode) rows = rows.filter(r => (r.pcCode||'').toLowerCase().includes(filters.pcCode.toLowerCase()));
   if (filters.status) rows = rows.filter(r => r.status === filters.status);
+  // v51ZD (Ishan): 'In Progress' + a date range means pack-in ACTIVE in that range. Rows whose only
+  // in-window signal was a dispatch RECORD (or nothing once the server aggregation loads) leaked in.
+  if (filters.status === 'in_progress' && dateMode !== 'all' && _perData48) {
+    rows = rows.filter(r => r.packInWindowBoxes > 0 || r.packInWindowQty > 0.005);
+  }
 
   // Sort by last activity desc (lastDispOut or lastPackIn)
   rows.sort((a, b) => {
@@ -17734,7 +17778,9 @@ async function renderTrackingAuditLog() {
     return;
   }
   try {
-    const r = await fetch(`${serverUrl}/api/audit/view?app=tracking&limit=200`, {
+    const _adDay = document.getElementById('v51zd-audit-date')?.value || window._v51zdAuditDate || '';
+    window._v51zdAuditDate = _adDay;
+    const r = await fetch(`${serverUrl}/api/audit/view?app=tracking&limit=200${_adDay?`&date=${_adDay}`:''}`, {
       headers:{'x-session-token': token}, signal: AbortSignal.timeout(5000)
     });
     const j = await r.json();
@@ -17742,7 +17788,7 @@ async function renderTrackingAuditLog() {
     const auditSection = document.createElement('div');
     auditSection.style.cssText = 'margin-top:20px';
     auditSection.innerHTML = `
-      <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:var(--text3);margin-bottom:10px">AUDIT LOG (${j.logs.length} entries)</div>
+      <div style="font-size:11px;font-weight:700;letter-spacing:1px;color:var(--text3);margin-bottom:10px">AUDIT LOG (${j.logs.length} entries${window._v51zdAuditDate?` — ${window._v51zdAuditDate}`:' — latest 200'}) &nbsp; <input type="date" id="v51zd-audit-date" value="${window._v51zdAuditDate||''}" style="font-size:11px;padding:2px 4px" onchange="window._v51zdAuditDate=this.value;renderSettings()"> <button class="btn btn-sm btn-secondary" style="font-size:10px;padding:2px 8px" onclick="window._v51zdAuditDate='';renderSettings()">Latest</button></div>
       <div style="background:var(--surface);border-radius:6px;overflow:hidden;max-height:400px;overflow-y:auto">
         ${j.logs.map(l=>`<div style="display:grid;grid-template-columns:140px 80px 100px 1fr;gap:6px;padding:6px 12px;border-bottom:1px solid var(--border);font-size:11px">
           <span style="color:var(--text3);font-family:var(--mono)">${l.ts}</span>
