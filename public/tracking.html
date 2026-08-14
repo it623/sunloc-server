@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51ZE</title>
+<title>Sunloc Tracking Suite v1.0 · build v51ZF</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZE</p>
+      <p>Tracking Suite v1.0 · build v51ZF</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZE</p>
+      <p>Tracking Suite v1.0 · build v51ZF</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -15762,8 +15762,18 @@ function renderReportK(targetId) {
     // Sort scans by ts asc
     d.packInScans.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
     d.dispatchOutScans.sort((a, b) => (a.ts || '').localeCompare(b.ts || ''));
-    const firstPackIn = _istDayKey(d.packInScans[0]?.ts) || null;
-    const lastPackIn = _istDayKey(d.packInScans[d.packInScans.length-1]?.ts) || null;
+    let firstPackIn = _istDayKey(d.packInScans[0]?.ts) || null;
+    let lastPackIn = _istDayKey(d.packInScans[d.packInScans.length-1]?.ts) || null;
+    // v51ZF (Ishan): merge the FULL-HISTORY scan-summary dates (server MIN/MAX per batch/dept/type).
+    // state.scans is windowed (since 1st of prev month, capped 2000 newest), so a batch packed
+    // before the cap had firstPackIn=null → daysInInv=null → the stale_7d/15d status could never
+    // fire and both Stale toggles filtered to an unreachable status (empty table). min-merge, so a
+    // window-visible date can only be pulled EARLIER by the authoritative summary, never later.
+    const _sumB51zf = state.scanSummary?.[bn]?.packing || null;
+    { const _sf = _istDayKey(_sumB51zf?.inFirstTs) || null;
+      if (_sf && (!firstPackIn || _sf < firstPackIn)) firstPackIn = _sf;
+      const _sl = _istDayKey(_sumB51zf?.inLastTs) || null;
+      if (_sl && (!lastPackIn || _sl > lastPackIn)) lastPackIn = _sl; }
     // v40 P18.14: include Phase 18 dispatch record timestamps too. lastDispOut should reflect
     // the latest physical dispatch event, whether legacy scan-out OR Phase 18 truck dispatch.
     const phase18TsList = (state.dispatchRecs || [])
@@ -15774,8 +15784,15 @@ function renderReportK(targetId) {
       ...d.dispatchOutScans.map(s => _istDayKey(s.ts)).filter(Boolean),
       ...phase18TsList
     ].sort();
-    const firstDispOut = allDispTs[0] || null;
-    const lastDispOut = allDispTs[allDispTs.length - 1] || null;
+    let firstDispOut = allDispTs[0] || null;
+    let lastDispOut = allDispTs[allDispTs.length - 1] || null;
+    // v51ZF: same full-history merge for dispatch-out (sibling of the pack-in fix above — the
+    // daysInInv formula consumes BOTH dates, so both must be window-independent; uniformity rule).
+    const _sumD51zf = state.scanSummary?.[bn]?.dispatch || null;
+    { const _df = _istDayKey(_sumD51zf?.outFirstTs) || null;
+      if (_df && (!firstDispOut || _df < firstDispOut)) firstDispOut = _df;
+      const _dl = _istDayKey(_sumD51zf?.outLastTs) || null;
+      if (_dl && (!lastDispOut || _dl > lastDispOut)) lastDispOut = _dl; }
     // v40 P18.14: counts from scan-summary (no LIMIT) + combined-source helper for dispatch
     const packInBoxes = hasScanSummary()
       ? _ss(bn, 'packing').in + state.scans.filter(s=>s.batchNumber===bn&&s.dept==='packing'&&s.type==='in'&&s._local).length

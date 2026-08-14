@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51ZE</p>
+      <p>Planning Suite v3.0 · build v51ZF</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1785,7 +1785,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1813,7 +1813,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZE' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2563,7 +2563,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json'},
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZF'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5575,7 +5575,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZE'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZF'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8195,18 +8195,52 @@ function renderPrinting() {
   // Unassigned print orders
   // Guard against string "null" or "" machineIds from DB
   const isReallyUnassigned = p => !p.machineId || p.machineId === "null" || p.machineId === "";
-  const unassigned = printOrders.filter(isReallyUnassigned);
-  if (unassigned.length>0) {
+  // v51ZF (Ishan): production-month filter for the assigning table. This list had NO scoping of any
+  // kind (unlike the per-machine tables above, which have the v45Y month rule), so every unassigned
+  // row from every month ever showed at once (62 rows, mostly prior-month clutter — Maan Singh,
+  // 14 Aug). Default is All months (unchanged behaviour); the dropdown narrows to one production
+  // month, derived from the linked production order's start month — the same option-A rule
+  // getPlanProdMonth uses on the dispatch side (order startDate → endDate → '').
+  const _poProdMonth51zf = (p) => {
+    const ord = state.orders.find(o => o.id === p.productionOrderId)
+             || (p.batchNumber ? state.orders.find(o => o.batchNumber === p.batchNumber) : null);
+    const ref = (ord && ord.startDate) ? ord.startDate
+              : (ord && ord.endDate)   ? ord.endDate
+              : p.startDate || '';
+    if (!ref) return '';
+    const d = new Date(ref);
+    if (isNaN(d.getTime())) return '';
+    return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
+  };
+  const unassignedAll = printOrders.filter(isReallyUnassigned);
+  const _uaSel51zf = window._printUnassignedMonth || 'all';
+  const _uaMonths51zf = [...new Set(unassignedAll.map(_poProdMonth51zf))].sort();
+  const _uaHasUnknown51zf = _uaMonths51zf.indexOf('') >= 0;
+  const unassigned = _uaSel51zf === 'all' ? unassignedAll
+    : _uaSel51zf === 'unknown' ? unassignedAll.filter(p => _poProdMonth51zf(p) === '')
+    : unassignedAll.filter(p => _poProdMonth51zf(p) === _uaSel51zf);
+  if (unassignedAll.length>0) {
     html += `<div class="card mb-4">
-      <div class="card-title text-accent">⚠️ Unassigned Print Orders (${unassigned.length})</div>
-      <div class="table-wrap"><table>
-        <thead><tr><th>Customer</th><th>Batch No</th><th>PC Code</th><th>Colour</th><th>Size</th><th>Qty to Print (L)</th><th>Status</th><th>Actions</th></tr></thead>
+      <div class="card-title text-accent" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span>⚠️ Unassigned Print Orders (${_uaSel51zf==='all' ? unassignedAll.length : unassigned.length + ' of ' + unassignedAll.length})</span>
+        <select onchange="window._printUnassignedMonth=this.value;render()"
+                style="margin-left:auto;padding:4px 8px;border:1px solid var(--border);border-radius:4px;font-size:11px;background:var(--surface2);color:var(--text)"
+                title="Filter by month of production (linked production order's start month)">
+          <option value="all" ${_uaSel51zf==='all'?'selected':''}>All Months</option>
+          ${_uaMonths51zf.filter(m=>m).map(m=>`<option value="${m}" ${_uaSel51zf===m?'selected':''}>${prodMonthLabel(m)}</option>`).join('')}
+          ${_uaHasUnknown51zf?`<option value="unknown" ${_uaSel51zf==='unknown'?'selected':''}>Unknown</option>`:''}
+        </select>
+      </div>
+      ${unassigned.length===0?'<div class="empty-state" style="padding:12px"><p>No unassigned print orders in the selected month</p></div>':''}
+      <div class="table-wrap" ${unassigned.length===0?'style="display:none"':''}><table>
+        <thead><tr><th>Customer</th><th>Batch No</th><th>PC Code</th><th>Colour</th><th>Size</th><th>Prod Month</th><th>Qty to Print (L)</th><th>Status</th><th>Actions</th></tr></thead>
         <tbody>${unassigned.map(p=>`<tr>
           <td>${p.customer||'-'}</td>
           <td class="text-mono text-accent">${p.batchNumber||'-'}</td>
           <td class="text-mono">${p.pcCode||'-'}</td>
           <td>${fmtColour(p.colour)}</td>
           <td>${p.size||'-'}</td>
+          <td class="text-mono text-dim">${_poProdMonth51zf(p) ? prodMonthLabel(_poProdMonth51zf(p)) : '—'}</td>
           <td class="text-mono">${fmt(p.qtyToPrint)}</td>
           <td><span class="badge badge-pending">Unassigned</span></td>
           <td><button class="btn btn-primary btn-sm" onclick="showAddPrintModal(null,'${p.id}')">Assign Machine</button></td>
@@ -8696,7 +8730,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8746,7 +8780,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json' },
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -8791,7 +8825,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json' },
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9384,6 +9418,17 @@ function getOrderReadyDate(p) {
   const dailyCap = mc ? (mc.cap || 8) : 8;
   const today = new Date(); today.setHours(0,0,0,0);
 
+  // v51ZF (Ishan, confirmed): residual-WIP entries carry qty = the WIP itself, while packedQty is
+  // the lot's FULL packed figure (already dispatched) — so the "ready now" test below would always
+  // pass for them, which is exactly wrong: nothing of the residual is packed yet. Rule as specified:
+  // date = today + WIP days for the machine (wipLakhs ÷ daily cap, ceil).
+  if (p._wipResidual) {
+    const wipDays = Math.ceil((_v51zfResidualWip(p) || p.qty || 0) / dailyCap);
+    const readyDate = new Date(today);
+    readyDate.setDate(readyDate.getDate() + Math.max(1, wipDays));
+    return readyDate;
+  }
+
   // 1) Packing complete
   const packOut = p.packedQty || 0;
   if (packOut > 0 && packOut >= (p.qty * 0.99)) {
@@ -9544,6 +9589,18 @@ function _normYm50x(v) {
   if (!(mo >= 1 && mo <= 12)) return '';
   return `${m[1]}-${String(mo).padStart(2, '0')}`;
 }
+// v51ZF (Ishan, 26ZB115): residual unpacked WIP on a lot. Source: dp.wipLakhs, stamped by
+// loadTrackingStatus from the server agrade-summary — the ONE authoritative WIP figure (frozen
+// formula (a), DPR-override- and retired-aware). > 0.005 L = the same epsilon the box-balance and
+// invoice paths use, so float noise cannot resurrect a lot. Membership consumers: the Order View
+// row filter, getActiveDispatchOrderIds, and the buildTruckPlans residual pool. NOT consulted by
+// Zone Readiness or invoice eligibility (WIP is not dispatchable — confirmed asymmetry).
+function _v51zfResidualWip(p) {
+  const w = parseFloat(p && p.wipLakhs);
+  return (isFinite(w) && w > 0.005) ? w : 0;
+}
+function _v51zfHasResidualWip(p) { return _v51zfResidualWip(p) > 0; }
+
 function getPlanProdMonth(p) {
   if (!p) return '';
   const ord = state.orders.find(o => o.id === p.productionOrderId);
@@ -9767,7 +9824,24 @@ function buildTruckPlans(zone, scope = true) {
                           : _truckPlanScopeTest(p, scope.quarter || _truckCurrentQuarter(), scope.month || 'all');
   const _rawPlans = state.dispatchPlans
     .filter(p => (p.zone||'Unassigned') === zone && p.status !== 'dispatched' && _bp_inScope(p));
-  const plans = [];
+  // v51ZF (Ishan, confirmed): residual-WIP pool — lots whose ordered qty is fully dispatched
+  // (status 'dispatched', so excluded above) but which still carry unpacked WIP beyond plan
+  // (26ZB115: order filled exactly while 2.00L was in the pipeline). These are binned as ESTIMATED
+  // future boxes — ceil(wipLakhs × 100000 ÷ size-wise pack definition), the same conversion
+  // autoGenerateDispatchPlans uses at plan creation — and dated by WIP days for the machine (the
+  // established getOrderReadyDate rule; the _wipResidual flag below forces that branch, because
+  // such a lot's packedQty ≥ its residual qty would otherwise satisfy the "ready now" test that is
+  // meant for packed goods). qty is the WIP itself, so truck totals stay honest.
+  const _wipResidualPlans = state.dispatchPlans
+    .filter(p => (p.zone||'Unassigned') === zone && p.status === 'dispatched' && _bp_inScope(p))
+    .filter(p => typeof _v51zfHasResidualWip === 'function' && _v51zfHasResidualWip(p))
+    .map(p => {
+      const wip = _v51zfResidualWip(p);
+      const packSize = state.packSizes[String(p.size ?? '0')] || 100000;
+      const estBoxes = Math.max(1, Math.ceil(wip * 100000 / packSize));
+      return { ...p, boxes: estBoxes, qty: wip, _plannedBoxesOrig: 0, _wipResidual: true, tentative: true };
+    });
+  const plans = [..._wipResidualPlans];
   _rawPlans.forEach(p => {
     const plannedBoxes = parseInt(p.boxes||0, 10);
     const dispBoxes = Math.round(parseFloat(p._dispatchedBoxes||0));
@@ -10372,6 +10446,10 @@ function getActiveDispatchOrderIds(scopeMonths) {
   state.dispatchPlans.forEach(p => {
     if (!p.productionOrderId) return;
     if (p.status !== 'dispatched') _undispatchedOrderIds.add(p.productionOrderId);
+    // v51ZF (26ZB115): a fully-dispatched lot with residual unpacked WIP still has material coming —
+    // its order must stay admitted, or the row-level WIP membership (and DM's batch search, which
+    // runs after membership) never gets the chance to apply. Same helper as the row filter.
+    else if (typeof _v51zfHasResidualWip === 'function' && _v51zfHasResidualWip(p)) _undispatchedOrderIds.add(p.productionOrderId);
   });
   return new Set(state.orders.filter(o => {
     if (o.deleted) return false;
@@ -10623,8 +10701,16 @@ function renderDispatch() {
       const out    = Math.round(parseFloat(p._dispatchedBoxes || 0)) || 0;
       return (packed - out) > 0;
     };
+    // v51ZF (Ishan, 26ZB115): a lot leaves Order View only when there is genuinely nothing left in
+    // the batch's PIPELINE, not just nothing on the packed shelf. Status flips 'dispatched' the
+    // moment dispatched qty reaches ordered qty; when that exact-fill coincides with box balance 0,
+    // v51W dropped the lot while unpacked WIP (server wipLakhs — frozen formula (a), Gross −
+    // Wastage − packIn, stamped by the 60s tracking tick) was still flowing toward packing with
+    // nowhere in the app to appear. Such lots now stay visible, flagged by the WIP chip in the
+    // Status column, and remain EXCLUDED from Zone Readiness / invoice eligibility (nothing packed
+    // is dispatchable — deliberate asymmetry, confirmed).
     const zPlans = (z==='all' ? plans : plans.filter(p=>(p.zone||'Unassigned')===z))
-                     .filter(p=>p.status!=='dispatched' || _v51wHasBoxBalance(p))
+                     .filter(p=>p.status!=='dispatched' || _v51wHasBoxBalance(p) || _v51zfHasResidualWip(p))
                      .filter(_povPlanInScope);
     window._dispatchZonePlans[z] = zPlans;
     const totalQty = zPlans.reduce((s,p)=>s+p.qty,0);
@@ -10920,7 +11006,7 @@ function renderDispatchRow(p) {
       style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
       onchange="updateDispatchActual('${p.id}',this.value)"></td>
     <td class="text-mono ${(p.qty-(p.actualDispatched||0))>0?'text-accent':''}">${isDispatched?'<span style="color:var(--accent3)">—</span>':fmt(Math.max(0,p.qty-(p.actualDispatched||0)))}</td>
-    <td>${statusBadge}${_v44r_stallBadge(p)}</td>
+    <td>${statusBadge}${_v44r_stallBadge(p)}${(isDispatched && typeof _v51zfResidualWip === 'function' && _v51zfResidualWip(p) > 0) ? `<div style="font-size:10px;color:#f59e0b;margin-top:3px;white-space:nowrap" title="Unpacked WIP still in the pipeline (Gross − Wastage − PackIn, from Tracking). Not dispatchable until packed.">⚠ ${fmt(_v51zfResidualWip(p))}L WIP pending — nothing packed to dispatch</div>` : ''}</td>
     <td><input type="text" value="${p.remarks||''}" placeholder="Remarks..."
       style="width:120px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px"
       onchange="updateDispatchRemark('${p.id}',this.value)"></td>
@@ -11714,7 +11800,12 @@ function renderTruckOrdersTable(truck) {
             return (!isNaN(dd) && dd > new Date(truck.etd)) ? new Date(truck.etd) : d;
           };
           let readyDate, readySource;
-          if (p.packingReadyDate) {
+          // v51ZF: residual-WIP entries must NOT take the packingReadyDate branch — that date is the
+          // lot's PAST packing (already dispatched); the residual's date is WIP days for the machine.
+          if (p._wipResidual) {
+            readyDate = fmtDate(_v45tClamp(getOrderReadyDate(p)));
+            readySource = '<span style="color:#f59e0b;font-size:10px">~ WIP Est.</span>';
+          } else if (p.packingReadyDate) {
             readyDate = fmtDate(_v45tClamp(new Date(p.packingReadyDate)));
             readySource = '<span style="color:var(--accent2);font-size:10px">✓ Tracking</span>';
           } else {
@@ -11735,7 +11826,11 @@ function renderTruckOrdersTable(truck) {
               return elig.eligible ? '' : 'opacity:0.6;';
             })()
           ) : '';
-          const statusBadge = p.status==='dispatched'
+          const statusBadge = p._wipResidual
+            // v51ZF: the underlying plan status is 'dispatched' (ordered qty filled), but THIS bin
+            // entry is estimated future material — saying "Dispatched" here would be false.
+            ? `<span class="badge" style="font-size:10px;background:rgba(245,158,11,0.12);color:#f59e0b;border:1px solid rgba(245,158,11,0.3)" title="Estimated boxes from ${fmt(_v51zfResidualWip(p))}L unpacked WIP — not yet packed">WIP est.</span>`
+            : p.status==='dispatched'
             ? '<span class="badge badge-completed" style="font-size:10px">Dispatched</span>'
             : packed >= (p.boxes||0) && p.boxes > 0
             ? '<span class="badge badge-running" style="font-size:10px">Packed ✓</span>'

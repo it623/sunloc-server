@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZE';
+const APP_BUILD = 'v51ZF';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -10139,6 +10139,30 @@ app.post('/api/print-orders/bulk', async (req, res) => {
     const { printOrders } = req.body;
     if (!Array.isArray(printOrders)) return res.status(400).json({ ok: false, error: 'printOrders array required' });
     if (!pgPool) return res.json({ ok: true, count: 0 });
+    // v51ZF (Ishan, confirmed): machine_id write audit — the v50T pattern applied to print-order
+    // assignment. Every save rewrites all rows, so timestamps carry no history (all of Maan Singh's
+    // rows shared one updated_at second on 14 Aug) and a lost assignment leaves zero trace. One
+    // ordered log line per assignment TRANSITION (assigned→null is the suspected revert vector, but
+    // any change is logged), naming the writing build (X-Sunloc-Build) so a stale-tab stomp is
+    // identifiable from the Railway logs alone. Read is one keyed SELECT; audit must never break
+    // the write.
+    try {
+      const _ids = printOrders.map(p => p && p.id).filter(Boolean);
+      if (_ids.length) {
+        const _ex = await pgPool.query('SELECT id, batch_number, machine_id FROM print_orders WHERE id = ANY($1)', [_ids]);
+        const _exMap = {};
+        _ex.rows.forEach(r => { _exMap[r.id] = r; });
+        const _bld = req.get('X-Sunloc-Build') || '-';
+        const _norm = v => (v == null || v === '' || v === 'null') ? null : String(v);
+        for (const p of printOrders) {
+          if (!p || !p.id || !_exMap[p.id]) continue;
+          const before = _norm(_exMap[p.id].machine_id), after = _norm(p.machineId);
+          if (before !== after) {
+            console.log(`[v51ZF PRINT AUDIT] ${_exMap[p.id].batch_number || p.batchNumber || p.id} machine_id: ${JSON.stringify(before)} → ${JSON.stringify(after)}${before && !after ? ' *** ASSIGNMENT CLEARED ***' : ''} | build=${_bld} | rows-in-save=${printOrders.length}`);
+          }
+        }
+      }
+    } catch (e) { /* audit must never break a write */ }
     for (const p of printOrders) {
       if (!p.id) continue;
       await pgPool.query(`
@@ -18952,7 +18976,13 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
         catch(e) { console.warn('[scan-summary] query failed:', e.message); return []; }
       };
       const pgCut = col => `(LEFT(${col},19))::timestamp < ($1::date + interval '1 day' + interval '30 minutes')`;
-      const scanSql = `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${pgCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type`;
+      // v51ZF (Ishan, Report G stale): MIN/MAX ts per (batch,dept,type) — the client's ONLY prior
+      // source of a batch's first pack-in date was the recency-windowed state.scans (since = 1st of
+      // previous month, capped 2000 newest rows), so any batch whose pack-in scans fell outside the
+      // cap had firstPackIn=null → daysInInv=null → could never classify stale_7d/15d, and the
+      // Stale toggles filtered to a status no row ever received. Additive fields only; every
+      // existing consumer reads in/out/inQty/outQty unchanged.
+      const scanSql = `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty, MIN(s.ts) as first_ts, MAX(s.ts) as last_ts FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${pgCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type`;
       const wasteSql = `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number, dept, type`;
       const dispSql  = `SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number`;
       [scanRows, wastageRows, dispatchRows] = await Promise.all([
@@ -18964,7 +18994,7 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
     } else {
       const sc = (sql, params) => { try { return db.prepare(sql).all(...(params||[])); } catch(e) { return []; } };
       const liteCut = col => `datetime(${col}) < datetime(?, '+1 day', '+30 minutes')`;
-      scanRows     = sc(`SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type`, asof?[asof]:[]);
+      scanRows     = sc(`SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty, MIN(s.ts) as first_ts, MAX(s.ts) as last_ts FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type`, asof?[asof]:[]);   // v51ZF: same MIN/MAX as PG
       wastageRows  = sc(`SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number, dept, type`, asof?[asof]:[]);
       dispatchRows = sc(`SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number`, asof?[asof]:[]);
       if (asof) grossRows = sc(`SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE substr(date,1,10) <= ? GROUP BY batch_number`, [asof]);
@@ -18980,6 +19010,17 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
       ensure(bn, r.dept);
       if (r.type === 'in')  { summary[bn][r.dept].in  += parseInt(r.cnt||0); summary[bn][r.dept].inQty  += parseFloat(r.total_qty||0); }
       if (r.type === 'out') { summary[bn][r.dept].out += parseInt(r.cnt||0); summary[bn][r.dept].outQty += parseFloat(r.total_qty||0); }
+      // v51ZF: full-history first/last scan instants per direction (Report G stale + daysInInv).
+      // min/max-merged rather than assigned so a hypothetical repeated (dept,type) group stays correct.
+      const d = summary[bn][r.dept];
+      if (r.type === 'in') {
+        if (r.first_ts && (!d.inFirstTs  || r.first_ts < d.inFirstTs)) d.inFirstTs = r.first_ts;
+        if (r.last_ts  && (!d.inLastTs   || r.last_ts  > d.inLastTs))  d.inLastTs  = r.last_ts;
+      }
+      if (r.type === 'out') {
+        if (r.first_ts && (!d.outFirstTs || r.first_ts < d.outFirstTs)) d.outFirstTs = r.first_ts;
+        if (r.last_ts  && (!d.outLastTs  || r.last_ts  > d.outLastTs))  d.outLastTs  = r.last_ts;
+      }
     });
     const wastage = {};
     wastageRows.forEach(r => {
