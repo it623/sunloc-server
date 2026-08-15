@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZJ';
+const APP_BUILD = 'v51ZK';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -3794,8 +3794,23 @@ function _sapUomScale(line) {
 // guard in the system (v41w 5s, GET-reconcile 30s, upsert staleness) compare against a clock that is
 // always "now" — the systemic enabler behind the status ping-pong. Unchanged rows are now skipped.
 function _v49pStable(o) {
-  return JSON.stringify(o, (k, v) => (v && typeof v === 'object' && !Array.isArray(v))
-    ? Object.keys(v).sort().reduce((a, kk) => { a[kk] = v[kk]; return a; }, {}) : v);
+  // v51ZK (Ishan — bg-merge churn: all ~1,171 production_orders rows rewritten every 30s with zero
+  // client changes): the v50L convenience injection copies the DB row's updated_at onto the
+  // blob-side object before this comparison, while the stored data_json (written from the blob)
+  // does not carry it — so the two sides could NEVER stringify equal, every row was judged dirty on
+  // every merge, the rewrite refreshed updated_at, and the next cycle re-injected it: a
+  // self-sustaining 100% rewrite that also destroyed row-timestamp history (all of Maan Singh's
+  // print rows shared one second) and kept the hot table write-churned (the v41ZM contention class).
+  // Fix at the comparator, not the injection: updated_at (and the derived dbUpdated) are EXCLUDED
+  // from the stable form on BOTH sides — they are bookkeeping about the write, not content of the
+  // order — so equality is decided purely by real fields. Rows now rewrite only when something the
+  // user actually changed differs; the v50L injection itself stays (its consumers still need the
+  // timestamp), and the dbUpdated staleness logic elsewhere is untouched.
+  return JSON.stringify(o, (k, v) => {
+    if (k === 'updated_at' || k === 'dbUpdated') return undefined;
+    return (v && typeof v === 'object' && !Array.isArray(v))
+      ? Object.keys(v).sort().reduce((a, kk) => { if (kk === 'updated_at' || kk === 'dbUpdated') return a; a[kk] = v[kk]; return a; }, {}) : v;
+  });
 }
 function _orderHasActuals(o) {
   if (!o) return false;
