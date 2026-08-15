@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51ZI</title>
+<title>Sunloc Tracking Suite v1.0 · build v51ZJ</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZI</p>
+      <p>Tracking Suite v1.0 · build v51ZJ</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZI</p>
+      <p>Tracking Suite v1.0 · build v51ZJ</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -11754,10 +11754,19 @@ function _v41_renderReportGInner(){
       // in-transit SUBSET (shown, not added). "Transit→Pack" folded into Packing (= toPackTransit,
       // all in-transit). Total = frozen WIP + packed (≤ gross); frozen WIP kept as its own line.
       const _u45 = _rptDUns(b);
+      // v51ZJ (Ishan, 15 Aug — "matrix still not reconciling with Report F"): the subset shown here
+      // was Math.min(unsc, bucket) and the whole cell was HIDDEN when the bucket was ≤0 — so Report F
+      // could say 1.75L printing→pi in-transit while this card showed ▸1.21 (26ZD108) or nothing at
+      // all (26ZD113, bucket netted to 0 by offsetting extra-in boxes). The subset is now the RAW
+      // server gap — the SAME number Report F prints — uncapped, and shown even on a zero bucket.
+      // Totals are UNCHANGED (buckets only; the subset stays "shown, NOT added", so row total ≤ gross
+      // still holds). transit > bucket is real information: offsetting extra-in boxes exist (boxes
+      // scanned IN without a prior-stage OUT — Report F's extraIn annotation), flagged in the title.
       const _stageCell = (label, colour, bucket, unsc) => {
-        if ((bucket||0) <= 0.005) return '';
-        const u = Math.min(unsc||0, bucket||0);
-        return `<span style="color:${colour}">${label}: ${fmt(bucket)}L${u>0.005?` <span style="color:#dc2626">▸ ${fmt(u)} in-transit</span>`:''}</span>`;
+        const u = unsc || 0;
+        if ((bucket||0) <= 0.005 && u <= 0.005) return '';
+        const _xTitle = (u > (bucket||0) + 0.005) ? ` title="In-transit exceeds the net bucket — offsetting extra-in boxes exist (scanned IN without a prior-stage OUT; see Report F extraIn)"` : '';
+        return `<span style="color:${colour}"${_xTitle}>${label}: ${fmt(bucket||0)}L${u>0.005?` <span style="color:#dc2626">▸ ${fmt(u)} in-transit</span>`:''}</span>`;
       };
       const rows2 = [];
       { const l = _stageCell(b.isPrinted?'🔴 Unsorted PTD':'🔴 Unsorted UP', 'var(--red)', wip.preAIM, 0); if(l) rows2.push(l); }
@@ -11956,7 +11965,10 @@ function _v41_renderReportGInner(){
         const u = _rptDUns(b);
         const cells = cols.map(c=>{
           const val = c.wip ? (w[c.wip]||0) : 0;              // bucket (already contains in-transit)
-          const unscanned = c.uns ? Math.min(u[c.uns]||0, val) : 0; // demarcated subset (≤ bucket)
+          // v51ZJ: subset = the RAW server gap, uncapped — identical to Report F's figure (was
+          // Math.min(gap, bucket), which made F read 5.25L while this cell read ▸4.79). Buckets and
+          // row totals unchanged; subset remains display-only.
+          const unscanned = c.uns ? (u[c.uns]||0) : 0;
           return { total: val, unscanned };
         });
         // v45ZR item 1.3 (confirmed by Ishan): Gross Production + total Wastage (AIM+Printing+PI
@@ -11970,8 +11982,8 @@ function _v41_renderReportGInner(){
       const colTot = cols.map((_,i)=> mrows.reduce((s,r)=>s+r.cells[i].total,0));
       const colUns = cols.map((_,i)=> mrows.reduce((s,r)=>s+r.cells[i].unscanned,0));
       const grand = colTot.reduce((s,v)=>s+v,0);
-      const _cell = c => c.total>0.005
-        ? `${fmt(c.total)}${c.unscanned>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(c.unscanned)} unsc</span>`:''}`
+      const _cell = c => (c.total>0.005 || c.unscanned>0.005)
+        ? `${c.total>0.005?fmt(c.total):'—'}${c.unscanned>0.005?`<br><span style="color:#dc2626;font-size:9px"${c.unscanned>c.total+0.005?' title="In-transit exceeds the net bucket — offsetting extra-in boxes exist (see Report F extraIn)"':''}>▸ ${fmt(c.unscanned)} unsc</span>`:''}`
         : '—';
       return `<div class="card-title mt-16">Stage-wise WIP Matrix — ${(_mxScope||'').replace(/</g,'&lt;')} (Lakhs${gCust?`, ${gCustMonth==='ALL'?'all months':gCustMonth}`:''})</div>
       <div class="tbl-wrap tbl-sticky"><table>
@@ -11979,7 +11991,7 @@ function _v41_renderReportGInner(){
         <tbody>${mrows.length?mrows.map(r=>`<tr><td class="td-mono fw-bold">${r.batch}</td><td class="td-mono text-right" style="color:var(--text2)">${r.gross>0.005?fmt(r.gross):'—'}</td>${r.cells.map(c=>`<td class="td-mono text-right">${_cell(c)}</td>`).join('')}<td class="td-mono text-right amber">${r.wastage>0.005?fmt(r.wastage):'—'}</td><td class="td-mono text-right fw-bold">${fmt(r.rowTot)}</td></tr>`).join(''):`<tr><td colspan="${cols.length+4}" class="text-center text-muted">No batches for this selection</td></tr>`}</tbody>
         <tfoot><tr style="background:var(--surface2);font-weight:800"><td>TOTAL</td><td class="td-mono text-right">${fmt(totGross)}</td>${colTot.map((v,i)=>`<td class="td-mono text-right">${v>0.005?fmt(v):'—'}${colUns[i]>0.005?`<br><span style="color:#dc2626;font-size:9px">▸ ${fmt(colUns[i])} unsc</span>`:''}</td>`).join('')}<td class="td-mono text-right amber">${fmt(totWaste)}</td><td class="td-mono text-right">${fmt(grand)}</td></tr></tfoot>
       </table></div>
-      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>WIP at that department</b> (the bucket already includes its in-transit boxes); the red <b>▸ N unsc</b> is the <b>in-transit subset</b> (boxes scanned out of the prior stage, not yet scanned IN here) — shown for visibility, NOT added, so the row total never exceeds gross. <b>📦 Packing</b> = boxes en route to packing but not yet packed (pi→packing / aim→packing, all in-transit). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(_mxScope||'').replace(/</g,'&lt;')}'s batches${gCust?` (${gCustMonth==='ALL'?'all months':gCustMonth})`:''}. All in Lakhs.</div>`;
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Each cell = <b>WIP at that department</b> (the bucket already includes its in-transit boxes); the red <b>▸ N unsc</b> is the <b>in-transit subset</b> (boxes scanned out of the prior stage, not yet scanned IN here) — the SAME per-box figure Report F shows, displayed for visibility, NOT added, so the row total never exceeds gross. When ▸unsc exceeds the bucket, offsetting extra-in boxes exist (scanned IN without a prior-stage OUT — Report F's extraIn). <b>📦 Packing</b> = boxes en route to packing but not yet packed (pi→packing / aim→packing, all in-transit). Packed = packed-not-dispatched (Report G balance). Row = per-batch total; column = per-department total across ${(_mxScope||'').replace(/</g,'&lt;')}'s batches${gCust?` (${gCustMonth==='ALL'?'all months':gCustMonth})`:''}. All in Lakhs.</div>`;
     })() : ''}
     <button class="btn btn-secondary btn-sm mt-12" onclick="exportReportG()">📥 Export Excel</button>
   </div>`;
@@ -14019,19 +14031,35 @@ function _v41_renderReportEInnerBody(){
     };
     const _rowPrint49v = (!_retiredE && b.isPrinted) ? _rptBRow(b.batchNumber, 'printing', _U49v) : null;
     const _rowPi49v    = (!_retiredE && b.isPrinted) ? _rptBRow(b.batchNumber, 'pi',       _U49v) : null;
-    const printingWip = _retiredE ? 0 : (b.isPrinted ? (((_rowPrint49v&&_rowPrint49v.wipQty)||0) + _gap49v('aim','printing')) : 0);
-    const piWip       = _retiredE ? 0 : (b.isPrinted ? (((_rowPi49v&&_rowPi49v.wipQty)||0)       + _gap49v('printing','pi')) : 0);
-    const packingWip  = _retiredE ? 0 : (b.isPrinted ? _gap49v('pi','packing') : _gap49v('aim','packing'));
+    // v51ZJ (Ishan, 15 Aug — "consolidated WIP for MC26/30 compare with matrix"): live (non-as-of)
+    // mode sources the three downstream legs AND the consolidated figure from getBatchWIPBreakdown —
+    // the ONE MODEL the stage-wise matrix and Report D sum. v49V's stated purpose was "so D ≡ E
+    // reconcile", but its leg construction (Report B own-dept wip + raw gap) does not telescope to
+    // the matrix bucket whenever offsetting extra-in boxes exist (boxes scanned IN without a
+    // prior-stage OUT): 26Z070 read 5.25 here vs 4.79 in the matrix. Sourcing the legs from the
+    // breakdown makes E ≡ (matrix row total − Packed) per batch BY CONSTRUCTION, reconciled or not,
+    // and subsumes the v51ZI reconciled short-circuit (the breakdown's reconciled branch is the
+    // _v47ySplit self-cured remainder). As-of date mode keeps the v49V arithmetic — the breakdown
+    // is live-only, while the swapped as-of state is date-bounded.
+    const _bd51zj = (!filterDate && !_retiredE) ? getBatchWIPBreakdown(b.batchNumber) : null;
+    const printingWip = _retiredE ? 0
+      : _bd51zj ? (_bd51zj.printWIP || 0)
+      : (b.isPrinted ? (((_rowPrint49v&&_rowPrint49v.wipQty)||0) + _gap49v('aim','printing')) : 0);
+    const piWip       = _retiredE ? 0
+      : _bd51zj ? (_bd51zj.piWIP || 0)
+      : (b.isPrinted ? (((_rowPi49v&&_rowPi49v.wipQty)||0)       + _gap49v('printing','pi')) : 0);
+    const packingWip  = _retiredE ? 0
+      : _bd51zj ? (_bd51zj.toPackTransit || 0)
+      : (b.isPrinted ? _gap49v('pi','packing') : _gap49v('aim','packing'));
     const _consolWipLegs = wip + printingWip + piWip + packingWip;
-    // v51ZI (Ishan, 15 Aug — "would Report E WIP also align identical?"): for a reconciled batch,
-    // Consolidated WIP comes from the ONE MODEL — getBatchWIPBreakdown's reconciled branch
-    // (_v47ySplit self-cured remainder, totalWIP = frozen WIP excluding packed) — the exact figure
-    // the stage-wise matrix and Report D sum. E's leg arithmetic (AIM legs from raw quantities,
-    // _rptBRow buckets) approximates it and left residuals (26Z068: 1.75, 26Z077: 3.50) because
-    // those legs never consulted the declared-WIP precedence. Non-reconciled batches keep the
-    // v49V leg sum byte-identically. Retired batches were already zeroed above.
+    // v51ZJ: consolidated = the five breakdown legs (preAIM + AIM + Printing + PI + toPackTransit) —
+    // exactly the matrix row total minus Packed. Falls back to the leg sum in as-of mode or if the
+    // breakdown is unavailable. (v51ZI's reconciled branch is subsumed: for a reconciled batch the
+    // breakdown legs ARE the _v47ySplit allocation, so the five-leg sum equals its self-cured total.)
     let consolWip = _consolWipLegs;
-    if (_rcE && !_retiredE) {
+    if (_bd51zj) {
+      consolWip = (_bd51zj.preAIM||0) + (_bd51zj.aimWIP||0) + (_bd51zj.printWIP||0) + (_bd51zj.piWIP||0) + (_bd51zj.toPackTransit||0);
+    } else if (_rcE && !_retiredE) {
       try {
         const _bd51zi = getBatchWIPBreakdown(b.batchNumber);
         if (_bd51zi && _bd51zi.reconciled && _bd51zi.totalWIP != null) consolWip = _bd51zi.totalWIP;
