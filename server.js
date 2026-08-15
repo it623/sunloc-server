@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZF';
+const APP_BUILD = 'v51ZG';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -20338,6 +20338,17 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       // v37E WIP-fix: material at packing is FG, not WIP (uses packIn)
       const totalWastageForWIP = aimWaste + printWaste + piWaste;
       const wipLakhs = _retiredBatchSet.has((batchNo||'').toUpperCase()) ? 0 : Math.max(0, grossProd - totalWastageForWIP - packInQty);
+      // v51ZG (Ishan, 26ZB115): scan-based in-transit-to-packing — the SAME leg Tracking Report D
+      // shows as "Packing (in transit)" and Report F counts as the aim→packing / pi→packing gap:
+      // boxes scanned OUT of the dept that feeds packing but not yet scanned IN at packing. The
+      // feeding dept is PI when the batch has PI activity (printed flow), else AIM (unprinted) —
+      // the same printed/unprinted branch Tracking applies, expressed through scan presence.
+      // Why it exists: the frozen WIP formula (a) above clamps to 0 whenever DPR gross is
+      // UNDERSTATED (26ZB115: gross 27.20 < inspected 35.45, already ⚠-flagged in Report D), which
+      // hid a lot whose boxes were demonstrably still flowing. Scans are direct physical evidence,
+      // independent of DPR entry quality. Additive field; formula (a) itself is untouched.
+      const _upstreamOutQty = (piOut > 0) ? piOut : aimOut;
+      const toPackTransit = _retiredBatchSet.has((batchNo||'').toUpperCase()) ? 0 : Math.max(0, _upstreamOutQty - packInQty);
       // v37I.1: Pack-Out stage removed. FG = boxes pack-in'd but not yet received by dispatch.
       // Old: packing.in - packing.out (boxes inside packing dept, packed but not yet shipped).
       // New: packing.in - dispatch.in (boxes packed and pending dispatch receipt — same concept,
@@ -20373,6 +20384,7 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
         packing: { inQty: packInQty, outQty: packOutQty, in: pack.in||0, out: pack.out||0 },
         grossProd,
         wipLakhs,          // Lakhs still in production (not yet at packing)
+        toPackTransit,     // v51ZG: Lakhs scanned out of the packing-feeding dept, not yet packed in
         fgAwaitingDispatch // Lakhs packed at packing dept, awaiting dispatch receipt
       };
     });

@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51ZF</p>
+      <p>Planning Suite v3.0 · build v51ZG</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1577,6 +1577,7 @@ const SYNC = (() => {
             const totQty   = parseFloat(bd.packing?.inQty || 0);
             if (totBoxes <= 0 && totQty <= 0) return; // no packing yet — leave these lots untouched
             const totWip   = bd.wipLakhs || 0;
+            const totTransit = bd.toPackTransit || 0;   // v51ZG: scan-based in-transit-to-packing
             const totGross = bd.grossProd || 0;
             const totFG    = bd.fgAwaitingDispatch || 0;
             const lots = _lotsByBatch[bn];
@@ -1591,6 +1592,7 @@ const SYNC = (() => {
                 boxes: allocBoxes,
                 qty: totQty * ratio,
                 wip: totWip * ratio,
+                transit: totTransit * ratio,   // v51ZG: same box-share split as wip
                 gross: totGross * ratio,
                 fgReady: Math.round(totFG * ratio),
                 packInQty: totQty * ratio,
@@ -1606,6 +1608,7 @@ const SYNC = (() => {
               dp.packedQty          = a.qty;
               dp.packedBoxes        = a.boxes;
               dp.wipLakhs           = a.wip;
+              dp.toPackTransit      = a.transit;   // v51ZG
               dp.grossProd          = a.gross;
               dp.fgAwaitingDispatch = a.fgReady;
               dp.packInQty          = a.packInQty;
@@ -1613,13 +1616,14 @@ const SYNC = (() => {
             }
             if (isSingleBatch) return; // single-batch with no packing — preserve existing values
             // Consolidated multi-batch export: sum the constituent batches wholesale.
-            let tQty=0, tBoxes=0, tWip=0, tGross=0, tFG=0, tPackIn=0;
+            let tQty=0, tBoxes=0, tWip=0, tTransit=0, tGross=0, tFG=0, tPackIn=0;
             batchNums.forEach(bn => {
               const bd = agj.batches[bn];
               if (!bd) return;
               tQty    += parseFloat(bd.packing?.inQty || 0);
               tBoxes  += parseInt(bd.packing?.in || 0, 10);
               tWip    += bd.wipLakhs || 0;
+              tTransit+= bd.toPackTransit || 0;   // v51ZG
               tGross  += bd.grossProd || 0;
               tFG     += bd.fgAwaitingDispatch || 0;
               tPackIn += parseFloat(bd.packing?.inQty || 0);
@@ -1628,6 +1632,7 @@ const SYNC = (() => {
               dp.packedQty          = tQty;
               dp.packedBoxes        = tBoxes;
               dp.wipLakhs           = tWip;
+              dp.toPackTransit      = tTransit;   // v51ZG
               dp.grossProd          = tGross;
               dp.fgAwaitingDispatch = tFG;
               dp.packInQty          = tPackIn;
@@ -1785,7 +1790,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZG' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1813,7 +1818,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZG' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2563,7 +2568,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZF'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZG'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5575,7 +5580,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZF'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZG'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8730,7 +8735,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZG' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8780,7 +8785,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZG' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -8825,7 +8830,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZF' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZG' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9589,15 +9594,24 @@ function _normYm50x(v) {
   if (!(mo >= 1 && mo <= 12)) return '';
   return `${m[1]}-${String(mo).padStart(2, '0')}`;
 }
-// v51ZF (Ishan, 26ZB115): residual unpacked WIP on a lot. Source: dp.wipLakhs, stamped by
-// loadTrackingStatus from the server agrade-summary — the ONE authoritative WIP figure (frozen
-// formula (a), DPR-override- and retired-aware). > 0.005 L = the same epsilon the box-balance and
-// invoice paths use, so float noise cannot resurrect a lot. Membership consumers: the Order View
-// row filter, getActiveDispatchOrderIds, and the buildTruckPlans residual pool. NOT consulted by
-// Zone Readiness or invoice eligibility (WIP is not dispatchable — confirmed asymmetry).
+// v51ZF (Ishan, 26ZB115): residual unpacked WIP on a lot — the membership measure for the Order
+// View row filter, getActiveDispatchOrderIds, and the buildTruckPlans residual pool. NOT consulted
+// by Zone Readiness or invoice eligibility (WIP is not dispatchable — confirmed asymmetry).
+// v51ZG: now max(wipLakhs, toPackTransit) — two views of "material still coming", both stamped by
+// loadTrackingStatus from the server agrade-summary:
+//   · wipLakhs — frozen formula (a), Gross − Wastage − packIn (DPR-based; clamps to 0 when DPR
+//     gross is understated, which is exactly what hid 26ZB115: gross 27.20 < inspected 35.45);
+//   · toPackTransit — scan-based aim/pi→packing gap, the same leg Report D shows as "Packing
+//     (in transit)" and Report F counts (direct physical evidence, immune to DPR entry quality).
+// max, NOT sum: on a healthy batch the in-transit boxes are already INSIDE formula (a)'s remainder
+// (gross − wastage − packIn contains them), so adding would double-count; max takes the best
+// available evidence from either source. > 0.005 L = the same epsilon the box-balance and invoice
+// paths use, so float noise cannot resurrect a lot.
 function _v51zfResidualWip(p) {
   const w = parseFloat(p && p.wipLakhs);
-  return (isFinite(w) && w > 0.005) ? w : 0;
+  const t = parseFloat(p && p.toPackTransit);
+  const eff = Math.max(isFinite(w) ? w : 0, isFinite(t) ? t : 0);
+  return (eff > 0.005) ? eff : 0;
 }
 function _v51zfHasResidualWip(p) { return _v51zfResidualWip(p) > 0; }
 
@@ -10494,6 +10508,16 @@ function _v51nApplyDispatchActuals() {
     const bns = String(dp.batchNumber || '').split(',').map(b => b.trim()).filter(Boolean);
     if (bns.length === 1 && qtyMap[bns[0]] !== undefined) (lots[bns[0]] = lots[bns[0]] || []).push(dp);
   });
+  // v51ZG (Ishan — "Order View flips between 311 and 417 orders"): the ONE divergence between this
+  // re-derivation and the loadTrackingStatus block it mirrors. That block SORTS each batch's lots by
+  // (lotNo, id) before the sequential apportionment; this one allocated in raw array order. When a
+  // split batch's lots sit out of lot order in state.dispatchPlans (appended at different times,
+  // server merges), the two passes filled DIFFERENT lots first — so statuses, actualDispatched and
+  // _dispatchedBoxes oscillated between the 60s tracking tick (sorted) and every interactive render
+  // (unsorted): dispatched lots re-admitted, membership and zone-card totals inflating and settling
+  // back, over and over. Identical sort ⇒ identical allocation ⇒ one stable render.
+  Object.keys(lots).forEach(bn => lots[bn].sort((a, b) =>
+    ((a.lotNo || 1) - (b.lotNo || 1)) || String(a.id || '').localeCompare(String(b.id || ''))));
   const alloc = {};
   Object.keys(lots).forEach(bn => {
     const L = lots[bn];
@@ -11006,7 +11030,7 @@ function renderDispatchRow(p) {
       style="width:70px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px;font-family:var(--mono)"
       onchange="updateDispatchActual('${p.id}',this.value)"></td>
     <td class="text-mono ${(p.qty-(p.actualDispatched||0))>0?'text-accent':''}">${isDispatched?'<span style="color:var(--accent3)">—</span>':fmt(Math.max(0,p.qty-(p.actualDispatched||0)))}</td>
-    <td>${statusBadge}${_v44r_stallBadge(p)}${(isDispatched && typeof _v51zfResidualWip === 'function' && _v51zfResidualWip(p) > 0) ? `<div style="font-size:10px;color:#f59e0b;margin-top:3px;white-space:nowrap" title="Unpacked WIP still in the pipeline (Gross − Wastage − PackIn, from Tracking). Not dispatchable until packed.">⚠ ${fmt(_v51zfResidualWip(p))}L WIP pending — nothing packed to dispatch</div>` : ''}</td>
+    <td>${statusBadge}${_v44r_stallBadge(p)}${(isDispatched && typeof _v51zfResidualWip === 'function' && _v51zfResidualWip(p) > 0) ? `<div style="font-size:10px;color:#f59e0b;margin-top:3px;white-space:nowrap" title="Material still coming: max of frozen WIP (Gross − Wastage − PackIn) and scan-based in-transit to packing (Report D / F leg). Not dispatchable until packed.">⚠ ${fmt(_v51zfResidualWip(p))}L WIP pending — nothing packed to dispatch</div>` : ''}</td>
     <td><input type="text" value="${p.remarks||''}" placeholder="Remarks..."
       style="width:120px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px"
       onchange="updateDispatchRemark('${p.id}',this.value)"></td>
