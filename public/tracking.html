@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51ZG</title>
+<title>Sunloc Tracking Suite v1.0 · build v51ZI</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZG</p>
+      <p>Tracking Suite v1.0 · build v51ZI</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZG</p>
+      <p>Tracking Suite v1.0 · build v51ZI</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -14022,7 +14022,21 @@ function _v41_renderReportEInnerBody(){
     const printingWip = _retiredE ? 0 : (b.isPrinted ? (((_rowPrint49v&&_rowPrint49v.wipQty)||0) + _gap49v('aim','printing')) : 0);
     const piWip       = _retiredE ? 0 : (b.isPrinted ? (((_rowPi49v&&_rowPi49v.wipQty)||0)       + _gap49v('printing','pi')) : 0);
     const packingWip  = _retiredE ? 0 : (b.isPrinted ? _gap49v('pi','packing') : _gap49v('aim','packing'));
-    const consolWip   = wip + printingWip + piWip + packingWip;
+    const _consolWipLegs = wip + printingWip + piWip + packingWip;
+    // v51ZI (Ishan, 15 Aug — "would Report E WIP also align identical?"): for a reconciled batch,
+    // Consolidated WIP comes from the ONE MODEL — getBatchWIPBreakdown's reconciled branch
+    // (_v47ySplit self-cured remainder, totalWIP = frozen WIP excluding packed) — the exact figure
+    // the stage-wise matrix and Report D sum. E's leg arithmetic (AIM legs from raw quantities,
+    // _rptBRow buckets) approximates it and left residuals (26Z068: 1.75, 26Z077: 3.50) because
+    // those legs never consulted the declared-WIP precedence. Non-reconciled batches keep the
+    // v49V leg sum byte-identically. Retired batches were already zeroed above.
+    let consolWip = _consolWipLegs;
+    if (_rcE && !_retiredE) {
+      try {
+        const _bd51zi = getBatchWIPBreakdown(b.batchNumber);
+        if (_bd51zi && _bd51zi.reconciled && _bd51zi.totalWIP != null) consolWip = _bd51zi.totalWIP;
+      } catch (e) { /* fall back to the leg sum — never blank the report */ }
+    }
     const printingTD_c = useSS ? (_ss(b.batchNumber,'printing').out + localExtra('printing','out'))
                                 : scansForBatch.filter(s=>s.dept==='printing'&&s.type==='out').length;
     const printingTD=b.isPrinted?_scanLakhs(b.batchNumber,'printing','out',b.size):0;  // v47G: per-box label sum

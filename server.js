@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZG';
+const APP_BUILD = 'v51ZI';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -13300,6 +13300,13 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
     if (!batch || !okDepts.includes(from) || !okDepts.includes(to)) {
       return res.status(400).json({ ok: false, error: 'batch, from, to required (valid depts)' });
     }
+    // v51ZH: v45ZB's premise — the header count and this expanded list must agree — now includes
+    // the reconciliation precedence: the counts endpoint zeroes an accounting-closed batch's gaps,
+    // so its expansion must be empty too (same rule: reconcile with declared WIP, or retired).
+    const _bnU51zh = batch.toUpperCase();
+    if ((Object.prototype.hasOwnProperty.call(_reconWipMap || {}, _bnU51zh)) || _retiredBatchSet.has(_bnU51zh)) {
+      return res.json({ ok: true, boxes: [], extraIn: [], reconciled: true });
+    }
     // v51Z: reversal-aware, matching the counts endpoint below — v45ZB's whole premise is that the
     // header count and this expanded list agree, so they must share the same exclusions.
     // v51ZA: plan-safe shape (see gap-counts) — batch-scoped 'live' set is tiny, one pass each leg.
@@ -13460,6 +13467,26 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
         transitions[key][r.bn].extraIn = parseInt(r.extra,10)||0;
       }
     }
+    // v51ZH (Ishan, 15 Aug — Report F vs Report Z divergence, 26ZA075): the v46M precedence rule —
+    // "admin-overridden figures take precedence across all reports" — applied to every WIP bucket
+    // but never to this endpoint, so a Report-Z-reconciled batch kept showing its physical scan
+    // gaps as live in-transit (Report F, Report D's Unscanned columns, the stage-wise matrix's
+    // ▸unsc subsets, Report E's unscanned legs — ALL consume these counts). Rule: a batch whose
+    // reconcile declared WIP (wip NOT NULL), or a retired batch (v44: WIP excluded at every WIP
+    // site), is accounting-closed — its transition decomposition is superseded by the admin figure,
+    // so ALL its gaps read zero, even when the declared WIP is > 0 (that WIP shows in Reports
+    // B/D/E via the override; the per-transition split of a superseded scan record has no meaning).
+    // Zeros are written as EXPLICIT recs — every count consumer is rec-first with a raw out−in
+    // fallback when the rec is MISSING, so mere omission would resurrect the gap client-side.
+    // An override that declared no WIP (gross/A-Grade only) leaves gaps live — deliberate.
+    try {
+      const _closed51zh = new Set([...Object.keys(_reconWipMap || {}), ..._retiredBatchSet]);
+      if (_closed51zh.size) {
+        for (const key of Object.keys(transitions)) {
+          for (const bn of _closed51zh) transitions[key][bn] = { gap: 0, gapQty: 0, extraIn: 0, reconciled: true };
+        }
+      }
+    } catch (e) { /* precedence overlay must never break the endpoint */ }
     const _body51za = { ok: true, transitions };
     _v51zaGapCache = { ts: Date.now(), body: _body51za };
     res.json(_body51za);
@@ -13650,6 +13677,34 @@ app.post('/api/dpr/batch-reopen', async (req, res) => {
 // flush does NOT run — retire must never materialise new numbers.) Reconcile WIP remains the
 // separate data-entry path that DOES move A-Grade/WIP.
 let _retiredBatchSet = new Set();
+// v51ZH (Ishan, 15 Aug — "Report F continues to show the previous uncorrected figures"): the
+// batch-level Report Z reconciliation set (batch_reconcile_override), kept in memory exactly like
+// _retiredBatchSet / _grossOverride. Map bn → admin-declared WIP. The v46M rule — "admin-overridden
+// figures take precedence across all reports" — was applied at every WIP bucket but never reached
+// the handover-gap endpoints or the server wipLakhs/toPackTransit feed; 26ZA075 proved it (Report D
+// WIP 0.00 RECONCILED, Report F still 7.00L printing→pi in-transit, Report D stage totals inflated).
+let _reconWipMap = {};
+async function loadReconOverrides() {
+  try {
+    let rows;
+    if (pgPool) rows = (await pgPool.query('SELECT batch_number, gross, packing, wip, wastage FROM batch_reconcile_override')).rows;
+    else rows = db.prepare('SELECT batch_number, gross, packing, wip, wastage FROM batch_reconcile_override').all();
+    const next = {};
+    const _n = v => (v === null || v === undefined || isNaN(parseFloat(v))) ? null : parseFloat(v);
+    // v51ZI (corrects v51ZH's wip-column-only reading): the client model is DERIVE-FIRST
+    // (_reconWip): when gross+packing were declared, the remainder derives as
+    // max(0, effectiveGross − packing − wastage) and SELF-CURES as boxes scan through; the raw
+    // wip column is only the fallback. And getBatchWIPBreakdown applies its reconciled branch for
+    // ANY override row — so precedence membership here is ANY row (v51ZH's NULL-wip carve-out
+    // removed as wrong against the client model). Rows are stored whole; the effective WIP is
+    // computed at use (agrade-summary), where the live pack-in quantity is in hand for the cure.
+    for (const r of (rows||[])) {
+      if (r.batch_number == null) continue;
+      next[String(r.batch_number).toUpperCase()] = { gross: _n(r.gross), packing: _n(r.packing), wip: _n(r.wip), wastage: _n(r.wastage) };
+    }
+    _reconWipMap = next;
+  } catch (e) { /* table may not exist yet on very first boot — safe to ignore */ }
+}
 async function loadRetiredBatches() {
   try {
     let rows;
@@ -13724,6 +13779,7 @@ app.post('/api/batch/retire', async (req, res) => {
       retired++;
     }
     await loadRetiredBatches();
+    _v51zaGapCache = null;   // v51ZH: retired batches are gap-excluded — don't serve a stale overlay
     try { await warmPlanningCache(); } catch (e) {}
     _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     console.log(`[retire] ${retired} batch(es) retired by ${by}`);
@@ -13757,6 +13813,7 @@ app.post('/api/batch/unretire', async (req, res) => {
       restored++;
     }
     await loadRetiredBatches();
+    _v51zaGapCache = null;   // v51ZH: retired batches are gap-excluded — don't serve a stale overlay
     try { await warmPlanningCache(); } catch (e) {}
     _invalidateClosedBatchesCache();   // v49W: closed-batches report cache
     console.log(`[retire] ${restored} batch(es) un-retired`);
@@ -13801,6 +13858,8 @@ app.post('/api/batch/reconcile-override', async (req, res) => {
         .run(batchNumber,g,a,p,w,ws,rsn,who,ts);
       db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','RECONCILE_OVERRIDE_SET',?)`).run(who, details);
     }
+    await loadReconOverrides();      // v51ZH: gap/WIP precedence sees the new reconcile immediately
+    _v51zaGapCache = null;           // v51ZH: never serve stale gaps for up to 30s after a reconcile
     res.json({ ok:true, ts });
   } catch (err) { res.status(500).json({ ok:false, error: err.message }); }
 });
@@ -13817,6 +13876,8 @@ app.post('/api/batch/reconcile-override/clear', async (req, res) => {
       db.prepare(`DELETE FROM batch_reconcile_override WHERE batch_number=?`).run(batchNumber);
       db.prepare(`INSERT INTO audit_log (username,role,app,action,details) VALUES (?,'admin','tracking','RECONCILE_OVERRIDE_CLEAR',?)`).run(who, JSON.stringify({batchNumber}));
     }
+    await loadReconOverrides();      // v51ZH: symmetric refresh — gaps go live again on clear
+    _v51zaGapCache = null;           // v51ZH
     res.json({ ok:true });
   } catch (err) { res.status(500).json({ ok:false, error: err.message }); }
 });
@@ -20312,6 +20373,7 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
     });
 
     // Calculate A-grade per batch per stage
+    const _dprOvrU51zi = new Set(Object.keys(_grossOverride || {}).map(k => String(k).toUpperCase()));   // v51ZI: "DPR correction present?" test for the recon derive rule
     const result = {};
     Object.entries(batches).forEach(([batchNo, depts]) => {
       const aim = depts['aim'] || {};
@@ -20337,7 +20399,7 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       const dispatchInQty = dispatch.inQty || 0;
       // v37E WIP-fix: material at packing is FG, not WIP (uses packIn)
       const totalWastageForWIP = aimWaste + printWaste + piWaste;
-      const wipLakhs = _retiredBatchSet.has((batchNo||'').toUpperCase()) ? 0 : Math.max(0, grossProd - totalWastageForWIP - packInQty);
+      let wipLakhs = _retiredBatchSet.has((batchNo||'').toUpperCase()) ? 0 : Math.max(0, grossProd - totalWastageForWIP - packInQty);
       // v51ZG (Ishan, 26ZB115): scan-based in-transit-to-packing — the SAME leg Tracking Report D
       // shows as "Packing (in transit)" and Report F counts as the aim→packing / pi→packing gap:
       // boxes scanned OUT of the dept that feeds packing but not yet scanned IN at packing. The
@@ -20348,7 +20410,30 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       // hid a lot whose boxes were demonstrably still flowing. Scans are direct physical evidence,
       // independent of DPR entry quality. Additive field; formula (a) itself is untouched.
       const _upstreamOutQty = (piOut > 0) ? piOut : aimOut;
-      const toPackTransit = _retiredBatchSet.has((batchNo||'').toUpperCase()) ? 0 : Math.max(0, _upstreamOutQty - packInQty);
+      let toPackTransit = _retiredBatchSet.has((batchNo||'').toUpperCase()) ? 0 : Math.max(0, _upstreamOutQty - packInQty);
+      // v51ZH/v51ZI (Ishan — v46M precedence must reach the server WIP feed): a Report-Z reconcile
+      // supersedes both measures. v51ZI corrects the effective-WIP rule to mirror the client's
+      // _reconWip derive-first model exactly: when gross+packing were declared, the remainder is
+      // max(0, effectiveGross − wastage − packing), with effectiveGross = the DPR closed-batch
+      // correction when present (grossProd already carries it — applied to grossProdMap upstream),
+      // else the reconcile record's gross. LIVE CURE: packing uses max(declared, live packInQty),
+      // so as boxes keep getting packed after the reconcile the server remainder falls with them —
+      // the same self-curing the client's _v47ySplit gives the reports, expressed through the
+      // frozen formula (a) shape fed by override inputs. Fallback: the raw wip column; else 0.
+      // toPackTransit is retired for any reconciled batch — the scan record is superseded.
+      if (Object.prototype.hasOwnProperty.call(_reconWipMap || {}, (batchNo||'').toUpperCase())) {
+        const _ro = _reconWipMap[(batchNo||'').toUpperCase()];
+        const _dprHasOvr = _dprOvrU51zi.has((batchNo||'').toUpperCase());
+        const _effG = _dprHasOvr ? grossProd : _ro.gross;
+        if (_effG != null && _ro.packing != null) {
+          wipLakhs = Math.max(0, _effG - (_ro.wastage || 0) - Math.max(_ro.packing || 0, packInQty));
+        } else if (_ro.wip != null) {
+          wipLakhs = Math.max(0, _ro.wip);
+        } else {
+          wipLakhs = 0;
+        }
+        toPackTransit = 0;
+      }
       // v37I.1: Pack-Out stage removed. FG = boxes pack-in'd but not yet received by dispatch.
       // Old: packing.in - packing.out (boxes inside packing dept, packed but not yet shipped).
       // New: packing.in - dispatch.in (boxes packed and pending dispatch receipt — same concept,
@@ -22853,6 +22938,7 @@ app.listen(PORT, () => {
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
+    loadReconOverrides(); // v51ZH: populate recon-override map for gap/WIP precedence
     // v49W: pre-build the closed-batches report cache once the warms above have had a moment to
     // land, so even the first click after a deploy/restart serves from memory.
     setTimeout(() => { try { _refreshClosedBatchesCache().catch(()=>{}); } catch(_) {} }, 15000);
