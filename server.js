@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZK';
+const APP_BUILD = 'v51ZL';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -1454,6 +1454,25 @@ const MIGRATIONS = [
       ALTER TABLE tracking_labels ADD COLUMN gross_wt REAL;
     `
   },
+  {
+    version: 58,
+    name: 'print_order_tombstones',
+    // v51ZL (Ishan — 26H039 stray row resurrected within 30s of a direct DELETE): print_orders has
+    // no resurrection-proof delete — every client bulk-save upserts its ENTIRE local list, and the
+    // planning blob re-seeds clients on load, so a table-only delete is undone by the first save
+    // from any tab still holding the row. A tombstoned id is (a) skipped AND purged by the bulk
+    // endpoint, (b) excluded from GET /api/print-orders, and (c) returned to the client, whose
+    // merge drops it from local state — so the row dies everywhere within one sync cycle.
+    sql: `
+      CREATE TABLE IF NOT EXISTS print_order_tombstones (
+        id TEXT PRIMARY KEY,
+        batch_number TEXT,
+        reason TEXT,
+        by_user TEXT,
+        ts TEXT
+      );
+    `
+  },
 ];
 
 function runMigrations() {
@@ -2269,6 +2288,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE TABLE IF NOT EXISTS tracking_scan_reversals (id TEXT PRIMARY KEY, reversed_scan_id TEXT NOT NULL, batch_number TEXT, label_id TEXT, dept TEXT, type TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id)`).catch(()=>{});
     await pgPool.query(`CREATE TABLE IF NOT EXISTS batch_reconcile_override (batch_number TEXT PRIMARY KEY, gross REAL, a_grade REAL, packing REAL, wip REAL, wastage REAL, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44E Issue#1
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS print_order_tombstones (id TEXT PRIMARY KEY, batch_number TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v51ZL: resurrection-proof print-order delete
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS dpr_batch_closed (
         order_id TEXT PRIMARY KEY,
@@ -2713,6 +2733,7 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE TABLE IF NOT EXISTS tracking_scan_reversals (id TEXT PRIMARY KEY, reversed_scan_id TEXT NOT NULL, batch_number TEXT, label_id TEXT, dept TEXT, type TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44C #6
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id)`).catch(()=>{});
     await pgPool.query(`CREATE TABLE IF NOT EXISTS batch_reconcile_override (batch_number TEXT PRIMARY KEY, gross REAL, a_grade REAL, packing REAL, wip REAL, wastage REAL, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44E Issue#1
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS print_order_tombstones (id TEXT PRIMARY KEY, batch_number TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v51ZL: resurrection-proof print-order delete
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS dpr_batch_closed (
         order_id TEXT PRIMARY KEY,
@@ -10121,7 +10142,29 @@ app.get('/api/print-orders', async (req, res) => {
     if (!pgPool) return res.json({ ok: true, printOrders: [] });
     // DISTINCT ON: one row per (productionOrderId,machineId,printType) — most-recently-updated wins
     // This removes DB duplicates where same batch was saved twice (once assigned, once null)
+    // v51ZL: tombstoned ids are excluded here AND returned as a list, so the client merge can drop
+    // any lingering local copies (blob-seeded tabs) instead of re-showing and re-saving them.
+    let _tombIds51zl = [];
+    try {
+      _tombIds51zl = (await pgPool.query('SELECT id FROM print_order_tombstones')).rows.map(r => r.id);
+    } catch (e) { /* table may not exist on first boot */ }
     const r = await pgPool.query(`
+      SELECT DISTINCT ON (
+        COALESCE(production_order_id, batch_number, id),
+        COALESCE(machine_id, ''),
+        COALESCE(print_type, '')
+      ) *
+      FROM print_orders
+      WHERE id NOT IN (SELECT id FROM print_order_tombstones)
+      ORDER BY
+        COALESCE(production_order_id, batch_number, id),
+        COALESCE(machine_id, ''),
+        COALESCE(print_type, ''),
+        CASE WHEN machine_id IS NOT NULL AND machine_id != '' AND machine_id != 'null' THEN 0 ELSE 1 END,
+        updated_at DESC NULLS LAST
+    `).catch(async (e) => {
+      // tombstone table absent (pre-migration boot) — fall back to the unfiltered query
+      return await pgPool.query(`
       SELECT DISTINCT ON (
         COALESCE(production_order_id, batch_number, id),
         COALESCE(machine_id, ''),
@@ -10135,7 +10178,8 @@ app.get('/api/print-orders', async (req, res) => {
         CASE WHEN machine_id IS NOT NULL AND machine_id != '' AND machine_id != 'null' THEN 0 ELSE 1 END,
         updated_at DESC NULLS LAST
     `);
-    res.json({ ok: true, printOrders: r.rows.map(row => ({
+    });
+    res.json({ ok: true, tombstonedIds: _tombIds51zl, printOrders: r.rows.map(row => ({
       id: row.id, machineId: row.machine_id, customer: row.customer,
       batchNumber: row.batch_number, pcCode: row.pc_code, size: row.size,
       colour: row.colour, printMatter: row.print_matter, printType: row.print_type,
@@ -10178,8 +10222,21 @@ app.post('/api/print-orders/bulk', async (req, res) => {
         }
       }
     } catch (e) { /* audit must never break a write */ }
+    // v51ZL: tombstone filter — a tombstoned id is NEVER upserted (the resurrection vector: every
+    // client bulk-save pushes its entire local list, so a deleted row came back within one 30s
+    // sync from any tab still holding it — 26H039 proved it live). Any tombstoned row that somehow
+    // exists is purged here too, making the delete converge no matter which client saves first.
+    let _tomb51zl = new Set();
+    try {
+      const _tr = await pgPool.query('SELECT id FROM print_order_tombstones');
+      _tomb51zl = new Set((_tr.rows || []).map(r => r.id));
+      if (_tomb51zl.size) {
+        await pgPool.query('DELETE FROM print_orders WHERE id = ANY($1)', [[..._tomb51zl]]);
+      }
+    } catch (e) { /* tombstone table may not exist on first boot — proceed without filter */ }
     for (const p of printOrders) {
       if (!p.id) continue;
+      if (_tomb51zl.has(p.id)) continue;   // v51ZL: dead by decree — skip the upsert
       await pgPool.query(`
         INSERT INTO print_orders (id,machine_id,customer,batch_number,pc_code,size,colour,
           print_matter,print_type,qty_to_print,order_qty,printed_to_date,printed_to_date_manual,

@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51ZK</p>
+      <p>Planning Suite v3.0 · build v51ZL</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1790,7 +1790,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZK' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZL' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1818,7 +1818,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZK' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZL' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2357,6 +2357,13 @@ async function loadFromKV() {
       if (prRes.ok) {
         const prj = await prRes.json();
         if (prj.ok && Array.isArray(prj.printOrders) && prj.printOrders.length > 0) {
+          // v51ZL: tombstone purge — ids the server has declared dead are dropped from local state
+          // BEFORE the merge, so a blob-seeded copy can neither re-display nor be re-saved
+          // (the resurrection that undid 26H039's direct DELETE within one 30s sync).
+          if (Array.isArray(prj.tombstonedIds) && prj.tombstonedIds.length) {
+            const _t51zl = new Set(prj.tombstonedIds);
+            state.printOrders = (state.printOrders||[]).filter(p => !p || !_t51zl.has(p.id));
+          }
           // v41ZC #2.1/2.2: merge with local assignments instead of blindly replacing.
           const _before = new Map((state.printOrders||[]).map(p=>[p.id,p]));
           state.printOrders = _mergePrintOrdersFromServer(prj.printOrders);
@@ -2393,6 +2400,13 @@ async function loadFromKV() {
       if (prResPO.ok) {
         const prjPO = await prResPO.json();
         if (prjPO.ok && Array.isArray(prjPO.printOrders) && prjPO.printOrders.length > 0) {
+          // v51ZL: tombstone purge — ids the server has declared dead are dropped from local state
+          // BEFORE the merge, so a blob-seeded copy can neither re-display nor be re-saved
+          // (the resurrection that undid 26H039's direct DELETE within one 30s sync).
+          if (Array.isArray(prjPO.tombstonedIds) && prjPO.tombstonedIds.length) {
+            const _t51zl = new Set(prjPO.tombstonedIds);
+            state.printOrders = (state.printOrders||[]).filter(p => !p || !_t51zl.has(p.id));
+          }
           // v41ZC #2.1/2.2: merge with local assignments instead of blindly replacing.
           state.printOrders = _mergePrintOrdersFromServer(prjPO.printOrders);
           // v41ZT Issue 1: display deduped via _mergePrintOrdersFromServer; do NOT delete server rows.
@@ -2568,7 +2582,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZK'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZL'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5580,7 +5594,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZK'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZL'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8735,7 +8749,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZK' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZL' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8785,7 +8799,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZK' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZL' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -8830,7 +8844,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZK' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZL' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
