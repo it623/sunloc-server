@@ -1,0 +1,321 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Sunloc Admin Assistant · build v52B</title>
+<style>
+  :root{--bg:#0f1420;--panel:#181f2e;--panel2:#1f2839;--line:#2b3650;--text:#e8ecf4;--text2:#9aa7bf;--text3:#66738c;
+        --blue:#4a9eff;--green:#3ddc84;--red:#ff5d5d;--amber:#ffb84d;}
+  *{box-sizing:border-box;margin:0;padding:0}
+  body{background:var(--bg);color:var(--text);font:14px/1.5 -apple-system,'Segoe UI',Roboto,sans-serif;min-height:100vh}
+  .top{display:flex;align-items:center;gap:12px;padding:12px 18px;background:var(--panel);border-bottom:1px solid var(--line);position:sticky;top:0;z-index:5}
+  .brand{font-weight:700;font-size:16px}.brand small{color:var(--text3);font-weight:400}
+  .top .sp{flex:1}.pill{font-size:11px;color:var(--text2);background:var(--panel2);border:1px solid var(--line);border-radius:999px;padding:3px 10px}
+  .wrap{max-width:1180px;margin:0 auto;padding:18px}
+  .tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+  .tab{padding:8px 16px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--text2);cursor:pointer;font-size:13px}
+  .tab.on{background:var(--blue);color:#fff;border-color:var(--blue)}
+  .card{background:var(--panel);border:1px solid var(--line);border-radius:12px;padding:16px;margin-bottom:14px}
+  .card h3{font-size:13px;color:var(--text2);text-transform:uppercase;letter-spacing:.4px;margin-bottom:10px}
+  textarea,input,select{width:100%;background:var(--panel2);border:1px solid var(--line);border-radius:8px;color:var(--text);padding:10px 12px;font:inherit}
+  textarea{min-height:74px;resize:vertical}
+  .btn{display:inline-block;background:var(--blue);color:#fff;border:0;border-radius:8px;padding:10px 18px;font:600 13px/1 inherit;cursor:pointer;margin-top:10px}
+  .btn.gray{background:var(--panel2);border:1px solid var(--line);color:var(--text2)}
+  .btn.green{background:var(--green);color:#08210f}
+  .btn:disabled{opacity:.5;cursor:wait}
+  .hint{font-size:12px;color:var(--text3);margin-top:6px}
+  .planline{font-size:12px;color:var(--amber);background:rgba(255,184,77,.08);border:1px solid rgba(255,184,77,.25);border-radius:8px;padding:8px 12px;margin:12px 0}
+  .asof{font-size:11px;color:var(--text3);margin:6px 0 0}
+  table{width:100%;border-collapse:collapse;margin-top:10px;font-size:13px}
+  th{background:var(--panel2);color:var(--text2);text-align:left;padding:7px 10px;border-bottom:1px solid var(--line);white-space:nowrap}
+  td{padding:6px 10px;border-bottom:1px solid rgba(43,54,80,.5)}
+  td.neg{color:var(--red);font-weight:600}
+  .sec-title{font-weight:700;margin:16px 0 2px;font-size:14px}
+  .sec-err{color:var(--red);font-size:12px}
+  .note{font-size:11px;color:var(--text3);font-style:italic;margin-top:4px}
+  .synth{background:rgba(61,220,132,.06);border:1px solid rgba(61,220,132,.25);border-radius:8px;padding:12px;margin-top:12px;font-size:13px;white-space:pre-wrap}
+  .digrow{display:flex;align-items:center;gap:12px;padding:9px 4px;border-bottom:1px solid rgba(43,54,80,.5);font-size:13px}
+  .digrow .sp{flex:1}
+  .lnk{color:var(--blue);cursor:pointer;text-decoration:underline;font-size:12px}
+  .login{max-width:360px;margin:12vh auto}
+  .badge{font-size:10px;padding:2px 8px;border-radius:999px}
+  .badge.ok{background:rgba(61,220,132,.15);color:var(--green)}.badge.no{background:rgba(255,93,93,.12);color:var(--red)}
+  #toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%);background:var(--panel2);border:1px solid var(--line);border-radius:8px;padding:10px 18px;font-size:13px;display:none;z-index:20}
+</style>
+</head>
+<body>
+
+<div class="top">
+  <div class="brand">Sunloc <b>Admin Assistant</b> <small>· build v52B</small></div>
+  <div class="sp"></div>
+  <span class="pill" id="who" style="display:none"></span>
+  <span class="pill" id="llmpill" style="display:none"></span>
+</div>
+
+<!-- ═══ LOGIN ═══ -->
+<div class="wrap login" id="loginView">
+  <div class="card">
+    <h3>Admin sign-in</h3>
+    <input id="loginUser" placeholder="Username" autocomplete="username">
+    <div style="height:8px"></div>
+    <input id="loginPin" type="password" placeholder="PIN" autocomplete="current-password">
+    <button class="btn" onclick="doLogin()">Sign in</button>
+    <div class="hint">Admin role required. Same credentials as the Planning app.</div>
+    <div class="hint" id="loginErr" style="color:var(--red)"></div>
+  </div>
+</div>
+
+<!-- ═══ MAIN ═══ -->
+<div class="wrap" id="mainView" style="display:none">
+  <div class="tabs">
+    <div class="tab on" data-v="ask" onclick="showTab('ask')">Ask</div>
+    <div class="tab" data-v="structured" onclick="showTab('structured')">Structured</div>
+    <div class="tab" data-v="digests" onclick="showTab('digests')">Digests</div>
+    <div class="tab" data-v="requests" onclick="showTab('requests')">Build queue</div>
+  </div>
+
+  <!-- ASK -->
+  <div id="v_ask">
+    <div class="card">
+      <h3>Ask anything across Planning · DPR · Tracking</h3>
+      <textarea id="q" placeholder="e.g.  Which machines are underperforming and why?&#10;e.g.  Balance quantity of Alkem remaining to dispatch from July production month&#10;e.g.  Which batches are in WIP in Printing?"></textarea>
+      <button class="btn" id="askBtn" onclick="doAsk()">Ask</button>
+      <button class="btn gray" onclick="doWhy()">Why? (remarks synthesis)</button>
+      <div class="hint">Figures are computed locally by the same frozen formulas as the Tracking reports. The AI only chooses which metrics to fetch — it never sees a quantity. Remarks text (numbers masked) is sent out only when you press "Why?".</div>
+    </div>
+    <div id="askOut"></div>
+  </div>
+
+  <!-- STRUCTURED (deterministic — works without the LLM) -->
+  <div id="v_structured" style="display:none">
+    <div class="card">
+      <h3>Structured query — pick a metric directly</h3>
+      <select id="metricSel"></select>
+      <div style="display:flex;gap:8px;margin-top:8px;flex-wrap:wrap">
+        <input id="pCustomer" placeholder="customer (optional)" style="flex:1;min-width:130px">
+        <input id="pMonth" placeholder="month YYYY-MM (optional)" style="flex:1;min-width:130px">
+        <input id="pBatch" placeholder="batch (optional)" style="flex:1;min-width:130px">
+        <input id="pDays" placeholder="days (optional)" style="flex:1;min-width:100px">
+      </div>
+      <button class="btn" id="qryBtn" onclick="doQuery()">Run</button>
+      <div class="hint">This path never touches the AI — it always works, even if the API key is unset.</div>
+    </div>
+    <div id="qryOut"></div>
+  </div>
+
+  <!-- DIGESTS -->
+  <div id="v_digests" style="display:none">
+    <div class="card">
+      <h3>12-hour digests (08:00 & 20:00 IST)</h3>
+      <button class="btn green" id="runBtn" onclick="runDigest()">Generate now</button>
+      <div class="hint">Generated automatically twice daily and emailed if SMTP is configured. History below; click to view or download the styled Excel.</div>
+      <div id="digList" style="margin-top:10px"></div>
+    </div>
+    <div id="digView"></div>
+  </div>
+
+  <!-- BUILD QUEUE -->
+  <div id="v_requests" style="display:none">
+    <div class="card">
+      <h3>Tier-2 build queue — questions that need new base data</h3>
+      <div id="reqList"></div>
+    </div>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script src="sunloc-core.js"></script>
+<script>
+// ─── plumbing ──────────────────────────────────────────────────────────────────────────────────
+const _url = location.origin;
+let TOKEN = sessionStorage.getItem('sunloc_assistant_token') || '';
+let USER = sessionStorage.getItem('sunloc_assistant_user') || '';
+const $ = (id) => document.getElementById(id);
+function toast(m){ const t=$('toast'); t.textContent=m; t.style.display='block'; setTimeout(()=>t.style.display='none', 2600); }
+async function api(path, body, method){
+  const r = await fetch(_url + path, {
+    method: method || (body ? 'POST' : 'GET'),
+    headers: { 'Content-Type':'application/json', 'x-session-token': TOKEN },
+    body: body ? JSON.stringify({ ...body, sessionToken: TOKEN }) : undefined,
+    signal: AbortSignal.timeout(120000),
+  });
+  const j = await r.json().catch(()=>({ ok:false, error:'bad response' }));
+  if (r.status === 403) { logout(); throw new Error('session expired — sign in again'); }
+  if (!j.ok) throw new Error(j.error || ('HTTP ' + r.status));
+  return j;
+}
+
+// ─── auth (reuses /api/auth/login; requires role admin) ────────────────────────────────────────
+async function doLogin(){
+  $('loginErr').textContent = '';
+  try {
+    const r = await fetch(_url + '/api/auth/login', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ username: $('loginUser').value.trim(), pin: $('loginPin').value.trim(), app: 'Planning' }) });
+    const j = await r.json();
+    if (!j.ok || !j.token) throw new Error(j.error || 'login failed');
+    if (j.role !== 'admin') throw new Error('admin role required');
+    TOKEN = j.token; USER = j.username;
+    sessionStorage.setItem('sunloc_assistant_token', TOKEN);
+    sessionStorage.setItem('sunloc_assistant_user', USER);
+    boot();
+  } catch(e){ $('loginErr').textContent = e.message; }
+}
+function logout(){ TOKEN=''; USER=''; sessionStorage.clear(); $('mainView').style.display='none'; $('loginView').style.display='block'; }
+
+async function boot(){
+  $('loginView').style.display='none'; $('mainView').style.display='block';
+  $('who').style.display='inline-block'; $('who').textContent = USER + ' · admin';
+  try {
+    const r = await api('/api/assistant/registry');
+    const sel = $('metricSel'); sel.innerHTML='';
+    for (const m of r.registry){ const o=document.createElement('option'); o.value=m.id; o.textContent=`${m.id} — ${m.desc}`; sel.appendChild(o); }
+    $('llmpill').style.display='inline-block'; $('llmpill').textContent = r.registry.length + ' metrics';
+  } catch(e){ toast(e.message); }
+  loadDigests();
+}
+
+// ─── rendering ─────────────────────────────────────────────────────────────────────────────────
+function esc(v){ return String(v==null?'':v).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function renderTable(sec){
+  if (sec.error) return `<div class="sec-title">${esc(sec.title||sec.id)}</div><div class="sec-err">Section failed: ${esc(sec.error)}</div>`;
+  const negIdx = (sec.headers||[]).map((h,i)=>/variance|difference|excess|left behind/i.test(h)?i:-1).filter(i=>i>=0);
+  let h = `<div class="sec-title">${esc(sec.title||sec.id)}</div>`;
+  if (!sec.rows || !sec.rows.length) return h + `<div class="note">${esc(sec.note||'No rows.')}</div>`;
+  h += '<table><tr>' + (sec.headers||[]).map(x=>`<th>${esc(x)}</th>`).join('') + '</tr>';
+  for (const row of sec.rows.slice(0,300)){
+    h += '<tr>' + row.map((c,i)=>`<td class="${negIdx.includes(i)&&Number(c)<0?'neg':''}">${esc(c)}</td>`).join('') + '</tr>';
+  }
+  h += '</table>';
+  if (sec.rows.length>300) h += `<div class="note">${sec.rows.length} rows — first 300 shown; export for all.</div>`;
+  if (sec.note) h += `<div class="note">${esc(sec.note)}</div>`;
+  return h;
+}
+function exportSections(sections, name){
+  // client-side xlsx via the CDN bundle already used by tracking.html
+  const s=document.createElement('script'); s.src='https://cdn.jsdelivr.net/npm/xlsx-js-style@1.2.0/dist/xlsx.bundle.js';
+  s.onload=()=>{
+    const wb=XLSX.utils.book_new();
+    sections.forEach((sec,i)=>{
+      const aoa=[[sec.title||sec.id]]; if(!sec.error){ aoa.push(sec.headers||[]); (sec.rows||[]).forEach(r=>aoa.push(r)); }
+      else aoa.push(['Section failed: '+sec.error]);
+      const ws=XLSX.utils.aoa_to_sheet(aoa); ws['!cols']=Array.from({length:8},()=>({wch:22}));
+      XLSX.utils.book_append_sheet(wb, ws, ((sec.id||('S'+i)).replace(/[\\\/?*[\]]/g,'')).slice(0,31));
+    });
+    XLSX.writeFile(wb, name+'.xlsx');
+  };
+  document.head.appendChild(s);
+}
+
+// ─── ASK ───────────────────────────────────────────────────────────────────────────────────────
+async function doAsk(){
+  const q=$('q').value.trim(); if(!q) return;
+  $('askBtn').disabled=true; $('askOut').innerHTML='<div class="card">Working — building snapshot & plan…</div>';
+  try {
+    const r = await api('/api/assistant/ask', { question:q });
+    let h='';
+    if (r.mode==='clarify') h=`<div class="card"><b>Need one clarification:</b><br>${esc(r.question)}</div>`;
+    else if (r.mode==='tier2') h=`<div class="card">${esc(r.note)}<div class="hint">It is now in the Build queue tab for the next build.</div></div>`;
+    else if (r.mode==='tier1') h=`<div class="card"><b>Proposed derived metric:</b> ${esc(r.proposal.name)}<br>
+        <span class="hint">base: ${esc(r.proposal.base)} · transform: ${esc(r.proposal.transform)}</span><br>
+        <button class="btn green" onclick='approveT1(${JSON.stringify(JSON.stringify(r.proposal))})'>Approve & save</button></div>`;
+    else if (r.mode==='fallback') { h=`<div class="card">${esc(r.note)}</div>`; showTab('structured'); }
+    else {
+      h=`<div class="card"><div class="planline">Interpreted as: ${esc(r.plan.metrics.map(m=>m.id+(m.params&&Object.keys(m.params).length?' ('+Object.entries(m.params).map(([k,v])=>k+'='+v).join(', ')+')':'')).join('  +  '))}</div>`;
+      for (const sec of r.results) h += renderTable(sec);
+      h += `<div class="asof">Data as of ${esc(r.asOf)}</div>
+            <button class="btn gray" onclick='window._last=${JSON.stringify(JSON.stringify(r.results))},exportSections(JSON.parse(window._last),"Sunloc_Answer")'>Export to Excel</button></div>`;
+    }
+    $('askOut').innerHTML=h;
+  } catch(e){ $('askOut').innerHTML=`<div class="card sec-err">${esc(e.message)}</div>`; }
+  $('askBtn').disabled=false;
+}
+async function approveT1(pjson){
+  try { await api('/api/assistant/tier1/approve', { proposal: JSON.parse(pjson) }); toast('Derived metric saved'); }
+  catch(e){ toast(e.message); }
+}
+async function doWhy(){
+  const q=$('q').value.trim()||'What recurring problems do the floor remarks show?';
+  $('askOut').innerHTML='<div class="card">Reading remarks (quantities masked) & synthesising…</div>';
+  try {
+    const r = await api('/api/assistant/why', { question:q });
+    $('askOut').innerHTML=`<div class="card"><div class="synth">${esc(r.synthesis)}</div>
+      <div class="hint">${r.remarksUsed||0} remark(s) used · quantities were masked before leaving the network.</div></div>`;
+  } catch(e){ $('askOut').innerHTML=`<div class="card sec-err">${esc(e.message)}</div>`; }
+}
+
+// ─── STRUCTURED ────────────────────────────────────────────────────────────────────────────────
+async function doQuery(){
+  $('qryBtn').disabled=true; $('qryOut').innerHTML='<div class="card">Running…</div>';
+  const params={};
+  if($('pCustomer').value.trim()) params.customer=$('pCustomer').value.trim();
+  if($('pMonth').value.trim()) params.month=$('pMonth').value.trim();
+  if($('pBatch').value.trim()) params.batch=$('pBatch').value.trim();
+  if($('pDays').value.trim()) params.days=$('pDays').value.trim();
+  try {
+    const r = await api('/api/assistant/query', { metric: $('metricSel').value, params });
+    let h='<div class="card">';
+    for (const sec of r.results) h += renderTable(sec);
+    h += `<div class="asof">Data as of ${esc(r.asOf)}</div>
+          <button class="btn gray" onclick='window._lastq=${JSON.stringify('')} , exportSections(JSON.parse(this.dataset.d),"Sunloc_Query")' data-d='${esc(JSON.stringify(r.results))}'>Export to Excel</button></div>`;
+    $('qryOut').innerHTML=h;
+  } catch(e){ $('qryOut').innerHTML=`<div class="card sec-err">${esc(e.message)}</div>`; }
+  $('qryBtn').disabled=false;
+}
+
+// ─── DIGESTS ───────────────────────────────────────────────────────────────────────────────────
+async function loadDigests(){
+  try {
+    const r = await api('/api/assistant/digests');
+    $('digList').innerHTML = (r.digests||[]).map(d=>`
+      <div class="digrow">
+        <span>${esc(String(d.generated_at||'').slice(0,16).replace('T',' '))}</span>
+        <span class="badge ${d.email_sent?'ok':'no'}">${d.email_sent?'emailed':'not emailed'}</span>
+        <span class="hint">${esc(d.email_note||'')}</span>
+        <span class="sp"></span>
+        <span class="lnk" onclick="viewDigest('${esc(d.id)}')">view</span>
+        <a class="lnk" href="${_url}/api/assistant/digest/${esc(d.id)}/xlsx?token=${encodeURIComponent(TOKEN)}">download xlsx</a>
+      </div>`).join('') || '<div class="hint">No digests yet — the first generates at the next 08:00/20:00 IST slot, or press Generate now.</div>';
+  } catch(e){ $('digList').innerHTML = `<div class="sec-err">${esc(e.message)}</div>`; }
+}
+async function viewDigest(id){
+  $('digView').innerHTML='<div class="card">Loading…</div>';
+  try {
+    const r = await api('/api/assistant/digest/'+id);
+    let h=`<div class="card"><h3>Digest · ${esc(r.digest.generatedAt)}</h3>`;
+    for (const sec of r.digest.sections) h += renderTable(sec);
+    if (r.digest.snapshotErrors && r.digest.snapshotErrors.length)
+      h += `<div class="note">Snapshot warnings: ${esc(r.digest.snapshotErrors.join(' | '))}</div>`;
+    $('digView').innerHTML=h+'</div>';
+  } catch(e){ $('digView').innerHTML=`<div class="card sec-err">${esc(e.message)}</div>`; }
+}
+async function runDigest(){
+  $('runBtn').disabled=true; toast('Generating digest — 30-60s…');
+  try { const r = await api('/api/assistant/digest/run', {}); toast(`Done — ${r.sections} sections, ${r.failed} failed, email: ${r.email.sent?'sent':r.email.reason}`); loadDigests(); }
+  catch(e){ toast(e.message); }
+  $('runBtn').disabled=false;
+}
+
+// ─── BUILD QUEUE ───────────────────────────────────────────────────────────────────────────────
+async function loadRequests(){
+  try {
+    const r = await api('/api/assistant/requests');
+    $('reqList').innerHTML = (r.requests||[]).map(x=>`
+      <div class="digrow"><div><b>${esc(String(x.created_at||'').slice(0,10))}</b> · ${esc(x.requested_by||'')}<br>
+      <span class="hint">Q: ${esc(x.question)}</span><br><span class="hint">Needs: ${esc(x.need)}</span></div></div>`).join('')
+      || '<div class="hint">Empty — nothing has needed new base data yet.</div>';
+  } catch(e){ $('reqList').innerHTML=`<div class="sec-err">${esc(e.message)}</div>`; }
+}
+
+function showTab(v){
+  for (const t of document.querySelectorAll('.tab')) t.classList.toggle('on', t.dataset.v===v);
+  for (const id of ['ask','structured','digests','requests']) $('v_'+id).style.display = id===v?'block':'none';
+  if (v==='digests') loadDigests();
+  if (v==='requests') loadRequests();
+}
+
+if (TOKEN) boot();
+</script>
+</body>
+</html>

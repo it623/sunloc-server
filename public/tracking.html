@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v51ZM</title>
+<title>Sunloc Tracking Suite v1.0 · build v52B</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZM</p>
+      <p>Tracking Suite v1.0 · build v52B</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v51ZM</p>
+      <p>Tracking Suite v1.0 · build v52B</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -12984,7 +12984,16 @@ function _rptBRow(batchNo, dept, U){
   const wipQty = dept==='aim'
     ? Math.max(0, innQty - w.remelt - outQty)
     : dept==='pi'
-      ? Math.max(0, (_piWipQty49d != null ? _piWipQty49d : boxToLakh(_rawRemain49d,_bSize45y)) - _piSal49d - _piRem49d)
+      ? Math.max(0, (_piWipQty49d != null ? _piWipQty49d
+      // v52A (Ishan, 17 Aug — 26T093: B said 3.34 while E said 2.19): the fallback valued the
+      // remaining boxes at NOMINAL box-count × pack size, but a partial last box is routine, so B
+      // overstated exactly the batches E prices correctly (E rides getBatchWIPBreakdown's qty-exact
+      // in − out). Fallback is now the same qty-exact net the month path's wipQtys approximates:
+      // innQty − outQty (26T093: 12.85 − 10.50 = 2.35, − 0.16 sal = 2.19 ≡ Report E). Uniformity:
+      // every cumulative-view consumer of the PI row (Report B, dashboard stage tiles, Report D's
+      // stage primitive) gets the corrected figure; the v49D month path with server wipQtys is
+      // untouched, as are boxes counts (physical inn − out stays).
+                                           : Math.max(0, innQty - outQty)) - _piSal49d - _piRem49d)
       : dept==='printing'
         ? Math.max(0, innQty - outQty - _dplSal51z - _prRem51z)
         : boxToLakh(wip,_bSize45y);

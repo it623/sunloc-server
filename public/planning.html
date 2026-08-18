@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v51ZM</p>
+      <p>Planning Suite v3.0 · build v52B</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1790,7 +1790,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZM' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1818,7 +1818,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZM' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2582,7 +2582,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZM'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52B'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5594,7 +5594,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v51ZM'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52B'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8324,7 +8324,9 @@ function renderPrintRow(p, pm) {
     <td class="text-mono ${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);return kg>0?'text-accent':''})()}">${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);return kg>0?fmt(kg,2)+' kg':'—'})()}</td>
     <td class="text-mono ${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);const out=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.totalOutput||0),0);const pct=out>0?(kg/out*100):0;return pct>2?'text-red':'';})()}">${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);const out=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.totalOutput||0),0);const pct=out>0?(kg/out*100):0;return out>0?fmt(pct,2)+'%':'—'})()}</td>
     <td class="text-mono ${balance<0?'text-green':balance>0?'text-accent':''}">${fmt(balance)}</td>
-    <td class="text-mono" style="white-space:nowrap">${fmtDate(p.startDate)}</td>
+    <td class="text-mono" style="white-space:nowrap">${currentUser?.role === 'admin'
+      ? `<input type="date" class="form-control" style="width:130px;padding:3px 6px;font-size:12px" value="${(p.startDate||'').slice(0,10)}" onchange="updatePrintStartDate('${p.id}', this.value)" title="v52B: admin edit — saved server-side with an admin lock so no stale tab can revert it">`
+      : fmtDate(p.startDate)}</td>
     <td class="text-mono" style="white-space:nowrap">${fmtDate(p.endDate)}</td>
     <td>${statusBadge}</td>
     <td class="text-sm">${p.zone||'-'}</td>
@@ -8335,6 +8337,29 @@ function renderPrintRow(p, pm) {
       ${p.status!=='completed'?`<button class="btn btn-success btn-sm" onclick="closePrintOrder('${p.id}')">✓</button>`:''}
     </td>
   </tr>`;
+}
+
+// v52B (Ishan, 17 Aug — 26ZB116): admin start-date edit through a LOCKED server write. Two SQL
+// repairs were stomped within minutes by stale-tab bulk-saves (any tab whose table-load once
+// failed re-saves the blob's copy forever). The admin endpoint records a lock the bulk endpoint
+// enforces, so this edit converges across every tab; a genuine reassignment releases it.
+async function updatePrintStartDate(id, val) {
+  if (!val) return;
+  const p = state.printOrders.find(o => o.id === id);
+  if (!p) return;
+  try {
+    const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52B' },
+      body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
+    });
+    const j = await r.json();
+    if (!j.ok) { alert('Start date not saved: ' + (j.error || r.status)); return; }
+    p.startDate = val;                     // local state follows the confirmed server write
+    console.log(`[v52B] start_date set + admin-locked for ${p.batchNumber || id} → ${val}`);
+    saveState();                           // normal save path; the lock now defends the value
+    render();
+  } catch (e) { alert('Start date not saved: ' + e.message); }
 }
 
 function updatePrintField(id, field, val) {
@@ -8775,7 +8800,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZM' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8825,7 +8850,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZM' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -8870,7 +8895,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v51ZM' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });

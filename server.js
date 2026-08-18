@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v51ZM';
+const APP_BUILD = 'v52B';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -27,7 +27,8 @@ const BUILD_FINGERPRINT = (() => {
   try {
     const _c = require('crypto'), _f = require('fs'), _p = require('path');
     const h = _c.createHash('sha256');
-    for (const rel of ['server.js', 'public/planning.html', 'public/dpr.html', 'public/tracking.html']) {
+    for (const rel of ['server.js', 'public/planning.html', 'public/dpr.html', 'public/tracking.html',
+                       'assistant-engine.js', 'public/assistant.html', 'public/sunloc-core.js']) {   // v52: assistant files are load-bearing
       try { h.update(_f.readFileSync(_p.join(__dirname, rel))); } catch (_) { h.update('missing:' + rel); }
     }
     return h.digest('hex').slice(0, 12);
@@ -1473,6 +1474,66 @@ const MIGRATIONS = [
       );
     `
   },
+  {
+    version: 59,
+    name: 'assistant_tables',
+    // v52: Admin Assistant. Four NEW tables only — no ALTER on anything existing. The assistant is
+    // read-only toward every pre-existing table (validator-enforced); these are its only writes.
+    sql: `
+      CREATE TABLE IF NOT EXISTS assistant_digests (
+        id TEXT PRIMARY KEY,
+        slot_key TEXT,
+        generated_at TEXT,
+        digest_json TEXT,
+        xlsx_base64 TEXT,
+        email_sent INTEGER DEFAULT 0,
+        email_note TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_assistant_digests_slot ON assistant_digests(slot_key);
+      CREATE TABLE IF NOT EXISTS assistant_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        username TEXT,
+        action TEXT,
+        question TEXT,
+        detail TEXT,
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS assistant_metrics (
+        id TEXT PRIMARY KEY,
+        definition TEXT,
+        approved_by TEXT,
+        created_at TEXT
+      );
+      CREATE TABLE IF NOT EXISTS assistant_requests (
+        id TEXT PRIMARY KEY,
+        question TEXT,
+        need TEXT,
+        requested_by TEXT,
+        created_at TEXT
+      );
+    `
+  },
+  {
+    version: 60,
+    name: 'print_order_admin_locks',
+    // v52B (Ishan, 17 Aug — 26ZB116): the tombstone philosophy applied to EDITS. A SQL-repaired
+    // start_date was stomped twice within minutes: every client bulk-save pushes its entire local
+    // list, and any tab whose guaranteed table-load failed (plant Wi-Fi) re-saves the stale blob
+    // copy indefinitely — tab discipline cannot converge this. An admin-set field value is
+    // recorded here and the bulk endpoint FORCES it over any incoming echo until a genuine
+    // reassignment (machine_id change) releases it, since resequencing legitimately recomputes
+    // dates. Deletes stick via tombstones; admin edits now stick via locks.
+    sql: `
+      CREATE TABLE IF NOT EXISTS print_order_admin_locks (
+        order_id TEXT NOT NULL,
+        field TEXT NOT NULL,
+        value TEXT,
+        by_user TEXT,
+        ts TEXT,
+        PRIMARY KEY (order_id, field)
+      );
+    `
+  },
 ];
 
 function runMigrations() {
@@ -2289,6 +2350,13 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id)`).catch(()=>{});
     await pgPool.query(`CREATE TABLE IF NOT EXISTS batch_reconcile_override (batch_number TEXT PRIMARY KEY, gross REAL, a_grade REAL, packing REAL, wip REAL, wastage REAL, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44E Issue#1
     await pgPool.query(`CREATE TABLE IF NOT EXISTS print_order_tombstones (id TEXT PRIMARY KEY, batch_number TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v51ZL: resurrection-proof print-order delete
+    // v52: Admin Assistant tables (additive; read-only toward everything else)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS assistant_digests (id TEXT PRIMARY KEY, slot_key TEXT, generated_at TEXT, digest_json TEXT, xlsx_base64 TEXT, email_sent INTEGER DEFAULT 0, email_note TEXT)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_assistant_digests_slot ON assistant_digests(slot_key)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS assistant_audit (id SERIAL PRIMARY KEY, username TEXT, action TEXT, question TEXT, detail TEXT, created_at TEXT)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS assistant_metrics (id TEXT PRIMARY KEY, definition TEXT, approved_by TEXT, created_at TEXT)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS assistant_requests (id TEXT PRIMARY KEY, question TEXT, need TEXT, requested_by TEXT, created_at TEXT)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS print_order_admin_locks (order_id TEXT NOT NULL, field TEXT NOT NULL, value TEXT, by_user TEXT, ts TEXT, PRIMARY KEY (order_id, field))`).catch(()=>{}); // v52B: admin edits stick
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS dpr_batch_closed (
         order_id TEXT PRIMARY KEY,
@@ -2734,6 +2802,13 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_scan_rev_scan ON tracking_scan_reversals(reversed_scan_id)`).catch(()=>{});
     await pgPool.query(`CREATE TABLE IF NOT EXISTS batch_reconcile_override (batch_number TEXT PRIMARY KEY, gross REAL, a_grade REAL, packing REAL, wip REAL, wastage REAL, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v44E Issue#1
     await pgPool.query(`CREATE TABLE IF NOT EXISTS print_order_tombstones (id TEXT PRIMARY KEY, batch_number TEXT, reason TEXT, by_user TEXT, ts TEXT)`).catch(()=>{}); // v51ZL: resurrection-proof print-order delete
+    // v52: Admin Assistant tables (additive; read-only toward everything else)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS assistant_digests (id TEXT PRIMARY KEY, slot_key TEXT, generated_at TEXT, digest_json TEXT, xlsx_base64 TEXT, email_sent INTEGER DEFAULT 0, email_note TEXT)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_assistant_digests_slot ON assistant_digests(slot_key)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS assistant_audit (id SERIAL PRIMARY KEY, username TEXT, action TEXT, question TEXT, detail TEXT, created_at TEXT)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS assistant_metrics (id TEXT PRIMARY KEY, definition TEXT, approved_by TEXT, created_at TEXT)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS assistant_requests (id TEXT PRIMARY KEY, question TEXT, need TEXT, requested_by TEXT, created_at TEXT)`).catch(()=>{});
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS print_order_admin_locks (order_id TEXT NOT NULL, field TEXT NOT NULL, value TEXT, by_user TEXT, ts TEXT, PRIMARY KEY (order_id, field))`).catch(()=>{}); // v52B: admin edits stick
     await pgPool.query(`
       CREATE TABLE IF NOT EXISTS dpr_batch_closed (
         order_id TEXT PRIMARY KEY,
@@ -3438,6 +3513,14 @@ async function ensurePostgresTables() {
     // Deletes ghost unassigned print order rows when a corresponding assigned row exists
     // for the same batch_number + pc_code. Idempotent.
     try {
+      // v52A (Ishan, 17 Aug — 26ZB116 vanished from Printing Plan): "an assigned row exists" was
+      // too broad a definition of superseded. A COMPLETED assigned row from an earlier print run
+      // matched too, so the fresh Unassigned skeleton for a batch printing AGAIN was purged AND
+      // tombstoned — and the v51C gap-fill could not recreate it (the completed row keeps the batch
+      // in its already-covered set), leaving the batch invisible to Maan Singh permanently. The
+      // supersession test now mirrors the client's own definition of a live assignment
+      // (status !== 'completed', planning.html assignedPOs): only an OPEN assigned row kills a
+      // skeleton. Existing wrongly-tombstoned rows are a DATA repair — diagnostic first, per rule.
       // v51ZM: tombstoned. This pass runs on EVERY boot, but a boot-time delete was as
       // resurrection-prone as any other — clients still holding the ghost re-upserted it on their
       // next bulk save, so the same ghosts were deleted again at the next restart, indefinitely.
@@ -3451,6 +3534,7 @@ async function ensurePostgresTables() {
                AND p2.machine_id IS NOT NULL
                AND p2.machine_id != ''
                AND p2.machine_id != 'null'
+               AND COALESCE(p2.status,'') != 'completed'
            )`, [],
         `(machine_id IS NULL OR machine_id = '' OR machine_id = 'null')
            AND EXISTS (
@@ -3460,6 +3544,7 @@ async function ensurePostgresTables() {
                AND p2.machine_id IS NOT NULL
                AND p2.machine_id != ''
                AND p2.machine_id != 'null'
+               AND COALESCE(p2.status,'') != 'completed'
            )`, [],
         'boot dedup: unassigned ghost superseded by an assigned row', 'boot-dedup');
     } catch (e) { console.warn('[v41 P19.1 PG] print_orders dedup:', e.message); }
@@ -10270,7 +10355,7 @@ app.post('/api/print-orders/bulk', async (req, res) => {
     try {
       const _ids = printOrders.map(p => p && p.id).filter(Boolean);
       if (_ids.length) {
-        const _ex = await pgPool.query('SELECT id, batch_number, machine_id FROM print_orders WHERE id = ANY($1)', [_ids]);
+        const _ex = await pgPool.query('SELECT id, batch_number, machine_id, start_date FROM print_orders WHERE id = ANY($1)', [_ids]);
         const _exMap = {};
         _ex.rows.forEach(r => { _exMap[r.id] = r; });
         const _bld = req.get('X-Sunloc-Build') || '-';
@@ -10281,7 +10366,38 @@ app.post('/api/print-orders/bulk', async (req, res) => {
           if (before !== after) {
             console.log(`[v51ZF PRINT AUDIT] ${_exMap[p.id].batch_number || p.batchNumber || p.id} machine_id: ${JSON.stringify(before)} → ${JSON.stringify(after)}${before && !after ? ' *** ASSIGNMENT CLEARED ***' : ''} | build=${_bld} | rows-in-save=${printOrders.length}`);
           }
+          // v52B: start_date transitions named too — the 26ZB116 stomp left zero trace because only
+          // machine_id was audited. A stale-tab echo now identifies itself (writing build + row count).
+          const _sdB = _norm(_exMap[p.id].start_date), _sdA = _norm(p.startDate);
+          if (_sdB !== _sdA) {
+            console.log(`[v52B PRINT AUDIT] ${_exMap[p.id].batch_number || p.batchNumber || p.id} start_date: ${JSON.stringify(_sdB)} → ${JSON.stringify(_sdA)} | build=${_bld} | rows-in-save=${printOrders.length}`);
+          }
         }
+        // ── v52B ADMIN-LOCK ENFORCEMENT (the edit-tombstone) ────────────────────────────────────
+        // An admin-set start_date is FORCED over any incoming client echo, so a stale tab cannot
+        // stomp a repair. A genuine reassignment (incoming machine_id differs from stored) releases
+        // the lock — the sequencing that recomputes dates on assignment is legitimate and must win.
+        try {
+          const _locks = await pgPool.query(`SELECT order_id, field, value FROM print_order_admin_locks WHERE order_id = ANY($1)`, [_ids]);
+          if (_locks.rows.length) {
+            const _lkMap = {};
+            _locks.rows.forEach(l => { (_lkMap[l.order_id] = _lkMap[l.order_id] || {})[l.field] = l.value; });
+            for (const p of printOrders) {
+              if (!p || !p.id || !_lkMap[p.id]) continue;
+              const stored = _exMap[p.id];
+              const reassigned = stored && _norm(stored.machine_id) !== _norm(p.machineId);
+              if (reassigned) {
+                await pgPool.query(`DELETE FROM print_order_admin_locks WHERE order_id = $1`, [p.id]);
+                console.log(`[v52B ADMIN-LOCK] released for ${p.batchNumber || p.id} — reassignment supersedes the lock`);
+                continue;
+              }
+              if ('start_date' in _lkMap[p.id] && _norm(p.startDate) !== _norm(_lkMap[p.id].start_date)) {
+                console.log(`[v52B ADMIN-LOCK] enforced start_date for ${p.batchNumber || p.id}: incoming ${JSON.stringify(p.startDate)} overridden to ${JSON.stringify(_lkMap[p.id].start_date)} | build=${_bld}`);
+                p.startDate = _lkMap[p.id].start_date;
+              }
+            }
+          }
+        } catch (e) { console.warn('[v52B ADMIN-LOCK] enforcement failed (write proceeds):', e.message); }
       }
     } catch (e) { /* audit must never break a write */ }
     // v51ZL: tombstone filter — a tombstoned id is NEVER upserted (the resurrection vector: every
@@ -22001,6 +22117,139 @@ app.get('/api/planning/all-kv', async (req, res) => {
     res.json({ ok: true, data: result });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });
+
+// ═══ v52B: ADMIN PRINT-ORDER START-DATE (locked edit) ═════════════════════════════════════════
+// POST /api/admin/print-order-start-date  { id, startDate }  — _acAdmin-gated.
+// Writes the date AND records an admin lock so client bulk-save echoes cannot stomp it (26ZB116:
+// two SQL repairs lost within minutes to stale-tab saves). The lock releases automatically on a
+// genuine reassignment (see the bulk endpoint's v52B enforcement block).
+app.post('/api/admin/print-order-start-date', async (req, res) => {
+  try {
+    const s = _acAdmin(req);
+    if (!s) return res.status(403).json({ ok: false, error: 'Admin only' });
+    const id = String(req.body.id || '').trim();
+    const startDate = String(req.body.startDate || '').trim();
+    if (!id || !/^\d{4}-\d{2}-\d{2}/.test(startDate)) return res.status(400).json({ ok: false, error: 'id and startDate (YYYY-MM-DD…) required' });
+    const nowIso = new Date().toISOString();
+    let batch = '';
+    if (pgPool) {
+      const r = await pgPool.query(`UPDATE print_orders SET start_date = $1, updated_at = NOW()::TEXT WHERE id = $2 RETURNING batch_number`, [startDate, id]);
+      if (!r.rows.length) return res.status(404).json({ ok: false, error: 'print order not found' });
+      batch = r.rows[0].batch_number || '';
+      await pgPool.query(`INSERT INTO print_order_admin_locks (order_id, field, value, by_user, ts) VALUES ($1,'start_date',$2,$3,$4)
+                          ON CONFLICT (order_id, field) DO UPDATE SET value = $2, by_user = $3, ts = $4`, [id, startDate, s.username, nowIso]);
+    } else {
+      const r = db.prepare(`UPDATE print_orders SET start_date = ?, updated_at = datetime('now') WHERE id = ?`).run(startDate, id);
+      if (!r.changes) return res.status(404).json({ ok: false, error: 'print order not found' });
+      batch = (db.prepare(`SELECT batch_number FROM print_orders WHERE id = ?`).get(id) || {}).batch_number || '';
+      db.prepare(`INSERT INTO print_order_admin_locks (order_id, field, value, by_user, ts) VALUES (?,?,?,?,?)
+                  ON CONFLICT(order_id, field) DO UPDATE SET value = excluded.value, by_user = excluded.by_user, ts = excluded.ts`).run(id, 'start_date', startDate, s.username, nowIso);
+    }
+    console.log(`[v52B ADMIN-LOCK] start_date set + locked for ${batch || id} → ${startDate} by ${s.username}`);
+    try { logAudit(s.username, s.role, 'planning', 'PRINT_ORDER_START_DATE', `${batch || id} start_date set to ${startDate} (admin-locked)`, req.ip); } catch (_) {}
+    res.json({ ok: true, id, batch, startDate, locked: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ═══ v52: ADMIN ASSISTANT ═════════════════════════════════════════════════════════════════════
+// All routes admin-gated via _acAdmin. The engine (assistant-engine.js) is READ-ONLY toward every
+// pre-existing table; it writes only assistant_digests / assistant_audit / assistant_metrics /
+// assistant_requests. Registered ABOVE the catch-all (which must stay last — validator D2).
+const assistantEngine = require('./assistant-engine.js');
+
+function _asGate(req, res) {
+  const s = _acAdmin(req);
+  if (!s) { res.status(403).json({ ok: false, error: 'admin session required' }); return null; }
+  return s;
+}
+
+app.post('/api/assistant/ask', async (req, res) => {
+  const s = _asGate(req, res); if (!s) return;
+  try { res.json({ ok: true, ...(await assistantEngine.ask(String(req.body.question || '').slice(0, 2000), s.username)) }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.post('/api/assistant/query', async (req, res) => {           // deterministic mode — no LLM
+  const s = _asGate(req, res); if (!s) return;
+  try { res.json({ ok: true, ...(await assistantEngine.resolveOne(String(req.body.metric || ''), req.body.params || {}, s.username)) }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.post('/api/assistant/why', async (req, res) => {              // remarks synthesis (option ii)
+  const s = _asGate(req, res); if (!s) return;
+  try { res.json({ ok: true, ...(await assistantEngine.synthesizeRemarks(String(req.body.question || '').slice(0, 1000), s.username)) }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/assistant/registry', async (req, res) => {
+  const s = _asGate(req, res); if (!s) return;
+  res.json({ ok: true, registry: assistantEngine.registry() });
+});
+
+app.get('/api/assistant/digests', async (req, res) => {
+  const s = _asGate(req, res); if (!s) return;
+  try {
+    const r = await assistantEngine.fencedQuery(
+      `SELECT id, slot_key, generated_at, email_sent, email_note FROM assistant_digests ORDER BY generated_at DESC LIMIT 30`, []);
+    res.json({ ok: true, digests: r.rows || [] });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/assistant/digest/:id', async (req, res) => {
+  const s = _asGate(req, res); if (!s) return;
+  try {
+    const r = await assistantEngine.fencedQuery(`SELECT digest_json FROM assistant_digests WHERE id = $1`, [req.params.id]);
+    if (!r.rows || !r.rows.length) return res.status(404).json({ ok: false, error: 'not found' });
+    res.json({ ok: true, digest: JSON.parse(r.rows[0].digest_json) });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/assistant/digest/:id/xlsx', async (req, res) => {
+  // browser <a href> downloads cannot send headers — this ONE route also accepts ?token= (same
+  // pattern as the v41e query-token precedent at the export endpoints).
+  let s = _acAdmin(req);
+  if (!s) { const qs = verifyToken(req.query.token); s = (qs && qs.role === 'admin') ? qs : null; }
+  if (!s) return res.status(403).json({ ok: false, error: 'admin session required' });
+  try {
+    const r = await assistantEngine.fencedQuery(`SELECT xlsx_base64, generated_at FROM assistant_digests WHERE id = $1`, [req.params.id]);
+    if (!r.rows || !r.rows.length) return res.status(404).json({ ok: false, error: 'not found' });
+    const buf = Buffer.from(r.rows[0].xlsx_base64, 'base64');
+    res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+    res.setHeader('Content-Disposition', `attachment; filename="Sunloc_Admin_Digest_${String(r.rows[0].generated_at).slice(0, 10)}.xlsx"`);
+    res.send(buf);
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.post('/api/assistant/digest/run', async (req, res) => {       // manual trigger
+  const s = _asGate(req, res); if (!s) return;
+  try { res.json({ ok: true, ...(await assistantEngine.runDigest('manual_' + Date.now().toString(36), s.username)) }); }
+  catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.post('/api/assistant/tier1/approve', async (req, res) => {     // persist an approved derived metric
+  const s = _asGate(req, res); if (!s) return;
+  try {
+    const p = req.body.proposal || {};
+    if (!p.name || !p.base) return res.status(400).json({ ok: false, error: 'proposal needs name and base' });
+    await assistantEngine.fencedQuery(
+      `INSERT INTO assistant_metrics (id, definition, approved_by, created_at) VALUES ($1,$2,$3,$4)`,
+      ['t1_' + String(p.name).replace(/\W+/g, '_').toLowerCase(), JSON.stringify(p), s.username, new Date().toISOString()]);
+    await assistantEngine.audit(s.username, 'tier1-approved', p.name, JSON.stringify(p));
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+app.get('/api/assistant/requests', async (req, res) => {           // Tier-2 build queue
+  const s = _asGate(req, res); if (!s) return;
+  try {
+    const r = await assistantEngine.fencedQuery(`SELECT * FROM assistant_requests ORDER BY created_at DESC LIMIT 50`, []);
+    res.json({ ok: true, requests: r.rows || [] });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
+assistantEngine.init({ pgPool, db, port: PORT, log: console.log });
+// ═══ end v52 admin assistant ══════════════════════════════════════════════════════════════════
+
 
 // ── Catch-all: serve index.html for unknown routes (SPA fallback) ──
 // MUST BE THE LAST ROUTE REGISTRATION IN THIS FILE. Express dispatches in registration order, so
