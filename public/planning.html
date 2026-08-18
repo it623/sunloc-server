@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v52B</p>
+      <p>Planning Suite v3.0 · build v52C</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1790,7 +1790,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52C' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1818,7 +1818,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52C' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2582,7 +2582,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52B'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52C'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5594,7 +5594,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52B'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52C'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8324,9 +8324,7 @@ function renderPrintRow(p, pm) {
     <td class="text-mono ${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);return kg>0?'text-accent':''})()}">${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);return kg>0?fmt(kg,2)+' kg':'—'})()}</td>
     <td class="text-mono ${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);const out=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.totalOutput||0),0);const pct=out>0?(kg/out*100):0;return pct>2?'text-red':'';})()}">${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);const out=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.totalOutput||0),0);const pct=out>0?(kg/out*100):0;return out>0?fmt(pct,2)+'%':'—'})()}</td>
     <td class="text-mono ${balance<0?'text-green':balance>0?'text-accent':''}">${fmt(balance)}</td>
-    <td class="text-mono" style="white-space:nowrap">${currentUser?.role === 'admin'
-      ? `<input type="date" class="form-control" style="width:130px;padding:3px 6px;font-size:12px" value="${(p.startDate||'').slice(0,10)}" onchange="updatePrintStartDate('${p.id}', this.value)" title="v52B: admin edit — saved server-side with an admin lock so no stale tab can revert it">`
-      : fmtDate(p.startDate)}</td>
+    <td class="text-mono" style="white-space:nowrap"><input type="date" class="form-control" style="width:130px;padding:3px 6px;font-size:12px" value="${(p.startDate||'').slice(0,10)}" onchange="updatePrintStartDate('${p.id}', this.value)" title="v52B: saved server-side with a lock so no stale tab can revert it (Ishan: open to all planning users, not admin-only)"></td>
     <td class="text-mono" style="white-space:nowrap">${fmtDate(p.endDate)}</td>
     <td>${statusBadge}</td>
     <td class="text-sm">${p.zone||'-'}</td>
@@ -8350,7 +8348,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52B' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52C' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -8800,7 +8798,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52C' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8850,7 +8848,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52C' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -8867,6 +8865,50 @@ async function savePrintModal(existingId) {
   // Reset multi state
   _opmIsMulti = false; _opmRowCount = 2;
   await saveState(); closeModal(); render();
+  _v52bOpmFullAlert(_effBatch);   // v52B: no silent pass into next month (26ZB116 → 3-Sep)
+}
+
+// ═══ v52B OPM-FULL ALERT (Ishan, 17 Aug) ══════════════════════════════════════════════════════
+// 26ZB116 was assigned to OPM14, silently sequenced to 3-Sep because OPM14's August queue was
+// full, and vanished from the August Printing Plan — nobody was told. After every print-modal
+// save, each just-saved unstarted order is checked: if the sequencer pushed its start beyond the
+// selected plan month, Maan Singh gets an alert naming the date AND the same-size OPMs that still
+// have capacity this month (earliest free slot each), so replanning is a choice, not archaeology.
+function _v52bEarliestSlot(machineId) {
+  const q = (state.printOrders || []).filter(p => p.machineId === machineId && p.status !== 'completed');
+  let end = new Date(today());
+  for (const p of q) {
+    const e = p.endDate ? new Date(p.endDate) : (p.startDate ? new Date(p.startDate) : null);
+    if (e && !isNaN(e) && e > end) end = e;
+  }
+  const slot = new Date(end); slot.setDate(slot.getDate() + 1);
+  return slot;
+}
+function _v52bOpmFullAlert(batch) {
+  try {
+    if (!batch) return;
+    const ym = _selectedPlanMonth || currentYM();
+    const _ymOf = d => { const x = new Date(d); return isNaN(x) ? '' : `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}`; };
+    const late = (state.printOrders || []).filter(p =>
+      p.batchNumber === batch && p.machineId && p.status !== 'completed' &&
+      !(p.printedToDate > 0) && p.startDate && _ymOf(p.startDate) > ym);
+    if (!late.length) return;
+    for (const po of late) {
+      const pm = getPrintMachine(po.machineId) || {};
+      const alts = (state.printMachineMaster || [])
+        .filter(m => m.active !== false && m.id !== po.machineId && String(m.size) === String(pm.size ?? po.size))
+        .map(m => ({ id: m.id, slot: _v52bEarliestSlot(m.id) }))
+        .filter(a => _ymOf(a.slot) <= ym)
+        .sort((a, b) => a.slot - b.slot)
+        .slice(0, 3);
+      const _fd = d => { const x = new Date(d); return `${String(x.getDate()).padStart(2,'0')}-${x.toLocaleString('en',{month:'short'})}-${x.getFullYear()}`; };
+      const altText = alts.length
+        ? `\n\nOPMs with ${monthLabel(ym)} capacity (size ${pm.size ?? po.size ?? '—'}):\n` + alts.map(a => `  • ${a.id} — free from ${_fd(a.slot)}`).join('\n')
+        : `\n\nNo other size-${pm.size ?? po.size ?? '—'} OPM has free capacity in ${monthLabel(ym)}.`;
+      alert(`⚠️ ${po.machineId} is FULL for ${monthLabel(ym)}\n\n${batch} was saved, but the queue pushes its start to ${_fd(po.startDate)} — it will NOT appear in the ${monthLabel(ym)} Printing Plan.${altText}\n\nReassign via Assign Machine if it must print this month, or keep ${po.machineId} and find it under ${monthLabel(_ymOf(po.startDate))} in the month picker.`);
+      console.log(`[v52B OPM-FULL] ${batch} on ${po.machineId} sequenced to ${_fd(po.startDate)} (beyond ${ym}); alternatives: ${alts.map(a=>a.id).join(',') || 'none'}`);
+    }
+  } catch (e) { console.warn('[v52B OPM-FULL] check failed:', e.message); }
 }
 
 function editPrintOrder(id) { showAddPrintModal(null, id); }
@@ -8895,7 +8937,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52B' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52C' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });

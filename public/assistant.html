@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Admin Assistant · build v52B</title>
+<title>Sunloc Admin Assistant · build v52C</title>
 <style>
   :root{--bg:#0f1420;--panel:#181f2e;--panel2:#1f2839;--line:#2b3650;--text:#e8ecf4;--text2:#9aa7bf;--text3:#66738c;
         --blue:#4a9eff;--green:#3ddc84;--red:#ff5d5d;--amber:#ffb84d;}
@@ -47,7 +47,7 @@
 <body>
 
 <div class="top">
-  <div class="brand">Sunloc <b>Admin Assistant</b> <small>· build v52B</small></div>
+  <div class="brand">Sunloc <b>Admin Assistant</b> <small>· build v52C</small></div>
   <div class="sp"></div>
   <span class="pill" id="who" style="display:none"></span>
   <span class="pill" id="llmpill" style="display:none"></span>
@@ -152,7 +152,11 @@ async function doLogin(){
   $('loginErr').textContent = '';
   try {
     const r = await fetch(_url + '/api/auth/login', { method:'POST', headers:{'Content-Type':'application/json'},
-      body: JSON.stringify({ username: $('loginUser').value.trim(), pin: $('loginPin').value.trim(), app: 'Planning' }) });
+      // v52C: app must be lowercase 'planning' — the auth lookup is exact-match on (username, app)
+      // and the Planning client sends lowercase; 'Planning' returned "User not found" for valid
+      // admins. deviceToken/userAgent mirror planning.html so sign-in survives the v50 access
+      // gate's future enforce flip (same-origin localStorage key, so the device is already known).
+      body: JSON.stringify({ username: $('loginUser').value.trim(), pin: $('loginPin').value.trim(), app: 'planning', deviceToken: (localStorage.getItem('sunloc_device_token')||''), userAgent: (navigator.userAgent||'') }) });
     const j = await r.json();
     if (!j.ok || !j.token) throw new Error(j.error || 'login failed');
     if (j.role !== 'admin') throw new Error('admin role required');

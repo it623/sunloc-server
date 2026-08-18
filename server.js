@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52B';
+const APP_BUILD = 'v52C';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -22125,8 +22125,10 @@ app.get('/api/planning/all-kv', async (req, res) => {
 // genuine reassignment (see the bulk endpoint's v52B enforcement block).
 app.post('/api/admin/print-order-start-date', async (req, res) => {
   try {
-    const s = _acAdmin(req);
-    if (!s) return res.status(403).json({ ok: false, error: 'Admin only' });
+    // v52B rev2 (Ishan): open to every authenticated planning user, not admin-only — Maan Singh
+    // owns his print schedule. The lock + audit still record exactly who set what.
+    const s = verifyToken(req.body?.token || req.headers['x-session-token']);
+    if (!s) return res.status(403).json({ ok: false, error: 'Sign-in required' });
     const id = String(req.body.id || '').trim();
     const startDate = String(req.body.startDate || '').trim();
     if (!id || !/^\d{4}-\d{2}-\d{2}/.test(startDate)) return res.status(400).json({ ok: false, error: 'id and startDate (YYYY-MM-DD…) required' });
