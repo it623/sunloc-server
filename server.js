@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52E';
+const APP_BUILD = 'v52D';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -7622,19 +7622,9 @@ function _v44zj_parseAllocations(body, inv) {
     const b = String(a && (a.batch != null ? a.batch : a.batchNumber) || '').trim();
     if (!b) return { error: 'Each batch allocation requires a batch number.' };
     if (/[\s,]/.test(b)) return { error: 'Each allocation must be a SINGLE batch (got multiple in one field): "' + b + '". Add a separate row per batch.' };
-    let q  = Math.max(0, parseFloat(a.qty) || 0);
-    let bx = Math.max(0, parseInt(a.boxes, 10) || 0);
+    const q  = Math.max(0, parseFloat(a.qty) || 0);
+    const bx = Math.max(0, parseInt(a.boxes, 10) || 0);
     if (q <= 0 && bx <= 0) return { error: 'Allocation for batch ' + b + ' needs a quantity and/or boxes.' };
-    // v52E (Ishan, 19 Aug — invoice 9065): explicit allocations were trusted verbatim while the
-    // default path already routed through _dispatchQtyBoxes (v47V) — so a modal pre-filled with
-    // raw THOUSAND-UoM figures wrote 1500L/875L per-batch dispatch records. Every explicit
-    // allocation now passes the same v46V authority: an implausible (>100) qty on an export batch
-    // recalibrates ×0.01 to Lakhs; everything plausible passes untouched.
-    const _qb52e = _dispatchQtyBoxes(b, q, bx);
-    if (_qb52e.recalibrated) {
-      console.log(`[v52E UOM] explicit allocation for ${b} recalibrated: ${q} -> ${_qb52e.qty} L (boxes ${bx} -> ${_qb52e.boxes})`);
-      q = _qb52e.qty; bx = _qb52e.boxes;
-    }
     clean.push({ batch: b, qty: q, boxes: bx });
   }
   if (!clean.length) return { error: 'At least one batch allocation is required to regularise — it is needed to reconcile the truck plan.' };
@@ -8512,15 +8502,7 @@ app.get('/api/invoice/:id/details', async (req, res) => {
       line_num: ln.LineNum != null ? ln.LineNum : idx,
       item_code: ln.ItemCode || '',
       item_description: ln.ItemDescription || '',
-      // v52E (Ishan, 19 Aug — invoice 9065): this API fed the re-allocation modal and the scan-out
-      // "qty in Lakhs" reference panel with RAW SAP line quantities. For export invoices SAP lines
-      // are in THOUSANDS (v45Z), so the modal pre-filled 1500/875 which the admin accepted and the
-      // dispatch records stored as 1500L/875L — Report E then showed −1484L balances. The v45Z
-      // authority (_sapUomScale) now applies at this serving boundary; the raw figure stays
-      // alongside for transparency.
-      quantity: parseFloat((((parseFloat(ln.Quantity) || 0) * _sapUomScale(ln))).toFixed(3)),
-      quantity_raw: parseFloat(ln.Quantity) || 0,
-      uom: ln.MeasureUnit || ln.UoMCode || '',
+      quantity: parseFloat(ln.Quantity) || 0,
       unit_price: parseFloat(ln.UnitPrice) || 0,
       line_total: parseFloat(ln.LineTotal) || 0,
       vat_percent: parseFloat(ln.VatPercent || ln.TaxPercentagePerRow) || 0,
