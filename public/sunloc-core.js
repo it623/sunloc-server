@@ -366,7 +366,16 @@ function getBatchWIPBreakdown(batchNo, opts){
   const preAIM   = Math.max(0, grossProd - wAIM.salvage - aimIn);
   const aimWIP   = Math.max(0, aimIn - wAIM.remelt - aimOut);
   const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - printSalvageDPL - wPrint.remelt) : 0;
-  const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt) : 0;
+  // v52D (Ishan, 19 Aug — frozen-region change, explicitly confirmed): printing rejection is
+  // RECORDED at the Printing stage but its physical impact lands only at PI scan-out, when the
+  // final label is generated short by (print + PI) rejection. printOut is therefore NOMINAL label
+  // qty, and the old net (printOut − piOut − piSal − piRem) left the printing rejection stranded
+  // as permanent phantom PI WIP (10 − 9.5 − 0.3 = 0.2 in Ishan's worked example). Subtracting the
+  // printing wastage — the same printSalvageDPL / wPrint.remelt the printWIP line nets — zeroes
+  // the phantom once the reduced final label goes out (10 − 9.5 − 0.3 − 0.2 = 0). AIM stages ride
+  // aimIn/aimOut scans taken BEFORE printing, so the reduced label cannot inflate them; the
+  // batch-level frozen formula (a) already nets ALL wastage once and is untouched.
+  const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt - printSalvageDPL - wPrint.remelt) : 0;
   // v37E: Transit gap between last production stage and packing receipt
   const lastProdOut   = batch.isPrinted ? piOut : aimOut;
   const toPackTransit = Math.max(0, lastProdOut - packIn);
@@ -621,7 +630,12 @@ function _rptBRow(batchNo, dept, U){
       // every cumulative-view consumer of the PI row (Report B, dashboard stage tiles, Report D's
       // stage primitive) gets the corrected figure; the v49D month path with server wipQtys is
       // untouched, as are boxes counts (physical inn − out stays).
-                                           : Math.max(0, innQty - outQty)) - _piSal49d - _piRem49d)
+                                           : Math.max(0, innQty - outQty)) - _piSal49d - _piRem49d
+      // v52D (Ishan, 19 Aug): printing rejection nets out of the PI row too — labels in PI carry
+      // NOMINAL qty until the short final label, so print-stage wastage otherwise lingers here as
+      // phantom (see the core piWIP comment). Same subtraction on BOTH the server-wipQtys path and
+      // the v52A qty-exact fallback; clamp protects any batch whose labels were already reduced.
+                                           - _dplSal51z - _prRem51z)
       : dept==='printing'
         ? Math.max(0, innQty - outQty - _dplSal51z - _prRem51z)
         : boxToLakh(wip,_bSize45y);
