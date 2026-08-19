@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v52C</title>
+<title>Sunloc Tracking Suite v1.0 · build v52D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52C</p>
+      <p>Tracking Suite v1.0 · build v52D</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52C</p>
+      <p>Tracking Suite v1.0 · build v52D</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3470,7 +3470,16 @@ function getBatchWIPBreakdown(batchNo, opts){
   const preAIM   = Math.max(0, grossProd - wAIM.salvage - aimIn);
   const aimWIP   = Math.max(0, aimIn - wAIM.remelt - aimOut);
   const printWIP = batch.isPrinted ? Math.max(0, aimOut - printOut - printSalvageDPL - wPrint.remelt) : 0;
-  const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt) : 0;
+  // v52D (Ishan, 19 Aug — frozen-region change, explicitly confirmed): printing rejection is
+  // RECORDED at the Printing stage but its physical impact lands only at PI scan-out, when the
+  // final label is generated short by (print + PI) rejection. printOut is therefore NOMINAL label
+  // qty, and the old net (printOut − piOut − piSal − piRem) left the printing rejection stranded
+  // as permanent phantom PI WIP (10 − 9.5 − 0.3 = 0.2 in Ishan's worked example). Subtracting the
+  // printing wastage — the same printSalvageDPL / wPrint.remelt the printWIP line nets — zeroes
+  // the phantom once the reduced final label goes out (10 − 9.5 − 0.3 − 0.2 = 0). AIM stages ride
+  // aimIn/aimOut scans taken BEFORE printing, so the reduced label cannot inflate them; the
+  // batch-level frozen formula (a) already nets ALL wastage once and is untouched.
+  const piWIP    = batch.isPrinted ? Math.max(0, printOut - piOut - wPI.salvage - wPI.remelt - printSalvageDPL - wPrint.remelt) : 0;
   // v37E: Transit gap between last production stage and packing receipt
   const lastProdOut   = batch.isPrinted ? piOut : aimOut;
   const toPackTransit = Math.max(0, lastProdOut - packIn);
@@ -8522,6 +8531,24 @@ function _v40_renderInvoiceGroup(group, mode) {
     </div>`;
 }
 
+// v52D: physical packed-not-dispatched box count for a batch, from live state — Packing IN scans
+// minus Packing OUT scans minus boxes already on any dispatch record. Selection-only; no formulas.
+function _v52dLivePackedBoxCount(batchNo) {
+  try {
+    const dispatched = new Set();
+    for (const rec of (state.dispatchRecs || [])) for (const bx of (rec.boxes || rec.boxIds || [])) dispatched.add(String(bx));
+    const inPack = new Set();
+    for (const sc of (state.scans || [])) {
+      if ((sc.batchNumber || sc.batch_number) !== batchNo) continue;
+      if ((sc.dept || '').toUpperCase() !== 'PACKING') continue;
+      const box = String(sc.boxId || sc.box_id || ''); if (!box) continue;
+      if ((sc.direction || sc.type || '').toUpperCase().includes('OUT')) inPack.delete(box); else inPack.add(box);
+    }
+    let n = 0; for (const b of inPack) if (!dispatched.has(b)) n++;
+    return n;
+  } catch (_) { return 0; }
+}
+
 function _v39_openScanOutModal(invoiceId) {
   const inv = _v39_pendingInvoices.find(i => i.id === invoiceId);
   if (!inv) { toast('Invoice not found', 'var(--red)'); return; }
@@ -8535,6 +8562,20 @@ function _v39_openScanOutModal(invoiceId) {
     return;
   }
   _v39_currentScanOutInvoice = inv;
+  // v52D (Ishan, 19 Aug — 26Z084 & 26ZB120): the DM's modal said "Expected: 0 boxes" and refused
+  // every scan ("Already at 0/0") because the invoice row carried total_boxes = 0 — the poller's
+  // request-match hadn't landed when the row was first written, and the modal trusted the stale
+  // column blindly. The physical truth was sitting in this very app's state the whole time: the
+  // batch's packed-not-dispatched labels. When the column says 0, count those live and proceed
+  // with a visible amber notice; a healthy column keeps winning untouched.
+  if (!(parseInt(inv.total_boxes, 10) > 0)) {
+    const _live = _v52dLivePackedBoxCount(inv.batch_number);
+    if (_live > 0) {
+      inv.total_boxes = _live;
+      toast(`⚠️ Invoice carried no box count — using live packed count: ${_live} boxes`, '#d97706');
+      console.log(`[v52D] scan-out boxCount fallback for ${inv.batch_number}: live packed = ${_live}`);
+    }
+  }
   _v39_scanProgress = {
     scanned: [],       // array of { labelId, batchNumber, boxNumber, size, qty, lineMatch, ts }
     boxCount: inv.total_boxes || 0,
@@ -9773,7 +9814,7 @@ async function renderGeneratedInvoices() {
         <button class="btn btn-sm btn-secondary" onclick="_v39_applyInvoiceFilters()">↻ Refresh</button>
         <button class="btn btn-sm btn-secondary" onclick="_v39_clearInvoiceFilters()">✕ Clear filters</button>
         <button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v39_repullFromSap()" title="Force Sunloc to pull the latest invoices from SAP now (normally runs every 5 min)">🔄 Re-pull from SAP</button>
-        <button class="btn btn-sm" style="background:#10b981;color:white;border:none" onclick="_v39_exportInvoicesCsv()">📥 Export CSV</button>
+        <button class="btn btn-sm" style="background:#10b981;color:white;border:none" onclick="_v39_exportInvoicesCsv()">📥 Export Excel</button>
         <button id="v39-gi-realloc-toggle" class="btn btn-sm btn-secondary" onclick="_v44zjToggleNeedsRealloc()" title="Show only regularised invoices whose dispatch landed under a multi-batch (concatenated) key — these need re-allocation to drop from the truck plan.">⚠ Needs re-allocation</button>
         <button id="v51d-overinv-toggle" class="btn btn-sm btn-secondary" onclick="_v51dToggleOverInv()" title="Show every over-invoiced batch in one table: invoiced (received + pending) exceeds packed quantity — the v49C definition, consolidated.">🔺 Over-invoiced</button>
         ${currentDept==='admin'?`<button class="btn btn-sm" style="background:#7c3aed;color:white;border:none" onclick="_v44zjReconcileMultibatch()" title="Auto-pair each multi-batch regularised invoice by matching invoice lines to batches by PC; rewrites clean per-batch records so the lots drop. Ambiguous ones are left for manual re-allocation.">🔧 Auto-pair reconcile</button>`:''}
@@ -10278,44 +10319,51 @@ async function _v40_showSalesRegisterDetails(invoiceId) {
 }
 
 function _v39_exportInvoicesCsv() {
+  // v52D (Ishan, 19 Aug): raw CSV replaced with a styled xlsx in the Report E mould — title bar,
+  // styled headers, sensible widths, ₹/number formats, red pending status, and a totals row. The
+  // function name is kept so every existing call site and button keeps working.
   const invoices = _v39_invoiceList || [];
-  if (invoices.length === 0) {
-    alert('No invoices to export. Adjust filters and try again.');
-    return;
-  }
-  // CSV column order — matches the table + adds detail fields
-  const headers = [
-    'Sales Order Number','Sales Order ID','Invoice Date','Source',
-    'Customer','Card Code','PO Number','Batch','PC Code','Size','Colour',
-    'Total Boxes','Total Qty (L)','Taxable Amount','IGST','Total Amount',
-    'IRN','Dispatch Status','Scanned Boxes','Dispatched At','Dispatched By','Vehicle','LR No',
-    'Admin Approved At','Admin Approved By','Remarks'
-  ];
-  const escape = v => {
-    if (v == null) return '';
-    const s = String(v);
-    const needsQuotes = s.includes(',') || s.includes('"') || s.includes('\n');
-    return needsQuotes ? '"' + s.split('"').join('""') + '"' : s;
+  if (invoices.length === 0) { alert('No invoices to export. Adjust filters and try again.'); return; }
+  const S = {
+    title:{font:{bold:true,sz:15,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1F4E79'}},alignment:{vertical:'center'}},
+    hdr:{font:{bold:true,sz:10,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'2E75B6'}},alignment:{wrapText:true,vertical:'center'},border:{bottom:{style:'thin'}}},
+    mono:{font:{sz:10}}, num:{font:{sz:10},alignment:{horizontal:'right'},numFmt:'#,##0.00'},
+    inr:{font:{sz:10},alignment:{horizontal:'right'},numFmt:'#,##0'},
+    pend:{font:{sz:10,bold:true,color:{rgb:'9C0006'}},fill:{fgColor:{rgb:'FFC7CE'}}},
+    disp:{font:{sz:10,color:{rgb:'006100'}},fill:{fgColor:{rgb:'C6EFCE'}}},
+    tot:{font:{bold:true,sz:10},fill:{fgColor:{rgb:'D9E1F2'}},border:{top:{style:'medium'}},numFmt:'#,##0.00'},
   };
-  const lines = [headers.join(',')];
+  const headers = ['Sales Order Number','Sales Order ID','Invoice Date','Source','Customer','Card Code','PO Number','Batch','PC Code','Size','Colour','Total Boxes','Total Qty (L)','Taxable Amount','IGST','Total Amount','IRN','Dispatch Status','Scanned Boxes','Dispatched At','Dispatched By','Vehicle','LR No','Admin Approved At','Admin Approved By','Remarks'];
+  const monthSel = (typeof _giProdMonthSel !== 'undefined' && _giProdMonthSel) ? _giProdMonthSel : (_trkSelectedMonth || 'all-months');
+  const aoa = [[{v:`SUNLOC — INVOICE LEDGER  ·  ${monthSel}  ·  exported ${today()}`,s:S.title}],[],
+               headers.map(h=>({v:h,s:S.hdr}))];
+  let tBoxes=0,tQty=0,tTaxable=0,tIgst=0,tTotal=0;
   for (const inv of invoices) {
     const qtyLakhs = parseFloat(inv.total_qty_lakhs) || (parseInt(inv.total_boxes)||0)/100;
-    lines.push([
-      inv.sap_doc_num, inv.sap_doc_entry, inv.invoice_date, inv.source,
-      inv.customer, inv.card_code, inv.po_number, inv.batch_number, inv.pc_code, inv.size, inv.colour,
-      inv.total_boxes, qtyLakhs.toFixed(2), inv.taxable_amount, inv.igst_amount, inv.total_amount,
-      inv.irn, inv.dispatch_status, inv.scanned_boxes, inv.dispatched_at, inv.dispatched_by, inv.vehicle_no, inv.lr_no,
-      inv.admin_approved_at, inv.admin_approved_by, inv.remarks
-    ].map(escape).join(','));
+    const boxes=parseInt(inv.total_boxes)||0, taxable=parseFloat(inv.taxable_amount)||0, igst=parseFloat(inv.igst_amount)||0, total=parseFloat(inv.total_amount)||0;
+    tBoxes+=boxes; tQty+=qtyLakhs; tTaxable+=taxable; tIgst+=igst; tTotal+=total;
+    const st=(inv.dispatch_status||'').toLowerCase();
+    aoa.push([
+      {v:inv.sap_doc_num||'',s:S.mono},{v:inv.sap_doc_entry||'',s:S.mono},{v:inv.invoice_date||'',s:S.mono},{v:inv.source||'',s:S.mono},
+      {v:inv.customer||'',s:S.mono},{v:inv.card_code||'',s:S.mono},{v:inv.po_number||'',s:S.mono},{v:inv.batch_number||'',s:S.mono},
+      {v:inv.pc_code||'',s:S.mono},{v:inv.size??'',s:S.mono},{v:inv.colour||'',s:S.mono},
+      {v:boxes,s:S.num},{v:qtyLakhs,s:S.num},{v:taxable,s:S.inr},{v:igst,s:S.inr},{v:total,s:S.inr},
+      {v:inv.irn||'',s:S.mono},{v:inv.dispatch_status||'',s:st==='pending'?S.pend:st==='dispatched'?S.disp:S.mono},
+      {v:inv.scanned_boxes??'',s:S.mono},{v:inv.dispatched_at||'',s:S.mono},{v:inv.dispatched_by||'',s:S.mono},
+      {v:inv.vehicle_no||'',s:S.mono},{v:inv.lr_no||'',s:S.mono},{v:inv.admin_approved_at||'',s:S.mono},
+      {v:inv.admin_approved_by||'',s:S.mono},{v:inv.remarks||'',s:S.mono},
+    ]);
   }
-  const blob = new Blob([lines.join('\n')], { type: 'text/csv;charset=utf-8' });
-  const url = URL.createObjectURL(blob);
-  const a = document.createElement('a');
-  a.href = url;
-  a.download = `sunloc_invoices_${today()}.csv`;
-  document.body.appendChild(a); a.click(); document.body.removeChild(a);
-  URL.revokeObjectURL(url);
-  toast(`✅ Exported ${invoices.length} invoices`, 'var(--green)');
+  const totRow=new Array(headers.length).fill('');
+  totRow[10]={v:'TOTAL',s:S.tot}; totRow[11]={v:tBoxes,s:S.tot}; totRow[12]={v:tQty,s:S.tot};
+  totRow[13]={v:tTaxable,s:{...S.tot,numFmt:'#,##0'}}; totRow[14]={v:tIgst,s:{...S.tot,numFmt:'#,##0'}}; totRow[15]={v:tTotal,s:{...S.tot,numFmt:'#,##0'}};
+  aoa.push(totRow);
+  const ws=XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols']=[{wch:12},{wch:10},{wch:11},{wch:10},{wch:26},{wch:9},{wch:12},{wch:12},{wch:9},{wch:5},{wch:16},{wch:8},{wch:11},{wch:13},{wch:11},{wch:13},{wch:14},{wch:11},{wch:9},{wch:16},{wch:12},{wch:12},{wch:9},{wch:16},{wch:12},{wch:20}];
+  ws['!rows']=[{hpt:24}];
+  const wb=XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Invoices');
+  XLSX.writeFile(wb, `Sunloc_Invoices_${String(monthSel).replace(/[^\w-]/g,'')}.xlsx`);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -12993,7 +13041,12 @@ function _rptBRow(batchNo, dept, U){
       // every cumulative-view consumer of the PI row (Report B, dashboard stage tiles, Report D's
       // stage primitive) gets the corrected figure; the v49D month path with server wipQtys is
       // untouched, as are boxes counts (physical inn − out stays).
-                                           : Math.max(0, innQty - outQty)) - _piSal49d - _piRem49d)
+                                           : Math.max(0, innQty - outQty)) - _piSal49d - _piRem49d
+      // v52D (Ishan, 19 Aug): printing rejection nets out of the PI row too — labels in PI carry
+      // NOMINAL qty until the short final label, so print-stage wastage otherwise lingers here as
+      // phantom (see the core piWIP comment). Same subtraction on BOTH the server-wipQtys path and
+      // the v52A qty-exact fallback; clamp protects any batch whose labels were already reduced.
+                                           - _dplSal51z - _prRem51z)
       : dept==='printing'
         ? Math.max(0, innQty - outQty - _dplSal51z - _prRem51z)
         : boxToLakh(wip,_bSize45y);
@@ -13616,7 +13669,7 @@ function _v41_renderReportDInner(){
     <div class="kpi"><div class="kpi-label">Gross Production</div><div class="kpi-val">${fmt(totalGross)}L</div></div>
     <div class="kpi"><div class="kpi-label">A-Grade % (Unprinted / AIM)</div><div class="kpi-val ${aimAGradePct>=95?'green':aimAGradePct>=90?'amber':'red'}">${fmt(aimAGradePct,1)}%</div><div class="kpi-sub">AIMOut ÷ (AIMOut+Sal+Rem) — matches Report E</div></div>
     <div class="kpi"><div class="kpi-label">A-Grade % (Post-Printing)</div><div class="kpi-val ${aGradePct>=95?'green':aGradePct>=90?'amber':'red'}">${fmt(aGradePct,1)}%</div><div class="kpi-sub">net of Print + PI salvage/remelt</div></div>
-    <div class="kpi"><div class="kpi-label">Total A-Grade (net)</div><div class="kpi-val green">${fmt(totalAGrade)}L</div></div>
+    <div class="kpi"><div class="kpi-label">Total A-Grade (net)</div><div class="kpi-val green">${fmt(totalGross*((aGradePct||0)/100))}L</div><div class="kpi-sub">= Gross × Post-Print A% (v52D, Ishan) · realized so far: ${fmt(totalAGrade)}L</div></div>
     <div class="kpi"><div class="kpi-label">Dispatched</div><div class="kpi-val purple">${(()=>{ const _inv = window._rptDInvoiced && window._rptDInvoiced[_trkSelectedMonth]; return _inv ? fmt(_inv.lakhs)+'L' : '…'; })()}</div><div class="kpi-sub">Invoiced (raised this month)</div></div>
     <!-- v47G (confirmed by Ishan): Dispatched = INVOICED. Σ total_qty_lakhs for invoices raised (invoice
          date) in the selected month — the same source/field as the Generated Invoices "TOTAL … L" tile
@@ -16899,7 +16952,8 @@ function exportReportD(){
     {'Metric':'Gross Production (L)','Value':fmt(totalGross)},
     {'Metric':'A-Grade % (Unprinted / AIM)','Value':fmt(aimAGradePct,1)+'%'},
     {'Metric':'A-Grade % (Post-Printing)','Value':fmt(aGradePct,1)+'%'},
-    {'Metric':'Total A-Grade (net) (L)','Value':fmt(totalAGrade)},
+    {'Metric':'Total A-Grade (net) (L)','Value':fmt(totalGross*((aGradePct||0)/100))},   // v52D: = Gross × Post-Print A% (matches the Report D card)
+    {'Metric':'A-Grade realized so far (L)','Value':fmt(totalAGrade)},
     {'Metric':'Dispatched (L)','Value':fmt(totalDispatched)},
   ];
   const batchRows=monthBatches.filter(b=>!b.deleted).map(b=>{
