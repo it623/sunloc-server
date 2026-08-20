@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v52F</title>
+<title>Sunloc Tracking Suite v1.0 · build v52G</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52F</p>
+      <p>Tracking Suite v1.0 · build v52G</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52F</p>
+      <p>Tracking Suite v1.0 · build v52G</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -13985,13 +13985,6 @@ function _v41_renderReportEInnerBody(){
   // v37E T4: Extract row-builder so it can be called for assigned-machine batches AND orphan batches
   // (orphan = batch whose machineId doesn't match any FLOORS machine — Report G includes them; we now do too)
   function _addBatchRowToReport(b, mc, floorKey){
-    // v52F (Ishan, 19 Aug): production-month filter. One gate here covers BOTH the on-screen table
-    // and the Excel export by construction (v49V single-row model). Cohort attribution is the
-    // frozen _v50bCohortMonth — identical to Reports B/D, so all reports slice consistently.
-    if (window._rptEMonth) {
-      let _bm = ''; try { _bm = _v50bCohortMonth(b.batchNumber) || ''; } catch(_) {}
-      if (_bm !== window._rptEMonth) return;
-    }
     includedBatchNos.add(b.batchNumber);
     // v37E T4: align with Report G — fall back to actualQty (legacy field) when actualProd absent
     // v41i FIX (issue 4): in "Month of Production" mode, use the month-sliced gross (sum of this
@@ -14669,14 +14662,9 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
 </html>`;
 
   // Show a button in the report-output area to open the new tab
-  // v52F (Ishan, 19 Aug): production-month filter — same cohort attribution as Reports B/D
-  // (_v50bCohortMonth, frozen), so Report E slices consistently with every other report. '' = all.
-  const _eM = window._rptEMonth || '';
-  const _eMonths = [...new Set((state.batches||[]).map(b=>{ try { return _v50bCohortMonth(b.batchNumber)||''; } catch(_) { return ''; } }).filter(Boolean))].sort().reverse();
-  const monthSelectHtml = `<select style="border:2px solid #d4b896;border-radius:4px;padding:5px 10px;font-size:12px;font-weight:700;background:#fff;color:#1a1208" onchange="window._rptEMonth=this.value;renderReportE()">
-    <option value="">All Months (Cumulative)</option>
-    ${_eMonths.map(m=>{const d=new Date(m+'-01T00:00:00Z');const lbl=isNaN(d)?m:d.toLocaleString('en',{month:'short',timeZone:'UTC'})+' '+d.getUTCFullYear();return `<option value="${m}" ${m===_eM?'selected':''}>${lbl} (Production)</option>`;}).join('')}
-  </select>`;
+  // v52G: the v52F per-report month dropdown here was REMOVED — Report E was already month-scoped
+  // via the app-wide month selector + Month-of-Production attribution ("if not already available"
+  // should have been answered, not built). The production-month filter lives in Report G instead.
   const dateSelectHtml = `<select style="border:2px solid #d4b896;border-radius:4px;padding:5px 10px;font-size:12px;font-weight:700;background:#fff;color:#1a1208" onchange="window._rptEDate=this.value;renderReportE()">
     <option value="">All Dates (Cumulative)</option>
     ${_rptE_dateOptions().map(d=>`<option value="${d}" ${filterDate===d?'selected':''}>${d}</option>`).join('')}
@@ -14690,7 +14678,6 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
     ${_v41_agradeToggleHtml('renderReportE')}
     <div class="text-sm text-muted mb-12">${dateLabel} · ${rows.length} batch rows</div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
-      ${monthSelectHtml}
       ${dateSelectHtml}
       <input id="rptE-inline-search" type="text" placeholder="Search batch / customer / PC / colour..." style="border:1px solid var(--border);border-radius:4px;padding:6px 10px;font-size:13px;background:var(--surface);color:var(--text);min-width:240px;flex:1" oninput="applyReportEInlineSearch(this.value)">
       <button class="btn btn-primary btn-sm" onclick="openReportETab()">🔗 Open Full View in New Tab</button>
@@ -16016,6 +16003,9 @@ function renderReportK(targetId) {
     }
   }
   // Other filters
+  // v52G (Ishan, 20 Aug): production-month filter — frozen cohort attribution (_v50bCohortMonth),
+  // identical to Reports B/D. One gate covers screen AND export (v48: export reuses these rows).
+  if (filters.prodMonth) rows = rows.filter(r => { try { return (_v50bCohortMonth(r.batchNo)||'') === filters.prodMonth; } catch(_) { return false; } });
   if (filters.customer) rows = rows.filter(r => (r.customer||'').toLowerCase().includes(filters.customer.toLowerCase()));
   if (filters.batch) rows = rows.filter(r => (r.batchNo||'').toLowerCase().includes(filters.batch.toLowerCase()));
   if (filters.pcCode) rows = rows.filter(r => (r.pcCode||'').toLowerCase().includes(filters.pcCode.toLowerCase()));
@@ -16088,6 +16078,11 @@ function renderReportK(targetId) {
         ${statusPill('stale_15d', '🚨 Stale 15d+', '#dc2626')}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:4px">
+        <select id="rptk-filter-prodmonth" onchange="window._reportKFilters.prodMonth=this.value;renderReportK('${containerId}')"
+                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-weight:600" title="v52G: production-month cohort (frozen attribution, same as Reports B/D)">
+          <option value="">📅 All Prod Months</option>
+          ${[...new Set((state.batches||[]).map(b=>{try{return _v50bCohortMonth(b.batchNumber)||'';}catch(_){return '';}}).filter(Boolean))].sort().reverse().map(m=>{const d=new Date(m+'-01T00:00:00Z');const lbl=isNaN(d)?m:d.toLocaleString('en',{month:'short',timeZone:'UTC'})+' '+d.getUTCFullYear();return `<option value="${m}" ${ (filters.prodMonth||'')===m?'selected':''}>${lbl} (Production)</option>`;}).join('')}
+        </select>
         <input type="text" id="rptk-filter-customer" placeholder="🔍 Customer" value="${filters.customer||''}"
                oninput="window._reportKFilters.customer=this.value;renderReportK('${containerId}')"
                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:140px;font-size:12px">
@@ -16097,7 +16092,7 @@ function renderReportK(targetId) {
         <input type="text" id="rptk-filter-pccode" placeholder="🔍 PC Code" value="${filters.pcCode||''}"
                oninput="window._reportKFilters.pcCode=this.value;renderReportK('${containerId}')"
                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;min-width:120px;font-size:12px">
-        <button class="btn btn-ghost btn-sm" onclick="window._reportKFilters={customer:'',batch:'',pcCode:'',status:''};renderReportK('${containerId}')">✕ Clear all filters</button>
+        <button class="btn btn-ghost btn-sm" onclick="window._reportKFilters={customer:'',batch:'',pcCode:'',status:'',prodMonth:''};renderReportK('${containerId}')">✕ Clear all filters</button>
         <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">${rows.length} batch${rows.length!==1?'es':''}</span>
       </div>
       <div class="tbl-wrap" style="max-height:600px;overflow-y:auto"><table>
