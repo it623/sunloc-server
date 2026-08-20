@@ -89,14 +89,21 @@ async function buildSnapshot() {
     try { snap[key] = await localGet(p); }
     catch (e) { snap[key] = null; snap.errors.push(`${key}: ${e.message}`); }
   };
+  // v52F (Ishan, 19 Aug — first-digest audit): the snapshot now mirrors the tracking client's OWN
+  // load sequence instead of guessing shapes. Batches live in planning/state (orders), labels in
+  // labels-all, and every report-grade number in scan-summary (summary/wastage/grossByBatch/
+  // grossOverrides) — the tracking/state endpoint only carries closure/wastage/dispatch/scans.
+  // Getting this wrong was why t2/t5/t6 showed all-zero WIP and t3 bucketed everything as 'older'.
   await grab('tracking', '/api/tracking/state');
   await grab('scanSummary', '/api/tracking/scan-summary');
+  await grab('labelsAll', '/api/tracking/labels-all');
   await grab('retired', '/api/batch/retired');
   await grab('reconOverrides', '/api/batch/reconcile-overrides');
   await grab('orders', '/api/orders/all');
   await grab('machines', '/api/machines/master');
   await grab('planningKV', '/api/planning/all-kv');
-  await grab('planningState', '/api/planning/state');
+  await grab('planningState', '/api/planning/state?reconcile=1');
+  await grab('printSalvagePct', '/api/daily-printing/salvage-pct');
   const monthStart = istDate().slice(0, 8) + '01';
   await grab('invoices', `/api/invoice/received?from_date=${monthStart}&limit=5000`);
   await grab('handoverGaps', '/api/tracking/handover-gap-counts');
@@ -105,7 +112,7 @@ async function buildSnapshot() {
   try {
     const since = new Date(Date.now() - 62 * 86400000).toISOString().slice(0, 10);
     const r = await fencedQuery(
-      `SELECT floor, date, data FROM dpr_records WHERE date >= $1 ORDER BY date ASC`, [since]);
+      `SELECT floor, date, data_json AS data FROM dpr_records WHERE date >= $1 ORDER BY date ASC`, [since]);   // v52F: real column is data_json
     snap.dprRecords = (r.rows || []).map(x => {
       try { return { floor: x.floor, date: x.date, data: typeof x.data === 'string' ? JSON.parse(x.data) : x.data }; }
       catch (_) { return { floor: x.floor, date: x.date, data: null }; }
@@ -114,9 +121,10 @@ async function buildSnapshot() {
 
   // deemed scan-outs + regularise audit (read-only)
   try {
+    // v52F: is_deemed_scan_out lives on invoices_received, not tracking_scans
     const r = await fencedQuery(
-      `SELECT batch_number, box_id, dept, qty_lakhs, scanned_by, ts FROM tracking_scans
-       WHERE is_deemed_scan_out = 1 ORDER BY ts DESC LIMIT 500`, []);
+      `SELECT sap_doc_num, batch_number, total_boxes, total_qty_lakhs, deemed_reason, deemed_by, dispatched_at
+       FROM invoices_received WHERE is_deemed_scan_out = 1 ORDER BY dispatched_at DESC NULLS LAST LIMIT 200`, []);
     snap.deemedScanOuts = r.rows || [];
   } catch (e) { snap.deemedScanOuts = []; snap.errors.push('deemed: ' + e.message); }
   try {
@@ -131,18 +139,25 @@ async function buildSnapshot() {
 // install snapshot into the core's globals (Node shim). Callers hold the single-flight lock.
 function installState(snap) {
   const t = (snap.tracking && (snap.tracking.state || snap.tracking.data || snap.tracking)) || {};
+  const pj = (snap.planningState && snap.planningState.state) || {};
+  const sj = snap.scanSummary || {};
   global.window = global.window || {};
   global.state = {
-    batches: t.batches || [], scans: t.scans || [], labels: t.labels || [],
+    // v52F: batches = planning orders (client STEP 1, v37F: all non-deleted), enriched identically
+    batches: ((pj.orders || []).filter(o => !o.deleted)).map(b => ({ ...b,
+      actualQty: b.actualQty || b.actualProd || 0, actualProd: b.actualProd || b.actualQty || 0 })),
+    scans: t.scans || [], labels: (snap.labelsAll && snap.labelsAll.labels) || t.labels || [],
     wastage: t.wastage || [], dispatchRecs: t.dispatchRecs || t.dispatches || [],
-    stageClosure: t.stageClosure || {}, grossOverrides: t.grossOverrides || {},
-    scanSummary: (snap.scanSummary && (snap.scanSummary.summary || snap.scanSummary.data || snap.scanSummary)) || null,
-    grossSummary: t.grossSummary || null, wastageSummary: t.wastageSummary || null,
+    stageClosure: t.stageClosure || {},
+    // v52F: report-grade aggregates come from scan-summary (client STEP 3.6), field-for-field
+    scanSummary: sj.summary || null, wastageSummary: sj.wastage || null,
+    grossSummary: sj.grossByBatch || null, grossOverrides: sj.grossOverrides || {},
   };
   global.window._retiredSet = new Set(((snap.retired && (snap.retired.batches || snap.retired.data)) || []).map(b => (b.batchNumber || b.batch_number || b)));
   global.window._reconOverrides = (snap.reconOverrides && (snap.reconOverrides.overrides || snap.reconOverrides.data)) || {};
-  const kv = (snap.planningKV && snap.planningKV.data) || {};
-  global.window._printSalvagePct = Number(kv.printSalvagePct || kv.print_salvage_pct || 0) || 0;
+  // v52F: _printSalvagePct is a per-batch MAP served by its own endpoint (client ~line 2226),
+  // not a scalar in planning kv — the wrong shape silently zeroed print-salvage netting.
+  global.window._printSalvagePct = (snap.printSalvagePct && snap.printSalvagePct.pct) || {};
   global.window._trkProdMonthFilter = null; // digest computes per-month explicitly
 }
 
@@ -250,13 +265,17 @@ section('pp1_wastage_opm', 'Planning', 'Printing — cumulative wastage % (Daily
 });
 
 section('p4_wo_july', 'Planning', 'W/O details — July production month onwards', (snap) => {
-  const orders = ((snap.orders && (snap.orders.orders || snap.orders.data)) || []).filter(o => !o.deleted);
+  // v52F (Ishan, 19 Aug — digest audit): W/O means orders CURRENTLY classified as W/O
+  // (woStatus === 'wo', the planning app's own test) — not every batch since July. The first
+  // digest listed 466 closed customer batches here; the section now shows the live W/O book only.
+  const orders = ((snap.orders && (snap.orders.orders || snap.orders.data)) || [])
+    .filter(o => !o.deleted && o.woStatus === 'wo');
   const rows = [];
   for (const o of orders) {
     const b = o.batchNumber || o.batch_number || '';
     const m = (() => { try { return core._v50bCohortMonth(b) || ''; } catch (_) { return ''; } })() || String(o.prodMonth || o.startDate || '').slice(0, 7);
-    if (!m || m < '2026-07') continue;
-    rows.push([m, o.woNumber || o.wo_number || o.wo || o.workOrder || '—', b, (o.customer || '').trim(), String(o.size ?? ''), r2(o.qty ?? o.orderQty ?? 0), o.status || 'open']);
+    if (m && m < '2026-07') continue;
+    rows.push([m || '—', o.woNumber || o.wo_number || o.wo || o.workOrder || '—', b, (o.customer || '').trim(), String(o.size ?? ''), r2(o.qty ?? o.orderQty ?? 0), o.status || 'open']);
   }
   rows.sort((a, b2) => a[0] < b2[0] ? -1 : a[0] > b2[0] ? 1 : 0);
   return { headers: ['Prod month', 'W/O', 'Batch', 'Customer', 'Size', 'Qty (L)', 'Status'], rows };
@@ -335,10 +354,10 @@ section('t1_inout', 'Tracking', 'Boxes & quantity IN / OUT — Printing, PI, Pac
   for (const s of scans) {
     const dept = (s.dept || s.department || '').toUpperCase();
     if (!['PRINTING', 'PI', 'PACKING'].includes(dept)) continue;
-    const dir = (s.direction || s.type || '').toUpperCase().includes('OUT') ? 'OUT' : 'IN';
+    const dir = String(s.type || '').toLowerCase() === 'out' ? 'OUT' : 'IN';   // v52F: scans carry type in/out
     const ts = Date.parse(s.ts || s.scannedAt || s.created_at || '') || 0;
     const day = new Date(ts).toISOString().slice(0, 10);
-    const q = Number(s.qtyLakhs ?? s.qty_lakhs) || (() => { try { return core.boxToLakh(s.boxId || s.box_id) || 0; } catch (_) { return 0; } })();
+    const q = Number(s.qty) || 0;   // v52F: tracking_scans rows carry the label qty in `qty`
     for (const win of [day >= monthStart ? 'MTD' : null, ts >= h12 ? '12H' : null]) {
       if (!win) continue;
       const k = `${win}|${dept}|${dir}`;
@@ -399,8 +418,10 @@ section('t4_top_invoiced', 'Tracking', 'Top 5 customers invoiced this month — 
   const byCust = {};
   for (const i of inv) {
     const c = (i.customer || '').trim() || '—';
-    const q = Number(i.qty_lakhs ?? i.qtyLakhs) || 0;
-    const v = q * (Number(i.rate_per_lakh ?? i.ratePerLakh) || 0);
+    // v52F: invoices_received carries total_qty_lakhs and the SAP-billed total_amount — the
+    // rate_per_lakh field belongs to invoice_requests and was never here (0-qty/0-value audit find)
+    const q = Number(i.total_qty_lakhs) || 0;
+    const v = Number(i.total_amount) || 0;
     const a = byCust[c] || (byCust[c] = { qty: 0, val: 0, n: 0 });
     a.qty += q; a.val += v; a.n++;
   }
@@ -456,16 +477,18 @@ section('t6_dept_wip_months', 'Tracking', 'Department-wise WIP per production mo
 
 section('t7_stale_boxes', 'Tracking', 'Boxes in Packing > 7 days, not dispatched', () => {
   const cut = Date.now() - 7 * 86400000;
+  // v52F: rec.boxes is a COUNT (the 'number 9 is not iterable' crash in the first digest);
+  // the box/label ids live in rec.scannedLabels. Scan rows identify their box via label_id.
   const dispatched = new Set();
   for (const rec of (global.state.dispatchRecs || []))
-    for (const bx of (rec.boxes || rec.boxIds || [])) dispatched.add(String(bx));
+    if (Array.isArray(rec.scannedLabels)) for (const bx of rec.scannedLabels) dispatched.add(String(bx && bx.labelId || bx));
   const rows = [];
   for (const s of (global.state.scans || [])) {
     const dept = (s.dept || '').toUpperCase();
-    if (dept !== 'PACKING' || (s.direction || s.type || '').toUpperCase().includes('OUT')) continue;
-    const ts = Date.parse(s.ts || s.scannedAt || '') || 0;
+    if (dept !== 'PACKING' || (s.type || '').toUpperCase().includes('OUT')) continue;
+    const ts = Date.parse(s.ts || '') || 0;
     if (!ts || ts > cut) continue;
-    const box = String(s.boxId || s.box_id || ''); if (!box || dispatched.has(box)) continue;
+    const box = String(s.labelId || s.label_id || ''); if (!box || dispatched.has(box)) continue;
     rows.push([box, s.batchNumber || s.batch_number || '', new Date(ts).toISOString().slice(0, 10), Math.floor((Date.now() - ts) / 86400000)]);
   }
   rows.sort((a, b2) => b2[3] - a[3]);
@@ -490,7 +513,7 @@ section('t8_partial', 'Tracking', 'Partial dispatches (less than available scann
 
 section('t8b_deemed', 'Tracking', 'Dispatches without scan-out (deemed) & admin regularisations', (snap) => {
   const rows = (snap.deemedScanOuts || []).slice(0, 50).map(d =>
-    ['Deemed scan-out', d.batch_number || '', d.box_id || '', r2(d.qty_lakhs), d.scanned_by || '', String(d.ts || '').slice(0, 16)]);
+    ['Deemed scan-out', d.batch_number || '', 'inv ' + (d.sap_doc_num || ''), r2(d.total_qty_lakhs), d.deemed_by || '', String(d.dispatched_at || '').slice(0, 16) + ' — ' + String(d.deemed_reason || '').slice(0, 60)]);
   for (const a of (snap.regulariseAudit || []).slice(0, 50))
     rows.push(['Admin regularise', '', '', '', a.username || '', String(a.created_at || '').slice(0, 16) + ' — ' + String(a.details || '').slice(0, 80)]);
   return { headers: ['Type', 'Batch', 'Box', 'Qty (L)', 'By', 'When / details'], rows };
@@ -816,12 +839,13 @@ metric('boxes.idle', 'Boxes/batches not moved in the last N days (default 15)', 
   const cut = Date.now() - days * 86400000;
   const lastByBox = {};
   for (const s of (global.state.scans || [])) {
-    const box = String(s.boxId || s.box_id || ''); if (!box) continue;
-    const ts = Date.parse(s.ts || s.scannedAt || '') || 0;
+    const box = String(s.labelId || s.label_id || ''); if (!box) continue;   // v52F: box id = label id
+    const ts = Date.parse(s.ts || '') || 0;
     if (!lastByBox[box] || ts > lastByBox[box].ts) lastByBox[box] = { ts, dept: (s.dept || '').toUpperCase(), batch: s.batchNumber || s.batch_number || '' };
   }
   const dispatched = new Set();
-  for (const rec of (global.state.dispatchRecs || [])) for (const bx of (rec.boxes || [])) dispatched.add(String(bx));
+  for (const rec of (global.state.dispatchRecs || []))
+    if (Array.isArray(rec.scannedLabels)) for (const bx of rec.scannedLabels) dispatched.add(String(bx && bx.labelId || bx));   // v52F: boxes is a count
   const rows = Object.entries(lastByBox)
     .filter(([box, x]) => x.ts && x.ts < cut && !dispatched.has(box))
     .map(([box, x]) => [box, x.batch, x.dept, new Date(x.ts).toISOString().slice(0, 10), Math.floor((Date.now() - x.ts) / 86400000)])
