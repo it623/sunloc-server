@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52H';
+const APP_BUILD = 'v52I';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -17532,10 +17532,24 @@ app.get('/api/pack-sizes', async (req, res) => {
 });
 
 // POST /api/pack-sizes — save pack sizes
+// v52I (Ishan, 20 Aug): STALE-TAB WRITE GUARD. Pack sizes are master data, but every Planning tab was
+// pushing its whole in-memory state.packSizes on every ambient background sync. A tab opened before a
+// master change therefore silently reverted it — size 4 was corrected to 300000 twice on 20 Aug and
+// stomped back to 175000 within minutes each time (pack_sizes rows all rewritten 14:29:00, planning_state
+// at 14:23:00). Closing every tab on the floor is not workable, so the write is now gated SERVER-side:
+// only an explicit Masters-screen edit carries `explicit:true` and is accepted. Ambient syncs — including
+// those from OLD tabs still running pre-v52H code, which is the whole point — are ignored and logged.
+// Reads are untouched: GET still serves the table to everyone.
 app.post('/api/pack-sizes', async (req, res) => {
   try {
-    const { packSizes } = req.body;
+    const { packSizes, explicit } = req.body;
     if (!packSizes || typeof packSizes !== 'object') return res.status(400).json({ ok: false, error: 'packSizes required' });
+    if (explicit !== true) {
+      // Not a rejection the caller needs to handle — the ambient sync is fire-and-forget and its copy
+      // is simply not authoritative. Report ok so no client retries or surfaces a spurious error.
+      console.log('[v52I pack-sizes] ambient sync push ignored (no explicit flag) — master data unchanged');
+      return res.json({ ok: true, ignored: true, reason: 'ambient sync cannot modify pack sizes; edit via Masters' });
+    }
     if (pgPool) {
       for (const [size, value] of Object.entries(packSizes)) {
         await pgPool.query(`
@@ -17548,6 +17562,7 @@ app.post('/api/pack-sizes', async (req, res) => {
         ON CONFLICT(size) DO UPDATE SET value=excluded.value,updated_at=datetime('now')`);
       for (const [size, value] of Object.entries(packSizes)) { stmt.run(size, value); }
     }
+    console.log('[v52I pack-sizes] explicit Masters edit accepted:', JSON.stringify(packSizes));
     res.json({ ok: true });
   } catch(err) { res.status(500).json({ ok: false, error: err.message }); }
 });

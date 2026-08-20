@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v52H</p>
+      <p>Planning Suite v3.0 · build v52I</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -680,7 +680,15 @@ const PRINT_MACHINES = [
   {id:'OPM20', size:'0', cap:10, pref:'ANY CUSTOMER'},
 ];
 
-const PACK_SIZES = {'00':75000,'0':100000,'1':125000,'2':175000,'3':225000,'0EL':100000,'0SEL':100000,'4':175000,'5':175000};
+// v52I (Ishan, 20 Aug): size 4 is 3.00 L/box (300000), NOT 1.75. The seed had 175000, disagreeing with
+// all six other pack-size tables in the suite (server.js _V44ZJ_PACK_SIZES / _packMap51e / _ps49d /
+// _V50X_PACK, and tracking.html PACK_SIZES — every one of which already carried 3.00). Planning was the
+// sole outlier, so any size-4 order falling back to this seed under-counted boxes by ~42%.
+// NOTE: this is the SEED only — the live values are state.packSizes, editable on the Masters screen and
+// persisted in planning_state; a saved value overrides this. Sizes '5', '0EL' and '0SEL' are defined
+// here but absent from every server table, so server-side box derivation returns 0 for them — flagged
+// to Ishan, NOT changed without his figures.
+const PACK_SIZES = {'00':75000,'0':100000,'1':125000,'2':175000,'3':225000,'0EL':100000,'0SEL':100000,'4':300000,'5':175000};
 
 // v41o FIX (added by IT, adopted into baseline): toast() was referenced in several places
 // (e.g. batch close/reopen feedback) but never defined in planning.html — a ReferenceError at
@@ -1790,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52H' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1818,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52H' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2553,14 +2561,14 @@ async function saveState() {
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
         }
-        // Pack sizes → dedicated table
-        if (state.packSizes && Object.keys(state.packSizes).length) {
-          fetch(_url + '/api/pack-sizes', {
-            method:'POST', headers:{'Content-Type':'application/json'},
-            body: JSON.stringify({ packSizes: state.packSizes }),
-            signal: AbortSignal.timeout(8000)
-          }).catch(()=>{});
-        }
+        // v52I (Ishan, 20 Aug): the ambient sync NO LONGER pushes pack sizes — the push that stood here
+        // was removed. Master data must not ride on a background whole-state write: a tab opened before a
+        // master change silently reverted it on its next sync (size 4 was corrected to 300000 and stomped
+        // back to 175000 twice within minutes on 20 Aug — pack_sizes rewritten 14:29:00, planning_state
+        // 14:23:00). Pack sizes are now written ONLY by updatePackSize() on an explicit Masters edit,
+        // which sends explicit:true; the server ignores every write lacking that flag, so tabs still
+        // running pre-v52I code are harmless too and nobody has to close anything. Reads are unchanged —
+        // GET /api/pack-sizes still populates state.packSizes on load (see ~line 2353).
         // Print orders → dedicated table (already exists)
         // Dedup before saving — prevent re-creating duplicate rows in DB
         if (state.printOrders?.length) {
@@ -2582,7 +2590,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52H'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52I'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5594,7 +5602,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52H'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52I'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8348,7 +8356,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52H' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52I' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -8798,7 +8806,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52H' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8848,7 +8856,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52H' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -8937,7 +8945,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52H' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -15891,8 +15899,21 @@ function renderSettings() {
 }
 
 function updatePackSize(sz, val) {
+  // v52I (Ishan, 20 Aug): the ONLY authorised writer of pack-size master data. Posts directly with
+  // explicit:true — the server accepts pack-size writes on that flag alone, so no background sync
+  // (from this tab or any stale one still running pre-v52I code) can revert the value afterwards.
   state.packSizes[sz] = parseFloat(val)||100000;
   saveState();
+  const _u = SYNC._url || localStorage.getItem('sunloc_server_url');
+  if (!_u) { toast('Pack size saved locally only — no server connection', '#d97706'); return; }
+  fetch(_u + '/api/pack-sizes', {
+    method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify({ packSizes: state.packSizes, explicit: true }),
+    signal: AbortSignal.timeout(8000)
+  }).then(r=>r.ok?r.json():null).then(j=>{
+    if (j && j.ok && !j.ignored) toast('Size ' + sz + ' pack size saved: ' + (parseFloat(val)||100000), '#16a34a');
+    else toast('Pack size NOT saved — please retry', '#dc2626');
+  }).catch(()=>{ toast('Pack size NOT saved — server unreachable', '#dc2626'); });
 }
 
 function saveTruckCap() {
