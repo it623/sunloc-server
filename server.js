@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52G';
+const APP_BUILD = 'v52H';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -1532,6 +1532,26 @@ const MIGRATIONS = [
         ts TEXT,
         PRIMARY KEY (order_id, field)
       );
+    `
+  },
+  {
+    version: 61,
+    name: 'dispatch_record_plan_qty',
+    // v52H (Ishan, 20 Aug — 26ZA083): SYMMETRIC MANUAL NETTING.
+    // Planning's ✓ Dispatch writes a MANUAL- record for a batch whose invoice never flowed through
+    // the software, and v51G already nets it DOWN against whatever is already dispatched. But the
+    // netting only ran in that one direction: when an invoice arrived LATER, nothing went back and
+    // re-shrank the earlier manual mark. 26ZA083 was marked 25L on 17 Aug and invoiced 10.5L on
+    // 19 Aug, so the batch read 35.5L against 19.25L of A-Grade — and the inflated box count then
+    // drove free-to-re-customer to zero and froze the batch.
+    // Re-netting later requires knowing what Planning ORIGINALLY asked for, which was nowhere on the
+    // row (only the already-netted remainder was stored). These two columns record the request, so
+    // the remainder can be RECOMPUTED at any time instead of guessed. Additive and nullable:
+    // pre-existing MANUAL rows carry NULL and the re-net helper deliberately skips them (no
+    // historical backfill, per standing rule).
+    sql: `
+      ALTER TABLE tracking_dispatch_records ADD COLUMN plan_qty REAL;
+      ALTER TABLE tracking_dispatch_records ADD COLUMN plan_boxes INTEGER;
     `
   },
 ];
@@ -3063,7 +3083,8 @@ async function ensurePostgresTables() {
     const dispatchColumns = [
       'customer TEXT', 'boxes INTEGER', 'vehicle_no TEXT', 'invoice_no TEXT',
       'remarks TEXT', '"by" TEXT',
-      'scanned_labels_json TEXT'   // v46H #2: per-box dispatch audit trail (box numbers scanned out)
+      'scanned_labels_json TEXT',  // v46H #2: per-box dispatch audit trail (box numbers scanned out)
+      'plan_qty REAL', 'plan_boxes INTEGER'   // v52H: Planning's ORIGINAL ✓ Dispatch request — lets the MANUAL remainder be re-netted when an invoice lands later
     ];
     for (const col of dispatchColumns) {
       const colName = col.split(' ')[0];
@@ -6888,6 +6909,7 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
       if (typeof _recomputeDispatchActuals === 'function') {
         for (const _b of _dispAllocs.map(a => a.batch)) {
           await _recomputeDispatchActuals(_b, vehicleNo || null, inv.sap_doc_num || null);
+          await _v52hRenetManual(_b);   // v52H: a real dispatch landed — shrink any earlier ✓ Dispatch mark
         }
       }
     } catch (e) {
@@ -7589,6 +7611,9 @@ async function _applyRegularisation(inv, clean, who, ts, rsn) {
   const affected = Array.from(new Set([...clean.map(c => c.batch), ...priorBatches]));
   for (const b of affected) {
     try { if (typeof _recomputeDispatchActuals === 'function') await _recomputeDispatchActuals(b, null, inv.sap_doc_num || null); } catch (e) {}
+    // v52H: the regularised invoice is a REAL dispatch for this batch — re-shrink any earlier ✓ Dispatch
+    // mark so the two never stack (26ZA083: manual 25L on 17 Aug + invoice 10.5L on 19 Aug = 35.5L).
+    try { await _v52hRenetManual(b); } catch (e) {}
   }
   return { joinedBatches, affected };
 }
@@ -8294,6 +8319,7 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
       try {
         if (typeof _recomputeDispatchActuals === 'function') {
           await _recomputeDispatchActuals(inv.batch_number, vehicleNo, inv.sap_doc_num || null);
+          await _v52hRenetManual(inv.batch_number);   // v52H: a real dispatch landed — shrink any earlier ✓ Dispatch mark
         }
       } catch (e) {
         console.warn('[v40 P18.11] _recomputeDispatchActuals failed:', e.message);
@@ -9105,6 +9131,7 @@ app.post('/api/invoice/:id/deemed-scan-out', async (req, res) => {
     try {
       if (typeof _recomputeDispatchActuals === 'function') {
         await _recomputeDispatchActuals(inv.batch_number, vehicleNo || null, inv.sap_doc_num || null);
+        await _v52hRenetManual(inv.batch_number);   // v52H: a real dispatch landed — shrink any earlier ✓ Dispatch mark
       }
     } catch (e) {
       console.warn('[v39 P16] dispatch_actuals recompute failed:', e.message);
@@ -19820,6 +19847,113 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
 // from tracking_dispatch_records. Called from: dispatch-record POST (new manual record),
 // dispatch-record PUT (edit/correction), dispatch-update (legacy entry point), and startup
 // backfill. Single source of truth, prevents the v37I-pre-bugfix overwrite drift.
+// ═══ v52H PACKED CEILING (confirmed by Ishan, 20 Aug) ═══════════════════════════════════════════
+// Capsules that are still in Packing cannot have been dispatched. Planning's ✓ Dispatch is a TYPED
+// assertion; packing scans are PHYSICAL evidence, and Ishan's rule is that the evidence wins. This
+// returns how much of a batch is genuinely available to dispatch: packed-in, less whatever has
+// already gone out.
+//
+// The `credible` guard matters as much as the number. ✓ Dispatch exists precisely for batches whose
+// paperwork never flowed through the software, which are the batches most likely to have thin or
+// absent packing scans — 26ZD120 shows 86.5L already dispatched against only 51.5L of packing scans.
+// On such a batch the packed figure is demonstrably incomplete, so using it as a ceiling would zero
+// out a legitimate manual mark. We therefore trust it ONLY when it accounts for at least what has
+// already shipped; otherwise we return credible:false and every caller leaves Planning's figure
+// alone (and says so in the log) rather than silently overruling it with bad evidence.
+async function _v52hPackedAvailable(batchNumber, excludeRecordId) {
+  const q = (sql, args) => pgPool ? pgPool.query(sql, args).then(r => r.rows)
+                                  : Promise.resolve(db.prepare(sql.replace(/\$\d+/g, '?')).all(...args));
+  // Packed-in Lakhs: each live box's own label qty, counted once, if it has a packing scan-IN.
+  const pk = await q(`SELECT COALESCE(SUM(l.qty),0) AS n FROM tracking_labels l
+                       WHERE l.batch_number=$1 AND COALESCE(l.voided,0)=0 AND COALESCE(l.is_orange,0)=0
+                         AND EXISTS (SELECT 1 FROM tracking_scans s
+                                      WHERE s.label_id=l.id AND s.dept='packing' AND s.type='in')`, [batchNumber]);
+  const packed = parseFloat(pk[0] && pk[0].n) || 0;
+  const d1 = await q(`SELECT COALESCE(SUM(qty),0) AS n FROM tracking_dispatch_records
+                       WHERE batch_number=$1 AND id <> $2`, [batchNumber, excludeRecordId || '']);
+  const d2 = await q(`SELECT COALESCE(SUM(qty),0) AS n FROM tracking_scans
+                       WHERE batch_number=$1 AND dept='dispatch' AND type='out'`, [batchNumber]);
+  const shipped = (parseFloat(d1[0] && d1[0].n) || 0) + (parseFloat(d2[0] && d2[0].n) || 0);
+  const credible = packed > 0 && packed >= shipped - 0.005;
+  return { packed, shipped, credible, available: Math.max(0, Math.round((packed - shipped) * 1000) / 1000) };
+}
+
+// ═══ v52H SYMMETRIC MANUAL RE-NETTING (confirmed by Ishan, 20 Aug — 26ZA083) ═══════════════════
+// Planning's ✓ Dispatch (manual-dispatch) writes a MANUAL- record for a batch whose invoice never
+// reached the software, and it nets ITSELF down against everything already dispatched. Nothing ever
+// netted in the other direction: an invoice arriving AFTER the manual mark left both records
+// standing and the batch's dispatch total became their sum (26ZA083: 25L manual on 17 Aug + 10.5L
+// invoice on 19 Aug = 35.5L against 19.25L of A-Grade). The inflated box count then drove
+// free-to-re-customer negative and froze the batch.
+//
+// This helper closes the loop. Every writer of a NON-manual dispatch record calls it afterwards; it
+// re-derives the manual remainder from Planning's ORIGINAL request (plan_qty/plan_boxes, migration
+// 61) using the SAME formula manual-dispatch itself applies:
+//     remainder = max(0, plan − (other dispatch records + dispatch out-scans))
+// and updates the row, or deletes it when nothing remains. Idempotent — re-running changes nothing.
+//
+// Deliberately skips rows with a NULL plan_qty: those pre-date migration 61, so their original
+// request is unknown and inventing one would be a speculative write (no historical backfill without
+// explicit instruction). Existing rows keep their current value; every new mark is protected.
+// Callers pass `excludeId` when they are about to insert, or have just inserted, their own record —
+// it is not needed for correctness (this runs after the insert) but keeps the intent explicit.
+async function _v52hRenetManual(batchNumber, excludeId) {
+  if (!batchNumber) return null;
+  try {
+    const q = (sql, args) => pgPool ? pgPool.query(sql, args).then(r => r.rows)
+                                    : Promise.resolve(db.prepare(sql.replace(/\$\d+/g, '?')).all(...args));
+    const manual = await q(
+      `SELECT id, plan_qty, plan_boxes FROM tracking_dispatch_records
+        WHERE batch_number=$1 AND id LIKE 'MANUAL-%' AND plan_qty IS NOT NULL`, [batchNumber]);
+    if (!manual.length) return null;
+    let changed = 0;
+    for (const m of manual) {
+      if (m.id === excludeId) continue;
+      const planQ = parseFloat(m.plan_qty) || 0;
+      const planB = parseInt(m.plan_boxes, 10) || 0;
+      // Everything dispatched for this batch OTHER than this manual row.
+      const o1 = await q(`SELECT COALESCE(SUM(qty),0) AS q, COALESCE(SUM(boxes),0) AS b
+                            FROM tracking_dispatch_records WHERE batch_number=$1 AND id <> $2`, [batchNumber, m.id]);
+      const o2 = await q(`SELECT COALESCE(SUM(qty),0) AS q, COUNT(*) AS b
+                            FROM tracking_scans WHERE batch_number=$1 AND dept='dispatch' AND type='out'`, [batchNumber]);
+      const otherQ = (parseFloat(o1[0] && o1[0].q) || 0) + (parseFloat(o2[0] && o2[0].q) || 0);
+      const otherB = (parseFloat(o1[0] && o1[0].b) || 0) + (parseFloat(o2[0] && o2[0].b) || 0);
+      const newQ0 = Math.max(0, Math.round((planQ - otherQ) * 1000) / 1000);
+      const newB0 = Math.max(0, planB - Math.round(otherB));
+      // v52H: PACKED CEILING. The plan-based remainder is what Planning ASSERTED; cap it at what is
+      // physically available to dispatch. Without this, 26ZA083 re-netted to a 14.5L manual remainder
+      // — arithmetically consistent with the 25L plan, but false, because only 10.5L was ever packed
+      // and all of it had already shipped. Skipped when the packing evidence is not credible.
+      const _av = await _v52hPackedAvailable(batchNumber, m.id);
+      let newQ = newQ0, newB = newB0;
+      if (_av.credible && newQ0 > _av.available + 0.005) {
+        newQ = _av.available;
+        newB = planB > 0 && planQ > 0 ? Math.min(newB0, Math.round(newB0 * (newQ / newQ0))) : newB0;
+        console.log(`[v52H packed-cap] ${batchNumber}: manual remainder ${newQ0}L capped to ${newQ}L — only ${_av.packed}L packed, ${_av.shipped}L already shipped`);
+      } else if (!_av.credible && newQ0 > 0) {
+        console.warn(`[v52H packed-cap] ${batchNumber}: packing record (${_av.packed}L) does not account for the ${_av.shipped}L already dispatched — NOT capping; Planning's ${newQ0}L stands. Check this batch's packing scans.`);
+      }
+      if (newQ < 0.005 && newB <= 0) {
+        if (pgPool) await pgPool.query(`DELETE FROM tracking_dispatch_records WHERE id=$1`, [m.id]);
+        else        db.prepare(`DELETE FROM tracking_dispatch_records WHERE id=?`).run(m.id);
+        console.log(`[v52H re-net] ${batchNumber}: manual mark ${m.id} fully absorbed by ${Math.round(otherQ*100)/100}L of real dispatch — record removed`);
+        changed++;
+      } else {
+        const rmk = `Manually dispatched — no invoice (remainder; ${Math.round(otherQ*100)/100}L already dispatched)`;
+        if (pgPool) await pgPool.query(`UPDATE tracking_dispatch_records SET qty=$1, boxes=$2, remarks=$3 WHERE id=$4`, [newQ, newB, rmk, m.id]);
+        else        db.prepare(`UPDATE tracking_dispatch_records SET qty=?, boxes=?, remarks=? WHERE id=?`).run(newQ, newB, rmk, m.id);
+        console.log(`[v52H re-net] ${batchNumber}: manual mark ${m.id} re-netted to ${newQ}L/${newB}b (plan ${planQ}L/${planB}b, other ${Math.round(otherQ*100)/100}L)`);
+        changed++;
+      }
+    }
+    // The rollup is derived from the records, so it must follow them in the same breath — a repair
+    // that skips this leaves Planning reading a stale dispatched_qty (exactly the trap the 26ZA083
+    // manual SQL repair hit).
+    if (changed) { try { await _recomputeDispatchActuals(batchNumber, null, null); } catch (e) {} }
+    return changed;
+  } catch (e) { console.warn('[v52H re-net] skipped for', batchNumber, '—', e.message); return null; }
+}
+
 async function _recomputeDispatchActuals(batchNumber, vehicleNo, invoiceNo) {
   if (!batchNumber) return 0;
   let totalQty = 0;
@@ -19963,28 +20097,54 @@ app.post('/api/tracking/manual-dispatch', async (req, res) => {
       alreadyQ = (parseFloat(e1?.q)||0) + (parseFloat(e2?.q)||0);
       alreadyB = (parseFloat(e1?.b)||0) + (parseFloat(e2?.b)||0);
     }
-    const recQ = Math.max(0, Math.round((q - alreadyQ) * 1000) / 1000);
-    const recB = Math.max(0, b - Math.round(alreadyB));
-    const remarks = alreadyQ > 0
+    const recQ0 = Math.max(0, Math.round((q - alreadyQ) * 1000) / 1000);
+    const recB0 = Math.max(0, b - Math.round(alreadyB));
+    // v52H (Ishan, 20 Aug): PACKED CEILING at the point of entry — the SAME cap _v52hRenetManual
+    // applies, so both paths agree by construction (formula-uniformity rule). This is where 26ZA083
+    // would have been caught on 17 Aug: 25L was asserted against 10.5L ever packed. Capsules still in
+    // Packing cannot have been dispatched, so the physical record bounds the typed figure. Skipped
+    // when the packing evidence is not credible (see _v52hPackedAvailable) — ✓ Dispatch is used on
+    // exactly the batches most likely to have incomplete scan history, and bad evidence must never
+    // silently overrule Planning.
+    const _avM = await _v52hPackedAvailable(batchNumber, recId);
+    let recQ = recQ0, recB = recB0;
+    let _cappedNote = '';
+    if (_avM.credible && recQ0 > _avM.available + 0.005) {
+      recQ = _avM.available;
+      recB = recQ0 > 0 ? Math.min(recB0, Math.round(recB0 * (recQ / recQ0))) : recB0;
+      _cappedNote = ` [capped to packed: ${_avM.packed}L packed, ${_avM.shipped}L already out]`;
+      console.log(`[v52H packed-cap] ${batchNumber}: ✓ Dispatch of ${recQ0}L capped to ${recQ}L — only ${_avM.packed}L packed, ${_avM.shipped}L already shipped`);
+    } else if (!_avM.credible && recQ0 > 0) {
+      console.warn(`[v52H packed-cap] ${batchNumber}: packing record (${_avM.packed}L) does not account for the ${_avM.shipped}L already dispatched — NOT capping; Planning's ${recQ0}L stands.`);
+    }
+    const remarks = (alreadyQ > 0
       ? `Manually dispatched — no invoice (remainder; ${Math.round(alreadyQ*100)/100}L already dispatched)`
-      : 'Manually dispatched — no invoice';
+      : 'Manually dispatched — no invoice') + _cappedNote;
     if (recQ >= 0.005 || (recQ === 0 && alreadyQ === 0 && recB > 0)) {
+      // v52H: persist Planning's ORIGINAL request (q/b) beside the netted remainder (recQ/recB), so
+      // an invoice arriving later can re-derive the remainder instead of the two totals stacking.
+      // Ishan (20 Aug): a re-press REPLACES the remembered plan — pressing ✓ Dispatch again is
+      // Planning restating their intent, so the newest figure is the authoritative one. The row is
+      // deleted and re-inserted above, so the new plan naturally supersedes.
       if (pgPool) {
         await pgPool.query(
-          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by")
-           VALUES ($1,$2,$3,$4,$5,'','',$6,$7,$8)`,
-          [recId, batchNumber, customer || '', recQ, recB, remarks, ts, who]
+          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by", plan_qty, plan_boxes)
+           VALUES ($1,$2,$3,$4,$5,'','',$6,$7,$8,$9,$10)`,
+          [recId, batchNumber, customer || '', recQ, recB, remarks, ts, who, q, b]
         );
       } else {
         db.prepare(
-          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by)
-           VALUES (?,?,?,?,?,'','',?,?,?)`
-        ).run(recId, batchNumber, customer || '', recQ, recB, remarks, ts, who);
+          `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by, plan_qty, plan_boxes)
+           VALUES (?,?,?,?,?,'','',?,?,?,?,?)`
+        ).run(recId, batchNumber, customer || '', recQ, recB, remarks, ts, who, q, b);
       }
     }
     let totalQty = null;
     try { if (typeof _recomputeDispatchActuals === 'function') totalQty = await _recomputeDispatchActuals(batchNumber, null, null); } catch(e) {}
-    res.json({ ok:true, id: recId, totalQty, recordedQty: recQ, alreadyDispatched: Math.round(alreadyQ*100)/100 });
+    res.json({ ok:true, id: recId, totalQty, recordedQty: recQ, alreadyDispatched: Math.round(alreadyQ*100)/100,
+      // v52H: surface the cap so Planning sees WHY the recorded figure is lower than what they typed,
+      // instead of silently getting a different number back.
+      requestedQty: q, packedCapped: recQ < recQ0 - 0.005, packedLakhs: _avM.packed, packedCredible: _avM.credible });
   } catch(err) { res.status(500).json({ ok:false, error: err.message }); }
 });
 
@@ -20977,10 +21137,30 @@ async function _v51tSapCommitment(batchNumber) {
                                   : Promise.resolve(db.prepare(sql.replace(/\$\d+/g, '?')).all(...args));
 
   const irRows = await q(`SELECT id, sap_doc_num, total_boxes FROM invoices_received WHERE batch_number=$1`, [batchNumber]);
+  // v52H FIX 1 (Ishan, 20 Aug — 26ZA083): a CANCELLED invoice request is not a live SAP claim, but it
+  // was counted as one. Excluding it inside the status clause alone is not enough — a cancelled
+  // request still carries its sap_doc_entry, so the FIRST leg of this OR matched it regardless. The
+  // exclusion therefore sits at the TOP level of the predicate. 26ZA083's only request was cancelled
+  // (3 boxes, SO 26003) and it alone produced the misleading "an invoice request has already been
+  // pushed to SAP" that blocked Shrikant's re-customer.
   const rqRows = await q(`SELECT id, selected_labels FROM invoice_requests
-                          WHERE batch_number=$1 AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending'))`, [batchNumber]);
+                          WHERE batch_number=$1 AND COALESCE(status,'') <> 'cancelled'
+                            AND (sap_doc_entry IS NOT NULL OR sap_response_doc_entry IS NOT NULL OR status NOT IN ('pending'))`, [batchNumber]);
+  // v52H FIX 2 (Ishan, 20 Aug): per-batch invoice authority. invoices_received.batch_number holds a
+  // CONCATENATED blob for a multi-batch invoice ("26ZA083, 26P031"), so the exact match above can
+  // never find it — invoice 2226 genuinely claimed 6 boxes of 26ZA083 and this leg saw nothing.
+  // invoice_batch_alloc already splits every invoice line to its own batch cleanly (it is the same
+  // table `claimed` is read from below), so it is the correct authority for "is there a live SAP
+  // claim on THIS batch" and for naming the documents.
+  let allocRows = [];
+  try {
+    allocRows = await q(`SELECT DISTINCT sap_doc_num FROM invoice_batch_alloc
+                          WHERE batch_number=$1 AND status='attributed'`, [batchNumber]);
+  } catch (e) { console.warn('[v52H commitment] alloc-doc leg skipped:', e.message); }
   if (irRows.length) { sapAny = true; why = 'a SAP invoice has already been received'; for (const r of irRows) if (r.sap_doc_num) sapDocs.push(r.sap_doc_num); }
+  else if (allocRows.length) { sapAny = true; why = 'a SAP invoice has already been received'; }
   else if (rqRows.length) { sapAny = true; why = 'an invoice request has already been pushed to SAP'; }
+  for (const r of allocRows) if (r.sap_doc_num && !sapDocs.includes(r.sap_doc_num)) sapDocs.push(r.sap_doc_num);
 
   // L1 — the box set Sunloc pushed to SAP.
   for (const r of rqRows) {
@@ -21026,6 +21206,23 @@ async function _v51tSapCommitment(batchNumber) {
     if (gone > claimed) claimed = gone;
     if (gone > 0) sapAny = true;
   } catch (e) { console.warn('[v51T commitment] dispatch-record leg skipped:', e.message); }
+
+  // v52H FIX 3 (Ishan, 20 Aug): SANITY CLAMP. `claimed` is floored at the raw dispatch-record box sum
+  // above, with nothing bounding it to reality — so ONE bad dispatch record silently foreclosed the
+  // batch forever. 26ZA083 claimed 21 boxes on a batch holding 12: unidentified became 21, freeBoxes
+  // went max(0, 12 − 21) = 0, and no re-customer of any size could ever succeed again. A batch cannot
+  // owe SAP more boxes than it physically has, so claimed is capped at its live (non-voided,
+  // non-orange) label count. Genuine over-invoicing is NOT hidden by this — it is reported in full by
+  // the Over Invoiced tab, which measures qty against packed and is untouched here (Ishan confirmed).
+  try {
+    const lb = await q(`SELECT COUNT(*) AS n FROM tracking_labels
+                         WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`, [batchNumber]);
+    const live = parseInt(lb[0] && lb[0].n, 10) || 0;
+    if (live > 0 && claimed > live) {
+      console.warn(`[v52H clamp] ${batchNumber}: claimed ${claimed} box(es) exceeds ${live} live box(es) — capping. A dispatch record for this batch is overstated; check tracking_dispatch_records.`);
+      claimed = live;
+    }
+  } catch (e) { console.warn('[v52H commitment] live-box clamp skipped:', e.message); }
 
   const unidentified = Math.max(0, claimed - committed.size);
   return { sapAny, why, sapDocs, committed, claimed, unidentified, receivedCount: irRows.length };
