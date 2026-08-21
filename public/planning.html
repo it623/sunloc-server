@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v52I</p>
+      <p>Planning Suite v3.0 · build v52K</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2152,6 +2152,7 @@ function openBatchTracking(bn){
 }
 function fmtColour(colour){
   if(!colour) return '-';
+  colour = String(colour);   // v52J: tolerate non-string colour (object/number from a bad merge) — render, don't throw
   const parts = colour.split('/');
   if(parts.length>=2){
     const cap=(parts[0]||'').trim(), body=(parts[1]||'').trim();
@@ -2590,7 +2591,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52I'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52K'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -2613,6 +2614,7 @@ async function saveState() {
 function fmt(n, dec=2) { if (n==null) return '-'; const v=+n; if (!isFinite(v) || isNaN(v)) return '-'; return v.toFixed(dec); }
 function fmtColour(colour){
   if(!colour) return '-';
+  colour = String(colour);   // v52J: tolerate non-string colour (object/number from a bad merge) — render, don't throw
   const parts = colour.split('/');
   if(parts.length>=2){
     const cap=(parts[0]||'').trim(), body=(parts[1]||'').trim();
@@ -3677,9 +3679,41 @@ document.addEventListener('keydown',   _markUserActive, true);
 document.addEventListener('scroll',    _markUserActive, true);
 document.addEventListener('touchstart',_markUserActive, true);
 document.addEventListener('touchstart',_markUserActive, true);
+// v52J (Ishan, 21 Aug): state sanitizer — see the call site in _renderImmediate above. Compacts
+// falsy entries out of every state array the renderers iterate, and restores the two machine
+// masters from their seed constants if they have lost array-ness (e.g. an object keyed by id from
+// a bad merge). Every repair is logged with what was dropped so data corruption stays VISIBLE —
+// this guard exists to keep views alive, not to hide the upstream writer that produced bad rows.
+function _v52jSanitizeState() {
+  const _arrays = ['orders', 'printOrders', 'dailyPrinting', 'dispatchPlans', 'machineMaster', 'printMachineMaster'];
+  for (const k of _arrays) {
+    const v = state[k];
+    if (v == null) { state[k] = []; continue; }
+    if (!Array.isArray(v)) {
+      if (k === 'machineMaster' && typeof MACHINE_MASTER !== 'undefined') state[k] = JSON.parse(JSON.stringify(MACHINE_MASTER));
+      else if (k === 'printMachineMaster' && typeof PRINT_MACHINES !== 'undefined') state[k] = JSON.parse(JSON.stringify(PRINT_MACHINES));
+      else state[k] = [];
+      console.warn(`[v52J sanitize] state.${k} was not an array (${typeof v}) — re-seeded/reset. Investigate the writer.`);
+      continue;
+    }
+    let dropped = 0;
+    for (let i = v.length - 1; i >= 0; i--) { if (!v[i] || typeof v[i] !== 'object') { v.splice(i, 1); dropped++; } }
+    if (dropped) console.warn(`[v52J sanitize] dropped ${dropped} malformed row(s) from state.${k} — a writer put null/non-object entries in this array.`);
+  }
+}
+
 function _renderImmediate() {
   // Never switch away from search page if user is actively typing in it
   if(_userIsFocused() && state.currentPage==='search') return;
+  // v52J (Ishan, 21 Aug — Printing Plan blank since 20 Aug pm): SANITIZE at the single render choke
+  // point. One malformed row anywhere (a null slipped into an array by a partial merge, a non-array
+  // where an array is expected) threw mid-renderer and left the PREVIOUS view's DOM on screen — the
+  // observed symptom: topbar showed Printing Plan's buttons while the content pane still held Daily
+  // Printing. Falsy entries are compacted from every state array a renderer iterates, and the two
+  // machine masters are re-seeded from their constants if they are not arrays. Dropping is LOGGED so
+  // corrupt data stays visible instead of being silently absorbed. Runs before every render — cheap
+  // (a filter pass over in-memory arrays), and it protects every view uniformly, not just Printing.
+  try { _v52jSanitizeState(); } catch (e) { console.warn('[v52J sanitize] skipped:', e.message); }
   // Save scroll position before rebuilding DOM — prevents auto-scroll-to-top on every render
   const _content = document.getElementById('content');
   const _scrollTop = _content ? _content.scrollTop : (window.scrollY || document.documentElement.scrollTop || 0);
@@ -3736,7 +3770,25 @@ function _renderImmediate() {
   const smEl = document.getElementById('sidebar-month');
   if (smEl) smEl.textContent = monthLabel(state.activeMonth) || '';
   const fn = pages[state.currentPage];
-  if (fn) fn();
+  // v52J (Ishan, 21 Aug — Printing Plan blank since 20 Aug pm): ERROR BOUNDARY. A view renderer
+  // that threw mid-way left the PREVIOUS view's DOM in #content under the NEW view's title and
+  // topbar — "not rendering", with the only evidence buried in the console. The failure is now
+  // painted into the content pane itself: view name, message, and the top of the stack, with a
+  // reload button. The throw is also re-logged. No more silent stale-content; whatever data shape
+  // breaks a renderer next identifies itself on screen on the first click.
+  if (fn) {
+    try { fn(); }
+    catch (e) {
+      console.error(`[v52J render] '${state.currentPage}' renderer threw:`, e);
+      const _c52j = document.getElementById('content');
+      if (_c52j) _c52j.innerHTML = `<div class="card" style="border-left:4px solid #dc2626;padding:16px">
+        <div style="font-weight:700;color:#dc2626;margin-bottom:6px">⚠️ This view failed to render</div>
+        <div style="font-size:12px;margin-bottom:8px">View <b>${state.currentPage}</b> hit an error. Please screenshot this box and share it with Ishan.</div>
+        <pre style="font-size:11px;background:var(--surface2);padding:10px;border-radius:6px;white-space:pre-wrap;word-break:break-word">${String(e && e.stack || e).split('\n').slice(0,6).join('\n').replace(/</g,'&lt;')}</pre>
+        <button class="btn btn-secondary btn-sm" onclick="location.reload()">↻ Reload App</button>
+      </div>`;
+    }
+  }
   updateUserBadge();
   // Restore scroll position and focus after DOM rebuild
   if(_scrollTop > 0) setTimeout(()=>{
@@ -5602,7 +5654,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52I'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52K'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8332,7 +8384,7 @@ function renderPrintRow(p, pm) {
     <td class="text-mono ${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);return kg>0?'text-accent':''})()}">${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);return kg>0?fmt(kg,2)+' kg':'—'})()}</td>
     <td class="text-mono ${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);const out=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.totalOutput||0),0);const pct=out>0?(kg/out*100):0;return pct>2?'text-red':'';})()}">${(()=>{const kg=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.salvage||0),0);const out=(state.dailyPrinting||[]).filter(l=>l.printOrderId===p.id).reduce((s,l)=>s+(l.totalOutput||0),0);const pct=out>0?(kg/out*100):0;return out>0?fmt(pct,2)+'%':'—'})()}</td>
     <td class="text-mono ${balance<0?'text-green':balance>0?'text-accent':''}">${fmt(balance)}</td>
-    <td class="text-mono" style="white-space:nowrap"><input type="date" class="form-control" style="width:130px;padding:3px 6px;font-size:12px" value="${(p.startDate||'').slice(0,10)}" onchange="updatePrintStartDate('${p.id}', this.value)" title="v52B: saved server-side with a lock so no stale tab can revert it (Ishan: open to all planning users, not admin-only)"></td>
+    <td class="text-mono" style="white-space:nowrap"><input type="date" class="form-control" style="width:130px;padding:3px 6px;font-size:12px" value="${String(p.startDate||'').slice(0,10)}" onchange="updatePrintStartDate('${p.id}', this.value)" title="v52B: saved server-side with a lock so no stale tab can revert it (Ishan: open to all planning users, not admin-only)"></td>
     <td class="text-mono" style="white-space:nowrap">${fmtDate(p.endDate)}</td>
     <td>${statusBadge}</td>
     <td class="text-sm">${p.zone||'-'}</td>
@@ -8356,7 +8408,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52I' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52K' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -8806,7 +8858,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8856,7 +8908,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -8945,7 +8997,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52I' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -11150,7 +11202,7 @@ function renderDispatchRow(p) {
       style="width:120px;background:var(--surface3);border:1px solid var(--border);border-radius:4px;color:var(--text);padding:3px 6px;font-size:12px"
       onchange="updateDispatchRemark('${p.id}',this.value)"></td>
     <td style="white-space:nowrap">
-      ${canDispatch?`<button class="btn btn-success btn-sm" onclick="markDispatched('${p.id}')">✓ Dispatch</button>`:''}
+      ${canDispatch?`<button class="btn btn-success btn-sm" onclick="markDispatched('${p.id}')" title="Direct Dispatched — the material left on a DIRECT invoice; no invoice request was sent through the software for SAP matching. Click this GREEN button only when the dispatch already happened outside the system and just needs recording. If an invoice request should be raised for matching, use the BLUE Invoice button instead.">✓ Direct Dispatched</button>`:''}
       ${_v39_renderInvoiceBtnForRow(p, ord)}
       <button class="btn btn-ghost btn-sm" onclick="editDispatch('${p.id}')">✏️</button>
     </td>
@@ -15902,13 +15954,18 @@ function updatePackSize(sz, val) {
   // v52I (Ishan, 20 Aug): the ONLY authorised writer of pack-size master data. Posts directly with
   // explicit:true — the server accepts pack-size writes on that flag alone, so no background sync
   // (from this tab or any stale one still running pre-v52I code) can revert the value afterwards.
+  // v52J (Ishan, 21 Aug): sends ONLY the edited size, not the whole map. The v52I write posted the
+  // tab's entire state.packSizes, so a Masters edit from a tab loaded BEFORE another admin's changes
+  // silently carried that tab's stale copies of every OTHER size along with its one edit — an
+  // explicit-flagged whole-map stomp the server gate correctly accepted. The server upserts only
+  // the keys it is given, so a one-key body makes cross-size stomping structurally impossible.
   state.packSizes[sz] = parseFloat(val)||100000;
   saveState();
   const _u = SYNC._url || localStorage.getItem('sunloc_server_url');
   if (!_u) { toast('Pack size saved locally only — no server connection', '#d97706'); return; }
   fetch(_u + '/api/pack-sizes', {
     method:'POST', headers:{'Content-Type':'application/json'},
-    body: JSON.stringify({ packSizes: state.packSizes, explicit: true }),
+    body: JSON.stringify({ packSizes: { [sz]: state.packSizes[sz] }, explicit: true }),
     signal: AbortSignal.timeout(8000)
   }).then(r=>r.ok?r.json():null).then(j=>{
     if (j && j.ok && !j.ignored) toast('Size ' + sz + ' pack size saved: ' + (parseFloat(val)||100000), '#16a34a');

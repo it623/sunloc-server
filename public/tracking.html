@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v52I</title>
+<title>Sunloc Tracking Suite v1.0 · build v52K</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52I</p>
+      <p>Tracking Suite v1.0 · build v52K</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52I</p>
+      <p>Tracking Suite v1.0 · build v52K</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -13427,6 +13427,18 @@ function renderReportB(){ window._activeReport = renderReportB; if(window._v41_c
 _scrollIntoReportIfFirstView('B');
 }
 
+// v52J (Ishan, 21 Aug): floor of a batch for Report C's filter — SAME classification Report B uses
+// for its GF vs FF/SF grouping (v44ZI): membership in the explicit FLOORS.FF / FLOORS.SF machine
+// lists via normMcId (so 'MC.30' / 'MC30' / 'mc 30' all match); every other or unknown machine is
+// GF. Kept as its own helper (getMachineFloor above does EXACT-string matching and would
+// misclassify format variants; Report B's in-place logic is untouched — this mirrors it).
+function _v52jFloorOf(machineId){
+  const m = normMcId(machineId);
+  if (!m) return 'GF';
+  if ((FLOORS.FF?.machines||[]).some(x=>normMcId(x)===m)) return 'FF';
+  if ((FLOORS.SF?.machines||[]).some(x=>normMcId(x)===m)) return 'SF';
+  return 'GF';
+}
 function renderReportC(){ window._activeReport = renderReportC; if(window._v41_composingD)window._v41_composingD=false;
   if(!document.getElementById('report-output')) renderReports();
   const reportEl = document.getElementById('report-output');
@@ -13445,7 +13457,8 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
   // batch-wise chronologically like Report B; totals reflect the active filter.
   const fType=window._rptCType||'all', fBatch=window._rptCBatch||'', fCust=window._rptCCust||'',
         fSize=window._rptCSize||'', fPC=window._rptCPC||'', fColour=window._rptCColour||'',
-        fSF=window._rptCStartFrom||'', fST=window._rptCStartTo||'';
+        fSF=window._rptCStartFrom||'', fST=window._rptCStartTo||'',
+        fFloor=window._rptCFloor||'', fZone=window._rptCZone||'';   // v52J (Ishan, 21 Aug): floor + export/domestic
   const monthBatches = getProdMonthBatches(true).filter(b=>!b.deleted && b.batchNumber);
   // v46R #5 (confirmed by Ishan): split-family roll-up. The server apportions a split batch's gross/
   // A-Grade/WIP from parent to child (e.g. 26ZH079 → 26ZH079-A). Report C compares Packable vs Planned,
@@ -13484,6 +13497,8 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
   if(fSize)   rows=rows.filter(r=>String(r.b.size)===String(fSize));
   if(fPC)     rows=rows.filter(r=>_like(r.b.pcCode,fPC));
   if(fColour) rows=rows.filter(r=>_like(r.b.colour,fColour));
+  if(fFloor)  rows=rows.filter(r=>_v52jFloorOf(r.b.machineId)===fFloor);                       // v52J: floor-wise
+  if(fZone)   rows=rows.filter(r=>_isExportBatchClient(r.b.batchNumber)===(fZone==='export')); // v52J: export/domestic (Report J's classifier)
   const _inRange=(d,from,to)=>{ if(!from&&!to) return true; if(!d) return false; const t=new Date(d).getTime(); if(from && t<new Date(from).getTime())return false; if(to && t>new Date(to+'T23:59:59').getTime())return false; return true; };
   if(fSF||fST) rows=rows.filter(r=>_inRange(_dispStart49zc(r.b),fSF,fST)); // v46Q range; v49ZC: filters match the DISPLAYED (actual-for-closed) date
   if(fType==='short')  rows=rows.filter(r=>r.deviation<0);
@@ -13513,11 +13528,24 @@ function renderReportC(){ window._activeReport = renderReportC; if(window._v41_c
       <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Colour</label>
         <input type="text" value="${(fColour||'').replace(/"/g,'&quot;')}" placeholder="e.g. Blue/White" onchange="window._rptCColour=this.value;renderReportC()"></div>
       <div class="form-group" style="margin-bottom:0;display:flex;align-items:flex-end">
-        <button class="btn btn-secondary btn-sm" onclick="['_rptCType','_rptCBatch','_rptCCust','_rptCSize','_rptCPC','_rptCColour','_rptCStartFrom','_rptCStartTo'].forEach(k=>window[k]='');window._rptCType='all';window._trkProdMonthFilter='ALL';renderReportC()">✕ Clear</button></div>
+        <button class="btn btn-secondary btn-sm" onclick="['_rptCType','_rptCBatch','_rptCCust','_rptCSize','_rptCPC','_rptCColour','_rptCStartFrom','_rptCStartTo','_rptCFloor','_rptCZone'].forEach(k=>window[k]='');window._rptCType='all';window._trkProdMonthFilter='ALL';renderReportC()">✕ Clear</button></div>
     </div>
-    <div class="form-row cols-2 mb-16" style="max-width:460px">
+    <div class="form-row cols-4 mb-16" style="max-width:920px">
       <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Prod Start from</label><input type="date" value="${fSF}" onchange="window._rptCStartFrom=this.value;renderReportC()"></div>
       <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Prod Start to</label><input type="date" value="${fST}" onchange="window._rptCStartTo=this.value;renderReportC()"></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Floor</label>
+        <select onchange="window._rptCFloor=this.value;renderReportC()">
+          <option value="">All Floors</option>
+          <option value="GF" ${fFloor==='GF'?'selected':''}>Ground Floor (GF)</option>
+          <option value="FF" ${fFloor==='FF'?'selected':''}>First Floor (FF)</option>
+          <option value="SF" ${fFloor==='SF'?'selected':''}>Second Floor (SF)</option>
+        </select></div>
+      <div class="form-group" style="margin-bottom:0"><label style="font-size:11px">Export / Domestic</label>
+        <select onchange="window._rptCZone=this.value;renderReportC()">
+          <option value="">All</option>
+          <option value="export" ${fZone==='export'?'selected':''}>🚢 Export</option>
+          <option value="domestic" ${fZone==='domestic'?'selected':''}>📦 Domestic</option>
+        </select></div>
     </div>
     <div class="tbl-wrap tbl-sticky"><table>
     <thead><tr><th>Batch</th><th>Customer</th><th>Size</th><th>PC</th><th>Colour</th><th>Prod Start</th><th>Prod End</th><th>Planned (L)</th><th>Packed (L)</th><th>A-Grade WIP (L)</th><th>Packable (L)</th><th>Deviation</th></tr></thead><tbody>`;
@@ -15971,7 +15999,17 @@ function renderReportK(targetId) {
       // tabs — first DPR production date (server-injected dprFirstDate = MIN(production_actuals.date)),
       // falling back to the production order's planned start date when the batch has no DPR rows yet.
       // Batches resolving to neither carry '' and are simply absent from the dropdown, as there.
-      prodMonth: String(b?.dprFirstDate || b?.startDate || b?.orderStartDate || '').slice(0, 7),
+      // v52K (Ishan, 21 Aug): attribution switched to _v50bCohortMonth — the SAME cohort rule Report D
+      // (getTrkMonthBatches) uses — so month-scoped G and D contain the SAME batch set by construction.
+      // For every batch with DPR production and no manual start date this is a NO-OP: the server's v51W
+      // anchor already serves startDate = first DPR date, so the v52H rule and the cohort rule agree.
+      // The rules only diverged at the edges, and each now follows D: a MANUAL start date is planner-
+      // authoritative (5 Aug rule) and buckets by its manual month, not the DPR month; dateless batches
+      // get the cohort fallbacks (planning month → first scan) instead of dropping out of the dropdown;
+      // and pre-July batches absorbed into July by _v50C appear under July here exactly as in D. Ghost
+      // rows (scans but no batch object) take the first-scan leg directly — the same fallback cohort
+      // attribution ends on.
+      prodMonth: b ? (_v50bCohortMonth(b) || '') : (_v50bFirstScanMonth(bn) || ''),
       customer: b?.customer || '-',
       pcCode: b?.pcCode || '-',
       size: size,
@@ -16052,10 +16090,18 @@ function renderReportK(targetId) {
   // Totals (summary only)
   let totalPackInBoxes = 0, totalPackInQty = 0, totalDispOutBoxes = 0, totalDispOutQty = 0;
   let totalPackInWindowBoxes = 0, totalPackInWindowQty = 0; // v45ZL item 3B
+  // v52K (Ishan, 21 Aug): Σ max(0, lifetime packIn − lifetime dispOut) per batch — the SAME per-batch
+  // floor Report D's Packed & Awaiting Dispatch applies (packedNotDisp = max(0, packIn − dispatched),
+  // same _scanLakhs / _v40_dispatchedLakhs sources). With a production month selected (cohort rule,
+  // v52K) this figure equals Report D's total for that month by construction. Kept separate from the
+  // footer Balance, which is deliberately UNFLOORED (an over-dispatched batch pulls it down — a real
+  // signal this chip must not absorb). Uses LIFETIME dispOutQty, not the period-scoped shown figure.
+  let totalPackedNotDisp52k = 0;
   rows.forEach(r => {
     totalPackInWindowBoxes += r.packInWindowBoxes; totalPackInWindowQty += r.packInWindowQty;
     totalPackInBoxes += r.packInBoxes; totalPackInQty += r.packInQty;
     totalDispOutBoxes += r.dispOutShownBoxes; totalDispOutQty += r.dispOutShownQty;
+    totalPackedNotDisp52k += Math.max(0, (r.packInQty || 0) - (r.dispOutQty || 0));
   });
   // v48 (Ishan #3): stash the EXACT rendered rows so the Excel export mirrors the on-screen table
   // (screen = Excel by construction), instead of the old parallel windowed re-derivation.
@@ -16077,7 +16123,8 @@ function renderReportK(targetId) {
   el.innerHTML = `
     <div class="card mb-16" style="border-top:4px solid #0891b2">
       <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
-        <div class="card-title" style="margin-bottom:0">📅 Per-Batch Pack In → Dispatch Out Summary${_perLoading48?' <span style="font-size:11px;font-weight:400;color:var(--accent3)">⏳ loading period…</span>':''}</div>
+        <div class="card-title" style="margin-bottom:0">📅 Per-Batch Pack In → Dispatch Out Summary${_perLoading48?' <span style="font-size:11px;font-weight:400;color:var(--accent3)">⏳ loading period…</span>':''}
+          <span style="margin-left:10px;font-size:11px;font-weight:700;color:#0891b2;background:rgba(8,145,178,0.1);border:1px solid rgba(8,145,178,0.25);padding:3px 8px;border-radius:4px" title="Σ max(0, packed-in − dispatched) per batch — identical formula, sources and per-batch floor as Report D's Packed & Awaiting Dispatch total. With a production month selected, this equals Report D's figure for the same month.">📦 Packed · not yet dispatched: ${fmt(totalPackedNotDisp52k)} L</span></div>
         <button class="btn btn-secondary btn-sm" onclick="exportReportK()">📥 Export Excel</button>
       </div>
       <div style="display:flex;gap:6px;flex-wrap:wrap;margin-bottom:10px;align-items:center">
@@ -16104,8 +16151,8 @@ function renderReportK(targetId) {
         ${statusPill('stale_15d', '🚨 Stale 15d+', '#dc2626')}
       </div>
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:4px">
-        <select id="rptk-filter-prodmonth" onchange="window._reportKFilters.prodMonth=this.value;renderReportK('${containerId}')"
-                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-weight:600" title="Production month — first DPR production date (same rule as Generated Invoices / Over Invoiced)">
+        <select id="rptk-filter-prodmonth" onchange="window._reportKFilters.prodMonth=this.value;if(this.value){window._reportKDateRangeMode='all';}renderReportK('${containerId}')"
+                style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-weight:600" title="Production month — same cohort rule as Report D (start date, anchored to first DPR production where it exists). Picking a month sets the period to All time so the month's full packed position shows; narrow with the period buttons if needed.">
           <option value="">All prod. months</option>${_rptKProdMonthOpts(_rptKMonthUniverse, filters.prodMonth)}
         </select>
         <input type="text" id="rptk-filter-customer" placeholder="🔍 Customer" value="${filters.customer||''}"

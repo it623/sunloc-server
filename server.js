@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52I';
+const APP_BUILD = 'v52K';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -141,6 +141,17 @@ app.use((req, res, next) => {
     res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
     res.setHeader('Pragma', 'no-cache');
     res.setHeader('Expires', '0');
+  }
+  // v52J (Ishan, 21 Aug — pack-size "revert overnight"): APIs join the no-store rule. API GET
+  // responses carried NO Cache-Control at all, and this domain's edge cache demonstrably caches
+  // extension-less/HTML responses when unhinted (the /assistant.html 4th-card incident needed a
+  // manual purge). A cached GET /api/pack-sizes shows yesterday's values on this morning's load
+  // even though the explicit POST persisted — indistinguishable on screen from a real revert.
+  // Live data must never be served by the CDN: every /api response is now explicitly no-store.
+  // (The jsqr.min.js static asset keeps its own public,max-age header — it is not under /api.)
+  else if (p.startsWith('/api/')) {
+    res.setHeader('Cache-Control', 'no-store, no-cache, must-revalidate');
+    res.setHeader('Pragma', 'no-cache');
   }
   next();
 });
