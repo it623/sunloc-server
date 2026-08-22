@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v52M</title>
+<title>Sunloc Tracking Suite v1.0 · build v52N</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52M</p>
+      <p>Tracking Suite v1.0 · build v52N</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52M</p>
+      <p>Tracking Suite v1.0 · build v52N</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -6946,7 +6946,7 @@ function confirmShortClose(batchNo, shortfall){
 // relabel (box identity + scans + production history preserved); forces a reprint with the new
 // customer. Blocked server-side if a SAP invoice document already exists for the batch.
 function openRecustomer(preBatch){
-  if(currentDept!=='admin'){ alert('Admin only.'); return; }
+  if(currentDept!=='admin' && currentDept!=='planning'){ alert('Admin / Planning Manager only.'); return; }   // v52N (Ishan, 22 Aug): PM re-customers export excess
   // Candidate batches: anything that has been labelled (non-voided, non-orange) — show current customer.
   const seen=new Map();
   state.labels.forEach(l=>{ if(!l.voided&&!l.isOrange&&!seen.has(l.batchNumber)) seen.set(l.batchNumber, l.customer||''); });
@@ -7056,7 +7056,7 @@ async function confirmRecustomer(){
   }catch(e){ alert('Re-customer failed: '+e.message); }
 }
 async function openRecustomerLog(){
-  if(currentDept!=='admin'){ alert('Admin only.'); return; }
+  if(currentDept!=='admin' && currentDept!=='planning'){ alert('Admin / Planning Manager only.'); return; }   // v52N (Ishan, 22 Aug): PM re-customers export excess
   openModal('Re-Customer Log', 'Before/after history of every re-customer action', `<div id="rc-log-body" style="font-size:12px;color:var(--text2)">Loading…</div>`, [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);
   try{
     const r=await fetch(serverUrl+'/api/tracking/recustomer-log',{headers:{'x-session-token':currentUser?.token||''}});
@@ -7248,7 +7248,7 @@ function renderDispatch(){
     <div class="dept-strip dispatch"></div>
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">Dispatch Management</div><div class="section-sub">Packed quantity ledger & dispatch recording</div></div>
-      ${currentDept==='admin'?`<div style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="openRecustomer()">🔄 Re-Customer Batch</button><button class="btn btn-sm btn-secondary" onclick="openRecustomerLog()">📋 Re-Customer Log</button></div>`:''}
+      ${(currentDept==='admin'||currentDept==='planning')?`<div style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="openRecustomer()">🔄 Re-Customer Batch</button><button class="btn btn-sm btn-secondary" onclick="openRecustomerLog()">📋 Re-Customer Log</button></div>`:''}
     </div>
 
     <!-- v39 Phase 10b: Invoice Queue panel — populated async by _v39_renderInvoiceQueuePanel().
@@ -17181,9 +17181,16 @@ function _v52lAppendNsrSheet(wb, rows, done) {
   const batches = [...new Set(rows.map(r => String(r.batchNo || '').trim().toUpperCase()).filter(Boolean))];
   const _build = (prices) => {
     try {
+      // v52N (Ishan, 22 Aug): DISPATCHED + BALANCE sections sit immediately right of Net Packable —
+      // the ready-reckoner. Dispatched qty is PREFILLED with the batch's actual dispatched lakhs at
+      // export time and stays PM-editable; both sections' prices are cell references to the single
+      // INR price (price never differs), values multiply live, and Balance = Net Packable − Dispatched
+      // by formula — so Dispatched + Balance always reconciles to Net Packable as anyone edits.
       const HDR = ['MACHINE','FLOOR','BATCH','CUSTOMER','PC CODE','SIZE','ZONE','PLANNED (L)','GROSS (L)',
         'AIM A-GRADE (L)','UNSCANNED WIP (L)','PRINT REJ (L)','PI REJ (L)','NET PACKABLE (L)',
-        'PRICE/L (INDENT)','CCY','PRICE/L (INR)','ORDER VALUE (INR)','PRICE SOURCE'];
+        'DISPATCHED (L)','DISP PRICE/L (INR)','DISPATCHED VALUE (INR)',
+        'BALANCE (L)','BAL PRICE/L (INR)','BALANCE VALUE (INR)',
+        'PRICE/L (INDENT)','CCY (USD/INR)','PRICE/L (INR)','ORDER VALUE (INR)','PRICE SOURCE'];
       const NC = HDR.length;
       const aoa = [], kinds = [], merges = [];
       const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
@@ -17227,19 +17234,27 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           // references the main row, so any hand-edit to the inputs re-splits inside Excel itself.
           const _netP = _n(r._aimAGrade) + _n(r._unscannedWip) - P('_printRej') - P('_piSalRem');
           const _splitExcess = zone === 'Export' && _netP > _n(r._plannedQty) + 0.005;
+          // v52N: actual dispatched lakhs at export time — the prefill for the Dispatched column.
+          // On a split, the main line takes up to its planned quantity; the excess line takes the rest.
+          let _dispAct = 0;
+          try { _dispAct = _n(_v40_dispatchedLakhs(r.batchNo, r.size)); } catch (_) {}
+          const _dispMain = _splitExcess ? Math.min(_dispAct, _n(r._plannedQty)) : _dispAct;
+          const _dispEx   = _splitExcess ? Math.max(_n(Math.round((_dispAct - _n(r._plannedQty)) * 100) / 100), 0) : 0;
           const mainIdx = aoa.length;
           dataRowIdxs.push(mainIdx);
           if (_splitExcess) capIdxs[mainIdx] = true;
           _push([r.machine, r.floor, r.batchNo, r.customer || '—', r.pcCode || '—', String(r.size), zone,
             _n(r._plannedQty), _n(r._grossProd), _n(r._aimAGrade), _n(r._unscannedWip), P('_printRej'), P('_piSalRem'),
-            null, (pr ? pr.pricePerLakh : ''), (pr ? pr.currency : ''), null, null, srcLbl],'data');
+            null, _dispMain, null, null, null, null, null,
+            (pr ? pr.pricePerLakh : ''), (pr ? pr.currency : ''), null, null, srcLbl],'data');
           if (_splitExcess) {
             const exIdx = aoa.length;
             dataRowIdxs.push(exIdx);
             excessIdxs[exIdx] = mainIdx;
             _push([r.machine, r.floor, r.batchNo + ' (EXCESS)', '⚠ RE-CUSTOMER — enter buyer', r.pcCode || '—', String(r.size), zone,
               0, 0, 0, 0, 0, 0,
-              null, '', '', null, null, 'ENTER MANUALLY (excess — re-customer via new SO)'],'data');
+              null, _dispEx, null, null, null, null, null,
+              '', '', null, null, 'ENTER MANUALLY (excess — re-customer via new SO)'],'data');
           }
         });
         mcBlocks.push({ mc, start, end: aoa.length - 1 });
@@ -17252,7 +17267,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       _push([`GRAND TOTAL (${dataRowIdxs.length} batches)`],'grand');
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       ws['!merges'] = merges;
-      ws['!cols'] = [{wch:9},{wch:6},{wch:11},{wch:24},{wch:9},{wch:6},{wch:9},...Array(7).fill({wch:12}),{wch:13},{wch:5},{wch:12},{wch:15},{wch:14}];
+      ws['!cols'] = [{wch:9},{wch:6},{wch:13},{wch:24},{wch:9},{wch:6},{wch:9},...Array(7).fill({wch:12}),{wch:12},{wch:12},{wch:15},{wch:11},{wch:12},{wch:15},{wch:13},{wch:10},{wch:12},{wch:15},{wch:14}];
       const _fc = (r, c, f, z) => { ws[XLSX.utils.encode_cell({r,c})] = { t:'n', f, z: z || '0.00' }; };
       const _row1 = i => i + 1;   // aoa index → 1-based Excel row
       // Per-data-row formulas: Net Packable (N=13), Price INR (Q=16), Order Value (R=17)
@@ -17268,28 +17283,46 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         } else {
           _fc(i, 13, `ROUND(J${R1}+K${R1}-L${R1}-M${R1},2)`);
         }
-        _fc(i, 16, `IF(P${R1}="USD",ROUND(N(O${R1})*$${XR.slice(0,1)}$${XR.slice(1)},2),N(O${R1}))`);
-        _fc(i, 17, `ROUND(N${R1}*Q${R1},0)`, '#,##0');
+        // v52N ready-reckoner: O = dispatched qty (static prefill, PM-editable). Prices in both
+        // sections mirror the single INR price cell W; values and balance are pure formulas.
+        _fc(i, 15, `W${R1}`);                              // P  disp price = INR price
+        _fc(i, 16, `ROUND(O${R1}*P${R1},0)`, '#,##0');     // Q  dispatched value
+        _fc(i, 17, `ROUND(N${R1}-O${R1},2)`);              // R  balance qty
+        _fc(i, 18, `W${R1}`);                              // S  bal price = INR price
+        _fc(i, 19, `ROUND(R${R1}*S${R1},0)`, '#,##0');     // T  balance value
+        _fc(i, 22, `IF(V${R1}="USD",ROUND(N(U${R1})*$${XR.slice(0,1)}$${XR.slice(1)},2),N(U${R1}))`);
+        _fc(i, 23, `ROUND(N${R1}*W${R1},0)`, '#,##0');
       });
       // Machine subtotals: SUM over the contiguous data block; NSR/L in Q = value ÷ packable.
       mcBlocks.forEach(b => {
         const subA = b.end + 1;                 // subtotal aoa index (row right after last data row)
         const s1 = _row1(b.start), e1 = _row1(b.end), R1 = _row1(subA);
-        for (const c of [7,8,9,10,11,12,13]) {
+        for (const c of [7,8,9,10,11,12,13,14,17]) {          // v52N: + dispatched(O) and balance(R) qty
           const col = String.fromCharCode(65 + c);
           _fc(subA, c, `ROUND(SUM(${col}${s1}:${col}${e1}),2)`);
         }
-        _fc(subA, 16, `IFERROR(ROUND(R${R1}/N${R1},0),"")`, '#,##0');
-        _fc(subA, 17, `ROUND(SUM(R${s1}:R${e1}),0)`, '#,##0');
+        for (const c of [16,19,23]) {                          // v52N: disp/bal/order VALUE sums
+          const col = String.fromCharCode(65 + c);
+          _fc(subA, c, `ROUND(SUM(${col}${s1}:${col}${e1}),0)`, '#,##0');
+        }
+        _fc(subA, 22, `IFERROR(ROUND(X${R1}/N${R1},0),"")`, '#,##0');   // machine NSR/L
       });
       // Grand total: SUMIF on nonblank BATCH column (C) so band/subtotal rows never double-count.
       const dFirst = _row1(hdrRowIdx + 1), dLast = _row1(grandIdx - 1), G1 = _row1(grandIdx);
-      for (const c of [7,8,9,10,11,12,13]) {
+      // v52N (double-count fix): "?*" — at least one character — in place of "<>". The style pass
+      // writes empty-STRING cells (v:'') across subtotal/band rows for the fills, and Excel's
+      // SUMIF "<>" treats an empty string as non-empty, so subtotal rows' sums were counted on top
+      // of the data rows they summarise (exactly 2×, as PM's manual /2 showed). SIZE on data rows
+      // is text with ≥1 character → matches "?*"; the '' cells on band/subtotal rows do not.
+      for (const c of [7,8,9,10,11,12,13,14,17]) {
         const col = String.fromCharCode(65 + c);
-        _fc(grandIdx, c, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"<>",${col}${dFirst}:${col}${dLast}),2)`);
+        _fc(grandIdx, c, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"?*",${col}${dFirst}:${col}${dLast}),2)`);
       }
-      _fc(grandIdx, 16, `IFERROR(ROUND(R${G1}/N${G1},0),"")`, '#,##0');
-      _fc(grandIdx, 17, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"<>",R${dFirst}:R${dLast}),0)`, '#,##0');
+      for (const c of [16,19,23]) {
+        const col = String.fromCharCode(65 + c);
+        _fc(grandIdx, c, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"?*",${col}${dFirst}:${col}${dLast}),0)`, '#,##0');
+      }
+      _fc(grandIdx, 22, `IFERROR(ROUND(X${G1}/N${G1},0),"")`, '#,##0');
       // ── NSR SUMMARY (all formulas — recalc live with the rate cell) ──
       let si = grandIdx + 1;
       const _sp = (row, kind) => { XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r: si, c: 0 } }); kinds[si] = kind; si++; };
@@ -17298,7 +17331,9 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       _sp(['NSR SUMMARY (₹ / Lakh) — Value ÷ Net Packable'], 'floor');
       _sp(['SIZE', 'OVERALL NSR', 'DOMESTIC NSR', 'EXPORT NSR'], 'hdr2');
       const F = `$F$${dFirst}:$F$${dLast}`, G = `$G$${dFirst}:$G$${dLast}`,
-            N = `$N$${dFirst}:$N$${dLast}`, RR = `$R$${dFirst}:$R$${dLast}`;
+            N = `$N$${dFirst}:$N$${dLast}`, RR = `$X$${dFirst}:$X$${dLast}`,       // v52N: order value now col X
+            DQ = `$O$${dFirst}:$O$${dLast}`, DV = `$Q$${dFirst}:$Q$${dLast}`,      // dispatched qty/value
+            BQ = `$R$${dFirst}:$R$${dLast}`, BV = `$T$${dFirst}:$T$${dLast}`;      // balance qty/value
       const sizesAll = [...new Set(rows.map(r => String(r.size)))].sort();
       sizesAll.forEach(sz => {
         const r1 = si + 1;
@@ -17309,10 +17344,31 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         kinds[si] = 'data'; si++;
       });
       XLSX.utils.sheet_add_aoa(ws, [['AVERAGE (ALL)']], { origin: { r: si, c: 0 } });
-      _fc(si, 1, `IFERROR(ROUND(SUMIF(${F},"<>",${RR})/SUMIF(${F},"<>",${N}),0),"—")`, '#,##0');
+      _fc(si, 1, `IFERROR(ROUND(SUMIF(${F},"?*",${RR})/SUMIF(${F},"?*",${N}),0),"—")`, '#,##0');
       _fc(si, 2, `IFERROR(ROUND(SUMIF(${G},"Domestic",${RR})/SUMIF(${G},"Domestic",${N}),0),"—")`, '#,##0');
       _fc(si, 3, `IFERROR(ROUND(SUMIF(${G},"Export",${RR})/SUMIF(${G},"Export",${N}),0),"—")`, '#,##0');
       kinds[si] = 'grand'; si++;
+      // ── v52N: MOVEMENT SUMMARY — Packable vs Dispatched vs Balance, qty + value, then the same
+      //    split for Domestic and Export. Pure formulas over the data region ("?*" / zone criteria,
+      //    so band and subtotal rows never leak in); every table follows edits live. ──
+      const _mvTables = [
+        { title: 'MOVEMENT — OVERALL (Packable vs Dispatched vs Balance)', crit: null },
+        { title: 'MOVEMENT — DOMESTIC', crit: 'Domestic' },
+        { title: 'MOVEMENT — EXPORT', crit: 'Export' },
+      ];
+      const _mvQ = (qr, z) => z ? `SUMIFS(${qr},${F},"?*",${G},"${z}")` : `SUMIF(${F},"?*",${qr})`;
+      _mvTables.forEach(t => {
+        _sp([], 'spacer');
+        merges.push({s:{r:si,c:0},e:{r:si,c:3}});
+        _sp([t.title], 'floor');
+        _sp(['', 'QTY (L)', 'VALUE (₹)'], 'hdr2');
+        [['PACKABLE', N, RR], ['DISPATCHED', DQ, DV], ['BALANCE', BQ, BV]].forEach(([lbl, qr, vr]) => {
+          XLSX.utils.sheet_add_aoa(ws, [[lbl]], { origin: { r: si, c: 0 } });
+          _fc(si, 1, `ROUND(${_mvQ(qr, t.crit)},2)`);
+          _fc(si, 2, `ROUND(${_mvQ(vr, t.crit)},0)`, '#,##0');
+          kinds[si] = 'data'; si++;
+        });
+      });
       if (ws['!ref']) { const rng = XLSX.utils.decode_range(ws['!ref']); rng.e.r = Math.max(rng.e.r, si); rng.e.c = Math.max(rng.e.c, NC - 1); ws['!ref'] = XLSX.utils.encode_range(rng); }
       // Styling — v50W colour language, same palette as the main sheet.
       try {
@@ -17325,7 +17381,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           if (kind === 'title')    { _set(r, 0, { font:{ bold:true, sz:14 } }); return; }
           if (kind === 'subtitle') { _set(r, 0, { font:{ italic:true, sz:10, color:{ rgb:'555555' } } }); return; }
           if (kind === 'rate')     { _set(r, 0, { font:{ bold:true, sz:11 } }); _set(r, 1, { font:{ bold:true, sz:12 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.RATE } }, border:_bAll }); _set(r, 2, { font:{ italic:true, sz:9, color:{ rgb:'92400E' } } }); return; }
-          const span = kind === 'hdr2' ? 4 : NC;
+          const span = kind === 'hdr2' ? 4 : NC;   // hdr2 also serves the movement tables (3 cols)
           for (let c = 0; c < span; c++) {
             if (kind === 'hdr' || kind === 'hdr2') _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
             else if (kind === 'mc')    _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.MC } }, border:_bAll });
