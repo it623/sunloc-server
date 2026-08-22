@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52K';
+const APP_BUILD = 'v52M';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -1563,6 +1563,41 @@ const MIGRATIONS = [
     sql: `
       ALTER TABLE tracking_dispatch_records ADD COLUMN plan_qty REAL;
       ALTER TABLE tracking_dispatch_records ADD COLUMN plan_boxes INTEGER;
+    `
+  },
+  {
+    version: 62,
+    name: 'invoice_request_so_remap',
+    // v52L (Ishan, 21 Aug — PM/DM leftover-quantity flow): FRESH-SO REMAP AUDIT TRAIL.
+    // When an SO closes in SAP after its full quantity is invoiced, leftover packed stock of the same
+    // batch (late WIP) cannot be invoiced on that SO — SAP will not raise an invoice on a closed
+    // order. PM raises a FRESH SO in SAP and the DM maps the leftover to it in the consolidated
+    // invoice modal. The request row must remember BOTH ends of that mapping: which SO it actually
+    // bills against (the existing sap_doc_entry/so_doc_num — now the fresh SO) and which SO the
+    // quantity originally belonged to. Additive and nullable; normal un-remapped requests carry NULL.
+    sql: `
+      ALTER TABLE invoice_requests ADD COLUMN remapped_from_so_doc_entry INTEGER;
+      ALTER TABLE invoice_requests ADD COLUMN remapped_from_so_doc_num TEXT;
+    `
+  },
+  {
+    version: 63,
+    name: 'nsr_price_snapshots',
+    // v52M (Ishan, 22 Aug — NSR correction 1): PERMANENT INDENT-PRICE SNAPSHOT. The indent cache
+    // holds OPEN Sales Orders only — a closed SO is pruned and its line price vanishes, degrading
+    // the batch to the invoice-realized fallback. But the indent price does not change when the SO
+    // closes, so the FIRST successful indent resolution for a batch is captured here and the batch
+    // carries that price forever. Written by /api/nsr/prices whenever it resolves from the live
+    // indent; read by the same endpoint ahead of the invoice fallback when the indent has gone.
+    sql: `
+      CREATE TABLE IF NOT EXISTS nsr_price_snapshots (
+        batch_number TEXT PRIMARY KEY,
+        pc_code TEXT,
+        price_per_lakh REAL NOT NULL,
+        currency TEXT NOT NULL DEFAULT 'INR',
+        sap_doc_num TEXT,
+        captured_at TEXT NOT NULL
+      );
     `
   },
 ];
@@ -3645,6 +3680,9 @@ async function ensurePostgresTables() {
       console.log(`[v44ZC] SO-number backfill: requests.so_doc_num rows=${_r1.rowCount}, invoices.base_so_doc_num set=${_bfN}`);
     } catch (e) { console.warn('[v44ZC] SO-number backfill error:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS reconciled_with_invoice_id TEXT`); } catch (e) { console.warn('[v41 P19.3 PG] add reconciled_with_invoice_id:', e.message); }
+    try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS remapped_from_so_doc_entry INTEGER`); } catch (e) { console.warn('[v52L PG] add remapped_from_so_doc_entry:', e.message); }
+    try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS remapped_from_so_doc_num TEXT`); } catch (e) { console.warn('[v52L PG] add remapped_from_so_doc_num:', e.message); }
+    try { await pgPool.query(`CREATE TABLE IF NOT EXISTS nsr_price_snapshots (batch_number TEXT PRIMARY KEY, pc_code TEXT, price_per_lakh REAL NOT NULL, currency TEXT NOT NULL DEFAULT 'INR', sap_doc_num TEXT, captured_at TEXT NOT NULL)`); } catch (e) { console.warn('[v52M PG] create nsr_price_snapshots:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS is_overdispatch_approved INTEGER NOT NULL DEFAULT 0`); } catch (e) { console.warn('[v41 P19.3 PG] add is_overdispatch_approved:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS overdispatch_approved_by TEXT`); } catch (e) { console.warn('[v41 P19.3 PG] add overdispatch_approved_by:', e.message); }
     try { await pgPool.query(`ALTER TABLE invoice_requests ADD COLUMN IF NOT EXISTS overdispatch_approved_at TEXT`); } catch (e) { console.warn('[v41 P19.3 PG] add overdispatch_approved_at:', e.message); }
@@ -5708,6 +5746,141 @@ app.get('/api/sap/config', async (req, res) => {
 
 // POST /api/sap/config — update SAP config (admin only). Password optional —
 // if omitted/empty, existing encrypted password is preserved.
+// v52L (Ishan, 21 Aug — fresh-SO leftover flow): SO LOOKUP + VALIDATION. The DM types the DocNum of
+// the FRESH Sales Order PM just raised in SAP; this endpoint fetches it live from the Service Layer
+// and returns everything the modal needs to let the DM confirm with eyes open: customer, open/closed
+// status, currency, and the line matching the batch's PC code (with open quantity in LAKHS via the
+// same UoM rule the invoice poller applies). Validation is advisory — the endpoint reports, the DM
+// confirms — except non-existence, which is a hard fail.
+app.post('/api/sap/lookup-so', async (req, res) => {
+  try {
+    const docNum = parseInt(req.body && req.body.docNum, 10);
+    const pcCode = String((req.body && req.body.pcCode) || '').trim();
+    if (!docNum || docNum <= 0) return res.status(400).json({ ok: false, error: 'docNum (numeric SAP SO number) required' });
+    if (!sapClient || !sapClient.isConfigured()) return res.status(503).json({ ok: false, error: 'SAP not configured' });
+    const query = `$filter=DocNum eq ${docNum}&$select=DocEntry,DocNum,CardCode,CardName,DocDate,DocumentStatus,DocCurrency,DocumentLines`;
+    const r = await sapClient.call({ method: 'GET', path: 'Orders', query });
+    if (!r.ok) return res.status(502).json({ ok: false, error: 'SAP query failed: ' + (r.error || 'unknown') });
+    const so = (r.data && r.data.value && r.data.value[0]) || null;
+    if (!so) return res.status(404).json({ ok: false, error: `Sales Order ${docNum} not found in SAP` });
+    const lines = (so.DocumentLines || []).map(l => {
+      const scale = _sapUomScale(l);                       // THOUSAND-unit lines → ×0.01 to lakhs
+      const openQ = parseFloat(l.RemainingOpenQuantity != null ? l.RemainingOpenQuantity : l.Quantity) || 0;
+      return { itemCode: String(l.ItemCode || ''), description: String(l.ItemDescription || ''),
+               openQtyLakhs: Math.round(openQ * scale * 100) / 100,
+               qtyLakhs: Math.round((parseFloat(l.Quantity) || 0) * scale * 100) / 100,
+               price: parseFloat(l.Price) || 0, lineStatus: String(l.LineStatus || '') };
+    });
+    const pcLine = pcCode ? (lines.find(l => l.itemCode === pcCode) || null) : null;
+    return res.json({ ok: true,
+      docEntry: so.DocEntry, docNum: String(so.DocNum), cardCode: so.CardCode || '', cardName: so.CardName || '',
+      docDate: so.DocDate || '', isOpen: String(so.DocumentStatus || '') === 'bost_Open',
+      currency: so.DocCurrency || 'INR', lines, pcLine,
+      pcLineFound: !!pcLine });
+  } catch (e) {
+    console.error('[v52L lookup-so]', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// v52L (Ishan, 21 Aug — NSR planning sheet): PRICE-PER-LAKH RESOLUTION for Report E's third sheet.
+// Orders do not persist a price; the authoritative source is the SAP Sales Order line (the indent).
+// Resolution per batch: production order → its SO → the indent-cache payload's line for the order's
+// PC code → line Price converted to per-LAKH via the same UoM rule the poller applies to quantities
+// (price is per SAP UoM unit, so pricePerLakh = Price ÷ scale: a THOUSAND-unit line's price × 100).
+// Closed SOs are pruned from the indent cache, so the fallback is the REALIZED price from received
+// invoices for the batch (Σ taxable ÷ Σ qty, always INR). Batches resolving to neither return null —
+// the Excel cell stays blank for PM to fill by hand; every formula downstream still works.
+app.post('/api/nsr/prices', async (req, res) => {
+  try {
+    const wanted = Array.isArray(req.body && req.body.batches) ? req.body.batches.map(b => String(b || '').trim().toUpperCase()).filter(Boolean) : [];
+    if (!wanted.length) return res.status(400).json({ ok: false, error: 'batches[] required' });
+    // 1. Load all production orders once (blob rows), index by batch.
+    let ordRows;
+    if (pgPool) ordRows = (await pgPool.query(`SELECT data_json FROM production_orders WHERE COALESCE(deleted,false)=false`)).rows;
+    else ordRows = db.prepare(`SELECT data_json FROM production_orders WHERE COALESCE(deleted,0)=0`).all();
+    const byBatch = {};
+    for (const r of (ordRows || [])) {
+      try { const o = JSON.parse(r.data_json || '{}');
+        const bn = String(o.batchNumber || '').trim().toUpperCase();
+        if (bn && !byBatch[bn]) byBatch[bn] = o;
+      } catch (_) {}
+    }
+    const prices = {};
+    for (const bn of wanted) {
+      const o = byBatch[bn];
+      let out = null;
+      // 2. Indent-cache line price (open SOs).
+      if (o && (o.sapDocEntry || o.sapDocNum)) {
+        try {
+          let ind;
+          if (o.sapDocEntry) {
+            if (pgPool) ind = (await pgPool.query(`SELECT payload_json FROM sap_indent_cache WHERE sap_doc_entry=$1 LIMIT 1`, [parseInt(o.sapDocEntry, 10)])).rows[0];
+            else ind = db.prepare(`SELECT payload_json FROM sap_indent_cache WHERE sap_doc_entry=? LIMIT 1`).get(parseInt(o.sapDocEntry, 10));
+          }
+          if (!ind && o.sapDocNum) {
+            if (pgPool) ind = (await pgPool.query(`SELECT payload_json FROM sap_indent_cache WHERE sap_doc_num=$1 LIMIT 1`, [String(o.sapDocNum)])).rows[0];
+            else ind = db.prepare(`SELECT payload_json FROM sap_indent_cache WHERE sap_doc_num=? LIMIT 1`).get(String(o.sapDocNum));
+          }
+          if (ind) {
+            const so = JSON.parse(ind.payload_json || '{}');
+            const pc = String(o.pcCode || '').trim();
+            const line = (so.DocumentLines || []).find(l => String(l.ItemCode || '') === pc) || (so.DocumentLines || [])[0] || null;
+            if (line) {
+              const scale = _sapUomScale(line) || 1;
+              const p = parseFloat(line.Price) || 0;
+              if (p > 0) {
+                out = { pricePerLakh: Math.round((p / scale) * 100) / 100, currency: so.DocCurrency || 'INR', source: 'indent' };
+                // v52M (correction 1): capture the indent price PERMANENTLY — when this SO later
+                // closes and leaves the cache, the batch keeps this price (it does not change).
+                try {
+                  const _cap = new Date().toISOString();
+                  if (pgPool) await pgPool.query(
+                    `INSERT INTO nsr_price_snapshots (batch_number, pc_code, price_per_lakh, currency, sap_doc_num, captured_at)
+                     VALUES ($1,$2,$3,$4,$5,$6)
+                     ON CONFLICT (batch_number) DO UPDATE SET pc_code=$2, price_per_lakh=$3, currency=$4, sap_doc_num=$5, captured_at=$6`,
+                    [bn, pc, out.pricePerLakh, out.currency, String(o.sapDocNum || ''), _cap]);
+                  else db.prepare(
+                    `INSERT INTO nsr_price_snapshots (batch_number, pc_code, price_per_lakh, currency, sap_doc_num, captured_at)
+                     VALUES (?,?,?,?,?,?)
+                     ON CONFLICT (batch_number) DO UPDATE SET pc_code=excluded.pc_code, price_per_lakh=excluded.price_per_lakh, currency=excluded.currency, sap_doc_num=excluded.sap_doc_num, captured_at=excluded.captured_at`
+                  ).run(bn, pc, out.pricePerLakh, out.currency, String(o.sapDocNum || ''), _cap);
+                } catch (e) { console.warn('[v52M nsr] snapshot write ' + bn + ':', e.message); }
+              }
+            }
+          }
+        } catch (e) { console.warn('[v52L nsr] indent lookup ' + bn + ':', e.message); }
+      }
+      // v52M (correction 1): SNAPSHOT ahead of the invoice fallback — the price the batch carried
+      // while its SO was open wins over any later invoice-derived figure.
+      if (!out) {
+        try {
+          let snap;
+          if (pgPool) snap = (await pgPool.query(`SELECT price_per_lakh, currency FROM nsr_price_snapshots WHERE batch_number=$1`, [bn])).rows[0];
+          else snap = db.prepare(`SELECT price_per_lakh, currency FROM nsr_price_snapshots WHERE batch_number=?`).get(bn);
+          const sp = parseFloat(snap && snap.price_per_lakh) || 0;
+          if (sp > 0) out = { pricePerLakh: sp, currency: (snap.currency || 'INR'), source: 'indent_snapshot' };
+        } catch (e) { console.warn('[v52M nsr] snapshot read ' + bn + ':', e.message); }
+      }
+      // 3. Fallback: realized price from received invoices (taxable ÷ qty, INR).
+      if (!out) {
+        try {
+          let inv;
+          if (pgPool) inv = (await pgPool.query(`SELECT SUM(taxable_amount) AS t, SUM(total_qty_lakhs) AS q FROM invoices_received WHERE UPPER(batch_number)=$1 AND COALESCE(total_qty_lakhs,0)>0 AND COALESCE(taxable_amount,0)>0`, [bn])).rows[0];
+          else inv = db.prepare(`SELECT SUM(taxable_amount) AS t, SUM(total_qty_lakhs) AS q FROM invoices_received WHERE UPPER(batch_number)=? AND COALESCE(total_qty_lakhs,0)>0 AND COALESCE(taxable_amount,0)>0`).get(bn);
+          const t = parseFloat(inv && inv.t) || 0, q = parseFloat(inv && inv.q) || 0;
+          if (t > 0 && q > 0) out = { pricePerLakh: Math.round((t / q) * 100) / 100, currency: 'INR', source: 'invoice_realized' };
+        } catch (e) { console.warn('[v52L nsr] invoice fallback ' + bn + ':', e.message); }
+      }
+      prices[bn] = out;
+    }
+    return res.json({ ok: true, prices });
+  } catch (e) {
+    console.error('[v52L nsr/prices]', e.message);
+    return res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.post('/api/sap/config', async (req, res) => {
   if (!_requireAdmin(req, res)) return;
   try {
@@ -6231,8 +6404,9 @@ app.post('/api/invoice/request', async (req, res) => {
             sap_doc_entry, size, colour, pc_code, boxes, qty_lakhs, rate_per_lakh,
             selected_labels, selection_mode, truck_number, status, created_by,
             is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at,
-            sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id)
-          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+            sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id,
+            remapped_from_so_doc_entry, remapped_from_so_doc_num)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
         `, [id, body.batchNumber, body.customer, body.cardCode || '', body.poNumber || '',
             body.sapDocEntry, body.size || '', body.colour || '', body.pcCode || '',
             parseInt(body.boxes) || 0, parseFloat(body.qtyLakhs) || 0, parseFloat(body.ratePerLakh) || 0,
@@ -6244,15 +6418,17 @@ app.post('/api/invoice/request', async (req, res) => {
             preLinkedInvoiceRow ? (preLinkedInvoiceRow.sap_doc_num || '') : null,
             preLinkedInvoiceRow ? preLinkedInvoiceRow.sap_doc_entry : null,
             preLinkedInvoiceRow ? new Date().toISOString() : null,
-            preLinkedInvoiceRow ? preLinkedInvoiceRow.id : null]);
+            preLinkedInvoiceRow ? preLinkedInvoiceRow.id : null,
+            parseInt(body.remappedFromSoDocEntry) || null, body.remappedFromSoDocNum || null]);
       } else {
         db.prepare(`
           INSERT INTO invoice_requests (id, batch_number, customer, card_code, po_number,
             sap_doc_entry, size, colour, pc_code, boxes, qty_lakhs, rate_per_lakh,
             selected_labels, selection_mode, truck_number, status, created_by,
             is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at,
-            sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id)
-          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+            sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id,
+            remapped_from_so_doc_entry, remapped_from_so_doc_num)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         `).run(id, body.batchNumber, body.customer, body.cardCode || '', body.poNumber || '',
             body.sapDocEntry, body.size || '', body.colour || '', body.pcCode || '',
             parseInt(body.boxes) || 0, parseFloat(body.qtyLakhs) || 0, parseFloat(body.ratePerLakh) || 0,
@@ -6264,7 +6440,8 @@ app.post('/api/invoice/request', async (req, res) => {
             preLinkedInvoiceRow ? (preLinkedInvoiceRow.sap_doc_num || '') : null,
             preLinkedInvoiceRow ? preLinkedInvoiceRow.sap_doc_entry : null,
             preLinkedInvoiceRow ? new Date().toISOString() : null,
-            preLinkedInvoiceRow ? preLinkedInvoiceRow.id : null);
+            preLinkedInvoiceRow ? preLinkedInvoiceRow.id : null,
+            parseInt(body.remappedFromSoDocEntry) || null, body.remappedFromSoDocNum || null);
       }
       // v44ZC (v44AD): record the SO NUMBER on the request (see request-batch handler).
       try {
@@ -6466,8 +6643,9 @@ app.post('/api/invoice/request-batch', async (req, res) => {
               sap_doc_entry, size, colour, pc_code, boxes, qty_lakhs, rate_per_lakh,
               selected_labels, selection_mode, truck_number, status, created_by,
               is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at,
-              sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id)
-            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)
+              sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id,
+            remapped_from_so_doc_entry, remapped_from_so_doc_num)
+            VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
           `, [id, b.batchNumber, b.customer, b.cardCode || '', b.poNumber || '',
               b.sapDocEntry, b.size || '', b.colour || '', b.pcCode || '',
               parseInt(b.boxes) || 0, parseFloat(b.qtyLakhs) || 0, parseFloat(b.ratePerLakh) || 0,
@@ -6479,15 +6657,17 @@ app.post('/api/invoice/request-batch', async (req, res) => {
               preLinkedInv ? (preLinkedInv.sap_doc_num || '') : null,
               preLinkedInv ? preLinkedInv.sap_doc_entry : null,
               preLinkedInv ? new Date().toISOString() : null,
-              preLinkedInv ? preLinkedInv.id : null]);
+              preLinkedInv ? preLinkedInv.id : null,
+              parseInt(b.remappedFromSoDocEntry) || null, b.remappedFromSoDocNum || null]);
         } else {
           db.prepare(`
             INSERT INTO invoice_requests (id, batch_number, customer, card_code, po_number,
               sap_doc_entry, size, colour, pc_code, boxes, qty_lakhs, rate_per_lakh,
               selected_labels, selection_mode, truck_number, status, created_by,
               is_overdispatch_approved, overdispatch_approved_by, overdispatch_approved_at,
-              sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+              sap_response_doc_num, sap_response_doc_entry, reconciled_at, reconciled_with_invoice_id,
+            remapped_from_so_doc_entry, remapped_from_so_doc_num)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
           `).run(id, b.batchNumber, b.customer, b.cardCode || '', b.poNumber || '',
               b.sapDocEntry, b.size || '', b.colour || '', b.pcCode || '',
               parseInt(b.boxes) || 0, parseFloat(b.qtyLakhs) || 0, parseFloat(b.ratePerLakh) || 0,
@@ -6499,7 +6679,8 @@ app.post('/api/invoice/request-batch', async (req, res) => {
               preLinkedInv ? (preLinkedInv.sap_doc_num || '') : null,
               preLinkedInv ? preLinkedInv.sap_doc_entry : null,
               preLinkedInv ? new Date().toISOString() : null,
-              preLinkedInv ? preLinkedInv.id : null);
+              preLinkedInv ? preLinkedInv.id : null,
+              parseInt(b.remappedFromSoDocEntry) || null, b.remappedFromSoDocNum || null);
         }
         // v44ZC (v44AD): record the SO NUMBER on the request so the poller can reconcile the
         // returning invoice number-to-number against its Comments, with no indent-cache dependence.

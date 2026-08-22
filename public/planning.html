@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v52K</p>
+      <p>Planning Suite v3.0 · build v52M</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52M' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52M' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2591,7 +2591,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52K'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52M'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5654,7 +5654,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52K'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52M'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -7774,7 +7774,11 @@ function _v40_renderConsolidatedApprovalModalBody() {
         ${statusCell}
         <td style="padding:5px 8px;font-family:var(--mono);font-size:11px">${it.batchNumber}</td>
         <td style="padding:5px 8px;font-size:11px">${(it.customer||'').substring(0,30)}</td>
-        <td style="padding:5px 8px;font-family:var(--mono);font-size:11px;color:#0891b2;font-weight:600">${it.sapDocNum || '—'}</td>
+        <td style="padding:5px 8px;font-family:var(--mono);font-size:11px;color:#0891b2;font-weight:600" id="v40-conf-so-${idx}">${
+          it.sapDocEntryOverride
+            ? `<span style="text-decoration:line-through;color:var(--text3)">${it.sapDocNum || '—'}</span> → <span style="color:#7c3aed;font-weight:700">${it.sapDocNumOverride}</span> <span style="font-size:9px;background:#ede9fe;color:#6d28d9;padding:1px 4px;border-radius:3px">FRESH</span>${results ? '' : ` <button onclick="_v52lClearFreshSo(${idx})" title="Undo — bill against the original SO ${it.sapDocNum || ''}" style="font-size:9px;padding:1px 4px;border:1px solid var(--border);background:var(--surface3);border-radius:3px;cursor:pointer">✕</button>`}`
+            : `${it.sapDocNum || '—'}${results ? '' : ` <button onclick="_v52lFreshSo(${idx})" title="Fresh SO — the original SO is closed in SAP (fully invoiced), so SAP will not raise an invoice for this leftover quantity on it. PM raises a FRESH Sales Order in SAP for the leftover; enter its number here and this request will bill against the fresh SO instead. The mapping (old SO → fresh SO) is recorded on the request for audit." style="font-size:9px;padding:1px 5px;border:1px solid #7c3aed;background:#f5f3ff;color:#6d28d9;border-radius:3px;cursor:pointer;font-weight:700">Fresh SO…</button>`}`
+        }</td>
         <td style="padding:5px 8px;font-family:var(--mono);font-size:11px">${it.pcCode || '—'}</td>
         <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:11px;white-space:nowrap"><span id="v40-conf-boxes-${idx}">${it.boxes}</span>${shortWarn}</td>
         <td style="padding:5px 8px;text-align:right;font-family:var(--mono);font-size:11px;font-weight:600">
@@ -7894,6 +7898,54 @@ function _v40_autoAdjustShort(planId){
   try{ _v40_openConsolidatedApprovalModal(); }catch(e){}
 }
 
+// v52L (Ishan, 21 Aug — PM/DM leftover-quantity flow): FRESH SO REMAP.
+// Scenario: SO carried 20L, 22L was produced, 20L packed+invoiced (SAP closes the SO on full
+// quantity), then the leftover 2L arrives through WIP. SAP will not invoice on the closed SO, so
+// PM raises a FRESH SO in SAP for the leftover and the DM maps this request onto it here. The
+// lookup validates the fresh SO live against SAP (exists / open / same customer / has the PC-code
+// line) and the DM confirms with those facts on screen. Advisory checks warn, only non-existence
+// blocks — the DM owns the decision, the request records old→new for audit (migration 62).
+async function _v52lFreshSo(idx) {
+  const ctx = window._v40_approvalContext; const it = ctx && ctx.items && ctx.items[idx];
+  if (!it) return;
+  const inp = prompt(`FRESH SO for ${it.batchNumber} (${it.qtyLakhs.toFixed(2)}L leftover)\n\nEnter the SAP Sales Order NUMBER (DocNum) of the fresh SO PM created for this leftover quantity:`, '');
+  if (inp == null) return;
+  const docNum = parseInt(String(inp).trim(), 10);
+  if (!docNum || docNum <= 0) { alert('Enter a numeric SAP Sales Order number.'); return; }
+  if (String(docNum) === String(it.sapDocNum || '')) { alert('That IS the current SO — a fresh SO must be a different order.'); return; }
+  const baseUrl = (typeof SYNC !== 'undefined' && SYNC._url) || localStorage.getItem('sunloc_server_url') || '';
+  const cell = document.getElementById('v40-conf-so-' + idx);
+  if (cell) cell.innerHTML = '⏳ checking SAP…';
+  try {
+    const r = await fetch(baseUrl + '/api/sap/lookup-so', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ docNum, pcCode: it.pcCode || it.itemCode || '' }),
+      signal: AbortSignal.timeout(20000)
+    });
+    const j = await r.json();
+    if (!j || !j.ok) { alert('SO ' + docNum + ' could not be used:\n\n' + ((j && j.error) || 'lookup failed')); _v40_renderConsolidatedApprovalModalBody(); return; }
+    const probs = [];
+    if (!j.isOpen) probs.push('• SO is NOT open in SAP (status suggests it is closed/delivered) — SAP may refuse to invoice on it.');
+    if ((it.cardCode && j.cardCode && it.cardCode !== j.cardCode)) probs.push(`• Customer mismatch: SO belongs to ${j.cardName} (${j.cardCode}), this batch bills ${it.customer} (${it.cardCode}).`);
+    if (!j.pcLineFound) probs.push(`• No line for PC code ${it.pcCode || '—'} on this SO — the poller's PC-code gate will NOT auto-match the resulting invoice to this request.`);
+    const pcQ = j.pcLine ? `\nPC ${it.pcCode} line: open ${j.pcLine.openQtyLakhs}L of ${j.pcLine.qtyLakhs}L` : '';
+    const msg = `Fresh SO ${j.docNum} — ${j.cardName} (${j.cardCode})\nStatus: ${j.isOpen ? 'OPEN ✓' : 'NOT OPEN ⚠'} · Currency: ${j.currency}${pcQ}\n\nThis request (${it.batchNumber}, ${it.qtyLakhs.toFixed(2)}L) will bill against SO ${j.docNum} instead of SO ${it.sapDocNum || '—'}.` +
+      (probs.length ? `\n\n⚠ CHECKS:\n${probs.join('\n')}\n\nProceed anyway?` : '\n\nConfirm?');
+    if (!confirm(msg)) { _v40_renderConsolidatedApprovalModalBody(); return; }
+    it.sapDocEntryOverride = j.docEntry; it.sapDocNumOverride = String(j.docNum);
+    _v40_renderConsolidatedApprovalModalBody();
+  } catch (e) {
+    alert('SAP lookup failed: ' + e.message);
+    _v40_renderConsolidatedApprovalModalBody();
+  }
+}
+function _v52lClearFreshSo(idx) {
+  const ctx = window._v40_approvalContext; const it = ctx && ctx.items && ctx.items[idx];
+  if (!it) return;
+  delete it.sapDocEntryOverride; delete it.sapDocNumOverride;
+  _v40_renderConsolidatedApprovalModalBody();
+}
+
 async function _v40_submitConsolidated() {
   const ctx = window._v40_approvalContext;
   if (!ctx || !ctx.items) return;
@@ -7911,7 +7963,13 @@ async function _v40_submitConsolidated() {
       const ps = (state.packSizes && state.packSizes[it.size]) || 100000;
       boxes = Math.max(0, Math.ceil((qty || 0) * 100000 / ps));
     }
-    toSend.push({ ...it, qtyLakhs: qty, boxes });
+    toSend.push({ ...it, qtyLakhs: qty, boxes,
+      // v52L fresh-SO remap: the override becomes the SO this request bills against; the original
+      // travels in the remappedFrom* audit fields (stored on the row by migration 62).
+      ...(it.sapDocEntryOverride ? {
+        sapDocEntry: it.sapDocEntryOverride, sapDocNum: it.sapDocNumOverride,
+        remappedFromSoDocEntry: it.sapDocEntry || null, remappedFromSoDocNum: it.sapDocNum || ''
+      } : {}) });
   });
   if (toSend.length === 0) {
     alert('No batches checked. Tick at least one to proceed.');
@@ -8408,7 +8466,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52K' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52M' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -8858,7 +8916,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52M' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8908,7 +8966,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52M' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -8997,7 +9055,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52K' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52M' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });

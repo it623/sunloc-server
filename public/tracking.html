@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v52K</title>
+<title>Sunloc Tracking Suite v1.0 · build v52M</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52K</p>
+      <p>Tracking Suite v1.0 · build v52M</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v52K</p>
+      <p>Tracking Suite v1.0 · build v52M</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -15829,6 +15829,109 @@ function _rptKProdMonthLabel(ym) {
   const [y, m] = String(ym).split('-');
   return new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1).toLocaleString('en-IN', { month: 'short', year: '2-digit' });
 }
+// v52L (Ishan, 21 Aug): STOCK LIST — as-on-date FG position (packed, not yet dispatched), July'26
+// production month onwards. Size-wise buckets; within each size, largest quantity first. Balance
+// figures are the SAME packIn − dispatch sources the movement rows carry; boxes derive from the
+// lifetime box counts (stock mode forces the All-time window, so 'shown' boxes ARE lifetime).
+function _v52lStockRows(rows) {
+  const out = rows.map(r => ({
+    batchNo: r.batchNo, colour: r.colour || '-', size: String(r.size || '-'), pcCode: r.pcCode || '-',
+    prodMonth: r.prodMonth || '-', customer: r.customer || '-',
+    qtyL: Math.max(0, Math.round(((r.packInQty || 0) - (r.dispOutQty || 0)) * 100) / 100),
+    boxes: Math.max(0, (r.packInBoxes || 0) - (r.dispOutShownBoxes || 0)),
+  })).filter(r => r.qtyL > 0.005);
+  // Size bucket order: natural size sequence; within a bucket, descending quantity.
+  const SIZE_ORDER = ['00','0','0EL','0SEL','1','2','3','4','5'];
+  const _si = sz => { const i = SIZE_ORDER.indexOf(sz); return i === -1 ? 99 : i; };
+  out.sort((a, b) => (_si(a.size) - _si(b.size)) || (b.qtyL - a.qtyL) || a.batchNo.localeCompare(b.batchNo));
+  return out;
+}
+function _v52lStockTableHtml(rows) {
+  const st = _v52lStockRows(rows);
+  window._v52lStockRowsCache = st;   // export serializes THE SAME rows the screen shows (v49V discipline)
+  if (!st.length) return `<div class="card" style="padding:16px;text-align:center;color:var(--text-muted)">No packed-but-undispatched stock (Jul'26 → today).</div>`;
+  const sizes = [...new Set(st.map(r => r.size))];
+  let grandQ = 0, grandB = 0;
+  let body = '';
+  sizes.forEach(sz => {
+    const sr = st.filter(r => r.size === sz);
+    const sq = sr.reduce((a, r) => a + r.qtyL, 0), sb = sr.reduce((a, r) => a + r.boxes, 0);
+    grandQ += sq; grandB += sb;
+    body += `<tr style="background:rgba(8,145,178,0.12)"><td colspan="8" style="font-weight:700;padding:6px 8px">SIZE ${sz} — ${sr.length} batch${sr.length!==1?'es':''} · ${fmt(sq)} L · ${sb} boxes</td></tr>`;
+    body += sr.map(r => `<tr style="border-bottom:1px solid var(--border)">
+      <td class="td-mono">${r.batchNo}</td><td>${r.colour}</td><td class="text-center">${r.size}</td>
+      <td class="td-mono">${r.pcCode}</td><td class="text-center td-mono">${r.prodMonth}</td>
+      <td>${r.customer}</td>
+      <td class="td-mono text-right" style="font-weight:600">${fmt(r.qtyL)}</td>
+      <td class="td-mono text-right">${r.boxes}</td></tr>`).join('');
+    body += `<tr style="background:var(--surface2);font-weight:700"><td colspan="6" style="padding:5px 8px">Size ${sz} subtotal</td><td class="td-mono text-right">${fmt(sq)}</td><td class="td-mono text-right">${sb}</td></tr>`;
+  });
+  return `
+      <div style="display:flex;justify-content:flex-end;margin-bottom:6px">
+        <button class="btn btn-secondary btn-sm" onclick="_v52lExportStockList()">📥 Export Stock List</button>
+      </div>
+      <div class="tbl-wrap" style="max-height:600px;overflow-y:auto"><table>
+        <thead><tr><th>Batch</th><th>Colour</th><th>Size</th><th>PC Number</th><th>Prod. Month</th><th>Customer</th><th class="text-right">Qty (L)</th><th class="text-right">Qty (Boxes)</th></tr></thead>
+        <tbody>${body}</tbody>
+        <tfoot><tr style="background:rgba(252,2,255,0.10);font-weight:700"><td colspan="6" style="padding:6px 8px">GRAND TOTAL — ${st.length} batches</td><td class="td-mono text-right">${fmt(grandQ)}</td><td class="td-mono text-right">${grandB}</td></tr></tfoot>
+      </table></div>
+      <div class="text-sm text-muted mt-8" style="font-size:11px">📦 As-on-date FG stock: every batch (Jul'26 production onwards) with packed quantity not yet dispatched — in-progress, partial and stale alike. Ordered size-wise, largest stock first within each size.</div>`;
+}
+// Excel export — v50W Report E colour language (cyan header/size bands, pink grand total, borders).
+function _v52lExportStockList() {
+  const st = window._v52lStockRowsCache || [];
+  if (!st.length) { alert('Nothing to export.'); return; }
+  const HDR = ['BATCH','COLOUR','SIZE','PC NUMBER','PROD. MONTH','CUSTOMER','QTY (L)','QTY (BOXES)'];
+  const NC = HDR.length;
+  const aoa = [], kinds = [], merges = [];
+  const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
+  merges.push({s:{r:0,c:0},e:{r:0,c:NC-1}});
+  _push(['Report G — FG Stock List (Packed · Not Yet Dispatched) — July 2026 onwards'],'title');
+  merges.push({s:{r:1,c:0},e:{r:1,c:NC-1}});
+  _push([`As on ${new Date().toLocaleString()}  |  Size-wise buckets, largest stock first`],'subtitle');
+  _push([],'spacer');
+  _push(HDR,'hdr');
+  const sizes = [...new Set(st.map(r => r.size))];
+  let grandQ = 0, grandB = 0;
+  sizes.forEach(sz => {
+    const sr = st.filter(r => r.size === sz);
+    const sq = sr.reduce((a,r)=>a+r.qtyL,0), sb = sr.reduce((a,r)=>a+r.boxes,0);
+    grandQ += sq; grandB += sb;
+    merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:NC-1}});
+    _push([`SIZE ${sz} — ${sr.length} batch${sr.length!==1?'es':''}`],'floor');
+    sr.forEach(r => _push([r.batchNo, r.colour, r.size, r.pcCode, r.prodMonth, r.customer, Math.round(r.qtyL*100)/100, r.boxes],'data'));
+    merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:5}});
+    _push([`Size ${sz} subtotal`,'','','','','', Math.round(sq*100)/100, sb],'sub');
+    _push([],'spacer');
+  });
+  merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:5}});
+  _push([`GRAND TOTAL — ${st.length} batches`,'','','','','', Math.round(grandQ*100)/100, grandB],'grand');
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = merges;
+  ws['!cols'] = [{wch:12},{wch:16},{wch:6},{wch:11},{wch:11},{wch:26},{wch:11},{wch:12}];
+  try {
+    const _F = { HDR:'20FFFF', FLOOR:'20FFFF', GRAND:'FC02FF', SUB:'F0F8F0' };
+    const _thin = { style:'thin', color:{ rgb:'9AA5B1' } };
+    const _bAll = { top:_thin, bottom:_thin, left:_thin, right:_thin };
+    const _set = (r,c,sy) => { const a = XLSX.utils.encode_cell({r,c}); if(!ws[a]) ws[a] = { t:'s', v:'' }; ws[a].s = sy; };
+    kinds.forEach((kind, r) => {
+      if (kind === 'title')    { _set(r,0,{ font:{ bold:true, sz:14 } }); return; }
+      if (kind === 'subtitle') { _set(r,0,{ font:{ italic:true, sz:10, color:{ rgb:'555555' } } }); return; }
+      if (kind === 'spacer')   return;
+      for (let c = 0; c < NC; c++) {
+        if (kind === 'hdr')        _set(r,c,{ font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
+        else if (kind === 'floor') _set(r,c,{ font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.FLOOR } }, border:_bAll });
+        else if (kind === 'sub')   _set(r,c,{ font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_F.SUB } }, border:_bAll, alignment:{ horizontal: c>=6?'right':'left' } });
+        else if (kind === 'grand') _set(r,c,{ font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.GRAND } }, border:_bAll, alignment:{ horizontal: c>=6?'right':'left' } });
+        else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal: c>=6?'right':'left' }, font:{ sz:10 } }; }
+      }
+    });
+  } catch(e) { console.warn('[v52L] stock style pass skipped:', e && e.message); }
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'FG Stock List');
+  XLSX.writeFile(wb, `Sunloc_FG_Stock_List_${today()}.xlsx`);
+}
+
 function _rptKProdMonthOpts(rows, sel) {
   return [...new Set((rows || []).map(r => r.prodMonth).filter(Boolean))].sort().reverse()
     .map(ym => `<option value="${ym}" ${sel === ym ? 'selected' : ''}>${_rptKProdMonthLabel(ym)}</option>`).join('');
@@ -16069,7 +16172,13 @@ function renderReportK(targetId) {
   // batch NUMBER; that helper takes a batch OBJECT, so it returned '' for every batch — the dropdown
   // was empty and this filter could never match.) One gate covers screen AND export (v48: export
   // reuses these rows).
-  if (filters.prodMonth) rows = rows.filter(r => (r.prodMonth || '') === filters.prodMonth);
+  // v52L (Ishan, 21 Aug): STOCK LIST mode — '__stock__' in the month filter shows ALL material
+  // packed and still awaiting dispatch (in-progress / partial / stale alike), July 2026 production
+  // month onwards: the as-on-date FG stock position. Balance > 0 is the membership test; a closed
+  // (fully-dispatched) batch has no stock and drops out. Any specific month keeps exact-match.
+  const _stockMode52l = filters.prodMonth === '__stock__';
+  if (_stockMode52l) rows = rows.filter(r => (r.prodMonth || '') >= '2026-07' && (r.balanceQty || 0) > 0.005);
+  else if (filters.prodMonth) rows = rows.filter(r => (r.prodMonth || '') === filters.prodMonth);
   if (filters.customer) rows = rows.filter(r => (r.customer||'').toLowerCase().includes(filters.customer.toLowerCase()));
   if (filters.batch) rows = rows.filter(r => (r.batchNo||'').toLowerCase().includes(filters.batch.toLowerCase()));
   if (filters.pcCode) rows = rows.filter(r => (r.pcCode||'').toLowerCase().includes(filters.pcCode.toLowerCase()));
@@ -16153,7 +16262,8 @@ function renderReportK(targetId) {
       <div style="display:flex;gap:8px;flex-wrap:wrap;margin-bottom:10px;padding:8px;background:var(--surface2);border-radius:4px">
         <select id="rptk-filter-prodmonth" onchange="window._reportKFilters.prodMonth=this.value;if(this.value){window._reportKDateRangeMode='all';}renderReportK('${containerId}')"
                 style="padding:5px 10px;border:1px solid var(--border);border-radius:4px;font-size:12px;font-weight:600" title="Production month — same cohort rule as Report D (start date, anchored to first DPR production where it exists). Picking a month sets the period to All time so the month's full packed position shows; narrow with the period buttons if needed.">
-          <option value="">All prod. months</option>${_rptKProdMonthOpts(_rptKMonthUniverse, filters.prodMonth)}
+          <option value="">All prod. months</option>
+          <option value="__stock__" ${filters.prodMonth==='__stock__'?'selected':''}>📦 Stock List (FG as on date, Jul'26 →)</option>${_rptKProdMonthOpts(_rptKMonthUniverse, filters.prodMonth)}
         </select>
         <input type="text" id="rptk-filter-customer" placeholder="🔍 Customer" value="${filters.customer||''}"
                oninput="window._reportKFilters.customer=this.value;renderReportK('${containerId}')"
@@ -16167,6 +16277,7 @@ function renderReportK(targetId) {
         <button class="btn btn-ghost btn-sm" onclick="window._reportKFilters={customer:'',batch:'',pcCode:'',status:'',prodMonth:''};renderReportK('${containerId}')">✕ Clear all filters</button>
         <span style="margin-left:auto;font-size:11px;color:var(--text-muted);align-self:center">${rows.length} batch${rows.length!==1?'es':''}</span>
       </div>
+      ${_stockMode52l ? _v52lStockTableHtml(rows) : `
       <div class="tbl-wrap" style="max-height:600px;overflow-y:auto"><table>
         <thead><tr>
           <th style="width:30px"></th>
@@ -16221,7 +16332,7 @@ function renderReportK(targetId) {
           <td></td>
         </tr></tfoot>` : ''}
       </table></div>
-      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Click a batch row to drill down to date-wise scan-by-scan movement.  Status: Closed = Pack In ≤ Dispatch Out · Partial = some packed-in not yet dispatched · In Progress = pack-in active · Stale = packed but not dispatched after 7/15 days (matches Report J alert thresholds).</div>
+      <div class="text-sm text-muted mt-8" style="font-size:11px">💡 Click a batch row to drill down to date-wise scan-by-scan movement.  Status: Closed = Pack In ≤ Dispatch Out · Partial = some packed-in not yet dispatched · In Progress = pack-in active · Stale = packed but not dispatched after 7/15 days (matches Report J alert thresholds).</div>`}
     </div>`;
   // v41ZB: restore focus + caret so the inner filter inputs can be typed without interruption.
   if (_afKId) {
@@ -17053,6 +17164,189 @@ function exportReportD(){
   XLSX.writeFile(wb,`Sunloc_Summary_${today()}.xlsx`);
 }
 
+// v52L (Ishan, 21 Aug — forward-planning of Net Sales Realisation): THIRD SHEET on Report E's
+// export, Admin/PM only. Quantities come off the SAME _rptERows the screen rendered (v49V
+// discipline): Net Packable = AIM A-Grade + Unscanned WIP at AIM − Printing Rejection − PI
+// Rejection. Prices come from /api/nsr/prices (indent line price per lakh; realized-invoice price
+// for closed SOs; blank when neither resolves — PM fills the cell by hand and every formula
+// downstream recalculates). The ENTIRE money side is live Excel formulas keyed off the editable
+// USD→INR cell ($B$3): the moment PM types the rate, every USD price, order value, subtotal and
+// NSR figure recomputes inside Excel itself. Summary SUMIFs condition on the SIZE / ZONE columns,
+// which are BLANK on subtotal and grand rows — so band rows can never double-count.
+function _v52lAppendNsrSheet(wb, rows, done) {
+  // Tracking roles are 'admin' and 'tracking_planning' (server user table); planning-app admins/PMs
+  // exporting from a planning session carry 'planning_manager'. All three are the PM/Admin audience.
+  const role = (state.currentUser?.role) || (typeof currentUser !== 'undefined' && currentUser?.role) || '';
+  if (role !== 'admin' && role !== 'tracking_planning' && role !== 'planning_manager') { done(); return; }
+  const batches = [...new Set(rows.map(r => String(r.batchNo || '').trim().toUpperCase()).filter(Boolean))];
+  const _build = (prices) => {
+    try {
+      const HDR = ['MACHINE','FLOOR','BATCH','CUSTOMER','PC CODE','SIZE','ZONE','PLANNED (L)','GROSS (L)',
+        'AIM A-GRADE (L)','UNSCANNED WIP (L)','PRINT REJ (L)','PI REJ (L)','NET PACKABLE (L)',
+        'PRICE/L (INDENT)','CCY','PRICE/L (INR)','ORDER VALUE (INR)','PRICE SOURCE'];
+      const NC = HDR.length;
+      const aoa = [], kinds = [], merges = [];
+      const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
+      const _n = v => { const x = +v; return isNaN(x) ? 0 : Math.round(x * 100) / 100; };
+      const XR = 'B3'; // exchange-rate cell
+      merges.push({s:{r:0,c:0},e:{r:0,c:NC-1}});
+      _push(['NSR Planning — Net Packable Quantity × Indent Price'],'title');
+      merges.push({s:{r:1,c:0},e:{r:1,c:NC-1}});
+      _push([`Generated ${new Date().toLocaleString()}  |  Net Packable = AIM A-Grade + Unscanned WIP − Print Rej − PI Rej`],'subtitle');
+      _push(['USD → INR RATE:', 0, '◀ enter today\'s exchange rate here — every USD price and all values recalculate instantly'],'rate');
+      _push([],'spacer');
+      const hdrRowIdx = aoa.length;
+      _push(HDR,'hdr');
+      // Data rows, grouped by machine (band + subtotal each), in the report's own order.
+      const XL = n => XLSX.utils.encode_cell({ r: n.r, c: n.c });   // helper
+      const dataRowIdxs = [];
+      const capIdxs = {};      // v52M: main rows whose Net Packable is MIN-capped at Planned (export split)
+      const excessIdxs = {};   // v52M: excess row aoa-index → its main row aoa-index
+      const mcBlocks = [];
+      const machines = [...new Set(rows.map(r => r.machine))];
+      machines.forEach(mc => {
+        const mcRows = rows.filter(r => r.machine === mc);
+        merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:NC-1}});
+        _push([`MACHINE: ${mc} — ${mcRows.length} batch${mcRows.length!==1?'es':''}`],'mc');
+        const start = aoa.length;
+        mcRows.forEach(r => {
+          const bn = String(r.batchNo || '').trim().toUpperCase();
+          const pr = prices[bn] || null;
+          const zone = (typeof _isExportBatchClient === 'function' && _isExportBatchClient(bn)) ? 'Export' : 'Domestic';
+          const P = k => r.isPrinted ? _n(r[k]) : 0;   // unprinted batches carry no print-chain rejections
+          const srcLbl = pr ? (pr.source === 'indent' ? 'SAP indent'
+                              : pr.source === 'indent_snapshot' ? 'SAP indent (snapshot)'
+                              : 'Invoice (realized)') : 'ENTER MANUALLY';
+          // v52M (correction 2): EXPORT EXCESS SPLIT. No export customer takes excess, so when an
+          // EXPORT batch's available-to-pack (Net Packable) exceeds its planned quantity, the main
+          // line bills only the PLANNED quantity at the indent price and the excess becomes its own
+          // line — customer and price left for PM to enter by hand (it will be re-customered and
+          // billed through a new SO). Domestic customers do take excess, so domestic rows never
+          // split. The split is decided here on computed values; the CELLS stay live formulas: the
+          // main row's Net Packable is MIN-capped at Planned and the excess row's quantity
+          // references the main row, so any hand-edit to the inputs re-splits inside Excel itself.
+          const _netP = _n(r._aimAGrade) + _n(r._unscannedWip) - P('_printRej') - P('_piSalRem');
+          const _splitExcess = zone === 'Export' && _netP > _n(r._plannedQty) + 0.005;
+          const mainIdx = aoa.length;
+          dataRowIdxs.push(mainIdx);
+          if (_splitExcess) capIdxs[mainIdx] = true;
+          _push([r.machine, r.floor, r.batchNo, r.customer || '—', r.pcCode || '—', String(r.size), zone,
+            _n(r._plannedQty), _n(r._grossProd), _n(r._aimAGrade), _n(r._unscannedWip), P('_printRej'), P('_piSalRem'),
+            null, (pr ? pr.pricePerLakh : ''), (pr ? pr.currency : ''), null, null, srcLbl],'data');
+          if (_splitExcess) {
+            const exIdx = aoa.length;
+            dataRowIdxs.push(exIdx);
+            excessIdxs[exIdx] = mainIdx;
+            _push([r.machine, r.floor, r.batchNo + ' (EXCESS)', '⚠ RE-CUSTOMER — enter buyer', r.pcCode || '—', String(r.size), zone,
+              0, 0, 0, 0, 0, 0,
+              null, '', '', null, null, 'ENTER MANUALLY (excess — re-customer via new SO)'],'data');
+          }
+        });
+        mcBlocks.push({ mc, start, end: aoa.length - 1 });
+        merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:6}});
+        _push([`${mc} SUBTOTAL`],'sub');
+        _push([],'spacer');
+      });
+      const grandIdx = aoa.length;
+      merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:6}});
+      _push([`GRAND TOTAL (${dataRowIdxs.length} batches)`],'grand');
+      const ws = XLSX.utils.aoa_to_sheet(aoa);
+      ws['!merges'] = merges;
+      ws['!cols'] = [{wch:9},{wch:6},{wch:11},{wch:24},{wch:9},{wch:6},{wch:9},...Array(7).fill({wch:12}),{wch:13},{wch:5},{wch:12},{wch:15},{wch:14}];
+      const _fc = (r, c, f, z) => { ws[XLSX.utils.encode_cell({r,c})] = { t:'n', f, z: z || '0.00' }; };
+      const _row1 = i => i + 1;   // aoa index → 1-based Excel row
+      // Per-data-row formulas: Net Packable (N=13), Price INR (Q=16), Order Value (R=17)
+      dataRowIdxs.forEach(i => {
+        const R1 = _row1(i);
+        if (excessIdxs[i] != null) {
+          // v52M excess row: quantity = the main row's uncapped packable minus Planned, floored at 0.
+          const M1 = _row1(excessIdxs[i]);
+          _fc(i, 13, `ROUND(MAX(J${M1}+K${M1}-L${M1}-M${M1}-H${M1},0),2)`);
+        } else if (capIdxs[i]) {
+          // v52M capped main row: bills the PLANNED quantity only; the balance sits on the excess row.
+          _fc(i, 13, `ROUND(MIN(J${R1}+K${R1}-L${R1}-M${R1},H${R1}),2)`);
+        } else {
+          _fc(i, 13, `ROUND(J${R1}+K${R1}-L${R1}-M${R1},2)`);
+        }
+        _fc(i, 16, `IF(P${R1}="USD",ROUND(N(O${R1})*$${XR.slice(0,1)}$${XR.slice(1)},2),N(O${R1}))`);
+        _fc(i, 17, `ROUND(N${R1}*Q${R1},0)`, '#,##0');
+      });
+      // Machine subtotals: SUM over the contiguous data block; NSR/L in Q = value ÷ packable.
+      mcBlocks.forEach(b => {
+        const subA = b.end + 1;                 // subtotal aoa index (row right after last data row)
+        const s1 = _row1(b.start), e1 = _row1(b.end), R1 = _row1(subA);
+        for (const c of [7,8,9,10,11,12,13]) {
+          const col = String.fromCharCode(65 + c);
+          _fc(subA, c, `ROUND(SUM(${col}${s1}:${col}${e1}),2)`);
+        }
+        _fc(subA, 16, `IFERROR(ROUND(R${R1}/N${R1},0),"")`, '#,##0');
+        _fc(subA, 17, `ROUND(SUM(R${s1}:R${e1}),0)`, '#,##0');
+      });
+      // Grand total: SUMIF on nonblank BATCH column (C) so band/subtotal rows never double-count.
+      const dFirst = _row1(hdrRowIdx + 1), dLast = _row1(grandIdx - 1), G1 = _row1(grandIdx);
+      for (const c of [7,8,9,10,11,12,13]) {
+        const col = String.fromCharCode(65 + c);
+        _fc(grandIdx, c, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"<>",${col}${dFirst}:${col}${dLast}),2)`);
+      }
+      _fc(grandIdx, 16, `IFERROR(ROUND(R${G1}/N${G1},0),"")`, '#,##0');
+      _fc(grandIdx, 17, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"<>",R${dFirst}:R${dLast}),0)`, '#,##0');
+      // ── NSR SUMMARY (all formulas — recalc live with the rate cell) ──
+      let si = grandIdx + 1;
+      const _sp = (row, kind) => { XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r: si, c: 0 } }); kinds[si] = kind; si++; };
+      _sp([], 'spacer');
+      merges.push({s:{r:si,c:0},e:{r:si,c:5}});
+      _sp(['NSR SUMMARY (₹ / Lakh) — Value ÷ Net Packable'], 'floor');
+      _sp(['SIZE', 'OVERALL NSR', 'DOMESTIC NSR', 'EXPORT NSR'], 'hdr2');
+      const F = `$F$${dFirst}:$F$${dLast}`, G = `$G$${dFirst}:$G$${dLast}`,
+            N = `$N$${dFirst}:$N$${dLast}`, RR = `$R$${dFirst}:$R$${dLast}`;
+      const sizesAll = [...new Set(rows.map(r => String(r.size)))].sort();
+      sizesAll.forEach(sz => {
+        const r1 = si + 1;
+        XLSX.utils.sheet_add_aoa(ws, [[sz]], { origin: { r: si, c: 0 } });
+        _fc(si, 1, `IFERROR(ROUND(SUMIF(${F},A${r1},${RR})/SUMIF(${F},A${r1},${N}),0),"—")`, '#,##0');
+        _fc(si, 2, `IFERROR(ROUND(SUMIFS(${RR},${F},A${r1},${G},"Domestic")/SUMIFS(${N},${F},A${r1},${G},"Domestic"),0),"—")`, '#,##0');
+        _fc(si, 3, `IFERROR(ROUND(SUMIFS(${RR},${F},A${r1},${G},"Export")/SUMIFS(${N},${F},A${r1},${G},"Export"),0),"—")`, '#,##0');
+        kinds[si] = 'data'; si++;
+      });
+      XLSX.utils.sheet_add_aoa(ws, [['AVERAGE (ALL)']], { origin: { r: si, c: 0 } });
+      _fc(si, 1, `IFERROR(ROUND(SUMIF(${F},"<>",${RR})/SUMIF(${F},"<>",${N}),0),"—")`, '#,##0');
+      _fc(si, 2, `IFERROR(ROUND(SUMIF(${G},"Domestic",${RR})/SUMIF(${G},"Domestic",${N}),0),"—")`, '#,##0');
+      _fc(si, 3, `IFERROR(ROUND(SUMIF(${G},"Export",${RR})/SUMIF(${G},"Export",${N}),0),"—")`, '#,##0');
+      kinds[si] = 'grand'; si++;
+      if (ws['!ref']) { const rng = XLSX.utils.decode_range(ws['!ref']); rng.e.r = Math.max(rng.e.r, si); rng.e.c = Math.max(rng.e.c, NC - 1); ws['!ref'] = XLSX.utils.encode_range(rng); }
+      // Styling — v50W colour language, same palette as the main sheet.
+      try {
+        const _Fc = { HDR:'20FFFF', MC:'21FF06', FLOOR:'20FFFF', GRAND:'FC02FF', SUB:'F0F8F0', RATE:'FFF3C4' };
+        const _thin = { style:'thin', color:{ rgb:'9AA5B1' } };
+        const _bAll = { top:_thin, bottom:_thin, left:_thin, right:_thin };
+        const _set = (r, c, sy) => { const a = XLSX.utils.encode_cell({r,c}); if (!ws[a]) ws[a] = { t:'s', v:'' }; ws[a].s = sy; };
+        kinds.forEach((kind, r) => {
+          if (!kind || kind === 'spacer') return;
+          if (kind === 'title')    { _set(r, 0, { font:{ bold:true, sz:14 } }); return; }
+          if (kind === 'subtitle') { _set(r, 0, { font:{ italic:true, sz:10, color:{ rgb:'555555' } } }); return; }
+          if (kind === 'rate')     { _set(r, 0, { font:{ bold:true, sz:11 } }); _set(r, 1, { font:{ bold:true, sz:12 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.RATE } }, border:_bAll }); _set(r, 2, { font:{ italic:true, sz:9, color:{ rgb:'92400E' } } }); return; }
+          const span = kind === 'hdr2' ? 4 : NC;
+          for (let c = 0; c < span; c++) {
+            if (kind === 'hdr' || kind === 'hdr2') _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
+            else if (kind === 'mc')    _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.MC } }, border:_bAll });
+            else if (kind === 'floor') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.FLOOR } }, border:_bAll });
+            else if (kind === 'sub')   _set(r, c, { font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.SUB } }, border:_bAll, alignment:{ horizontal: c>=7?'right':'left' } });
+            else if (kind === 'grand') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.GRAND } }, border:_bAll, alignment:{ horizontal: c>=7?'right':'left' } });
+            else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal: c>=7?'right':'left' }, font:{ sz:10 } }; }
+          }
+        });
+      } catch (e) { console.warn('[v52L NSR] style pass skipped:', e && e.message); }
+      XLSX.utils.book_append_sheet(wb, ws, 'NSR Planning');
+    } catch (e) { console.warn('[v52L NSR] sheet build failed:', e && e.message); }
+    done();
+  };
+  fetch(serverUrl + '/api/nsr/prices', {
+    method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ batches }), signal: AbortSignal.timeout(20000)
+  }).then(r => r.json()).then(j => _build((j && j.ok && j.prices) || {}))
+    .catch(() => _build({}));   // offline → sheet still builds, price cells blank for manual entry
+}
+
 function exportReportE(){
   // v49V (locked scope): SINGLE ROW MODEL — the render body emits window._rptERows and this export
   // serializes THOSE SAME rows, so view and export match row-for-row BY CONSTRUCTION. This kills
@@ -17172,7 +17466,11 @@ function exportReportE(){
   // Generated Invoices (invoice_batch_alloc for multi-batch invoices, whole-invoice rows for
   // single-batch ones), a TOTAL INVOICED line, and a variance note when it differs from the
   // report's Dispatch figure. Batches with no dispatch and no invoices are omitted for readability.
-  const _finish = () => XLSX.writeFile(wb, `Sunloc_WIP_Report_${today()}.xlsx`);
+  // v52L (Ishan, 21 Aug): the write is routed through the NSR sheet builder — for Admin/PM it
+  // appends the third sheet (async price fetch) and then writes; for other roles, and on any
+  // failure, it writes the workbook exactly as before. The NSR sheet can never block the export.
+  const _write = () => XLSX.writeFile(wb, `Sunloc_WIP_Report_${today()}.xlsx`);
+  const _finish = () => { try { _v52lAppendNsrSheet(wb, rows, _write); } catch (e) { console.warn('[v52L NSR] skipped:', e && e.message); _write(); } };
   try {
     fetch(serverUrl + '/api/invoice/batch-dispatch-detail', { signal: AbortSignal.timeout(12000) })
       .then(r => r.json())
