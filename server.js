@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52N';
+const APP_BUILD = 'v52R';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -5163,9 +5163,43 @@ async function _doRefreshSapInvoices() {
 
     // v44O #3: for a Sunloc-linked invoice, the invoice_request holds the authoritative physical
     // box count and Lakhs the dispatch manager selected — use them (SAP Quantity is Lakhs, not boxes).
-    if (invReqId) {
+    // v52P (Ishan, 23 Aug — multi-batch modal misattribution): that override is only valid when the
+    // invoice covers ONE batch. A multi-batch invoice links whichever of its several requests the
+    // poller matched FIRST, so its single request's boxes/Lakhs became the whole invoice's totals —
+    // invoice 2273 (26ZA085+26ZD126+26Z085, 66.5L, 38 boxes) stored 11 boxes = its first line alone,
+    // and the modal read "Scanned 38 / 11". Now: single-batch invoices keep the request's
+    // authoritative figures; multi-batch invoices SUM boxes across ALL lines — U_NO_BOXES where SAP
+    // carries it, else derived per line from qty ÷ the line's own pack size (per-line PC → size via
+    // the same pc_codes/pc-master chain the header uses, so mixed-size invoices count correctly).
+    const _isSingleBatchInv52p = String(batchForStore || '').split(/[\s,]+/).filter(Boolean).length <= 1;
+    if (invReqId && _isSingleBatchInv52p) {
       if (reqBoxes != null && parseInt(reqBoxes) > 0) totalBoxes = parseInt(reqBoxes);
       if (reqQtyLakhs != null && parseFloat(reqQtyLakhs) > 0) totalQtyLakhs = parseFloat(reqQtyLakhs);
+    } else if ((inv.DocumentLines || []).length > 0) {
+      let _sum52p = 0, _ok52p = true;
+      for (const l of inv.DocumentLines) {
+        const lq = (parseFloat(l.Quantity) || 0) * _sapUomScale(l);
+        if (!(lq > 0)) continue;                                   // zero/scrap lines carry no boxes
+        let lb = parseInt(l.U_NO_BOXES, 10);
+        if (!Number.isFinite(lb) || lb <= 0) {
+          let lsz = '';
+          try {
+            const ic = String(l.ItemCode || '').trim();
+            if (ic) {
+              let pr;
+              if (pgPool) pr = (await pgPool.query(`SELECT size FROM pc_codes WHERE code=$1 LIMIT 1`, [ic])).rows[0];
+              else pr = db.prepare(`SELECT size FROM pc_codes WHERE code=? LIMIT 1`).get(ic);
+              lsz = (pr && pr.size) || (_pcMasterLookup(ic) || {}).size || '';
+            }
+          } catch (_) {}
+          const packL = _V44ZJ_PACK_SIZES[String(lsz)] || 0;
+          if (packL > 0) lb = Math.round(lq / packL);
+          else { _ok52p = false; break; }                          // unknown size — don't guess a total
+        }
+        _sum52p += lb;
+      }
+      if (_ok52p && _sum52p > 0) totalBoxes = _sum52p;
+      // else totalBoxes stays 0 — an honest blank beats a first-line-only figure
     }
 
     try {

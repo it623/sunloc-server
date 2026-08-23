@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v52N</p>
+      <p>Planning Suite v3.0 · build v52R</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52N' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52R' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52N' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52R' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2591,7 +2591,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52N'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52R'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5654,7 +5654,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52N'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52R'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8014,6 +8014,15 @@ function toggleWoRows(ci, rowEl){
     if(rowEl){ var c=rowEl.querySelector('.wo-caret'); if(c) c.innerHTML=hide?'&#9654;':'&#9660;'; }
   }catch(e){}
 }
+// v52R (Ishan, 23 Aug): the plant runs ALL calendar days of the month, not a 26-day working
+// convention. Monthly capacity = daily rate × the SELECTED month's actual day count (Aug=31,
+// Sep=30, Feb=28/29) so the figure is exact for whichever month the planner is viewing.
+function _v52rDaysInMonth(ym) {
+  const m = /^(\d{4})-(\d{2})$/.exec(String(ym || ''));
+  if (!m) return 30;
+  return new Date(parseInt(m[1], 10), parseInt(m[2], 10), 0).getDate();
+}
+
 function renderProdSummary() {
   const topActions = document.getElementById('topbar-actions');
   topActions.innerHTML = `<span style="font-size:11px;color:var(--text3);padding:4px 8px">${monthLabel(_selectedPlanMonth)}</span>`;
@@ -8021,14 +8030,25 @@ function renderProdSummary() {
   const orders = getMonthOrders().filter(o=>!o.deleted);
 
   // Size wise totals
+  // v52P (Ishan, 23 Aug): capacities are LIVE, not the static standard. Each machine's daily rate is
+  // its actual DPR average for the month (total gross ÷ distinct production days — the SAME
+  // window._mcActualRate the Production Plan header and the scheduler already use, v50G rule), and
+  // falls back to the machine's configured standard only while that machine has no completed
+  // production day yet. The figures therefore self-refresh as every day's DPR lands.
+  const _effDailyCap52p = (mc) => {
+    const r = window._mcActualRate?.[mc.id];
+    return (r && r.distinctDays > 0) ? r.avgPerDay : (mc.cap || 0);
+  };
+  const _isDprCap52p = (mc) => !!(window._mcActualRate?.[mc.id]?.distinctDays > 0);
   const sizeStats = {};
-  const WORKING_DAYS = 26;
+  const WORKING_DAYS = _v52rDaysInMonth(_selectedPlanMonth);   // v52R: calendar days, not 26
   for (const sz of SIZES) {
     const mcs = state.machineMaster.filter(m=>m.size===sz);
-    const dailyCap = mcs.reduce((s,m)=>s+m.cap,0);
+    const dailyCap = mcs.reduce((s,m)=>s+_effDailyCap52p(m),0);
     const monthlyCap = dailyCap * WORKING_DAYS;
     const planned = orders.filter(o=>o.size===sz).reduce((s,o)=>s+o.qty,0);
-    sizeStats[sz] = {cap:monthlyCap, planned, available:Math.max(0,monthlyCap-planned)};
+    const dprMcs = mcs.filter(_isDprCap52p).length;
+    sizeStats[sz] = {cap:monthlyCap, planned, available:Math.max(0,monthlyCap-planned), dprMcs, totMcs:mcs.length};
   }
 
   // Customer × Size matrix
@@ -8066,7 +8086,7 @@ function renderProdSummary() {
               const pct = st.cap>0 ? (st.planned/st.cap*100).toFixed(0) : 0;
               return `<tr>
                 <td><strong>Size ${sz}</strong></td>
-                <td class="text-mono">${fmt(st.cap)}</td>
+                <td class="text-mono">${fmt(st.cap)} <span style="font-size:9px;color:${st.dprMcs>0?'var(--accent)':'var(--text3)'}" title="${st.dprMcs>0?`Live: ${st.dprMcs} of ${st.totMcs} machines on this month's DPR average; the rest on standard until their first production day lands`:'All machines on standard rate — no DPR production days yet this month'}">${st.dprMcs>0?`DPR ${st.dprMcs}/${st.totMcs}`:'STD'}</span></td>
                 <td class="text-mono ${st.planned>0?'text-accent':''}">${fmt(st.planned)}</td>
                 <td style="min-width:120px">
                   <div style="font-size:11px;color:var(--text3);margin-bottom:3px">${pct}% utilized</div>
@@ -8155,12 +8175,15 @@ function renderProdSummary() {
   // Populate machine-wise table via JS (avoids template literal escaping issues)
   const mcTbody = document.getElementById('mc-cap-tbody');
   if (mcTbody) {
-    const WORKING_DAYS = 26;
+    const WORKING_DAYS = _v52rDaysInMonth(_selectedPlanMonth);   // v52R: calendar days, not 26
     mcTbody.innerHTML = state.machineMaster.map(mc => {
       // v41 P19.1 Fix 2A: "Planned" = sum of ALL order_qty for this machine in this month,
       // regardless of status (per spec confirmation). Previously excluded closed orders.
       const planned = orders.filter(o => o.machineId === mc.id).reduce((s, o) => s + (parseFloat(o.qty)||0), 0);
-      const monthlyCap = mc.cap * WORKING_DAYS;
+      // v52P: live capacity — DPR average/day × working days once the machine has produced this
+      // month; the configured standard until then. Tagged DPR/STD so the basis is always visible.
+      const _dpr52p = _isDprCap52p(mc);
+      const monthlyCap = _effDailyCap52p(mc) * WORKING_DAYS;
       const avail = Math.max(0, monthlyCap - planned);
       const pct = monthlyCap > 0 ? Math.min(120, (planned / monthlyCap * 100)).toFixed(0) : 0;
       const col = pct > 100 ? 'var(--red)' : pct > 85 ? 'var(--accent)' : 'var(--accent3)';
@@ -8168,7 +8191,7 @@ function renderProdSummary() {
       return '<tr>' +
         '<td class="text-mono fw-bold" style="color:var(--accent)">' + mc.id + '</td>' +
         '<td><span style="background:var(--surface3);padding:2px 6px;border-radius:3px;font-size:11px">' + mc.size + '</span></td>' +
-        '<td class="text-mono">' + fmt(monthlyCap) + '</td>' +
+        '<td class="text-mono">' + fmt(monthlyCap) + ' <span style="font-size:9px;color:' + (_dpr52p ? 'var(--accent)' : 'var(--text3)') + '" title="' + (_dpr52p ? 'Live: this month\'s DPR average per day × ' + WORKING_DAYS + ' calendar days of this month — refreshes as daily production lands' : 'Standard rate — no completed DPR production day for this machine this month yet; switches to the live average the moment one lands') + '">' + (_dpr52p ? 'DPR' : 'STD') + '</span></td>' +
         '<td class="text-mono text-accent">' + fmt(planned) + '</td>' +
         '<td class="text-mono" style="' + availColor + '">' + fmt(avail) + '</td>' +
         '<td style="min-width:160px"><div style="font-size:11px;color:var(--text3);margin-bottom:3px">' + pct + '% loaded</div>' +
@@ -8466,7 +8489,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52N' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52R' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -8916,7 +8939,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52N' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52R' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8966,7 +8989,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52N' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52R' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9055,7 +9078,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52N' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52R' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
