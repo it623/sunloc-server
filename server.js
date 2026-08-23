@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52R';
+const APP_BUILD = 'v52S';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -4995,12 +4995,73 @@ async function backfillInvoiceBatchFromPayload() {
   if (fixed > 0) console.log(`[SAP v45I] invoice-batch backfill repopulated ${fixed} blank invoice(s) from stored payload`);
 }
 
+// v52S: recompute an invoice's physical totals from its DocumentLines. Boxes per line: SAP's own
+// U_NO_BOXES where present, else qty ÷ the line's OWN pack size (line PC → size via the shipped PC
+// master — the same chain the header derivation uses, so mixed-size invoices count correctly).
+// Returns ok:false when any line's size cannot be resolved — an honest blank beats a guess.
+function _v52sRecomputeTotals(lines) {
+  let boxes = 0, qty = 0, ok = true;
+  for (const l of (lines || [])) {
+    const lq = (parseFloat(l.Quantity) || 0) * _sapUomScale(l);
+    if (!(lq > 0)) continue;
+    qty += lq;
+    let lb = parseInt(l.U_NO_BOXES, 10);
+    if (!Number.isFinite(lb) || lb <= 0) {
+      const pm = _pcMasterLookup(String(l.ItemCode || '').trim());
+      const packL = _V44ZJ_PACK_SIZES[String((pm && pm.size) || '')] || 0;
+      // CEIL, not round: a partial last box is still a physical box (26ZB122's 33.3L size-0 line
+      // travelled in 34 boxes — the 42 the scanner actually counted, not 41). The epsilon keeps
+      // exact multiples exact against float noise (19.25/1.75 must stay 11, never 12).
+      if (packL > 0) lb = Math.ceil(lq / packL - 1e-9);
+      else { ok = false; break; }
+    }
+    boxes += lb;
+  }
+  return { ok, boxes, qty: Math.round(qty * 100) / 100 };
+}
+
+let _v52sTotalsBackfillDone = false;
+async function _v52sBackfillMultiBatchTotals() {
+  let rows;
+  const sel = `SELECT id, batch_number, total_boxes, total_qty_lakhs, payload_json FROM invoices_received
+               WHERE batch_number LIKE '%,%' AND payload_json IS NOT NULL`;
+  if (pgPool) rows = (await pgPool.query(sel)).rows;
+  else rows = db.prepare(sel).all();
+  let fixed = 0;
+  for (const r of (rows || [])) {
+    let inv; try { inv = JSON.parse(r.payload_json); } catch { continue; }
+    const lines = (inv && inv.DocumentLines) || [];
+    if (!lines.length) continue;
+    const rc = _v52sRecomputeTotals(lines);
+    if (!rc.ok || !(rc.boxes > 0) || !(rc.qty > 0)) continue;
+    const oldB = parseInt(r.total_boxes, 10) || 0, oldQ = Math.round((parseFloat(r.total_qty_lakhs) || 0) * 100) / 100;
+    if (oldB === rc.boxes && Math.abs(oldQ - rc.qty) < 0.01) continue;
+    if (pgPool) await pgPool.query(`UPDATE invoices_received SET total_boxes=$1, total_qty_lakhs=$2 WHERE id=$3`, [rc.boxes, rc.qty, r.id]);
+    else db.prepare(`UPDATE invoices_received SET total_boxes=?, total_qty_lakhs=? WHERE id=?`).run(rc.boxes, rc.qty, r.id);
+    console.log(`[v52S totals] ${r.id} (${r.batch_number}): boxes ${oldB} -> ${rc.boxes}, qty ${oldQ} -> ${rc.qty} L`);
+    fixed++;
+  }
+  console.log(`[v52S totals] multi-batch invoice totals backfill: ${fixed} row(s) corrected of ${(rows || []).length} examined`);
+}
+
 async function _doRefreshSapInvoices() {
   // v45I #6: one-shot repopulate of blank batches from stored payloads (fixes invoices pulled before
   // the line-level extractor existed). Guarded so it runs at most once per process, on the poller.
   if (!_v45iInvBatchBackfillDone) {
     try { await backfillInvoiceBatchFromPayload(); _v45iInvBatchBackfillDone = true; }
     catch (e) { console.warn('[SAP v45I] invoice-batch backfill failed (will retry next poll):', e.message); }
+  }
+  // v52S (Ishan, 23 Aug): one-shot self-heal of MULTI-BATCH invoice totals from STORED payloads.
+  // v52P's recompute only ran on lines carried by the CURRENT fetch — but on a re-ingest of an
+  // already-reconciled invoice both enrichment paths skip (its requests are 'reconciled' so the
+  // UDF match fails, and pc_code is stored so the direct-SAP enrich declares it done), so the pass
+  // saw no lines, computed nothing, and the CASE guard preserved the wrong 11. The lines that
+  // matter were in OUR OWN payload_json all along (stored by the original enriched ingestion —
+  // exactly what the modal renders). This backfill recomputes every multi-batch invoice's
+  // total_boxes and total_qty_lakhs from its stored lines, once per boot, no SAP call, idempotent.
+  if (!_v52sTotalsBackfillDone) {
+    try { await _v52sBackfillMultiBatchTotals(); _v52sTotalsBackfillDone = true; }
+    catch (e) { console.warn('[v52S] multi-batch totals backfill failed (will retry next poll):', e.message); }
   }
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
@@ -5102,7 +5163,7 @@ async function _doRefreshSapInvoices() {
     const vatSum = parseFloat(inv.VatSum) || 0;
     const taxable = docTotal - vatSum;
     const recId = `inv_${inv.DocEntry}`;
-    const payload = JSON.stringify(inv);
+    let payload = JSON.stringify(inv);   // v52S: re-serialized below if stored lines are restored
 
     // v41s Q2: derive pc_code/size/colour for the header row (= first line's values).
     // Per-line details are still available in payload_json for the detail modal and filtering.
@@ -5172,34 +5233,36 @@ async function _doRefreshSapInvoices() {
     // carries it, else derived per line from qty ÷ the line's own pack size (per-line PC → size via
     // the same pc_codes/pc-master chain the header uses, so mixed-size invoices count correctly).
     const _isSingleBatchInv52p = String(batchForStore || '').split(/[\s,]+/).filter(Boolean).length <= 1;
+    // v52S: the recompute must not depend on the CURRENT fetch carrying lines — on a re-ingest of a
+    // reconciled invoice both enrichment paths skip and the bulk entity may be line-less, which is
+    // exactly how v52P's pass computed nothing and the CASE guard kept the wrong figure. Lines are
+    // sourced fetch-first, then from OUR OWN STORED payload (written by the original enriched
+    // ingestion). The stored payload is also PRESERVED when the incoming one has no lines, so a
+    // lean re-fetch can never strip line detail the modal and allocation rebuilds rely on.
+    let _lines52s = (inv.DocumentLines || []);
+    if (!_lines52s.length) {
+      try {
+        let _pj;
+        if (pgPool) _pj = (await pgPool.query(`SELECT payload_json FROM invoices_received WHERE id=$1`, [recId])).rows[0];
+        else _pj = db.prepare(`SELECT payload_json FROM invoices_received WHERE id=?`).get(recId);
+        if (_pj && _pj.payload_json) {
+          const _stored = JSON.parse(_pj.payload_json);
+          if (_stored && Array.isArray(_stored.DocumentLines) && _stored.DocumentLines.length) {
+            _lines52s = _stored.DocumentLines;
+            inv.DocumentLines = _stored.DocumentLines;
+            payload = JSON.stringify(inv);               // re-serialize — stored lines preserved in the upsert
+          }
+        }
+      } catch (e) { console.warn('[v52S] stored-payload line fallback failed for', recId, '-', e.message); }
+    }
     if (invReqId && _isSingleBatchInv52p) {
       if (reqBoxes != null && parseInt(reqBoxes) > 0) totalBoxes = parseInt(reqBoxes);
       if (reqQtyLakhs != null && parseFloat(reqQtyLakhs) > 0) totalQtyLakhs = parseFloat(reqQtyLakhs);
-    } else if ((inv.DocumentLines || []).length > 0) {
-      let _sum52p = 0, _ok52p = true;
-      for (const l of inv.DocumentLines) {
-        const lq = (parseFloat(l.Quantity) || 0) * _sapUomScale(l);
-        if (!(lq > 0)) continue;                                   // zero/scrap lines carry no boxes
-        let lb = parseInt(l.U_NO_BOXES, 10);
-        if (!Number.isFinite(lb) || lb <= 0) {
-          let lsz = '';
-          try {
-            const ic = String(l.ItemCode || '').trim();
-            if (ic) {
-              let pr;
-              if (pgPool) pr = (await pgPool.query(`SELECT size FROM pc_codes WHERE code=$1 LIMIT 1`, [ic])).rows[0];
-              else pr = db.prepare(`SELECT size FROM pc_codes WHERE code=? LIMIT 1`).get(ic);
-              lsz = (pr && pr.size) || (_pcMasterLookup(ic) || {}).size || '';
-            }
-          } catch (_) {}
-          const packL = _V44ZJ_PACK_SIZES[String(lsz)] || 0;
-          if (packL > 0) lb = Math.round(lq / packL);
-          else { _ok52p = false; break; }                          // unknown size — don't guess a total
-        }
-        _sum52p += lb;
-      }
-      if (_ok52p && _sum52p > 0) totalBoxes = _sum52p;
-      // else totalBoxes stays 0 — an honest blank beats a first-line-only figure
+    } else if (_lines52s.length > 0) {
+      const _rc52s = _v52sRecomputeTotals(_lines52s);
+      if (_rc52s.ok && _rc52s.boxes > 0) totalBoxes = _rc52s.boxes;
+      if (_rc52s.qty > 0) totalQtyLakhs = _rc52s.qty;
+      // unresolved sizes → totals stay 0 — an honest blank beats a first-line-only figure
     }
 
     try {
