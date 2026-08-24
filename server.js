@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52S';
+const APP_BUILD = 'v52T';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -21014,7 +21014,11 @@ app.post('/api/tracking/recustomer', async (req, res) => {
   try {
     const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
     if (!session) return res.status(401).json({ ok:false, error:'Not authenticated' });
-    if (session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin required' });
+    // v52T (Ishan, 24 Aug): PM re-customers export excess — v52N opened the client gates but this
+    // server gate still said admin-only, so PM's submit bounced with "Admin required". Same trio
+    // of roles as the client now, normalised per the v51H convention.
+    if (!['admin','tracking_planning','planning_manager'].includes(String(session.role||'').trim().toLowerCase()))
+      return res.status(403).json({ ok:false, error:'Admin or Planning Manager required' });
     const { batchNumber, newCustomer, newCardCode, newPoNumber, shipTo, billTo, reason,
             splitBoxes, convertToPrinted, printMatter, printType, newSapDocNum } = req.body;
     // v49B (confirmed by Ishan): the SAP Sales Order belongs to the OLD customer, so after a
@@ -21350,7 +21354,8 @@ app.post('/api/tracking/recustomer', async (req, res) => {
 app.get('/api/tracking/recustomer-log', async (req, res) => {
   try {
     const session = verifyToken(req.headers['x-session-token'] || req.query?.token);
-    if (!session || session.role !== 'admin') return res.status(403).json({ ok:false, error:'Admin required' });
+    if (!session || !['admin','tracking_planning','planning_manager'].includes(String(session.role||'').trim().toLowerCase()))
+      return res.status(403).json({ ok:false, error:'Admin or Planning Manager required' });   // v52T: PM sees the log too
     const rows = pgPool
       ? (await pgPool.query(`SELECT * FROM recustomer_log ORDER BY ts DESC LIMIT 500`)).rows
       : db.prepare(`SELECT * FROM recustomer_log ORDER BY ts DESC LIMIT 500`).all();
