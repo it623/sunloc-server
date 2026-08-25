@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v52T</p>
+      <p>Planning Suite v3.0 · build v52U</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52T' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52U' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52T' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52U' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2591,7 +2591,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52T'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52U'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -4196,7 +4196,67 @@ function _v51qHasRealCustomer(o) {
   return u !== '-' && u !== 'TBD' && u !== 'W/O' && u !== 'W/O — PENDING' && u !== 'W/O - PENDING';
 }
 function _v51qAwaitingCustomer(o) {
-  return !!o && o.woStatus === 'wo' && !_v51qHasRealCustomer(o);
+  // v52U (Ishan, 24 Aug — 26ZG152): the SERVER accepts Split & Assign from BOTH 'wo' and
+  // 'wo-split-partial' (a residual parent after a partial split), but this predicate — the single
+  // gate for Section B, the row chip, the Split & Assign button and the SAP-link skip — only
+  // recognised 'wo'. The moment a partial split was approved, the residual parent VANISHED from
+  // every W/O surface while still customer-less, which pushed operators to "fix" it via the edit
+  // form (see the radio preservation fix at the form save) and destroyed the split state.
+  return !!o && (o.woStatus === 'wo' || o.woStatus === 'wo-split-partial') && !_v51qHasRealCustomer(o);
+}
+// v52U: the W/O FAMILY — order-type radio side + field-lock scope in the edit form. 'wo-split'
+// (fully-split parent, closed) and 'wo-split-child' are members for STATUS PRESERVATION but the
+// child renders on the Normal side (it has a customer and behaves as a normal order).
+function _v52uWoFamilySide(st) {
+  return (st === 'wo' || st === 'wo-reconciled' || st === 'wo-split-partial' || st === 'wo-split') ? 'wo' : 'normal';
+}
+// v52U: live child orders of a parent — by woSplitParentId when the split flow stamped it, and by
+// batch-suffix otherwise (both 26ZG152A and 26ZG135-A spellings — the same rule the server's child
+// allocator claims letters with), so children minted by any historical path are recognised.
+function _v52uChildrenOf(parent) {
+  if (!parent) return [];
+  const bn = String(parent.batchNumber || '').trim().toUpperCase();
+  let re = null;
+  try { re = bn ? new RegExp('^' + bn.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '-?([A-Z])$') : null; } catch (e) { re = null; }
+  return (state.orders || []).filter(o => {
+    if (!o || o.deleted || o.id === parent.id) return false;
+    if (o.woSplitParentId && o.woSplitParentId === parent.id) return true;
+    return !!(re && re.test(String(o.batchNumber || '').trim().toUpperCase()));
+  });
+}
+
+// v52U (Ishan, 24 Aug): split-family linkage on the Production Plan itself, so the parent/child
+// quantity attribution is visible where the quantities live. Parent rows list their children with
+// each child's qty; child rows name their parent. The lookup is cached per state.orders reference —
+// renderOrderRow is a hot path and must not scan the order list per row.
+function _v52uFamilyNote(ord) {
+  try {
+    if (!ord || !ord.batchNumber) return '';
+    if (window._v52uFamCacheRef !== state.orders) {
+      window._v52uFamCacheRef = state.orders;
+      const kids = {};    // parent order id -> [child orders]
+      const parentBn = {}; // child order id -> parent batch number
+      const byBn = {};
+      for (const o of (state.orders || [])) if (o && !o.deleted && o.batchNumber) byBn[String(o.batchNumber).trim().toUpperCase()] = o;
+      for (const o of (state.orders || [])) {
+        if (!o || o.deleted) continue;
+        let par = null;
+        if (o.woSplitParentId) par = (state.orders || []).find(p => p && p.id === o.woSplitParentId && !p.deleted) || null;
+        if (!par) {
+          const m = /^(.*?)-?([A-Z])$/.exec(String(o.batchNumber || '').trim().toUpperCase());
+          if (m && m[1] && byBn[m[1]] && byBn[m[1]].id !== o.id) par = byBn[m[1]];
+        }
+        if (par) { (kids[par.id] = kids[par.id] || []).push(o); parentBn[o.id] = par.batchNumber; }
+      }
+      window._v52uFamKids = kids; window._v52uFamParent = parentBn;
+    }
+    const kids = (window._v52uFamKids || {})[ord.id] || [];
+    const par = (window._v52uFamParent || {})[ord.id] || '';
+    let html = '';
+    if (kids.length) html += `<br><span style="font-size:10px;color:var(--accent3)" title="Child orders split from this batch — planned qty each">→ split: ${kids.map(k=>`${k.batchNumber} (${fmt(parseFloat(k.qty)||0)}L)`).join(', ')}</span>`;
+    if (par) html += `<br><span style="font-size:10px;color:var(--text3)" title="This order was split out of ${par}">↳ from ${par}</span>`;
+    return html;
+  } catch (e) { return ''; }
 }
 
 function renderOrderRow(ord, idx, mc) {
@@ -4288,7 +4348,7 @@ function renderOrderRow(ord, idx, mc) {
     <td class="text-mono" style="position:sticky;left:28px;z-index:2;background:var(--surface2,#0f2a20);white-space:nowrap;box-shadow:2px 0 4px rgba(0,0,0,0.1)">
       ${woBadge}${sapLinkBadge}
       ${ord.poType==='verbal'?'<span class="tag" style="background:rgba(240,165,0,0.1);color:var(--accent);font-size:10px">VERBAL</span> ':''}${ord.poNumber||'-'}
-      ${ord.batchNumber?`<br><span class="text-dim text-sm" style="cursor:pointer;text-decoration:underline dotted" title="Open batch tracking" onclick="event.stopPropagation();openBatchTracking('${(ord.batchNumber||'').replace(/'/g,'')}')">${ord.batchNumber}</span>`:''}${ord._dupBatch?`<br><span class="tag" style="background:rgba(192,57,43,0.15);color:#c0392b;font-size:9px;font-weight:800;cursor:pointer" title="Another live order on this machine carries the same batch number. Both orders are kept — click to renumber this one from the next free serial." onclick="event.stopPropagation();_v50fRenumberByIdV50f('${ord.id}')">⚠ DUPLICATE BATCH</span>`:''}
+      ${ord.batchNumber?`<br><span class="text-dim text-sm" style="cursor:pointer;text-decoration:underline dotted" title="Open batch tracking" onclick="event.stopPropagation();openBatchTracking('${(ord.batchNumber||'').replace(/'/g,'')}')">${ord.batchNumber}</span>`:''}${_v52uFamilyNote(ord)}${ord._dupBatch?`<br><span class="tag" style="background:rgba(192,57,43,0.15);color:#c0392b;font-size:9px;font-weight:800;cursor:pointer" title="Another live order on this machine carries the same batch number. Both orders are kept — click to renumber this one from the next free serial." onclick="event.stopPropagation();_v50fRenumberByIdV50f('${ord.id}')">⚠ DUPLICATE BATCH</span>`:''}
     </td>
     <td style="position:sticky;left:128px;z-index:2;background:var(--surface2,#0f2a20);font-weight:500;box-shadow:2px 0 4px rgba(0,0,0,0.1)">${(isWO && !String(ord.shipTo||ord.customer||'').trim())
       ? '<span style="color:var(--accent3);font-style:italic;font-size:12px">W/O — pending</span>'
@@ -4838,14 +4898,14 @@ function showAddOrderModal(machineId, existingOrder) {
     <div style="margin-bottom:12px;padding:10px 14px;background:rgba(255,171,0,0.08);border:1px solid rgba(255,171,0,0.3);border-radius:6px;display:flex;align-items:center;gap:12px">
       <label style="font-size:13px;font-weight:600;color:var(--text)">Order Type:</label>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-        <input type="radio" name="fo-wotype" value="normal" ${(ord.woStatus||'normal')==='normal'?'checked':''} onchange="toggleWOMode(false)"> Normal Order
+        <input type="radio" name="fo-wotype" value="normal" ${_v52uWoFamilySide(ord.woStatus)==='normal'?'checked':''} onchange="toggleWOMode(false)"> Normal Order
       </label>
       <label style="display:flex;align-items:center;gap:6px;cursor:pointer">
-        <input type="radio" name="fo-wotype" value="wo" ${ord.woStatus==='wo'||ord.woStatus==='wo-reconciled'?'checked':''} onchange="toggleWOMode(true)">
+        <input type="radio" name="fo-wotype" value="wo" ${_v52uWoFamilySide(ord.woStatus)==='wo'?'checked':''} onchange="toggleWOMode(true)">
         <span style="color:var(--accent3);font-weight:600">🔶 Without Order (W/O)</span>
       </label>
     </div>
-    <div id="fo-wo-notice" style="display:${ord.woStatus==='wo'||ord.woStatus==='wo-reconciled'?'block':'none'};margin-bottom:12px;padding:8px 12px;background:rgba(255,171,0,0.05);border-left:3px solid var(--accent3);font-size:12px;color:var(--accent3)">
+    <div id="fo-wo-notice" style="display:${_v52uWoFamilySide(ord.woStatus)==='wo'?'block':'none'};margin-bottom:12px;padding:8px 12px;background:rgba(255,171,0,0.05);border-left:3px solid var(--accent3);font-size:12px;color:var(--accent3)">
       ⚠️ W/O order — Customer and PO fields are locked until customer is confirmed via Reconciliation.
     </div>
     <div class="form-grid">
@@ -4859,7 +4919,7 @@ function showAddOrderModal(machineId, existingOrder) {
       </div>
       <div class="form-group" id="fo-ponum-group">
         <label>PO / Reference Number</label>
-        <input class="form-control" id="fo-ponum" value="${ord.poNumber||''}" placeholder="e.g. 26ZD23" ${ord.woStatus==='wo'?'disabled':''}>
+        <input class="form-control" id="fo-ponum" value="${ord.poNumber||''}" placeholder="e.g. 26ZD23" ${_v51qAwaitingCustomer(ord)?'disabled':''}>
       </div>
       <!-- v39 Phase 7: SAP Doc reference fields. Required for indent orders.
            Pre-filled and locked when order was created from Unplanned Orders flow. -->
@@ -4878,12 +4938,12 @@ function showAddOrderModal(machineId, existingOrder) {
         <input class="form-control" id="fo-batch" value="${ord.batchNumber||''}" placeholder="e.g. 26U17">
       </div>
       <div class="form-group">
-        <label>Ship To (Customer Name) ${ord.woStatus==='wo'?'<span style="color:var(--accent3);font-size:10px;margin-left:4px">LOCKED — W/O</span>':''}</label>
-        <input class="form-control" id="fo-customer" list="fo-customer-list" autocomplete="off" value="${ord.shipTo||ord.customer||''}" placeholder="${ord.woStatus==='wo'?'Will be assigned via Reconciliation':'e.g. M/S ACME LIFETECH LLP'}" ${ord.woStatus==='wo'?'disabled style="opacity:0.5"':''}>
+        <label>Ship To (Customer Name) ${_v51qAwaitingCustomer(ord)?'<span style="color:var(--accent3);font-size:10px;margin-left:4px">LOCKED — W/O</span>':''}</label>
+        <input class="form-control" id="fo-customer" list="fo-customer-list" autocomplete="off" value="${ord.shipTo||ord.customer||''}" placeholder="${_v51qAwaitingCustomer(ord)?'Will be assigned via Reconciliation':'e.g. M/S ACME LIFETECH LLP'}" ${_v51qAwaitingCustomer(ord)?'disabled style="opacity:0.5"':''}>
       </div>
       <div class="form-group">
-        <label>Bill To <span style="font-size:11px;color:var(--text3);font-weight:400">(if different from Ship To)</span> ${ord.woStatus==='wo'?'<span style="color:var(--accent3);font-size:10px;margin-left:4px">LOCKED — W/O</span>':''}</label>
-        <input class="form-control" id="fo-billto" list="fo-customer-list" autocomplete="off" value="${ord.billTo||''}" placeholder="e.g. M/S ACME PHARMA PVT LTD — leave blank if same as Ship To" ${ord.woStatus==='wo'?'disabled style="opacity:0.5"':''}>
+        <label>Bill To <span style="font-size:11px;color:var(--text3);font-weight:400">(if different from Ship To)</span> ${_v51qAwaitingCustomer(ord)?'<span style="color:var(--accent3);font-size:10px;margin-left:4px">LOCKED — W/O</span>':''}</label>
+        <input class="form-control" id="fo-billto" list="fo-customer-list" autocomplete="off" value="${ord.billTo||''}" placeholder="e.g. M/S ACME PHARMA PVT LTD — leave blank if same as Ship To" ${_v51qAwaitingCustomer(ord)?'disabled style="opacity:0.5"':''}>
       </div>
       <datalist id="fo-customer-list">
         ${(state.customerMaster||[]).map(c=>`<option value="${c.replace(/"/g,'&quot;').replace(/</g,'&lt;')}">`).join('')}
@@ -5281,7 +5341,19 @@ function saveOrderModal(existingId, defaultMachine) {
     _v50iBnBefore: _bnBefore50i,   // v50I: batch number as loaded into this form (rename detection)
     id: existingId || uid(),
     machineId,
-    woStatus: document.querySelector('input[name="fo-wotype"]:checked')?.value === 'wo' ? 'wo' : (existingId ? (_existing?.woStatus||'normal') : 'normal'),
+    // v52U (Ishan, 24 Aug — 26ZG152 root cause, leg 2): the old mapping wrote the CHECKED RADIO
+    // VALUE back as the status, so any ordinary edit of a 'wo-reconciled' order (whose radio renders
+    // on the W/O side) downgraded it to pristine 'wo', and a 'wo-split-partial' parent — which
+    // pre-v52U rendered with NEITHER radio checked — had its split state destroyed the moment the
+    // operator ticked either one. The status now survives every edit that does not FLIP the side:
+    // same side as rendered ⇒ keep the exact prior value; normal→wo ⇒ 'wo'; wo→normal ⇒ 'normal'
+    // (the existing explicit-conversion semantics, unchanged).
+    woStatus: (() => {
+      const _prev = (existingId ? (_existing?.woStatus || 'normal') : 'normal');
+      const _side = document.querySelector('input[name="fo-wotype"]:checked')?.value || _v52uWoFamilySide(_prev);
+      if (_side === _v52uWoFamilySide(_prev)) return _prev;
+      return _side === 'wo' ? 'wo' : 'normal';
+    })(),
     poType: document.getElementById('fo-potype')?.value,
     poNumber: document.getElementById('fo-ponum')?.value,
     sapDocEntry: _sapDocEntryNum || null,            // v39 Phase 7
@@ -5654,7 +5726,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52T'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52U'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8489,7 +8561,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52T' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52U' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -8939,7 +9011,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52T' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52U' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -8989,7 +9061,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52T' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52U' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9078,7 +9150,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52T' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52U' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -15342,19 +15414,42 @@ async function renderReconciliation() {
       ${_v51jReconFilterBar(_reconYms, woOrders.length, woOrdersAll.length, 'W/O orders')}
       <div class="recon-scroll">
         <table class="summary-table">
-          <thead><tr><th>Batch</th><th>Size</th><th>Colour</th><th>PC Code</th><th>Qty (L)</th><th>Start Date</th><th>Status</th><th>Action</th></tr></thead>
+          <thead><tr><th>Batch</th><th>Size</th><th>Colour</th><th>PC Code</th><th>Planned Qty (L)</th><th>Produced (L)</th><th>Dispatched (L)</th><th>Split → Children</th><th>Start Date</th><th>Status</th><th>Action</th></tr></thead>
           <tbody>
-            ${woOrders.map(o=>`<tr style="border-left:3px solid rgba(255,171,0,0.5)">
+            ${woOrders.map(o=>{
+              // v52U (Ishan, 24 Aug — 26ZG152 divergence): the recon showed only the planned qty, so a
+              // residual parent advertised its full remainder as "awaiting assignment" while the
+              // production plan, Report E and the invoices each told a different story. The row now
+              // carries the same reality every other surface reads: Produced = actualProd (the split
+              // flow conserves it: children + residual = family actual), Dispatched = the per-batch
+              // dispatched-actuals total (same source as the Production Plan column), and the batch's
+              // existing split children (matched by suffix — both 26ZG152A and 26ZG135-A spellings —
+              // or by woSplitParentId). A dispatch against a batch that HAS no customer means a SAP
+              // invoice was raised directly on the W/O — flagged in red so it is assigned before more
+              // quantity is invoiced customer-less.
+              const _kids = _v52uChildrenOf(o);
+              const _disp = (state._dispatchActualsQty && state._dispatchActualsQty[o.batchNumber]) || 0;
+              const _prod = parseFloat(o.actualProd) || 0;
+              const _kidsCell = _kids.length
+                ? _kids.map(k=>`<span class="text-mono" style="font-size:11px">${k.batchNumber}\u00A0(${fmt(parseFloat(k.qty)||0)}L${_v51qHasRealCustomer(k)?'':' — no customer'})</span>`).join('<br>')
+                : '<span style="color:var(--text3)">—</span>';
+              const _dispFlag = _disp > 0.005
+                ? `<br><span style="color:#dc2626;font-size:10px;font-weight:700" title="A SAP invoice/dispatch exists against this batch while it has no customer in Sunloc — assign the customer before further invoicing.">⚠ dispatched without customer</span>`
+                : '';
+              return `<tr style="border-left:3px solid rgba(255,171,0,0.5)">
               <td class="text-mono text-accent">${o.batchNumber||o.id}</td>
               <td class="text-mono">${o.size}</td>
               <td>${fmtColour(o.colour)}</td>
               <td class="text-mono">${o.pcCode||'—'}</td>
-              <td class="text-mono">${fmt(o.qty)}</td>
+              <td class="text-mono fw-bold">${fmt(o.qty)}</td>
+              <td class="text-mono" title="Actual produced remaining on this batch (post-split residual where a split was approved)">${_prod>0.005?fmt(_prod):'<span style="color:var(--text3)">—</span>'}</td>
+              <td class="text-mono" style="${_disp>0.005?'color:#dc2626;font-weight:700':''}">${_disp>0.005?fmt(_disp):'<span style="color:var(--text3)">—</span>'}${_dispFlag}</td>
+              <td>${_kidsCell}</td>
               <td class="text-mono" style="font-size:11px">${fmtDate(o.startDate)}</td>
-              <td><span class="badge" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.4);font-size:10px">🔶 W/O</span></td>
+              <td><span class="badge" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.4);font-size:10px">${o.woStatus==='wo-split-partial'?'🔶 W/O — partial split':'🔶 W/O'}</span></td>
               <td><button class="btn btn-sm" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.3)" onclick="openAssignCustomerModal('${o.id}')">🔶 Split & Assign</button></td>
-            </tr>`).join('')}
-            ${woOrders.length === 0 ? `<tr><td colspan="8" style="text-align:center;color:var(--text3);padding:18px;font-weight:600">No W/O orders in this production scope — ${woOrdersAll.length} exist in other periods. Change the scope above to see them.</td></tr>` : ''}
+            </tr>`;}).join('')}
+            ${woOrders.length === 0 ? `<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:18px;font-weight:600">No W/O orders in this production scope — ${woOrdersAll.length} exist in other periods. Change the scope above to see them.</td></tr>` : ''}
           </tbody>
         </table>
       </div>
