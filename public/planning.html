@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v52W</p>
+      <p>Planning Suite v3.0 · build v52X</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52W' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52X' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52W' },
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52X' },
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2591,7 +2591,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52W'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52X'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5734,7 +5734,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52W'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v52X'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8569,7 +8569,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52W' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v52X' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9019,7 +9019,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52W' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52X' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9069,7 +9069,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52W' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52X' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9158,7 +9158,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52W' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v52X' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -14814,7 +14814,30 @@ function openAssignCustomerModal(orderId) {
   // and the LARGER of (qty-derived, stored totalBoxes) so the full ordered qty can always be split.
   const _ps = (state.packSizes && state.packSizes[ord.size]) || 100000;
   const _boxesFromQty = Math.ceil((Number(ord.qty)||0) * 100000 / _ps);
-  const totalBoxes = Math.max(1, _boxesFromQty, parseInt(ord.totalBoxes) || 0);
+  // ═══ v52X (Ishan, 26 Aug — "healed in Report E but not on the W/O split modal") ══════════════
+  // The modal derived its box capacity purely from the PLANNED qty and showed nothing of reality —
+  // no attributed production, no dispatches, no existing children — so it advertised phantom
+  // capacity the reports had already corrected. Once production exists (actualProd > 0, which is
+  // the family-attributed figure injected from the server's apportioned gross), the physically
+  // assignable quantity is produced − dispatched, and THAT drives the capacity; a pre-production
+  // W/O still plans against qty as before. A reality strip mirrors the recon columns so the PM
+  // splits against the same numbers every other surface shows.
+  const _prod52x = parseFloat(ord.actualProd) || 0;
+  const _disp52x = (state._dispatchActualsQty && state._dispatchActualsQty[ord.batchNumber]) || 0;
+  const _kids52x = (typeof _v52uChildrenOf === 'function') ? _v52uChildrenOf(ord) : [];
+  const _assignableL = _prod52x > 0 ? Math.max(0, _prod52x - _disp52x) : (Number(ord.qty) || 0);
+  const _boxesFromAssignable = Math.ceil(_assignableL * 100000 / _ps);
+  const totalBoxes = _prod52x > 0
+    ? Math.max(1, _boxesFromAssignable)
+    : Math.max(1, _boxesFromQty, parseInt(ord.totalBoxes) || 0);
+  const _realityStrip52x = `
+    <div style="display:flex;gap:14px;flex-wrap:wrap;background:var(--surface2);border:1px solid var(--border);border-radius:6px;padding:8px 10px;margin-bottom:10px;font-size:12px">
+      <span>Planned: <b>${fmt(Number(ord.qty)||0)}L</b></span>
+      <span>Produced (attributed): <b>${_prod52x>0?fmt(_prod52x)+'L':'—'}</b></span>
+      <span style="${_disp52x>0.005?'color:var(--red);font-weight:700':''}">Dispatched: <b>${_disp52x>0.005?fmt(_disp52x)+'L':'—'}</b></span>
+      <span>Assignable: <b>${fmt(_assignableL)}L (${totalBoxes} boxes)</b></span>
+      ${_kids52x.length?`<span>Already split → ${_kids52x.map(k=>`${k.batchNumber} (${fmt(parseFloat(k.qty)||0)}L)`).join(', ')}</span>`:''}
+    </div>`;
 
   // Initialise a single empty line to start
   window._v40_woSplitLines = [{ customer: '', billTo: '', poNumber: '', zone: '', boxes: '', suffix: 'A', sapDocEntry: '', sapDocNum: '' }];
@@ -14886,6 +14909,7 @@ function openAssignCustomerModal(orderId) {
 
   openModal('🔶 Split W/O & Assign to Customers', `
     <div style="padding:8px 0">
+      ${_realityStrip52x}
       <div style="background:rgba(255,171,0,0.08);border:1px solid rgba(255,171,0,0.3);border-radius:6px;padding:10px 14px;margin-bottom:14px;font-size:13px">
         <strong>Source W/O batch:</strong> ${ord.batchNumber||ord.id}
         &nbsp;|&nbsp; <strong>Size:</strong> ${ord.size}

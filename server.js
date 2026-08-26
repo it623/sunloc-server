@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52W';
+const APP_BUILD = 'v52X';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -5157,28 +5157,75 @@ async function _v52vSplitLegacyMbDispRecs() {
 // grossQty = qty, a cleared grossOverride when it carried the same clone, and a fresh _localEditedAt
 // so the blob field-diff protection keeps the repair against stale client saves.
 let _v52vChildGrossHealDone = false;
+// ═══ v52X (Ishan, 26 Aug) — TWO-PASS FAMILY PLANNED-GROSS HEAL ═════════════════════════════════
+// Supersedes the v52V child-only heal, which keyed on woSplitParentId alone and so missed older
+// children the split flow never stamped (26ZE119A still showed the parent's 22.10 as its planned).
+// Families are resolved the same way as everywhere else since v52W: woSplitParentId,
+// woSplitFromBatch, or the suffix shape <NNlettersNN><letter> with a live parent.
+//   PASS 1 (children): a child whose grossQty EQUALS the parent's current grossQty (the clone
+//   signature) while exceeding its own qty is rebased to its qty — 26ZE119A: 22.10 → 8.75.
+//   PASS 2 (parents): whatever is attributed to the children is reduced from the parent's planned
+//   gross — gated on the arithmetic still describing the FAMILY TOTAL: the reduction only fires
+//   when (parent.grossQty − Σ children.grossQty) ≥ parent.qty − 0.75, which an already-reduced
+//   parent fails by construction, so the pass is idempotent by math (a _v52xGrossRebased stamp is
+//   added as belt-and-braces). grossOverride, when present, is reduced identically — it is the
+//   displayed planned figure. 26ZE133: 54.50 − 3.50 → 51.00; 26ZE119: 22.10 − 8.75 → 13.35.
 async function _v52vHealChildGrossClones() {
   const st = await getPlanningStateAsync();
   const orders = (st && st.orders) || [];
-  const byId = {}; for (const o of orders) if (o && !o.deleted) byId[o.id] = o;
-  let healed = 0;
-  for (const o of orders) {
-    if (!o || o.deleted || !o.woSplitParentId) continue;
-    const par = byId[o.woSplitParentId];
-    if (!par) continue;
-    const cg = parseFloat(o.grossQty) || 0, pg = parseFloat(par.grossQty) || 0, q = parseFloat(o.qty) || 0;
-    if (!(cg > 0 && pg > 0 && q > 0)) continue;
-    if (Math.abs(cg - pg) > 0.005) continue;          // not the clone signature
-    if (!(q < cg - 0.005)) continue;                   // nothing to rebase
-    const og = parseFloat(o.grossOverride);
-    o.grossQty = q;
-    if (Number.isFinite(og) && (Math.abs(og - cg) < 0.005 || Math.abs(og - (parseFloat(par.grossOverride) || -1)) < 0.005)) o.grossOverride = null;
-    o._localEditedAt = Date.now();
-    healed++;
-    console.log(`[v52V child-gross] ${o.batchNumber}: planned gross ${cg} (parent clone) -> ${q}`);
+  const live = orders.filter(o => o && !o.deleted);
+  const byId = {}, byBn = {};
+  for (const o of live) { byId[o.id] = o; if (o.batchNumber) byBn[String(o.batchNumber).trim().toUpperCase()] = o; }
+  const famKids = {};   // parent order id -> [child orders]
+  for (const o of live) {
+    let par = null;
+    if (o.woSplitParentId && byId[o.woSplitParentId]) par = byId[o.woSplitParentId];
+    if (!par && o.woSplitFromBatch && byBn[String(o.woSplitFromBatch).trim().toUpperCase()]) par = byBn[String(o.woSplitFromBatch).trim().toUpperCase()];
+    if (!par) {
+      const m = /^(\d+[A-Za-z]+\d+)-?([A-Za-z])$/.exec(String(o.batchNumber || '').trim().toUpperCase());
+      if (m && byBn[m[1]] && byBn[m[1]].id !== o.id) par = byBn[m[1]];
+    }
+    if (par && par.id !== o.id) (famKids[par.id] = famKids[par.id] || []).push(o);
   }
-  if (healed) await savePlanningState(st);
-  console.log(`[v52V child-gross] split-child planned-gross heal: ${healed} order(s) rebased`);
+  let healedKids = 0, healedParents = 0;
+  // PASS 1 — child clone rebase
+  for (const pid of Object.keys(famKids)) {
+    const par = byId[pid];
+    const pg = parseFloat(par.grossQty) || 0;
+    for (const o of famKids[pid]) {
+      const cg = parseFloat(o.grossQty) || 0, q = parseFloat(o.qty) || 0;
+      if (!(cg > 0 && pg > 0 && q > 0)) continue;
+      if (Math.abs(cg - pg) > 0.005) continue;          // not the clone signature
+      if (!(q < cg - 0.005)) continue;
+      const og = parseFloat(o.grossOverride);
+      o.grossQty = q;
+      if (Number.isFinite(og) && (Math.abs(og - cg) < 0.005 || Math.abs(og - (parseFloat(par.grossOverride) || -1)) < 0.005)) o.grossOverride = null;
+      o._localEditedAt = Date.now();
+      healedKids++;
+      console.log(`[v52X fam-gross] child ${o.batchNumber}: planned gross ${cg} (parent clone) -> ${q}`);
+    }
+  }
+  // PASS 2 — parent reduction by attributed children
+  for (const pid of Object.keys(famKids)) {
+    const par = byId[pid];
+    if (par._v52xGrossRebased) continue;
+    const pg = parseFloat(par.grossQty) || 0;
+    if (!(pg > 0)) continue;
+    const kidsSum = famKids[pid].reduce((s, o) => s + Math.max(0, parseFloat(o.grossQty) || 0), 0);
+    if (!(kidsSum > 0)) continue;
+    const residual = +(pg - kidsSum).toFixed(3);
+    const pq = parseFloat(par.qty) || 0;
+    if (!(residual >= pq - 0.75)) continue;             // parent no longer holds the family total — already reduced
+    par.grossQty = Math.max(0, residual);
+    const po = parseFloat(par.grossOverride);
+    if (Number.isFinite(po) && po > 0) par.grossOverride = Math.max(0, +(po - kidsSum).toFixed(3));
+    par._v52xGrossRebased = true;
+    par._localEditedAt = Date.now();
+    healedParents++;
+    console.log(`[v52X fam-gross] parent ${par.batchNumber}: planned gross ${pg} -> ${par.grossQty} (− ${kidsSum.toFixed(2)} attributed to ${famKids[pid].map(k => k.batchNumber).join(', ')})`);
+  }
+  if (healedKids || healedParents) await savePlanningState(st);
+  console.log(`[v52X fam-gross] family planned-gross heal: ${healedKids} child(ren) + ${healedParents} parent(s) rebased`);
 }
 
 async function _doRefreshSapInvoices() {
@@ -7976,12 +8023,13 @@ async function _v46k_loadSplitFamilies() {
         const s = _lblSum[String(c.batch).trim().toUpperCase()];
         if (s > 0) c.boxed = +s.toFixed(3);
       }
-      // drop inferred children that stayed at 0 (no labels — nothing physical to attribute)
-      for (const f of families) if (f.inferred) f.children = f.children.filter(c => c.boxed > 0);
+      // v52X: inferred children are KEPT even at boxed 0 — the applier reduces the parent by an
+      // own-gross child's own figure regardless of labels, and a boxed-0 no-gross child simply
+      // receives nothing (harmless).
     }
   } catch (e) { console.warn('[v52W] child label-sum refinement failed (boxes×pack figures kept):', e.message); }
 
-  return families.filter(f => f.children.length);
+  return families;   // v52X: empty-children families are inert in the applier
 }
 
 // Apply the apportionment to a per-batch gross map IN PLACE. Idempotent against a freshly-built map
@@ -7994,20 +8042,30 @@ function _v46k_applyGrossApportionment(map, families) {
   for (const fam of families) {
     const parentGross = map[fam.parentBatch];
     if (!(parentGross > 0)) continue;                 // parent absent/zero in this map → nothing to split
-    // v52W: a SUFFIX-INFERRED child that has its OWN DPR gross in this map produced its own material
-    // and is not carved from the parent — apportioning would corrupt both. Explicit-record families
-    // (tiers 1/2) are untouched: their children never have own production_actuals by construction.
-    const kids = fam.inferred ? fam.children.filter(c => !((map[c.batch] || 0) > 0)) : fam.children;
-    const sum = kids.reduce((s, c) => s + (c.boxed || 0), 0);
-    if (!(sum > 0)) continue;
-    const scale = sum > parentGross ? parentGross / sum : 1;
+    // v52X (Ishan, 26 Aug — 26ZH077/26ZH077A still double-counted): v52W skipped an inferred child
+    // that had its OWN key in the raw map, leaving the parent untouched — but the child's own figure
+    // (DPR rows logged under the child's number, or a gross override on it) is the SAME family
+    // material recorded under another key, not additional production. Ishan's rule, applied
+    // literally: WHATEVER IS ATTRIBUTED TO A CHILD IS REDUCED FROM THE PARENT. So per family:
+    //   • own-gross children KEEP their own figure (it is already attributed) and that figure is
+    //     subtracted from the parent;
+    //   • no-gross children receive their label-based share as before;
+    //   • the shares are scaled into whatever remains of the parent after the own-gross deduction,
+    //     so the parent residual can never go negative and the family always conserves.
+    const ownKids = fam.children.filter(c => (map[c.batch] || 0) > 0);
+    const assignKids = fam.children.filter(c => !((map[c.batch] || 0) > 0));
+    const ownTotal = ownKids.reduce((s, c) => s + (map[c.batch] || 0), 0);
+    const availForAssign = Math.max(0, parentGross - ownTotal);
+    const sum = assignKids.reduce((s, c) => s + (c.boxed || 0), 0);
+    const scale = (sum > 0 && sum > availForAssign) ? availForAssign / sum : 1;
     let assigned = 0;
-    for (const c of kids) {
+    for (const c of assignKids) {
       const g = +((c.boxed || 0) * scale).toFixed(3);
+      if (!(g > 0)) continue;
       map[c.batch] = (map[c.batch] || 0) + g;         // child has no own production_actuals → base 0
       assigned += g;
     }
-    map[fam.parentBatch] = Math.max(0, +(parentGross - assigned).toFixed(3));
+    map[fam.parentBatch] = Math.max(0, +(parentGross - ownTotal - assigned).toFixed(3));
   }
 }
 
@@ -16789,6 +16847,21 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
       // the parent value itself at the family total (26ZG135: 36.75 against 31.75 residual actual).
       // Cleared on both branches; the DPR-derived sum and any batch_gross_override still apply.
       parent.grossOverride = null;
+      // v52X (Ishan, 26 Aug — 26ZE133 kept planned gross 54.50 after carving 3.50 to 26ZE133A):
+      // whatever is attributed to the children is reduced from the parent's PLANNED GROSS as well —
+      // qty and actual were rebased since v44ZQ, but grossQty kept displaying the family total
+      // against the residual. Full splits zero it with everything else.
+      {
+        const _pg52x = parseFloat(parent.grossQty) || 0;
+        if (residualBoxes > 0) {
+          if (_pg52x > 0) {
+            const _kidsQty52x = childOrders.reduce((s, c) => s + (parseFloat(c.child.qty) || 0), 0);
+            parent.grossQty = Math.max(0, +(_pg52x - _kidsQty52x).toFixed(3));
+          }
+        } else {
+          parent.grossQty = 0;
+        }
+      }
       parent.woSplitRequestId = reqId;
       }
 
