@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53A</title>
+<title>Sunloc Tracking Suite v1.0 · build v53C</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53A</p>
+      <p>Tracking Suite v1.0 · build v53C</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53A</p>
+      <p>Tracking Suite v1.0 · build v53C</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -4721,17 +4721,26 @@ function renderLabels(){
     const _genLabels = state.labels.filter(l=>l.batchNumber===b.batchNumber&&!l.voided&&!l.isOrange&&!_isSpecimenLabel(l));
     const _prtLabels = _genLabels.filter(l=>l.printed);
     const _wb  = (typeof getBatchWIPBreakdown==='function') ? getBatchWIPBreakdown(b.batchNumber) : null;
-    const _salvL = _wb ? (((_wb.wAIM&&_wb.wAIM.salvage)||0)+((_wb.wPrint&&_wb.wPrint.salvage)||0)+((_wb.wPI&&_wb.wPI.salvage)||0)) : 0;
+    // v53C (Ishan, 26 Aug — supersedes the v47 all-stage choice FOR THIS SCREEN): printing/PI
+    // rejection happens DOWNSTREAM of label generation — those boxes were labelled before being
+    // rejected — so it never reduces labelable quantity and the printing leg is a DPL-percentage
+    // ESTIMATE besides. The label screen now shows the AIM leg only (matching the AIM tab and
+    // Report E's AIM SALVAGE column exactly); the all-stage total remains the Reports B/D/E figure.
+    const _sA = (_wb && _wb.wAIM   && _wb.wAIM.salvage)   || 0;
+    const _sP = (_wb && _wb.wPrint && _wb.wPrint.salvage) || 0;
+    const _sI = (_wb && _wb.wPI    && _wb.wPI.salvage)    || 0;
+    const _salvL = _sA + _sP + _sI;
     // v47F (confirmed by Ishan): SUM each box's actual stored quantity (partial-aware) instead of
     // box-count × uniform pack size, which over-counted partial/last boxes — e.g. 10×2.25=22.50 vs the
     // real 8×2.25+1.75+1.00=20.75. label.qty is authoritative per box (partial boxes carry their true qty).
     const _genL = _genLabels.reduce((s,l)=>s+(parseFloat(l.qty)||0), 0);
     const _prtL = _prtLabels.reduce((s,l)=>s+(parseFloat(l.qty)||0), 0);
-    return { salvageL:_salvL, genL:_genL, prtL:_prtL };
+    return { salvageL:_salvL, salvAIM:_sA, salvPrint:_sP, salvPI:_sI, genL:_genL, prtL:_prtL };
   };
   const _lgFig = new Map();
   let _lgTotSalvL = 0, _lgTotGenL = 0, _lgTotPrtL = 0;
-  activeBatches.forEach(b=>{ const f=_lgComputeFig(b); _lgFig.set(b.batchNumber,f); _lgTotSalvL+=f.salvageL; _lgTotGenL+=f.genL; _lgTotPrtL+=f.prtL; });
+  let _lgTotSalvAIM = 0, _lgTotSalvPr = 0, _lgTotSalvPI = 0;   // v53B: stage split for the header strip
+  activeBatches.forEach(b=>{ const f=_lgComputeFig(b); _lgFig.set(b.batchNumber,f); _lgTotSalvL+=f.salvageL; _lgTotSalvAIM+=f.salvAIM; _lgTotSalvPr+=f.salvPrint; _lgTotSalvPI+=f.salvPI; _lgTotGenL+=f.genL; _lgTotPrtL+=f.prtL; });
   const _lgFigColor = '#06b6d4'; // distinct bold colour for the (L) sub-figures
 
   document.getElementById('tb-actions').innerHTML=`
@@ -4746,8 +4755,8 @@ function renderLabels(){
   <!-- v47 Point 2: label-dashboard summary tiles — Salvage / Generated / Printed in Lakhs, across the active batches shown. Totals equal the sum of the per-row (L) figures. -->
   <div style="display:flex;gap:10px;margin-bottom:10px;flex-wrap:wrap">
     <div class="card" style="flex:1;min-width:150px;padding:8px 12px">
-      <div style="font-size:10px;font-weight:700;letter-spacing:0.05em;color:var(--text3)">SALVAGE (ACTIVE)</div>
-      <div style="font-size:18px;font-weight:800;color:${_lgFigColor}">${fmt(_lgTotSalvL)} <span style="font-size:11px;font-weight:700">L</span></div>
+      <div style="font-size:10px;font-weight:700;letter-spacing:0.05em;color:var(--text3)" title="AIM salvage entries across the active batches — matches the AIM Inspection tab. Printing/PI rejection happens after labelling and is tracked separately in the DPL and Reports B/D/E.">SALVAGE (ACTIVE — AIM)</div>
+      <div style="font-size:18px;font-weight:800;color:${_lgFigColor}">${fmt(_lgTotSalvAIM)} <span style="font-size:11px;font-weight:700">L</span></div>
     </div>
     <div class="card" style="flex:1;min-width:150px;padding:8px 12px">
       <div style="font-size:10px;font-weight:700;letter-spacing:0.05em;color:var(--text3)">GENERATED QTY (ACTIVE)</div>
@@ -4828,7 +4837,7 @@ function renderLabels(){
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;text-align:center">${b.size}</td>
           <td style="padding:5px 6px;font-size:11px;max-width:80px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${clr?`<span style="display:inline-block;max-width:75px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${clr}">${clr}</span>`:'—'}${b.packing?`<br><span style="font-size:9px;color:var(--accent);font-weight:700" title="Packing instruction">📦 ${b.packing}</span>`:''}${b.isPrinted?`<br><span style="font-size:9px;background:#7c3aed;color:#fde047;font-weight:800;padding:1px 6px;border-radius:6px;letter-spacing:.5px" title="Printed order (PTD) — route the box to the Printing department after AIM">PTD</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px">${b.pcCode||'—'}</td>
-          <td style="padding:5px 6px;font-family:monospace;font-size:11px;color:${actualProd>0?'var(--text1)':'var(--text3)'}">${actualProd>0?actualProd.toFixed(2):'—'}${_fig.salvageL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Salvage (L) — total recorded salvage for this batch">Sal ${fmt(_fig.salvageL)}L</span>`:''}</td>
+          <td style="padding:5px 6px;font-family:monospace;font-size:11px;color:${actualProd>0?'var(--text1)':'var(--text3)'}">${actualProd>0?actualProd.toFixed(2):'—'}${_fig.salvAIM>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="AIM salvage entries for this batch — matches the AIM Inspection tab and Report E's AIM SALVAGE column. Printing rejection${_fig.salvPrint>0.005?` (${fmt(_fig.salvPrint)}L here)`:''} happens AFTER labelling and is tracked separately in the DPL and Reports B/D/E; it does not reduce labelable quantity.">Sal ${fmt(_fig.salvAIM)}L</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:700">${generated}${_fig.genL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Generated quantity (L) = sum of each box's actual quantity (partial boxes counted at true qty)">${fmt(_fig.genL)}L</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px">${printed}${_fig.prtL>0?`<br><span style="font-size:9px;font-weight:700;color:${_lgFigColor}" title="Printed quantity (L) = sum of each printed box's actual quantity (partial boxes counted at true qty)">${fmt(_fig.prtL)}L</span>`:''}</td>
           <td style="padding:5px 6px;font-family:monospace;font-size:11px;font-weight:${remaining===0?'400':'700'};color:${remaining===0?'var(--text3)':'var(--accent2)'}">${remaining}</td>
