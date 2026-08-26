@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52Z';
+const APP_BUILD = 'v53A';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -5146,10 +5146,53 @@ async function _v52vSplitLegacyMbDispRecs() {
       console.log(`[v52Z disp-alloc] inv ${inv.sap_doc_num}: record(s) on [${oldKeys.join(', ') || '?'}] rebuilt as ${batches.map(b => `${b} (${perBatch[b].qty.toFixed(2)}L)`).join(', ')}`);
     } catch (e) { skipped++; console.warn(`[v52Z disp-alloc] inv ${inv.sap_doc_num}: heal failed — left untouched:`, e.message); }
   }
+  _v53aStats.dispRebuilt = rebuilt; _v53aStats.dispMatched = matched; _v53aStats.dispReview = skipped; _v53aStats.lastDisp = Date.now();
   console.log(`[v52Z disp-alloc] alloc-driven dispatch rebuild: ${rebuilt} rebuilt, ${matched} already correct, ${skipped} left for review of ${(invs || []).length} multi-batch dispatched invoice(s)`);
 }
 
 let _v52vChildGrossHealDone = false;
+// ═══ v53A (Ishan, 26 Aug — "I can't have every user close the tabs") — HEAL ASSERTS ══════════
+// Stale planning clients were reverting healed gross fields on their next save (the same divergent-
+// blob war visible as the 26H054 start-date ping-pong). Plant-level tab hygiene is not achievable,
+// so the server now defends the heal: every value the family heal writes is recorded here with the
+// PRE-heal value it replaced, and for 24h the planning merge refuses an incoming value that EQUALS
+// the pre-heal value (the revert signature) while the server still holds the healed one — logged as
+// a blocked revert. A genuinely NEW value (a real planner edit differing from the pre-heal figure)
+// is always accepted. Belt-and-braces: the heals also re-assert on a ~25-minute cycle, so anything
+// that slips through is re-corrected within half an hour without a restart.
+const _v53aHealAsserts = new Map();   // orderId -> { ts, fields: { grossQty:{pre,healed}, grossOverride:{pre,healed} } }
+const _v53aStats = { famKids: 0, famParents: 0, guardBlocks: 0, ovrHealed: 0, ovrReview: 0, dispRebuilt: 0, dispMatched: 0, dispReview: 0, lastFam: 0, lastOvr: 0, lastDisp: 0 };
+function _v53aAssert(o, field, pre, healed) {
+  const a = _v53aHealAsserts.get(String(o.id)) || { ts: Date.now(), fields: {} };
+  a.ts = Date.now(); a.fields[field] = { pre: pre === undefined ? null : pre, healed: healed === undefined ? null : healed };
+  _v53aHealAsserts.set(String(o.id), a);
+}
+function _v53aNumEq(a, b) {
+  const na = parseFloat(a), nb = parseFloat(b);
+  if (Number.isFinite(na) && Number.isFinite(nb)) return Math.abs(na - nb) <= 0.005;
+  return (a == null || a === '') && (b == null || b === '');
+}
+function _v53aHealGuard(mergedOrd, srvOrd) {
+  try {
+    if (!mergedOrd || !mergedOrd.id) return mergedOrd;
+    const a = _v53aHealAsserts.get(String(mergedOrd.id));
+    if (!a || (Date.now() - a.ts) > 24 * 3600 * 1000) return mergedOrd;
+    let out = mergedOrd, blocked = 0;
+    for (const f of Object.keys(a.fields)) {
+      const { pre, healed } = a.fields[f];
+      if (_v53aNumEq(mergedOrd[f], pre) && !_v53aNumEq(pre, healed) && _v53aNumEq(srvOrd && srvOrd[f], healed)) {
+        if (out === mergedOrd) out = { ...mergedOrd };
+        out[f] = srvOrd[f]; blocked++;
+      }
+    }
+    if (blocked) {
+      _v53aStats.guardBlocks += blocked;
+      console.log(`[v53A heal-guard] blocked revert of ${mergedOrd.batchNumber || mergedOrd.id}: ${blocked} healed field(s) kept`);
+    }
+    return out;
+  } catch (e) { return mergedOrd; }
+}
+
 // ═══ v52Y (Ishan, 26 Aug) — OVERRIDE-AWARE FAMILY PLANNED-GROSS HEAL (v3) ═════════════════════
 // The v52X pass keyed on grossQty; the batches that "didn't heal" (26ZE119/119A, 26ZH077) carry the
 // family total in grossOverride — the "edited" badge — which both DISPLAYS and survives a grossQty
@@ -5196,6 +5239,8 @@ async function _v52vHealChildGrossClones() {
       const pv = P(o);
       if (!(q > 0 && pv > q + 0.75)) continue;
       console.log(`[v52Y fam-gross] child ${o.batchNumber}: planned ${pv} -> ${q} (child planned is its qty; override cleared)`);
+      _v53aAssert(o, 'grossQty', o.grossQty, q);
+      _v53aAssert(o, 'grossOverride', o.grossOverride, null);
       o.grossQty = q;
       o.grossOverride = null;
       o._localEditedAt = Date.now();
@@ -5218,15 +5263,16 @@ async function _v52vHealChildGrossClones() {
     const labelGate = pl > 0 && pp >= kidsSum + pl - tol;
     if (!arithGate && !labelGate) { continue; }
     const go = parseFloat(par.grossOverride);
-    if (Number.isFinite(go) && go > 0) par.grossOverride = Math.max(0, +(go - kidsSum).toFixed(3));
+    if (Number.isFinite(go) && go > 0) { const nv = Math.max(0, +(go - kidsSum).toFixed(3)); _v53aAssert(par, 'grossOverride', go, nv); par.grossOverride = nv; }
     const gq = parseFloat(par.grossQty) || 0;
-    if (gq > 0) par.grossQty = Math.max(0, +(gq - kidsSum).toFixed(3));
+    if (gq > 0) { const nv = Math.max(0, +(gq - kidsSum).toFixed(3)); _v53aAssert(par, 'grossQty', gq, nv); par.grossQty = nv; }
     par._v52yGrossRebased = true;
     par._localEditedAt = Date.now();
     healedParents++;
     console.log(`[v52Y fam-gross] parent ${par.batchNumber}: planned ${pp} -> ${Math.max(0, residual)} (− ${kidsSum.toFixed(2)} to ${famKids[pid].map(k => k.batchNumber).join(', ')}; gate=${arithGate ? 'arith' : 'labels'})`);
   }
   if (healedKids || healedParents) await savePlanningState(st);
+  _v53aStats.famKids = healedKids; _v53aStats.famParents = healedParents; _v53aStats.lastFam = Date.now();
   console.log(`[v52Y fam-gross] planning family heal: ${healedKids} child(ren) + ${healedParents} parent(s) rebased`);
 }
 
@@ -5303,6 +5349,7 @@ async function _v52yHealOverrideFamilies() {
     console.log(`[v52Y ovr-fam] ${p}: gross override ${po} -> ${nv} (− ${sum.toFixed(2)} attributed to ${attr.map(x => `${x.k} (${x.v.toFixed(2)}L)`).join(', ')})`);
   }
   if (healed) await loadGrossOverrides();   // refresh the in-memory tier-1 cache immediately
+  _v53aStats.ovrHealed = healed; _v53aStats.ovrReview = ambiguous; _v53aStats.lastOvr = Date.now();
   console.log(`[v52Y ovr-fam] override family heal: ${healed} parent override(s) rebased, ${ambiguous} left for review`);
 }
 
@@ -5321,12 +5368,20 @@ async function _doRefreshSapInvoices() {
   // matter were in OUR OWN payload_json all along (stored by the original enriched ingestion —
   // exactly what the modal renders). This backfill recomputes every multi-batch invoice's
   // total_boxes and total_qty_lakhs from its stored lines, once per boot, no SAP call, idempotent.
+  // v53A: heals re-assert every ~25 minutes (idempotent by their gates), so a stale-client stomp is
+  // re-corrected without anyone restarting anything or closing tabs.
+  const _now53a = Date.now(), _P53A = 25 * 60 * 1000;
+  if (_v52vMbDispHealDone && (_now53a - (_v53aStats.lastDisp || 0)) > _P53A) _v52vMbDispHealDone = false;
+  if (_v52vChildGrossHealDone && (_now53a - (_v53aStats.lastFam || 0)) > _P53A) _v52vChildGrossHealDone = false;
+  if (_v52yOverrideHealDone && (_now53a - (_v53aStats.lastOvr || 0)) > _P53A) _v52yOverrideHealDone = false;
+  // v53A: results telemetry EVERY poll — no more racing rolling log buffers for one-shot lines.
+  console.log(`[v53A status] fam(kids=${_v53aStats.famKids},parents=${_v53aStats.famParents},guard-blocks=${_v53aStats.guardBlocks}) ovr(healed=${_v53aStats.ovrHealed},review=${_v53aStats.ovrReview}) disp(rebuilt=${_v53aStats.dispRebuilt},matched=${_v53aStats.dispMatched},review=${_v53aStats.dispReview})`);
   // v52Y: heal execution must NEVER be ambiguous again — one status line every poll, unconditionally.
   console.log(`[v52Y heals] mb-disp=${_v52vMbDispHealDone ? 'done' : 'pending'}, planning-fam=${_v52vChildGrossHealDone ? 'done' : 'pending'}, override-fam=${_v52yOverrideHealDone ? 'done' : 'pending'}`);
   // v52Z: replay the persistent heal audit once per boot, so past results are visible in ANY log
   // window — the last two rounds of detail lines fell before the captured windows.
-  if (!global._v52zAuditReplayed) {
-    global._v52zAuditReplayed = true;
+  global._v52zReplayTick = (global._v52zReplayTick || 0) + 1;
+  if (global._v52zReplayTick % 12 === 1) {   // v53A: replay every ~hour, not just at boot
     try {
       const r = pgPool ? (await pgPool.query(`SELECT batch_number, old_gross, new_gross, ts FROM v52y_gross_override_heal ORDER BY ts`)).rows
                        : db.prepare(`SELECT batch_number, old_gross, new_gross, ts FROM v52y_gross_override_heal ORDER BY ts`).all();
@@ -11657,7 +11712,7 @@ app.post('/api/planning/state', async (req, res) => {
             // against), but the re-customer lock is re-applied so a missing field map can never
             // wholesale-revert a re-customered order the way it did on 26P044/26P045.
             if (flds === '*' || !Array.isArray(flds)) {
-              const _g50tw = _v49f_rcLock(_v50mGuard(cli, srv, cli), srv);
+              const _g50tw = _v53aHealGuard(_v49f_rcLock(_v50mGuard(cli, srv, cli), srv), srv);   // v53A
               _v50tAudit('v49A claim (whole-object)', srv, _g50tw, `cliStamp=${cli._localEditedAt||'-'}`);   // v50T
               merged.push(_g50tw); continue;
             }  // locally new / no detail → whole object (v50M stamp-guarded)
@@ -11666,7 +11721,7 @@ app.post('/api/planning/state', async (req, res) => {
               if (Object.prototype.hasOwnProperty.call(cli, k)) out[k] = cli[k];
               else delete out[k];                                  // planner removed the field
             }
-            { const _g50t = _v49f_rcLock(_v50mGuard(out, srv, cli), srv);
+            { const _g50t = _v53aHealGuard(_v49f_rcLock(_v50mGuard(out, srv, cli), srv), srv);   // v53A
               _v50tAudit('v49A claim (field-level)', srv, _g50t, `flds=${Array.isArray(flds)?flds.join('+'):'*'} cliStamp=${cli._localEditedAt||'-'}`);   // v50T
               merged.push(_g50t); }
           }
@@ -14992,7 +15047,22 @@ async function _buildClosedBatchesPayload() {
       overrideBy: ov ? (ov.updated_by || '') : '',
       overrideAt: ov ? (ov.updated_at || '') : '',
       closedAt: cRow ? (cRow.closed_at || '') : '',
-      status: o.status || ''
+      status: o.status || '',
+      // v53A (Ishan's option b): split-family linkage so DPR's closed list shows the split the same
+      // way Planning does — the child rows (closed at split) were already listed but unmarked, so
+      // the parent's residual planned/actual against the family physical READ as a mismatch.
+      familyParent: (() => {
+        if (o.woSplitFromBatch) return String(o.woSplitFromBatch).trim();
+        const m = /^(\d+[A-Za-z]+\d+)-?([A-Za-z])$/.exec(String(o.batchNumber || '').trim());
+        return (m && orders.some(x => x && String(x.batchNumber || '').trim().toUpperCase() === m[1].toUpperCase())) ? m[1] : '';
+      })(),
+      familyChildren: orders.filter(x => {
+        if (!x || x.id === o.id || !x.batchNumber) return false;
+        if (x.woSplitParentId && x.woSplitParentId === o.id) return true;
+        if (x.woSplitFromBatch && String(x.woSplitFromBatch).trim().toUpperCase() === String(o.batchNumber || '').trim().toUpperCase()) return true;
+        const m = /^(\d+[A-Za-z]+\d+)-?([A-Za-z])$/.exec(String(x.batchNumber || '').trim().toUpperCase());
+        return !!(m && m[1] === String(o.batchNumber || '').trim().toUpperCase());
+      }).map(x => ({ batch: x.batchNumber, qty: parseFloat(x.qty) || 0 }))
     });
   }
   // Machine then batch ordering (report is grouped/filtered client-side)
