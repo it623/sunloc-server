@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52X';
+const APP_BUILD = 'v52Y';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -5157,26 +5157,23 @@ async function _v52vSplitLegacyMbDispRecs() {
 // grossQty = qty, a cleared grossOverride when it carried the same clone, and a fresh _localEditedAt
 // so the blob field-diff protection keeps the repair against stale client saves.
 let _v52vChildGrossHealDone = false;
-// ═══ v52X (Ishan, 26 Aug) — TWO-PASS FAMILY PLANNED-GROSS HEAL ═════════════════════════════════
-// Supersedes the v52V child-only heal, which keyed on woSplitParentId alone and so missed older
-// children the split flow never stamped (26ZE119A still showed the parent's 22.10 as its planned).
-// Families are resolved the same way as everywhere else since v52W: woSplitParentId,
-// woSplitFromBatch, or the suffix shape <NNlettersNN><letter> with a live parent.
-//   PASS 1 (children): a child whose grossQty EQUALS the parent's current grossQty (the clone
-//   signature) while exceeding its own qty is rebased to its qty — 26ZE119A: 22.10 → 8.75.
-//   PASS 2 (parents): whatever is attributed to the children is reduced from the parent's planned
-//   gross — gated on the arithmetic still describing the FAMILY TOTAL: the reduction only fires
-//   when (parent.grossQty − Σ children.grossQty) ≥ parent.qty − 0.75, which an already-reduced
-//   parent fails by construction, so the pass is idempotent by math (a _v52xGrossRebased stamp is
-//   added as belt-and-braces). grossOverride, when present, is reduced identically — it is the
-//   displayed planned figure. 26ZE133: 54.50 − 3.50 → 51.00; 26ZE119: 22.10 − 8.75 → 13.35.
+// ═══ v52Y (Ishan, 26 Aug) — OVERRIDE-AWARE FAMILY PLANNED-GROSS HEAL (v3) ═════════════════════
+// The v52X pass keyed on grossQty; the batches that "didn't heal" (26ZE119/119A, 26ZH077) carry the
+// family total in grossOverride — the "edited" badge — which both DISPLAYS and survives a grossQty
+// rebase. The effective planned figure P(o) = grossOverride (when set) else grossQty now drives both
+// passes. Pass 1 broadens per the v52X-forward invariant (a child's planned IS its qty): ANY family
+// child whose P exceeds its qty is rebased — this covers exact clones (22.10) and stale carries
+// (31.50) alike. Pass 2 keeps the arithmetic gate and adds a LABEL gate for families created outside
+// the split flow (parent qty never rebased, so the arithmetic gate can't see the family total):
+// fire when P(parent) covers the children PLUS the parent's own physically-labelled content.
 async function _v52vHealChildGrossClones() {
   const st = await getPlanningStateAsync();
   const orders = (st && st.orders) || [];
   const live = orders.filter(o => o && !o.deleted);
   const byId = {}, byBn = {};
   for (const o of live) { byId[o.id] = o; if (o.batchNumber) byBn[String(o.batchNumber).trim().toUpperCase()] = o; }
-  const famKids = {};   // parent order id -> [child orders]
+  const P = (o) => { const go = parseFloat(o.grossOverride); if (Number.isFinite(go) && go > 0) return go; return parseFloat(o.grossQty) || 0; };
+  const famKids = {};
   for (const o of live) {
     let par = null;
     if (o.woSplitParentId && byId[o.woSplitParentId]) par = byId[o.woSplitParentId];
@@ -5187,45 +5184,133 @@ async function _v52vHealChildGrossClones() {
     }
     if (par && par.id !== o.id) (famKids[par.id] = famKids[par.id] || []).push(o);
   }
+  // parent label sums (physical content) for the pass-2 label gate — one query for all parents
+  const parentBns = [...new Set(Object.keys(famKids).map(pid => String(byId[pid].batchNumber || '').trim()).filter(Boolean))];
+  const lblSum = {};
+  try {
+    if (parentBns.length) {
+      let lr;
+      if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) GROUP BY batch_number`, [parentBns])).rows;
+      else { const ph = parentBns.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) GROUP BY batch_number`).all(...parentBns); }
+      for (const r of (lr || [])) lblSum[String(r.batch_number).trim().toUpperCase()] = parseFloat(r.q) || 0;
+    }
+  } catch (e) { console.warn('[v52Y fam-gross] parent label-sum query failed (label gate disabled this run):', e.message); }
   let healedKids = 0, healedParents = 0;
-  // PASS 1 — child clone rebase
+  // PASS 1 — any family child whose effective planned exceeds its qty rebases to qty
   for (const pid of Object.keys(famKids)) {
-    const par = byId[pid];
-    const pg = parseFloat(par.grossQty) || 0;
     for (const o of famKids[pid]) {
-      const cg = parseFloat(o.grossQty) || 0, q = parseFloat(o.qty) || 0;
-      if (!(cg > 0 && pg > 0 && q > 0)) continue;
-      if (Math.abs(cg - pg) > 0.005) continue;          // not the clone signature
-      if (!(q < cg - 0.005)) continue;
-      const og = parseFloat(o.grossOverride);
+      const q = parseFloat(o.qty) || 0;
+      const pv = P(o);
+      if (!(q > 0 && pv > q + 0.75)) continue;
+      console.log(`[v52Y fam-gross] child ${o.batchNumber}: planned ${pv} -> ${q} (child planned is its qty; override cleared)`);
       o.grossQty = q;
-      if (Number.isFinite(og) && (Math.abs(og - cg) < 0.005 || Math.abs(og - (parseFloat(par.grossOverride) || -1)) < 0.005)) o.grossOverride = null;
+      o.grossOverride = null;
       o._localEditedAt = Date.now();
       healedKids++;
-      console.log(`[v52X fam-gross] child ${o.batchNumber}: planned gross ${cg} (parent clone) -> ${q}`);
     }
   }
-  // PASS 2 — parent reduction by attributed children
+  // PASS 2 — parent reduced by what the children carry
   for (const pid of Object.keys(famKids)) {
     const par = byId[pid];
-    if (par._v52xGrossRebased) continue;
-    const pg = parseFloat(par.grossQty) || 0;
-    if (!(pg > 0)) continue;
-    const kidsSum = famKids[pid].reduce((s, o) => s + Math.max(0, parseFloat(o.grossQty) || 0), 0);
+    if (par._v52xGrossRebased || par._v52yGrossRebased) continue;
+    const pp = P(par);
+    if (!(pp > 0)) continue;
+    const kidsSum = famKids[pid].reduce((s, o) => s + Math.max(0, P(o)), 0);
     if (!(kidsSum > 0)) continue;
-    const residual = +(pg - kidsSum).toFixed(3);
+    const residual = +(pp - kidsSum).toFixed(3);
     const pq = parseFloat(par.qty) || 0;
-    if (!(residual >= pq - 0.75)) continue;             // parent no longer holds the family total — already reduced
-    par.grossQty = Math.max(0, residual);
-    const po = parseFloat(par.grossOverride);
-    if (Number.isFinite(po) && po > 0) par.grossOverride = Math.max(0, +(po - kidsSum).toFixed(3));
-    par._v52xGrossRebased = true;
+    const pl = lblSum[String(par.batchNumber || '').trim().toUpperCase()] || 0;
+    const tol = Math.max(1.5, pp * 0.07);
+    const arithGate = residual >= pq - 0.75;
+    const labelGate = pl > 0 && pp >= kidsSum + pl - tol;
+    if (!arithGate && !labelGate) { continue; }
+    const go = parseFloat(par.grossOverride);
+    if (Number.isFinite(go) && go > 0) par.grossOverride = Math.max(0, +(go - kidsSum).toFixed(3));
+    const gq = parseFloat(par.grossQty) || 0;
+    if (gq > 0) par.grossQty = Math.max(0, +(gq - kidsSum).toFixed(3));
+    par._v52yGrossRebased = true;
     par._localEditedAt = Date.now();
     healedParents++;
-    console.log(`[v52X fam-gross] parent ${par.batchNumber}: planned gross ${pg} -> ${par.grossQty} (− ${kidsSum.toFixed(2)} attributed to ${famKids[pid].map(k => k.batchNumber).join(', ')})`);
+    console.log(`[v52Y fam-gross] parent ${par.batchNumber}: planned ${pp} -> ${Math.max(0, residual)} (− ${kidsSum.toFixed(2)} to ${famKids[pid].map(k => k.batchNumber).join(', ')}; gate=${arithGate ? 'arith' : 'labels'})`);
   }
   if (healedKids || healedParents) await savePlanningState(st);
-  console.log(`[v52X fam-gross] family planned-gross heal: ${healedKids} child(ren) + ${healedParents} parent(s) rebased`);
+  console.log(`[v52Y fam-gross] planning family heal: ${healedKids} child(ren) + ${healedParents} parent(s) rebased`);
+}
+
+// ═══ v52Y (Ishan, 26 Aug) — batch_gross_override FAMILY CONSERVATION ═══════════════════════════
+// THE layer every prior fix missed: a DPR-gross OVERRIDE (the OVR chip; batch_gross_override table)
+// supersedes the apportioned map in effectiveGross() on the server AND in _dprOvrGross on every
+// client — so 26ZH077's override of 53.6 kept displaying the FAMILY total no matter how correctly
+// the map was apportioned underneath. This one-shot repairs the override rows themselves: for each
+// family whose PARENT carries an override, the children's attributed gross (their own override if
+// set, else their physically-rebatched label sum) is subtracted from the parent's override. Gate —
+// the override must still describe the family total: it must cover the children PLUS the parent's
+// own labelled content (within max(1.5L, 7%)); an already-residual override fails this by
+// construction. Idempotence is belt-and-braces: a marker table records every healed batch with its
+// old and new value (also the audit trail), and the arithmetic gate itself refuses a second pass.
+// Ambiguous rows (gate fails both ways) are LOGGED and left untouched for review — never guessed.
+let _v52yOverrideHealDone = false;
+async function _v52yHealOverrideFamilies() {
+  const mk = `CREATE TABLE IF NOT EXISTS v52y_gross_override_heal (batch_number TEXT PRIMARY KEY, old_gross REAL, new_gross REAL, ts TEXT)`;
+  if (pgPool) await pgPool.query(mk); else db.prepare(mk).run();
+  const done = new Set();
+  {
+    const r = pgPool ? (await pgPool.query(`SELECT batch_number FROM v52y_gross_override_heal`)).rows
+                     : db.prepare(`SELECT batch_number FROM v52y_gross_override_heal`).all();
+    for (const x of (r || [])) done.add(String(x.batch_number).trim().toUpperCase());
+  }
+  const ov = {};
+  {
+    const r = pgPool ? (await pgPool.query(`SELECT batch_number, gross_lakhs FROM batch_gross_override`)).rows
+                     : db.prepare(`SELECT batch_number, gross_lakhs FROM batch_gross_override`).all();
+    for (const x of (r || [])) ov[String(x.batch_number).trim().toUpperCase()] = parseFloat(x.gross_lakhs) || 0;
+  }
+  const st = await getPlanningStateAsync();
+  const live = ((st && st.orders) || []).filter(o => o && !o.deleted && o.batchNumber);
+  const byBn = {}; for (const o of live) byBn[String(o.batchNumber).trim().toUpperCase()] = o;
+  const kidsOf = {};
+  for (const o of live) {
+    const bn = String(o.batchNumber).trim().toUpperCase();
+    let root = o.woSplitFromBatch ? String(o.woSplitFromBatch).trim().toUpperCase() : '';
+    if (!root) { const m = /^(\d+[A-Za-z]+\d+)-?([A-Za-z])$/.exec(bn); if (m) root = m[1]; }
+    if (root && byBn[root] && root !== bn) (kidsOf[root] = kidsOf[root] || []).push(bn);
+  }
+  const parents = Object.keys(kidsOf).filter(p => ov[p] > 0 && !done.has(p));
+  if (!parents.length) { console.log('[v52Y ovr-fam] no family parents with un-healed gross overrides'); return; }
+  const allBns = [...new Set(parents.concat(...parents.map(p => kidsOf[p])))];
+  const lbl = {};
+  {
+    let lr;
+    if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) GROUP BY batch_number`, [allBns])).rows;
+    else { const ph = allBns.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) GROUP BY batch_number`).all(...allBns); }
+    for (const r of (lr || [])) lbl[String(r.batch_number).trim().toUpperCase()] = parseFloat(r.q) || 0;
+  }
+  let healed = 0, ambiguous = 0;
+  for (const p of parents) {
+    const po = ov[p];
+    const attr = kidsOf[p].map(k => ({ k, v: ov[k] > 0 ? ov[k] : (lbl[k] || 0) })).filter(x => x.v > 0);
+    const sum = attr.reduce((s, x) => s + x.v, 0);
+    if (!(sum > 0)) { console.log(`[v52Y ovr-fam] ${p}: children carry no attributable gross — skipped`); continue; }
+    const pl = lbl[p] || 0;
+    const tol = Math.max(1.5, po * 0.07);
+    if (!(pl > 0 && po >= sum + pl - tol)) {
+      ambiguous++;
+      console.log(`[v52Y ovr-fam] ${p}: override ${po} vs children ${sum.toFixed(2)} + own labels ${pl.toFixed(2)} — not the family-total signature, LEFT FOR REVIEW`);
+      continue;
+    }
+    const nv = Math.max(0, +(po - sum).toFixed(3));
+    if (pgPool) {
+      await pgPool.query(`UPDATE batch_gross_override SET gross_lakhs=$1, reason=COALESCE(reason,'') || ' [v52Y: family residual; was ' || $2 || ']', updated_by='v52Y-heal', updated_at=NOW()::text WHERE batch_number=$3`, [nv, String(po), p]);
+      await pgPool.query(`INSERT INTO v52y_gross_override_heal (batch_number, old_gross, new_gross, ts) VALUES ($1,$2,$3,$4) ON CONFLICT (batch_number) DO NOTHING`, [p, po, nv, new Date().toISOString()]);
+    } else {
+      db.prepare(`UPDATE batch_gross_override SET gross_lakhs=?, reason=COALESCE(reason,'') || ' [v52Y: family residual; was ' || ? || ']', updated_by='v52Y-heal', updated_at=datetime('now') WHERE batch_number=?`).run(nv, String(po), p);
+      db.prepare(`INSERT OR IGNORE INTO v52y_gross_override_heal (batch_number, old_gross, new_gross, ts) VALUES (?,?,?,?)`).run(p, po, nv, new Date().toISOString());
+    }
+    healed++;
+    console.log(`[v52Y ovr-fam] ${p}: gross override ${po} -> ${nv} (− ${sum.toFixed(2)} attributed to ${attr.map(x => `${x.k} (${x.v.toFixed(2)}L)`).join(', ')})`);
+  }
+  if (healed) await loadGrossOverrides();   // refresh the in-memory tier-1 cache immediately
+  console.log(`[v52Y ovr-fam] override family heal: ${healed} parent override(s) rebased, ${ambiguous} left for review`);
 }
 
 async function _doRefreshSapInvoices() {
@@ -5243,6 +5328,8 @@ async function _doRefreshSapInvoices() {
   // matter were in OUR OWN payload_json all along (stored by the original enriched ingestion —
   // exactly what the modal renders). This backfill recomputes every multi-batch invoice's
   // total_boxes and total_qty_lakhs from its stored lines, once per boot, no SAP call, idempotent.
+  // v52Y: heal execution must NEVER be ambiguous again — one status line every poll, unconditionally.
+  console.log(`[v52Y heals] mb-disp=${_v52vMbDispHealDone ? 'done' : 'pending'}, planning-fam=${_v52vChildGrossHealDone ? 'done' : 'pending'}, override-fam=${_v52yOverrideHealDone ? 'done' : 'pending'}`);
   if (!_v52sTotalsBackfillDone) {
     try { await _v52sBackfillMultiBatchTotals(); _v52sTotalsBackfillDone = true; }
     catch (e) { console.warn('[v52S] multi-batch totals backfill failed (will retry next poll):', e.message); }
@@ -5256,6 +5343,10 @@ async function _doRefreshSapInvoices() {
   if (!_v52vChildGrossHealDone) {
     try { await _v52vHealChildGrossClones(); _v52vChildGrossHealDone = true; }
     catch (e) { console.warn('[v52V] child planned-gross heal failed (will retry next poll):', e.message); }
+  }
+  if (!_v52yOverrideHealDone) {
+    try { await _v52yHealOverrideFamilies(); _v52yOverrideHealDone = true; }
+    catch (e) { console.warn('[v52Y] override family heal failed (will retry next poll):', e.message); }
   }
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
