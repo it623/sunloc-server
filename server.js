@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52Y';
+const APP_BUILD = 'v52Z';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -5061,101 +5061,94 @@ async function _v52sBackfillMultiBatchTotals() {
   console.log(`[v52S totals] multi-batch invoice totals backfill: ${fixed} row(s) corrected of ${(rows || []).length} examined`);
 }
 
-// ═══ v52V (Ishan, 25 Aug — 26ZB086 / 26ZG135-A, invoice 1838) ══════════════════════════════════
-// LEGACY MULTI-BATCH DISPATCH RECORDS. Invoices dispatched BEFORE the v46H per-batch split wrote a
-// SINGLE tracking_dispatch_records row whose batch_number is the invoice's comma-joined string
-// ("26ZB086, 26ZG135-A"). Every consumer — Report E's DISPATCH column, /api/tracking/dispatch-actuals,
-// the Production Plan Dispatched column, the W/O recon — matches batch_number EXACTLY, so those
-// records' quantity is attributed to NO batch anywhere: invoice 1838's 7.70 L was invisible on all
-// sites while the invoice itself showed dispatched. This one-shot heal splits each such record into
-// per-batch records using invoice_batch_alloc (the v48R attribution engine — L1 line-batch UDFs,
-// L2 single-batch, L3 unique-PC), which is the same authority the Expected display and the totals
-// backfill already trust. Rules: the FIRST split record reuses the original id (invoice →
-// dispatch_record_id linkage survives); Σ allocated qty must reconcile to the record's own qty
-// within 0.51 L or 5% (never invent quantity — an unresolvable record is left untouched and
-// logged); scanned_labels_json rides on the first record only; dispatch actuals are recomputed for
-// every batch involved INCLUDING the old joined key (zeroing its stale row). Idempotent: healed
-// records no longer contain a comma, so a second boot finds nothing.
+// ═══ v52Z (Ishan, 26 Aug — invoice 1838) — ALLOC-DRIVEN DISPATCH-RECORD REBUILD ═══════════════
+// The v52V heal hunted comma-joined batch keys; IT's SELECT proved there are ZERO such records —
+// the legacy record's key has some other shape, and guessing shapes is what kept this open. The
+// finder is now shape-agnostic: for every DISPATCHED invoice whose v48R allocation spans TWO OR
+// MORE attributed batches (the allocation is the authority — for 1838 it is exactly 3.00 L →
+// 26ZB086 and 4.70 L → 26ZG135-A), the invoice's existing dispatch record(s) are compared to that
+// breakdown. Matching records are left alone (idempotence); mismatched or missing ones are
+// REBUILT from the allocation — old records deleted by id, one record inserted per batch (first
+// reuses the original id so invoices_received.dispatch_record_id stays valid), actuals recomputed
+// for every batch involved including the old keys. PENDING invoices (no dispatch_record_id — e.g.
+// Desh's 9060/9068) are never touched: this heal only re-attributes dispatches that already
+// happened. Quantity is never invented: Σ alloc must reconcile to the invoice/record total within
+// max(0.51 L, 5%), else the invoice is logged and left for review.
 let _v52vMbDispHealDone = false;
 async function _v52vSplitLegacyMbDispRecs() {
-  const sel = `SELECT * FROM tracking_dispatch_records WHERE batch_number LIKE '%,%'`;
-  const recs = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
-  let healed = 0, skipped = 0;
-  for (const rec of (recs || [])) {
+  // dispatched multi-batch invoices with ≥2 attributed alloc batches
+  const invSel = `SELECT ir.id, ir.sap_doc_num, ir.batch_number, ir.dispatch_record_id, ir.customer
+                  FROM invoices_received ir
+                  WHERE ir.dispatch_record_id IS NOT NULL AND ir.dispatch_record_id <> ''
+                    AND (SELECT COUNT(DISTINCT a.batch_number) FROM invoice_batch_alloc a
+                         WHERE a.invoice_id = ir.id AND a.status = 'attributed'
+                           AND a.batch_number IS NOT NULL AND a.batch_number <> '') >= 2`;
+  const invs = pgPool ? (await pgPool.query(invSel)).rows : db.prepare(invSel).all();
+  let rebuilt = 0, matched = 0, skipped = 0;
+  for (const inv of (invs || [])) {
     try {
-      // Resolve the owning invoice: primary by dispatch_record_id, fallback by SO + joined batch key.
-      let inv = null;
-      if (pgPool) {
-        let r = await pgPool.query(`SELECT id, sap_doc_num, batch_number FROM invoices_received WHERE dispatch_record_id=$1`, [rec.id]);
-        inv = r.rows[0] || null;
-        if (!inv && rec.invoice_no) {
-          r = await pgPool.query(`SELECT id, sap_doc_num, batch_number FROM invoices_received WHERE sap_doc_num=$1 AND batch_number=$2 LIMIT 1`, [String(rec.invoice_no), rec.batch_number]);
-          inv = r.rows[0] || null;
-        }
-      } else {
-        inv = db.prepare(`SELECT id, sap_doc_num, batch_number FROM invoices_received WHERE dispatch_record_id=?`).get(rec.id) || null;
-        if (!inv && rec.invoice_no) inv = db.prepare(`SELECT id, sap_doc_num, batch_number FROM invoices_received WHERE sap_doc_num=? AND batch_number=? LIMIT 1`).get(String(rec.invoice_no), rec.batch_number) || null;
-      }
-      if (!inv) { skipped++; console.warn(`[v52V mb-disp] ${rec.id} (${rec.batch_number}): owning invoice not found — left untouched`); continue; }
-      // Per-batch allocation from the v48R engine, aggregated per batch (an invoice can carry
-      // several lines of one batch).
       const aSel = `SELECT batch_number, qty_lakhs, boxes FROM invoice_batch_alloc WHERE invoice_id=${pgPool ? '$1' : '?'} AND status='attributed' AND batch_number IS NOT NULL AND batch_number <> ''`;
       const allocRows = pgPool ? (await pgPool.query(aSel, [inv.id])).rows : db.prepare(aSel).all(inv.id);
       const perBatch = {};
       for (const a of (allocRows || [])) {
-        const b = String(a.batch_number).trim().toUpperCase();
+        const b = String(a.batch_number).trim();
         if (!b) continue;
         perBatch[b] = perBatch[b] || { qty: 0, boxes: 0 };
         perBatch[b].qty += parseFloat(a.qty_lakhs) || 0;
         perBatch[b].boxes += parseInt(a.boxes, 10) || 0;
       }
       const batches = Object.keys(perBatch);
-      const sumQty = batches.reduce((s, b) => s + perBatch[b].qty, 0);
-      const recQty = parseFloat(rec.qty) || 0;
-      if (batches.length < 2 || !(sumQty > 0) || (recQty > 0 && Math.abs(sumQty - recQty) > Math.max(0.51, recQty * 0.05))) {
+      const allocSum = batches.reduce((s, b) => s + perBatch[b].qty, 0);
+      if (batches.length < 2 || !(allocSum > 0)) continue;
+      // the invoice's existing dispatch records: by linkage id OR by invoice number
+      const rSel = `SELECT * FROM tracking_dispatch_records WHERE id=${pgPool ? '$1' : '?'} OR invoice_no=${pgPool ? '$2' : '?'}`;
+      const recs = pgPool ? (await pgPool.query(rSel, [inv.dispatch_record_id, String(inv.sap_doc_num || '')])).rows
+                          : db.prepare(rSel).all(inv.dispatch_record_id, String(inv.sap_doc_num || ''));
+      if (!recs || !recs.length) { skipped++; console.log(`[v52Z disp-alloc] inv ${inv.sap_doc_num}: dispatch_record_id ${inv.dispatch_record_id} has NO record rows — left for review`); continue; }
+      // already correct? one record per alloc batch with matching qty
+      const byBn = {}; for (const r of recs) { const b = String(r.batch_number || '').trim(); byBn[b] = (byBn[b] || 0) + (parseFloat(r.qty) || 0); }
+      const alreadyOk = batches.length === Object.keys(byBn).length && batches.every(b => Math.abs((byBn[b] || 0) - perBatch[b].qty) <= 0.05);
+      if (alreadyOk) { matched++; continue; }
+      const recSum = recs.reduce((s, r) => s + (parseFloat(r.qty) || 0), 0);
+      if (recSum > 0 && Math.abs(recSum - allocSum) > Math.max(0.51, allocSum * 0.05)) {
         skipped++;
-        console.warn(`[v52V mb-disp] ${rec.id} (${rec.batch_number}): alloc ${batches.length} batch(es), Σ${sumQty.toFixed(2)}L vs record ${recQty}L — cannot reconcile, left untouched`);
+        console.log(`[v52Z disp-alloc] inv ${inv.sap_doc_num}: record total ${recSum.toFixed(2)}L vs alloc ${allocSum.toFixed(2)}L across ${batches.join(', ')} — cannot reconcile, left for review`);
         continue;
       }
-      // Replace: first batch keeps the original record id.
-      if (pgPool) await pgPool.query(`DELETE FROM tracking_dispatch_records WHERE id=$1`, [rec.id]);
-      else db.prepare(`DELETE FROM tracking_dispatch_records WHERE id=?`).run(rec.id);
+      const oldKeys = [...new Set(recs.map(r => String(r.batch_number || '').trim()).filter(Boolean))];
+      const proto = recs[0];
+      for (const r of recs) {
+        if (pgPool) await pgPool.query(`DELETE FROM tracking_dispatch_records WHERE id=$1`, [r.id]);
+        else db.prepare(`DELETE FROM tracking_dispatch_records WHERE id=?`).run(r.id);
+      }
       for (let i = 0; i < batches.length; i++) {
         const b = batches[i];
-        const rid = i === 0 ? rec.id : ('disprec_' + crypto.randomBytes(6).toString('hex'));
-        const sl = i === 0 ? (rec.scanned_labels_json || '[]') : '[]';
+        const rid = i === 0 ? proto.id : ('disprec_' + crypto.randomBytes(6).toString('hex'));
+        const sl = i === 0 ? (proto.scanned_labels_json || '[]') : '[]';
         const q = Math.round(perBatch[b].qty * 100) / 100, bx = perBatch[b].boxes;
-        const rmk = ((rec.remarks || '') + ` [v52V: split from legacy multi-batch record ${rec.id}]`).trim();
+        const rmk = ((proto.remarks || '') + ` [v52Z: rebuilt from invoice ${inv.sap_doc_num} allocation]`).trim();
         if (pgPool) {
           await pgPool.query(
             `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by", scanned_labels_json)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-            [rid, b, rec.customer || '', q, bx, rec.vehicle_no || '', rec.invoice_no || '', rmk, rec.ts, rec.by || 'v52V-heal', sl]);
+            [rid, b, proto.customer || inv.customer || '', q, bx, proto.vehicle_no || '', String(inv.sap_doc_num || proto.invoice_no || ''), rmk, proto.ts, proto.by || 'v52Z-heal', sl]);
         } else {
           db.prepare(
             `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by, scanned_labels_json)
              VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-          ).run(rid, b, rec.customer || '', q, bx, rec.vehicle_no || '', rec.invoice_no || '', rmk, rec.ts, rec.by || 'v52V-heal', sl);
+          ).run(rid, b, proto.customer || inv.customer || '', q, bx, proto.vehicle_no || '', String(inv.sap_doc_num || proto.invoice_no || ''), rmk, proto.ts, proto.by || 'v52Z-heal', sl);
         }
       }
       try {
-        for (const b of batches) await _recomputeDispatchActuals(b, rec.vehicle_no || null, rec.invoice_no || null);
-        await _recomputeDispatchActuals(rec.batch_number, null, null);   // zero the stale joined-key row
-      } catch (e) { console.warn('[v52V mb-disp] actuals recompute:', e.message); }
-      healed++;
-      console.log(`[v52V mb-disp] ${rec.id}: split ${recQty}L across ${batches.map(b => `${b} (${perBatch[b].qty.toFixed(2)}L)`).join(', ')}`);
-    } catch (e) { skipped++; console.warn(`[v52V mb-disp] ${rec.id}: heal failed — left untouched:`, e.message); }
+        for (const b of [...new Set(batches.concat(oldKeys))]) await _recomputeDispatchActuals(b, proto.vehicle_no || null, String(inv.sap_doc_num || '') || null);
+      } catch (e) { console.warn('[v52Z disp-alloc] actuals recompute:', e.message); }
+      rebuilt++;
+      console.log(`[v52Z disp-alloc] inv ${inv.sap_doc_num}: record(s) on [${oldKeys.join(', ') || '?'}] rebuilt as ${batches.map(b => `${b} (${perBatch[b].qty.toFixed(2)}L)`).join(', ')}`);
+    } catch (e) { skipped++; console.warn(`[v52Z disp-alloc] inv ${inv.sap_doc_num}: heal failed — left untouched:`, e.message); }
   }
-  console.log(`[v52V mb-disp] legacy multi-batch dispatch records: ${healed} split, ${skipped} left of ${(recs || []).length} found`);
+  console.log(`[v52Z disp-alloc] alloc-driven dispatch rebuild: ${rebuilt} rebuilt, ${matched} already correct, ${skipped} left for review of ${(invs || []).length} multi-batch dispatched invoice(s)`);
 }
 
-// v52V heal 2: existing split children created before this build still carry the PARENT's grossQty
-// (cloned via {...parent}). Evidence gate keeps this surgical: the child must have been created by
-// the split flow (woSplitParentId), the parent must still exist live, and the child's grossQty must
-// EQUAL the parent's current grossQty (the clone signature) while exceeding the child's own qty —
-// 26ZG135-A (36.75 vs qty 5) matches; 26ZG152A (12.10 vs parent 20.80) is untouched. Healed rows get
-// grossQty = qty, a cleared grossOverride when it carried the same clone, and a fresh _localEditedAt
-// so the blob field-diff protection keeps the repair against stale client saves.
 let _v52vChildGrossHealDone = false;
 // ═══ v52Y (Ishan, 26 Aug) — OVERRIDE-AWARE FAMILY PLANNED-GROSS HEAL (v3) ═════════════════════
 // The v52X pass keyed on grossQty; the batches that "didn't heal" (26ZE119/119A, 26ZH077) carry the
@@ -5330,6 +5323,16 @@ async function _doRefreshSapInvoices() {
   // total_boxes and total_qty_lakhs from its stored lines, once per boot, no SAP call, idempotent.
   // v52Y: heal execution must NEVER be ambiguous again — one status line every poll, unconditionally.
   console.log(`[v52Y heals] mb-disp=${_v52vMbDispHealDone ? 'done' : 'pending'}, planning-fam=${_v52vChildGrossHealDone ? 'done' : 'pending'}, override-fam=${_v52yOverrideHealDone ? 'done' : 'pending'}`);
+  // v52Z: replay the persistent heal audit once per boot, so past results are visible in ANY log
+  // window — the last two rounds of detail lines fell before the captured windows.
+  if (!global._v52zAuditReplayed) {
+    global._v52zAuditReplayed = true;
+    try {
+      const r = pgPool ? (await pgPool.query(`SELECT batch_number, old_gross, new_gross, ts FROM v52y_gross_override_heal ORDER BY ts`)).rows
+                       : db.prepare(`SELECT batch_number, old_gross, new_gross, ts FROM v52y_gross_override_heal ORDER BY ts`).all();
+      console.log(`[v52Z audit] override-heal history: ${(r || []).length} row(s)` + ((r || []).length ? ' — ' + r.map(x => `${x.batch_number} ${x.old_gross}→${x.new_gross}`).join('; ') : ''));
+    } catch (e) { console.log('[v52Z audit] override-heal history unavailable:', e.message); }
+  }
   if (!_v52sTotalsBackfillDone) {
     try { await _v52sBackfillMultiBatchTotals(); _v52sTotalsBackfillDone = true; }
     catch (e) { console.warn('[v52S] multi-batch totals backfill failed (will retry next poll):', e.message); }
