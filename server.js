@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v52U';
+const APP_BUILD = 'v52W';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -2196,12 +2196,29 @@ function _v49gDprClosedAtFor(ord) {
   if (ord.id && _v49gDprClosedAt.has('id:' + ord.id)) return _v49gDprClosedAt.get('id:' + ord.id);
   if (ord.batchNumber && _v49gDprClosedAt.has('batch:' + String(ord.batchNumber).trim().toLowerCase()))
     return _v49gDprClosedAt.get('batch:' + String(ord.batchNumber).trim().toLowerCase());
+  const _root52w = _v52wDprFamilyRoot(ord);   // v52W: a family member closes at the ROOT's close moment
+  if (_root52w && _v49gDprClosedAt.has('batch:' + _root52w)) return _v49gDprClosedAt.get('batch:' + _root52w);
   return null;
+}
+// v52W (Ishan, 26 Aug — 26ZE133A stuck "DPR Open"): a split CHILD has no DPR batch of its own —
+// DPR tracks the physical batch and knows nothing of planning's parent/child carve — so the child
+// could NEVER be DPR-closed here: the chip stayed "⏳ DPR Open" forever, the v49G close gate refused
+// the planner, and the v49K auto-promotion never fired. The family ROOT's closure now closes the
+// whole family: woSplitFromBatch when the split flow stamped it, else the suffix shape
+// <NN letters NN><letter> (both 26ZE133A and 26ZG135-A spellings). Root shape is required, so a
+// plain batch ending in a digit can never false-match.
+function _v52wDprFamilyRoot(ord) {
+  if (!ord) return null;
+  if (ord.woSplitFromBatch) return String(ord.woSplitFromBatch).trim().toLowerCase();
+  const m = /^(\d+[A-Za-z]+\d+)-?([A-Za-z])$/.exec(String(ord.batchNumber || '').trim());
+  return m ? m[1].toLowerCase() : null;
 }
 function _v49gIsDprClosed(ord) {
   if (!_v49gDprClosedSet) return false;
   if (ord.id && _v49gDprClosedSet.has('id:' + ord.id)) return true;
   if (ord.batchNumber && _v49gDprClosedSet.has('batch:' + String(ord.batchNumber).trim().toLowerCase())) return true;
+  const _root52w = _v52wDprFamilyRoot(ord);
+  if (_root52w && _v49gDprClosedSet.has('batch:' + _root52w)) return true;   // v52W: family closure
   return false;
 }
 // Does the incoming client order assert an explicit CLOSE? (planner ticked/closed it)
@@ -5044,6 +5061,126 @@ async function _v52sBackfillMultiBatchTotals() {
   console.log(`[v52S totals] multi-batch invoice totals backfill: ${fixed} row(s) corrected of ${(rows || []).length} examined`);
 }
 
+// ═══ v52V (Ishan, 25 Aug — 26ZB086 / 26ZG135-A, invoice 1838) ══════════════════════════════════
+// LEGACY MULTI-BATCH DISPATCH RECORDS. Invoices dispatched BEFORE the v46H per-batch split wrote a
+// SINGLE tracking_dispatch_records row whose batch_number is the invoice's comma-joined string
+// ("26ZB086, 26ZG135-A"). Every consumer — Report E's DISPATCH column, /api/tracking/dispatch-actuals,
+// the Production Plan Dispatched column, the W/O recon — matches batch_number EXACTLY, so those
+// records' quantity is attributed to NO batch anywhere: invoice 1838's 7.70 L was invisible on all
+// sites while the invoice itself showed dispatched. This one-shot heal splits each such record into
+// per-batch records using invoice_batch_alloc (the v48R attribution engine — L1 line-batch UDFs,
+// L2 single-batch, L3 unique-PC), which is the same authority the Expected display and the totals
+// backfill already trust. Rules: the FIRST split record reuses the original id (invoice →
+// dispatch_record_id linkage survives); Σ allocated qty must reconcile to the record's own qty
+// within 0.51 L or 5% (never invent quantity — an unresolvable record is left untouched and
+// logged); scanned_labels_json rides on the first record only; dispatch actuals are recomputed for
+// every batch involved INCLUDING the old joined key (zeroing its stale row). Idempotent: healed
+// records no longer contain a comma, so a second boot finds nothing.
+let _v52vMbDispHealDone = false;
+async function _v52vSplitLegacyMbDispRecs() {
+  const sel = `SELECT * FROM tracking_dispatch_records WHERE batch_number LIKE '%,%'`;
+  const recs = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+  let healed = 0, skipped = 0;
+  for (const rec of (recs || [])) {
+    try {
+      // Resolve the owning invoice: primary by dispatch_record_id, fallback by SO + joined batch key.
+      let inv = null;
+      if (pgPool) {
+        let r = await pgPool.query(`SELECT id, sap_doc_num, batch_number FROM invoices_received WHERE dispatch_record_id=$1`, [rec.id]);
+        inv = r.rows[0] || null;
+        if (!inv && rec.invoice_no) {
+          r = await pgPool.query(`SELECT id, sap_doc_num, batch_number FROM invoices_received WHERE sap_doc_num=$1 AND batch_number=$2 LIMIT 1`, [String(rec.invoice_no), rec.batch_number]);
+          inv = r.rows[0] || null;
+        }
+      } else {
+        inv = db.prepare(`SELECT id, sap_doc_num, batch_number FROM invoices_received WHERE dispatch_record_id=?`).get(rec.id) || null;
+        if (!inv && rec.invoice_no) inv = db.prepare(`SELECT id, sap_doc_num, batch_number FROM invoices_received WHERE sap_doc_num=? AND batch_number=? LIMIT 1`).get(String(rec.invoice_no), rec.batch_number) || null;
+      }
+      if (!inv) { skipped++; console.warn(`[v52V mb-disp] ${rec.id} (${rec.batch_number}): owning invoice not found — left untouched`); continue; }
+      // Per-batch allocation from the v48R engine, aggregated per batch (an invoice can carry
+      // several lines of one batch).
+      const aSel = `SELECT batch_number, qty_lakhs, boxes FROM invoice_batch_alloc WHERE invoice_id=${pgPool ? '$1' : '?'} AND status='attributed' AND batch_number IS NOT NULL AND batch_number <> ''`;
+      const allocRows = pgPool ? (await pgPool.query(aSel, [inv.id])).rows : db.prepare(aSel).all(inv.id);
+      const perBatch = {};
+      for (const a of (allocRows || [])) {
+        const b = String(a.batch_number).trim().toUpperCase();
+        if (!b) continue;
+        perBatch[b] = perBatch[b] || { qty: 0, boxes: 0 };
+        perBatch[b].qty += parseFloat(a.qty_lakhs) || 0;
+        perBatch[b].boxes += parseInt(a.boxes, 10) || 0;
+      }
+      const batches = Object.keys(perBatch);
+      const sumQty = batches.reduce((s, b) => s + perBatch[b].qty, 0);
+      const recQty = parseFloat(rec.qty) || 0;
+      if (batches.length < 2 || !(sumQty > 0) || (recQty > 0 && Math.abs(sumQty - recQty) > Math.max(0.51, recQty * 0.05))) {
+        skipped++;
+        console.warn(`[v52V mb-disp] ${rec.id} (${rec.batch_number}): alloc ${batches.length} batch(es), Σ${sumQty.toFixed(2)}L vs record ${recQty}L — cannot reconcile, left untouched`);
+        continue;
+      }
+      // Replace: first batch keeps the original record id.
+      if (pgPool) await pgPool.query(`DELETE FROM tracking_dispatch_records WHERE id=$1`, [rec.id]);
+      else db.prepare(`DELETE FROM tracking_dispatch_records WHERE id=?`).run(rec.id);
+      for (let i = 0; i < batches.length; i++) {
+        const b = batches[i];
+        const rid = i === 0 ? rec.id : ('disprec_' + crypto.randomBytes(6).toString('hex'));
+        const sl = i === 0 ? (rec.scanned_labels_json || '[]') : '[]';
+        const q = Math.round(perBatch[b].qty * 100) / 100, bx = perBatch[b].boxes;
+        const rmk = ((rec.remarks || '') + ` [v52V: split from legacy multi-batch record ${rec.id}]`).trim();
+        if (pgPool) {
+          await pgPool.query(
+            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by", scanned_labels_json)
+             VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+            [rid, b, rec.customer || '', q, bx, rec.vehicle_no || '', rec.invoice_no || '', rmk, rec.ts, rec.by || 'v52V-heal', sl]);
+        } else {
+          db.prepare(
+            `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by, scanned_labels_json)
+             VALUES (?,?,?,?,?,?,?,?,?,?,?)`
+          ).run(rid, b, rec.customer || '', q, bx, rec.vehicle_no || '', rec.invoice_no || '', rmk, rec.ts, rec.by || 'v52V-heal', sl);
+        }
+      }
+      try {
+        for (const b of batches) await _recomputeDispatchActuals(b, rec.vehicle_no || null, rec.invoice_no || null);
+        await _recomputeDispatchActuals(rec.batch_number, null, null);   // zero the stale joined-key row
+      } catch (e) { console.warn('[v52V mb-disp] actuals recompute:', e.message); }
+      healed++;
+      console.log(`[v52V mb-disp] ${rec.id}: split ${recQty}L across ${batches.map(b => `${b} (${perBatch[b].qty.toFixed(2)}L)`).join(', ')}`);
+    } catch (e) { skipped++; console.warn(`[v52V mb-disp] ${rec.id}: heal failed — left untouched:`, e.message); }
+  }
+  console.log(`[v52V mb-disp] legacy multi-batch dispatch records: ${healed} split, ${skipped} left of ${(recs || []).length} found`);
+}
+
+// v52V heal 2: existing split children created before this build still carry the PARENT's grossQty
+// (cloned via {...parent}). Evidence gate keeps this surgical: the child must have been created by
+// the split flow (woSplitParentId), the parent must still exist live, and the child's grossQty must
+// EQUAL the parent's current grossQty (the clone signature) while exceeding the child's own qty —
+// 26ZG135-A (36.75 vs qty 5) matches; 26ZG152A (12.10 vs parent 20.80) is untouched. Healed rows get
+// grossQty = qty, a cleared grossOverride when it carried the same clone, and a fresh _localEditedAt
+// so the blob field-diff protection keeps the repair against stale client saves.
+let _v52vChildGrossHealDone = false;
+async function _v52vHealChildGrossClones() {
+  const st = await getPlanningStateAsync();
+  const orders = (st && st.orders) || [];
+  const byId = {}; for (const o of orders) if (o && !o.deleted) byId[o.id] = o;
+  let healed = 0;
+  for (const o of orders) {
+    if (!o || o.deleted || !o.woSplitParentId) continue;
+    const par = byId[o.woSplitParentId];
+    if (!par) continue;
+    const cg = parseFloat(o.grossQty) || 0, pg = parseFloat(par.grossQty) || 0, q = parseFloat(o.qty) || 0;
+    if (!(cg > 0 && pg > 0 && q > 0)) continue;
+    if (Math.abs(cg - pg) > 0.005) continue;          // not the clone signature
+    if (!(q < cg - 0.005)) continue;                   // nothing to rebase
+    const og = parseFloat(o.grossOverride);
+    o.grossQty = q;
+    if (Number.isFinite(og) && (Math.abs(og - cg) < 0.005 || Math.abs(og - (parseFloat(par.grossOverride) || -1)) < 0.005)) o.grossOverride = null;
+    o._localEditedAt = Date.now();
+    healed++;
+    console.log(`[v52V child-gross] ${o.batchNumber}: planned gross ${cg} (parent clone) -> ${q}`);
+  }
+  if (healed) await savePlanningState(st);
+  console.log(`[v52V child-gross] split-child planned-gross heal: ${healed} order(s) rebased`);
+}
+
 async function _doRefreshSapInvoices() {
   // v45I #6: one-shot repopulate of blank batches from stored payloads (fixes invoices pulled before
   // the line-level extractor existed). Guarded so it runs at most once per process, on the poller.
@@ -5062,6 +5199,16 @@ async function _doRefreshSapInvoices() {
   if (!_v52sTotalsBackfillDone) {
     try { await _v52sBackfillMultiBatchTotals(); _v52sTotalsBackfillDone = true; }
     catch (e) { console.warn('[v52S] multi-batch totals backfill failed (will retry next poll):', e.message); }
+  }
+  // v52V (Ishan, 25 Aug): split legacy comma-joined multi-batch dispatch records per batch — see
+  // _v52vSplitLegacyMbDispRecs. Runs after the totals backfill so allocations are already settled.
+  if (!_v52vMbDispHealDone) {
+    try { await _v52vSplitLegacyMbDispRecs(); _v52vMbDispHealDone = true; }
+    catch (e) { console.warn('[v52V] multi-batch dispatch-record heal failed (will retry next poll):', e.message); }
+  }
+  if (!_v52vChildGrossHealDone) {
+    try { await _v52vHealChildGrossClones(); _v52vChildGrossHealDone = true; }
+    catch (e) { console.warn('[v52V] child planned-gross heal failed (will retry next poll):', e.message); }
   }
   const cfg = await sap.getConfig();
   const lookback = (cfg && cfg.invoice_poll_lookback_days) || 7;
@@ -7783,7 +7930,58 @@ async function _v46k_loadSplitFamilies() {
     if (!(boxed > 0)) continue;
     families.push({ parentBatch, children: [{ batch: childBatch, boxed }] });
   }
-  return families;
+
+  // ═══ v52W (Ishan, 26 Aug — 26ZG152A 0.75L phantom, 26ZH077/26ZH077A double-count) ═════════════
+  // (3) SUFFIX-INFERRED families. Children exist in planning that no wo_split_request or
+  // recustomer_log row describes (created via older/manual paths) — those families were invisible
+  // here, so NO apportionment ran: the parent kept its full DPR gross AND the child's own actualProd
+  // was injected on top, double-counting the family and showing the child's entire content as
+  // phantom unscanned WIP. Any live order whose batch is <PARENT><letter> (with or without hyphen,
+  // parent shape NN<letters>NN) where the parent is itself a live order forms an edge, unless tiers
+  // (1)/(2) already carry it. Inferred children's share comes ONLY from their physically rebatched
+  // labels (below) — never a guess — and the applier skips an inferred child that has its own DPR
+  // production (it is then not carved from the parent).
+  try {
+    const _covered = new Set();
+    for (const f of families) for (const c of f.children) _covered.add(String(f.parentBatch).trim().toUpperCase() + '|' + String(c.batch).trim().toUpperCase());
+    const _liveByBn = {};
+    for (const o of orders) { if (o && !o.deleted && o.batchNumber) _liveByBn[String(o.batchNumber).trim().toUpperCase()] = o; }
+    const _inferred = {};   // parentBatch -> [{batch, boxed:0}]
+    for (const bn of Object.keys(_liveByBn)) {
+      const m = /^(\d+[A-Za-z]+\d+)-?([A-Za-z])$/.exec(bn);
+      if (!m) continue;
+      const root = m[1].toUpperCase();
+      if (!_liveByBn[root]) continue;
+      if (_covered.has(root + '|' + bn)) continue;
+      (_inferred[root] = _inferred[root] || []).push({ batch: bn, boxed: 0 });
+    }
+    for (const root of Object.keys(_inferred)) families.push({ parentBatch: root, children: _inferred[root], inferred: true });
+  } catch (e) { console.warn('[v52W] suffix-inferred family scan failed:', e.message); }
+
+  // v52W: PHYSICAL LABEL SUMS for every child, every tier. The split rebatches labels box-by-box and
+  // per-label qty honours a PARTIAL last box; `boxes × pack size` rounds that partial up (26ZG152A:
+  // 9 × 1.25 = 11.25 against 10.50 L of actual labels — a permanent 0.75 L phantom in Unscanned WIP,
+  // with the parent under-counted by the same). Wherever the child's labels sum to a positive
+  // quantity, that sum IS the child's share; the prior boxes×pack figure remains only as the
+  // fallback for children whose labels are not present. Inferred children have no fallback.
+  try {
+    const _allKids = [...new Set(families.flatMap(f => f.children.map(c => String(c.batch).trim())))];
+    if (_allKids.length) {
+      let lr;
+      if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) GROUP BY batch_number`, [_allKids])).rows;
+      else { const ph = _allKids.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) GROUP BY batch_number`).all(..._allKids); }
+      const _lblSum = {};
+      for (const r of (lr || [])) _lblSum[String(r.batch_number).trim().toUpperCase()] = parseFloat(r.q) || 0;
+      for (const f of families) for (const c of f.children) {
+        const s = _lblSum[String(c.batch).trim().toUpperCase()];
+        if (s > 0) c.boxed = +s.toFixed(3);
+      }
+      // drop inferred children that stayed at 0 (no labels — nothing physical to attribute)
+      for (const f of families) if (f.inferred) f.children = f.children.filter(c => c.boxed > 0);
+    }
+  } catch (e) { console.warn('[v52W] child label-sum refinement failed (boxes×pack figures kept):', e.message); }
+
+  return families.filter(f => f.children.length);
 }
 
 // Apply the apportionment to a per-batch gross map IN PLACE. Idempotent against a freshly-built map
@@ -7796,11 +7994,15 @@ function _v46k_applyGrossApportionment(map, families) {
   for (const fam of families) {
     const parentGross = map[fam.parentBatch];
     if (!(parentGross > 0)) continue;                 // parent absent/zero in this map → nothing to split
-    const sum = fam.children.reduce((s, c) => s + (c.boxed || 0), 0);
+    // v52W: a SUFFIX-INFERRED child that has its OWN DPR gross in this map produced its own material
+    // and is not carved from the parent — apportioning would corrupt both. Explicit-record families
+    // (tiers 1/2) are untouched: their children never have own production_actuals by construction.
+    const kids = fam.inferred ? fam.children.filter(c => !((map[c.batch] || 0) > 0)) : fam.children;
+    const sum = kids.reduce((s, c) => s + (c.boxed || 0), 0);
     if (!(sum > 0)) continue;
     const scale = sum > parentGross ? parentGross / sum : 1;
     let assigned = 0;
-    for (const c of fam.children) {
+    for (const c of kids) {
       const g = +((c.boxed || 0) * scale).toFixed(3);
       map[c.batch] = (map[c.batch] || 0) + g;         // child has no own production_actuals → base 0
       assigned += g;
@@ -10917,7 +11119,7 @@ app.get('/api/planning/state', async (req, res) => {
           // ("lost in transit" closure) must be corrected to 'closed'. This is not an auto-revert to
           // pending — it promotes a stale-running order to its true, DPR-authoritative closed state, so
           // it stops inflating the v41z running count and causing real running orders to be downgraded.
-          if ((o.status === 'running' || o.status === 'pending') && _v49gIsDprClosed({ id: o.id, batchNumber: o.batchNumber })
+          if ((o.status === 'running' || o.status === 'pending') && _v49gIsDprClosed({ id: o.id, batchNumber: o.batchNumber, woSplitFromBatch: o.woSplitFromBatch })   // v52W: family-aware
               && !_v49gIsReopenedOpen(o)) {
             o.status = 'closed';
             // v49ZJ (confirmed by Ishan — 48h label-window fix): stamp closedDate from the ACTUAL
@@ -16517,6 +16719,11 @@ app.post('/api/wo/split/approve/:id', async (req, res) => {
         // A child has its own qty and its own apportioned actual; a plan figure for the batch it
         // was carved out of does not describe it. Cleared explicitly, never inherited.
         grossOverride: null,
+        // v52V (Ishan, 25 Aug — 26ZG135-A showed "AIM Out: 9.85L / 36.75L planned"): grossQty was
+        // ALSO cloned from the parent, so every child's planning row and AIM-progress line displayed
+        // the whole family's planned gross. A child is carved out of finished production at order-qty
+        // level — its own planned figure is the quantity assigned to it.
+        grossQty: parseFloat(L.qty_lakhs) || 0,
         batchNumber: L.child_batch_number,
         customer: L.customer,
         shipTo: L.customer,
