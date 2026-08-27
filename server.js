@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v53C';
+const APP_BUILD = 'v53D';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -7218,6 +7218,7 @@ app.get('/api/invoice/received', async (req, res) => {
     const size = (req.query.size || '').toString().trim();
     const colour = (req.query.colour || '').toString().trim();
     const limit = Math.min(parseInt(req.query.limit, 10) || 200, 5000);   // v51ZC: GI shows ALL invoices
+    const prodMonth = (req.query.prod_month || '').toString().trim();   // v53D: month-slice attribution
     const wheres = [];
     const args = [];
     if (status) { wheres.push(pgPool ? `dispatch_status = $${args.length+1}` : 'dispatch_status = ?'); args.push(status); }
@@ -7235,6 +7236,78 @@ app.get('/api/invoice/received', async (req, res) => {
       rows = r.rows;
     } else {
       rows = db.prepare(`SELECT * FROM invoices_received ${whereSql} ORDER BY invoice_date DESC, fetched_at DESC LIMIT ${limit}`).all(...args);
+    }
+    // ═══ v53D (Ishan, 27 Aug — Seva/Sixty Pharma: multi-month invoices bunched into one month) ═══
+    // The month view previously KEPT an invoice when ANY of its batches belonged to the selected
+    // month and then showed the FULL invoice quantity — a 101 L invoice with one August batch put
+    // all 101 L into August. The month now receives only ITS SLICE: the sum of invoice_batch_alloc
+    // quantities for batches whose production month (frozen v51G rule — MIN(production_actuals.date),
+    // fallback the order's planned startDate) equals the selected month. Invoices without alloc rows
+    // fall back to whole-invoice attribution by their single batch's month; a multi-batch invoice
+    // with no allocs keeps the old any-batch behaviour and is flagged unsliced (never invent a split).
+    if (prodMonth && rows.length) {
+      try {
+        const invIds = rows.map(r => r.id);
+        let allocRows;
+        if (pgPool) allocRows = (await pgPool.query(`SELECT invoice_id, batch_number, qty_lakhs, boxes FROM invoice_batch_alloc WHERE invoice_id = ANY($1) AND status='attributed' AND batch_number IS NOT NULL AND batch_number <> ''`, [invIds])).rows;
+        else { const ph = invIds.map(() => '?').join(','); allocRows = db.prepare(`SELECT invoice_id, batch_number, qty_lakhs, boxes FROM invoice_batch_alloc WHERE invoice_id IN (${ph}) AND status='attributed' AND batch_number IS NOT NULL AND batch_number <> ''`).all(...invIds); }
+        const allocByInv = {};
+        const allBns = new Set();
+        for (const a of (allocRows || [])) {
+          (allocByInv[a.invoice_id] = allocByInv[a.invoice_id] || []).push(a);
+          allBns.add(String(a.batch_number).trim().toUpperCase());
+        }
+        for (const r of rows) String(r.batch_number || '').split(',').forEach(t => { const b = t.trim().toUpperCase(); if (b) allBns.add(b); });
+        const bns = [...allBns];
+        const pmMap = {};
+        if (bns.length) {
+          let pa;
+          if (pgPool) pa = (await pgPool.query(`SELECT batch_number, MIN(date) AS d0 FROM production_actuals WHERE batch_number = ANY($1) AND COALESCE(date,'') <> '' GROUP BY batch_number`, [bns])).rows;
+          else { const ph = bns.map(() => '?').join(','); pa = db.prepare(`SELECT batch_number, MIN(date) AS d0 FROM production_actuals WHERE batch_number IN (${ph}) AND COALESCE(date,'') <> '' GROUP BY batch_number`).all(...bns); }
+          for (const r of (pa || [])) if (r.batch_number && r.d0) pmMap[String(r.batch_number).trim().toUpperCase()] = String(r.d0).slice(0, 7);
+          const missing = bns.filter(b => !pmMap[b]);
+          if (missing.length) {
+            let po;
+            if (pgPool) po = (await pgPool.query(`SELECT batch_number, data_json FROM production_orders WHERE batch_number = ANY($1)`, [missing])).rows;
+            else { const ph = missing.map(() => '?').join(','); po = db.prepare(`SELECT batch_number, data_json FROM production_orders WHERE batch_number IN (${ph})`).all(...missing); }
+            for (const r of (po || [])) {
+              try { const d = typeof r.data_json === 'string' ? JSON.parse(r.data_json) : (r.data_json || {});
+                const sd = d.startDate || d.start_date || null;
+                if (sd) pmMap[String(r.batch_number).trim().toUpperCase()] = String(sd).slice(0, 7);
+              } catch (_) {}
+            }
+          }
+        }
+        const kept = [];
+        for (const inv of rows) {
+          const allocs = allocByInv[inv.id] || [];
+          const totQ = parseFloat(inv.total_qty_lakhs) || 0;
+          if (allocs.length) {
+            let mQ = 0, mB = 0, aQ = 0; const mBatches = [], oBatches = [];
+            for (const a of allocs) {
+              const b = String(a.batch_number).trim().toUpperCase();
+              const q = parseFloat(a.qty_lakhs) || 0; aQ += q;
+              if (pmMap[b] === prodMonth) { mQ += q; mB += parseInt(a.boxes, 10) || 0; mBatches.push(b); }
+              else oBatches.push(b);
+            }
+            if (!(mQ > 0)) continue;
+            inv.pm = { month: prodMonth, qty: Math.round(mQ * 100) / 100, boxes: mB,
+                       month_batches: mBatches, other_batches: oBatches,
+                       other_qty: Math.round(Math.max(0, aQ - mQ) * 100) / 100,
+                       is_partial: oBatches.length > 0 };
+            kept.push(inv);
+          } else {
+            const toks = String(inv.batch_number || '').split(',').map(t => t.trim().toUpperCase()).filter(Boolean);
+            const mBatches = toks.filter(b => pmMap[b] === prodMonth);
+            if (!mBatches.length) continue;
+            inv.pm = { month: prodMonth, qty: Math.round(totQ * 100) / 100, boxes: parseInt(inv.total_boxes, 10) || 0,
+                       month_batches: mBatches, other_batches: toks.filter(b => pmMap[b] !== prodMonth),
+                       other_qty: 0, is_partial: false, unsliced: toks.length > 1 };
+            kept.push(inv);
+          }
+        }
+        rows = kept;
+      } catch (e) { console.warn('[v53D pm-slice] failed (falling back to unsliced list):', e.message); }
     }
     // v41s Q2: post-filter by pc_code/size/colour. Match ANY line of the invoice
     // (header column OR any DocumentLine in payload_json). Case-insensitive substring match.
@@ -7284,7 +7357,7 @@ app.get('/api/invoice/received', async (req, res) => {
           && inv.dispatch_record_id && stuckRecIds.has(inv.dispatch_record_id));
       }
     } catch (e) { console.warn('[v44ZK needs_realloc]', e.message); }
-    res.json({ ok: true, count: rows.length, invoices: rows });
+    res.json({ ok: true, pm_supported: true, count: rows.length, invoices: rows });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

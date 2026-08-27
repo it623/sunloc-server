@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53C</title>
+<title>Sunloc Tracking Suite v1.0 · build v53D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53C</p>
+      <p>Tracking Suite v1.0 · build v53D</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53C</p>
+      <p>Tracking Suite v1.0 · build v53D</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9912,14 +9912,17 @@ async function _v39_applyInvoiceFilters() {
   const statusText = document.getElementById('v39-gi-status-text');
   if (statusText) statusText.textContent = 'Loading...';
   try {
+    // v53D (Ishan, 27 Aug): the production-month filter is now server-side and returns MONTH SLICES —
+    // each invoice carries pm { qty, boxes, month_batches, other_qty, is_partial } computed from
+    // invoice_batch_alloc, so a multi-month invoice contributes only its share to the selected month.
+    const _pm53d = document.getElementById('v39-gi-pm')?.value || '';
+    if (_pm53d) params.set('prod_month', _pm53d);
     const r = await fetch(serverUrl + '/api/invoice/received?' + params.toString(), { signal: AbortSignal.timeout(10000) });
     const j = await r.json();
-    // v51ZE (Ishan): production-month filter — keep invoices whose batch field contains ANY batch
-    // attributed (v50B cohort) to the selected month. Multi-batch invoices match on any listed batch.
-    const _pm51ze = document.getElementById('v39-gi-pm')?.value || '';
-    if (_pm51ze && j && j.ok && Array.isArray(j.invoices)) {
+    // v51ZE fallback (only against a pre-v53D server that ignores prod_month): any-batch membership.
+    if (_pm53d && j && j.ok && !j.pm_supported && Array.isArray(j.invoices)) {
       const _bm = {}; (state.batches||[]).forEach(b=>{ if(!b.deleted&&b.batchNumber) _bm[String(b.batchNumber).trim().toUpperCase()]=_v50bCohortMonth(b)||''; });
-      j.invoices = j.invoices.filter(inv => String(inv.batch_number||'').split(',').some(x => _bm[x.trim().toUpperCase()] === _pm51ze));
+      j.invoices = j.invoices.filter(inv => String(inv.batch_number||'').split(',').some(x => _bm[x.trim().toUpperCase()] === _pm53d));
     }
     if (j.ok) {
       _v39_invoiceList = j.invoices || [];
@@ -10004,9 +10007,18 @@ function _v39_renderInvoiceTable() {
   }
   // Build summary KPIs
   const totalCount = invoices.length;
-  const totalBoxes = invoices.reduce((sum, i) => sum + (parseInt(i.total_boxes) || 0), 0);
-  const totalQty   = invoices.reduce((sum, i) => sum + (parseFloat(i.total_qty_lakhs) || 0), 0);
-  const totalAmount = invoices.reduce((sum, i) => sum + (parseFloat(i.total_amount) || 0), 0);
+  // v53D: in a production-month view, the strip totals are the MONTH'S SLICES — amount pro-rata by
+  // quantity share for partial invoices (marked ≈), so a multi-month invoice no longer bunches its
+  // whole value into this month.
+  const _pmView = invoices.some(i => i.pm);
+  const totalBoxes = invoices.reduce((sum, i) => sum + (i.pm ? (parseInt(i.pm.boxes) || 0) : (parseInt(i.total_boxes) || 0)), 0);
+  const totalQty   = invoices.reduce((sum, i) => sum + (i.pm ? (parseFloat(i.pm.qty) || 0) : (parseFloat(i.total_qty_lakhs) || 0)), 0);
+  const totalAmount = invoices.reduce((sum, i) => {
+    const amt = parseFloat(i.total_amount) || 0;
+    if (!i.pm || !i.pm.is_partial) return sum + amt;
+    const tq = parseFloat(i.total_qty_lakhs) || 0;
+    return sum + (tq > 0 ? amt * ((parseFloat(i.pm.qty) || 0) / tq) : amt);
+  }, 0);
   const dispatched = invoices.filter(i => i.dispatch_status === 'dispatched').length;
   const pending    = invoices.filter(i => i.dispatch_status === 'pending').length;
   // Table rows
@@ -10038,12 +10050,12 @@ function _v39_renderInvoiceTable() {
         <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.sap_doc_entry || '—'}</td>
         <td style="padding:6px 8px;font-size:11px">${invDate}</td>
         <td style="padding:6px 8px;font-size:12px">${(inv.customer||'—').substring(0,32)}</td>
-        <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.batch_number || '—'}</td>
+        <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.pm && inv.pm.is_partial ? `${(inv.pm.month_batches||[]).join(', ')} <span style="color:var(--text3);font-size:9px" title="Batches from other production months on this invoice: ${(inv.pm.other_batches||[]).join(', ')}">+${(inv.pm.other_batches||[]).length} other-month</span>` : (inv.batch_number || '—')}${inv.pm && inv.pm.unsliced ? ' <span style="color:#f59e0b;font-size:9px" title="Multi-batch invoice without per-batch allocation — full quantity shown (cannot be split)">unsliced</span>' : ''}</td>
         <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.pc_code || '—'} ${linesHint}</td>
         <td style="padding:6px 8px;font-size:11px">${inv.size || '—'}</td>
         <td style="padding:6px 8px;font-size:11px">${(inv.colour||'—').substring(0,18)}</td>
-        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${inv.total_boxes || 0}</td>
-        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${qtyLakhs.toFixed(2)} L</td>
+        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${inv.pm ? inv.pm.boxes : (inv.total_boxes || 0)}${inv.pm && inv.pm.is_partial ? `<br><span style="color:var(--text3);font-size:9px">of ${inv.total_boxes||0}</span>` : ''}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${inv.pm ? (parseFloat(inv.pm.qty)||0).toFixed(2) : qtyLakhs.toFixed(2)} L${inv.pm && inv.pm.is_partial ? `<br><span style="color:var(--text3);font-size:9px" title="This invoice spans production months — ${(parseFloat(inv.pm.other_qty)||0).toFixed(2)} L belongs to other months">of ${qtyLakhs.toFixed(2)} L</span>` : ''}</td>
         <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">₹${(parseFloat(inv.total_amount)||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
         <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.vehicle_no || '—'}</td>
         <td style="padding:6px 8px;text-align:center"><span style="color:${statusColor};font-size:11px;font-weight:600">${statusLabel}</span></td>
