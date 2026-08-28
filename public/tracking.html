@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53D</title>
+<title>Sunloc Tracking Suite v1.0 · build v53E</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53D</p>
+      <p>Tracking Suite v1.0 · build v53E</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53D</p>
+      <p>Tracking Suite v1.0 · build v53E</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -10357,21 +10357,34 @@ function _v39_exportInvoicesCsv() {
     disp:{font:{sz:10,color:{rgb:'006100'}},fill:{fgColor:{rgb:'C6EFCE'}}},
     tot:{font:{bold:true,sz:10},fill:{fgColor:{rgb:'D9E1F2'}},border:{top:{style:'medium'}},numFmt:'#,##0.00'},
   };
-  const headers = ['Sales Order Number','Sales Order ID','Invoice Date','Source','Customer','Card Code','PO Number','Batch','PC Code','Size','Colour','Total Boxes','Total Qty (L)','Taxable Amount','IGST','Total Amount','IRN','Dispatch Status','Scanned Boxes','Dispatched At','Dispatched By','Vehicle','LR No','Admin Approved At','Admin Approved By','Remarks'];
-  const monthSel = (typeof _giProdMonthSel !== 'undefined' && _giProdMonthSel) ? _giProdMonthSel : (_trkSelectedMonth || 'all-months');
-  const aoa = [[{v:`SUNLOC — INVOICE LEDGER  ·  ${monthSel}  ·  exported ${today()}`,s:S.title}],[],
+  // v53E (Ishan, 28 Aug): in a production-month view the export carries the MONTH SLICE — the same
+  // v53D attribution the on-screen table shows — alongside the invoice totals, so the two can never
+  // diverge again. In all-months view the slice columns stay blank and the sheet is unchanged.
+  const _pmExp = document.getElementById('v39-gi-pm')?.value || '';
+  const headers = ['Sales Order Number','Sales Order ID','Invoice Date','Source','Customer','Card Code','PO Number','Batch','PC Code','Size','Colour','Total Boxes','Total Qty (L)','Month Boxes','Month Qty (L)','Other-Month Qty (L)','Month Batches','Taxable Amount','IGST','Total Amount','Month Amount (≈)','IRN','Dispatch Status','Scanned Boxes','Dispatched At','Dispatched By','Vehicle','LR No','Admin Approved At','Admin Approved By','Remarks'];
+  const monthSel = _pmExp || 'all-months';   // v53E: the label is the FILTER actually applied
+  const aoa = [[{v:`SUNLOC — INVOICE LEDGER  ·  ${monthSel}${_pmExp?' (month-slice attribution)':''}  ·  exported ${today()}`,s:S.title}],[],
                headers.map(h=>({v:h,s:S.hdr}))];
-  let tBoxes=0,tQty=0,tTaxable=0,tIgst=0,tTotal=0;
+  let tBoxes=0,tQty=0,tTaxable=0,tIgst=0,tTotal=0,tmBoxes=0,tmQty=0,tmOther=0,tmAmt=0;
   for (const inv of invoices) {
     const qtyLakhs = parseFloat(inv.total_qty_lakhs) || (parseInt(inv.total_boxes)||0)/100;
     const boxes=parseInt(inv.total_boxes)||0, taxable=parseFloat(inv.taxable_amount)||0, igst=parseFloat(inv.igst_amount)||0, total=parseFloat(inv.total_amount)||0;
+    const pm = inv.pm || null;   // v53E: the v53D month slice, when a month filter is active
+    const mBoxes = pm ? (parseInt(pm.boxes)||0) : null;
+    const mQty = pm ? (parseFloat(pm.qty)||0) : null;
+    const mOther = pm ? (parseFloat(pm.other_qty)||0) : null;
+    const mAmt = pm ? (pm.is_partial && qtyLakhs>0 ? total*(mQty/qtyLakhs) : total) : null;
     tBoxes+=boxes; tQty+=qtyLakhs; tTaxable+=taxable; tIgst+=igst; tTotal+=total;
+    if (pm) { tmBoxes+=mBoxes; tmQty+=mQty; tmOther+=mOther; tmAmt+=mAmt; }
     const st=(inv.dispatch_status||'').toLowerCase();
     aoa.push([
       {v:inv.sap_doc_num||'',s:S.mono},{v:inv.sap_doc_entry||'',s:S.mono},{v:inv.invoice_date||'',s:S.mono},{v:inv.source||'',s:S.mono},
       {v:inv.customer||'',s:S.mono},{v:inv.card_code||'',s:S.mono},{v:inv.po_number||'',s:S.mono},{v:inv.batch_number||'',s:S.mono},
       {v:inv.pc_code||'',s:S.mono},{v:inv.size??'',s:S.mono},{v:inv.colour||'',s:S.mono},
-      {v:boxes,s:S.num},{v:qtyLakhs,s:S.num},{v:taxable,s:S.inr},{v:igst,s:S.inr},{v:total,s:S.inr},
+      {v:boxes,s:S.num},{v:qtyLakhs,s:S.num},
+      {v:pm?mBoxes:'',s:S.num},{v:pm?mQty:'',s:S.num},{v:pm?mOther:'',s:S.num},
+      {v:pm?((pm.month_batches||[]).join(', ')+((pm.unsliced)?' [unsliced]':'' )):'',s:S.mono},
+      {v:taxable,s:S.inr},{v:igst,s:S.inr},{v:total,s:S.inr},{v:pm?Math.round(mAmt):'',s:S.inr},
       {v:inv.irn||'',s:S.mono},{v:inv.dispatch_status||'',s:st==='pending'?S.pend:st==='dispatched'?S.disp:S.mono},
       {v:inv.scanned_boxes??'',s:S.mono},{v:inv.dispatched_at||'',s:S.mono},{v:inv.dispatched_by||'',s:S.mono},
       {v:inv.vehicle_no||'',s:S.mono},{v:inv.lr_no||'',s:S.mono},{v:inv.admin_approved_at||'',s:S.mono},
@@ -10380,10 +10393,12 @@ function _v39_exportInvoicesCsv() {
   }
   const totRow=new Array(headers.length).fill('');
   totRow[10]={v:'TOTAL',s:S.tot}; totRow[11]={v:tBoxes,s:S.tot}; totRow[12]={v:tQty,s:S.tot};
-  totRow[13]={v:tTaxable,s:{...S.tot,numFmt:'#,##0'}}; totRow[14]={v:tIgst,s:{...S.tot,numFmt:'#,##0'}}; totRow[15]={v:tTotal,s:{...S.tot,numFmt:'#,##0'}};
+  totRow[13]={v:_pmExp?tmBoxes:'',s:S.tot}; totRow[14]={v:_pmExp?tmQty:'',s:S.tot}; totRow[15]={v:_pmExp?tmOther:'',s:S.tot}; totRow[16]='';
+  totRow[17]={v:tTaxable,s:{...S.tot,numFmt:'#,##0'}}; totRow[18]={v:tIgst,s:{...S.tot,numFmt:'#,##0'}}; totRow[19]={v:tTotal,s:{...S.tot,numFmt:'#,##0'}};
+  totRow[20]={v:_pmExp?Math.round(tmAmt):'',s:{...S.tot,numFmt:'#,##0'}};
   aoa.push(totRow);
   const ws=XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols']=[{wch:12},{wch:10},{wch:11},{wch:10},{wch:26},{wch:9},{wch:12},{wch:12},{wch:9},{wch:5},{wch:16},{wch:8},{wch:11},{wch:13},{wch:11},{wch:13},{wch:14},{wch:11},{wch:9},{wch:16},{wch:12},{wch:12},{wch:9},{wch:16},{wch:12},{wch:20}];
+  ws['!cols']=[{wch:12},{wch:10},{wch:11},{wch:10},{wch:26},{wch:9},{wch:12},{wch:12},{wch:9},{wch:5},{wch:16},{wch:8},{wch:11},{wch:9},{wch:11},{wch:13},{wch:26},{wch:13},{wch:11},{wch:13},{wch:12},{wch:14},{wch:11},{wch:9},{wch:16},{wch:12},{wch:12},{wch:9},{wch:16},{wch:12},{wch:20}];
   ws['!rows']=[{hpt:24}];
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Invoices');
