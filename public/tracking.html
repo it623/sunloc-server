@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53E</title>
+<title>Sunloc Tracking Suite v1.0 · build v53G</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53E</p>
+      <p>Tracking Suite v1.0 · build v53G</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53E</p>
+      <p>Tracking Suite v1.0 · build v53G</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -17226,7 +17226,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         'AIM A-GRADE (L)','UNSCANNED WIP (L)','PRINT REJ (L)','PI REJ (L)','NET PACKABLE (L)',
         'DISPATCHED (L)','DISP PRICE/L (INR)','DISPATCHED VALUE (INR)',
         'BALANCE (L)','BAL PRICE/L (INR)','BALANCE VALUE (INR)',
-        'PRICE/L (INDENT)','CCY (USD/INR)','PRICE/L (INR)','ORDER VALUE (INR)','PRICE SOURCE'];
+        'PRICE/L (INDENT)','CCY (USD/INR)','PRICE/L (INR)','TOTAL SALE VALUE (INR, DISP+BAL)','PRICE SOURCE'];
       const NC = HDR.length;
       const aoa = [], kinds = [], merges = [];
       const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
@@ -17235,7 +17235,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       merges.push({s:{r:0,c:0},e:{r:0,c:NC-1}});
       _push(['NSR Planning — Net Packable Quantity × Indent Price'],'title');
       merges.push({s:{r:1,c:0},e:{r:1,c:NC-1}});
-      _push([`Generated ${new Date().toLocaleString()}  |  Net Packable = AIM A-Grade + Unscanned WIP − Print Rej − PI Rej  ·  unstarted orders (Gross 0): Net Packable = Planned Qty  ·  Balance floored at 0`],'subtitle');
+      _push([`Generated ${new Date().toLocaleString()}  |  Net Packable = AIM A-Grade + Unscanned WIP − Print Rej − PI Rej  ·  unstarted orders (Gross 0): Net Packable = Planned Qty  ·  Balance floored at 0  ·  Total Sale Value = Dispatched Value + Balance Value (over-invoiced dispatch counts in full — physically shipped)`],'subtitle');
       _push(['USD → INR RATE:', 0, '◀ enter today\'s exchange rate here — every USD price and all values recalculate instantly'],'rate');
       _push([],'spacer');
       const hdrRowIdx = aoa.length;
@@ -17327,8 +17327,13 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         }
         // v52N ready-reckoner: O = dispatched qty (static prefill, PM-editable). Prices in both
         // sections mirror the single INR price cell W; values and balance are pure formulas.
+        // (v53F pairing invariant applied after this loop — see below.)
         _fc(i, 15, `W${R1}`);                              // P  disp price = INR price
-        _fc(i, 16, `ROUND(O${R1}*P${R1},0)`, '#,##0');     // Q  dispatched value
+        // v53G (Ishan, 29 Aug — overruling the v53F cap): over-invoiced quantity PHYSICALLY
+        // dispatched IS sales — it is the production-side packable that understates, not sales that
+        // overstates. Dispatched value counts in full; the identity is structural instead:
+        // X = Q + T by formula, so 50 planned / 48 dispatched / 7 in packable WIP values 55.
+        _fc(i, 16, `ROUND(O${R1}*P${R1},0)`, '#,##0');     // Q  dispatched value (full — physically shipped)
         // v52U (Ishan, 24 Aug — observation B): balance is floored at ZERO. When dispatch exceeds
         // packable (over-invoicing), the balance shows 0 — never a negative — and the balance VALUE
         // (T = R×S) and every total that sums R/T follow automatically.
@@ -17336,8 +17341,25 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         _fc(i, 18, `W${R1}`);                              // S  bal price = INR price
         _fc(i, 19, `ROUND(R${R1}*S${R1},0)`, '#,##0');     // T  balance value
         _fc(i, 22, `IF(V${R1}="USD",ROUND(N(U${R1})*$${XR.slice(0,1)}$${XR.slice(1)},2),N(U${R1}))`);
-        _fc(i, 23, `ROUND(N${R1}*W${R1},0)`, '#,##0');
+        _fc(i, 23, `Q${R1}+T${R1}`, '#,##0');
       });
+      // ═══ v53F (Ishan, 29 Aug — 26ZC110/116/124, 26ZB109) — CAP↔EXCESS PAIRING INVARIANT ═══════
+      // A capped main row without its excess sibling silently loses (packable − planned): the live
+      // 29-08 export carried four such rows worth 3.30 L, though the builder writes the pair from a
+      // single boolean. Until the trigger is caught (the console warning below will name it on the
+      // next occurrence), the sheet is structurally lossless: any unpaired cap is rewritten to the
+      // uncapped fallback formula before styling.
+      {
+        const _pairedMains = new Set(Object.values(excessIdxs));
+        Object.keys(capIdxs).forEach(k => {
+          const i = parseInt(k, 10);
+          if (!_pairedMains.has(i)) {
+            const R1 = _row1(i);
+            _fc(i, 13, `IF(I${R1}=0,H${R1},ROUND(J${R1}+K${R1}-L${R1}-M${R1},2))`);
+            console.warn('[v53F] NSR: capped row without excess sibling at sheet row', R1, '— rewritten lossless; please report this batch');
+          }
+        });
+      }
       // Machine subtotals: SUM over the contiguous data block; NSR/L in Q = value ÷ packable.
       mcBlocks.forEach(b => {
         const subA = b.end + 1;                 // subtotal aoa index (row right after last data row)
@@ -17350,7 +17372,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           const col = String.fromCharCode(65 + c);
           _fc(subA, c, `ROUND(SUM(${col}${s1}:${col}${e1}),0)`, '#,##0');
         }
-        _fc(subA, 22, `IFERROR(ROUND(X${R1}/N${R1},0),"")`, '#,##0');   // machine NSR/L
+        _fc(subA, 22, `IFERROR(ROUND(X${R1}/(O${R1}+R${R1}),0),"")`, '#,##0');   // v53G: machine NSR per SOLD lakh (disp+bal)
         // v52U (Ishan, 24 Aug — observation A): weighted-average NSR of the machine's DISPATCHED and
         // BALANCE quantities, sitting in the same price columns (P, S) the data rows use — value ÷
         // qty, so a hand-edited price on any row reweights the average live. Blank when qty is 0.
@@ -17372,7 +17394,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         const col = String.fromCharCode(65 + c);
         _fc(grandIdx, c, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"?*",${col}${dFirst}:${col}${dLast}),0)`, '#,##0');
       }
-      _fc(grandIdx, 22, `IFERROR(ROUND(X${G1}/N${G1},0),"")`, '#,##0');
+      _fc(grandIdx, 22, `IFERROR(ROUND(X${G1}/(O${G1}+R${G1}),0),"")`, '#,##0');   // v53G
       // v52U (observation A): grand-row weighted-average dispatched / balance NSR — the grand row's
       // own value ÷ qty cells, which are already "?*"-guarded SUMIFs over data rows only.
       _fc(grandIdx, 15, `IFERROR(ROUND(Q${G1}/O${G1},0),"")`, '#,##0');   // P  overall wtd-avg disp NSR/L
@@ -17392,15 +17414,18 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       sizesAll.forEach(sz => {
         const r1 = si + 1;
         XLSX.utils.sheet_add_aoa(ws, [[sz]], { origin: { r: si, c: 0 } });
-        _fc(si, 1, `IFERROR(ROUND(SUMIF(${F},A${r1},${RR})/SUMIF(${F},A${r1},${N}),0),"—")`, '#,##0');
-        _fc(si, 2, `IFERROR(ROUND(SUMIFS(${RR},${F},A${r1},${G},"Domestic")/SUMIFS(${N},${F},A${r1},${G},"Domestic"),0),"—")`, '#,##0');
-        _fc(si, 3, `IFERROR(ROUND(SUMIFS(${RR},${F},A${r1},${G},"Export")/SUMIFS(${N},${F},A${r1},${G},"Export"),0),"—")`, '#,##0');
+        // v53F (Ishan, 29 Aug): SUMIF/SUMIFS coerce numeric-looking text — criteria '00' and '0'
+        // BOTH become the number 0, so size 00's NSR silently blended with size 0's. EXACT() does
+        // no coercion: each size line now matches its own rows and no other.
+        _fc(si, 1, `IFERROR(ROUND(SUMPRODUCT(--EXACT(${F},A${r1}),${RR})/SUMPRODUCT(--EXACT(${F},A${r1}),(${DQ}+${BQ})),0),"—")`, '#,##0');
+        _fc(si, 2, `IFERROR(ROUND(SUMPRODUCT(--EXACT(${F},A${r1}),--(${G}="Domestic"),${RR})/SUMPRODUCT(--EXACT(${F},A${r1}),--(${G}="Domestic"),(${DQ}+${BQ})),0),"—")`, '#,##0');
+        _fc(si, 3, `IFERROR(ROUND(SUMPRODUCT(--EXACT(${F},A${r1}),--(${G}="Export"),${RR})/SUMPRODUCT(--EXACT(${F},A${r1}),--(${G}="Export"),(${DQ}+${BQ})),0),"—")`, '#,##0');
         kinds[si] = 'data'; si++;
       });
       XLSX.utils.sheet_add_aoa(ws, [['AVERAGE (ALL)']], { origin: { r: si, c: 0 } });
-      _fc(si, 1, `IFERROR(ROUND(SUMIF(${F},"?*",${RR})/SUMIF(${F},"?*",${N}),0),"—")`, '#,##0');
-      _fc(si, 2, `IFERROR(ROUND(SUMIF(${G},"Domestic",${RR})/SUMIF(${G},"Domestic",${N}),0),"—")`, '#,##0');
-      _fc(si, 3, `IFERROR(ROUND(SUMIF(${G},"Export",${RR})/SUMIF(${G},"Export",${N}),0),"—")`, '#,##0');
+      _fc(si, 1, `IFERROR(ROUND(SUMIF(${F},"?*",${RR})/(SUMIF(${F},"?*",${DQ})+SUMIF(${F},"?*",${BQ})),0),"—")`, '#,##0');
+      _fc(si, 2, `IFERROR(ROUND(SUMIF(${G},"Domestic",${RR})/(SUMIF(${G},"Domestic",${DQ})+SUMIF(${G},"Domestic",${BQ})),0),"—")`, '#,##0');
+      _fc(si, 3, `IFERROR(ROUND(SUMIF(${G},"Export",${RR})/(SUMIF(${G},"Export",${DQ})+SUMIF(${G},"Export",${BQ})),0),"—")`, '#,##0');
       kinds[si] = 'grand'; si++;
       // ── v52N: MOVEMENT SUMMARY — Packable vs Dispatched vs Balance, qty + value, then the same
       //    split for Domestic and Export. Pure formulas over the data region ("?*" / zone criteria,
