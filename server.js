@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v53G';
+const APP_BUILD = 'v53H';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -7219,6 +7219,7 @@ app.get('/api/invoice/received', async (req, res) => {
     const colour = (req.query.colour || '').toString().trim();
     const limit = Math.min(parseInt(req.query.limit, 10) || 200, 5000);   // v51ZC: GI shows ALL invoices
     const prodMonth = (req.query.prod_month || '').toString().trim();   // v53D: month-slice attribution
+    const includeAllocs = String(req.query.include_allocs || '') === '1';   // v53H: per-batch grain for exports
     const wheres = [];
     const args = [];
     if (status) { wheres.push(pgPool ? `dispatch_status = $${args.length+1}` : 'dispatch_status = ?'); args.push(status); }
@@ -7357,7 +7358,21 @@ app.get('/api/invoice/received', async (req, res) => {
           && inv.dispatch_record_id && stuckRecIds.has(inv.dispatch_record_id));
       }
     } catch (e) { console.warn('[v44ZK needs_realloc]', e.message); }
-    res.json({ ok: true, pm_supported: true, count: rows.length, invoices: rows });
+        // v53H (Ishan, 29 Aug): the export must carry the GRANULAR per-batch quantities for multi-batch
+    // invoices — the batch string plus gross total was not an attribution. The v48R allocation rows
+    // ride along on request, attributed-only, under whatever filters produced this list.
+    if (includeAllocs && rows.length) {
+      try {
+        const ids = rows.map(r => r.id);
+        let ar;
+        if (pgPool) ar = (await pgPool.query(`SELECT invoice_id, batch_number, qty_lakhs, boxes FROM invoice_batch_alloc WHERE invoice_id = ANY($1) AND status='attributed' AND batch_number IS NOT NULL AND batch_number <> '' ORDER BY batch_number`, [ids])).rows;
+        else { const ph = ids.map(() => '?').join(','); ar = db.prepare(`SELECT invoice_id, batch_number, qty_lakhs, boxes FROM invoice_batch_alloc WHERE invoice_id IN (${ph}) AND status='attributed' AND batch_number IS NOT NULL AND batch_number <> '' ORDER BY batch_number`).all(...ids); }
+        const byInv = {};
+        for (const a of (ar || [])) (byInv[a.invoice_id] = byInv[a.invoice_id] || []).push({ batch: String(a.batch_number).trim(), qty: parseFloat(a.qty_lakhs) || 0, boxes: parseInt(a.boxes, 10) || 0 });
+        for (const r of rows) r.allocs = byInv[r.id] || [];
+      } catch (e) { console.warn('[v53H allocs] attach failed (export will mark rows unallocated):', e.message); }
+    }
+res.json({ ok: true, pm_supported: true, count: rows.length, invoices: rows });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53G</title>
+<title>Sunloc Tracking Suite v1.0 · build v53H</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53G</p>
+      <p>Tracking Suite v1.0 · build v53H</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53G</p>
+      <p>Tracking Suite v1.0 · build v53H</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9917,6 +9917,7 @@ async function _v39_applyInvoiceFilters() {
     // invoice_batch_alloc, so a multi-month invoice contributes only its share to the selected month.
     const _pm53d = document.getElementById('v39-gi-pm')?.value || '';
     if (_pm53d) params.set('prod_month', _pm53d);
+    params.set('include_allocs', '1');   // v53H: per-batch grain rides along for exports
     const r = await fetch(serverUrl + '/api/invoice/received?' + params.toString(), { signal: AbortSignal.timeout(10000) });
     const j = await r.json();
     // v51ZE fallback (only against a pre-v53D server that ignores prod_month): any-batch membership.
@@ -10379,7 +10380,12 @@ function _v39_exportInvoicesCsv() {
     const st=(inv.dispatch_status||'').toLowerCase();
     aoa.push([
       {v:inv.sap_doc_num||'',s:S.mono},{v:inv.sap_doc_entry||'',s:S.mono},{v:inv.invoice_date||'',s:S.mono},{v:inv.source||'',s:S.mono},
-      {v:inv.customer||'',s:S.mono},{v:inv.card_code||'',s:S.mono},{v:inv.po_number||'',s:S.mono},{v:inv.batch_number||'',s:S.mono},
+      {v:inv.customer||'',s:S.mono},{v:inv.card_code||'',s:S.mono},{v:inv.po_number||'',s:S.mono},
+      // v53H: multi-batch invoices carry the GRANULAR allocation inline — "26ZB086 (3.00L), 26ZG135-A (4.70L)"
+      // — never just the batch list with a gross total. Multi-batch rows without allocation rows are
+      // flagged rather than guessed.
+      {v:(inv.allocs && inv.allocs.length > 1) ? inv.allocs.map(a=>`${a.batch} (${a.qty.toFixed(2)}L)`).join(', ')
+         : ((String(inv.batch_number||'').includes(',') && (!inv.allocs || !inv.allocs.length)) ? (inv.batch_number + ' [UNALLOCATED]') : (inv.batch_number||'')),s:S.mono},
       {v:inv.pc_code||'',s:S.mono},{v:inv.size??'',s:S.mono},{v:inv.colour||'',s:S.mono},
       {v:boxes,s:S.num},{v:qtyLakhs,s:S.num},
       {v:pm?mBoxes:'',s:S.num},{v:pm?mQty:'',s:S.num},{v:pm?mOther:'',s:S.num},
@@ -10402,6 +10408,34 @@ function _v39_exportInvoicesCsv() {
   ws['!rows']=[{hpt:24}];
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Invoices');
+  // v53H: pivot-ready per-batch allocation grain for every exported invoice, same filters applied.
+  {
+    const aAoa = [[{v:`BATCH ALLOCATION — one row per invoice × batch  ·  ${monthSel}  ·  exported ${today()}`,s:S.title}],[],
+      ['Invoice #','Invoice Date','Customer','Batch','Alloc Qty (L)','Alloc Boxes','Invoice Total Qty (L)','# Batches on Invoice'].map(h=>({v:h,s:S.hdr}))];
+    let aq=0, ab=0;
+    for (const inv of invoices) {
+      const al = inv.allocs || [];
+      const tq = parseFloat(inv.total_qty_lakhs)||0;
+      if (al.length) {
+        for (const a of al) {
+          aq+=a.qty; ab+=a.boxes;
+          aAoa.push([{v:inv.sap_doc_num||'',s:S.mono},{v:inv.invoice_date||'',s:S.mono},{v:inv.customer||'',s:S.mono},
+                     {v:a.batch,s:S.mono},{v:a.qty,s:S.num},{v:a.boxes,s:S.num},{v:tq,s:S.num},{v:al.length,s:S.num}]);
+        }
+      } else {
+        aAoa.push([{v:inv.sap_doc_num||'',s:S.mono},{v:inv.invoice_date||'',s:S.mono},{v:inv.customer||'',s:S.mono},
+                   {v:(inv.batch_number||'')+(String(inv.batch_number||'').includes(',')?' [UNALLOCATED]':''),s:S.mono},
+                   {v:'',s:S.mono},{v:'',s:S.mono},{v:tq,s:S.num},{v:String(inv.batch_number||'').split(',').filter(x=>x.trim()).length,s:S.num}]);
+      }
+    }
+    const tR=new Array(8).fill('');
+    tR[3]={v:'TOTAL',s:S.tot}; tR[4]={v:Math.round(aq*100)/100,s:S.tot}; tR[5]={v:ab,s:S.tot};
+    aAoa.push(tR);
+    const aws = XLSX.utils.aoa_to_sheet(aAoa);
+    aws['!cols']=[{wch:12},{wch:12},{wch:30},{wch:16},{wch:12},{wch:11},{wch:14},{wch:10}];
+    aws['!merges']=[{s:{r:0,c:0},e:{r:0,c:7}}];
+    XLSX.utils.book_append_sheet(wb, aws, 'Batch Allocation');
+  }
   XLSX.writeFile(wb, `Sunloc_Invoices_${String(monthSel).replace(/[^\w-]/g,'')}.xlsx`);
 }
 
