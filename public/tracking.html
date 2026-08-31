@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53I</title>
+<title>Sunloc Tracking Suite v1.0 · build v53J</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53I</p>
+      <p>Tracking Suite v1.0 · build v53J</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53I</p>
+      <p>Tracking Suite v1.0 · build v53J</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -5887,10 +5887,7 @@ function renderDeptScan(dept){
         // "26X049/?" with a future timestamp — indistinguishable from corruption. Label them instead.
         const _sLid = s.labelId||s.label_id||'';
         const _sOp  = s.operator||s.by||'';
-        // v53I: scrap per-box clears carry operator 'recon-scrap:%' (v50X zero-valued markers against
-        // real labels) — 'recon-scrap:' does not startWith 'recon:', so they escaped the v49U badge
-        // and rendered as ordinary scans with a future timestamp. All three signatures now covered.
-        const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:') || String(_sOp).startsWith('recon-scrap:');
+        const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:');
         const lbl=_isRecon?null:state.labels.find(l=>l.id===_sLid);
         // Fallback: if label not in state, try matching by batch+labelNumber from scan, or show box from scan qty
         // v49ZJ (confirmed by Ishan): excess boxes show their LABEL NOMENCLATURE (E-1, E-2 …), not a
@@ -17263,7 +17260,12 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         'AIM A-GRADE (L)','UNSCANNED WIP (L)','PRINT REJ (L)','PI REJ (L)','NET PACKABLE (L)',
         'DISPATCHED (L)','DISP PRICE/L (INR)','DISPATCHED VALUE (INR)',
         'BALANCE (L)','BAL PRICE/L (INR)','BALANCE VALUE (INR)',
-        'PRICE/L (INDENT)','CCY (USD/INR)','PRICE/L (INR)','TOTAL SALE VALUE (INR, DISP+BAL)','PRICE SOURCE'];
+        'PRICE/L (INDENT)','CCY (USD/INR)','PRICE/L (INR)','TOTAL SALE VALUE (INR, DISP+BAL)','PRICE SOURCE',
+        // v53J (Ishan, 31 Aug): Z = OVER-INVOICED flag (live: dispatched beyond packable — the planner's
+        // heads-up), AA = size key helper ('SZ00'/'SZ0'…) so the size summary can use plain SUMIFS
+        // without numeric-text coercion and without any array-context dependency (the v53F/G
+        // SUMPRODUCT+EXACT form calculated in LibreOffice but rendered blank in Excel for Mac).
+        'OVER-INVOICED ⚠','SIZE KEY (helper)'];
       const NC = HDR.length;
       const aoa = [], kinds = [], merges = [];
       const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
@@ -17319,7 +17321,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           _push([r.machine, r.floor, r.batchNo, r.customer || '—', r.pcCode || '—', String(r.size), zone,
             _n(r._plannedQty), _n(r._grossProd), _n(r._aimAGrade), _n(r._unscannedWip), P('_printRej'), P('_piSalRem'),
             null, _dispMain, null, null, null, null, null,
-            (pr ? pr.pricePerLakh : ''), (pr ? pr.currency : ''), null, null, srcLbl],'data');
+            (pr ? pr.pricePerLakh : ''), (pr ? pr.currency : ''), null, null, srcLbl, null, 'SZ' + String(r.size)],'data');
           if (_splitExcess) {
             const exIdx = aoa.length;
             dataRowIdxs.push(exIdx);
@@ -17327,7 +17329,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
             _push([r.machine, r.floor, r.batchNo + ' (EXCESS)', '⚠ RE-CUSTOMER — enter buyer', r.pcCode || '—', String(r.size), zone,
               0, 0, 0, 0, 0, 0,
               null, _dispEx, null, null, null, null, null,
-              '', '', null, null, 'ENTER MANUALLY (excess — re-customer via new SO)'],'data');
+              '', '', null, null, 'ENTER MANUALLY (excess — re-customer via new SO)', null, 'SZ' + String(r.size)],'data');
           }
         });
         mcBlocks.push({ mc, start, end: aoa.length - 1 });
@@ -17340,7 +17342,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       _push([`GRAND TOTAL (${dataRowIdxs.length} batches)`],'grand');
       const ws = XLSX.utils.aoa_to_sheet(aoa);
       ws['!merges'] = merges;
-      ws['!cols'] = [{wch:9},{wch:6},{wch:13},{wch:24},{wch:9},{wch:6},{wch:9},...Array(7).fill({wch:12}),{wch:12},{wch:12},{wch:15},{wch:11},{wch:12},{wch:15},{wch:13},{wch:10},{wch:12},{wch:15},{wch:14}];
+      ws['!cols'] = [{wch:9},{wch:6},{wch:13},{wch:24},{wch:9},{wch:6},{wch:9},...Array(7).fill({wch:12}),{wch:12},{wch:12},{wch:15},{wch:11},{wch:12},{wch:15},{wch:13},{wch:10},{wch:12},{wch:15},{wch:14},{wch:16},{wch:8}];
       const _fc = (r, c, f, z) => { ws[XLSX.utils.encode_cell({r,c})] = { t:'n', f, z: z || '0.00' }; };
       const _row1 = i => i + 1;   // aoa index → 1-based Excel row
       // Per-data-row formulas: Net Packable (N=13), Price INR (Q=16), Order Value (R=17)
@@ -17375,6 +17377,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         // packable (over-invoicing), the balance shows 0 — never a negative — and the balance VALUE
         // (T = R×S) and every total that sums R/T follow automatically.
         _fc(i, 17, `ROUND(MAX(N${R1}-O${R1},0),2)`);       // R  balance qty (≥ 0)
+        _fc(i, 25, `IF(O${R1}>N${R1}+0.005,"OVER by "&TEXT(O${R1}-N${R1},"0.00")&" L","")`);   // Z  v53J over-invoiced flag (live)
         _fc(i, 18, `W${R1}`);                              // S  bal price = INR price
         _fc(i, 19, `ROUND(R${R1}*S${R1},0)`, '#,##0');     // T  balance value
         _fc(i, 22, `IF(V${R1}="USD",ROUND(N(U${R1})*$${XR.slice(0,1)}$${XR.slice(1)},2),N(U${R1}))`);
@@ -17415,6 +17418,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         // qty, so a hand-edited price on any row reweights the average live. Blank when qty is 0.
         _fc(subA, 15, `IFERROR(ROUND(Q${R1}/O${R1},0),"")`, '#,##0');   // P  machine wtd-avg disp NSR/L
         _fc(subA, 18, `IFERROR(ROUND(T${R1}/R${R1},0),"")`, '#,##0');   // S  machine wtd-avg bal NSR/L
+        _fc(subA, 25, `COUNTIF(Z${s1}:Z${e1},"OVER*")&" over-invoiced"`);   // Z  v53J machine count
       });
       // Grand total: SUMIF on nonblank BATCH column (C) so band/subtotal rows never double-count.
       const dFirst = _row1(hdrRowIdx + 1), dLast = _row1(grandIdx - 1), G1 = _row1(grandIdx);
@@ -17436,6 +17440,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       // own value ÷ qty cells, which are already "?*"-guarded SUMIFs over data rows only.
       _fc(grandIdx, 15, `IFERROR(ROUND(Q${G1}/O${G1},0),"")`, '#,##0');   // P  overall wtd-avg disp NSR/L
       _fc(grandIdx, 18, `IFERROR(ROUND(T${G1}/R${G1},0),"")`, '#,##0');   // S  overall wtd-avg bal NSR/L
+      _fc(grandIdx, 25, `COUNTIF($Z$${dFirst}:$Z$${dLast},"OVER*")&" over-invoiced"`);   // Z  v53J overall count
       // ── NSR SUMMARY (all formulas — recalc live with the rate cell) ──
       let si = grandIdx + 1;
       const _sp = (row, kind) => { XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r: si, c: 0 } }); kinds[si] = kind; si++; };
@@ -17447,6 +17452,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
             N = `$N$${dFirst}:$N$${dLast}`, RR = `$X$${dFirst}:$X$${dLast}`,       // v52N: order value now col X
             DQ = `$O$${dFirst}:$O$${dLast}`, DV = `$Q$${dFirst}:$Q$${dLast}`,      // dispatched qty/value
             BQ = `$R$${dFirst}:$R$${dLast}`, BV = `$T$${dFirst}:$T$${dLast}`;      // balance qty/value
+      const KEY = `$AA$${dFirst}:$AA$${dLast}`;   // v53J size key helper
       const sizesAll = [...new Set(rows.map(r => String(r.size)))].sort();
       sizesAll.forEach(sz => {
         const r1 = si + 1;
@@ -17454,9 +17460,10 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         // v53F (Ishan, 29 Aug): SUMIF/SUMIFS coerce numeric-looking text — criteria '00' and '0'
         // BOTH become the number 0, so size 00's NSR silently blended with size 0's. EXACT() does
         // no coercion: each size line now matches its own rows and no other.
-        _fc(si, 1, `IFERROR(ROUND(SUMPRODUCT(--EXACT(${F},A${r1}),${RR})/SUMPRODUCT(--EXACT(${F},A${r1}),(${DQ}+${BQ})),0),"—")`, '#,##0');
-        _fc(si, 2, `IFERROR(ROUND(SUMPRODUCT(--EXACT(${F},A${r1}),--(${G}="Domestic"),${RR})/SUMPRODUCT(--EXACT(${F},A${r1}),--(${G}="Domestic"),(${DQ}+${BQ})),0),"—")`, '#,##0');
-        _fc(si, 3, `IFERROR(ROUND(SUMPRODUCT(--EXACT(${F},A${r1}),--(${G}="Export"),${RR})/SUMPRODUCT(--EXACT(${F},A${r1}),--(${G}="Export"),(${DQ}+${BQ})),0),"—")`, '#,##0');
+        // v53J: SUMIFS on the non-numeric size key — exact per size, works in every Excel.
+        _fc(si, 1, `IFERROR(ROUND(SUMIFS(${RR},${KEY},"SZ"&A${r1})/(SUMIFS(${DQ},${KEY},"SZ"&A${r1})+SUMIFS(${BQ},${KEY},"SZ"&A${r1})),0),"—")`, '#,##0');
+        _fc(si, 2, `IFERROR(ROUND(SUMIFS(${RR},${KEY},"SZ"&A${r1},${G},"Domestic")/(SUMIFS(${DQ},${KEY},"SZ"&A${r1},${G},"Domestic")+SUMIFS(${BQ},${KEY},"SZ"&A${r1},${G},"Domestic")),0),"—")`, '#,##0');
+        _fc(si, 3, `IFERROR(ROUND(SUMIFS(${RR},${KEY},"SZ"&A${r1},${G},"Export")/(SUMIFS(${DQ},${KEY},"SZ"&A${r1},${G},"Export")+SUMIFS(${BQ},${KEY},"SZ"&A${r1},${G},"Export")),0),"—")`, '#,##0');
         kinds[si] = 'data'; si++;
       });
       XLSX.utils.sheet_add_aoa(ws, [['AVERAGE (ALL)']], { origin: { r: si, c: 0 } });
@@ -18366,25 +18373,15 @@ async function refreshScans(){
     if(window._rsActive && window._rsActive[dept]) return;
     const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
     tbody.innerHTML=scans.map(s=>{
-      // v53I (Ishan's 30-Aug screenshots — '26Z077/?' with a 01-Sept timestamp): this LIVE refresh
-      // repaints the tbody every 5 seconds with its OWN row template, and that template never got
-      // the v49U recon labelling — so the page render badged month-end reconciliation entries
-      // correctly for under 5 seconds before this loop overwrote them as ordinary-looking scans
-      // with future timestamps. Same failure class as v51F below (the refresh missing v49ZJ).
-      // Detection + badge + (month-end) chip now byte-consistent with the page template, including
-      // the v53I 'recon-scrap:' signature.
-      const _sLid = s.labelId||s.label_id||'';
-      const _sOp  = s.operator||s.by||'';
-      const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:') || String(_sOp).startsWith('recon-scrap:');
-      const lbl=_isRecon?null:state.labels.find(l=>l.id===_sLid);
+      const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
       // v51F (Rahul, 26ZE123 E-3/E-4): the LIVE refresh never got the v49ZJ fix — Math.abs stripped
       // the E-series convention (excess labels store negative labelNumbers), so E-4 rendered as 4.
       // Same canonical _boxDisplayId + negative→E- fallback as the filtered path.
       const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '?';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?('E-'+Math.abs(_ni)):String(Math.abs(_ni||0));})();
       const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{}; // v45T #2.3
-      return `<tr${_isRecon?' style="background:rgba(124,58,237,0.05)"':''}>
-        <td class="td-mono text-sm">${fmtDateTime(s.ts)}${_isRecon?' <span style="font-size:9px;color:#7c3aed" title="Timestamp is the month-window end so this adjustment is attributed to the reconciled month — not a real scan time">(month-end)</span>':''}</td>
-        <td class="td-bold td-mono">${s.batchNumber}/${_isRecon?`<span class="badge" style="background:rgba(124,58,237,0.12);color:#7c3aed;border:1px solid rgba(124,58,237,0.35);font-size:9px" title="Synthetic movement created by admin WIP reconciliation — no physical box label">⚙ RECON</span>`:`<span style="color:var(--accent)">${boxNum}</span>`}</td>
+      return `<tr>
+        <td class="td-mono text-sm">${fmtDateTime(s.ts)}</td>
+        <td class="td-bold td-mono">${s.batchNumber}/<span style="color:var(--accent)">${boxNum}</span></td>
         <td class="text-sm">${_rsB.customer||'—'}</td>
         <td class="text-sm">${_rsB.colour||'—'}</td>
         <td class="text-sm">${_rsB.size!=null?_rsB.size:'—'}</td>

@@ -16,33 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v53I';
-// ═══ v53I (Ishan, 30 Aug — the AIM '2036' clock excursion) — FUTURE-TS CLAMP ═════════════════════
-// 68 real AIM scans arrived stamped 2036 because /api/tracking/scan stores the CLIENT's ts verbatim
-// and one station's clock was set ten years ahead (classic NTP-era wraparound signature). Those rows
-// pinned the top of every newest-first list and fell outside every 2026 month window. The server now
-// refuses to store a FUTURE timestamp from a device: any incoming scan ts parseable to more than 48h
-// ahead of server time is replaced with server time and logged. Recon-signed rows are exempt — the
-// month-end reconciliation ts (window end − 1s, up to a month ahead) is by design (v41/v49U/v50X).
-// Past-dated ts (offline-queue replays, admin backfill of history) pass through untouched, and an
-// unparseable ts is logged but NOT altered (today's behaviour), so the guard can only ever fire on
-// the one case that is always wrong: a device claiming to scan in the future.
-const _V53I_MAX_AHEAD_MS = 48 * 3600 * 1000;
-function _v53iClampTs(ts, labelId, operator, ctx) {
-  try {
-    const lid = String(labelId || ''), op = String(operator || '');
-    if (lid.startsWith('recon-') || op.startsWith('recon:') || op.startsWith('recon-scrap:')) return ts;
-    const t = Date.parse(ts);
-    if (!Number.isFinite(t)) { console.warn(`[v53I ts-clamp] ${ctx}: unparseable ts '${ts}' — stored unchanged`); return ts; }
-    const now = Date.now();
-    if (t - now > _V53I_MAX_AHEAD_MS) {
-      const iso = new Date().toISOString();
-      console.warn(`[v53I ts-clamp] ${ctx}: client ts ${ts} is ~${Math.round((t - now) / 86400000)}d in the future → stored as ${iso}`);
-      return iso;
-    }
-    return ts;
-  } catch (e) { return ts; }
-}
+const APP_BUILD = 'v53J';
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -18548,9 +18522,8 @@ app.post('/api/tracking/state', async (req, res) => {
         }
         if (scans && scans.length) {
           for (const s of scans) {
-            const _ts53i = _v53iClampTs(s.ts, s.labelId||s.label_id, s.operator, 'state-sync');   // v53I: future-ts clamp
             await client.query(`INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
-              [s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,s.dept,s.type,_ts53i,s.operator||null,s.size||null,s.qty||null]);
+              [s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null]);
           }
         }
         if (stageClosure && stageClosure.length) {
@@ -18583,7 +18556,7 @@ app.post('/api/tracking/state', async (req, res) => {
     } else {
       const saveAll = db.transaction(() => {
         if (labels?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_labels (id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`); labels.forEach(l => stmt.run(l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,l.poNumber||null,l.machineId||null,l.printingMatter||null,l.generated||new Date().toISOString(),l.printed?1:0,l.printedAt||null,l.voided?1:0,l.voidReason||null,l.voidedAt||null,l.voidedBy||null,l.qrData||null,l.woStatus||null,l.shipTo||null,l.billTo||null,l.isExcess?1:0,l.excessNum||null,l.excessTotal||null,l.normalTotal||null)); }
-        if (scans?.length) { const stmt = db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?)`); scans.forEach(s => stmt.run(s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,s.dept,s.type,_v53iClampTs(s.ts, s.labelId||s.label_id, s.operator, 'state-sync'),s.operator||null,s.size||null,s.qty||null)); }
+        if (scans?.length) { const stmt = db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?)`); scans.forEach(s => stmt.run(s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null)); }
         if (wastage?.length) { const stmt = db.prepare(`INSERT OR REPLACE INTO tracking_wastage (id,batch_number,dept,type,qty,ts,by,shift) VALUES (?,?,?,?,?,?,?,?)`); wastage.forEach(w => stmt.run(w.id,w.batchNumber||w.batch_number,w.dept,w.type,w.qty,w.ts,w.by||null,w.shift||null)); }
       });
       saveAll();
@@ -20240,9 +20213,6 @@ app.post('/api/tracking/scan', async (req, res) => {
     if(!scan || !scan.id) return res.status(400).json({ok:false,error:'Missing scan'});
     const labelId = scan.labelId||scan.label_id;
     const batchNumber = scan.batchNumber||scan.batch_number;
-    // v53I: a device claiming a FUTURE scan time is always wrong (the AIM '2036' excursion) — clamp
-    // to server time before the ts is used anywhere in this handler. Recon signatures exempt inside.
-    scan.ts = _v53iClampTs(scan.ts, labelId, scan.operator, `scan ${scan.dept}:${scan.type} ${batchNumber||'?'}`);
 
     // ═══ v51U ORPHAN GUARD (Ishan, 10 Aug — 26Y065 box 18) ══════════════════════════════════
     // A scan was accepted against ANY label_id, existing or not. That is how box 18's AIM history
@@ -21127,14 +21097,13 @@ app.post('/api/tracking/backfill', async (req, res) => {
     let count = 0;
     for (const scan of scans) {
       if (!scan.id) continue;
-      const _ts53i = _v53iClampTs(scan.ts, scan.labelId||scan.label_id, scan.operator, 'backfill');   // v53I: future-ts clamp (past/historical ts untouched)
       if (pgPool) {
         await pgPool.query(
           `INSERT INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,
-          [scan.id, scan.labelId||scan.label_id||null, scan.batchNumber||scan.batch_number||null, scan.labelNumber||null, scan.dept, scan.type, _ts53i, scan.operator||null, scan.size||null, scan.qty||null]
+          [scan.id, scan.labelId||scan.label_id||null, scan.batchNumber||scan.batch_number||null, scan.labelNumber||null, scan.dept, scan.type, scan.ts, scan.operator||null, scan.size||null, scan.qty||null]
         );
       } else {
-        db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(scan.id, scan.labelId||scan.label_id||null, scan.batchNumber||scan.batch_number||null, scan.labelNumber||null, scan.dept, scan.type, _ts53i, scan.operator||null, scan.size||null, scan.qty||null);
+        db.prepare(`INSERT OR IGNORE INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty) VALUES (?,?,?,?,?,?,?,?,?,?)`).run(scan.id, scan.labelId||scan.label_id||null, scan.batchNumber||scan.batch_number||null, scan.labelNumber||null, scan.dept, scan.type, scan.ts, scan.operator||null, scan.size||null, scan.qty||null);
       }
       count++;
     }
