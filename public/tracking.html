@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53J</title>
+<title>Sunloc Tracking Suite v1.0 · build v53L</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53J</p>
+      <p>Tracking Suite v1.0 · build v53L</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53J</p>
+      <p>Tracking Suite v1.0 · build v53L</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -3374,7 +3374,7 @@ function getBatchWIPBreakdown(batchNo, opts){
   if(_isRetired(batchNo) && !_raw){
     // Retired: WIP excluded to 0 (batch declared physically gone). Gross kept (it was produced);
     // A-Grade is computed separately from scan data, so it is unaffected by this exclusion.
-    const _g = batch.actualProd || batch.actualQty || 0;
+    const _g = _v50fGross(batchNo, batch);   // v53K item 3: same resolver as the Gross column (was the blob tier)
     return { grossProd:_g, aimIn:0, aimOut:0, packIn:0, packOut:0, preAIM:0, aimWIP:0, printWIP:0,
              piWIP:0, toPackTransit:0, packWIP:0, packedNotDisp:0, totalWIP:0,
              wAIM:{salvage:0,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, retired:true };
@@ -3447,7 +3447,16 @@ function getBatchWIPBreakdown(batchNo, opts){
   const wAIM   = getTotalWastage(batchNo,'aim');
   const wPrint = getTotalWastage(batchNo,'printing');
   const wPI    = getTotalWastage(batchNo,'pi');
-  const grossProd = batch.actualProd || batch.actualQty || 0;
+  // v53K item 3 (Ishan, 01 Sep — 26P054: 20.00L Consolidated WIP against 0.00 Gross): this line read the
+  // planning blob's actualProd/actualQty — the tier v50H retired from the Gross column's resolver
+  // (_v50fGross) because a figure with no DPR behind it is not production. Report E's Gross cell and
+  // its Consolidated WIP were therefore resolving gross through two different tiers in ONE row:
+  // Gross said 0, the WIP legs said 20 (preAIM = 20 − 0 − 0). One resolver for both — the same
+  // precedence Report B/D/E/G already share: DPR correction → absorbed July slice → apportioned DPR
+  // sum → 0 once the summary is loaded (blob only before it loads). Every breakdown consumer (stage
+  // matrix, Report D, Batch Tracker, Planning packable) moves with it by construction. The frozen
+  // formulas below are untouched — only their grossProd input is now the canonical one.
+  const grossProd = _v50fGross(batchNo, batch);
 
   // v47I (confirmed by Ishan): printing salvage is logged in the DPL (Planning), never in Tracking, so
   // getTotalWastage('printing') reads 0 and the printing loss was previously stuck in WIP. Feed the
@@ -5887,7 +5896,8 @@ function renderDeptScan(dept){
         // "26X049/?" with a future timestamp — indistinguishable from corruption. Label them instead.
         const _sLid = s.labelId||s.label_id||'';
         const _sOp  = s.operator||s.by||'';
-        const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:');
+        // v53K item 1 (re-applied from v53I): scrap-disposition per-box clears carry operator 'recon-scrap:%' (v50X) — badge them too.
+        const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:') || String(_sOp).startsWith('recon-scrap:');
         const lbl=_isRecon?null:state.labels.find(l=>l.id===_sLid);
         // Fallback: if label not in state, try matching by batch+labelNumber from scan, or show box from scan qty
         // v49ZJ (confirmed by Ishan): excess boxes show their LABEL NOMENCLATURE (E-1, E-2 …), not a
@@ -18373,15 +18383,22 @@ async function refreshScans(){
     if(window._rsActive && window._rsActive[dept]) return;
     const scans=state.scans.filter(s=>s.dept===dept).slice().sort((a,b)=>new Date(b.ts)-new Date(a.ts)).slice(0,30);
     tbody.innerHTML=scans.map(s=>{
-      const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
+      // v53K item 1 (re-applied from v53I — same disease as the v51F note below): the LIVE refresh never
+      // got the v49U badge either, so the correct page render survived <5 s before this template
+      // overwrote it with plain "26X049/?" rows. Identical detection + badge + month-end chip as the
+      // page template; 'recon-scrap:%' covered in both.
+      const _sLid = s.labelId||s.label_id||'';
+      const _sOp  = s.operator||s.by||'';
+      const _isRecon = String(_sLid).startsWith('recon-') || String(_sOp).startsWith('recon:') || String(_sOp).startsWith('recon-scrap:');
+      const lbl=_isRecon?null:state.labels.find(l=>l.id===_sLid);
       // v51F (Rahul, 26ZE123 E-3/E-4): the LIVE refresh never got the v49ZJ fix — Math.abs stripped
       // the E-series convention (excess labels store negative labelNumbers), so E-4 rendered as 4.
       // Same canonical _boxDisplayId + negative→E- fallback as the filtered path.
       const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '?';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?('E-'+Math.abs(_ni)):String(Math.abs(_ni||0));})();
       const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{}; // v45T #2.3
-      return `<tr>
-        <td class="td-mono text-sm">${fmtDateTime(s.ts)}</td>
-        <td class="td-bold td-mono">${s.batchNumber}/<span style="color:var(--accent)">${boxNum}</span></td>
+      return `<tr${_isRecon?' style="background:rgba(124,58,237,0.05)"':''}>
+        <td class="td-mono text-sm">${fmtDateTime(s.ts)}${_isRecon?' <span style="font-size:9px;color:#7c3aed" title="Timestamp is the month-window end so this adjustment is attributed to the reconciled month — not a real scan time">(month-end)</span>':''}</td>
+        <td class="td-bold td-mono">${s.batchNumber}/${_isRecon?`<span class="badge" style="background:rgba(124,58,237,0.12);color:#7c3aed;border:1px solid rgba(124,58,237,0.35);font-size:9px" title="Synthetic movement created by admin WIP reconciliation — no physical box label">⚙ RECON</span>`:`<span style="color:var(--accent)">${boxNum}</span>`}</td>
         <td class="text-sm">${_rsB.customer||'—'}</td>
         <td class="text-sm">${_rsB.colour||'—'}</td>
         <td class="text-sm">${_rsB.size!=null?_rsB.size:'—'}</td>

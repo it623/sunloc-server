@@ -16,7 +16,30 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v53J';
+const APP_BUILD = 'v53L';
+// ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
+// from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
+// 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
+// one station's clock was ten years ahead (NTP-era wraparound signature). Any device ts more than
+// 48h ahead of server time is stored as server time with a log line; recon signatures (label
+// 'recon-%', operator 'recon:%' / 'recon-scrap:%') are exempt — their month-window-end future ts is
+// by design. Past-dated ts (offline replays) and unparseable ts pass through untouched.
+const _V53K_FUTURE_MS = 48 * 3600 * 1000;
+function _v53kClampTs(scan, route) {
+  try {
+    const ts = scan && scan.ts;
+    if (!ts) return ts;
+    const lid = String(scan.labelId || scan.label_id || ''), op = String(scan.operator || '');
+    if (lid.startsWith('recon-') || op.startsWith('recon:') || op.startsWith('recon-scrap:')) return ts;
+    const t = Date.parse(ts);
+    if (!Number.isFinite(t)) return ts;
+    const now = Date.now();
+    if (t - now <= _V53K_FUTURE_MS) return ts;
+    const fixed = new Date(now).toISOString();
+    console.warn(`[v53K ts-clamp] ${route} ${scan.dept}:${scan.type} batch ${scan.batchNumber || scan.batch_number || '?'} device ts ${ts} → ${fixed}`);
+    return fixed;
+  } catch (e) { return scan && scan.ts; }
+}
 // v51M BUILD FINGERPRINT (my own process failure, 9 Aug): two DIFFERENT v51L archives were shipped
 // — one before the Truck/Order scope unification and one after — and both reported build 'v51L' on
 // /api/health, so there was no way to tell from the running server which one was actually deployed.
@@ -54,6 +77,90 @@ function _v50tAudit(route, before, after, extra) {
     if (!diffs.length) return;
     console.log(`[v50T AUDIT] ${bn} via ${route} | stamp=${(after && after._localEditedAt) || (before && before._localEditedAt) || '-'} | ${diffs.join(' ; ')}${extra ? ' | ' + extra : ''}`);
   } catch (e) { /* audit must never break a write */ }
+}
+
+// ═══ v53L (Rahul, 02 Sep — "DPR save not syncing / close a batch → slow → hang") ══════════════════
+// One multi-row upsert for production_actuals, chunked (same v41w pattern as production_orders).
+// Replaces three serial INSERT-per-run loops: the save route's main write, its v43 #1 restore pass,
+// and the batch-close flush. Identical ON CONFLICT semantics at every site (order/batch/qty win,
+// synced_at bumped). rows = [order_id, batch_number, machine_id, date, shift, run_index, qty, floor].
+async function _v53lUpsertActuals(rows, client) {
+  if (!rows || !rows.length) return 0;
+  const q = client || pgPool;
+  const CHUNK = 100;
+  let n = 0;
+  for (let i = 0; i < rows.length; i += CHUNK) {
+    const chunk = rows.slice(i, i + CHUNK);
+    const vals = [], params = [];
+    chunk.forEach((r, k) => {
+      const b = k * 8;
+      vals.push(`($${b+1},$${b+2},$${b+3},$${b+4},$${b+5},$${b+6},$${b+7},$${b+8})`);
+      params.push(r[0] == null ? null : r[0], r[1] == null ? null : r[1], r[2], r[3], r[4], r[5], r[6], r[7] == null ? null : r[7]);
+    });
+    await q.query(
+      `INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
+       VALUES ${vals.join(',')}
+       ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
+         order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number,
+         qty_lakhs=EXCLUDED.qty_lakhs, synced_at=NOW()`, params);
+    n += chunk.length;
+  }
+  return n;
+}
+
+// ═══ v53K item 2 — UP→PTD CONVERSION GUARD on the planning write paths (Ishan, 01 Sep) ══════════════
+// 26N045 / 26N047 were planned unprinted, scanned AIM→Packing (12.45L + 17.05L packed as UP FG), then
+// Planning_Manager flipped isPrinted on the ORDER EDIT FORM (31 Aug 06:03–06:05 UTC, ORDER_EDITED). Only
+// the Re-customer CONVERT endpoint carried the v44C D5 reversal step, so the pack-in scans survived and
+// the same 29.50L sat in FG UP *and* in the AIM→Printing handover gap at once. Rule (Ishan): on an
+// unprinted→printed conversion the FG must be reversed — the stock shows only as WIP and re-flows
+// Printing→PI→Packing. This guard runs as a pre-pass on BOTH order write paths (blob merge and
+// upsert-bulk) so the flip cannot arrive by any route without its reversal:
+//   • flip detected  = incoming isPrinted === true while the stored copy was not printed;
+//   • already dispatched (either flow) → the flip is REFUSED (same rule as Re-customer CONVERT): the
+//     incoming order's isPrinted is reverted to false, audited, and reported to the client;
+//   • otherwise every live packing scan gets a ledger reversal row (identical INSERT to D5 — originals
+//     preserved, idempotent by id), audited, and reported so the planner sees what moved.
+// Never blocks a save: any failure logs and lets the write proceed exactly as before.
+async function _v53kConvertGuard(prevOf, orders, who, route) {
+  const notices = [];
+  if (!Array.isArray(orders)) return notices;
+  for (const o of orders) {
+    try {
+      if (!o || !o.id || o.deleted || o.isPrinted !== true) continue;
+      const prev = prevOf(o);
+      if (!prev || prev.isPrinted === true) continue;                 // not a false→true flip
+      const bn = String(o.batchNumber || prev.batchNumber || '').trim();
+      if (!bn) continue;
+      let dispatched = false;
+      if (pgPool) {
+        const r = await pgPool.query(`SELECT (EXISTS (SELECT 1 FROM tracking_scans WHERE UPPER(batch_number)=UPPER($1) AND dept='dispatch') OR EXISTS (SELECT 1 FROM tracking_dispatch_records WHERE UPPER(batch_number)=UPPER($1))) AS d`, [bn]);
+        dispatched = !!(r.rows[0] && r.rows[0].d);
+      } else {
+        dispatched = !!db.prepare(`SELECT 1 FROM tracking_scans WHERE UPPER(batch_number)=UPPER(?) AND dept='dispatch' LIMIT 1`).get(bn);
+      }
+      if (dispatched) {
+        o.isPrinted = false;
+        try { logAudit(who, 'planning', 'planning', 'UP_TO_PTD_REFUSED', `${bn}: unprinted→printed refused via ${route} — box(es) already dispatched. Re-customer without conversion, or handle dispatch first.`); } catch (_) {}
+        notices.push({ id: o.id, batchNumber: bn, refused: true, reason: 'already dispatched' });
+        continue;
+      }
+      const ts = new Date().toISOString();
+      const reason = `Planning UP→PTD conversion via ${route} (${who}) — pack-in reversed; box re-flows Printing→PI→Packing`;
+      let n = 0;
+      if (pgPool) {
+        const r = await pgPool.query(`INSERT INTO tracking_scan_reversals (id, reversed_scan_id, batch_number, label_id, dept, type, reason, by_user, ts) SELECT 'rev-'||s.id, s.id, s.batch_number, s.label_id, s.dept, s.type, $2, $3, $4 FROM tracking_scans s WHERE UPPER(s.batch_number)=UPPER($1) AND s.dept='packing' AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`, [bn, reason, who, ts]);
+        n = r.rowCount || 0;
+      } else {
+        const r = db.prepare(`INSERT OR IGNORE INTO tracking_scan_reversals (id, reversed_scan_id, batch_number, label_id, dept, type, reason, by_user, ts) SELECT 'rev-'||s.id, s.id, s.batch_number, s.label_id, s.dept, s.type, ?, ?, ? FROM tracking_scans s WHERE UPPER(s.batch_number)=UPPER(?) AND s.dept='packing'`).run(reason, who, ts, bn);
+        n = r.changes || 0;
+      }
+      try { logAudit(who, 'planning', 'planning', 'UP_TO_PTD_CONVERT', `${bn}: unprinted→printed via ${route} — ${n} packing scan(s) reversed (ledger), stock returns to WIP pending Printing scan-in`); } catch (_) {}
+      notices.push({ id: o.id, batchNumber: bn, reversed: n });
+    } catch (e) { console.warn(`[v53K convert-guard] ${route} skipped for ${(o && o.batchNumber) || '?'}:`, e && e.message); }
+  }
+  if (notices.length) console.log(`[v53K convert-guard] ${route} (${who}): ` + notices.map(x => x.refused ? `${x.batchNumber} REFUSED (${x.reason})` : `${x.batchNumber} ${x.reversed} pack-in reversed`).join('; '));
+  return notices;
 }
 
 // v47G (confirmed by Ishan): authoritative per-box scan quantity in SQL. Every scanned REAL box is
@@ -10764,6 +10871,13 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
     } catch(e) {
       console.warn('[v41w upsert-bulk] Existing-row preload failed (falling back to client status):', e.message);
     }
+    // v53K item 2: UP→PTD conversion guard as a pre-pass against the stored row (mutates ord.isPrinted
+    // on refusal BEFORE mergedOrd is built below, so the refusal flows into the write).
+    let _convertNotices53k = [];
+    try {
+      const _who53k = (req.headers['x-sunloc-user'] || 'Planning').toString();
+      _convertNotices53k = await _v53kConvertGuard(o => { const ex = existingMap[o.id]; if (!ex) return null; try { return typeof ex.data_json === 'string' ? JSON.parse(ex.data_json) : (ex.data_json || null); } catch (e) { return null; } }, orders, _who53k, 'POST /api/orders/upsert-bulk');
+    } catch (_cvErr) { console.warn('[v53K convert-guard] skipped:', _cvErr.message); }
     // Build DB running count per machine for 2-order limit enforcement
     // Sort oldest-first so the 2 most established running orders are protected
     const dbRunningPerMachine = {};
@@ -11079,7 +11193,7 @@ app.post('/api/orders/upsert-bulk', async (req, res) => {
     if (preservedCount > 0) {
       console.log(`[v41w upsert-bulk] Preserved DB status on ${preservedCount}/${orders.length} orders (stale client write blocked)`);
     }
-    res.json({ ok: true, count: orders.length, preservedCount, preservedOrders, savedAt: new Date().toISOString() });
+    res.json({ ok: true, count: orders.length, preservedCount, preservedOrders, savedAt: new Date().toISOString(), convertNotices: _convertNotices53k });   // v53K item 2
   } catch(err) { console.error('[v51 upsert-bulk 500]', err && err.stack || err); res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -12113,6 +12227,7 @@ app.post('/api/planning/state', async (req, res) => {
     // rewrite localStorage immediately.
     let blobPreservedCount = 0;
     const preservedOrders = [];
+    const _convertNotices53k = [];   // v53K item 2
     if (state.orders && state.orders.length > 0 && pgPool) {
       try {
         const ids = state.orders.map(o => o.id).filter(Boolean);
@@ -12321,6 +12436,12 @@ app.post('/api/planning/state', async (req, res) => {
             });
             if (_custKept) console.log(`[v46G customer-guard] preserved ${_custKept} assigned customer(s) a stale client blanked back to W/O`);
           } catch (_cgErr) { console.warn('[v46G customer-guard] skipped:', _cgErr.message); }
+          // v53K item 2: UP→PTD conversion guard (stored copy vs incoming) — see _v53kConvertGuard.
+          try {
+            const _who53k = (req.headers['x-sunloc-user'] || 'Planning').toString();
+            const _n53k = await _v53kConvertGuard(o => _storedById.get(o.id), state.orders, _who53k, 'POST /api/planning/state');
+            if (_n53k.length) _convertNotices53k.push(..._n53k);
+          } catch (_cvErr) { console.warn('[v53K convert-guard] skipped:', _cvErr.message); }
         }
       }
     } catch (_mgErr) { console.warn('[v46A merge-guard] skipped:', _mgErr.message); }
@@ -12343,7 +12464,7 @@ app.post('/api/planning/state', async (req, res) => {
         db.prepare('INSERT INTO planning_state (state_json) VALUES (?)').run(json);
       }
     }
-    res.json({ ok: true, savedAt: new Date().toISOString(), preservedOrders });
+    res.json({ ok: true, savedAt: new Date().toISOString(), preservedOrders, convertNotices: _convertNotices53k });   // v53K item 2
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
@@ -13262,16 +13383,7 @@ app.post('/api/dpr/save', async (req, res) => {
           }
         }
       }
-      for (const row of actualsToSave) {
-        await pgPool.query(
-          `INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
-           VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-           ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
-             order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number,
-             qty_lakhs=EXCLUDED.qty_lakhs, synced_at=NOW()`,
-          row
-        );
-      }
+      await _v53lUpsertActuals(actualsToSave);   // v53L: one chunked upsert (was one round-trip per run)
 
       // v43 #1: restore DPR-closed batches' production that this re-save would have dropped. A snapshot
       // row is "dropped" when its (machine,shift,run_index) slot was NOT re-saved this round; restore it
@@ -13280,22 +13392,15 @@ app.post('/api/dpr/save', async (req, res) => {
       // closed batch's runs after the blanket delete, so we put back exactly those that belonged to it.
       if (_preDeleteActuals.length) {
         const _savedKeys = new Set(actualsToSave.map(r => `${r[2]}|${r[4]}|${r[5]}`));
-        let _restored = 0;
+        const _restoreRows = [];
         for (const s of _preDeleteActuals) {
           if (_savedKeys.has(`${s.machine_id}|${s.shift}|${s.run_index}`)) continue;  // slot legitimately re-saved
           const _closed = _closedSet.has('id:'+s.order_id) || (s.batch_number && _closedSet.has('bn:'+s.batch_number));
           if (!_closed) continue;                                                      // only preserve closed-batch history
           if (!(parseFloat(s.qty_lakhs) > 0)) continue;
-          await pgPool.query(
-            `INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
-             VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-             ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
-               order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number,
-               qty_lakhs=EXCLUDED.qty_lakhs, synced_at=NOW()`,
-            [s.order_id||null, s.batch_number||null, s.machine_id, date, s.shift, s.run_index, s.qty_lakhs, s.floor||floor]
-          );
-          _restored++;
+          _restoreRows.push([s.order_id||null, s.batch_number||null, s.machine_id, date, s.shift, s.run_index, s.qty_lakhs, s.floor||floor]);
         }
+        const _restored = await _v53lUpsertActuals(_restoreRows);   // v53L: one chunked upsert
         if (_restored) console.log(`[v43 #1] preserved ${_restored} closed-batch actual row(s) on ${floor}/${date} a re-save would have dropped`);
       }
 
@@ -14606,7 +14711,18 @@ app.post('/api/dpr/batch-close', async (req, res) => {
     // before the gate starts rejecting saves for this closed batch.
     if (pgPool) {
       try {
-        const allRecords = await pgPool.query(`SELECT floor, date, data_json FROM dpr_records`);
+        // v53L (Rahul, 02 Sep): this read EVERY dpr_records row ever written — all floors, all dates
+        // since inception, each a full floor-day blob — parsed them all in Node, then ran one INSERT
+        // per matching run. That is the "close one or two batches → slow → hang → restart". A batch
+        // can only be referenced by floor-days whose blob contains its order id or batch number, so
+        // filter IN the database on the TEXT column (a few rows come back, not hundreds) and write
+        // the flushed runs as one multi-row upsert. Same rows, same values, same conflict rule.
+        const _needles = [];
+        if (orderId) _needles.push(String(orderId));
+        if (batchNumber) _needles.push(String(batchNumber));
+        const _where = _needles.map((_, i) => `data_json LIKE '%' || $${i + 1} || '%'`).join(' OR ');
+        const allRecords = await pgPool.query(`SELECT floor, date, data_json FROM dpr_records WHERE ${_where}`, _needles);
+        const _flushRows = [];
         for (const rec of allRecords.rows) {
           const data = typeof rec.data_json === 'string' ? JSON.parse(rec.data_json) : rec.data_json;
           const shifts = data.shifts || {};
@@ -14619,18 +14735,13 @@ app.post('/api/dpr/batch-close', async (req, res) => {
                 if ((run.orderId !== orderId) && (run.batchNumber !== batchNumber)) continue;
                 const qty = parseFloat(run.qty) || 0;
                 if (qty <= 0) continue;
-                await pgPool.query(
-                  `INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor)
-                   VALUES ($1,$2,$3,$4,$5,$6,$7,$8)
-                   ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET
-                   order_id=EXCLUDED.order_id, batch_number=EXCLUDED.batch_number, qty_lakhs=EXCLUDED.qty_lakhs`,
-                  [run.orderId||orderId, batchNumber||run.batchNumber||null, machineId, rec.date, shiftName, ri, qty, rec.floor]
-                );
+                _flushRows.push([run.orderId||orderId, batchNumber||run.batchNumber||null, machineId, rec.date, shiftName, ri, qty, rec.floor]);
               }
             }
           }
         }
-        console.log(`[batch-close] flushed actuals for ${batchNumber||orderId} before close`);
+        const _flushed = await _v53lUpsertActuals(_flushRows);
+        console.log(`[batch-close] flushed ${_flushed} actual row(s) from ${allRecords.rows.length} floor-day(s) for ${batchNumber||orderId} before close`);
       } catch (flushErr) {
         console.warn('[batch-close] actuals flush warning:', flushErr.message);
         // Non-fatal — proceed with close even if flush has issues
@@ -18522,6 +18633,7 @@ app.post('/api/tracking/state', async (req, res) => {
         }
         if (scans && scans.length) {
           for (const s of scans) {
+            s.ts = _v53kClampTs(s, 'state-sync');   // v53K item 1
             await client.query(`INSERT INTO tracking_scans (id,label_id,batch_number,dept,type,ts,operator,size,qty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) ON CONFLICT (id) DO NOTHING`,
               [s.id,s.labelId||s.label_id,s.batchNumber||s.batch_number,s.dept,s.type,s.ts,s.operator||null,s.size||null,s.qty||null]);
           }
@@ -20213,6 +20325,7 @@ app.post('/api/tracking/scan', async (req, res) => {
     if(!scan || !scan.id) return res.status(400).json({ok:false,error:'Missing scan'});
     const labelId = scan.labelId||scan.label_id;
     const batchNumber = scan.batchNumber||scan.batch_number;
+    scan.ts = _v53kClampTs(scan, 'scan');   // v53K item 1: device clock guard (both pg + sqlite branches read scan.ts)
 
     // ═══ v51U ORPHAN GUARD (Ishan, 10 Aug — 26Y065 box 18) ══════════════════════════════════
     // A scan was accepted against ANY label_id, existing or not. That is how box 18's AIM history
@@ -21097,6 +21210,7 @@ app.post('/api/tracking/backfill', async (req, res) => {
     let count = 0;
     for (const scan of scans) {
       if (!scan.id) continue;
+      scan.ts = _v53kClampTs(scan, 'backfill');   // v53K item 1
       if (pgPool) {
         await pgPool.query(
           `INSERT INTO tracking_scans (id,label_id,batch_number,label_number,dept,type,ts,operator,size,qty) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10) ON CONFLICT(id) DO NOTHING`,

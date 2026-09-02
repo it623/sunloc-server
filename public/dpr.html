@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v53J</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v53L</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1603,6 +1603,12 @@ async function checkServer(){
 }
 // ── Pending save queue: retries every 15s until server confirms ─────
 let _dprPendingSaves = new Map(); // keyed by "fl|d" — no save is ever overwritten
+// v53L (Rahul, 02 Sep — "data not synced after save, takes long"): a pending floor-day was pushed by
+// THREE independent loops (10 s retry timer, 30 s auto-sync, tab-visibility flush) with no in-flight
+// guard. One slow save spawned duplicate identical /api/dpr/save requests — each re-running the full
+// server save — until the pool saturated and every one of them timed out and re-queued. One push per
+// floor-day at a time; a newer local edit simply waits in _dprPendingSaves for the next attempt.
+const _dprInFlight = new Set();
 let _dprRetryTimer = null;
 let _dprLastSaveTime = 0; // timestamp of last save — blocks fetch for 10s after save
 let _suppressRenderShifts = false;
@@ -1633,6 +1639,13 @@ function _dprScheduleRetry(){
   },10000); // retry every 10s until server confirms
 }
 async function _dprPushRaw(fl,d,data){
+  const _ifk = fl+'|'+d;
+  if(_dprInFlight.has(_ifk)) return false;           // v53L: already on its way — caller keeps it pending
+  _dprInFlight.add(_ifk);
+  try { return await _dprPushRawInner(fl,d,data); }
+  finally { _dprInFlight.delete(_ifk); }
+}
+async function _dprPushRawInner(fl,d,data){
   const actuals=[];
   Object.keys(FLOORS).forEach(f=>{
     if(!data.shifts) return;
@@ -1669,7 +1682,7 @@ async function _dprPushRaw(fl,d,data){
         userName: dprUser?.username || dprUser?.name || '',
         forceEntry: _forceEntryAny,
       }),
-      signal:AbortSignal.timeout(15000)
+      signal:AbortSignal.timeout(30000)   // v53L: was 15 s — a slow-but-succeeding save was abandoned and re-queued
     });
     if(r.ok){
       // Update _savedAt in localStorage from server-confirmed time
