@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53M</title>
+<title>Sunloc Tracking Suite v1.0 · build v53U</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53M</p>
+      <p>Tracking Suite v1.0 · build v53U</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53M</p>
+      <p>Tracking Suite v1.0 · build v53U</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1138,6 +1138,7 @@ function _v50bFirstScanMonth(batchNo) {
 function getTrkMonthBatches(excludeRetired) {
   return state.batches.filter(b => {
     if (b.deleted) return false;
+    if (b._v53tVirtual) return false;   // v53T: standalone legacy batches have no production — never in month reports
     if (excludeRetired && _isRetired(b.batchNumber)) return false; // v41ZZ: drop retired from operational reports (A/B/C/F/G)
     return _v50bCohortMonth(b) === _trkSelectedMonth;
   });
@@ -1243,18 +1244,94 @@ function _boxLakh(sc, fallbackSize){
 // PLUS any not-yet-synced LOCAL scans, valued the same way (so a just-scanned box counts at once).
 // This is the single primitive every report/plan uses in place of boxToLakh(scanCount, size), so the
 // on-screen figures, the Excel exports and the server-side month reports cannot drift apart.
+// ═══ v53P — LEGACY RE-BATCH (Ishan, 03 Sep 2026) ═════════════════════════════════════════════════
+// R-series labels (isLegacy / legacyNum / legacyRef; labelNumber = -(100000+n)) carry 2025 stock
+// re-batched into a current batch. They live on the dispatch side only: the server scan-summary
+// routes their scans into legacy* fields, so _scanLakhs / _ss().in/out stay production-only by
+// construction; the local (pre-summary and _local) scan paths mirror that here. Dispatch-side
+// surfaces add _v53pLegacyLakhs / legacyOut explicitly (Ishan: "show as part of dispatch").
+const _V53P_R_BASE = 100000;
+function _v53pIsLegacyLabel(l){ return !!(l && (l.isLegacy || (parseInt(l.labelNumber)||0) <= -_V53P_R_BASE)); }
+// O(1) legacy lookups. state.labels is ~10k rows and _scanLakhs' pre-summary fallback walks up to
+// 2,000 scans per call across every batch × dept × report — a per-scan array scan would freeze Report
+// E/B on a cold load. The index is rebuilt only when the label array identity or length changes.
+let _v53pIdx = { ref:null, len:-1, ids:new Set(), byBatch:new Map() };
+function _v53pIndex(){
+  const arr = state.labels||[];
+  if(_v53pIdx.ref===arr && _v53pIdx.len===arr.length) return _v53pIdx;
+  const ids=new Set(), byBatch=new Map();
+  for(const l of arr){ if(_v53pIsLegacyLabel(l)){ ids.add(l.id); if(!l.voided && !l.isOrange){ const a=byBatch.get(l.batchNumber)||[]; a.push(l); byBatch.set(l.batchNumber,a); } } }
+  _v53pIdx = { ref:arr, len:arr.length, ids, byBatch };
+  return _v53pIdx;
+}
+function _v53pIsLegacyScan(sc){
+  if(!sc) return false;
+  const n = parseInt(sc.labelNumber!=null?sc.labelNumber:sc.label_number);
+  if(Number.isFinite(n) && n <= -_V53P_R_BASE) return true;
+  const lid = sc.labelId||sc.label_id;
+  return !!lid && _v53pIndex().ids.has(lid);
+}
+// v53T — STANDALONE LEGACY BATCHES: a pre-Sunloc batch relabelled under its OWN number has no
+// planning order, yet scanning, dispatch records, truck loading and the label list all resolve the
+// batch through getBatch(). Synthesise one batch object per standalone legacy batch from its own
+// R-labels (details were typed by admin and stored on the labels). Flagged _v53tVirtual so
+// getTrkMonthBatches() — the single gate behind Reports B/D/E/G/H and month-end — never sees it.
+function _v53tSyncVirtualBatches(){
+  try{
+    const real = new Set((state.batches||[]).filter(b=>!b._v53tVirtual).map(b=>b.batchNumber));
+    const groups = new Map();
+    for(const l of (state.labels||[])){
+      if(!l || l.voided || l.isOrange || !_v53pIsLegacyLabel(l) || l.legacyMode!=='standalone') continue;
+      if(real.has(l.batchNumber)) continue;
+      const g = groups.get(l.batchNumber) || { labels:[] }; g.labels.push(l); groups.set(l.batchNumber, g);
+    }
+    const keep = (state.batches||[]).filter(b=>!b._v53tVirtual);
+    groups.forEach((g, bn)=>{
+      const l = g.labels[0];
+      keep.push({ _v53tVirtual:true, isLegacyBatch:true, id:'legacy:'+bn, batchNumber:bn, status:'legacy',
+        customer:l.customer||'', shipTo:l.shipTo||l.customer||'', billTo:l.billTo||'', size:l.size, colour:l.colour||'', pcCode:l.pcCode||'',
+        printMatter:l.printingMatter||'', printingMatter:l.printingMatter||'', isPrinted:!!l.legacyPrinted, poNumber:l.poNumber||'',
+        qty: Math.round(g.labels.reduce((a,x)=>a+(parseFloat(x.qty)||0),0)*100)/100, grossQty:0, actualProd:0, actualQty:0,
+        machineId:'', zone:'', startDate: l.legacyMfg ? (l.legacyMfg+'-01') : null, legacyMfg:l.legacyMfg||null, legacyExp:l.legacyExp||null, legacyRef:l.legacyRef||bn,
+        sapDocEntry:l.legacySapDocEntry||null, sapDocNum:l.legacySapDocNum||'', cardCode:l.legacyCardCode||'' });   // v53U: SO link for invoice request / poller
+    });
+    if(keep.length !== (state.batches||[]).length || groups.size) state.batches = keep;
+  }catch(e){ console.warn('[v53T virtual batches]', e.message); }
+}
+function _v53tMfgText(ym){ if(!/^\d{4}-\d{2}$/.test(String(ym||''))) return ''; const d=new Date(ym+'-01T00:00:00'); return d.toLocaleDateString('en-IN',{month:'short',year:'numeric'}).toUpperCase(); }
+function _v53pNegBox(n){ const a=Math.abs(n); return n <= -_V53P_R_BASE ? 'R-'+(a-_V53P_R_BASE) : 'E-'+a; }
+function _v53pLegacyLakhs(batchNo, dept, type, size){
+  let q = 0;
+  if (hasScanSummary()){ const s=_ss(batchNo,dept); q += (type==='in' ? (s.legacyInQty||0) : (s.legacyOutQty||0)); }
+  q += (state.scans||[]).filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && (hasScanSummary()?sc._local:true) && _v53pIsLegacyScan(sc)).reduce((a,sc)=>a+_boxLakh(sc,size),0);
+  return q;
+}
+function _v53pLegacyBoxes(batchNo, dept, type){
+  let n = 0;
+  if (hasScanSummary()){ const s=_ss(batchNo,dept); n += (type==='in' ? (s.legacyIn||0) : (s.legacyOut||0)); }
+  n += (state.scans||[]).filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && (hasScanSummary()?sc._local:true) && _v53pIsLegacyScan(sc)).length;
+  return n;
+}
+// Re-batch summary for a batch from its R-labels: total lakhs re-batched in + distinct legacy refs.
+function _v53pRebatchInfo(batchNo){
+  const ls = _v53pIndex().byBatch.get(batchNo) || [];   // blue, non-voided R-labels only (oranges are twins, not stock)
+  if(!ls.length) return null;
+  const qty = ls.reduce((a,l)=>a+(parseFloat(l.qty)||0),0);
+  const refs = [...new Set(ls.map(l=>l.legacyRef).filter(Boolean))];
+  return { boxes: ls.length, qty: Math.round(qty*100)/100, refs, remark: `Re-batch of ${(Math.round(qty*100)/100).toFixed(2)} L from ${refs.join(', ')||'legacy stock'} has caused it` };
+}
 function _scanLakhs(batchNo, dept, type, size){
   if (hasScanSummary()){
     const s = _ss(batchNo, dept);
     const serverQ = (type==='in' ? s.inQty : s.outQty) || 0;
     const localQ = (state.scans||[])
-      .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && sc._local)
+      .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && sc._local && !_v53pIsLegacyScan(sc))   // v53P
       .reduce((a,sc)=>a+_boxLakh(sc,size),0);
     return serverQ + localQ;
   }
   // summary not loaded yet — sum the (windowed) local scan set directly, valued per box
   return (state.scans||[])
-    .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type)
+    .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && !_v53pIsLegacyScan(sc))   // v53P
     .reduce((a,sc)=>a+_boxLakh(sc,size),0);
 }
 
@@ -1281,9 +1358,9 @@ function _grossFor(batchNo, b) {
 function _v40_dispatchedLakhs(batchNumber, batchSize) {
   const localOut = state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out' && s._local).length;
   const legacyBoxes = hasScanSummary()
-    ? (_ss(batchNumber, 'dispatch').out + localOut)
+    ? (_ss(batchNumber, 'dispatch').out + (_ss(batchNumber,'dispatch').legacyOut||0) + localOut)
     : state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out').length;
-  const legacyLakhs = _scanLakhs(batchNumber,'dispatch','out',batchSize);  // v47G: per-box label sum
+  const legacyLakhs = _scanLakhs(batchNumber,'dispatch','out',batchSize) + _v53pLegacyLakhs(batchNumber,'dispatch','out',batchSize);  // v47G: per-box label sum · v53P: + R-boxes
   const phase18Lakhs = state.dispatchRecs.filter(r => r.batchNumber === batchNumber).reduce((s, r) => s + (r.qty || 0), 0);
   return legacyLakhs + phase18Lakhs;
 }
@@ -1293,7 +1370,7 @@ function _v40_dispatchedLakhs(batchNumber, batchSize) {
 function _v40_dispatchedBoxes(batchNumber) {
   const localOut = state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out' && s._local).length;
   const legacyBoxes = hasScanSummary()
-    ? (_ss(batchNumber, 'dispatch').out + localOut)
+    ? (_ss(batchNumber, 'dispatch').out + (_ss(batchNumber,'dispatch').legacyOut||0) + localOut)
     : state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out').length;
   // v45Y (confirmed by Ishan): EXPORT dispatch records carry a unit/capsule count in r.boxes, not
   // label boxes — 26ZB074 showed "Dispatched: 6600 / 15000%". Box count now derives from the
@@ -1516,7 +1593,7 @@ function checkAlerts(){
     if(hoursAgo(scan.ts) < ALERT_HOURS) continue;
     if(alertKey.has(scan.labelId+'|'+scan.dept)) continue;
     const lbl = state.labels.find(l=>l.id===scan.labelId);
-    const boxNo = lbl ? _boxDisplayId(lbl) : (scan.labelNumber ? ((parseInt(scan.labelNumber)<0)?('E-'+Math.abs(parseInt(scan.labelNumber))):String(Math.abs(scan.labelNumber))) : '?');   // v51F: E-aware
+    const boxNo = lbl ? _boxDisplayId(lbl) : (scan.labelNumber ? ((parseInt(scan.labelNumber)<0)?_v53pNegBox(parseInt(scan.labelNumber)):String(Math.abs(scan.labelNumber))) : '?');   // v51F: E-aware
     state.alerts.push({ id:uid(), labelId:scan.labelId, batchNumber:scan.batchNumber, boxNo, dept:scan.dept, scanInTs:scan.ts, hoursStuck:hoursAgo(scan.ts).toFixed(1), resolved:0 });
     alertKey.add(scan.labelId+'|'+scan.dept);
   }
@@ -1980,6 +2057,7 @@ async function pullFromServer(force){
         if(batches.length > 0 || state.batches.length === 0){
           state.batches = batches;
         }
+        _v53tSyncVirtualBatches();   // v53T
         state.machineMaster = pj.state.machineMaster||[];
         // v37F: Capture dispatch plans for Dispatch Summary report
         if (pj.state.dispatchPlans) state.dispatchPlans = pj.state.dispatchPlans;
@@ -2053,7 +2131,7 @@ async function pullFromServer(force){
               const sids = new Set(sl.map(l=>l.id));
               const lo = state.labels.filter(l=>!sids.has(l.id));
               if (lo.length>0) pushLabelsToServer(lo);
-              state.labels = sl;
+              state.labels = sl; _v53tSyncVirtualBatches();   // v53T
               // v41b: labels-all no longer ships qr_data (payload slim). Rebuild it locally from
               // the label's own fields so every consumer (printing at the ZPL ^BQN sites, future
               // RFID) always has a populated, correct QR string. Format is deterministic and
@@ -2385,7 +2463,7 @@ function loadState(){
         localStorage.removeItem('sunloc_tracking');
         console.log('[Tracking] Cache version mismatch — wiped stale localStorage automatically');
       } else {
-        if(p.labels)       state.labels       = p.labels;
+        if(p.labels)     { state.labels       = p.labels; _v53tSyncVirtualBatches(); }   // v53T
         if(p.stageClosure) state.stageClosure  = p.stageClosure;
         if(p.wastage)      state.wastage       = p.wastage;
         if(p.dispatchRecs) state.dispatchRecs  = p.dispatchRecs;
@@ -2456,6 +2534,13 @@ function recordScan(labelId, dept, type, operator, parsed){
   const batch = getBatch(label.batchNumber);
   if(!batch) return {ok:false,msg:'Batch not found'};
 
+  // v53P: R-series (legacy re-batch) labels are dispatch-side only — Packing IN and Dispatch, no
+  // upstream requirement at Packing (they have no production history by design). Any other dept is
+  // refused here AND by the server gate.
+  const _v53pLg = _v53pIsLegacyLabel(label);
+  if(_v53pLg && dept !== 'packing' && dept !== 'dispatch'){
+    return {ok:false, msg:`♻️ ${_boxDisplayId(label)} of ${label.batchNumber} is a legacy re-batch label (from ${label.legacyRef||'legacy stock'}) — accepted at PACKING and DISPATCH only.`};
+  }
   // ABSOLUTE BLOCK: Unprinted batches can NEVER go to Printing or PI — even admin cannot bypass
   if(!batch.isPrinted && (dept === 'printing' || dept === 'pi')){
     return {ok:false, msg:`❌ Batch ${label.batchNumber} is UNPRINTED — scanning at ${dept==='printing'?'Printing':'Print Inspection'} is not allowed. Unprinted batches go AIM → Packing directly.`};
@@ -2476,7 +2561,7 @@ function recordScan(labelId, dept, type, operator, parsed){
   if(type==='in'  && alreadyIn)  return {ok:false,msg:'Box already scanned IN at this department'};
   if(type==='out' && alreadyOut) return {ok:false,msg:'Box already scanned OUT at this department'};
 
-  if(currentDept!=='admin' && _isPrematureScan(label.batchNumber, dept)){
+  if(currentDept!=='admin' && !(_v53pLg && dept==='packing') && _isPrematureScan(label.batchNumber, dept)){   // v53P: R-label packing-in has no upstream stage
     return {ok:false,msg:'Previous department has not closed this batch yet'};
   }
 
@@ -2498,7 +2583,7 @@ function recordScan(labelId, dept, type, operator, parsed){
   // For a scan-IN at any non-AIM dept, the SAME label must have a scan-OUT at the previous dept.
   // This is a stricter rule than canScanDept (which is batch-aggregate level).
   // Non-admin: hard block here. Admin: warning, server enforcement remains (admin can override via prompt there).
-  if (type === 'in' && dept !== 'aim' && dept !== 'production') {
+  if (type === 'in' && dept !== 'aim' && dept !== 'production' && !(_v53pLg && dept === 'packing')) {   // v53P: R-label packing-in has no upstream
     const batchIsPrinted = batch.isPrinted || label.isPrinted || false;
     let prevDept = null;
     if (dept === 'printing') prevDept = 'aim';
@@ -2662,6 +2747,13 @@ function parseScanInput(raw){
       return { labelId:parts[1], batchNumber:parts[2], size:parts[3], qty:parseFloat(parts[4])||0 };
     }
   }
+  // v53P: typed R-series / E-series tokens ("26ZB100-R-3", "26ZB100-E-2") resolve to the stored
+  // negative label number the byBatch lookup compares on (R: -(100000+n), E: -n).
+  const _mRE = /^(.+?)-([RE])-(\d+)$/i.exec(raw.trim());
+  if(_mRE && _mRE[1].length > 2){
+    const _n = parseInt(_mRE[3]);
+    return { labelId:raw.trim(), batchNumber:_mRE[1].trim(), boxNumber: _mRE[2].toUpperCase()==='R' ? -(_V53P_R_BASE + _n) : -_n };
+  }
   // Check for BatchNo-LabelNo format (e.g. "26ZH061-5")
   const dashIdx = raw.lastIndexOf('-');
   if(dashIdx > 0){
@@ -2750,6 +2842,7 @@ function _effGrossForCap(b){
 function canGenerateLabels(batchNo, requestedBoxes){
   const batch = getBatch(batchNo);
   if(!batch) return {ok:false,msg:'Batch not found'};
+  if(batch._v53tVirtual) return {ok:false,msg:`${batchNo} is a legacy batch (pre-Sunloc). Add labels through Admin → ♻️ Re-batch Legacy → Standalone.`};   // v53T
   let _admLateClosed = null;   // v51H: set when ADMIN is printing outside the 48h post-closure window
   // Block label generation if batch is closed AND more than 2 days since close date
   if(batch.status === 'closed'){
@@ -2869,8 +2962,8 @@ function generateLabels(batchNo, count, isPartialLast, partialQty, grossWt, nett
   const newLabels = [];
   // Determine if this is an excess run
   const normalBoxMax = originalNormalBoxMax(batchNo, batch);  // v43 #3: original planned boxes (anchored, not live qty)
-  const existingNormal = state.labels.filter(l=>l.batchNumber===batchNo&&!l.isOrange&&!l.isExcess&&!l.voided&&!_isSpecimenLabel(l)).length;
-  const existingExcess = state.labels.filter(l=>l.batchNumber===batchNo&&!l.isOrange&&l.isExcess&&!l.voided&&!_isSpecimenLabel(l)).length;
+  const existingNormal = state.labels.filter(l=>l.batchNumber===batchNo&&!l.isOrange&&!l.isExcess&&!l.voided&&!_isSpecimenLabel(l)&&!_v53pIsLegacyLabel(l)).length;   // v53P
+  const existingExcess = state.labels.filter(l=>l.batchNumber===batchNo&&!l.isOrange&&l.isExcess&&!l.voided&&!_isSpecimenLabel(l)&&!_v53pIsLegacyLabel(l)).length;   // v53P
   const isExcessRun = check.isExcessRun || existingNormal >= normalBoxMax;
   // For excess: excessTotal = how many excess labels will exist after this run
   const excessTotal = isExcessRun ? existingExcess + count : 0;
@@ -3844,7 +3937,7 @@ function generateZPL(label, batch){
   // every label; standard boxes carry qty = pack size anyway, so nothing else changes.
   const pieces     = Math.round(((label.qty > 0 ? label.qty : packSizeL)) * 100000);
   const mfgRaw     = batch?.startDate ? new Date(batch.startDate) : new Date();
-  const mfgDate    = mfgRaw.toLocaleDateString('en-IN',{month:'short',year:'numeric'}).toUpperCase();
+  const mfgDate    = (label.legacyMfg && _v53tMfgText(label.legacyMfg)) || mfgRaw.toLocaleDateString('en-IN',{month:'short',year:'numeric'}).toUpperCase();   // v53T: hand-entered mfg month wins
   const batchNo    = label.batchNumber || '';
 
   const _b      = getBatch(batchNo);
@@ -3853,13 +3946,17 @@ function generateZPL(label, batch){
   // v44F #1: excess denominator = LIVE count of this batch's non-voided excess labels, so excess
   // labels generated in separate runs all show the correct total (E-1/2, E-2/2) on (re)print,
   // instead of the per-run frozen excessTotal that produced E-1/1 then E-2/2.
-  const _exTotLive = state.labels.filter(x=>x.batchNumber===batchNo && !x.voided && !x.isOrange && x.isExcess).length;
+  const _exTotLive = state.labels.filter(x=>x.batchNumber===batchNo && !x.voided && !x.isOrange && x.isExcess && !_v53pIsLegacyLabel(x)).length;
   // v50M: excess oranges loaded from the server carry numeric labelNumber in the dedicated excess
   // range (1,500,000 + n) — recover n when excessNum wasn't persisted, so the container always
   // renders as E-n/n and never as a raw range number.
   const _exN = (label.excessNum != null) ? label.excessNum
              : (_num >= 1500000 ? _num - 1500000 : _num);
-  const containerNo = label.isExcess
+  // v53P: R-series prints as R-n/total-R of this batch (live count), never as a raw range number.
+  const _rbTotLive = state.labels.filter(x=>x.batchNumber===batchNo && !x.voided && !x.isOrange && _v53pIsLegacyLabel(x)).length;   // v53Q: blue R-labels only
+  const containerNo = _v53pIsLegacyLabel(label)
+    ? `R-${label.legacyNum || (_num - _V53P_R_BASE)}/${_rbTotLive || 1}`
+    : label.isExcess
     ? `E-${_exN}/${_exTotLive || label.excessTotal || 1}`
     : (normTot !== '?' ? `${_num}/${normTot}` : String(_num));
 
@@ -3991,9 +4088,10 @@ function _pushLabelUpdate(payload){
 // is flagged BY CONSTRUCTION — the v45Y key compared stored fields, which diverge from the display
 // for legacy excess labels (stored as negative numbers, shown as E-n) and mixed-type rows.
 function _boxDisplayId(l){
+  if(_v53pIsLegacyLabel(l)) return 'R-' + (l.legacyNum || (Math.abs(parseInt(l.labelNumber)||0) - _V53P_R_BASE));   // v53P
   if(l.isExcess) return 'E-' + (l.excessNum || Math.abs(parseInt(l.labelNumber)||0));
   const n = parseInt(l.labelNumber);
-  if(!isNaN(n) && n < 0) return 'E-' + Math.abs(n);
+  if(!isNaN(n) && n < 0) return _v53pNegBox(n);
   return String(l.labelNumber);
 }
 function _dupLabelIds(labels){
@@ -4019,7 +4117,7 @@ function printLabel(labelId){
   const batch = getBatch(label.batchNumber);
   const zpl = generateZPL(label,batch);
   // Try to send to local printer bridge or download as file
-  const printerUrl = localStorage.getItem('sunloc_printer_url');
+  const printerUrl = _printerUrlFor(label);   // v53R: orange → orange bridge when configured
   if(printerUrl){
     fetch(printerUrl,{method:'POST',headers:{'Content-Type':'text/plain'},body:zpl})
       .then(r=>{ if(r.ok){ _persistLabelsPrinted([label]); renderPage(currentPage); }
@@ -5087,7 +5185,7 @@ function reprintOrangeLabel(labelId){
   if(!l) return;
   const batch = getBatch(l.batchNumber);
   const zpl = generateZPL(l, batch);
-  const printerUrl = localStorage.getItem('sunloc_printer_url');
+  const printerUrl = _printerUrlFor(l);   // v53R: orange reprint → orange bridge when configured
   if(printerUrl){
     fetch(printerUrl,{method:'POST',headers:{'Content-Type':'text/plain'},body:zpl})
       .then(r=>{ if(r.ok){ toast('✅ Reprint sent to printer','var(--green)',3000); } else { downloadZPL(zpl,l); } })
@@ -5534,6 +5632,23 @@ function confirmDamagedReprint(labelId){
   }
 }
 
+// ═══ v53R (Ishan, 03 Sep): TWO PRINTER BRIDGES — blue stock (GF AIM) and orange stock (PI) ═════════
+// Rolls are fixed per printer, so an orange label must never stream to the blue printer. Each device
+// keeps its main bridge URL (blues) and, optionally, an orange bridge URL. _printerUrlFor() picks by
+// label colour; when the orange URL is blank the orange job falls back to the main URL exactly as
+// before v53R, so nothing changes for a PI terminal that only has its own printer configured.
+function _printerUrlFor(label){
+  // v53S (Ishan): no second bridge. Every device prints on its own printer; admin prints blues from
+  // the GF AIM PC and oranges from the PI PC using the two separate print commands.
+  return localStorage.getItem('sunloc_printer_url') || '';
+}
+// Send one ZPL job to one bridge; resolves true on success, false when it fell back to download.
+function _sendZpl(url, zpl, dlMeta){
+  if(!url){ downloadZPL(zpl, dlMeta); return Promise.resolve(false); }
+  return fetch(url,{method:'POST',headers:{'Content-Type':'text/plain'},body:zpl})
+    .then(r=>{ if(r.ok) return true; downloadZPL(zpl, dlMeta); return false; })
+    .catch(()=>{ downloadZPL(zpl, dlMeta); return false; });
+}
 function configurePrinter(){
   const current=localStorage.getItem('sunloc_printer_url')||'';
   const url=prompt('Enter Zebra Printer Bridge URL:\n(e.g. http://localhost:9100 or http://printer-ip:9100)\n\nLeave blank to download ZPL files instead.',current);
@@ -5904,7 +6019,7 @@ function renderDeptScan(dept){
         // bare absolute number — Math.abs() was stripping the E-series convention (excess labels are
         // stored with negative labelNumbers). Uses the canonical _boxDisplayId; the no-label fallback
         // applies the same negative→E- rule to the scan's own labelNumber.
-        const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '?';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?('E-'+Math.abs(_ni)):String(Math.abs(_ni||0));})();
+        const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '?';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?_v53pNegBox(_ni):String(Math.abs(_ni||0));})();
         // v45T #2.3: resolve Customer/Colour/Size from the batch master for every dept's table
         const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{};
         return `<tr${_isRecon?' style="background:rgba(124,58,237,0.05)"':''}>
@@ -6139,7 +6254,7 @@ function exportScansCsv(dept){
   rows.forEach(s=>{
     const lbl=state.labels.find(l=>l.id===(s.labelId||s.label_id));
     // v51F: CSV export carries the same E-series nomenclature as the table
-    const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?('E-'+Math.abs(_ni)):String(Math.abs(_ni||0));})();
+    const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?_v53pNegBox(_ni):String(Math.abs(_ni||0));})();
     const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{}; // v45T #2.3
     lines.push([esc(fmtDateTime(s.ts)),esc(s.batchNumber),esc(boxNum),esc(_rsB.customer||''),esc(_rsB.colour||''),esc(_rsB.size!=null?_rsB.size:''),esc(s.qty),esc((s.type||'').toUpperCase())].join(','));
   });
@@ -7074,6 +7189,209 @@ async function confirmRecustomer(){
     else { alert('Re-customer failed: '+(j?.error||'server error')); }
   }catch(e){ alert('Re-customer failed: '+e.message); }
 }
+// ═══ v53P — RE-BATCH LEGACY STOCK (admin flow) ══════════════════════════════════════════════════════
+// Step 1: X (legacy batch), Y (target batch), A (lakhs). Step 2: server preview → box plan for Y's
+// pack size with the batch's own label details, confirm → server writes R-labels + ledger row →
+// print. Flow after that: Packing IN → Dispatch OUT → invoice reconciliation, like any packed box.
+function openRebatch(preBatch){
+  if(currentDept!=='admin' && currentDept!=='planning'){ alert('Admin / Planning Manager only.'); return; }
+  const cands=(state.batches||[]).map(b=>b.batchNumber).filter(Boolean).sort();
+  if(!cands.length){ alert('No batches loaded.'); return; }
+  const opts=cands.map(bn=>{const b=getBatch(bn);return `<option value="${bn}" ${bn===preBatch?'selected':''}>${bn}${b?` — ${b.customer||'—'} · size ${b.size??'?'} · ${b.status||''}`:''}</option>`;}).join('');
+  const sizeOpts = Object.keys(PACK_SIZES).map(s=>`<option value="${s}">${s} (${PACK_SIZES[s]} L/box)</option>`).join('');
+  const mode = window._rbMode || 'merge';
+  openModal('Re-batch Legacy Stock', 'Fresh blue R-series labels for pre-Sunloc stock', `
+    <div class="alert alert-warning" style="font-size:12px;margin-bottom:10px">R-labels are recorded apart from production: they never enter WIP, A-grade or packed counts. They are scanned <b>IN at Packing</b>, then <b>OUT at Dispatch</b>, and count in Dispatch and invoice reconciliation.</div>
+    <div style="display:flex;gap:14px;margin-bottom:10px;font-size:12px">
+      <label style="cursor:pointer"><input type="radio" name="rb-mode" value="merge" ${mode==='merge'?'checked':''} onchange="window._rbMode='merge';openRebatch()"> <b>Merge into current batch</b> — legacy X ships as part of Sunloc batch Y (Y's label details)</label>
+      <label style="cursor:pointer"><input type="radio" name="rb-mode" value="standalone" ${mode==='standalone'?'checked':''} onchange="window._rbMode='standalone';openRebatch()"> <b>Standalone legacy batch</b> — keeps its own number; all details entered by hand</label>
+    </div>
+    ${mode==='merge' ? `
+    <div class="form-row cols-3">
+      <div class="form-group"><label>Legacy batch (X) *</label><input type="text" id="rb-legacy" class="form-control" placeholder="e.g. 25X090" style="text-transform:uppercase"></div>
+      <div class="form-group"><label>Target batch (Y) *</label><select id="rb-target" class="form-control">${opts}</select></div>
+      <div class="form-group"><label>Quantity (A, lakhs) *</label><input type="number" id="rb-qty" class="form-control" step="0.01" min="0.01" placeholder="e.g. 5"></div>
+    </div>
+    <div class="text-sm text-muted mb-8">Y will show as over-invoiced by this quantity in Report E / Over-invoiced, with the re-batch remark.</div>` : `
+    <div class="form-row cols-3">
+      <div class="form-group"><label>Legacy batch number *</label><input type="text" id="rb-legacy" class="form-control" placeholder="e.g. 25X090" style="text-transform:uppercase"></div>
+      <div class="form-group"><label>Quantity (lakhs) *</label><input type="number" id="rb-qty" class="form-control" step="0.01" min="0.01" placeholder="e.g. 5"></div>
+      <div class="form-group"><label>Capsule size *</label><select id="rb-size" class="form-control">${sizeOpts}</select></div>
+    </div>
+    <div class="form-row cols-3">
+      <div class="form-group"><label>Customer *</label><input type="text" id="rb-customer" class="form-control" placeholder="Customer name (label line 1)"></div>
+      <div class="form-group"><label>Ship to</label><input type="text" id="rb-shipto" class="form-control" placeholder="(defaults to customer)"></div>
+      <div class="form-group"><label>Bill to</label><input type="text" id="rb-billto" class="form-control" placeholder="(optional — label line 2)"></div>
+    </div>
+    <div class="form-row cols-3">
+      <div class="form-group"><label>Colour — cap</label><input type="text" id="rb-cap" class="form-control" placeholder="e.g. MAROON"></div>
+      <div class="form-group"><label>Colour — body</label><input type="text" id="rb-body" class="form-control" placeholder="e.g. MAROON"></div>
+      <div class="form-group"><label>PC code</label><input type="text" id="rb-pc" class="form-control" placeholder="e.g. 01242"></div>
+    </div>
+    <div class="form-row cols-3">
+      <div class="form-group"><label>Mfg month *</label><input type="month" id="rb-mfg" class="form-control"></div>
+      <div class="form-group"><label>Expiry month *</label><input type="month" id="rb-exp" class="form-control"></div>
+      <div class="form-group"><label>Customer PO number</label><input type="text" id="rb-po" class="form-control" placeholder="(optional)"></div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group"><label>SAP Sales Order No. <span class="text-muted" style="font-weight:400">(optional — the SO this stock ships against)</span></label><input type="text" id="rb-so" class="form-control" placeholder="e.g. 547 — same SO as the fresh batches for a consolidated invoice"></div>
+      <div class="form-group"><label>SAP customer code</label><input type="text" id="rb-cardcode" class="form-control" placeholder="(auto from the SO when known)"></div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group"><label>Print type *</label><select id="rb-printed" class="form-control" onchange="document.getElementById('rb-pm-wrap').style.display=this.value==='1'?'':'none'"><option value="0">Unprinted (plain)</option><option value="1">Printed</option></select></div>
+      <div class="form-group" id="rb-pm-wrap" style="display:none"><label>Print matter *</label><input type="text" id="rb-pm" class="form-control" placeholder="Printed text — goes on the orange labels too"></div>
+    </div>
+    <div class="text-sm text-muted mb-8">The batch keeps its own number on the blue label. It is not in Planning, so it never appears in production reports; a SAP invoice raised against it shows in Over-invoiced with the legacy remark. Printed → matching orange labels are created too.</div>`}
+    <div class="form-group"><label>Note</label><input type="text" id="rb-note" class="form-control" placeholder="(optional — reason / customer instruction)"></div>
+    <div id="rb-err" style="font-size:12px;color:#dc2626"></div>`,
+    [{label:'Cancel',cls:'btn-secondary',onclick:closeModal},{label:'Next → box plan',cls:'btn-primary',onclick:_rbPreview}]);
+}
+async function _rbPost(body){
+  const r=await fetch(serverUrl+'/api/tracking/rebatch',{method:'POST',headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},body:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
+  return await r.json();
+}
+function _rbGather(){
+  const v=id=>(document.getElementById(id)?.value||'').trim();
+  const mode=window._rbMode||'merge';
+  const body={ mode, legacyRef:v('rb-legacy').toUpperCase(), qtyLakhs:parseFloat(v('rb-qty')||'0')||0, note:v('rb-note') };
+  if(mode==='merge') body.targetBatch=v('rb-target');
+  else Object.assign(body,{ size:v('rb-size'), customer:v('rb-customer'), shipTo:v('rb-shipto'), billTo:v('rb-billto'), colourCap:v('rb-cap').toUpperCase(), colourBody:v('rb-body').toUpperCase(), pcCode:v('rb-pc'), poNumber:v('rb-po'), mfg:v('rb-mfg'), exp:v('rb-exp'), isPrinted:v('rb-printed')==='1', printMatter:v('rb-pm'), sapDocNum:v('rb-so'), cardCode:v('rb-cardcode') });
+  return body;
+}
+async function _rbPreview(){
+  const body=_rbGather();
+  const {legacyRef,qtyLakhs,note}=body; const targetBatch=body.mode==='merge'?body.targetBatch:legacyRef;
+  const err=document.getElementById('rb-err');
+  if(!legacyRef||!targetBatch||!(qtyLakhs>0)){ if(err) err.textContent='Legacy batch number and a quantity > 0 are required.'; return; }
+  window._rbLastBody=body;
+  try{
+    const j=await _rbPost({...body,preview:true});
+    if(!j||!j.ok){ if(err) err.textContent='Preview failed: '+((j&&j.error)||'server error'); return; }
+    const p=j.plan, ls=j.labels||[];
+    const rows=ls.map((l,i)=>`<tr><td class="td-mono fw-bold">R-${l.legacyNum}</td><td class="td-mono">${l.batchNumber}</td><td>${l.customer||'—'}</td><td>${l.colour||'—'}</td><td class="td-mono">${l.pcCode||'—'}</td><td class="td-mono" style="text-align:center">${l.size}</td><td class="td-mono" style="text-align:right">${(parseFloat(l.qty)||0).toFixed(2)}${l.isPartial?' <span class="badge badge-gray" style="font-size:9px">partial</span>':''}</td></tr>`).join('');
+    openModal(p.mode==='standalone'?`Confirm legacy batch ${p.targetBatch} — blue relabel`:`Confirm re-batch ${legacyRef} → ${p.targetBatch}`, `${p.qtyLakhs} L as ${p.boxes} box(es) · size ${p.size} · pack ${p.packSize} L/box${p.partialQty?` · last box ${p.partialQty} L`:''}${p.mode==='standalone'?` · mfg ${_v53tMfgText(p.mfg)} · exp ${_v53tMfgText(p.exp)} · ${p.isPrinted?'PRINTED — '+p.printMatter:'unprinted'}${p.sapDocNum?` · SO ${p.sapDocNum}${p.cardCode?' ('+p.cardCode+')':''}`:' · no SO linked'}`:''}`, `
+      <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Labels below carry <b>${p.targetBatch}</b>'s ${p.mode==='standalone'?'hand-entered':'own'} blue-label details (${p.isPrinted?'printed':'unprinted'} flow) and print as R-${p.startFrom}…R-${p.startFrom+p.boxes-1}.${p.oranges?` <b>${p.targetBatch} is a printed batch</b>, so ${p.oranges} matching <span style="color:#c2410c">orange</span> PI-verification label(s) (R-${p.startFrom}…R-${p.startFrom+p.boxes-1}) are created too.`:''} Nothing is written until you confirm. After confirming you get two print commands — blues from the GF AIM PC, oranges from the PI PC.</div>
+      <div class="tbl-wrap" style="max-height:320px;overflow:auto"><table><thead><tr><th>Label</th><th>Batch</th><th>Customer</th><th>Colour</th><th>PC</th><th>Size</th><th style="text-align:right">Qty (L)</th></tr></thead><tbody>${rows}</tbody></table></div>
+      <div style="font-size:11px;color:var(--text3);margin-top:8px">Legacy ref <b>${legacyRef}</b> is stored on every label and in the Re-batch Log${note?` · note: ${note}`:''}.</div>
+      <div id="rb-err2" style="font-size:12px;color:#dc2626"></div>`,
+      [{label:'← Back',cls:'btn-secondary',onclick:()=>openRebatch(targetBatch)},{label:`Confirm — create ${p.boxes} label(s)${p.oranges?` + ${p.oranges} orange`:''}`,cls:'btn-primary',onclick:()=>_rbConfirm(window._rbLastBody||body)}]);
+  }catch(e){ if(err) err.textContent='Preview failed: '+e.message; }
+}
+async function _rbConfirm(body){
+  const err=document.getElementById('rb-err2');
+  try{
+    const j=await _rbPost(body);
+    if(!j||!j.ok){ if(err) err.textContent='Re-batch failed: '+((j&&j.error)||'server error'); return; }
+    const ls=j.labels||[], os=j.oranges||[];
+    // merge into the local label set (server already persisted them) so print + list see them now
+    ls.concat(os).forEach(l=>{ if(!state.labels.find(x=>x.id===l.id)) state.labels.push(l); });
+    os.forEach(o=>{ if(!o.qrData) o.qrData=generateQRData(o); });   // v53Q: orange QR built client-side like autoGenerateOrangeLabel
+    _v53tSyncVirtualBatches();   // v53T: a standalone legacy batch becomes resolvable immediately
+    try{ trkAuditLog('REBATCH_LEGACY_CLIENT', `${body.legacyRef} → ${j.plan.targetBatch}: ${j.plan.qtyLakhs} L, ${ls.length} R-label(s)${os.length?` + ${os.length} orange`:''}`); }catch(_){}
+    closeModal();
+    toast(`♻️ Re-batched ${body.legacyRef} → ${j.plan.targetBatch}: ${ls.length} R-label(s)${os.length?` + ${os.length} orange`:''}`,'var(--green)');
+    renderPage(currentPage);
+    _rbPrintModal(ls, os, `Re-batch ${body.legacyRef} → ${j.plan.targetBatch} saved`);   // v53S: two print commands, no auto-print
+  }catch(e){ if(err) err.textContent='Re-batch failed: '+e.message; }
+}
+// v53S (Ishan): ONE colour per print command, on THIS device's printer. Admin runs the blue command at
+// the GF AIM PC and the orange command at the PI PC — from the post-confirm modal or from any
+// Re-batch Log row (so the oranges can be printed later, on the other PC).
+async function _rbPrintLabels(labels, kind){
+  const want = kind==='orange' ? labels.filter(l=>l.isOrange) : labels.filter(l=>!l.isOrange);
+  if(!want.length){ toast(`No ${kind||'blue'} R-labels to print`); return; }
+  const already = want.filter(l=>l.printed);
+  if(already.length && !confirm(`${already.length} of ${want.length} ${kind||'blue'} R-label(s) are already marked printed. Print them again?`)) return;
+  const batch=getBatch(want[0].batchNumber);
+  const zpl=want.map(l=>generateZPL(l,batch)).join('\n');
+  const ok=await _sendZpl(_printerUrlFor(want[0]), zpl, {batchNumber:want[0].batchNumber,labelNumber:kind==='orange'?'R-ALL-ORANGE':'R-ALL'});
+  _persistLabelsPrinted(want); renderPage(currentPage);
+  toast(`${kind==='orange'?'🟠':'🔵'} ${want.length} ${kind||'blue'} R-label(s) ${ok?'sent to this PC\'s printer':'saved as ZPL (no printer on this PC)'}`, ok?'var(--green)':'#b45309', 5000);
+}
+// Resolve a ledger row's labels from local state (labels-all loads every label on page open).
+function _rbLabelsForRow(x){
+  const ids=new Set([].concat(x.labelIds||[], x.orangeIds||[]));
+  return (state.labels||[]).filter(l=>ids.has(l.id));
+}
+function _rbPrintModal(blues, oranges, title){
+  const all=blues.concat(oranges);
+  openModal(title||'Print re-batch labels', 'Print each colour from the PC connected to that printer', `
+    <div style="font-size:12px;color:var(--text2);margin-bottom:10px">
+      <b>${blues.length}</b> blue R-label(s)${oranges.length?` and <b>${oranges.length}</b> orange R-label(s)`:''} for <b>${all[0]?all[0].batchNumber:''}</b> are saved. Print the blues from the <b>GF AIM PC</b> and the oranges from the <b>PI PC</b> — either now, or later from the Re-batch Log (📒), where the same two buttons appear on this row.
+    </div>
+    <div style="display:flex;gap:8px;flex-wrap:wrap">
+      <button class="btn btn-primary" onclick="_rbPrintLabels(window._rbLast||[], 'blue')">🔵 Print ${blues.length} blue label(s) here</button>
+      ${oranges.length?`<button class="btn" style="background:#ea580c;color:#fff" onclick="_rbPrintLabels(window._rbLast||[], 'orange')">🟠 Print ${oranges.length} orange label(s) here</button>`:''}
+    </div>`,
+    [{label:'Done',cls:'btn-secondary',onclick:closeModal}]);
+  window._rbLast=all;
+}
+// ═══ v53U — INVOICE REQUEST for a standalone legacy batch ═══════════════════════════════════════════
+// Same request Planning's "Generate Invoice" creates (POST /api/invoice/request), built here because
+// the legacy batch has no planning order. Qty/boxes default to the R-boxes packed and not yet
+// dispatched. With the SO the PM used for the fresh batches, the SAP invoice (consolidated or
+// standalone) reconciles to this request by SO ref and its legacy line attributes to this batch.
+function _rbInvoiceRequest(x){
+  const bn=x.targetBatch, d=x.details||{};
+  const labels=_rbLabelsForRow({labelIds:x.labelIds}).filter(l=>!l.isOrange && !l.voided);
+  const packed=labels.filter(l=>(state.scans||[]).some(s=>(s.labelId||s.label_id)===l.id && s.dept==='packing' && s.type==='in'));
+  const shipped=new Set((state.scans||[]).filter(s=>s.dept==='dispatch'&&s.type==='out').map(s=>s.labelId||s.label_id));
+  const avail=packed.filter(l=>!shipped.has(l.id));
+  const vb=getBatch(bn)||{};
+  const so=d.sapDocNum||vb.sapDocNum||'', soEntry=d.sapDocEntry||vb.sapDocEntry||null, card=d.cardCode||vb.cardCode||'';
+  const qty=Math.round(avail.reduce((a,l)=>a+(parseFloat(l.qty)||0),0)*100)/100;
+  openModal(`Invoice request — legacy batch ${bn}`, `${labels.length} R-box(es) · ${packed.length} packed · ${avail.length} packed & not yet dispatched`, `
+    <div class="form-row cols-2">
+      <div class="form-group"><label>SAP Sales Order No. *</label><input type="text" id="rbi-so" class="form-control" value="${so}" ${soEntry?'readonly':''} placeholder="SO number (resolved from the SAP cache)"></div>
+      <div class="form-group"><label>SAP customer code</label><input type="text" id="rbi-card" class="form-control" value="${card}"></div>
+    </div>
+    <div class="form-row cols-2">
+      <div class="form-group"><label>Boxes *</label><input type="number" id="rbi-boxes" class="form-control" value="${avail.length}" min="1" step="1"></div>
+      <div class="form-group"><label>Quantity (lakhs) *</label><input type="number" id="rbi-qty" class="form-control" value="${qty}" min="0.01" step="0.01"></div>
+    </div>
+    <div class="form-group"><label>Remarks</label><input type="text" id="rbi-remarks" class="form-control" placeholder="(optional)"></div>
+    <div class="text-sm text-muted">Customer <b>${d.customer||vb.customer||'—'}</b> · size ${d.size||vb.size||'—'} · ${d.isPrinted?'printed':'unprinted'}. For a consolidated invoice use the same SO as the fresh batches; SAP's invoice line for this batch attributes here automatically.</div>
+    <div id="rbi-err" style="font-size:12px;color:#dc2626"></div>`,
+    [{label:'Cancel',cls:'btn-secondary',onclick:closeModal},{label:'Create invoice request',cls:'btn-primary',onclick:()=>_rbInvoiceSubmit(bn, d, soEntry)}]);
+}
+async function _rbInvoiceSubmit(bn, d, soEntry){
+  const v=id=>(document.getElementById(id)?.value||'').trim(); const err=document.getElementById('rbi-err');
+  const soNum=v('rbi-so'); const boxes=parseInt(v('rbi-boxes'),10)||0; const qty=parseFloat(v('rbi-qty'))||0;
+  if(!soNum){ if(err) err.textContent='SAP Sales Order number is required to invoice.'; return; }
+  if(!(boxes>0)||!(qty>0)){ if(err) err.textContent='Boxes and quantity must be > 0.'; return; }
+  try{
+    let entry=soEntry;
+    if(!entry){   // resolve a typed SO number through the re-batch preview resolver (SAP cache)
+      const r=await _rbPost({mode:'standalone',legacyRef:bn,qtyLakhs:0.01,size:d.size||'0',customer:d.customer||'x',mfg:d.mfg||'2000-01',exp:d.exp||'2000-01',sapDocNum:soNum,cardCode:v('rbi-card'),preview:true});
+      if(!r||!r.ok){ if(err) err.textContent=(r&&r.error)||'Could not resolve the SO'; return; }
+      entry=r.plan.sapDocEntry; if(!entry){ if(err) err.textContent='SO not found in the SAP cache.'; return; }
+    }
+    const vb=getBatch(bn)||{};
+    const body={ batchNumber:bn, customer:d.customer||vb.customer||'', cardCode:v('rbi-card')||d.cardCode||vb.cardCode||'', poNumber:d.poNumber||vb.poNumber||'',
+      sapDocEntry:entry, sapDocNum:soNum, size:d.size||vb.size||'', colour:d.colour||vb.colour||'', pcCode:d.pcCode||vb.pcCode||'',
+      boxes, qtyLakhs:qty, selectionMode:'batch', remarks:('Legacy stock (standalone re-batch) — '+v('rbi-remarks')).trim(), createdBy:currentUser?.username||currentUser?.role||'admin' };
+    const r=await fetch(serverUrl+'/api/invoice/request',{method:'POST',headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},body:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
+    const j=await r.json();
+    if(!j||!j.ok){ if(err) err.textContent='Request failed: '+((j&&(j.error||j.message))||'server error'); return; }
+    try{ trkAuditLog('REBATCH_LEGACY_INVOICE_REQUEST', `${bn}: ${qty} L / ${boxes} box(es) against SO ${soNum}`); }catch(_){}
+    closeModal(); toast(`🧾 Invoice request created for ${bn} against SO ${soNum}`,'var(--green)',5000);
+  }catch(e){ if(err) err.textContent='Request failed: '+e.message; }
+}
+async function openRebatchLog(preBatch){
+  if(currentDept!=='admin' && currentDept!=='planning'){ alert('Admin / Planning Manager only.'); return; }
+  openModal('Re-batch Log', 'Every legacy re-batch, followed through packing and dispatch', `<div id="rb-log-body" style="font-size:12px;color:var(--text2)">Loading…</div>`, [{label:'Close',cls:'btn-secondary',onclick:closeModal}]);
+  try{
+    const r=await fetch(serverUrl+'/api/tracking/rebatch-log'+(preBatch?('?batch='+encodeURIComponent(preBatch)):''),{headers:{'x-session-token':currentUser?.token||''}});
+    const j=await r.json();
+    const body=document.getElementById('rb-log-body'); if(!body) return;
+    if(!j||!j.ok){ body.innerHTML='Failed to load log: '+((j&&j.error)||'error'); return; }
+    if(!j.rows.length){ body.innerHTML='No re-batch actions logged yet.'; return; }
+    body.innerHTML=`<div class="tbl-wrap"><table><thead><tr><th>When</th><th>Mode</th><th>Legacy (X)</th><th>Target (Y)</th><th style="text-align:right">Qty (L)</th><th style="text-align:right">Boxes</th><th style="text-align:right">Printed</th><th style="text-align:right" title="Orange PI-verification twins (printed target batch only)">Orange</th><th style="text-align:right">Packed</th><th style="text-align:right">Dispatched</th><th>By</th><th>Note</th><th></th><th>Print</th><th>Invoice</th></tr></thead><tbody>${
+      j.rows.map(x=>{const when=(x.ts||'').replace('T',' ').slice(0,16);const st=x.dispatched>=x.boxes?'<span class="badge" style="background:#dcfce7;color:#166534">dispatched</span>':x.packed>0?'<span class="badge" style="background:#fef9c3;color:#854d0e">packed</span>':'<span class="badge badge-gray">pending</span>';
+        return `<tr><td class="td-mono">${when}</td><td>${x.mode==='standalone'?'<span class="badge" style="background:#eef2ff;color:#3730a3" title="Own number; details typed by admin">standalone</span>':'<span class="badge badge-gray">merge</span>'}${x.details&&x.mode==='standalone'?`<div style="font-size:10px;color:var(--text3)">mfg ${_v53tMfgText(x.details.mfg)} · exp ${_v53tMfgText(x.details.exp)}${x.details.isPrinted?' · printed':''}</div>`:''}</td><td class="td-mono fw-bold">${x.legacyRef}</td><td class="td-mono fw-bold">${x.targetBatch}</td><td class="td-mono" style="text-align:right">${x.qtyLakhs.toFixed(2)}</td><td class="td-mono" style="text-align:right">${x.boxes}</td><td class="td-mono" style="text-align:right">${x.printed}/${x.boxes}</td><td class="td-mono" style="text-align:right">${x.oranges?`${x.orangesPrinted}/${x.oranges}`:'—'}</td><td class="td-mono" style="text-align:right">${x.packed} (${x.packedQty.toFixed(2)} L)</td><td class="td-mono" style="text-align:right">${x.dispatched} (${x.dispatchedQty.toFixed(2)} L)</td><td>${x.byUser||'—'}</td><td style="font-size:11px">${x.note||''}</td><td>${st}</td><td style="white-space:nowrap"><button class="btn btn-sm btn-primary" title="Blue R-labels — use at the GF AIM PC" onclick='_rbPrintLabels(_rbLabelsForRow(${JSON.stringify({labelIds:x.labelIds,orangeIds:x.orangeIds})}),"blue")'>🔵 ${x.printed}/${x.boxes}</button>${x.oranges?` <button class="btn btn-sm" style="background:#ea580c;color:#fff" title="Orange R-labels — use at the PI PC" onclick='_rbPrintLabels(_rbLabelsForRow(${JSON.stringify({labelIds:x.labelIds,orangeIds:x.orangeIds})}),"orange")'>🟠 ${x.orangesPrinted}/${x.oranges}</button>`:''}</td><td style="white-space:nowrap">${x.mode==='standalone'?`<button class="btn btn-sm btn-secondary" title="Create the invoice request for this legacy batch (same flow as Planning's Generate Invoice)" onclick='_rbInvoiceRequest(${JSON.stringify({targetBatch:x.targetBatch,labelIds:x.labelIds,details:x.details||{}})})'>🧾 ${x.details&&x.details.sapDocNum?'SO '+x.details.sapDocNum:'no SO'}</button>`:'<span class="text-muted" style="font-size:11px">via '+x.targetBatch+'</span>'}</td></tr>`;}).join('')
+    }</tbody></table></div>`;
+  }catch(e){ const body=document.getElementById('rb-log-body'); if(body) body.innerHTML='Failed to load log: '+e.message; }
+}
 async function openRecustomerLog(){
   if(currentDept!=='admin' && currentDept!=='planning'){ alert('Admin / Planning Manager only.'); return; }   // v52N (Ishan, 22 Aug): PM re-customers export excess
   openModal('Re-Customer Log', 'Before/after history of every re-customer action', `<div id="rc-log-body" style="font-size:12px;color:var(--text2)">Loading…</div>`, [{label:'Close', cls:'btn-secondary', fn:'closeModal()'}]);
@@ -7267,7 +7585,7 @@ function renderDispatch(){
     <div class="dept-strip dispatch"></div>
     <div class="section-header" style="margin-bottom:8px">
       <div><div class="section-title">Dispatch Management</div><div class="section-sub">Packed quantity ledger & dispatch recording</div></div>
-      ${(currentDept==='admin'||currentDept==='planning')?`<div style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="openRecustomer()">🔄 Re-Customer Batch</button><button class="btn btn-sm btn-secondary" onclick="openRecustomerLog()">📋 Re-Customer Log</button></div>`:''}
+      ${(currentDept==='admin'||currentDept==='planning')?`<div style="display:flex;gap:6px"><button class="btn btn-sm btn-secondary" onclick="openRecustomer()">🔄 Re-Customer Batch</button><button class="btn btn-sm btn-secondary" onclick="openRecustomerLog()">📋 Re-Customer Log</button><button class="btn btn-sm btn-secondary" onclick="openRebatch()" title="v53P: re-batch legacy (pre-Sunloc) stock into a current batch with fresh R-series blue labels">♻️ Re-batch Legacy</button><button class="btn btn-sm btn-secondary" onclick="openRebatchLog()">📒 Re-batch Log</button></div>`:''}
     </div>
 
     <!-- v39 Phase 10b: Invoice Queue panel — populated async by _v39_renderInvoiceQueuePanel().
@@ -7441,7 +7759,7 @@ function openDispatchRecord(batchNo){
   if(!batch){ alert('Batch not found.'); return; }
   // Compute scan-out boxes for this batch (uses _ss summary if available, falls back to state.scans)
   const localScanOut = state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
-  const scanOutBoxes = hasScanSummary() ? (_ss(batchNo,'dispatch').out + localScanOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='dispatch'&&s.type==='out').length;
+  const scanOutBoxes = hasScanSummary() ? (_ss(batchNo,'dispatch').out + (_ss(batchNo,'dispatch').legacyOut||0) + localScanOut) : state.scans.filter(s=>s.batchNumber===batchNo&&s.dept==='dispatch'&&s.type==='out').length;
   // Sum of already-recorded boxes from existing dispatchRecs
   const existingRecs = state.dispatchRecs.filter(r=>r.batchNumber===batchNo);
   const recordedBoxes = existingRecs.reduce((s,r)=>s+(parseInt(r.boxes)||0),0);
@@ -8137,7 +8455,7 @@ function _v51dRenderOverInv() {
       <td class="td-mono" style="text-align:right" title="Gross produced (DPR actuals) — production context for the packed-basis excess; a batch can be legitimately produced but not yet packed">${r.producedL != null ? r.producedL.toFixed(2) : '—'}</td>
       <td class="td-mono" style="text-align:right">${r.packed.toFixed(2)}</td>
       <td class="td-mono" style="text-align:right" title="Received ${r.received.toFixed(2)}L + Pending ${r.pending.toFixed(2)}L">${r.invoiced.toFixed(2)}</td>
-      <td class="td-mono fw-bold" style="text-align:right;color:#dc2626">${r.excess.toFixed(2)}</td>
+      <td class="td-mono fw-bold" style="text-align:right;color:#dc2626">${r.excess.toFixed(2)}${r.legacyRemark?`<div style="font-size:10px;font-weight:400;color:#047857;white-space:normal;text-align:right" title="v53P: re-batched legacy stock ships under this batch but is not its packed production">♻ ${r.legacyRemark}</div>`:''}</td>
       <td class="td-mono" style="font-size:10px">${(r.invoices||[]).map(i=>{
         const _in = _v51dOverInvInRange(i, df, dt);
         const _dtxt = i.date ? `, ${_v51dOverInvDateFmt(i.date)}` : '';
@@ -8190,7 +8508,7 @@ function _v51dExportOverInv() {
   // month of production) and carries the new PROD MONTH column + per-invoice dates.
   const rows = _v51dFilteredOverInvRows();
   const wb = XLSX.utils.book_new();
-  const HDR = ['BATCH','CUSTOMER','PROD MONTH','PRODUCED (L)','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)','EXCESS (L)','INVOICE #s (QTY, DATE)'];   // v51H: Produced = gross DPR actuals
+  const HDR = ['BATCH','CUSTOMER','PROD MONTH','PRODUCED (L)','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)','EXCESS (L)','INVOICE #s (QTY, DATE)','REMARK'];   // v51H: Produced = gross DPR actuals · v53P: REMARK (re-batch explanation)
   const NC = HDR.length;
   const aoa = []; const merges = []; const kinds = [];
   const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
@@ -8203,13 +8521,14 @@ function _v51dExportOverInv() {
   _push([],'spacer');
   _push(HDR,'hdr');
   rows.forEach(r => _push([r.batch, r.customer||'—', r.prodMonth||'—', (r.producedL != null ? r.producedL : '—'), r.packed, r.received, r.pending, r.invoiced, r.excess,
-    (r.invoices||[]).map(i=>`${i.no} (${i.qty}L${i.date ? ', ' + _v51dOverInvDateFmt(i.date) : ''})`).join(', ')],'data'));
+    (r.invoices||[]).map(i=>`${i.no} (${i.qty}L${i.date ? ', ' + _v51dOverInvDateFmt(i.date) : ''})`).join(', '), r.legacyRemark||''],'data'));   // v53P REMARK
   const s = k => rows.reduce((a,r)=>a+(r[k]||0),0);
   _push([`TOTAL (${rows.length} batches)`,'','',Math.round(rows.reduce((a,r)=>a+(r.producedL||0),0)*100)/100,Math.round(s('packed')*100)/100,Math.round(s('received')*100)/100,
-    Math.round(s('pending')*100)/100,Math.round(s('invoiced')*100)/100,Math.round(s('excess')*100)/100,''],'grand');
+    Math.round(s('pending')*100)/100,Math.round(s('invoiced')*100)/100,Math.round(s('excess')*100)/100,'',
+    (rows.filter(r=>r.legacyQty).length ? `${rows.filter(r=>r.legacyQty).length} batch(es) over-invoiced by re-batch: ${Math.round(rows.reduce((a,r)=>a+(r.legacyQty||0),0)*100)/100} L` : '')],'grand');   // v53P
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
-  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:56}];
+  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:56},{wch:48}];   // v53P: REMARK
   const R = XLSX.utils.decode_range(ws['!ref']);
   for(let r=R.s.r; r<=R.e.r; r++) for(let c=3; c<=8; c++){
     const cell = ws[XLSX.utils.encode_cell({r,c})];
@@ -11230,7 +11549,7 @@ function _rptB_wipBoxChips(batchNo, dept){
   // say it plainly and point at Sync, which reloads the scan cache and heals the list.
   _note49d += '<div class="text-sm" style="margin-bottom:6px;padding:5px 8px;border-radius:4px;background:rgba(8,145,178,0.08);color:#0e7490;border:1px solid rgba(8,145,178,0.25)">\u2139 This list is from this device\u2019s local scan cache. If it disagrees with the WIP count (which is server-computed), press <b>Sync</b> \u2014 out-scans recorded on other devices may not be cached here yet.</div>';
   const chips = labels.map(l=>{
-    const box = l.isExcess ? ('E-'+(l.excessNum||Math.abs(l.labelNumber||0))) : String(Math.abs(l.labelNumber||0));
+    const box = _boxDisplayId(l);   // v53P: one formatter (R-n / E-n / n)
     return `<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(8,145,178,0.1);border:1px solid rgba(8,145,178,0.35);color:#0e7490${l.voided?';opacity:0.5;text-decoration:line-through':''}"${l.isPartial?' title="Partial box"':''}>${box}</span>`;
   }).join('');
   return _note49d + `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${labels.length}</b> box${labels.length>1?'es':''} currently in WIP at ${DEPT_LABELS[dept]||dept}:</div>${chips}`;
@@ -14294,9 +14613,9 @@ function _v41_renderReportEInnerBody(){
     const packUnptd=!b.isPrinted?_packInQty:0;
     const packPtd=b.isPrinted?_packInQty:0;
     // v40 Phase 18.14d: sum legacy + Phase 18 (straddle batches have both flows for different shipments)
-    const _legBoxes = useSS ? (_ss(b.batchNumber,'dispatch').out + localExtra('dispatch','out'))
+    const _legBoxes = useSS ? (_ss(b.batchNumber,'dispatch').out + (_ss(b.batchNumber,'dispatch').legacyOut||0) + localExtra('dispatch','out'))   // v53P: + R-boxes
                             : scansForBatch.filter(s=>s.dept==='dispatch'&&s.type==='out').length;
-    const _legLakhs = _scanLakhs(b.batchNumber,'dispatch','out',b.size);  // v47G: per-box label sum
+    const _legLakhs = _scanLakhs(b.batchNumber,'dispatch','out',b.size) + _v53pLegacyLakhs(b.batchNumber,'dispatch','out',b.size);  // v47G: per-box label sum · v53P (Ishan): re-batched R-boxes are part of dispatch
     const _p18 = state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0); // v45E: date-bounding handled by the as-of state swap (cumulative-through-date)
     const disp = _legLakhs + _p18;
     // v47H (confirmed by Ishan): Post-PTD A-Grade — SCAN-BASED. Base = AIM A-Grade (Scan-In − AIM Remelt);
@@ -14309,7 +14628,7 @@ function _v41_renderReportEInnerBody(){
     // (AIM A-Grade + AIM Salvage) — that % is ag.pct per row; the subtotals aggregate _agNum/_agDen.
     // 26ZD104: Print Rej = 1.82% × 49.00 = 0.89; % = (52.5 − 0.89 − 3.75) ÷ (52.5 + 2.2) = 87.5%.
     const _printRejDPL45h = printingTD * (_printSalPct / 100);
-    rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',zone:b.zone||'',pcCode:b.pcCode||'',colour:b.colour||'',size:b.size,startDate:_dispStart49zc(b),endDate:_dispEnd49zc(b),   // v49ZC: closed ⇒ actual window (display-only)
+    rows.push({machine:mc,floor:floorKey,batchNo:b.batchNumber,customer:b.customer||'',zone:b.zone||'',pcCode:b.pcCode||'',rebatch:_v53pRebatchInfo(b.batchNumber),colour:b.colour||'',size:b.size,startDate:_dispStart49zc(b),endDate:_dispEnd49zc(b),   // v49ZC: closed ⇒ actual window (display-only)
       isPrinted: b.isPrinted,  // v37H: used by table render to distinguish PTD vs UP for column display
       plannedQty:b.qty||0, _plannedQty:b.qty||0,
       grossProd:fmt(grossProd),_grossProd:grossProd,
@@ -14464,7 +14783,7 @@ function _v41_renderReportEInnerBody(){
         return `<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-zone="${(r.zone||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}" data-pp-num="${r._agNum||0}" data-pp-den="${r._agDen||0}" data-aim-num="${r._aimAGrade||0}" data-aim-den="${r._aimInspNew||0}">
         <td class="sticky-col" style="left:0;min-width:70px;border-right:1px solid #d4b896">${r.machine}</td>
         <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
-        <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}${_reconBadge(!!_reconOverride(r.batchNo),(_reconTips(r.batchNo)||{}).title)}${_ovrBadge(r.batchNo)}</td>
+        <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}${_reconBadge(!!_reconOverride(r.batchNo),(_reconTips(r.batchNo)||{}).title)}${_ovrBadge(r.batchNo)}${r.rebatch?` <span class="badge" style="background:#ecfdf5;color:#047857;border:1px solid #6ee7b7;font-size:9px;cursor:help" title="${r.rebatch.remark}. Dispatch and Balance include the R-boxes; production figures do not.">♻ RB +${r.rebatch.qty.toFixed(2)} L</span>`:''}</td>
         <td class="sticky-col" style="left:210px;min-width:180px;border-right:2px solid #d4b896">${r.customer||'—'}</td>
         <td style="white-space:nowrap">${r.zone||'—'}</td><td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td><td style="white-space:nowrap;font-size:11px">${r.startDate?new Date(r.startDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td><td style="white-space:nowrap;font-size:11px">${r.endDate?new Date(r.endDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
         <td>${fmtN(r._plannedQty)}</td><td>${fmtN(r._grossProd)}</td>
@@ -15715,7 +16034,7 @@ function _renderReportJContent(alerts) {
             : filtered.map(a => {
               const b = getBatch(a.batch_number);
               const localScanOut = state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
-              const scanOutBoxes = hasScanSummary() ? (_ss(a.batch_number,'dispatch').out + localScanOut) : state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
+              const scanOutBoxes = hasScanSummary() ? (_ss(a.batch_number,'dispatch').out + (_ss(a.batch_number,'dispatch').legacyOut||0) + localScanOut) : state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
               const recordedBoxes = state.dispatchRecs.filter(r=>r.batchNumber===a.batch_number).reduce((s,r)=>s+(parseInt(r.boxes)||0),0);
               const uncovered = Math.max(0, scanOutBoxes - recordedBoxes);
               return `<tr>
@@ -15740,7 +16059,7 @@ function _renderReportJContent(alerts) {
           let _o=0,_r=0,_u=0;
           filtered.forEach(a=>{
             const lo=state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
-            const so=hasScanSummary()?(_ss(a.batch_number,'dispatch').out+lo):state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
+            const so=hasScanSummary()?(_ss(a.batch_number,'dispatch').out+(_ss(a.batch_number,'dispatch').legacyOut||0)+lo):state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
             const rec=state.dispatchRecs.filter(r=>r.batchNumber===a.batch_number).reduce((s,r)=>s+(parseInt(r.boxes)||0),0);
             _o+=so; _r+=rec; _u+=Math.max(0,so-rec);
           });
@@ -15847,7 +16166,7 @@ function exportReportJ() {
     const rowsB = activeB.map(a => {
       const b = getBatch(a.batch_number);
       const localScanOut = state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out'&&s._local).length;
-      const scanOutBoxes = hasScanSummary() ? (_ss(a.batch_number,'dispatch').out + localScanOut) : state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
+      const scanOutBoxes = hasScanSummary() ? (_ss(a.batch_number,'dispatch').out + (_ss(a.batch_number,'dispatch').legacyOut||0) + localScanOut) : state.scans.filter(s=>s.batchNumber===a.batch_number&&s.dept==='dispatch'&&s.type==='out').length;
       const recordedBoxes = state.dispatchRecs.filter(r=>r.batchNumber===a.batch_number).reduce((s,r)=>s+(parseInt(r.boxes)||0),0);
       return {
         'Batch': a.batch_number||'',
@@ -16511,7 +16830,7 @@ function _v40_renderReportKDetail(r) {
     if (s.boxNumber != null && s.boxNumber !== '') return s.boxNumber;
     const l = _kLbls[s.labelId] || (state.labels || []).find(x => x.id === s.labelId);
     if (l) return _boxDisplayId(l);
-    if (s.labelNumber != null && !isNaN(parseInt(s.labelNumber))) { const n = parseInt(s.labelNumber); return n < 0 ? 'E-' + Math.abs(n) : String(Math.abs(n)); }
+    if (s.labelNumber != null && !isNaN(parseInt(s.labelNumber))) { const n = parseInt(s.labelNumber); return n < 0 ? _v53pNegBox(n) : String(Math.abs(n)); }
     return s.labelId || '—';
   };
   const packInRows = _packInList.length === 0
@@ -17550,13 +17869,17 @@ function exportReportE(){
   const wb = XLSX.utils.book_new();
   // v53M (user request via Ishan, 02 Sep): ZONE (dispatch zone as set on the planning order) after
   // CUSTOMER — on screen and in this sheet, same position. Ten leading text columns now (was nine).
+  // v53P (Ishan): REMARK appended as the LAST column — carries the re-batch explanation for a row
+  // whose Dispatch/Balance include R-boxes ("Re-batch of A L from X has caused it"). Appending keeps
+  // every earlier column index (numeric formats, % columns, merges) exactly as v53M set them.
   const HDR = ['MACHINE','FLOOR','BATCH','CUSTOMER','ZONE','PC CODE','COLOUR','SIZE','START','END',
     'PLANNED (L)','GROSS PROD (L)','AIM SALVAGE (L)','AIM REMELT (L)','TOTAL WASTE (L)',
     'AVAIL TO SCAN IN (L)','SCAN IN (L)','UNSCANNED WIP (L)','AIM A-GRADE (L)','AIM %',
     'SCAN OUT (L)','DEPT WIP (L)','TOTAL AIM WIP (L)','PRINT TD (L)','PRINT REJ (L)','PRINTING WIP (L)',
     'PI INSPECT (L)','PI SAL/REM (L)','PI WIP (L)','POST PRINTING A-GRADE %','PACKING WIP (L)',
     'CONSOLIDATED WIP (L)','PACK UNPTD (L)','PACK PTD (L)','DISPATCH (L)','BALANCE (L)'];
-  const NC = HDR.length; // 36 — must equal the Full-View column count (v53M: +ZONE)
+  HDR.push('REMARK');   // v53P
+  const NC = HDR.length; // 37 — 36 Full-View columns + REMARK (v53P)
   const aoa = []; const merges = [];
   const kinds = [];   // v50W: one entry per aoa row — drives the styling pass (title/hdr/floor/mc/data/sub/floortot/grand/spacer)
   const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
@@ -17579,7 +17902,8 @@ function exportReportE(){
       _n(r._availScanIn), _n(r._aimScanIn), _n(r._unscannedWip), _n(r._aimAGrade), _n(parseFloat(r.aimAGradePct)||0),
       _n(r._aimScanOut), _n(r._deptWip), _n(r._wip), P(r._printingTD), P(r._printRej), P(r._printingWip),
       P(r._piInspect), P(r._piSalRem), P(r._piWip), (r.printAGradePct==='—' ? '—' : _n(r._printAGradePct)),
-      _n(r._packingWip), _n(r._consolWip), _n(r._packingUP), _n(r._packingPTD), _n(r._dispatch), _n(r._balance)];
+      _n(r._packingWip), _n(r._consolWip), _n(r._packingUP), _n(r._packingPTD), _n(r._dispatch), _n(r._balance),
+      (r.rebatch ? r.rebatch.remark : '')];   // v53P REMARK
   };
   // Subtotal/total rows — the SAME sums and % bases as the Full-View buildSubtotalRow:
   // AIM % = Σ A-Grade ÷ Σ (A-Grade+Sal+Rem); Post-Printing % = Σ agNum ÷ Σ agDen (v47H blend).
@@ -17595,7 +17919,8 @@ function exportReportE(){
       _n(sum(arr,'availScanIn')), _n(sum(arr,'aimScanIn')), _n(sum(arr,'unscannedWip')), _n(aimNum), (aimDen>0 ? _n(aimNum/aimDen*100) : '—'),
       _n(sum(arr,'aimScanOut')), _n(sum(arr,'deptWip')), _n(sum(arr,'wip')), _n(sum(arr,'printingTD')), _n(sum(arr,'printRej')), _n(sum(arr,'printingWip')),
       _n(sum(arr,'piInspect')), _n(sum(arr,'piSalRem')), _n(sum(arr,'piWip')), (agDen>0 ? _n(Math.max(0,agNum/agDen*100)) : '—'),
-      _n(sum(arr,'packingWip')), _n(sum(arr,'consolWip')), _n(sum(arr,'packingUP')), _n(sum(arr,'packingPTD')), _n(sum(arr,'dispatch')), _n(sumBalX(arr))];
+      _n(sum(arr,'packingWip')), _n(sum(arr,'consolWip')), _n(sum(arr,'packingUP')), _n(sum(arr,'packingPTD')), _n(sum(arr,'dispatch')), _n(sumBalX(arr)),
+      (arr.filter(r=>r.rebatch).length ? `${arr.filter(r=>r.rebatch).length} re-batched (+${_n(arr.reduce((a,r)=>a+(r.rebatch?r.rebatch.qty:0),0))} L)` : '')];   // v53P REMARK
   };
   const _lblMerge = () => merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:9}});
   const floors = [...new Set(rows.map(r=>r.floor))];
@@ -17618,7 +17943,7 @@ function exportReportE(){
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
   ws['!cols'] = [{wch:9},{wch:6},{wch:11},{wch:24},{wch:12},{wch:9},{wch:11},{wch:5},{wch:12},{wch:12},
-    ...Array(NC-10).fill({wch:13})];
+    ...Array(NC-11).fill({wch:13}), {wch:44}];   // v53P: REMARK last
   // 2-dp display on every numeric cell (matches the on-screen fmtN); % columns get a % suffix.
   const R = XLSX.utils.decode_range(ws['!ref']);
   for(let r=R.s.r; r<=R.e.r; r++) for(let c=10; c<=R.e.c; c++){
@@ -17643,14 +17968,33 @@ function exportReportE(){
         if (kind === 'hdr')           _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
         else if (kind === 'floor')    _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.FLOOR } }, border:_bAll });
         else if (kind === 'mc')       _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.MC } }, border:_bAll });
-        else if (kind === 'sub')      _set(r, c, { font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_F.SUB } }, border:_bAll, alignment:{ horizontal: c>=10?'right':'left' } });
-        else if (kind === 'floortot') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.FLOOR } }, border:_bAll, alignment:{ horizontal: c>=10?'right':'left' } });
-        else if (kind === 'grand')    _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.GRAND } }, border:_bAll, alignment:{ horizontal: c>=10?'right':'left' } });
-        else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal: c>=10?'right':'left' }, font:{ sz:10 } }; }
+        else if (kind === 'sub')      _set(r, c, { font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_F.SUB } }, border:_bAll, alignment:{ horizontal: (c>=10 && c<NC-1)?'right':'left' } });
+        else if (kind === 'floortot') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.FLOOR } }, border:_bAll, alignment:{ horizontal: (c>=10 && c<NC-1)?'right':'left' } });
+        else if (kind === 'grand')    _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.GRAND } }, border:_bAll, alignment:{ horizontal: (c>=10 && c<NC-1)?'right':'left' } });
+        else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal: (c>=10 && c<NC-1)?'right':'left' }, font:{ sz:10 } }; }
       }
     });
   } catch(e) { console.warn('[v50W] style pass skipped:', e && e.message); }
   XLSX.utils.book_append_sheet(wb, ws, 'Report E');
+  // v53P (Ishan): a dedicated "Legacy Re-batch" sheet — every R-label in the exported rows' batches,
+  // with legacy ref, quantity and scan status, so re-batched stock is auditable without being
+  // conflated with the production columns.
+  try {
+    const _rbLabels = (state.labels||[]).filter(l=>!l.voided && !l.isOrange && _v53pIsLegacyLabel(l))   // v53T: every R-label, both modes
+      .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'') || ((a.legacyNum||0)-(b.legacyNum||0)));
+    const _rbAoa = [['Legacy Re-batch — R-series labels (dispatch-side only; excluded from production, WIP, A-grade and packed)'],[`Generated ${new Date().toLocaleString()}`],[],
+      ['BATCH ON LABEL','MODE','LEGACY REF (X)','LABEL','CUSTOMER','SIZE','QTY (L)','MFG','EXP','PRINTED','ORANGE TWIN','PACKED IN','DISPATCHED OUT']];
+    _rbLabels.forEach(l=>{
+      const pk = (state.scans||[]).some(s=>(s.labelId||s.label_id)===l.id && s.dept==='packing' && s.type==='in');
+      const dp = (state.scans||[]).some(s=>(s.labelId||s.label_id)===l.id && s.dept==='dispatch' && s.type==='out');
+      const ol = (state.labels||[]).find(o=>o.isOrange && o.parentLabelId===l.id && !o.voided);
+      _rbAoa.push([l.batchNumber, l.legacyMode||'merge', l.legacyRef||'', 'R-'+(l.legacyNum||''), l.customer||'', l.size, _n(parseFloat(l.qty)||0), _v53tMfgText(l.legacyMfg)||'', _v53tMfgText(l.legacyExp)||'', l.printed?'Y':'', ol?(ol.printed?'Y (printed)':'Y'):'', pk?'Y':'', dp?'Y':'']);
+    });
+    _rbAoa.push([`TOTAL (${_rbLabels.length} labels)`,'','','','','',_n(_rbLabels.reduce((a,l)=>a+(parseFloat(l.qty)||0),0)),'','','','','','']);
+    const _rbWs = XLSX.utils.aoa_to_sheet(_rbAoa);
+    _rbWs['!cols'] = [{wch:14},{wch:11},{wch:16},{wch:8},{wch:26},{wch:6},{wch:10},{wch:10},{wch:10},{wch:9},{wch:12},{wch:11},{wch:15}];
+    XLSX.utils.book_append_sheet(wb, _rbWs, 'Legacy Re-batch');
+  } catch(e) { console.warn('[v53P] Legacy Re-batch sheet skipped:', e.message); }
   // ═══ v50W DISPATCH DETAIL SHEET (Ishan, 6 Aug item 3) ═══════════════════════════════════════════
   // One-row-per-batch discipline in the main sheet is untouched; invoice-level attribution lives on
   // its own tab: per batch, a bold band, then a Date | Invoice No | Qty (L) table sourced from
@@ -18218,7 +18562,7 @@ function handleImportFile(input){
         input.value = ''; return;
       }
       // Merge or replace
-      if(data.labels)       state.labels       = data.labels;
+      if(data.labels)     { state.labels       = data.labels; _v53tSyncVirtualBatches(); }   // v53T
       if(data.scans)        state.scans        = data.scans;
       if(data.stageClosure) state.stageClosure = data.stageClosure;
       if(data.wastage)      state.wastage      = data.wastage;
@@ -18396,7 +18740,7 @@ async function refreshScans(){
       // v51F (Rahul, 26ZE123 E-3/E-4): the LIVE refresh never got the v49ZJ fix — Math.abs stripped
       // the E-series convention (excess labels store negative labelNumbers), so E-4 rendered as 4.
       // Same canonical _boxDisplayId + negative→E- fallback as the filtered path.
-      const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '?';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?('E-'+Math.abs(_ni)):String(Math.abs(_ni||0));})();
+      const boxNum=lbl?_boxDisplayId(lbl):(()=>{const _nv=(s.labelNumber!=null?s.labelNumber:(s.label_number!=null?s.label_number:null));if(_nv==null)return '?';const _ni=parseInt(_nv);return (!isNaN(_ni)&&_ni<0)?_v53pNegBox(_ni):String(Math.abs(_ni||0));})();
       const _rsB=state.batches.find(b=>b.batchNumber===s.batchNumber)||{}; // v45T #2.3
       return `<tr${_isRecon?' style="background:rgba(124,58,237,0.05)"':''}>
         <td class="td-mono text-sm">${fmtDateTime(s.ts)}${_isRecon?' <span style="font-size:9px;color:#7c3aed" title="Timestamp is the month-window end so this adjustment is attributed to the reconciled month — not a real scan time">(month-end)</span>':''}</td>
