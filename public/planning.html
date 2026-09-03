@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v53U</p>
+      <p>Planning Suite v3.0 · build v53M</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53U' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53M' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53U', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53M', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2609,7 +2609,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53U'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53M'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5385,8 +5385,6 @@ function saveOrderModal(existingId, defaultMachine) {
     sapDocEntry: _sapDocEntryNum || null,            // v39 Phase 7
     sapDocNum: _sapDocNumStr || '',                  // v39 Phase 7
     createdFrom: _existing?.createdFrom || (_sapDocEntryNum ? 'sap_manual' : 'manual'),
-    sapLineNum: (_existing && _existing.sapLineNum != null) ? _existing.sapLineNum : null,   // v53N: survive edits
-    sapItemCode: (_existing && _existing.sapItemCode) || '',                                  // v53N
     batchNumber: document.getElementById('fo-batch')?.value || autoGenBatchNumber(machineId),
     shipTo: document.getElementById('fo-customer')?.value,
     billTo: document.getElementById('fo-billto')?.value || '',
@@ -5754,7 +5752,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53U'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53M'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -6261,48 +6259,6 @@ function _v39_reconcileSapIndents(indents) {
       return isThousand ? 0.01 : 1;
     };
 
-    // v53N (Shrikant, 03 Sep — Wellness Nepal SO 547, four colour lines 5/5/7/11 L): planned qty was
-    // matched to the indent by DOCUMENT only, so the 7 L order assigned for the maroon line was
-    // subtracted from every line — 5−7, 5−7, 7−7 vanished and 11−7 showed as "4 L partial". Attribute
-    // each planned order to ONE line: (1) exact sapLineNum (stored by Assign from v53N on); (2) same
-    // item code (pcCode), filled sequentially across lines that share it; (3) a single-line indent
-    // takes anything left (the pre-v53N behaviour, which was only ever right for single-line docs);
-    // orders that cannot be placed on a multi-line indent are left out and logged rather than
-    // subtracted from all lines. Existing orders self-heal via (2) — no data repair.
-    const _docOrders = (state.orders || []).filter(o =>
-      !o.deleted &&
-      (
-        (o.sapDocEntry && Number(o.sapDocEntry) === Number(docEntry)) ||
-        (!o.sapDocEntry && o.poNumber && String(o.poNumber).trim() === docNum.trim())
-      )
-    );
-    const _lineKey = (line, li) => String(line.LineNum != null ? line.LineNum : li);
-    const _norm = v => String(v == null ? '' : v).trim().toUpperCase();
-    const _openLines = lines.map((line, li) => {
-      const sc = _uomScaleForLine(line);
-      const raw = (line.RemainingOpenQuantity != null) ? (parseFloat(line.RemainingOpenQuantity) || 0) : (parseFloat(line.Quantity) || 0);
-      return { key: _lineKey(line, li), qty: raw * sc, item: _norm(line.ItemCode) };
-    }).filter(l => l.qty > 0);
-    const _plannedByLine = {};
-    const _addPlanned = (key, q) => { _plannedByLine[key] = (_plannedByLine[key] || 0) + q; };
-    for (const o of _docOrders) {
-      const q = parseFloat(o.qty) || 0;
-      if (q <= 0) continue;
-      if (o.sapLineNum != null && _openLines.some(l => l.key === String(o.sapLineNum))) { _addPlanned(String(o.sapLineNum), q); continue; }
-      const cands = _openLines.filter(l => l.item && l.item === _norm(o.pcCode || o.sapItemCode));
-      if (cands.length) {
-        let rem = q;
-        for (const l of cands) {
-          const room = Math.max(0, l.qty - (_plannedByLine[l.key] || 0));
-          const take = (l === cands[cands.length - 1]) ? rem : Math.min(rem, room);
-          if (take > 0) { _addPlanned(l.key, take); rem -= take; }
-          if (rem <= 0) break;
-        }
-        continue;
-      }
-      if (_openLines.length === 1) { _addPlanned(_openLines[0].key, q); continue; }
-      if (window._SAP_DEBUG) console.log('[SAP reconcile] order not attributable to a line of multi-line SO', { docNum, batch: o.batchNumber, pcCode: o.pcCode, qty: q });
-    }
     for (let li = 0; li < lines.length; li++) {
       const line = lines[li];
       const uomScale = _uomScaleForLine(line); // v41o: per-line, UoM-based
@@ -6377,7 +6333,14 @@ function _v39_reconcileSapIndents(indents) {
         'U_InkBody','U_Ink_Body','U_INKBODYCOLOUR','U_INK_B','U_BODYINK'
       ]);
       // Find matching planned orders
-      const plannedQty = _plannedByLine[_lineKey(line, li)] || 0;   // v53N: this line's share only
+      const planned = (state.orders || []).filter(o =>
+        !o.deleted &&
+        (
+          (o.sapDocEntry && Number(o.sapDocEntry) === Number(docEntry)) ||
+          (!o.sapDocEntry && o.poNumber && String(o.poNumber).trim() === docNum.trim())
+        )
+      );
+      const plannedQty = planned.reduce((s, o) => s + (parseFloat(o.qty) || 0), 0);
       const unplannedQty = Math.max(0, lineQty - plannedQty);
       if (unplannedQty > 0.001) {
         out.push({
@@ -6843,8 +6806,6 @@ async function _v39_confirmAssign() {
     poNumber: u.docNum || '',
     sapDocEntry: u.docEntry,      // v39 new field
     sapDocNum: String(u.docNum||''), // v39 new field
-    sapLineNum: (u.lineNum != null ? Number(u.lineNum) : null),   // v53N: which line of the indent this order plans
-    sapItemCode: u.itemCode || '',                                  // v53N: line item code (audit / fallback match)
     batchNumber: typeof autoGenBatchNumber === 'function' ? autoGenBatchNumber(machineId) : '',
     shipTo: customer,
     billTo: customer,
@@ -8626,7 +8587,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v53U' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v53M' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9076,7 +9037,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53U' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53M' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9126,7 +9087,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53U' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53M' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9215,7 +9176,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53U' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53M' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
