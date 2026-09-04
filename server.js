@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v53V';
+const APP_BUILD = 'v53W';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -20734,8 +20734,8 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
         batchSet = bs.rows.map(r => r.batch_number);
       }
       const scanSql = batchSet
-        ? `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number = ANY($1) GROUP BY s.batch_number, s.dept, s.type`
-        : `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type`;
+        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number = ANY($1) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`
+        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;
       const wasteSql = batchSet
         ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE batch_number = ANY($1) GROUP BY batch_number, dept, type'
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
@@ -20763,8 +20763,8 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       }
       const _ph = batchSet ? batchSet.map(() => '?').join(',') : '';
       const scanSql = batchSet
-        ? `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number IN (${_ph || "''"}) GROUP BY s.batch_number, s.dept, s.type`
-        : `SELECT s.batch_number, s.dept, s.type, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type`;
+        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number IN (${_ph || "''"}) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`
+        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;
       const wasteSql = batchSet
         ? `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE batch_number IN (${_ph || "''"}) GROUP BY batch_number, dept, type`
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
@@ -20793,12 +20793,20 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       const bn = (s.batch_number||'').toUpperCase(); // normalize to uppercase
       if (!batches[bn]) batches[bn] = {};
       if (!batches[bn][s.dept]) batches[bn][s.dept] = {in:0,out:0,inQty:0,outQty:0};
-      batches[bn][s.dept][s.type] = parseInt(s.cnt||0, 10);
+      // v53W (uniformity with /api/tracking/scan-summary, v53P): scans on legacy re-batch labels go to
+      // legacyIn/legacyOut/legacyInQty/legacyOutQty — Planning's WIP/packable stays production-only;
+      // Planning's Dispatch Planning adds the legacy leg explicitly for invoicing.
+      if (Number(s.lg) === 1) {
+        const d = batches[bn][s.dept]; const k = s.type === 'in' ? 'legacyIn' : 'legacyOut';
+        d[k] = (d[k]||0) + parseInt(s.cnt||0, 10); d[k+'Qty'] = (d[k+'Qty']||0) + parseFloat(s.total_qty||0);
+        return;
+      }
+      batches[bn][s.dept][s.type] = (batches[bn][s.dept][s.type]||0) + parseInt(s.cnt||0, 10);
       // v47G (confirmed by Ishan): total_qty is now the authoritative per-box label sum computed in
       // SQL (_v47gScanQtySql — each box valued at its tracking_labels.qty, pack-standard fallback,
       // recon-synthetic keep their own qty). The old "SUM(qty) else COUNT × PACK_SIZES" fallback used
       // a divergent local pack map and the unauthoritative tracking_scans.qty — both retired here.
-      batches[bn][s.dept][s.type+'Qty'] = parseFloat(s.total_qty||0);
+      batches[bn][s.dept][s.type+'Qty'] = (batches[bn][s.dept][s.type+'Qty']||0) + parseFloat(s.total_qty||0);
     });
 
     wastage.forEach(w => {
@@ -22152,7 +22160,7 @@ app.post('/api/tracking/rebatch', async (req, res) => {
     if (mode === 'merge' && legacyRef === targetBatch) return res.status(400).json({ ok:false, error:'Legacy and target batch cannot be the same' });
     let ord = null;
     if (pgPool) {
-      const r = await pgPool.query(`SELECT batch_number, status, data_json FROM production_orders WHERE UPPER(TRIM(batch_number))=$1 AND COALESCE(deleted,0)=0 LIMIT 1`, [targetBatch]);
+      const r = await pgPool.query(`SELECT batch_number, status, data_json FROM production_orders WHERE UPPER(TRIM(batch_number))=$1 AND COALESCE(deleted,false)=false LIMIT 1`, [targetBatch]);   // v53W: deleted is BOOLEAN in pg
       ord = r.rows[0] || null;
     } else {
       ord = db.prepare(`SELECT batch_number, status, data_json FROM production_orders WHERE UPPER(TRIM(batch_number))=? AND COALESCE(deleted,0)=0 LIMIT 1`).get(targetBatch) || null;
@@ -22165,30 +22173,29 @@ app.post('/api/tracking/rebatch', async (req, res) => {
       if (ord) return res.status(400).json({ ok:false, error:`${legacyRef} exists in Planning — use "Merge into current batch" for a Sunloc batch, or pick the legacy batch's own (pre-Sunloc) number` });
       const b = req.body || {};
       const mfgOk = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(b.mfg || ''));
-      const expOk = /^\d{4}-(0[1-9]|1[0-2])$/.test(String(b.exp || ''));
+      const expOk = !b.exp || /^\d{4}-(0[1-9]|1[0-2])$/.test(String(b.exp || ''));   // v53W: optional — expiry is pre-printed on the blue stock
       const missing = [];
       if (!String(b.customer || '').trim()) missing.push('customer');
       if (!String(b.size ?? '').trim()) missing.push('size');
       if (!mfgOk) missing.push('mfg month (YYYY-MM)');
-      if (!expOk) missing.push('expiry month (YYYY-MM)');
+      if (!expOk) missing.push('expiry month must be YYYY-MM if given');
       if (b.isPrinted && !String(b.printMatter || '').trim()) missing.push('print matter (printed batch)');
       if (missing.length) return res.status(400).json({ ok:false, error:'Required for a standalone legacy batch: ' + missing.join(', ') });
       const cap = String(b.colourCap || '').trim(), body = String(b.colourBody || '').trim();
       // v53U: optional SAP Sales Order link — typed as the SO NUMBER (what the PM sees); resolved to
       // DocEntry + card code from the SAP indent cache so a later invoice request carries the same SO
       // ref as the PM's fresh batches (consolidated invoice) or its own (standalone dispatch).
-      let soEntry = null, soNum = String(b.sapDocNum || '').trim(), cardCode = String(b.cardCode || '').trim();
+      let soEntry = null, soNum = String(b.sapDocNum || '').trim(), cardCode = String(b.cardCode || '').trim(), soWarning = null;
       if (soNum) {
         const so = pgPool ? (await pgPool.query(`SELECT sap_doc_entry, card_code FROM sap_indent_cache WHERE TRIM(sap_doc_num)=$1 ORDER BY fetched_at DESC LIMIT 1`, [soNum])).rows[0]
                           : db.prepare(`SELECT sap_doc_entry, card_code FROM sap_indent_cache WHERE TRIM(sap_doc_num)=? ORDER BY fetched_at DESC LIMIT 1`).get(soNum);
-        if (!so) return res.status(400).json({ ok:false, error:`SAP Sales Order ${soNum} is not in Sunloc's SAP cache (open SOs are pulled every 5 minutes). Check the number, or leave it blank and link later.` });
-        soEntry = parseInt(so.sap_doc_entry, 10) || null;
-        if (!cardCode) cardCode = so.card_code || '';
+        if (so) { soEntry = parseInt(so.sap_doc_entry, 10) || null; if (!cardCode) cardCode = so.card_code || ''; }
+        else soWarning = `SAP Sales Order ${soNum} is not in Sunloc's SAP cache yet (open SOs are pulled every 5 minutes). The number is stored as typed; it will be resolved when the invoice request is raised.`;   // v53W: never refuse on the SO
       }
       od = { size: String(b.size).trim(), customer: String(b.customer).trim(), shipTo: String(b.shipTo || b.customer).trim(), billTo: String(b.billTo || '').trim(),
              colour: body ? `${cap}/${body}` : cap, pcCode: String(b.pcCode || '').trim(), poNumber: String(b.poNumber || '').trim(),
-             isPrinted: !!b.isPrinted, printMatter: String(b.printMatter || '').trim(), startDate: `${b.mfg}-01`, legacyMfg: String(b.mfg), legacyExp: String(b.exp), machineId: '',
-             sapDocEntry: soEntry, sapDocNum: soNum || '', cardCode };
+             isPrinted: !!b.isPrinted, printMatter: String(b.printMatter || '').trim(), startDate: `${b.mfg}-01`, legacyMfg: String(b.mfg), legacyExp: b.exp ? String(b.exp) : null, machineId: '',
+             sapDocEntry: soEntry, sapDocNum: soNum || '', cardCode, soWarning };
       ord = { batch_number: legacyRef, status: 'legacy' };
     }
     const size = String(od.size ?? '');
@@ -22239,7 +22246,7 @@ app.post('/api/tracking/rebatch', async (req, res) => {
       }
     }
     const plan = { mode, legacyRef, targetBatch: ord.batch_number, qtyLakhs: qty, size, packSize: ps, boxes, fullBoxes: full, partialQty: rem > 0.0005 ? rem : 0,
-                   customer: od.customer || '', colour: od.colour || '', pcCode: od.pcCode || '', isPrinted: !!od.isPrinted, printMatter: od.printMatter || '', mfg: od.legacyMfg || null, exp: od.legacyExp || null, sapDocEntry: od.sapDocEntry || null, sapDocNum: od.sapDocNum || '', cardCode: od.cardCode || '', startFrom: existing + 1, status: ord.status, oranges: oranges.length };
+                   customer: od.customer || '', colour: od.colour || '', pcCode: od.pcCode || '', isPrinted: !!od.isPrinted, printMatter: od.printMatter || '', mfg: od.legacyMfg || null, exp: od.legacyExp || null, sapDocEntry: od.sapDocEntry || null, sapDocNum: od.sapDocNum || '', cardCode: od.cardCode || '', soWarning: od.soWarning || null, startFrom: existing + 1, status: ord.status, oranges: oranges.length };
     if (preview) return res.json({ ok:true, preview:true, plan, labels, oranges });
     const logId = 'rbl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     const who = session.username || 'admin';
@@ -22265,6 +22272,34 @@ app.post('/api/tracking/rebatch', async (req, res) => {
         db.prepare(`INSERT INTO rebatch_log (id,ts,by_user,legacy_ref,target_batch,qty_lakhs,boxes,size,label_ids,note,orange_ids,mode,details_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
           .run(logId, nowIso, who, legacyRef, ord.batch_number, qty, boxes, size, JSON.stringify(labels.map(l => l.id)), note || null, JSON.stringify(oranges.map(o => o.id)), mode, JSON.stringify(_details));
       })();
+    }
+    // v53W (Ishan, 04 Sep): a STANDALONE legacy batch gets a Dispatch Planning row so the Dispatch Manager
+    // invoices it from the usual screen (Planning → Dispatch Planning → Invoice), exactly like a Sunloc
+    // batch. No planning order is created — the plan row carries customer / SO / card code itself and is
+    // flagged isLegacyBatch; Planning's invoice modal reads those fields when there is no order.
+    // Repeat re-batches into the same legacy number add to the same row's quantity.
+    if (mode === 'standalone') {
+      try {
+        const dpId = 'legacy_' + ord.batch_number;
+        let existingDp = null;
+        if (pgPool) { const r = await pgPool.query(`SELECT data_json FROM dispatch_plans WHERE id=$1`, [dpId]); existingDp = r.rows[0] ? (typeof r.rows[0].data_json === 'string' ? JSON.parse(r.rows[0].data_json) : r.rows[0].data_json) : null; }
+        else { const r = db.prepare(`SELECT data_json FROM dispatch_plans WHERE id=?`).get(dpId); existingDp = r ? JSON.parse(r.data_json) : null; }
+        const totalQty = Math.round(((existingDp && parseFloat(existingDp.qty)) || 0) * 1000 + qty * 1000) / 1000;
+        const totalBoxes = ((existingDp && parseInt(existingDp.boxes, 10)) || 0) + boxes;
+        const dp = Object.assign({}, existingDp || {}, {
+          id: dpId, productionOrderId: null, isAuto: false, isLegacyBatch: true, legacyRef: ord.batch_number, legacyMode: 'standalone',
+          batchNumber: ord.batch_number, customer: od.customer || '', shipTo: od.shipTo || '', billTo: od.billTo || '', zone: (existingDp && existingDp.zone) || '',
+          size, colour: od.colour || '', pcCode: od.pcCode || '', packing: od.isPrinted ? 'PTD' : 'UP', isPrinted: !!od.isPrinted, printMatter: od.printMatter || '',
+          qty: totalQty, boxes: totalBoxes, plannedDate: (existingDp && existingDp.plannedDate) || null, exportPending: false, actualDispatched: (existingDp && existingDp.actualDispatched) || 0,
+          status: (existingDp && existingDp.status) || 'pending', lotNo: 1, lotTotal: 1,
+          sapDocEntry: od.sapDocEntry || (existingDp && existingDp.sapDocEntry) || null, sapDocNum: od.sapDocNum || (existingDp && existingDp.sapDocNum) || '',
+          cardCode: od.cardCode || (existingDp && existingDp.cardCode) || '', poNumber: od.poNumber || (existingDp && existingDp.poNumber) || '',
+          prodMonthYm: od.legacyMfg || null, legacyMfg: od.legacyMfg || null, deleted: false, createdAt: (existingDp && existingDp.createdAt) || nowIso, updatedAt: nowIso, rebatchLogIds: ((existingDp && existingDp.rebatchLogIds) || []).concat([logId]),
+        });
+        if (pgPool) await pgPool.query(`INSERT INTO dispatch_plans (id, data_json, production_order_id, batch_number, customer, zone, status, is_auto, deleted, updated_at) VALUES ($1,$2,NULL,$3,$4,$5,$6,false,false,NOW()::TEXT) ON CONFLICT(id) DO UPDATE SET data_json=$2, batch_number=$3, customer=$4, zone=$5, status=$6, deleted=false, updated_at=NOW()::TEXT`, [dpId, JSON.stringify(dp), dp.batchNumber, dp.customer || null, dp.zone || null, dp.status]);
+        else db.prepare(`INSERT INTO dispatch_plans (id,data_json,production_order_id,batch_number,customer,zone,status,is_auto,deleted,updated_at) VALUES (?,?,NULL,?,?,?,?,0,0,datetime('now')) ON CONFLICT(id) DO UPDATE SET data_json=excluded.data_json,batch_number=excluded.batch_number,customer=excluded.customer,zone=excluded.zone,status=excluded.status,deleted=0,updated_at=datetime('now')`).run(dpId, JSON.stringify(dp), dp.batchNumber, dp.customer || null, dp.zone || null, dp.status);
+        console.log(`[v53W rebatch] dispatch plan ${dpId}: ${totalQty} L / ${totalBoxes} box(es)`);
+      } catch (e) { console.warn('[v53W rebatch] dispatch plan row skipped:', e.message); }
     }
     try { logAudit(who, session.role, 'tracking', mode === 'standalone' ? 'REBATCH_LEGACY_STANDALONE' : 'REBATCH_LEGACY', `${legacyRef} → ${ord.batch_number}: ${qty} L as ${boxes} R-label(s) R-${existing+1}..R-${existing+boxes}${oranges.length?` + ${oranges.length} orange twin(s)`:''} (size ${size}, pack ${ps} L)${note?' — '+note:''}`, req.ip); } catch (_) {}
     console.log(`[v53P rebatch] ${who}: ${legacyRef} → ${ord.batch_number} ${qty} L, ${boxes} R-label(s) from R-${existing+1}`);

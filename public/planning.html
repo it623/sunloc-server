@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v53V</p>
+      <p>Planning Suite v3.0 · build v53W</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1581,8 +1581,8 @@ const SYNC = (() => {
           Object.keys(_lotsByBatch).forEach(bn => {
             const bd = agj.batches[bn];
             if (!bd) return;
-            const totBoxes = parseInt(bd.packing?.in || 0, 10);
-            const totQty   = parseFloat(bd.packing?.inQty || 0);
+            const totBoxes = parseInt(bd.packing?.in || 0, 10) + parseInt(bd.packing?.legacyIn || 0, 10);      // v53W: + re-batched R-boxes (dispatch side)
+            const totQty   = parseFloat(bd.packing?.inQty || 0) + parseFloat(bd.packing?.legacyInQty || 0);
             if (totBoxes <= 0 && totQty <= 0) return; // no packing yet — leave these lots untouched
             const totWip   = bd.wipLakhs || 0;
             const totTransit = bd.toPackTransit || 0;   // v51ZG: scan-based in-transit-to-packing
@@ -1628,13 +1628,13 @@ const SYNC = (() => {
             batchNums.forEach(bn => {
               const bd = agj.batches[bn];
               if (!bd) return;
-              tQty    += parseFloat(bd.packing?.inQty || 0);
-              tBoxes  += parseInt(bd.packing?.in || 0, 10);
+              tQty    += parseFloat(bd.packing?.inQty || 0) + parseFloat(bd.packing?.legacyInQty || 0);   // v53W
+              tBoxes  += parseInt(bd.packing?.in || 0, 10) + parseInt(bd.packing?.legacyIn || 0, 10);
               tWip    += bd.wipLakhs || 0;
               tTransit+= bd.toPackTransit || 0;   // v51ZG
               tGross  += bd.grossProd || 0;
               tFG     += bd.fgAwaitingDispatch || 0;
-              tPackIn += parseFloat(bd.packing?.inQty || 0);
+              tPackIn += parseFloat(bd.packing?.inQty || 0) + parseFloat(bd.packing?.legacyInQty || 0);   // v53W
             });
             if (tQty > 0 || tBoxes > 0 || tPackIn > 0) {
               dp.packedQty          = tQty;
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53V' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53V', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2609,7 +2609,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53V'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53W'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5754,7 +5754,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53V'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53W'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -7330,10 +7330,22 @@ async function _v39_loadInvoiceState({ silent = false } = {}) {
   }
 }
 
+// v53W (Ishan, 04 Sep): a STANDALONE legacy batch has no planning order — its Dispatch Planning row
+// (isLegacyBatch, created by Tracking's re-batch) carries customer / SO / card code itself. Every
+// invoice path that needs "the order" resolves through here so legacy rows invoice like any other.
+function _v53wOrderForPlan(p) {
+  if (!p) return null;
+  const ord = state.orders.find(o => o.id === p.productionOrderId);
+  if (ord) return ord;
+  if (!p.isLegacyBatch) return null;
+  return { id: null, batchNumber: p.batchNumber, customer: p.customer || '', cardCode: p.cardCode || '', poNumber: p.poNumber || '',
+           sapDocEntry: p.sapDocEntry || null, sapDocNum: p.sapDocNum || '', size: p.size || '', colour: p.colour || '', pcCode: p.pcCode || '',
+           isPrinted: !!p.isPrinted, printMatter: p.printMatter || '', status: 'closed', qty: p.qty || 0, actualQty: p.qty || 0, startDate: p.legacyMfg ? p.legacyMfg + '-01' : null, _v53wLegacy: true };
+}
 function _v39_openGenerateInvoiceModal(planId, mode) {
   const p = state.dispatchPlan?.find(x => x.id === planId);
   if (!p) { toast('Dispatch plan not found', 'var(--red)'); return; }
-  const ord = state.orders.find(o => o.id === p.productionOrderId);
+  const ord = _v53wOrderForPlan(p);   // v53W: legacy plan rows resolve to a synthetic order
   if (!ord) { toast('Production order not found for this plan', 'var(--red)'); return; }
   if (!ord.sapDocEntry && !ord.sapDocNum && !(ord.poNumber && String(ord.poNumber).trim())) {
     alert('⚠️ This order has no Sales Order Number. Cannot generate invoice.\n\nThe order must be linked to a SAP Sales Order before invoicing. Edit the order to add the Sales Order Number, or recreate it via the Unplanned Orders page.');
@@ -7707,7 +7719,7 @@ async function _v39_submitTruckInvoices() {
     const cb = document.getElementById(`v39-trk-inv-${i}`);
     if (!cb?.checked) continue;
     const p = ctx.eligible[i];
-    const ord = state.orders.find(x => x.id === p.productionOrderId);
+    const ord = _v53wOrderForPlan(p);   // v53W
     if (!ord) continue;
     // v44Q PARTIAL-INVOICE: bill the remaining (packed minus already-invoiced) boxes/qty.
     const _trkInv = (window._v39_invoiceState || {})[p.batchNumber] || {};
@@ -7791,7 +7803,7 @@ function _v40_openConsolidatedApprovalModal() {
   for (const planId of selectedIds) {
     const plan = (state.dispatchPlans || []).find(p => p.id === planId);
     if (!plan) continue;
-    const ord = (state.orders || []).find(o => o.id === plan.productionOrderId);
+    const ord = _v53wOrderForPlan(plan);   // v53W
     if (!ord) continue;
     // Re-check eligibility (in case state changed since selection)
     const elig = _v40_isInvoiceEligible(plan, ord);
@@ -8626,7 +8638,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v53V' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v53W' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9076,7 +9088,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53V' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9126,7 +9138,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53V' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9215,7 +9227,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53V' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -12190,7 +12202,7 @@ function renderTruckOrdersTable(truck) {
           // v40 Phase 18.1: eligibility for multi-select checkbox
           let checkboxCell = '';
           if (isMS) {
-            const ord = state.orders.find(o => o.id === p.productionOrderId);
+            const ord = _v53wOrderForPlan(p);   // v53W
             const elig = _v40_isInvoiceEligible(p, ord);
             if (elig.eligible) {
               const checked = window._v40_invoiceSelections.has(p.id) ? 'checked' : '';
@@ -12230,7 +12242,7 @@ function renderTruckOrdersTable(truck) {
           // v40 Phase 18.1: dim ineligible rows in multi-select mode
           const rowOpacity = isMS ? (
             (function(){
-              const ord = state.orders.find(o => o.id === p.productionOrderId);
+              const ord = _v53wOrderForPlan(p);   // v53W
               const elig = _v40_isInvoiceEligible(p, ord);
               return elig.eligible ? '' : 'opacity:0.6;';
             })()
