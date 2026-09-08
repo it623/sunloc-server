@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v53W</p>
+      <p>Planning Suite v3.0 · build v53Y</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53Y' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53Y', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2609,7 +2609,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53W'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53Y'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5754,7 +5754,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53W'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v53Y'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8638,7 +8638,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v53W' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v53Y' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9088,7 +9088,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53Y' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9138,7 +9138,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53Y' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9227,7 +9227,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53W' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v53Y' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -12505,6 +12505,7 @@ function dispatchRowObj(p) {
     'Size': p.size || '',
     'PTD/UP': p.packing || '',
     'Zone': p.zone || '',
+    'Prod Month': (() => { const ym = getPlanProdMonth(p); return ym ? prodMonthLabel(ym).replace(/\s+/g,' ') : ''; })(),   // v53X
     'Qty (Lakhs)': Math.round((p.qty||0)*100)/100,
     'Boxes': p.boxes || 0,
     'Packed (Lakhs)': Math.round((p.packedQty||0)*100)/100,
@@ -12524,7 +12525,7 @@ function dispatchRowObj(p) {
     // see rather than have rounded away.
     'Balance Packed−Disp (L)': Math.round(((p.packedQty||0)-(p.actualDispatched||0))*100)/100,
     'Status': p.status || '',
-    'Remarks': p.remarks || ''
+    'Remarks': [(p.status === 'dispatched' && _v53yResidualPacked(p) > 0.005) ? `Marked dispatched — ${_v53yResidualPacked(p).toFixed(2)} L still packed, not dispatched` : '', p.remarks || ''].filter(Boolean).join(' · ')   // v53Y
   };
 }
 
@@ -12535,7 +12536,7 @@ function dispatchRowObj(p) {
 function _dispatchColWidths() {
   // matches the 18 dispatchRowObj columns in order (v51K: + packed balance; v51L: both
   // balance columns explicitly named by their basis)
-  return [22,14,10,16,6,8,12,12,8,14,12,16,18,12,14,16,16,22].map(w=>({wch:w}));
+  return [22,14,10,16,6,8,12,10,12,8,14,12,16,18,12,14,16,16,22].map(w=>({wch:w}));   // v53X: 19 columns (+Prod Month)
 }
 function _dispatchTotalRow(customerLabel, zone, plans) {
   const r2 = x => Math.round((x||0)*100)/100;
@@ -12545,6 +12546,7 @@ function _dispatchTotalRow(customerLabel, zone, plans) {
   return {
     'Customer': customerLabel, 'Batch No': '', 'PC Code': '', 'Colour': '', 'Size': '', 'PTD/UP': '',
     'Zone': zone || '',
+    'Prod Month': '',   // v53X
     'Qty (Lakhs)': r2(sQ),
     'Boxes': sum(p=>p.boxes),
     'Packed (Lakhs)': r2(sP),
@@ -12565,10 +12567,13 @@ function _dispatchTotalRow(customerLabel, zone, plans) {
 // subtotals and a pink GRAND TOTAL. Numeric columns carry a real 2-dp number format so they stay
 // summable in Excel. Styles are cell-level `.s` objects honoured by xlsx-js-style (loaded in the
 // head); if that CDN ever fails the plain build ignores them and the sheet still writes correctly.
-const _DISPATCH_HDR = ['Customer','Batch No','PC Code','Colour','Size','PTD/UP','Zone',
+// v53X (Ishan, 08 Sep): 'Prod Month' after Zone — the batch's month of production (order start date,
+// or the admin-entered mfg month for a standalone legacy batch), so the Q2 all-months file and every
+// other dispatch export say which month each row was produced in. One schema drives all of them.
+const _DISPATCH_HDR = ['Customer','Batch No','PC Code','Colour','Size','PTD/UP','Zone','Prod Month',
   'Qty (Lakhs)','Boxes','Packed (Lakhs)','Packed Boxes','Dispatched (Lakhs)',
   'Planned Dispatch Date','Date Status','Balance Order−Disp (L)','Balance Packed−Disp (L)','Status','Remarks'];
-const _DISPATCH_NUMCOLS = [7,8,9,10,11,14,15];   // indices into _DISPATCH_HDR that must be numeric
+const _DISPATCH_NUMCOLS = [8,9,10,11,12,15,16];   // indices into _DISPATCH_HDR that must be numeric (v53X: +1 for Prod Month)
 // groups: [{ label, plans }] — rendered as band + rows + subtotal. Pass one group for a flat sheet.
 function _buildDispatchSheet(groups, opts) {
   const o = opts || {};
@@ -12591,17 +12596,18 @@ function _buildDispatchSheet(groups, opts) {
     }
     g.plans.forEach(p => { push(toArr(dispatchRowObj(p)), 'data'); all.push(p); });
     if (o.showSubtotals !== false) {
-      merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:6} });
+      merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:7} });   // v53X: label spans through Prod Month
       push(toArr(_dispatchTotalRow(g.subtotalLabel || `${g.label} TOTAL`, g.zone || '', g.plans)), 'sub');
       push([], 'spacer');
     }
   });
   if (o.showGrand !== false && all.length) {
-    merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:6} });
+    merges.push({ s:{r:aoa.length,c:0}, e:{r:aoa.length,c:7} });   // v53X
     push(toArr(_dispatchTotalRow(o.grandLabel || `GRAND TOTAL (${all.length} orders)`, '', all)), 'grand');
   }
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{ r:3, c:0 }, e:{ r:aoa.length-1, c:NC-1 } }) };   // v53Y: filter spans every zone/customer band
   ws['!cols'] = _dispatchColWidths();
   ws['!freeze'] = { xSplit:0, ySplit:4 };
   const R = XLSX.utils.decode_range(ws['!ref']);
@@ -12678,10 +12684,14 @@ function _v48ScopedPlans(){
   // question — what is still to go — so a file can no longer show rows the screen it came from does
   // not. Partially-dispatched lots are kept (they carry a real balance). The Pending Dispatch
   // Summary already filtered this way, so it is unaffected.
+  // v53Y (Ishan, 08 Sep — 46 August batches held 99.35 L packed on plans already marked dispatched and
+  // appeared in no pending file): a plan with packed − dispatched > 0 is included in every dispatch
+  // export REGARDLESS of its status. Fully-dispatched plans with nothing left packed stay excluded.
   return (state.dispatchPlans||[])
-    .filter(pl => pl.status !== 'dispatched')
+    .filter(pl => pl.status !== 'dispatched' || _v53yResidualPacked(pl) > 0.005)
     .filter(pl => _truckPlanScopeTest(pl, q, mo));
 }
+function _v53yResidualPacked(pl){ return Math.round(((pl.packedQty||0) - (pl.actualDispatched||0))*100)/100; }
 function _v48OrderInScope(ord){
   const { q, mo } = _v51kDispatchScope();   // v51K: same active-view scope as _v48ScopedPlans
   const ref = (ord && (ord.startDate || ord.endDate)) || '';
@@ -12781,8 +12791,7 @@ function exportZoneWise() {
 // 4. PENDING DISPATCH SUMMARY — only undispatched orders
 function exportPendingDispatch() {
   if (document.getElementById('export-menu')) document.getElementById('export-menu').style.display = 'none';
-  const pending = _v48ScopedPlans()
-    .filter(p => p.status !== 'dispatched')
+  const pending = _v48ScopedPlans()   // v53Y: scope already keeps dispatched plans that still hold packed stock
     .sort((a,b) => new Date(a.plannedDate) - new Date(b.plannedDate));
 
   if (pending.length === 0) { alert('No pending dispatch orders found.'); return; }

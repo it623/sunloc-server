@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v53W';
+const APP_BUILD = 'v53Y';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -20734,8 +20734,8 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
         batchSet = bs.rows.map(r => r.batch_number);
       }
       const scanSql = batchSet
-        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number = ANY($1) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`
-        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;
+        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number = ANY($1) AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`
+        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;
       const wasteSql = batchSet
         ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE batch_number = ANY($1) GROUP BY batch_number, dept, type'
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
@@ -20763,8 +20763,8 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       }
       const _ph = batchSet ? batchSet.map(() => '?').join(',') : '';
       const scanSql = batchSet
-        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number IN (${_ph || "''"}) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`
-        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;
+        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number IN (${_ph || "''"}) AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`
+        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;
       const wasteSql = batchSet
         ? `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE batch_number IN (${_ph || "''"}) GROUP BY batch_number, dept, type`
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
@@ -20788,6 +20788,10 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
     } } catch(_) {}
 
     // Build per-batch summary
+    // v53X (Ishan, 08 Sep — Pending Dispatch vs Report E, 26N041/042/043/045/047): this aggregation never
+    // honoured the v44C reversal ledger, so Planning's packed kept counting pack-in scans that Tracking
+    // had reversed (UP→PTD conversions). All four SQL variants now exclude reversed scans, exactly as
+    // /api/tracking/scan-summary does.
     const batches = {};
     scans.forEach(s => {
       const bn = (s.batch_number||'').toUpperCase(); // normalize to uppercase

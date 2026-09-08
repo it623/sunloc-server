@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53W</title>
+<title>Sunloc Tracking Suite v1.0 · build v53Y</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53W</p>
+      <p>Tracking Suite v1.0 · build v53Y</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53W</p>
+      <p>Tracking Suite v1.0 · build v53Y</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -11999,7 +11999,7 @@ function _v48PackedAwaitingRows(batches){
     const qty = Math.round((wip.packedNotDisp||0)*100)/100;
     if (qty <= 0.005) continue;
     const boxes = Math.max(0, ((_ss(bn,'packing').in)||0) - (_v40_dispatchedBoxes(bn)||0)); // v48: net of ALL dispatched (scan-out + admin-regularise), matching Report D top table + the qty
-    out.push({ batchNumber:bn, customer:(b.customer||'-'), colour:(b.colour||'-'), size:(b.size!=null?b.size:'-'), pcCode:(b.pcCode||'-'), qty, boxes });
+    out.push({ batchNumber:bn, customer:(b.customer||'-'), zone:(b.zone||''), colour:(b.colour||'-'), size:(b.size!=null?b.size:'-'), pcCode:(b.pcCode||'-'), qty, boxes });   // v53X: zone
   }
   out.sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'')); // v48: chronological batch order, like Report B
   return out;
@@ -12046,10 +12046,10 @@ function _v48RenderPackedAwaiting(batches){
 }
 function _v48ExportPackedAwaiting(){
   const batches = getTrkMonthBatches(true).filter(b=>!b.deleted && b.batchNumber);
-  const rows = _v48PackedAwaitingRows(batches).map(r=>({ 'Customer':r.customer,'Batch':r.batchNumber,'Colour':r.colour,'Size':r.size,'Quantity (L)':r.qty,'Boxes Packed':r.boxes,'PC Code':r.pcCode }));
+  const rows = _v48PackedAwaitingRows(batches).map(r=>({ 'Customer':r.customer,'Batch':r.batchNumber,'Zone':r.zone,'Colour':r.colour,'Size':r.size,'Quantity (L)':r.qty,'Boxes Packed':r.boxes,'PC Code':r.pcCode }));   // v53X: Zone
   const tQ = Math.round(rows.reduce((s,r)=>s+(r['Quantity (L)']||0),0)*100)/100;
   const tB = rows.reduce((s,r)=>s+(r['Boxes Packed']||0),0);
-  rows.push({ 'Customer':'TOTAL','Batch':'','Colour':'','Size':'','Quantity (L)':tQ,'Boxes Packed':tB,'PC Code':'' });
+  rows.push({ 'Customer':'TOTAL','Batch':'','Zone':'','Colour':'','Size':'','Quantity (L)':tQ,'Boxes Packed':tB,'PC Code':'' });
   const wb = XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(rows), 'Packed Awaiting Dispatch');
   XLSX.writeFile(wb, `Sunloc_Packed_Awaiting_Dispatch_${new Date().toISOString().slice(0,10)}.xlsx`);
@@ -12503,6 +12503,7 @@ function exportReportG(){
     const row = {
       'Batch': b.batchNumber,
       'Customer': b.customer||'',
+      'Zone': b.zone||'',   // v53X
       'Size': b.size,
       'Type': b.isPrinted?'PTD':'UP',
       'A-Grade Basis': _v41_useMonthAttributed ? (`Production cohort ${_trkSelectedMonth} (tracked to dispatch)`) : 'All months — live cumulative',
@@ -17564,7 +17565,7 @@ function exportReportD(){
   ];
   const batchRows=monthBatches.filter(b=>!b.deleted).map(b=>{
     const ag=_v41_agradeFor(b.batchNumber,b.isPrinted?'printed':'unprinted');
-    return {'Batch':b.batchNumber,'Gross Prod (L)':fmt(_reconGross(b)),'A-Grade (L)':fmt(ag.aGrade),'A-Grade %':fmt(ag.pct,1),'Salvage (L)':fmt(ag.salvage),'Remelt (L)':fmt(ag.remelt)};
+    return {'Batch':b.batchNumber,'Customer':b.customer||'','Zone':b.zone||'','Gross Prod (L)':fmt(_reconGross(b)),'A-Grade (L)':fmt(ag.aGrade),'A-Grade %':fmt(ag.pct,1),'Salvage (L)':fmt(ag.salvage),'Remelt (L)':fmt(ag.remelt)};   // v53X: +Customer, +Zone
   });
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb,XLSX.utils.json_to_sheet(summaryRows),'KPI Summary');
@@ -17680,6 +17681,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:6}});
       _push([`GRAND TOTAL (${dataRowIdxs.length} batches)`],'grand');
       const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{ r:hdrRowIdx, c:0 }, e:{ r:aoa.length-1, c:NC-1 } }) };   // v53Y: filter spans all machines
       ws['!merges'] = merges;
       ws['!cols'] = [{wch:9},{wch:6},{wch:13},{wch:24},{wch:9},{wch:6},{wch:9},...Array(7).fill({wch:12}),{wch:12},{wch:12},{wch:15},{wch:11},{wch:12},{wch:15},{wch:13},{wch:10},{wch:12},{wch:15},{wch:14},{wch:16},{wch:8}];
       const _fc = (r, c, f, z) => { ws[XLSX.utils.encode_cell({r,c})] = { t:'n', f, z: z || '0.00' }; };
@@ -17952,6 +17954,10 @@ function exportReportE(){
   _lblMerge(); _push(subtotalRow(rows, `GRAND TOTAL (${rows.length} batches)`),'grand');
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
+  // v53Y (Ishan, 08 Sep): with no explicit AutoFilter range Excel infers the contiguous block under the
+  // header and stops at the first spacer row — so a filter only ever acted on the first machine. The
+  // range now spans header → last row, so any filter applies to every machine's rows.
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{ r:3, c:0 }, e:{ r:aoa.length-1, c:NC-1 } }) };
   ws['!cols'] = [{wch:9},{wch:6},{wch:11},{wch:24},{wch:12},{wch:9},{wch:11},{wch:5},{wch:12},{wch:12},
     ...Array(NC-11).fill({wch:13}), {wch:44}];   // v53P: REMARK last
   // 2-dp display on every numeric cell (matches the on-screen fmtN); % columns get a % suffix.
