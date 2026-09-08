@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53Y</title>
+<title>Sunloc Tracking Suite v1.0 · build v53Z</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53Y</p>
+      <p>Tracking Suite v1.0 · build v53Z</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53Y</p>
+      <p>Tracking Suite v1.0 · build v53Z</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -16291,7 +16291,7 @@ function _v52lStockTableHtml(rows) {
 function _v52lExportStockList() {
   const st = window._v52lStockRowsCache || [];
   if (!st.length) { alert('Nothing to export.'); return; }
-  const HDR = ['BATCH','COLOUR','SIZE','PC NUMBER','PROD. MONTH','CUSTOMER','QTY (L)','QTY (BOXES)'];
+  const HDR = ['BATCH','COLOUR','SIZE','PC NUMBER','PROD. MONTH','CUSTOMER','ZONE','QTY (L)','QTY (BOXES)'];   // v53Z: +ZONE
   const NC = HDR.length;
   const aoa = [], kinds = [], merges = [];
   const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
@@ -16309,16 +16309,16 @@ function _v52lExportStockList() {
     grandQ += sq; grandB += sb;
     merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:NC-1}});
     _push([`SIZE ${sz} — ${sr.length} batch${sr.length!==1?'es':''}`],'floor');
-    sr.forEach(r => _push([r.batchNo, r.colour, r.size, r.pcCode, r.prodMonth, r.customer, Math.round(r.qtyL*100)/100, r.boxes],'data'));
-    merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:5}});
-    _push([`Size ${sz} subtotal`,'','','','','', Math.round(sq*100)/100, sb],'sub');
+    sr.forEach(r => _push([r.batchNo, r.colour, r.size, r.pcCode, r.prodMonth, r.customer, (getBatch(r.batchNo)?.zone)||'', Math.round(r.qtyL*100)/100, r.boxes],'data'));   // v53Z
+    merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:6}});
+    _push([`Size ${sz} subtotal`,'','','','','','', Math.round(sq*100)/100, sb],'sub');
     _push([],'spacer');
   });
-  merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:5}});
-  _push([`GRAND TOTAL — ${st.length} batches`,'','','','','', Math.round(grandQ*100)/100, grandB],'grand');
+  merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:6}});
+  _push([`GRAND TOTAL — ${st.length} batches`,'','','','','','', Math.round(grandQ*100)/100, grandB],'grand');
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
-  ws['!cols'] = [{wch:12},{wch:16},{wch:6},{wch:11},{wch:11},{wch:26},{wch:11},{wch:12}];
+  ws['!cols'] = [{wch:12},{wch:16},{wch:6},{wch:11},{wch:11},{wch:26},{wch:12},{wch:11},{wch:12}];
   try {
     const _F = { HDR:'20FFFF', FLOOR:'20FFFF', GRAND:'FC02FF', SUB:'F0F8F0' };
     const _thin = { style:'thin', color:{ rgb:'9AA5B1' } };
@@ -16331,9 +16331,9 @@ function _v52lExportStockList() {
       for (let c = 0; c < NC; c++) {
         if (kind === 'hdr')        _set(r,c,{ font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
         else if (kind === 'floor') _set(r,c,{ font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.FLOOR } }, border:_bAll });
-        else if (kind === 'sub')   _set(r,c,{ font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_F.SUB } }, border:_bAll, alignment:{ horizontal: c>=6?'right':'left' } });
-        else if (kind === 'grand') _set(r,c,{ font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.GRAND } }, border:_bAll, alignment:{ horizontal: c>=6?'right':'left' } });
-        else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal: c>=6?'right':'left' }, font:{ sz:10 } }; }
+        else if (kind === 'sub')   _set(r,c,{ font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_F.SUB } }, border:_bAll, alignment:{ horizontal: c>=7?'right':'left' } });
+        else if (kind === 'grand') _set(r,c,{ font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.GRAND } }, border:_bAll, alignment:{ horizontal: c>=7?'right':'left' } });
+        else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal: c>=7?'right':'left' }, font:{ sz:10 } }; }
       }
     });
   } catch(e) { console.warn('[v52L] stock style pass skipped:', e && e.message); }
@@ -16346,6 +16346,14 @@ function _rptKProdMonthOpts(rows, sel) {
   return [...new Set((rows || []).map(r => r.prodMonth).filter(Boolean))].sort().reverse()
     .map(ym => `<option value="${ym}" ${sel === ym ? 'selected' : ''}>${_rptKProdMonthLabel(ym)}</option>`).join('');
 }
+// ═══ v53Z — REPORT NOMENCLATURE (backend ↔ screen) ══════════════════════════════════════════════════════
+// The screen's Report G is the merged view: Movement (Pack In → Dispatch Out, formerly Report K) plus the
+// FG-aging / Flow-B alerts (formerly Report J). The A-Grade export once called exportReportG belongs to
+// Report D since v41ZF. Canonical names are declared right after exportReportK; the historical names
+// remain as the implementations so no call site, onclick string or bookmark breaks.
+//   renderReportG_Movement / exportReportG_Movement  == renderReportK / exportReportK
+//   renderReportG_Alerts                             == renderReportJ
+//   exportReportD_AGrade                             == exportReportG   (stale name; A-Grade lives in Report D)
 function renderReportK(targetId) {
   const containerId = targetId || 'report-k-container';
   const el = document.getElementById(containerId);
@@ -16524,6 +16532,7 @@ function renderReportK(targetId) {
       // attribution ends on.
       prodMonth: b ? (_v50bCohortMonth(b) || '') : (_v50bFirstScanMonth(bn) || ''),
       customer: b?.customer || '-',
+      zone: b?.zone || '',   // v53Z
       pcCode: b?.pcCode || '-',
       size: size,
       colour: b?.colour || '-',
@@ -16919,7 +16928,7 @@ function exportReportK() {
   const r2 = v => Math.round((Number(v)||0)*100)/100;
   const mk = r => {
     const o = {
-      'Batch': r.batchNo||'', 'Customer': r.customer||'', 'PC Code': r.pcCode||'',
+      'Batch': r.batchNo||'', 'Customer': r.customer||'', 'Zone': r.zone||'', 'PC Code': r.pcCode||'',   // v53Z: Zone (Report G = Movement)
       'Size': r.size!=null?r.size:'', 'Colour': r.colour||'',
       'Pack In Date': r.firstPackIn||'', 'Pack In Boxes': r.packInBoxes||0, 'Pack In Qty (L)': r2(r.packInQty),
     };
@@ -16934,7 +16943,7 @@ function exportReportK() {
   };
   const out = rows.map(mk);
   const sumN = k => out.reduce((s,x)=>s+(Number(x[k])||0),0);
-  const total = { 'Batch':'TOTAL','Customer':'','PC Code':'','Size':'','Colour':'',
+  const total = { 'Batch':'TOTAL','Customer':'','Zone':'','PC Code':'','Size':'','Colour':'',
     'Pack In Date':'', 'Pack In Boxes': sumN('Pack In Boxes'), 'Pack In Qty (L)': r2(sumN('Pack In Qty (L)')) };
   if (!isAll) { total['Pack In (Period) Boxes'] = sumN('Pack In (Period) Boxes'); total['Pack In (Period) Qty (L)'] = r2(sumN('Pack In (Period) Qty (L)')); }
   total['Dispatch Out Date']=''; total['Dispatch Out Boxes']=sumN('Dispatch Out Boxes'); total['Dispatch Out Qty (L)']=r2(sumN('Dispatch Out Qty (L)'));
@@ -16944,6 +16953,7 @@ function exportReportK() {
   XLSX.utils.book_append_sheet(wb, XLSX.utils.json_to_sheet(out), 'Pack In - Dispatch Out');
   XLSX.writeFile(wb, `Sunloc_Dispatch_Summary_${today()}.xlsx`);
 }
+const renderReportG_Movement = renderReportK, exportReportG_Movement = exportReportK, renderReportG_Alerts = renderReportJ, exportReportD_AGrade = exportReportG;   // v53Z canonical aliases
 
 // ═══════════════════════════════════════════════════════
 // v39 Phase 12 — Report L: SAP Invoice Ledger
