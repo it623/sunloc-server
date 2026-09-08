@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v53Z</title>
+<title>Sunloc Tracking Suite v1.0 · build v54A</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53Z</p>
+      <p>Tracking Suite v1.0 · build v54A</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v53Z</p>
+      <p>Tracking Suite v1.0 · build v54A</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -17522,7 +17522,132 @@ function exportReportC(){
   exportToExcel(out,`Sunloc_ShortExcess_${today()}.xlsx`,'Short & Excess');
 }
 
-function exportReportD(){
+// ═══ v54A — REPORT D EXPORT REBUILT (Ishan, 08 Sep 2026) ═════════════════════════════════════════════
+// One sheet, Report-E-formatted (floor bands, machine bands, batch rows in sequence, machine subtotals,
+// floor totals, grand total, full-table AutoFilter): a per-batch SNAPSHOT of stage-wise WIP with
+// SCANNED and UNSCANNED demarcated, plus packed-not-dispatched.
+//   Buckets  : Report B model — getBatchWIPBreakdown (preAIM / aimWIP / printWIP / piWIP / toPackTransit).
+//   Unscanned: Report F's in-transit gap per handover (server gap-counts, same as the on-screen matrix).
+//   Scanned  : bucket − in-transit at Printing and PI; AIM dept WIP is scanned by definition; Unsorted
+//              (pre-AIM) and Packing transit are unscanned by definition.
+//   Packed   : packedNotDisp (pack-in − dispatched) — the same source Report D's export used before.
+//   Additivity: Scanned + Unscanned = Total WIP (frozen bucket sum) on every row. Where Report F's raw
+//   gap exceeds a bucket (offsetting extra-in boxes), the excess is NOT added — it is written to REMARK.
+async function exportReportD(){
+  if (!window._rptHGapSrv || !window._rptHGapSrv.data) {
+    try { await _rptH_loadGapCounts(); } catch (e) { /* fall back to per-box out−in below */ }
+  }
+  const monthBatches = getTrkMonthBatches();
+  if (!monthBatches.length) { alert(`No batches for ${_trkSelectedMonth}.`); return; }
+  const gapL = (bn, from, to, sz) => {
+    const rec = (window._rptHGapSrv && window._rptHGapSrv.data) ? ((window._rptHGapSrv.data[`${from}\u2192${to}`]||{})[bn]) : null;
+    return (rec && rec.gapQty != null) ? rec.gapQty : Math.max(0, _scanLakhs(bn, from, 'out', sz) - _scanLakhs(bn, to, 'in', sz));
+  };
+  const r2 = v => Math.round((Number(v)||0)*100)/100;
+  const mkRow = (b, mc, floorKey) => {
+    const bn = b.batchNumber, sz = b.size;
+    const w = getBatchWIPBreakdown(bn) || {};
+    const uns = b.isPrinted
+      ? { printing: gapL(bn,'aim','printing',sz), pi: gapL(bn,'printing','pi',sz), packing: gapL(bn,'pi','packing',sz) }
+      : { printing: 0, pi: 0, packing: gapL(bn,'aim','packing',sz) };
+    const preAIM = w.preAIM||0, aimWIP = w.aimWIP||0, printWIP = w.printWIP||0, piWIP = w.piWIP||0, transit = w.toPackTransit||0, packed = w.packedNotDisp||0;
+    const prUns = Math.min(uns.printing, printWIP), piUns = Math.min(uns.pi, piWIP);
+    const prSc = Math.max(0, printWIP - prUns), piSc = Math.max(0, piWIP - piUns);
+    const remarks = [];
+    if (uns.printing > printWIP + 0.005) remarks.push(`Printing in-transit ${r2(uns.printing)} L exceeds bucket by ${r2(uns.printing-printWIP)} L (extra-in boxes — see Report F)`);
+    if (uns.pi > piWIP + 0.005) remarks.push(`PI in-transit ${r2(uns.pi)} L exceeds bucket by ${r2(uns.pi-piWIP)} L (extra-in boxes — see Report F)`);
+    if (Math.abs(uns.packing - transit) > 0.005) remarks.push(`Packing transit (Report F ${r2(uns.packing)} L) differs from bucket ${r2(transit)} L`);
+    const scanned = aimWIP + prSc + piSc;
+    const unscanned = preAIM + prUns + piUns + transit;
+    const totalWip = preAIM + aimWIP + printWIP + piWIP + transit;
+    const wastage = ['aim','printing','pi'].reduce((s,d)=>{ const tw=getTotalWastage(bn,d); return s+((tw&&tw.total)||0); }, 0);
+    return { machine: mc, floor: floorKey, batchNo: bn, customer: b.customer||'', zone: b.zone||'', pcCode: b.pcCode||'', colour: b.colour||'', size: b.size, type: b.isPrinted?'PTD':'UP',
+      start: _dispStart49zc(b), end: _dispEnd49zc(b), gross: w.grossProd||0, wastage,
+      preAIM, aimWIP, prSc, prUns, piSc, piUns, transit, scanned, unscanned, totalWip, packed, wipPacked: totalWip + packed, remark: remarks.join(' · ') };
+  };
+  const rows = []; const included = new Set();
+  Object.entries(FLOORS).forEach(([floorKey, floor]) => {
+    floor.machines.forEach(mc => {
+      monthBatches.filter(b => !b.deleted && normMcId(b.machineId) === normMcId(mc))
+        .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}))
+        .forEach(b => { rows.push(mkRow(b, mc, floorKey)); included.add(b.batchNumber); });
+    });
+  });
+  monthBatches.filter(b => !b.deleted && !included.has(b.batchNumber))
+    .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'', undefined, {numeric:true}))
+    .forEach(b => rows.push(mkRow(b, b.machineId || 'UNASSIGNED', 'OTHER')));
+  const HDR = ['MACHINE','FLOOR','BATCH','CUSTOMER','ZONE','PC CODE','COLOUR','SIZE','PTD/UP','START','END',
+    'GROSS PROD (L)','WASTAGE (L)',
+    'UNSORTED — UNSCANNED (L)','AIM DEPT — SCANNED (L)',
+    'PRINTING — SCANNED (L)','PRINTING — IN-TRANSIT UNSCANNED (L)',
+    'PI — SCANNED (L)','PI — IN-TRANSIT UNSCANNED (L)',
+    'PACKING — IN-TRANSIT UNSCANNED (L)',
+    'TOTAL SCANNED WIP (L)','TOTAL UNSCANNED WIP (L)','TOTAL WIP (L)',
+    'PACKED NOT DISPATCHED (L)','WIP + PACKED (L)','REMARK'];
+  const NC = HDR.length, FIRST_NUM = 11;
+  const aoa = [], kinds = [], merges = [];
+  const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
+  const _n = v => r2(v);
+  const dataRow = r => [r.machine, r.floor, r.batchNo, r.customer||'—', r.zone||'—', r.pcCode||'—', r.colour||'—', r.size, r.type, r.start||'', r.end||'',
+    _n(r.gross), _n(r.wastage), _n(r.preAIM), _n(r.aimWIP), _n(r.prSc), _n(r.prUns), _n(r.piSc), _n(r.piUns), _n(r.transit), _n(r.scanned), _n(r.unscanned), _n(r.totalWip), _n(r.packed), _n(r.wipPacked), r.remark];
+  const sum = (arr,k) => arr.reduce((a,r)=>a+(r[k]||0),0);
+  const totRow = (arr, label) => [label,'','','','','','','','','','',
+    _n(sum(arr,'gross')), _n(sum(arr,'wastage')), _n(sum(arr,'preAIM')), _n(sum(arr,'aimWIP')), _n(sum(arr,'prSc')), _n(sum(arr,'prUns')), _n(sum(arr,'piSc')), _n(sum(arr,'piUns')), _n(sum(arr,'transit')),
+    _n(sum(arr,'scanned')), _n(sum(arr,'unscanned')), _n(sum(arr,'totalWip')), _n(sum(arr,'packed')), _n(sum(arr,'wipPacked')), `${arr.length} batch${arr.length!==1?'es':''}`];
+  const _lblMerge = () => merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:FIRST_NUM-1}});
+  merges.push({s:{r:0,c:0},e:{r:0,c:NC-1}}); _push(['Report D — Stage-wise WIP Snapshot per Batch (Scanned · Unscanned · Packed not dispatched)'],'title');
+  merges.push({s:{r:1,c:0},e:{r:1,c:NC-1}}); _push([`${_trkSelectedMonth === 'ALL' ? 'All months' : 'Production month ' + _trkSelectedMonth}  |  Buckets: Report B model · In-transit: Report F server gap-counts · Packed: pack-in − dispatched  |  Generated ${new Date().toLocaleString()}`],'subtitle');
+  _push([],'spacer');
+  _push(HDR,'hdr');
+  const floors = [...new Set(rows.map(r=>r.floor))];
+  floors.forEach(fl => {
+    const flRows = rows.filter(r=>r.floor===fl);
+    merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:NC-1}}); _push([`FLOOR: ${fl}`],'floor');
+    [...new Set(flRows.map(r=>r.machine))].forEach(mc => {
+      const mcRows = flRows.filter(r=>r.machine===mc);
+      merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:NC-1}}); _push([`MACHINE: ${mc} — ${mcRows.length} batch${mcRows.length!==1?'es':''}`],'mc');
+      mcRows.forEach(r => _push(dataRow(r),'data'));
+      _lblMerge(); _push(totRow(mcRows, `${mc} SUBTOTAL`),'sub');
+      _push([],'spacer');
+    });
+    _lblMerge(); _push(totRow(flRows, `FLOOR ${fl} TOTAL`),'floortot');
+    _push([],'spacer');
+  });
+  _lblMerge(); _push(totRow(rows, `GRAND TOTAL (${rows.length} batches)`),'grand');
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = merges;
+  ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{ r:3, c:0 }, e:{ r:aoa.length-1, c:NC-1 } }) };
+  ws['!cols'] = [{wch:9},{wch:6},{wch:11},{wch:26},{wch:12},{wch:9},{wch:12},{wch:5},{wch:7},{wch:12},{wch:12}, ...Array(NC-12).fill({wch:13}), {wch:48}];
+  ws['!freeze'] = { xSplit: 3, ySplit: 4 };
+  const R = XLSX.utils.decode_range(ws['!ref']);
+  for (let r=R.s.r; r<=R.e.r; r++) for (let c=FIRST_NUM; c<NC-1; c++) { const cell = ws[XLSX.utils.encode_cell({r,c})]; if (cell && cell.t==='n') cell.z = '0.00'; }
+  const _F = { HDR:'20FFFF', MC:'21FF06', FLOOR:'20FFFF', GRAND:'FC02FF', SUB:'F0F8F0', UNS:'FFF4E5', SC:'EAF6EA' };
+  const _thin = { style:'thin', color:{ rgb:'999999' } }, _bAll = { top:_thin, bottom:_thin, left:_thin, right:_thin };
+  const _set = (r, c, s) => { const a = XLSX.utils.encode_cell({r,c}); if (!ws[a]) ws[a] = { t:'s', v:'' }; ws[a].s = s; };
+  const UNS_COLS = new Set([13,16,18,19,21]), SC_COLS = new Set([14,15,17,20]);
+  kinds.forEach((kind, r) => {
+    if (kind === 'title')    { _set(r, 0, { font:{ bold:true, sz:14 } }); return; }
+    if (kind === 'subtitle') { _set(r, 0, { font:{ italic:true, sz:10, color:{ rgb:'555555' } } }); return; }
+    if (kind === 'spacer')   return;
+    for (let c = 0; c < NC; c++) {
+      const right = (c>=FIRST_NUM && c<NC-1) ? 'right' : 'left';
+      if (kind === 'hdr')           _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb: UNS_COLS.has(c) ? 'FFD8A8' : SC_COLS.has(c) ? 'C6EFCE' : _F.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
+      else if (kind === 'floor')    _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.FLOOR } }, border:_bAll });
+      else if (kind === 'mc')       _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.MC } }, border:_bAll });
+      else if (kind === 'sub')      _set(r, c, { font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_F.SUB } }, border:_bAll, alignment:{ horizontal:right } });
+      else if (kind === 'floortot') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.FLOOR } }, border:_bAll, alignment:{ horizontal:right } });
+      else if (kind === 'grand')    _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_F.GRAND } }, border:_bAll, alignment:{ horizontal:right } });
+      else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal:right }, font:{ sz:10 }, ...(UNS_COLS.has(c) ? { fill:{ patternType:'solid', fgColor:{ rgb:_F.UNS } } } : SC_COLS.has(c) ? { fill:{ patternType:'solid', fgColor:{ rgb:_F.SC } } } : {}) }; }
+    }
+  });
+  ws['!rows'] = aoa.map((_,i)=> i===3 ? { hpt: 44 } : {});
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, 'Report D — WIP Snapshot');
+  XLSX.writeFile(wb, `Sunloc_ReportD_WIP_Snapshot_${_trkSelectedMonth}_${today()}.xlsx`);
+}
+// v54A: the previous Report D export (KPI summary / stage table / batch A-Grade) kept under its old
+// role name for reference; not wired to any button.
+function exportReportD_LegacyStageTable(){
   const monthBatches=getTrkMonthBatches();
   const monthBatchNos=new Set(monthBatches.map(b=>b.batchNumber).filter(Boolean));
   // v45ZW: KPI Summary now mirrors the on-screen Report D header EXACTLY — month-sliced gross via the
