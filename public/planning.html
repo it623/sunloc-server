@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v54C</p>
+      <p>Planning Suite v3.0 · build v54E</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54E' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54E', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2621,7 +2621,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54C'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54E'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -3037,7 +3037,13 @@ function recalcMachineScheduleQuiet(machineId) {
       const _manEnd50p = !!ord.manualEndDate && ord.endDate && !isNaN(new Date(ord.endDate));
       const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
       if (_manEnd50p) { const _me50p = new Date(ord.endDate); ord.endDate = _v47xFloorDay(_me50p); _endFrac = _me50p; _endAnchored45x = true; }
-      else if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
+      // v54E (Ishan, 10 Sep — 26U164 showed end 9 Sep on 10 Sep while still running): a batch that has
+      // reached its gross but is NOT DPR-closed is still in production — its end is TODAY, and the next
+      // order cannot start before it. Anchoring to the last DPR date holds once DPR has closed the batch
+      // (v51W) or the planner fixed the end by hand (v50P). Before the day's DPR is entered, the last DPR
+      // date is always yesterday — that lag is what produced the stale end.
+      else if (_dprClosed51w && _ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
+      else if (_ld45x && !isNaN(_ld45x)) { const _run54e = new Date(Math.max(_ld45x.getTime(), todayD.getTime())); ord.endDate = _v47xFloorDay(_run54e); _endFrac = _run54e; _endAnchored45x = true; }
       else { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
     } else {
       _endFrac = new Date(_startFrac.getTime() + fracDays * 86400000);
@@ -3184,7 +3190,13 @@ function recalcMachineSchedule(machineId) {
       const _manEnd50p = !!ord.manualEndDate && ord.endDate && !isNaN(new Date(ord.endDate));
       const _ld45x = ord.dprLastDate ? new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00') : null;
       if (_manEnd50p) { const _me50p = new Date(ord.endDate); ord.endDate = _v47xFloorDay(_me50p); _endFrac = _me50p; _endAnchored45x = true; }
-      else if (_ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
+      // v54E (Ishan, 10 Sep — 26U164 showed end 9 Sep on 10 Sep while still running): a batch that has
+      // reached its gross but is NOT DPR-closed is still in production — its end is TODAY, and the next
+      // order cannot start before it. Anchoring to the last DPR date holds once DPR has closed the batch
+      // (v51W) or the planner fixed the end by hand (v50P). Before the day's DPR is entered, the last DPR
+      // date is always yesterday — that lag is what produced the stale end.
+      else if (_dprClosed51w && _ld45x && !isNaN(_ld45x)) { ord.endDate = _v47xFloorDay(_ld45x); _endFrac = _ld45x; _endAnchored45x = true; }
+      else if (_ld45x && !isNaN(_ld45x)) { const _run54e = new Date(Math.max(_ld45x.getTime(), todayD.getTime())); ord.endDate = _v47xFloorDay(_run54e); _endFrac = _run54e; _endAnchored45x = true; }
       else { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
     } else {
       _endFrac = new Date(_startFrac.getTime() + fracDays * 86400000);
@@ -5779,7 +5791,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54C'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54E'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8663,7 +8675,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54C' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54E' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9113,7 +9125,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54E' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9163,7 +9175,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54E' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9252,7 +9264,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54E' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });

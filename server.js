@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v54C';
+const APP_BUILD = 'v54E';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -13221,13 +13221,16 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
             // a machine PRESENT with an empty A-shift (a client that loaded from local cache before
             // the server answered) still wiped that shift's server rows on save. A shift with no
             // qty>0 run in the payload no longer deletes anything — existing entries survive.
-            const _pairs51 = [];
+            // v54E: same grain as the single-day save — every in-scope machine in every shift that carries data
+            const _shiftsWithData54e = new Set();
             for (const [_sn51, _sd51] of Object.entries(data.shifts || {})) {
               for (const [_mid51, _md51] of Object.entries((_sd51 && _sd51.machines) || {})) {
                 const _runs51 = _md51.runs || [{ qty: _md51.prod }];
-                if (_runs51.some(r => (parseFloat(r && r.qty) || 0) > 0)) _pairs51.push(_mid51 + '||' + _sn51);
+                if (_runs51.some(r => (parseFloat(r && r.qty) || 0) > 0)) _shiftsWithData54e.add(_sn51);
               }
             }
+            const _pairs51 = [];
+            for (const _sh of _shiftsWithData54e) for (const _mc of _bScope50k) _pairs51.push(String(_mc) + '||' + _sh);
             if (_pairs51.length === 0) {
               console.warn(`[v51 shift-guard bulk] ${floor} ${date}: no shift in payload carries data — nothing deleted`);
             } else {
@@ -13353,9 +13356,14 @@ app.post('/api/dpr/save', async (req, res) => {
         // machine with an EMPTY shift (loaded from local cache before the server answered) wipe that
         // shift's server rows. Deletion now happens at (machine, shift) grain, only for shifts this
         // payload actually carries with qty>0 rows — a shift the payload is silent on survives.
-        const _pairs51 = [...new Set((actuals || [])
-          .filter(a => a && (parseFloat(a.qty) || 0) > 0 && _scope50k.indexOf(String(a.machineId)) !== -1)
-          .map(a => String(a.machineId) + '||' + String(a.shift)))];
+        // v54E (Ishan/Rahul, 10 Sep — MC8 9 Sep: 187 L row with no batch survived every re-save): the v51
+        // pairs were (machine, shift) WITH qty>0 in the payload, so a machine whose entry was cleared
+        // never purged its old server row. Balanced grain: a shift is "real" when ANY machine carries
+        // qty>0 in it; within a real shift every in-scope machine is replaced (a cleared machine purges).
+        // A stale-cache client with a wholly empty shift still cannot wipe it (shift silent → untouched).
+        const _shiftsWithData54e = new Set((actuals || []).filter(a => a && (parseFloat(a.qty) || 0) > 0).map(a => String(a.shift)));
+        const _pairs51 = [];
+        for (const _sh of _shiftsWithData54e) for (const _mc of _scope50k) _pairs51.push(String(_mc) + '||' + _sh);
         if (_pairs51.length === 0) {
           console.warn(`[v51 shift-guard] ${floor} ${date}: no shift in payload carries data — nothing deleted`);
         } else {
@@ -21685,11 +21693,30 @@ app.post('/api/tracking/label-update', async (req, res) => {
         db.prepare('UPDATE tracking_labels SET printed = ?, printed_at = ? WHERE id = ?').run(pVal, pAt, labelId);
       }
     } else if (qty) {
-      // Update qty and mark for reprint
+      // v54D (Rahul, 10 Sep — the actual PI path): the label-edit modal changes qty IN PLACE on the same
+      // label id (no void, no new label), so v54C's repoint lineage never fired and every earlier scan
+      // of the box (AIM in/out, printing) was revalued at the new, smaller qty — pre-AIM unscanned WIP
+      // rose by the difference. If the label already has scans, record the qty in force before this
+      // edit and the edit time; _v47gScanQtySql values scans stamped before regenerated_at at
+      // original_qty. A label edited before any scan needs no lineage (nothing was scanned at the old
+      // qty). Repeated edits: the latest edit's previous qty wins for all earlier scans.
+      const _nowIso = new Date().toISOString();
       if (pgPool) {
-        await pgPool.query('UPDATE tracking_labels SET qty = $1, printed = 0 WHERE id = $2', [qty, labelId]);
+        const cur = (await pgPool.query('SELECT qty FROM tracking_labels WHERE id=$1', [labelId])).rows[0];
+        const hasScans = !!(await pgPool.query('SELECT 1 FROM tracking_scans WHERE label_id=$1 LIMIT 1', [labelId])).rows[0];
+        const changed = cur && Math.abs((parseFloat(cur.qty) || 0) - (parseFloat(qty) || 0)) > 0.0005;
+        if (changed && hasScans) {
+          await pgPool.query('UPDATE tracking_labels SET qty = $1, printed = 0, original_qty = $3, regenerated_at = $4 WHERE id = $2', [qty, labelId, cur.qty, _nowIso]);
+          console.log(`[v54D label-update] ${labelId}: qty ${cur.qty} → ${qty} with scans present — earlier scans keep ${cur.qty}`);
+        } else {
+          await pgPool.query('UPDATE tracking_labels SET qty = $1, printed = 0 WHERE id = $2', [qty, labelId]);
+        }
       } else {
-        db.prepare('UPDATE tracking_labels SET qty = ?, printed = 0 WHERE id = ?').run(qty, labelId);
+        const cur = db.prepare('SELECT qty FROM tracking_labels WHERE id=?').get(labelId);
+        const hasScans = !!db.prepare('SELECT 1 FROM tracking_scans WHERE label_id=? LIMIT 1').get(labelId);
+        const changed = cur && Math.abs((parseFloat(cur.qty) || 0) - (parseFloat(qty) || 0)) > 0.0005;
+        if (changed && hasScans) db.prepare('UPDATE tracking_labels SET qty = ?, printed = 0, original_qty = ?, regenerated_at = ? WHERE id = ?').run(qty, cur.qty, _nowIso, labelId);
+        else db.prepare('UPDATE tracking_labels SET qty = ?, printed = 0 WHERE id = ?').run(qty, labelId);
       }
     }
     // v50E: weights are updated INDEPENDENTLY of the branches above, so the printed-flag path
