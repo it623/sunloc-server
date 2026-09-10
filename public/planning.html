@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v54A</p>
+      <p>Planning Suite v3.0 · build v54C</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1798,7 +1798,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54A' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1826,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54A', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2207,13 +2207,25 @@ const DISPATCH_SPLIT_THRESHOLD = 50;
 //
 // Cumulative formula (matches Report E machine subtotal): sum(stageOut) / sum(stageInspected) × 100.
 // Filters by the currently-selected planning month, same as Report E and the in-page display.
+// v54B (Ishan, 10 Sep — MC14/16/23/27 Live A-Grade ≠ Report E): membership here used orderInMonth, which
+// admits a batch that merely ENDED in the month (26P053: started 26 Aug, ended 1 Sep, 67.8% AIM) and so
+// dragged MC16's September figure to 74.0% against Report E's 75.9%. Report E's cohort rule is the
+// production START month (with the v50C pre-July absorption). Same rule here, so the header equals
+// Report E's machine subtotal by construction.
+function _v54bCohortMonth(o) {
+  const ym = d => { const x = new Date(d); return isNaN(x.getTime()) ? '' : `${x.getFullYear()}-${String(x.getMonth()+1).padStart(2,'0')}`; };
+  let m = o.startDate ? ym(o.startDate) : '';
+  if (!m) m = o.planMonth || o.month || o.planningMonth || '';
+  if (m && m < '2026-07' && o.endDate && ym(o.endDate) >= '2026-07') m = '2026-07';   // v50C absorption
+  return m;
+}
 function _populateMachineAGrade() {
   window._machineAGrade = {};
   // Build per-machine accumulators
   const acc = {};  // mcId → {aimOut, aimInsp, printOut, printInsp, piOut, piInsp}
   (state.orders || []).forEach(o => {
     if (o.deleted || !o.batchNumber || !o.machineId) return;
-    if (!orderInMonth(o, _selectedPlanMonth)) return;
+    if (_v54bCohortMonth(o) !== _selectedPlanMonth) return;   // v54B: Report E cohort rule
     const key = o.batchNumber.trim().toUpperCase();
     const la = window._liveAGrade?.[key] || window._liveAGrade?.[o.batchNumber];
     if (!la) return;
@@ -2609,7 +2621,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54A'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54C'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -2686,11 +2698,24 @@ function calcOrderSchedule(order, mc) {
   const mcId = mc.id || mc.machineId;
   const mcCum = window._machineAGrade?.[mcId] || {};
   // Guard: clamp aGradePct to minimum 1 to prevent division-by-zero → Infinity
-  const rawAimPct = (liveAG?.aim?.aGradePct != null && liveAG.aim.aGradePct > 0)
-    ? liveAG.aim.aGradePct
-    : (mcCum.aimPct != null && mcCum.aimPct > 0)
-      ? mcCum.aimPct
-      : (order.aGrade || mc.aGrade || 0);
+  // v54B (Ishan, 10 Sep — 26P056: 50 L planned → 82.23 L gross at a header A-grade of 74%): the gross
+  // divisor was the SCAN-OUT ratio (AIM out ÷ inspected), which is depressed while boxes sit in AIM not
+  // yet scanned out (MC16: 60.8%), so gross overshot. Gross now divides by the SAME frozen AIM% the
+  // header and Report E show — (ScanIn − Remelt) ÷ (ScanIn + Salvage): the batch's own figure once it
+  // has AIM scan-in, else the machine's month cohort, else the configured default. 50 ÷ 0.74 = 67.6 L.
+  const _frozenBatchPct = (() => {
+    const a = liveAG?.aim; if (!a) return null;
+    const sin = a.inQty || 0, sal = a.salvage || 0, rem = a.remelt || 0;
+    if (sin <= 0 || (a.salvage == null && a.remelt == null)) return null;
+    const p = (sin - rem) / (sin + sal) * 100; return (p > 0 && isFinite(p)) ? p : null;
+  })();
+  const rawAimPct = (_frozenBatchPct != null)
+    ? _frozenBatchPct
+    : (mcCum.aimPctDisplay != null && mcCum.aimPctDisplay > 0)
+      ? mcCum.aimPctDisplay
+      : (mcCum.aimPct != null && mcCum.aimPct > 0)
+        ? mcCum.aimPct
+        : (order.aGrade || mc.aGrade || 0);
   const aimFactor = rawAimPct > 0 ? (100 / rawAimPct) : (1 / (1 - STD_AIM_WASTE));
   // Print A-Grade fallback chain
   const livePrintPct = liveAG?.printing?.aGradePct;
@@ -5754,7 +5779,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54A'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54C'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8638,7 +8663,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54A' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54C' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9088,7 +9113,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54A' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9138,7 +9163,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54A' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9227,7 +9252,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54A' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54C' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });

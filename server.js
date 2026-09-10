@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v54A';
+const APP_BUILD = 'v54C';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -227,9 +227,19 @@ function _v47gPackCaseSql(s) {
 // with qty NULL and deliberately fall through to the label-qty branch — packed-good output is real
 // output. Single authority: scan-summary, agrade-summary, agrade-by-month and dispatch-period all
 // inherit this uniformly.
+// v54C (Rahul, 10 Sep — "pre-AIM unscanned WIP jumps when PI regenerates the last label with a smaller
+// qty"): regeneratePartialLabel voids the old label, issues a new one with the REDUCED qty and repoints
+// every scan of that box onto it (v49J). Valuing scans at the label's CURRENT qty therefore shrank the
+// box's AIM scan-in retroactively, and pre-AIM (gross − salvage − AIM in) rose by the difference — the
+// removed quantity was already recorded as printing/PI salvage, so it was being counted twice. A scan
+// is now valued at the qty in force WHEN IT WAS SCANNED: scans stamped before regenerated_at use
+// original_qty (the voided label's qty); later scans (PI out, packing, dispatch) use the new qty.
+// Stage-agnostic — a regeneration at Packing behaves the same way. Lineage is written by the
+// relabel-repoint route; the "SQL for IT" backfill sets it for regenerations made before v54C.
 function _v47gScanQtySql(s, l) {
   return `CASE WHEN ${s}.operator LIKE 'recon-scrap:%' THEN 0 `
        + `WHEN ${s}.label_id LIKE 'recon-%' THEN COALESCE(${s}.qty,0) `
+       + `WHEN ${l}.original_qty IS NOT NULL AND ${l}.regenerated_at IS NOT NULL AND ${s}.ts < ${l}.regenerated_at THEN ${l}.original_qty `
        + `ELSE COALESCE(${l}.qty, ${_v47gPackCaseSql(s)}) END`;
 }
 
@@ -670,6 +680,15 @@ const MIGRATIONS = [
       ALTER TABLE tracking_labels ADD COLUMN legacy_sap_doc_entry INTEGER;
       ALTER TABLE tracking_labels ADD COLUMN legacy_sap_doc_num TEXT;
       ALTER TABLE tracking_labels ADD COLUMN legacy_card_code TEXT;
+    `
+  },
+  {
+    version: 67,
+    name: 'v54c_label_regen_lineage',
+    sql: `
+      ALTER TABLE tracking_labels ADD COLUMN regenerated_from TEXT;
+      ALTER TABLE tracking_labels ADD COLUMN original_qty REAL;
+      ALTER TABLE tracking_labels ADD COLUMN regenerated_at TEXT;
     `
   },
   {
@@ -3003,6 +3022,8 @@ async function ensurePostgresTables() {
       'legacy_mode TEXT', 'legacy_mfg TEXT', 'legacy_exp TEXT', 'legacy_printed INTEGER DEFAULT 0',
       // v53U: SAP SO link for standalone legacy batches (invoice request + poller attribution)
       'legacy_sap_doc_entry INTEGER', 'legacy_sap_doc_num TEXT', 'legacy_card_code TEXT',
+      // v54C: partial-box regeneration lineage — scans before regenerated_at are valued at original_qty
+      'regenerated_from TEXT', 'original_qty REAL', 'regenerated_at TEXT',
       // v50E: per-box weights. Until now grossWt/nettWt existed ONLY in the client blob — never
       // stored, never returned by labels-all, and pullFromServer replaces state.labels wholesale,
       // so every weight an operator typed was wiped on the next label sync. Persisting them here is
@@ -21629,6 +21650,8 @@ app.post('/api/tracking/relabel-repoint', async (req, res) => {
       const upd = await pgPool.query(
         `UPDATE tracking_scans SET label_id=$1 WHERE batch_number=$2 AND label_id=$3`,
         [toLabelId, batchNumber, fromLabelId]);
+      // v54C: record lineage on the new label so repointed scans keep the qty they were scanned at
+      try { await pgPool.query(`UPDATE tracking_labels n SET regenerated_from=$1, original_qty=COALESCE((SELECT o.original_qty FROM tracking_labels o WHERE o.id=$1 AND o.original_qty IS NOT NULL AND o.regenerated_at IS NOT NULL), (SELECT o.qty FROM tracking_labels o WHERE o.id=$1)), regenerated_at=COALESCE(n.regenerated_at,$3) WHERE n.id=$2`, [fromLabelId, toLabelId, new Date().toISOString()]); } catch (e) { console.warn('[v54C lineage]', e.message); }
       console.log(`[v49J] relabel-repoint: ${upd.rowCount||0} scan(s) moved ${fromLabelId} -> ${toLabelId} (batch ${batchNumber})`);
       return res.json({ ok: true, moved: upd.rowCount || 0 });
     } else {
@@ -21636,6 +21659,7 @@ app.post('/api/tracking/relabel-repoint', async (req, res) => {
       if (disp) {
         return res.json({ ok: false, dispatch_blocked: true, error: 'Box already dispatched — scans not re-pointed. Handle via dispatch, not regeneration.' });
       }
+      try { const o = db.prepare(`SELECT qty, original_qty, regenerated_at FROM tracking_labels WHERE id=?`).get(fromLabelId); if (o) db.prepare(`UPDATE tracking_labels SET regenerated_from=?, original_qty=?, regenerated_at=COALESCE(regenerated_at,?) WHERE id=?`).run(fromLabelId, (o.original_qty!=null && o.regenerated_at) ? o.original_qty : o.qty, new Date().toISOString(), toLabelId); } catch (e) { console.warn('[v54C lineage]', e.message); }
       const info = db.prepare(`UPDATE tracking_scans SET label_id=? WHERE batch_number=? AND label_id=?`)
         .run(toLabelId, batchNumber, fromLabelId);
       console.log(`[v49J] relabel-repoint: ${info.changes||0} scan(s) moved ${fromLabelId} -> ${toLabelId} (batch ${batchNumber})`);

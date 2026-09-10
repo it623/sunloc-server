@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v54A</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v54C</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -4711,8 +4711,16 @@ function renderHistory(){
   // v41ZG #4: one-time month sync so the floor-wise TOTAL/AVG below are complete (History reads
   // localStorage only; on a fresh session prior days weren't cached, undercounting the totals).
   // Renders immediately from cache first (fast), then re-renders once after the server fills in.
-  if(serverUrl && dprUser && !filterDate && _histSyncedMonth !== _dprSelectedMonth){
-    _histSyncedMonth = _dprSelectedMonth;
+  // v54B (Rahul, 10 Sep — History 1,232.20 vs Plant Report 1,422.60): the month sync ran ONCE per
+  // session, so a floor-day saved later on another device never reached a long-lived tab. Re-sync the
+  // CURRENT month on every History render (at most once a minute) with a fresh date list; past months
+  // keep the once-per-session behaviour.
+  const _isCurMonth = _dprSelectedMonth === today().slice(0,7);
+  window._histSyncAt = window._histSyncAt || {};
+  const _dueAgain = _isCurMonth && (Date.now() - (window._histSyncAt[_dprSelectedMonth] || 0) > 60000);
+  if(serverUrl && dprUser && !filterDate && (_histSyncedMonth !== _dprSelectedMonth || _dueAgain)){
+    _histSyncedMonth = _dprSelectedMonth; window._histSyncAt[_dprSelectedMonth] = Date.now();
+    if (_isCurMonth) Object.keys(FLOORS).forEach(fl => { delete _dprDatesListCache[fl]; });   // v54B: fresh date list
     const _mStart = _dprSelectedMonth + '-01';
     // v41ZG #4/#5: bound the sync at the LESSER of today and the selected month's last day — viewing
     // a past month must not over-fetch into later months (correctness + perf).
