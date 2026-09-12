@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v54E';
+const APP_BUILD = 'v54F';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -5434,8 +5434,8 @@ async function _v52vHealChildGrossClones() {
   try {
     if (parentBns.length) {
       let lr;
-      if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) GROUP BY batch_number`, [parentBns])).rows;
-      else { const ph = parentBns.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) GROUP BY batch_number`).all(...parentBns); }
+      if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) AND COALESCE(is_orange,0)=0 AND COALESCE(voided,0)=0 AND COALESCE(is_legacy_rebatch,0)=0 GROUP BY batch_number`, [parentBns])).rows;
+      else { const ph = parentBns.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) AND COALESCE(is_orange,0)=0 AND COALESCE(voided,0)=0 AND COALESCE(is_legacy_rebatch,0)=0 GROUP BY batch_number`).all(...parentBns); }
       for (const r of (lr || [])) lblSum[String(r.batch_number).trim().toUpperCase()] = parseFloat(r.q) || 0;
     }
   } catch (e) { console.warn('[v52Y fam-gross] parent label-sum query failed (label gate disabled this run):', e.message); }
@@ -5528,8 +5528,8 @@ async function _v52yHealOverrideFamilies() {
   const lbl = {};
   {
     let lr;
-    if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) GROUP BY batch_number`, [allBns])).rows;
-    else { const ph = allBns.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) GROUP BY batch_number`).all(...allBns); }
+    if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) AND COALESCE(is_orange,0)=0 AND COALESCE(voided,0)=0 AND COALESCE(is_legacy_rebatch,0)=0 GROUP BY batch_number`, [allBns])).rows;
+    else { const ph = allBns.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) AND COALESCE(is_orange,0)=0 AND COALESCE(voided,0)=0 AND COALESCE(is_legacy_rebatch,0)=0 GROUP BY batch_number`).all(...allBns); }
     for (const r of (lr || [])) lbl[String(r.batch_number).trim().toUpperCase()] = parseFloat(r.q) || 0;
   }
   let healed = 0, ambiguous = 0;
@@ -8453,6 +8453,12 @@ async function _v46k_loadSplitFamilies() {
     for (const root of Object.keys(_inferred)) families.push({ parentBatch: root, children: _inferred[root], inferred: true });
   } catch (e) { console.warn('[v52W] suffix-inferred family scan failed:', e.message); }
 
+  // v54F (Ishan, 12 Sep — 26ZB117 / 117A / 117B): every "physical content" label sum (here, the
+  // pass-2 label gate, and the v52Y override heal) counted ORANGE twins, so a PRINTED child's share
+  // doubled (5 blue + 5 orange = 10.00 L each) and the parent was reduced by 20 instead of 10
+  // (33.90 → 13.90); each child then showed its whole 5 L as phantom pre-AIM WIP, and the parent's
+  // negative was clipped. Unprinted children have no oranges, which is why 26ZG152A never exposed
+  // it. All three sums now count blue, live, non-legacy labels only — one label per physical box.
   // v52W: PHYSICAL LABEL SUMS for every child, every tier. The split rebatches labels box-by-box and
   // per-label qty honours a PARTIAL last box; `boxes × pack size` rounds that partial up (26ZG152A:
   // 9 × 1.25 = 11.25 against 10.50 L of actual labels — a permanent 0.75 L phantom in Unscanned WIP,
@@ -8463,8 +8469,8 @@ async function _v46k_loadSplitFamilies() {
     const _allKids = [...new Set(families.flatMap(f => f.children.map(c => String(c.batch).trim())))];
     if (_allKids.length) {
       let lr;
-      if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) GROUP BY batch_number`, [_allKids])).rows;
-      else { const ph = _allKids.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) GROUP BY batch_number`).all(..._allKids); }
+      if (pgPool) lr = (await pgPool.query(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number = ANY($1) AND COALESCE(is_orange,0)=0 AND COALESCE(voided,0)=0 AND COALESCE(is_legacy_rebatch,0)=0 GROUP BY batch_number`, [_allKids])).rows;
+      else { const ph = _allKids.map(() => '?').join(','); lr = db.prepare(`SELECT batch_number, COALESCE(SUM(qty),0) AS q FROM tracking_labels WHERE batch_number IN (${ph}) AND COALESCE(is_orange,0)=0 AND COALESCE(voided,0)=0 AND COALESCE(is_legacy_rebatch,0)=0 GROUP BY batch_number`).all(..._allKids); }
       const _lblSum = {};
       for (const r of (lr || [])) _lblSum[String(r.batch_number).trim().toUpperCase()] = parseFloat(r.q) || 0;
       for (const f of families) for (const c of f.children) {
