@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v54F</p>
+      <p>Planning Suite v3.0 · build v54J</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1655,6 +1655,12 @@ const SYNC = (() => {
           if (state.currentPage === 'dispatch' && !_userIsActive() && !_userIsFocused()) {
             try { _renderImmediate(); } catch { try { renderDispatch(); } catch {} }
           }
+          // v54G (Ishan, 15 Sep): the W/O table's Dispatched / Balance / AIM A-grade read this sync's
+          // data — refresh the reconciliation page too, with the same idle guard, so the columns stay
+          // current without navigating away.
+          if (state.currentPage === 'reconciliation' && !_userIsActive() && !_userIsFocused()) {
+            try { _renderImmediate(); } catch {}
+          }
         }
       }
     } catch(e) {}
@@ -1798,7 +1804,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54F' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1826,7 +1832,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54F', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2621,7 +2627,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54F'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54J'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5791,7 +5797,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54F'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54J'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -6450,12 +6456,15 @@ async function renderUnplannedOrders() {
   topActions.innerHTML = `
     <button class="btn btn-ghost btn-sm" onclick="_v39_triggerSapRefreshIndents()">🔄 Force Refresh from SAP</button>
     <button class="btn btn-ghost btn-sm" onclick="_v39_renderUnplannedRefresh()">↻ Reload page</button>
-    ${currentUser?.role === 'admin' ? `<button class="btn btn-ghost btn-sm" onclick="_v41_openDismissedPanel()">🗑️ Dismissed (<span id="v41-dismissed-count">…</span>)</button>` : ''}
+    ${['admin','planning_manager'].includes(currentUser?.role) ? `<button class="btn btn-ghost btn-sm" onclick="_v41_openDismissedPanel()">🗑️ Dismissed (<span id="v41-dismissed-count">…</span>)</button>` : ''}
     <span id="v39-sap-status-pill" style="font-size:11px;color:var(--text3);padding:4px 8px"></span>
   `;
   content.innerHTML = `<div style="padding:24px;color:var(--text3);font-size:13px">⏳ Loading SAP indents from cache…</div>`;
   await _v39_fetchSapIndents();
-  // v41 P19.2 Fix 6G: fetch dismissed indents and filter from display
+  // v54J (Shrikant, 15 Sep): Dismiss / Dismissed-panel visible to planning_manager as well as admin —
+// the PM plans from this screen and needs to hide executed / not-to-plan lines; the server route was
+// never role-gated, only the buttons were. Every dismissal still prompts for a reason and is audited.
+// v41 P19.2 Fix 6G: fetch dismissed indents and filter from display
   await _v41_fetchDismissedIndents();
   const dismissedKeys = new Set((window._v41_dismissedIndents || []).map(d =>
     `${d.sap_doc_entry}|${d.line_num}`
@@ -6521,7 +6530,7 @@ async function renderUnplannedOrders() {
       <td style="text-align:center;font-family:monospace;font-size:11px" ${dueClass}>${_v39_fmtDate(u.dueDate)}</td>
       <td style="text-align:center;white-space:nowrap">
         <button class="btn btn-primary" style="padding:4px 12px;font-size:11px" onclick="_v39_openAssignModal(${i})">+ Assign</button>
-        ${currentUser?.role === 'admin' ? `<button class="btn btn-ghost" style="padding:4px 8px;font-size:10px;margin-left:4px;color:#dc2626;border-color:rgba(220,38,38,0.3)" onclick="_v41_dismissIndentLine(${i})" title="Hide this line from the unplanned list (admin only)">Dismiss</button>` : ''}
+        ${['admin','planning_manager'].includes(currentUser?.role) ? `<button class="btn btn-ghost" style="padding:4px 8px;font-size:10px;margin-left:4px;color:#dc2626;border-color:rgba(220,38,38,0.3)" onclick="_v41_dismissIndentLine(${i})" title="Hide this line from the unplanned list (admin only)">Dismiss</button>` : ''}
       </td>
     </tr>`;
   }).join('');
@@ -8675,7 +8684,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54F' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54J' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9125,7 +9134,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54F' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9175,7 +9184,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54F' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9264,7 +9273,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54F' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -15285,6 +15294,10 @@ function _v51jYm(d) {
   if (!d) return '';
   if (d instanceof Date) return isNaN(d) ? '' : `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}`;
   const s = String(d);
+  // v54G (Ishan, 15 Sep — 1-Sept starts listed under August): a stored start is an ISO instant
+  // (2026-08-31T18:30:00.000Z = 1 Sept IST). Slicing the string took the UTC month; the month is
+  // the LOCAL calendar month of that instant, exactly as the dates render on screen.
+  if (/^\d{4}-\d{2}-\d{2}T/.test(s)) { const dt = new Date(s); if (!isNaN(dt)) return `${dt.getFullYear()}-${String(dt.getMonth()+1).padStart(2,'0')}`; }
   if (/^\d{4}-\d{2}/.test(s)) return s.slice(0,7);
   const p = new Date(s);
   return isNaN(p) ? '' : `${p.getFullYear()}-${String(p.getMonth()+1).padStart(2,'0')}`;
@@ -15432,7 +15445,7 @@ async function renderReconciliation() {
           <div style="display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:8px;margin-bottom:8px">
             <div>
               <span class="text-mono fw-bold" style="color:var(--accent3)">${r.id}</span>
-              <span style="font-size:12px;color:var(--text3);margin-left:10px">Batch: <strong style="color:var(--accent2)">${r.batch_number}</strong> · Proposed by ${r.proposed_by} on ${(r.proposed_at||'').slice(0,16)}</span>
+              <span style="font-size:12px;color:var(--text3);margin-left:10px">Batch: <strong style="color:var(--accent2)">${r.batch_number}</strong>${(()=>{ const _o=(state.orders||[]).find(x=>!x.deleted && String(x.batchNumber||'').trim().toUpperCase()===String(r.batch_number||'').trim().toUpperCase()); return _o ? ` · <span title="Original customer of the parent batch">${_v51qHasRealCustomer(_o)?(_o.customer||''):'W/O — no customer'}</span> · <span title="Capsule colour">${fmtColour(_o.colour)||'—'}</span>` : ''; })()} · Proposed by ${r.proposed_by} on ${(r.proposed_at||'').slice(0,16)}</span>
             </div>
             ${['admin','planning_manager'].includes(currentUser?.role) ? `<div style="display:flex;gap:8px">
               <button class="btn btn-success btn-sm" onclick="approveExcessUnprint('${r.id}')">✅ Approve</button>
@@ -15561,7 +15574,7 @@ async function renderReconciliation() {
       ${_v51jReconFilterBar(_reconYms, woOrders.length, woOrdersAll.length, 'W/O orders')}
       <div class="recon-scroll">
         <table class="summary-table">
-          <thead><tr><th>Batch</th><th>Size</th><th>Colour</th><th>PC Code</th><th>Planned Qty (L)</th><th>Produced (L)</th><th>Dispatched (L)</th><th>Split → Children</th><th>Start Date</th><th>Status</th><th>Action</th></tr></thead>
+          <thead><tr><th>Batch</th><th>Size</th><th>Colour</th><th>PC Code</th><th>Planned Qty (L)</th><th>Produced (L)</th><th title="Report E's AIM A-Grade (L) = AIM Scan-In − AIM Remelt, live from Tracking">AIM A-Grade (L)</th><th>Dispatched (L)</th><th title="Report E's Balance = Total Packable − Dispatched, where Total Packable = Unscanned WIP + AIM A-Grade (− Print Rej − PI Rej on printed batches; zero for W/O). Shown raw — a negative means dispatched beyond packable.">Balance (L)</th><th>Split → Children</th><th>Start Date</th><th>Status</th><th>Action</th></tr></thead>
           <tbody>
             ${woOrders.map(o=>{
               // v52U (Ishan, 24 Aug — 26ZG152 divergence): the recon showed only the planned qty, so a
@@ -15577,6 +15590,19 @@ async function renderReconciliation() {
               const _kids = _v52uChildrenOf(o);
               const _disp = (state._dispatchActualsQty && state._dispatchActualsQty[o.batchNumber]) || 0;
               const _prod = parseFloat(o.actualProd) || 0;
+              // v54H (Ishan, 15 Sep): the two Report E figures in litres, from the same inputs Report E
+              // reads (AIM scan-in / salvage / remelt from Tracking's summary, gross = DPR actual):
+              //   AIM A-Grade (L) = ScanIn − Remelt                               (v45V, Report E col)
+              //   Unscanned WIP   = max(0, (Gross − Salvage) − ScanIn)             (Report E col)
+              //   Total Packable  = Unscanned WIP + AIM A-Grade (− Print/PI rej on printed; W/O = 0)
+              //   Balance         = Total Packable − Dispatched, shown raw like Report E.
+              // The 60 s Tracking sync refreshes the inputs and re-renders this page (v54G).
+              const _la = window._liveAGrade && (window._liveAGrade[String(o.batchNumber||'').trim().toUpperCase()] || window._liveAGrade[o.batchNumber]);
+              const _aimIn = (_la && _la.aim && _la.aim.inQty) || 0, _aimSal = (_la && _la.aim && _la.aim.salvage) || 0, _aimRem = (_la && _la.aim && _la.aim.remelt) || 0;
+              const _ag = Math.max(0, _aimIn - _aimRem);
+              const _unsc = Math.max(0, Math.max(0, _prod - _aimSal) - _aimIn);
+              const _packable = _unsc + _ag;
+              const _bal = _packable - _disp;
               const _kidsCell = _kids.length
                 ? _kids.map(k=>`<span class="text-mono" style="font-size:11px">${k.batchNumber}\u00A0(${fmt(parseFloat(k.qty)||0)}L${_v51qHasRealCustomer(k)?'':' — no customer'})</span>`).join('<br>')
                 : '<span style="color:var(--text3)">—</span>';
@@ -15590,13 +15616,15 @@ async function renderReconciliation() {
               <td class="text-mono">${o.pcCode||'—'}</td>
               <td class="text-mono fw-bold">${fmt(o.qty)}</td>
               <td class="text-mono" title="Actual produced remaining on this batch (post-split residual where a split was approved)">${_prod>0.005?fmt(_prod):'<span style="color:var(--text3)">—</span>'}</td>
+              <td class="text-mono" title="AIM Scan-In ${fmt(_aimIn)} − Remelt ${fmt(_aimRem)}">${_aimIn>0.005?fmt(_ag):'<span style="color:var(--text3)">—</span>'}</td>
               <td class="text-mono" style="${_disp>0.005?'color:#dc2626;font-weight:700':''}">${_disp>0.005?fmt(_disp):'<span style="color:var(--text3)">—</span>'}${_dispFlag}</td>
+              <td class="text-mono fw-bold" style="${_bal<-0.005?'color:#dc2626':(_bal>0.005?'color:#C55A11':'')}" title="Total Packable ${fmt(_packable)} (Unscanned WIP ${fmt(_unsc)} + AIM A-Grade ${fmt(_ag)}) − Dispatched ${fmt(_disp)}">${(_prod>0.005||_aimIn>0.005)?fmt(_bal):'<span style="color:var(--text3)">—</span>'}</td>
               <td>${_kidsCell}</td>
               <td class="text-mono" style="font-size:11px">${fmtDate(o.startDate)}</td>
               <td><span class="badge" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.4);font-size:10px">${o.woStatus==='wo-split-partial'?'🔶 W/O — partial split':'🔶 W/O'}</span></td>
               <td><button class="btn btn-sm" style="background:rgba(255,171,0,0.15);color:#C55A11;border:1px solid rgba(255,171,0,0.3)" onclick="openAssignCustomerModal('${o.id}')">🔶 Split & Assign</button></td>
             </tr>`;}).join('')}
-            ${woOrders.length === 0 ? `<tr><td colspan="11" style="text-align:center;color:var(--text3);padding:18px;font-weight:600">No W/O orders in this production scope — ${woOrdersAll.length} exist in other periods. Change the scope above to see them.</td></tr>` : ''}
+            ${woOrders.length === 0 ? `<tr><td colspan="13" style="text-align:center;color:var(--text3);padding:18px;font-weight:600">No W/O orders in this production scope — ${woOrdersAll.length} exist in other periods. Change the scope above to see them.</td></tr>` : ''}
           </tbody>
         </table>
       </div>
