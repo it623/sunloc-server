@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v54M</p>
+      <p>Planning Suite v3.0 · build v54R</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1804,7 +1804,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54M' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54R' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1832,7 +1832,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54M', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54R', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2627,7 +2627,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54M'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54R'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -2957,6 +2957,19 @@ function recalcMachineScheduleQuiet(machineId) {
         if (ord.manualStartDate) ord.endDate = new Date(ord.startDate);
         else ord.startDate = new Date(ord.endDate);
       }
+      // v54N DPR END-FLOOR (Ishan-confirmed ruling, 16 Sep): same invariant for CLOSED orders —
+      // their stored/manual end never precedes the last DPR production date. See the block in the
+      // non-closed path for the full rationale; at-or-after manual ends stay planner-authoritative.
+      if (ord.dprLastDate) {
+        const _ld54nC = new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00');
+        if (!isNaN(_ld54nC) && ord.endDate && new Date(ord.endDate) < _ld54nC) {
+          console.warn(`[v54N dpr-end-floor] ${ord.batchNumber||ord.id} (closed): end lifted to last DPR production ${_ld54nC.toDateString()}`);
+          ord.endDate = _v47xFloorDay(_ld54nC);
+          if (ord.startDate && new Date(ord.startDate) > new Date(ord.endDate)) {
+            if (ord.manualStartDate) ord.endDate = new Date(ord.startDate); else ord.startDate = new Date(ord.endDate);
+          }
+        }
+      }
       // v54M: a CLOSED order can also sit over its predecessor's recorded end (26T113 closed with a
       // manual-start 13-Sep against 26T112's manual end 14-Sep) — the closed branch skipped the
       // v54L detector entirely, so the conflict was invisible. Both dates are history here; flag
@@ -3123,6 +3136,23 @@ function recalcMachineScheduleQuiet(machineId) {
     // start and survive every recalc. Coherence is now unconditional: the end never precedes the
     // start, whichever path produced it. Anchored behaviour is byte-identical to before.
     if (ord.startDate && ord.endDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
+    // ═══ v54N DPR END-FLOOR (Ishan-confirmed ruling, 16 Sep — 26P056: manual end 11-Sep against DPR
+    // production through 15-Sep) ══════════════════════════════════════════════════════════════════
+    // A batch cannot have ENDED before days on which DPR recorded its production. When any end —
+    // manual (the 5-Aug authority rule's one carve-out), anchored, or stored — sits EARLIER than
+    // the batch's last DPR production date, it lifts to that date. A manual end at-or-after
+    // dprLastDate remains planner-authoritative exactly as before (26T112's 14-Sep vs DPR 13-Sep is
+    // untouched — that stays a planner edit, flagged by the v54M chip). The lifted end is a real
+    // recorded date: anchored, not a live placeholder, so the v54L pull-back never moves it.
+    if (ord.dprLastDate) {
+      const _ld54n = new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00');
+      if (!isNaN(_ld54n) && ord.endDate && new Date(ord.endDate) < _ld54n) {
+        console.warn(`[v54N dpr-end-floor] ${ord.batchNumber||ord.id}: end ${_v47xFloorDay(new Date(ord.endDate)).toDateString()} precedes last DPR production ${_ld54n.toDateString()} — lifted to the DPR date`);
+        ord.endDate = _v47xFloorDay(_ld54n); _endFrac = new Date(_ld54n);
+        _endAnchored45x = true; _endLive54m = false;
+        if (ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
+      }
+    }
     if (_endFrac && !isNaN(new Date(_endFrac))) {
       cursor = _endFrac; // v47X: fractional cursor — carries the sub-day remainder to the next order
     }
@@ -3184,6 +3214,19 @@ function recalcMachineSchedule(machineId) {
       if (ord.startDate && ord.endDate && new Date(ord.startDate) > new Date(ord.endDate)) {
         if (ord.manualStartDate) ord.endDate = new Date(ord.startDate);
         else ord.startDate = new Date(ord.endDate);
+      }
+      // v54N DPR END-FLOOR (Ishan-confirmed ruling, 16 Sep): same invariant for CLOSED orders —
+      // their stored/manual end never precedes the last DPR production date. See the block in the
+      // non-closed path for the full rationale; at-or-after manual ends stay planner-authoritative.
+      if (ord.dprLastDate) {
+        const _ld54nC = new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00');
+        if (!isNaN(_ld54nC) && ord.endDate && new Date(ord.endDate) < _ld54nC) {
+          console.warn(`[v54N dpr-end-floor] ${ord.batchNumber||ord.id} (closed): end lifted to last DPR production ${_ld54nC.toDateString()}`);
+          ord.endDate = _v47xFloorDay(_ld54nC);
+          if (ord.startDate && new Date(ord.startDate) > new Date(ord.endDate)) {
+            if (ord.manualStartDate) ord.endDate = new Date(ord.startDate); else ord.startDate = new Date(ord.endDate);
+          }
+        }
       }
       // v54M: a CLOSED order can also sit over its predecessor's recorded end (26T113 closed with a
       // manual-start 13-Sep against 26T112's manual end 14-Sep) — the closed branch skipped the
@@ -3342,6 +3385,23 @@ function recalcMachineSchedule(machineId) {
     // start and survive every recalc. Coherence is now unconditional: the end never precedes the
     // start, whichever path produced it. Anchored behaviour is byte-identical to before.
     if (ord.startDate && ord.endDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
+    // ═══ v54N DPR END-FLOOR (Ishan-confirmed ruling, 16 Sep — 26P056: manual end 11-Sep against DPR
+    // production through 15-Sep) ══════════════════════════════════════════════════════════════════
+    // A batch cannot have ENDED before days on which DPR recorded its production. When any end —
+    // manual (the 5-Aug authority rule's one carve-out), anchored, or stored — sits EARLIER than
+    // the batch's last DPR production date, it lifts to that date. A manual end at-or-after
+    // dprLastDate remains planner-authoritative exactly as before (26T112's 14-Sep vs DPR 13-Sep is
+    // untouched — that stays a planner edit, flagged by the v54M chip). The lifted end is a real
+    // recorded date: anchored, not a live placeholder, so the v54L pull-back never moves it.
+    if (ord.dprLastDate) {
+      const _ld54n = new Date(String(ord.dprLastDate).slice(0,10) + 'T00:00:00');
+      if (!isNaN(_ld54n) && ord.endDate && new Date(ord.endDate) < _ld54n) {
+        console.warn(`[v54N dpr-end-floor] ${ord.batchNumber||ord.id}: end ${_v47xFloorDay(new Date(ord.endDate)).toDateString()} precedes last DPR production ${_ld54n.toDateString()} — lifted to the DPR date`);
+        ord.endDate = _v47xFloorDay(_ld54n); _endFrac = new Date(_ld54n);
+        _endAnchored45x = true; _endLive54m = false;
+        if (ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
+      }
+    }
     if (_endFrac && !isNaN(new Date(_endFrac))) {
       cursor = _endFrac; // v47X: fractional cursor — carries the sub-day remainder to the next order
     }
@@ -5929,7 +5989,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54M'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54R'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8820,7 +8880,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54M' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54R' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9270,7 +9330,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54M' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54R' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9320,7 +9380,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54M' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54R' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9409,7 +9469,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54M' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54R' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });

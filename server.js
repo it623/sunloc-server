@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v54M';
+const APP_BUILD = 'v54R';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -4180,7 +4180,20 @@ function _v51wAnchorStartToDpr(ord) {
 // non-destructive: the blob is untouched, we only lift the SERVED end up to the served start.
 function _v54kCohereEnd(ord) {
   try {
-    if (!ord || !ord.startDate || !ord.endDate) return;
+    if (!ord) return;
+    // v54N (Ishan-confirmed ruling, 16 Sep — 26P056 manual end 11-Sep vs DPR through 15-Sep): the
+    // served end never precedes the batch's last DPR production date. Same serve-only, non-
+    // destructive pattern as the v51W start anchor; manual ends at-or-after dprLast are untouched.
+    const _bn54n = ord.batchNumber;
+    const _ld54n = (_bn54n != null && _lastProdByBatch) ? _lastProdByBatch[_bn54n] : null;
+    if (_ld54n && ord.endDate) {
+      const _ldIso54n = _v51wIstMidnightIso(_ld54n);
+      if (_ldIso54n && new Date(ord.endDate) < new Date(_ldIso54n)) {
+        console.warn(`[v54N dpr-end-floor] ${_bn54n}: served end ${ord.endDate} precedes last DPR production ${_ld54n} — lifted (blob untouched)`);
+        ord.endDate = _ldIso54n;
+      }
+    }
+    if (!ord.startDate || !ord.endDate) return;
     const st = new Date(ord.startDate), en = new Date(ord.endDate);
     if (isNaN(st) || isNaN(en) || en >= st) return;
     console.warn(`[v54K date-cohere] ${ord.batchNumber || ord.id}: served end ${ord.endDate} < start ${ord.startDate} — end lifted to start (blob untouched)`);

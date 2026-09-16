@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v54M</title>
+<title>Sunloc Tracking Suite v1.0 · build v54R</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v54M</p>
+      <p>Tracking Suite v1.0 · build v54R</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v54M</p>
+      <p>Tracking Suite v1.0 · build v54R</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -12264,7 +12264,7 @@ function _v41_renderReportGInner(){
     }
 
     let wipBreakdown = '—';
-    if(wip && (wip.totalWIP > 0 || wip.packedNotDisp > 0 || (()=>{const u=_rptDUns(b);return (u.printing+u.pi+u.packing)>0.005;})())){
+    if(wip && (wip.totalWIP > 0 || wip.packedNotDisp > 0 || Math.max(0,(_v40_dispatchedLakhs(b.batchNumber,b.size)||0)-(wip.packIn||0)) > 0.005 || (()=>{const u=_rptDUns(b);return (u.printing+u.pi+u.packing)>0.005;})())){
       // v45ZP Option B + v45ZR item 1.2 (confirmed by Ishan): breakdown mirrors the matrix. Each
       // stage line = the WIP BUCKET (which already contains its in-transit boxes); the ▸unsc is the
       // in-transit SUBSET (shown, not added). "Transit→Pack" folded into Packing (= toPackTransit,
@@ -12295,6 +12295,14 @@ function _v41_renderReportGInner(){
         ? `<span style="color:var(--green)">📦 Packed: ${fmt(wip.packedNotDisp)}L</span>`
         : '';
       if(fgRow) rows2.push(fgRow);
+      // ═══ v54R OVER-DISPATCH REMARK (Ishan's ruling, 16 Sep — 26H055/26H056) ══════════════════════
+      // Deliberately NO netting (v54P built it and was discarded before deploy): a batch billed
+      // beyond its own packing scans is an OPEN reconciliation item — the raw figures must keep
+      // disagreeing so the packing-vs-dispatch gap stays visible and gets FIXED (invoice
+      // re-allocation via the Over-invoiced tab, or scan correction), never silently balanced.
+      // This adds visibility only: every number in this report is untouched.
+      const _over54r = Math.max(0, (_v40_dispatchedLakhs(b.batchNumber, b.size) || 0) - (wip.packIn || 0));
+      if (_over54r > 0.005) rows2.push(`<span style="color:#dc2626;font-size:9px;font-weight:700" title="This batch's invoices dispatched ${fmt(_over54r)}L more than its packing scans — the excess physically left from another batch's packed stock or without a Packing IN scan (blocked for new dispatches since v54K). Unreconciled: fix via invoice re-allocation (Over-invoiced tab in Generated Invoices) or scan correction; this remark clears itself once dispatched ≤ packed.">⚠ dispatched ${fmt(_over54r)}L beyond its packed — reconcile (Over-invoiced tab)</span>`);
       // matrix per-batch total = frozen WIP (buckets) + packed  ≤ gross
       const _ripTotal = (wip.preAIM||0)+(wip.aimWIP||0)+(wip.printWIP||0)+(wip.piWIP||0)+(wip.toPackTransit||0)+(wip.packedNotDisp||0);
       wipBreakdown = `<div style="font-weight:700;color:var(--text);margin-bottom:3px">${fmt(_ripTotal)}L <span style="font-size:9px;color:var(--text3);font-weight:400">WIP + packed</span></div>
