@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v54K</p>
+      <p>Planning Suite v3.0 · build v54L</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1804,7 +1804,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54L' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1832,7 +1832,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54L', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2627,7 +2627,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54K'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54L'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -3036,6 +3036,27 @@ function recalcMachineScheduleQuiet(machineId) {
         }
       }
     }
+    // ═══ v54L "PREVIOUS STOPS AS ON" — GENERALISED (Ishan, 16 Sep — 26V119→26V120, 26T112→26T113) ═
+    // v46Q pulls a PROJECTED previous end back to this order's start, but only fires inside the
+    // dprFirstDate anchor above — so a MANUAL start (W/O-assigned batches) or a started order with
+    // no DPR-attributed first date could sit earlier than the previous order's projection and the
+    // overlap rendered forever (26V119's today-floored projected end 16-Sep vs 26V120's start
+    // 15-Sep). Same confirmed principle, any start source: if the previous end is a PROJECTION and
+    // this order's resolved start precedes it, the previous order clearly stopped when this one
+    // began — pull its end back (never below its own start). Idempotent with v46Q: when that pull
+    // already fired, cursor equals this start and this block is a no-op. A REAL previous end (DPR
+    // last date / closed / manual) is never altered — a genuine interleave is recorded fact; it is
+    // named in the console instead so the DPR attribution can be checked.
+    if (prevOrder && cursor && _startFrac < cursor) {
+      if (prevEndProjected) {
+        const _prevStart54l = prevOrder.startDate && !isNaN(new Date(prevOrder.startDate)) ? new Date(prevOrder.startDate).getTime() : _startFrac.getTime();
+        const _pull54l = new Date(Math.max(_startFrac.getTime(), _prevStart54l));
+        prevOrder.endDate = _v47xFloorDay(_pull54l);
+        cursor = new Date(_pull54l);
+      } else if (prevOrder.endDate && !isNaN(new Date(prevOrder.endDate)) && _startFrac < new Date(prevOrder.endDate)) {
+        console.warn(`[v54L overlap] ${ord.batchNumber||ord.id} starts ${_v47xFloorDay(_startFrac).toDateString()} before ${prevOrder.batchNumber||prevOrder.id}'s REAL end ${new Date(prevOrder.endDate).toDateString()} — interleaved DPR days; check attribution.`);
+      }
+    }
     // Determine end date (v45T #1.1.1 / v45X, rule confirmed by Ishan — DPR actuals drive the end date):
     //   • actual ≥ planned gross → end anchors to last DPR production date (today at latest).
     //   • otherwise → end = fractional start + fractional run duration (v47X).
@@ -3209,6 +3230,27 @@ function recalcMachineSchedule(machineId) {
           prevOrder.endDate = _v47xFloorDay(_fd45w);
           cursor = new Date(_fd45w);
         }
+      }
+    }
+    // ═══ v54L "PREVIOUS STOPS AS ON" — GENERALISED (Ishan, 16 Sep — 26V119→26V120, 26T112→26T113) ═
+    // v46Q pulls a PROJECTED previous end back to this order's start, but only fires inside the
+    // dprFirstDate anchor above — so a MANUAL start (W/O-assigned batches) or a started order with
+    // no DPR-attributed first date could sit earlier than the previous order's projection and the
+    // overlap rendered forever (26V119's today-floored projected end 16-Sep vs 26V120's start
+    // 15-Sep). Same confirmed principle, any start source: if the previous end is a PROJECTION and
+    // this order's resolved start precedes it, the previous order clearly stopped when this one
+    // began — pull its end back (never below its own start). Idempotent with v46Q: when that pull
+    // already fired, cursor equals this start and this block is a no-op. A REAL previous end (DPR
+    // last date / closed / manual) is never altered — a genuine interleave is recorded fact; it is
+    // named in the console instead so the DPR attribution can be checked.
+    if (prevOrder && cursor && _startFrac < cursor) {
+      if (prevEndProjected) {
+        const _prevStart54l = prevOrder.startDate && !isNaN(new Date(prevOrder.startDate)) ? new Date(prevOrder.startDate).getTime() : _startFrac.getTime();
+        const _pull54l = new Date(Math.max(_startFrac.getTime(), _prevStart54l));
+        prevOrder.endDate = _v47xFloorDay(_pull54l);
+        cursor = new Date(_pull54l);
+      } else if (prevOrder.endDate && !isNaN(new Date(prevOrder.endDate)) && _startFrac < new Date(prevOrder.endDate)) {
+        console.warn(`[v54L overlap] ${ord.batchNumber||ord.id} starts ${_v47xFloorDay(_startFrac).toDateString()} before ${prevOrder.batchNumber||prevOrder.id}'s REAL end ${new Date(prevOrder.endDate).toDateString()} — interleaved DPR days; check attribution.`);
       }
     }
     // Determine end date (v45T #1.1.1 / v45X — DPR actuals drive the end date; projections use the
@@ -5839,7 +5881,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54K'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54L'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8730,7 +8772,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54K' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54L' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9180,7 +9222,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54L' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9230,7 +9272,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54L' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9319,7 +9361,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54L' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
