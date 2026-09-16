@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v54J</title>
+<title>Sunloc Tracking Suite v1.0 · build v54K</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v54J</p>
+      <p>Tracking Suite v1.0 · build v54K</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v54J</p>
+      <p>Tracking Suite v1.0 · build v54K</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9177,6 +9177,13 @@ function _v39_onBoxScanned(raw) {
     // Accept — increment line count
     exp.scanned_count += 1;
   }
+  // v54K: dispatch-before-packing gate (26ZG192 E-3) — reject an unpacked box at scan time.
+  const _packed54k = _v54kClientPackedIn(parsed);
+  if (_packed54k === false) {
+    sp.mismatchCount++;
+    _v39_setMismatchMsg(`🚫 Box <strong>${parsed.boxNumber || parsed.labelId}</strong> has NO Packing IN scan — pack it in first. Box NOT counted (admin can override at dispatch).`);
+    return;
+  }
   // Accept the scan
   sp.scanned.push({
     labelId: parsed.labelId,
@@ -9192,6 +9199,33 @@ function _v39_onBoxScanned(raw) {
   _v40_renderLineExpectationsPanel();
   // v44Q: persist scan to server
   _v39_saveScansToServer();
+}
+
+// ═══ v54K CLIENT-SIDE PACKING-IN CHECK (26ZG192 E-3) ════════════════════════════════════════════
+// Immediate feedback at the truck: a scanned box with no Packing IN scan (its own label or a twin
+// of the same physical box — blue/orange, qty-edit repoints) is rejected on the spot instead of at
+// dispatch submit. CONSERVATIVE by design: it only judges when this batch's packing scans are
+// demonstrably loaded in state (at least one packing IN exists for the batch) — otherwise it stays
+// silent and the server gate (authoritative, reversal-aware) decides at dispatch-out. Legacy
+// R-boxes and recon labels are exempt, mirroring the server.
+function _v54kClientPackedIn(parsed) {
+  try {
+    const lid = parsed && parsed.labelId;
+    const bn = parsed && parsed.batchNumber;
+    if (!lid || !bn || String(lid).startsWith('recon-')) return null;               // cannot judge
+    const _isPackIn = sc => sc && sc.dept === 'packing' && sc.type === 'in';
+    const _batchHasPackData = (state.scans || []).some(sc => sc.batchNumber === bn && _isPackIn(sc));
+    if (!_batchHasPackData) return null;                                            // data not loaded — server decides
+    if (getScansForBox(lid).some(_isPackIn)) return true;
+    const lbl = (state.labels || []).find(l => l.id === lid);
+    if (!lbl) return null;                                                          // unknown label — server decides
+    if (lbl.isLegacyRebatch || lbl.is_legacy_rebatch) return true;                  // pre-Sunloc stock — exempt
+    const _canon = l => l.isExcess ? ('E-' + (l.excessNum || Math.abs(parseInt(l.labelNumber) || 0))) : String(Math.abs(parseInt(l.labelNumber) || 0));
+    const key = _canon(lbl);
+    const twins = (state.labels || []).filter(l => l.id !== lid && l.batchNumber === lbl.batchNumber && !l.voided && _canon(l) === key);
+    for (const t of twins) if (getScansForBox(t.id).some(_isPackIn)) return true;
+    return false;
+  } catch (_e) { return null; }                                                     // never block on an internal error
 }
 
 async function _v39_saveScansToServer() {
@@ -9291,7 +9325,7 @@ async function _v39_restoreScansFromServer(invoiceId) {
   } catch (e) { console.warn('[scan-session restore]', e.message); }
 }
 
-async function _v39_dispatchOut() {
+async function _v39_dispatchOut(_allowUnpacked54k) {   // v54K: true only on an admin-confirmed override retry
   const inv = _v39_currentScanOutInvoice;
   if (!inv) return;
   const scanned = _v39_scanProgress.scanned.length;
@@ -9310,7 +9344,8 @@ async function _v39_dispatchOut() {
   try {
     const r = await fetch(serverUrl + `/api/invoice/${encodeURIComponent(inv.id)}/dispatch-out`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      // v54K: session/role headers so the unpacked-boxes admin override can be authenticated server-side
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'x-sunloc-role': currentUser?.role || '' },
       body: JSON.stringify({
         vehicleNo,
         dispatchedBy: currentDept || 'unknown',
@@ -9326,6 +9361,7 @@ async function _v39_dispatchOut() {
         })),
         scannedLabelIds: _v39_scanProgress.scanned.map(s => s.labelId).filter(Boolean),
         remarks,
+        allowUnpacked: _allowUnpacked54k === true,   // v54K: admin override for the packing-IN gate
       }),
     });
     const j = await r.json();
@@ -9344,6 +9380,14 @@ async function _v39_dispatchOut() {
       _v39_closeScanOut();
       _v39_loadAndRenderInvoiceQueue();
     } else {
+      // v54K: unpacked-boxes rejection — name the boxes; admin may confirm an override retry.
+      if (j.unpackedBoxes && j.unpackedBoxes.length) {
+        if (currentUser?.role === 'admin' && confirm(`🚫 ${j.error}\n\nADMIN OVERRIDE: dispatch these boxes WITHOUT a Packing IN scan?\nThe override is written into the dispatch record's remarks and logged.`)) {
+          return _v39_dispatchOut(true);   // retry with allowUnpacked
+        }
+        alert(`🚫 ${j.error}`);
+        return;
+      }
       alert(`❌ Dispatch failed: ${j.error || 'unknown'}`);
       if (dispatchBtn) { dispatchBtn.disabled = false; dispatchBtn.textContent = '🚚 Dispatch Out'; }
     }
@@ -11506,10 +11550,22 @@ async function _rptH_toggleGapBoxes(batch, fromKey, toKey, rowId){
   const paint = (data)=>{
     if(!data || !data.ok){ cell.innerHTML = '<span class="text-sm" style="color:var(--accent4)">Could not load box detail'+(data&&data.error?': '+_v40_esc(data.error):'')+'</span>'; return; }
     if(!data.boxes.length){ cell.innerHTML = '<span class="text-sm text-muted">No scan-tracked boxes in this gap (e.g. covered by truck-level dispatch records).</span>'; return; }
-    const chips = data.boxes.map(b=>`<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.35);color:var(--accent4)${b.voided?';opacity:0.5;text-decoration:line-through':''}" title="${b.qty?fmt(b.qty)+'L · ':''}out ${b.outTs?fmtDateTime(b.outTs):''}${b.voided?' · VOIDED':''}">${b.box}</span>`).join('');
+    // v54K (26ZG192 E-3): a gap box that was later dispatched paints AMBER with its dispatch date —
+    // it is not "pending", it physically left having skipped the Packing IN scan. Pure presentation;
+    // counts and WIP legs unchanged. The v54K dispatch gate blocks new occurrences.
+    const chips = data.boxes.map(b=>{
+      const _disp54k = !!b.dispatchedTs;
+      const _style = _disp54k
+        ? 'background:rgba(180,83,9,0.1);border:1px solid rgba(180,83,9,0.4);color:#b45309'
+        : 'background:rgba(220,38,38,0.1);border:1px solid rgba(220,38,38,0.35);color:var(--accent4)';
+      const _title = `${b.qty?fmt(b.qty)+'L · ':''}out ${b.outTs?fmtDateTime(b.outTs):''}${_disp54k?` · 🚚 DISPATCHED ${fmtDateTime(b.dispatchedTs)}${b.dispatchedInv?' (inv '+b.dispatchedInv+')':''} — skipped Packing IN`:''}${b.voided?' · VOIDED':''}`;
+      return `<span style="display:inline-block;margin:2px;padding:2px 9px;border-radius:10px;font-family:var(--mono);font-size:11px;font-weight:700;${_style}${b.voided?';opacity:0.5;text-decoration:line-through':''}" title="${_title}">${b.box}${_disp54k?' 🚚':''}</span>`;
+    }).join('');
+    const _dispN54k = data.boxes.filter(b=>b.dispatchedTs).length;
+    const _anno54k = _dispN54k>0 ? `<div class="text-sm" style="margin-top:6px;color:#b45309">🚚 ${_dispN54k} box(es) above were DISPATCHED without a Packing IN scan (amber) — physically gone, not pending. New dispatches of unpacked boxes are blocked since v54K.</div>` : '';
     const _anno45 = (data.extraIn>0||data.reconIn>0)
       ? `<div class="text-sm" style="margin-top:6px;color:#b45309">⚠ ${data.extraIn>0?`${data.extraIn} box(es) scanned IN at ${DEPT_LABELS[toKey]||toKey} without an OUT scan at ${DEPT_LABELS[fromKey]||fromKey}. `:''}${data.reconIn>0?`${data.reconIn} reconciliation IN(s) recorded at ${DEPT_LABELS[toKey]||toKey}. `:''}These offset the simple out−in count — the box list above is the per-box truth.</div>` : '';
-    cell.innerHTML = `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${data.count}</b> box${data.count>1?'es':''} scanned OUT of ${DEPT_LABELS[fromKey]||fromKey} with no scan IN at ${DEPT_LABELS[toKey]||toKey}:</div>${chips}${_anno45}`;
+    cell.innerHTML = `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${data.count}</b> box${data.count>1?'es':''} scanned OUT of ${DEPT_LABELS[fromKey]||fromKey} with no scan IN at ${DEPT_LABELS[toKey]||toKey}:</div>${chips}${_anno54k}${_anno45}`;
   };
   if(window._rptHGapBoxCache[cacheKey]){ paint(window._rptHGapBoxCache[cacheKey]); return; }
   try{

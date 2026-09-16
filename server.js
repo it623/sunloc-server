@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v54J';
+const APP_BUILD = 'v54K';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -4161,16 +4161,31 @@ function _v51wIstMidnightIso(ymd) {
 }
 function _v51wAnchorStartToDpr(ord) {
   try {
-    if (!ord || ord.manualStartDate) return;
+    if (!ord || ord.manualStartDate) { _v54kCohereEnd(ord); return; }
     const bn = ord.batchNumber;
-    if (bn == null) return;
+    if (bn == null) { _v54kCohereEnd(ord); return; }
     const fd = _firstProdByBatch && _firstProdByBatch[bn];
-    if (!fd) return;                                   // no DPR production — leave the plan alone
+    if (!fd) { _v54kCohereEnd(ord); return; }          // no DPR production — leave the plan alone
     const iso = _v51wIstMidnightIso(fd);
-    if (!iso) return;
-    if (ord.startDate === iso) return;                 // already correct — no churn
-    ord.startDate = iso;
+    if (!iso) { _v54kCohereEnd(ord); return; }
+    if (ord.startDate !== iso) ord.startDate = iso;    // v54K: fall through to coherence either way
+    _v54kCohereEnd(ord);
   } catch (_e) { /* never let a date fix break the orders feed */ }
+}
+// v54K (Ishan, 16 Sep — 26P057 served start 20-Sept / end 14-Sept): same serve-time self-heal
+// pattern as v51W, for the END. A stored end can sit BEFORE the stored (or freshly anchored)
+// start — written under an older engine, or a manual future start over a stale end — and nothing
+// server-side ever cohered it, so every consumer that renders without a client recalc (exports,
+// the assistant snapshot, a machine missing from the master) displayed the inversion. Narrow and
+// non-destructive: the blob is untouched, we only lift the SERVED end up to the served start.
+function _v54kCohereEnd(ord) {
+  try {
+    if (!ord || !ord.startDate || !ord.endDate) return;
+    const st = new Date(ord.startDate), en = new Date(ord.endDate);
+    if (isNaN(st) || isNaN(en) || en >= st) return;
+    console.warn(`[v54K date-cohere] ${ord.batchNumber || ord.id}: served end ${ord.endDate} < start ${ord.startDate} — end lifted to start (blob untouched)`);
+    ord.endDate = ord.startDate;
+  } catch (_e) {}
 }
 
 let _firstProdByBatch = null; // v45W: batch → first DPR production date (YYYY-MM-DD)
@@ -4549,6 +4564,20 @@ app.post('/api/customers', async (req, res) => {
 // by /api/admin/* endpoints elsewhere in this file.
 // ════════════════════════════════════════════════════════════════════
 
+// v54K (Shrikant, 16 Sep — PM "Admin only." on Dismiss): shared role gate for routes open to the
+// planning manager as well as admin. Same session-first resolution as _requireAdmin (v41e), same
+// legacy header/body fallback. Used by the SAP indent dismiss/undismiss routes below — the v54J
+// client change assumed these routes were un-gated; they were in fact _requireAdmin-gated.
+function _requireRole(req, res, roles) {
+  const session = verifyToken(req.headers['x-session-token'] || req.body?.token || req.query?.token);
+  let role = (session?.role || '').toString().toLowerCase();
+  if (!role) role = (req.headers['x-sunloc-role'] || req.body?._role || '').toString().toLowerCase();
+  if (!roles.includes(role)) {
+    res.status(403).json({ ok: false, error: roles.map(r => r.replace(/_/g, ' ')).join(' or ') + ' role required' });
+    return false;
+  }
+  return true;
+}
 function _requireAdmin(req, res) {
   // v41e FIX (issue 4): the client authenticates with the session token (x-session-token), NOT an
   // x-sunloc-role header — so the old header/body role read was always empty and every admin got
@@ -6776,7 +6805,7 @@ app.post('/api/sap/indents/:docEntry/unprocess', async (req, res) => {
 // ─────────────────────────────────────────────────────────────────
 
 app.post('/api/sap/dismiss-indent-line', async (req, res) => {
-  if (!_requireAdmin(req, res)) return;
+  if (!_requireRole(req, res, ['admin', 'planning_manager'])) return;   // v54K: PM dismisses too (audited, reason required)
   try {
     const { sapDocEntry, lineNum, sapDocNum, cardCode, cardName, itemCode, reason } = req.body || {};
     if (sapDocEntry == null || lineNum == null) {
@@ -6814,7 +6843,7 @@ app.post('/api/sap/dismiss-indent-line', async (req, res) => {
 });
 
 app.post('/api/sap/undismiss-indent-line', async (req, res) => {
-  if (!_requireAdmin(req, res)) return;
+  if (!_requireRole(req, res, ['admin', 'planning_manager'])) return;   // v54K: PM restores too (panel already PM-visible since v54J)
   try {
     const { sapDocEntry, lineNum } = req.body || {};
     if (sapDocEntry == null || lineNum == null) {
@@ -7696,6 +7725,64 @@ function _v51vBoxIdentities(scanned, batch, splitByBatch) {
   return out;
 }
 
+// ═══ v54K DISPATCH-BEFORE-PACKING GATE (DM + Ishan, 16 Sep — 26ZG192 box E-3) ═══════════════════
+// E-3 was scanned onto the truck and dispatched having NEVER been scanned IN at Packing, so Report F
+// showed it "pending for packing" while the DM held its invoice: dispatch accepted any live label of
+// the batch. Per the DM's ask ("no box dispatch before packing in"), every box the DM scans at
+// dispatch must now hold a Packing IN scan — its own label's, or a twin label's of the same physical
+// box (blue/orange share the box; a qty-edit repoint moves the id). Reversal-aware, recon labels and
+// legacy R-boxes exempt (pre-Sunloc stock has no packing history by design). Entries WITHOUT a
+// labelId (v51V id-only degradation, count-only truck flows) cannot be judged and pass through —
+// the gate never blocks flows that carry no per-box evidence, so deemed scan-outs, regularise and
+// legacy truck dispatches are untouched. Admin may override per dispatch with body.allowUnpacked
+// (annotated into the record's remarks). Returns the offending boxes' canonical names.
+async function _v54kUnpackedBoxes(scanned) {
+  const ids = [...new Set((Array.isArray(scanned) ? scanned : [])
+    .map(x => x && (x.labelId || x.label_id)).filter(id => id && !String(id).startsWith('recon-')))];
+  if (!ids.length) return [];
+  const _lblSql = `SELECT id, batch_number, label_number, COALESCE(is_excess,0) AS is_excess, excess_num,
+                          COALESCE(is_legacy_rebatch,0) AS is_legacy_rebatch, legacy_num
+                     FROM tracking_labels WHERE id = ANY($1)`;
+  let lbls;
+  if (pgPool) lbls = (await pgPool.query(_lblSql, [ids])).rows;
+  else lbls = ids.map(id => db.prepare(`SELECT id, batch_number, label_number, COALESCE(is_excess,0) AS is_excess, excess_num, COALESCE(is_legacy_rebatch,0) AS is_legacy_rebatch, legacy_num FROM tracking_labels WHERE id=?`).get(id)).filter(Boolean);
+  if (!lbls.length) return [];
+  const _canon = l => String(l.batch_number || '').trim().toUpperCase() + '|' + _v53pBoxLabel(parseInt(l.label_number) || 0, l.is_excess, l.excess_num, l.is_legacy_rebatch, l.legacy_num);
+  const batches = [...new Set(lbls.map(l => l.batch_number).filter(Boolean))];
+  // every live label of these batches → twin resolution by canonical (batch, box)
+  const _twinSql = `SELECT id, batch_number, label_number, COALESCE(is_excess,0) AS is_excess, excess_num,
+                           COALESCE(is_legacy_rebatch,0) AS is_legacy_rebatch, legacy_num
+                      FROM tracking_labels WHERE batch_number = ANY($1) AND COALESCE(voided,0) = 0`;
+  let allLbls;
+  if (pgPool) allLbls = (await pgPool.query(_twinSql, [batches])).rows;
+  else allLbls = batches.flatMap(bn => db.prepare(`SELECT id, batch_number, label_number, COALESCE(is_excess,0) AS is_excess, excess_num, COALESCE(is_legacy_rebatch,0) AS is_legacy_rebatch, legacy_num FROM tracking_labels WHERE batch_number=? AND COALESCE(voided,0)=0`).all(bn));
+  const idsByCanon = {};
+  for (const l of allLbls) (idsByCanon[_canon(l)] = idsByCanon[_canon(l)] || []).push(l.id);
+  const candIds = [...new Set([...ids, ...Object.values(idsByCanon).flat()])];
+  const _packSql = `SELECT DISTINCT s.label_id FROM tracking_scans s
+                      LEFT JOIN tracking_scan_reversals r ON r.reversed_scan_id = s.id
+                     WHERE r.reversed_scan_id IS NULL AND s.dept = 'packing' AND s.type = 'in'
+                       AND s.label_id = ANY($1)`;
+  let packedIds;
+  if (pgPool) packedIds = new Set((await pgPool.query(_packSql, [candIds])).rows.map(r => r.label_id));
+  else packedIds = new Set(candIds.filter(id => db.prepare(`SELECT 1 FROM tracking_scans s LEFT JOIN tracking_scan_reversals r ON r.reversed_scan_id = s.id WHERE r.reversed_scan_id IS NULL AND s.dept='packing' AND s.type='in' AND s.label_id=? LIMIT 1`).get(id)));
+  const offenders = [];
+  for (const l of lbls) {
+    if (Number(l.is_legacy_rebatch) === 1) continue;                          // pre-Sunloc stock — exempt
+    const twins = idsByCanon[_canon(l)] || [l.id];
+    if (twins.some(id => packedIds.has(id)) || packedIds.has(l.id)) continue; // packed-in (self or twin)
+    offenders.push(_canon(l).split('|')[1] + ' (' + String(l.batch_number || '').trim() + ')');
+  }
+  return offenders;
+}
+function _v54kAllowUnpacked(req) {
+  if (!(req.body && req.body.allowUnpacked === true)) return null;
+  const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+  let role = (session?.role || '').toString().toLowerCase();
+  if (!role) role = (req.headers['x-sunloc-role'] || '').toString().toLowerCase();
+  return role === 'admin' ? (session?.username || 'admin') : null;
+}
+
 // POST /api/invoice/:id/dispatch-out — complete the Scan Out activity for an
 // invoice. Called by the Tracking App's new Scan Out panel when:
 //   - all boxes expected on the invoice have been scanned, AND
@@ -7753,6 +7840,21 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
     if (inv.source === 'direct_sap' && !inv.admin_approved_at) {
       return res.status(403).json({ ok: false, error: 'Direct-SAP invoice must be admin-approved before dispatch-out' });
     }
+    // v54K DISPATCH-BEFORE-PACKING GATE (26ZG192 E-3): every scanned box must hold a Packing IN
+    // scan (self or twin). Admin body.allowUnpacked overrides, annotated into remarks.
+    let _v54kOverrideNote = '';
+    if (_v51vScanned.length) {
+      const _unpacked = await _v54kUnpackedBoxes(_v51vScanned);
+      if (_unpacked.length) {
+        const _by = _v54kAllowUnpacked(req);
+        if (!_by) {
+          return res.status(422).json({ ok: false, unpackedBoxes: _unpacked,
+            error: `Dispatch blocked — ${_unpacked.length} box(es) have no Packing IN scan: ${_unpacked.join(', ')}. Pack them in first (admin can override).` });
+        }
+        _v54kOverrideNote = ` [unpacked-override by ${_by}: ${_unpacked.join(', ')}]`;
+        console.warn(`[v54K unpacked-override] invoice ${invId}: ${_unpacked.join(', ')} dispatched without Packing IN by ${_by}`);
+      }
+    }
     // Build dispatch record
     const recId = 'disprec_' + crypto.randomBytes(6).toString('hex');
     // v44O #3: ledger qty in Lakhs — prefer the authoritative total_qty_lakhs (from the
@@ -7790,7 +7892,7 @@ app.post('/api/invoice/:id/dispatch-out', async (req, res) => {
       for (let _i = 0; _i < _dispAllocs.length; _i++) {
         const a = _dispAllocs[_i];
         const rid = _i === 0 ? recId : ('disprec_' + crypto.randomBytes(6).toString('hex'));
-        const rmk = (remarks || '') + (a.flagged ? ' [v46H: batch line unresolved in invoice — needs re-allocation]' : '');
+        const rmk = (remarks || '') + _v54kOverrideNote + (a.flagged ? ' [v46H: batch line unresolved in invoice — needs re-allocation]' : '');
         // v51V: this allocation's own boxes. On a MULTI-batch invoice each record carries only the
         // boxes scanned for ITS batch (scan entries carry batchNumber); on a single-batch invoice
         // every scanned box belongs to the one record. Same shape the truck route writes.
@@ -9279,6 +9381,22 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
       // v51V: same normaliser the single-invoice route now uses, so both flows write one shape.
       // splitByBatch=false — the truck client already filters st.scanned down to THIS invoice.
       const _lbls51v = _v51vBoxIdentities(b.scannedLabels, inv.batch_number, false);
+      // v54K DISPATCH-BEFORE-PACKING GATE (26ZG192 E-3): same rule as the single-invoice route.
+      // Blocks only THIS invoice's entry (results shape unchanged); the rest of the truck proceeds.
+      let _v54kTruckNote = '';
+      if (_lbls51v.length) {
+        const _unpacked54k = await _v54kUnpackedBoxes(_lbls51v);
+        if (_unpacked54k.length) {
+          const _by54k = _v54kAllowUnpacked(req);
+          if (!_by54k) {
+            results.push({ invoiceId: invId, ok: false, unpackedBoxes: _unpacked54k,
+              error: `Dispatch blocked — ${_unpacked54k.length} box(es) have no Packing IN scan: ${_unpacked54k.join(', ')}. Pack them in first (admin can override).` });
+            continue;
+          }
+          _v54kTruckNote = ` [unpacked-override by ${_by54k}: ${_unpacked54k.join(', ')}]`;
+          console.warn(`[v54K unpacked-override] truck invoice ${invId}: ${_unpacked54k.join(', ')} dispatched without Packing IN by ${_by54k}`);
+        }
+      }
       const _sLabels = JSON.stringify(_lbls51v);
       // v48D (Ishan): double-fire guard — skip this invoice's insert if an identical record already exists.
       if (await _isDuplicateDispatch(inv.batch_number, inv.sap_doc_num || '', boxes, qty)) {
@@ -9290,13 +9408,13 @@ app.post('/api/invoice/dispatch-out-truck', async (req, res) => {
           await pgPool.query(
             `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, "by", scanned_labels_json)
              VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-            [recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo, inv.sap_doc_num || '', remarks, ts, dispatchedBy, _sLabels]
+            [recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo, inv.sap_doc_num || '', (remarks || '') + _v54kTruckNote, ts, dispatchedBy, _sLabels]
           );
         } else {
           db.prepare(
             `INSERT INTO tracking_dispatch_records (id, batch_number, customer, qty, boxes, vehicle_no, invoice_no, remarks, ts, by, scanned_labels_json)
              VALUES (?,?,?,?,?,?,?,?,?,?,?)`
-          ).run(recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo, inv.sap_doc_num || '', remarks, ts, dispatchedBy, _sLabels);
+          ).run(recId, inv.batch_number, inv.customer || '', qty, boxes, vehicleNo, inv.sap_doc_num || '', (remarks || '') + _v54kTruckNote, ts, dispatchedBy, _sLabels);
         }
       } catch (e) {
         results.push({ invoiceId: invId, ok: false, error: 'Insert dispatch record failed: ' + e.message });
@@ -14660,6 +14778,42 @@ app.get('/api/tracking/handover-gap-boxes', async (req, res) => {
       voided: !!(r.voided && Number(r.voided) !== 0),
       outTs: r.out_ts || null,
     }));
+    // v54K (DM + Ishan, 16 Sep — 26ZG192 box E-3 "pending for packing" while already dispatched):
+    // a gap box that later left on a truck sat in this list as bare red "pending" forever, because
+    // dispatch-record box identities were never consulted. Each gap box is now annotated with the
+    // dispatch that carried it (matched by labelId, else by canonical box name — excess labels store
+    // negative numbers on the record, _v53pBoxLabel folds both spellings to E-n). Counts, WIP legs
+    // and every frozen formula are untouched — this is presentation truth only; the v54K dispatch
+    // gate prevents the class from recurring.
+    try {
+      const _drSql = `SELECT ts, invoice_no, scanned_labels_json FROM tracking_dispatch_records
+                       WHERE UPPER(TRIM(batch_number)) = UPPER(TRIM($1)) AND scanned_labels_json IS NOT NULL`;
+      let _drRows;
+      if (pgPool) _drRows = (await _v51zaTimedQuery(_drSql, [batch])).rows;
+      else _drRows = db.prepare(_drSql.replace('$1','?')).all(batch);
+      const _byLabel = {}, _byBox = {};
+      for (const dr of (_drRows || [])) {
+        let arr = [];
+        try { arr = JSON.parse(dr.scanned_labels_json || '[]'); } catch (_) {}
+        for (const e of (Array.isArray(arr) ? arr : [])) {
+          if (!e) continue;
+          const meta = { ts: dr.ts || null, inv: dr.invoice_no || '' };
+          const lid = e.labelId || e.label_id;
+          if (lid && !_byLabel[lid]) _byLabel[lid] = meta;
+          const bnRaw = (e.boxNumber != null && e.boxNumber !== '') ? e.boxNumber : e.box_number;
+          if (bnRaw != null && bnRaw !== '') {
+            const bs = String(bnRaw).trim().toUpperCase();
+            const asNum = Number(bs);
+            const canon = Number.isFinite(asNum) ? _v53pBoxLabel(asNum, 0, null, 0, null) : bs;
+            if (!_byBox[canon]) _byBox[canon] = meta;
+          }
+        }
+      }
+      for (const b of boxes) {
+        const hit = (b.labelId && _byLabel[b.labelId]) || _byBox[String(b.box).trim().toUpperCase()];
+        if (hit) { b.dispatchedTs = hit.ts; b.dispatchedInv = hit.inv; }
+      }
+    } catch (_e) { /* annotation is best-effort — the gap list itself is unaffected */ }
     // v45ZB: annotate the offsetting anomalies that make the per-box gap differ from the count-net:
     // boxes scanned IN at `to` with no OUT at `from`, and synthetic reconciliation INs at `to`.
     const extraSql = `

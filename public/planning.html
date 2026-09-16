@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v54J</p>
+      <p>Planning Suite v3.0 · build v54K</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1804,7 +1804,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1832,7 +1832,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2627,7 +2627,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54J'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54K'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -2906,7 +2906,23 @@ function getMachineOrders(machineId) {
 function recalcMachineScheduleQuiet(machineId) {
   // Same as recalcMachineSchedule but doesn't save or re-render — used for live A-grade updates
   const mc = getMachine(machineId);
-  if (!mc) return;
+  if (!mc) {
+    // v54K (Ishan, 16 Sep): a machine missing from the machine master used to return here silently,
+    // so its orders rendered RAW stored dates forever — including inverted start>end pairs that no
+    // live cascade can produce. The full recalc still needs the machine (rates, A-grade); what runs
+    // here is only the closed-branch coherence rule (v50R): manual start heals the end UP to it,
+    // otherwise the start snaps back to the end. Display can no longer show end-before-start.
+    for (const _o54k of getMachineOrders(machineId)) {
+      try {
+        if (_o54k.startDate && _o54k.endDate && !isNaN(new Date(_o54k.startDate)) && !isNaN(new Date(_o54k.endDate))
+            && new Date(_o54k.startDate) > new Date(_o54k.endDate)) {
+          if (_o54k.manualStartDate) _o54k.endDate = new Date(_o54k.startDate);
+          else _o54k.startDate = new Date(_o54k.endDate);
+        }
+      } catch (_e) {}
+    }
+    return;
+  }
   const orders = getMachineOrders(machineId);
   let cursor = null;
   // v46Q (confirmed by Ishan): track the previous order + whether its end was a PROJECTION so that when
@@ -3056,7 +3072,12 @@ function recalcMachineScheduleQuiet(machineId) {
       ord.endDate = _v47xFloorDay(_endFrac);
     }
     if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
-    if (_endAnchored45x && ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
+    // v54K (Ishan, 16 Sep — 26P057 rendered start 20-Sept / end 14-Sept): the end>=start coherence
+    // guard fired only on the ANCHORED path, so a NON-anchored end (projected-then-today-floored, or
+    // the complete-with-no-dprLastDate "today" fallback) could still sit before a future manual
+    // start and survive every recalc. Coherence is now unconditional: the end never precedes the
+    // start, whichever path produced it. Anchored behaviour is byte-identical to before.
+    if (ord.startDate && ord.endDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
     if (_endFrac && !isNaN(new Date(_endFrac))) {
       cursor = _endFrac; // v47X: fractional cursor — carries the sub-day remainder to the next order
     }
@@ -3069,7 +3090,23 @@ function recalcMachineScheduleQuiet(machineId) {
 
 function recalcMachineSchedule(machineId) {
   const mc = getMachine(machineId);
-  if (!mc) return;
+  if (!mc) {
+    // v54K (Ishan, 16 Sep): a machine missing from the machine master used to return here silently,
+    // so its orders rendered RAW stored dates forever — including inverted start>end pairs that no
+    // live cascade can produce. The full recalc still needs the machine (rates, A-grade); what runs
+    // here is only the closed-branch coherence rule (v50R): manual start heals the end UP to it,
+    // otherwise the start snaps back to the end. Display can no longer show end-before-start.
+    for (const _o54k of getMachineOrders(machineId)) {
+      try {
+        if (_o54k.startDate && _o54k.endDate && !isNaN(new Date(_o54k.startDate)) && !isNaN(new Date(_o54k.endDate))
+            && new Date(_o54k.startDate) > new Date(_o54k.endDate)) {
+          if (_o54k.manualStartDate) _o54k.endDate = new Date(_o54k.startDate);
+          else _o54k.startDate = new Date(_o54k.endDate);
+        }
+      } catch (_e) {}
+    }
+    return;
+  }
   const orders = getMachineOrders(machineId);
   let cursor = null;
   // v46Q (confirmed by Ishan): see recalcMachineScheduleQuiet — stop a previous order "as on" a later
@@ -3209,7 +3246,12 @@ function recalcMachineSchedule(machineId) {
       ord.endDate = _v47xFloorDay(_endFrac);
     }
     if (!_endAnchored45x && ord.endDate && new Date(ord.endDate) < todayD) { ord.endDate = _v47xFloorDay(todayD); _endFrac = new Date(todayD); }
-    if (_endAnchored45x && ord.startDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
+    // v54K (Ishan, 16 Sep — 26P057 rendered start 20-Sept / end 14-Sept): the end>=start coherence
+    // guard fired only on the ANCHORED path, so a NON-anchored end (projected-then-today-floored, or
+    // the complete-with-no-dprLastDate "today" fallback) could still sit before a future manual
+    // start and survive every recalc. Coherence is now unconditional: the end never precedes the
+    // start, whichever path produced it. Anchored behaviour is byte-identical to before.
+    if (ord.startDate && ord.endDate && new Date(ord.endDate) < new Date(ord.startDate)) { ord.endDate = new Date(ord.startDate); _endFrac = new Date(_startFrac); }
     if (_endFrac && !isNaN(new Date(_endFrac))) {
       cursor = _endFrac; // v47X: fractional cursor — carries the sub-day remainder to the next order
     }
@@ -5797,7 +5839,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54J'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54K'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -6626,7 +6668,11 @@ async function _v41_fetchDismissedIndents() {
 async function _v41_dismissIndentLine(idx) {
   const u = window._v39_unplannedCache?.[idx];
   if (!u) return;
-  if (currentUser?.role !== 'admin') { alert('Admin only.'); return; }
+  // v54K (Shrikant, 16 Sep — "Admin only." alert on Dismiss): v54J made the Dismiss button visible to
+  // planning_manager but this handler kept its old admin-only gate, and the server route was in fact
+  // admin-gated too (_requireAdmin) — the v54J comment claiming otherwise was wrong. Both ends now
+  // accept admin + planning_manager; every dismissal still prompts for a reason and is audited.
+  if (!['admin','planning_manager'].includes(currentUser?.role)) { alert('Admin or Planning Manager only.'); return; }
   const reason = prompt(`Dismiss SAP indent line for "${u.cardName||u.cardCode}" / ${u.docNum} (item ${u.itemCode})?\n\nReason (for audit log):`, '');
   if (reason === null) return; // cancelled
   let serverUrl = ''; try { serverUrl = localStorage.getItem('sunloc_server_url') || ''; } catch(e) {}
@@ -8684,7 +8730,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54J' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54K' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9134,7 +9180,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9184,7 +9230,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9273,7 +9319,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54J' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54K' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });

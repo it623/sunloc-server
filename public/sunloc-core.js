@@ -120,18 +120,45 @@ function _boxLakh(sc, fallbackSize){
   return ps || 0;
 }
 
+// ═══ v54K BACKPORT — FORMULA UNIFORMITY WITH tracking.html (Ishan, 16 Sep) ══════════════════════
+// Two ruled changes shipped in tracking.html were never mirrored here, so the Admin Assistant (this
+// module's only consumer) computed gross/WIP off the OLD tiers:
+//   • v53K item 3 — getBatchWIPBreakdown's grossProd input is _v50fGross (the Gross column's own
+//     resolver), not the planning blob's actualProd (26P054: 20 L Consolidated WIP against 0 Gross).
+//   • v53P — _scanLakhs excludes legacy re-batch scans, exactly as tracking's copy does.
+// The helpers below are ported byte-for-byte from tracking.html; state.labels is supplied by the
+// assistant's snapshot shim exactly as the tracking client supplies it.
+const _V53P_R_BASE = 100000;
+function _v53pIsLegacyLabel(l){ return !!(l && (l.isLegacy || (parseInt(l.labelNumber)||0) <= -_V53P_R_BASE)); }
+let _v53pIdx = { ref:null, len:-1, ids:new Set(), byBatch:new Map() };
+function _v53pIndex(){
+  const arr = state.labels||[];
+  if(_v53pIdx.ref===arr && _v53pIdx.len===arr.length) return _v53pIdx;
+  const ids=new Set(), byBatch=new Map();
+  for(const l of arr){ if(_v53pIsLegacyLabel(l)){ ids.add(l.id); if(!l.voided && !l.isOrange){ const a=byBatch.get(l.batchNumber)||[]; a.push(l); byBatch.set(l.batchNumber,a); } } }
+  _v53pIdx = { ref:arr, len:arr.length, ids, byBatch };
+  return _v53pIdx;
+}
+function _v53pIsLegacyScan(sc){
+  if(!sc) return false;
+  const n = parseInt(sc.labelNumber!=null?sc.labelNumber:sc.label_number);
+  if(Number.isFinite(n) && n <= -_V53P_R_BASE) return true;
+  const lid = sc.labelId||sc.label_id;
+  return !!lid && _v53pIndex().ids.has(lid);
+}
+
 function _scanLakhs(batchNo, dept, type, size){
   if (hasScanSummary()){
     const s = _ss(batchNo, dept);
     const serverQ = (type==='in' ? s.inQty : s.outQty) || 0;
     const localQ = (state.scans||[])
-      .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && sc._local)
+      .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && sc._local && !_v53pIsLegacyScan(sc))   // v53P
       .reduce((a,sc)=>a+_boxLakh(sc,size),0);
     return serverQ + localQ;
   }
   // summary not loaded yet — sum the (windowed) local scan set directly, valued per box
   return (state.scans||[])
-    .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type)
+    .filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && !_v53pIsLegacyScan(sc))   // v53P
     .reduce((a,sc)=>a+_boxLakh(sc,size),0);
 }
 
@@ -270,7 +297,7 @@ function getBatchWIPBreakdown(batchNo, opts){
   if(_isRetired(batchNo) && !_raw){
     // Retired: WIP excluded to 0 (batch declared physically gone). Gross kept (it was produced);
     // A-Grade is computed separately from scan data, so it is unaffected by this exclusion.
-    const _g = batch.actualProd || batch.actualQty || 0;
+    const _g = _v50fGross(batchNo, batch);   // v53K item 3: same resolver as the Gross column (was the blob tier)
     return { grossProd:_g, aimIn:0, aimOut:0, packIn:0, packOut:0, preAIM:0, aimWIP:0, printWIP:0,
              piWIP:0, toPackTransit:0, packWIP:0, packedNotDisp:0, totalWIP:0,
              wAIM:{salvage:0,remelt:0}, wPrint:{salvage:0,remelt:0}, wPI:{salvage:0,remelt:0}, retired:true };
@@ -343,7 +370,16 @@ function getBatchWIPBreakdown(batchNo, opts){
   const wAIM   = getTotalWastage(batchNo,'aim');
   const wPrint = getTotalWastage(batchNo,'printing');
   const wPI    = getTotalWastage(batchNo,'pi');
-  const grossProd = batch.actualProd || batch.actualQty || 0;
+  // v53K item 3 (Ishan, 01 Sep — 26P054: 20.00L Consolidated WIP against 0.00 Gross): this line read the
+  // planning blob's actualProd/actualQty — the tier v50H retired from the Gross column's resolver
+  // (_v50fGross) because a figure with no DPR behind it is not production. Report E's Gross cell and
+  // its Consolidated WIP were therefore resolving gross through two different tiers in ONE row:
+  // Gross said 0, the WIP legs said 20 (preAIM = 20 − 0 − 0). One resolver for both — the same
+  // precedence Report B/D/E/G already share: DPR correction → absorbed July slice → apportioned DPR
+  // sum → 0 once the summary is loaded (blob only before it loads). Every breakdown consumer (stage
+  // matrix, Report D, Batch Tracker, Planning packable) moves with it by construction. The frozen
+  // formulas below are untouched — only their grossProd input is now the canonical one.
+  const grossProd = _v50fGross(batchNo, batch);
 
   // v47I (confirmed by Ishan): printing salvage is logged in the DPL (Planning), never in Tracking, so
   // getTotalWastage('printing') reads 0 and the printing loss was previously stuck in WIP. Feed the
