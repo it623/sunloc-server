@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v54R</title>
+<title>Sunloc Tracking Suite v1.0 · build v54S</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v54R</p>
+      <p>Tracking Suite v1.0 · build v54S</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v54R</p>
+      <p>Tracking Suite v1.0 · build v54S</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -9177,14 +9177,25 @@ function _v39_onBoxScanned(raw) {
     // Accept — increment line count
     exp.scanned_count += 1;
   }
-  // v54K: dispatch-before-packing gate (26ZG192 E-3) — reject an unpacked box at scan time.
-  const _packed54k = _v54kClientPackedIn(parsed);
-  if (_packed54k === false) {
-    sp.mismatchCount++;
-    _v39_setMismatchMsg(`🚫 Box <strong>${parsed.boxNumber || parsed.labelId}</strong> has NO Packing IN scan — pack it in first. Box NOT counted (admin can override at dispatch).`);
-    return;
+  // ═══ v54S (DM, 17 Sep — 26U144/26T100: boxes WITH packing scans rejected at the truck) ═════════
+  // v54K's scan-time gate judged "no Packing IN" from the device's LOCAL scan window: once the
+  // batch had ANY packing scan loaded, absence in the window was read as absence in the DB — so
+  // boxes packed on earlier dates (outside the loaded window) were falsely rejected while the
+  // same day's boxes passed. Local data can prove a packing scan EXISTS, never that it doesn't.
+  // Now: local hit → accept instantly (fast path). Anything else → the SERVER answers per box
+  // (the same reversal-aware, twin-aware check the dispatch gate runs) before the box is counted;
+  // network failure fails OPEN with an amber note — the authoritative dispatch-out gate still
+  // enforces at submit. Genuinely-unpacked boxes are still rejected on the spot, now correctly.
+  if (_v54kClientPackedIn(parsed) === true) {
+    _v54sAcceptScan(sp, parsed, inv, lineMatch);            // local proof of presence — no round-trip
+  } else {
+    _v39_setMismatchMsg(`⏳ Box <strong>${parsed.boxNumber || parsed.labelId}</strong> — verifying Packing IN with server…`);
+    _v54sDeferredVerdict(sp, parsed, inv, lineMatch);       // async: accept or reject on the server's answer
   }
-  // Accept the scan
+}
+
+// v54S: the single accept path (was inline) — used by the fast path and the deferred verdict.
+function _v54sAcceptScan(sp, parsed, inv, lineMatch) {
   sp.scanned.push({
     labelId: parsed.labelId,
     batchNumber: parsed.batchNumber || inv.batch_number,
@@ -9199,6 +9210,31 @@ function _v39_onBoxScanned(raw) {
   _v40_renderLineExpectationsPanel();
   // v44Q: persist scan to server
   _v39_saveScansToServer();
+}
+
+// v54S: authoritative per-box verdict from the server; duplicate-guarded while in flight.
+const _v54sPending = {};
+async function _v54sDeferredVerdict(sp, parsed, inv, lineMatch) {
+  if (!parsed.labelId) { _v54sAcceptScan(sp, parsed, inv, lineMatch); return; }   // typed entry, no label id — unjudgeable here AND at the submit gate; accept
+  const lid = parsed.labelId;
+  if (_v54sPending[lid]) return;                            // same box scanned again while pending
+  _v54sPending[lid] = true;
+  try {
+    const r = await fetch(serverUrl + '/api/tracking/box-packed/' + encodeURIComponent(parsed.labelId || ''), { headers: { 'x-session-token': currentUser?.token || '' } });
+    const j = await r.json();
+    if (j && j.ok && j.packed === false) {
+      sp.mismatchCount++;
+      _v39_setMismatchMsg(`🚫 Box <strong>${parsed.boxNumber || parsed.labelId}</strong> has NO Packing IN scan on the server — pack it in first. Box NOT counted (admin can override at dispatch).`);
+      _v39_refreshScanOutProgress();
+      return;
+    }
+    // packed (or the endpoint couldn't judge, j.packed !== false) → accept
+    _v54sAcceptScan(sp, parsed, inv, lineMatch);
+  } catch (_e) {
+    // network failure: fail OPEN — count the box; the dispatch-out gate is the final authority.
+    _v54sAcceptScan(sp, parsed, inv, lineMatch);
+    _v39_setMismatchMsg(`⚠ Box <strong>${parsed.boxNumber || parsed.labelId}</strong> counted — Packing IN could not be verified now (network); it will be verified at dispatch.`);
+  } finally { delete _v54sPending[lid]; }
 }
 
 // ═══ v54K CLIENT-SIDE PACKING-IN CHECK (26ZG192 E-3) ════════════════════════════════════════════
@@ -9224,7 +9260,10 @@ function _v54kClientPackedIn(parsed) {
     const key = _canon(lbl);
     const twins = (state.labels || []).filter(l => l.id !== lid && l.batchNumber === lbl.batchNumber && !l.voided && _canon(l) === key);
     for (const t of twins) if (getScansForBox(t.id).some(_isPackIn)) return true;
-    return false;
+    // v54S: the local window proves PRESENCE only — absence here is not absence in the DB (26U144:
+    // boxes packed 09–12 Sep sat outside the loaded window while 17-Sep boxes were present, so the
+    // v54K `return false` rejected genuinely-packed boxes). Unknown → the server decides.
+    return null;
   } catch (_e) { return null; }                                                     // never block on an internal error
 }
 

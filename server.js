@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v54R';
+const APP_BUILD = 'v54S';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -7795,6 +7795,23 @@ function _v54kAllowUnpacked(req) {
   if (!role) role = (req.headers['x-sunloc-role'] || '').toString().toLowerCase();
   return role === 'admin' ? (session?.username || 'admin') : null;
 }
+
+// GET /api/tracking/box-packed/:labelId — v54S (DM, 17 Sep — 26U144/26T100 false rejections at the
+// truck): per-box authoritative Packing-IN check for the dispatch Scan Out screen, answering from
+// the DB via the SAME helper the dispatch gate uses (_v54kUnpackedBoxes: reversal-aware, blue/orange
+// twin-aware, legacy R-boxes and recon exempt) — so scan-time feedback and the submit-time gate can
+// never disagree. packed:null when the label id is unknown/unjudgeable (caller accepts; the
+// dispatch-out gate remains the final authority).
+app.get('/api/tracking/box-packed/:labelId', async (req, res) => {
+  try {
+    const lid = String(req.params.labelId || '').trim();
+    if (!lid) return res.json({ ok: true, packed: null });
+    const offenders = await _v54kUnpackedBoxes([{ labelId: lid }]);
+    return res.json({ ok: true, packed: offenders.length === 0, offenders });
+  } catch (e) {
+    return res.json({ ok: true, packed: null, note: 'check unavailable: ' + e.message });   // fail open
+  }
+});
 
 // POST /api/invoice/:id/dispatch-out — complete the Scan Out activity for an
 // invoice. Called by the Tracking App's new Scan Out panel when:
