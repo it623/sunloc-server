@@ -1,0 +1,1688 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>GPR.tracker · build v55E</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600;700&family=DM+Mono:wght@400;500&display=swap');
+:root{
+  /* Suite cream/ivory base — identical to Planning and DPR */
+  --bg:#faf6f0;--s1:#ffffff;--s2:#fdf9f4;--s3:#f5ede0;
+  --b1:#e8d9c4;--b2:#d4b896;
+  /* GPR signature accent — copper/amber, the colour of warm gelatine solution.
+     Distinguishes GPR at a glance from DPR/Planning's forest green nav. */
+  --accent:#a8621f;--accent-l:#fdf1e5;
+  --teal:#1a6b5a;--teal-l:#e8f5f1;
+  --green:#2d7a3a;--green-l:#e8f5ea;
+  --amber:#c47a00;--amber-l:#fdf6e8;
+  --red:#b83232;--red-l:#fdf0f0;
+  --purple:#5c3a8a;--purple-l:#f3eef9;
+  --t1:#1a1208;--t2:#3d2e1a;--t3:#7a6548;--t4:#a89478;
+  --font:'Barlow',sans-serif;--fc:'Barlow Condensed',sans-serif;--mono:'DM Mono',monospace;
+  --nav:52px;--r:6px;
+  --shadow:0 1px 3px rgba(61,43,26,.10);
+  --shadow-md:0 4px 10px rgba(61,43,26,.12);
+}
+*{box-sizing:border-box;margin:0;padding:0}
+body{font-family:var(--font);background:var(--bg);color:var(--t1);font-size:13px;font-weight:500;min-height:100vh}
+button{font-family:var(--font)}
+input,select{font-family:var(--font)}
+
+/* ── LOGIN ─────────────────────────────────────────── */
+#login{position:fixed;inset:0;display:flex;align-items:center;justify-content:center;background:
+  radial-gradient(circle at 20% 15%,#f5ede0 0%,transparent 55%),
+  radial-gradient(circle at 85% 85%,#f0e2cc 0%,transparent 50%),var(--bg);padding:20px;z-index:500}
+.login-card{background:var(--s1);border:1px solid var(--b1);border-radius:12px;padding:36px 32px;width:100%;max-width:380px;box-shadow:var(--shadow-md)}
+.login-card h1{font-family:var(--fc);font-size:38px;font-weight:800;letter-spacing:1px;color:var(--t1);line-height:1}
+.login-card h1 b{color:var(--accent)}
+.login-card .sub{color:var(--t3);font-size:12px;margin:6px 0 26px;font-weight:600}
+.field-grp{display:flex;flex-direction:column;gap:5px}
+.field-grp label{font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--t3)}
+input,select{padding:8px 10px;border:1px solid var(--b1);border-radius:var(--r);background:var(--s1);color:var(--t1);font-size:13px;font-weight:600;width:100%;outline:none;transition:border-color .15s,box-shadow .15s}
+input:focus,select:focus{border-color:var(--accent);box-shadow:0 0 0 3px rgba(168,98,31,.12)}
+input[readonly]{background:var(--s3);color:var(--t2)}
+
+/* ── NAV ───────────────────────────────────────────── */
+#nav{position:fixed;top:0;left:0;right:0;min-height:var(--nav);background:#3d2b1a;border-bottom:3px solid #2a1c0f;
+  z-index:200;display:flex;align-items:center;flex-wrap:wrap;padding:0 16px;gap:0 4px;box-shadow:0 2px 8px rgba(26,19,8,.22)}
+.nbrand{font-family:var(--fc);font-weight:800;font-size:15px;letter-spacing:1px;color:#e0a355;white-space:nowrap;margin-right:10px;flex-shrink:0}
+.nbrand b{color:#fff}
+.nbrand small{font-size:11px;color:rgba(255,255,255,.45);font-weight:400;margin-left:4px}
+.ntabs{display:flex;flex-wrap:wrap;flex:1;align-items:center;min-height:var(--nav);min-width:0}
+.ntab{background:transparent;border:none;color:rgba(255,255,255,.62);font-family:var(--fc);font-size:13px;font-weight:600;
+  letter-spacing:.5px;padding:8px 13px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s,border-color .15s}
+.ntab:hover{color:#fff}
+.ntab.on{color:#e0a355;border-bottom-color:#e0a355}
+.nright{display:flex;align-items:center;gap:8px;flex-shrink:0}
+.nuser{font-family:var(--mono);font-size:11px;color:rgba(255,255,255,.6)}
+.nbtn{background:rgba(255,255,255,.10);border:1px solid rgba(255,255,255,.18);color:#fff;font-size:11px;font-weight:600;
+  padding:5px 11px;border-radius:var(--r);cursor:pointer}
+.nbtn:hover{background:rgba(255,255,255,.18)}
+.nbtn.danger{background:rgba(184,50,50,.28);border-color:rgba(184,50,50,.45)}
+
+/* ── LAYOUT ────────────────────────────────────────── */
+#wrap{padding:calc(var(--nav) + 16px) 18px 60px;max-width:1400px;margin:0 auto}
+.page{display:none}.page.on{display:block}
+.card{background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);padding:16px 18px;margin-bottom:14px;box-shadow:var(--shadow)}
+.card-title{font-family:var(--fc);font-size:16px;font-weight:700;letter-spacing:.4px;color:var(--t1);margin-bottom:3px;display:flex;align-items:center;gap:8px}
+.card-sub{font-size:11.5px;color:var(--t3);margin-bottom:14px;line-height:1.5;font-weight:500}
+.fgroup-title{font-family:var(--fc);font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--accent);
+  margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--b1)}
+.fgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(165px,1fr));gap:11px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:flex-end}
+.hint{font-size:10.5px;color:var(--t4);margin-top:3px;font-weight:500}
+
+/* ── BUTTONS ───────────────────────────────────────── */
+.btn{background:var(--s1);border:1px solid var(--b2);color:var(--t2);font-size:12px;font-weight:600;padding:7px 14px;
+  border-radius:var(--r);cursor:pointer;transition:all .15s;white-space:nowrap}
+.btn:hover{background:var(--s3);border-color:var(--t4)}
+.btn.primary{background:var(--accent);border-color:var(--accent);color:#fff}
+.btn.primary:hover{background:#8f5119}
+.btn.teal{background:var(--teal);border-color:var(--teal);color:#fff}
+.btn.teal:hover{background:#14584a}
+.btn.ok{background:var(--green);border-color:var(--green);color:#fff}
+.btn.ok:hover{background:#246330}
+.btn.danger{background:var(--red);border-color:var(--red);color:#fff}
+.btn.sm{padding:4px 9px;font-size:11px}
+.btn:disabled{opacity:.45;cursor:not-allowed}
+
+/* ── FLOOR / SUB TABS ──────────────────────────────── */
+.ftabs{display:flex;gap:4px;margin-bottom:14px;flex-wrap:wrap;border-bottom:1px solid var(--b1);padding-bottom:0}
+.ftab{padding:7px 14px;font-family:var(--fc);font-size:13px;font-weight:600;letter-spacing:.4px;color:var(--t3);cursor:pointer;
+  border-bottom:2px solid transparent;margin-bottom:-1px;transition:color .15s,border-color .15s}
+.ftab:hover{color:var(--t2)}
+.ftab.on{color:var(--accent);border-bottom-color:var(--accent)}
+
+/* ── TABLES ────────────────────────────────────────── */
+.gtable{width:100%;border-collapse:collapse;font-size:12px}
+.gtable th{background:var(--s3);font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
+  color:var(--t2);text-align:left;padding:7px 9px;border-bottom:1px solid var(--b2);white-space:nowrap;position:sticky;top:0}
+.gtable td{padding:7px 9px;border-bottom:1px solid var(--b1);color:var(--t1);vertical-align:middle}
+.gtable tbody tr:hover{background:var(--s2)}
+.gtable tbody tr.clickable{cursor:pointer}
+.mono{font-family:var(--mono);font-size:11.5px}
+.num{font-family:var(--mono);font-size:11.5px;text-align:right}
+.tscroll{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.empty{padding:26px;text-align:center;color:var(--t4);font-size:12px;font-weight:500}
+
+/* ── BADGES ────────────────────────────────────────── */
+.badge{display:inline-block;font-family:var(--fc);font-size:10.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;
+  padding:2px 8px;border-radius:20px;white-space:nowrap}
+.badge.planned{background:var(--s3);color:var(--t3)}
+.badge.open{background:var(--amber-l);color:var(--amber)}
+.badge.inprod{background:var(--green-l);color:var(--green)}
+.badge.closed{background:var(--teal-l);color:var(--teal)}
+.badge.warn{background:var(--red-l);color:var(--red)}
+.badge.info{background:var(--accent-l);color:var(--accent)}
+
+/* ── KPI ───────────────────────────────────────────── */
+.kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+.kpi{background:var(--s2);border:1px solid var(--b1);border-radius:var(--r);padding:11px 13px}
+.kpi-label{font-family:var(--fc);font-size:10.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--t3);margin-bottom:4px}
+.kpi-val{font-family:var(--mono);font-size:19px;font-weight:500;color:var(--t1);line-height:1.1}
+.kpi-val.green{color:var(--green)}.kpi-val.red{color:var(--red)}
+.kpi-val.amber{color:var(--amber)}.kpi-val.accent{color:var(--accent)}
+.kpi-sub{font-size:10.5px;color:var(--t4);margin-top:3px;font-weight:500}
+
+/* ── SIGNATURE 1: four-account ledger strip ────────── */
+.acct-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:16px}
+.acct{background:var(--s1);border:1px solid var(--b1);border-left:4px solid var(--t4);border-radius:var(--r);padding:11px 13px;position:relative;overflow:hidden}
+.acct[data-a="cutting"]{border-left-color:var(--accent)}
+.acct[data-a="aim_salvage"]{border-left-color:var(--teal)}
+.acct[data-a="printed_salvage"]{border-left-color:var(--purple)}
+.acct[data-a="oily_salvage"]{border-left-color:var(--amber)}
+.acct-name{font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--t2);margin-bottom:5px;line-height:1.25}
+.acct-bal{font-family:var(--mono);font-size:20px;font-weight:500;color:var(--t1);line-height:1}
+.acct-bal span{font-size:11px;color:var(--t3);margin-left:3px}
+.acct-flow{display:flex;gap:12px;margin-top:7px;font-family:var(--mono);font-size:10.5px;color:var(--t3)}
+.acct-flow b{font-weight:500}
+.acct-flow .up{color:var(--green)}.acct-flow .dn{color:var(--red)}
+.acct-auto{position:absolute;top:9px;right:10px;font-family:var(--fc);font-size:9px;font-weight:700;letter-spacing:.5px;
+  text-transform:uppercase;color:var(--t4);background:var(--s3);padding:1px 6px;border-radius:10px}
+
+/* ── SIGNATURE 2: tank fill gauge ──────────────────── */
+.tank{display:flex;align-items:flex-end;gap:10px;margin-top:6px}
+.tank-body{position:relative;width:46px;height:58px;border:2px solid var(--b2);border-radius:4px 4px 7px 7px;background:var(--s3);overflow:hidden;flex-shrink:0}
+.tank-fill{position:absolute;left:0;right:0;bottom:0;background:linear-gradient(180deg,#c9822f 0%,#a8621f 100%);transition:height .35s ease}
+.tank-mark{position:absolute;left:0;right:0;border-top:1px dashed rgba(61,43,26,.45)}
+.tank-info{font-size:11px;color:var(--t2);line-height:1.6;font-weight:600}
+.tank-info .pct{font-family:var(--mono);font-size:17px;color:var(--t1);display:block;line-height:1.1}
+
+/* ── LABEL PREVIEW ─────────────────────────────────── */
+.lbl{background:#fff;border:2px solid var(--t1);border-radius:4px;padding:12px 14px;max-width:420px;font-family:var(--mono)}
+.lbl-batch{font-size:21px;font-weight:500;letter-spacing:.5px;color:var(--t1)}
+.lbl-tt{font-size:14px;color:var(--t2);margin-top:2px}
+.lbl-hr{border-top:1px solid var(--t1);margin:8px 0}
+.lbl-row{font-size:12px;color:var(--t2);display:flex;gap:6px}
+.lbl-row b{display:inline-block;min-width:62px;color:var(--t3);font-weight:400}
+.lbl-pay{font-size:9.5px;color:var(--t4);word-break:break-all;margin-top:9px;line-height:1.4}
+
+/* ── BANNERS ───────────────────────────────────────── */
+.banner{border-radius:var(--r);padding:10px 14px;margin-bottom:14px;font-size:12px;font-weight:600;display:flex;gap:9px;align-items:flex-start;line-height:1.5}
+.banner.info{background:var(--accent-l);border:1px solid #e8c9a5;color:#7a4715}
+.banner.warn{background:var(--amber-l);border:1px solid #e8cf95;color:#8a5600}
+.banner.ok{background:var(--green-l);border:1px solid #b5dcbc;color:#1f5a29}
+.banner b{font-weight:700}
+
+/* ── TOAST ─────────────────────────────────────────── */
+.toast{position:fixed;bottom:22px;left:50%;transform:translateX(-50%) translateY(90px);background:var(--t1);color:#fff;
+  padding:11px 20px;border-radius:8px;font-size:12.5px;font-weight:600;box-shadow:var(--shadow-md);opacity:0;
+  transition:all .28s cubic-bezier(.2,.8,.3,1);z-index:600;max-width:90vw;text-align:center}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+.toast.err{background:var(--red)}.toast.ok{background:var(--green)}
+
+@media (prefers-reduced-motion:reduce){*{transition:none!important;animation:none!important}}
+@media(max-width:720px){
+  #wrap{padding:calc(var(--nav) + 12px) 11px 50px}
+  .card{padding:13px 12px}
+  .fgrid{grid-template-columns:1fr 1fr}
+  .kgrid{grid-template-columns:1fr 1fr}
+}
+</style>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+</head>
+<body>
+
+<!-- LOGIN -->
+<div id="login">
+  <div class="login-card">
+    <h1>GPR<b>.</b>tracker</h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55E</div>
+    <div class="field-grp" style="margin-bottom:14px">
+      <label>Sign in as</label>
+      <select id="loginUser">
+        <option value="GPR_GF">GPR — Ground Floor</option>
+        <option value="GPR_FF_SF">GPR — First / Second Floor</option>
+        <option value="GPR_Manager">GPR Manager (all floors)</option>
+        <option value="GPR_Admin">GPR Admin</option>
+      </select>
+    </div>
+    <div class="field-grp" style="margin-bottom:20px">
+      <label>PIN</label>
+      <input id="loginPin" type="password" inputmode="numeric" placeholder="••••" onkeydown="if(event.key==='Enter')doLogin()">
+    </div>
+    <button class="btn primary" style="width:100%;padding:10px" onclick="doLogin()">Sign in</button>
+  </div>
+</div>
+
+<!-- NAV -->
+<div id="nav" style="display:none">
+  <div class="nbrand">GPR<b>.</b>tracker <small>v55E</small></div>
+  <div class="ntabs" id="ntabs"></div>
+  <div class="nright">
+    <span class="nuser" id="navUser"></span>
+    <button class="nbtn danger" onclick="doLogout()">Exit</button>
+  </div>
+</div>
+
+<div id="wrap" style="display:none">
+  <div id="modeBanner"></div>
+
+  <!-- TT SHEET (landing) -->
+  <div class="page on" id="page-sheet">
+    <div class="card">
+      <div class="card-title">Transfer Tank Sheet</div>
+      <div class="card-sub">Every tank issued, across batches. Filter, then export to Excel. Click a row to open its batch.</div>
+      <div class="fgrid" style="margin-bottom:12px">
+        <div class="field-grp"><label>Batch</label><input id="sh_batch" placeholder="e.g. 26N50"></div>
+        <div class="field-grp"><label>Machine</label><input id="sh_machine" placeholder="e.g. MC29"></div>
+        <div class="field-grp"><label>Floor</label><select id="sh_floor"></select></div>
+        <div class="field-grp"><label>Side</label><select id="sh_side"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp"><label>From (production day)</label><input id="sh_from" type="date"></div>
+        <div class="field-grp"><label>To</label><input id="sh_to" type="date"></div>
+      </div>
+      <div class="row">
+        <button class="btn primary" onclick="loadSheet()">Apply filters</button>
+        <button class="btn" onclick="clearSheetFilters()">Clear</button>
+        <button class="btn teal" onclick="exportSheet()">Export to Excel</button>
+      </div>
+      <div id="sheetKpis"></div>
+      <div id="sheetResult" class="tscroll"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- MMT -->
+  <div class="page" id="page-plan">
+    <div class="card">
+      <div class="card-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">GPR Planning — TT &amp; MMT
+        <input type="month" id="pl_month" style="font-size:12px" onchange="loadPlan()">
+        <button class="btn" style="padding:4px 12px;font-size:11px" onclick="loadPlan()">Refresh</button>
+        <button class="btn" style="padding:4px 12px;font-size:11px" onclick="exportPlan()">Export XLSX</button>
+        <span id="pl_now" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--t3)"></span>
+      </div>
+      <div class="card-sub">Live from Planning, DPR and the Report E bindings. End-shift estimate: required gross = planned gross × (assumed A ÷ actual A, capped ±); rate = machine's last 6 producing shifts. Next batch's first cap+body TT must be READY by the start of the shift the current batch ends in; preparation begins one TT-prep window (8 h, tunable in Masters) earlier.</div>
+      <div id="pl_alert"></div>
+      <div class="fgroup-title" style="margin-top:14px">Sheet 1 — Month summary (machine-wise, all batches)</div>
+      <div id="pl_summary" style="font-size:12px">Loading…</div>
+      <div class="fgroup-title" style="margin-top:18px">Sheet 2 — TT time cascade (colour change / dish wash planning)</div>
+      <div id="pl_cascade" style="font-size:12px"></div>
+    </div>
+  </div>
+  <div class="page" id="page-mmt">
+    <div class="ftabs" id="mmtFloorTabs"></div>
+    <div class="card">
+      <div class="card-title">New MMT charge</div>
+      <div class="card-sub">The mother charge in the Melter-Mixer Tank. Transfer tanks link back to it for full traceability to the vendor gelatine batch.</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>MMT reference *</label><input id="m_ref" placeholder="e.g. MMT-GF-260728-1"></div>
+        <div class="field-grp"><label>Total charge (kg) *</label><input id="m_total" type="number" inputmode="decimal" placeholder="e.g. 1000"></div>
+      </div>
+      <div class="fgroup-title">Virgin gelatine</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Vendor</label><input id="m_vendor"></div>
+        <div class="field-grp"><label>Gelatine batch no.</label><input id="m_gbatch"></div>
+        <div class="field-grp"><label>Gelatine (kg)</label><input id="m_gkg" type="number" inputmode="decimal"></div>
+      </div>
+      <div class="fgroup-title">Water</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Purified water (kg)</label><input id="m_wkg" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Water temp (°C)</label><input id="m_wtemp" type="number" inputmode="decimal"></div>
+      </div>
+      <div class="fgroup-title">Chemicals &amp; additives (grams) — per stock sheet 17-09-2026</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>SLS-799 Needles <small style="color:var(--t3)">col0045</small></label><input id="m_sls799" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>PEG-6000 (IP Grade) <small style="color:var(--t3)">col0069</small></label><input id="m_peg6000" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Bronopol BP/IP <small style="color:var(--t3)">col0004</small></label><input id="m_bronopol" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Othadd-2 (Finamul DL) <small style="color:var(--t3)">col0056</small></label><input id="m_othadd2" type="number" inputmode="decimal"></div>
+      </div>
+      <div class="fgrid" id="m_tank_wrap" style="display:none">
+        <div class="field-grp"><label>MMT tank (GF has a spare — two charges may run)</label>
+          <select id="m_tank"><option value="">— pick GF1 / GF2 —</option><option value="GF1">MMT GF1</option><option value="GF2">MMT GF2</option></select></div>
+      </div>
+      <div class="fgroup-title">Timestamps</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Charge commenced</label><input id="m_start" type="datetime-local"></div>
+        <div class="field-grp"><label>Charge completed</label><input id="m_complete" type="datetime-local"></div>
+        <div class="field-grp"><label>TT prep commenced</label><input id="m_ttprep" type="datetime-local"></div>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <button class="btn primary" onclick="saveMmt()">Save charge</button>
+        <button class="btn" onclick="clearMmtForm()">Clear</button>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Charges — <span id="mmtFloorLabel">All floors</span></div>
+      <div class="card-sub">Starting a charge while another is unexhausted raises an alert, not a block — spare MMT capacity can be used to fast-track a charge.</div>
+      <div id="mmtList" class="tscroll"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- ISSUE TT -->
+  <div class="page" id="page-issue">
+    <div class="card">
+      <div class="card-title">Plan the batch</div>
+      <div class="card-sub">Enter a batch to see the solution it needs. Gross comes straight from Planning, so GPR and Planning always agree.</div>
+      <div class="fgrid" style="margin-bottom:12px">
+        <div class="field-grp"><label>Batch number</label><input id="tp_batch" placeholder="e.g. 26N50" onkeydown="if(event.key==='Enter')loadTtPlan()"></div>
+        <div class="field-grp"><label>Measured avg weight (mg)</label><input id="tp_avgmg" type="number" inputmode="decimal" placeholder="optional override"></div>
+        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadTtPlan()">Compute plan</button></div>
+      </div>
+      <div id="ttPlanResult"></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Issue a transfer tank</div>
+      <div class="card-sub">Prepare and issue a tank for Cap or Body. Saving prints a label and posts the material movements to the ledger.</div>
+      <div class="fgroup-title">Batch &amp; machine</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Batch number *</label><input id="t_batch" placeholder="e.g. 26N50" onblur="ttPrefill()"></div>
+        <div class="field-grp"><label>Side *</label><select id="t_side"><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp"><label>Machine</label><input id="t_machine" placeholder="from batch"></div>
+        <div class="field-grp"><label>Floor</label><input id="t_floor" readonly placeholder="from machine"></div>
+        <div class="field-grp"><label>PC code</label><input id="t_pc" placeholder="from batch"></div>
+        <div class="field-grp"><label>Colour name</label><input id="t_colname"></div>
+        <div class="field-grp"><label>Colour code</label><input id="t_colcode"></div>
+        <div class="field-grp"><label>Link MMT charge</label><select id="t_mmt"><option value="">— select —</option></select></div>
+        <div class="field-grp"><label>Tanks planned this side (N)</label><input id="t_seqtotal" type="number" inputmode="numeric"></div>
+      </div>
+
+      <div class="fgroup-title">Volume</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Tank capacity (L)</label><input id="t_cap" type="number" inputmode="decimal" oninput="drawTank()"></div>
+        <div class="field-grp"><label>Planned fill (L)</label><input id="t_planned" type="number" inputmode="decimal" oninput="drawTank()"></div>
+        <div class="field-grp"><label>Actual issued (L) *</label><input id="t_actual" type="number" inputmode="decimal" oninput="drawTank()"></div>
+      </div>
+      <div id="tankGauge"></div>
+      <div id="t_underfill" style="display:none;margin-top:11px">
+        <div class="field-grp"><label style="color:var(--red)">Under-fill reason (required)</label><input id="t_reason" placeholder="Why this tank is more than 5% below capacity"></div>
+      </div>
+
+      <div class="fgroup-title">Charged into this tank (kg)</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Virgin gelatine (from MMT)</label><input id="t_virgin" type="number" inputmode="decimal" oninput="drawCharge()"></div>
+        <div class="field-grp"><label>Colour + TiO₂</label><input id="t_colourkg" type="number" inputmode="decimal" oninput="drawCharge()"></div>
+        <div class="field-grp"><label>FG remelt</label><input id="t_fgremelt" type="number" inputmode="decimal" oninput="drawCharge()"><div class="hint">Finished goods melted back — reduce virgin to match</div></div>
+      </div>
+      <div class="fgroup-title">Reuse material drawn from stock (kg)</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Draw from</label><select id="t_source" onchange="toggleLegacyLoc()"><option value="ledger">Ledger A — online register</option><option value="legacy">Ledger B — legacy stock</option></select></div>
+        <div class="field-grp" id="legacyLocWrap" style="display:none"><label>Legacy location</label><select id="t_legacyloc"></select></div>
+        <div class="field-grp"><label>Salvage account</label><select id="t_salvacct"><option value="aim_salvage">Unprinted AIM salvage</option><option value="printed_salvage">Printed salvage</option><option value="oily_salvage">Oily salvage</option></select></div>
+        <div class="field-grp"><label>Salvage added</label><input id="t_salvage" type="number" inputmode="decimal" oninput="drawCharge()"></div>
+        <div class="field-grp"><label>Cutting added</label><input id="t_cutting" type="number" inputmode="decimal" oninput="drawCharge()"></div>
+      </div>
+      <div id="chargeSummary"></div>
+
+      <div class="fgroup-title">Colourants (up to 8, grams)</div>
+      <div id="t_colourants" class="fgrid"></div>
+
+      <div class="fgroup-title">Quality</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Viscosity (cps)</label><input id="t_visc" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Temperature (°C)</label><input id="t_temp" type="number" inputmode="decimal"></div>
+      </div>
+
+      <div class="row" style="margin-top:18px">
+        <button class="btn primary" onclick="saveTt()">Issue tank &amp; print label</button>
+        <button class="btn" onclick="clearTtForm()">Clear</button>
+      </div>
+    </div>
+
+    <div class="card" id="labelCard" style="display:none">
+      <div class="card-title">Tank label</div>
+      <div id="labelView"></div>
+      <div class="row" style="margin-top:12px">
+        <button class="btn primary" onclick="printLabel()">Print label</button>
+        <button class="btn" onclick="downloadZpl()">Download ZPL</button>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Tanks issued — <span id="ttListBatch">enter a batch</span></div>
+      <div id="ttList" class="tscroll"><div class="empty">Enter a batch above to see its tanks.</div></div>
+    </div>
+  </div>
+
+  <!-- LEDGER -->
+  <div class="page" id="page-ledger">
+    <div class="card">
+      <div class="card-title">Reuse material — Ledger A</div>
+      <div class="card-sub">Four accounts. Cutting and oily salvage are entered here; AIM and printed salvage arrive from Tracking, and cap/body cuttings from DPR, as PENDING receipts above — they join stock when the chemist accepts them.</div>
+      <div id="rcpPanel" style="margin-bottom:14px">
+        <div class="fgroup-title" style="display:flex;align-items:center;gap:10px">Pending receipts — awaiting GPR acceptance
+          <span id="rcpTotal" style="font-family:var(--mono);font-size:12px;color:var(--amber)"></span>
+          <button class="btn" style="margin-left:auto;padding:4px 10px;font-size:11px" onclick="loadReceipts()">Refresh</button>
+        </div>
+        <div id="rcpList" style="font-size:12px;color:var(--t3)">Loading…</div>
+      </div>
+      <div id="acctStrip" class="acct-strip"></div>
+      <div class="ftabs">
+        <div class="ftab on" id="lv-account" onclick="loadLedger('account',this)">By account</div>
+        <div class="ftab" id="lv-daily" onclick="loadLedger('daily',this)">By production day</div>
+        <div class="ftab" id="lv-colour" onclick="loadLedger('colour',this)">By colour code</div>
+        <div class="ftab" id="lv-lots" onclick="loadLedger('lots',this)">Available lots</div>
+        <div class="ftab" id="lv-movements" onclick="loadLedger('movements',this)">All movements</div>
+      </div>
+      <div class="fgrid" style="margin-bottom:12px">
+        <div class="field-grp"><label>Batch (optional)</label><input id="lg_batch" placeholder="e.g. 26N50"></div>
+        <div class="field-grp"><label>From</label><input id="lg_from" type="date"></div>
+        <div class="field-grp"><label>To</label><input id="lg_to" type="date"></div>
+        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadLedger()">Apply</button></div>
+      </div>
+      <div id="ledgerResult" class="tscroll"><div class="empty">Loading…</div></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Record a movement</div>
+      <div class="card-sub">Generation is for cutting and oily salvage only — the two Tracking-fed accounts are read-only here.</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Movement</label><select id="mv_type"><option value="generate">Generated (credit)</option><option value="consume">Consumed (debit)</option></select></div>
+        <div class="field-grp"><label>Account</label><select id="mv_account"></select></div>
+        <div class="field-grp"><label>Batch</label><input id="mv_batch"></div>
+        <div class="field-grp"><label>Machine</label><input id="mv_machine"></div>
+        <div class="field-grp"><label>Side</label><select id="mv_side"><option value="">—</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp"><label>Colour code</label><input id="mv_colcode"></div>
+        <div class="field-grp"><label>PC code</label><input id="mv_pc"></div>
+        <div class="field-grp"><label>Quantity (kg)</label><input id="mv_kg" type="number" inputmode="decimal"></div>
+        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="saveMovement()">Record</button></div>
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Legacy stock — Ledger B</div>
+      <div class="card-sub">The pre-implementation pile. Seed it once before the first tank is issued; after that it only draws down.</div>
+      <div id="legacyBalance" style="margin-bottom:12px"></div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Storage location *</label><input id="lgs_loc" placeholder="e.g. GF Store A"></div>
+        <div class="field-grp"><label>Account</label><select id="lgs_acct"></select></div>
+        <div class="field-grp"><label>Quantity (kg)</label><input id="lgs_kg" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Note</label><input id="lgs_note" placeholder="optional"></div>
+        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="seedLegacy()">Add location</button></div>
+      </div>
+      <div class="hint" style="margin-top:8px">Seed one row per storage location. Draws are recorded against the location they came from, so each area's remaining balance stays accurate.</div>
+    </div>
+  </div>
+
+  <!-- YIELD -->
+  <div class="page" id="page-yield">
+    <div class="card">
+      <div class="card-title">Yield</div>
+      <div class="card-sub">Target 103% — the 3% moisture gain between 12%-moisture virgin gelatine and 15%-moisture finished capsules, less about 1% wash loss.</div>
+      <div class="ftabs">
+        <div class="ftab on" id="yv-batch" onclick="switchYield('batch',this)">By batch</div>
+        <div class="ftab" id="yv-daily" onclick="switchYield('daily',this)">Daily by floor</div>
+        <div class="ftab" id="yv-month" onclick="switchYield('month',this)">Monthly by floor</div>
+      </div>
+
+      <div id="yieldBatchPane">
+        <div class="fgrid" style="margin-bottom:12px">
+          <div class="field-grp"><label>Machine</label><input id="yr_machine" placeholder="e.g. MC29"></div>
+          <div class="field-grp"><label>PC code</label><input id="yr_pc"></div>
+          <div class="field-grp"><label>Floor</label><select id="yr_floor"></select></div>
+          <div class="field-grp"><label>From</label><input id="yr_from" type="date"></div>
+          <div class="field-grp"><label>To</label><input id="yr_to" type="date"></div>
+          <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadYieldReport()">Run report</button></div>
+        </div>
+        <div id="yieldResult" class="tscroll"><div class="empty">Run the report to see batch yields.</div></div>
+      </div>
+
+      <div id="yieldDailyPane" style="display:none">
+        <div class="fgrid" style="margin-bottom:12px">
+          <div class="field-grp"><label>From (production day)</label><input id="yd_from" type="date"></div>
+          <div class="field-grp"><label>To</label><input id="yd_to" type="date"></div>
+          <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadYieldDaily()">Load</button></div>
+        </div>
+        <div id="yieldDailyResult"><div class="empty">Pick a date range and load.</div></div>
+      </div>
+
+      <div id="yieldMonthPane" style="display:none">
+        <div class="fgrid" style="margin-bottom:12px">
+          <div class="field-grp"><label>Month</label><input id="ym_month" type="month"></div>
+          <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadYieldMonth()">Load</button></div>
+        </div>
+        <div id="yieldMonthResult"><div class="empty">Pick a month and load.</div></div>
+      </div>
+    </div>
+  </div>
+
+  <!-- CRUSHING -->
+  <div class="page" id="page-crush">
+    <div class="card">
+      <div class="card-title">Propose stock for crushing</div>
+      <div class="card-sub">The Manager proposes, an Admin decides. On approval the stock is debited and the quantity lands on the floor and daily yield — never on a single batch.</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Account</label><select id="cr_acct"></select></div>
+        <div class="field-grp"><label>Colour code</label><input id="cr_colcode"></div>
+        <div class="field-grp"><label>Floor</label><select id="cr_floor"></select></div>
+        <div class="field-grp"><label>Batch (traceability)</label><input id="cr_batch" placeholder="optional"></div>
+        <div class="field-grp"><label>Quantity (kg)</label><input id="cr_kg" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Reason</label><input id="cr_reason" placeholder="Why it can no longer be used"></div>
+        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="proposeCrush()">Propose</button></div>
+      </div>
+    </div>
+    <div class="card">
+      <div class="card-title">Crushing monitor</div>
+      <div class="ftabs">
+        <div class="ftab on" id="cm-proposed" onclick="loadCrush('proposed',this)">Awaiting decision</div>
+        <div class="ftab" id="cm-approved" onclick="loadCrush('approved',this)">Approved</div>
+        <div class="ftab" id="cm-rejected" onclick="loadCrush('rejected',this)">Rejected</div>
+        <div class="ftab" id="cm-all" onclick="loadCrush('',this)">All</div>
+      </div>
+      <div id="crushResult" class="tscroll"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+
+  <!-- BATCH -->
+  <div class="page" id="page-batch">
+    <div class="card">
+      <div class="card-title">Batch reconciliation</div>
+      <div class="card-sub">Everything about one batch: status, charges, tanks, ledger movements and the full yield working.</div>
+      <div class="fgrid" style="margin-bottom:12px">
+        <div class="field-grp"><label>Batch number</label><input id="bs_batch" placeholder="e.g. 26N50" onkeydown="if(event.key==='Enter')loadBatch()"></div>
+        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadBatch()">Load</button></div>
+      </div>
+      <div id="batchResult"></div>
+    </div>
+  </div>
+
+  <!-- MASTERS -->
+  <div class="page" id="page-masters">
+    <div class="card">
+      <div class="card-title">Masters</div>
+      <div class="card-sub">Machine tank sizes, capsule weights, colourants and process constants. The Manager and Admin can edit; everyone else reads.</div>
+      <div id="mastersView"><div class="empty">Loading…</div></div>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const API = '';
+let SESSION = { token:null, username:null, role:null };
+let MASTERS = null, ACCOUNTS = {}, CUR_FLOOR = 'GF';
+let LEDGER_VIEW = 'account', SHEET_ROWS = [], LAST_LABEL = null, TT_ORDER_SIZE = '';
+const FLOOR_LABELS = { GF:'Ground Floor', '1F':'First Floor', '2F':'Second Floor', ALL:'All floors', unknown:'Unattributed' };
+
+function visibleFloors(){
+  const r = SESSION.role;
+  if (r === 'gpr_gf') return ['GF'];
+  if (r === 'gpr_ff_sf') return ['1F','2F'];
+  return ['GF','1F','2F'];
+}
+function esc(s){ return String(s==null?'':s).replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+function val(id){ const el=document.getElementById(id); return el?el.value.trim():''; }
+function num(id){ const el=document.getElementById(id); const n=el?parseFloat(el.value):0; return isNaN(n)?0:n; }
+function setVal(id,v){ const el=document.getElementById(id); if(el) el.value = v==null?'':v; }
+function fmt(n,d){ return Number(n||0).toFixed(d==null?1:d); }
+function toast(msg, kind){
+  const t = document.getElementById('toast');
+  t.textContent = msg; t.className = 'toast show ' + (kind||'');
+  setTimeout(()=>{ t.className = 'toast'; }, 3000);
+}
+async function api(path, opts){
+  const r = await fetch(API + path, opts);
+  return await r.json();
+}
+async function post(path, body){
+  return await api(path, { method:'POST', headers:{'Content-Type':'application/json'},
+    body: JSON.stringify(Object.assign({ token: SESSION.token }, body)) });
+}
+// Production day (DPR rule): the day runs 06:00 to 06:00, so anything before
+// 06:00 belongs to the previous day. Mirrors the server's gprProductionDay.
+function productionDay(d){
+  const t = d ? new Date(d) : new Date();
+  return new Date(t.getTime() - 6*3600*1000).toISOString().slice(0,10);
+}
+
+// ── AUTH ───────────────────────────────────────────────
+async function doLogin(){
+  const username = document.getElementById('loginUser').value;
+  const pin = document.getElementById('loginPin').value.trim();
+  if(!pin){ toast('Enter your PIN','err'); return; }
+  try{
+    const d = await api('/api/auth/login', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ username, pin, app:'gpr' }) });
+    if(!d.ok){ toast(d.error||'Sign-in failed','err'); return; }
+    SESSION = { token:d.token, username:d.username, role:d.role };
+    localStorage.setItem('gpr_session', JSON.stringify(SESSION));
+    startApp();
+  }catch(e){ toast('Cannot reach the server','err'); }
+}
+function doLogout(){
+  localStorage.removeItem('gpr_session');
+  location.reload();
+}
+async function verifySession(){
+  const saved = localStorage.getItem('gpr_session');
+  if(!saved) return false;
+  try{
+    SESSION = JSON.parse(saved);
+    const d = await api('/api/auth/verify', { method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ token: SESSION.token }) });
+    return !!d.ok;
+  }catch(e){ return false; }
+}
+
+// ── NAV ────────────────────────────────────────────────
+const TABS = [
+  { id:'sheet',   label:'TT Sheet' },
+  { id:'plan',    label:'Planning' },
+  { id:'mmt',     label:'MMT Charges' },
+  { id:'issue',   label:'Issue TT' },
+  { id:'ledger',  label:'Stock Ledger' },
+  { id:'yield',   label:'Yield' },
+  { id:'crush',   label:'Crushing' },
+  { id:'batch',   label:'Batch' },
+  { id:'masters', label:'Masters' },
+];
+function buildNav(){
+  const nt = document.getElementById('ntabs');
+  nt.innerHTML = '';
+  TABS.forEach((t,i)=>{
+    const b = document.createElement('button');
+    b.className = 'ntab' + (i===0?' on':'');
+    b.textContent = t.label;
+    b.onclick = ()=> showPage(t.id, b);
+    nt.appendChild(b);
+  });
+  document.getElementById('navUser').textContent = SESSION.username || '';
+}
+function showPage(id, btn){
+  document.querySelectorAll('.page').forEach(p=>p.classList.remove('on'));
+  const pg = document.getElementById('page-'+id);
+  if(pg) pg.classList.add('on');
+  document.querySelectorAll('.ntab').forEach(t=>t.classList.remove('on'));
+  if(btn) btn.classList.add('on');
+  if(id==='sheet')  loadSheet();
+  if(id==='plan')   loadPlan();
+  if(id==='mmt')    loadMmt();
+  if(id==='mmt'){ try{ document.getElementById('m_tank_wrap').style.display = (curFloor==='GF') ? '' : 'none'; }catch(_){}}
+  if(id==='issue'){ buildColourantRows(); loadMmtOptions(); }
+  if(id==='ledger'){ loadReceipts(); loadAccountStrip(); loadLedger(); loadLegacyBalance(); }
+  if(id==='crush')  loadCrush('proposed');
+  if(id==='masters')renderMasters();
+}
+
+// ── SHARED SELECTS ─────────────────────────────────────
+function fillFloorSelects(){
+  const fl = visibleFloors();
+  ['sh_floor','yr_floor'].forEach(id=>{
+    const el = document.getElementById(id); if(!el) return;
+    el.innerHTML = '<option value="">All floors</option>' + fl.map(f=>`<option value="${f}">${FLOOR_LABELS[f]}</option>`).join('');
+  });
+  const cf = document.getElementById('cr_floor');
+  if(cf) cf.innerHTML = fl.map(f=>`<option value="${f}">${FLOOR_LABELS[f]}</option>`).join('');
+}
+function fillAccountSelects(){
+  const opts = Object.entries(ACCOUNTS).map(([k,v])=>`<option value="${k}">${esc(v)}</option>`).join('');
+  ['mv_account','lgs_acct','cr_acct'].forEach(id=>{
+    const el = document.getElementById(id); if(el) el.innerHTML = opts;
+  });
+}
+async function ensureMasters(){
+  if(MASTERS) return MASTERS;
+  const d = await api('/api/gpr/masters');
+  MASTERS = d.masters || {};
+  ACCOUNTS = d.accounts || {};
+  return MASTERS;
+}
+
+// ── MODE BANNER ────────────────────────────────────────
+async function renderModeBanner(){
+  const el = document.getElementById('modeBanner');
+  try{
+    const d = await api('/api/gpr/active-batches');
+    if(d.cascadeArmed){
+      el.innerHTML = '<div class="banner ok"><b>Cascade armed.</b><span>GPR now controls In-Production and batch closing. DPR entry follows GPR.</span></div>';
+    } else {
+      el.innerHTML = '<div class="banner info"><b>Additive mode.</b><span>Record everything here as you normally would. GPR is not yet driving DPR or Planning — the plant continues on its existing rules, so nothing you do here can hold up production.</span></div>';
+    }
+  }catch(e){ el.innerHTML = ''; }
+}
+
+// ── TT SHEET ───────────────────────────────────────────
+function clearSheetFilters(){
+  ['sh_batch','sh_machine','sh_from','sh_to'].forEach(id=>setVal(id,''));
+  document.getElementById('sh_floor').value = '';
+  document.getElementById('sh_side').value = '';
+  loadSheet();
+}
+async function loadSheet(){
+  const out = document.getElementById('sheetResult');
+  out.innerHTML = '<div class="empty">Loading…</div>';
+  const q = new URLSearchParams();
+  if(val('sh_batch')) q.set('batch', val('sh_batch'));
+  if(val('sh_machine')) q.set('machine', val('sh_machine'));
+  if(document.getElementById('sh_floor').value) q.set('floor', document.getElementById('sh_floor').value);
+  if(document.getElementById('sh_side').value) q.set('side', document.getElementById('sh_side').value);
+  if(val('sh_from')) q.set('from', val('sh_from'));
+  if(val('sh_to')) q.set('to', val('sh_to'));
+  try{
+    const d = await api('/api/gpr/tt-sheet?' + q.toString());
+    if(!d.ok){ out.innerHTML = '<div class="empty">Could not load the sheet.</div>'; return; }
+    SHEET_ROWS = d.rows || [];
+    document.getElementById('sheetKpis').innerHTML =
+      '<div class="kgrid" style="margin-top:14px">'
+      + kpi('Tanks issued', d.totals.tt)
+      + kpi('Solution issued', fmt(d.totals.litres,0)+' L')
+      + kpi('Material charged', fmt(d.totals.charged,0)+' kg')
+      + '</div>';
+    if(!SHEET_ROWS.length){ out.innerHTML = '<div class="empty">No tanks match these filters yet.</div>'; return; }
+    let h = '<table class="gtable"><thead><tr><th>Day</th><th>Batch</th><th>TT</th><th>Side</th><th>Machine</th><th>Floor</th>'
+          + '<th>Colour</th><th class="num">Actual L</th><th class="num">Charged kg</th><th>MMT</th><th>Status</th></tr></thead><tbody>';
+    SHEET_ROWS.forEach(r=>{
+      h += `<tr class="clickable" onclick="gotoBatch('${esc(r.batch_number)}')">`
+        + `<td class="mono">${esc(r.production_day||'—')}</td>`
+        + `<td class="mono"><b>${esc(r.batch_number)}</b></td>`
+        + `<td class="mono">${esc(r.tt_number||'')}</td>`
+        + `<td>${esc((r.side||'').toUpperCase())}</td>`
+        + `<td class="mono">${esc(r.machine_id||'')}</td>`
+        + `<td>${esc(FLOOR_LABELS[r.floor]||r.floor||'—')}</td>`
+        + `<td>${esc(r.colour_name||r.colour_code||'—')}</td>`
+        + `<td class="num">${fmt(r.actual_l,0)}</td>`
+        + `<td class="num">${fmt(r.total_charged_kg,1)}</td>`
+        + `<td class="mono">${esc(r.mmt_ref||'—')}</td>`
+        + `<td>${statusBadge(r.status)}${r.is_under_fill?' <span class="badge warn">Under-fill</span>':''}</td></tr>`;
+    });
+    out.innerHTML = h + '</tbody></table>';
+  }catch(e){ out.innerHTML = '<div class="empty">Could not load the sheet.</div>'; }
+}
+function statusBadge(s){
+  const m = { prepared:'planned', holding:'open', released:'inprod' };
+  return `<span class="badge ${m[s]||'planned'}">${esc(s||'')}</span>`;
+}
+function exportSheet(){
+  if(!SHEET_ROWS.length){ toast('Nothing to export yet','err'); return; }
+  const cols = ['production_day','batch_number','tt_number','side','machine_id','floor','pc_code','colour_name','colour_code',
+                'mmt_ref','capacity_l','planned_l','actual_l','virgin_kg','salvage_kg','cutting_kg','colour_kg','fg_remelt_kg',
+                'total_charged_kg','viscosity_cps','temperature_c','status','under_fill_reason','created_by','created_at'];
+  const head = ['Production day','Batch','TT number','Side','Machine','Floor','PC code','Colour','Colour code','MMT ref',
+                'Capacity L','Planned L','Actual L','Virgin kg','Salvage kg','Cutting kg','Colour kg','FG remelt kg',
+                'Total charged kg','Viscosity','Temp C','Status','Under-fill reason','Issued by','Issued at'];
+  const q = v => { const s = v==null?'':String(v); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
+  const csv = [head.join(',')].concat(SHEET_ROWS.map(r=>cols.map(c=>q(r[c])).join(','))).join('\n');
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8;'}));
+  a.download = 'gpr_tt_sheet_' + productionDay() + '.csv';
+  a.click();
+  toast('Exported '+SHEET_ROWS.length+' tanks','ok');
+}
+function gotoBatch(b){
+  setVal('bs_batch', b);
+  const idx = TABS.findIndex(t=>t.id==='batch');
+  showPage('batch', document.querySelectorAll('.ntab')[idx]);
+  loadBatch();
+}
+
+// ── MMT ────────────────────────────────────────────────
+function buildFloorTabs(){
+  const fl = visibleFloors();
+  const wrap = document.getElementById('mmtFloorTabs');
+  const opts = fl.length > 1 ? ['ALL', ...fl] : fl;
+  CUR_FLOOR = fl[0];
+  wrap.innerHTML = '';
+  opts.forEach(f=>{
+    const d = document.createElement('div');
+    d.className = 'ftab' + (f===CUR_FLOOR?' on':'');
+    d.textContent = FLOOR_LABELS[f] || f;
+    d.onclick = ()=>{
+      CUR_FLOOR = f;
+      wrap.querySelectorAll('.ftab').forEach(x=>x.classList.remove('on'));
+      d.classList.add('on');
+      loadMmt();
+    };
+    wrap.appendChild(d);
+  });
+}
+async function loadMmt(){
+  const out = document.getElementById('mmtList');
+  document.getElementById('mmtFloorLabel').textContent = FLOOR_LABELS[CUR_FLOOR] || CUR_FLOOR;
+  out.innerHTML = '<div class="empty">Loading…</div>';
+  try{
+    const d = await api('/api/gpr/mmt' + (CUR_FLOOR && CUR_FLOOR!=='ALL' ? ('?floor='+encodeURIComponent(CUR_FLOOR)) : ''));
+    if(!d.ok || !d.charges.length){ out.innerHTML = '<div class="empty">No charges recorded yet.</div>'; return; }
+    let h = '<table class="gtable"><thead><tr><th>Reference</th><th>Floor</th><th>Vendor</th><th>Gelatine batch</th>'
+          + '<th class="num">Total kg</th><th class="num">Allocated</th><th class="num">Remaining</th><th>Started</th></tr></thead><tbody>';
+    d.charges.forEach(c=>{
+      const rem = Number(c.remaining_kg||0);
+      h += `<tr><td class="mono"><b>${esc(c.mmt_ref)}</b></td><td>${esc(FLOOR_LABELS[c.floor]||c.floor)}</td>`
+        + `<td>${esc(c.gelatine_vendor||'—')}</td><td class="mono">${esc(c.gelatine_batch||'—')}</td>`
+        + `<td class="num">${fmt(c.total_kg,0)}</td><td class="num">${fmt(c.allocated_kg,0)}</td>`
+        + `<td class="num" style="color:${rem>0.01?'var(--amber)':'var(--green)'}"><b>${fmt(rem,1)}</b></td>`
+        + `<td class="mono">${esc(String(c.charge_start||c.created_at||'').slice(0,16).replace('T',' '))}</td></tr>`;
+    });
+    out.innerHTML = h + '</tbody></table>';
+  }catch(e){ out.innerHTML = '<div class="empty">Could not load charges.</div>'; }
+}
+async function saveMmt(){
+  if(!val('m_ref')){ toast('A reference is required','err'); return; }
+  if(num('m_total') <= 0){ toast('Enter the total charge in kg','err'); return; }
+  const floor = (CUR_FLOOR && CUR_FLOOR!=='ALL') ? CUR_FLOOR : visibleFloors()[0];
+  const d = await post('/api/gpr/mmt', {
+    mmt_ref: val('m_ref'), floor, total_kg: num('m_total'),
+    gelatine_vendor: val('m_vendor'), gelatine_batch: val('m_gbatch'),
+    gelatine_kg: num('m_gkg'), water_kg: num('m_wkg'), water_temp_c: num('m_wtemp'),
+    additives: { col0045_sls799: num('m_sls799'), col0069_peg6000: num('m_peg6000'),
+                 col0004_bronopol: num('m_bronopol'), col0056_othadd2: num('m_othadd2') },
+      tank_no: (typeof curFloor!=='undefined' && curFloor==='GF') ? (document.getElementById('m_tank')?.value || '') : undefined,
+    charge_start: val('m_start')||null, charge_complete: val('m_complete')||null, tt_prep_start: val('m_ttprep')||null
+  });
+  if(!d.ok){ toast(d.error||'Could not save the charge','err'); return; }
+  toast(d.warning ? ('Charge saved — ' + d.warning) : 'Charge saved', d.warning ? '' : 'ok');
+  clearMmtForm(); loadMmt(); loadMmtOptions();
+}
+function clearMmtForm(){
+  ['m_ref','m_total','m_vendor','m_gbatch','m_gkg','m_wkg','m_wtemp','m_sls','m_fin','m_peg','m_pres','m_sio2','m_start','m_complete','m_ttprep']
+    .forEach(id=>setVal(id,''));
+}
+
+// ── TT PLAN ────────────────────────────────────────────
+async function loadTtPlan(){
+  const batch = val('tp_batch');
+  const out = document.getElementById('ttPlanResult');
+  if(!batch){ toast('Enter a batch number','err'); return; }
+  out.innerHTML = '<div class="empty">Computing…</div>';
+  let url = '/api/gpr/tt-plan/' + encodeURIComponent(batch);
+  if(val('tp_avgmg')) url += '?avgMg=' + encodeURIComponent(val('tp_avgmg'));
+  try{
+    const d = await api(url);
+    if(!d.ok){ out.innerHTML = '<div class="empty">'+esc(d.error||'Batch not found in Planning.')+'</div>'; return; }
+    const p = d.plan, o = d.order, iss = d.issued, ag = d.aGrade;
+    const basisLabel = { 'batch-live':'live from Tracking', 'order-default':'order default', 'system-default':'system default' }[ag.basis] || ag.basis;
+    let h = '<div class="kgrid">'
+      + kpi('Gross (from Planning)', fmt(o.grossQty,2)+' L', 'accent')
+      + kpi('AIM A-Grade', ag.aimPct!=null?fmt(ag.aimPct,1)+'%':'—', '', basisLabel)
+      + kpi('Solution needed', fmt(p.totalSolutionL,0)+' L')
+      + kpi('Avg weight used', fmt(p.inputs.avgMg,1)+' mg', d.weightBasis && d.weightBasis.basis!=='size-master' ? 'green' : '',
+            d.weightBasis ? d.weightBasis.basis : '')
+      + '</div>';
+    if(d.weightBasis && d.weightBasis.clamped){
+      h += '<div class="banner warn"><b>Weight clamped.</b><span>Labels give '
+         + fmt(d.weightBasis.actualMg,1)+' mg, which is outside tolerance of the '
+         + fmt(d.weightBasis.masterMg,1)+' mg master. Using the tolerance limit instead — check the net weights entered at AIM.</span></div>';
+    }
+    h += '<div class="banner info"><b>'+esc(o.customer||'—')+'</b><span>Size '+esc(o.size)+' · '+esc(o.machineId)+' · '
+       + esc(FLOOR_LABELS[o.floor]||o.floor||'—')+' · PC '+esc(o.pcCode||'—')+(o.isPrinted?' · printed':'')+'</span></div>';
+    h += '<div class="tscroll"><table class="gtable"><thead><tr><th>Side</th><th class="num">Litres needed</th><th class="num">Fill per tank</th>'
+       + '<th class="num">Tanks needed</th><th class="num">Tanks issued</th><th class="num">Litres issued</th><th class="num">Still to issue</th></tr></thead><tbody>';
+    [['Cap','cap'],['Body','body']].forEach(([lbl,k])=>{
+      const s = p[k], i = iss[k];
+      const left = Math.max(0, s.ttPlanned - i.tt);
+      h += `<tr><td><b>${lbl}</b></td><td class="num">${fmt(s.litres,0)}</td><td class="num">${fmt(s.fillL,0)}</td>`
+        + `<td class="num"><b>${s.ttPlanned}</b> <span style="color:var(--t4)">(${s.ttExact})</span></td>`
+        + `<td class="num" style="${i.tt>s.ttPlanned?'color:var(--red);font-weight:700':''}">${i.tt}</td>`
+        + `<td class="num">${fmt(i.litres,0)}</td>`
+        + `<td class="num"><b style="color:${left>0?'var(--amber)':'var(--green)'}">${left}</b></td></tr>`;
+    });
+    h += '</tbody></table></div>';
+    h += '<div class="hint" style="margin-top:9px">Colour + TiO₂ needed: <b>'+fmt(p.colourKg,1)+' kg</b> · capsule mass '
+       + fmt(p.capsuleMassKg,0)+' kg · avg weight '+fmt(p.inputs.avgMg,0)+' mg. '
+       + 'Gross is taken from Planning unchanged, so it already reflects live A-Grade.</div>';
+    out.innerHTML = h;
+    if(!val('t_batch')) setVal('t_batch', batch);
+    ttPrefill();
+  }catch(e){ out.innerHTML = '<div class="empty">Could not compute the plan.</div>'; }
+}
+function kpi(label, v, cls, sub){
+  return '<div class="kpi"><div class="kpi-label">'+esc(label)+'</div><div class="kpi-val '+(cls||'')+'">'+esc(v)+'</div>'
+       + (sub?'<div class="kpi-sub">'+esc(sub)+'</div>':'') + '</div>';
+}
+
+// ── ISSUE TT ───────────────────────────────────────────
+async function buildColourantRows(){
+  const m = await ensureMasters();
+  const list = m.colourants || [];
+  const wrap = document.getElementById('t_colourants');
+  if(wrap.children.length) return;
+  let h = '';
+  for(let i=0;i<8;i++){
+    h += '<div class="field-grp"><label>Slot '+(i+1)+'</label>'
+      + '<select id="t_col_'+i+'"><option value="">—</option>'
+      + list.map(c=>{ const nm=(c&&c.name)||c, cd=(c&&c.code)||''; return `<option value="${esc(nm)}">${esc(nm)}${cd?' ['+esc(cd)+']':''}</option>`; }).join('')
+      + '</select>'
+      + '<input id="t_colg_'+i+'" type="number" inputmode="decimal" placeholder="grams" style="margin-top:5px"></div>';
+  }
+  wrap.innerHTML = h;
+}
+async function loadMmtOptions(){
+  const sel = document.getElementById('t_mmt');
+  try{
+    const fl = visibleFloors();
+    const all = [];
+    for(const f of fl){
+      const d = await api('/api/gpr/mmt?floor='+encodeURIComponent(f)+'&status=open');
+      if(d.ok) all.push(...d.charges);
+    }
+    sel.innerHTML = '<option value="">— none —</option>' + all.map(c=>
+      `<option value="${esc(c.mmt_ref)}">${esc(c.mmt_ref)} · ${fmt(c.remaining_kg,0)} kg left</option>`).join('');
+  }catch(e){}
+}
+async function ttPrefill(){
+  const batch = val('t_batch'); if(!batch) return;
+  try{
+    const d = await api('/api/gpr/tt-plan/' + encodeURIComponent(batch));
+    if(d.ok && d.order){
+      if(!val('t_machine')) setVal('t_machine', d.order.machineId||'');
+      if(!val('t_pc')) setVal('t_pc', d.order.pcCode||'');
+      setVal('t_floor', FLOOR_LABELS[d.order.floor] || d.order.floor || '');
+      TT_ORDER_SIZE = d.order.size || '';
+      const m = await ensureMasters();
+      const mc = (m.tt_machine_master||{})[d.order.machineId];
+      if(mc){
+        const side = document.getElementById('t_side').value;
+        setVal('t_cap', side==='cap'?mc.capCapL:mc.bodyCapL);
+        setVal('t_planned', side==='cap'?mc.capFillL:mc.bodyFillL);
+        drawTank();
+      }
+    }
+    loadTtList(batch);
+  }catch(e){}
+}
+document.addEventListener('change', e=>{
+  if(e.target && e.target.id==='t_side') ttPrefill();
+});
+function drawTank(){
+  const cap = num('t_cap'), act = num('t_actual'), plan = num('t_planned');
+  const el = document.getElementById('tankGauge');
+  if(cap<=0){ el.innerHTML=''; document.getElementById('t_underfill').style.display='none'; return; }
+  const pct = Math.max(0, Math.min(100, (act/cap)*100));
+  const planPct = plan>0 ? Math.max(0, Math.min(100, (plan/cap)*100)) : null;
+  const under = act>0 && act < cap*0.95;
+  document.getElementById('t_underfill').style.display = under ? 'block' : 'none';
+  el.innerHTML = '<div class="tank">'
+    + '<div class="tank-body">'
+    +   '<div class="tank-fill" style="height:'+pct+'%"></div>'
+    +   (planPct!=null ? '<div class="tank-mark" style="bottom:'+planPct+'%"></div>' : '')
+    + '</div>'
+    + '<div class="tank-info"><span class="pct">'+fmt(pct,0)+'%</span>'
+    +   fmt(act,0)+' L of '+fmt(cap,0)+' L capacity'
+    +   (plan>0?' · planned fill '+fmt(plan,0)+' L':'')
+    +   (under?'<br><b style="color:var(--red)">More than 5% below capacity — a reason is required.</b>':'')
+    + '</div></div>';
+}
+function toggleLegacyLoc(){
+  const on = document.getElementById('t_source').value === 'legacy';
+  document.getElementById('legacyLocWrap').style.display = on ? 'flex' : 'none';
+  if(on) loadLegacyLocations();
+}
+function drawCharge(){
+  const virgin=num('t_virgin'), colour=num('t_colourkg'), fg=num('t_fgremelt');
+  const salv=num('t_salvage'), cut=num('t_cutting');
+  const total = virgin+colour+fg+salv+cut;
+  const pct = (MASTERS && MASTERS.gpr_constants && MASTERS.gpr_constants.cuttingPctOfChargedWeight) || 22.5;
+  const est = total * pct / 100;
+  const el = document.getElementById('chargeSummary');
+  if(total<=0){ el.innerHTML=''; return; }
+  el.innerHTML = '<div class="kgrid" style="margin-top:12px">'
+    + kpi('Total charged', fmt(total,1)+' kg', 'accent')
+    + kpi('Fresh material', fmt(virgin+colour+fg,1)+' kg', '', 'virgin + colour + FG remelt')
+    + kpi('Reuse drawn', fmt(salv+cut,1)+' kg', '', 'debited from stock')
+    + kpi('Cutting expected back', fmt(est,1)+' kg', 'green', pct+'% of charged weight')
+    + '</div>';
+}
+async function saveTt(){
+  const batch = val('t_batch'), side = document.getElementById('t_side').value;
+  if(!batch){ toast('A batch number is required','err'); return; }
+  if(num('t_actual') <= 0){ toast('Enter the litres actually issued','err'); return; }
+  const cap = num('t_cap'), act = num('t_actual');
+  if(cap>0 && act < cap*0.95 && !val('t_reason')){
+    toast('This tank is more than 5% below capacity — add a reason','err');
+    document.getElementById('t_underfill').style.display='block';
+    return;
+  }
+  const colourants = [];
+  for(let i=0;i<8;i++){
+    const c = val('t_col_'+i), g = num('t_colg_'+i);
+    if(c) colourants.push({ colourant:c, grams:g, slot:i+1 });
+  }
+  const d = await post('/api/gpr/tt', {
+    batch_number: batch, side, machine_id: val('t_machine')||'(unset)',
+    pc_code: val('t_pc'), colour_name: val('t_colname'), colour_code: val('t_colcode'),
+    mmt_ref: val('t_mmt')||null, seq_total: num('t_seqtotal')||null, size: TT_ORDER_SIZE,
+    capacity_l: cap, planned_l: num('t_planned'), actual_l: act,
+    virgin_kg: num('t_virgin'), colour_kg: num('t_colourkg'), fg_remelt_kg: num('t_fgremelt'),
+    salvage_kg: num('t_salvage'), cutting_kg: num('t_cutting'),
+    salvage_account: document.getElementById('t_salvacct').value,
+    consume_from: document.getElementById('t_source').value,
+    legacy_location: document.getElementById('t_legacyloc') ? document.getElementById('t_legacyloc').value : null,
+    viscosity_cps: num('t_visc'), temperature_c: num('t_temp'),
+    colourants, under_fill_reason: val('t_reason')||null
+  });
+  if(!d.ok){ toast(d.detail || d.error || 'Could not issue the tank','err'); return; }
+  toast('Issued ' + d.tt_number + (d.warning ? ' — ' + d.warning : ''), d.warning ? '' : 'ok');
+  showLabel(d, batch, side);
+  loadTtList(batch); loadMmtOptions();
+}
+function showLabel(d, batch, side){
+  LAST_LABEL = { payload:d.label_payload, batch, side, tt:d.tt_number,
+                 pc:val('t_pc'), colour:val('t_colname')||val('t_colcode'), litres:num('t_actual') };
+  document.getElementById('labelCard').style.display = 'block';
+  document.getElementById('labelView').innerHTML =
+    '<div class="lbl"><div class="lbl-batch">'+esc(batch)+'</div>'
+    + '<div class="lbl-tt">'+esc(d.tt_number)+' · '+esc(side.toUpperCase())+'</div>'
+    + '<div class="lbl-hr"></div>'
+    + '<div class="lbl-row"><b>PC</b>'+esc(val('t_pc')||'—')+'</div>'
+    + '<div class="lbl-row"><b>Colour</b>'+esc(val('t_colname')||val('t_colcode')||'—')+'</div>'
+    + '<div class="lbl-row"><b>Volume</b>'+fmt(num('t_actual'),0)+' L</div>'
+    + '<div class="lbl-row"><b>MMT</b>'+esc(val('t_mmt')||'—')+'</div>'
+    + '<div class="lbl-pay">'+esc(d.label_payload)+'</div></div>';
+  document.getElementById('labelCard').scrollIntoView({behavior:'smooth', block:'nearest'});
+}
+function buildZpl(L){
+  return '^XA\n^CI28\n^PW812\n^LL406\n^MMT\n^PON\n^LH0,0\n'
+    + '^FO6,6^GB800,394,3^FS\n'
+    + '^CF0,40\n^FO16,18^FB780,1,0,L^FD' + (L.batch||'') + '^FS\n'
+    + '^CF0,30\n^FO16,66^FD' + (L.tt||'') + '  ' + String(L.side||'').toUpperCase() + '^FS\n'
+    + '^FO16,104^GB780,2,2^FS\n'
+    + '^CF0,30\n^FO16,116^FDPC    : ' + (L.pc||'') + '^FS\n'
+    + '^FO16,154^FDCOLOUR: ' + (L.colour||'') + '^FS\n'
+    + '^FO16,196^GB780,2,2^FS\n'
+    + '^FO334,214^BQN,2,5^FDLA,' + (L.payload||'') + '^FS\n'
+    + '^XZ';
+}
+function printLabel(){
+  if(!LAST_LABEL){ toast('No label to print','err'); return; }
+  const zpl = buildZpl(LAST_LABEL);
+  const url = localStorage.getItem('sunloc_printer_url');
+  if(url){
+    fetch(url,{method:'POST',headers:{'Content-Type':'text/plain'},body:zpl})
+      .then(r=>{ if(r.ok) toast('Sent to the printer','ok'); else downloadZpl(); })
+      .catch(()=>downloadZpl());
+  } else downloadZpl();
+}
+function downloadZpl(){
+  if(!LAST_LABEL){ toast('No label to download','err'); return; }
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(new Blob([buildZpl(LAST_LABEL)],{type:'text/plain'}));
+  a.download = 'ttlabel_' + String(LAST_LABEL.batch).replace(/[^A-Za-z0-9_-]/g,'') + '_' + String(LAST_LABEL.tt).replace(/[^A-Za-z0-9]/g,'') + '.zpl';
+  a.click();
+}
+function clearTtForm(){
+  ['t_colname','t_colcode','t_actual','t_virgin','t_salvage','t_cutting','t_colourkg','t_fgremelt','t_visc','t_temp','t_reason']
+    .forEach(id=>setVal(id,''));
+  for(let i=0;i<8;i++){ setVal('t_col_'+i,''); setVal('t_colg_'+i,''); }
+  drawTank(); drawCharge();
+}
+async function loadTtList(batch){
+  const out = document.getElementById('ttList');
+  document.getElementById('ttListBatch').textContent = batch || 'enter a batch';
+  if(!batch){ out.innerHTML = '<div class="empty">Enter a batch above to see its tanks.</div>'; return; }
+  try{
+    const d = await api('/api/gpr/tt/' + encodeURIComponent(batch));
+    if(!d.ok || !d.tts.length){ out.innerHTML = '<div class="empty">No tanks issued for this batch yet.</div>'; return; }
+    let h = '<table class="gtable"><thead><tr><th>TT</th><th>Side</th><th class="num">Actual L</th><th class="num">Charged kg</th>'
+          + '<th class="num">Visc</th><th>MMT</th><th>Status</th><th>Scan</th></tr></thead><tbody>';
+    d.tts.forEach(t=>{
+      h += `<tr><td class="mono"><b>${esc(t.tt_number||'')}</b></td><td>${esc((t.side||'').toUpperCase())}</td>`
+        + `<td class="num">${fmt(t.actual_l,0)}</td><td class="num">${fmt(t.total_charged_kg,1)}</td>`
+        + `<td class="num">${t.viscosity_cps!=null?esc(t.viscosity_cps):'—'}</td>`
+        + `<td class="mono">${esc(t.mmt_ref||'—')}</td><td>${statusBadge(t.status)}</td><td>${scanBtns(t)}</td></tr>`;
+    });
+    out.innerHTML = h + '</tbody></table>';
+  }catch(e){ out.innerHTML = '<div class="empty">Could not load tanks.</div>'; }
+}
+function scanBtns(t){
+  if(!t.scan_in_at) return `<button class="btn sm" onclick="ttScan(${t.id},'in')">Scan in</button>`;
+  if(!t.scan_out_at) return `<button class="btn sm ok" onclick="ttScan(${t.id},'out')">Release</button>`;
+  return '<span class="badge closed">Released</span>';
+}
+async function ttScan(id, type){
+  const d = await post('/api/gpr/tt/'+id+'/scan', { type });
+  if(!d.ok){ toast(d.detail || d.error || 'Scan failed','err'); return; }
+  toast(type==='in' ? 'Tank held' : 'Tank released', 'ok');
+  loadTtList(val('t_batch'));
+}
+
+// ── LEDGER ─────────────────────────────────────────────
+
+
+// ── v55D: GPR Planning — summary + TT time cascade ─────────────────────────
+let _planData = null, _planTimer = null;
+function _plShift(x){ return x ? (x.date+' '+x.shift) : '—'; }
+function _plBadge(st){
+  const m = { 'done':['DONE','var(--green)'], 'overdue':['TT OVERDUE','var(--red)'],
+              'prepare-now':['PREPARE NOW','var(--amber)'], 'upcoming':['Upcoming','var(--t3)'] };
+  const [t,c] = m[st] || [st,'var(--t3)'];
+  return '<span style="font-weight:700;color:'+c+'">'+t+'</span>';
+}
+async function loadPlan(){
+  const mEl = document.getElementById('pl_month');
+  if(mEl && !mEl.value){ mEl.value = new Date(Date.now()+330*60000).toISOString().slice(0,7); }
+  const sEl = document.getElementById('pl_summary'), cEl = document.getElementById('pl_cascade');
+  try{
+    const d = await api('/api/gpr/plan?floor='+encodeURIComponent(curFloor)+'&month='+encodeURIComponent(mEl?mEl.value:''));
+    if(!d.ok){ sEl.innerHTML = '<span style="color:var(--red)">'+esc(d.error||'plan failed')+'</span>'; return; }
+    _planData = d;
+    document.getElementById('pl_now').textContent = 'now: '+d.now.date+' shift '+d.now.shift+' · assumed A '+d.assumedAGradePct+'% · prep '+d.prepHours+'h';
+    // alert banner
+    const al = document.getElementById('pl_alert');
+    if(d.alerts && d.alerts.length){
+      al.innerHTML = d.alerts.map(a=>'<div style="margin:8px 0;padding:8px 12px;border:1px solid var(--amber);border-radius:6px;background:rgba(245,158,11,0.08)">'
+        + (a.status==='overdue'?'&#9888; <b style="color:var(--red)">TT OVERDUE</b>':'&#9200; <b style="color:var(--amber)">BEGIN TT PREPARATION</b>')
+        + ' — <b>'+esc(a.toBatch)+'</b> on '+esc(a.machineId)+' ('+esc(a.toColour||'?')+')'
+        + ': first cap+body TT ready by <b>'+esc(a.ttReadyBy.date+' '+a.ttReadyBy.shift+' start')+'</b>'
+        + (a.dishWash?' · <b>DISH WASH</b> (colour change '+esc(a.fromColour||'—')+' → '+esc(a.toColour||'—')+')':'')
+        + '</div>').join('');
+    } else al.innerHTML = '';
+    // sheet 1
+    let h = '';
+    (d.machines||[]).forEach(m=>{
+      h += '<div style="margin:10px 0 4px;font-weight:700;color:var(--t2)">'+esc(m.machineId)+' <span style="font-weight:400;color:var(--t3);font-size:11px">rate '+m.ratePerShift+' L/shift</span></div>';
+      h += '<table style="width:100%;border-collapse:collapse"><thead><tr>'
+        + ['Batch','Status','Customer','Colour','Size','Order (L)','Gross Plan','Gross Actual','Unscanned WIP @AIM','A-Grade AIM %','Est / Actual End'].map(x=>'<th style="text-align:left;padding:4px 6px;color:var(--t3);border-bottom:1px solid var(--b1);font-size:11px">'+x+'</th>').join('')
+        + '</tr></thead><tbody>';
+      m.batches.forEach(b=>{
+        const endTxt = b.status==='completed' ? esc(b.dprLast||b.plannedEnd||'—')+' (done)' : _plShift(b.estEnd);
+        h += '<tr'+(b.status==='running'?' style="background:rgba(96,165,250,0.06)"':'')+'>'
+          + '<td style="padding:4px 6px" class="mono">'+esc(b.batchNumber)+'</td>'
+          + '<td style="padding:4px 6px">'+esc(b.status)+'</td>'
+          + '<td style="padding:4px 6px">'+esc(b.customer||'—')+'</td>'
+          + '<td style="padding:4px 6px">'+esc(b.colour||'—')+'</td>'
+          + '<td style="padding:4px 6px">'+esc(String(b.size||'—'))+'</td>'
+          + '<td style="padding:4px 6px" class="mono">'+(b.orderQty||0)+'</td>'
+          + '<td style="padding:4px 6px" class="mono">'+(b.grossPlanned||0)+'</td>'
+          + '<td style="padding:4px 6px" class="mono">'+(b.grossActual||0)+'</td>'
+          + '<td style="padding:4px 6px" class="mono">'+(b.unscannedWipAim==null?'—':b.unscannedWipAim)+'</td>'
+          + '<td style="padding:4px 6px" class="mono">'+(b.aGradeAimPct==null?'—':b.aGradeAimPct)+'</td>'
+          + '<td style="padding:4px 6px" class="mono">'+endTxt+'</td></tr>';
+      });
+      h += '</tbody></table>';
+    });
+    sEl.innerHTML = h || '<span style="color:var(--t3)">No batches on '+esc(curFloor)+' machines in this month.</span>';
+    // sheet 2
+    let c = '<table style="width:100%;border-collapse:collapse"><thead><tr>'
+      + ['MC','Current batch','Est end','Next batch','Colour change','TT ready by','Begin prep at','Status','Actual Cap TT out','Actual Body TT out'].map(x=>'<th style="text-align:left;padding:4px 6px;color:var(--t3);border-bottom:1px solid var(--b1);font-size:11px">'+x+'</th>').join('')
+      + '</tr></thead><tbody>';
+    let any = false;
+    (d.machines||[]).forEach(m=> (m.cascade||[]).forEach(t=>{
+      any = true;
+      c += '<tr>'
+        + '<td style="padding:4px 6px">'+esc(m.machineId)+'</td>'
+        + '<td style="padding:4px 6px" class="mono">'+esc(t.fromBatch)+' <span style="color:var(--t3)">('+esc(t.fromColour||'—')+')</span></td>'
+        + '<td style="padding:4px 6px" class="mono">'+_plShift(t.endEst)+'</td>'
+        + '<td style="padding:4px 6px" class="mono">'+esc(t.toBatch)+' <span style="color:var(--t3)">('+esc(t.toColour||'—')+')</span></td>'
+        + '<td style="padding:4px 6px">'+(t.dishWash?'<b style="color:var(--amber)">DISH WASH</b>':'same colour')+'</td>'
+        + '<td style="padding:4px 6px" class="mono">'+esc(t.ttReadyBy.date+' '+t.ttReadyBy.shift+' start')+'</td>'
+        + '<td style="padding:4px 6px" class="mono">'+esc(t.beginPrepAt.date+' '+t.beginPrepAt.shift+' start')+'</td>'
+        + '<td style="padding:4px 6px">'+_plBadge(t.status)+'</td>'
+        + '<td style="padding:4px 6px" class="mono">'+esc((t.actual&&t.actual.cap&&t.actual.cap.firstOut)||(t.actual&&t.actual.cap&&t.actual.cap.firstCreated?'prepared':'—'))+'</td>'
+        + '<td style="padding:4px 6px" class="mono">'+esc((t.actual&&t.actual.body&&t.actual.body.firstOut)||(t.actual&&t.actual.body&&t.actual.body.firstCreated?'prepared':'—'))+'</td>'
+        + '</tr>';
+    }));
+    cEl.innerHTML = any ? c+'</tbody></table>' : '<span style="color:var(--t3)">No upcoming transitions for '+esc(curFloor)+' in this month.</span>';
+    if(_planTimer) clearInterval(_planTimer);
+    _planTimer = setInterval(()=>{ const pg=document.getElementById('page-plan'); if(pg && pg.classList.contains('on')) loadPlan(); else { clearInterval(_planTimer); _planTimer=null; } }, 60000);
+  }catch(e){ sEl.innerHTML = '<span style="color:var(--red)">Plan failed: '+esc(e.message||'error')+'</span>'; }
+}
+function exportPlan(){
+  if(!_planData || typeof XLSX==='undefined'){ alert('Load the plan first.'); return; }
+  const d = _planData;
+  const s1 = [['Machine','Batch','Status','Customer','Colour','Size','Order (L)','Gross Planned','Gross Actual','Unscanned WIP @AIM','A-Grade AIM %','Est/Actual End']];
+  d.machines.forEach(m=>m.batches.forEach(b=>s1.push([m.machineId,b.batchNumber,b.status,b.customer,b.colour,b.size,b.orderQty,b.grossPlanned,b.grossActual,b.unscannedWipAim,b.aGradeAimPct,(b.status==='completed'?(b.dprLast||b.plannedEnd||''):(b.estEnd?b.estEnd.date+' '+b.estEnd.shift:''))])));
+  const s2 = [['Machine','Current batch','Current colour','Est end','Next batch','Next colour','Dish wash','TT ready by','Begin prep at','Status','Actual Cap TT out','Actual Body TT out']];
+  d.machines.forEach(m=>m.cascade.forEach(t=>s2.push([m.machineId,t.fromBatch,t.fromColour,(t.endEst?t.endEst.date+' '+t.endEst.shift:''),t.toBatch,t.toColour,(t.dishWash?'YES':'no'),t.ttReadyBy.date+' '+t.ttReadyBy.shift,t.beginPrepAt.date+' '+t.beginPrepAt.shift,t.status,(t.actual&&t.actual.cap&&t.actual.cap.firstOut)||'',(t.actual&&t.actual.body&&t.actual.body.firstOut)||''])));
+  const wb = XLSX.utils.book_new();
+  const w1 = XLSX.utils.aoa_to_sheet(s1); w1['!cols'] = s1[0].map((_,i)=>({wch:[8,12,10,18,14,6,10,12,12,16,14,16][i]||12}));
+  const w2 = XLSX.utils.aoa_to_sheet(s2); w2['!cols'] = s2[0].map(()=>({wch:15}));
+  XLSX.utils.book_append_sheet(wb, w1, 'Summary');
+  XLSX.utils.book_append_sheet(wb, w2, 'TT Cascade');
+  XLSX.writeFile(wb, 'GPR_Plan_'+curFloor+'_'+(document.getElementById('pl_month')?.value||'')+'.xlsx');
+}
+
+// ── v55A item 5+6: pending physical receipts (Tracking salvage/remelt + DPR cuttings) ──
+async function loadReceipts(){
+  const el = document.getElementById('rcpList'); if(!el) return;
+  el.innerHTML = 'Loading…';
+  try{
+    const fl = (typeof visibleFloors==='function' ? visibleFloors() : [curFloor]);
+    const rows = [];
+    let tot = 0;
+    for(const f of fl){
+      const d = await api('/api/gpr/receipts?floor='+encodeURIComponent(f));
+      if(d.ok){ rows.push(...(d.pending||[])); tot += (d.totalKg||0); }
+    }
+    document.getElementById('rcpTotal').textContent = rows.length ? (tot.toFixed(2)+' kg pending') : '';
+    if(!rows.length){ el.innerHTML = '<span style="color:var(--green)">Nothing pending — all generation received into stock.</span>'; return; }
+    let h = '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+      + ['Day','Source','Batch','MC','Side','Account','Floor','Kg',''].map(x=>'<th style="text-align:left;padding:4px 6px;color:var(--t3);border-bottom:1px solid var(--b1)">'+x+'</th>').join('')+'</tr></thead><tbody>';
+    rows.forEach(r=>{
+      h += '<tr>'
+        + '<td style="padding:4px 6px" class="mono">'+esc(r.production_day||'')+'</td>'
+        + '<td style="padding:4px 6px">'+esc(r.source==='dpr'?'DPR cutting':'Tracking')+'</td>'
+        + '<td style="padding:4px 6px" class="mono">'+esc(r.batch_number||'—')+'</td>'
+        + '<td style="padding:4px 6px">'+esc(r.machine_id||'—')+'</td>'
+        + '<td style="padding:4px 6px">'+esc((r.side||'—').toUpperCase())+'</td>'
+        + '<td style="padding:4px 6px">'+esc(r.account_label||r.account)+'</td>'
+        + '<td style="padding:4px 6px">'+esc(r.floor||'—')+'</td>'
+        + '<td style="padding:4px 6px" class="mono">'+Number(r.qty_kg||0).toFixed(2)+'</td>'
+        + '<td style="padding:4px 6px"><button class="btn" style="padding:3px 10px;font-size:11px" onclick="acceptReceipt('+r.id+')">Accept</button></td>'
+        + '</tr>';
+    });
+    el.innerHTML = h + '</tbody></table>';
+  }catch(e){ el.innerHTML = '<span style="color:var(--red)">Receipts failed: '+esc(e.message||'error')+'</span>'; }
+}
+async function acceptReceipt(id){
+  try{
+    const d = await post('/api/gpr/receipts/'+id+'/accept', {});
+    if(!d.ok){ alert(d.detail||d.error||'Accept failed'); return; }
+    loadReceipts(); if(typeof loadAccountStrip==='function') loadAccountStrip(); if(typeof loadLedger==='function') loadLedger();
+  }catch(e){ alert('Accept failed: '+(e.message||'error')); }
+}
+async function loadAccountStrip(){
+  const el = document.getElementById('acctStrip');
+  try{
+    const d = await api('/api/gpr/ledger/summary?view=account&cumulative=1');
+    const by = {}; (d.rows||[]).forEach(r=>{ by[r.account]=r; });
+    el.innerHTML = Object.entries(ACCOUNTS).map(([k,label])=>{
+      const r = by[k] || { generated:0, consumed:0, balance:0 };
+      const auto = (k==='aim_salvage'||k==='printed_salvage');
+      return `<div class="acct" data-a="${k}">`
+        + (auto?'<div class="acct-auto">auto</div>':'')
+        + `<div class="acct-name">${esc(label)}</div>`
+        + `<div class="acct-bal">${fmt(r.balance,1)}<span>kg</span></div>`
+        + `<div class="acct-flow"><b class="up">▲ ${fmt(r.generated,1)}</b><b class="dn">▼ ${fmt(r.consumed,1)}</b></div>`
+        + `</div>`;
+    }).join('');
+  }catch(e){ el.innerHTML=''; }
+}
+async function loadLedger(view, btn){
+  if(view) LEDGER_VIEW = view; else view = LEDGER_VIEW;
+  document.querySelectorAll('#page-ledger .ftabs .ftab').forEach(x=>x.classList.remove('on'));
+  const tab = btn || document.getElementById('lv-'+view);
+  if(tab) tab.classList.add('on');
+  const out = document.getElementById('ledgerResult');
+  out.innerHTML = '<div class="empty">Loading…</div>';
+  const q = new URLSearchParams();
+  if(val('lg_batch')) q.set('batch', val('lg_batch'));
+  if(val('lg_from')) q.set('from', val('lg_from'));
+  if(val('lg_to')) q.set('to', val('lg_to'));
+  try{
+    if(view==='lots'){
+      const d = await api('/api/gpr/ledger/lots');
+      if(!d.ok || !d.lots.length){ out.innerHTML='<div class="empty">No stock lots with a positive balance.</div>'; return; }
+      let h = '<table class="gtable"><thead><tr><th>Account</th><th>PC</th><th>Colour</th><th>Side</th><th class="num">Balance kg</th><th>First seen</th></tr></thead><tbody>';
+      d.lots.forEach(l=>{
+        h += `<tr><td>${esc(l.account_label)}</td><td class="mono">${esc(l.pc_code||'—')}</td>`
+          + `<td>${esc(l.colour_name||l.colour_code||'—')}</td><td>${esc((l.side||'').toUpperCase()||'—')}</td>`
+          + `<td class="num"><b>${fmt(l.balance_kg,1)}</b></td><td class="mono">${esc(String(l.first_seen||'').slice(0,10))}</td></tr>`;
+      });
+      out.innerHTML = h + '</tbody></table>';
+      return;
+    }
+    q.set('view', view);
+    const d = await api('/api/gpr/ledger/summary?' + q.toString());
+    if(!d.ok || !d.rows.length){ out.innerHTML='<div class="empty">No movements for this selection.</div>'; return; }
+    let h = '';
+    if(view==='movements'){
+      h = '<table class="gtable"><thead><tr><th>Day</th><th>Batch</th><th>TT</th><th>Account</th><th>Movement</th><th>Source</th><th class="num">kg</th><th>By</th></tr></thead><tbody>';
+      d.rows.forEach(r=>{
+        const dir = ['consumption','draw'].includes(r.movement_type);
+        h += `<tr><td class="mono">${esc(r.production_day||'')}</td><td class="mono">${esc(r.batch_number||'—')}</td>`
+          + `<td class="mono">${r.tt_id||'—'}</td><td>${esc(ACCOUNTS[r.account]||r.account)}</td>`
+          + `<td><span class="badge ${dir?'warn':'inprod'}">${esc(r.movement_type)}</span></td>`
+          + `<td><span class="badge ${r.source==='tracking'?'info':'planned'}">${esc(r.source)}</span></td>`
+          + `<td class="num" style="color:${dir?'var(--red)':'var(--green)'}">${dir?'−':'+'}${fmt(r.qty_kg,1)}</td>`
+          + `<td>${esc(r.moved_by||'')}</td></tr>`;
+      });
+    } else if(view==='daily'){
+      h = '<table class="gtable"><thead><tr><th>Production day</th><th>Account</th><th class="num">Generated</th><th class="num">Consumed</th><th class="num">Net</th></tr></thead><tbody>';
+      d.rows.forEach(r=>{
+        h += `<tr><td class="mono">${esc(r.day||'')}</td><td>${esc(r.account_label||r.account)}</td>`
+          + `<td class="num">${fmt(r.generated,1)}</td><td class="num">${fmt(r.consumed,1)}</td>`
+          + `<td class="num"><b>${r.balance>=0?'+':''}${fmt(r.balance,1)}</b></td></tr>`;
+      });
+    } else if(view==='colour'){
+      h = '<table class="gtable"><thead><tr><th>Colour code</th><th>Colour</th><th>Account</th><th class="num">Generated</th><th class="num">Consumed</th><th class="num">Balance</th></tr></thead><tbody>';
+      d.rows.forEach(r=>{
+        h += `<tr><td class="mono">${esc(r.colour_code||'—')}</td><td>${esc(r.colour_name||'—')}</td>`
+          + `<td>${esc(r.account_label||r.account)}</td><td class="num">${fmt(r.generated,1)}</td>`
+          + `<td class="num">${fmt(r.consumed,1)}</td><td class="num"><b>${fmt(r.balance,1)}</b></td></tr>`;
+      });
+    } else {
+      h = '<table class="gtable"><thead><tr><th>Account</th><th class="num">Generated</th><th class="num">Consumed</th><th class="num">Balance kg</th></tr></thead><tbody>';
+      d.rows.forEach(r=>{
+        h += `<tr><td><b>${esc(r.account_label||r.account)}</b></td><td class="num">${fmt(r.generated,1)}</td>`
+          + `<td class="num">${fmt(r.consumed,1)}</td><td class="num"><b>${fmt(r.balance,1)}</b></td></tr>`;
+      });
+    }
+    out.innerHTML = h + '</tbody></table>';
+  }catch(e){ out.innerHTML='<div class="empty">Could not load the ledger.</div>'; }
+}
+async function saveMovement(){
+  const type = document.getElementById('mv_type').value;
+  const account = document.getElementById('mv_account').value;
+  if(num('mv_kg') <= 0){ toast('Enter a quantity in kg','err'); return; }
+  const body = { account, qty_kg:num('mv_kg'), batch_number:val('mv_batch')||null,
+                 machine_id:val('mv_machine')||null, side:document.getElementById('mv_side').value||null,
+                 colour_code:val('mv_colcode')||null, pc_code:val('mv_pc')||null };
+  const d = await post('/api/gpr/ledger/' + (type==='generate'?'generate':'consume'), body);
+  if(!d.ok){ toast(d.detail || d.error || 'Could not record the movement','err'); return; }
+  toast('Movement recorded','ok');
+  setVal('mv_kg','');
+  loadAccountStrip(); loadLedger();
+}
+async function loadLegacyBalance(){
+  const el = document.getElementById('legacyBalance');
+  try{
+    const d = await api('/api/gpr/legacy/balance');
+    if(!d.ok || !d.legacy.length){ el.innerHTML='<div class="empty" style="padding:12px">Legacy stock has not been seeded yet.</div>'; return; }
+    let h = '<div class="tscroll"><table class="gtable"><thead><tr><th>Location</th><th>Account</th>'
+          + '<th class="num">Seeded</th><th class="num">Drawn</th><th class="num">Remaining kg</th></tr></thead><tbody>';
+    d.legacy.forEach(l=>{
+      const pct = l.seeded_kg>0 ? (l.balance_kg/l.seeded_kg*100) : 0;
+      h += `<tr><td><b>${esc(l.location)}</b></td><td>${esc(l.account_label||l.account)}</td>`
+        + `<td class="num">${fmt(l.seeded_kg,1)}</td><td class="num">${fmt(l.drawn_kg,1)}</td>`
+        + `<td class="num"><b style="color:${pct<15?'var(--red)':pct<40?'var(--amber)':'var(--t1)'}">${fmt(l.balance_kg,1)}</b></td></tr>`;
+    });
+    h += `<tr style="background:var(--s3)"><td colspan="4"><b>Total remaining</b></td>`
+       + `<td class="num"><b>${fmt(d.totalBalanceKg,1)}</b></td></tr>`;
+    el.innerHTML = h + '</tbody></table></div>';
+  }catch(e){ el.innerHTML=''; }
+}
+async function seedLegacy(){
+  if(!val('lgs_loc')){ toast('Enter the storage location','err'); return; }
+  if(num('lgs_kg') <= 0){ toast('Enter a quantity in kg','err'); return; }
+  const d = await post('/api/gpr/legacy/seed', { account: document.getElementById('lgs_acct').value,
+    location: val('lgs_loc'), qty_kg: num('lgs_kg'), note: val('lgs_note') });
+  if(!d.ok){ toast(d.error||'Could not seed legacy stock','err'); return; }
+  toast(val('lgs_loc') + ' added','ok');
+  setVal('lgs_loc',''); setVal('lgs_kg',''); setVal('lgs_note','');
+  loadLegacyBalance(); loadLegacyLocations();
+}
+// Locations come from what has actually been seeded, so a draw can only be booked
+// against a real store rather than a free-typed name that would never reconcile.
+async function loadLegacyLocations(){
+  const sel = document.getElementById('t_legacyloc');
+  if(!sel) return;
+  try{
+    const d = await api('/api/gpr/legacy/balance');
+    const locs = (d.legacy||[]).filter(l=>l.balance_kg>0);
+    sel.innerHTML = locs.length
+      ? locs.map(l=>`<option value="${esc(l.location)}">${esc(l.location)} · ${fmt(l.balance_kg,0)} kg left</option>`).join('')
+      : '<option value="">— none seeded —</option>';
+  }catch(e){}
+}
+
+// ── YIELD ──────────────────────────────────────────────
+function switchYield(which, btn){
+  document.querySelectorAll('#page-yield .ftabs .ftab').forEach(x=>x.classList.remove('on'));
+  if(btn) btn.classList.add('on');
+  document.getElementById('yieldBatchPane').style.display = which==='batch'?'block':'none';
+  document.getElementById('yieldDailyPane').style.display = which==='daily'?'block':'none';
+  document.getElementById('yieldMonthPane').style.display = which==='month'?'block':'none';
+  if(which==='daily' && !val('yd_to')){ setVal('yd_to', productionDay()); setVal('yd_from', productionDay()); }
+  if(which==='month' && !val('ym_month')) setVal('ym_month', productionDay().slice(0,7));
+}
+function yCls(pct, target){
+  if(pct==null) return '';
+  const v = pct - target;
+  return Math.abs(v) <= 2 ? 'green' : (v < 0 ? 'red' : 'amber');
+}
+async function loadYieldReport(){
+  const out = document.getElementById('yieldResult');
+  out.innerHTML = '<div class="empty">Running…</div>';
+  const q = new URLSearchParams();
+  ['yr_machine','yr_pc','yr_from','yr_to'].forEach(id=>{ if(val(id)) q.set(id.slice(3), val(id)); });
+  if(document.getElementById('yr_floor').value) q.set('floor', document.getElementById('yr_floor').value);
+  try{
+    const d = await api('/api/gpr/yield-report?' + q.toString());
+    if(!d.ok || !d.rows.length){ out.innerHTML='<div class="empty">No batches match these filters.</div>'; return; }
+    let h = '<table class="gtable"><thead><tr><th>Batch</th><th class="num">Yield %</th><th class="num">Variance</th>'
+          + '<th class="num">Output kg</th><th class="num">Material kg</th><th class="num">Packed L</th>'
+          + '<th class="num">WIP L</th><th class="num">Tanks</th></tr></thead><tbody>';
+    d.rows.forEach(r=>{
+      const cls = yCls(r.yieldPct, r.target);
+      h += `<tr class="clickable" onclick="gotoBatch('${esc(r.batch)}')"><td class="mono"><b>${esc(r.batch)}</b></td>`
+        + `<td class="num"><b style="color:var(--${cls==='green'?'green':cls==='red'?'red':cls==='amber'?'amber':'t1'})">`
+        + (r.yieldPct!=null?fmt(r.yieldPct,2)+'%':'—')+'</b></td>'
+        + `<td class="num">${r.variance!=null?(r.variance>=0?'+':'')+fmt(r.variance,2):'—'}</td>`
+        + `<td class="num">${fmt(r.numeratorKg,0)}</td><td class="num">${fmt(r.denominatorKg,0)}</td>`
+        + `<td class="num">${fmt(r.packedLakhs,2)}</td><td class="num">${fmt(r.wipLakhs,2)}</td>`
+        + `<td class="num">${r.ttCount}</td></tr>`;
+    });
+    out.innerHTML = h + '</tbody></table>';
+  }catch(e){ out.innerHTML='<div class="empty">Could not run the report.</div>'; }
+}
+async function loadYieldDaily(){
+  const out = document.getElementById('yieldDailyResult');
+  out.innerHTML = '<div class="empty">Computing…</div>';
+  const q = new URLSearchParams();
+  if(val('yd_from')) q.set('from', val('yd_from'));
+  if(val('yd_to')) q.set('to', val('yd_to'));
+  try{
+    const d = await api('/api/gpr/yield-daily?' + q.toString());
+    if(!d.ok || !d.days.length){ out.innerHTML='<div class="empty">No tank activity in this range.</div>'; return; }
+    let h = '<div class="hint" style="margin-bottom:10px">A production day runs 06:00 to 06:00, exactly as DPR counts it — C-shift belongs to the day it started.</div>';
+    d.days.forEach(day=>{
+      const c = day.consolidated, cls = yCls(c.yieldPct, d.target);
+      h += '<div class="card" style="margin-bottom:10px;box-shadow:none">';
+      h += '<div class="card-title" style="font-size:14px">'+esc(day.day)
+         + ' <span class="badge '+(cls==='green'?'inprod':cls==='red'?'warn':'open')+'">'
+         + (c.yieldPct!=null?fmt(c.yieldPct,2)+'%':'—')+'</span></div>';
+      h += '<div class="tscroll"><table class="gtable"><thead><tr><th>Floor</th><th class="num">Yield %</th><th class="num">Variance</th>'
+         + '<th class="num">Output kg</th><th class="num">Material kg</th><th class="num">Batches</th></tr></thead><tbody>';
+      day.floors.forEach(f=>{
+        const fc = yCls(f.yieldPct, d.target);
+        h += `<tr><td>${esc(FLOOR_LABELS[f.floor]||f.floor)}</td>`
+          + `<td class="num"><b style="color:var(--${fc==='green'?'green':fc==='red'?'red':fc==='amber'?'amber':'t1'})">`
+          + (f.yieldPct!=null?fmt(f.yieldPct,2)+'%':'—')+'</b></td>'
+          + `<td class="num">${f.yieldPct!=null?((f.yieldPct-d.target)>=0?'+':'')+fmt(f.yieldPct-d.target,2):'—'}</td>`
+          + `<td class="num">${fmt(f.numeratorKg,0)}</td><td class="num">${fmt(f.denominatorKg,0)}</td>`
+          + `<td class="num">${f.batches}</td></tr>`;
+      });
+      h += '</tbody></table></div></div>';
+    });
+    out.innerHTML = h;
+  }catch(e){ out.innerHTML='<div class="empty">Could not compute daily yield.</div>'; }
+}
+async function loadYieldMonth(){
+  const out = document.getElementById('yieldMonthResult');
+  const month = val('ym_month') || productionDay().slice(0,7);
+  out.innerHTML = '<div class="empty">Computing…</div>';
+  try{
+    const d = await api('/api/gpr/yield-live?month=' + encodeURIComponent(month));
+    if(!d.ok){ out.innerHTML='<div class="empty">Could not compute monthly yield.</div>'; return; }
+    const c = d.consolidated, cls = yCls(c.yieldPct, d.target);
+    let h = '<div class="kgrid">'
+      + kpi('Consolidated yield', c.yieldPct!=null?fmt(c.yieldPct,2)+'%':'—', cls)
+      + kpi('Target', d.target+'%')
+      + kpi('Total output', fmt(c.numeratorKg,0)+' kg')
+      + kpi('Total material', fmt(c.denominatorKg,0)+' kg')
+      + '</div>';
+    if(!d.floors.length){ out.innerHTML = h + '<div class="empty">No tank activity in '+esc(month)+'.</div>'; return; }
+    h += '<div class="tscroll"><table class="gtable"><thead><tr><th>Floor</th><th class="num">Yield %</th><th class="num">Variance</th>'
+       + '<th class="num">Output kg</th><th class="num">Material kg</th><th class="num">Batches</th></tr></thead><tbody>';
+    d.floors.forEach(f=>{
+      const fc = yCls(f.yieldPct, d.target);
+      h += `<tr><td>${esc(FLOOR_LABELS[f.floor]||f.floor)}</td>`
+        + `<td class="num"><b style="color:var(--${fc==='green'?'green':fc==='red'?'red':fc==='amber'?'amber':'t1'})">`
+        + (f.yieldPct!=null?fmt(f.yieldPct,2)+'%':'—')+'</b></td>'
+        + `<td class="num">${f.yieldPct!=null?((f.yieldPct-d.target)>=0?'+':'')+fmt(f.yieldPct-d.target,2):'—'}</td>`
+        + `<td class="num">${fmt(f.numeratorKg,0)}</td><td class="num">${fmt(f.denominatorKg,0)}</td>`
+        + `<td class="num">${f.batches}</td></tr>`;
+    });
+    h += '</tbody></table></div>';
+    h += '<div class="hint" style="margin-top:9px">Only batches with tanks issued inside '+esc(month)+' are counted, plus that month\u2019s approved crushing.</div>';
+    out.innerHTML = h;
+  }catch(e){ out.innerHTML='<div class="empty">Could not compute monthly yield.</div>'; }
+}
+
+// ── CRUSHING ───────────────────────────────────────────
+async function proposeCrush(){
+  if(num('cr_kg') <= 0){ toast('Enter a quantity in kg','err'); return; }
+  const d = await post('/api/gpr/crush/propose', {
+    account: document.getElementById('cr_acct').value, colour_code: val('cr_colcode'),
+    floor: document.getElementById('cr_floor').value, batch_number: val('cr_batch')||null,
+    qty_kg: num('cr_kg'), reason: val('cr_reason') });
+  if(!d.ok){ toast(d.error||'Could not submit the proposal','err'); return; }
+  toast('Sent for approval','ok');
+  setVal('cr_kg',''); setVal('cr_reason','');
+  loadCrush('proposed');
+}
+async function loadCrush(status, btn){
+  document.querySelectorAll('#page-crush .ftabs .ftab').forEach(x=>x.classList.remove('on'));
+  if(btn) btn.classList.add('on');
+  const out = document.getElementById('crushResult');
+  out.innerHTML = '<div class="empty">Loading…</div>';
+  try{
+    const d = await api('/api/gpr/crush' + (status ? ('?status='+encodeURIComponent(status)) : ''));
+    if(!d.ok || !d.rows.length){ out.innerHTML='<div class="empty">Nothing here.</div>'; return; }
+    const isAdmin = SESSION.role === 'admin';
+    let h = '<div class="kgrid">'+kpi('Awaiting decision', fmt(d.pendingKg,1)+' kg','amber')
+          + kpi('Approved', fmt(d.approvedKg,1)+' kg','green')+'</div>';
+    h += '<table class="gtable"><thead><tr><th>Proposed</th><th>Account</th><th>Colour</th><th>Floor</th><th>Batch</th>'
+       + '<th class="num">kg</th><th>Reason</th><th>Status</th>'+(isAdmin?'<th>Decide</th>':'')+'</tr></thead><tbody>';
+    d.rows.forEach(r=>{
+      const cls = r.status==='approved'?'inprod':r.status==='rejected'?'warn':'open';
+      h += `<tr><td class="mono">${esc(String(r.proposed_at||'').slice(0,10))}</td>`
+        + `<td>${esc(r.account_label||r.account)}</td><td class="mono">${esc(r.colour_code||'—')}</td>`
+        + `<td>${esc(FLOOR_LABELS[r.floor]||r.floor||'—')}</td><td class="mono">${esc(r.batch_number||'—')}</td>`
+        + `<td class="num"><b>${fmt(r.qty_kg,1)}</b></td><td>${esc(r.reason||'—')}</td>`
+        + `<td><span class="badge ${cls}">${esc(r.status)}</span></td>`
+        + (isAdmin ? `<td>${r.status==='proposed'
+            ? `<button class="btn sm ok" onclick="decideCrush(${r.id},'approved')">Approve</button> `
+            + `<button class="btn sm danger" onclick="decideCrush(${r.id},'rejected')">Reject</button>`
+            : `<span class="mono" style="color:var(--t4)">${esc(r.decided_by||'')}</span>`}</td>` : '')
+        + '</tr>';
+    });
+    out.innerHTML = h + '</tbody></table>';
+  }catch(e){ out.innerHTML='<div class="empty">Could not load proposals.</div>'; }
+}
+async function decideCrush(id, decision){
+  if(decision==='approved' && !confirm('Approve this crushing? The stock will be debited and the quantity will count against floor and daily yield.')) return;
+  const d = await post('/api/gpr/crush/'+id+'/decide', { decision });
+  if(!d.ok){ toast(d.error||'Could not record the decision','err'); return; }
+  toast('Marked ' + decision, 'ok');
+  loadCrush('proposed'); loadAccountStrip();
+}
+
+// ── BATCH ──────────────────────────────────────────────
+async function loadBatch(){
+  const batch = val('bs_batch');
+  const out = document.getElementById('batchResult');
+  if(!batch){ toast('Enter a batch number','err'); return; }
+  out.innerHTML = '<div class="empty">Loading…</div>';
+  try{
+    const d = await api('/api/gpr/batch-summary/' + encodeURIComponent(batch));
+    if(!d.ok){ out.innerHTML='<div class="empty">'+esc(d.error||'Not found')+'</div>'; return; }
+    const st = d.status, y = d.yield, o = d.order;
+    const cls = yCls(y.yieldPct, y.target);
+    let h = '';
+
+    h += '<div class="row" style="margin-bottom:14px">';
+    h += '<span class="badge '+(st.status==='closed'?'closed':st.status==='in_production'?'inprod':'planned')
+       + '" style="font-size:12px;padding:4px 12px">'+esc(String(st.status||'planned').replace('_',' '))+'</span>';
+    if(st.status!=='in_production') h += `<button class="btn ok" onclick="setStatus('${esc(batch)}','in_production')">Mark in production</button>`;
+    if(st.status==='in_production') h += `<button class="btn primary" onclick="setStatus('${esc(batch)}','close')">Close batch</button>`;
+    if(st.status==='closed') h += `<button class="btn" onclick="setStatus('${esc(batch)}','reopen')">Reopen</button>`;
+    h += '</div>';
+    h += '<div class="banner '+(d.cascadeArmed?'ok':'info')+'">'
+       + (d.cascadeArmed ? '<b>Cascade armed.</b><span>Closing this batch will stop DPR entry against it.</span>'
+                         : '<b>Additive mode.</b><span>This status is GPR\u2019s own record. DPR and Planning are unaffected.</span>')
+       + '</div>';
+
+    if(o) h += '<div class="hint" style="margin-bottom:12px">'+esc(o.customer||'')+' · size '+esc(o.size)+' · '
+             + esc(o.machineId)+' · order '+fmt(o.qty,2)+' L · gross '+fmt(o.grossQty,2)+' L</div>';
+
+    h += '<div class="kgrid">'
+      + kpi('Yield', y.yieldPct!=null?fmt(y.yieldPct,2)+'%':'—', cls)
+      + kpi('Target', y.target+'%')
+      + kpi('Variance', y.variance!=null?(y.variance>=0?'+':'')+fmt(y.variance,2):'—', cls)
+      + kpi('Tanks', y.ttCount + ' · ' + fmt(y.ttLitres,0) + ' L')
+      + '</div>';
+
+    h += '<div class="fgroup-title">Yield working</div><div class="tscroll"><table class="gtable"><tbody>'
+      + r2('Output — packed + WIP (kg)', fmt(y.numerator.total,2), true)
+      + r2('&nbsp;&nbsp;Packed', fmt(y.numerator.packedLakhs,3)+' L  =  '+fmt(y.numerator.packedWeightKg,2)+' kg')
+      + r2('&nbsp;&nbsp;WIP (frozen suite formula)', fmt(y.numerator.wipLakhs,3)+' L  =  '+fmt(y.numerator.wipWeightKg,2)+' kg')
+      + r2('Material — total (kg)', fmt(y.denominator.total,2), true)
+      + r2('&nbsp;&nbsp;Fresh material issued', fmt(y.denominator.freshMaterialKg,2)+' kg')
+      + r2('&nbsp;&nbsp;&nbsp;&nbsp;virgin / colour / FG remelt', fmt(y.denominator.virginKg,1)+' / '+fmt(y.denominator.colourKg,1)+' / '+fmt(y.denominator.fgRemeltKg,1))
+      + r2('&nbsp;&nbsp;Reuse consumed', fmt(y.denominator.consumedKg,2)+' kg')
+      + r2('&nbsp;&nbsp;Reuse generated (cutting + oily)', '− '+fmt(y.denominator.generatedManualKg,2)+' kg')
+      + r2('&nbsp;&nbsp;Salvage recovered (from Tracking)', '− '+fmt(y.denominator.salvageRecoveredKg,2)+' kg')
+      + r2('&nbsp;&nbsp;&nbsp;&nbsp;credited to stock automatically', fmt(y.denominator.generatedTrackingKg,2)+' kg')
+      + r2('Avg capsule weight', fmt(y.avgMg,1)+' mg  ('+(y.weightBasis?y.weightBasis.basis:'size-master')+')')
+      + (y.denominator.aimRemeltKg>0 ? r2('AIM remelt (out of process, shown for reference)', fmt(y.denominator.aimRemeltKg,2)+' kg') : '')
+      + '</tbody></table></div>';
+
+    h += '<div class="fgroup-title">MMT charges</div>';
+    if(d.mmts.length){
+      h += '<div class="tscroll"><table class="gtable"><thead><tr><th>Reference</th><th>Floor</th><th>Vendor</th><th>Gelatine batch</th><th class="num">Total kg</th><th class="num">Allocated</th></tr></thead><tbody>';
+      d.mmts.forEach(m=>{ h += `<tr><td class="mono">${esc(m.mmt_ref)}</td><td>${esc(FLOOR_LABELS[m.floor]||m.floor)}</td>`
+        + `<td>${esc(m.gelatine_vendor||'—')}</td><td class="mono">${esc(m.gelatine_batch||'—')}</td>`
+        + `<td class="num">${fmt(m.total_kg,0)}</td><td class="num">${fmt(m.allocated_kg,0)}</td></tr>`; });
+      h += '</tbody></table></div>';
+    } else h += '<div class="empty">No charges linked.</div>';
+
+    h += '<div class="fgroup-title">Transfer tanks ('+d.tts.length+')</div>';
+    if(d.tts.length){
+      h += '<div class="tscroll"><table class="gtable"><thead><tr><th>TT</th><th>Side</th><th>Day</th><th class="num">L</th>'
+         + '<th class="num">Virgin</th><th class="num">Charged</th><th class="num">Visc</th><th>Status</th></tr></thead><tbody>';
+      d.tts.forEach(t=>{ h += `<tr><td class="mono"><b>${esc(t.tt_number||'')}</b></td><td>${esc((t.side||'').toUpperCase())}</td>`
+        + `<td class="mono">${esc(t.production_day||'—')}</td><td class="num">${fmt(t.actual_l,0)}</td>`
+        + `<td class="num">${fmt(t.virgin_kg,1)}</td><td class="num">${fmt(t.total_charged_kg,1)}</td>`
+        + `<td class="num">${t.viscosity_cps!=null?esc(t.viscosity_cps):'—'}</td><td>${statusBadge(t.status)}</td></tr>`; });
+      h += '</tbody></table></div>';
+    } else h += '<div class="empty">No tanks issued.</div>';
+
+    h += '<div class="fgroup-title">Ledger movements</div>';
+    if(d.ledger.length){
+      h += '<div class="tscroll"><table class="gtable"><thead><tr><th>Account</th><th>Movement</th><th>Source</th><th class="num">kg</th></tr></thead><tbody>';
+      d.ledger.forEach(l=>{ const dir=['consumption','draw'].includes(l.movement_type);
+        h += `<tr><td>${esc(l.account_label)}</td><td><span class="badge ${dir?'warn':'inprod'}">${esc(l.movement_type)}</span></td>`
+        + `<td><span class="badge ${l.source==='tracking'?'info':'planned'}">${esc(l.source)}</span></td>`
+        + `<td class="num">${fmt(l.kg,2)}</td></tr>`; });
+      h += '</tbody></table></div>';
+    } else h += '<div class="empty">No ledger movements.</div>';
+
+    out.innerHTML = h;
+  }catch(e){ out.innerHTML='<div class="empty">Could not load the batch.</div>'; }
+}
+function r2(k,v,bold){
+  return '<tr><td style="width:52%;color:var(--t2)'+(bold?';font-weight:700':'')+'">'+k+'</td>'
+       + '<td class="mono"'+(bold?' style="font-weight:500"':'')+'>'+esc(v)+'</td></tr>';
+}
+async function setStatus(batch, action){
+  if(action==='close' && !confirm('Close '+batch+' in GPR?')) return;
+  const d = await post('/api/gpr/batch-status/'+encodeURIComponent(batch)+'/set', { action });
+  if(!d.ok){ toast(d.detail || d.error || 'Could not change the status','err'); return; }
+  toast(d.note || ('Marked ' + action.replace('_',' ')), 'ok');
+  loadBatch();
+}
+
+// ── MASTERS ────────────────────────────────────────────
+async function renderMasters(){
+  const out = document.getElementById('mastersView');
+  MASTERS = null;
+  const m = await ensureMasters();
+  const canEdit = SESSION.role === 'admin' || SESSION.role === 'gpr_manager';
+  let h = '';
+
+  const C = m.gpr_constants || {};
+  h += '<div class="fgroup-title">Cascade</div>';
+  h += '<div class="banner '+(Number(C.cascadeEnabled||0)===1?'ok':'info')+'">'
+     + (Number(C.cascadeEnabled||0)===1
+        ? '<b>Armed.</b><span>GPR controls In-Production and batch closing across the suite.</span>'
+        : '<b>Additive mode.</b><span>GPR records status for its own reporting only. DPR and Planning run on their existing rules. Set cascadeEnabled to 1 when the team is ready.</span>')
+     + '</div>';
+
+  h += '<div class="fgroup-title">Process constants</div><div class="tscroll"><table class="gtable"><thead><tr><th>Constant</th><th class="num">Value</th>'
+     + (canEdit?'<th></th>':'') + '</tr></thead><tbody>';
+  Object.entries(C).forEach(([k,v])=>{
+    h += `<tr><td class="mono">${esc(k)}</td>`
+      + `<td class="num">${canEdit?`<input id="mc_${esc(k)}" value="${esc(v)}" style="text-align:right;padding:3px 6px">`:esc(v)}</td>`
+      + (canEdit?`<td><button class="btn sm" onclick="saveConstant('${esc(k)}')">Save</button></td>`:'')
+      + '</tr>';
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div class="fgroup-title">Machine tank sizes (litres)</div><div class="tscroll"><table class="gtable"><thead><tr><th>Machine</th><th>Floor</th>'
+     + '<th class="num">Cap capacity</th><th class="num">Cap fill</th><th class="num">Body capacity</th><th class="num">Body fill</th></tr></thead><tbody>';
+  Object.entries(m.tt_machine_master||{}).forEach(([k,v])=>{
+    h += `<tr><td class="mono"><b>${esc(k)}</b></td><td>${esc(FLOOR_LABELS[v.floor]||v.floor)}</td>`
+      + `<td class="num">${v.capCapL}</td><td class="num">${v.capFillL}</td>`
+      + `<td class="num">${v.bodyCapL}</td><td class="num">${v.bodyFillL}</td></tr>`;
+  });
+  h += '</tbody></table></div>';
+
+  h += '<div class="fgroup-title">Average capsule weights</div><div class="tscroll"><table class="gtable"><thead><tr>';
+  const w = m.capsule_weights || {};
+  Object.keys(w).forEach(k=>{ h += `<th class="num">${esc(k)}</th>`; });
+  h += '</tr></thead><tbody><tr>';
+  Object.values(w).forEach(v=>{ h += `<td class="num"><b>${esc(v.avgMg)}</b> mg</td>`; });
+  h += '</tr></tbody></table></div>';
+
+  h += '<div class="fgroup-title">Colourants</div><div style="display:flex;flex-wrap:wrap;gap:6px">';
+  (m.colourants||[]).forEach(c=>{ h += `<span class="badge info" style="text-transform:none;font-size:11px">${esc(c)}</span>`; });
+  h += '</div>';
+
+  out.innerHTML = h;
+}
+async function saveConstant(key){
+  const el = document.getElementById('mc_' + key);
+  if(!el) return;
+  let v = el.value.trim();
+  const n = Number(v);
+  const C = Object.assign({}, (MASTERS && MASTERS.gpr_constants) || {});
+  C[key] = (v !== '' && !isNaN(n)) ? n : v;
+  const d = await post('/api/gpr/masters', { key:'gpr_constants', value:C });
+  if(!d.ok){ toast(d.error||'Could not save','err'); return; }
+  toast(key + ' saved','ok');
+  MASTERS = null; await ensureMasters(); renderModeBanner();
+}
+
+// ── BOOT ───────────────────────────────────────────────
+async function startApp(){
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('nav').style.display = 'flex';
+  document.getElementById('wrap').style.display = 'block';
+  await ensureMasters();
+  buildNav();
+  buildFloorTabs();
+  fillFloorSelects();
+  fillAccountSelects();
+  renderModeBanner();
+  const t = productionDay();
+  setVal('yd_from', t); setVal('yd_to', t); setVal('ym_month', t.slice(0,7));
+  loadSheet();
+}
+(async function(){
+  if(await verifySession()) startApp();
+  else document.getElementById('login').style.display = 'flex';
+})();
+</script>
+</body>
+</html>

@@ -474,7 +474,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v54S</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v55E</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1360,7 +1360,7 @@ function renderMachineSettings(){
   container.innerHTML=html;
 }
 
-function blankMachine(){ return {runs:[blankRun()], aim:'', operator:'', proc:'', mech:'', elec:'', gpr:'', hvac:'', dw:''}; }
+function blankMachine(){ return {runs:[blankRun()], aim:'', capCut:'', bodyCut:'', operator:'', proc:'', mech:'', elec:'', gpr:'', hvac:'', dw:''}; }   // v55A item 6: cap/body cutting kg per machine per shift
 function blankShift(fl){
   const s={incharge:'',fitter:'',chemist:'',
     electrical:[],utility:[],aim_staff:[],gpr_staff:[],
@@ -1510,6 +1510,10 @@ function collectForm(){
     getActiveMachines(fl).forEach(mc=>{
       const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
       m.aim=v(`aim-${sh}-${mc.id}`)||'';
+      // v55A item 6 (Ishan, 18 Sep): cap/body cutting generated at this machine this shift, in kg.
+      // Flows to the GPR chemist's Pending Receipts (Stock Ledger tab) for physical acceptance.
+      m.capCut=v(`capcut-${sh}-${mc.id}`)||'';
+      m.bodyCut=v(`bodycut-${sh}-${mc.id}`)||'';
       m.operator=v(`op-${sh}-${mc.id}`)||'';
       // Collect group operators (stored on each machine in the group)
       const grpOps=collectGroupOperators(sh,fl,mc.id);
@@ -2562,6 +2566,8 @@ function renderShifts(){
             <th class="r" style="min-width:52px">AIM</th>
             <th class="r" style="min-width:52px">Backlog</th>
             <th class="r" style="min-width:52px;color:var(--amber)">Re-Sort</th>
+            <th class="r" style="min-width:58px;color:var(--cyan)">Cap Cut <span style="font-size:8px;font-weight:400">kg→GPR</span></th>
+            <th class="r" style="min-width:58px;color:var(--cyan)">Body Cut <span style="font-size:8px;font-weight:400">kg→GPR</span></th>
           </tr></thead>
           <tbody>`;
 
@@ -2724,6 +2730,8 @@ function renderShifts(){
         <td><input type="number" id="aim-${sh}-${mc.id}" value="${m.aim||''}" placeholder="0" min="0" style="width:52px" step="0.01" oninput="markUnsaved();updateBacklog('${sh}','${mc.id}');updateShiftTotals('${sh}')" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''" onkeydown="dprAimNav(event,'${sh}','${mc.id}')">  </td>
         <td class="r" id="bl-${sh}-${mc.id}" style="font-family:var(--mono);color:var(--amber)">${bl===null?'—':bl}</td>
         <td class="r" style="font-family:var(--mono);color:var(--red)">${mcResort||`<span style="color:var(--t3)">0</span>`}</td>
+        <td class="r"><input type="number" id="capcut-${sh}-${mc.id}" value="${m.capCut||''}" placeholder="0" min="0" style="width:52px" step="0.01" oninput="markUnsaved()" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''"></td>
+        <td class="r"><input type="number" id="bodycut-${sh}-${mc.id}" value="${m.bodyCut||''}" placeholder="0" min="0" style="width:52px" step="0.01" oninput="markUnsaved()" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''"></td>
       </tr>`;
     });
 

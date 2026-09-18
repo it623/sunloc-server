@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v54S</p>
+      <p>Planning Suite v3.0 · build v55E</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1804,7 +1804,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54S' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55E' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1832,7 +1832,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54S', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55E', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2627,7 +2627,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54S'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v55E'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5989,7 +5989,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v54S'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v55E'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8880,7 +8880,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v54S' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v55E' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9330,7 +9330,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54S' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55E' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9380,7 +9380,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54S' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55E' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9469,7 +9469,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v54S' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55E' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
@@ -17076,6 +17076,7 @@ const _v40_ROLES_BY_APP = {
   dpr: ['gf','ff','admin'],
   planning: ['planning_manager','printing_manager','dispatch_manager','admin'],
   tracking: ['tracking_planning','tracking_labels','tracking_aim','tracking_printing','tracking_pi','tracking_packing','tracking_dispatch','admin'],
+  gpr: ['gpr_gf','gpr_ff_sf','gpr_manager','admin'],   // v55C: matches the seeded GPR roles
 };
 
 async function renderAdminUsers() {
@@ -17112,12 +17113,12 @@ async function _v40_loadAdminUsers() {
     const el = document.getElementById('admin-users-content');
     if (!el) return;
     // Group by app
-    const byApp = { dpr: [], planning: [], tracking: [] };
+    const byApp = { dpr: [], planning: [], tracking: [], gpr: [] };   // v55C: GPR users manageable here (PIN rotation before training)
     for (const u of (j.users||[])) {
       if (byApp[u.app]) byApp[u.app].push(u);
     }
-    const appColors = {dpr:'#16a34a', planning:'#2563eb', tracking:'#d97706'};
-    const appLabels = {dpr:'DPR', planning:'Planning', tracking:'Tracking'};
+    const appColors = {dpr:'#16a34a', planning:'#2563eb', tracking:'#d97706', gpr:'#a8621f'};
+    const appLabels = {dpr:'DPR', planning:'Planning', tracking:'Tracking', gpr:'GPR'};
     const renderAppBlock = (app) => {
       const users = byApp[app] || [];
       if (users.length === 0) return '';
@@ -17151,7 +17152,7 @@ async function _v40_loadAdminUsers() {
         </div>
       </div>`;
     };
-    el.innerHTML = renderAppBlock('dpr') + renderAppBlock('planning') + renderAppBlock('tracking');
+    el.innerHTML = renderAppBlock('dpr') + renderAppBlock('planning') + renderAppBlock('tracking') + renderAppBlock('gpr');
     if ((j.users||[]).length === 0) el.innerHTML = '<div style="color:var(--text3);padding:20px">No users found.</div>';
   } catch(e) {
     const el = document.getElementById('admin-users-content');
@@ -17219,6 +17220,7 @@ function _v40_openAddUserModal() {
           <option value="dpr">DPR</option>
           <option value="planning">Planning</option>
           <option value="tracking">Tracking</option>
+          <option value="gpr">GPR</option>
         </select>
       </div>
       <div class="form-group">

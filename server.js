@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v54S';
+const APP_BUILD = 'v55E';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -51,7 +51,8 @@ const BUILD_FINGERPRINT = (() => {
     const _c = require('crypto'), _f = require('fs'), _p = require('path');
     const h = _c.createHash('sha256');
     for (const rel of ['server.js', 'public/planning.html', 'public/dpr.html', 'public/tracking.html',
-                       'assistant-engine.js', 'public/assistant.html', 'public/sunloc-core.js']) {   // v52: assistant files are load-bearing
+                       'assistant-engine.js', 'public/assistant.html', 'public/sunloc-core.js',
+                       'public/gpr.html']) {   // v52: assistant files are load-bearing; v55: gpr.html joins the GPR merge
       try { h.update(_f.readFileSync(_p.join(__dirname, rel))); } catch (_) { h.update('missing:' + rel); }
     }
     return h.digest('hex').slice(0, 12);
@@ -689,6 +690,263 @@ const MIGRATIONS = [
       ALTER TABLE tracking_labels ADD COLUMN regenerated_from TEXT;
       ALTER TABLE tracking_labels ADD COLUMN original_qty REAL;
       ALTER TABLE tracking_labels ADD COLUMN regenerated_at TEXT;
+    `
+  },
+
+  // ═══ v55 — GPR MODULE migrations (merged from the v42V branch, 18 Sep 2026) ═══════════════════
+  // The v42V branch numbered these 54-61, but the deployed base had ALREADY spent 54-67 on
+  // excess_unprint_requests .. v54c_label_regen_lineage — the live schema_migrations table records
+  // those versions as applied, so keeping the v42V numbers would make the runner SKIP every GPR
+  // table silently. Renumbered 68-75; SQL is byte-identical to the v42V branch (all idempotent
+  // CREATE IF NOT EXISTS). PostgreSQL mirror lives in ensurePostgresTables, as on the branch.
+  {
+    version: 68,
+    name: 'gpr_mmt_charges',   // v55: was 54 on the v42V branch — renumbered past the base's 54-67 (see merge note above)
+    // Mother charge in the Melter-Mixer Tank. TTs link back for back-traceability.
+    // v42U item 6: the exhaustion rule is now an ALERT, not a block — chemists use
+    // spare MMT capacity to fast-track a charge and better plan onward TTs.
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_mmt_charges (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mmt_ref TEXT NOT NULL UNIQUE,
+        floor TEXT NOT NULL,
+        gelatine_vendor TEXT,
+        gelatine_batch TEXT,
+        gelatine_kg REAL DEFAULT 0,
+        water_kg REAL DEFAULT 0,
+        water_temp_c REAL,
+        additives_json TEXT,
+        total_kg REAL DEFAULT 0,
+        allocated_kg REAL NOT NULL DEFAULT 0,
+        charge_start TEXT,
+        charge_complete TEXT,
+        tt_prep_start TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_mmt_floor ON gpr_mmt_charges(floor, status);
+      CREATE INDEX IF NOT EXISTS idx_gpr_mmt_ref ON gpr_mmt_charges(mmt_ref);
+    `
+  },
+  {
+    version: 69,
+    name: 'gpr_tt',
+    // One row per Transfer Tank for a batch/machine, Cap OR Body. Machines run two
+    // at once (1 Cap + 1 Body). production_day is the DPR 08:00-08:00 production day
+    // (item 7) stamped at issue, so the daily yield report groups identically to DPR.
+    // total_charged_kg is the base for the 22.5% cutting estimate (item 4).
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_tt (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_number TEXT NOT NULL,
+        pc_code TEXT,
+        machine_id TEXT NOT NULL,
+        floor TEXT NOT NULL,
+        side TEXT NOT NULL,
+        seq_index INTEGER,
+        seq_total INTEGER,
+        tt_number TEXT,
+        mmt_ref TEXT,
+        colour_name TEXT,
+        colour_code TEXT,
+        capacity_l REAL,
+        planned_l REAL,
+        actual_l REAL DEFAULT 0,
+        virgin_kg REAL DEFAULT 0,
+        salvage_kg REAL DEFAULT 0,
+        cutting_kg REAL DEFAULT 0,
+        colour_kg REAL DEFAULT 0,
+        fg_remelt_kg REAL DEFAULT 0,
+        total_charged_kg REAL DEFAULT 0,
+        viscosity_cps REAL,
+        temperature_c REAL,
+        label_payload TEXT,
+        production_day TEXT,
+        scan_in_at TEXT,
+        scan_out_at TEXT,
+        status TEXT NOT NULL DEFAULT 'prepared',
+        is_under_fill INTEGER NOT NULL DEFAULT 0,
+        under_fill_reason TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_tt_batch ON gpr_tt(batch_number, side);
+      CREATE INDEX IF NOT EXISTS idx_gpr_tt_machine ON gpr_tt(machine_id, status);
+      CREATE INDEX IF NOT EXISTS idx_gpr_tt_mmt ON gpr_tt(mmt_ref);
+      CREATE INDEX IF NOT EXISTS idx_gpr_tt_day ON gpr_tt(production_day, floor);
+    `
+  },
+  {
+    version: 70,
+    name: 'gpr_tt_colourants',
+    // Up to 8 colourants per TT, each in grams. Normalised child of gpr_tt so the
+    // colour recipe is fully transparent (ratio drives product quality).
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_tt_colourants (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        tt_id INTEGER NOT NULL,
+        colourant TEXT NOT NULL,
+        grams REAL DEFAULT 0,
+        slot INTEGER,
+        created_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_ttcol_tt ON gpr_tt_colourants(tt_id);
+    `
+  },
+  {
+    version: 71,
+    name: 'gpr_batch_status',
+    // GPR's own In-Production / Close record. In v42U this is RECORD-ONLY: the
+    // cross-module cascade is gated behind gpr_constants.cascadeEnabled (default 0)
+    // so the first month runs purely additive on v49U's existing rules. Flipping the
+    // constant to 1 arms the cascade — no rebuild needed (target 1 September).
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_batch_status (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        batch_number TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'planned',
+        in_production_at TEXT,
+        in_production_by TEXT,
+        closed_at TEXT,
+        closed_by TEXT,
+        planned_solution_cap_l REAL DEFAULT 0,
+        planned_solution_body_l REAL DEFAULT 0,
+        issued_solution_cap_l REAL DEFAULT 0,
+        issued_solution_body_l REAL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT (datetime('now')),
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_bstat_status ON gpr_batch_status(status);
+    `
+  },
+  {
+    version: 72,
+    name: 'gpr_masters',
+    // Editable, seeded masters stored as keyed JSON rows so Admin/GPR Manager can
+    // change them in-app without a redeploy.
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_masters (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        master_key TEXT NOT NULL UNIQUE,
+        value_json TEXT NOT NULL,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+    `
+  },
+  {
+    version: 73,
+    name: 'gpr_ledger',
+    // ── LEDGER A (merged) — every reuse-material movement, one table ──
+    // Replaces the v42 gpr_recirc + gpr_stock pair, which held identical data and
+    // could diverge. account ∈ cutting | aim_salvage | printed_salvage | oily_salvage.
+    // movement_type ∈ generation | consumption | draw | correction.
+    // source ∈ manual | tracking | estimate. Rows with source='tracking' are
+    // auto-synced from tracking_wastage and carry a UNIQUE (batch, account) identity
+    // so a re-sync UPDATES rather than double-credits (idempotent by construction).
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_ledger (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        movement_type TEXT NOT NULL,
+        account TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'manual',
+        pc_code TEXT,
+        colour_name TEXT,
+        colour_code TEXT,
+        side TEXT,
+        machine_id TEXT,
+        batch_number TEXT,
+        tt_id INTEGER,
+        floor TEXT,
+        qty_kg REAL DEFAULT 0,
+        production_day TEXT,
+        note TEXT,
+        moved_by TEXT,
+        moved_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_lot ON gpr_ledger(account, pc_code, colour_code, side);
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_batch ON gpr_ledger(batch_number, account);
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_type ON gpr_ledger(movement_type, moved_at);
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_day ON gpr_ledger(production_day, floor);
+      CREATE UNIQUE INDEX IF NOT EXISTS idx_gpr_ledger_autosync
+        ON gpr_ledger(batch_number, account, source) WHERE source = 'tracking';
+    `
+  },
+  {
+    version: 74,
+    name: 'gpr_legacy_stock',
+    // ── LEDGER B — legacy lump-sum stock (renamed from Ledger C, item 10) ──
+    // Seeded once, then DEBIT-ONLY: all post-implementation material flows through
+    // Ledger A. An admin 'correction' is the sole exception.
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_legacy_stock (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        movement_type TEXT NOT NULL,
+        account TEXT,
+        location TEXT,
+        batch_number TEXT,
+        tt_id INTEGER,
+        floor TEXT,
+        qty_kg REAL DEFAULT 0,
+        note TEXT,
+        moved_by TEXT,
+        moved_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_legacy_acct ON gpr_legacy_stock(account, movement_type);
+      CREATE INDEX IF NOT EXISTS idx_gpr_legacy_loc ON gpr_legacy_stock(location, movement_type);
+    `
+  },
+  {
+    version: 75,
+    name: 'gpr_crush',
+    // Crushing/disposal approval lifecycle: Manager proposes, Admin approves. On
+    // approval Ledger A is debited and the qty feeds FLOOR/DAILY/MONTHLY yield only
+    // — never an individual batch's yield. batch_number optional (traceability).
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_crush (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        status TEXT NOT NULL DEFAULT 'proposed',
+        account TEXT,
+        pc_code TEXT,
+        colour_code TEXT,
+        side TEXT,
+        batch_number TEXT,
+        floor TEXT,
+        qty_kg REAL DEFAULT 0,
+        production_day TEXT,
+        proposed_by TEXT,
+        proposed_at TEXT NOT NULL DEFAULT (datetime('now')),
+        reason TEXT,
+        decided_by TEXT,
+        decided_at TEXT,
+        decision_note TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_crush_status ON gpr_crush(status, proposed_at);
+      CREATE INDEX IF NOT EXISTS idx_gpr_crush_floor ON gpr_crush(floor, status);
+    `
+  },
+  {
+    version: 76,
+    name: 'v55a_gpr_receipts_tanks',
+    // v55A items 4+5+6 (Ishan, 18 Sep): (a) physical-receipt flow — generation arriving from
+    // Tracking (salvage/remelt) and DPR (cap/body cuttings) lands as receipt_status='pending'
+    // and joins usable stock only when the GPR chemist ACCEPTS it in-app. NULL receipt_status
+    // (all pre-existing and manual chemist rows) reads as accepted — backward compatible.
+    // receipt_ref carries the idempotency key for DPR-sourced rows (date|shift|machine|side).
+    // (b) GF runs a spare MMT — gpr_mmt_charges.tank_no ('GF1'/'GF2' on GF, NULL elsewhere)
+    // distinguishes the two concurrent mother charges; the unexhausted-charge alert becomes
+    // per-tank-slot on GF.
+    sql: `
+      ALTER TABLE gpr_ledger ADD COLUMN receipt_status TEXT;
+      ALTER TABLE gpr_ledger ADD COLUMN accepted_by TEXT;
+      ALTER TABLE gpr_ledger ADD COLUMN accepted_at TEXT;
+      ALTER TABLE gpr_ledger ADD COLUMN receipt_ref TEXT;
+      ALTER TABLE gpr_mmt_charges ADD COLUMN tank_no TEXT;
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_receipt ON gpr_ledger(receipt_status, floor);
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_rref ON gpr_ledger(source, receipt_ref);
     `
   },
   {
@@ -1905,6 +2163,145 @@ async function _v45s_repairProductionOrders() {
 // ─── Seed default users if none exist ─────────────────────────
 function hashPin(pin) { return crypto.createHash('sha256').update(pin + 'sunloc_salt').digest('hex'); }
 
+// ═══════════════════════════════════════════════════════════════════════════
+// v42U — GPR masters seed. BLOCKER B2 FIX: the original v42 branch seeded via
+// db.prepare() only, so on PostgreSQL the masters table stayed EMPTY — capsule
+// weights and the machine master resolved to zero and every TT plan / yield
+// numerator silently computed as 0. This runs against whichever engine is live.
+// Values are editable in-app (Admin + GPR Manager) — never hard-coded downstream.
+// ═══════════════════════════════════════════════════════════════════════════
+const GPR_SEED_MASTERS = (() => {
+  // Capacity buckets are 80 / 100 / 200 L; planned fill is what is actually poured.
+  const tt_machine_master = {
+    MC7:  { floor:'GF', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC8:  { floor:'GF', capCapL:100, capFillL:90,  bodyCapL:200, bodyFillL:150 },
+    MC20: { floor:'GF', capCapL:100, capFillL:90,  bodyCapL:200, bodyFillL:150 },
+    MC21: { floor:'GF', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC22: { floor:'GF', capCapL:100, capFillL:90,  bodyCapL:200, bodyFillL:150 },
+    MC29: { floor:'GF', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC30: { floor:'GF', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC31: { floor:'GF', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC32: { floor:'GF', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC33: { floor:'GF', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC34: { floor:'GF', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC14: { floor:'1F', capCapL:80,  capFillL:70,  bodyCapL:100, bodyFillL:90 },
+    MC15: { floor:'1F', capCapL:80,  capFillL:70,  bodyCapL:100, bodyFillL:90 },
+    MC16: { floor:'1F', capCapL:80,  capFillL:70,  bodyCapL:100, bodyFillL:90 },
+    MC23: { floor:'2F', capCapL:200, capFillL:180, bodyCapL:200, bodyFillL:180 },
+    MC24: { floor:'2F', capCapL:200, capFillL:180, bodyCapL:200, bodyFillL:180 },
+    MC25: { floor:'2F', capCapL:200, capFillL:180, bodyCapL:200, bodyFillL:180 },
+    MC26: { floor:'2F', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC27: { floor:'2F', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+    MC28: { floor:'2F', capCapL:200, capFillL:150, bodyCapL:200, bodyFillL:150 },
+  };
+  const capsule_weights = {
+    '#00': { avgMg:122 }, '#0EL': { avgMg:106 }, '#0': { avgMg:96 },
+    '#1': { avgMg:76 }, '#2': { avgMg:63 }, '#3': { avgMg:50 }, '#4': { avgMg:40 },
+  };
+  // v55A item 8 (Ishan's stock sheet, 17-09-2026): colourants carry the store item CODE so TT
+  // entry records exactly what the store issues. Names without a code predate the coded sheet.
+  const colourants = [
+    { code:'col0038', name:'Titanium Dioxide' },
+    { code:'col0018', name:'Ponceau 4R' },
+    { code:'col0006', name:'Carmosine' },
+    { code:'col0034', name:'Sunset Yellow' },
+    { code:'col0024', name:'Tartrazine' },
+    { code:'col0008', name:'Erythrosine Supra' },
+    { code:'col0003', name:'Brilliant Blue' },
+    { code:'', name:'Quinoline Yellow Supra' },
+    { code:'', name:'Sodium Metabisulphite (SMBS)' },
+    { code:'', name:'Candurin' },
+  ];
+  // v55A item 8: the chemicals charged into the MMT, one entry field each (grams), coded per the
+  // same stock sheet. Per-floor separation rides the MMT's own floor.
+  const mmt_chemicals = [
+    { code:'col0045', name:'SLS-799 Needles',       key:'sls799'   },
+    { code:'col0069', name:'PEG-6000 (IP Grade)',   key:'peg6000'  },
+    { code:'col0004', name:'Bronopol BP/IP',        key:'bronopol' },
+    { code:'col0056', name:'Othadd-2 (Finamul DL)', key:'othadd2'  },
+  ];
+  const gpr_constants = {
+    capFrac: 0.40, bodyFrac: 0.60, weightTolerance: 0.10,
+    // Forward litre calc: gelatine_kg = capsule_mass_kg (same 12%-moisture wet
+    // basis), litres = gelatine_kg / 0.33. Colour/TiO2 is a SEPARATE kg line.
+    gelatineKgPerLitre: 0.33,
+    colourFracOfSolution: 0.025,
+    totalSolidsPctLo: 0.355, totalSolidsPctHi: 0.36,
+    yieldTargetPct: 103,   // 3% moisture gain (15% finished vs 12% virgin) less ~1% wash
+    // ── Reuse economy (v42U item 4/5, confirmed by Ishan) ──
+    // 22.5% is GUIDANCE used to auto-credit the cutting head on TT issue. The base
+    // is TOTAL CHARGED WEIGHT (not solution weight) because the cutting carries the
+    // colour weight and the 3% moisture gain back with it. The chemist's actual
+    // consumption entries then self-correct the running balance.
+    cuttingPctOfChargedWeight: 22.5,
+    defaultAGradePct: 93,  // display fallback only — gross itself comes from Planning
+    // ── Actual capsule weight from the AIM label (v42V, confirmed by Ishan) ──
+    // The AIM operator enters a net weight on each label; average capsule weight is
+    // derived from it per batch instead of the size master. The column landed in the base
+    // as tracking_labels.nett_wt (migration 57, v50E weights); kept as a master value so a
+    // future rename needs no rebuild.
+    // Until that column exists the resolver silently falls back to the size master,
+    // which is also the correct behaviour at the START of every batch (no labels yet).
+    labelNetWeightColumn: 'nett_wt',
+    ttPrepHours: 8,   // v55D: hours from MMT charge to TT ready (colour-matched, viscosity set) — drives the cascade prep alert   // v55: v50E shipped the column as nett_wt (kg per box; qty is lakhs, so gprAvgMg's (w*10)/q yields mg/capsule)
+    // ── Cascade master switch (v42U, confirmed by Ishan) ──
+    // 0 = ADDITIVE MODE: GPR records In-Production/Close for its own reporting but
+    //     does NOT gate DPR, and does NOT own the 2-order-per-machine limit. The
+    //     suite continues on the v49U rules exactly as today.
+    // 1 = CASCADE ARMED: GPR becomes the authority (target 1 September).
+    // Flip in Masters — no redeploy. INTEGER 0/1, never a boolean literal.
+    cascadeEnabled: 0,
+  };
+  return { tt_machine_master, capsule_weights, colourants, mmt_chemicals, gpr_constants };
+})();
+
+async function seedGprMasters() {
+  try {
+    if (pgPool) {
+      const r = await pgPool.query(`SELECT COUNT(*) AS n FROM gpr_masters`);
+      if (Number(r.rows[0]?.n || 0) > 0) return;
+      for (const [k, v] of Object.entries(GPR_SEED_MASTERS)) {
+        await pgPool.query(
+          `INSERT INTO gpr_masters (master_key, value_json, updated_by, updated_at)
+           VALUES ($1,$2,'seed',NOW()::TEXT) ON CONFLICT(master_key) DO NOTHING`,
+          [k, JSON.stringify(v)]);
+      }
+    } else {
+      const existing = db.prepare(`SELECT COUNT(*) AS n FROM gpr_masters`).get();
+      if (existing && Number(existing.n) > 0) return;
+      const ins = db.prepare(`INSERT INTO gpr_masters (master_key, value_json, updated_by) VALUES (?, ?, 'seed')`);
+      for (const [k, v] of Object.entries(GPR_SEED_MASTERS)) ins.run(k, JSON.stringify(v));
+    }
+    console.log('[v42U GPR] Masters seeded (machine TT sizes, capsule weights, colourants, constants)');
+  } catch (e) {
+    console.error('[v42U GPR] seedGprMasters error:', e.message);
+  }
+}
+
+// v55A masters upgrade (see boot-chain comment). Safe on every boot.
+async function _gprUpgradeMastersV55A() {
+  const get1 = async (key) => {
+    const sql = `SELECT value_json FROM gpr_masters WHERE master_key=${pgPool ? '$1' : '?'}`;
+    const r = pgPool ? (await pgPool.query(sql, [key])).rows[0] : db.prepare(sql).get(key);
+    return r ? JSON.parse(r.value_json) : null;
+  };
+  const put1 = async (key, val) => {
+    if (pgPool) await pgPool.query(`INSERT INTO gpr_masters (master_key, value_json, updated_by) VALUES ($1,$2,'v55A-upgrade')
+      ON CONFLICT(master_key) DO UPDATE SET value_json=$2, updated_by='v55A-upgrade', updated_at=NOW()::TEXT`, [key, JSON.stringify(val)]);
+    else db.prepare(`INSERT INTO gpr_masters (master_key, value_json, updated_by) VALUES (?,?,'v55A-upgrade')
+      ON CONFLICT(master_key) DO UPDATE SET value_json=excluded.value_json, updated_by='v55A-upgrade', updated_at=datetime('now')`).run(key, JSON.stringify(val));
+  };
+  try {
+    if (!(await get1('mmt_chemicals'))) await put1('mmt_chemicals', GPR_SEED_MASTERS.mmt_chemicals);
+    const cols = await get1('colourants');
+    if (Array.isArray(cols) && cols.length && typeof cols[0] === 'string') {
+      const byName = {}; GPR_SEED_MASTERS.colourants.forEach(c => { byName[c.name.toLowerCase()] = c.code; });
+      await put1('colourants', cols.map(n => ({ code: byName[String(n).toLowerCase()] || '', name: n })));
+      console.log('[v55A GPR] colourants master migrated to coded form');
+    }
+  } catch (e) { console.warn('[v55A GPR] masters upgrade skipped:', e?.message); }
+}
+
 const seedUsers = [
   { username: 'GF',                pin: '1111', role: 'gf',               app: 'dpr'      },
   { username: 'FF',                pin: '2222', role: 'ff',               app: 'dpr'      },
@@ -1925,6 +2322,12 @@ const seedUsers = [
   { username: 'Track_PI',          pin: '5555', role: 'tracking_pi',       app: 'tracking' },
   { username: 'Track_Packing',     pin: '6666', role: 'tracking_packing',  app: 'tracking' },
   { username: 'Track_Dispatch',    pin: '7777', role: 'tracking_dispatch', app: 'tracking' },
+  // v55: GPR module users (merged from the v42V branch). Same weak-by-design defaults as the
+  // rest of the seed — admin should rotate PINs via Admin Users before training begins.
+  { username: 'GPR_GF',            pin: '1111', role: 'gpr_gf',           app: 'gpr'      },
+  { username: 'GPR_FF_SF',         pin: '2222', role: 'gpr_ff_sf',        app: 'gpr'      },
+  { username: 'GPR_Manager',       pin: '3333', role: 'gpr_manager',      app: 'gpr'      },
+  { username: 'GPR_Admin',         pin: '9999', role: 'admin',            app: 'gpr'      },
 ];
 
 const insertUser = db.prepare(`
@@ -4070,6 +4473,191 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_prod_actuals_date ON production_actuals(date, machine_id)`).catch(()=>{});
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_records_date ON dpr_records(date)`).catch(()=>{});
 
+
+    // ═══════════════════════════════════════════════════════════════════════
+    // v42U — GPR MODULE tables (PostgreSQL mirror of migrations 68-75 (54-61 on the v42V branch; renumbered in v55)).
+    // BLOCKER B1 FIX: the original v42 branch defined these for SQLite only, so on
+    // the live PostgreSQL database every GPR endpoint would 500 on a missing table.
+    // SERIAL replaces AUTOINCREMENT; NOW()::TEXT replaces datetime('now').
+    // ═══════════════════════════════════════════════════════════════════════
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS gpr_mmt_charges (
+        id SERIAL PRIMARY KEY,
+        mmt_ref TEXT NOT NULL UNIQUE,
+        floor TEXT NOT NULL,
+        gelatine_vendor TEXT,
+        gelatine_batch TEXT,
+        gelatine_kg REAL DEFAULT 0,
+        water_kg REAL DEFAULT 0,
+        water_temp_c REAL,
+        additives_json TEXT,
+        total_kg REAL DEFAULT 0,
+        allocated_kg REAL NOT NULL DEFAULT 0,
+        charge_start TEXT,
+        charge_complete TEXT,
+        tt_prep_start TEXT,
+        status TEXT NOT NULL DEFAULT 'open',
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS gpr_tt (
+        id SERIAL PRIMARY KEY,
+        batch_number TEXT NOT NULL,
+        pc_code TEXT,
+        machine_id TEXT NOT NULL,
+        floor TEXT NOT NULL,
+        side TEXT NOT NULL,
+        seq_index INTEGER,
+        seq_total INTEGER,
+        tt_number TEXT,
+        mmt_ref TEXT,
+        colour_name TEXT,
+        colour_code TEXT,
+        capacity_l REAL,
+        planned_l REAL,
+        actual_l REAL DEFAULT 0,
+        virgin_kg REAL DEFAULT 0,
+        salvage_kg REAL DEFAULT 0,
+        cutting_kg REAL DEFAULT 0,
+        colour_kg REAL DEFAULT 0,
+        fg_remelt_kg REAL DEFAULT 0,
+        total_charged_kg REAL DEFAULT 0,
+        viscosity_cps REAL,
+        temperature_c REAL,
+        label_payload TEXT,
+        production_day TEXT,
+        scan_in_at TEXT,
+        scan_out_at TEXT,
+        status TEXT NOT NULL DEFAULT 'prepared',
+        is_under_fill INTEGER NOT NULL DEFAULT 0,
+        under_fill_reason TEXT,
+        created_by TEXT,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS gpr_tt_colourants (
+        id SERIAL PRIMARY KEY,
+        tt_id INTEGER NOT NULL,
+        colourant TEXT NOT NULL,
+        grams REAL DEFAULT 0,
+        slot INTEGER,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS gpr_batch_status (
+        id SERIAL PRIMARY KEY,
+        batch_number TEXT NOT NULL UNIQUE,
+        status TEXT NOT NULL DEFAULT 'planned',
+        in_production_at TEXT,
+        in_production_by TEXT,
+        closed_at TEXT,
+        closed_by TEXT,
+        planned_solution_cap_l REAL DEFAULT 0,
+        planned_solution_body_l REAL DEFAULT 0,
+        issued_solution_cap_l REAL DEFAULT 0,
+        issued_solution_body_l REAL DEFAULT 0,
+        created_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS gpr_masters (
+        id SERIAL PRIMARY KEY,
+        master_key TEXT NOT NULL UNIQUE,
+        value_json TEXT NOT NULL,
+        updated_by TEXT,
+        updated_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS gpr_ledger (
+        id SERIAL PRIMARY KEY,
+        movement_type TEXT NOT NULL,
+        account TEXT NOT NULL,
+        source TEXT NOT NULL DEFAULT 'manual',
+        pc_code TEXT,
+        colour_name TEXT,
+        colour_code TEXT,
+        side TEXT,
+        machine_id TEXT,
+        batch_number TEXT,
+        tt_id INTEGER,
+        floor TEXT,
+        qty_kg REAL DEFAULT 0,
+        production_day TEXT,
+        note TEXT,
+        moved_by TEXT,
+        moved_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS gpr_legacy_stock (
+        id SERIAL PRIMARY KEY,
+        movement_type TEXT NOT NULL,
+        account TEXT,
+        location TEXT,
+        batch_number TEXT,
+        tt_id INTEGER,
+        floor TEXT,
+        qty_kg REAL DEFAULT 0,
+        note TEXT,
+        moved_by TEXT,
+        moved_at TEXT NOT NULL DEFAULT NOW()::TEXT
+      )
+    `);
+    await pgPool.query(`
+      CREATE TABLE IF NOT EXISTS gpr_crush (
+        id SERIAL PRIMARY KEY,
+        status TEXT NOT NULL DEFAULT 'proposed',
+        account TEXT,
+        pc_code TEXT,
+        colour_code TEXT,
+        side TEXT,
+        batch_number TEXT,
+        floor TEXT,
+        qty_kg REAL DEFAULT 0,
+        production_day TEXT,
+        proposed_by TEXT,
+        proposed_at TEXT NOT NULL DEFAULT NOW()::TEXT,
+        reason TEXT,
+        decided_by TEXT,
+        decided_at TEXT,
+        decision_note TEXT
+      )
+    `);
+    // GPR indexes (best-effort — never block boot)
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_mmt_floor ON gpr_mmt_charges(floor, status)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_tt_batch ON gpr_tt(batch_number, side)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_tt_day ON gpr_tt(production_day, floor)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_ttcol_tt ON gpr_tt_colourants(tt_id)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_ledger_lot ON gpr_ledger(account, pc_code, colour_code, side)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_ledger_batch ON gpr_ledger(batch_number, account)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_ledger_day ON gpr_ledger(production_day, floor)`).catch(()=>{});
+    // Idempotency guard for the Tracking auto-credit: one row per (batch, account)
+    // for source='tracking', so re-syncing UPDATES the running total instead of
+    // stacking duplicate credits. Partial index — manual rows are unconstrained.
+    await pgPool.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_gpr_ledger_autosync
+      ON gpr_ledger(batch_number, account, source) WHERE source = 'tracking'`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_legacy_acct ON gpr_legacy_stock(account, movement_type)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_legacy_loc ON gpr_legacy_stock(location, movement_type)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_gpr_crush_status ON gpr_crush(status, proposed_at)`).catch(()=>{});
+    // v55A migration-76 mirror (idempotent; PG supports IF NOT EXISTS on columns)
+    for (const stmt of [
+      `ALTER TABLE gpr_ledger ADD COLUMN IF NOT EXISTS receipt_status TEXT`,
+      `ALTER TABLE gpr_ledger ADD COLUMN IF NOT EXISTS accepted_by TEXT`,
+      `ALTER TABLE gpr_ledger ADD COLUMN IF NOT EXISTS accepted_at TEXT`,
+      `ALTER TABLE gpr_ledger ADD COLUMN IF NOT EXISTS receipt_ref TEXT`,
+      `ALTER TABLE gpr_mmt_charges ADD COLUMN IF NOT EXISTS tank_no TEXT`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_receipt ON gpr_ledger(receipt_status, floor)`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_rref ON gpr_ledger(source, receipt_ref)`,
+    ]) { await pgPool.query(stmt).catch(()=>{}); }
+    console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
         console.log('[DB] PostgreSQL tables verified/created');
   } catch(e) {
@@ -13435,6 +14023,29 @@ app.post('/api/dpr/save', async (req, res) => {
     const { floor, date, data, actuals } = req.body;
     if (!floor || !date || !data) return res.status(400).json({ ok: false, error: 'Missing floor, date, or data' });
 
+    // ═══ v55B item 1 (Ishan, 18 Sep) ═══════════════════════════════════════════════════════════
+    // GPR closing a batch signals its TT supply is COMPLETE — but a TT takes up to ~36 h to become
+    // capsule production, so DPR entry stays open for 48 HOURS after the GPR close, then hard-stops.
+    // Armed-cascade only: in additive mode (cascadeEnabled=0, the current state) this set stays
+    // empty and nothing changes — per the standing dormancy ruling. A GPR reopen moves the batch
+    // out of 'closed', which empties it from this set and unblocks entry (item 3: reopen flow
+    // unchanged — corrections then possible in GPR, DPR and Tracking as today). Re-closing stamps
+    // a fresh closed_at, i.e. a fresh 48-hour window. Admin force-entry keeps its existing bypass
+    // with audit, exactly like the DPR-closed gate below. The DPR-closed (dpr_batch_closed / v41l)
+    // and Tracking-label (48 h post-DPR-close, v51H) gates are separate and unchanged.
+    const _gprLateClosed = new Set();
+    try {
+      if (await gprCascadeArmed()) {
+        const _gcSql = `SELECT batch_number, closed_at FROM gpr_batch_status WHERE status='closed'`;
+        const _gcRows = pgPool ? (await pgPool.query(_gcSql)).rows : db.prepare(_gcSql).all();
+        const _nowMs = Date.now(), _graceMs = 48 * 3600 * 1000;
+        for (const r of (_gcRows || [])) {
+          const t = Date.parse(r.closed_at || '') || 0;
+          if (r.batch_number && t && (_nowMs - t) > _graceMs) _gprLateClosed.add(String(r.batch_number).toUpperCase());
+        }
+      }
+    } catch (e) { console.warn('[v55B GPR-close gate] load failed (gate skipped):', e.message); }
+
     if (pgPool) {
       // Merge incoming shifts with existing DB data to protect shifts filled by other users
       const existingRow = await pgPool.query('SELECT data_json FROM dpr_records WHERE floor=$1 AND date=$2', [floor, date]);
@@ -13602,6 +14213,15 @@ app.post('/api/dpr/save', async (req, res) => {
           _rejected.push({ orderId, batchNumber, machineId, shift, qty, reason: `Batch ${batchNumber||orderId} is CLOSED in DPR — reopen it (same day, once) before entering data` });
           return false;
         }
+        // v55B item 1: GPR closed this batch more than 48 h ago — the post-close entry window ended.
+        if (batchNumber && _gprLateClosed.has(String(batchNumber).toUpperCase())) {
+          if (_isAdminCaller && _forceEntry) {
+            try { logAudit(req.body.userName||'admin','admin','dpr','DPR_FORCE_ENTRY_GPR_CLOSED',`Wrote ${qty}L to GPR-closed batch ${batchNumber} (>48h) on ${machineId} ${date}/${shift}`); } catch {}
+            return true;
+          }
+          _rejected.push({ orderId, batchNumber, machineId, shift, qty, reason: `Batch ${batchNumber} was closed by GPR more than 48 hours ago — the post-close entry window has ended. Reopen the batch in GPR to make corrections.` });
+          return false;
+        }
         const meta = _orderStatusById[orderId] || _orderStatusByBatch[batchNumber];
         if (!meta) return true;   // unknown order → don't block (could be a legacy/orphan)
         if (meta.deleted) {
@@ -13730,6 +14350,15 @@ app.post('/api/dpr/save', async (req, res) => {
             return true;
           }
           _rejectedSq.push({ orderId, batchNumber, machineId, shift, qty, reason: `Batch ${batchNumber||orderId} is CLOSED in DPR — reopen it (same day, once) before entering data` });
+          return false;
+        }
+        // v55B item 1: GPR closed this batch more than 48 h ago — the post-close entry window ended.
+        if (batchNumber && _gprLateClosed.has(String(batchNumber).toUpperCase())) {
+          if (_isAdminCallerSq && _forceEntrySq) {
+            try { logAudit(req.body.userName||'admin','admin','dpr','DPR_FORCE_ENTRY_GPR_CLOSED',`Wrote ${qty}L to GPR-closed batch ${batchNumber} (>48h) on ${machineId} ${date}/${shift}`); } catch {}
+            return true;
+          }
+          _rejectedSq.push({ orderId, batchNumber, machineId, shift, qty, reason: `Batch ${batchNumber} was closed by GPR more than 48 hours ago — the post-close entry window has ended. Reopen the batch in GPR to make corrections.` });
           return false;
         }
         const meta = _orderStatusByIdSq[orderId] || _orderStatusByBatchSq[batchNumber];
@@ -17805,7 +18434,11 @@ app.get('/api/admin/export', (req, res) => {
       'planning_state', 'dpr_records', 'production_actuals',
       'tracking_labels', 'tracking_scans', 'tracking_stage_closure',
       'tracking_wastage', 'tracking_dispatch_records', 'tracking_alerts',
-      'app_users', 'audit_log', 'schema_migrations'
+      'app_users', 'audit_log', 'schema_migrations',
+      // v55: GPR module tables (branch parity — omitting them meant a backup silently
+      // excluded every charge, tank and ledger movement; export now round-trips GPR).
+      'gpr_mmt_charges', 'gpr_tt', 'gpr_tt_colourants', 'gpr_batch_status',
+      'gpr_masters', 'gpr_ledger', 'gpr_legacy_stock', 'gpr_crush'
     ];
 
     const exportData = {
@@ -17861,7 +18494,10 @@ app.post('/api/admin/import', (req, res) => {
       const importableTables = [
         'planning_state', 'dpr_records', 'production_actuals',
         'tracking_labels', 'tracking_scans', 'tracking_stage_closure',
-        'tracking_wastage', 'tracking_dispatch_records', 'tracking_alerts'
+        'tracking_wastage', 'tracking_dispatch_records', 'tracking_alerts',
+        // v55: GPR module tables — importable so an export restores GPR alongside the rest.
+        'gpr_mmt_charges', 'gpr_tt', 'gpr_tt_colourants', 'gpr_batch_status',
+        'gpr_masters', 'gpr_ledger', 'gpr_legacy_stock', 'gpr_crush'
       ];
 
       for (const table of importableTables) {
@@ -24029,6 +24665,1874 @@ app.get('*', (req, res) => {
 });
 
 
+
+// ═══════════════════════════════════════════════════════════════════════════
+// v55 — GPR MODULE merged from the v42V branch (18 Sep 2026), verbatim except:
+//   • migrations renumbered 68-75 (see the migration array note),
+//   • labelNetWeightColumn seed corrected to 'nett_wt' (the name v50E shipped),
+//   • the engine binds to the BASE's _v47gScanQtySql, which since the branch forked
+//     gained recon-scrap exclusion (v53K) and regeneration-lineage valuation (v54C) —
+//     GPR's tracking credits therefore value scans identically to Tracking itself
+//     (formula uniformity, inherited rather than ported).
+// DORMANCY (Ishan's ruling for the training window): gpr_constants.cascadeEnabled
+// stays 0 — GPR receives and records everything, gates nothing outside itself.
+// The 2-order-per-machine authority arms by flipping the constant to 1 in Masters
+// (Admin/GPR Manager, in-app, INTEGER 0/1) — no rebuild, no redeploy.
+// ═══════════════════════════════════════════════════════════════════════════
+// v42U — GPR MODULE API  (Gelatine Processing Room)
+// Rebased onto the v49U baseline. Formula contract with the rest of the suite:
+//
+//   GROSS      — GPR NEVER recomputes gross. It reads order.grossQty exactly as
+//                Planning calculated and persisted it (calcOrderSchedule). Since
+//                v49U that figure is already live-A-Grade-driven via
+//                aimFactor = 100/liveAIM%, so GPR and Planning move in lockstep
+//                and the old v42 "plannedAGrade/actualAGrade" TT adjustment is
+//                DELETED — applying it would double-count A-Grade.
+//   A-GRADE    — inherited through the SAME fallback chain Planning uses
+//                (batch live -> machine cumulative -> configured default).
+//                Display/traceability only; it already lives inside gross.
+//   WIP        — the frozen v49U identity, read-only:
+//                max(0, grossProd - (aimWaste+printWaste+piWaste) - packInQty)
+//   PROD DAY   — DPR's production day. Shift table (dpr.html): A 06:00-14:00,
+//                B 14:00-22:00, C 22:00-06:00 => the day runs 06:00 to 06:00, so
+//                production_day = date(ts - 6h).
+// ═══════════════════════════════════════════════════════════════════════════
+
+const GPR_ACCOUNTS = ['cutting', 'aim_salvage', 'printed_salvage', 'oily_salvage'];
+const GPR_ACCOUNT_LABELS = {
+  cutting:         'Cutting',
+  aim_salvage:     'Unprinted AIM Salvage',
+  printed_salvage: 'Printed Salvage (Printing + PI)',
+  oily_salvage:    'Oily Salvage',
+};
+// Ledger A balance signs. generation + correction CREDIT; consumption + draw DEBIT.
+const GPR_A_CREDIT = `('generation','correction')`;
+const GPR_A_DEBIT  = `('consumption','draw')`;
+
+// Production-day SQL, per engine. 6-hour shift back-off (see header).
+function gprPDaySql(col) {
+  return pgPool
+    ? `((LEFT(${col},19))::timestamp - interval '6 hours')::date`
+    : `date(datetime(${col}, '-6 hours'))`;
+}
+// JS twin — used when stamping production_day at write time.
+function gprProductionDay(iso) {
+  const d = iso ? new Date(iso) : new Date();
+  if (isNaN(d)) return null;
+  return new Date(d.getTime() - 6 * 3600 * 1000).toISOString().slice(0, 10);
+}
+
+// Load all GPR masters into a plain object (engine-aware).
+async function gprLoadMasters() {
+  let rows;
+  if (pgPool) {
+    const r = await pgPool.query(`SELECT master_key, value_json FROM gpr_masters`);
+    rows = r.rows;
+  } else {
+    rows = db.prepare(`SELECT master_key, value_json FROM gpr_masters`).all();
+  }
+  const out = {};
+  (rows || []).forEach(row => { try { out[row.master_key] = JSON.parse(row.value_json); } catch (e) {} });
+  return out;
+}
+async function gprConstants() {
+  const m = await gprLoadMasters();
+  return m.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
+}
+// Cascade master switch. 0 = additive mode (default): GPR records status for its
+// own reporting but does NOT gate DPR and does NOT own the 2-order limit.
+async function gprCascadeArmed() {
+  try {
+    const C = await gprConstants();
+    return Number(C.cascadeEnabled || 0) === 1;
+  } catch (e) { return false; }
+}
+
+// Resolve a batch to its Planning order (authoritative for gross, size, machine).
+function gprFindOrder(batchNumber) {
+  const st = getPlanningState();
+  const bn = String(batchNumber || '').trim().toUpperCase();
+  if (!bn) return null;
+  return (st.orders || []).find(o =>
+    String(o.batchNumber || '').trim().toUpperCase() === bn && !o.deleted) || null;
+}
+
+// ── A-Grade inheritance ────────────────────────────────────────────────────
+// Mirrors Planning's calcOrderSchedule fallback chain so GPR shows the SAME
+// number Planning used. Returns { aimPct, printPct, piPct, basis } or nulls.
+// Read-only: gross already embeds these; this exists for display + traceability.
+// ═══ v55A items 1-3 (Ishan, 18 Sep) — ONE live-batch resolver matching Report E today ═══════════
+// A-Grade: the v45V AIM basis Report E uses — AIM A-Grade = max(0, ScanIn − AIM Remelt);
+//   Inspected = A-Grade + Salvage + Remelt (= ScanIn + Salvage); % = A-Grade / Inspected.
+//   Printed-stage cascade stays the FROZEN (c)/(d) shapes against the AIM denominator.
+// WIP: Report E's CONSOLIDATED five-leg breakdown (sunloc-core getBatchWIPBreakdown), replicated
+//   from the same inputs the server owns: per-box scan sums via _v47gScanQtySql (reversal-aware),
+//   tracking_wastage, effectiveGross (DPR correction → apportioned production_actuals), the DPL
+//   printing-salvage term (v47I/v52D), the retired set, and the recon-override precedence in its
+//   server v51ZI derive-first form. Legs (each floored at 0, exactly as the client):
+//     preAIM   = gross − aimSalvage − aimIn
+//     aimWIP   = aimIn − aimRemelt − aimOut
+//     printWIP = printed ? aimOut − printOut − printSalDPL − printRemelt : 0
+//     piWIP    = printed ? printOut − piOut − piSal − piRem − printSalDPL − printRemelt : 0   (v52D)
+//     toPackTransit = (printed ? piOut : aimOut) − packIn
+//   consolidatedWip = sum of the five.
+let _gprDplPctCache = null, _gprDplPctTime = 0;
+async function _gprDplPrintPctMap() {
+  if (_gprDplPctCache && (Date.now() - _gprDplPctTime) < 60000) return _gprDplPctCache;
+  const agg = {};
+  try {
+    let rows;
+    if (pgPool) rows = (await pgPool.query('SELECT data_json FROM daily_printing')).rows.map(x => typeof x.data_json === 'string' ? JSON.parse(x.data_json) : x.data_json);
+    else rows = db.prepare('SELECT data_json FROM daily_printing').all().map(x => JSON.parse(x.data_json));
+    for (const l of (rows || [])) {
+      const b = ((l && l.batchNumber) || '').trim().toUpperCase();
+      if (!b) continue;
+      if (!agg[b]) agg[b] = { sal: 0, out: 0 };
+      agg[b].sal += parseFloat(l.salvage || 0) || 0;
+      agg[b].out += parseFloat(l.totalOutput || 0) || 0;
+    }
+  } catch (_) {}
+  const pct = {};
+  for (const k in agg) pct[k] = agg[k].out > 0 ? (agg[k].sal / agg[k].out * 100) : 0;
+  _gprDplPctCache = pct; _gprDplPctTime = Date.now();
+  return pct;
+}
+async function _gprBatchLive(batchNumber, order) {
+  const bn = String(batchNumber || '').trim().toUpperCase();
+  const P = pgPool ? '$1' : '?';
+  const scanSql = `SELECT s.dept, s.type, SUM(${_v47gScanQtySql('s', 'l')}) AS q
+                   FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id
+                   WHERE UPPER(s.batch_number)=${P}
+                     AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)
+                   GROUP BY s.dept, s.type`;
+  const wasteSql = `SELECT dept, type, SUM(qty) AS q FROM tracking_wastage WHERE UPPER(batch_number)=${P} GROUP BY dept, type`;
+  const scans  = pgPool ? (await pgPool.query(scanSql, [bn])).rows  : db.prepare(scanSql).all(bn);
+  const wastes = pgPool ? (await pgPool.query(wasteSql, [bn])).rows : db.prepare(wasteSql).all(bn);
+  const S = {}; (scans || []).forEach(r => { S[`${r.dept}_${r.type}`] = parseFloat(r.q || 0); });
+  const W = {}; (wastes || []).forEach(r => { W[`${r.dept}_${r.type}`] = parseFloat(r.q || 0); });
+  const g = k => Number(S[k] || 0), w = k => Number(W[k] || 0);
+  const aimIn = g('aim_in'), aimOut = g('aim_out'), printOut = g('printing_out'), piOut = g('pi_out'), packIn = g('packing_in');
+  const aimSal = w('aim_salvage'), aimRem = w('aim_remelt');
+  const prSal = w('printing_salvage'), prRem = w('printing_remelt');
+  const piSal = w('pi_salvage'), piRem = w('pi_remelt');
+
+  // Gross: the server canonical resolver (DPR closed-batch correction → apportioned actuals).
+  const gross = effectiveGross(bn) || Number((order && order.grossQty) || 0);
+  const printed = !!((order && order.isPrinted) || printOut > 0 || piOut > 0);
+  const dplPct = (await _gprDplPrintPctMap())[bn] || 0;
+  const printSalDPL = printed ? printOut * (dplPct / 100) : 0;
+
+  // ── A-Grade (v45V AIM basis, the figure Report E's AIM% shows) ──
+  const aGrade = Math.max(0, aimIn - aimRem);
+  const inspected = aGrade + aimSal + aimRem;           // = ScanIn + Salvage
+  let aimPct = inspected > 0 ? (aGrade / inspected * 100) : null;
+  // Frozen (c)/(d) printed cascade against the AIM denominator:
+  const aimDen = aimOut + aimSal + aimRem;
+  let printPct = aimDen > 0 && (prSal + prRem + printOut) > 0 ? Math.max(0, (aimOut - prSal - prRem) / aimDen * 100) : null;
+  let piPct    = aimDen > 0 && (piSal + piRem + piOut) > 0 ? Math.max(0, (aimOut - prSal - prRem - piSal - piRem) / aimDen * 100) : null;
+
+  // ── Consolidated WIP (Report E five-leg model) ──
+  let preAIM   = Math.max(0, gross - aimSal - aimIn);
+  let aimWIP   = Math.max(0, aimIn - aimRem - aimOut);
+  let printWIP = printed ? Math.max(0, aimOut - printOut - printSalDPL - prRem) : 0;
+  let piWIP    = printed ? Math.max(0, printOut - piOut - piSal - piRem - printSalDPL - prRem) : 0;
+  let toPackTransit = Math.max(0, (printed ? piOut : aimOut) - packIn);
+  let consolidatedWip = preAIM + aimWIP + printWIP + piWIP + toPackTransit;
+  let wipBasis = 'live-legs';
+
+  // Retired: WIP declared physically gone (matches every Report E consumer).
+  if (typeof _retiredBatchSet !== 'undefined' && _retiredBatchSet.has(bn)) {
+    consolidatedWip = 0; preAIM = aimWIP = printWIP = piWIP = toPackTransit = 0; wipBasis = 'retired';
+  }
+  // Recon override precedence — the server v51ZI derive-first rule (the same rule the
+  // agrade-summary feed applies for Report E's reconciled rows). A-Grade follows the client
+  // _reconOverride shape when the row carries a_grade.
+  if (typeof _reconWipMap !== 'undefined' && Object.prototype.hasOwnProperty.call(_reconWipMap || {}, bn)) {
+    const ro = _reconWipMap[bn];
+    const dprHasOvr = typeof _grossOverride !== 'undefined' && Object.prototype.hasOwnProperty.call(_grossOverride || {}, bn);
+    const effG = dprHasOvr ? gross : ro.gross;
+    if (effG != null && ro.packing != null) consolidatedWip = Math.max(0, effG - (ro.wastage || 0) - Math.max(ro.packing || 0, packIn));
+    else if (ro.wip != null) consolidatedWip = Math.max(0, ro.wip);
+    else consolidatedWip = 0;
+    wipBasis = 'reconciled';
+    try {
+      const roSql = `SELECT * FROM batch_reconcile_override WHERE UPPER(batch_number)=${P}`;
+      const roRow = pgPool ? (await pgPool.query(roSql, [bn])).rows[0] : db.prepare(roSql).get(bn);
+      const roA = roRow && (roRow.a_grade ?? roRow.agrade ?? null);
+      if (roA != null && !isNaN(parseFloat(roA))) {
+        const a = parseFloat(roA), ws = parseFloat(roRow.wastage || 0) || 0;
+        aimPct = (a + ws) > 0 ? (a / (a + ws) * 100) : aimPct;
+      }
+    } catch (_) { /* column may not exist — live basis stands */ }
+  }
+  return { bn, gross, printed, aimIn, aimOut, printOut, piOut, packIn,
+           aimSal, aimRem, prSal, prRem, piSal, piRem, printSalDPL: +printSalDPL.toFixed(3),
+           aGrade, inspected, aimPct, printPct, piPct,
+           preAIM, aimWIP, printWIP, piWIP, toPackTransit,
+           consolidatedWip: +consolidatedWip.toFixed(3), wipBasis };
+}
+
+async function gprInheritedAGrade(batchNumber, order) {
+  const bn = String(batchNumber || '').trim().toUpperCase();
+  const out = { aimPct: null, printPct: null, piPct: null, basis: 'default' };
+  try {
+    const scanSql = `SELECT s.batch_number, s.dept, s.type, SUM(${_v47gScanQtySql('s', 'l')}) AS total_qty
+                     FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id
+                     WHERE UPPER(s.batch_number)=${pgPool ? '$1' : '?'}
+                       AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)
+                     GROUP BY s.batch_number, s.dept, s.type`;
+    const wasteSql = `SELECT dept, type, SUM(qty) AS total_qty FROM tracking_wastage
+                      WHERE UPPER(batch_number)=${pgPool ? '$1' : '?'} GROUP BY dept, type`;
+    const scans  = pgPool ? (await pgPool.query(scanSql, [bn])).rows  : db.prepare(scanSql).all(bn);
+    const wastes = pgPool ? (await pgPool.query(wasteSql, [bn])).rows : db.prepare(wasteSql).all(bn);
+    const S = {}; (scans || []).forEach(r => { S[`${r.dept}_${r.type}`] = parseFloat(r.total_qty || 0); });
+    const W = {}; (wastes || []).forEach(r => { W[`${r.dept}_${r.type}`] = parseFloat(r.total_qty || 0); });
+    const g = k => Number(S[k] || 0), w = k => Number(W[k] || 0);
+
+    // v55A item 1 (Ishan, 18 Sep): AIM basis = Report E's v45V frozen formula —
+    // A-Grade = max(0, ScanIn − AIM Remelt); Inspected = ScanIn + Salvage — replacing the old
+    // Scan-OUT basis (out/(out+sal+rem)) this function carried from the v49U-era feed. The printed
+    // cascade uses the FROZEN (c)/(d) shapes against the AIM denominator, exactly as Report E.
+    const aimIn = g('aim_in'), aimOut = g('aim_out');
+    const aimSal = w('aim_salvage'), aimRem = w('aim_remelt');
+    const prSal = w('printing_salvage'), prRem = w('printing_remelt');
+    const piSal = w('pi_salvage'), piRem = w('pi_remelt');
+    const aG = Math.max(0, aimIn - aimRem), insp = aG + aimSal + aimRem;   // = ScanIn + Salvage
+    const aimDen = aimOut + aimSal + aimRem;
+    if (insp > 0) { out.aimPct = (aG / insp) * 100; out.basis = 'batch-live'; }
+    if (aimDen > 0 && (g('printing_out') + prSal + prRem) > 0) out.printPct = Math.max(0, (aimOut - prSal - prRem) / aimDen * 100);
+    if (aimDen > 0 && (g('pi_out') + piSal + piRem) > 0)       out.piPct    = Math.max(0, (aimOut - prSal - prRem - piSal - piRem) / aimDen * 100);
+  } catch (e) { /* fall through to configured default */ }
+
+  if (out.aimPct == null) {
+    const C = await gprConstants();
+    out.aimPct = Number((order && order.aGrade) || C.defaultAGradePct || 93);
+    out.basis = (order && order.aGrade) ? 'order-default' : 'system-default';
+  }
+  return out;
+}
+
+
+// ── Average capsule weight — SINGLE RESOLVER (v42V) ────────────────────────
+// Average weight drifts within tolerance batch to batch, so the size master is a
+// guidance figure, not the truth. The truth is the net weight the AIM operator
+// enters on each label. Resolution order (confirmed by Ishan):
+//   1. BATCH ACTUAL — derived from that batch's label net weights
+//   2. SIZE MASTER  — used at the start of every batch, before any label carries
+//      a net weight, and whenever the column does not exist yet
+// Arithmetic: tracking_labels.qty is in LAKHS, so for one label
+//     avgMg = net_weight_kg x 1e6 mg  /  (qty x 1e5 capsules)  =  net_kg x 10 / qty
+// Across a batch it MUST be the weighted figure -- SUM(net) x 10 / SUM(qty) --
+// never an average of per-label averages, which would over-weight small boxes.
+//
+// GUARD: a mistyped net weight would otherwise distort the whole batch's yield,
+// so the derived value is clamped to the size master +/- weightTolerance and the
+// clamp is REPORTED, not applied silently.
+//
+// This resolver is the ONLY place avgMg is decided. Its three consumers -- the TT
+// solution plan, the Tracking salvage credit (Lakhs->kg) and the yield numerator --
+// all call it, so they can never disagree about a batch's weight.
+async function gprAvgMg(batchNumber, sizeKey, masters) {
+  const m = masters || await gprLoadMasters();
+  const C = m.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
+  const masterMg = sizeKey ? Number((m.capsule_weights || {})[sizeKey]?.avgMg || 0) : 0;
+  const out = { avgMg: masterMg, basis: 'size-master', masterMg, actualMg: null, clamped: false };
+  const bn = String(batchNumber || '').trim().toUpperCase();
+  if (!bn) return out;
+
+  // Column name is a master value because v49V has not fixed it yet.
+  const col = String(C.labelNetWeightColumn || 'net_weight_kg');
+  if (!/^[a-z_][a-z0-9_]*$/i.test(col)) return out;   // identifier guard
+
+  try {
+    const P = pgPool ? '$1' : '?';
+    const sql = `SELECT COALESCE(SUM(${col}),0) AS w, COALESCE(SUM(qty),0) AS q
+                 FROM tracking_labels
+                 WHERE UPPER(batch_number)=${P} AND COALESCE(voided,0)=0
+                   AND ${col} IS NOT NULL AND ${col} > 0`;
+    const r = pgPool ? (await pgPool.query(sql, [bn])).rows[0] : db.prepare(sql).get(bn);
+    const w = Number(r?.w || 0), q = Number(r?.q || 0);
+    if (w > 0 && q > 0) {
+      const derived = (w * 10) / q;
+      out.actualMg = +derived.toFixed(3);
+      if (masterMg > 0) {
+        const tol = Number(C.weightTolerance ?? 0.10);
+        const lo = masterMg * (1 - tol), hi = masterMg * (1 + tol);
+        if (derived < lo)      { out.avgMg = +lo.toFixed(3); out.clamped = 'below'; }
+        else if (derived > hi) { out.avgMg = +hi.toFixed(3); out.clamped = 'above'; }
+        else                     out.avgMg = out.actualMg;
+      } else {
+        out.avgMg = out.actualMg;
+      }
+      out.basis = out.clamped ? 'label-actual (clamped to tolerance)' : 'label-actual';
+    }
+  } catch (e) {
+    // Column not present yet (pre-v49V) — the size master is the correct answer.
+  }
+  return out;
+}
+
+// ── TT solution calculator ─────────────────────────────────────────────────
+// Forward demand from Planning's gross. NO A-Grade factor here (v42U): gross is
+// already A-Grade-derived upstream, so re-applying it would double-count.
+//   capsuleMassKg = grossLakhs x avgWeightMg / 10
+//   gelatineKg    = capsuleMassKg            (same 12%-moisture wet basis)
+//   solutionL     = gelatineKg / 0.33
+//   colour/TiO2   = solutionL x 0.025        (separate kg line, same litres)
+//   TT count      = ceil(sideL / machineFillL)
+function gprComputeSolutionPlan({ grossLakhs, size, machineId, masters, actualAvgMg, resolvedAvgMg }) {
+  const C = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
+  const weights  = masters.capsule_weights   || {};
+  const machines = masters.tt_machine_master || {};
+  const capFrac    = C.capFrac ?? 0.40;
+  const bodyFrac   = C.bodyFrac ?? 0.60;
+  const gPerL      = C.gelatineKgPerLitre ?? 0.33;
+  const colourFrac = C.colourFracOfSolution ?? 0.025;
+
+  // Operator override wins; otherwise the resolved weight passed in by the caller
+  // (label-actual once available, size master before that).
+  const avgMg = Number(actualAvgMg) > 0 ? Number(actualAvgMg)
+              : (Number(resolvedAvgMg) > 0 ? Number(resolvedAvgMg) : Number(weights[size]?.avgMg || 0));
+  const g = Number(grossLakhs || 0);
+
+  const capsuleMassKg  = g * avgMg / 10;
+  const gelatineKg     = capsuleMassKg;
+  const totalSolutionL = gPerL > 0 ? gelatineKg / gPerL : 0;
+  const capL   = totalSolutionL * capFrac;
+  const bodyL  = totalSolutionL * bodyFrac;
+  const colourKg = totalSolutionL * colourFrac;
+
+  const m = machines[machineId] || {};
+  const capFill  = Number(m.capFillL || 0);
+  const bodyFill = Number(m.bodyFillL || 0);
+  const capTTexact  = capFill  > 0 ? capL / capFill   : 0;
+  const bodyTTexact = bodyFill > 0 ? bodyL / bodyFill : 0;
+
+  return {
+    inputs: { grossLakhs: g, size, machineId, avgMg, grossSource: 'planning' },
+    capsuleMassKg: +capsuleMassKg.toFixed(2),
+    gelatineKg: +gelatineKg.toFixed(2),
+    colourKg: +colourKg.toFixed(2),
+    totalSolutionL: +totalSolutionL.toFixed(1),
+    cap:  { litres: +capL.toFixed(1),  fillL: capFill,  ttPlanned: Math.ceil(capTTexact),  ttExact: +capTTexact.toFixed(2) },
+    body: { litres: +bodyL.toFixed(1), fillL: bodyFill, ttPlanned: Math.ceil(bodyTTexact), ttExact: +bodyTTexact.toFixed(2) },
+  };
+}
+const gprSolutionRequired = gprComputeSolutionPlan; // canonical spec alias (greppable)
+
+// ── LEDGER A: single movement writer ───────────────────────────────────────
+async function gprLedgerMove(row) {
+  const r = {
+    movement_type: row.movement_type,
+    account: row.account,
+    source: row.source || 'manual',
+    pc_code: row.pc_code || null, colour_name: row.colour_name || null,
+    colour_code: row.colour_code || null, side: row.side || null,
+    machine_id: row.machine_id || null, batch_number: row.batch_number || null,
+    tt_id: row.tt_id || null, floor: row.floor || null,
+    qty_kg: Number(row.qty_kg || 0),
+    production_day: row.production_day || gprProductionDay(),
+    note: row.note || null, moved_by: row.moved_by || null,
+  };
+  const cols = `(movement_type,account,source,pc_code,colour_name,colour_code,side,machine_id,batch_number,tt_id,floor,qty_kg,production_day,note,moved_by)`;
+  const vals = [r.movement_type, r.account, r.source, r.pc_code, r.colour_name, r.colour_code,
+                r.side, r.machine_id, r.batch_number, r.tt_id, r.floor, r.qty_kg,
+                r.production_day, r.note, r.moved_by];
+  if (pgPool) {
+    const q = await pgPool.query(
+      `INSERT INTO gpr_ledger ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, vals);
+    return q.rows[0].id;
+  }
+  const info = db.prepare(`INSERT INTO gpr_ledger ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...vals);
+  return info.lastInsertRowid;
+}
+
+// ── LEDGER B: legacy lump-sum writer ───────────────────────────────────────
+async function gprLegacyMove(row) {
+  const vals = [row.movement_type, row.account || null, row.location || null,
+                row.batch_number || null, row.tt_id || null, row.floor || null,
+                Number(row.qty_kg || 0), row.note || null, row.moved_by || null];
+  const cols = `(movement_type,account,location,batch_number,tt_id,floor,qty_kg,note,moved_by)`;
+  if (pgPool) {
+    const q = await pgPool.query(
+      `INSERT INTO gpr_legacy_stock ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9) RETURNING id`, vals);
+    return q.rows[0].id;
+  }
+  const info = db.prepare(`INSERT INTO gpr_legacy_stock ${cols} VALUES (?,?,?,?,?,?,?,?,?)`).run(...vals);
+  return info.lastInsertRowid;
+}
+
+// ── Tracking auto-credit (item 5d) ─────────────────────────────────────────
+// Heads 2 and 3 are generated in AIM / Printing / PI and tracked by Tracking, so
+// GPR credits them automatically rather than asking the chemist to retype them.
+//   aim_salvage     = AIM salvage                      (AIM REMELT IS OUT OF PROCESS)
+//   printed_salvage = Printing + PI salvage AND remelt
+// IDEMPOTENT BY CONSTRUCTION: exactly one source='tracking' row per (batch,
+// account) — a re-sync UPDATES that row's qty to the current cumulative total.
+// It can therefore run on every batch read without ever double-crediting.
+async function gprSyncTrackingCredits(batchNumber) {
+  const bn = String(batchNumber || '').trim().toUpperCase();
+  if (!bn) return { aim_salvage: 0, printed_salvage: 0 };
+  const masters = await gprLoadMasters();
+  const order = gprFindOrder(bn);
+  const sizeKey = order ? ('#' + String(order.size || '').replace(/^#/, '')) : null;
+  const wt = await gprAvgMg(bn, sizeKey, masters);   // same resolver as plan + yield
+  const avgMg = wt.avgMg;
+  if (avgMg <= 0) return { aim_salvage: 0, printed_salvage: 0, skipped: 'no capsule weight' };
+
+  const wSql = `SELECT dept, type, SUM(qty) AS q FROM tracking_wastage
+                WHERE UPPER(batch_number)=${pgPool ? '$1' : '?'} GROUP BY dept, type`;
+  const rows = pgPool ? (await pgPool.query(wSql, [bn])).rows : db.prepare(wSql).all(bn);
+  let aimSalL = 0, printedL = 0;
+  (rows || []).forEach(r => {
+    const d = String(r.dept || '').toLowerCase(), t = String(r.type || '').toLowerCase();
+    const q = parseFloat(r.q || 0);
+    if (d === 'aim' && t === 'salvage') aimSalL += q;
+    if ((d === 'printing' || d === 'pi') && (t === 'salvage' || t === 'remelt')) printedL += q;
+  });
+  const toKg = lakhs => +(lakhs * avgMg / 10).toFixed(2);
+  const targets = { aim_salvage: toKg(aimSalL), printed_salvage: toKg(printedL) };
+
+  for (const [account, kg] of Object.entries(targets)) {
+    if (kg <= 0) continue;
+    const sel = `SELECT id, qty_kg FROM gpr_ledger WHERE batch_number=${pgPool ? '$1' : '?'} AND account=${pgPool ? '$2' : '?'} AND source='tracking'`;
+    const existing = pgPool ? (await pgPool.query(sel, [bn, account])).rows[0]
+                            : db.prepare(sel).get(bn, account);
+    if (existing) {
+      if (Math.abs(Number(existing.qty_kg || 0) - kg) < 0.005) continue;
+      // v55A item 5: quantity moved since the chemist last saw it — the delta is physically
+      // unreceived, so the row RETURNS TO PENDING for re-acceptance at the new total.
+      if (pgPool) await pgPool.query(`UPDATE gpr_ledger SET qty_kg=$1, receipt_status='pending', moved_at=NOW()::TEXT WHERE id=$2`, [kg, existing.id]);
+      else db.prepare(`UPDATE gpr_ledger SET qty_kg=?, receipt_status='pending', moved_at=datetime('now') WHERE id=?`).run(kg, existing.id);
+    } else {
+      await gprLedgerMove({
+        movement_type: 'generation', account, source: 'tracking',
+        batch_number: bn, pc_code: order?.pcCode || order?.pc_code || null,
+        colour_name: order?.colour || null, machine_id: order?.machineId || null,
+        floor: gprFloorOfMachine(order?.machineId, masters),
+        qty_kg: kg, moved_by: 'system',
+        note: 'auto-credited from Tracking (pending GPR receipt)',
+      });
+      // v55A item 5: a fresh Tracking credit is PENDING until the chemist accepts receipt.
+      { const mk = `UPDATE gpr_ledger SET receipt_status='pending' WHERE batch_number=${pgPool ? '$1' : '?'} AND account=${pgPool ? '$2' : '?'} AND source='tracking' AND receipt_status IS NULL`;
+        if (pgPool) await pgPool.query(mk, [bn, account]); else db.prepare(mk).run(bn, account); }
+    }
+  }
+  return targets;
+}
+
+// Machine -> floor, from the editable machine master. Replaces the v42 bug that
+// stamped every TT with the operator's FIRST visible floor (blocker H2).
+function gprFloorOfMachine(machineId, masters) {
+  if (!machineId) return null;
+  const m = (masters && masters.tt_machine_master) || GPR_SEED_MASTERS.tt_machine_master;
+  return (m[machineId] && m[machineId].floor) || null;
+}
+
+// ── YIELD ──────────────────────────────────────────────────────────────────
+// Numerator   = (Packed + WIP) weight kg = (packedLakhs + wipLakhs) x avgMg / 10
+//               wipLakhs is the FROZEN v49U identity, replicated read-only.
+// Denominator = freshMaterialKg + netRecircKg - salvageRecoveredKg
+//   freshMaterialKg   = SUM(virgin + colour + fg_remelt) over the batch's TTs
+//   netRecircKg       = consumedAll - generatedManual
+//                       generatedManual EXCLUDES source='tracking' rows, because
+//                       that same recovery is already the salvageRecovered term.
+//                       Generation is therefore counted EXACTLY ONCE.
+//   salvageRecoveredKg= AIM salvage + Printing/PI salvage&remelt, in kg
+// Confirmed by Ishan: recovery credited is not recovery used. Material recovered
+// but not reused reduces the denominator; recovered AND reused nets back to
+// neutral because the consumption leg adds it straight back.
+async function gprComputeYield(batchNumber) {
+  const bn = String(batchNumber || '').trim().toUpperCase();
+  const masters = await gprLoadMasters();
+  const order = gprFindOrder(bn);
+  const sizeKey = order ? ('#' + String(order.size || '').replace(/^#/, '')) : null;
+  const wt = await gprAvgMg(bn, sizeKey, masters);   // same resolver as plan + credits
+  const avgMg = wt.avgMg;
+  const P = pgPool ? '$1' : '?';
+
+  // TT issuance — fresh material and litres
+  const ttSql = `SELECT COALESCE(SUM(virgin_kg),0) AS virgin, COALESCE(SUM(colour_kg),0) AS colour,
+                   COALESCE(SUM(fg_remelt_kg),0) AS fg_remelt,
+                   COALESCE(SUM(total_charged_kg),0) AS charged,
+                   COALESCE(SUM(actual_l),0) AS litres, COUNT(*) AS tt_count
+                 FROM gpr_tt WHERE UPPER(batch_number)=${P}`;
+  const ttAgg = pgPool ? (await pgPool.query(ttSql, [bn])).rows[0] : db.prepare(ttSql).get(bn);
+  const fgRemelt = Number(ttAgg?.fg_remelt || 0);
+  const freshMaterial = Number(ttAgg?.virgin || 0) + Number(ttAgg?.colour || 0) + fgRemelt;
+
+  // Ledger A — consumption (all accounts) vs MANUAL generation only
+  const lSql = `SELECT
+                  COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} THEN qty_kg ELSE 0 END),0) AS consumed,
+                  COALESCE(SUM(CASE WHEN movement_type='generation' AND source<>'tracking' THEN qty_kg ELSE 0 END),0) AS gen_manual,
+                  COALESCE(SUM(CASE WHEN movement_type='generation' AND source='tracking' THEN qty_kg ELSE 0 END),0) AS gen_tracking
+                FROM gpr_ledger WHERE UPPER(batch_number)=${P}`;
+  const led = pgPool ? (await pgPool.query(lSql, [bn])).rows[0] : db.prepare(lSql).get(bn);
+  const consumed = Number(led?.consumed || 0);
+  const generatedManual = Number(led?.gen_manual || 0);
+  const generatedTracking = Number(led?.gen_tracking || 0);
+  const netRecirc = +(consumed - generatedManual).toFixed(2);
+
+  // Salvage recovered from Tracking, in kg. AIM REMELT EXCLUDED (out of process);
+  // it is surfaced separately below so nothing is hidden from the reconciliation.
+  const wSql = `SELECT dept, type, COALESCE(SUM(qty),0) AS q FROM tracking_wastage
+                WHERE UPPER(batch_number)=${P} GROUP BY dept, type`;
+  const wRows = pgPool ? (await pgPool.query(wSql, [bn])).rows : db.prepare(wSql).all(bn);
+  let aimSalL = 0, aimRemL = 0, printedL = 0;
+  (wRows || []).forEach(r => {
+    const d = String(r.dept || '').toLowerCase(), t = String(r.type || '').toLowerCase();
+    const q = parseFloat(r.q || 0);
+    if (d === 'aim' && t === 'salvage') aimSalL += q;
+    if (d === 'aim' && t === 'remelt')  aimRemL += q;
+    if ((d === 'printing' || d === 'pi') && (t === 'salvage' || t === 'remelt')) printedL += q;
+  });
+  const salvageLakhs = aimSalL + printedL;
+  const salvageRecoveredKg = +(salvageLakhs * avgMg / 10).toFixed(2);
+  const aimRemeltKg = +(aimRemL * avgMg / 10).toFixed(2);
+
+  // ── FROZEN v49U WIP identity (read-only replication) ──
+  // wipLakhs = max(0, grossProd - (aimWaste + printWaste + piWaste) - packInQty)
+  // aimWaste/printWaste/piWaste each = salvage + remelt (AIM remelt IS included
+  // here — the frozen formula is untouched; only the stock ACCOUNTS exclude it).
+  const packSql = `SELECT COALESCE(SUM(${_v47gScanQtySql('s', 'l')}),0) AS q
+                   FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id
+                   WHERE UPPER(s.batch_number)=${P} AND s.dept='packing' AND s.type='in'
+                     AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)`;
+  const wipWSql = `SELECT COALESCE(SUM(qty),0) AS q FROM tracking_wastage
+                   WHERE UPPER(batch_number)=${P} AND dept IN ('aim','printing','pi') AND type IN ('salvage','remelt')`;
+  const grossSql = `SELECT COALESCE(SUM(qty_lakhs),0) AS gross FROM production_actuals WHERE UPPER(batch_number)=${P}`;
+  const packRow  = pgPool ? (await pgPool.query(packSql, [bn])).rows[0]  : db.prepare(packSql).get(bn);
+  const wipWRow  = pgPool ? (await pgPool.query(wipWSql, [bn])).rows[0]  : db.prepare(wipWSql).get(bn);
+  const grossRow = pgPool ? (await pgPool.query(grossSql, [bn])).rows[0] : db.prepare(grossSql).get(bn);
+
+  const packLakhs = Number(packRow?.q || 0);
+  const grossProd = Number(grossRow?.gross || 0);
+  const totalWastageForWIP = Number(wipWRow?.q || 0);
+  // v55A item 2 (Ishan, 18 Sep): WIP is now Report E's CONSOLIDATED figure — the five-leg
+  // breakdown with retired-set and recon-override precedence — via the shared _gprBatchLive
+  // resolver, replacing the plain frozen-(a) replica above (kept for reference in _wipFrozenA).
+  const _live55a = await _gprBatchLive(bn, gprFindOrder(bn));
+  const _wipFrozenA = Math.max(0, grossProd - totalWastageForWIP - packLakhs);
+  const wipLakhs = _live55a.consolidatedWip;
+
+  const packedWeightKg = +(packLakhs * avgMg / 10).toFixed(2);
+  const wipWeightKg    = +(wipLakhs * avgMg / 10).toFixed(2);
+  const numerator      = +(packedWeightKg + wipWeightKg).toFixed(2);
+  const denominator    = +(freshMaterial + netRecirc - salvageRecoveredKg).toFixed(2);
+  const yieldPct = denominator > 0 ? +((numerator / denominator) * 100).toFixed(2) : null;
+  const C = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
+  const target = Number(C.yieldTargetPct || 103);
+
+  return {
+    batch: bn, avgMg, weightBasis: wt, grossProd: +grossProd.toFixed(3),
+    numerator: {
+      packedLakhs: +packLakhs.toFixed(3), wipLakhs: +wipLakhs.toFixed(3),
+      packedWeightKg, wipWeightKg, total: numerator,
+    },
+    denominator: {
+      freshMaterialKg: +freshMaterial.toFixed(2),
+      virginKg: +Number(ttAgg?.virgin || 0).toFixed(2),
+      colourKg: +Number(ttAgg?.colour || 0).toFixed(2),
+      fgRemeltKg: +fgRemelt.toFixed(2),
+      totalChargedKg: +Number(ttAgg?.charged || 0).toFixed(2),
+      consumedKg: +consumed.toFixed(2),
+      generatedManualKg: +generatedManual.toFixed(2),
+      generatedTrackingKg: +generatedTracking.toFixed(2),
+      netRecirc,
+      salvageLakhs: +salvageLakhs.toFixed(3), salvageRecoveredKg,
+      aimRemeltKg,
+      total: denominator,
+    },
+    ttLitres: +Number(ttAgg?.litres || 0).toFixed(1),
+    ttCount: Number(ttAgg?.tt_count || 0),
+    yieldPct, target,
+    variance: yieldPct != null ? +(yieldPct - target).toFixed(2) : null,
+  };
+}
+const gprYield = gprComputeYield; // canonical spec alias (greppable)
+
+// ── Auth guard shared by every GPR write ───────────────────────────────────
+function gprSession(req) {
+  const token = (req.body && req.body.token) || req.query.token;
+  const s = verifyToken(token);
+  if (!s || s.app !== 'gpr') return null;
+  return s;
+}
+const GPR_MGR = s => s && (s.role === 'admin' || s.role === 'gpr_manager');
+
+// ─── MASTERS ───────────────────────────────────────────────────────────────
+app.get('/api/gpr/masters', async (req, res) => {
+  try {
+    res.json({ ok: true, masters: await gprLoadMasters(), accounts: GPR_ACCOUNT_LABELS });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/masters', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!GPR_MGR(session)) return res.status(403).json({ ok: false, error: 'Admin or GPR Manager only' });
+    const { key, value } = req.body;
+    if (!key || value === undefined) return res.status(400).json({ ok: false, error: 'key and value required' });
+    const json = JSON.stringify(value);
+    if (pgPool) {
+      await pgPool.query(
+        `INSERT INTO gpr_masters (master_key, value_json, updated_by, updated_at)
+         VALUES ($1,$2,$3,NOW()::TEXT)
+         ON CONFLICT(master_key) DO UPDATE SET value_json=$2, updated_by=$3, updated_at=NOW()::TEXT`,
+        [key, json, session.username]);
+    } else {
+      db.prepare(`INSERT OR REPLACE INTO gpr_masters (master_key, value_json, updated_by, updated_at)
+                  VALUES (?,?,?,datetime('now'))`).run(key, json, session.username);
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_MASTER_UPDATED', `key=${key}`, req.ip);
+    res.json({ ok: true, key, savedAt: new Date().toISOString() });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── MMT CHARGES ───────────────────────────────────────────────────────────
+app.get('/api/gpr/mmt', async (req, res) => {
+  try {
+    const { floor, status } = req.query;
+    const conds = []; const params = [];
+    if (floor)  { params.push(floor);  conds.push(pgPool ? `floor=$${params.length}`  : `floor=?`); }
+    if (status) { params.push(status); conds.push(pgPool ? `status=$${params.length}` : `status=?`); }
+    const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
+    const sql = `SELECT * FROM gpr_mmt_charges ${where} ORDER BY created_at DESC`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    (rows || []).forEach(r => { r.remaining_kg = +(Number(r.total_kg || 0) - Number(r.allocated_kg || 0)).toFixed(1); });
+    res.json({ ok: true, charges: rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// v42U item 6 (confirmed by Ishan): the exhaustion rule is an ALERT, not a block.
+// Chemists legitimately use spare MMT capacity to fast-track a gelatine charge and
+// better plan onward TTs. The response carries `warning` so the UI can surface it;
+// the charge is always created.
+app.post('/api/gpr/mmt', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const b = req.body;
+    if (!b.mmt_ref || !b.floor) return res.status(400).json({ ok: false, error: 'mmt_ref and floor required' });
+    const totalKg = Number(b.total_kg || 0);
+
+    // v55A item 4 (Ishan, 18 Sep): GF runs a SPARE MMT — two mother charges may be live on GF at
+    // once, distinguished as tank slots GF1 and GF2. The one-charge-until-exhausted rule now
+    // applies PER TANK SLOT on GF (a slot's own unexhausted charge still raises the alert);
+    // FF/SF keep the single-charge rule unchanged. tank_no is required on GF.
+    let tankNo = null;
+    if (b.floor === 'GF') {
+      tankNo = String(b.tank_no || '').toUpperCase();
+      if (tankNo !== 'GF1' && tankNo !== 'GF2') {
+        return res.status(400).json({ ok: false, error: 'TANK_NO_REQUIRED',
+          detail: "GF has two MMTs — pick the tank this charge goes into: GF1 or GF2." });
+      }
+    }
+    let warning = null;
+    const openSql = `SELECT mmt_ref, total_kg, allocated_kg, tank_no FROM gpr_mmt_charges WHERE floor=${pgPool ? '$1' : '?'} AND status='open'`;
+    const openRows = pgPool ? (await pgPool.query(openSql, [b.floor])).rows : db.prepare(openSql).all(b.floor);
+    const scope = (openRows || []).filter(r => b.floor !== 'GF' || String(r.tank_no || 'GF1').toUpperCase() === tankNo);
+    const blocking = scope.find(r => Number(r.allocated_kg) < Number(r.total_kg) - 0.001);
+    if (blocking) {
+      warning = `MMT ${blocking.mmt_ref}${b.floor === 'GF' ? ' on ' + tankNo : ''} still has ${(Number(blocking.total_kg) - Number(blocking.allocated_kg)).toFixed(1)} kg unallocated.`;
+    }
+
+    const additivesJson = JSON.stringify(b.additives || {});
+    const vals = [b.mmt_ref, b.floor, tankNo, b.gelatine_vendor || null, b.gelatine_batch || null,
+                  Number(b.gelatine_kg || 0), Number(b.water_kg || 0),
+                  b.water_temp_c != null ? Number(b.water_temp_c) : null, additivesJson, totalKg,
+                  b.charge_start || null, b.charge_complete || null, b.tt_prep_start || null, session.username];
+    const cols = `(mmt_ref,floor,tank_no,gelatine_vendor,gelatine_batch,gelatine_kg,water_kg,water_temp_c,additives_json,total_kg,charge_start,charge_complete,tt_prep_start,status,created_by)`;
+    if (pgPool) {
+      await pgPool.query(`INSERT INTO gpr_mmt_charges ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'open',$14)`, vals);
+    } else {
+      db.prepare(`INSERT INTO gpr_mmt_charges ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?)`).run(...vals);
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_MMT_CREATED',
+      `ref=${b.mmt_ref} floor=${b.floor} ${totalKg}kg${warning ? ' [alert]' : ''}`, req.ip);
+    res.json({ ok: true, mmt_ref: b.mmt_ref, warning, createdAt: new Date().toISOString() });
+  } catch (err) {
+    if (String(err.message).match(/unique|duplicate/i)) {
+      return res.status(409).json({ ok: false, error: 'MMT reference already exists' });
+    }
+    res.status(500).json({ ok: false, error: err.message });
+  }
+});
+
+app.get('/api/gpr/mmt/:ref', async (req, res) => {
+  try {
+    const sql = `SELECT * FROM gpr_mmt_charges WHERE mmt_ref=${pgPool ? '$1' : '?'}`;
+    const row = pgPool ? (await pgPool.query(sql, [req.params.ref])).rows[0] : db.prepare(sql).get(req.params.ref);
+    if (!row) return res.status(404).json({ ok: false, error: 'Not found' });
+    row.remaining_kg = +(Number(row.total_kg || 0) - Number(row.allocated_kg || 0)).toFixed(1);
+    res.json({ ok: true, charge: row });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── TT PLANNING ───────────────────────────────────────────────────────────
+// Gross comes straight from Planning. GPR applies NO A-Grade factor of its own.
+app.get('/api/gpr/tt-plan/:batch', async (req, res) => {
+  try {
+    const batch = req.params.batch;
+    const order = gprFindOrder(batch);
+    if (!order) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
+    const masters = await gprLoadMasters();
+    const grossLakhs = Number(order.grossQty || order.qty || 0);
+    const ag = await gprInheritedAGrade(batch, order);
+    const sizeKey = '#' + String(order.size || '').replace(/^#/, '');
+    const wt = await gprAvgMg(batch, sizeKey, masters);   // same resolver as yield + credits
+
+    const plan = gprComputeSolutionPlan({
+      grossLakhs,
+      size: sizeKey,
+      machineId: order.machineId,
+      masters,
+      actualAvgMg: req.query.avgMg ? Number(req.query.avgMg) : null,
+      resolvedAvgMg: wt.avgMg,
+    });
+
+    const P = pgPool ? '$1' : '?';
+    const isSql = `SELECT side, COUNT(*) AS tt, COALESCE(SUM(actual_l),0) AS litres
+                   FROM gpr_tt WHERE UPPER(batch_number)=${P} GROUP BY side`;
+    const issued = pgPool ? (await pgPool.query(isSql, [String(batch).toUpperCase()])).rows
+                          : db.prepare(isSql).all(String(batch).toUpperCase());
+    const issuedMap = { cap: { tt: 0, litres: 0 }, body: { tt: 0, litres: 0 } };
+    (issued || []).forEach(r => {
+      const s = (r.side || '').toLowerCase();
+      if (issuedMap[s]) issuedMap[s] = { tt: Number(r.tt || 0), litres: Number(r.litres || 0) };
+    });
+
+    res.json({
+      ok: true, batch, plan, issued: issuedMap, aGrade: ag, weightBasis: wt,
+      order: {
+        customer: order.customer || '', pcCode: order.pcCode || order.pc_code || '',
+        size: order.size || '', qty: order.qty || 0, grossQty: grossLakhs,
+        machineId: order.machineId || '', floor: gprFloorOfMachine(order.machineId, masters),
+        isPrinted: !!order.isPrinted, status: order.status || '',
+      },
+    });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── TT ISSUE ──────────────────────────────────────────────────────────────
+app.post('/api/gpr/tt', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const b = req.body;
+    if (!b.batch_number || !b.side || !b.machine_id) {
+      return res.status(400).json({ ok: false, error: 'batch_number, side and machine_id required' });
+    }
+    const side = String(b.side).toLowerCase();
+    if (side !== 'cap' && side !== 'body') return res.status(400).json({ ok: false, error: "side must be 'cap' or 'body'" });
+    const bn = String(b.batch_number).trim().toUpperCase();
+    const masters = await gprLoadMasters();
+    const C = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
+
+    // MMT allocation — ALERT, never a block (item 6 applies to the whole MMT rule set).
+    let mmtWarning = null;
+    if (b.mmt_ref) {
+      const mSql = `SELECT total_kg, allocated_kg FROM gpr_mmt_charges WHERE mmt_ref=${pgPool ? '$1' : '?'}`;
+      const mmt = pgPool ? (await pgPool.query(mSql, [b.mmt_ref])).rows[0] : db.prepare(mSql).get(b.mmt_ref);
+      if (!mmt) return res.status(404).json({ ok: false, error: 'Linked MMT charge not found' });
+      const remaining = Number(mmt.total_kg || 0) - Number(mmt.allocated_kg || 0);
+      const thisKg = Number(b.virgin_kg || 0);
+      if (thisKg > remaining + 0.001) {
+        mmtWarning = `MMT ${b.mmt_ref} has ${remaining.toFixed(1)} kg left; this TT draws ${thisKg.toFixed(1)} kg.`;
+      }
+    }
+
+    // Sequence within (batch, side)
+    const sSql = `SELECT COALESCE(MAX(seq_index),0) AS m FROM gpr_tt WHERE UPPER(batch_number)=${pgPool ? '$1' : '?'} AND side=${pgPool ? '$2' : '?'}`;
+    const seqRow = pgPool ? (await pgPool.query(sSql, [bn, side])).rows[0] : db.prepare(sSql).get(bn, side);
+    const seqIndex = Number(seqRow?.m || 0) + 1;
+    const seqTotal = Number(b.seq_total || 0) || null;
+
+    const capacityL = Number(b.capacity_l || 0);
+    const actualL = Number(b.actual_l || 0);
+    const underFill = capacityL > 0 && actualL < capacityL * 0.95 ? 1 : 0;
+    if (underFill === 1 && !b.under_fill_reason) {
+      return res.status(400).json({ ok: false, error: 'UNDER_FILL_REASON_REQUIRED',
+        detail: `Actual ${actualL}L is more than 5% below the ${capacityL}L tank capacity — a reason is required.` });
+    }
+
+    // Total charged weight — the base for the 22.5% cutting estimate (item 4).
+    const virginKg  = Number(b.virgin_kg || 0);
+    const salvageKg = Number(b.salvage_kg || 0);
+    const cuttingKg = Number(b.cutting_kg || 0);
+    const colourKg  = Number(b.colour_kg || 0);
+    const fgRemelt  = Number(b.fg_remelt_kg || 0);
+    const totalChargedKg = +(virginKg + salvageKg + cuttingKg + colourKg + fgRemelt).toFixed(2);
+
+    const floor = gprFloorOfMachine(b.machine_id, masters) || b.floor || null;
+    const nowIso = new Date().toISOString();
+    const pday = gprProductionDay(nowIso);
+    // v42U item 7: TT Number replaces the old Box Number on the label.
+    const ttNumber = 'TT-' + (side === 'cap' ? 'C' : 'B') + seqIndex + (seqTotal ? ('/' + seqTotal) : '');
+
+    const cols = `(batch_number,pc_code,machine_id,floor,side,seq_index,seq_total,tt_number,mmt_ref,colour_name,colour_code,capacity_l,planned_l,actual_l,virgin_kg,salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by)`;
+    const vals = [b.batch_number, b.pc_code || null, b.machine_id, floor, side, seqIndex, seqTotal,
+                  ttNumber, b.mmt_ref || null, b.colour_name || null, b.colour_code || null,
+                  capacityL || null, Number(b.planned_l || 0), actualL, virginKg, salvageKg, cuttingKg,
+                  colourKg, fgRemelt, totalChargedKg,
+                  b.viscosity_cps != null ? Number(b.viscosity_cps) : null,
+                  b.temperature_c != null ? Number(b.temperature_c) : null,
+                  pday, 'prepared', underFill, b.under_fill_reason || null, session.username];
+    let ttId;
+    if (pgPool) {
+      const ph = vals.map((_, i) => '$' + (i + 1)).join(',');
+      ttId = (await pgPool.query(`INSERT INTO gpr_tt ${cols} VALUES (${ph}) RETURNING id`, vals)).rows[0].id;
+    } else {
+      ttId = db.prepare(`INSERT INTO gpr_tt ${cols} VALUES (${vals.map(() => '?').join(',')})`).run(...vals).lastInsertRowid;
+    }
+
+    // Suite-standard label. BoxNo slot now carries the TT Number (item 7).
+    // SUNLOC | Batch | TT-C3/7 | Size | 125L | TT-<id> | CAP | ColourCode | MMTref
+    const sizeStr = b.size ? ('#' + String(b.size).replace(/^#/, '')) : '';
+    const finalPayload = b.label_payload || [
+      'SUNLOC', b.batch_number, ttNumber, sizeStr, actualL + 'L', 'TT-' + ttId,
+      side.toUpperCase(), b.colour_code || '', b.mmt_ref || '',
+    ].join('|');
+    if (pgPool) await pgPool.query(`UPDATE gpr_tt SET label_payload=$1 WHERE id=$2`, [finalPayload, ttId]);
+    else db.prepare(`UPDATE gpr_tt SET label_payload=? WHERE id=?`).run(finalPayload, ttId);
+
+    // Colourants (up to 8)
+    const colourants = Array.isArray(b.colourants) ? b.colourants.slice(0, 8) : [];
+    for (const c of colourants) {
+      if (!c || !c.colourant) continue;
+      if (pgPool) await pgPool.query(`INSERT INTO gpr_tt_colourants (tt_id,colourant,grams,slot) VALUES ($1,$2,$3,$4)`,
+        [ttId, c.colourant, Number(c.grams || 0), c.slot != null ? Number(c.slot) : null]);
+      else db.prepare(`INSERT INTO gpr_tt_colourants (tt_id,colourant,grams,slot) VALUES (?,?,?,?)`)
+        .run(ttId, c.colourant, Number(c.grams || 0), c.slot != null ? Number(c.slot) : null);
+    }
+
+    // MMT allocation
+    if (b.mmt_ref && virginKg > 0) {
+      if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, updated_at=NOW()::TEXT WHERE mmt_ref=$2`, [virginKg, b.mmt_ref]);
+      else db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(virginKg, b.mmt_ref);
+    }
+
+    // ── LEDGER A postings for this TT ──
+    // (a) CONSUMPTION: salvage / cutting charged INTO this tank are material drawn
+    //     FROM stock. BLOCKER H1 FIX — the v42 branch posted these as GENERATION,
+    //     crediting stock instead of debiting it and inverting netRecirc's sign.
+    const consumeFrom = String(b.consume_from || 'ledger').toLowerCase(); // 'ledger' | 'legacy'
+    const postConsumption = async (account, kg) => {
+      if (kg <= 0) return;
+      if (consumeFrom === 'legacy') {
+        await gprLegacyMove({ movement_type: 'draw', account, location: b.legacy_location || null,
+          batch_number: bn, tt_id: ttId, floor, qty_kg: kg,
+          note: 'consumed into TT ' + ttNumber, moved_by: session.username });
+      } else {
+        await gprLedgerMove({ movement_type: 'consumption', account, source: 'manual',
+          pc_code: b.pc_code, colour_name: b.colour_name, colour_code: b.colour_code, side,
+          machine_id: b.machine_id, batch_number: bn, tt_id: ttId, floor, qty_kg: kg,
+          production_day: pday, moved_by: session.username, note: 'consumed into TT ' + ttNumber });
+      }
+    };
+    await postConsumption(String(b.salvage_account || 'aim_salvage'), salvageKg);
+    await postConsumption('cutting', cuttingKg);
+
+    // (b) GENERATION: cutting this tank will yield back, auto-credited at 22.5% of
+    //     TOTAL CHARGED WEIGHT (item 4 — the cutting carries colour weight and the
+    //     3% moisture gain back with it). Guidance only: the chemist's actual entry
+    //     overrides, and consumption entries self-correct the running balance.
+    const cutPct = Number(C.cuttingPctOfChargedWeight ?? 22.5);
+    const estCutting = +(totalChargedKg * cutPct / 100).toFixed(2);
+    const genCutting = (b.cutting_generated_kg != null) ? Number(b.cutting_generated_kg) : estCutting;
+    if (genCutting > 0) {
+      await gprLedgerMove({ movement_type: 'generation', account: 'cutting',
+        source: (b.cutting_generated_kg != null) ? 'manual' : 'estimate',
+        pc_code: b.pc_code, colour_name: b.colour_name, colour_code: b.colour_code, side,
+        machine_id: b.machine_id, batch_number: bn, tt_id: ttId, floor, qty_kg: genCutting,
+        production_day: pday, moved_by: session.username,
+        note: (b.cutting_generated_kg != null) ? 'chemist actual' : `auto ${cutPct}% of charged weight` });
+    }
+
+    logAudit(session.username, session.role, 'gpr', 'GPR_TT_CREATED',
+      `batch=${bn} ${side} ${ttNumber} ${actualL}L charged=${totalChargedKg}kg`, req.ip);
+    res.json({ ok: true, tt_id: ttId, tt_number: ttNumber, seq_index: seqIndex,
+      label_payload: finalPayload, production_day: pday, total_charged_kg: totalChargedKg,
+      cutting_generated_kg: genCutting, warning: mmtWarning });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/gpr/tt/:batch', async (req, res) => {
+  try {
+    const bn = String(req.params.batch).trim().toUpperCase();
+    const P = pgPool ? '$1' : '?';
+    const sql = `SELECT * FROM gpr_tt WHERE UPPER(batch_number)=${P} ORDER BY side, seq_index`;
+    const tts = pgPool ? (await pgPool.query(sql, [bn])).rows : db.prepare(sql).all(bn);
+    let cols = [];
+    const ids = (tts || []).map(t => t.id);
+    if (ids.length) {
+      if (pgPool) cols = (await pgPool.query(`SELECT * FROM gpr_tt_colourants WHERE tt_id = ANY($1::int[])`, [ids])).rows;
+      else cols = db.prepare(`SELECT * FROM gpr_tt_colourants WHERE tt_id IN (${ids.map(() => '?').join(',')})`).all(...ids);
+    }
+    const byTt = {};
+    (cols || []).forEach(c => { (byTt[c.tt_id] = byTt[c.tt_id] || []).push({ colourant: c.colourant, grams: c.grams, slot: c.slot }); });
+    (tts || []).forEach(t => { t.colourants = byTt[t.id] || []; });
+    res.json({ ok: true, tts });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Dynamic TT sheet — every TT across batches, with filters. Excel-friendly.
+app.get('/api/gpr/tt-sheet', async (req, res) => {
+  try {
+    const { batch, machine, floor, side, from, to, status } = req.query;
+    const conds = []; const params = [];
+    const add = (frag, val) => { params.push(val); conds.push(frag(params.length)); };
+    if (batch)   add(n => pgPool ? `UPPER(batch_number)=$${n}` : `UPPER(batch_number)=?`, String(batch).toUpperCase());
+    if (machine) add(n => pgPool ? `machine_id=$${n}` : `machine_id=?`, machine);
+    if (floor)   add(n => pgPool ? `floor=$${n}` : `floor=?`, floor);
+    if (side)    add(n => pgPool ? `side=$${n}` : `side=?`, String(side).toLowerCase());
+    if (status)  add(n => pgPool ? `status=$${n}` : `status=?`, status);
+    if (from)    add(n => pgPool ? `production_day >= $${n}` : `production_day >= ?`, from);
+    if (to)      add(n => pgPool ? `production_day <= $${n}` : `production_day <= ?`, to);
+    const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
+    const sql = `SELECT id,batch_number,tt_number,side,seq_index,seq_total,machine_id,floor,pc_code,
+                        colour_name,colour_code,mmt_ref,capacity_l,planned_l,actual_l,virgin_kg,
+                        salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,
+                        temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by,created_at
+                 FROM gpr_tt ${where} ORDER BY production_day DESC, batch_number, side, seq_index`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    const totals = (rows || []).reduce((a, r) => ({
+      tt: a.tt + 1, litres: a.litres + Number(r.actual_l || 0),
+      charged: a.charged + Number(r.total_charged_kg || 0),
+    }), { tt: 0, litres: 0, charged: 0 });
+    res.json({ ok: true, rows, totals: {
+      tt: totals.tt, litres: +totals.litres.toFixed(1), charged: +totals.charged.toFixed(2) } });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Scan in / out — with the ordering + duplicate guards the v42 branch lacked.
+app.post('/api/gpr/tt/:id/scan', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const type = String(req.body.type || '').toLowerCase();
+    if (type !== 'in' && type !== 'out') return res.status(400).json({ ok: false, error: "type must be 'in' or 'out'" });
+    const gSql = `SELECT id, tt_number, scan_in_at, scan_out_at FROM gpr_tt WHERE id=${pgPool ? '$1' : '?'}`;
+    const tt = pgPool ? (await pgPool.query(gSql, [req.params.id])).rows[0] : db.prepare(gSql).get(req.params.id);
+    if (!tt) return res.status(404).json({ ok: false, error: 'TT not found' });
+    if (type === 'in' && tt.scan_in_at) {
+      return res.status(409).json({ ok: false, error: 'ALREADY_SCANNED_IN', detail: `${tt.tt_number} was already scanned IN at ${String(tt.scan_in_at).slice(0, 16)}.` });
+    }
+    if (type === 'out') {
+      if (!tt.scan_in_at) return res.status(409).json({ ok: false, error: 'NOT_SCANNED_IN', detail: `${tt.tt_number} must be scanned IN before it can be released.` });
+      if (tt.scan_out_at) return res.status(409).json({ ok: false, error: 'ALREADY_SCANNED_OUT', detail: `${tt.tt_number} was already released at ${String(tt.scan_out_at).slice(0, 16)}.` });
+    }
+    const now = new Date().toISOString();
+    const newStatus = type === 'in' ? 'holding' : 'released';
+    // Column name written as two explicit literal statements rather than an
+    // interpolated identifier — `type` is already validated to 'in'|'out' above,
+    // but keeping the SQL literal means no identifier is ever built from input.
+    if (type === 'in') {
+      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET scan_in_at=$1, status=$2, updated_at=NOW()::TEXT WHERE id=$3`, [now, newStatus, req.params.id]);
+      else db.prepare(`UPDATE gpr_tt SET scan_in_at=?, status=?, updated_at=datetime('now') WHERE id=?`).run(now, newStatus, req.params.id);
+    } else {
+      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET scan_out_at=$1, status=$2, updated_at=NOW()::TEXT WHERE id=$3`, [now, newStatus, req.params.id]);
+      else db.prepare(`UPDATE gpr_tt SET scan_out_at=?, status=?, updated_at=datetime('now') WHERE id=?`).run(now, newStatus, req.params.id);
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_TT_SCAN_' + type.toUpperCase(), `tt=${tt.tt_number}`, req.ip);
+    res.json({ ok: true, tt_id: req.params.id, type, at: now, status: newStatus });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── LEDGER A ──────────────────────────────────────────────────────────────
+// NOTE: static paths are registered BEFORE '/:batch' so they are not swallowed.
+app.get('/api/gpr/ledger/lots', async (req, res) => {
+  try {
+    const { account, side, colour_code } = req.query;
+    const conds = []; const params = [];
+    const add = (frag, val) => { params.push(val); conds.push(frag(params.length)); };
+    if (account)     add(n => pgPool ? `account=$${n}` : `account=?`, account);
+    if (side)        add(n => pgPool ? `side=$${n}` : `side=?`, side);
+    if (colour_code) add(n => pgPool ? `colour_code=$${n}` : `colour_code=?`, colour_code);
+    const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
+    const bal = `SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status='accepted') THEN qty_kg WHEN movement_type IN ${GPR_A_DEBIT} THEN -qty_kg ELSE 0 END)`;   // v55A item 5: accepted-only credits
+    const sql = `SELECT account, pc_code, colour_name, colour_code, side, ${bal} AS balance_kg,
+                        MIN(moved_at) AS first_seen
+                 FROM gpr_ledger ${where}
+                 GROUP BY account, pc_code, colour_name, colour_code, side
+                 HAVING ${bal} > 0.001
+                 ORDER BY MIN(moved_at) ASC`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    (rows || []).forEach(r => { r.balance_kg = +Number(r.balance_kg || 0).toFixed(2); r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account; });
+    res.json({ ok: true, lots: rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Consolidated views: account | daily | colour | movements
+app.get('/api/gpr/ledger/summary', async (req, res) => {
+  try {
+    const view = req.query.view || 'account';
+    const cumulative = req.query.cumulative === '1' || req.query.cumulative === 'true';
+    const from = (!cumulative && req.query.from) ? String(req.query.from) : null;
+    const to   = (!cumulative && req.query.to)   ? String(req.query.to)   : null;
+    const conds = []; const params = [];
+    const add = (frag, val) => { params.push(val); conds.push(frag(params.length)); };
+    if (req.query.batch) add(n => pgPool ? `UPPER(batch_number)=$${n}` : `UPPER(batch_number)=?`, String(req.query.batch).toUpperCase());
+    if (from) add(n => pgPool ? `production_day >= $${n}` : `production_day >= ?`, from);
+    if (to)   add(n => pgPool ? `production_day <= $${n}` : `production_day <= ?`, to);
+    const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
+    const CR = `SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status='accepted') THEN qty_kg ELSE 0 END)`;   // v55A item 5: pending receipts are not yet stock
+    const PEND = `SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} AND receipt_status='pending' THEN qty_kg ELSE 0 END)`;
+    const DB_ = `SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} THEN qty_kg ELSE 0 END)`;
+
+    let sql;
+    if (view === 'daily')        sql = `SELECT production_day AS day, account, ${CR} AS generated, ${DB_} AS consumed FROM gpr_ledger ${where} GROUP BY production_day, account ORDER BY production_day DESC`;
+    else if (view === 'colour')  sql = `SELECT colour_code, colour_name, account, ${CR} AS generated, ${DB_} AS consumed FROM gpr_ledger ${where} GROUP BY colour_code, colour_name, account ORDER BY colour_code`;
+    else if (view === 'movements') sql = `SELECT id, moved_at, production_day, batch_number, tt_id, account, movement_type, source, side, colour_code, machine_id, floor, qty_kg, note, moved_by FROM gpr_ledger ${where} ORDER BY moved_at DESC`;
+    else                         sql = `SELECT account, ${CR} AS generated, ${DB_} AS consumed, ${PEND} AS pending_kg FROM gpr_ledger ${where} GROUP BY account ORDER BY account`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    (rows || []).forEach(r => {
+      if (r.generated != null) r.generated = +Number(r.generated).toFixed(2);
+      if (r.consumed  != null) r.consumed  = +Number(r.consumed).toFixed(2);
+      if (r.generated != null && r.consumed != null) r.balance = +(r.generated - r.consumed).toFixed(2);
+      if (r.account) r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account;
+    });
+    res.json({ ok: true, view, from, to, cumulative, rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/ledger/generate', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const b = req.body;
+    const account = String(b.account || '');
+    if (!GPR_ACCOUNTS.includes(account)) return res.status(400).json({ ok: false, error: 'invalid account' });
+    if (account === 'aim_salvage' || account === 'printed_salvage') {
+      return res.status(400).json({ ok: false, error: 'AUTO_ACCOUNT',
+        detail: `${GPR_ACCOUNT_LABELS[account]} is credited automatically from Tracking and cannot be entered by hand.` });
+    }
+    const qty = Number(b.qty_kg || 0);
+    if (qty <= 0) return res.status(400).json({ ok: false, error: 'qty_kg required' });
+    const masters = await gprLoadMasters();
+    const id = await gprLedgerMove({ movement_type: 'generation', account, source: 'manual',
+      pc_code: b.pc_code, colour_name: b.colour_name, colour_code: b.colour_code, side: b.side,
+      machine_id: b.machine_id, batch_number: b.batch_number ? String(b.batch_number).toUpperCase() : null,
+      floor: gprFloorOfMachine(b.machine_id, masters) || b.floor, qty_kg: qty,
+      moved_by: session.username, note: b.note || 'manual generation' });
+    logAudit(session.username, session.role, 'gpr', 'GPR_LEDGER_GENERATE', `${account} ${qty}kg`, req.ip);
+    res.json({ ok: true, id, account, qty_kg: qty });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/ledger/consume', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const b = req.body;
+    const account = String(b.account || '');
+    if (!GPR_ACCOUNTS.includes(account)) return res.status(400).json({ ok: false, error: 'invalid account' });
+    const qty = Number(b.qty_kg || 0);
+    if (qty <= 0) return res.status(400).json({ ok: false, error: 'qty_kg required' });
+    // v55A item 5 (Ishan, 18 Sep): consumption can only draw what the chemist has ACCEPTED into
+    // stock. Available = accepted credits − all debits for this account (+floor when given).
+    // GPR-internal check — it constrains GPR entry only, never the other three apps.
+    try {
+      const _fl = req.body.floor || null;
+      const _bSql = `SELECT SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status='accepted') THEN qty_kg
+                                     WHEN movement_type IN ${GPR_A_DEBIT} THEN -qty_kg ELSE 0 END) AS bal
+                     FROM gpr_ledger WHERE account=${pgPool ? '$1' : '?'}` + (_fl ? ` AND floor=${pgPool ? '$2' : '?'}` : '');
+      const _bp = _fl ? [account, _fl] : [account];
+      const _bRow = pgPool ? (await pgPool.query(_bSql, _bp)).rows[0] : db.prepare(_bSql).get(..._bp);
+      const _bal = Number(_bRow?.bal || 0);
+      if (qty > _bal + 0.005) {
+        const _pSql = `SELECT COALESCE(SUM(qty_kg),0) AS p FROM gpr_ledger WHERE account=${pgPool ? '$1' : '?'} AND movement_type='generation' AND receipt_status='pending'` + (_fl ? ` AND floor=${pgPool ? '$2' : '?'}` : '');
+        const _pRow = pgPool ? (await pgPool.query(_pSql, _bp)).rows[0] : db.prepare(_pSql).get(..._bp);
+        return res.status(409).json({ ok: false, error: 'INSUFFICIENT_ACCEPTED_STOCK',
+          detail: `Accepted ${account} stock${_fl ? ' on ' + _fl : ''} is ${_bal.toFixed(2)} kg — ${qty} kg requested. ` +
+                  (Number(_pRow?.p || 0) > 0.005 ? `${Number(_pRow.p).toFixed(2)} kg is awaiting GPR receipt acceptance; accept it first.` : 'No pending receipts for this account.'),
+          availableKg: +_bal.toFixed(2), pendingKg: +Number(_pRow?.p || 0).toFixed(2) });
+      }
+    } catch (_e55a) { /* balance check must never 500 a consume — worst case falls through */ }
+
+    const masters = await gprLoadMasters();
+    const id = await gprLedgerMove({ movement_type: 'consumption', account, source: 'manual',
+      pc_code: b.pc_code, colour_name: b.colour_name, colour_code: b.colour_code, side: b.side,
+      machine_id: b.machine_id, batch_number: b.batch_number ? String(b.batch_number).toUpperCase() : null,
+      tt_id: b.tt_id || null, floor: gprFloorOfMachine(b.machine_id, masters) || b.floor,
+      qty_kg: qty, moved_by: session.username, note: b.note || 'consumed into TT' });
+    logAudit(session.username, session.role, 'gpr', 'GPR_LEDGER_CONSUME', `${account} ${qty}kg batch=${b.batch_number || ''}`, req.ip);
+    res.json({ ok: true, id, account, qty_kg: qty });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/ledger/draw', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const b = req.body;
+    const qty = Number(b.qty_kg || 0);
+    if (qty <= 0) return res.status(400).json({ ok: false, error: 'qty_kg required' });
+    // v55A item 5 (Ishan, 18 Sep): consumption can only draw what the chemist has ACCEPTED into
+    // stock. Available = accepted credits − all debits for this account (+floor when given).
+    // GPR-internal check — it constrains GPR entry only, never the other three apps.
+    try {
+      const _fl = req.body.floor || null;
+      const _bSql = `SELECT SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status='accepted') THEN qty_kg
+                                     WHEN movement_type IN ${GPR_A_DEBIT} THEN -qty_kg ELSE 0 END) AS bal
+                     FROM gpr_ledger WHERE account=${pgPool ? '$1' : '?'}` + (_fl ? ` AND floor=${pgPool ? '$2' : '?'}` : '');
+      const _bp = _fl ? [account, _fl] : [account];
+      const _bRow = pgPool ? (await pgPool.query(_bSql, _bp)).rows[0] : db.prepare(_bSql).get(..._bp);
+      const _bal = Number(_bRow?.bal || 0);
+      if (qty > _bal + 0.005) {
+        const _pSql = `SELECT COALESCE(SUM(qty_kg),0) AS p FROM gpr_ledger WHERE account=${pgPool ? '$1' : '?'} AND movement_type='generation' AND receipt_status='pending'` + (_fl ? ` AND floor=${pgPool ? '$2' : '?'}` : '');
+        const _pRow = pgPool ? (await pgPool.query(_pSql, _bp)).rows[0] : db.prepare(_pSql).get(..._bp);
+        return res.status(409).json({ ok: false, error: 'INSUFFICIENT_ACCEPTED_STOCK',
+          detail: `Accepted ${account} stock${_fl ? ' on ' + _fl : ''} is ${_bal.toFixed(2)} kg — ${qty} kg requested. ` +
+                  (Number(_pRow?.p || 0) > 0.005 ? `${Number(_pRow.p).toFixed(2)} kg is awaiting GPR receipt acceptance; accept it first.` : 'No pending receipts for this account.'),
+          availableKg: +_bal.toFixed(2), pendingKg: +Number(_pRow?.p || 0).toFixed(2) });
+      }
+    } catch (_e55a) { /* balance check must never 500 a consume — worst case falls through */ }
+
+    const masters = await gprLoadMasters();
+    const id = await gprLedgerMove({ movement_type: 'draw', account: b.account || 'cutting', source: 'manual',
+      pc_code: b.pc_code, colour_code: b.colour_code, side: b.side, machine_id: b.machine_id,
+      batch_number: b.batch_number ? String(b.batch_number).toUpperCase() : null,
+      floor: gprFloorOfMachine(b.machine_id, masters) || b.floor, qty_kg: qty,
+      moved_by: session.username, note: b.note || 'draw from stock' });
+    logAudit(session.username, session.role, 'gpr', 'GPR_LEDGER_DRAW', `${qty}kg`, req.ip);
+    res.json({ ok: true, id, drawn_kg: qty });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/ledger/correction', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
+    const b = req.body;
+    const qty = Number(b.qty_kg || 0);
+    if (qty === 0) return res.status(400).json({ ok: false, error: 'non-zero qty_kg required' });
+    const id = await gprLedgerMove({
+      movement_type: qty > 0 ? 'correction' : 'draw', account: b.account || 'cutting', source: 'manual',
+      pc_code: b.pc_code, colour_code: b.colour_code, side: b.side, qty_kg: Math.abs(qty),
+      moved_by: session.username, note: b.note || (qty > 0 ? 'admin correction (credit)' : 'admin correction (debit)') });
+    logAudit(session.username, session.role, 'gpr', 'GPR_LEDGER_CORRECTION', `${qty}kg`, req.ip);
+    res.json({ ok: true, id, correction_kg: qty });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Per-batch ledger — registered LAST among /ledger/* so static paths win.
+app.get('/api/gpr/ledger/:batch', async (req, res) => {
+  try {
+    const bn = String(req.params.batch).trim().toUpperCase();
+    await gprSyncTrackingCredits(bn);
+    const P = pgPool ? '$1' : '?';
+    const netSql = `SELECT account, side, colour_code,
+                      COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} THEN qty_kg ELSE 0 END),0) AS generated,
+                      COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} THEN qty_kg ELSE 0 END),0) AS consumed
+                    FROM gpr_ledger WHERE UPPER(batch_number)=${P} AND NOT (movement_type='generation' AND receipt_status='pending') GROUP BY account, side, colour_code`;
+    const trailSql = `SELECT id, moved_at, production_day, tt_id, account, movement_type, source, side,
+                             colour_code, machine_id, floor, qty_kg, note, moved_by
+                      FROM gpr_ledger WHERE UPPER(batch_number)=${P} ORDER BY moved_at`;
+    const net   = pgPool ? (await pgPool.query(netSql, [bn])).rows   : db.prepare(netSql).all(bn);
+    const trail = pgPool ? (await pgPool.query(trailSql, [bn])).rows : db.prepare(trailSql).all(bn);
+    (net || []).forEach(r => {
+      r.generated = +Number(r.generated || 0).toFixed(2);
+      r.consumed  = +Number(r.consumed || 0).toFixed(2);
+      r.net = +(r.generated - r.consumed).toFixed(2);
+      r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account;
+    });
+    res.json({ ok: true, batch: bn, net, trail });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Manual re-sync trigger for the Tracking auto-credit (idempotent).
+app.get('/api/gpr/sync-tracking/:batch', async (req, res) => {
+  try {
+    const credited = await gprSyncTrackingCredits(req.params.batch);
+    res.json({ ok: true, batch: String(req.params.batch).toUpperCase(), credited });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── LEDGER B (legacy lump-sum) ────────────────────────────────────────────
+app.get('/api/gpr/legacy/balance', async (req, res) => {
+  try {
+    // Lump sum per storage LOCATION (confirmed by Ishan): the legacy pile sits in
+    // several areas of the plant, so draws are tracked per location to keep an
+    // accurate picture of what is left where.
+    const bal = `COALESCE(SUM(CASE WHEN movement_type IN ('legacy_seed','correction') THEN qty_kg
+                                   WHEN movement_type='draw' THEN -qty_kg ELSE 0 END),0)`;
+    const sql = `SELECT location, account,
+                   ${bal} AS balance_kg,
+                   COALESCE(SUM(CASE WHEN movement_type='legacy_seed' THEN qty_kg ELSE 0 END),0) AS seeded_kg,
+                   COALESCE(SUM(CASE WHEN movement_type='draw' THEN qty_kg ELSE 0 END),0) AS drawn_kg
+                 FROM gpr_legacy_stock GROUP BY location, account ORDER BY location`;
+    const rows = pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
+    (rows || []).forEach(r => {
+      r.balance_kg = +Number(r.balance_kg || 0).toFixed(2);
+      r.seeded_kg  = +Number(r.seeded_kg  || 0).toFixed(2);
+      r.drawn_kg   = +Number(r.drawn_kg   || 0).toFixed(2);
+      r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account || '—';
+      r.location = r.location || '(unspecified)';
+    });
+    const total = +(rows || []).reduce((a, r) => a + r.balance_kg, 0).toFixed(2);
+    res.json({ ok: true, legacy: rows, totalBalanceKg: total });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/legacy/seed', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!GPR_MGR(session)) return res.status(403).json({ ok: false, error: 'Admin or GPR Manager only' });
+    const qty = Number(req.body.qty_kg || 0);
+    if (qty <= 0) return res.status(400).json({ ok: false, error: 'qty_kg required' });
+    const id = await gprLegacyMove({ movement_type: 'legacy_seed', account: req.body.account || 'cutting',
+      location: req.body.location || null, floor: req.body.floor, qty_kg: qty,
+      note: req.body.note || 'legacy lump-sum seed', moved_by: session.username });
+    logAudit(session.username, session.role, 'gpr', 'GPR_LEGACY_SEED',
+      `${qty}kg ${req.body.account || ''} @ ${req.body.location || 'unspecified'}`, req.ip);
+    res.json({ ok: true, id, seeded_kg: qty });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Bulk-seed the legacy pile from the location-wise spreadsheet. One row per
+// location. REFUSES if any legacy_seed rows already exist unless replace=true is
+// passed, because seeding is a one-time action and a second accidental run would
+// silently double the opening stock.
+app.post('/api/gpr/legacy/import', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!GPR_MGR(session)) return res.status(403).json({ ok: false, error: 'Admin or GPR Manager only' });
+    const rows = Array.isArray(req.body.rows) ? req.body.rows : null;
+    if (!rows || !rows.length) return res.status(400).json({ ok: false, error: 'rows required' });
+
+    const cSql = `SELECT COUNT(*) AS n FROM gpr_legacy_stock WHERE movement_type='legacy_seed'`;
+    const c = pgPool ? (await pgPool.query(cSql)).rows[0] : db.prepare(cSql).get();
+    const already = Number(c?.n || 0);
+    if (already > 0 && req.body.replace !== true) {
+      return res.status(409).json({ ok: false, error: 'ALREADY_SEEDED',
+        detail: `Legacy stock already carries ${already} seed row(s). Re-importing would double the opening balance. Pass replace=true only if you intend to clear and re-seed.` });
+    }
+    if (already > 0 && req.body.replace === true) {
+      if (pgPool) await pgPool.query(`DELETE FROM gpr_legacy_stock WHERE movement_type='legacy_seed'`);
+      else db.prepare(`DELETE FROM gpr_legacy_stock WHERE movement_type='legacy_seed'`).run();
+    }
+
+    const done = []; const skipped = [];
+    for (const r of rows) {
+      const qty = Number(r.qty_kg || 0);
+      const loc = String(r.location || '').trim();
+      if (!loc)     { skipped.push({ row: r, why: 'location missing' }); continue; }
+      if (qty <= 0) { skipped.push({ row: r, why: 'qty_kg must be greater than zero' }); continue; }
+      const id = await gprLegacyMove({ movement_type: 'legacy_seed',
+        account: r.account || 'cutting', location: loc, floor: r.floor || null,
+        qty_kg: qty, note: r.note || 'legacy opening stock', moved_by: session.username });
+      done.push({ id, location: loc, qty_kg: qty });
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_LEGACY_IMPORT',
+      `${done.length} location(s), ${done.reduce((a,x)=>a+x.qty_kg,0).toFixed(1)}kg`, req.ip);
+    res.json({ ok: true, imported: done.length, skipped, rows: done,
+      totalKg: +done.reduce((a,x)=>a+x.qty_kg,0).toFixed(2) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/legacy/draw', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const qty = Number(req.body.qty_kg || 0);
+    if (qty <= 0) return res.status(400).json({ ok: false, error: 'qty_kg required' });
+    const id = await gprLegacyMove({ movement_type: 'draw', account: req.body.account || 'cutting',
+      location: req.body.location || null, batch_number: req.body.batch_number || null,
+      tt_id: req.body.tt_id || null, floor: req.body.floor || null,
+      qty_kg: qty, note: req.body.note || 'draw from legacy', moved_by: session.username });
+    logAudit(session.username, session.role, 'gpr', 'GPR_LEGACY_DRAW',
+      `${qty}kg @ ${req.body.location || 'unspecified'}`, req.ip);
+    res.json({ ok: true, id, drawn_kg: qty });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/legacy/correction', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
+    const qty = Number(req.body.qty_kg || 0);
+    if (qty === 0) return res.status(400).json({ ok: false, error: 'non-zero qty_kg required' });
+    const id = await gprLegacyMove({ movement_type: qty > 0 ? 'correction' : 'draw',
+      account: req.body.account || 'cutting', qty_kg: Math.abs(qty),
+      note: req.body.note || 'admin correction', moved_by: session.username });
+    logAudit(session.username, session.role, 'gpr', 'GPR_LEGACY_CORRECTION', `${qty}kg`, req.ip);
+    res.json({ ok: true, id, correction_kg: qty });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── YIELD ─────────────────────────────────────────────────────────────────
+app.get('/api/gpr/yield-report', async (req, res) => {
+  try {
+    const { machine, pc, floor, from, to } = req.query;
+    const conds = []; const params = [];
+    const add = (frag, val) => { params.push(val); conds.push(frag(params.length)); };
+    if (machine) add(n => pgPool ? `machine_id=$${n}` : `machine_id=?`, machine);
+    if (pc)      add(n => pgPool ? `pc_code=$${n}` : `pc_code=?`, pc);
+    if (floor)   add(n => pgPool ? `floor=$${n}` : `floor=?`, floor);
+    if (from)    add(n => pgPool ? `production_day >= $${n}` : `production_day >= ?`, from);
+    if (to)      add(n => pgPool ? `production_day <= $${n}` : `production_day <= ?`, to);
+    const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
+    const bSql = `SELECT DISTINCT batch_number FROM gpr_tt ${where} ORDER BY batch_number`;
+    const batches = pgPool ? (await pgPool.query(bSql, params)).rows : db.prepare(bSql).all(...params);
+    const rows = [];
+    for (const b of (batches || [])) {
+      const y = await gprComputeYield(b.batch_number);
+      rows.push({ batch: y.batch, yieldPct: y.yieldPct, target: y.target, variance: y.variance,
+                  numeratorKg: y.numerator.total, denominatorKg: y.denominator.total,
+                  packedLakhs: y.numerator.packedLakhs, wipLakhs: y.numerator.wipLakhs,
+                  ttCount: y.ttCount, ttLitres: y.ttLitres });
+    }
+    res.json({ ok: true, count: rows.length, rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Daily yield per floor (item 8). The day is DPR's production day (06:00-06:00),
+// so GPR groups exactly as DPR does. Same formula as batch/monthly yield: the
+// aggregate is SUM(numerators) / SUM(denominators), never an average of percents.
+app.get('/api/gpr/yield-daily', async (req, res) => {
+  try {
+    const to   = req.query.to   || gprProductionDay();
+    const from = req.query.from || to;
+    const floorFilter = req.query.floor || null;
+    const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
+    const bSql = `SELECT DISTINCT batch_number, floor, production_day FROM gpr_tt
+                  WHERE production_day BETWEEN ${P1} AND ${P2}`;
+    const rows = pgPool ? (await pgPool.query(bSql, [from, to])).rows : db.prepare(bSql).all(from, to);
+
+    // day -> floor -> {num, den}. A batch contributes to the days its TTs were issued.
+    const grid = {};
+    const yieldCache = {};
+    for (const r of (rows || [])) {
+      const fl = r.floor || 'unknown';
+      if (floorFilter && fl !== floorFilter) continue;
+      const day = r.production_day;
+      if (!day) continue;
+      const key = String(r.batch_number).toUpperCase();
+      if (!yieldCache[key]) yieldCache[key] = await gprComputeYield(key);
+      const y = yieldCache[key];
+      grid[day] = grid[day] || {};
+      grid[day][fl] = grid[day][fl] || { num: 0, den: 0, batches: 0 };
+      grid[day][fl].num += y.numerator.total;
+      grid[day][fl].den += y.denominator.total;
+      grid[day][fl].batches += 1;
+    }
+    // Approved crushing lands on the floor/day denominator only, never a batch.
+    const cSql = `SELECT production_day AS day, floor, COALESCE(SUM(qty_kg),0) AS kg FROM gpr_crush
+                  WHERE status='approved' AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor`;
+    const crush = pgPool ? (await pgPool.query(cSql, [from, to])).rows : db.prepare(cSql).all(from, to);
+    (crush || []).forEach(c => {
+      const fl = c.floor || 'unknown';
+      if (floorFilter && fl !== floorFilter) return;
+      if (!c.day) return;
+      grid[c.day] = grid[c.day] || {};
+      grid[c.day][fl] = grid[c.day][fl] || { num: 0, den: 0, batches: 0 };
+      grid[c.day][fl].den += Number(c.kg || 0);
+    });
+
+    const masters = await gprLoadMasters();
+    const target = Number((masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants).yieldTargetPct || 103);
+    const days = Object.keys(grid).sort().reverse().map(day => {
+      const floors = Object.entries(grid[day]).map(([floor, v]) => ({
+        floor, batches: v.batches,
+        numeratorKg: +v.num.toFixed(1), denominatorKg: +v.den.toFixed(1),
+        yieldPct: v.den > 0 ? +((v.num / v.den) * 100).toFixed(2) : null,
+      }));
+      const n = floors.reduce((s, f) => s + f.numeratorKg, 0);
+      const d = floors.reduce((s, f) => s + f.denominatorKg, 0);
+      return { day, floors, consolidated: { numeratorKg: +n.toFixed(1), denominatorKg: +d.toFixed(1),
+        yieldPct: d > 0 ? +((n / d) * 100).toFixed(2) : null } };
+    });
+    res.json({ ok: true, from, to, target, dayBasis: 'DPR production day (06:00-06:00)', days });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Monthly live yield per floor + consolidated. BLOCKER H3 FIX: the v42 branch
+// looped EVERY batch that ever had a TT and only date-filtered the crushing, so
+// "July yield" was really all-time yield plus July crushing. The batch set is now
+// restricted to TT activity inside the month, by production day.
+app.get('/api/gpr/yield-live', async (req, res) => {
+  try {
+    const month = req.query.month || String(gprProductionDay()).slice(0, 7);
+    const floorFilter = req.query.floor || null;
+    const lo = month + '-01';
+    const hiDate = new Date(Number(month.slice(0, 4)), Number(month.slice(5, 7)), 0);
+    const hi = month + '-' + String(hiDate.getDate()).padStart(2, '0');
+    const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
+
+    const bSql = `SELECT DISTINCT batch_number, floor FROM gpr_tt WHERE production_day BETWEEN ${P1} AND ${P2}`;
+    const batches = pgPool ? (await pgPool.query(bSql, [lo, hi])).rows : db.prepare(bSql).all(lo, hi);
+    const byFloor = {};
+    const seen = new Set();
+    for (const b of (batches || [])) {
+      const fl = b.floor || 'unknown';
+      if (floorFilter && fl !== floorFilter) continue;
+      const key = fl + '|' + String(b.batch_number).toUpperCase();
+      if (seen.has(key)) continue;
+      seen.add(key);
+      const y = await gprComputeYield(b.batch_number);
+      byFloor[fl] = byFloor[fl] || { num: 0, den: 0, batches: 0 };
+      byFloor[fl].num += y.numerator.total;
+      byFloor[fl].den += y.denominator.total;
+      byFloor[fl].batches += 1;
+    }
+    const cSql = `SELECT floor, COALESCE(SUM(qty_kg),0) AS kg FROM gpr_crush
+                  WHERE status='approved' AND production_day BETWEEN ${P1} AND ${P2} GROUP BY floor`;
+    const crush = pgPool ? (await pgPool.query(cSql, [lo, hi])).rows : db.prepare(cSql).all(lo, hi);
+    (crush || []).forEach(c => {
+      const fl = c.floor || 'unknown';
+      if (floorFilter && fl !== floorFilter) return;
+      byFloor[fl] = byFloor[fl] || { num: 0, den: 0, batches: 0 };
+      byFloor[fl].den += Number(c.kg || 0);
+    });
+
+    const floors = Object.entries(byFloor).map(([floor, v]) => ({
+      floor, batches: v.batches,
+      numeratorKg: +v.num.toFixed(1), denominatorKg: +v.den.toFixed(1),
+      yieldPct: v.den > 0 ? +((v.num / v.den) * 100).toFixed(2) : null,
+    }));
+    const totN = floors.reduce((s, f) => s + f.numeratorKg, 0);
+    const totD = floors.reduce((s, f) => s + f.denominatorKg, 0);
+    const masters = await gprLoadMasters();
+    res.json({ ok: true, month, from: lo, to: hi, floorFilter,
+      target: Number((masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants).yieldTargetPct || 103),
+      floors,
+      consolidated: { numeratorKg: +totN.toFixed(1), denominatorKg: +totD.toFixed(1),
+        yieldPct: totD > 0 ? +((totN / totD) * 100).toFixed(2) : null } });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/gpr/yield/:batch', async (req, res) => {
+  try {
+    await gprSyncTrackingCredits(req.params.batch);
+    res.json({ ok: true, ...(await gprComputeYield(req.params.batch)) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── BATCH SUMMARY + STATUS ────────────────────────────────────────────────
+app.get('/api/gpr/batch-summary/:batch', async (req, res) => {
+  try {
+    const bn = String(req.params.batch).trim().toUpperCase();
+    await gprSyncTrackingCredits(bn);
+    const P = pgPool ? '$1' : '?';
+    const ttSql = `SELECT * FROM gpr_tt WHERE UPPER(batch_number)=${P} ORDER BY side, seq_index`;
+    const tts = pgPool ? (await pgPool.query(ttSql, [bn])).rows : db.prepare(ttSql).all(bn);
+    const refs = [...new Set((tts || []).map(t => t.mmt_ref).filter(Boolean))];
+    let mmts = [];
+    if (refs.length) {
+      const ph = pgPool ? refs.map((_, i) => `$${i + 1}`).join(',') : refs.map(() => '?').join(',');
+      const mSql = `SELECT * FROM gpr_mmt_charges WHERE mmt_ref IN (${ph})`;
+      mmts = pgPool ? (await pgPool.query(mSql, refs)).rows : db.prepare(mSql).all(...refs);
+    }
+    const stSql = `SELECT * FROM gpr_batch_status WHERE UPPER(batch_number)=${P}`;
+    const status = pgPool ? (await pgPool.query(stSql, [bn])).rows[0] : db.prepare(stSql).get(bn);
+    const ledSql = `SELECT account, movement_type, source, COALESCE(SUM(qty_kg),0) AS kg
+                    FROM gpr_ledger WHERE UPPER(batch_number)=${P} AND NOT (movement_type='generation' AND receipt_status='pending') GROUP BY account, movement_type, source`;
+    const ledger = pgPool ? (await pgPool.query(ledSql, [bn])).rows : db.prepare(ledSql).all(bn);
+    (ledger || []).forEach(l => { l.kg = +Number(l.kg || 0).toFixed(2); l.account_label = GPR_ACCOUNT_LABELS[l.account] || l.account; });
+    const order = gprFindOrder(bn);
+    res.json({ ok: true, batch: bn,
+      status: status || { batch_number: bn, status: 'planned' },
+      cascadeArmed: await gprCascadeArmed(),
+      order: order ? { customer: order.customer || '', machineId: order.machineId || '',
+        size: order.size || '', qty: order.qty || 0, grossQty: order.grossQty || order.qty || 0,
+        status: order.status || '' } : null,
+      mmts, tts, ledger, yield: await gprComputeYield(bn) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/gpr/batch-status/:batch', async (req, res) => {
+  try {
+    const sql = `SELECT * FROM gpr_batch_status WHERE UPPER(batch_number)=${pgPool ? '$1' : '?'}`;
+    const bn = String(req.params.batch).trim().toUpperCase();
+    const row = pgPool ? (await pgPool.query(sql, [bn])).rows[0] : db.prepare(sql).get(bn);
+    res.json({ ok: true, status: row || { batch_number: bn, status: 'planned' },
+      cascadeArmed: await gprCascadeArmed() });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GPR records In-Production / Close / Reopen.
+// ADDITIVE MODE (cascadeEnabled = 0, the v42U default): this is GPR's own record.
+// It does not gate DPR and does not own the 2-order-per-machine limit — the suite
+// runs on the existing v49U rules untouched.
+// CASCADE ARMED (cascadeEnabled = 1, target 1 Sept): GPR owns the 2-order limit.
+// It REFUSES LOUDLY and names the occupying batches — never a silent downgrade.
+app.post('/api/gpr/batch-status/:batch/set', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const bn = String(req.params.batch).trim().toUpperCase();
+    const action = String(req.body.action || '');
+    if (!['in_production', 'close', 'reopen'].includes(action)) {
+      return res.status(400).json({ ok: false, error: 'invalid action' });
+    }
+    const armed = await gprCascadeArmed();
+    const now = new Date().toISOString();
+
+    if (armed && action === 'in_production') {
+      const order = gprFindOrder(bn);
+      const mc = order && order.machineId;
+      if (mc) {
+        const oSql = `SELECT batch_number FROM gpr_batch_status WHERE status='in_production' AND UPPER(batch_number)<>${pgPool ? '$1' : '?'}`;
+        const rows = pgPool ? (await pgPool.query(oSql, [bn])).rows : db.prepare(oSql).all(bn);
+        const occupants = (rows || [])
+          .map(r => ({ batch: r.batch_number, order: gprFindOrder(r.batch_number) }))
+          .filter(x => x.order && x.order.machineId === mc)
+          .map(x => x.batch);
+        if (occupants.length >= 2) {
+          return res.status(409).json({ ok: false, error: 'MACHINE_AT_CAPACITY',
+            detail: `${mc} already has 2 batches In-Production: ${occupants.join(' and ')}. Close one before starting ${bn}.`,
+            machine: mc, occupants });
+        }
+      }
+    }
+
+    const exSql = `SELECT id FROM gpr_batch_status WHERE UPPER(batch_number)=${pgPool ? '$1' : '?'}`;
+    const exists = pgPool ? (await pgPool.query(exSql, [bn])).rows[0] : db.prepare(exSql).get(bn);
+    if (!exists) {
+      if (pgPool) await pgPool.query(`INSERT INTO gpr_batch_status (batch_number,status) VALUES ($1,'planned')`, [bn]);
+      else db.prepare(`INSERT INTO gpr_batch_status (batch_number,status) VALUES (?,'planned')`).run(bn);
+    }
+    let sets;
+    if (action === 'in_production') sets = { status: 'in_production', in_production_at: now, in_production_by: session.username };
+    else if (action === 'close')    sets = { status: 'closed', closed_at: now, closed_by: session.username };
+    else                            sets = { status: 'in_production', closed_at: null, closed_by: null };
+
+    const cols = Object.keys(sets);
+    if (pgPool) {
+      const setClause = cols.map((c, i) => `${c}=$${i + 1}`).join(', ');
+      await pgPool.query(`UPDATE gpr_batch_status SET ${setClause}, updated_at=NOW()::TEXT WHERE UPPER(batch_number)=$${cols.length + 1}`,
+        [...cols.map(c => sets[c]), bn]);
+    } else {
+      const setClause = cols.map(c => `${c}=?`).join(', ');
+      db.prepare(`UPDATE gpr_batch_status SET ${setClause}, updated_at=datetime('now') WHERE UPPER(batch_number)=?`)
+        .run(...cols.map(c => sets[c]), bn);
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_BATCH_' + action.toUpperCase(),
+      `batch=${bn} cascade=${armed ? 'armed' : 'additive'}`, req.ip);
+    res.json({ ok: true, batch: bn, action, at: now, cascadeArmed: armed,
+      note: armed ? undefined : 'Recorded in GPR. Cascade is in additive mode — DPR and Planning are unaffected.' });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/gpr/active-batches', async (req, res) => {
+  try {
+    const sql = `SELECT batch_number, status, in_production_at, closed_at FROM gpr_batch_status
+                 WHERE status='in_production' ORDER BY in_production_at DESC`;
+    const rows = pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
+    res.json({ ok: true, batches: rows, cascadeArmed: await gprCascadeArmed() });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ═══ v55A items 5+6 (Ishan, 18 Sep) — PHYSICAL RECEIPT FLOW ═══════════════════════════════════
+// Generation reaches GPR from two upstream sources and must be physically received before it is
+// stock: (a) Tracking salvage/remelt credits (gprSyncTrackingCredits, now landing as pending);
+// (b) DPR cap/body cutting kg typed per machine per shift (synced below from dpr_records JSON).
+// A pending row joins usable stock ONLY when a GPR chemist accepts it here. Lazy sync: runs on
+// every pending-receipts read; the DPR save path is untouched (nothing added to it can break it).
+function _gprNormMc(id) { return String(id || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
+async function gprSyncDprCuttings(days) {
+  const lookback = Math.max(7, Math.min(90, Number(days) || 45));
+  const since = new Date(Date.now() - lookback * 86400000).toISOString().slice(0, 10);
+  let rows;
+  try {
+    const sql = `SELECT floor, date, data_json FROM dpr_records WHERE date >= ${pgPool ? '$1' : '?'}`;
+    rows = pgPool ? (await pgPool.query(sql, [since])).rows : db.prepare(sql).all(since);
+  } catch (e) { return { synced: 0, error: e.message }; }
+  const masters = await gprLoadMasters();
+  const mm = (masters.tt_machine_master || GPR_SEED_MASTERS.tt_machine_master);
+  const mmNorm = {}; Object.keys(mm).forEach(k => { mmNorm[_gprNormMc(k)] = mm[k]; });
+  let synced = 0;
+  for (const rec of (rows || [])) {
+    let data; try { data = typeof rec.data_json === 'string' ? JSON.parse(rec.data_json) : rec.data_json; } catch (_) { continue; }
+    const shifts = (data && data.shifts) || {};
+    for (const sh of ['A', 'B', 'C']) {
+      const machines = (shifts[sh] && shifts[sh].machines) || {};
+      for (const [mcId, m] of Object.entries(machines)) {
+        if (!m) continue;
+        const mcN = _gprNormMc(mcId);
+        const floorGpr = (mmNorm[mcN] && mmNorm[mcN].floor) || null;
+        const runs = Array.isArray(m.runs) ? m.runs : [];
+        const run = runs.find(r => r && String(r.batchNumber || '').trim()) || runs[0] || {};
+        const bn = String(run.batchNumber || '').trim().toUpperCase() || null;
+        for (const [field, side] of [['capCut', 'cap'], ['bodyCut', 'body']]) {
+          const kg = parseFloat(m[field] || 0) || 0;
+          const ref = `${rec.date}|${sh}|${mcN}|${side}`;
+          const sel = `SELECT id, qty_kg, receipt_status FROM gpr_ledger WHERE source='dpr' AND receipt_ref=${pgPool ? '$1' : '?'}`;
+          const ex = pgPool ? (await pgPool.query(sel, [ref])).rows[0] : db.prepare(sel).get(ref);
+          if (kg <= 0) { continue; }   // never delete on zero — an accepted receipt is history
+          if (ex) {
+            if (Math.abs(Number(ex.qty_kg || 0) - kg) < 0.005) continue;
+            // Quantity changed since the chemist saw it — back to pending at the new figure.
+            const up = `UPDATE gpr_ledger SET qty_kg=${pgPool ? '$1' : '?'}, receipt_status='pending', moved_at=${pgPool ? 'NOW()::TEXT' : "datetime('now')"} WHERE id=${pgPool ? '$2' : '?'}`;
+            if (pgPool) await pgPool.query(up, [kg, ex.id]); else db.prepare(up).run(kg, ex.id);
+            synced++;
+          } else {
+            const id = await gprLedgerMove({ movement_type: 'generation', account: 'cutting', source: 'dpr',
+              side, machine_id: mcId, batch_number: bn, floor: floorGpr, qty_kg: kg,
+              production_day: rec.date, moved_by: 'system',
+              note: `DPR ${side} cutting — shift ${sh} (pending GPR receipt)` });
+            const mk = `UPDATE gpr_ledger SET receipt_status='pending', receipt_ref=${pgPool ? '$1' : '?'} WHERE id=${pgPool ? '$2' : '?'}`;
+            if (pgPool) await pgPool.query(mk, [ref, id]); else db.prepare(mk).run(ref, id);
+            synced++;
+          }
+        }
+      }
+    }
+  }
+  return { synced, since };
+}
+
+// Pending receipts, per floor. Sync order: DPR cuttings sweep, then Tracking credits for the
+// floor's live batches (running orders from Planning — capped, newest first).
+app.get('/api/gpr/receipts', async (req, res) => {
+  try {
+    // v55E: open read, matching every other GPR GET (the module gates MUTATIONS by token; reads
+    // are open). The lazy sync below only upserts idempotent pending rows in gpr_* tables, and
+    // ACCEPTING a receipt — the state that matters — stays token-gated on the POST.
+    const floor = req.query.floor || null;
+    await gprSyncDprCuttings().catch(() => {});
+    try {
+      const st = getPlanningState();
+      const masters = await gprLoadMasters();
+      const live = (st.orders || []).filter(o => o && !o.deleted && o.batchNumber &&
+        (o.status === 'running' || o.status === 'planned') &&
+        (!floor || gprFloorOfMachine(o.machineId, masters) === floor)).slice(-60);
+      for (const o of live) { await gprSyncTrackingCredits(o.batchNumber).catch(() => {}); }
+    } catch (_) {}
+    const conds = ["receipt_status='pending'"]; const params = [];
+    if (floor) { params.push(floor); conds.push(`floor=${pgPool ? '$' + params.length : '?'}`); }
+    const sql = `SELECT id, moved_at, production_day, batch_number, account, source, side, colour_code,
+                        machine_id, floor, qty_kg, note, receipt_ref
+                 FROM gpr_ledger WHERE ${conds.join(' AND ')} ORDER BY production_day DESC, id DESC`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    (rows || []).forEach(r => { r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account; });
+    const totalKg = +(rows || []).reduce((a, r) => a + Number(r.qty_kg || 0), 0).toFixed(2);
+    res.json({ ok: true, floor, pending: rows, totalKg });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// Chemist accepts physical receipt — the row becomes usable stock.
+app.post('/api/gpr/receipts/:id/accept', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const id = Number(req.params.id);
+    const sel = `SELECT * FROM gpr_ledger WHERE id=${pgPool ? '$1' : '?'}`;
+    const row = pgPool ? (await pgPool.query(sel, [id])).rows[0] : db.prepare(sel).get(id);
+    if (!row) return res.status(404).json({ ok: false, error: 'Not found' });
+    if (row.receipt_status !== 'pending') return res.status(409).json({ ok: false, error: 'NOT_PENDING', detail: `Row ${id} is ${row.receipt_status || 'already stock'}.` });
+    const now = new Date().toISOString();
+    const up = `UPDATE gpr_ledger SET receipt_status='accepted', accepted_by=${pgPool ? '$1' : '?'}, accepted_at=${pgPool ? '$2' : '?'} WHERE id=${pgPool ? '$3' : '?'}`;
+    if (pgPool) await pgPool.query(up, [session.username, now, id]); else db.prepare(up).run(session.username, now, id);
+    logAudit(session.username, session.role, 'gpr', 'GPR_RECEIPT_ACCEPTED',
+      `id=${id} ${row.qty_kg}kg ${row.account} src=${row.source} batch=${row.batch_number || '-'} floor=${row.floor || '-'}`, req.ip);
+    res.json({ ok: true, id, accepted_at: now });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ═══ v55D (Ishan, 18 Sep) — GPR PLANNING: summary sheet + TT time-cascade sheet ═══════════════
+// Two live sheets, per floor, machine-wise, whole month, all batches (past/current/future), fed
+// from Planning (order/gross/colour/sequence), DPR (production_actuals — actual gross + run rate)
+// and the Report E bindings (_gprBatchLive — Unscanned WIP at AIM, v45V AIM A-Grade).
+//
+// END-SHIFT ESTIMATE (drives the cascade): a running batch ends when its REQUIRED gross is met.
+//   requiredGross = grossPlanned × clamp(assumedA / actualA, 0.85, 1.30)  — actual A-Grade below
+//   plan stretches the run (more gross needed for the same order), above plan prepones it. The
+//   assumed A-Grade is gpr_constants.defaultAGradePct (93). Rate = the machine's average lakhs per
+//   shift over its last 6 producing shifts (fallback: planned gross / planned shifts, then 5 L).
+//   Future batches chain after the live head, so a delay or preponement on the running batch moves
+//   every subsequent deadline in real time (item 9).
+//
+// TIME CASCADE (Ishan's rule, item 7): if the current batch ends in shift S, the next batch's first
+// cap+body TT must be READY BY THE START of shift S (= end of the previous shift), and one TT takes
+// ~8 h from MMT charge to viscosity-set — so TT PREPARATION MUST BEGIN at the start of the shift
+// before S. gpr_constants.ttPrepHours (seeded 8) can be tuned in Masters without a rebuild.
+// Shift table (DPR): A 06:00-14:00, B 14:00-22:00, C 22:00-06:00 IST; production day = 06:00 start.
+//
+// LOOP CLOSE (item 11): against each transition the sheet shows the ACTUAL first cap and body TT
+// scan-outs (gpr_tt.scan_out_at) for the incoming batch — once both exist the transition is DONE
+// and the rest of that batch's tanks roll on the normal schedule.
+// Read-only route: it writes nothing anywhere.
+const _GPR_IST_MS = 330 * 60000;
+function _gprShiftIdx(dt) {            // Date → linear shift index (IST, 8h shifts from prod-day 06:00)
+  const ist = new Date(dt.getTime() + _GPR_IST_MS);
+  return Math.floor((ist.getTime() / 3600000 - 6) / 8);
+}
+function _gprShiftInfo(idx) {          // linear index → {date, shift, startISO(+05:30)}
+  const startIstH = idx * 8 + 6;
+  const startUtc = new Date(startIstH * 3600000 - _GPR_IST_MS);
+  const ist = new Date(startUtc.getTime() + _GPR_IST_MS);
+  const p = n => String(n).padStart(2, '0');
+  const date = `${ist.getUTCFullYear()}-${p(ist.getUTCMonth() + 1)}-${p(ist.getUTCDate())}`;
+  const shift = ['A', 'B', 'C'][((idx % 3) + 3) % 3];
+  const startISO = `${date}T${p(ist.getUTCHours())}:${p(ist.getUTCMinutes())}:00+05:30`;
+  return { idx, date, shift, startISO, startMs: startUtc.getTime() };
+}
+async function _gprMachineRate(mc) {   // avg lakhs/shift over last 6 producing shifts
+  const P = pgPool ? '$1' : '?';
+  const sql = `SELECT date, shift, SUM(qty_lakhs) AS q FROM production_actuals
+               WHERE machine_id=${P} AND qty_lakhs > 0
+               GROUP BY date, shift ORDER BY date DESC, shift DESC LIMIT 6`;
+  const rows = pgPool ? (await pgPool.query(sql, [mc])).rows : db.prepare(sql).all(mc);
+  const qs = (rows || []).map(r => Number(r.q || 0)).filter(q => q > 0);
+  return qs.length ? qs.reduce((a, b) => a + b, 0) / qs.length : 0;
+}
+app.get('/api/gpr/plan', async (req, res) => {
+  try {
+    // v55E: open read-only route, matching the module's GET convention (see receipts above).
+    const floor = String(req.query.floor || 'GF');
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : new Date(Date.now() + _GPR_IST_MS).toISOString().slice(0, 7);
+    const masters = await gprLoadMasters();
+    const C = Object.assign({}, GPR_SEED_MASTERS.gpr_constants, masters.gpr_constants || {});
+    const assumedA = Number(C.defaultAGradePct || 93);
+    const prepHours = Number(C.ttPrepHours || 8);
+    const st = getPlanningState();
+    const inMonth = d => typeof d === 'string' && d.slice(0, 7) === month;
+    const orders = (st.orders || []).filter(o => o && !o.deleted && o.batchNumber && o.machineId &&
+      gprFloorOfMachine(o.machineId, masters) === floor &&
+      (o.status === 'running' || [o.startDate, o.endDate, o.manualEndDate, o.dprFirstDate, o.dprLastDate].some(inMonth)));
+    const nowIdx = _gprShiftIdx(new Date());
+    const nowMs = Date.now();
+    const byMc = {};
+    for (const o of orders) { (byMc[o.machineId] = byMc[o.machineId] || []).push(o); }
+    const machines = [];
+    for (const mc of Object.keys(byMc).sort()) {
+      const q = byMc[mc].sort((a, b) => String(a.startDate || a.dprFirstDate || a.endDate || '').localeCompare(String(b.startDate || b.dprFirstDate || b.endDate || '')) || (a.id > b.id ? 1 : -1));
+      let rate = await _gprMachineRate(mc);
+      const rows = []; let cursor = null;
+      for (const o of q) {
+        const bn = String(o.batchNumber).toUpperCase();
+        const started = o.status === 'running' || o.status === 'completed' || !!o.dprFirstDate;
+        const live = started ? await _gprBatchLive(bn, o) : null;
+        const grossPlanned = Number(o.grossQty || 0);
+        const grossActual = live ? Number(live.gross || 0) : 0;
+        const aPct = live && live.aimPct != null ? Number(live.aimPct) : null;
+        const f = (aPct && aPct > 5) ? Math.min(1.30, Math.max(0.85, assumedA / aPct)) : 1;
+        const requiredGross = grossPlanned * f;
+        const plannedShifts = Math.max(1, Math.round(((Date.parse(o.endDate || '') - Date.parse(o.startDate || '')) / 86400000 + 1) * 3) || 0);
+        const rateEff = rate > 0 ? rate : (grossPlanned && plannedShifts ? grossPlanned / plannedShifts : 5);
+        const row = { batchNumber: bn, status: o.status || 'planned', customer: o.customer || '', colour: o.colour || o.color || '',
+          size: o.size || '', pcCode: o.pcCode || '', orderQty: Number(o.qty || 0), grossPlanned: +grossPlanned.toFixed(2),
+          grossActual: +grossActual.toFixed(2), unscannedWipAim: live ? +Number(live.preAIM || 0).toFixed(2) : null,
+          aGradeAimPct: aPct != null ? +aPct.toFixed(2) : null, wipBasis: live ? live.wipBasis : null,
+          plannedStart: o.startDate || null, plannedEnd: o.manualEndDate || o.endDate || null,
+          dprFirst: o.dprFirstDate || null, dprLast: o.dprLastDate || null, estEnd: null, estFactor: +f.toFixed(3) };
+        if (o.status === 'completed') {
+          row.estEnd = null;   // history — actual dates shown from DPR
+        } else if (o.status === 'running') {
+          const remaining = Math.max(0, requiredGross - grossActual);
+          const shiftsLeft = remaining <= 0 ? 0 : Math.ceil(remaining / rateEff);
+          const endIdx = nowIdx + Math.max(0, shiftsLeft - (remaining > 0 ? 1 : 0));
+          row.estEnd = _gprShiftInfo(endIdx); cursor = endIdx;
+        } else {   // future — chained after the live head (or its own planned start when the machine is idle)
+          const planIdx = o.startDate ? _gprShiftIdx(new Date(Date.parse(o.startDate + 'T06:00:00+05:30'))) : nowIdx;
+          const startIdx = cursor != null ? cursor : Math.max(nowIdx, planIdx);
+          const endIdx = startIdx + Math.ceil((grossPlanned || rateEff) / rateEff);
+          row.estStart = _gprShiftInfo(startIdx); row.estEnd = _gprShiftInfo(endIdx); cursor = endIdx;
+        }
+        rows.push(row);
+      }
+      // cascade transitions between consecutive non-completed pairs
+      const cascade = [];
+      for (let k = 0; k < rows.length - 1; k++) {
+        const cur = rows[k], nxt = rows[k + 1];
+        if (cur.status === 'completed' || !cur.estEnd) continue;
+        const readyBy = _gprShiftInfo(cur.estEnd.idx);                       // start of the shift the run ends in
+        const prep = { ms: readyBy.startMs - prepHours * 3600000 };
+        const prepInfo = _gprShiftInfo(_gprShiftIdx(new Date(prep.ms)));
+        const P2 = pgPool ? ['$1', '$2'] : ['?', '?'];
+        const aSql = `SELECT side, MIN(scan_out_at) AS first_out, MIN(created_at) AS first_created, COUNT(*) AS n
+                      FROM gpr_tt WHERE UPPER(batch_number)=${P2[0]} AND machine_id=${P2[1]} GROUP BY side`;
+        const aRows = pgPool ? (await pgPool.query(aSql, [nxt.batchNumber, mc])).rows : db.prepare(aSql).all(nxt.batchNumber, mc);
+        const act = {}; (aRows || []).forEach(r => { act[String(r.side).toLowerCase()] = { firstOut: r.first_out || null, firstCreated: r.first_created || null, n: Number(r.n || 0) }; });
+        const done = !!(act.cap && act.cap.firstOut && act.body && act.body.firstOut);
+        let status = 'upcoming';
+        if (done) status = 'done';
+        else if (nowMs >= readyBy.startMs) status = 'overdue';
+        else if (nowMs >= prep.ms) status = 'prepare-now';
+        const cchg = String(cur.colour || '').trim().toLowerCase() !== String(nxt.colour || '').trim().toLowerCase();
+        cascade.push({ machineId: mc, fromBatch: cur.batchNumber, toBatch: nxt.batchNumber,
+          fromColour: cur.colour, toColour: nxt.colour, colourChange: cchg, dishWash: cchg,
+          endEst: cur.estEnd, ttReadyBy: { date: readyBy.date, shift: readyBy.shift, atISO: readyBy.startISO },
+          beginPrepAt: { date: prepInfo.date, shift: prepInfo.shift, atISO: new Date(prep.ms + _GPR_IST_MS).toISOString().replace('Z', '+05:30').replace(/\.\d{3}/, '') },
+          prepHours, status, actual: act });
+      }
+      machines.push({ machineId: mc, ratePerShift: +Number(rate || 0).toFixed(2), batches: rows, cascade });
+    }
+    const alerts = machines.flatMap(m => m.cascade.filter(c => c.status === 'prepare-now' || c.status === 'overdue'));
+    res.json({ ok: true, floor, month, assumedAGradePct: assumedA, prepHours,
+      now: { idx: nowIdx, ...(({ date, shift }) => ({ date, shift }))(_gprShiftInfo(nowIdx)) },
+      machines, alerts });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── CRUSHING ──────────────────────────────────────────────────────────────
+app.post('/api/gpr/crush/propose', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!GPR_MGR(session)) return res.status(403).json({ ok: false, error: 'GPR Manager or Admin only' });
+    const b = req.body;
+    const qty = Number(b.qty_kg || 0);
+    if (qty <= 0) return res.status(400).json({ ok: false, error: 'qty_kg required' });
+    const vals = [b.account || 'cutting', b.pc_code || null, b.colour_code || null, b.side || null,
+                  b.batch_number || null, b.floor || null, qty, gprProductionDay(), session.username, b.reason || null];
+    const cols = `(status,account,pc_code,colour_code,side,batch_number,floor,qty_kg,production_day,proposed_by,reason)`;
+    let id;
+    if (pgPool) id = (await pgPool.query(`INSERT INTO gpr_crush ${cols} VALUES ('proposed',$1,$2,$3,$4,$5,$6,$7,$8,$9,$10) RETURNING id`, vals)).rows[0].id;
+    else id = db.prepare(`INSERT INTO gpr_crush ${cols} VALUES ('proposed',?,?,?,?,?,?,?,?,?,?)`).run(...vals).lastInsertRowid;
+    logAudit(session.username, session.role, 'gpr', 'GPR_CRUSH_PROPOSE', `${qty}kg ${b.account || ''}`, req.ip);
+    res.json({ ok: true, id, status: 'proposed', qty_kg: qty });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/crush/:id/decide', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session || session.role !== 'admin') return res.status(403).json({ ok: false, error: 'Admin only' });
+    const decision = String(req.body.decision || '');
+    if (decision !== 'approved' && decision !== 'rejected') {
+      return res.status(400).json({ ok: false, error: 'decision must be approved|rejected' });
+    }
+    const gSql = `SELECT * FROM gpr_crush WHERE id=${pgPool ? '$1' : '?'}`;
+    const p = pgPool ? (await pgPool.query(gSql, [req.params.id])).rows[0] : db.prepare(gSql).get(req.params.id);
+    if (!p) return res.status(404).json({ ok: false, error: 'Proposal not found' });
+    if (p.status !== 'proposed') return res.status(409).json({ ok: false, error: `Already ${p.status}` });
+    const now = new Date().toISOString();
+    if (pgPool) await pgPool.query(`UPDATE gpr_crush SET status=$1, decided_by=$2, decided_at=$3, decision_note=$4 WHERE id=$5`,
+      [decision, session.username, now, req.body.note || null, req.params.id]);
+    else db.prepare(`UPDATE gpr_crush SET status=?, decided_by=?, decided_at=?, decision_note=? WHERE id=?`)
+      .run(decision, session.username, now, req.body.note || null, req.params.id);
+    if (decision === 'approved') {
+      await gprLedgerMove({ movement_type: 'draw', account: p.account || 'cutting', source: 'manual',
+        pc_code: p.pc_code, colour_code: p.colour_code, side: p.side, batch_number: p.batch_number || null,
+        floor: p.floor, qty_kg: Number(p.qty_kg || 0), production_day: p.production_day,
+        moved_by: session.username, note: 'crushing/disposal (approved)' });
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_CRUSH_' + decision.toUpperCase(), `id=${req.params.id} ${p.qty_kg}kg`, req.ip);
+    res.json({ ok: true, id: req.params.id, decision, at: now });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.get('/api/gpr/crush', async (req, res) => {
+  try {
+    const { status, floor, from, to } = req.query;
+    const conds = []; const params = [];
+    const add = (frag, val) => { params.push(val); conds.push(frag(params.length)); };
+    if (status) add(n => pgPool ? `status=$${n}` : `status=?`, status);
+    if (floor)  add(n => pgPool ? `floor=$${n}` : `floor=?`, floor);
+    if (from)   add(n => pgPool ? `production_day >= $${n}` : `production_day >= ?`, from);
+    if (to)     add(n => pgPool ? `production_day <= $${n}` : `production_day <= ?`, to);
+    const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
+    const sql = `SELECT * FROM gpr_crush ${where} ORDER BY proposed_at DESC`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    (rows || []).forEach(r => { r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account; });
+    const sum = st => +(rows || []).filter(r => r.status === st).reduce((s, r) => s + Number(r.qty_kg || 0), 0).toFixed(2);
+    res.json({ ok: true, rows, approvedKg: sum('approved'), pendingKg: sum('proposed') });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+
 // ── Start server ──────────────────────────────────────────────
 // v41ZG #1: ensurePostgresTables() creates ~30 tables inside a SINGLE try block, so if any one
 // CREATE/ALTER throws (transient error, type conflict on a pre-existing table, etc.) the whole
@@ -24165,6 +26669,16 @@ app.listen(PORT, () => {
     _acSeedTrustedSites().catch(e => console.warn('[v50] access seed boot invocation failed:', e?.message)); // v50: seed Alwar+Delhi trusted IPs
     _v47h_repairPrintedFlag().catch(e => console.warn('[v47H] printed-flag repair boot invocation failed:', e?.message)); // v47H: mark scanned-but-unflagged labels printed
     _v47l_repairFalseReconcile().catch(e => console.warn('[v47L] false-reconcile repair boot invocation failed:', e?.message)); // v47L: un-stick SO-pass false reconciles
+    // v55 (GPR merge): seed GPR masters once the tables are guaranteed present (PG creates them in
+    // ensurePostgresTables; SQLite in runMigrations). Branch blocker B2 — seeding via db.prepare()
+    // only left PostgreSQL masters empty and every TT plan at zero. Seed is count-guarded: it never
+    // overwrites masters an admin has edited in-app.
+    seedGprMasters().catch(e => console.warn('[v55 GPR] masters seed failed:', e?.message));
+    // v55A: masters UPGRADE for stores already seeded by v55 — (a) add the mmt_chemicals key if
+    // absent; (b) migrate a plain-string colourants list to the coded form (matched by name;
+    // unmatched names keep code:''). Idempotent; never touches values an admin has since edited
+    // beyond attaching codes to unchanged seed names.
+    _gprUpgradeMastersV55A().catch(e => console.warn('[v55A GPR] masters upgrade failed:', e?.message));
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
