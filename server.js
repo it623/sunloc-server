@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v55E';
+const APP_BUILD = 'v55G';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -13259,6 +13259,16 @@ app.post('/api/planning/state', async (req, res) => {
             _missing.forEach(o => { if (_delMap[o.id]) return; state.orders.push(o); _restored++; });
             if (_restored) console.log(`[v46A merge-guard] restored ${_restored} unclosed order(s) missing from incoming blob (stale-client overwrite protection): ${_missing.filter(o=>!_delMap[o.id]).map(o=>o.batchNumber||o.id).join(', ')}`);
           }
+          // v55F (found in live logs, 18 Sep): _storedById was declared INSIDE the v46G try block,
+          // but the v53K convert-guard in the SIBLING try referenced it through its prevOf closure —
+          // block-scoped const, so every prevOf() call threw "_storedById is not defined", the
+          // per-order catch swallowed it, and the v53K UP→PTD guard has been silently DEAD since it
+          // shipped (log signature: "[v53K convert-guard] ... skipped for <batch>: _storedById is
+          // not defined"). Hoisted to the enclosing scope both guards share: v46G behavior is
+          // unchanged, the v53K guard actually runs. Code was byte-identical in v54S — pre-existing,
+          // not a v55-chain regression.
+          const _storedById = new Map();
+          _storedBlob.orders.forEach(o => { if (o && o.id) _storedById.set(o.id, o); });
           // v46G best-effort (W/O customer reverts to "W/O — pending" after a few moments): a W/O
           // customer is assigned via its own endpoint (wo/assign-customer → savePlanningState), but a
           // stale Planning tab's ~30s full-state auto-save still carries the OLD unassigned order and
@@ -13268,8 +13278,6 @@ app.post('/api/planning/state', async (req, res) => {
           // assignment — a genuine reassignment (real->different real) still passes through. Reversible.
           try {
             const _isRealCust = c => { const s = (c==null?'':String(c)).trim(); return s !== '' && !/^w\/?o\b/i.test(s) && !/pending/i.test(s); };
-            const _storedById = new Map();
-            _storedBlob.orders.forEach(o => { if (o && o.id) _storedById.set(o.id, o); });
             let _custKept = 0;
             state.orders.forEach(o => {
               if (!o || !o.id) return;
@@ -24658,14 +24666,6 @@ assistantEngine.init({ pgPool, db, port: PORT, log: console.log });
 // ── Catch-all: serve index.html for unknown routes (SPA fallback) ──
 // MUST BE THE LAST ROUTE REGISTRATION IN THIS FILE. Express dispatches in registration order, so
 // anything registered below this line is unreachable. Do not add routes after it — put them above.
-app.get('*', (req, res) => {
-  const idx = path.join(__dirname, 'public', 'index.html');
-  if (fs.existsSync(idx)) res.sendFile(idx);
-  else res.json({ ok: false, error: 'No frontend found. Place Planning App and DPR App in /public folder.' });
-});
-
-
-
 // ═══════════════════════════════════════════════════════════════════════════
 // v55 — GPR MODULE merged from the v42V branch (18 Sep 2026), verbatim except:
 //   • migrations renumbered 68-75 (see the migration array note),
@@ -26657,6 +26657,23 @@ async function _v47l_repairFalseReconcile() {
     }
   } catch (e) { console.warn('[v47L] false-reconcile repair failed:', e?.message); }
 }
+
+// (v55G: the GPR section above was RELOCATED from after the '*' catch-all — see the note inside it.)
+
+app.get('*', (req, res) => {
+  // v55G: unmatched /api GETs must fail LOUDLY as JSON — never index.html. This exact class
+  // (catch-all swallowing API GETs registered after it) already bit twice: the planning KV store
+  // (documented above) and now the entire GPR module on the v55E deploy (every GPR GET returned
+  // this page; login worked because POSTs bypass a GET catch-all; the app shell then died parsing
+  // HTML as JSON). The GPR section now registers BEFORE this catch-all; this guard makes any
+  // future ordering mistake an obvious JSON 404 instead of a silent client poisoning.
+  if ((req.path || '').startsWith('/api/')) return res.status(404).json({ ok: false, error: 'API route not found: ' + req.path });
+  const idx = path.join(__dirname, 'public', 'index.html');
+  if (fs.existsSync(idx)) res.sendFile(idx);
+  else res.json({ ok: false, error: 'No frontend found. Place Planning App and DPR App in /public folder.' });
+});
+
+
 
 app.listen(PORT, () => {
   console.log(`[Sunloc] Server running on port ${PORT}`);
