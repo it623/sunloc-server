@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v55G';
+const APP_BUILD = 'v55L';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -2252,7 +2252,11 @@ const GPR_SEED_MASTERS = (() => {
     // Flip in Masters — no redeploy. INTEGER 0/1, never a boolean literal.
     cascadeEnabled: 0,
   };
-  return { tt_machine_master, capsule_weights, colourants, mmt_chemicals, gpr_constants };
+  // v55K item 12 architecture: colour codes for CUTTINGS — loads from Ishan's Excel via
+  // POST /api/gpr/masters (key 'cutting_colour_codes', shape [{code, name}]). Seeded empty;
+  // every datalist wired to it lights up the moment the Excel is loaded — no rebuild needed.
+  const cutting_colour_codes = [];
+  return { tt_machine_master, capsule_weights, colourants, mmt_chemicals, cutting_colour_codes, gpr_constants };
 })();
 
 async function seedGprMasters() {
@@ -2293,6 +2297,7 @@ async function _gprUpgradeMastersV55A() {
   };
   try {
     if (!(await get1('mmt_chemicals'))) await put1('mmt_chemicals', GPR_SEED_MASTERS.mmt_chemicals);
+    if (!(await get1('cutting_colour_codes'))) await put1('cutting_colour_codes', []);   // v55K item 12 architecture
     const cols = await get1('colourants');
     if (Array.isArray(cols) && cols.length && typeof cols[0] === 'string') {
       const byName = {}; GPR_SEED_MASTERS.colourants.forEach(c => { byName[c.name.toLowerCase()] = c.code; });
@@ -24700,10 +24705,12 @@ assistantEngine.init({ pgPool, db, port: PORT, log: console.log });
 
 const GPR_ACCOUNTS = ['cutting', 'aim_salvage', 'printed_salvage', 'oily_salvage'];
 const GPR_ACCOUNT_LABELS = {
-  cutting:         'Cutting',
-  aim_salvage:     'Unprinted AIM Salvage',
-  printed_salvage: 'Printed Salvage (Printing + PI)',
-  oily_salvage:    'Oily Salvage',
+  cutting:          'Cutting',
+  aim_salvage:      'AIM Salvage',
+  printing_salvage: 'Printing Salvage',      // v55J item 10: printed split into printing + PI
+  pi_salvage:       'PI Salvage',            //   (done while the ledger was empty on live)
+  oily_salvage:     'Oily Salvage',
+  printed_salvage:  'Printed Salvage (legacy combined)',   // display-only for any pre-split rows
 };
 // Ledger A balance signs. generation + correction CREDIT; consumption + draw DEBIT.
 const GPR_A_CREDIT = `('generation','correction')`;
@@ -25072,26 +25079,33 @@ async function gprLegacyMove(row) {
 // It can therefore run on every batch read without ever double-crediting.
 async function gprSyncTrackingCredits(batchNumber) {
   const bn = String(batchNumber || '').trim().toUpperCase();
-  if (!bn) return { aim_salvage: 0, printed_salvage: 0 };
+  if (!bn) return { aim_salvage: 0, printing_salvage: 0, pi_salvage: 0 };
   const masters = await gprLoadMasters();
   const order = gprFindOrder(bn);
   const sizeKey = order ? ('#' + String(order.size || '').replace(/^#/, '')) : null;
   const wt = await gprAvgMg(bn, sizeKey, masters);   // same resolver as plan + yield
   const avgMg = wt.avgMg;
-  if (avgMg <= 0) return { aim_salvage: 0, printed_salvage: 0, skipped: 'no capsule weight' };
+  if (avgMg <= 0) return { aim_salvage: 0, printing_salvage: 0, pi_salvage: 0, skipped: 'no capsule weight' };
 
   const wSql = `SELECT dept, type, SUM(qty) AS q FROM tracking_wastage
                 WHERE UPPER(batch_number)=${pgPool ? '$1' : '?'} GROUP BY dept, type`;
   const rows = pgPool ? (await pgPool.query(wSql, [bn])).rows : db.prepare(wSql).all(bn);
-  let aimSalL = 0, printedL = 0;
+  let aimSalL = 0, printingL = 0, piL = 0;
   (rows || []).forEach(r => {
     const d = String(r.dept || '').toLowerCase(), t = String(r.type || '').toLowerCase();
     const q = parseFloat(r.q || 0);
     if (d === 'aim' && t === 'salvage') aimSalL += q;
-    if ((d === 'printing' || d === 'pi') && (t === 'salvage' || t === 'remelt')) printedL += q;
+    if (d === 'printing' && (t === 'salvage' || t === 'remelt')) printingL += q;
+    if (d === 'pi' && (t === 'salvage' || t === 'remelt')) piL += q;
   });
   const toKg = lakhs => +(lakhs * avgMg / 10).toFixed(2);
-  const targets = { aim_salvage: toKg(aimSalL), printed_salvage: toKg(printedL) };
+  // v55J item 10: printing and PI are separate reuse accounts (was one combined printed_salvage).
+  const targets = { aim_salvage: toKg(aimSalL), printing_salvage: toKg(printingL), pi_salvage: toKg(piL) };
+  // Pre-split PENDING combined rows (never accepted) are superseded by the per-dept rows.
+  try {
+    const del = `DELETE FROM gpr_ledger WHERE batch_number=${pgPool ? '$1' : '?'} AND account='printed_salvage' AND source='tracking' AND receipt_status='pending'`;
+    if (pgPool) await pgPool.query(del, [bn]); else db.prepare(del).run(bn);
+  } catch (_) {}
 
   for (const [account, kg] of Object.entries(targets)) {
     if (kg <= 0) continue;
@@ -25320,6 +25334,20 @@ app.post('/api/gpr/mmt', async (req, res) => {
     // once, distinguished as tank slots GF1 and GF2. The one-charge-until-exhausted rule now
     // applies PER TANK SLOT on GF (a slot's own unexhausted charge still raises the alert);
     // FF/SF keep the single-charge rule unchanged. tank_no is required on GF.
+    // v55J item 7: FF and SF charge from ONE GPR — their MMT sheets are merged. Any FF/SF
+    // charge is stored under the combined floor 'FFSF'; machines keep their own floors.
+    if (b.floor === '1F' || b.floor === '2F') b.floor = 'FFSF';   // floor keys are GF/1F/2F in this app
+    // v55J item 6: sequential auto-reference MMT-{FLOOR}-{DDMMYY}-{n} when the client leaves
+    // the reference blank or sends 'AUTO'. n = charges already taken on that floor today + 1.
+    if (!b.mmt_ref || String(b.mmt_ref).trim().toUpperCase() === 'AUTO') {
+      const ist = new Date(Date.now() + 330 * 60000);
+      const p2 = n => String(n).padStart(2, '0');
+      const day = `${p2(ist.getUTCDate())}${p2(ist.getUTCMonth() + 1)}${String(ist.getUTCFullYear()).slice(2)}`;
+      const cSql = `SELECT COUNT(*) AS n FROM gpr_mmt_charges WHERE floor=${pgPool ? '$1' : '?'} AND mmt_ref LIKE ${pgPool ? '$2' : '?'}`;
+      const pref = `MMT-${b.floor}-${day}-`;
+      const cRow = pgPool ? (await pgPool.query(cSql, [b.floor, pref + '%'])).rows[0] : db.prepare(cSql).get(b.floor, pref + '%');
+      b.mmt_ref = pref + (Number(cRow?.n || 0) + 1);
+    }
     let tankNo = null;
     if (b.floor === 'GF') {
       tankNo = String(b.tank_no || '').toUpperCase();
@@ -25681,6 +25709,30 @@ app.get('/api/gpr/ledger/summary', async (req, res) => {
     const DB_ = `SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} THEN qty_kg ELSE 0 END)`;
 
     let sql;
+    if (view === 'pc') {
+      // v55K item 12: PC-grouped stock — salvage rows carry the Planning order's PC (stamped at
+      // credit time since v42U; cutting rows since v55K). Cutting colour codes resolve from the
+      // gpr_masters key 'cutting_colour_codes' once Ishan's Excel is loaded (empty until then).
+      const pSql = `SELECT COALESCE(pc_code,'') AS pc_code, COALESCE(colour_code,'') AS colour_code,
+                           COALESCE(colour_name,'') AS colour_name, account,
+                           ${CR} AS generated, ${DB_} AS consumed, ${PEND} AS pending_kg
+                    FROM gpr_ledger ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''}
+                    GROUP BY pc_code, colour_code, colour_name, account
+                    ORDER BY pc_code, colour_code, account`;
+      const pRows = pgPool ? (await pgPool.query(pSql, params)).rows : db.prepare(pSql).all(...params);
+      (pRows || []).forEach(r => { r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account; r.balance_kg = +(Number(r.generated||0) - Number(r.consumed||0)).toFixed(2); });
+      return res.json({ ok: true, view, rows: pRows });
+    }
+    if (view === 'movements') {
+      // v55J item 13: recent-movements snapshot for the ledger header.
+      const lim = Math.max(1, Math.min(50, Number(req.query.limit) || 10));
+      const mSql = `SELECT id, moved_at, movement_type, account, source, side, colour_code, machine_id,
+                           batch_number, floor, qty_kg, note
+                    FROM gpr_ledger ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''}
+                    ORDER BY id DESC LIMIT ${lim}`;
+      const mRows = pgPool ? (await pgPool.query(mSql, params)).rows : db.prepare(mSql).all(...params);
+      return res.json({ ok: true, view, rows: mRows });
+    }
     if (view === 'daily')        sql = `SELECT production_day AS day, account, ${CR} AS generated, ${DB_} AS consumed FROM gpr_ledger ${where} GROUP BY production_day, account ORDER BY production_day DESC`;
     else if (view === 'colour')  sql = `SELECT colour_code, colour_name, account, ${CR} AS generated, ${DB_} AS consumed FROM gpr_ledger ${where} GROUP BY colour_code, colour_name, account ORDER BY colour_code`;
     else if (view === 'movements') sql = `SELECT id, moved_at, production_day, batch_number, tt_id, account, movement_type, source, side, colour_code, machine_id, floor, qty_kg, note, moved_by FROM gpr_ledger ${where} ORDER BY moved_at DESC`;
@@ -26268,7 +26320,9 @@ async function gprSyncDprCuttings(days) {
             if (pgPool) await pgPool.query(up, [kg, ex.id]); else db.prepare(up).run(kg, ex.id);
             synced++;
           } else {
+            const _ord55k = bn ? gprFindOrder(bn) : null;
             const id = await gprLedgerMove({ movement_type: 'generation', account: 'cutting', source: 'dpr',
+              pc_code: (_ord55k && (_ord55k.pcCode || _ord55k.pc_code)) || null,   // v55K item 12: PC rides cutting rows too
               side, machine_id: mcId, batch_number: bn, floor: floorGpr, qty_kg: kg,
               production_day: rec.date, moved_by: 'system',
               note: `DPR ${side} cutting — shift ${sh} (pending GPR receipt)` });
