@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v55L';
+const APP_BUILD = 'v55P';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -947,6 +947,20 @@ const MIGRATIONS = [
       ALTER TABLE gpr_mmt_charges ADD COLUMN tank_no TEXT;
       CREATE INDEX IF NOT EXISTS idx_gpr_ledger_receipt ON gpr_ledger(receipt_status, floor);
       CREATE INDEX IF NOT EXISTS idx_gpr_ledger_rref ON gpr_ledger(source, receipt_ref);
+    `
+  },
+  {
+    version: 77,
+    name: 'v55n_tt_lifecycle',
+    // v55N (Ishan, 18 Sep items 2-3): the TT lifecycle is split into explicit gated stages —
+    // entry (both sides) -> GENERATE LABEL (separate action, like Tracking) -> SCAN IN (holding;
+    // requires the label) -> SCAN OUT (released) -> ISSUE TANK to the machine (requires scan-out).
+    // These columns record who/when for the label and issue stages; scan stamps already exist.
+    sql: `
+      ALTER TABLE gpr_tt ADD COLUMN label_generated_at TEXT;
+      ALTER TABLE gpr_tt ADD COLUMN label_generated_by TEXT;
+      ALTER TABLE gpr_tt ADD COLUMN issued_at TEXT;
+      ALTER TABLE gpr_tt ADD COLUMN issued_by TEXT;
     `
   },
   {
@@ -4661,6 +4675,11 @@ async function ensurePostgresTables() {
       `ALTER TABLE gpr_mmt_charges ADD COLUMN IF NOT EXISTS tank_no TEXT`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_receipt ON gpr_ledger(receipt_status, floor)`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_rref ON gpr_ledger(source, receipt_ref)`,
+      // v55N migration-77 mirror — TT lifecycle stamps
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS label_generated_at TEXT`,
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS label_generated_by TEXT`,
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS issued_at TEXT`,
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS issued_by TEXT`,
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -25621,7 +25640,8 @@ app.get('/api/gpr/tt-sheet', async (req, res) => {
     const sql = `SELECT id,batch_number,tt_number,side,seq_index,seq_total,machine_id,floor,pc_code,
                         colour_name,colour_code,mmt_ref,capacity_l,planned_l,actual_l,virgin_kg,
                         salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,
-                        temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by,created_at
+                        temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by,created_at,
+                        label_generated_at,scan_in_at,scan_out_at,issued_at,issued_by
                  FROM gpr_tt ${where} ORDER BY production_day DESC, batch_number, side, seq_index`;
     const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
     const totals = (rows || []).reduce((a, r) => ({
@@ -25640,11 +25660,17 @@ app.post('/api/gpr/tt/:id/scan', async (req, res) => {
     if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
     const type = String(req.body.type || '').toLowerCase();
     if (type !== 'in' && type !== 'out') return res.status(400).json({ ok: false, error: "type must be 'in' or 'out'" });
-    const gSql = `SELECT id, tt_number, scan_in_at, scan_out_at FROM gpr_tt WHERE id=${pgPool ? '$1' : '?'}`;
+    const gSql = `SELECT id, tt_number, scan_in_at, scan_out_at, label_generated_at, issued_at FROM gpr_tt WHERE id=${pgPool ? '$1' : '?'}`;   // v55N: lifecycle stamps drive the gates
     const tt = pgPool ? (await pgPool.query(gSql, [req.params.id])).rows[0] : db.prepare(gSql).get(req.params.id);
     if (!tt) return res.status(404).json({ ok: false, error: 'TT not found' });
     if (type === 'in' && tt.scan_in_at) {
       return res.status(409).json({ ok: false, error: 'ALREADY_SCANNED_IN', detail: `${tt.tt_number} was already scanned IN at ${String(tt.scan_in_at).slice(0, 16)}.` });
+    }
+    // v55N item 3 (Ishan, 18 Sep): the label comes FIRST — a tank is scanned IN to holding by
+    // scanning its printed label, so scan-in requires the label to have been generated. This is a
+    // GPR-internal entry validation (live during dormancy by design, like the other entry gates).
+    if (type === 'in' && !tt.label_generated_at) {
+      return res.status(409).json({ ok: false, error: 'LABEL_REQUIRED', detail: `Generate ${tt.tt_number}'s label first — the tank is scanned IN by scanning its label.` });
     }
     if (type === 'out') {
       if (!tt.scan_in_at) return res.status(409).json({ ok: false, error: 'NOT_SCANNED_IN', detail: `${tt.tt_number} must be scanned IN before it can be released.` });
@@ -25664,6 +25690,53 @@ app.post('/api/gpr/tt/:id/scan', async (req, res) => {
     }
     logAudit(session.username, session.role, 'gpr', 'GPR_TT_SCAN_' + type.toUpperCase(), `tt=${tt.tt_number}`, req.ip);
     res.json({ ok: true, tt_id: req.params.id, type, at: now, status: newStatus });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── v55N (Ishan, 18 Sep item 3) — TT LIFECYCLE: label + issue stages ────────
+// Flow: entry creates the tank ('prepared') -> GENERATE LABEL (separate action; the label is
+// scanned to move the tank) -> SCAN IN = 'holding' -> SCAN OUT = 'released' -> ISSUE = 'issued'
+// (tank plugged into the machine; gated on scan-out). Reprints keep the first generation stamp.
+app.post('/api/gpr/tt/:id/label', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const P = pgPool ? '$1' : '?';
+    const gSql = `SELECT * FROM gpr_tt WHERE id=${P}`;
+    const tt = pgPool ? (await pgPool.query(gSql, [req.params.id])).rows[0] : db.prepare(gSql).get(req.params.id);
+    if (!tt) return res.status(404).json({ ok: false, error: 'TT not found' });
+    let firstTime = false;
+    if (!tt.label_generated_at) {
+      firstTime = true;
+      const now = new Date().toISOString();
+      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET label_generated_at=$1, label_generated_by=$2, updated_at=NOW()::TEXT WHERE id=$3`, [now, session.username, req.params.id]);
+      else db.prepare(`UPDATE gpr_tt SET label_generated_at=?, label_generated_by=?, updated_at=datetime('now') WHERE id=?`).run(now, session.username, req.params.id);
+      tt.label_generated_at = now; tt.label_generated_by = session.username;
+    }
+    logAudit(session.username, session.role, 'gpr', firstTime ? 'GPR_TT_LABEL' : 'GPR_TT_LABEL_REPRINT', `tt=${tt.tt_number}`, req.ip);
+    res.json({ ok: true, tt, reprint: !firstTime });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+app.post('/api/gpr/tt/:id/issue', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const P = pgPool ? '$1' : '?';
+    const gSql = `SELECT id, tt_number, scan_out_at, issued_at FROM gpr_tt WHERE id=${P}`;
+    const tt = pgPool ? (await pgPool.query(gSql, [req.params.id])).rows[0] : db.prepare(gSql).get(req.params.id);
+    if (!tt) return res.status(404).json({ ok: false, error: 'TT not found' });
+    if (!tt.scan_out_at) {
+      return res.status(409).json({ ok: false, error: 'NOT_RELEASED', detail: `${tt.tt_number} must be scanned OUT of holding before it can be issued to the machine.` });
+    }
+    if (tt.issued_at) {
+      return res.status(409).json({ ok: false, error: 'ALREADY_ISSUED', detail: `${tt.tt_number} was already issued at ${String(tt.issued_at).slice(0, 16)}.` });
+    }
+    const now = new Date().toISOString();
+    if (pgPool) await pgPool.query(`UPDATE gpr_tt SET issued_at=$1, issued_by=$2, status='issued', updated_at=NOW()::TEXT WHERE id=$3`, [now, session.username, req.params.id]);
+    else db.prepare(`UPDATE gpr_tt SET issued_at=?, issued_by=?, status='issued', updated_at=datetime('now') WHERE id=?`).run(now, session.username, req.params.id);
+    logAudit(session.username, session.role, 'gpr', 'GPR_TT_ISSUED', `tt=${tt.tt_number}`, req.ip);
+    res.json({ ok: true, tt_id: req.params.id, issued_at: now, status: 'issued' });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -25726,7 +25799,7 @@ app.get('/api/gpr/ledger/summary', async (req, res) => {
     if (view === 'movements') {
       // v55J item 13: recent-movements snapshot for the ledger header.
       const lim = Math.max(1, Math.min(50, Number(req.query.limit) || 10));
-      const mSql = `SELECT id, moved_at, movement_type, account, source, side, colour_code, machine_id,
+      const mSql = `SELECT id, moved_at, movement_type, account, source, side, colour_code, colour_name, pc_code, receipt_status, machine_id,
                            batch_number, floor, qty_kg, note
                     FROM gpr_ledger ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''}
                     ORDER BY id DESC LIMIT ${lim}`;
@@ -26414,6 +26487,7 @@ function _gprShiftIdx(dt) {            // Date → linear shift index (IST, 8h s
   return Math.floor((ist.getTime() / 3600000 - 6) / 8);
 }
 function _gprShiftInfo(idx) {          // linear index → {date, shift, startISO(+05:30)}
+  if (!Number.isFinite(idx)) idx = _gprShiftIdx(new Date());   // v55M: never let NaN reach date math
   const startIstH = idx * 8 + 6;
   const startUtc = new Date(startIstH * 3600000 - _GPR_IST_MS);
   const ist = new Date(startUtc.getTime() + _GPR_IST_MS);
@@ -26480,7 +26554,14 @@ app.get('/api/gpr/plan', async (req, res) => {
           const endIdx = nowIdx + Math.max(0, shiftsLeft - (remaining > 0 ? 1 : 0));
           row.estEnd = _gprShiftInfo(endIdx); cursor = endIdx;
         } else {   // future — chained after the live head (or its own planned start when the machine is idle)
-          const planIdx = o.startDate ? _gprShiftIdx(new Date(Date.parse(o.startDate + 'T06:00:00+05:30'))) : nowIdx;
+          // v55M: live Planning startDate is a full ISO timestamp — take the date part only, and any
+          // unparseable value falls back to now instead of poisoning the whole schedule with NaN
+          // (the NaN reached toISOString in the cascade and 500'd the route: "Invalid time value").
+          let planIdx = nowIdx;
+          if (o.startDate) {
+            const t = Date.parse(String(o.startDate).slice(0, 10) + 'T06:00:00+05:30');
+            if (!isNaN(t)) planIdx = _gprShiftIdx(new Date(t));
+          }
           const startIdx = cursor != null ? cursor : Math.max(nowIdx, planIdx);
           const endIdx = startIdx + Math.ceil((grossPlanned || rateEff) / rateEff);
           row.estStart = _gprShiftInfo(startIdx); row.estEnd = _gprShiftInfo(endIdx); cursor = endIdx;
@@ -26493,7 +26574,7 @@ app.get('/api/gpr/plan', async (req, res) => {
         const cur = rows[k], nxt = rows[k + 1];
         if (cur.status === 'completed' || !cur.estEnd) continue;
         const readyBy = _gprShiftInfo(cur.estEnd.idx);                       // start of the shift the run ends in
-        const prep = { ms: readyBy.startMs - prepHours * 3600000 };
+        const prep = { ms: (Number.isFinite(readyBy.startMs) ? readyBy.startMs : Date.now()) - prepHours * 3600000 };
         const prepInfo = _gprShiftInfo(_gprShiftIdx(new Date(prep.ms)));
         const P2 = pgPool ? ['$1', '$2'] : ['?', '?'];
         const aSql = `SELECT side, MIN(scan_out_at) AS first_out, MIN(created_at) AS first_created, COUNT(*) AS n

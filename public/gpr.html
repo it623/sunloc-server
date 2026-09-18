@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v55L</title>
+<title>GPR.tracker · build v55P</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -64,6 +64,22 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 /* ── LAYOUT ────────────────────────────────────────── */
 #wrap{padding:calc(var(--nav) + 16px) 18px 60px;max-width:1400px;margin:0 auto}
 .page{display:none}.page.on{display:block}
+.tswrap{max-height:420px;overflow:auto;border:1px solid var(--b1);border-radius:var(--r)}   /* v55M items 6/8: every register scrolls instead of growing unbounded */
+.tswrap table thead th{position:sticky;top:0;z-index:2}
+/* v55N item 2: dual Cap|Body compact entry tables */
+.dgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
+@media(max-width:860px){.dgrid{grid-template-columns:1fr}}
+.dside{border:1px solid var(--b1);border-radius:var(--r);padding:10px 12px;background:var(--s1)}
+.dside-head{font-family:var(--fc);font-weight:700;font-size:13px;letter-spacing:1px;color:var(--accent);margin-bottom:8px;padding-bottom:5px;border-bottom:2px solid var(--accent-l)}
+.dtable{width:100%;border-collapse:collapse}
+.dtable td{padding:3px 4px;font-size:12px;border-bottom:1px dashed var(--b1)}
+.dtable td:first-child{color:var(--t2);width:46%}
+.dtable input,.dtable select{width:100%;box-sizing:border-box;font-size:12px;padding:4px 6px}
+.dtable tr.dkey td{background:var(--teal-l)}
+.dcolgrid{display:grid;grid-template-columns:1fr 1fr;gap:4px 8px}
+.dcolgrid .cpair{display:flex;gap:4px}
+.dcolgrid .cpair select{flex:1.6;font-size:11px;padding:3px}
+.dcolgrid .cpair input{flex:1;font-size:11px;padding:3px}
 .card{background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);padding:16px 18px;margin-bottom:14px;box-shadow:var(--shadow)}
 .card-title{font-family:var(--fc);font-size:16px;font-weight:700;letter-spacing:.4px;color:var(--t1);margin-bottom:3px;display:flex;align-items:center;gap:8px}
 .card-sub{font-size:11.5px;color:var(--t3);margin-bottom:14px;line-height:1.5;font-weight:500}
@@ -95,10 +111,20 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 .ftab.on{color:var(--accent);border-bottom-color:var(--accent)}
 
 /* ── TABLES ────────────────────────────────────────── */
-.gtable{width:100%;border-collapse:collapse;font-size:12px}
+/* v55P table hygiene (Ishan, 18 Sep): every register is a bordered, rounded, zebra-striped
+   card of its own — compact rows, tabular numerals, clear separation between adjacent tables. */
+.gtable{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;background:var(--s1);
+  border:1px solid var(--b1);border-radius:var(--r);overflow:hidden;margin:10px 0}
 .gtable th{background:var(--s3);font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;
-  color:var(--t2);text-align:left;padding:7px 9px;border-bottom:1px solid var(--b2);white-space:nowrap;position:sticky;top:0}
-.gtable td{padding:7px 9px;border-bottom:1px solid var(--b1);color:var(--t1);vertical-align:middle}
+  color:var(--t2);text-align:left;padding:6px 9px;border-bottom:1px solid var(--b2);white-space:nowrap;position:sticky;top:0}
+.gtable td{padding:5px 9px;border-bottom:1px solid var(--b1);color:var(--t1);vertical-align:middle;line-height:1.4;overflow-wrap:break-word}
+.gtable tbody tr:last-child td{border-bottom:none}
+.gtable tbody tr:nth-child(even) td{background:var(--s2)}
+.gtable tbody tr:hover td{background:var(--accent-l)}
+.gtable td.num,.gtable th.num{text-align:right;font-family:var(--mono);font-variant-numeric:tabular-nums}
+.gtable td.mono{font-family:var(--mono);font-size:11.5px}
+.tswrap .gtable{border:none;border-radius:0;margin:0}
+.tswrap{margin:10px 0;background:var(--s1)}
 .gtable tbody tr:hover{background:var(--s2)}
 .gtable tbody tr.clickable{cursor:pointer}
 .mono{font-family:var(--mono);font-size:11.5px}
@@ -188,7 +214,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55L</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55P</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -208,7 +234,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v55L</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v55P</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -253,6 +279,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <input type="month" id="pl_month" style="font-size:12px" onchange="loadPlan()">
         <button class="btn" style="padding:4px 12px;font-size:11px" onclick="loadPlan()">Refresh</button>
         <button class="btn" style="padding:4px 12px;font-size:11px" onclick="exportPlan()">Export XLSX</button>
+        <button class="btn" style="padding:4px 12px;font-size:11px" onclick="openPlanTab()">Open in new tab ↗</button>
         <span id="pl_now" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--t3)"></span>
       </div>
       <div class="card-sub">Live from Planning, DPR and the Report E bindings. End-shift estimate: required gross = planned gross × (assumed A ÷ actual A, capped ±); rate = machine's last 6 producing shifts. Next batch's first cap+body TT must be READY by the start of the shift the current batch ends in; preparation begins one TT-prep window (8 h, tunable in Masters) earlier.</div>
@@ -326,61 +353,78 @@ input[readonly]{background:var(--s3);color:var(--t2)}
     </div>
 
     <div class="card">
-      <div class="card-title">Issue a transfer tank</div>
-      <div class="card-sub">Prepare and issue a tank for Cap or Body. Saving prints a label and posts the material movements to the ledger.</div>
-      <div class="fgroup-title">Batch &amp; machine</div>
+      <div class="card-title">Enter transfer tanks — Cap &amp; Body together</div>
+      <div class="card-sub">Pick the batch and both side tables auto-fill from Planning and the machine master. Enter each tank's actuals in its side, then <b>Complete TT entry</b> — the tanks are created and their labels are printed from the panel below (separate action). Material movements post to the ledger on completion.</div>
+      <div class="fgroup-title">Batch — shared by both sides</div>
       <div class="fgrid">
-        <div class="field-grp"><label>Batch number *</label><input id="t_batch" placeholder="e.g. 26N50" onblur="ttPrefill()" list="batchOpts"></div>
-        <div class="field-grp"><label>Side *</label><select id="t_side"><option value="cap">Cap</option><option value="body">Body</option></select></div>
-        <div class="field-grp"><label>Machine</label><input id="t_machine" placeholder="from batch"></div>
-        <div class="field-grp"><label>Floor</label><input id="t_floor" readonly placeholder="from machine"></div>
-        <div class="field-grp"><label>PC code</label><input id="t_pc" placeholder="from batch"></div>
-        <div class="field-grp"><label>Colour name</label><input id="t_colname"></div>
-        <div class="field-grp"><label>Colour code</label><input id="t_colcode" list="cutColourOpts"></div>
-        <div class="field-grp"><label>Link MMT charge</label><select id="t_mmt"><option value="">— select —</option></select></div>
-        <div class="field-grp"><label>Tanks planned this side (N)</label><input id="t_seqtotal" type="number" inputmode="numeric"></div>
+        <div class="field-grp"><label>Batch number *</label><input id="td_batch" placeholder="e.g. 26N50" onblur="dualPrefill()" list="batchOpts"></div>
+        <div class="field-grp"><label>Machine</label><input id="td_machine" placeholder="from batch"></div>
+        <div class="field-grp"><label>Floor</label><input id="td_floor" readonly placeholder="from machine"></div>
+        <div class="field-grp"><label>PC code</label><input id="td_pc" placeholder="from batch"></div>
+        <div class="field-grp"><label>Colour name</label><input id="td_colname"></div>
+        <div class="field-grp"><label>Colour code</label><input id="td_colcode" list="cutColourOpts"></div>
       </div>
-
-      <div class="fgroup-title">Volume</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>Tank capacity (L)</label><input id="t_cap" type="number" inputmode="decimal" oninput="drawTank()"></div>
-        <div class="field-grp"><label>Planned fill (L)</label><input id="t_planned" type="number" inputmode="decimal" oninput="drawTank()"></div>
-        <div class="field-grp"><label>Actual issued (L) *</label><input id="t_actual" type="number" inputmode="decimal" oninput="drawTank()"></div>
+      <div class="dgrid">
+        <div class="dside" id="ds_tc">
+          <div class="dside-head">CAP</div>
+          <table class="dtable"><tbody>
+            <tr><td>Link MMT charge</td><td><select id="tc_mmt"><option value="">— select —</option></select></td></tr>
+            <tr><td>Tanks planned (N)</td><td><input id="tc_seqtotal" type="number" inputmode="numeric"></td></tr>
+            <tr><td>Tank capacity (L)</td><td><input id="tc_cap" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
+            <tr><td>Planned fill (L)</td><td><input id="tc_planned" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
+            <tr class="dkey"><td>Actual issued (L) *</td><td><input id="tc_actual" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
+            <tr><td>Virgin gelatine (kg)</td><td><input id="tc_virgin" type="number" inputmode="decimal" oninput="drawChargeSide('tc')"></td></tr>
+            <tr><td>Colour + TiO₂ (kg)</td><td><input id="tc_colourkg" type="number" inputmode="decimal" oninput="drawChargeSide('tc')"></td></tr>
+            <tr><td>FG remelt (kg)</td><td><input id="tc_fgremelt" type="number" inputmode="decimal" oninput="drawChargeSide('tc')"></td></tr>
+            <tr><td>Draw from</td><td><select id="tc_source" onchange="toggleLegacySide('tc')"><option value="ledger">Ledger A — online register</option><option value="legacy">Ledger B — legacy stock</option></select></td></tr>
+            <tr id="tc_legacywrap" style="display:none"><td>Legacy location</td><td><select id="tc_legacyloc"></select></td></tr>
+            <tr><td>Salvage account</td><td><select id="tc_salvacct"><option value="aim_salvage">AIM Salvage</option><option value="printing_salvage">Printing Salvage</option><option value="pi_salvage">PI Salvage</option><option value="cutting">Cuttings</option></select></td></tr>
+            <tr><td>Salvage added (kg)</td><td><input id="tc_salvage" type="number" inputmode="decimal" oninput="drawChargeSide('tc')"></td></tr>
+            <tr><td>Cutting added (kg)</td><td><input id="tc_cutting" type="number" inputmode="decimal" oninput="drawChargeSide('tc')"></td></tr>
+            <tr><td>Viscosity (cps)</td><td><input id="tc_visc" type="number" inputmode="decimal"></td></tr>
+            <tr><td>Temperature (°C)</td><td><input id="tc_temp" type="number" inputmode="decimal"></td></tr>
+          </tbody></table>
+          <div class="fgroup-title" style="margin-top:8px;font-size:11px">Colourants (grams)</div>
+          <div id="tc_colourants" class="dcolgrid"></div>
+          <div id="tc_gauge"></div>
+          <div id="tc_charge"></div>
+          <div id="tc_underfill" style="display:none;margin-top:8px">
+            <div class="field-grp"><label style="color:var(--red)">Under-fill reason (required)</label><input id="tc_reason" placeholder="Why this tank is >5% below capacity"></div>
+          </div>
+        </div>
+        <div class="dside" id="ds_tb">
+          <div class="dside-head">BODY</div>
+          <table class="dtable"><tbody>
+            <tr><td>Link MMT charge</td><td><select id="tb_mmt"><option value="">— select —</option></select></td></tr>
+            <tr><td>Tanks planned (N)</td><td><input id="tb_seqtotal" type="number" inputmode="numeric"></td></tr>
+            <tr><td>Tank capacity (L)</td><td><input id="tb_cap" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
+            <tr><td>Planned fill (L)</td><td><input id="tb_planned" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
+            <tr class="dkey"><td>Actual issued (L) *</td><td><input id="tb_actual" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
+            <tr><td>Virgin gelatine (kg)</td><td><input id="tb_virgin" type="number" inputmode="decimal" oninput="drawChargeSide('tb')"></td></tr>
+            <tr><td>Colour + TiO₂ (kg)</td><td><input id="tb_colourkg" type="number" inputmode="decimal" oninput="drawChargeSide('tb')"></td></tr>
+            <tr><td>FG remelt (kg)</td><td><input id="tb_fgremelt" type="number" inputmode="decimal" oninput="drawChargeSide('tb')"></td></tr>
+            <tr><td>Draw from</td><td><select id="tb_source" onchange="toggleLegacySide('tb')"><option value="ledger">Ledger A — online register</option><option value="legacy">Ledger B — legacy stock</option></select></td></tr>
+            <tr id="tb_legacywrap" style="display:none"><td>Legacy location</td><td><select id="tb_legacyloc"></select></td></tr>
+            <tr><td>Salvage account</td><td><select id="tb_salvacct"><option value="aim_salvage">AIM Salvage</option><option value="printing_salvage">Printing Salvage</option><option value="pi_salvage">PI Salvage</option><option value="cutting">Cuttings</option></select></td></tr>
+            <tr><td>Salvage added (kg)</td><td><input id="tb_salvage" type="number" inputmode="decimal" oninput="drawChargeSide('tb')"></td></tr>
+            <tr><td>Cutting added (kg)</td><td><input id="tb_cutting" type="number" inputmode="decimal" oninput="drawChargeSide('tb')"></td></tr>
+            <tr><td>Viscosity (cps)</td><td><input id="tb_visc" type="number" inputmode="decimal"></td></tr>
+            <tr><td>Temperature (°C)</td><td><input id="tb_temp" type="number" inputmode="decimal"></td></tr>
+          </tbody></table>
+          <div class="fgroup-title" style="margin-top:8px;font-size:11px">Colourants (grams)</div>
+          <div id="tb_colourants" class="dcolgrid"></div>
+          <div id="tb_gauge"></div>
+          <div id="tb_charge"></div>
+          <div id="tb_underfill" style="display:none;margin-top:8px">
+            <div class="field-grp"><label style="color:var(--red)">Under-fill reason (required)</label><input id="tb_reason" placeholder="Why this tank is >5% below capacity"></div>
+          </div>
+        </div>
       </div>
-      <div id="tankGauge"></div>
-      <div id="t_underfill" style="display:none;margin-top:11px">
-        <div class="field-grp"><label style="color:var(--red)">Under-fill reason (required)</label><input id="t_reason" placeholder="Why this tank is more than 5% below capacity"></div>
-      </div>
-
-      <div class="fgroup-title">Charged into this tank (kg)</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>Virgin gelatine (from MMT)</label><input id="t_virgin" type="number" inputmode="decimal" oninput="drawCharge()"></div>
-        <div class="field-grp"><label>Colour + TiO₂</label><input id="t_colourkg" type="number" inputmode="decimal" oninput="drawCharge()"></div>
-        <div class="field-grp"><label>FG remelt</label><input id="t_fgremelt" type="number" inputmode="decimal" oninput="drawCharge()"><div class="hint">Finished goods melted back — reduce virgin to match</div></div>
-      </div>
-      <div class="fgroup-title">Reuse material drawn from stock (kg)</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>Draw from</label><select id="t_source" onchange="toggleLegacyLoc()"><option value="ledger">Ledger A — online register</option><option value="legacy">Ledger B — legacy stock</option></select></div>
-        <div class="field-grp" id="legacyLocWrap" style="display:none"><label>Legacy location</label><select id="t_legacyloc"></select></div>
-        <div class="field-grp"><label>Salvage account</label><select id="t_salvacct"><option value="aim_salvage">AIM Salvage</option><option value="printing_salvage">Printing Salvage</option><option value="pi_salvage">PI Salvage</option><option value="cutting">Cuttings</option></select></div>
-        <div class="field-grp"><label>Salvage added</label><input id="t_salvage" type="number" inputmode="decimal" oninput="drawCharge()"></div>
-        <div class="field-grp"><label>Cutting added</label><input id="t_cutting" type="number" inputmode="decimal" oninput="drawCharge()"></div>
-      </div>
-      <div id="chargeSummary"></div>
-
-      <div class="fgroup-title">Colourants (up to 8, grams)</div>
-      <div id="t_colourants" class="fgrid"></div>
-
-      <div class="fgroup-title">Quality</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>Viscosity (cps)</label><input id="t_visc" type="number" inputmode="decimal"></div>
-        <div class="field-grp"><label>Temperature (°C)</label><input id="t_temp" type="number" inputmode="decimal"></div>
-      </div>
-
       <div class="row" style="margin-top:18px">
-        <button class="btn primary" onclick="saveTt()">Issue tank &amp; print label</button>
+        <button class="btn primary" onclick="completeDualTt()">Complete TT entry — create tanks</button>
         <button class="btn" onclick="clearTtForm()">Clear</button>
       </div>
+      <div id="dualCreated"></div>
     </div>
 
     <div class="card" id="labelCard" style="display:none">
@@ -416,8 +460,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div class="ftabs">
         <div class="ftab on" id="lv-account" onclick="loadLedger('account',this)">By account</div>
         <div class="ftab" id="lv-daily" onclick="loadLedger('daily',this)">By production day</div>
-        <div class="ftab" id="lv-colour" onclick="loadLedger('colour',this)">By colour code</div>
-        <div class="ftab" id="lv-pc" onclick="loadLedger('pc',this)">By PC code</div>
+        <div class="ftab" id="lv-colour" onclick="loadLedger('pc',this)">By colour code</div>
         <div class="ftab" id="lv-lots" onclick="loadLedger('lots',this)">Available lots</div>
         <div class="ftab" id="lv-movements" onclick="loadLedger('movements',this)">All movements</div>
       </div>
@@ -435,11 +478,12 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div class="card-sub">v55J: cuttings now arrive from DPR and AIM/Printing/PI salvage from Tracking through the pending-receipt queue above &mdash; oily salvage is the one stream with no upstream feed, so it (and corrections) are entered here.</div>
       <div class="fgrid">
         <div class="field-grp"><label>Movement</label><select id="mv_type"><option value="generate">Generated (credit)</option><option value="consume">Consumed (debit)</option></select></div>
-        <div class="field-grp"><label>Account</label><select id="mv_account"></select></div>
+        <div class="field-grp" style="display:none"><label>Account</label><select id="mv_account"></select></div>
+        <div class="field-grp"><label>Account</label><input value="Oily Salvage" disabled style="background:var(--s3)"></div>
         <div class="field-grp"><label>Batch</label><input id="mv_batch"></div>
         <div class="field-grp"><label>Machine</label><input id="mv_machine"></div>
-        <div class="field-grp"><label>Side</label><select id="mv_side"><option value="">—</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
-        <div class="field-grp"><label>Colour code</label><input id="mv_colcode" list="cutColourOpts"></div>
+        <div class="field-grp" style="display:none"><label>Side</label><select id="mv_side"><option value="">—</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp" style="display:none"><label>Colour code</label><input id="mv_colcode" list="cutColourOpts"></div>
         <div class="field-grp"><label>PC code</label><input id="mv_pc"></div>
         <div class="field-grp"><label>Quantity (kg)</label><input id="mv_kg" type="number" inputmode="decimal"></div>
         <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="saveMovement()">Record</button></div>
@@ -746,18 +790,23 @@ async function loadSheet(){
           Object.keys(by).sort().forEach(k=>{
             const [fl,mc] = k.split('|');
             lh += '<div style="margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;font-size:12px">'+esc(FLOOR_LABELS[fl]||fl)+' &middot; '+esc(mc)+'</div>';
-            lh += '<div style="display:flex;flex-wrap:wrap;gap:6px;margin-bottom:6px">';
             by[k].sort((a,b)=>String(a.batch_number).localeCompare(String(b.batch_number))||String(a.side).localeCompare(String(b.side))||(a.seq_index-b.seq_index));
+            // v55N item 3: the live board is the SCAN IN / SCAN OUT surface — each tank is an
+            // actionable row through its gated lifecycle, with the per-TT movement log one click away.
+            lh += '<table class="gtable" style="margin-bottom:6px"><tbody>';
             by[k].forEach(r=>{
-              const outD = !!r.scan_out_at;
-              lh += '<span style="border:1px solid '+(outD?'var(--green)':'var(--teal)')+';border-radius:8px;padding:3px 10px;font-size:11.5px;background:'+(outD?'var(--green-l)':'var(--teal-l)')+'">'
-                + '<b class="mono">'+esc(r.batch_number)+'</b> '+esc(String(r.side||'').toUpperCase())+' #'+(r.seq_index||'?')
-                + ' &middot; '+fmt(r.actual_l,0)+' L'
-                + (r.colour_name?(' &middot; '+esc(r.colour_name)):'')
-                + ' &middot; '+(outD?'OUT '+esc(String(r.scan_out_at).slice(11,16)):'prepared')
-                + '</span>';
+              window._TTROWS[r.id] = r;
+              const [,slabel,scolr] = lcStage(r);
+              lh += '<tr>'
+                + '<td class="mono" style="white-space:nowrap"><b>'+esc(r.tt_number||'')+'</b></td>'
+                + '<td class="mono">'+esc(r.batch_number)+' '+esc(String(r.side||'').toUpperCase())+' #'+(r.seq_index||'?')+'</td>'
+                + '<td class="num">'+fmt(r.actual_l,0)+' L</td>'
+                + '<td>'+esc(r.colour_name||r.colour_code||'—')+'</td>'
+                + '<td><b style="font-size:10.5px;color:'+scolr+'">'+slabel+'</b></td>'
+                + '<td style="white-space:nowrap;text-align:right">'+lcActions(r)+'</td>'
+                + '</tr>';
             });
-            lh += '</div>';
+            lh += '</tbody></table>';
           });
           liveEl.innerHTML = lh;
         }
@@ -771,9 +820,12 @@ async function loadSheet(){
       + '</div>';
     if(!SHEET_ROWS.length){ out.innerHTML = '<div class="empty">No tanks match these filters yet.</div>'; return; }
     let h = '<table class="gtable"><thead><tr><th>Day</th><th>Batch</th><th>TT</th><th>Side</th><th>Machine</th><th>Floor</th>'
-          + '<th>Colour</th><th class="num">Actual L</th><th class="num">Charged kg</th><th>MMT</th><th>Status</th></tr></thead><tbody>';
+          + '<th>Colour</th><th class="num">Actual L</th><th class="num">Charged kg</th><th>MMT</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody>';
     SHEET_ROWS.forEach(r=>{
-      h += `<tr class="clickable" onclick="gotoBatch('${esc(r.batch_number)}')">`
+      window._TTROWS[r.id] = r;
+      // v55N: row click opens the per-TT movement log (the old gotoBatch pointed at the Batch tab,
+      // removed in v55H item 16 — the click had been silently dead since).
+      h += `<tr class="clickable" onclick="ttMove(${r.id})">`
         + `<td class="mono">${esc(r.production_day||'—')}</td>`
         + `<td class="mono"><b>${esc(r.batch_number)}</b></td>`
         + `<td class="mono">${esc(r.tt_number||'')}</td>`
@@ -784,23 +836,26 @@ async function loadSheet(){
         + `<td class="num">${fmt(r.actual_l,0)}</td>`
         + `<td class="num">${fmt(r.total_charged_kg,1)}</td>`
         + `<td class="mono">${esc(r.mmt_ref||'—')}</td>`
-        + `<td>${statusBadge(r.status)}${r.is_under_fill?' <span class="badge warn">Under-fill</span>':''}</td></tr>`;
+        + (()=>{ const [,slabel,scolr] = lcStage(r); return `<td><b style="font-size:10.5px;color:${scolr}">${slabel}</b>${r.is_under_fill?' <span class="badge warn">Under-fill</span>':''}</td>`; })()
+        + `<td style="white-space:nowrap" onclick="event.stopPropagation()">${lcActions(r)}</td></tr>`;
     });
-    out.innerHTML = h + '</tbody></table>';
+    out.innerHTML = '<div class="tswrap" style="max-height:460px">' + h + '</tbody></table></div>';
   }catch(e){ out.innerHTML = '<div class="empty">Could not load the sheet.</div>'; }
 }
 function statusBadge(s){
-  const m = { prepared:'planned', holding:'open', released:'inprod' };
+  const m = { prepared:'planned', holding:'open', released:'closed', issued:'inprod' };   // v55N: full lifecycle
   return `<span class="badge ${m[s]||'planned'}">${esc(s||'')}</span>`;
 }
 function exportSheet(){
   if(!SHEET_ROWS.length){ toast('Nothing to export yet','err'); return; }
   const cols = ['production_day','batch_number','tt_number','side','machine_id','floor','pc_code','colour_name','colour_code',
                 'mmt_ref','capacity_l','planned_l','actual_l','virgin_kg','salvage_kg','cutting_kg','colour_kg','fg_remelt_kg',
-                'total_charged_kg','viscosity_cps','temperature_c','status','under_fill_reason','created_by','created_at'];
+                'total_charged_kg','viscosity_cps','temperature_c','status','under_fill_reason','created_by','created_at',
+                'label_generated_at','scan_in_at','scan_out_at','issued_at','issued_by'];
   const head = ['Production day','Batch','TT number','Side','Machine','Floor','PC code','Colour','Colour code','MMT ref',
                 'Capacity L','Planned L','Actual L','Virgin kg','Salvage kg','Cutting kg','Colour kg','FG remelt kg',
-                'Total charged kg','Viscosity','Temp C','Status','Under-fill reason','Issued by','Issued at'];
+                'Total charged kg','Viscosity','Temp C','Status','Under-fill reason','Entered by','Entered at',
+                'Label generated at','Scanned in at','Scanned out at','Issued at','Issued by'];
   const q = v => { const s = v==null?'':String(v); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
   const csv = [head.join(',')].concat(SHEET_ROWS.map(r=>cols.map(c=>q(r[c])).join(','))).join('\n');
   const a = document.createElement('a');
@@ -809,12 +864,8 @@ function exportSheet(){
   a.click();
   toast('Exported '+SHEET_ROWS.length+' tanks','ok');
 }
-function gotoBatch(b){
-  setVal('bs_batch', b);
-  const idx = TABS.findIndex(t=>t.id==='batch');
-  showPage('batch', document.querySelectorAll('.ntab')[idx]);
-  loadBatch();
-}
+// v55N: gotoBatch removed — the Batch tab it targeted was removed in v55H (item 16);
+// TT rows now open the movement log instead.
 
 // ── MMT ────────────────────────────────────────────────
 function buildFloorTabs(){
@@ -905,7 +956,7 @@ function mmtHistFilter(){
   const chemDummy = 0;
   const head = '<table class="gtable"><thead><tr><th>Reference</th><th>Floor</th><th>Vendor</th><th>Gelatine batch</th>'
     + '<th class="num">Total kg</th><th class="num">Allocated</th><th class="num">Remaining</th><th>Started</th><th>Status</th></tr></thead><tbody>';
-  el.innerHTML = rows.length ? head + rows.map(c=>{
+  el.innerHTML = rows.length ? '<div class="tswrap" style="max-height:380px">' + head + rows.map(c=>{
     const rem = Number(c.remaining_kg||0);
     return `<tr style="cursor:pointer" onclick="mmtToggle(${c.id})"><td class="mono"><b>${esc(c.mmt_ref)}</b></td>`
       + `<td>${esc(FLOOR_LABELS[c.floor]||c.floor)}</td><td>${esc(c.gelatine_vendor||'—')}</td><td class="mono">${esc(c.gelatine_batch||'—')}</td>`
@@ -913,7 +964,7 @@ function mmtHistFilter(){
       + `<td class="mono" style="font-size:11px">${esc(c.charge_start||c.created_at||'—')}</td>`
       + `<td style="font-size:11px">${esc(c.status||'')}</td></tr>`
       + `<tr id="mmtDet${c.id}" style="display:none"><td colspan="9" style="background:var(--s2);padding:8px 14px;font-size:12px">gelatine ${fmt(c.gelatine_kg,1)} kg &middot; water ${fmt(c.water_kg,1)} kg &middot; commenced <span class="mono">${esc(c.charge_start||'—')}</span> &middot; completed <span class="mono">${esc(c.charge_complete||'—')}</span></td></tr>`;
-  }).join('') + '</tbody></table>' : '<div class="empty">No charges match.</div>';
+  }).join('') + '</tbody></table></div>' : '<div class="empty">No charges match.</div>';
 }
 async function saveMmt(){
   // v55J item 6: manual timestamps sanity-checked against this computer's clock.
@@ -1000,8 +1051,8 @@ async function loadTtPlan(){
        + fmt(p.capsuleMassKg,0)+' kg · avg weight '+fmt(p.inputs.avgMg,0)+' mg. '
        + 'Gross is taken from Planning unchanged, so it already reflects live A-Grade.</div>';
     out.innerHTML = h;
-    if(!val('t_batch')) setVal('t_batch', batch);
-    ttPrefill();
+    if(!val('td_batch')) setVal('td_batch', batch);
+    dualPrefill();
   }catch(e){ out.innerHTML = '<div class="empty">Could not compute the plan.</div>'; }
 }
 function kpi(label, v, cls, sub){
@@ -1011,19 +1062,20 @@ function kpi(label, v, cls, sub){
 
 // ── ISSUE TT ───────────────────────────────────────────
 async function buildColourantRows(){
+  // v55N item 2: the colourant slots live inside EACH side's compact table.
   const m = await ensureMasters();
   const list = m.colourants || [];
-  const wrap = document.getElementById('t_colourants');
-  if(wrap.children.length) return;
-  let h = '';
-  for(let i=0;i<8;i++){
-    h += '<div class="field-grp"><label>Slot '+(i+1)+'</label>'
-      + '<select id="t_col_'+i+'"><option value="">—</option>'
-      + list.map(c=>{ const nm=(c&&c.name)||c, cd=(c&&c.code)||''; return `<option value="${esc(nm)}">${esc(nm)}${cd?' ['+esc(cd)+']':''}</option>`; }).join('')
-      + '</select>'
-      + '<input id="t_colg_'+i+'" type="number" inputmode="decimal" placeholder="grams" style="margin-top:5px"></div>';
+  for(const p of ['tc','tb']){
+    const wrap = document.getElementById(p+'_colourants');
+    if(!wrap || wrap.children.length) continue;
+    let h = '';
+    for(let i=0;i<8;i++){
+      h += '<div class="cpair"><select id="'+p+'_col_'+i+'"><option value="">—</option>'
+        + list.map(c=>{ const nm=(c&&c.name)||c, cd=(c&&c.code)||''; return '<option value="'+esc(nm)+'">'+esc(nm)+(cd?' · '+esc(cd):'')+'</option>'; }).join('')
+        + '</select><input id="'+p+'_colg_'+i+'" type="number" inputmode="decimal" placeholder="g"></div>';
+    }
+    wrap.innerHTML = h;
   }
-  wrap.innerHTML = h;
 }
 // v55J items 8/9: batch pick-list — every RUNNING batch and the NEXT planned batch per machine,
 // in machine sequence, for both the plan box and the issue form. Selecting a batch autofills
@@ -1064,14 +1116,14 @@ function ycBatch(){
 function prepSide(side){
   try{
     const pl = (window._TTPLAN55K||{})[side]; if(!pl){ toast('Compute the plan first','err'); return; }
-    setVal('t_batch', pl.batch);
-    document.getElementById('t_side').value = side;
+    setVal('td_batch', pl.batch);
+    const p = side==='cap' ? 'tc' : 'tb';
     const mc = MASTERS && MASTERS.tt_machine_master && MASTERS.tt_machine_master[pl.machine];
-    if(mc) setVal('t_cap', side==='cap' ? mc.capCapL : mc.bodyCapL);
-    setVal('t_planned', pl.fillL);
-    if(typeof ttPrefill==='function') ttPrefill();
-    const el = document.getElementById('t_side'); if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
-    toast('Issue form prefilled for '+side.toUpperCase()+' — review and save','ok');
+    if(mc) setVal(p+'_cap', side==='cap' ? mc.capCapL : mc.bodyCapL);
+    setVal(p+'_planned', pl.fillL);
+    if(typeof dualPrefill==='function') dualPrefill();
+    const el = document.getElementById('ds_'+p); if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
+    toast(side.toUpperCase()+' table prefilled — enter the tank actuals and Complete','ok');
   }catch(e){ toast('Could not prefill: '+(e.message||'error'),'err'); }
 }
 function buildCutColourOpts(){
@@ -1094,6 +1146,8 @@ async function loadBatchOptions(){
       (d.machines||[]).forEach(m=>{
         const run = m.batches.filter(b=>b.status==='running');
         const nxt = m.batches.find(b=>b.status!=='running' && b.status!=='completed');
+        window._BATCHMETA = window._BATCHMETA || {};
+        m.batches.forEach(b=>{ window._BATCHMETA[String(b.batchNumber).toUpperCase()] = { colour: b.colour||'', pc: b.pcCode||'' }; });
         run.forEach(b=>opts.push({bn:b.batchNumber, lbl:m.machineId+' · RUNNING · '+(b.colour||'')}));
         if(nxt) opts.push({bn:nxt.batchNumber, lbl:m.machineId+' · next · '+(nxt.colour||'')});
       });
@@ -1102,7 +1156,8 @@ async function loadBatchOptions(){
   }catch(_e){}
 }
 async function loadMmtOptions(){
-  const sel = document.getElementById('t_mmt');
+  const sels = ['tc_mmt','tb_mmt'].map(id=>document.getElementById(id)).filter(Boolean);
+  if(!sels.length) return;
   try{
     const fl = [...new Set(visibleFloors().map(f => (f==='1F'||f==='2F') ? 'FFSF' : f))];
     const all = [];
@@ -1110,121 +1165,241 @@ async function loadMmtOptions(){
       const d = await api('/api/gpr/mmt?floor='+encodeURIComponent(f)+'&status=open');
       if(d.ok) all.push(...d.charges);
     }
-    sel.innerHTML = '<option value="">— none —</option>' + all.map(c=>
+    const html = '<option value="">— none —</option>' + all.map(c=>
       `<option value="${esc(c.mmt_ref)}">${esc(c.mmt_ref)} · ${fmt(c.remaining_kg,0)} kg left</option>`).join('');
+    sels.forEach(sel=>{ const keep = sel.value; sel.innerHTML = html; if(keep) sel.value = keep; });
   }catch(e){}
 }
-async function ttPrefill(){
-  const batch = val('t_batch'); if(!batch) return;
+// ═══ v55N (Ishan, 18 Sep items 2-3) — dual Cap|Body entry + gated TT lifecycle ═══════════════
+// Entry creates the tank ('prepared'); GENERATE LABEL is a SEPARATE action (Tracking-style, never
+// on the same button as entry); the printed label is scanned IN to holding; after viscosity set it
+// is scanned OUT ('released'); only then does the gate to ISSUE the tank to the machine open
+// ('issued'). Every stage is stamped server-side and visible per TT in the movement log.
+async function dualPrefill(){
+  const batch = val('td_batch'); if(!batch) return;
   try{
     const d = await api('/api/gpr/tt-plan/' + encodeURIComponent(batch));
     if(d.ok && d.order){
-      if(!val('t_machine')) setVal('t_machine', d.order.machineId||'');
-      if(!val('t_pc')) setVal('t_pc', d.order.pcCode||'');
-      setVal('t_floor', FLOOR_LABELS[d.order.floor] || d.order.floor || '');
+      if(!val('td_machine')) setVal('td_machine', d.order.machineId||'');
+      if(!val('td_pc')) setVal('td_pc', d.order.pcCode||'');
+      setVal('td_floor', FLOOR_LABELS[d.order.floor] || d.order.floor || '');
       TT_ORDER_SIZE = d.order.size || '';
+      const meta = (window._BATCHMETA||{})[String(batch).toUpperCase()];
+      if(meta && meta.colour && !val('td_colname')) setVal('td_colname', meta.colour);
       const m = await ensureMasters();
       const mc = (m.tt_machine_master||{})[d.order.machineId];
-      if(mc){
-        const side = document.getElementById('t_side').value;
-        setVal('t_cap', side==='cap'?mc.capCapL:mc.bodyCapL);
-        setVal('t_planned', side==='cap'?mc.capFillL:mc.bodyFillL);
-        drawTank();
-      }
+      [['tc','cap'],['tb','body']].forEach(([p,k])=>{
+        const s = d.plan && d.plan[k];
+        if(mc && !num(p+'_cap')) setVal(p+'_cap', k==='cap'?mc.capCapL:mc.bodyCapL);
+        if(s){ if(!num(p+'_planned')) setVal(p+'_planned', s.fillL); if(!num(p+'_seqtotal')) setVal(p+'_seqtotal', s.ttPlanned); }
+        else if(mc && !num(p+'_planned')){ setVal(p+'_planned', k==='cap'?mc.capFillL:mc.bodyFillL); }
+        drawTankSide(p);
+      });
     }
     loadTtList(batch);
   }catch(e){}
 }
-document.addEventListener('change', e=>{
-  if(e.target && e.target.id==='t_side') ttPrefill();
-});
-function drawTank(){
-  const cap = num('t_cap'), act = num('t_actual'), plan = num('t_planned');
-  const el = document.getElementById('tankGauge');
-  if(cap<=0){ el.innerHTML=''; document.getElementById('t_underfill').style.display='none'; return; }
+function drawTankSide(p){
+  const cap = num(p+'_cap'), act = num(p+'_actual'), plan = num(p+'_planned');
+  const el = document.getElementById(p+'_gauge'); if(!el) return;
+  drawChargeSide(p);
+  if(cap<=0 || act<=0){ el.innerHTML=''; const u=document.getElementById(p+'_underfill'); if(u) u.style.display='none'; return; }
   const pct = Math.max(0, Math.min(100, (act/cap)*100));
-  const planPct = plan>0 ? Math.max(0, Math.min(100, (plan/cap)*100)) : null;
-  const under = act>0 && act < cap*0.95;
-  document.getElementById('t_underfill').style.display = under ? 'block' : 'none';
-  el.innerHTML = '<div class="tank">'
-    + '<div class="tank-body">'
-    +   '<div class="tank-fill" style="height:'+pct+'%"></div>'
-    +   (planPct!=null ? '<div class="tank-mark" style="bottom:'+planPct+'%"></div>' : '')
-    + '</div>'
-    + '<div class="tank-info"><span class="pct">'+fmt(pct,0)+'%</span>'
-    +   fmt(act,0)+' L of '+fmt(cap,0)+' L capacity'
-    +   (plan>0?' · planned fill '+fmt(plan,0)+' L':'')
-    +   (under?'<br><b style="color:var(--red)">More than 5% below capacity — a reason is required.</b>':'')
-    + '</div></div>';
-}
-function toggleLegacyLoc(){
-  const on = document.getElementById('t_source').value === 'legacy';
-  document.getElementById('legacyLocWrap').style.display = on ? 'flex' : 'none';
-  if(on) loadLegacyLocations();
-}
-function drawCharge(){
-  const virgin=num('t_virgin'), colour=num('t_colourkg'), fg=num('t_fgremelt');
-  const salv=num('t_salvage'), cut=num('t_cutting');
-  const total = virgin+colour+fg+salv+cut;
-  const pct = (MASTERS && MASTERS.gpr_constants && MASTERS.gpr_constants.cuttingPctOfChargedWeight) || 22.5;
-  const est = total * pct / 100;
-  const el = document.getElementById('chargeSummary');
-  if(total<=0){ el.innerHTML=''; return; }
-  el.innerHTML = '<div class="kgrid" style="margin-top:12px">'
-    + kpi('Total charged', fmt(total,1)+' kg', 'accent')
-    + kpi('Fresh material', fmt(virgin+colour+fg,1)+' kg', '', 'virgin + colour + FG remelt')
-    + kpi('Reuse drawn', fmt(salv+cut,1)+' kg', '', 'debited from stock')
-    + kpi('Cutting expected back', fmt(est,1)+' kg', 'green', pct+'% of charged weight')
+  const under = act < cap*0.95;
+  document.getElementById(p+'_underfill').style.display = under ? 'block' : 'none';
+  el.innerHTML = '<div style="font-size:11px;margin-top:6px;color:'+(under?'var(--red)':'var(--t2)')+'">'
+    + fmt(act,0)+' L of '+fmt(cap,0)+' L ('+fmt(pct,0)+'%)'
+    + (plan>0?' · planned '+fmt(plan,0)+' L':'')
+    + (under?' — <b>&gt;5% under capacity, reason required</b>':'')
     + '</div>';
 }
-async function saveTt(){
-  const batch = val('t_batch'), side = document.getElementById('t_side').value;
-  if(!batch){ toast('A batch number is required','err'); return; }
-  if(num('t_actual') <= 0){ toast('Enter the litres actually issued','err'); return; }
-  const cap = num('t_cap'), act = num('t_actual');
-  if(cap>0 && act < cap*0.95 && !val('t_reason')){
-    toast('This tank is more than 5% below capacity — add a reason','err');
-    document.getElementById('t_underfill').style.display='block';
-    return;
-  }
+function toggleLegacySide(p){
+  const row = document.getElementById(p+'_legacywrap');
+  const on = document.getElementById(p+'_source').value === 'legacy';
+  if(row) row.style.display = on ? 'table-row' : 'none';
+  if(on) loadLegacyLocations();
+}
+function drawChargeSide(p){
+  const virgin=num(p+'_virgin'), colour=num(p+'_colourkg'), fg=num(p+'_fgremelt');
+  const salv=num(p+'_salvage'), cut=num(p+'_cutting');
+  const total = virgin+colour+fg+salv+cut;
+  const el = document.getElementById(p+'_charge'); if(!el) return;
+  if(total<=0){ el.innerHTML=''; return; }
+  el.innerHTML = '<div style="font-size:11px;margin-top:2px;color:var(--t2)">Charged <b>'+fmt(total,1)+' kg</b>'
+    + ' · fresh '+fmt(virgin+colour+fg,1)+' · reuse '+fmt(salv+cut,1)+' kg</div>';
+}
+function _sideFilled(p){ return num(p+'_actual') > 0; }
+function _sidePayload(p, side){
   const colourants = [];
   for(let i=0;i<8;i++){
-    const c = val('t_col_'+i), g = num('t_colg_'+i);
-    if(c) colourants.push({ colourant:c, grams:g, slot:i+1 });
+    const c = val(p+'_col_'+i), gr = num(p+'_colg_'+i);
+    if(c) colourants.push({ colourant:c, grams:gr, slot:i+1 });
   }
-  const d = await post('/api/gpr/tt', {
-    batch_number: batch, side, machine_id: val('t_machine')||'(unset)',
-    pc_code: val('t_pc'), colour_name: val('t_colname'), colour_code: val('t_colcode'),
-    mmt_ref: val('t_mmt')||null, seq_total: num('t_seqtotal')||null, size: TT_ORDER_SIZE,
-    capacity_l: cap, planned_l: num('t_planned'), actual_l: act,
-    virgin_kg: num('t_virgin'), colour_kg: num('t_colourkg'), fg_remelt_kg: num('t_fgremelt'),
-    salvage_kg: num('t_salvage'), cutting_kg: num('t_cutting'),
-    salvage_account: document.getElementById('t_salvacct').value,
-    consume_from: document.getElementById('t_source').value,
-    legacy_location: document.getElementById('t_legacyloc') ? document.getElementById('t_legacyloc').value : null,
-    viscosity_cps: num('t_visc'), temperature_c: num('t_temp'),
-    colourants, under_fill_reason: val('t_reason')||null
-  });
-  if(!d.ok){ toast(d.detail || d.error || 'Could not issue the tank','err'); return; }
-  toast('Issued ' + d.tt_number + (d.warning ? ' — ' + d.warning : ''), d.warning ? '' : 'ok');
-  showLabel(d, batch, side);
+  return {
+    batch_number: val('td_batch'), side, machine_id: val('td_machine')||'(unset)',
+    pc_code: val('td_pc'), colour_name: val('td_colname'), colour_code: val('td_colcode'),
+    mmt_ref: val(p+'_mmt')||null, seq_total: num(p+'_seqtotal')||null, size: TT_ORDER_SIZE,
+    capacity_l: num(p+'_cap'), planned_l: num(p+'_planned'), actual_l: num(p+'_actual'),
+    virgin_kg: num(p+'_virgin'), colour_kg: num(p+'_colourkg'), fg_remelt_kg: num(p+'_fgremelt'),
+    salvage_kg: num(p+'_salvage'), cutting_kg: num(p+'_cutting'),
+    salvage_account: document.getElementById(p+'_salvacct').value,
+    consume_from: document.getElementById(p+'_source').value,
+    legacy_location: document.getElementById(p+'_legacyloc') ? document.getElementById(p+'_legacyloc').value : null,
+    viscosity_cps: num(p+'_visc'), temperature_c: num(p+'_temp'),
+    colourants, under_fill_reason: val(p+'_reason')||null
+  };
+}
+async function completeDualTt(){
+  const batch = val('td_batch');
+  if(!batch){ toast('A batch number is required','err'); return; }
+  const sides = [['tc','cap'],['tb','body']].filter(([p])=>_sideFilled(p));
+  if(!sides.length){ toast('Enter actual litres in the Cap and/or Body table first','err'); return; }
+  if(sides.length===1){
+    const done = sides[0][1].toUpperCase(), missing = done==='CAP' ? 'BODY' : 'CAP';
+    if(!confirm('The '+missing+' table is empty — complete '+done+' only?')) return;
+  }
+  for(const [p, side] of sides){
+    const cap = num(p+'_cap'), act = num(p+'_actual');
+    if(cap>0 && act < cap*0.95 && !val(p+'_reason')){
+      toast(side.toUpperCase()+' tank is more than 5% below capacity — add a reason','err');
+      document.getElementById(p+'_underfill').style.display='block';
+      return;
+    }
+  }
+  const created = [];
+  for(const [p, side] of sides){
+    const d = await post('/api/gpr/tt', _sidePayload(p, side));
+    if(!d.ok){
+      toast(side.toUpperCase()+': '+(d.detail || d.error || 'could not create the tank'),'err');
+      if(created.length) renderDualCreated(created, true);
+      return;
+    }
+    created.push({ tt_id:d.tt_id, tt_number:d.tt_number, side });
+    if(d.warning) toast(side.toUpperCase()+' — '+d.warning,'');
+  }
+  toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — generate the labels below','ok');
+  renderDualCreated(created, false);
   loadTtList(batch); loadMmtOptions();
 }
-function showLabel(d, batch, side){
-  LAST_LABEL = { payload:d.label_payload, batch, side, tt:d.tt_number,
-                 pc:val('t_pc'), colour:val('t_colname')||val('t_colcode'), litres:num('t_actual') };
-  document.getElementById('labelCard').style.display = 'block';
-  document.getElementById('labelView').innerHTML =
-    '<div class="lbl"><div class="lbl-batch">'+esc(batch)+'</div>'
-    + '<div class="lbl-tt">'+esc(d.tt_number)+' · '+esc(side.toUpperCase())+'</div>'
-    + '<div class="lbl-hr"></div>'
-    + '<div class="lbl-row"><b>PC</b>'+esc(val('t_pc')||'—')+'</div>'
-    + '<div class="lbl-row"><b>Colour</b>'+esc(val('t_colname')||val('t_colcode')||'—')+'</div>'
-    + '<div class="lbl-row"><b>Volume</b>'+fmt(num('t_actual'),0)+' L</div>'
-    + '<div class="lbl-row"><b>MMT</b>'+esc(val('t_mmt')||'—')+'</div>'
-    + '<div class="lbl-pay">'+esc(d.label_payload)+'</div></div>';
-  document.getElementById('labelCard').scrollIntoView({behavior:'smooth', block:'nearest'});
+function renderDualCreated(created, partial){
+  const el = document.getElementById('dualCreated'); if(!el) return;
+  el.innerHTML = '<div class="fgroup-title" style="margin-top:14px">Tanks created'
+    + (partial?' <span style="color:var(--red)">(partial — fix the failed side and complete again)</span>':'')
+    + ' — generate each label (separate step; the tank is scanned IN by its label)</div>'
+    + '<div style="display:flex;gap:10px;flex-wrap:wrap">'
+    + created.map(c=>'<div style="border:1px solid var(--b1);border-radius:var(--r);padding:8px 12px;background:var(--s1)">'
+        + '<b class="mono">'+esc(c.tt_number)+'</b> <span style="color:var(--t3);font-size:11px">'+esc(c.side.toUpperCase())+'</span>'
+        + ' <button class="btn sm primary" style="margin-left:8px" onclick="ttGenLabel('+c.tt_id+')">🏷 Generate label</button>'
+        + '</div>').join('')
+    + '</div>';
 }
+
+// ── TT lifecycle actions, label modal, movement log ──────────────────────────
+window._TTROWS = window._TTROWS || {};
+function lcStage(t){
+  if(t.issued_at) return ['issued','ISSUED TO MACHINE','var(--green)'];
+  if(t.scan_out_at) return ['released','SCANNED OUT — ready to issue','var(--teal)'];
+  if(t.scan_in_at) return ['holding','IN HOLDING','var(--amber)'];
+  if(t.label_generated_at) return ['label','LABEL READY — scan in','var(--accent)'];
+  return ['prepared','ENTERED — generate label','var(--t3)'];
+}
+function lcActions(t){
+  const b = [];
+  if(!t.label_generated_at){
+    b.push('<button class="btn sm primary" onclick="ttGenLabel('+t.id+')">🏷 Label</button>');
+  } else if(!t.scan_in_at){
+    b.push('<button class="btn sm" onclick="ttGenLabel('+t.id+')" title="Reprint">🏷</button>');
+    b.push('<button class="btn sm primary" onclick="ttScanLc('+t.id+',\'in\')">Scan IN</button>');
+  } else if(!t.scan_out_at){
+    b.push('<button class="btn sm primary" onclick="ttScanLc('+t.id+',\'out\')">Scan OUT</button>');
+  } else if(!t.issued_at){
+    b.push('<button class="btn sm ok" onclick="ttIssue('+t.id+')">Issue tank</button>');
+  }
+  b.push('<button class="btn sm" onclick="ttMove('+t.id+')" title="Movement log">Log</button>');
+  return b.join(' ');
+}
+async function ttGenLabel(id){
+  const d = await post('/api/gpr/tt/'+id+'/label', {});
+  if(!d.ok){ toast(d.detail || d.error || 'Could not generate the label','err'); return; }
+  if(d.tt) window._TTROWS[d.tt.id] = Object.assign(window._TTROWS[d.tt.id]||{}, d.tt);
+  showLabelRow(d.tt);
+  toast(d.reprint ? 'Label reprinted' : 'Label generated — scan the tank IN when it enters holding','ok');
+  refreshTtViews();
+}
+async function ttScanLc(id, type){
+  const d = await post('/api/gpr/tt/'+id+'/scan', { type });
+  if(!d.ok){ toast(d.detail || d.error || 'Scan failed','err'); return; }
+  toast(type==='in' ? 'Scanned IN — tank holding' : 'Scanned OUT — the issue gate is open', 'ok');
+  refreshTtViews();
+}
+async function ttIssue(id){
+  const d = await post('/api/gpr/tt/'+id+'/issue', {});
+  if(!d.ok){ toast(d.detail || d.error || 'Could not issue the tank','err'); return; }
+  toast('Tank issued to the machine','ok');
+  refreshTtViews();
+}
+function refreshTtViews(){
+  if(val('td_batch')) loadTtList(val('td_batch'));
+  const sp = document.getElementById('page-sheet');
+  if(sp && sp.classList.contains('on') && typeof loadSheet==='function') loadSheet();
+}
+function showLabelRow(t){
+  if(!t) return;
+  LAST_LABEL = { payload:t.label_payload, batch:t.batch_number, side:t.side, tt:t.tt_number,
+                 pc:t.pc_code, colour:t.colour_name||t.colour_code, litres:t.actual_l };
+  const body = '<div class="lbl"><div class="lbl-batch">'+esc(t.batch_number)+'</div>'
+    + '<div class="lbl-tt">'+esc(t.tt_number||'')+' · '+esc(String(t.side||'').toUpperCase())+'</div>'
+    + '<div class="lbl-hr"></div>'
+    + '<div class="lbl-row"><b>PC</b>'+esc(t.pc_code||'—')+'</div>'
+    + '<div class="lbl-row"><b>Colour</b>'+esc(t.colour_name||t.colour_code||'—')+'</div>'
+    + '<div class="lbl-row"><b>Volume</b>'+fmt(t.actual_l,0)+' L</div>'
+    + '<div class="lbl-row"><b>MMT</b>'+esc(t.mmt_ref||'—')+'</div>'
+    + '<div class="lbl-pay">'+esc(t.label_payload||'')+'</div></div>';
+  ttModalOpen('Tank label — '+esc(t.tt_number||''), body
+    + '<div class="row" style="margin-top:12px">'
+    + '<button class="btn primary" onclick="printLabel()">Print label</button>'
+    + '<button class="btn" onclick="downloadZpl()">Download ZPL</button></div>');
+}
+function ttMove(id){
+  const t = window._TTROWS[id];
+  if(!t){ toast('Row not loaded — refresh the list','err'); return; }
+  const rows = [
+    ['Entry created', t.created_at, t.created_by],
+    ['Label generated', t.label_generated_at, t.label_generated_by],
+    ['Scanned IN — holding', t.scan_in_at, null],
+    ['Scanned OUT — released', t.scan_out_at, null],
+    ['Issued to machine', t.issued_at, t.issued_by],
+  ];
+  let h = '<table class="gtable"><thead><tr><th>Stage</th><th>When</th><th>By</th></tr></thead><tbody>';
+  rows.forEach(([st, at, by])=>{
+    h += '<tr'+(at?'':' style="opacity:.5"')+'><td>'+(at?'✅ ':'▫ ')+st+'</td>'
+      + '<td class="mono">'+(at?esc(String(at).slice(0,16).replace('T',' ')):'— pending')+'</td>'
+      + '<td>'+esc(by||'—')+'</td></tr>';
+  });
+  h += '</tbody></table>';
+  const [,label,colr] = lcStage(t);
+  ttModalOpen('TT movements — '+esc(t.tt_number||('#'+id)),
+    '<div style="margin-bottom:8px;font-size:12px">Batch <b class="mono">'+esc(t.batch_number||'')+'</b> · '
+    + esc(String(t.side||'').toUpperCase())+' · '+fmt(t.actual_l,0)+' L · '
+    + '<b style="color:'+colr+'">'+label+'</b></div>' + h);
+}
+function ttModalOpen(title, bodyHtml){
+  let ov = document.getElementById('ttModal');
+  if(!ov){
+    ov = document.createElement('div');
+    ov.id = 'ttModal';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,33,58,.45);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px';
+    ov.onclick = e=>{ if(e.target===ov) ov.style.display='none'; };
+    ov.innerHTML = '<div id="ttModalBox" style="background:var(--s1);border-radius:var(--r);box-shadow:var(--shadow-md);max-width:520px;width:100%;max-height:86vh;overflow:auto;padding:16px 18px"></div>';
+    document.body.appendChild(ov);
+  }
+  document.getElementById('ttModalBox').innerHTML =
+    '<div style="display:flex;align-items:center;margin-bottom:10px"><div class="card-title" style="margin:0">'+title+'</div>'
+    + '<button class="btn sm" style="margin-left:auto" onclick="document.getElementById(\'ttModal\').style.display=\'none\'">✕</button></div>'
+    + bodyHtml;
+  ov.style.display = 'flex';
+}
+
 function buildZpl(L){
   return '^XA\n^CI28\n^PW812\n^LL406\n^MMT\n^PON\n^LH0,0\n'
     + '^FO6,6^GB800,394,3^FS\n'
@@ -1254,11 +1429,15 @@ function downloadZpl(){
   a.download = 'ttlabel_' + String(LAST_LABEL.batch).replace(/[^A-Za-z0-9_-]/g,'') + '_' + String(LAST_LABEL.tt).replace(/[^A-Za-z0-9]/g,'') + '.zpl';
   a.click();
 }
+
 function clearTtForm(){
-  ['t_colname','t_colcode','t_actual','t_virgin','t_salvage','t_cutting','t_colourkg','t_fgremelt','t_visc','t_temp','t_reason']
-    .forEach(id=>setVal(id,''));
-  for(let i=0;i<8;i++){ setVal('t_col_'+i,''); setVal('t_colg_'+i,''); }
-  drawTank(); drawCharge();
+  ['td_colname','td_colcode'].forEach(id=>setVal(id,''));
+  for(const p of ['tc','tb']){
+    ['_actual','_virgin','_salvage','_cutting','_colourkg','_fgremelt','_visc','_temp','_reason'].forEach(sf=>setVal(p+sf,''));
+    for(let i=0;i<8;i++){ setVal(p+'_col_'+i,''); setVal(p+'_colg_'+i,''); }
+    drawTankSide(p);
+  }
+  const el = document.getElementById('dualCreated'); if(el) el.innerHTML='';
 }
 async function loadTtList(batch){
   const out = document.getElementById('ttList');
@@ -1266,28 +1445,21 @@ async function loadTtList(batch){
   if(!batch){ out.innerHTML = '<div class="empty">Enter a batch above to see its tanks.</div>'; return; }
   try{
     const d = await api('/api/gpr/tt/' + encodeURIComponent(batch));
-    if(!d.ok || !d.tts.length){ out.innerHTML = '<div class="empty">No tanks issued for this batch yet.</div>'; return; }
+    if(!d.ok || !d.tts.length){ out.innerHTML = '<div class="empty">No tanks entered for this batch yet.</div>'; return; }
     let h = '<table class="gtable"><thead><tr><th>TT</th><th>Side</th><th class="num">Actual L</th><th class="num">Charged kg</th>'
-          + '<th class="num">Visc</th><th>MMT</th><th>Status</th><th>Scan</th></tr></thead><tbody>';
+          + '<th class="num">Visc</th><th>MMT</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody>';
     d.tts.forEach(t=>{
+      window._TTROWS[t.id] = t;
+      const [,label,colr] = lcStage(t);
       h += `<tr><td class="mono"><b>${esc(t.tt_number||'')}</b></td><td>${esc((t.side||'').toUpperCase())}</td>`
         + `<td class="num">${fmt(t.actual_l,0)}</td><td class="num">${fmt(t.total_charged_kg,1)}</td>`
         + `<td class="num">${t.viscosity_cps!=null?esc(t.viscosity_cps):'—'}</td>`
-        + `<td class="mono">${esc(t.mmt_ref||'—')}</td><td>${statusBadge(t.status)}</td><td>${scanBtns(t)}</td></tr>`;
+        + `<td class="mono">${esc(t.mmt_ref||'—')}</td>`
+        + `<td><b style="font-size:10.5px;color:${colr}">${label}</b></td>`
+        + `<td style="white-space:nowrap">${lcActions(t)}</td></tr>`;
     });
-    out.innerHTML = h + '</tbody></table>';
+    out.innerHTML = '<div class="tswrap" style="max-height:380px">' + (h + '</tbody></table>') + '</div>';
   }catch(e){ out.innerHTML = '<div class="empty">Could not load tanks.</div>'; }
-}
-function scanBtns(t){
-  if(!t.scan_in_at) return `<button class="btn sm" onclick="ttScan(${t.id},'in')">Scan in</button>`;
-  if(!t.scan_out_at) return `<button class="btn sm ok" onclick="ttScan(${t.id},'out')">Release</button>`;
-  return '<span class="badge closed">Released</span>';
-}
-async function ttScan(id, type){
-  const d = await post('/api/gpr/tt/'+id+'/scan', { type });
-  if(!d.ok){ toast(d.detail || d.error || 'Scan failed','err'); return; }
-  toast(type==='in' ? 'Tank held' : 'Tank released', 'ok');
-  loadTtList(val('t_batch'));
 }
 
 // ── LEDGER ─────────────────────────────────────────────
@@ -1329,7 +1501,7 @@ async function loadPlan(){
     // ── Sheet 1: Report E format — FLOOR: X → MACHINE: MC — N BATCHES → rows + subtotal ──
     const FLN = { GF:'GF', FF:'FF', SF:'SF' };
     const th = x => '<th style="text-align:left;padding:5px 7px;background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px;letter-spacing:.4px;white-space:nowrap">'+x+'</th>';
-    const td = (x,extra) => '<td style="padding:5px 7px;border-bottom:1px solid var(--b1);'+(extra||'')+'">'+x+'</td>';
+    const td = (x,extra) => '<td style="'+(extra||'')+'">'+x+'</td>';   // v55P: metrics from .gtable
     const num = (x,d) => (x==null?'&mdash;':Number(x).toFixed(d==null?2:d));
     let h = '';
     perFloor.forEach(d=>{
@@ -1337,7 +1509,7 @@ async function loadPlan(){
       h += '<div style="margin:12px 0 4px;padding:5px 10px;background:var(--accent-l);border-left:5px solid var(--accent);font-family:var(--fc);font-weight:700;color:var(--accent)">FLOOR: '+esc(FLN[d.floor]||d.floor)+'</div>';
       d.machines.forEach(m=>{
         h += '<div style="margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;color:var(--t2);font-size:12px">MACHINE: '+esc(m.machineId)+' &mdash; '+m.batches.length+' BATCH'+(m.batches.length===1?'':'ES')+' <span style="font-weight:400;color:var(--t3);font-size:11px">&middot; rate '+m.ratePerShift+' L/shift</span></div>';
-        h += '<table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+        h += '<table class="gtable" style="margin:4px 0 14px"><thead><tr>'
           + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','UNSCANNED WIP @AIM','A-GRADE AIM %'].map(th).join('')
           + '</tr></thead><tbody>';
         let sOrd=0,sGP=0,sGA=0;
@@ -1387,6 +1559,51 @@ if(_planTimer) clearInterval(_planTimer);
     _planTimer = setInterval(()=>{ const pg=document.getElementById('page-plan'); if(pg && pg.classList.contains('on')) loadPlan(); else { clearInterval(_planTimer); _planTimer=null; } }, 60000);
   }catch(e){ sEl.innerHTML = '<span style="color:var(--red)">Plan failed: '+esc(e.message||'error')+'</span>'; }
 }
+// v55N (Ishan, 18 Sep): open the GPR Planning sheet in a separate tab, like Report E in
+// Tracking — same blob-URL mechanism. Static snapshot of both sheets; click again after a
+// refresh to regenerate.
+function openPlanTab(){
+  const sEl = document.getElementById('pl_summary'), cEl = document.getElementById('pl_cascade'), aEl = document.getElementById('pl_alert');
+  if(!_planData || !sEl || !sEl.innerHTML || sEl.innerHTML.indexOf('Loading')>=0){
+    loadPlan(); setTimeout(openPlanTab, 400); return;
+  }
+  const mo = (document.getElementById('pl_month')||{}).value || '';
+  const now = new Date(Date.now()+330*60000).toISOString().slice(0,16).replace('T',' ');
+  const css = ':root{--bg:#f6f8fc;--s1:#ffffff;--s2:#fafbfe;--s3:#eef2f9;--b1:#dbe3ef;--b2:#b9c6da;'
+    + '--accent:#283593;--accent-l:#e8ebf7;--teal:#0284c7;--teal-l:#e0f2fe;--green:#2e7d32;--green-l:#e8f5e9;'
+    + '--amber:#e8590c;--amber-l:#fdeee3;--red:#c62828;--red-l:#fdecec;--purple:#4527a0;--purple-l:#ede7f6;'
+    + '--t1:#16213a;--t2:#33415e;--t3:#64748f;--t4:#94a3b8;'
+    + "--font:'Inter',system-ui,sans-serif;--fc:'Sora',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,monospace;--r:8px}"
+    + 'body{font-family:var(--font);color:var(--t1);background:var(--bg);margin:0;padding:22px 26px}'
+    + 'h1{font-family:var(--fc);font-size:17px;color:var(--accent);margin:0 0 2px}'
+    + '.sub{font-size:11.5px;color:var(--t3);margin-bottom:16px}'
+    + '.mono{font-family:var(--mono)}.num{text-align:right;font-family:var(--mono)}'
+    + '.gtable{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);overflow:hidden;margin:10px 0}'
+    + '.gtable th{background:var(--s3);font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--t2);text-align:left;padding:7px 9px;border-bottom:1px solid var(--b2);white-space:nowrap}'
+    + '.gtable td{padding:5px 9px;border-bottom:1px solid var(--b1);color:var(--t1);vertical-align:middle;line-height:1.4}'
+    + '.gtable tbody tr:last-child td{border-bottom:none}.gtable tbody tr:nth-child(even) td{background:var(--s2)}'
+    + '.gtable td.num,.gtable th.num{text-align:right;font-family:var(--mono)}table{border-collapse:separate;border-spacing:0}'
+    + '.fgroup-title{font-family:var(--fc);font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--accent);margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--b1)}'
+    + 'table{border-collapse:collapse}td,th{font-size:12px}'
+    + '@media print{body{padding:8px}.noprint{display:none}}';
+  const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>GPR Planning — '+esc(CUR_FLOOR)+' — '+esc(mo)+'</title><style>'+css+'</style></head><body>'
+    + '<h1>GPR Planning — TT &amp; MMT · '+esc(FLOOR_LABELS[CUR_FLOOR]||CUR_FLOOR)+'</h1>'
+    + '<div class="sub">Month '+esc(mo)+' · generated '+esc(now)+' IST · snapshot — reopen from the app for live data'
+    + ' <button class="noprint" onclick="window.print()" style="margin-left:10px;font-size:11px">Print</button></div>'
+    + (aEl && aEl.innerHTML ? '<div style="margin-bottom:10px">'+aEl.innerHTML+'</div>' : '')
+    + '<div class="fgroup-title">Sheet 1 — Month summary (machine-wise, all batches)</div>'
+    + '<div style="font-size:12px">'+sEl.innerHTML+'</div>'
+    + '<div class="fgroup-title" style="margin-top:22px">Sheet 2 — TT time cascade (colour change / dish wash planning)</div>'
+    + '<div style="font-size:12px">'+(cEl?cEl.innerHTML:'')+'</div>'
+    + '</body></html>';
+  const url = URL.createObjectURL(new Blob([html], {type:'text/html'}));
+  try{
+    if(window._gprPlanTab && !window._gprPlanTab.closed){ window._gprPlanTab.location.href = url; }
+    else { window._gprPlanTab = window.open(url,'_blank'); }
+  }catch(e){ window._gprPlanTab = window.open(url,'_blank'); }
+  if(!window._gprPlanTab) alert('Please allow popups for this site to open the Planning sheet in a new tab.');
+  setTimeout(()=>URL.revokeObjectURL(url), 60000);
+}
 function exportPlan(){
   if(!_planData || typeof XLSX==='undefined'){ alert('Load the plan first.'); return; }
   const d = { machines: (_planData.floors||[]).flatMap(f=>f.machines||[]) };
@@ -1420,7 +1637,7 @@ function renderCascCal(){
   const dates = [...new Set(evs.map(e=>e.date))].sort().filter(d=>!day || d===day);
   if(!dates.length){ cal.innerHTML = '<div class="empty">No cascade events for the selected filters.</div>'; document.getElementById('cascSnap').innerHTML=''; return; }
   const th = x => '<th style="text-align:left;padding:5px 8px;background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px">'+x+'</th>';
-  let h = '<table style="width:100%;border-collapse:collapse;font-size:12px;table-layout:fixed"><thead><tr>'+th('DATE')+th('SHIFT A (06&ndash;14)')+th('SHIFT B (14&ndash;22)')+th('SHIFT C (22&ndash;06)')+'</tr></thead><tbody>';
+  let h = '<table class="gtable" style="table-layout:fixed"><thead><tr>'+th('DATE')+th('SHIFT A (06&ndash;14)')+th('SHIFT B (14&ndash;22)')+th('SHIFT C (22&ndash;06)')+'</tr></thead><tbody>';
   dates.forEach(d=>{
     h += '<tr><td style="padding:6px 8px;font-family:var(--mono);font-weight:600;border-bottom:1px solid var(--b1);vertical-align:top">'+esc(d)+'</td>';
     ['A','B','C'].forEach(sh=>{
@@ -1473,7 +1690,7 @@ async function loadReceipts(){
     document.getElementById('rcpTotal').textContent = rows.length ? (tot.toFixed(2)+' kg pending') : '';
     if(!rows.length){ el.innerHTML = '<div style="padding:10px 14px;border:1px solid var(--green);border-left:5px solid var(--green);border-radius:var(--r);background:var(--green-l);color:var(--green);font-weight:600">Nothing pending &mdash; all generation received into stock.</div>'; return; }
     const th = x => '<th style="text-align:left;padding:6px 9px;background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px;letter-spacing:.4px;white-space:nowrap">'+x+'</th>';
-    let h = '<div style="border:1px solid var(--b1);border-radius:var(--r);overflow:auto;box-shadow:var(--shadow)"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr>'
+    let h = '<div class="tswrap" style="max-height:320px;box-shadow:var(--shadow)"><table class="gtable"><thead><tr>'
       + ['DAY','SOURCE','BATCH','MC','SIDE','ACCOUNT','FLOOR','KG',''].map(th).join('')+'</tr></thead><tbody>';
     rows.forEach((r,k)=>{
       const srcBadge = r.source==='dpr'
@@ -1506,15 +1723,43 @@ async function acceptReceipt(id){
 async function loadRecentMoves(){
   const el = document.getElementById('recentMoves'); if(!el) return;
   try{
-    const d = await api('/api/gpr/ledger/summary?view=movements&limit=10' + gMonthQS());
-    const rows = (d.ok && (d.rows||d.movements)) ? (d.rows||d.movements).slice(0,10) : null;
-    if(!rows || !rows.length){ el.innerHTML = '<span style="color:var(--t3)">No movements yet.</span>'; return; }
-    el.innerHTML = '<table class="gtable"><tbody>' + rows.map(r=>
-      '<tr><td class="mono" style="font-size:11px">'+esc((r.moved_at||'').slice(0,16).replace('T',' '))+'</td>'
-      + '<td>'+(String(r.movement_type||'').includes('gen')?'<b style="color:var(--green)">+'+fmt(r.qty_kg,1)+'</b>':'<b style="color:var(--red)">-'+fmt(r.qty_kg,1)+'</b>')+' kg</td>'
-      + '<td>'+esc((ACCOUNTS&&ACCOUNTS[r.account])||r.account||'')+'</td>'
-      + '<td class="mono">'+esc(r.batch_number||'')+'</td>'
-      + '<td style="color:var(--t3);font-size:11px">'+esc(r.source||'')+'</td></tr>').join('') + '</tbody></table>';
+    const q = new URLSearchParams({view:'movements', limit:'50'});
+    const b = gMonthBounds(); if(b){ q.set('from', b.from); q.set('to', b.to); }
+    if(val('rm_batch')) q.set('batch', val('rm_batch'));
+    const d = await api('/api/gpr/ledger/summary?'+q.toString());
+    let rows = (d.ok && d.rows) ? d.rows : [];
+    // client-side filters (item 5): date / PC / accepted-only
+    const fd = val('rm_date'), fpc = val('rm_pc'), acc = document.getElementById('rm_acc')?.value||'';
+    rows = rows.filter(r=>{
+      if(fd && String(r.moved_at||'').slice(0,10)!==fd) return false;
+      if(fpc && String(r.pc_code||'')!==fpc) return false;
+      if(acc==='accepted' && r.receipt_status==='pending') return false;
+      if(acc==='pending' && r.receipt_status!=='pending') return false;
+      return true;
+    });
+    const ctl = '<div class="fgrid" style="margin-bottom:6px">'
+      + '<div class="field-grp"><label>Batch</label><input id="rm_batch" value="'+esc(val('rm_batch'))+'" onchange="loadRecentMoves()" placeholder="e.g. 26N50"></div>'
+      + '<div class="field-grp"><label>Date</label><input id="rm_date" type="date" value="'+esc(fd)+'" onchange="loadRecentMoves()"></div>'
+      + '<div class="field-grp"><label>PC code</label><input id="rm_pc" value="'+esc(fpc)+'" onchange="loadRecentMoves()"></div>'
+      + '<div class="field-grp"><label>Status</label><select id="rm_acc" onchange="loadRecentMoves()"><option value="">All</option><option value="accepted"'+(acc==='accepted'?' selected':'')+'>Accepted/stock only</option><option value="pending"'+(acc==='pending'?' selected':'')+'>Pending only</option></select></div></div>';
+    if(!rows.length){ el.innerHTML = ctl + '<span style="color:var(--t3)">No movements match.</span>'; return; }
+    let tot = 0;
+    const body = rows.map(r=>{
+      const gen = String(r.movement_type||'').includes('gen');
+      tot += gen ? Number(r.qty_kg||0) : -Number(r.qty_kg||0);
+      return '<tr><td class="mono" style="font-size:11px">'+esc((r.moved_at||'').slice(0,16).replace('T',' '))+'</td>'
+        + '<td>'+(gen?'<b style="color:var(--green)">+'+fmt(r.qty_kg,1)+'</b>':'<b style="color:var(--red)">-'+fmt(r.qty_kg,1)+'</b>')+' kg</td>'
+        + '<td>'+esc((ACCOUNTS&&ACCOUNTS[r.account])||r.account||'')+'</td>'
+        + '<td class="mono">'+esc(r.batch_number||'')+'</td>'
+        + '<td class="mono">'+esc(r.pc_code||'—')+'</td>'
+        + '<td>'+esc(r.colour_name||r.colour_code||'—')+'</td>'
+        + '<td style="color:var(--t3);font-size:11px">'+esc(r.source||'')+(r.receipt_status==='pending'?' <b style="color:var(--amber)">PENDING</b>':'')+'</td></tr>';
+    }).join('');
+    el.innerHTML = ctl + '<div class="tswrap" style="max-height:300px"><table class="gtable"><thead><tr><th>When</th><th>Qty</th><th>Account</th><th>Batch</th><th>PC</th><th>Colour</th><th>Source</th></tr></thead><tbody>'
+      + body
+      + '<tr style="background:var(--s3);font-weight:700"><td>NET TOTAL ('+rows.length+' rows)</td><td class="mono">'+(tot>=0?'+':'')+fmt(tot,1)+' kg</td><td colspan="5"></td></tr>'
+      + '</tbody></table></div>';
+   
   }catch(e){ el.innerHTML = ''; }
 }
 async function loadAccountStrip(){
@@ -1582,7 +1827,9 @@ async function loadLedger(view, btn){
         });
         h += '</tbody></table>';
       });
-      out2.innerHTML = h;
+      const tg = rows.reduce((a,r)=>a+Number(r.generated||0),0), tc = rows.reduce((a,r)=>a+Number(r.consumed||0),0), tb = rows.reduce((a,r)=>a+Number(r.balance_kg||0),0);
+      h += '<table class="gtable"><tbody><tr style="background:var(--s3);font-weight:700"><td colspan="3">TOTAL</td><td class="num mono">'+fmt(tg,1)+'</td><td class="num mono">'+fmt(tc,1)+'</td><td></td><td class="num mono">'+fmt(tb,1)+'</td></tr></tbody></table>';
+      out2.innerHTML = '<div class="tswrap">'+h+'</div>';
       return;
     }
 
@@ -1625,7 +1872,7 @@ async function loadLedger(view, btn){
 }
 async function saveMovement(){
   const type = document.getElementById('mv_type').value;
-  const account = document.getElementById('mv_account').value;
+  const account = 'oily_salvage' /* v55M item 7: oily-only entry */;
   if(num('mv_kg') <= 0){ toast('Enter a quantity in kg','err'); return; }
   const body = { account, qty_kg:num('mv_kg'), batch_number:val('mv_batch')||null,
                  machine_id:val('mv_machine')||null, side:document.getElementById('mv_side').value||null,
@@ -1667,14 +1914,15 @@ async function seedLegacy(){
 // Locations come from what has actually been seeded, so a draw can only be booked
 // against a real store rather than a free-typed name that would never reconcile.
 async function loadLegacyLocations(){
-  const sel = document.getElementById('t_legacyloc');
-  if(!sel) return;
+  const sels = ['tc_legacyloc','tb_legacyloc'].map(id=>document.getElementById(id)).filter(Boolean);
+  if(!sels.length) return;
   try{
     const d = await api('/api/gpr/legacy/balance');
     const locs = (d.legacy||[]).filter(l=>l.balance_kg>0);
-    sel.innerHTML = locs.length
+    const html = locs.length
       ? locs.map(l=>`<option value="${esc(l.location)}">${esc(l.location)} · ${fmt(l.balance_kg,0)} kg left</option>`).join('')
       : '<option value="">— none seeded —</option>';
+    sels.forEach(sel=>{ const keep = sel.value; sel.innerHTML = html; if(keep) sel.value = keep; });
   }catch(e){}
 }
 
@@ -1709,7 +1957,7 @@ async function loadYieldReport(){
           + '<th class="num">WIP L</th><th class="num">Tanks</th></tr></thead><tbody>';
     d.rows.forEach(r=>{
       const cls = yCls(r.yieldPct, r.target);
-      h += `<tr class="clickable" onclick="gotoBatch('${esc(r.batch)}')"><td class="mono"><b>${esc(r.batch)}</b></td>`
+      h += `<tr class="clickable" onclick="window._YC_ONLY='${esc(r.batch)}';loadYieldReport()" title="Show this batch alone"><td class="mono"><b>${esc(r.batch)}</b></td>`
         + `<td class="num"><b style="color:var(--${cls==='green'?'green':cls==='red'?'red':cls==='amber'?'amber':'t1'})">`
         + (r.yieldPct!=null?fmt(r.yieldPct,2)+'%':'—')+'</b></td>'
         + `<td class="num">${r.variance!=null?(r.variance>=0?'+':'')+fmt(r.variance,2):'—'}</td>`
