@@ -544,7 +544,7 @@ input[type="file"] { display:none; }
   <div id="sidebar">
     <div class="sidebar-logo">
       <h1>SUNLOC</h1>
-      <p>Planning Suite v3.0 · build v55T</p>
+      <p>Planning Suite v3.0 · build v55U</p>
     </div>
     <div class="sidebar-divider"></div>
     <div class="nav-section">Production</div>
@@ -1288,12 +1288,20 @@ const SYNC = (() => {
             // to the formula. Number() guards string-typed blob values.
             const _ovL = Number(o.grossOverride), _ovD = Number(dbOrd.grossOverride);
             const _ovLok = Number.isFinite(_ovL) && _ovL > 0, _ovDok = Number.isFinite(_ovD) && _ovD > 0;
-            const _ovEff = _protd ? (_ovLok ? _ovL : null) : (_ovDok ? _ovD : (_ovLok ? _ovL : null));
+            // v55U: the override is now ACTION-STAMPED (set or clear — see the Edit Order save).
+            // Whichever copy carries the newer deliberate action wins, INCLUDING an explicit clear —
+            // presence alone no longer resurrects a value the planner deleted (26P057's 54L).
+            // With no stamps on either copy (legacy orders), the original v44ZZ rule applies.
+            const _aL = Number(o.grossOvActionAt || 0), _aD = Number(dbOrd.grossOvActionAt || 0);
+            let _ovEff;
+            if (_aL !== _aD) _ovEff = (_aL > _aD) ? (_ovLok ? _ovL : null) : (_ovDok ? _ovD : null);
+            else _ovEff = _protd ? (_ovLok ? _ovL : null) : (_ovDok ? _ovD : (_ovLok ? _ovL : null));
             // FIX 2: DB status always wins — user set it explicitly
             return {
               ...dbOrd,
               // v44ZZ: override-aware gross (see above) — never reverted by a stale dedicated-table copy
               grossOverride: _ovEff,
+              grossOvActionAt: Math.max(_aL, _aD) || undefined,   // v55U: the winning action's stamp rides the merge
               grossQty:      (_ovEff != null) ? _ovEff : (_protd ? o.grossQty : dbOrd.grossQty),
               // v41ZW: preserve recent local batch/machine/zone edits against stale server data
               // v50M: …unless the server copy is provably fresher (see _srvNewer50m above)
@@ -1804,7 +1812,7 @@ function loadState() {
       const assigned = (state.printOrders||[]).filter(p => p.machineId && p.machineId !== 'null' && p.machineId !== '');
       if (_url && assigned.length > 0) {
         const r = await fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55T' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55U' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: assigned }),
           signal: AbortSignal.timeout(15000)
         });
@@ -1832,7 +1840,7 @@ function loadState() {
       } else if (_url && allOrders.length > 0) {
         try { localStorage.setItem(_mig51y, _today51y); } catch (e) {}
         fetch(_url + '/api/orders/upsert-bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55T', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55U', 'X-Sunloc-User': ((typeof currentUser!=='undefined' && currentUser && currentUser.username) || '') },   // v53K item 2
           body: JSON.stringify({ orders: allOrders }),   // v50T: build named via X-Sunloc-Build header
           signal: AbortSignal.timeout(30000)
         }).then(async r => {
@@ -2627,7 +2635,7 @@ async function saveState() {
             state.printOrders = dedupedPOs; // also fix local state
           }
           fetch(_url + '/api/print-orders/bulk', {
-            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v55T'},   // v51ZF: audit names the writing build
+            method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v55U'},   // v51ZF: audit names the writing build
             body: JSON.stringify({ printOrders: dedupedPOs }),
             signal: AbortSignal.timeout(8000)
           }).catch(()=>{});
@@ -5639,6 +5647,17 @@ function saveOrderModal(existingId, defaultMachine) {
     aGrade: ag,
     grossQty,
     grossOverride: hasGrossOverride ? grossOverrideVal : null,
+    // v55U (26P057 — PM deleted the 54L gross edit and it kept reappearing): stamp the override
+    // ACTION, set or CLEAR, so a deliberate clear is a durable fact (tombstone, same pattern as
+    // deleted orders). Without this, the v44ZZ merge's presence-wins rule resurrected the cleared
+    // value from any copy still holding it (the 30s dedicated-table sync) once the 5-min protect
+    // window lapsed, and the next auto-save persisted it back.
+    grossOvActionAt: (function(){
+      const _pv = Number((_existing||{}).grossOverride);
+      const _prevOv = (Number.isFinite(_pv) && _pv > 0) ? _pv : null;
+      const _newOv = hasGrossOverride ? grossOverrideVal : null;
+      return (_newOv !== _prevOv) ? Date.now() : ((_existing||{}).grossOvActionAt || 0);
+    })(),
     daysNeeded,
     startDate,
     endDate,
@@ -5989,7 +6008,7 @@ async function _pushOrderOnce(ord){
   if(!_url) return false;
   try {
     const r = await fetch(_url + '/api/orders/upsert', {
-      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v55T'},   // v50T: audit names the writing build
+      method:'POST', headers:{'Content-Type':'application/json','X-Sunloc-Build':'v55U'},   // v50T: audit names the writing build
       body: JSON.stringify(ord), signal: AbortSignal.timeout(8000)
     });
     if (!(r && r.ok)) return false;
@@ -8880,7 +8899,7 @@ async function updatePrintStartDate(id, val) {
   try {
     const r = await fetch(`${window.SUNLOC_SERVER_URL || ''}/api/admin/print-order-start-date`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v55T' },
+      headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '', 'X-Sunloc-Build': 'v55U' },
       body: JSON.stringify({ id, startDate: val, token: currentUser?.token || '' }),
     });
     const j = await r.json();
@@ -9330,7 +9349,7 @@ async function savePrintModal(existingId) {
       const _url = SYNC._url || localStorage.getItem('sunloc_server_url');
       if (_url) {
         fetch(_url + '/api/print-orders/bulk', {
-          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55T' },   // v51ZF: audit names the writing build
+          method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55U' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: newOrders }),
           signal: AbortSignal.timeout(8000)
         });
@@ -9380,7 +9399,7 @@ async function savePrintModal(existingId) {
         const _savePrintToDB = async (attempt) => {
           try {
             const r = await fetch(_url + '/api/print-orders/bulk', {
-              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55T' },   // v51ZF: audit names the writing build
+              method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55U' },   // v51ZF: audit names the writing build
               body: JSON.stringify({ printOrders: [ord] }),
               signal: AbortSignal.timeout(8000)
             });
@@ -9469,7 +9488,7 @@ async function upsertPrintOrderToDB(po) {
       try {
         const r = await fetch(_url + '/api/print-orders/bulk', {
           method: 'POST',
-          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55T' },   // v51ZF: audit names the writing build
+          headers: { 'Content-Type': 'application/json', 'X-Sunloc-Build': 'v55U' },   // v51ZF: audit names the writing build
           body: JSON.stringify({ printOrders: [po] }),
           signal: AbortSignal.timeout(8000)
         });
