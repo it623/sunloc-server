@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v55P';
+const APP_BUILD = 'v55S';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25718,6 +25718,114 @@ app.post('/api/gpr/tt/:id/label', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ─── v55S (Ishan, 19 Sep) — LABEL HISTORY: complete register of every generated TT label,
+// filterable by batch / PC / machine / floor / side / date, Tracking-style. Reprints are counted
+// from the audit trail (GPR_TT_LABEL_REPRINT), so the register shows first generation + reprints.
+app.get('/api/gpr/label-history', async (req, res) => {
+  try {
+    const { batch, pc, machine, floor, side } = req.query;
+    const now = new Date(Date.now() + _GPR_IST_MS).toISOString().slice(0, 10);
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '')) ? String(req.query.from) : null;
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to || '')) ? String(req.query.to) : now;
+    const P = n => pgPool ? `$${n}` : '?';
+    const conds = ['label_generated_at IS NOT NULL']; const params = [];
+    const add = (frag, v) => { params.push(v); conds.push(frag(params.length)); };
+    if (from) add(n => `SUBSTR(label_generated_at,1,10) >= ${P(n)}`, from);
+    add(n => `SUBSTR(label_generated_at,1,10) <= ${P(n)}`, to);
+    if (batch) add(n => `UPPER(batch_number)=${P(n)}`, String(batch).toUpperCase());
+    if (pc) add(n => `pc_code=${P(n)}`, pc);
+    if (machine) add(n => `machine_id=${P(n)}`, machine);
+    if (floor) add(n => `floor=${P(n)}`, floor);
+    if (side) add(n => `side=${P(n)}`, String(side).toLowerCase());
+    const sql = `SELECT id, tt_number, batch_number, machine_id, floor, side, seq_index, pc_code,
+                        colour_name, colour_code, actual_l, mmt_ref, status, label_payload,
+                        label_generated_at, label_generated_by, scan_in_at, scan_out_at, issued_at, issued_by,
+                        created_at, created_by
+                 FROM gpr_tt WHERE ${conds.join(' AND ')}
+                 ORDER BY label_generated_at DESC LIMIT 500`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    // reprint counts from the audit trail, batched by tt_number
+    const reprints = {};
+    if ((rows || []).length) {
+      const tts = [...new Set(rows.map(r => 'tt=' + r.tt_number))];
+      const ph = tts.map((_, k) => P(k + 1)).join(',');
+      const aSql = `SELECT details, COUNT(*) AS n FROM audit_log
+                    WHERE app='gpr' AND action='GPR_TT_LABEL_REPRINT' AND details IN (${ph}) GROUP BY details`;
+      try {
+        const aRows = pgPool ? (await pgPool.query(aSql, tts)).rows : db.prepare(aSql).all(...tts);
+        (aRows || []).forEach(a => { reprints[String(a.details).slice(3)] = Number(a.n || 0); });
+      } catch (e) {}
+    }
+    (rows || []).forEach(r => { r.reprints = reprints[r.tt_number] || 0; });
+    res.json({ ok: true, to, rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── v55R item 10 — INPUTS LOG: unified register of every material input consumed in
+// MMT charges (gelatine, water, additives) and TT entries (virgin, colour+TiO2, FG remelt,
+// salvage, cutting, colourants), day-wise/batch-wise consolidation done client-side.
+app.get('/api/gpr/inputs-log', async (req, res) => {
+  try {
+    const { batch, floor, machine } = req.query;
+    const now = new Date(Date.now() + _GPR_IST_MS).toISOString().slice(0, 10);
+    const from = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.from || '')) ? String(req.query.from) : now.slice(0, 7) + '-01';
+    const to = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.to || '')) ? String(req.query.to) : now;
+    const P = n => pgPool ? `$${n}` : '?';
+    const rows = [];
+    // MMT charges in window (floor-level; no batch attribution by design)
+    if (!batch) {
+      const mConds = [`COALESCE(SUBSTR(charge_start,1,10), SUBSTR(created_at,1,10)) BETWEEN ${P(1)} AND ${P(2)}`];
+      const mParams = [from, to];
+      if (floor) { mParams.push(floor); mConds.push(`floor=${P(mParams.length)}`); }
+      const mSql = `SELECT mmt_ref, floor, gelatine_kg, water_kg, additives_json,
+                           COALESCE(SUBSTR(charge_start,1,10), SUBSTR(created_at,1,10)) AS d, created_by
+                    FROM gpr_mmt_charges WHERE ${mConds.join(' AND ')} ORDER BY d, mmt_ref`;
+      const mRows = pgPool ? (await pgPool.query(mSql, mParams)).rows : db.prepare(mSql).all(...mParams);
+      for (const c of (mRows || [])) {
+        const base = { date: c.d, source: 'MMT', ref: c.mmt_ref, batch: null, machine: null, floor: c.floor, side: null, by: c.created_by || null };
+        if (Number(c.gelatine_kg) > 0) rows.push(Object.assign({}, base, { input: 'Gelatine', qty: +Number(c.gelatine_kg).toFixed(3), unit: 'kg' }));
+        if (Number(c.water_kg) > 0) rows.push(Object.assign({}, base, { input: 'Water', qty: +Number(c.water_kg).toFixed(3), unit: 'kg' }));
+        try { for (const a of JSON.parse(c.additives_json || '[]')) {
+          const q = Number(a.kg != null ? a.kg : a.qty || 0);
+          if (q > 0) rows.push(Object.assign({}, base, { input: String(a.name || a.chemical || 'Additive'), qty: +q.toFixed(3), unit: a.unit || 'kg' }));
+        } } catch (e) {}
+      }
+    }
+    // TT entries in window
+    const tConds = [`COALESCE(production_day, SUBSTR(created_at,1,10)) BETWEEN ${P(1)} AND ${P(2)}`];
+    const tParams = [from, to];
+    if (batch) { tParams.push(String(batch).toUpperCase()); tConds.push(`UPPER(batch_number)=${P(tParams.length)}`); }
+    if (floor) { tParams.push(floor); tConds.push(`floor=${P(tParams.length)}`); }
+    if (machine) { tParams.push(machine); tConds.push(`machine_id=${P(tParams.length)}`); }
+    const tSql = `SELECT id, tt_number, batch_number, machine_id, floor, side, salvage_account, created_by,
+                         virgin_kg, colour_kg, fg_remelt_kg, salvage_kg, cutting_kg,
+                         COALESCE(production_day, SUBSTR(created_at,1,10)) AS d
+                  FROM gpr_tt WHERE ${tConds.join(' AND ')} ORDER BY d, tt_number`;
+    const tRows = pgPool ? (await pgPool.query(tSql, tParams)).rows : db.prepare(tSql).all(...tParams);
+    const ids = (tRows || []).map(r => r.id);
+    const colByTt = {};
+    if (ids.length) {
+      const ph = ids.map((_, k) => P(k + 1)).join(',');
+      const cSql = `SELECT tt_id, colourant, grams FROM gpr_tt_colourants WHERE tt_id IN (${ph})`;
+      const cRows = pgPool ? (await pgPool.query(cSql, ids)).rows : db.prepare(cSql).all(...ids);
+      (cRows || []).forEach(c => { (colByTt[c.tt_id] = colByTt[c.tt_id] || []).push(c); });
+    }
+    const SAL = { aim_salvage: 'AIM Salvage', printing_salvage: 'Printing Salvage', pi_salvage: 'PI Salvage', cutting: 'Cuttings' };
+    for (const t of (tRows || [])) {
+      const base = { date: t.d, source: 'TT', ref: t.tt_number, batch: t.batch_number, machine: t.machine_id, floor: t.floor, side: t.side, by: t.created_by || null };
+      if (Number(t.virgin_kg) > 0) rows.push(Object.assign({}, base, { input: 'Virgin gelatine', qty: +Number(t.virgin_kg).toFixed(3), unit: 'kg' }));
+      if (Number(t.colour_kg) > 0) rows.push(Object.assign({}, base, { input: 'Colour + TiO2', qty: +Number(t.colour_kg).toFixed(3), unit: 'kg' }));
+      if (Number(t.fg_remelt_kg) > 0) rows.push(Object.assign({}, base, { input: 'FG remelt', qty: +Number(t.fg_remelt_kg).toFixed(3), unit: 'kg' }));
+      if (Number(t.salvage_kg) > 0) rows.push(Object.assign({}, base, { input: SAL[t.salvage_account] || 'Salvage', qty: +Number(t.salvage_kg).toFixed(3), unit: 'kg' }));
+      if (Number(t.cutting_kg) > 0) rows.push(Object.assign({}, base, { input: 'Cutting', qty: +Number(t.cutting_kg).toFixed(3), unit: 'kg' }));
+      for (const c of (colByTt[t.id] || [])) {
+        if (Number(c.grams) > 0) rows.push(Object.assign({}, base, { input: String(c.colourant), qty: +Number(c.grams).toFixed(2), unit: 'g' }));
+      }
+    }
+    res.json({ ok: true, from, to, rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.post('/api/gpr/tt/:id/issue', async (req, res) => {
   try {
     const session = gprSession(req);
@@ -26545,7 +26653,9 @@ app.get('/api/gpr/plan', async (req, res) => {
           grossActual: +grossActual.toFixed(2), unscannedWipAim: live ? +Number(live.preAIM || 0).toFixed(2) : null,
           aGradeAimPct: aPct != null ? +aPct.toFixed(2) : null, wipBasis: live ? live.wipBasis : null,
           plannedStart: o.startDate || null, plannedEnd: o.manualEndDate || o.endDate || null,
-          dprFirst: o.dprFirstDate || null, dprLast: o.dprLastDate || null, estEnd: null, estFactor: +f.toFixed(3) };
+          dprFirst: o.dprFirstDate || null, dprLast: o.dprLastDate || null, estEnd: null, estFactor: +f.toFixed(3),
+          // v55R item 5: AIM A-grade in lacs, per batch — same figure Report E shows (aimIn - aimRem).
+          aimALacs: live ? +Number(live.aGrade || 0).toFixed(2) : null };
         if (o.status === 'completed') {
           row.estEnd = null;   // history — actual dates shown from DPR
         } else if (o.status === 'running') {
@@ -26554,6 +26664,11 @@ app.get('/api/gpr/plan', async (req, res) => {
           const endIdx = nowIdx + Math.max(0, shiftsLeft - (remaining > 0 ? 1 : 0));
           row.estEnd = _gprShiftInfo(endIdx); cursor = endIdx;
         } else {   // future — chained after the live head (or its own planned start when the machine is idle)
+          // v55R item 4: a batch whose actuals already cover the required gross is effectively
+          // finished even if Planning still says 'planned' — show its DPR dates, don't re-schedule it.
+          if (grossActual > 0 && grossActual >= requiredGross - 0.005) {
+            row.estEnd = null; row.effectivelyComplete = true;
+          } else {
           // v55M: live Planning startDate is a full ISO timestamp — take the date part only, and any
           // unparseable value falls back to now instead of poisoning the whole schedule with NaN
           // (the NaN reached toISOString in the cascade and 500'd the route: "Invalid time value").
@@ -26563,8 +26678,18 @@ app.get('/api/gpr/plan', async (req, res) => {
             if (!isNaN(t)) planIdx = _gprShiftIdx(new Date(t));
           }
           const startIdx = cursor != null ? cursor : Math.max(nowIdx, planIdx);
-          const endIdx = startIdx + Math.ceil((grossPlanned || rateEff) / rateEff);
+          // v55R item 4: Planning is the source of truth for scheduled dates — when the order carries
+          // an end date, anchor the estimate to its C shift so GPR, Planning and Report E reconcile
+          // in real time; the rate-chained estimate is only the fallback when Planning has no date.
+          let endIdx = null;
+          const pe = o.manualEndDate || o.endDate;
+          if (pe) {
+            const t = Date.parse(String(pe).slice(0, 10) + 'T22:00:00+05:30');
+            if (!isNaN(t)) endIdx = _gprShiftIdx(new Date(t));
+          }
+          if (endIdx == null || endIdx < startIdx) endIdx = startIdx + Math.ceil((grossPlanned || rateEff) / rateEff);
           row.estStart = _gprShiftInfo(startIdx); row.estEnd = _gprShiftInfo(endIdx); cursor = endIdx;
+          }
         }
         rows.push(row);
       }
@@ -26593,7 +26718,8 @@ app.get('/api/gpr/plan', async (req, res) => {
           beginPrepAt: { date: prepInfo.date, shift: prepInfo.shift, atISO: new Date(prep.ms + _GPR_IST_MS).toISOString().replace('Z', '+05:30').replace(/\.\d{3}/, '') },
           prepHours, status, actual: act });
       }
-      machines.push({ machineId: mc, ratePerShift: +Number(rate || 0).toFixed(2), batches: rows, cascade });
+      const _runRow = rows.find(r => r.status === 'running');
+      machines.push({ machineId: mc, ratePerDay: +(rate * 3).toFixed(1), liveAPct: _runRow && _runRow.aGradeAimPct != null ? _runRow.aGradeAimPct : null, ratePerShift: +Number(rate || 0).toFixed(2), batches: rows, cascade });
     }
     const alerts = machines.flatMap(m => m.cascade.filter(c => c.status === 'prepare-now' || c.status === 'overdue'));
     res.json({ ok: true, floor, month, assumedAGradePct: assumedA, prepHours,

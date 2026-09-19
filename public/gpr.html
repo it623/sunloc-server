@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v55P</title>
+<title>GPR.tracker · build v55S</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -214,7 +214,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55P</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55S</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -234,7 +234,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v55P</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v55S</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -276,7 +276,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
   <div class="page" id="page-plan">
     <div class="card">
       <div class="card-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">GPR Planning — TT &amp; MMT
-        <input type="month" id="pl_month" style="font-size:12px" onchange="loadPlan()">
+        <select id="pl_floor" style="font-size:12px" onchange="loadPlan()"><option value="">This GPR's floor(s)</option><option value="GF">Ground Floor</option><option value="1F">First Floor</option><option value="2F">Second Floor</option><option value="ALL">All floors</option></select>
+        <select id="pl_month" style="font-size:12px" onchange="loadPlan()"></select>
         <button class="btn" style="padding:4px 12px;font-size:11px" onclick="loadPlan()">Refresh</button>
         <button class="btn" style="padding:4px 12px;font-size:11px" onclick="exportPlan()">Export XLSX</button>
         <button class="btn" style="padding:4px 12px;font-size:11px" onclick="openPlanTab()">Open in new tab ↗</button>
@@ -437,8 +438,15 @@ input[readonly]{background:var(--s3);color:var(--t2)}
     </div>
 
     <div class="card">
-      <div class="card-title">Tanks issued — <span id="ttListBatch">enter a batch</span></div>
-      <div id="ttList" class="tscroll"><div class="empty">Enter a batch above to see its tanks.</div></div>
+      <div class="card-title">Shift log — tanks entered <span id="ttListBatch" style="font-weight:400;color:var(--t3);font-size:12px"></span></div>
+      <div class="card-sub">Every tank saved here stays in the log — click its next action whenever ready (label &rarr; scan in &rarr; scan out &rarr; issue). Work resumes from wherever it was left.</div>
+      <div class="fgrid" style="margin-bottom:8px">
+        <div class="field-grp"><label>Batch</label><input id="tl_batch" placeholder="blank = all batches" list="batchOpts" onchange="loadTtList()"></div>
+        <div class="field-grp"><label>Date</label><input id="tl_date" type="date" onchange="loadTtList()"></div>
+        <div class="field-grp"><label>Status</label><select id="tl_status" onchange="loadTtList()"><option value="">All stages</option><option value="prepared">Entered</option><option value="label">Label ready</option><option value="holding">Holding</option><option value="released">Scanned out</option><option value="issued">Issued</option></select></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn" onclick="loadTtList()">Refresh</button></div>
+      </div>
+      <div id="ttList" class="tscroll"><div class="empty">Loading today's log…</div></div>
     </div>
   </div>
 
@@ -519,11 +527,11 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div id="yieldBatchPane">
         <div class="fgrid" style="margin-bottom:12px">
           <div class="fgrid" style="background:var(--accent-l);border-radius:var(--r);padding:8px;margin-bottom:8px">
-        <div class="field-grp"><label>1&#41; Production month</label><input id="yc_month" type="month" onchange="ycMonth()"></div>
+        <div class="field-grp"><label>1&#41; Production month</label><select id="yc_month" onchange="ycMonth()"><option value="">— select month —</option></select></div>
         <div class="field-grp"><label>2&#41; Machine</label><select id="yc_machine" onchange="ycMachine()"><option value="">&mdash; pick month first &mdash;</option></select></div>
         <div class="field-grp"><label>3&#41; Batch (produced on that machine that month)</label><select id="yc_batch" onchange="ycBatch()"><option value="">&mdash;</option></select></div>
       </div>
-      <div class="field-grp"><label>Machine</label><input id="yr_machine" placeholder="e.g. MC29"></div>
+      <div class="field-grp"><label>Machine</label><input id="yr_machine" placeholder="e.g. MC29" list="mcOpts"><datalist id="mcOpts"></datalist></div>
           <div class="field-grp"><label>PC code</label><input id="yr_pc"></div>
           <div class="field-grp"><label>Floor</label><select id="yr_floor"></select></div>
           <div class="field-grp"><label>From</label><input id="yr_from" type="date"></div>
@@ -593,6 +601,42 @@ input[readonly]{background:var(--s3);color:var(--t2)}
   </div>
 
   <!-- MASTERS -->
+  <!-- LOG (v55R item 10) -->
+  <div class="page" id="page-log">
+    <div class="card">
+      <div class="card-title">Inputs log — every material into MMT &amp; TT</div>
+      <div class="card-sub">One register of all inputs consumed: gelatine, water and additives charged in MMT, and virgin/colour/FG-remelt/salvage/cutting/colourants issued in every transfer tank. Consolidate day-wise or batch-wise; MMT rows are floor-level (no batch) so batch filters and batch grouping show TT inputs only.</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>From</label><input id="il_from" type="date" onchange="loadInputsLog()"></div>
+        <div class="field-grp"><label>To</label><input id="il_to" type="date" onchange="loadInputsLog()"></div>
+        <div class="field-grp"><label>Batch</label><input id="il_batch" list="batchOpts" placeholder="all" onchange="loadInputsLog()"></div>
+        <div class="field-grp"><label>Floor</label><select id="il_floor" onchange="loadInputsLog()"><option value="">All</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
+        <div class="field-grp"><label>Machine</label><input id="il_mc" list="mcOpts" placeholder="all" onchange="loadInputsLog()"></div>
+        <div class="field-grp"><label>Input</label><select id="il_input" onchange="renderInputsLog()"><option value="">All inputs</option></select></div>
+        <div class="field-grp"><label>View</label><select id="il_view" onchange="renderInputsLog()"><option value="detail">Detail</option><option value="day">By day</option><option value="batch">By batch</option><option value="input">By input</option></select></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadInputsLog()">Load</button></div>
+      </div>
+      <div id="ilOut"><div class="empty">Pick a range and Load.</div></div>
+    </div>
+
+    <!-- v55S: label-generation history — Tracking-style register -->
+    <div class="card">
+      <div class="card-title">Label history — every generated TT label</div>
+      <div class="card-sub">Complete register of label generations, like Tracking's label history. Filter by batch, PC, machine, floor, side or date; a row's Log opens its full movement trail, 🏷 reprints the label.</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>From</label><input id="lh_from" type="date" onchange="loadLabelHistory()"></div>
+        <div class="field-grp"><label>To</label><input id="lh_to" type="date" onchange="loadLabelHistory()"></div>
+        <div class="field-grp"><label>Batch</label><input id="lh_batch" list="batchOpts" placeholder="all" onchange="loadLabelHistory()"></div>
+        <div class="field-grp"><label>PC code</label><input id="lh_pc" placeholder="all" onchange="loadLabelHistory()"></div>
+        <div class="field-grp"><label>Machine</label><input id="lh_mc" list="mcOpts" placeholder="all" onchange="loadLabelHistory()"></div>
+        <div class="field-grp"><label>Floor</label><select id="lh_floor" onchange="loadLabelHistory()"><option value="">All</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
+        <div class="field-grp"><label>Side</label><select id="lh_side" onchange="loadLabelHistory()"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadLabelHistory()">Load</button></div>
+      </div>
+      <div id="lhOut"><div class="empty">Pick filters and Load.</div></div>
+    </div>
+  </div>
+
   <div class="page" id="page-masters">
     <div class="card">
       <div class="card-title">Masters</div>
@@ -680,6 +724,7 @@ const TABS = [
   { id:'ledger',  label:'Stock Ledger' },
   { id:'yield',   label:'Yield' },
   { id:'crush',   label:'Crushing' },
+  { id:'log',     label:'Log' },   // v55R item 10: unified MMT + TT inputs register
   // v55H item 16: Batch tab removed — batch reconciliation lives in Yield → By batch.
   { id:'masters', label:'Masters' },
 ];
@@ -706,6 +751,8 @@ function showPage(id, btn){
   if(id==='plan')   loadPlan();
   if(id==='mmt')    loadMmt();
   if(id==='mmt'){ try{ document.getElementById('m_tank_wrap').style.display = (CUR_FLOOR==='GF') ? '' : 'none'; }catch(_){}}
+  if(id==='yield'){ buildYieldPickers(); }
+  if(id==='log'){ buildYieldPickers(); loadBatchOptions(); loadInputsLog(); loadLabelHistory(); }
   if(id==='issue'){ buildColourantRows(); loadMmtOptions(); loadBatchOptions(); buildCutColourOpts(); }
   if(id==='ledger'){ loadReceipts(); loadAccountStrip(); loadLedger(); loadLegacyBalance(); loadRecentMoves(); buildCutColourOpts(); }
   if(id==='crush')  loadCrush('proposed');
@@ -1084,6 +1131,124 @@ async function buildColourantRows(){
 // 'cutting_colour_codes' ([{code,name}]). Empty until the Excel loads; lights up automatically.
 // ═══ v55K item 15 — yield cascades: month → machine → batch (plan API is the batch source) ═══
 let _YC_PLAN = null;
+// ── v55S: LABEL HISTORY register ──────────────────────────────────────────────
+async function loadLabelHistory(){
+  const out = document.getElementById('lhOut'); if(!out) return;
+  const now = new Date(Date.now()+330*60000).toISOString().slice(0,10);
+  if(!val('lh_to')) setVal('lh_to', now);
+  out.innerHTML = '<div class="empty">Loading…</div>';
+  try{
+    const q = new URLSearchParams();
+    if(val('lh_from')) q.set('from', val('lh_from'));
+    q.set('to', val('lh_to'));
+    if(val('lh_batch')) q.set('batch', val('lh_batch'));
+    if(val('lh_pc')) q.set('pc', val('lh_pc'));
+    if(val('lh_mc')) q.set('machine', val('lh_mc'));
+    const fl = document.getElementById('lh_floor').value; if(fl) q.set('floor', fl);
+    const sd = document.getElementById('lh_side').value; if(sd) q.set('side', sd);
+    const d = await api('/api/gpr/label-history?' + q.toString());
+    if(!d.ok){ out.innerHTML = '<div class="empty">'+esc(d.error||'Could not load the history.')+'</div>'; return; }
+    const rows = d.rows || [];
+    if(!rows.length){ out.innerHTML = '<div class="empty">No labels generated for these filters.</div>'; return; }
+    let h = '<table class="gtable"><thead><tr><th>Generated at</th><th>By</th><th>TT</th><th>Batch</th><th>Side</th><th>MC</th><th>Floor</th><th>PC</th><th>Colour</th><th class="num">Litres</th><th class="num">Reprints</th><th>Lifecycle</th><th>Payload</th><th>Actions</th></tr></thead><tbody>';
+    rows.forEach(t=>{
+      window._TTROWS[t.id] = t;
+      const [,label,colr] = lcStage(t);
+      h += `<tr><td class="mono">${esc(String(t.label_generated_at||'').slice(0,16).replace('T',' '))}</td>`
+        + `<td>${esc(t.label_generated_by||'—')}</td>`
+        + `<td class="mono"><b>${esc(t.tt_number||'')}</b></td><td class="mono">${esc(t.batch_number||'')}</td>`
+        + `<td>${esc((t.side||'').toUpperCase())}${t.seq_index?' #'+t.seq_index:''}</td>`
+        + `<td>${esc(t.machine_id||'—')}</td><td>${esc(t.floor||'—')}</td><td class="mono">${esc(t.pc_code||'—')}</td>`
+        + `<td>${esc(t.colour_name||t.colour_code||'—')}</td><td class="num">${fmt(t.actual_l,0)}</td>`
+        + `<td class="num">${t.reprints||0}</td>`
+        + `<td><b style="font-size:10.5px;color:${colr}">${label}</b></td>`
+        + `<td class="mono" style="font-size:10px;max-width:180px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="${esc(t.label_payload||'')}">${esc(t.label_payload||'—')}</td>`
+        + `<td style="white-space:nowrap"><button class="btn sm" onclick="ttGenLabel(${t.id})" title="Reprint">🏷</button> <button class="btn sm" onclick="ttMove(${t.id})">Log</button></td></tr>`;
+    });
+    h += `<tr style="background:var(--s3);font-weight:700"><td colspan="14">${rows.length} label${rows.length===1?'':'s'}${rows.length===500?' (showing latest 500 — narrow the filters for more)':''}</td></tr>`;
+    out.innerHTML = '<div class="tswrap" style="max-height:480px">' + h + '</tbody></table></div>';
+  }catch(e){ out.innerHTML = '<div class="empty">Could not load the history.</div>'; }
+}
+// ── v55R item 10: INPUTS LOG ──────────────────────────────────────────────────
+window._IL_ROWS = [];
+async function loadInputsLog(){
+  const out = document.getElementById('ilOut'); if(!out) return;
+  const now = new Date(Date.now()+330*60000).toISOString().slice(0,10);
+  if(!val('il_from')) setVal('il_from', now.slice(0,7)+'-01');
+  if(!val('il_to')) setVal('il_to', now);
+  out.innerHTML = '<div class="empty">Loading…</div>';
+  try{
+    const q = new URLSearchParams({ from: val('il_from'), to: val('il_to') });
+    if(val('il_batch')) q.set('batch', val('il_batch'));
+    const fl = document.getElementById('il_floor').value; if(fl) q.set('floor', fl);
+    if(val('il_mc')) q.set('machine', val('il_mc'));
+    const d = await api('/api/gpr/inputs-log?' + q.toString());
+    if(!d.ok){ out.innerHTML = '<div class="empty">'+esc(d.error||'Could not load the log.')+'</div>'; return; }
+    window._IL_ROWS = d.rows || [];
+    const inputs = [...new Set(window._IL_ROWS.map(r=>r.input))].sort();
+    const sel = document.getElementById('il_input'); const keep = sel.value;
+    sel.innerHTML = '<option value="">All inputs</option>' + inputs.map(x=>'<option>'+esc(x)+'</option>').join('');
+    if(keep && inputs.includes(keep)) sel.value = keep;
+    renderInputsLog();
+  }catch(e){ out.innerHTML = '<div class="empty">Could not load the log.</div>'; }
+}
+function renderInputsLog(){
+  const out = document.getElementById('ilOut'); if(!out) return;
+  const fi = document.getElementById('il_input').value;
+  const view = document.getElementById('il_view').value;
+  let rows = window._IL_ROWS.filter(r=>!fi || r.input===fi);
+  if(!rows.length){ out.innerHTML = '<div class="empty">No inputs in this window.</div>'; return; }
+  const kg = r => r.unit==='g' ? r.qty/1000 : r.qty;
+  if(view==='detail'){
+    let h = '<table class="gtable"><thead><tr><th>Date</th><th>Source</th><th>Ref</th><th>Batch</th><th>MC</th><th>Floor</th><th>Side</th><th>Input</th><th class="num">Qty</th><th>Unit</th><th>By</th></tr></thead><tbody>';
+    rows.forEach(r=>{
+      h += `<tr><td class="mono">${esc(r.date)}</td><td>${esc(r.source)}</td><td class="mono">${esc(r.ref||'—')}</td>`
+        + `<td class="mono">${esc(r.batch||'—')}</td><td>${esc(r.machine||'—')}</td><td>${esc(r.floor||'—')}</td><td>${esc((r.side||'').toUpperCase()||'—')}</td>`
+        + `<td>${esc(r.input)}</td><td class="num"><b>${fmt(r.qty, r.unit==='g'?1:2)}</b></td><td>${esc(r.unit)}</td><td>${esc(r.by||'—')}</td></tr>`;
+    });
+    const tot = rows.reduce((a,r)=>a+kg(r),0);
+    h += `<tr style="background:var(--s3);font-weight:700"><td colspan="8">TOTAL (${rows.length} rows, g converted)</td><td class="num">${fmt(tot,2)}</td><td>kg</td><td></td></tr>`;
+    out.innerHTML = '<div class="tswrap" style="max-height:480px">' + h + '</tbody></table></div>';
+    return;
+  }
+  const keyOf = r => view==='day' ? r.date : (view==='batch' ? (r.batch||'(MMT — no batch)') : r.input);
+  const G = {};
+  rows.forEach(r=>{
+    const k = keyOf(r); G[k] = G[k] || { n:0, kg:0, inputs:{} };
+    G[k].n++; G[k].kg += kg(r);
+    G[k].inputs[r.input] = (G[k].inputs[r.input]||0) + kg(r);
+  });
+  const first = view==='day' ? 'Date' : (view==='batch' ? 'Batch' : 'Input');
+  let h = '<table class="gtable"><thead><tr><th>'+first+'</th><th class="num">Rows</th><th class="num">Total kg</th><th>Breakup (kg)</th></tr></thead><tbody>';
+  let gT = 0;
+  Object.keys(G).sort().forEach(k=>{
+    const x = G[k]; gT += x.kg;
+    const bk = Object.keys(x.inputs).sort().map(nm=>esc(nm)+' '+fmt(x.inputs[nm],1)).join(' · ');
+    h += `<tr><td class="mono"><b>${esc(k)}</b></td><td class="num">${x.n}</td><td class="num"><b>${fmt(x.kg,2)}</b></td><td style="font-size:11px;color:var(--t2)">${bk}</td></tr>`;
+  });
+  h += `<tr style="background:var(--s3);font-weight:700"><td>GRAND TOTAL</td><td class="num">${rows.length}</td><td class="num">${fmt(gT,2)}</td><td></td></tr>`;
+  out.innerHTML = h + '</tbody></table>';
+}
+async function buildYieldPickers(){
+  // v55R item 9: real dropdowns — desktop Firefox renders <input type=month> as a bare textbox,
+  // so the cascade's step 1 looked broken; machine gets a datalist from the machine master.
+  const mSel = document.getElementById('yc_month');
+  if(mSel && mSel.options.length<=1){
+    const nowM = new Date(Date.now()+330*60000);
+    for(let k=0;k<=13;k++){
+      const d = new Date(Date.UTC(nowM.getUTCFullYear(), nowM.getUTCMonth()-k, 1));
+      const v = d.toISOString().slice(0,7);
+      const o = document.createElement('option'); o.value=v; o.textContent=v; mSel.appendChild(o);
+    }
+  }
+  try{
+    const dl = document.getElementById('mcOpts');
+    if(dl && !dl.children.length){
+      const m = await ensureMasters();
+      dl.innerHTML = Object.keys(m.tt_machine_master||{}).sort().map(x=>'<option value="'+esc(x)+'">').join('');
+    }
+  }catch(e){}
+}
 async function ycMonth(){
   const mo = val('yc_month'); if(!mo) return;
   const sel = document.getElementById('yc_machine');
@@ -1135,25 +1300,28 @@ function buildCutColourOpts(){
   }catch(_e){}
 }
 async function loadBatchOptions(){
+  // v55R items 6-7: the pick-list self-populates with every RUNNING batch, the next batch per
+  // machine, and every batch a dish-wash/colour-change tank must be prepared for (from the
+  // cascade). Batch number leads the label — typing "26" matches batches, not "MC26".
   try{
-    let dl = document.getElementById('batchOpts');
-    if(!dl){ dl = document.createElement('datalist'); dl.id = 'batchOpts'; document.body.appendChild(dl); }
-    const floors = [...new Set(visibleFloors())];
-    const opts = [];
-    for(const f of floors){
-      const d = await api('/api/gpr/plan?floor='+encodeURIComponent(f));
+    const dl = document.getElementById('batchOpts'); if(!dl) return;
+    const seen = {}; const opts = [];
+    const put = (bn, tag, extra) => { const k = String(bn||'').toUpperCase(); if(!k || seen[k]) return; seen[k]=1; opts.push({bn:k, lbl:k+' · '+tag+(extra?' · '+extra:'')}); };
+    for(const f of ['GF','1F','2F']){
+      const d = await api('/api/gpr/plan?floor='+f);
       if(!d.ok) continue;
+      window._BATCHMETA = window._BATCHMETA || {};
       (d.machines||[]).forEach(m=>{
-        const run = m.batches.filter(b=>b.status==='running');
-        const nxt = m.batches.find(b=>b.status!=='running' && b.status!=='completed');
-        window._BATCHMETA = window._BATCHMETA || {};
         m.batches.forEach(b=>{ window._BATCHMETA[String(b.batchNumber).toUpperCase()] = { colour: b.colour||'', pc: b.pcCode||'' }; });
-        run.forEach(b=>opts.push({bn:b.batchNumber, lbl:m.machineId+' · RUNNING · '+(b.colour||'')}));
-        if(nxt) opts.push({bn:nxt.batchNumber, lbl:m.machineId+' · next · '+(nxt.colour||'')});
+        const run = m.batches.filter(b=>b.status==='running');
+        const nxt = m.batches.find(b=>b.status!=='running' && b.status!=='completed' && !b.effectivelyComplete);
+        run.forEach(b=>put(b.batchNumber, m.machineId+' RUNNING', b.colour||''));
+        (m.cascade||[]).forEach(c=>put(c.toBatch, m.machineId+(c.dishWash?' DISH WASH next':' next'), c.toColour||''));
+        if(nxt) put(nxt.batchNumber, m.machineId+' next', nxt.colour||'');
       });
     }
     dl.innerHTML = opts.map(o=>'<option value="'+esc(o.bn)+'">'+esc(o.lbl)+'</option>').join('');
-  }catch(_e){}
+  }catch(e){}
 }
 async function loadMmtOptions(){
   const sels = ['tc_mmt','tb_mmt'].map(id=>document.getElementById(id)).filter(Boolean);
@@ -1339,7 +1507,7 @@ async function ttIssue(id){
   refreshTtViews();
 }
 function refreshTtViews(){
-  if(val('td_batch')) loadTtList(val('td_batch'));
+  loadTtList();
   const sp = document.getElementById('page-sheet');
   if(sp && sp.classList.contains('on') && typeof loadSheet==='function') loadSheet();
 }
@@ -1440,27 +1608,44 @@ function clearTtForm(){
   const el = document.getElementById('dualCreated'); if(el) el.innerHTML='';
 }
 async function loadTtList(batch){
-  const out = document.getElementById('ttList');
-  document.getElementById('ttListBatch').textContent = batch || 'enter a batch';
-  if(!batch){ out.innerHTML = '<div class="empty">Enter a batch above to see its tanks.</div>'; return; }
+  // v55R item 6: the log is shift-wise and cross-batch — the day's tanks grouped A/B/C, each row
+  // carrying its lifecycle actions so the operator saves, leaves, and resumes per tank.
+  const out = document.getElementById('ttList'); if(!out) return;
+  if(batch && document.getElementById('tl_batch') && !val('tl_batch')) setVal('tl_batch', batch);
+  const fb = val('tl_batch') || '';
+  const fd = val('tl_date') || new Date(Date.now()+330*60000).toISOString().slice(0,10);
+  const fs = (document.getElementById('tl_status')||{}).value || '';
+  document.getElementById('ttListBatch').textContent = '· '+(fb||'all batches')+' · '+fd;
   try{
-    const d = await api('/api/gpr/tt/' + encodeURIComponent(batch));
-    if(!d.ok || !d.tts.length){ out.innerHTML = '<div class="empty">No tanks entered for this batch yet.</div>'; return; }
-    let h = '<table class="gtable"><thead><tr><th>TT</th><th>Side</th><th class="num">Actual L</th><th class="num">Charged kg</th>'
-          + '<th class="num">Visc</th><th>MMT</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody>';
-    d.tts.forEach(t=>{
-      window._TTROWS[t.id] = t;
-      const [,label,colr] = lcStage(t);
-      h += `<tr><td class="mono"><b>${esc(t.tt_number||'')}</b></td><td>${esc((t.side||'').toUpperCase())}</td>`
-        + `<td class="num">${fmt(t.actual_l,0)}</td><td class="num">${fmt(t.total_charged_kg,1)}</td>`
-        + `<td class="num">${t.viscosity_cps!=null?esc(t.viscosity_cps):'—'}</td>`
-        + `<td class="mono">${esc(t.mmt_ref||'—')}</td>`
-        + `<td><b style="font-size:10.5px;color:${colr}">${label}</b></td>`
-        + `<td style="white-space:nowrap">${lcActions(t)}</td></tr>`;
-    });
-    out.innerHTML = '<div class="tswrap" style="max-height:380px">' + (h + '</tbody></table>') + '</div>';
-  }catch(e){ out.innerHTML = '<div class="empty">Could not load tanks.</div>'; }
+    const q = new URLSearchParams({ from: fd, to: fd });
+    if(fb) q.set('batch', fb);
+    const d = await api('/api/gpr/tt-sheet?' + q.toString());
+    let rows = (d.ok && d.rows) ? d.rows : [];
+    if(fs) rows = rows.filter(t=>lcStage(t)[0]===fs || (fs==='label' && lcStage(t)[0]==='label'));
+    if(!rows.length){ out.innerHTML = '<div class="empty">No tanks in the log for these filters.</div>'; return; }
+    const shiftOf = t => { const hh = Number(String(t.created_at||'').slice(11,13)); const ih = (hh + 5.5 + 24) % 24; return ih>=6&&ih<14?'A':(ih>=14&&ih<22?'B':'C'); };
+    const groups = { A:[], B:[], C:[] };
+    rows.forEach(t=>groups[shiftOf(t)].push(t));
+    let h = '';
+    for(const sh of ['A','B','C']){
+      if(!groups[sh].length) continue;
+      h += '<div style="margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;font-size:12px">SHIFT '+sh+' — '+groups[sh].length+' tank'+(groups[sh].length===1?'':'s')+'</div>';
+      h += '<table class="gtable" style="margin:4px 0 10px"><thead><tr><th>TT</th><th>Batch</th><th>Side</th><th class="num">Actual L</th><th class="num">Charged kg</th><th>MMT</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody>';
+      groups[sh].forEach(t=>{
+        window._TTROWS[t.id] = t;
+        const [,label,colr] = lcStage(t);
+        h += `<tr><td class="mono"><b>${esc(t.tt_number||'')}</b></td><td class="mono">${esc(t.batch_number||'')}</td><td>${esc((t.side||'').toUpperCase())}</td>`
+          + `<td class="num">${fmt(t.actual_l,0)}</td><td class="num">${fmt(t.total_charged_kg,1)}</td>`
+          + `<td class="mono">${esc(t.mmt_ref||'—')}</td>`
+          + `<td><b style="font-size:10.5px;color:${colr}">${label}</b></td>`
+          + `<td style="white-space:nowrap">${lcActions(t)}</td></tr>`;
+      });
+      h += '</tbody></table>';
+    }
+    out.innerHTML = h;
+  }catch(e){ out.innerHTML = '<div class="empty">Could not load the log.</div>'; }
 }
+
 
 // ── LEDGER ─────────────────────────────────────────────
 
@@ -1476,10 +1661,23 @@ function _plBadge(st){
 }
 async function loadPlan(){
   const mEl = document.getElementById('pl_month');
-  if(mEl && !mEl.value){ mEl.value = new Date(Date.now()+330*60000).toISOString().slice(0,7); }
+  if(mEl && !mEl.options.length){
+    // v55R item 9-class fix: desktop Firefox has no <input type=month> — a real select instead.
+    const nowM = new Date(Date.now()+330*60000);
+    let oh = '';
+    for(let k=2;k>=-11;k--){
+      const d = new Date(Date.UTC(nowM.getUTCFullYear(), nowM.getUTCMonth()+k, 1));
+      const v = d.toISOString().slice(0,7);
+      oh += '<option value="'+v+'"'+(k===0?' selected':'')+'>'+v+'</option>';
+    }
+    mEl.innerHTML = oh;
+  }
   const sEl = document.getElementById('pl_summary'), cEl = document.getElementById('pl_cascade');
   try{
-    const floors = (CUR_FLOOR==='ALL') ? ['GF','1F','2F'] : (CUR_FLOOR==='FFSF' ? ['1F','2F'] : [CUR_FLOOR]);
+    // v55R item 1: floor picker on the tab overrides the login context (GF-only until now).
+    const pf = (document.getElementById('pl_floor')||{}).value || '';
+    const eff = pf || CUR_FLOOR;
+    const floors = (eff==='ALL') ? ['GF','1F','2F'] : (eff==='FFSF' ? ['1F','2F'] : [eff]);
     const perFloor = [];
     let meta = null;
     for(const f of floors){
@@ -1508,15 +1706,38 @@ async function loadPlan(){
       if(!(d.machines||[]).length) return;
       h += '<div style="margin:12px 0 4px;padding:5px 10px;background:var(--accent-l);border-left:5px solid var(--accent);font-family:var(--fc);font-weight:700;color:var(--accent)">FLOOR: '+esc(FLN[d.floor]||d.floor)+'</div>';
       d.machines.forEach(m=>{
-        h += '<div style="margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;color:var(--t2);font-size:12px">MACHINE: '+esc(m.machineId)+' &mdash; '+m.batches.length+' BATCH'+(m.batches.length===1?'':'ES')+' <span style="font-weight:400;color:var(--t3);font-size:11px">&middot; rate '+m.ratePerShift+' L/shift</span></div>';
+        // v55R item 3: per-DAY rate and the machine's live A-grade, sourced from the same
+        // plan payload Planning itself is built from (running batch's live AIM %).
+        const rateDay = m.ratePerDay != null ? m.ratePerDay : +(Number(m.ratePerShift||0)*3).toFixed(1);
+        h += '<div style="margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;color:var(--t2);font-size:12px">MACHINE: '+esc(m.machineId)+' &mdash; '+m.batches.length+' BATCH'+(m.batches.length===1?'':'ES')
+          + ' <span style="font-weight:400;color:var(--t3);font-size:11px">&middot; rate '+rateDay+' L/day'
+          + (m.liveAPct!=null ? ' &middot; Live A <b style="color:var(--teal)">'+Number(m.liveAPct).toFixed(1)+'%</b>' : '')+'</span></div>';
         h += '<table class="gtable" style="margin:4px 0 14px"><thead><tr>'
-          + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','UNSCANNED WIP @AIM','A-GRADE AIM %'].map(th).join('')
+          + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','UNSCANNED WIP @AIM','A-GRADE AIM %','AIM A-GRADE (LACS)'].map(th).join('')
           + '</tr></thead><tbody>';
         let sOrd=0,sGP=0,sGA=0;
-        m.batches.forEach(b=>{
-          sOrd+=Number(b.orderQty||0); sGP+=Number(b.grossPlanned||0); sGA+=Number(b.grossActual||0);
-          const endTxt = b.status==='completed' ? esc(b.dprLast||b.plannedEnd||'—') : (b.estEnd ? '<span title="live estimate">'+esc(b.estEnd.date)+' <b>'+esc(b.estEnd.shift)+'</b> <small style="color:var(--teal)">est</small></span>' : '&mdash;');
-          const hl = b.status==='running' ? 'background:var(--teal-l);' : (b.status==='completed' ? 'color:var(--t3);' : '');
+        m.batches.forEach(b=>{ sOrd+=Number(b.orderQty||0); sGP+=Number(b.grossPlanned||0); sGA+=Number(b.grossActual||0); });
+        // v55R item 2: compact default — one preceding batch, the current one, and the next two;
+        // the full month lives in "Open in new tab" with filters. Subtotal still covers the month.
+        let vis = m.batches, hiddenN = 0;
+        if(!window._PLAN_FULL && m.batches.length > 4){
+          const isDone = b => b.status==='completed' || b.effectivelyComplete;
+          let a = m.batches.findIndex(b=>b.status==='running');
+          if(a<0) a = m.batches.findIndex(b=>!isDone(b));
+          if(a<0) a = m.batches.length-1;
+          const s0 = Math.max(0, a-1);
+          vis = m.batches.slice(s0, Math.min(m.batches.length, s0+4));
+          hiddenN = m.batches.length - vis.length;
+        }
+        vis.forEach(b=>{
+          // v55R item 4: END reconciles with Planning/Report E — finished batches show their DPR
+          // dates; planned batches show Planning's own end date; the live estimate only for the
+          // running batch (and as fallback when Planning carries no date).
+          const doneB = b.status==='completed' || b.effectivelyComplete;
+          const endTxt = doneB ? esc(b.dprLast||b.plannedEnd||'—')
+            : (b.status!=='running' && b.plannedEnd) ? esc(b.plannedEnd)
+            : (b.estEnd ? '<span title="live estimate">'+esc(b.estEnd.date)+' <b>'+esc(b.estEnd.shift)+'</b> <small style="color:var(--teal)">est</small></span>' : '&mdash;');
+          const hl = b.status==='running' ? 'background:var(--teal-l);' : ((b.status==='completed'||b.effectivelyComplete) ? 'color:var(--t3);' : '');
           h += '<tr>'
             + td(esc(m.machineId),hl) + td('<span class="mono" style="font-family:var(--mono)">'+esc(b.batchNumber)+'</span>'+(b.status==='running'?' <b style="color:var(--teal);font-size:10px">RUNNING</b>':''),hl)
             + td(esc(b.customer||'—'),hl) + td(esc(b.pcCode||'—'),hl) + td(esc(b.colour||'—'),hl) + td(esc(String(b.size||'—')),hl)
@@ -1525,10 +1746,14 @@ async function loadPlan(){
             + td(num(b.grossActual),hl+'text-align:right;font-family:var(--mono)')
             + td(num(b.unscannedWipAim),hl+'text-align:right;font-family:var(--mono)')
             + td(b.aGradeAimPct==null?'&mdash;':num(b.aGradeAimPct)+'%',hl+'text-align:right;font-family:var(--mono)')
+            + td(b.aimALacs==null?'&mdash;':num(b.aimALacs),hl+'text-align:right;font-family:var(--mono)')
             + '</tr>';
         });
+        if(hiddenN>0){
+          h += '<tr><td colspan="14" style="color:var(--t3);font-size:11px;padding:4px 9px">&hellip; '+hiddenN+' more batch'+(hiddenN===1?'':'es')+' this month &mdash; <a href="javascript:openPlanTab()" style="color:var(--accent)">full view with filters &#8599;</a></td></tr>';
+        }
         h += '<tr style="background:var(--s3);font-weight:700"><td colspan="8" style="padding:5px 7px;font-family:var(--fc)">'+esc(m.machineId)+' SUBTOTAL</td>'
-          + td(num(sOrd),'text-align:right;font-family:var(--mono)') + td(num(sGP),'text-align:right;font-family:var(--mono)') + td(num(sGA),'text-align:right;font-family:var(--mono)') + '<td></td><td></td></tr>';
+          + td(num(sOrd),'text-align:right;font-family:var(--mono)') + td(num(sGP),'text-align:right;font-family:var(--mono)') + td(num(sGA),'text-align:right;font-family:var(--mono)') + '<td></td><td></td><td></td></tr>';
         h += '</tbody></table>';
       });
     });
@@ -1559,11 +1784,11 @@ if(_planTimer) clearInterval(_planTimer);
     _planTimer = setInterval(()=>{ const pg=document.getElementById('page-plan'); if(pg && pg.classList.contains('on')) loadPlan(); else { clearInterval(_planTimer); _planTimer=null; } }, 60000);
   }catch(e){ sEl.innerHTML = '<span style="color:var(--red)">Plan failed: '+esc(e.message||'error')+'</span>'; }
 }
-// v55N (Ishan, 18 Sep): open the GPR Planning sheet in a separate tab, like Report E in
-// Tracking — same blob-URL mechanism. Static snapshot of both sheets; click again after a
-// refresh to regenerate.
+// v55R item 2: the separate tab is now the FULL interactive view — every batch of the month and
+// the whole cascade calendar, each with its own filters — while the in-app tab stays compact.
+// Same blob-URL mechanism as Report E; data is embedded, so the page is self-contained.
 function openPlanTab(){
-  const sEl = document.getElementById('pl_summary'), cEl = document.getElementById('pl_cascade'), aEl = document.getElementById('pl_alert');
+  const sEl = document.getElementById('pl_summary');
   if(!_planData || !sEl || !sEl.innerHTML || sEl.innerHTML.indexOf('Loading')>=0){
     loadPlan(); setTimeout(openPlanTab, 400); return;
   }
@@ -1571,31 +1796,96 @@ function openPlanTab(){
   const now = new Date(Date.now()+330*60000).toISOString().slice(0,16).replace('T',' ');
   const css = ':root{--bg:#f6f8fc;--s1:#ffffff;--s2:#fafbfe;--s3:#eef2f9;--b1:#dbe3ef;--b2:#b9c6da;'
     + '--accent:#283593;--accent-l:#e8ebf7;--teal:#0284c7;--teal-l:#e0f2fe;--green:#2e7d32;--green-l:#e8f5e9;'
-    + '--amber:#e8590c;--amber-l:#fdeee3;--red:#c62828;--red-l:#fdecec;--purple:#4527a0;--purple-l:#ede7f6;'
-    + '--t1:#16213a;--t2:#33415e;--t3:#64748f;--t4:#94a3b8;'
+    + '--amber:#e8590c;--amber-l:#fdeee3;--red:#c62828;--t1:#16213a;--t2:#33415e;--t3:#64748f;'
     + "--font:'Inter',system-ui,sans-serif;--fc:'Sora',system-ui,sans-serif;--mono:'JetBrains Mono',ui-monospace,monospace;--r:8px}"
     + 'body{font-family:var(--font);color:var(--t1);background:var(--bg);margin:0;padding:22px 26px}'
     + 'h1{font-family:var(--fc);font-size:17px;color:var(--accent);margin:0 0 2px}'
-    + '.sub{font-size:11.5px;color:var(--t3);margin-bottom:16px}'
-    + '.mono{font-family:var(--mono)}.num{text-align:right;font-family:var(--mono)}'
+    + '.sub{font-size:11.5px;color:var(--t3);margin-bottom:14px}'
+    + '.mono{font-family:var(--mono)}'
+    + '.flt{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0 12px;align-items:end}'
+    + '.flt label{display:block;font-size:10px;font-weight:700;letter-spacing:.5px;color:var(--t3);text-transform:uppercase;margin-bottom:2px}'
+    + '.flt input,.flt select{font-size:12px;padding:4px 7px;border:1px solid var(--b2);border-radius:6px;background:var(--s1)}'
     + '.gtable{width:100%;border-collapse:separate;border-spacing:0;font-size:12px;background:var(--s1);border:1px solid var(--b1);border-radius:var(--r);overflow:hidden;margin:10px 0}'
-    + '.gtable th{background:var(--s3);font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--t2);text-align:left;padding:7px 9px;border-bottom:1px solid var(--b2);white-space:nowrap}'
-    + '.gtable td{padding:5px 9px;border-bottom:1px solid var(--b1);color:var(--t1);vertical-align:middle;line-height:1.4}'
+    + '.gtable th{background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px;letter-spacing:.4px;text-align:left;padding:6px 8px;white-space:nowrap}'
+    + '.gtable td{padding:5px 8px;border-bottom:1px solid var(--b1);vertical-align:top;line-height:1.4}'
     + '.gtable tbody tr:last-child td{border-bottom:none}.gtable tbody tr:nth-child(even) td{background:var(--s2)}'
-    + '.gtable td.num,.gtable th.num{text-align:right;font-family:var(--mono)}table{border-collapse:separate;border-spacing:0}'
-    + '.fgroup-title{font-family:var(--fc);font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--accent);margin:18px 0 8px;padding-bottom:5px;border-bottom:1px solid var(--b1)}'
-    + 'table{border-collapse:collapse}td,th{font-size:12px}'
-    + '@media print{body{padding:8px}.noprint{display:none}}';
-  const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>GPR Planning — '+esc(CUR_FLOOR)+' — '+esc(mo)+'</title><style>'+css+'</style></head><body>'
-    + '<h1>GPR Planning — TT &amp; MMT · '+esc(FLOOR_LABELS[CUR_FLOOR]||CUR_FLOOR)+'</h1>'
+    + '.num{text-align:right;font-family:var(--mono)}'
+    + '.mcband{margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;color:var(--t2);font-size:12px}'
+    + '.flband{margin:12px 0 4px;padding:5px 10px;background:var(--accent-l);border-left:5px solid var(--accent);font-family:var(--fc);font-weight:700;color:var(--accent)}'
+    + '.sect{font-family:var(--fc);font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--accent);margin:20px 0 6px;padding-bottom:5px;border-bottom:1px solid var(--b1)}'
+    + '.ev{margin:2px 0;padding:3px 8px;border-left:4px solid var(--teal);background:var(--teal-l);border-radius:4px;font-size:11px}'
+    + '@media print{.flt,.noprint{display:none}body{padding:8px}}';
+  const dataJson = JSON.stringify({ floors:_planData.floors, month:mo }).replace(/</g,'\\u003c');
+  const pageJs = ''
+    + 'var D='+dataJson+';\n'
+    + 'function esc(x){return String(x==null?"":x).replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}\n'
+    + 'function num(x,d){return x==null?"\u2014":Number(x).toFixed(d==null?2:d);}\n'
+    + 'var FL={GF:"Ground Floor","1F":"First Floor","2F":"Second Floor"};\n'
+    + 'var CASC=[];var BM={};\n'
+    + 'D.floors.forEach(function(d){(d.machines||[]).forEach(function(m){(m.batches||[]).forEach(function(b){BM[b.batchNumber]={pc:b.pcCode||"",cust:b.customer||""};});});});\n'
+    + 'D.floors.forEach(function(d){(d.machines||[]).forEach(function(m){(m.cascade||[]).forEach(function(t){var q=BM[t.toBatch]||{};var o={};for(var k in t)o[k]=t[k];o.machineId=m.machineId;o.pc=q.pc;o.customer=q.cust;CASC.push(o);});});});\n'
+    + 'function fillSel(id,vals){var s=document.getElementById(id);s.innerHTML="<option value=\'\'>All</option>"+vals.map(function(v){return "<option>"+esc(v)+"</option>";}).join("");}\n'
+    + 'function initFilters(){var bs=[],ms=[],ps=[],cs=[];D.floors.forEach(function(d){(d.machines||[]).forEach(function(m){if(ms.indexOf(m.machineId)<0)ms.push(m.machineId);(m.batches||[]).forEach(function(b){if(bs.indexOf(b.batchNumber)<0)bs.push(b.batchNumber);if(b.pcCode&&ps.indexOf(b.pcCode)<0)ps.push(b.pcCode);if(b.customer&&cs.indexOf(b.customer)<0)cs.push(b.customer);});});});\n'
+    + ' fillSel("f_mc",ms.sort());fillSel("f_batch",bs.sort());fillSel("f_pc",ps.sort());fillSel("f_cust",cs.sort());\n'
+    + ' fillSel("c_batch",bs.sort());fillSel("c_pc",ps.sort());fillSel("c_cust",cs.sort());\n'
+    + ' var ds=[];CASC.forEach(function(t){[t.beginPrepAt,t.ttReadyBy].forEach(function(e){if(e&&e.date&&ds.indexOf(e.date)<0)ds.push(e.date);});});fillSel("c_day",ds.sort());}\n'
+    + 'function v(id){return document.getElementById(id).value;}\n'
+    + 'function renderSheet(){var fm=v("f_mc"),fb=v("f_batch"),fp=v("f_pc"),fc=v("f_cust"),fs=v("f_status");var h="";\n'
+    + ' D.floors.forEach(function(d){var mcs=(d.machines||[]).filter(function(m){return !fm||m.machineId===fm;});if(!mcs.length)return;var fh="";\n'
+    + '  mcs.forEach(function(m){var rows=(m.batches||[]).filter(function(b){\n'
+    + '    if(fb&&b.batchNumber!==fb)return false;if(fp&&b.pcCode!==fp)return false;if(fc&&b.customer!==fc)return false;\n'
+    + '    var done=b.status==="completed"||b.effectivelyComplete;\n'
+    + '    if(fs==="running"&&b.status!=="running")return false;if(fs==="done"&&!done)return false;if(fs==="planned"&&(b.status==="running"||done))return false;return true;});\n'
+    + '   if(!rows.length)return;\n'
+    + '   var rd=m.ratePerDay!=null?m.ratePerDay:(Number(m.ratePerShift||0)*3).toFixed(1);\n'
+    + '   fh+="<div class=\'mcband\'>MACHINE: "+esc(m.machineId)+" \u2014 "+rows.length+" OF "+(m.batches||[]).length+" BATCHES \u00b7 rate "+rd+" L/day"+(m.liveAPct!=null?" \u00b7 Live A <b>"+Number(m.liveAPct).toFixed(1)+"%</b>":"")+"</div>";\n'
+    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","UNSCANNED WIP @AIM","A-GRADE AIM %","AIM A-GRADE (LACS)"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
+    + '   var so=0,sp=0,sa=0;\n'
+    + '   rows.forEach(function(b){so+=Number(b.orderQty||0);sp+=Number(b.grossPlanned||0);sa+=Number(b.grossActual||0);\n'
+    + '    var done=b.status==="completed"||b.effectivelyComplete;\n'
+    + '    var end=done?esc(b.dprLast||b.plannedEnd||"\u2014"):(b.status!=="running"&&b.plannedEnd)?esc(b.plannedEnd):(b.estEnd?esc(b.estEnd.date)+" <b>"+esc(b.estEnd.shift)+"</b> <small>est</small>":"\u2014");\n'
+    + '    var st=b.status==="running"?" <b style=\'color:var(--teal);font-size:10px\'>RUNNING</b>":(done?" <small style=\'color:var(--t3)\'>done</small>":"");\n'
+    + '    fh+="<tr><td>"+esc(m.machineId)+"</td><td class=\'mono\'>"+esc(b.batchNumber)+st+"</td><td>"+esc(b.customer||"\u2014")+"</td><td>"+esc(b.pcCode||"\u2014")+"</td><td>"+esc(b.colour||"\u2014")+"</td><td>"+esc(b.size||"\u2014")+"</td>"\n'
+    + '     +"<td>"+esc(b.dprFirst||b.plannedStart||"\u2014")+"</td><td>"+end+"</td>"\n'
+    + '     +"<td class=\'num\'>"+num(b.orderQty)+"</td><td class=\'num\'>"+num(b.grossPlanned)+"</td><td class=\'num\'>"+num(b.grossActual)+"</td>"\n'
+    + '     +"<td class=\'num\'>"+num(b.unscannedWipAim)+"</td><td class=\'num\'>"+(b.aGradeAimPct==null?"\u2014":num(b.aGradeAimPct)+"%")+"</td><td class=\'num\'>"+(b.aimALacs==null?"\u2014":num(b.aimALacs))+"</td></tr>";});\n'
+    + '   fh+="<tr style=\'background:var(--s3);font-weight:700\'><td colspan=\'8\'>"+esc(m.machineId)+" SUBTOTAL (shown)</td><td class=\'num\'>"+num(so)+"</td><td class=\'num\'>"+num(sp)+"</td><td class=\'num\'>"+num(sa)+"</td><td></td><td></td><td></td></tr></tbody></table>";});\n'
+    + '  if(fh)h+="<div class=\'flband\'>FLOOR: "+esc(FL[d.floor]||d.floor)+"</div>"+fh;});\n'
+    + ' document.getElementById("sheet1").innerHTML=h||"<div style=\'color:var(--t3)\'>Nothing matches the filters.</div>";}\n'
+    + 'function renderCasc(){var fd=v("c_day"),fb=v("c_batch"),fp=v("c_pc"),fc=v("c_cust");var evs=[];\n'
+    + ' CASC.forEach(function(t){if(fb&&t.toBatch!==fb)return;if(fp&&t.pc!==fp)return;if(fc&&t.customer!==fc)return;\n'
+    + '  evs.push({date:t.beginPrepAt.date,shift:t.beginPrepAt.shift,kind:"prep",t:t});evs.push({date:t.ttReadyBy.date,shift:t.ttReadyBy.shift,kind:"ready",t:t});});\n'
+    + ' var dates=[];evs.forEach(function(e){if(dates.indexOf(e.date)<0)dates.push(e.date);});dates.sort();if(fd)dates=dates.filter(function(d){return d===fd;});\n'
+    + ' if(!dates.length){document.getElementById("casc").innerHTML="<div style=\'color:var(--t3)\'>No cascade events for the filters.</div>";return;}\n'
+    + ' var h="<table class=\'gtable\' style=\'table-layout:fixed\'><thead><tr><th>DATE</th><th>SHIFT A (06\u201314)</th><th>SHIFT B (14\u201322)</th><th>SHIFT C (22\u201306)</th></tr></thead><tbody>";\n'
+    + ' dates.forEach(function(d){h+="<tr><td class=\'mono\' style=\'font-weight:600\'>"+esc(d)+"</td>";["A","B","C"].forEach(function(sh){var c="";\n'
+    + '  evs.forEach(function(e){if(e.date!==d||e.shift!==sh)return;var t=e.t;\n'
+    + '   var col=e.kind==="prep"?"var(--teal)":(t.dishWash?"var(--amber)":"var(--green)");var bg=e.kind==="prep"?"var(--teal-l)":(t.dishWash?"var(--amber-l)":"var(--green-l)");\n'
+    + '   c+="<div class=\'ev\' style=\'border-left-color:"+col+";background:"+bg+"\'>"+(e.kind==="prep"?"\u23f0 <b>BEGIN PREP</b> ":(t.dishWash?"\ud83d\udec1 <b>DISH WASH + TT READY</b> ":"\u2705 <b>TT READY</b> "))+"<span class=\'mono\'>"+esc(t.toBatch)+"</span> on "+esc(t.machineId)+"</div>";});\n'
+    + '  h+="<td>"+(c||"<span style=\'color:var(--t3)\'>\u2014</span>")+"</td>";});h+="</tr>";});\n'
+    + ' document.getElementById("casc").innerHTML=h+"</tbody></table>";}\n'
+    + 'function rerender(){renderSheet();renderCasc();}\n'
+    + 'initFilters();rerender();\n';
+  const html = '<!DOCTYPE html><html><head><meta charset="utf-8"><title>GPR Planning (full) — '+esc(mo)+'</title><style>'+css+'</style></head><body>'
+    + '<h1>GPR Planning — full month view</h1>'
     + '<div class="sub">Month '+esc(mo)+' · generated '+esc(now)+' IST · snapshot — reopen from the app for live data'
     + ' <button class="noprint" onclick="window.print()" style="margin-left:10px;font-size:11px">Print</button></div>'
-    + (aEl && aEl.innerHTML ? '<div style="margin-bottom:10px">'+aEl.innerHTML+'</div>' : '')
-    + '<div class="fgroup-title">Sheet 1 — Month summary (machine-wise, all batches)</div>'
-    + '<div style="font-size:12px">'+sEl.innerHTML+'</div>'
-    + '<div class="fgroup-title" style="margin-top:22px">Sheet 2 — TT time cascade (colour change / dish wash planning)</div>'
-    + '<div style="font-size:12px">'+(cEl?cEl.innerHTML:'')+'</div>'
-    + '</body></html>';
+    + '<div class="sect">Sheet 1 — Month summary (all batches)</div>'
+    + '<div class="flt">'
+    + '<div><label>Machine</label><select id="f_mc" onchange="rerender()"></select></div>'
+    + '<div><label>Batch</label><select id="f_batch" onchange="rerender()"></select></div>'
+    + '<div><label>PC code</label><select id="f_pc" onchange="rerender()"></select></div>'
+    + '<div><label>Customer</label><select id="f_cust" onchange="rerender()"></select></div>'
+    + '<div><label>Status</label><select id="f_status" onchange="rerender()"><option value="">All</option><option value="running">Running</option><option value="planned">Planned</option><option value="done">Done</option></select></div>'
+    + '</div><div id="sheet1"></div>'
+    + '<div class="sect" style="margin-top:26px">Sheet 2 — TT time cascade (full calendar)</div>'
+    + '<div class="flt">'
+    + '<div><label>Day</label><select id="c_day" onchange="rerender()"></select></div>'
+    + '<div><label>Batch</label><select id="c_batch" onchange="rerender()"></select></div>'
+    + '<div><label>PC code</label><select id="c_pc" onchange="rerender()"></select></div>'
+    + '<div><label>Customer</label><select id="c_cust" onchange="rerender()"></select></div>'
+    + '</div><div id="casc"></div>'
+    + '<script>'+pageJs+'<\/script></body></html>';
   const url = URL.createObjectURL(new Blob([html], {type:'text/html'}));
   try{
     if(window._gprPlanTab && !window._gprPlanTab.closed){ window._gprPlanTab.location.href = url; }
@@ -1634,8 +1924,18 @@ function renderCascCal(){
     evs.push({date:t.beginPrepAt.date, shift:t.beginPrepAt.shift, kind:'prep', t});
     evs.push({date:t.ttReadyBy.date, shift:t.ttReadyBy.shift, kind:'ready', t});
   });
-  const dates = [...new Set(evs.map(e=>e.date))].sort().filter(d=>!day || d===day);
-  if(!dates.length){ cal.innerHTML = '<div class="empty">No cascade events for the selected filters.</div>'; document.getElementById('cascSnap').innerHTML=''; return; }
+  let dates = [...new Set(evs.map(e=>e.date))].sort().filter(d=>!day || d===day);
+  // v55R item 2: compact default — yesterday, today, tomorrow; the full calendar lives in the
+  // "Open in new tab" view. Picking a specific day always shows that day.
+  let cascHiddenN = 0;
+  if(!window._PLAN_FULL && !day){
+    const t0 = Date.now()+330*60000;
+    const win = [-1,0,1].map(k=>new Date(t0+k*86400000).toISOString().slice(0,10));
+    const all = dates.length;
+    dates = dates.filter(d=>win.includes(d));
+    cascHiddenN = all - dates.length;
+  }
+  if(!dates.length){ cal.innerHTML = '<div class="empty">No cascade events '+(cascHiddenN>0?'in the &plusmn;1-day window ('+cascHiddenN+' on other days &mdash; <a href="javascript:openPlanTab()">full view &#8599;</a>)':'for the selected filters')+'.</div>'; document.getElementById('cascSnap').innerHTML=''; return; }
   const th = x => '<th style="text-align:left;padding:5px 8px;background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px">'+x+'</th>';
   let h = '<table class="gtable" style="table-layout:fixed"><thead><tr>'+th('DATE')+th('SHIFT A (06&ndash;14)')+th('SHIFT B (14&ndash;22)')+th('SHIFT C (22&ndash;06)')+'</tr></thead><tbody>';
   dates.forEach(d=>{
@@ -1656,7 +1956,7 @@ function renderCascCal(){
     });
     h += '</tr>';
   });
-  cal.innerHTML = h + '</tbody></table>';
+  cal.innerHTML = h + '</tbody></table>' + (cascHiddenN>0 ? '<div style="color:var(--t3);font-size:11px;margin:4px 2px">Showing yesterday / today / tomorrow &mdash; '+cascHiddenN+' event'+(cascHiddenN===1?'':'s')+' on other days in <a href="javascript:openPlanTab()" style="color:var(--accent)">full view &#8599;</a></div>' : '');
 }
 function cascSnapShow(date, shift){
   const el = document.getElementById('cascSnap'); if(!el) return;
@@ -1804,7 +2104,9 @@ async function loadLedger(view, btn){
       return;
     }
     q.set('view', view);
-    const d = await api('/api/gpr/ledger/summary?' + q.toString( + ((view==='daily'||view==='colour'||view==='pc'||view==='movements') ? gMonthQS() : '')));
+    // v55R item 8: the '+' sat INSIDE toString() — the month bound was never sent, so the
+    // By-colour view errored and every summary view scanned the ledger unbounded (the slowness).
+    const d = await api('/api/gpr/ledger/summary?' + q.toString() + ((view==='daily'||view==='colour'||view==='pc'||view==='movements') ? gMonthQS() : ''));
     if(view === 'pc'){
       // v55K item 12: PC-grouped view — salvage PC from the Planning order, cutting colour codes
       // from the cuttings master (fills in once the Excel is loaded).
