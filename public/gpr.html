@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v55U</title>
+<title>GPR.tracker · build v55W</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -214,7 +214,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55U</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55W</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -234,7 +234,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v55U</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v55W</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -361,15 +361,16 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <div class="field-grp"><label>Batch number *</label><input id="td_batch" placeholder="e.g. 26N50" onblur="dualPrefill()" list="batchOpts"></div>
         <div class="field-grp"><label>Machine</label><input id="td_machine" placeholder="from batch"></div>
         <div class="field-grp"><label>Floor</label><input id="td_floor" readonly placeholder="from machine"></div>
-        <div class="field-grp"><label>PC code</label><input id="td_pc" placeholder="from batch"></div>
+        <div class="field-grp"><label>PC code</label><input id="td_pc" placeholder="from batch" onchange="pcLinkFill(true)"></div>
         <div class="field-grp"><label>Colour name</label><input id="td_colname"></div>
-        <div class="field-grp"><label>Colour code</label><input id="td_colcode" list="cutColourOpts"></div>
+        <div class="field-grp"><label>Colour code (cap/body)</label><input id="td_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></div>
       </div>
       <div class="dgrid">
         <div class="dside" id="ds_tc">
           <div class="dside-head">CAP</div>
           <table class="dtable"><tbody>
             <tr><td>Link MMT charge</td><td><select id="tc_mmt"><option value="">— select —</option></select></td></tr>
+            <tr><td>Colour code (this side)</td><td><input id="tc_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></td></tr>
             <tr><td>Tanks planned (N)</td><td><input id="tc_seqtotal" type="number" inputmode="numeric"></td></tr>
             <tr><td>Tank capacity (L)</td><td><input id="tc_cap" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
             <tr><td>Planned fill (L)</td><td><input id="tc_planned" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
@@ -397,6 +398,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
           <div class="dside-head">BODY</div>
           <table class="dtable"><tbody>
             <tr><td>Link MMT charge</td><td><select id="tb_mmt"><option value="">— select —</option></select></td></tr>
+            <tr><td>Colour code (this side)</td><td><input id="tb_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></td></tr>
             <tr><td>Tanks planned (N)</td><td><input id="tb_seqtotal" type="number" inputmode="numeric"></td></tr>
             <tr><td>Tank capacity (L)</td><td><input id="tb_cap" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
             <tr><td>Planned fill (L)</td><td><input id="tb_planned" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
@@ -639,6 +641,19 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
   <div class="page" id="page-masters">
     <div class="card">
+      <div class="card-title">Product code ↔ colour codes — add / update</div>
+      <div class="card-sub">New PCs and shade developments enter here — the map and every colour datalist update automatically, no rebuild. Enter an existing PC to amend it; the current mapping shows as you type.</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>PC code *</label><input id="pcm_pc" onblur="pcmLookup()" placeholder="e.g. 2270"></div>
+        <div class="field-grp"><label>Size</label><input id="pcm_size" placeholder="e.g. 2"></div>
+        <div class="field-grp"><label>Colour name</label><input id="pcm_name" placeholder="Cap/Body e.g. Red/White"></div>
+        <div class="field-grp"><label>Cap colour code *</label><input id="pcm_cap" list="cutColourOpts" placeholder="e.g. RD151"></div>
+        <div class="field-grp"><label>Body colour code *</label><input id="pcm_body" list="cutColourOpts" placeholder="e.g. WH1"></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="pcmSave()">Save mapping</button></div>
+      </div>
+      <div id="pcmHint" style="font-size:12px;color:var(--t3);margin-top:4px"></div>
+    </div>
+    <div class="card">
       <div class="card-title">Masters</div>
       <div class="card-sub">Machine tank sizes, capsule weights, colourants and process constants. The Manager and Admin can edit; everyone else reads.</div>
       <div id="mastersView"><div class="empty">Loading…</div></div>
@@ -753,8 +768,9 @@ function showPage(id, btn){
   if(id==='mmt'){ try{ document.getElementById('m_tank_wrap').style.display = (CUR_FLOOR==='GF') ? '' : 'none'; }catch(_){}}
   if(id==='yield'){ buildYieldPickers(); }
   if(id==='log'){ buildYieldPickers(); loadBatchOptions(); loadInputsLog(); loadLabelHistory(); }
-  if(id==='issue'){ buildColourantRows(); loadMmtOptions(); loadBatchOptions(); buildCutColourOpts(); }
-  if(id==='ledger'){ loadReceipts(); loadAccountStrip(); loadLedger(); loadLegacyBalance(); loadRecentMoves(); buildCutColourOpts(); }
+  if(id==='masters'){ _pcIdx(); }
+  if(id==='issue'){ buildColourantRows(); loadMmtOptions(); loadBatchOptions(); _pcIdx(); }
+  if(id==='ledger'){ loadReceipts(); loadAccountStrip(); loadLedger(); loadLegacyBalance(); loadRecentMoves(); _pcIdx(); }
   if(id==='crush')  loadCrush('proposed');
   if(id==='masters')renderMasters();
 }
@@ -1292,11 +1308,16 @@ function prepSide(side){
   }catch(e){ toast('Could not prefill: '+(e.message||'error'),'err'); }
 }
 function buildCutColourOpts(){
+  // v55W: every distinct SIDE code from the PC table, plus any manual cutting_colour_codes entries.
   try{
     let dl = document.getElementById('cutColourOpts');
     if(!dl){ dl = document.createElement('datalist'); dl.id = 'cutColourOpts'; document.body.appendChild(dl); }
-    const list = (MASTERS && MASTERS.cutting_colour_codes) || [];
-    dl.innerHTML = list.map(c=>'<option value="'+esc(c.code||c)+'">'+esc(c.name||'')+'</option>').join('');
+    const seen = {}; const opts = [];
+    const add = (code, name) => { const k = String(code||'').toUpperCase(); if(!k || seen[k]) return; seen[k]=1; opts.push({code:k, name:name||''}); };
+    const idx = window._PCIDX;
+    if(idx){ Object.keys(idx.byCode).forEach(k=>{ if(k.indexOf('/')<0){ const e=(idx.byCode[k]||[])[0]||{}; const nm=(e.name||'').split('/'); add(k, k===e.cap?nm[0]:nm[nm.length-1]); } }); }
+    ((MASTERS && MASTERS.cutting_colour_codes) || []).forEach(c=>add(c.code||c, c.name||''));
+    dl.innerHTML = opts.sort((a,b)=>a.code.localeCompare(b.code)).map(c=>'<option value="'+esc(c.code)+'">'+esc(c.name)+'</option>').join('');
   }catch(_e){}
 }
 async function loadBatchOptions(){
@@ -1343,6 +1364,74 @@ async function loadMmtOptions(){
 // on the same button as entry); the printed label is scanned IN to holding; after viscosity set it
 // is scanned OUT ('released'); only then does the gate to ISSUE the tank to the machine open
 // ('issued'). Every stage is stamped server-side and visible per TT in the movement log.
+// ── v55W: add / update a PC mapping in-app (GPR develops new PCs/shades continuously) ───────
+async function pcmLookup(){
+  const pc = val('pcm_pc').toUpperCase(); const el = document.getElementById('pcmHint');
+  if(!pc || !el) return;
+  const idx = await _pcIdx();
+  const e = idx.byPc[pc];
+  if(e){
+    setVal('pcm_size', e.size||''); setVal('pcm_name', e.name||''); setVal('pcm_cap', e.cap||''); setVal('pcm_body', e.body||'');
+    el.innerHTML = 'PC <b class="mono">'+esc(pc)+'</b> exists — '+esc(e.name||'')+' · <span class="mono">'+esc(e.colourCode)+'</span>. Saving will UPDATE it.';
+  } else {
+    el.innerHTML = 'PC <b class="mono">'+esc(pc)+'</b> is new — it will be added to the map.';
+  }
+}
+async function pcmSave(){
+  const pc = val('pcm_pc'), cap = val('pcm_cap'), body = val('pcm_body');
+  if(!pc || !cap || !body){ toast('PC, cap code and body code are required','err'); return; }
+  const d = await post('/api/gpr/pc-colour', { pc, size: val('pcm_size'), name: val('pcm_name'), cap, body });
+  if(!d.ok){ toast(d.detail || d.error || 'Could not save the mapping','err'); return; }
+  await _pcIdx(true);   // refresh the cached map + datalists immediately
+  toast('PC '+d.pc+' → '+d.cap+'/'+d.body+' saved — datalists updated','ok');
+  ['pcm_pc','pcm_size','pcm_name','pcm_cap','pcm_body'].forEach(x=>setVal(x,''));
+  document.getElementById('pcmHint').innerHTML = '';
+}
+// ── v55V (Ishan, 19 Sep): PC ↔ COLOUR-CODE auto-linking from the Product Code file ──────────
+// Every PC carries a distinct cap and body colour code (pc_colour_map master, seeded from Shri
+// Kant Gupta's Excel). Entering / auto-picking a PC fills the colour name, the CAP/BODY pair and
+// each side's code; entering a colour code resolves back to its PC(s) — unique match auto-fills.
+async function _pcIdx(force){
+  // v55W (Ishan's point 1): the map is a dedicated table with its own endpoint, fetched LAZILY
+  // here — once per session, only when a linked screen needs it — exactly Planning's pc_codes
+  // pattern; /api/gpr/masters carries none of it, so app init stays light.
+  if(window._PCIDX && !force) return window._PCIDX;
+  const byPc = {}, byCode = {};
+  let rows = [];
+  try{ const d = await api('/api/gpr/pc-colour'); if(d.ok) rows = d.rows || []; }catch(e){}
+  rows.forEach(r=>{
+    if(!r || !r.pc) return;
+    const e = { pc: r.pc, size: r.size||'', name: r.name||'', cap: r.cap_code, body: r.body_code, colourCode: r.cap_code + '/' + r.body_code };
+    byPc[String(e.pc).toUpperCase()] = e;
+    [e.cap, e.body, e.colourCode].forEach(c=>{ if(c){ const k = String(c).toUpperCase(); (byCode[k] = byCode[k] || []).push(e); } });
+  });
+  window._PCIDX = { byPc, byCode, n: rows.length };
+  buildCutColourOpts();   // datalists derive from the table (+ any manual cutting_colour_codes)
+  return window._PCIDX;
+}
+async function pcLinkFill(announce){
+  const pc = val('td_pc').toUpperCase(); if(!pc) return;
+  const idx = await _pcIdx();
+  const e = idx.byPc[pc]; if(!e) { if(announce && idx.n) toast('PC '+pc+' is not in the Product Code master','' ); return; }
+  if(!val('td_colname')) setVal('td_colname', e.name || '');
+  setVal('td_colcode', e.colourCode || '');
+  if(!val('tc_colcode')) setVal('tc_colcode', e.cap || '');
+  if(!val('tb_colcode')) setVal('tb_colcode', e.body || '');
+  if(announce) toast('PC '+pc+' → '+(e.name||'')+' · cap '+e.cap+' · body '+e.body, 'ok');
+}
+async function pcReverseLookup(el){
+  const code = String(el.value||'').trim().toUpperCase(); if(!code) return;
+  const idx = await _pcIdx();
+  const hits = idx.byCode[code] || [];
+  if(!hits.length){ if(idx.n) toast('No PC uses colour code '+code, ''); return; }
+  const pcs = [...new Set(hits.map(h=>h.pc))];
+  if(!val('td_pc') && pcs.length === 1){
+    setVal('td_pc', pcs[0]); pcLinkFill(false);
+    toast(code+' → PC '+pcs[0]+' ('+(hits[0].name||'')+')', 'ok');
+  } else {
+    toast(code+' is used by '+pcs.length+' PC'+(pcs.length===1?'':'s')+': '+pcs.slice(0,6).join(', ')+(pcs.length>6?' …':''), '');
+  }
+}
 async function dualPrefill(){
   const batch = val('td_batch'); if(!batch) return;
   try{
@@ -1350,6 +1439,7 @@ async function dualPrefill(){
     if(d.ok && d.order){
       if(!val('td_machine')) setVal('td_machine', d.order.machineId||'');
       if(!val('td_pc')) setVal('td_pc', d.order.pcCode||'');
+      pcLinkFill(false);   // v55V: PC → colour codes, silently
       setVal('td_floor', FLOOR_LABELS[d.order.floor] || d.order.floor || '');
       TT_ORDER_SIZE = d.order.size || '';
       const meta = (window._BATCHMETA||{})[String(batch).toUpperCase()];
@@ -1405,7 +1495,8 @@ function _sidePayload(p, side){
   }
   return {
     batch_number: val('td_batch'), side, machine_id: val('td_machine')||'(unset)',
-    pc_code: val('td_pc'), colour_name: val('td_colname'), colour_code: val('td_colcode'),
+    pc_code: val('td_pc'), colour_name: val('td_colname'),
+    colour_code: val(p+'_colcode') || val('td_colcode'),   // v55V: the SIDE's own code from the PC map
     mmt_ref: val(p+'_mmt')||null, seq_total: num(p+'_seqtotal')||null, size: TT_ORDER_SIZE,
     capacity_l: num(p+'_cap'), planned_l: num(p+'_planned'), actual_l: num(p+'_actual'),
     virgin_kg: num(p+'_virgin'), colour_kg: num(p+'_colourkg'), fg_remelt_kg: num(p+'_fgremelt'),
@@ -1601,7 +1692,7 @@ function downloadZpl(){
 function clearTtForm(){
   ['td_colname','td_colcode'].forEach(id=>setVal(id,''));
   for(const p of ['tc','tb']){
-    ['_actual','_virgin','_salvage','_cutting','_colourkg','_fgremelt','_visc','_temp','_reason'].forEach(sf=>setVal(p+sf,''));
+    ['_actual','_virgin','_salvage','_cutting','_colourkg','_fgremelt','_visc','_temp','_reason','_colcode'].forEach(sf=>setVal(p+sf,''));
     for(let i=0;i<8;i++){ setVal(p+'_col_'+i,''); setVal(p+'_colg_'+i,''); }
     drawTankSide(p);
   }
