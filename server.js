@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v55W';
+const APP_BUILD = 'v55X';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -982,6 +982,16 @@ const MIGRATIONS = [
       );
       CREATE INDEX IF NOT EXISTS idx_gpr_pcc_cap ON gpr_pc_colour_map(cap_code);
       CREATE INDEX IF NOT EXISTS idx_gpr_pcc_body ON gpr_pc_colour_map(body_code);
+    `
+  },
+  {
+    version: 79,
+    name: 'v55x_ledger_indexes',
+    sql: `
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_day ON gpr_ledger(production_day);
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_batch ON gpr_ledger(batch_number);
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_acct ON gpr_ledger(account);
+      CREATE INDEX IF NOT EXISTS idx_gpr_ledger_pending ON gpr_ledger(receipt_status);
     `
   },
   {
@@ -4776,6 +4786,10 @@ async function ensurePostgresTables() {
         updated_at TEXT NOT NULL DEFAULT (NOW()::TEXT))`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_pcc_cap ON gpr_pc_colour_map(cap_code)`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_pcc_body ON gpr_pc_colour_map(body_code)`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_day ON gpr_ledger(production_day)`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_batch ON gpr_ledger(batch_number)`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_acct ON gpr_ledger(account)`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_pending ON gpr_ledger(receipt_status)`,
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -25814,6 +25828,51 @@ app.post('/api/gpr/tt/:id/label', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ─── v55X item 5 (Ishan, 19 Sep) — BATCH SUMMARY: click any batch in the Planning sheet for the
+// GPR view of it — MMT charge references, TT planned vs issued per side with all lifecycle
+// stamps, litres, and the batch's live figures. Read-only assembly of existing records.
+app.get('/api/gpr/batch-summary/:batch', async (req, res) => {
+  try {
+    const bn = String(req.params.batch || '').trim().toUpperCase();
+    if (!bn) return res.status(400).json({ ok: false, error: 'batch required' });
+    const P = n => pgPool ? `$${n}` : '?';
+    const tSql = `SELECT id, tt_number, side, seq_index, actual_l, mmt_ref, status, colour_code,
+                         created_at, created_by, label_generated_at, label_generated_by,
+                         scan_in_at, scan_out_at, issued_at, issued_by
+                  FROM gpr_tt WHERE UPPER(batch_number)=${P(1)} ORDER BY side, seq_index, id`;
+    const tanks = pgPool ? (await pgPool.query(tSql, [bn])).rows : db.prepare(tSql).all(bn);
+    const side = {};
+    (tanks || []).forEach(t => {
+      const k = String(t.side || '').toLowerCase() || '?';
+      const a = side[k] = side[k] || { tanks: 0, litres: 0, labelled: 0, scannedIn: 0, scannedOut: 0, issued: 0 };
+      a.tanks++; a.litres += Number(t.actual_l || 0);
+      if (t.label_generated_at) a.labelled++;
+      if (t.scan_in_at) a.scannedIn++;
+      if (t.scan_out_at) a.scannedOut++;
+      if (t.issued_at) a.issued++;
+    });
+    Object.values(side).forEach(a => { a.litres = +a.litres.toFixed(1); });
+    const refs = [...new Set((tanks || []).map(t => t.mmt_ref).filter(Boolean))];
+    let mmt = [];
+    if (refs.length) {
+      const ph = refs.map((_, k) => P(k + 1)).join(',');
+      const mSql = `SELECT mmt_ref, floor, tank_no, status, created_at, created_by FROM gpr_mmt_charges WHERE mmt_ref IN (${ph})`;
+      mmt = pgPool ? (await pgPool.query(mSql, refs)).rows : db.prepare(mSql).all(...refs);
+    }
+    const order = gprFindOrder(bn);
+    const live = order ? await _gprBatchLive(bn, order).catch(() => null) : null;
+    const day = v => { if (!v) return null; const sv = String(v); if (/^\d{4}-\d{2}-\d{2}$/.test(sv)) return sv; const t = Date.parse(sv); return isNaN(t) ? null : new Date(t + _GPR_IST_MS).toISOString().slice(0, 10); };
+    res.json({ ok: true, batch: bn,
+      order: order ? { machineId: order.machineId || null, status: order.status || null, customer: order.customer || '',
+        pcCode: order.pcCode || '', colour: order.colour || order.color || '', size: order.size || '',
+        qty: Number(order.qty || 0), grossPlanned: Number(order.grossQty || 0),
+        start: day(order.dprFirstDate || order.startDate), end: day(order.dprLastDate || order.endDate) } : null,
+      live: live ? { gross: +Number(live.gross || 0).toFixed(2), aimPct: live.aimPct != null ? +Number(live.aimPct).toFixed(2) : null,
+        aGradeLacs: +Number(live.aGrade || 0).toFixed(2), unscannedWipAim: +Number(live.preAIM || 0).toFixed(2) } : null,
+      tanks, side, mmt });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ─── v55W (Ishan, 19 Sep) — PC ↔ COLOUR MAP: dedicated table, Planning's pc_codes pattern ────
 // GET is an open read (module convention), fetched LAZILY by the client only when the Issue or
 // Masters tab needs it — never part of /api/gpr/masters, so app init stays light. POST upserts a
@@ -26685,21 +26744,33 @@ async function gprSyncDprCuttings(days) {
 
 // Pending receipts, per floor. Sync order: DPR cuttings sweep, then Tracking credits for the
 // floor's live batches (running orders from Planning — capped, newest first).
+let _gprReceiptSyncAt = 0;   // v55X item 7: shared sweep throttle
 app.get('/api/gpr/receipts', async (req, res) => {
   try {
     // v55E: open read, matching every other GPR GET (the module gates MUTATIONS by token; reads
     // are open). The lazy sync below only upserts idempotent pending rows in gpr_* tables, and
     // ACCEPTING a receipt — the state that matters — stays token-gated on the POST.
     const floor = req.query.floor || null;
-    await gprSyncDprCuttings().catch(() => {});
-    try {
-      const st = getPlanningState();
-      const masters = await gprLoadMasters();
-      const live = (st.orders || []).filter(o => o && !o.deleted && o.batchNumber &&
-        (o.status === 'running' || o.status === 'planned') &&
-        (!floor || gprFloorOfMachine(o.machineId, masters) === floor)).slice(-60);
-      for (const o of live) { await gprSyncTrackingCredits(o.batchNumber).catch(() => {}); }
-    } catch (_) {}
+    // v55X item 7 (Ledger A "excruciatingly long"): this GET ran the full DPR-cuttings sweep PLUS
+    // gprSyncTrackingCredits for up to 60 batches — hundreds of serial PG round-trips — on EVERY
+    // call, and the tab fires it once per visible floor. The sweeps are now throttled to once per
+    // 120 s across all callers (the Refresh button forces with ?sync=1), and the credits sweep
+    // covers RUNNING batches only — planned batches cannot have tracking salvage yet, and they
+    // join the sweep the moment they start. Data freshness is unchanged in substance: accepts
+    // re-check server-side, and anything new is at most two minutes from the pending queue.
+    const _force = req.query.sync === '1';
+    if (_force || Date.now() - _gprReceiptSyncAt > 120000) {
+      _gprReceiptSyncAt = Date.now();
+      await gprSyncDprCuttings().catch(() => {});
+      try {
+        const st = getPlanningState();
+        const masters = await gprLoadMasters();
+        const live = (st.orders || []).filter(o => o && !o.deleted && o.batchNumber &&
+          o.status === 'running' &&
+          (!floor || gprFloorOfMachine(o.machineId, masters) === floor)).slice(-30);
+        for (const o of live) { await gprSyncTrackingCredits(o.batchNumber).catch(() => {}); }
+      } catch (_) {}
+    }
     const conds = ["receipt_status='pending'"]; const params = [];
     if (floor) { params.push(floor); conds.push(`floor=${pgPool ? '$' + params.length : '?'}`); }
     const sql = `SELECT id, moved_at, production_day, batch_number, account, source, side, colour_code,
@@ -26793,6 +26864,15 @@ app.get('/api/gpr/plan', async (req, res) => {
     const orders = (st.orders || []).filter(o => o && !o.deleted && o.batchNumber && o.machineId &&
       gprFloorOfMachine(o.machineId, masters) === floor &&
       (o.status === 'running' || [o.startDate, o.endDate, o.manualEndDate, o.dprFirstDate, o.dprLastDate].some(inMonth)));
+    const _gprIstDay = v => {
+      if (!v) return null;
+      let sv = String(v);
+      if (/^\d{4}-\d{2}-\d{2}$/.test(sv)) return sv;
+      // Postgres text stamps: micros beyond millis and bare '+00' offsets defeat Date.parse.
+      sv = sv.replace(/(\.\d{3})\d+/, '$1').replace(/([+-]\d{2})$/, '$1:00');
+      const t = Date.parse(sv);
+      return isNaN(t) ? null : new Date(t + _GPR_IST_MS).toISOString().slice(0, 10);
+    };
     const nowIdx = _gprShiftIdx(new Date());
     const nowMs = Date.now();
     // v55T item 1: the machine banner must read exactly as Planning's header — rated L/day from
@@ -26801,7 +26881,14 @@ app.get('/api/gpr/plan', async (req, res) => {
     // month, pre-July absorption) = Report E's machine subtotal by construction.
     const mmRated = {};
     (st.machineMaster || []).forEach(m => { if (m && m.id) mmRated[m.id] = Number(m.cap || 0) || null; });
-    const monthFrom = month + '-01', monthTo = month + '-31';
+    // v55X (Rahul): the window must be EXACTLY /api/actuals/machine-summary's default — Planning
+    // calls it with no params, so the figure is the CURRENT month under the DPR 06:00-IST day cut,
+    // regardless of the month selected here. Same window, same plant-cum rule → same number.
+    const _nowR = new Date(); const _istR = new Date(_nowR.getTime() + (330 + _nowR.getTimezoneOffset()) * 60000);
+    if (_istR.getHours() < 6) _istR.setDate(_istR.getDate() - 1);
+    const _padR = n => String(n).padStart(2, '0');
+    const rateFrom = `${_istR.getFullYear()}-${_padR(_istR.getMonth() + 1)}-01`;
+    const rateTo = `${_istR.getFullYear()}-${_padR(_istR.getMonth() + 1)}-${_padR(_istR.getDate())}`;
     const P2r = pgPool ? ['$1', '$2'] : ['?', '?'];
     const rateSql = `SELECT machine_id, SUM(day_qty) AS total_qty, COUNT(*) AS days
                      FROM ( SELECT machine_id, date, SUM(qty_lakhs) AS day_qty
@@ -26809,15 +26896,19 @@ app.get('/api/gpr/plan', async (req, res) => {
                             WHERE date >= ${P2r[0]} AND date <= ${P2r[1]}
                             GROUP BY machine_id, date ) t
                      WHERE day_qty > 0 GROUP BY machine_id`;
-    const rateRows = pgPool ? (await pgPool.query(rateSql, [monthFrom, monthTo])).rows : db.prepare(rateSql).all(monthFrom, monthTo);
+    const rateRows = pgPool ? (await pgPool.query(rateSql, [rateFrom, rateTo])).rows : db.prepare(rateSql).all(rateFrom, rateTo);
     const mcAvg = {};
     (rateRows || []).forEach(r => { const d = Number(r.days || 0); if (d > 0) mcAvg[r.machine_id] = +(Number(r.total_qty || 0) / d).toFixed(1); });
+    // v55X (Rahul: MC20 GPR 89.3% vs Planning 90.5%): this must be a VERBATIM port of
+    // planning.html's _v54bCohortMonth — startDate only (never dprFirstDate), the planMonth/month
+    // fallbacks, and CONDITIONAL v50C absorption (only when the batch ends July-or-later). The
+    // ym is the IST calendar month, matching the browser's local rendering on plant machines.
+    const _ymIst = d => { const t = Date.parse(String(d || '')); return isNaN(t) ? '' : new Date(t + _GPR_IST_MS).toISOString().slice(0, 7); };
     const _cohortYm = o => {
-      const d = o.dprFirstDate || o.startDate;
-      const x = new Date(String(d || '').slice(0, 10));
-      if (isNaN(x.getTime())) return '';
-      const ym = `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`;
-      return ym < '2026-07' ? '2026-07' : ym;   // v50C pre-July absorption, as Planning applies it
+      let m2 = o.startDate ? _ymIst(o.startDate) : '';
+      if (!m2) m2 = o.planMonth || o.month || o.planningMonth || '';
+      if (m2 && m2 < '2026-07' && o.endDate && _ymIst(o.endDate) >= '2026-07') m2 = '2026-07';
+      return m2;
     };
     const byMc = {};
     for (const o of orders) { (byMc[o.machineId] = byMc[o.machineId] || []).push(o); }
@@ -26829,10 +26920,17 @@ app.get('/api/gpr/plan', async (req, res) => {
       const rows = []; let cursor = null;
       for (const o of q) {
         const bn = String(o.batchNumber).toUpperCase();
-        const started = o.status === 'running' || o.status === 'completed' || !!o.dprFirstDate;
+        // v55X items 1/2 (ZD143): 'closed' was missing here, so a CLOSED batch got NO live figures at
+        // all — gross 0.00 against Report E's 54.00, no AIM, and the planned-row branch offered the
+        // In-production button. Closed is finished history, same as completed.
+        const started = o.status === 'running' || o.status === 'completed' || o.status === 'closed' || !!o.dprFirstDate;
         const live = started ? await _gprBatchLive(bn, o) : null;
-        if (live && Number(live.inspected || 0) > 0 && _cohortYm(o) === month) {
-          mcA.aG += Number(live.aGrade || 0); mcA.insp += Number(live.inspected || 0);   // v55T cohort Live A
+        // v55X: Planning includes a batch only when its scan-OUT-based inspected is > 0 (the
+        // agrade-summary gate); the frozen numerator/denominator (ScanIn−Rem)/(ScanIn+Sal) are
+        // aGrade/inspected here. Same gate, same fractions → same machine figure.
+        const _outInsp = live ? (Number(live.aimOut || 0) + Number(live.aimSal || 0) + Number(live.aimRem || 0)) : 0;
+        if (live && _outInsp > 0 && _cohortYm(o) === month) {
+          mcA.aG += Number(live.aGrade || 0); mcA.insp += Number(live.inspected || 0);
         }
         const grossPlanned = Number(o.grossQty || 0);
         const grossActual = live ? Number(live.gross || 0) : 0;
@@ -26845,11 +26943,15 @@ app.get('/api/gpr/plan', async (req, res) => {
           size: o.size || '', pcCode: o.pcCode || '', orderQty: Number(o.qty || 0), grossPlanned: +grossPlanned.toFixed(2),
           grossActual: +grossActual.toFixed(2), unscannedWipAim: live ? +Number(live.preAIM || 0).toFixed(2) : null,
           aGradeAimPct: aPct != null ? +aPct.toFixed(2) : null, wipBasis: live ? live.wipBasis : null,
-          plannedStart: o.startDate || null, plannedEnd: o.manualEndDate || o.endDate || null,
-          dprFirst: o.dprFirstDate || null, dprLast: o.dprLastDate || null, estEnd: null, estFactor: +f.toFixed(3),
+          // v55X item 4: manualEndDate is v50L's boolean INTENT flag — `flag || date` returned literal
+          // `true` into the END column. The date always lives in endDate. And every served date is
+          // normalised to its IST day (item 3): cascade stamps are IST-midnight ISO ("…T18:30:00.000Z")
+          // and raw pass-through made the sheet unreadable (v50U lesson: slice the LOCAL day).
+          plannedStart: _gprIstDay(o.startDate), plannedEnd: _gprIstDay(o.endDate),
+          dprFirst: _gprIstDay(o.dprFirstDate), dprLast: _gprIstDay(o.dprLastDate), estEnd: null, estFactor: +f.toFixed(3),
           // v55R item 5: AIM A-grade in lacs, per batch — same figure Report E shows (aimIn - aimRem).
           aimALacs: live ? +Number(live.aGrade || 0).toFixed(2) : null };
-        if (o.status === 'completed') {
+        if (o.status === 'completed' || o.status === 'closed') {
           row.estEnd = null;   // history — actual dates shown from DPR
         } else if (o.status === 'running') {
           const remaining = Math.max(0, requiredGross - grossActual);
@@ -26875,7 +26977,7 @@ app.get('/api/gpr/plan', async (req, res) => {
           // an end date, anchor the estimate to its C shift so GPR, Planning and Report E reconcile
           // in real time; the rate-chained estimate is only the fallback when Planning has no date.
           let endIdx = null;
-          const pe = o.manualEndDate || o.endDate;
+          const pe = o.endDate;   // v55X item 4: never the boolean intent flag
           if (pe) {
             const t = Date.parse(String(pe).slice(0, 10) + 'T22:00:00+05:30');
             if (!isNaN(t)) endIdx = _gprShiftIdx(new Date(t));
@@ -26890,7 +26992,7 @@ app.get('/api/gpr/plan', async (req, res) => {
       const cascade = [];
       for (let k = 0; k < rows.length - 1; k++) {
         const cur = rows[k], nxt = rows[k + 1];
-        if (cur.status === 'completed' || !cur.estEnd) continue;
+        if (cur.status === 'completed' || cur.status === 'closed' || !cur.estEnd) continue;
         const readyBy = _gprShiftInfo(cur.estEnd.idx);                       // start of the shift the run ends in
         const prep = { ms: (Number.isFinite(readyBy.startMs) ? readyBy.startMs : Date.now()) - prepHours * 3600000 };
         const prepInfo = _gprShiftInfo(_gprShiftIdx(new Date(prep.ms)));

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v55W</title>
+<title>GPR.tracker · build v55X</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -214,7 +214,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55W</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55X</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -234,7 +234,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v55W</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v55X</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -460,7 +460,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div id="rcpPanel" style="margin-bottom:14px">
         <div class="fgroup-title" style="display:flex;align-items:center;gap:10px">Pending receipts — awaiting GPR acceptance
           <span id="rcpTotal" style="font-family:var(--mono);font-size:12px;color:var(--amber)"></span>
-          <button class="btn" style="margin-left:auto;padding:4px 10px;font-size:11px" onclick="loadReceipts()">Refresh</button>
+          <button class="btn" style="margin-left:auto;padding:4px 10px;font-size:11px" onclick="loadReceipts(true)">Refresh</button>
         </div>
         <div id="rcpList" style="font-size:12px;color:var(--t3)">Loading…</div>
       </div>
@@ -1750,6 +1750,41 @@ function _plBadge(st){
   const [t,c] = m[st] || [st,'var(--t3)'];
   return '<span style="font-weight:700;color:'+c+'">'+t+'</span>';
 }
+// v55X: alerts register — scrollable + filterable (status / machine / dish-wash)
+function renderPlAlerts(){
+  const al = document.getElementById('pl_alert'); if(!al) return;
+  const alerts = window._PLALERTS || [];
+  if(!alerts.length){ al.innerHTML=''; return; }
+  const fS = (document.getElementById('alf_status')||{}).value || '';
+  const fM = ((document.getElementById('alf_mc')||{}).value || '').trim().toUpperCase();
+  const fD = (document.getElementById('alf_dw')||{}).value || '';
+  let rows = alerts.slice().sort((a,b)=> (a.status===b.status ? String(a.ttReadyBy.atISO||'').localeCompare(String(b.ttReadyBy.atISO||'')) : (a.status==='overdue' ? -1 : 1)));
+  if(fS) rows = rows.filter(a=>a.status===fS);
+  if(fM) rows = rows.filter(a=>String(a.machineId||'').toUpperCase().includes(fM));
+  if(fD==='yes') rows = rows.filter(a=>a.dishWash);
+  if(fD==='no') rows = rows.filter(a=>!a.dishWash);
+  let h = '<div class="fgrid" style="margin:2px 0 6px">'
+    + '<div class="field-grp"><label>Status</label><select id="alf_status" onchange="renderPlAlerts()"><option value="">All ('+alerts.length+')</option><option value="overdue">TT overdue</option><option value="prepare-now">Begin preparation</option></select></div>'
+    + '<div class="field-grp"><label>Machine</label><input id="alf_mc" list="mcOpts" placeholder="all" onchange="renderPlAlerts()"></div>'
+    + '<div class="field-grp"><label>Dish wash</label><select id="alf_dw" onchange="renderPlAlerts()"><option value="">All</option><option value="yes">Dish wash only</option><option value="no">Same colour only</option></select></div>'
+    + '</div>';
+  h += '<div class="tswrap" style="max-height:240px"><table class="gtable"><thead><tr><th>Status</th><th>Next batch</th><th>Machine</th><th>Colour</th><th>First cap+body TT ready by</th><th>Dish wash</th></tr></thead><tbody>';
+  rows.forEach(a=>{
+    h += '<tr>'
+      + '<td>'+(a.status==='overdue' ? '&#9888; <b style="color:var(--red)">TT OVERDUE</b>' : '&#9200; <b style="color:var(--amber)">BEGIN PREPARATION</b>')+'</td>'
+      + '<td><a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(a.toBatch)+'\')" class="mono" style="font-family:var(--mono);color:var(--accent);text-decoration:none"><b>'+esc(a.toBatch)+'</b></a></td>'
+      + '<td>'+esc(a.machineId)+'</td><td>'+esc(a.toColour||'?')+'</td>'
+      + '<td><b>'+esc(a.ttReadyBy.date+' '+a.ttReadyBy.shift)+' start</b></td>'
+      + '<td>'+(a.dishWash ? '&#128705; '+esc(a.fromColour||'—')+' &rarr; '+esc(a.toColour||'—') : '<span style="color:var(--t3)">same colour</span>')+'</td></tr>';
+  });
+  h += '</tbody></table></div>';
+  if(!rows.length) h += '<div class="empty">No alerts match the filters.</div>';
+  const keep = { s:fS, m:((document.getElementById('alf_mc')||{}).value||''), d:fD };
+  al.innerHTML = h;
+  const se = document.getElementById('alf_status'); if(se) se.value = keep.s;
+  const me = document.getElementById('alf_mc'); if(me) me.value = keep.m;
+  const de = document.getElementById('alf_dw'); if(de) de.value = keep.d;
+}
 async function loadPlan(){
   const mEl = document.getElementById('pl_month');
   if(mEl && !mEl.options.length){
@@ -1780,13 +1815,11 @@ async function loadPlan(){
     document.getElementById('pl_now').textContent = 'now: '+meta.now.date+' shift '+meta.now.shift+' · assumed A '+meta.assumedAGradePct+'% · prep '+meta.prepHours+'h';
     // alert banner (all fetched floors)
     const alerts = perFloor.flatMap(d=>d.alerts||[]);
-    const al = document.getElementById('pl_alert');
-    al.innerHTML = alerts.map(a=>'<div style="margin:8px 0;padding:9px 14px;border:1px solid var(--amber);border-left:5px solid var(--amber);border-radius:var(--r);background:var(--amber-l)">'
-      + (a.status==='overdue'?'&#9888; <b style="color:var(--red)">TT OVERDUE</b>':'&#9200; <b style="color:var(--amber)">BEGIN TT PREPARATION</b>')
-      + ' — <b>'+esc(a.toBatch)+'</b> on '+esc(a.machineId)+' ('+esc(a.toColour||'?')+')'
-      + ': first cap+body TT ready by <b>'+esc(a.ttReadyBy.date+' '+a.ttReadyBy.shift+' start')+'</b>'
-      + (a.dishWash?' · <b>DISH WASH</b> ('+esc(a.fromColour||'—')+' &rarr; '+esc(a.toColour||'—')+')':'')
-      + '</div>').join('');
+    // v55X (Ishan): the alert stack became an unreadable block — now a compact, scrollable,
+    // filterable register. Filters act client-side on the loaded alerts; row order: overdue first,
+    // then by ready-by time.
+    window._PLALERTS = alerts;
+    renderPlAlerts();
     // ── Sheet 1: Report E format — FLOOR: X → MACHINE: MC — N BATCHES → rows + subtotal ──
     const FLN = { GF:'GF', FF:'FF', SF:'SF' };
     const th = x => '<th style="text-align:left;padding:5px 7px;background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px;letter-spacing:.4px;white-space:nowrap">'+x+'</th>';
@@ -1815,7 +1848,7 @@ async function loadPlan(){
         // the full month lives in "Open in new tab" with filters. Subtotal still covers the month.
         let vis = m.batches, hiddenN = 0;
         if(!window._PLAN_FULL && m.batches.length > 4){
-          const isDone = b => b.status==='completed' || b.effectivelyComplete;
+          const isDone = b => b.status==='completed' || b.status==='closed' || b.effectivelyComplete;
           let a = m.batches.findIndex(b=>b.status==='running');
           if(a<0) a = m.batches.findIndex(b=>!isDone(b));
           if(a<0) a = m.batches.length-1;
@@ -1827,15 +1860,21 @@ async function loadPlan(){
           // v55R item 4: END reconciles with Planning/Report E — finished batches show their DPR
           // dates; planned batches show Planning's own end date; the live estimate only for the
           // running batch (and as fallback when Planning carries no date).
-          const doneB = b.status==='completed' || b.effectivelyComplete;
+          // v55X item 1: closed and completed are finished history — a status chip, never the
+          // In-production control (the server 409s them anyway); effectively-complete keeps its own
+          // marking. The batch number itself opens the GPR batch summary (item 5).
+          const doneB = b.status==='completed' || b.status==='closed' || b.effectivelyComplete;
           const endTxt = doneB ? esc(b.dprLast||b.plannedEnd||'—')
             : (b.status!=='running' && b.plannedEnd) ? esc(b.plannedEnd)
             : (b.estEnd ? '<span title="live estimate">'+esc(b.estEnd.date)+' <b>'+esc(b.estEnd.shift)+'</b> <small style="color:var(--teal)">est</small></span>' : '&mdash;');
           const hl = b.status==='running' ? 'background:var(--teal-l);' : ((b.status==='completed'||b.effectivelyComplete) ? 'color:var(--t3);' : '');
           h += '<tr>'
-            + td(esc(m.machineId),hl) + td('<span class="mono" style="font-family:var(--mono)">'+esc(b.batchNumber)+'</span>'
+            + td(esc(m.machineId),hl) + td('<a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(b.batchNumber)+'\')" class="mono" style="font-family:var(--mono);color:var(--accent);text-decoration:none" title="GPR batch summary — MMT refs, TT planned vs issued, stamps">'+esc(b.batchNumber)+'</a>'
                 + (b.status==='running'?' <b style="color:var(--teal);font-size:10px">RUNNING</b>'
-                   : (!doneB ? ' <button class="btn sm" style="padding:1px 8px;font-size:10px" title="Start production (goes live in Issue TT immediately)" onclick="gprStartOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9654; In production</button>' : '')),hl)
+                   : b.status==='closed' ? ' <b style="color:var(--t3);font-size:10px">CLOSED</b>'
+                   : b.status==='completed' ? ' <b style="color:var(--t3);font-size:10px">DONE</b>'
+                   : b.effectivelyComplete ? ' <b style="color:var(--green);font-size:10px" title="Actuals cover the plan — DPR dates shown">DONE (ACTUALS)</b>'
+                   : ' <button class="btn sm" style="padding:1px 8px;font-size:10px" title="Start production (goes live in Issue TT immediately)" onclick="gprStartOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9654; In production</button>'),hl)
             + td(esc(b.customer||'—'),hl) + td(esc(b.pcCode||'—'),hl) + td(esc(b.colour||'—'),hl) + td(esc(String(b.size||'—')),hl)
             + td(esc(b.dprFirst||b.plannedStart||'—'),hl) + td(endTxt,hl)
             + td(num(b.orderQty),hl+'text-align:right;font-family:var(--mono)') + td(num(b.grossPlanned),hl+'text-align:right;font-family:var(--mono)')
@@ -1879,6 +1918,44 @@ async function loadPlan(){
 if(_planTimer) clearInterval(_planTimer);
     _planTimer = setInterval(()=>{ const pg=document.getElementById('page-plan'); if(pg && pg.classList.contains('on')) loadPlan(); else { clearInterval(_planTimer); _planTimer=null; } }, 60000);
   }catch(e){ sEl.innerHTML = '<span style="color:var(--red)">Plan failed: '+esc(e.message||'error')+'</span>'; }
+}
+// v55X item 5: GPR batch summary — any batch in the sheet is clickable; the modal shows the
+// batch from the GPR side: MMT charge references, TT planned vs issued per side with lifecycle
+// counts, every tank's stamps, and the live figures. Assembled read-only from existing records.
+async function gprBatchSummary(bn){
+  const d = await api('/api/gpr/batch-summary/' + encodeURIComponent(bn));
+  if(!d.ok){ toast(d.error||'Could not load the batch summary','err'); return; }
+  let pl = null;
+  try{ const p = await api('/api/gpr/tt-plan/' + encodeURIComponent(bn)); if(p.ok) pl = p.plan || null; }catch(e){}
+  const o = d.order || {};
+  const dt = v => v ? String(v).slice(0,16).replace('T',' ') : '—';
+  let h = '<div style="font-size:12px;color:var(--t2);margin-bottom:8px">'+esc(o.machineId||'—')+' · '+esc(o.customer||'—')+' · PC '+esc(o.pcCode||'—')+' · '+esc(o.colour||'—')+' · size '+esc(String(o.size||'—'))
+     + ' · <b>'+esc((o.status||'—').toUpperCase())+'</b> · '+esc(o.start||'—')+' → '+esc(o.end||'—')+'</div>';
+  if(d.live) h += '<div style="font-size:12px;margin-bottom:8px">Gross actual <b>'+fmt(d.live.gross,2)+' L</b> · A-grade AIM <b>'+(d.live.aimPct==null?'—':fmt(d.live.aimPct,1)+'%')+'</b> · AIM A-grade <b>'+fmt(d.live.aGradeLacs,2)+' lacs</b> · Unscanned WIP <b>'+fmt(d.live.unscannedWipAim,2)+' L</b></div>';
+  h += '<table class="gtable"><thead><tr><th>Side</th><th class="num">TT planned</th><th class="num">TT issued</th><th class="num">Entered</th><th class="num">Litres</th><th class="num">Labelled</th><th class="num">Scan IN</th><th class="num">Scan OUT</th></tr></thead><tbody>';
+  ['cap','body'].forEach(k=>{
+    const a = (d.side||{})[k] || {tanks:0,litres:0,labelled:0,scannedIn:0,scannedOut:0,issued:0};
+    const pln = pl && pl[k] ? pl[k].ttPlanned : null;
+    h += '<tr><td><b>'+k.toUpperCase()+'</b></td><td class="num">'+(pln==null?'—':pln)+'</td><td class="num"><b>'+a.issued+'</b></td>'
+       + '<td class="num">'+a.tanks+'</td><td class="num">'+fmt(a.litres,1)+'</td><td class="num">'+a.labelled+'</td><td class="num">'+a.scannedIn+'</td><td class="num">'+a.scannedOut+'</td></tr>';
+  });
+  h += '</tbody></table>';
+  h += '<div style="font-family:var(--fc);font-weight:600;font-size:12px;margin:8px 0 3px">MMT charge references</div>';
+  h += (d.mmt||[]).length
+    ? '<table class="gtable"><thead><tr><th>MMT ref</th><th>Floor</th><th>Tank</th><th>Status</th><th>Opened</th><th>By</th></tr></thead><tbody>'
+      + d.mmt.map(m=>'<tr><td class="mono">'+esc(m.mmt_ref)+'</td><td>'+esc(m.floor||'—')+'</td><td>'+esc(String(m.tank_no||'—'))+'</td><td>'+esc(m.status||'—')+'</td><td class="mono">'+esc(dt(m.created_at))+'</td><td>'+esc(m.created_by||'—')+'</td></tr>').join('')
+      + '</tbody></table>'
+    : '<div class="empty">No MMT charge linked to this batch\'s tanks.</div>';
+  h += '<div style="font-family:var(--fc);font-weight:600;font-size:12px;margin:8px 0 3px">Tanks — full lifecycle stamps</div>';
+  h += (d.tanks||[]).length
+    ? '<div class="tswrap" style="max-height:260px"><table class="gtable"><thead><tr><th>TT</th><th>Side</th><th class="num">L</th><th>MMT</th><th>Entered</th><th>Label</th><th>Scan IN</th><th>Scan OUT</th><th>Issued</th></tr></thead><tbody>'
+      + d.tanks.map(t=>'<tr><td class="mono"><b>'+esc(t.tt_number||'')+'</b></td><td>'+esc((t.side||'').toUpperCase())+(t.seq_index?' #'+t.seq_index:'')+'</td><td class="num">'+fmt(t.actual_l,0)+'</td><td class="mono">'+esc(t.mmt_ref||'—')+'</td>'
+        + '<td class="mono" style="font-size:10px">'+esc(dt(t.created_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.label_generated_at))+'</td>'
+        + '<td class="mono" style="font-size:10px">'+esc(dt(t.scan_in_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.scan_out_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.issued_at))+'</td></tr>').join('')
+      + '</tbody></table></div>'
+    : '<div class="empty">No tanks entered for this batch yet.</div>';
+  ttModalOpen(esc(bn) + ' — GPR batch summary', h);
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '860px';   // summary needs width
 }
 // v55T item 3: GPR-side start-production — going forward GPR owns this; in test mode Planning
 // stays the primary flow, but the control works here too (audited server-side).
@@ -2053,7 +2130,7 @@ function renderCascCal(){
         const col = e.kind==='prep' ? 'var(--teal)' : (t.dishWash ? 'var(--amber)' : 'var(--green)');
         const bg  = e.kind==='prep' ? 'var(--teal-l)' : (t.dishWash ? 'var(--amber-l)' : 'var(--green-l)');
         c += '<div onclick="cascSnapShow(\''+d+'\',\''+sh+'\')" style="cursor:pointer;margin:2px 0;padding:3px 8px;border-left:4px solid '+col+';background:'+bg+';border-radius:4px;font-size:11px">'
-          + (e.kind==='prep' ? '&#9200; <b>BEGIN PREP</b> ' : (t.dishWash ? '&#128705; <b>DISH WASH + TT READY</b> ' : '&#9989; <b>TT READY</b> '))
+          + (e.kind==='prep' ? '&#9200; <b>BEGIN PREP</b> ' : (t.dishWash ? '&#128705; <b>DISH WASH + TT READY</b> ' : '&#9654; <b>TT READY BY</b> '))
           + '<span class="mono">'+esc(t.toBatch)+'</span> on '+esc(t.machineId)
           + '</div>';
       });
@@ -2061,7 +2138,8 @@ function renderCascCal(){
     });
     h += '</tr>';
   });
-  cal.innerHTML = h + '</tbody></table>' + (cascHiddenN>0 ? '<div style="color:var(--t3);font-size:11px;margin:4px 2px">Showing yesterday / today / tomorrow &mdash; '+cascHiddenN+' event'+(cascHiddenN===1?'':'s')+' on other days in <a href="javascript:openPlanTab()" style="color:var(--accent)">full view &#8599;</a></div>' : '');
+  cal.innerHTML = h + '</tbody></table>'
+    + '<div style="color:var(--t3);font-size:11px;margin:5px 2px">&#9200; <b style="color:var(--teal)">Blue</b> = begin TT preparation (one prep window before the deadline) &middot; &#128705; <b style="color:var(--amber)">Orange</b> = TT-ready deadline with a DISH WASH (colour change) &middot; &#9654; <b style="color:var(--green)">Green</b> = TT-ready deadline, same colour (no wash). All three are schedule deadlines from the cascade &mdash; actual completion shows as DONE in the transitions table, from real TT scan-outs.</div>' + (cascHiddenN>0 ? '<div style="color:var(--t3);font-size:11px;margin:4px 2px">Showing yesterday / today / tomorrow &mdash; '+cascHiddenN+' event'+(cascHiddenN===1?'':'s')+' on other days in <a href="javascript:openPlanTab()" style="color:var(--accent)">full view &#8599;</a></div>' : '');
 }
 function cascSnapShow(date, shift){
   const el = document.getElementById('cascSnap'); if(!el) return;
@@ -2082,14 +2160,16 @@ function cascSnapShow(date, shift){
 }
 
 // ── v55A item 5+6: pending physical receipts (Tracking salvage/remelt + DPR cuttings) ──
-async function loadReceipts(){
+async function loadReceipts(force){
+  // v55X item 7: the server throttles the heavy DPR/Tracking sweeps to once per 2 min; the
+  // Refresh button forces a fresh sweep with ?sync=1. Routine opens serve the queue instantly.
   const el = document.getElementById('rcpList'); if(!el) return;
   el.innerHTML = '<span style="color:var(--t3)">Loading&hellip;</span>';
   try{
     const fl = (typeof visibleFloors==='function' ? visibleFloors() : [CUR_FLOOR==='ALL' ? 'GF' : CUR_FLOOR]);
     const rows = []; let tot = 0;
     for(const f of fl){
-      const d = await api('/api/gpr/receipts?floor='+encodeURIComponent(f));
+      const d = await api('/api/gpr/receipts?floor='+encodeURIComponent(f)+(force?'&sync=1':''));
       if(d.ok){ rows.push(...(d.pending||[])); tot += (d.totalKg||0); }
     }
     document.getElementById('rcpTotal').textContent = rows.length ? (tot.toFixed(2)+' kg pending') : '';
