@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v55S</title>
+<title>GPR.tracker · build v55T</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -214,7 +214,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55S</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55T</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -234,7 +234,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v55S</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v55T</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -1708,12 +1708,15 @@ async function loadPlan(){
       d.machines.forEach(m=>{
         // v55R item 3: per-DAY rate and the machine's live A-grade, sourced from the same
         // plan payload Planning itself is built from (running batch's live AIM %).
-        const rateDay = m.ratePerDay != null ? m.ratePerDay : +(Number(m.ratePerShift||0)*3).toFixed(1);
+        // v55T item 1: the trio reads exactly as Planning's machine header — rated L/day (machine
+        // master), Avg Actual L/day (DPR plant-cum), Live A (v54B cohort = Report E machine subtotal).
+        const rateDay = m.ratedPerDay != null ? m.ratedPerDay : (m.ratePerDay != null ? m.ratePerDay : +(Number(m.ratePerShift||0)*3).toFixed(1));
         h += '<div style="margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;color:var(--t2);font-size:12px">MACHINE: '+esc(m.machineId)+' &mdash; '+m.batches.length+' BATCH'+(m.batches.length===1?'':'ES')
-          + ' <span style="font-weight:400;color:var(--t3);font-size:11px">&middot; rate '+rateDay+' L/day'
+          + ' <span style="font-weight:400;color:var(--t3);font-size:11px">&middot; '+rateDay+' L/day'
+          + (m.avgActualPerDay!=null ? ' &middot; Avg actual <b>'+m.avgActualPerDay+' L/day</b> <small>DPR</small>' : '')
           + (m.liveAPct!=null ? ' &middot; Live A <b style="color:var(--teal)">'+Number(m.liveAPct).toFixed(1)+'%</b>' : '')+'</span></div>';
         h += '<table class="gtable" style="margin:4px 0 14px"><thead><tr>'
-          + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','UNSCANNED WIP @AIM','A-GRADE AIM %','AIM A-GRADE (LACS)'].map(th).join('')
+          + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','AIM A-GRADE (LACS)','UNSCANNED WIP @AIM','A-GRADE AIM %'].map(th).join('')
           + '</tr></thead><tbody>';
         let sOrd=0,sGP=0,sGA=0;
         m.batches.forEach(b=>{ sOrd+=Number(b.orderQty||0); sGP+=Number(b.grossPlanned||0); sGA+=Number(b.grossActual||0); });
@@ -1739,14 +1742,16 @@ async function loadPlan(){
             : (b.estEnd ? '<span title="live estimate">'+esc(b.estEnd.date)+' <b>'+esc(b.estEnd.shift)+'</b> <small style="color:var(--teal)">est</small></span>' : '&mdash;');
           const hl = b.status==='running' ? 'background:var(--teal-l);' : ((b.status==='completed'||b.effectivelyComplete) ? 'color:var(--t3);' : '');
           h += '<tr>'
-            + td(esc(m.machineId),hl) + td('<span class="mono" style="font-family:var(--mono)">'+esc(b.batchNumber)+'</span>'+(b.status==='running'?' <b style="color:var(--teal);font-size:10px">RUNNING</b>':''),hl)
+            + td(esc(m.machineId),hl) + td('<span class="mono" style="font-family:var(--mono)">'+esc(b.batchNumber)+'</span>'
+                + (b.status==='running'?' <b style="color:var(--teal);font-size:10px">RUNNING</b>'
+                   : (!doneB ? ' <button class="btn sm" style="padding:1px 8px;font-size:10px" title="Start production (goes live in Issue TT immediately)" onclick="gprStartOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9654; In production</button>' : '')),hl)
             + td(esc(b.customer||'—'),hl) + td(esc(b.pcCode||'—'),hl) + td(esc(b.colour||'—'),hl) + td(esc(String(b.size||'—')),hl)
             + td(esc(b.dprFirst||b.plannedStart||'—'),hl) + td(endTxt,hl)
             + td(num(b.orderQty),hl+'text-align:right;font-family:var(--mono)') + td(num(b.grossPlanned),hl+'text-align:right;font-family:var(--mono)')
             + td(num(b.grossActual),hl+'text-align:right;font-family:var(--mono)')
+            + td(b.aimALacs==null?'&mdash;':num(b.aimALacs),hl+'text-align:right;font-family:var(--mono)')
             + td(num(b.unscannedWipAim),hl+'text-align:right;font-family:var(--mono)')
             + td(b.aGradeAimPct==null?'&mdash;':num(b.aGradeAimPct)+'%',hl+'text-align:right;font-family:var(--mono)')
-            + td(b.aimALacs==null?'&mdash;':num(b.aimALacs),hl+'text-align:right;font-family:var(--mono)')
             + '</tr>';
         });
         if(hiddenN>0){
@@ -1783,6 +1788,15 @@ async function loadPlan(){
 if(_planTimer) clearInterval(_planTimer);
     _planTimer = setInterval(()=>{ const pg=document.getElementById('page-plan'); if(pg && pg.classList.contains('on')) loadPlan(); else { clearInterval(_planTimer); _planTimer=null; } }, 60000);
   }catch(e){ sEl.innerHTML = '<span style="color:var(--red)">Plan failed: '+esc(e.message||'error')+'</span>'; }
+}
+// v55T item 3: GPR-side start-production — going forward GPR owns this; in test mode Planning
+// stays the primary flow, but the control works here too (audited server-side).
+async function gprStartOrder(batch, mc){
+  if(!confirm('Move '+batch+' on '+mc+' into PRODUCTION now?\n\nThe batch appears in the Issue TT pick-list immediately. (Test mode: Planning remains the primary flow.)')) return;
+  const d = await post('/api/gpr/order-start', { batch });
+  if(!d.ok){ toast(d.detail || d.error || 'Could not start the batch','err'); return; }
+  toast(batch+' is now IN PRODUCTION','ok');
+  loadPlan(); loadBatchOptions();
 }
 // v55R item 2: the separate tab is now the FULL interactive view — every batch of the month and
 // the whole cascade calendar, each with its own filters — while the in-app tab stays compact.
@@ -1837,9 +1851,9 @@ function openPlanTab(){
     + '    var done=b.status==="completed"||b.effectivelyComplete;\n'
     + '    if(fs==="running"&&b.status!=="running")return false;if(fs==="done"&&!done)return false;if(fs==="planned"&&(b.status==="running"||done))return false;return true;});\n'
     + '   if(!rows.length)return;\n'
-    + '   var rd=m.ratePerDay!=null?m.ratePerDay:(Number(m.ratePerShift||0)*3).toFixed(1);\n'
-    + '   fh+="<div class=\'mcband\'>MACHINE: "+esc(m.machineId)+" \u2014 "+rows.length+" OF "+(m.batches||[]).length+" BATCHES \u00b7 rate "+rd+" L/day"+(m.liveAPct!=null?" \u00b7 Live A <b>"+Number(m.liveAPct).toFixed(1)+"%</b>":"")+"</div>";\n'
-    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","UNSCANNED WIP @AIM","A-GRADE AIM %","AIM A-GRADE (LACS)"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
+    + '   var rd=m.ratedPerDay!=null?m.ratedPerDay:(m.ratePerDay!=null?m.ratePerDay:(Number(m.ratePerShift||0)*3).toFixed(1));\n'
+    + '   fh+="<div class=\'mcband\'>MACHINE: "+esc(m.machineId)+" \u2014 "+rows.length+" OF "+(m.batches||[]).length+" BATCHES \u00b7 "+rd+" L/day"+(m.avgActualPerDay!=null?" \u00b7 Avg actual <b>"+m.avgActualPerDay+" L/day</b>":"")+(m.liveAPct!=null?" \u00b7 Live A <b>"+Number(m.liveAPct).toFixed(1)+"%</b>":"")+"</div>";\n'
+    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","AIM A-GRADE (LACS)","UNSCANNED WIP @AIM","A-GRADE AIM %"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
     + '   var so=0,sp=0,sa=0;\n'
     + '   rows.forEach(function(b){so+=Number(b.orderQty||0);sp+=Number(b.grossPlanned||0);sa+=Number(b.grossActual||0);\n'
     + '    var done=b.status==="completed"||b.effectivelyComplete;\n'
@@ -1847,8 +1861,8 @@ function openPlanTab(){
     + '    var st=b.status==="running"?" <b style=\'color:var(--teal);font-size:10px\'>RUNNING</b>":(done?" <small style=\'color:var(--t3)\'>done</small>":"");\n'
     + '    fh+="<tr><td>"+esc(m.machineId)+"</td><td class=\'mono\'>"+esc(b.batchNumber)+st+"</td><td>"+esc(b.customer||"\u2014")+"</td><td>"+esc(b.pcCode||"\u2014")+"</td><td>"+esc(b.colour||"\u2014")+"</td><td>"+esc(b.size||"\u2014")+"</td>"\n'
     + '     +"<td>"+esc(b.dprFirst||b.plannedStart||"\u2014")+"</td><td>"+end+"</td>"\n'
-    + '     +"<td class=\'num\'>"+num(b.orderQty)+"</td><td class=\'num\'>"+num(b.grossPlanned)+"</td><td class=\'num\'>"+num(b.grossActual)+"</td>"\n'
-    + '     +"<td class=\'num\'>"+num(b.unscannedWipAim)+"</td><td class=\'num\'>"+(b.aGradeAimPct==null?"\u2014":num(b.aGradeAimPct)+"%")+"</td><td class=\'num\'>"+(b.aimALacs==null?"\u2014":num(b.aimALacs))+"</td></tr>";});\n'
+    + '     +"<td class=\'num\'>"+num(b.orderQty)+"</td><td class=\'num\'>"+num(b.grossPlanned)+"</td><td class=\'num\'>"+num(b.grossActual)+"</td><td class=\'num\'>"+(b.aimALacs==null?"\u2014":num(b.aimALacs))+"</td>"\n'
+    + '     +"<td class=\'num\'>"+num(b.unscannedWipAim)+"</td><td class=\'num\'>"+(b.aGradeAimPct==null?"\u2014":num(b.aGradeAimPct)+"%")+"</td></tr>";});\n'
     + '   fh+="<tr style=\'background:var(--s3);font-weight:700\'><td colspan=\'8\'>"+esc(m.machineId)+" SUBTOTAL (shown)</td><td class=\'num\'>"+num(so)+"</td><td class=\'num\'>"+num(sp)+"</td><td class=\'num\'>"+num(sa)+"</td><td></td><td></td><td></td></tr></tbody></table>";});\n'
     + '  if(fh)h+="<div class=\'flband\'>FLOOR: "+esc(FL[d.floor]||d.floor)+"</div>"+fh;});\n'
     + ' document.getElementById("sheet1").innerHTML=h||"<div style=\'color:var(--t3)\'>Nothing matches the filters.</div>";}\n'
@@ -2107,12 +2121,18 @@ async function loadLedger(view, btn){
     // v55R item 8: the '+' sat INSIDE toString() — the month bound was never sent, so the
     // By-colour view errored and every summary view scanned the ledger unbounded (the slowness).
     const d = await api('/api/gpr/ledger/summary?' + q.toString() + ((view==='daily'||view==='colour'||view==='pc'||view==='movements') ? gMonthQS() : ''));
+    // v55T item 4: surface the real server error instead of the blind catch, and treat an empty
+    // result as the normal no-stock state (an empty ledger is not a failure).
+    if(!d.ok){ out.innerHTML = '<div class="empty">Ledger error: '+esc(d.error||'unknown')+'</div>'; return; }
+    if(view!=='pc' && !(d.rows||[]).length){ out.innerHTML = '<div class="empty">No stock movements yet in this cohort.</div>'; return; }
     if(view === 'pc'){
       // v55K item 12: PC-grouped view — salvage PC from the Planning order, cutting colour codes
       // from the cuttings master (fills in once the Excel is loaded).
       const rows = d.rows || [];
-      const out2 = document.getElementById('ledgerView');
-      if(!rows.length){ out2.innerHTML = '<div class="empty">No stock yet.</div>'; return; }
+      // v55T item 4: this wrote into #ledgerView, which does not exist — the null deref threw and
+      // the blind catch said "Could not load the ledger." Render into the tab's own container.
+      const out2 = out;
+      if(!rows.length){ out2.innerHTML = '<div class="empty">No stock yet in this cohort.</div>'; return; }
       const byPc = {};
       rows.forEach(r=>{ const k = r.pc_code || '(no PC)'; (byPc[k]=byPc[k]||[]).push(r); });
       let h = '';

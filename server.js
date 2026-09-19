@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v55S';
+const APP_BUILD = 'v55T';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25718,6 +25718,29 @@ app.post('/api/gpr/tt/:id/label', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ─── v55T item 3 (Ishan, 19 Sep) — START PRODUCTION from GPR Planning: going forward GPR owns
+// this action; while GPR is in test mode Planning remains the primary flow, but the control is
+// live here too. Sets the order's status to 'running' in Planning state (the same fact Planning's
+// own flow records), audited; the batch then appears in the Issue TT pick-list immediately.
+app.post('/api/gpr/order-start', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const bn = String((req.body || {}).batch || '').trim().toUpperCase();
+    if (!bn) return res.status(400).json({ ok: false, error: 'batch required' });
+    const st = getPlanningState();
+    const o = (st.orders || []).find(x => x && !x.deleted && String(x.batchNumber || '').toUpperCase() === bn);
+    if (!o) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
+    if (o.status === 'running') return res.status(409).json({ ok: false, error: 'ALREADY_RUNNING', detail: bn + ' is already in production.' });
+    if (o.status === 'completed' || o.status === 'closed') return res.status(409).json({ ok: false, error: 'ALREADY_DONE', detail: bn + ' is ' + o.status + '.' });
+    o.status = 'running';
+    if (!o.startDate) o.startDate = new Date(Date.now() + _GPR_IST_MS).toISOString().slice(0, 10);
+    await savePlanningState(st);
+    logAudit(session.username, session.role, 'gpr', 'GPR_ORDER_START', `batch=${bn} machine=${o.machineId || '?'}`, req.ip);
+    res.json({ ok: true, batch: bn, machineId: o.machineId || null, status: 'running' });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ─── v55S (Ishan, 19 Sep) — LABEL HISTORY: complete register of every generated TT label,
 // filterable by batch / PC / machine / floor / side / date, Tracking-style. Reprints are counted
 // from the audit trail (GPR_TT_LABEL_REPRINT), so the register shows first generation + reprints.
@@ -26630,17 +26653,45 @@ app.get('/api/gpr/plan', async (req, res) => {
       (o.status === 'running' || [o.startDate, o.endDate, o.manualEndDate, o.dprFirstDate, o.dprLastDate].some(inMonth)));
     const nowIdx = _gprShiftIdx(new Date());
     const nowMs = Date.now();
+    // v55T item 1: the machine banner must read exactly as Planning's header — rated L/day from
+    // the planning machine master, Avg Actual from DPR (plant-cum rule: day_qty>0 days only,
+    // mirroring /api/actuals/machine-summary), Live A per the v54B cohort rule (production START
+    // month, pre-July absorption) = Report E's machine subtotal by construction.
+    const mmRated = {};
+    (st.machineMaster || []).forEach(m => { if (m && m.id) mmRated[m.id] = Number(m.cap || 0) || null; });
+    const monthFrom = month + '-01', monthTo = month + '-31';
+    const P2r = pgPool ? ['$1', '$2'] : ['?', '?'];
+    const rateSql = `SELECT machine_id, SUM(day_qty) AS total_qty, COUNT(*) AS days
+                     FROM ( SELECT machine_id, date, SUM(qty_lakhs) AS day_qty
+                            FROM production_actuals
+                            WHERE date >= ${P2r[0]} AND date <= ${P2r[1]}
+                            GROUP BY machine_id, date ) t
+                     WHERE day_qty > 0 GROUP BY machine_id`;
+    const rateRows = pgPool ? (await pgPool.query(rateSql, [monthFrom, monthTo])).rows : db.prepare(rateSql).all(monthFrom, monthTo);
+    const mcAvg = {};
+    (rateRows || []).forEach(r => { const d = Number(r.days || 0); if (d > 0) mcAvg[r.machine_id] = +(Number(r.total_qty || 0) / d).toFixed(1); });
+    const _cohortYm = o => {
+      const d = o.dprFirstDate || o.startDate;
+      const x = new Date(String(d || '').slice(0, 10));
+      if (isNaN(x.getTime())) return '';
+      const ym = `${x.getFullYear()}-${String(x.getMonth() + 1).padStart(2, '0')}`;
+      return ym < '2026-07' ? '2026-07' : ym;   // v50C pre-July absorption, as Planning applies it
+    };
     const byMc = {};
     for (const o of orders) { (byMc[o.machineId] = byMc[o.machineId] || []).push(o); }
     const machines = [];
     for (const mc of Object.keys(byMc).sort()) {
       const q = byMc[mc].sort((a, b) => String(a.startDate || a.dprFirstDate || a.endDate || '').localeCompare(String(b.startDate || b.dprFirstDate || b.endDate || '')) || (a.id > b.id ? 1 : -1));
       let rate = await _gprMachineRate(mc);
+      const mcA = { aG: 0, insp: 0 };   // v55T: cohort Live A accumulator (v54B rule)
       const rows = []; let cursor = null;
       for (const o of q) {
         const bn = String(o.batchNumber).toUpperCase();
         const started = o.status === 'running' || o.status === 'completed' || !!o.dprFirstDate;
         const live = started ? await _gprBatchLive(bn, o) : null;
+        if (live && Number(live.inspected || 0) > 0 && _cohortYm(o) === month) {
+          mcA.aG += Number(live.aGrade || 0); mcA.insp += Number(live.inspected || 0);   // v55T cohort Live A
+        }
         const grossPlanned = Number(o.grossQty || 0);
         const grossActual = live ? Number(live.gross || 0) : 0;
         const aPct = live && live.aimPct != null ? Number(live.aimPct) : null;
@@ -26718,8 +26769,11 @@ app.get('/api/gpr/plan', async (req, res) => {
           beginPrepAt: { date: prepInfo.date, shift: prepInfo.shift, atISO: new Date(prep.ms + _GPR_IST_MS).toISOString().replace('Z', '+05:30').replace(/\.\d{3}/, '') },
           prepHours, status, actual: act });
       }
-      const _runRow = rows.find(r => r.status === 'running');
-      machines.push({ machineId: mc, ratePerDay: +(rate * 3).toFixed(1), liveAPct: _runRow && _runRow.aGradeAimPct != null ? _runRow.aGradeAimPct : null, ratePerShift: +Number(rate || 0).toFixed(2), batches: rows, cascade });
+      machines.push({ machineId: mc,
+        ratedPerDay: mmRated[mc] != null ? mmRated[mc] : +(rate * 3).toFixed(1),          // Planning machine master cap (L/day)
+        avgActualPerDay: mcAvg[mc] != null ? mcAvg[mc] : null,                            // DPR plant-cum avg, same as Planning header
+        liveAPct: mcA.insp > 0 ? +((mcA.aG / mcA.insp) * 100).toFixed(1) : null,          // v54B cohort rule
+        ratePerShift: +Number(rate || 0).toFixed(2), batches: rows, cascade });
     }
     const alerts = machines.flatMap(m => m.cascade.filter(c => c.status === 'prepare-now' || c.status === 'overdue'));
     res.json({ ok: true, floor, month, assumedAGradePct: assumedA, prepHours,
