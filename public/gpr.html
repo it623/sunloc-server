@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v56P</title>
+<title>GPR · build v56R</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -48,7 +48,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
   z-index:200;display:flex;align-items:center;flex-wrap:wrap;padding:0 16px;gap:0 4px;box-shadow:0 2px 8px rgba(26,19,8,.22)}
 .nbrand{font-family:var(--fc);font-weight:800;font-size:15px;letter-spacing:1px;color:#e0a355;white-space:nowrap;margin-right:10px;flex-shrink:0}
 .nbrand b{color:#fff}
-/* v56P (Ishan): the header reads "GPR" with the build as a small pill beside it — the
+/* v56R (Ishan): the header reads "GPR" with the build as a small pill beside it — the
        ".tracker" suffix added length without saying anything. */
     .nbrand small{font-size:11px;color:rgba(255,255,255,.45);font-weight:400;margin-left:4px}
     .vpill{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:9px;
@@ -89,7 +89,10 @@ input[readonly]{background:var(--s3);color:var(--t2)}
     tr.grandrow>td.usecol{background:#3a1d1d;color:#f5d9d9}
     /* v56D item 3: TT entry opens as a MODAL over the page — a batch's tank preparation should not
        drag the whole sheet with it. The sheet stays put underneath and returns on close. */
-    .ttmodal{position:fixed;inset:0;z-index:180;background:rgba(22,33,58,.45);overflow:auto;padding:18px 12px}
+    /* v56R item 2: this MUST outrank #nav (z-index 200). At 180 the overlay rendered beneath the
+       fixed nav, so its sticky header — and the only close button — sat behind the nav at top:0
+       and could never be scrolled into view. The modal now covers the nav, as a modal should. */
+    .ttmodal{position:fixed;inset:0;z-index:240;background:rgba(22,33,58,.45);overflow:auto;padding:18px 12px;overscroll-behavior:contain}
     .ttmodal > .ttmbox{max-width:1180px;margin:0 auto;background:var(--s1);border-radius:var(--r);
       box-shadow:var(--shadow-md);padding:0 0 14px}
     .ttmodal .ttmhead{position:sticky;top:0;z-index:2;background:var(--amber-l);border-bottom:1px solid var(--amber);
@@ -287,8 +290,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v56P</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56P</div>
+    <h1>GPR<span class="vpill">v56R</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56R</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -308,7 +311,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v56P</span></div>
+  <div class="nbrand">GPR<span class="vpill">v56R</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -992,7 +995,7 @@ function showPage(id, btn){
   if(id==='plan')   loadPlan();
   if(id==='mmt'){   mmSection(window._MMSEC||'w'); loadSuggestions(); }   // v56A item 24 / v56B item 1
   if(id==='mmt'){ try{ document.getElementById('m_tank_wrap').style.display = (CUR_FLOOR==='GF') ? '' : 'none'; }catch(_){}}
-  if(id==='yield'){ buildYieldPickers(); gprBatchList().then(rcFillBatches); }   // v56P item 6
+  if(id==='yield'){ buildYieldPickers(); gprBatchList().then(rcFillBatches); }   // v56R item 6
   if(id==='log'){ buildYieldPickers(); loadBatchOptions(); loadInputsLog(); loadLabelHistory(); }
   if(id==='masters'){ _pcIdx(); }
   // v56C item 6: 'issue' is no longer a page — openTtEntry() does this work on the TT page.
@@ -1506,7 +1509,7 @@ async function loadInputsLog(){
   }catch(e){ out.innerHTML = '<div class="empty">Could not load the log.</div>'; }
 }
 
-// ── v56P: MATERIAL CONSUMPTION SUMMARY — every input, per floor and summed ─────
+// ── v56R: MATERIAL CONSUMPTION SUMMARY — every input, per floor and summed ─────
 // One kilogram must be counted once. Gelatine melted at MMT is consumed from the store at the
 // MMT stage; when a TT links that MMT charge its virgin draw is an internal transfer of the same
 // material, so it is reported separately and excluded from the consumed total.
@@ -2129,16 +2132,16 @@ function ttModalOpen(title, bodyHtml){
   if(!ov){
     ov = document.createElement('div');
     ov.id = 'ttModal';
-    // v56P: align-items:center clipped the TOP of any modal taller than the viewport — the header
+    // v56R: align-items:center clipped the TOP of any modal taller than the viewport — the header
     // and its close button became unreachable because a centred flex child cannot scroll upward.
     // Start-aligned with the OVERLAY scrolling fixes it at any content height.
-    ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,33,58,.45);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,33,58,.45);z-index:240;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
     ov.onclick = e=>{ if(e.target===ov) ov.style.display='none'; };
     ov.innerHTML = '<div id="ttModalBox" style="background:var(--s1);border-radius:var(--r);box-shadow:var(--shadow-md);max-width:520px;width:100%;margin:auto;padding:0;overflow:visible"></div>';
     document.body.appendChild(ov);
   }
   document.getElementById('ttModalBox').innerHTML =
-    // v56P item 4: the header band is amber and sticks to the top of the box, so the title and the
+    // v56R item 4: the header band is amber and sticks to the top of the box, so the title and the
     // close control stay distinct from the content and remain reachable however long the body is.
     '<div style="position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;'
     + 'background:linear-gradient(180deg,#fff9e6,#fff3cd);border-bottom:1px solid #e8d68a;'
@@ -2576,9 +2579,14 @@ async function gprBatchSummary(bn){
   try{ const p = await api('/api/gpr/tt-plan/' + encodeURIComponent(bn)); if(p.ok) pl = p.plan || null; }catch(e){}
   const o = d.order || {};
   const dt = v => v ? String(v).slice(0,16).replace('T',' ') : '—';
-  let h = '<div style="font-size:12px;color:var(--t2);margin-bottom:8px">'+esc(o.machineId||'—')+' · '+esc(o.customer||'—')+' · PC '+esc(o.pcCode||'—')+' · '+esc(o.colour||'—')+' · size '+esc(String(o.size||'—'))
-     + ' · <b>'+esc((o.status||'—').toUpperCase())+'</b> · '+esc(o.start||'—')+' → '+esc(o.end||'—')+'</div>';
-  if(d.live) h += '<div style="font-size:12px;margin-bottom:8px">Gross actual <b>'+fmt(d.live.gross,2)+' L</b> · A-grade AIM <b>'+(d.live.aimPct==null?'—':fmt(d.live.aimPct,1)+'%')+'</b> · AIM A-grade <b>'+fmt(d.live.aGradeLacs,2)+' lacs</b> · Unscanned WIP <b>'+fmt(d.live.unscannedWipAim,2)+' L</b></div>';
+  // v56R item 1: the batch identity and its live figures sit in their own amber band, so they
+  // read as the batch's header rather than dissolving into the first table.
+  let h = '<div style="background:linear-gradient(180deg,#fff9e6,#fff3cd);border:1px solid #e8d68a;'
+     + 'border-left:4px solid var(--amber);border-radius:var(--r);padding:9px 12px;margin-bottom:10px">'
+     + '<div style="font-size:12px;color:#6b4a08;font-weight:600">'+esc(o.machineId||'—')+' · '+esc(o.customer||'—')+' · PC '+esc(o.pcCode||'—')+' · '+esc(o.colour||'—')+' · size '+esc(String(o.size||'—'))
+     + ' · <b>'+esc((o.status||'—').toUpperCase())+'</b> · '+esc(o.start||'—')+' → '+esc(o.end||'—')+'</div>'
+     + (d.live ? '<div style="font-size:12px;color:#6b4a08;margin-top:4px;border-top:1px solid #e8d68a;padding-top:4px">Gross actual <b>'+fmt(d.live.gross,2)+' L</b> · A-grade AIM <b>'+(d.live.aimPct==null?'—':fmt(d.live.aimPct,1)+'%')+'</b> · AIM A-grade <b>'+fmt(d.live.aGradeLacs,2)+' lacs</b> · Unscanned WIP <b>'+fmt(d.live.unscannedWipAim,2)+' L</b></div>' : '')
+     + '</div>';
   // v56C item 2: planned vs actual vs remaining — production AND gelatine — so a running batch is
   // read and continued from this one modal.
   if(d.gel){
@@ -2983,7 +2991,7 @@ async function loadShiftWise(q){
         + '<td class="num gencol">'+fmt(r.C.gen,1)+'</td><td class="num usecol">'+fmt(r.C.con,1)+'</td>'
         + '<td class="num gencol"><b>'+fmt(r.gen,1)+'</b></td><td class="num usecol">'+fmt(r.con,1)+'</td>'
         + '<td class="num" style="color:'+_netCol(r.net)+'"><b>'+fmt(r.net,1)+'</b></td>'
-        + '</tr>';   // v56P item 5: PC column dropped — it added width without informing the shift view
+        + '</tr>';   // v56R item 5: PC column dropped — it added width without informing the shift view
     });
     h += '<tr class="sumrow"><td colspan="3">'+esc(_dm(day))+' &mdash; DAY TOTAL</td>'
       + ['A','B','C'].map(s=>'<td class="num gencol">'+fmt(D[s].g,1)+'</td><td class="num usecol">'+fmt(D[s].c,1)+'</td>').join('')
@@ -2993,7 +3001,7 @@ async function loadShiftWise(q){
   h += '<tr class="grandrow"><td colspan="3">GRAND TOTAL &mdash; '+rows.length+' machine-day-account rows</td>'
     + ['A','B','C'].map(s=>'<td class="num gencol">'+fmt(T[s].g,1)+'</td><td class="num usecol">'+fmt(T[s].c,1)+'</td>').join('')
     + '<td class="num gencol">'+fmt(T.g,1)+'</td><td class="num usecol">'+fmt(T.c,1)+'</td>'
-    + '<td class="num"><b>'+fmt(T.g-T.c,1)+'</b></td></tr>';   // v56P: PC cell dropped
+    + '<td class="num"><b>'+fmt(T.g-T.c,1)+'</b></td></tr>';   // v56R: PC cell dropped
   out.innerHTML = '<div class="tswrap" style="max-height:520px">' + h + '</tbody></table></div>';
 }
 // v56 item 25 (early slice): every ledger view exports with proper headers.
@@ -3050,6 +3058,7 @@ function ttGate(anchored, bn){
   const note = document.getElementById('ttGateNote');
   if(planCard) planCard.style.display = anchored ? 'none' : '';
   if(entryCard) entryCard.style.display = anchored ? '' : 'none';
+  if(note) note.style.display = anchored ? 'none' : '';   // v56R: an empty note must not paint a bare band
   if(note) note.innerHTML = anchored ? ''
     : '<b>'+esc(bn||'This batch')+' has not been anchored yet.</b> Run <b>Compute plan</b>, then '
       + '<b>Prepare next CAP tank</b> / <b>Prepare next BODY tank</b> — that fixes the planned quantity '
@@ -3182,7 +3191,7 @@ function exportLedger(){
       num: typeof rows[0][k] === 'number' })) });
 }
 // v56C item 13: the human-readable window/filter line shown above every ledger view.
-// v56P item 5: negative net = stock drawn down = green; positive net = accumulating = red.
+// v56R item 5: negative net = stock drawn down = green; positive net = accumulating = red.
 function _netCol(v){ const n = Number(v||0); return Math.abs(n)<0.05 ? 'var(--t3)' : (n < 0 ? 'var(--green)' : 'var(--red)'); }
 function _lgColGroup(){ return '<colgroup><col style="width:15%"><col style="width:20%"><col style="width:21%">'+'<col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:11%"></colgroup>'; }
 function _lgWindowLabel(){
@@ -3387,7 +3396,7 @@ function switchYield(which, btn){
   if(which==='daily' && !val('yd_to')){ setVal('yd_to', productionDay()); setVal('yd_from', productionDay()); }
   if(which==='month' && !val('ym_month')) setVal('ym_month', productionDay().slice(0,7));
 }
-// v56P item 6: one batch list feeds every Yield picker, and it carries customer and PC so the
+// v56R item 6: one batch list feeds every Yield picker, and it carries customer and PC so the
 // chemist can narrow by either before choosing a batch. Fetched once per session.
 async function gprBatchList(){
   if(window._BLIST) return window._BLIST;
@@ -3414,7 +3423,7 @@ async function rcFillBatches(){
   if(!sel) return;
   const keep = sel.value;
   sel.innerHTML = '<option value="">choose a batch'+(rows.length?' ('+rows.length+')':'')+'</option>'
-    + rows.slice(0,800).map(r=>'<option value="'+esc(r.batch)+'">'+esc(r.batch)
+    + rows.slice(0,800).map(r=>'<option value="'+esc(r.batch)+'">'+(r.day?esc(_dm(r.day))+' \u00b7 ':'')+esc(r.batch)
         + ' \u00b7 ' + esc(r.machineId||'') + (r.pcCode?' \u00b7 PC '+esc(r.pcCode):'')
         + (r.customer?' \u00b7 '+esc(String(r.customer).slice(0,22)):'') + '</option>').join('');
   if(keep && rows.some(r=>r.batch===keep)) sel.value = keep;
@@ -3963,7 +3972,7 @@ function buildGMonth(){
   for(let k=0;k<13;k++){
     const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth()-k, 1));
     const v = d.toISOString().slice(0,7);
-    // v56P: the current month is self-evident from the date — the "(current)" suffix was noise.
+    // v56R: the current month is self-evident from the date — the "(current)" suffix was noise.
       opts.push('<option value="'+v+'">'+d.toLocaleString('en',{month:'short',timeZone:'UTC'})+' '+d.getUTCFullYear()+'</option>');
   }
   opts.push('<option value="ALL">All time</option>');

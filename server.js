@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56P';
+const APP_BUILD = 'v56R';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25919,6 +25919,15 @@ app.post('/api/gpr/batch-plan/anchor', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v56R: Planning dates arrive as plain dates, ISO datetimes or parseable strings; normalise to
+// YYYY-MM-DD so they sort chronologically instead of lexicographically.
+function _gprDateStr(d) {
+  if (!d) return '';
+  const str = String(d);
+  if (/^\d{4}-\d{2}-\d{2}/.test(str)) return str.slice(0, 10);
+  const dt = new Date(str);
+  return isNaN(dt) ? '' : dt.toISOString().slice(0, 10);
+}
 // v56N item 6: batch/customer/PC picker source - read-only, straight from Planning state.
 app.get('/api/gpr/batch-list', async (req, res) => {
   try {
@@ -25934,9 +25943,17 @@ app.get('/api/gpr/batch-list', async (req, res) => {
       out.push({ batch: bn, machineId: o.machineId || '', customer: o.customer || '',
         pcCode: o.pcCode || o.pc_code || '', status: o.status || '',
         floor: gprFloorOfMachine(o.machineId, masters) || '',
-        day: String(o.dprFirstDate || o.startDate || '').slice(0, 10) || null });
+        day: _gprDateStr(o.dprFirstDate || o.startDate) || null });
     }
-    out.sort((a, b) => String(b.day || '').localeCompare(String(a.day || '')) || a.batch.localeCompare(b.batch));
+    // v56R item 3: strict chronological order, newest first. A plain slice(0,10) was wrong because
+    // Planning dates are not uniformly ISO — a non-ISO value yielded text like "Fri Sep 19", which
+    // sorted lexicographically and scattered the list. Undated batches sort last, not first.
+    out.sort((a, b) => {
+      if (a.day && b.day && a.day !== b.day) return b.day.localeCompare(a.day);
+      if (a.day && !b.day) return -1;
+      if (!a.day && b.day) return 1;
+      return a.batch.localeCompare(b.batch);
+    });
     const customers = Array.from(new Set(out.map(r => r.customer).filter(Boolean))).sort();
     const pcs = Array.from(new Set(out.map(r => r.pcCode).filter(Boolean))).sort();
     res.json({ ok: true, rows: out, customers, pcs, count: out.length });
