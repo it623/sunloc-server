@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56C';
+const APP_BUILD = 'v56H';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -992,6 +992,25 @@ const MIGRATIONS = [
       CREATE INDEX IF NOT EXISTS idx_gpr_ledger_batch ON gpr_ledger(batch_number);
       CREATE INDEX IF NOT EXISTS idx_gpr_ledger_acct ON gpr_ledger(account);
       CREATE INDEX IF NOT EXISTS idx_gpr_ledger_pending ON gpr_ledger(receipt_status);
+    `
+  },
+  {
+    version: 80,
+    name: 'v56d_batch_plan_anchor',
+    // v56D item 1 (Ishan, 20 Sep): a batch's TT plan is ANCHORED when its first tank is prepared.
+    // Until now planned figures were recomputed on every read, so they could drift if the size
+    // master's avg weight or the Planning gross changed mid-batch — and "planned vs issued vs
+    // remaining" would silently move. The anchor freezes what the batch was actually planned
+    // against; recomputation remains the source only until the anchor exists.
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_batch_plan (
+        batch TEXT PRIMARY KEY,
+        machine_id TEXT, size TEXT, gross_lakhs REAL, avg_mg REAL,
+        gelatine_kg REAL, solution_l REAL, colour_kg REAL,
+        cap_litres REAL, cap_fill_l REAL, cap_tt INTEGER,
+        body_litres REAL, body_fill_l REAL, body_tt INTEGER,
+        anchored_by TEXT, anchored_at TEXT NOT NULL DEFAULT (datetime('now'))
+      );
     `
   },
   {
@@ -4790,6 +4809,11 @@ async function ensurePostgresTables() {
       `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_batch ON gpr_ledger(batch_number)`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_acct ON gpr_ledger(account)`,
       `CREATE INDEX IF NOT EXISTS idx_gpr_ledger_pending ON gpr_ledger(receipt_status)`,
+      // v56D migration-80 mirror — anchored batch plan
+      `CREATE TABLE IF NOT EXISTS gpr_batch_plan (batch TEXT PRIMARY KEY, machine_id TEXT, size TEXT,
+        gross_lakhs REAL, avg_mg REAL, gelatine_kg REAL, solution_l REAL, colour_kg REAL,
+        cap_litres REAL, cap_fill_l REAL, cap_tt INTEGER, body_litres REAL, body_fill_l REAL, body_tt INTEGER,
+        anchored_by TEXT, anchored_at TEXT NOT NULL DEFAULT (NOW()::TEXT))`,
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -25539,7 +25563,10 @@ app.get('/api/gpr/tt-plan/:batch', async (req, res) => {
     const sizeKey = '#' + String(order.size || '').replace(/^#/, '');
     const wt = await gprAvgMg(batch, sizeKey, masters);   // same resolver as yield + credits
 
-    const plan = gprComputeSolutionPlan({
+    const anchor = await _gprPlanAnchor(batch);
+    // v56D: an override recomputes for display, but the anchored plan is what the batch is
+    // measured against once it exists.
+    const live = gprComputeSolutionPlan({
       grossLakhs,
       size: sizeKey,
       machineId: order.machineId,
@@ -25547,6 +25574,7 @@ app.get('/api/gpr/tt-plan/:batch', async (req, res) => {
       actualAvgMg: req.query.avgMg ? Number(req.query.avgMg) : null,
       resolvedAvgMg: wt.avgMg,
     });
+    const plan = (anchor && !req.query.avgMg) ? anchor : live;
 
     const P = pgPool ? '$1' : '?';
     const isSql = `SELECT side, COUNT(*) AS tt, COALESCE(SUM(actual_l),0) AS litres
@@ -25560,7 +25588,7 @@ app.get('/api/gpr/tt-plan/:batch', async (req, res) => {
     });
 
     res.json({
-      ok: true, batch, plan, issued: issuedMap, aGrade: ag, weightBasis: wt,
+      ok: true, batch, plan, live, anchored: !!anchor, anchor, issued: issuedMap, aGrade: ag, weightBasis: wt,
       order: {
         customer: order.customer || '', pcCode: order.pcCode || order.pc_code || '',
         size: order.size || '', qty: order.qty || 0, grossQty: grossLakhs,
@@ -25829,6 +25857,325 @@ app.post('/api/gpr/tt/:id/label', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ─── v56D item 1 — ANCHORED BATCH PLAN ──────────────────────────────────────────────────────
+// Reading an anchor: every surface that reports "planned" prefers the anchored row, so Planning,
+// the batch modal and the TT screen quote the same figures for the life of the batch.
+async function _gprPlanAnchor(batch) {
+  try {
+    const sql = `SELECT * FROM gpr_batch_plan WHERE UPPER(batch)=${pgPool ? '$1' : '?'}`;
+    const bn = String(batch || '').toUpperCase();
+    const r = pgPool ? (await pgPool.query(sql, [bn])).rows[0] : db.prepare(sql).get(bn);
+    if (!r) return null;
+    return {
+      anchored: true, anchoredAt: r.anchored_at, anchoredBy: r.anchored_by,
+      inputs: { grossLakhs: Number(r.gross_lakhs || 0), size: r.size, machineId: r.machine_id, avgMg: Number(r.avg_mg || 0) },
+      gelatineKg: Number(r.gelatine_kg || 0), totalSolutionL: Number(r.solution_l || 0), colourKg: Number(r.colour_kg || 0),
+      cap: { litres: Number(r.cap_litres || 0), fillL: Number(r.cap_fill_l || 0), ttPlanned: Number(r.cap_tt || 0) },
+      body: { litres: Number(r.body_litres || 0), fillL: Number(r.body_fill_l || 0), ttPlanned: Number(r.body_tt || 0) },
+    };
+  } catch (e) { return null; }
+}
+
+app.post('/api/gpr/batch-plan/anchor', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const bn = String((req.body || {}).batch || '').trim().toUpperCase();
+    if (!bn) return res.status(400).json({ ok: false, error: 'batch required' });
+    const existing = await _gprPlanAnchor(bn);
+    if (existing) return res.json({ ok: true, batch: bn, plan: existing, alreadyAnchored: true });
+    const order = gprFindOrder(bn);
+    if (!order) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
+    const masters = await gprLoadMasters();
+    const sizeKey = '#' + String(order.size || '').replace(/^#/, '');
+    const wt = await gprAvgMg(bn, sizeKey, masters).catch(() => ({ avgMg: 0 }));
+    const p = gprComputeSolutionPlan({
+      grossLakhs: Number(order.grossQty || order.qty || 0), size: sizeKey, machineId: order.machineId,
+      masters, actualAvgMg: Number((req.body || {}).avgMg) > 0 ? Number(req.body.avgMg) : null,
+      resolvedAvgMg: wt.avgMg });
+    const cols = [bn, order.machineId || null, sizeKey, p.inputs.grossLakhs, p.inputs.avgMg,
+      p.gelatineKg, p.totalSolutionL, p.colourKg,
+      p.cap.litres, p.cap.fillL, p.cap.ttPlanned,
+      p.body.litres, p.body.fillL, p.body.ttPlanned, session.username];
+    const ph = cols.map((_, k) => pgPool ? `$${k + 1}` : '?').join(',');
+    const ins = `INSERT INTO gpr_batch_plan (batch, machine_id, size, gross_lakhs, avg_mg, gelatine_kg,
+                   solution_l, colour_kg, cap_litres, cap_fill_l, cap_tt, body_litres, body_fill_l, body_tt, anchored_by)
+                 VALUES (${ph}) ON CONFLICT(batch) DO NOTHING`;
+    if (pgPool) await pgPool.query(ins, cols); else db.prepare(ins).run(...cols);
+    logAudit(session.username, session.role, 'gpr', 'GPR_PLAN_ANCHOR',
+      `batch=${bn} gross=${p.inputs.grossLakhs} avgMg=${p.inputs.avgMg} cap=${p.cap.ttPlanned} body=${p.body.ttPlanned}`, req.ip);
+    res.json({ ok: true, batch: bn, plan: await _gprPlanAnchor(bn) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── v56G item 3 — GPR PERFORMANCE REPORT: planned vs actual for every batch in one place ───
+// One row per batch: material against plan with the variance attributed, TT issued against plan,
+// and the holding-time exceptions. Each batch costs a live-figure lookup, so the set is bounded
+// and the response says plainly when it was capped rather than silently truncating.
+app.get('/api/gpr/performance', async (req, res) => {
+  try {
+    const { machine, floor, batch, status } = req.query;
+    const isD = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+    const ym = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : null;
+    const from = isD(req.query.from) ? String(req.query.from) : (ym ? ym + '-01' : null);
+    const to = isD(req.query.to) ? String(req.query.to) : (ym ? ym + '-31' : null);
+    const LIMIT = Math.min(Number(req.query.limit || 80), 150);
+
+    const st = getPlanningState();
+    const masters = await gprLoadMasters();
+    const dayOf = o => String(o.dprFirstDate || o.startDate || '').slice(0, 10);
+    let orders = (st.orders || []).filter(o => o && !o.deleted && o.batchNumber);
+    if (batch) orders = orders.filter(o => String(o.batchNumber).toUpperCase().includes(String(batch).toUpperCase()));
+    if (machine) orders = orders.filter(o => String(o.machineId || '').toUpperCase() === String(machine).toUpperCase());
+    if (floor) orders = orders.filter(o => gprFloorOfMachine(o.machineId, masters) === floor);
+    if (status) orders = orders.filter(o => String(o.status || '') === String(status));
+    if (from) orders = orders.filter(o => !dayOf(o) || dayOf(o) >= from);
+    if (to) orders = orders.filter(o => !dayOf(o) || dayOf(o) <= to);
+    // only batches that actually have tanks or actuals are meaningful here
+    orders = orders.filter(o => o.status === 'running' || o.status === 'completed' || o.status === 'closed' || o.dprFirstDate);
+    orders.sort((a, b) => String(dayOf(b)).localeCompare(String(dayOf(a))));
+    const capped = orders.length > LIMIT;
+    const use = orders.slice(0, LIMIT);
+
+    const rows = [];
+    for (const o of use) {
+      const bn = String(o.batchNumber).toUpperCase();
+      try {
+        const sizeKey = '#' + String(o.size || '').replace(/^#/, '');
+        const anchorRow = await _gprPlanAnchor(bn);
+        const planned = anchorRow || gprComputeSolutionPlan({
+          grossLakhs: Number(o.grossQty || o.qty || 0), size: sizeKey,
+          machineId: o.machineId, masters, actualAvgMg: null, resolvedAvgMg: null });
+        const live = await _gprBatchLive(bn, o).catch(() => null);
+        const wt = await gprAvgMg(bn, sizeKey, masters).catch(() => ({ avgMg: 0, actualMg: null }));
+        const P1 = pgPool ? '$1' : '?';
+        const mSql = `SELECT COALESCE(SUM(virgin_kg),0)+COALESCE(SUM(salvage_kg),0)+COALESCE(SUM(cutting_kg),0)
+                             +COALESCE(SUM(fg_remelt_kg),0) AS gel,
+                             COALESCE(SUM(colour_kg),0) AS colour, COUNT(*) AS tanks
+                      FROM gpr_tt WHERE UPPER(batch_number)=${P1}`;
+        const mr = (pgPool ? (await pgPool.query(mSql, [bn])).rows[0] : db.prepare(mSql).get(bn)) || {};
+        const usedGel = +Number(mr.gel || 0).toFixed(2);
+        const aimPct = live && live.aimPct != null ? Number(live.aimPct) : null;
+        const grossA = live ? Number(live.gross || 0) : 0;
+        const aG = live ? Number(live.aGrade || 0) : 0;
+        const Qa = grossA > 0 ? grossA : (aG > 0 && aimPct > 0 ? aG / (aimPct / 100) : 0);
+        const Qp = Number(planned.inputs.grossLakhs || 0);
+        const Wp = Number(planned.inputs.avgMg || 0) / 10;
+        const WaMg = wt.actualMg != null ? Number(wt.actualMg) : Number(wt.avgMg || 0);
+        const Wa = WaMg / 10;
+        const plannedGel = Number(planned.gelatineKg || 0);
+        const requiredForActual = +(Qa * Wa).toFixed(2);
+        const qtyEffect = +((Qa - Qp) * Wp).toFixed(2);
+        const weightEffect = +((Wa - Wp) * Qa).toFixed(2);
+        const processVariance = +(usedGel - requiredForActual).toFixed(2);
+        const totalDifference = +(usedGel - plannedGel).toFixed(2);
+        const tt = await _gprTtVariance(bn, planned);
+        rows.push({
+          batch: bn, machineId: o.machineId || '', floor: gprFloorOfMachine(o.machineId, masters) || '',
+          customer: o.customer || '', pcCode: o.pcCode || o.pc_code || '', size: o.size || '',
+          status: o.status || '', day: dayOf(o) || null, anchored: !!anchorRow,
+          plannedGel: +plannedGel.toFixed(2), usedGel, totalDifference,
+          pctOfPlan: plannedGel > 0 ? +(totalDifference / plannedGel * 100).toFixed(1) : null,
+          qtyEffect, weightEffect, processVariance, requiredForActual,
+          plannedAvgMg: +Number(planned.inputs.avgMg || 0).toFixed(2), actualAvgMg: +WaMg.toFixed(2),
+          grossPlannedLacs: +Qp.toFixed(2), grossActualLacs: +Qa.toFixed(2), aimPct,
+          ttPlanned: tt.total.planned, ttIssued: tt.total.issued, ttEntered: tt.total.entered,
+          ttVariance: tt.total.ttVariance, overFillTanks: tt.total.overFillTanks, underFillTanks: tt.total.underFillTanks,
+          overFillL: tt.total.overFillL, underFillL: tt.total.underFillL, netFillL: tt.total.netFillL,
+          shortHold: tt.total.shortHold,
+          capPlanned: tt.cap.planned, capIssued: tt.cap.issued, bodyPlanned: tt.body.planned, bodyIssued: tt.body.issued,
+          avgHoldCap: tt.cap.avgHoldHours, avgHoldBody: tt.body.avgHoldHours,
+        });
+      } catch (e) { /* one bad batch must not lose the report */ }
+    }
+    res.json({ ok: true, from, to, rows, capped, matched: orders.length, shown: rows.length, minHoldHours: GPR_MIN_HOLD_HOURS });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── v56G (Ishan, 20 Sep) — TT VARIANCE + HOLDING TIME ──────────────────────────────────────
+// Per batch and per side: tanks planned vs issued, and the fill variance split into over-fill and
+// under-fill. Holding time is scan-in → scan-out (the maturation window the solution actually sat
+// for); tanks released in under the required hold are counted and listed, since that is a quality
+// exception, not a statistic. Nothing here is stored — it is derived from the tanks themselves.
+const GPR_MIN_HOLD_HOURS = 2;
+function _gprHoldHours(t) {
+  const P = v => { if (!v) return null; let sv = String(v).replace(/(\.\d{3})\d+/, '$1').replace(/([+-]\d{2})$/, '$1:00');
+    const ms = Date.parse(sv); return isNaN(ms) ? null : ms; };
+  const a = P(t.scan_in_at), b = P(t.scan_out_at);
+  if (a == null || b == null || b < a) return null;
+  return +((b - a) / 3600000).toFixed(2);
+}
+async function _gprTtVariance(bn, plan) {
+  const P = pgPool ? '$1' : '?';
+  const sql = `SELECT id, tt_number, side, seq_index, planned_l, actual_l, capacity_l, total_charged_kg,
+                      scan_in_at, scan_out_at, issued_at, is_under_fill, under_fill_reason, status
+               FROM gpr_tt WHERE UPPER(batch_number)=${P} ORDER BY side, seq_index, id`;
+    const rows = pgPool ? (await pgPool.query(sql, [String(bn).toUpperCase()])).rows
+                        : db.prepare(sql).all(String(bn).toUpperCase());
+  const mk = () => ({ planned: 0, entered: 0, issued: 0, plannedLitres: 0, actualLitres: 0,
+    overFillTanks: 0, overFillL: 0, underFillTanks: 0, underFillL: 0, shortHold: 0, holdSum: 0, holdN: 0 });
+  const out = { cap: mk(), body: mk() };
+  const shortHoldTanks = [];
+  (rows || []).forEach(t => {
+    const k = String(t.side || '').toLowerCase();
+    const a = out[k]; if (!a) return;
+    a.entered++;
+    if (t.issued_at) a.issued++;
+    const pl = Number(t.planned_l || 0), ac = Number(t.actual_l || 0);
+    a.plannedLitres += pl; a.actualLitres += ac;
+    const d = +(ac - pl).toFixed(2);
+    if (pl > 0 && d > 0.05) { a.overFillTanks++; a.overFillL += d; }
+    else if (pl > 0 && d < -0.05) { a.underFillTanks++; a.underFillL += -d; }
+    const hh = _gprHoldHours(t);
+    if (hh != null) {
+      a.holdSum += hh; a.holdN++;
+      if (hh < GPR_MIN_HOLD_HOURS) {
+        a.shortHold++;
+        shortHoldTanks.push({ tt: t.tt_number, side: k, hours: hh, scanIn: t.scan_in_at, scanOut: t.scan_out_at });
+      }
+    }
+  });
+  ['cap', 'body'].forEach(k => {
+    const a = out[k];
+    a.planned = plan && plan[k] ? Number(plan[k].ttPlanned || 0) : 0;
+    a.ttVariance = a.issued - a.planned;
+    a.avgHoldHours = a.holdN ? +(a.holdSum / a.holdN).toFixed(2) : null;
+    ['plannedLitres', 'actualLitres', 'overFillL', 'underFillL'].forEach(f => { a[f] = +a[f].toFixed(1); });
+    a.netFillL = +(a.actualLitres - a.plannedLitres).toFixed(1);
+    delete a.holdSum; delete a.holdN;
+  });
+  const tot = {
+    planned: out.cap.planned + out.body.planned, issued: out.cap.issued + out.body.issued,
+    entered: out.cap.entered + out.body.entered,
+    overFillTanks: out.cap.overFillTanks + out.body.overFillTanks,
+    underFillTanks: out.cap.underFillTanks + out.body.underFillTanks,
+    overFillL: +(out.cap.overFillL + out.body.overFillL).toFixed(1),
+    underFillL: +(out.cap.underFillL + out.body.underFillL).toFixed(1),
+    shortHold: out.cap.shortHold + out.body.shortHold,
+  };
+  tot.ttVariance = tot.issued - tot.planned;
+  tot.netFillL = +(out.cap.netFillL + out.body.netFillL).toFixed(1);
+  return { cap: out.cap, body: out.body, total: tot, shortHoldTanks, minHoldHours: GPR_MIN_HOLD_HOURS };
+}
+
+// ─── v56F (Ishan, 20 Sep) — MATERIAL RECONCILIATION: planned vs actual, with the difference
+// ATTRIBUTED. Material is quantity × weight-per-unit, so the variance splits exactly into a
+// quantity effect and a weight effect using the standard two-factor decomposition:
+//     qty effect    = (Q_actual − Q_planned) × W_planned
+//     weight effect = (W_actual − W_planned) × Q_actual
+//     these two sum EXACTLY to (Q_a·W_a − Q_p·W_p) — no residual, by construction.
+// Q is gross capsules in lacs (what actually consumed material); W is kg per lac = avgMg/10.
+// A third bucket is reported honestly and is NOT forced into the two: the gap between the material
+// that output mathematically required and what was physically charged into the tanks (over/under
+// charging, spillage, recording). Folding that into "weight" would misattribute a real process loss.
+app.get('/api/gpr/reconcile/:batch', async (req, res) => {
+  try {
+    const bn = String(req.params.batch || '').trim().toUpperCase();
+    if (!bn) return res.status(400).json({ ok: false, error: 'batch required' });
+    const order = gprFindOrder(bn);
+    if (!order) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
+    const masters = await gprLoadMasters();
+    const sizeKey = '#' + String(order.size || '').replace(/^#/, '');
+
+    // ── PLANNED: the anchored plan if the batch has one, else the live computation ──
+    const anchorRow = await _gprPlanAnchor(bn);
+    const planned = anchorRow || gprComputeSolutionPlan({
+      grossLakhs: Number(order.grossQty || order.qty || 0), size: sizeKey,
+      machineId: order.machineId, masters, actualAvgMg: null, resolvedAvgMg: null });
+
+    // ── ACTUAL output: gross lacs and the label-derived weight (never the anchor) ──
+    const live = await _gprBatchLive(bn, order).catch(() => null);
+    const wt = await gprAvgMg(bn, sizeKey, masters).catch(() => ({ avgMg: 0, actualMg: null, basis: 'unknown' }));
+
+    // ── ACTUAL material physically charged, by component ──
+    const P = pgPool ? '$1' : '?';
+    const mSql = `SELECT COALESCE(SUM(virgin_kg),0) AS virgin, COALESCE(SUM(salvage_kg),0) AS salvage,
+                         COALESCE(SUM(cutting_kg),0) AS cutting, COALESCE(SUM(fg_remelt_kg),0) AS fg_remelt,
+                         COALESCE(SUM(colour_kg),0) AS colour, COALESCE(SUM(total_charged_kg),0) AS total,
+                         COUNT(*) AS tanks, COALESCE(SUM(actual_l),0) AS litres
+                  FROM gpr_tt WHERE UPPER(batch_number)=${P}`;
+    const mr = (pgPool ? (await pgPool.query(mSql, [bn])).rows[0] : db.prepare(mSql).get(bn)) || {};
+    const N = v => +Number(v || 0).toFixed(3);
+    const actual = { virgin: N(mr.virgin), salvage: N(mr.salvage), cutting: N(mr.cutting),
+      fgRemelt: N(mr.fg_remelt), colour: N(mr.colour), totalCharged: N(mr.total),
+      tanks: Number(mr.tanks || 0), litres: N(mr.litres) };
+    // gelatine-equivalent = everything that becomes capsule mass (colour is tracked separately)
+    actual.gelatineEquiv = N(actual.virgin + actual.salvage + actual.cutting + actual.fgRemelt);
+
+    // ── the two quantities and the two weights ──
+    const aimPct = live && live.aimPct != null ? Number(live.aimPct) : null;
+    const grossActualLacs = live ? Number(live.gross || 0) : 0;
+    const aGradeLacs = live ? Number(live.aGrade || 0) : 0;
+    // Q: gross lacs consumed material. If gross is not yet posted but A-grade is, gross it up by A%.
+    const Qa = grossActualLacs > 0 ? grossActualLacs
+             : (aGradeLacs > 0 && aimPct > 0 ? +(aGradeLacs / (aimPct / 100)).toFixed(3) : 0);
+    const Qp = Number(planned.inputs.grossLakhs || 0);
+    const Wp = Number(planned.inputs.avgMg || 0) / 10;        // kg per lac
+    const WaMg = wt.actualMg != null ? Number(wt.actualMg) : Number(wt.avgMg || 0);
+    const Wa = WaMg / 10;
+
+    const plannedGelatine = Number(planned.gelatineKg || 0);
+    const requiredForActual = +(Qa * Wa).toFixed(3);          // what the real output mathematically needed
+    const qtyEffect = +((Qa - Qp) * Wp).toFixed(3);
+    const weightEffect = +((Wa - Wp) * Qa).toFixed(3);
+    const processVariance = +(actual.gelatineEquiv - requiredForActual).toFixed(3);
+    const totalDifference = +(actual.gelatineEquiv - plannedGelatine).toFixed(3);
+    // identity check — the three buckets must reproduce the total exactly
+    const check = +(qtyEffect + weightEffect + processVariance - totalDifference).toFixed(3);
+
+    res.json({ ok: true, batch: bn,
+      order: { machineId: order.machineId || null, customer: order.customer || '', pcCode: order.pcCode || order.pc_code || '',
+        size: order.size || '', status: order.status || '' },
+      basis: { anchored: !!anchorRow, anchoredAt: anchorRow ? anchorRow.anchoredAt : null,
+        plannedAvgMg: +Number(planned.inputs.avgMg || 0).toFixed(3), actualAvgMg: +WaMg.toFixed(3),
+        weightBasis: wt.basis, aimPct, grossPlannedLacs: Qp, grossActualLacs: +Qa.toFixed(3),
+        aGradeLacs: +aGradeLacs.toFixed(3), grossPosted: grossActualLacs > 0 },
+      planned: { gelatine: +plannedGelatine.toFixed(3), colour: +Number(planned.colourKg || 0).toFixed(3),
+        solutionL: +Number(planned.totalSolutionL || 0).toFixed(1) },
+      actual,
+      variance: { requiredForActual, totalDifference, qtyEffect, weightEffect, processVariance, identityCheck: check },
+      tt: await _gprTtVariance(bn, planned),   // v56G item 1: TT planned vs issued, fill and hold
+    });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── v56E (Ishan, 20 Sep) — RE-ANCHOR: the anchored plan is an ESTIMATE. Production's real
+// average weight comes from the labels and must never be blocked or masked by it. When the label
+// basis has moved materially, the planner re-anchors DELIBERATELY — old and new values both go to
+// the audit trail. Actual figures (yield, A-grade, credits) never read the anchor at all: they
+// resolve weight through gprAvgMg from tracking_labels, exactly as before.
+app.post('/api/gpr/batch-plan/reanchor', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const bn = String((req.body || {}).batch || '').trim().toUpperCase();
+    if (!bn) return res.status(400).json({ ok: false, error: 'batch required' });
+    const prev = await _gprPlanAnchor(bn);
+    if (!prev) return res.status(409).json({ ok: false, error: 'NOT_ANCHORED', detail: bn + ' has no anchored plan yet.' });
+    const order = gprFindOrder(bn);
+    if (!order) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
+    const masters = await gprLoadMasters();
+    const sizeKey = '#' + String(order.size || '').replace(/^#/, '');
+    const wt = await gprAvgMg(bn, sizeKey, masters).catch(() => ({ avgMg: 0 }));
+    const p = gprComputeSolutionPlan({
+      grossLakhs: Number(order.grossQty || order.qty || 0), size: sizeKey, machineId: order.machineId,
+      masters, actualAvgMg: Number((req.body || {}).avgMg) > 0 ? Number(req.body.avgMg) : null,
+      resolvedAvgMg: wt.avgMg });
+    const up = `UPDATE gpr_batch_plan SET gross_lakhs=${pgPool ? '$1' : '?'}, avg_mg=${pgPool ? '$2' : '?'},
+                  gelatine_kg=${pgPool ? '$3' : '?'}, solution_l=${pgPool ? '$4' : '?'}, colour_kg=${pgPool ? '$5' : '?'},
+                  cap_litres=${pgPool ? '$6' : '?'}, cap_fill_l=${pgPool ? '$7' : '?'}, cap_tt=${pgPool ? '$8' : '?'},
+                  body_litres=${pgPool ? '$9' : '?'}, body_fill_l=${pgPool ? '$10' : '?'}, body_tt=${pgPool ? '$11' : '?'},
+                  anchored_by=${pgPool ? '$12' : '?'}, anchored_at=${pgPool ? 'NOW()::TEXT' : "datetime('now')"}
+                WHERE UPPER(batch)=${pgPool ? '$13' : '?'}`;
+    const args = [p.inputs.grossLakhs, p.inputs.avgMg, p.gelatineKg, p.totalSolutionL, p.colourKg,
+      p.cap.litres, p.cap.fillL, p.cap.ttPlanned, p.body.litres, p.body.fillL, p.body.ttPlanned, session.username, bn];
+    if (pgPool) await pgPool.query(up, args); else db.prepare(up).run(...args);
+    logAudit(session.username, session.role, 'gpr', 'GPR_PLAN_REANCHOR',
+      `batch=${bn} avgMg ${prev.inputs.avgMg} -> ${p.inputs.avgMg} · cap TT ${prev.cap.ttPlanned} -> ${p.cap.ttPlanned} · body TT ${prev.body.ttPlanned} -> ${p.body.ttPlanned}`, req.ip);
+    res.json({ ok: true, batch: bn, previous: prev, plan: await _gprPlanAnchor(bn) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ─── v56C item 4 (Ishan, 20 Sep) — CLOSE BATCH from GPR: the counterpart to order-start. Sets
 // the order's status to 'closed' through Planning's own save path, audited. A closed batch is
 // history: it keeps every figure it earned and stops appearing as a TT target.
@@ -26081,7 +26428,7 @@ app.get('/api/gpr/batch-summary/:batch', async (req, res) => {
     try {
       if (order) {
         const masters2 = await gprLoadMasters();
-        const sPlan = gprComputeSolutionPlan({
+        const sPlan = (await _gprPlanAnchor(bn)) || gprComputeSolutionPlan({
           grossLakhs: Number(order.grossQty || order.qty || 0),
           size: '#' + String(order.size || '').replace(/^#/, ''),
           machineId: order.machineId, masters: masters2, actualAvgMg: null, resolvedAvgMg: null });
@@ -27215,17 +27562,51 @@ app.get('/api/gpr/plan', async (req, res) => {
       const ttAgg = {};
       if (_bns.length) {
         const ph = _bns.map((_, k) => pgPool ? `$${k + 1}` : '?').join(',');
+        // v56H item 1: the sheet now carries the full reconciliation per batch, so the same
+        // grouped query also returns the gelatine-equivalent charged, the fill variance and the
+        // short-hold count — still ONE query per machine, not one per batch.
         const aSql = `SELECT UPPER(batch_number) AS bn, side, COUNT(*) AS tt,
                              COALESCE(SUM(actual_l),0) AS litres,
                              COALESCE(SUM(total_charged_kg),0) AS charged,
+                             COALESCE(SUM(virgin_kg),0)+COALESCE(SUM(salvage_kg),0)
+                               +COALESCE(SUM(cutting_kg),0)+COALESCE(SUM(fg_remelt_kg),0) AS gel_kg,
+                             COALESCE(SUM(planned_l),0) AS planned_l,
+                             SUM(CASE WHEN planned_l > 0 AND actual_l > planned_l + 0.05 THEN 1 ELSE 0 END) AS over_n,
+                             SUM(CASE WHEN planned_l > 0 AND actual_l < planned_l - 0.05 THEN 1 ELSE 0 END) AS under_n,
                              SUM(CASE WHEN issued_at IS NOT NULL THEN 1 ELSE 0 END) AS tt_issued,
                              COALESCE(SUM(CASE WHEN issued_at IS NOT NULL THEN actual_l ELSE 0 END),0) AS litres_issued
                       FROM gpr_tt WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number), side`;
         const aRows = pgPool ? (await pgPool.query(aSql, _bns)).rows : db.prepare(aSql).all(..._bns);
+        // short holds: computed in JS because the boundary is a duration, not a column
+        const hSql = `SELECT UPPER(batch_number) AS bn, scan_in_at, scan_out_at FROM gpr_tt
+                      WHERE UPPER(batch_number) IN (${ph}) AND scan_in_at IS NOT NULL AND scan_out_at IS NOT NULL`;
+        const hRows = pgPool ? (await pgPool.query(hSql, _bns)).rows : db.prepare(hSql).all(..._bns);
+        const holdN = {};
+        (hRows || []).forEach(r => {
+          const hh = _gprHoldHours(r);
+          if (hh != null && hh < GPR_MIN_HOLD_HOURS) holdN[String(r.bn).toUpperCase()] = (holdN[String(r.bn).toUpperCase()] || 0) + 1;
+        });
+        // label-derived actual weight per batch — one query for every batch on this machine
+        const wCol = String((masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants).labelNetWeightColumn || 'net_weight_kg');
+        const wByBatch = {};
+        if (/^[a-z_][a-z0-9_]*$/i.test(wCol)) {
+          try {
+            const wSql = `SELECT UPPER(batch_number) AS bn, COALESCE(SUM(${wCol}),0) AS w, COALESCE(SUM(qty),0) AS q
+                          FROM tracking_labels WHERE UPPER(batch_number) IN (${ph}) AND COALESCE(voided,0)=0
+                            AND ${wCol} IS NOT NULL AND ${wCol} > 0 GROUP BY UPPER(batch_number)`;
+            const wRows = pgPool ? (await pgPool.query(wSql, _bns)).rows : db.prepare(wSql).all(..._bns);
+            (wRows || []).forEach(r => {
+              const w = Number(r.w || 0), q = Number(r.q || 0);
+              if (w > 0 && q > 0) wByBatch[String(r.bn).toUpperCase()] = +((w * 10) / q).toFixed(3);
+            });
+          } catch (e) { /* labels unavailable — the sheet falls back to the planned weight */ }
+        }
         (aRows || []).forEach(r => {
           const bn2 = String(r.bn).toUpperCase(), sd = String(r.side || '').toLowerCase();
           const e = ttAgg[bn2] = ttAgg[bn2] || {};
           e[sd] = { tt: Number(r.tt || 0), litres: Number(r.litres || 0), charged: Number(r.charged || 0),
+                    gelKg: Number(r.gel_kg || 0), plannedL: Number(r.planned_l || 0),
+                    overN: Number(r.over_n || 0), underN: Number(r.under_n || 0),
                     ttIssued: Number(r.tt_issued || 0), litresIssued: Number(r.litres_issued || 0) };
         });
       }
@@ -27300,7 +27681,9 @@ app.get('/api/gpr/plan', async (req, res) => {
         }
         // v56B item 2: planned solution/TT from the canonical resolver, issued from the tanks.
         try {
-          const sPlan = gprComputeSolutionPlan({
+          // v56D item 1: the ANCHORED plan wins once the batch's first tank was prepared, so the
+          // sheet keeps quoting what the batch was actually planned against.
+          const sPlan = (await _gprPlanAnchor(bn)) || gprComputeSolutionPlan({
             grossLakhs: grossPlanned, size: '#' + String(o.size || '').replace(/^#/, ''),
             machineId: mc, masters, actualAvgMg: null, resolvedAvgMg: null });
           const agg = ttAgg[bn] || {};
@@ -27317,8 +27700,39 @@ app.get('/api/gpr/plan', async (req, res) => {
                      kgRemaining: +Math.max(0, kgPlan - a.charged).toFixed(1) };
           };
           const cap = side('cap'), body = side('body');
+          // ── v56H item 1: the reconciliation, per batch, on the sheet itself ──────────────
+          // Same arithmetic as Yield → Material reconciliation (quantity effect uses the planned
+          // weight, weight effect uses the actual quantity, so the two close exactly), plus the
+          // process bucket. Actual weight is the label-derived figure — never the anchor.
+          const _agg = agg;
+          const usedGel = +(((_agg.cap || {}).gelKg || 0) + ((_agg.body || {}).gelKg || 0)).toFixed(2);
+          const Qp2 = Number(sPlan.inputs.grossLakhs || 0);
+          const Wp2 = Number(sPlan.inputs.avgMg || 0) / 10;
+          const _aimPct = live && live.aimPct != null ? Number(live.aimPct) : null;
+          const _grossA = live ? Number(live.gross || 0) : 0;
+          const _aG = live ? Number(live.aGrade || 0) : 0;
+          const Qa2 = _grossA > 0 ? _grossA : (_aG > 0 && _aimPct > 0 ? _aG / (_aimPct / 100) : 0);
+          const WaMg2 = wByBatch[bn] != null ? wByBatch[bn] : Number(sPlan.inputs.avgMg || 0);
+          const Wa2 = WaMg2 / 10;
+          const reqForActual = +(Qa2 * Wa2).toFixed(2);
+          row.recon = {
+            plannedGel: +Number(sPlan.gelatineKg || 0).toFixed(2), usedGel,
+            totalDifference: +(usedGel - Number(sPlan.gelatineKg || 0)).toFixed(2),
+            requiredForActual: reqForActual,
+            qtyEffect: +((Qa2 - Qp2) * Wp2).toFixed(2),
+            weightEffect: +((Wa2 - Wp2) * Qa2).toFixed(2),
+            processVariance: +(usedGel - reqForActual).toFixed(2),
+            plannedAvgMg: +Number(sPlan.inputs.avgMg || 0).toFixed(2), actualAvgMg: +WaMg2.toFixed(2),
+            weightFromLabels: wByBatch[bn] != null,
+            ttPlanned: cap.ttPlanned + body.ttPlanned, ttIssued: cap.ttIssued + body.ttIssued,
+            overFillTanks: ((_agg.cap || {}).overN || 0) + ((_agg.body || {}).overN || 0),
+            underFillTanks: ((_agg.cap || {}).underN || 0) + ((_agg.body || {}).underN || 0),
+            shortHold: holdN[bn] || 0, anchored: !!sPlan.anchored,
+          };
+          row.recon.ttVariance = row.recon.ttIssued - row.recon.ttPlanned;
           row.gel = {
             kgPlanned: sPlan.gelatineKg, solutionPlannedL: sPlan.totalSolutionL, avgMg: sPlan.inputs.avgMg,
+            anchored: !!sPlan.anchored, anchoredAt: sPlan.anchoredAt || null,
             kgIssued: +(cap.kgIssued + body.kgIssued).toFixed(1),
             kgRemaining: +Math.max(0, sPlan.gelatineKg - (cap.kgIssued + body.kgIssued)).toFixed(1),
             litresIssued: +(cap.litresIssued + body.litresIssued).toFixed(1),

@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v56C</title>
+<title>GPR.tracker · build v56H</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -65,6 +65,30 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 #wrap{padding:calc(var(--nav) + 16px) 18px 60px;max-width:1400px;margin:0 auto}
 .page{display:none}.page.on{display:block}
 .tswrap{max-height:420px;overflow:auto;border:1px solid var(--b1);border-radius:var(--r)}
+    /* v56E item 2: the copy-last-charge control is meant to be seen and used every shift. */
+    .btn.aplc{background:linear-gradient(180deg,#1f7a4d,#16603c);border-color:#12512f;color:#fff;
+      font-weight:800;letter-spacing:.4px;font-size:12.5px;padding:7px 16px;box-shadow:0 1px 3px rgba(0,0,0,.25)}
+    .btn.aplc:hover{background:linear-gradient(180deg,#249059,#1a6e45)}
+    /* v56D item 6: generation reads green, consumption reads red, and the total rows break the
+       table instead of blending into it. */
+    td.gencol,th.gencol{background:#eef8ef}
+    td.usecol,th.usecol{background:#fdeeee}
+    th.gencol{color:#256b2c}
+    th.usecol{color:#9e2b2b}
+    tr.sumrow>td{background:#dfe7f2;font-weight:700;border-top:2px solid var(--b2);border-bottom:1px solid var(--b2)}
+    tr.sumrow>td.gencol{background:#cfe4d2}
+    tr.sumrow>td.usecol{background:#f0d6d6}
+    tr.grandrow>td{background:#16213a;color:#fff;font-weight:700;border-top:3px solid #0d1526}
+    tr.grandrow>td.gencol{background:#1d3a24;color:#d8f0da}
+    tr.grandrow>td.usecol{background:#3a1d1d;color:#f5d9d9}
+    /* v56D item 3: TT entry opens as a MODAL over the page — a batch's tank preparation should not
+       drag the whole sheet with it. The sheet stays put underneath and returns on close. */
+    .ttmodal{position:fixed;inset:0;z-index:180;background:rgba(22,33,58,.45);overflow:auto;padding:18px 12px}
+    .ttmodal > .ttmbox{max-width:1180px;margin:0 auto;background:var(--s1);border-radius:var(--r);
+      box-shadow:var(--shadow-md);padding:0 0 14px}
+    .ttmodal .ttmhead{position:sticky;top:0;z-index:2;background:var(--amber-l);border-bottom:1px solid var(--amber);
+      padding:9px 14px;display:flex;align-items:center;gap:10px;flex-wrap:wrap;border-radius:var(--r) var(--r) 0 0}
+    body.ttopen{overflow:hidden}
     /* v56C items 1/9/11: the control bars are tinted so they read as controls, not as another
        table, and their filters sit on ONE row that wraps only when the screen truly runs out. */
     .ctlbar{background:linear-gradient(180deg,#fff9e6,#fff3cd);border:1px solid #e8d68a;
@@ -192,7 +216,11 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 .kpi-sub{font-size:10.5px;color:var(--t4);margin-top:3px;font-weight:500}
 
 /* ── SIGNATURE 1: four-account ledger strip ────────── */
-.acct-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(180px,1fr));gap:10px;margin-bottom:16px}
+/* v56H item 2: six accounts fit one row on a normal screen instead of orphaning one. */
+    .acct-strip{display:grid;grid-template-columns:repeat(auto-fit,minmax(148px,1fr));gap:8px;margin-bottom:16px}
+    @media(min-width:1100px){.acct-strip{grid-template-columns:repeat(6,1fr)}}
+    .acct-strip .acct{min-width:0}
+    .acct-strip .acct b,.acct-strip .acct .lbl{overflow-wrap:anywhere}
 .acct{background:var(--s1);border:1px solid var(--b1);border-left:4px solid var(--t4);border-radius:var(--r);padding:11px 13px;position:relative;overflow:hidden}
 .acct[data-a="cutting"]{border-left-color:var(--accent)}
 .acct[data-a="aim_salvage"]{border-left-color:var(--teal)}
@@ -254,7 +282,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56C</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56H</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -274,7 +302,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v56C</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v56H</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -322,15 +350,15 @@ input[readonly]{background:var(--s3);color:var(--t2)}
     <!-- v56C item 6: the TT entry form is a panel of this page now, not a separate tab. It opens
          from "+ New TT entry" here or from a batch click in Planning, and closes back to the sheet. -->
     <div id="ttEntryPanel" style="display:none">
-      <div class="card" style="padding:8px 14px;background:var(--amber-l);border-color:var(--amber)">
-        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-          <b style="font-family:var(--fc);font-size:13px">TT entry</b>
-          <span id="ttEntryCtx" style="font-family:var(--mono);font-size:11.5px;color:var(--t2)"></span>
-          <button class="btn sm" style="margin-left:auto" onclick="closeTtEntry()">&#10005; Close entry &mdash; back to the sheet</button>
-        </div>
+      <div class="ttmbox">
+      <div class="ttmhead">
+        <b style="font-family:var(--fc);font-size:13px">TT entry</b>
+        <span id="ttEntryCtx" style="font-family:var(--mono);font-size:11.5px;color:var(--t2)"></span>
+        <button class="btn sm" style="margin-left:auto" onclick="closeTtEntry()">&#10005; Close &mdash; back to the sheet</button>
       </div>
+      <div id="ttGateNote" style="margin:10px 14px 0;padding:8px 12px;border:1px solid var(--amber);border-left:4px solid var(--amber);border-radius:var(--r);background:var(--amber-l);font-size:12px;color:var(--t2)"></div>
 
-    <div class="card">
+    <div class="card" id="ttPlanCard">
       <div class="card-title">Plan the batch</div>
       <div class="card-sub">Enter a batch to see the solution it needs. Gross comes straight from Planning, so GPR and Planning always agree.</div>
       <div class="fgrid" style="margin-bottom:12px">
@@ -341,7 +369,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div id="ttPlanResult"></div>
     </div>
 
-    <div class="card">
+    <div class="card" id="ttEntryCard">
       <div class="card-title">Enter transfer tanks — Cap &amp; Body together</div>
       <div class="card-sub">Pick the batch and both side tables auto-fill from Planning and the machine master. Enter each tank's actuals in its side, then <b>Complete TT entry</b> — the tanks are created and their labels are printed from the panel below (separate action). Material movements post to the ledger on completion.</div>
       <div class="fgroup-title">Batch — shared by both sides</div>
@@ -441,6 +469,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div id="ttList" class="tscroll"><div class="empty">Loading today's log…</div></div>
     </div>
   
+      </div>
     </div>
     <div id="sheetKpis"></div>
     <div class="card">
@@ -463,6 +492,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <button class="btn sm" onclick="exportPlan()">Export XLSX</button>
         <button class="btn sm" onclick="openPlanTab()">Open in new tab &#8599;</button>
         <button class="btn sm" id="pl_gelbtn" onclick="plToggleGel()" title="Gelatine kg and TT position per batch">Gelatine &amp; TT: on</button>
+        <button class="btn sm" id="pl_reconbtn" onclick="plToggleRecon()" title="Planned vs actual material with the difference attributed, per batch">Reconciliation: on</button>
         <span id="pl_now" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--t3)"></span>
       </div>
       <div id="pl_ctx" style="display:flex;gap:16px;flex-wrap:wrap;padding-top:7px;border-top:1px solid #e8d68a;font-size:11.5px;color:var(--t2)"></div>
@@ -494,6 +524,9 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div class="card">
       <div class="card-title">New MMT charge</div>
       <div class="card-sub">The mother charge in the Melter-Mixer Tank. Transfer tanks link back to it for full traceability to the vendor gelatine batch.</div>
+      <!-- v56E item 2: the copy action belongs where the chemist starts, not only at the bottom. -->
+      <div style="margin:9px 0 2px"><button class="btn aplc" onclick="mmtAsPerLast()" title="Copy the last charge on this floor">&#128203; AS PER LAST CHARGE</button>
+        <span style="font-size:11.5px;color:var(--t3);margin-left:8px">fills the recipe from the last charge on this floor &mdash; gelatine batch, tank and timestamps stay blank</span></div>
       <div class="fgrid">
         <div class="field-grp"><label>MMT reference *</label><input id="m_ref" placeholder="AUTO — assigned on save: MMT-FLOOR-DDMMYY-n"></div>
         <div class="field-grp"><label>Total charge (kg) *</label><input id="m_total" type="number" inputmode="decimal" placeholder="e.g. 1000"></div>
@@ -528,6 +561,9 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       </div>
       <div class="row" style="margin-top:16px">
         <button class="btn primary" onclick="saveMmt()">Save charge</button>
+        <!-- v56D item 4: the recipe is stable charge to charge — copy the last one and edit the few
+             fields that differ, rather than retyping the whole form every time. -->
+        <button class="btn aplc" onclick="mmtAsPerLast()" title="Copy the last charge on this floor — quantities, chemicals and temperature; gelatine batch, tank and timestamps stay blank">&#128203; AS PER LAST CHARGE</button>
         <button class="btn" onclick="clearMmtForm()">Clear</button>
       </div>
     </div>
@@ -674,6 +710,34 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <div class="ftab on" id="yv-batch" onclick="switchYield('batch',this)">By batch</div>
         <div class="ftab" id="yv-daily" onclick="switchYield('daily',this)">Daily by floor</div>
         <div class="ftab" id="yv-month" onclick="switchYield('month',this)">Monthly by floor</div>
+        <!-- v56F (Ishan): yield alone does not say WHY material moved — this reconciles planned
+             against actual and attributes the gap. -->
+        <div class="ftab" id="yv-recon" onclick="switchYield('recon',this)">Material reconciliation</div>
+        <!-- v56G item 3: the ready reckoner — planned vs actual for every batch, one row each. -->
+        <div class="ftab" id="yv-perf" onclick="switchYield('perf',this)">GPR performance report</div>
+      </div>
+
+      <div id="yieldPerfPane" style="display:none">
+        <div class="ctlbar"><div class="fgrid">
+          <div class="field-grp"><label>Batch</label><input id="pf_batch" list="batchOpts" placeholder="all"></div>
+          <div class="field-grp"><label>Machine</label><input id="pf_machine" list="mcOpts" placeholder="all"></div>
+          <div class="field-grp"><label>Floor</label><select id="pf_floor"><option value="">All floors</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
+          <div class="field-grp"><label>Status</label><select id="pf_status"><option value="">All</option><option value="running">Running</option><option value="closed">Closed</option><option value="completed">Completed</option></select></div>
+          <div class="field-grp"><label>From</label><input id="pf_from" type="date"></div>
+          <div class="field-grp"><label>To</label><input id="pf_to" type="date"></div>
+          <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadPerf()">Run report</button></div>
+          <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportPerf()">Export</button></div>
+        </div></div>
+        <div id="perfOut"><div class="empty">Set the filters and run the report.</div></div>
+      </div>
+
+      <div id="yieldReconPane" style="display:none">
+        <div class="ctlbar"><div class="fgrid">
+          <div class="field-grp"><label>Batch</label><input id="rc_batch" list="batchOpts" placeholder="e.g. 26ZD145" onchange="loadReconcile()"></div>
+          <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadReconcile()">Reconcile</button></div>
+          <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportReconcile()">Export</button></div>
+        </div></div>
+        <div id="reconOut"><div class="empty">Pick a batch to reconcile its planned material against what was actually charged.</div></div>
       </div>
 
       <div id="yieldBatchPane">
@@ -1111,6 +1175,29 @@ function buildFloorTabs(){
     wrap.appendChild(d);
   });
 }
+// v56D item 4: fill the new-charge form from the most recent charge on this floor. Everything
+// that is genuinely per-charge — the reference (auto), the gelatine batch number, the tank and all
+// three timestamps — is deliberately LEFT BLANK, so nothing false is carried into a new charge.
+async function mmtAsPerLast(){
+  let rows = window._MMT_ROWS || [];
+  if(!rows.length){ await loadMmt(); rows = window._MMT_ROWS || []; }
+  const fl = (CUR_FLOOR && CUR_FLOOR!=='ALL') ? CUR_FLOOR : null;
+  const pool = rows.filter(c => !fl || c.floor === fl);
+  if(!pool.length){ toast('No previous charge on this floor to copy','err'); return; }
+  const last = pool.slice().sort((a,b)=> String(b.charge_start||b.created_at||'').localeCompare(String(a.charge_start||a.created_at||'')))[0];
+  setVal('m_total', last.total_kg || '');
+  setVal('m_vendor', last.gelatine_vendor || '');
+  setVal('m_gel', last.gelatine_kg || '');
+  setVal('m_water', last.water_kg || '');
+  setVal('m_temp', last.water_temp_c || '');
+  try{
+    const add = typeof last.additives_json === 'string' ? JSON.parse(last.additives_json) : (last.additives_json || {});
+    Object.entries(add).forEach(([k,v])=>{ const e = document.getElementById('m_'+k) || document.getElementById(k); if(e) e.value = v; });
+  }catch(e){}
+  ['m_gbatch','m_start','m_complete','m_ttprep'].forEach(id=>setVal(id,''));
+  const tk = document.getElementById('m_tank'); if(tk) tk.value = '';
+  toast('Copied ' + (last.mmt_ref||'the last charge') + ' — gelatine batch, tank and timestamps left blank','ok');
+}
 // ── v56A item 24: MMT sections — working vs history ─────────────────────────────────────────
 function mmSection(k){
   window._MMSEC = k;
@@ -1256,9 +1343,28 @@ async function loadTtPlan(){
       + kpi('Gross (from Planning)', fmt(o.grossQty,2)+' L', 'accent')
       + kpi('AIM A-Grade', ag.aimPct!=null?fmt(ag.aimPct,1)+'%':'—', '', basisLabel)
       + kpi('Solution needed', fmt(p.totalSolutionL,0)+' L')
-      + kpi('Avg weight used', fmt(p.inputs.avgMg,1)+' mg', d.weightBasis && d.weightBasis.basis!=='size-master' ? 'green' : '',
-            d.weightBasis ? d.weightBasis.basis : '')
+      // v56E (Ishan): the anchored plan is an ESTIMATE. Showing the frozen weight under the LIVE
+      // resolver's basis label claimed "live from Tracking" for a number that was not live. The
+      // planning weight and the label-derived production weight are now two separate figures, and
+      // a material divergence is called out rather than hidden.
+      + kpi(d.anchored ? 'Avg weight — planned' : 'Avg weight used', fmt(p.inputs.avgMg,1)+' mg',
+            d.anchored ? 'amber' : (d.weightBasis && d.weightBasis.basis!=='size-master' ? 'green' : ''),
+            d.anchored ? 'anchored estimate' : (d.weightBasis ? d.weightBasis.basis : ''))
+      + (d.weightBasis ? kpi('Avg weight — actual (labels)',
+            (d.weightBasis.actualMg!=null ? fmt(d.weightBasis.actualMg,1)+' mg' : '—'),
+            d.weightBasis.actualMg!=null ? 'green' : '',
+            d.weightBasis.actualMg!=null ? 'from production labels' : 'no labels yet') : '')
       + '</div>';
+    if(d.anchored && d.weightBasis && d.weightBasis.actualMg!=null){
+      const pa = Number(p.inputs.avgMg||0), ac = Number(d.weightBasis.actualMg||0);
+      const diff = pa>0 ? Math.abs(ac-pa)/pa : 0;
+      if(diff >= 0.02){
+        h += '<div class="banner warn"><b>Plan and production disagree on average weight.</b>'
+          + '<span>Planned at <b>'+fmt(pa,1)+' mg</b>; production labels give <b>'+fmt(ac,1)+' mg</b> ('
+          + fmt(diff*100,1)+'% apart). Yield, A-grade and ledger credits already use the <b>label</b> figure &mdash; only the planned tank counts still follow the anchor.</span>'
+          + '<button class="btn sm stop" onclick="gprReanchor(\''+esc(val('tp_batch'))+'\')">Re-anchor to '+fmt(ac,1)+' mg</button></div>';
+      }
+    }
     if(d.weightBasis && d.weightBasis.clamped){
       h += '<div class="banner warn"><b>Weight clamped.</b><span>Labels give '
          + fmt(d.weightBasis.actualMg,1)+' mg, which is outside tolerance of the '
@@ -1472,7 +1578,20 @@ function ycBatch(){
   window._YC_ONLY = bn;
   loadYieldReport();
 }
-function prepSide(side){
+async function prepSide(side){
+  // v56D item 1: preparing the first tank ANCHORS the batch's plan — this is the moment the
+  // planned quantity is fixed, so every later "remaining" is measured against it.
+  try{
+    const bn = val('tp_batch') || val('td_batch');
+    if(bn){
+      const d = await post('/api/gpr/batch-plan/anchor', { batch: bn, avgMg: num('tp_avgmg') || undefined });
+      if(d.ok && !d.alreadyAnchored) toast('Plan anchored for '+bn+' — this is what the batch is measured against','ok');
+      setVal('td_batch', bn);
+      ttGate(true, bn);
+      await dualPrefill();
+    }
+  }catch(e){}
+
   try{
     const pl = (window._TTPLAN55K||{})[side]; if(!pl){ toast('Compute the plan first','err'); return; }
     setVal('td_batch', pl.batch);
@@ -1633,10 +1752,12 @@ async function pcLinkFill(announce){
   const pc = val('td_pc').toUpperCase(); if(!pc) return;
   const idx = await _pcIdx();
   const e = idx.byPc[pc]; if(!e) { if(announce && idx.n) toast('PC '+pc+' is not in the Product Code master','' ); return; }
-  if(!val('td_colname')) setVal('td_colname', e.name || '');
+  // v56D: the PC master is authoritative for this batch — overwrite, never "fill if empty",
+  // otherwise a previous batch's codes persist onto the new tank.
+  setVal('td_colname', e.name || val('td_colname') || '');
   setVal('td_colcode', e.colourCode || '');
-  if(!val('tc_colcode')) setVal('tc_colcode', e.cap || '');
-  if(!val('tb_colcode')) setVal('tb_colcode', e.body || '');
+  setVal('tc_colcode', e.cap || '');
+  setVal('tb_colcode', e.body || '');
   if(announce) toast('PC '+pc+' → '+(e.name||'')+' · cap '+e.cap+' · body '+e.body, 'ok');
 }
 async function pcReverseLookup(el){
@@ -1652,18 +1773,35 @@ async function pcReverseLookup(el){
     toast(code+' is used by '+pcs.length+' PC'+(pcs.length===1?'':'s')+': '+pcs.slice(0,6).join(', ')+(pcs.length>6?' …':''), '');
   }
 }
+// v56D: every batch-scoped field is cleared when the batch CHANGES. Until now each field was
+// filled only when empty, so the previous batch's values survived — 26ZD145 (PC 2046, Pink Tr/Clr
+// Tr) was showing YL51/YL51 carried over from 26T115. A wrong colour code reaches the tank label,
+// so this resets first and fills authoritatively afterwards.
+function ttResetForBatch(bn){
+  const key = String(bn||'').toUpperCase();
+  if(window._TT_FORM_BATCH === key) return false;
+  window._TT_FORM_BATCH = key;
+  ['td_machine','td_floor','td_pc','td_colname','td_colcode'].forEach(id=>setVal(id,''));
+  ['tc','tb'].forEach(p=>{
+    ['_colcode','_cap','_planned','_actual','_seqtotal','_virgin','_colourkg','_fgremelt','_salvage','_cutting','_visc','_temp','_reason'].forEach(f=>setVal(p+f,''));
+    const mm = document.getElementById(p+'_mmt'); if(mm) mm.value='';
+    const sn = document.getElementById(p+'_seqnote'); if(sn) sn.innerHTML='';
+  });
+  return true;
+}
 async function dualPrefill(){
   const batch = val('td_batch'); if(!batch) return;
+  const changed = ttResetForBatch(batch);
   try{
     const d = await api('/api/gpr/tt-plan/' + encodeURIComponent(batch));
     if(d.ok && d.order){
-      if(!val('td_machine')) setVal('td_machine', d.order.machineId||'');
-      if(!val('td_pc')) setVal('td_pc', d.order.pcCode||'');
-      pcLinkFill(false);   // v55V: PC → colour codes, silently
+      setVal('td_machine', d.order.machineId||'');
+      setVal('td_pc', d.order.pcCode||'');
+      await pcLinkFill(false);   // v56D: awaited, and it now OVERWRITES rather than fills-if-empty
       setVal('td_floor', FLOOR_LABELS[d.order.floor] || d.order.floor || '');
       TT_ORDER_SIZE = d.order.size || '';
       const meta = (window._BATCHMETA||{})[String(batch).toUpperCase()];
-      if(meta && meta.colour && !val('td_colname')) setVal('td_colname', meta.colour);
+      if(meta && meta.colour && !val('td_colname')) setVal('td_colname', meta.colour);   // only if the PC master had no name
       const m = await ensureMasters();
       const mc = (m.tt_machine_master||{})[d.order.machineId];
       [['tc','cap'],['tb','body']].forEach(([p,k])=>{
@@ -1744,6 +1882,34 @@ async function completeDualTt(){
       document.getElementById(p+'_underfill').style.display='block';
       return;
     }
+  }
+  // ── v56G item 2: the chemist MAY deviate from the plan — production reality wins — but the
+  // deviation is called out at the moment it happens, not discovered later in the report. Each
+  // warning is a confirm, never a block: answering yes proceeds and the variance lands in the
+  // Yield reconciliation, where it is attributed.
+  const devs = [];
+  for(const [p, side] of sides){
+    const S = side.toUpperCase();
+    const planL = num(p+'_planned'), actL = num(p+'_actual'), capL = num(p+'_cap');
+    if(planL > 0 && actL > 0){
+      const dL = actL - planL, pct = Math.abs(dL)/planL*100;
+      if(pct >= 5) devs.push(S+' fill: '+fmt(actL,0)+' L against a planned '+fmt(planL,0)+' L ('+(dL>0?'+':'')+fmt(dL,0)+' L, '+fmt(pct,0)+'%)');
+    }
+    if(capL > 0 && actL > capL + 0.05) devs.push(S+' fill exceeds tank capacity: '+fmt(actL,0)+' L in a '+fmt(capL,0)+' L tank');
+    const tot = num(p+'_seqtotal');
+    const doneN = (window._TTLIST||[]).filter(t=>String(t.batch_number||'').toUpperCase()===String(batch).toUpperCase()
+      && String(t.side||'').toLowerCase()===side).length;
+    if(tot > 0 && doneN + 1 > tot) devs.push(S+' tank count: this is tank '+(doneN+1)+' of a planned '+tot);
+    const chg = num(p+'_virgin') + num(p+'_salvage') + num(p+'_cutting') + num(p+'_fgremelt');
+    if(actL > 0 && chg > 0){
+      const kgPerL = chg/actL;
+      if(kgPerL < 0.20 || kgPerL > 0.55) devs.push(S+' gelatine charge looks off: '+fmt(chg,1)+' kg for '+fmt(actL,0)+' L ('+fmt(kgPerL,2)+' kg/L)');
+    }
+  }
+  if(devs.length){
+    if(!confirm('This entry deviates from the plan:\n\n  • ' + devs.join('\n  • ')
+      + '\n\nProceed anyway? The deviation is recorded and will appear in Yield → Material reconciliation, attributed to quantity, weight or process.')) return;
+    toast('Deviation recorded — see Yield → Material reconciliation', '');
   }
   const created = [];
   for(const [p, side] of sides){
@@ -1973,6 +2139,12 @@ function _plBadge(st){
 }
 // ── v55Y items 8/9: collapsible sections + the always-on context strip ──────────────────────
 // v56B item 2: the gelatine block can be folded away on narrow screens; the rest is unchanged.
+function plToggleRecon(){
+  window._PLAN_RECON = (window._PLAN_RECON===false);
+  const b = document.getElementById('pl_reconbtn');
+  if(b) b.textContent = 'Reconciliation: ' + (window._PLAN_RECON===false ? 'off' : 'on');
+  return loadPlan();
+}
 function plToggleGel(){
   window._PLAN_GEL = (window._PLAN_GEL===false);
   const b = document.getElementById('pl_gelbtn');
@@ -2054,6 +2226,26 @@ function renderPlAlerts(){
 // ── v56B item 2: gelatine & TT cells. Planned figures come from the same solution resolver the
 // TT form uses; issued figures are the tanks actually issued, so the sheet reconciles with the TT
 // screen by construction. "P/I/R" reads planned / issued / remaining. ─────────────────────────
+// v56H item 1: per-batch reconciliation cells for the planning sheet — the same figures the
+// Yield reconciliation reports, so the two can never disagree.
+function _reconCells(b, hl){
+  const td = (x,extra) => '<td style="'+(extra||'')+'">'+x+'</td>';
+  const n = 'text-align:right;font-family:var(--mono)';
+  const R = b.recon;
+  if(!R) return new Array(10).fill(td('&mdash;',hl+n)).join('');   // a batch with no figures still needs its cells
+  const sign = v => (v>0?'+':'')+Number(v||0).toFixed(1);
+  const col = v => Math.abs(Number(v||0))<0.05 ? '' : (Number(v)>0 ? ';color:var(--red)' : ';color:var(--green)');
+  return td(Number(R.plannedGel||0).toFixed(1),hl+n)
+    + td('<b>'+Number(R.usedGel||0).toFixed(1)+'</b>',hl+n)
+    + td('<b>'+sign(R.totalDifference)+'</b>',hl+n+col(R.totalDifference))
+    + td(sign(R.qtyEffect),hl+n+col(R.qtyEffect))
+    + td(sign(R.weightEffect),hl+n+col(R.weightEffect))
+    + td(sign(R.processVariance),hl+n+col(R.processVariance))
+    + td(Number(R.plannedAvgMg||0).toFixed(1)+(R.anchored?'':'<span title="no anchored plan" style="color:var(--amber)">*</span>'),hl+n)
+    + td(Number(R.actualAvgMg||0).toFixed(1)+(R.weightFromLabels?'':'<span title="no labels yet — planned weight shown" style="color:var(--t3)">~</span>'),hl+n)
+    + td(R.ttIssued+'/'+R.ttPlanned+(R.ttVariance?' <b style="color:'+(R.ttVariance>0?'var(--red)':'var(--amber)')+'">'+(R.ttVariance>0?'+':'')+R.ttVariance+'</b>':''),hl+n)
+    + td(R.shortHold ? '<b style="color:var(--red)">'+R.shortHold+'</b>' : '<span style="color:var(--t3)">0</span>',hl+n);
+}
 function _gelCells(b, hl){
   // self-contained: td/num are locals of the sheet renderer, so they are redefined here rather
   // than captured — the harness caught this as "td is not defined" on the live plan render.
@@ -2133,16 +2325,25 @@ async function loadPlan(){
           + (window._PLAN_GEL===false ? '' :
              // v56B item 2: the gelatine position — what the batch needs, what has gone in, what is left
              ['GEL kg PLAN','GEL kg ISSUED','GEL kg REM','CAP TT P/I/R','CAP L REM','BODY TT P/I/R','BODY L REM'].map(th).join(''))
+          // v56H item 1: the reconciliation rides the sheet, so Planning is the complete working
+          // summary for GPR the way Report E is for production.
+          + (window._PLAN_RECON===false ? '' :
+             ['MAT PLAN kg','MAT USED kg','MAT DIFF','QTY CAUSE','WEIGHT CAUSE','PROCESS CAUSE','PLAN mg','ACTUAL mg','TT I/P','HOLD &lt;2h'].map(th).join(''))
           + '</tr></thead><tbody>';
         // v55Y item 6: the subtotal row carries EVERY numeric column, not just the first three.
         // Lacs and WIP sum; the A% is the machine's live cohort figure (a sum of percentages is
         // meaningless — this is the same figure the machine banner shows).
         let sOrd=0,sGP=0,sGA=0,sLacs=0,sWip=0,nLacs=0,nWip=0;
         let sGelP=0,sGelI=0,sGelR=0,sCapP=0,sCapI=0,sCapR=0,sBodP=0,sBodI=0,sBodR=0,sCapLR=0,sBodLR=0,nGel=0;
+        let sMP=0,sMU=0,sMD=0,sQ=0,sW=0,sPr=0,sTI=0,sTP=0,sSH=0,nRec=0;
         m.batches.forEach(b=>{
           sOrd+=Number(b.orderQty||0); sGP+=Number(b.grossPlanned||0); sGA+=Number(b.grossActual||0);
           if(b.aimALacs!=null){ sLacs+=Number(b.aimALacs); nLacs++; }
           if(b.unscannedWipAim!=null){ sWip+=Number(b.unscannedWipAim); nWip++; }
+          if(b.recon){ nRec++;
+            sMP+=Number(b.recon.plannedGel||0); sMU+=Number(b.recon.usedGel||0); sMD+=Number(b.recon.totalDifference||0);
+            sQ+=Number(b.recon.qtyEffect||0); sW+=Number(b.recon.weightEffect||0); sPr+=Number(b.recon.processVariance||0);
+            sTI+=Number(b.recon.ttIssued||0); sTP+=Number(b.recon.ttPlanned||0); sSH+=Number(b.recon.shortHold||0); }
           if(b.gel){ nGel++;
             sGelP+=b.gel.kgPlanned; sGelI+=b.gel.kgIssued; sGelR+=b.gel.kgRemaining;
             sCapP+=b.gel.cap.ttPlanned; sCapI+=b.gel.cap.ttIssued; sCapR+=b.gel.cap.ttRemaining; sCapLR+=b.gel.cap.litresRemaining;
@@ -2196,16 +2397,22 @@ async function loadPlan(){
             + td(num(b.unscannedWipAim),hl+'text-align:right;font-family:var(--mono)')
             + td(b.aGradeAimPct==null?'&mdash;':num(b.aGradeAimPct)+'%',hl+'text-align:right;font-family:var(--mono)')
             + (window._PLAN_GEL===false ? '' : _gelCells(b,hl))
+            + (window._PLAN_RECON===false ? '' : _reconCells(b,hl))
             + '</tr>';
         });
         if(hiddenN>0){
-          h += '<tr><td colspan="'+(window._PLAN_GEL===false?14:21)+'" style="color:var(--t3);font-size:11px;padding:4px 9px">&hellip; '+hiddenN+' more batch'+(hiddenN===1?'':'es')+' this month &mdash; <a href="javascript:openPlanTab()" style="color:var(--accent)">full view with filters &#8599;</a></td></tr>';
+          h += '<tr><td colspan="'+(14+(window._PLAN_GEL===false?0:7)+(window._PLAN_RECON===false?0:10))+'" style="color:var(--t3);font-size:11px;padding:4px 9px">&hellip; '+hiddenN+' more batch'+(hiddenN===1?'':'es')+' this month &mdash; <a href="javascript:openPlanTab()" style="color:var(--accent)">full view with filters &#8599;</a></td></tr>';
         }
         const _stn = 'text-align:right;font-family:var(--mono)';
         h += '<tr style="background:var(--s3);font-weight:700"><td colspan="8" style="padding:5px 7px;font-family:var(--fc)">'+esc(m.machineId)+' SUBTOTAL &mdash; '+m.batches.length+' batch'+(m.batches.length===1?'':'es')+'</td>'
           + td(num(sOrd),_stn) + td(num(sGP),_stn) + td(num(sGA),_stn)
           + td(nLacs?num(sLacs):'&mdash;',_stn) + td(nWip?num(sWip):'&mdash;',_stn)
           + td(m.liveAPct!=null?Number(m.liveAPct).toFixed(2)+'%':'&mdash;',_stn+';color:var(--teal)')
+          + (window._PLAN_RECON===false ? '' : (nRec
+              ? td(num(sMP,1),_stn)+td(num(sMU,1),_stn)+td((sMD>0?'+':'')+num(sMD,1),_stn)
+                + td((sQ>0?'+':'')+num(sQ,1),_stn)+td((sW>0?'+':'')+num(sW,1),_stn)+td((sPr>0?'+':'')+num(sPr,1),_stn)
+                + td('&mdash;',_stn)+td('&mdash;',_stn)+td(sTI+'/'+sTP,_stn)+td(num(sSH,0),_stn)
+              : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'))
           + (window._PLAN_GEL===false ? '' : (nGel
               ? td(num(sGelP,1),_stn)+td(num(sGelI,1),_stn)+td(num(sGelR,1),_stn)
                 + td(sCapP+'/'+sCapI+'/'+sCapR,_stn)+td(num(sCapLR,0),_stn)
@@ -2654,27 +2861,27 @@ async function loadShiftWise(q){
   const byDay = {};
   rows.forEach(r=>{ (byDay[r.production_day] = byDay[r.production_day] || []).push(r); });
   let h = '<table class="gtable"><thead><tr><th>Day</th><th>Machine</th><th>Account</th>'
-    + '<th class="num">A gen</th><th class="num">A used</th><th class="num">B gen</th><th class="num">B used</th>'
-    + '<th class="num">C gen</th><th class="num">C used</th><th class="num">Total gen</th><th class="num">Total used</th><th class="num">Net</th><th>PC · code</th></tr></thead><tbody>';
+    + '<th class="num gencol">A gen</th><th class="num usecol">A used</th><th class="num gencol">B gen</th><th class="num usecol">B used</th>'
+    + '<th class="num gencol">C gen</th><th class="num usecol">C used</th><th class="num gencol">Total gen</th><th class="num usecol">Total used</th><th class="num">Net</th><th>PC · code</th></tr></thead><tbody>';
   Object.keys(byDay).sort().reverse().forEach(day=>{
     const D = { A:{g:0,c:0}, B:{g:0,c:0}, C:{g:0,c:0}, g:0, c:0 };
     byDay[day].forEach(r=>{
       ['A','B','C'].forEach(s=>{ D[s].g += r[s].gen; D[s].c += r[s].con; T[s].g += r[s].gen; T[s].c += r[s].con; });
       D.g += r.gen; D.c += r.con; T.g += r.gen; T.c += r.con;
       h += '<tr><td class="mono">'+esc(_dm(day))+'</td><td>'+esc(r.machine_id)+'</td><td>'+esc(r.account_label)+'</td>'
-        + '<td class="num">'+fmt(r.A.gen,1)+'</td><td class="num">'+fmt(r.A.con,1)+'</td>'
-        + '<td class="num">'+fmt(r.B.gen,1)+'</td><td class="num">'+fmt(r.B.con,1)+'</td>'
-        + '<td class="num">'+fmt(r.C.gen,1)+'</td><td class="num">'+fmt(r.C.con,1)+'</td>'
-        + '<td class="num"><b>'+fmt(r.gen,1)+'</b></td><td class="num">'+fmt(r.con,1)+'</td>'
+        + '<td class="num gencol">'+fmt(r.A.gen,1)+'</td><td class="num usecol">'+fmt(r.A.con,1)+'</td>'
+        + '<td class="num gencol">'+fmt(r.B.gen,1)+'</td><td class="num usecol">'+fmt(r.B.con,1)+'</td>'
+        + '<td class="num gencol">'+fmt(r.C.gen,1)+'</td><td class="num usecol">'+fmt(r.C.con,1)+'</td>'
+        + '<td class="num gencol"><b>'+fmt(r.gen,1)+'</b></td><td class="num usecol">'+fmt(r.con,1)+'</td>'
         + '<td class="num" style="color:'+(r.net>=0?'var(--green)':'var(--red)')+'"><b>'+fmt(r.net,1)+'</b></td>'
         + '<td class="mono">'+_pcCell(r)+'</td></tr>';
     });
-    h += '<tr style="background:var(--s2);font-weight:600"><td colspan="3">'+esc(_dm(day))+' — day total</td>'
-      + ['A','B','C'].map(s=>'<td class="num">'+fmt(D[s].g,1)+'</td><td class="num">'+fmt(D[s].c,1)+'</td>').join('')
+    h += '<tr class="sumrow"><td colspan="3">'+esc(_dm(day))+' &mdash; DAY TOTAL</td>'
+      + ['A','B','C'].map(s=>'<td class="num gencol">'+fmt(D[s].g,1)+'</td><td class="num usecol">'+fmt(D[s].c,1)+'</td>').join('')
       + '<td class="num">'+fmt(D.g,1)+'</td><td class="num">'+fmt(D.c,1)+'</td><td class="num">'+fmt(D.g-D.c,1)+'</td><td></td></tr>';
   });
-  h += '<tr style="background:var(--s3);font-weight:700"><td colspan="3">GRAND TOTAL — '+rows.length+' machine-day-account rows</td>'
-    + ['A','B','C'].map(s=>'<td class="num">'+fmt(T[s].g,1)+'</td><td class="num">'+fmt(T[s].c,1)+'</td>').join('')
+  h += '<tr class="grandrow"><td colspan="3">GRAND TOTAL &mdash; '+rows.length+' machine-day-account rows</td>'
+    + ['A','B','C'].map(s=>'<td class="num gencol">'+fmt(T[s].g,1)+'</td><td class="num usecol">'+fmt(T[s].c,1)+'</td>').join('')
     + '<td class="num">'+fmt(T.g,1)+'</td><td class="num">'+fmt(T.c,1)+'</td><td class="num">'+fmt(T.g-T.c,1)+'</td><td></td></tr>';
   out.innerHTML = '<div class="tswrap" style="max-height:520px">' + h + '</tbody></table></div>';
 }
@@ -2689,15 +2896,59 @@ async function gprCloseOrder(batch, mc){
   loadPlan(); loadBatchOptions();
 }
 // ── v56C item 6: the TT entry panel lives inside the TT page ────────────────────────────────
-function openTtEntry(batch, machineId){
-  const p = document.getElementById('ttEntryPanel'); if(p) p.style.display = '';
+// v56E: re-anchoring is deliberate and audited — the planner chooses to move the ESTIMATE onto
+// production's real weight basis. It never touches actuals, which always come from the labels.
+async function gprReanchor(batch){
+  const bn = String(batch||'').trim().toUpperCase();
+  if(!bn) return;
+  if(!confirm('Re-anchor the plan for '+bn+' to the current label-derived average weight?\n\nPlanned tank counts and gelatine are recomputed. Actual yield, A-grade and ledger figures are unaffected — they already use the label weight.')) return;
+  const d = await post('/api/gpr/batch-plan/reanchor', { batch: bn });
+  if(!d.ok){ toast(d.detail || d.error || 'Could not re-anchor','err'); return; }
+  toast(bn+' re-anchored — the plan now follows production','ok');
+  loadTtPlan(); loadPlan();
+}
+// ── v56D items 1/2/3: TT entry opens as a MODAL, pre-filled, and a batch that has never been
+// anchored must go through Compute plan → Prepare next CAP/BODY tank first. That first step is
+// what fixes the batch's planned quantity; without it "planned vs issued vs remaining" has no
+// reference. A batch already anchored (i.e. running) skips straight to tank entry. ───────────
+async function openTtEntry(batch, machineId){
+  const p = document.getElementById('ttEntryPanel'); if(!p) return;
+  p.className = 'ttmodal'; p.style.display = '';
+  document.body.classList.add('ttopen');
   const c = document.getElementById('ttEntryCtx');
   if(c) c.textContent = batch ? (batch + (machineId ? ' · ' + machineId : '')) : 'new entry';
   buildColourantRows(); loadMmtOptions(); loadBatchOptions(); _pcIdx(); loadSuggestions();
-  try{ p.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){}
+  const bn = String(batch||'').trim().toUpperCase();
+  if(bn){
+    setVal('tp_batch', bn); setVal('td_batch', bn);
+    if(machineId) setVal('td_machine', machineId);
+    let anchored = false;
+    try{ const d = await api('/api/gpr/tt-plan/' + encodeURIComponent(bn)); anchored = !!(d.ok && d.anchored); }catch(e){}
+    ttGate(anchored, bn);
+    if(anchored) await dualPrefill();   // running batch — straight to the tanks, fully pre-filled
+    else await loadTtPlan();            // new batch — compute the plan it must be anchored against
+  } else {
+    ttGate(true, '');   // manual entry: the chemist picks the batch inside the form
+  }
+  try{ p.scrollTop = 0; }catch(e){}
+}
+// The gate shows/hides the two halves of the modal: the plan step and the tank-entry step.
+function ttGate(anchored, bn){
+  const planCard = document.getElementById('ttPlanCard');
+  const entryCard = document.getElementById('ttEntryCard');
+  const note = document.getElementById('ttGateNote');
+  if(planCard) planCard.style.display = anchored ? 'none' : '';
+  if(entryCard) entryCard.style.display = anchored ? '' : 'none';
+  if(note) note.innerHTML = anchored ? ''
+    : '<b>'+esc(bn||'This batch')+' has not been anchored yet.</b> Run <b>Compute plan</b>, then '
+      + '<b>Prepare next CAP tank</b> / <b>Prepare next BODY tank</b> — that fixes the planned quantity '
+      + 'this batch is measured against. Subsequent tanks skip this step.';
 }
 function closeTtEntry(){
-  const p = document.getElementById('ttEntryPanel'); if(p) p.style.display = 'none';
+  const p = document.getElementById('ttEntryPanel');
+  if(p){ p.style.display = 'none'; p.className = ''; }
+  document.body.classList.remove('ttopen');
+  window._TT_FORM_BATCH = null;   // next open re-fills from scratch
   loadSheet();
 }
 // ── v56B item 1 (Ishan, 20 Sep): remembered entries — the fields the plant retypes every shift
@@ -2820,6 +3071,7 @@ function exportLedger(){
       num: typeof rows[0][k] === 'number' })) });
 }
 // v56C item 13: the human-readable window/filter line shown above every ledger view.
+function _lgColGroup(){ return '<colgroup><col style="width:15%"><col style="width:20%"><col style="width:21%">'+'<col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:11%"></colgroup>'; }
 function _lgWindowLabel(){
   const f = val('lg_from'), t = val('lg_to');
   const bits = [];
@@ -2895,7 +3147,10 @@ async function loadLedger(view, btn){
         const rs = byPc[pc];
         const tot = rs.reduce((a,r)=>a+Number(r.balance_kg||0),0);
         h += '<div style="margin:10px 0 2px;padding:4px 10px;background:var(--accent-l);border-left:4px solid var(--accent);font-family:var(--fc);font-weight:700">PC '+esc(pc)+' <span style="font-weight:400;color:var(--t3)">&middot; balance '+tot.toFixed(1)+' kg</span></div>';
-        h += '<table class="gtable"><thead><tr><th>Colour code</th><th>Colour</th><th>Account</th><th class="num">Generated</th><th class="num">Consumed</th><th class="num">Pending</th><th class="num">Balance kg</th></tr></thead><tbody>';
+        // v56D item 5: the per-PC tables and the TOTAL are separate tables, so their columns only
+        // line up if every one of them uses the SAME fixed layout. One colgroup, shared.
+        h += '<table class="gtable" style="table-layout:fixed">' + _lgColGroup()
+          + '<thead><tr><th>Colour code</th><th>Colour</th><th>Account</th><th class="num">Generated</th><th class="num">Consumed</th><th class="num">Pending</th><th class="num">Balance kg</th></tr></thead><tbody>';
         rs.forEach(r=>{
           h += '<tr><td class="mono">'+esc(r.colour_code||'—')+'</td><td>'+esc(r.colour_name||'—')+'</td><td>'+esc(r.account_label||r.account)+'</td>'
             + '<td class="num mono">'+fmt(r.generated,1)+'</td><td class="num mono">'+fmt(r.consumed,1)+'</td>'
@@ -2905,7 +3160,10 @@ async function loadLedger(view, btn){
         h += '</tbody></table>';
       });
       const tg = rows.reduce((a,r)=>a+Number(r.generated||0),0), tc = rows.reduce((a,r)=>a+Number(r.consumed||0),0), tb = rows.reduce((a,r)=>a+Number(r.balance_kg||0),0);
-      h += '<table class="gtable"><tbody><tr style="background:var(--s3);font-weight:700"><td colspan="3">TOTAL</td><td class="num mono">'+fmt(tg,1)+'</td><td class="num mono">'+fmt(tc,1)+'</td><td></td><td class="num mono">'+fmt(tb,1)+'</td></tr></tbody></table>';
+      h += '<table class="gtable" style="table-layout:fixed;margin-top:6px">' + _lgColGroup()
+        + '<tbody><tr style="background:var(--s3);font-weight:700"><td colspan="3">TOTAL &mdash; all PCs</td>'
+        + '<td class="num mono">'+fmt(tg,1)+'</td><td class="num mono">'+fmt(tc,1)+'</td><td></td>'
+        + '<td class="num mono">'+fmt(tb,1)+'</td></tr></tbody></table>';
       out2.innerHTML = '<div class="tswrap">'+h+'</div>';
       return;
     }
@@ -3010,8 +3268,211 @@ function switchYield(which, btn){
   document.getElementById('yieldBatchPane').style.display = which==='batch'?'block':'none';
   document.getElementById('yieldDailyPane').style.display = which==='daily'?'block':'none';
   document.getElementById('yieldMonthPane').style.display = which==='month'?'block':'none';
+  document.getElementById('yieldReconPane').style.display = which==='recon'?'block':'none';
+  document.getElementById('yieldPerfPane').style.display = which==='perf'?'block':'none';
+  if(which==='perf' && !val('pf_from')){ const b = gMonthBounds(); if(b){ setVal('pf_from', b.from); setVal('pf_to', b.to); } }
   if(which==='daily' && !val('yd_to')){ setVal('yd_to', productionDay()); setVal('yd_from', productionDay()); }
   if(which==='month' && !val('ym_month')) setVal('ym_month', productionDay().slice(0,7));
+}
+// ── v56F (Ishan): material reconciliation — planned vs actual, with the gap ATTRIBUTED ──────
+// Material = quantity × weight per unit, so the variance splits exactly into a quantity effect and
+// a weight effect. The third line is deliberately NOT folded into those two: it is the gap between
+// what the real output mathematically required and what was physically charged — a process or
+// recording loss, and calling it "weight" would misattribute it.
+async function loadReconcile(){
+  const out = document.getElementById('reconOut');
+  const bn = val('rc_batch');
+  if(!bn){ toast('Pick a batch','err'); return; }
+  out.innerHTML = '<div class="empty">Reconciling…</div>';
+  const d = await api('/api/gpr/reconcile/' + encodeURIComponent(bn));
+  if(!d.ok){ out.innerHTML = '<div class="empty">'+esc(d.error||'Could not reconcile')+'</div>'; return; }
+  window._RECON = d;
+  const B = d.basis, P = d.planned, A = d.actual, V = d.variance;
+  const sign = v => (v>0?'+':'') + fmt(v,1);
+  const col = v => Math.abs(v)<0.05 ? 'var(--t3)' : (v>0 ? 'var(--red)' : 'var(--green)');
+  let h = '<div class="kgrid">'
+    + kpi('Planned material', fmt(P.gelatine,1)+' kg', 'amber', B.anchored ? 'anchored plan' : 'live plan')
+    + kpi('Actually charged', fmt(A.gelatineEquiv,1)+' kg', '', A.tanks+' tank'+(A.tanks===1?'':'s'))
+    + kpi('Difference', sign(V.totalDifference)+' kg', V.totalDifference>0?'red':'green',
+          P.gelatine>0 ? fmt(V.totalDifference/P.gelatine*100,1)+'% of plan' : '')
+    + kpi('Required for actual output', fmt(V.requiredForActual,1)+' kg', '', 'gross × actual weight')
+    + '</div>';
+
+  h += '<div class="fgroup-title" style="margin-top:12px">A &mdash; Planned vs B &mdash; Actual, by component</div>';
+  h += '<table class="gtable"><thead><tr><th>Component</th><th class="num">Planned kg</th><th class="num">Actual kg</th><th class="num">Difference</th></tr></thead><tbody>'
+    + '<tr><td>Virgin gelatine</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.virgin,1)+'</td><td class="num">&mdash;</td></tr>'
+    + '<tr><td>Salvage</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.salvage,1)+'</td><td class="num">&mdash;</td></tr>'
+    + '<tr><td>Cutting</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.cutting,1)+'</td><td class="num">&mdash;</td></tr>'
+    + '<tr><td>FG remelt</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.fgRemelt,1)+'</td><td class="num">&mdash;</td></tr>'
+    + '<tr class="sumrow"><td>GELATINE-EQUIVALENT TOTAL</td><td class="num">'+fmt(P.gelatine,1)+'</td><td class="num">'+fmt(A.gelatineEquiv,1)+'</td>'
+      + '<td class="num" style="color:'+col(V.totalDifference)+'">'+sign(V.totalDifference)+'</td></tr>'
+    + '<tr><td>Colour + TiO&#8322;</td><td class="num">'+fmt(P.colour,1)+'</td><td class="num">'+fmt(A.colour,1)+'</td>'
+      + '<td class="num" style="color:'+col(A.colour-P.colour)+'">'+sign(A.colour-P.colour)+'</td></tr>'
+    + '</tbody></table>'
+    + '<div style="font-size:11.5px;color:var(--t3);margin-top:4px">The virgin / salvage / cutting split is a sourcing decision taken at issue time, not something the plan fixes &mdash; so only the gelatine-equivalent total carries a planned figure.</div>';
+
+  h += '<div class="fgroup-title" style="margin-top:14px">C &mdash; Where the difference came from</div>';
+  h += '<table class="gtable"><thead><tr><th>Cause</th><th>Basis</th><th class="num">kg</th><th class="num">Share</th></tr></thead><tbody>';
+  const tot = Math.abs(V.qtyEffect)+Math.abs(V.weightEffect)+Math.abs(V.processVariance);
+  const shr = v => tot>0 ? fmt(Math.abs(v)/tot*100,0)+'%' : '&mdash;';
+  h += '<tr><td><b>1. Quantity produced</b><div style="font-size:11px;color:var(--t3)">More or less gross than planned consumes proportionally more or less material</div></td>'
+    + '<td class="mono" style="font-size:11px">('+fmt(B.grossActualLacs,2)+' &minus; '+fmt(B.grossPlannedLacs,2)+' lacs) × '+fmt(B.plannedAvgMg,1)+' mg</td>'
+    + '<td class="num" style="color:'+col(V.qtyEffect)+'"><b>'+sign(V.qtyEffect)+'</b></td><td class="num">'+shr(V.qtyEffect)+'</td></tr>';
+  h += '<tr><td><b>2. Capsule weight</b><div style="font-size:11px;color:var(--t3)">Heavier or lighter capsules than planned, from the production labels</div></td>'
+    + '<td class="mono" style="font-size:11px">('+fmt(B.actualAvgMg,1)+' &minus; '+fmt(B.plannedAvgMg,1)+' mg) × '+fmt(B.grossActualLacs,2)+' lacs</td>'
+    + '<td class="num" style="color:'+col(V.weightEffect)+'"><b>'+sign(V.weightEffect)+'</b></td><td class="num">'+shr(V.weightEffect)+'</td></tr>';
+  h += '<tr><td><b>3. Process / recording</b><div style="font-size:11px;color:var(--t3)">Charged more or less than the output mathematically required &mdash; over-charge, spillage or entry error</div></td>'
+    + '<td class="mono" style="font-size:11px">'+fmt(A.gelatineEquiv,1)+' &minus; '+fmt(V.requiredForActual,1)+' kg</td>'
+    + '<td class="num" style="color:'+col(V.processVariance)+'"><b>'+sign(V.processVariance)+'</b></td><td class="num">'+shr(V.processVariance)+'</td></tr>';
+  h += '<tr class="grandrow"><td colspan="2">TOTAL DIFFERENCE</td><td class="num"><b>'+sign(V.totalDifference)+'</b></td><td class="num">100%</td></tr>';
+  h += '</tbody></table>';
+  // v56G item 1: TT planned vs issued, with over/under-fill and holding exceptions per side.
+  if(d.tt){
+    const T = d.tt, sd = k => T[k];
+    const sgn = v => (v>0?'+':'')+fmt(v,0);
+    h += '<div class="fgroup-title" style="margin-top:14px">D &mdash; Transfer tanks: planned vs issued</div>';
+    h += '<table class="gtable"><thead><tr><th>Side</th><th class="num">TT planned</th><th class="num">TT issued</th>'
+      + '<th class="num">Variance</th><th class="num">Planned L</th><th class="num">Actual L</th>'
+      + '<th class="num">Over-fill</th><th class="num">Under-fill</th><th class="num">Avg hold</th><th class="num">Hold &lt; '+T.minHoldHours+'h</th></tr></thead><tbody>';
+    ['cap','body'].forEach(k=>{
+      const a = sd(k);
+      h += '<tr><td><b>'+k.toUpperCase()+'</b></td><td class="num">'+a.planned+'</td><td class="num"><b>'+a.issued+'</b></td>'
+        + '<td class="num" style="color:'+(a.ttVariance===0?'var(--t3)':(a.ttVariance>0?'var(--red)':'var(--amber)'))+'">'+sgn(a.ttVariance)+'</td>'
+        + '<td class="num">'+fmt(a.plannedLitres,0)+'</td><td class="num">'+fmt(a.actualLitres,0)+'</td>'
+        + '<td class="num">'+(a.overFillTanks?a.overFillTanks+' · '+fmt(a.overFillL,0)+' L':'&mdash;')+'</td>'
+        + '<td class="num">'+(a.underFillTanks?a.underFillTanks+' · '+fmt(a.underFillL,0)+' L':'&mdash;')+'</td>'
+        + '<td class="num">'+(a.avgHoldHours!=null?fmt(a.avgHoldHours,1)+' h':'&mdash;')+'</td>'
+        + '<td class="num" style="color:'+(a.shortHold?'var(--red)':'var(--t3)')+'"><b>'+(a.shortHold||0)+'</b></td></tr>';
+    });
+    h += '<tr class="sumrow"><td>TOTAL</td><td class="num">'+T.total.planned+'</td><td class="num">'+T.total.issued+'</td>'
+      + '<td class="num">'+sgn(T.total.ttVariance)+'</td><td class="num">&mdash;</td><td class="num">'+sgn(T.total.netFillL)+' L</td>'
+      + '<td class="num">'+T.total.overFillTanks+' · '+fmt(T.total.overFillL,0)+' L</td>'
+      + '<td class="num">'+T.total.underFillTanks+' · '+fmt(T.total.underFillL,0)+' L</td>'
+      + '<td class="num">&mdash;</td><td class="num"><b>'+T.total.shortHold+'</b></td></tr></tbody></table>';
+    if((T.shortHoldTanks||[]).length){
+      h += '<div class="banner warn"><b>'+T.shortHoldTanks.length+' tank'+(T.shortHoldTanks.length===1?'':'s')+' released under the '+T.minHoldHours+'-hour hold.</b><span>'
+        + T.shortHoldTanks.slice(0,8).map(t=>esc(t.tt||'?')+' ('+esc(t.side.toUpperCase())+', '+fmt(t.hours,1)+' h)').join(' · ')
+        + (T.shortHoldTanks.length>8 ? ' …' : '') + '</span></div>';
+    }
+  }
+  if(Math.abs(V.identityCheck) > 0.05){
+    h += '<div class="banner warn"><b>Attribution does not close.</b><span>The three causes differ from the total by '
+      + fmt(V.identityCheck,2)+' kg. Treat this reconciliation as indicative and report it.</span></div>';
+  }
+  h += '<div style="font-size:11.5px;color:var(--t2);margin-top:8px">Weight basis: planned <b>'+fmt(B.plannedAvgMg,1)+' mg</b>'
+    + (B.anchored ? ' (anchored'+(B.anchoredAt?' '+esc(String(B.anchoredAt).slice(0,10)):'')+')' : '')
+    + ' &middot; actual <b>'+fmt(B.actualAvgMg,1)+' mg</b> ('+esc(B.weightBasis||'')+')'
+    + (B.aimPct!=null ? ' &middot; A-grade '+fmt(B.aimPct,1)+'%' : '')
+    + (B.grossPosted ? '' : ' &middot; <b style="color:var(--amber)">gross not posted yet &mdash; grossed up from A-grade</b>')
+    + '</div>';
+  out.innerHTML = h;
+}
+// ── v56G item 3: the GPR performance report — one row per batch, planned against actual ─────
+async function loadPerf(){
+  const out = document.getElementById('perfOut');
+  out.innerHTML = '<div class="empty">Running…</div>';
+  const q = new URLSearchParams();
+  ['batch','machine','from','to'].forEach(k=>{ const v = val('pf_'+k); if(v) q.set(k, v); });
+  ['floor','status'].forEach(k=>{ const e = document.getElementById('pf_'+k); if(e && e.value) q.set(k, e.value); });
+  const d = await api('/api/gpr/performance?' + q.toString());
+  if(!d.ok){ out.innerHTML = '<div class="empty">'+esc(d.error||'Report failed')+'</div>'; return; }
+  window._PERF = d;
+  const rows = d.rows || [];
+  if(!rows.length){ out.innerHTML = '<div class="empty">No batches match these filters.</div>'; return; }
+  const sum = f => rows.reduce((a,r)=>a+Number(r[f]||0),0);
+  const sign = v => (v>0?'+':'')+fmt(v,1);
+  const col = v => Math.abs(v)<0.05 ? 'var(--t3)' : (v>0 ? 'var(--red)' : 'var(--green)');
+  let h = '<div class="kgrid">'
+    + kpi('Batches in report', rows.length, '', d.capped ? ('of '+d.matched+' — capped') : '')
+    + kpi('Planned material', fmt(sum('plannedGel'),0)+' kg')
+    + kpi('Actual material', fmt(sum('usedGel'),0)+' kg')
+    + kpi('Net difference', sign(sum('totalDifference'))+' kg', sum('totalDifference')>0?'red':'green')
+    + kpi('TT issued vs planned', sum('ttIssued')+' / '+sum('ttPlanned'), '', sign(sum('ttVariance'))+' tanks')
+    + kpi('Holds under '+d.minHoldHours+' h', sum('shortHold'), sum('shortHold')?'red':'green')
+    + '</div>';
+  h += '<div class="froze" style="max-height:540px"><table class="gtable" style="margin:0"><thead><tr>'
+    + '<th class="fz1">Batch</th><th class="fz2">MC</th><th>Status</th><th>PC</th>'
+    + '<th class="num">Planned kg</th><th class="num">Actual kg</th><th class="num">Diff kg</th><th class="num">% of plan</th>'
+    + '<th class="num">Qty cause</th><th class="num">Weight cause</th><th class="num">Process cause</th>'
+    + '<th class="num">Plan mg</th><th class="num">Actual mg</th>'
+    + '<th class="num">TT plan</th><th class="num">TT issued</th><th class="num">TT var</th>'
+    + '<th class="num">Over-fill</th><th class="num">Under-fill</th><th class="num">Hold &lt;'+d.minHoldHours+'h</th></tr></thead><tbody>';
+  rows.forEach(r=>{
+    const rowCls = r.status==='running' ? 'rowrun' : ((r.status==='closed'||r.status==='completed') ? 'rowclosed' : '');
+    h += '<tr class="'+rowCls+'">'
+      + '<td class="fz1 mono"><a href="javascript:void(0)" onclick="perfOpen(\''+esc(r.batch)+'\')" style="color:var(--accent);text-decoration:none"><b>'+esc(r.batch)+'</b></a>'+(r.anchored?'':' <span title="no anchored plan" style="color:var(--amber)">*</span>')+'</td>'
+      + '<td class="fz2">'+esc(r.machineId||'—')+'</td><td>'+esc((r.status||'').toUpperCase())+'</td><td class="mono">'+esc(r.pcCode||'—')+'</td>'
+      + '<td class="num">'+fmt(r.plannedGel,1)+'</td><td class="num"><b>'+fmt(r.usedGel,1)+'</b></td>'
+      + '<td class="num" style="color:'+col(r.totalDifference)+'"><b>'+sign(r.totalDifference)+'</b></td>'
+      + '<td class="num">'+(r.pctOfPlan==null?'—':fmt(r.pctOfPlan,1)+'%')+'</td>'
+      + '<td class="num" style="color:'+col(r.qtyEffect)+'">'+sign(r.qtyEffect)+'</td>'
+      + '<td class="num" style="color:'+col(r.weightEffect)+'">'+sign(r.weightEffect)+'</td>'
+      + '<td class="num" style="color:'+col(r.processVariance)+'">'+sign(r.processVariance)+'</td>'
+      + '<td class="num">'+fmt(r.plannedAvgMg,1)+'</td><td class="num">'+fmt(r.actualAvgMg,1)+'</td>'
+      + '<td class="num">'+r.ttPlanned+'</td><td class="num"><b>'+r.ttIssued+'</b></td>'
+      + '<td class="num" style="color:'+(r.ttVariance===0?'var(--t3)':(r.ttVariance>0?'var(--red)':'var(--amber)'))+'">'+(r.ttVariance>0?'+':'')+r.ttVariance+'</td>'
+      + '<td class="num">'+(r.overFillTanks?r.overFillTanks+' · '+fmt(r.overFillL,0)+'L':'—')+'</td>'
+      + '<td class="num">'+(r.underFillTanks?r.underFillTanks+' · '+fmt(r.underFillL,0)+'L':'—')+'</td>'
+      + '<td class="num" style="color:'+(r.shortHold?'var(--red)':'var(--t3)')+'"><b>'+r.shortHold+'</b></td></tr>';
+  });
+  h += '<tr class="grandrow"><td class="fz1" colspan="4">TOTAL — '+rows.length+' batches</td>'
+    + '<td class="num">'+fmt(sum('plannedGel'),1)+'</td><td class="num">'+fmt(sum('usedGel'),1)+'</td>'
+    + '<td class="num">'+sign(sum('totalDifference'))+'</td><td class="num">—</td>'
+    + '<td class="num">'+sign(sum('qtyEffect'))+'</td><td class="num">'+sign(sum('weightEffect'))+'</td><td class="num">'+sign(sum('processVariance'))+'</td>'
+    + '<td class="num">—</td><td class="num">—</td>'
+    + '<td class="num">'+sum('ttPlanned')+'</td><td class="num">'+sum('ttIssued')+'</td><td class="num">'+(sum('ttVariance')>0?'+':'')+sum('ttVariance')+'</td>'
+    + '<td class="num">'+sum('overFillTanks')+'</td><td class="num">'+sum('underFillTanks')+'</td><td class="num">'+sum('shortHold')+'</td></tr>';
+  h += '</tbody></table></div>';
+  if(d.capped) h += '<div class="banner warn"><b>Report capped.</b><span>'+d.matched+' batches matched; the '+rows.length+' most recent are shown. Narrow the dates or machine to see the rest.</span></div>';
+  h += '<div style="font-size:11.5px;color:var(--t3);margin-top:6px">A batch marked <b style="color:var(--amber)">*</b> has no anchored plan, so its planned figures are computed live and may move with the masters.</div>';
+  out.innerHTML = h;
+}
+function perfOpen(bn){ switchYield('recon', document.getElementById('yv-recon')); setVal('rc_batch', bn); loadReconcile(); }
+function exportPerf(){
+  const d = window._PERF;
+  if(!d || !(d.rows||[]).length){ toast('Run the report first','err'); return; }
+  gprExport({ rows: d.rows, title:'GPR performance — planned vs actual by batch',
+    context: [val('pf_from')&&(_dm(val('pf_from'))+' → '+_dm(val('pf_to'))), val('pf_machine')&&('machine '+val('pf_machine'))].filter(Boolean).join(' · '),
+    sheet:'GPR performance', file:'gpr_performance', totals:true,
+    columns:[ {key:'batch',label:'Batch',w:12},{key:'machineId',label:'Machine',w:9},{key:'floor',label:'Floor',w:8},
+      {key:'status',label:'Status',w:10},{key:'customer',label:'Customer',w:26},{key:'pcCode',label:'PC',w:10},
+      {key:'day',label:'Start',w:12},
+      {key:'plannedGel',label:'Planned kg',w:12,num:true},{key:'usedGel',label:'Actual kg',w:12,num:true},
+      {key:'totalDifference',label:'Difference kg',w:13,num:true},{key:'pctOfPlan',label:'% of plan',w:10,num:true},
+      {key:'qtyEffect',label:'Cause: quantity',w:15,num:true},{key:'weightEffect',label:'Cause: weight',w:14,num:true},
+      {key:'processVariance',label:'Cause: process',w:14,num:true},
+      {key:'grossPlannedLacs',label:'Gross planned (lacs)',w:18,num:true},{key:'grossActualLacs',label:'Gross actual (lacs)',w:18,num:true},
+      {key:'plannedAvgMg',label:'Planned mg',w:11,num:true},{key:'actualAvgMg',label:'Actual mg',w:11,num:true},
+      {key:'aimPct',label:'A-grade %',w:10,num:true},
+      {key:'capPlanned',label:'Cap TT plan',w:12,num:true},{key:'capIssued',label:'Cap TT issued',w:13,num:true},
+      {key:'bodyPlanned',label:'Body TT plan',w:13,num:true},{key:'bodyIssued',label:'Body TT issued',w:14,num:true},
+      {key:'ttVariance',label:'TT variance',w:12,num:true},
+      {key:'overFillTanks',label:'Over-fill tanks',w:14,num:true},{key:'overFillL',label:'Over-fill L',w:12,num:true},
+      {key:'underFillTanks',label:'Under-fill tanks',w:15,num:true},{key:'underFillL',label:'Under-fill L',w:13,num:true},
+      {key:'avgHoldCap',label:'Avg hold cap (h)',w:15,num:true},{key:'avgHoldBody',label:'Avg hold body (h)',w:16,num:true},
+      {key:'shortHold',label:'Holds under min',w:15,num:true} ] });
+}
+function exportReconcile(){
+  const d = window._RECON;
+  if(!d){ toast('Reconcile a batch first','err'); return; }
+  const V = d.variance, A = d.actual, P = d.planned, B = d.basis;
+  gprExport({
+    rows: [
+      { item:'Planned gelatine-equivalent', kg:P.gelatine, note: B.anchored?'anchored plan':'live plan' },
+      { item:'Actual virgin', kg:A.virgin, note:'' }, { item:'Actual salvage', kg:A.salvage, note:'' },
+      { item:'Actual cutting', kg:A.cutting, note:'' }, { item:'Actual FG remelt', kg:A.fgRemelt, note:'' },
+      { item:'Actual gelatine-equivalent total', kg:A.gelatineEquiv, note:A.tanks+' tanks' },
+      { item:'Planned colour + TiO2', kg:P.colour, note:'' }, { item:'Actual colour + TiO2', kg:A.colour, note:'' },
+      { item:'Required for actual output', kg:V.requiredForActual, note:'gross × actual weight' },
+      { item:'Cause 1 — quantity produced', kg:V.qtyEffect, note:'('+B.grossActualLacs+' − '+B.grossPlannedLacs+' lacs) × '+B.plannedAvgMg+' mg' },
+      { item:'Cause 2 — capsule weight', kg:V.weightEffect, note:'('+B.actualAvgMg+' − '+B.plannedAvgMg+' mg) × '+B.grossActualLacs+' lacs' },
+      { item:'Cause 3 — process / recording', kg:V.processVariance, note:'charged − required' },
+      { item:'TOTAL DIFFERENCE', kg:V.totalDifference, note:'' },
+    ],
+    title:'GPR — material reconciliation ' + d.batch,
+    context: (d.order.machineId||'') + ' · PC ' + (d.order.pcCode||'') + ' · size ' + (d.order.size||''),
+    sheet:'Reconciliation', file:'gpr_reconciliation_'+d.batch,
+    columns:[{key:'item',label:'Item',w:38},{key:'kg',label:'kg',w:12,num:true},{key:'note',label:'Basis',w:46}] });
 }
 function yCls(pct, target){
   if(pct==null) return '';
