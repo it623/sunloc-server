@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v55X</title>
+<title>GPR.tracker · build v56B</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -64,7 +64,24 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 /* ── LAYOUT ────────────────────────────────────────── */
 #wrap{padding:calc(var(--nav) + 16px) 18px 60px;max-width:1400px;margin:0 auto}
 .page{display:none}.page.on{display:block}
-.tswrap{max-height:420px;overflow:auto;border:1px solid var(--b1);border-radius:var(--r)}   /* v55M items 6/8: every register scrolls instead of growing unbounded */
+.tswrap{max-height:420px;overflow:auto;border:1px solid var(--b1);border-radius:var(--r)}
+    /* v56 item 18: Stock Ledger vertical section rail */
+    .lgrail{display:flex;flex-direction:column;gap:6px;min-width:190px}
+    .lgnav{padding:9px 12px;border:1px solid var(--b1);border-radius:var(--r);background:var(--s1);cursor:pointer;user-select:none}
+    .lgnav:hover{background:var(--s2)}
+    .lgnav.on{background:var(--s3);border-color:var(--accent);box-shadow:inset 3px 0 0 var(--accent)}
+    .lgnav b{display:block;font-family:var(--fc);font-size:12.5px;color:var(--t1)}
+    .lgnav span{display:block;font-size:10.5px;color:var(--t3);margin-top:1px}
+    @media(max-width:720px){ .lgrail{flex-direction:row;flex-wrap:wrap;min-width:0;width:100%} .lgnav{flex:1} }
+    /* v55Y item 8: collapsible planning sections */
+    .plsec{display:flex;align-items:center;gap:8px;padding:11px 14px;cursor:pointer;background:var(--s2);
+      border-bottom:1px solid var(--b1);font-family:var(--fc);font-size:12px;letter-spacing:.5px;color:var(--t1);user-select:none}
+    .plsec:hover{background:var(--s3)}
+    .plchev{display:inline-block;transition:transform .12s;color:var(--t3);font-size:11px}
+    .plchev.open{transform:rotate(90deg)}
+    .plbadge{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--t3);font-weight:400;letter-spacing:0}
+    .plbody{display:none;padding:12px 14px;border-bottom:1px solid var(--b1)}
+    .plbody.open{display:block}   /* v55M items 6/8: every register scrolls instead of growing unbounded */
 .tswrap table thead th{position:sticky;top:0;z-index:2}
 /* v55N item 2: dual Cap|Body compact entry tables */
 .dgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
@@ -214,7 +231,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v55X</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56B</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -234,7 +251,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v55X</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v56B</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -248,52 +265,85 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
   <!-- TT SHEET (landing) -->
   <div class="page on" id="page-sheet">
+    <!-- v55Z items 1/2/11 (Ishan, 20 Sep): the live board and the search/history table were the
+         same tanks rendered twice. One filter-driven sheet now serves current, past and expected
+         tanks; KPI bubbles render ABOVE the table (Tracking's order); every row stays actionable
+         through the gated lifecycle, so this is also the scan/issue surface. -->
+    <div class="card" style="padding:10px 14px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+        <b style="font-family:var(--fc);font-size:13px">Transfer Tank Sheet</b>
+        <select id="sh_scope" style="font-size:12px;max-width:190px" onchange="shScope()">
+          <option value="cur">Current production day</option>
+          <option value="prev">Current + previous day</option>
+          <option value="7">Last 7 days</option>
+          <option value="month">This production month</option>
+          <option value="custom">Custom range</option>
+        </select>
+        <button class="btn primary sm" onclick="openTtForBatch(val('sh_batch'))">+ New TT entry</button>
+        <button class="btn sm" onclick="loadSheet()">Refresh</button>
+        <button class="btn teal sm" onclick="exportSheet()">Export to Excel</button>
+        <span id="sh_ctx" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--t3)"></span>
+      </div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Batch</label><input id="sh_batch" list="batchOpts" placeholder="all" onchange="loadSheet()"></div>
+        <div class="field-grp"><label>Machine</label><input id="sh_machine" list="mcOpts" placeholder="all" onchange="loadSheet()"></div>
+        <div class="field-grp"><label>Floor</label><select id="sh_floor" onchange="loadSheet()"></select></div>
+        <div class="field-grp"><label>Side</label><select id="sh_side" onchange="loadSheet()"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp"><label>Stage</label><select id="sh_stage" onchange="renderSheet()"><option value="">All stages</option><option value="prepared">Entered (no label)</option><option value="label">Label generated</option><option value="holding">Scanned in — holding</option><option value="released">Scanned out — ready to issue</option><option value="issued">Issued to machine</option></select></div>
+        <div class="field-grp"><label>PC code</label><input id="sh_pc" placeholder="all" onchange="renderSheet()"></div>
+        <div class="field-grp"><label>From (production day)</label><input id="sh_from" type="date" onchange="shCustom()"></div>
+        <div class="field-grp"><label>To</label><input id="sh_to" type="date" onchange="shCustom()"></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn" onclick="clearSheetFilters()">Clear filters</button></div>
+      </div>
+    </div>
+    <div id="sheetKpis"></div>
     <div class="card">
-      <div class="card-title">Transfer Tank Sheet</div>
-      <div class="fgroup-title" style="color:var(--teal)">Live board &mdash; current &amp; previous production day</div>
-      <div id="sheetLive" class="empty">Loading&hellip;</div>
-      <div class="fgroup-title" style="margin-top:14px">Search / history</div>
-      <div class="card-sub">Every tank issued, across batches. Filter, then export to Excel. Click a row to open its batch.</div>
-      <div class="fgrid" style="margin-bottom:12px">
-        <div class="field-grp"><label>Batch</label><input id="sh_batch" placeholder="e.g. 26N50"></div>
-        <div class="field-grp"><label>Machine</label><input id="sh_machine" placeholder="e.g. MC29"></div>
-        <div class="field-grp"><label>Floor</label><select id="sh_floor"></select></div>
-        <div class="field-grp"><label>Side</label><select id="sh_side"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
-        <div class="field-grp"><label>From (production day)</label><input id="sh_from" type="date"></div>
-        <div class="field-grp"><label>To</label><input id="sh_to" type="date"></div>
-      </div>
-      <div class="row">
-        <button class="btn primary" onclick="loadSheet()">Apply filters</button>
-        <button class="btn" onclick="clearSheetFilters()">Clear</button>
-        <button class="btn teal" onclick="exportSheet()">Export to Excel</button>
-      </div>
-      <div id="sheetKpis"></div>
-      <div id="sheetResult" class="tscroll"><div class="empty">Loading…</div></div>
+      <div id="sheetResult" class="tscroll"><div class="empty">Loading&hellip;</div></div>
     </div>
   </div>
 
   <!-- MMT -->
   <div class="page" id="page-plan">
-    <div class="card">
-      <div class="card-title" style="display:flex;align-items:center;gap:12px;flex-wrap:wrap">GPR Planning — TT &amp; MMT
-        <select id="pl_floor" style="font-size:12px" onchange="loadPlan()"><option value="">This GPR's floor(s)</option><option value="GF">Ground Floor</option><option value="1F">First Floor</option><option value="2F">Second Floor</option><option value="ALL">All floors</option></select>
-        <select id="pl_month" style="font-size:12px" onchange="loadPlan()"></select>
-        <button class="btn" style="padding:4px 12px;font-size:11px" onclick="loadPlan()">Refresh</button>
-        <button class="btn" style="padding:4px 12px;font-size:11px" onclick="exportPlan()">Export XLSX</button>
-        <button class="btn" style="padding:4px 12px;font-size:11px" onclick="openPlanTab()">Open in new tab ↗</button>
+    <!-- v55Y items 4 + 9: the control bar is its own compact strip — always visible, never part of
+         the alert block, and it carries the context the chemist needs at a glance. -->
+    <div class="card" style="padding:10px 14px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <b style="font-family:var(--fc);font-size:13px">GPR Planning</b>
+        <select id="pl_floor" style="font-size:12px;max-width:170px" onchange="loadPlan()"><option value="">This GPR's floor(s)</option><option value="GF">Ground Floor</option><option value="1F">First Floor</option><option value="2F">Second Floor</option><option value="ALL">All floors</option></select>
+        <select id="pl_month" style="font-size:12px;max-width:120px" onchange="loadPlan()"></select>
+        <button class="btn sm" onclick="loadPlan()">Refresh</button>
+        <button class="btn sm" onclick="exportPlan()">Export XLSX</button>
+        <button class="btn sm" onclick="openPlanTab()">Open in new tab &#8599;</button>
+        <button class="btn sm" id="pl_gelbtn" onclick="plToggleGel()" title="Gelatine kg and TT position per batch">Gelatine &amp; TT: on</button>
         <span id="pl_now" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--t3)"></span>
       </div>
-      <div class="card-sub">Live from Planning, DPR and the Report E bindings. End-shift estimate: required gross = planned gross × (assumed A ÷ actual A, capped ±); rate = machine's last 6 producing shifts. Next batch's first cap+body TT must be READY by the start of the shift the current batch ends in; preparation begins one TT-prep window (8 h, tunable in Masters) earlier.</div>
-      <div id="pl_alert"></div>
-      <div class="fgroup-title" style="margin-top:14px">Sheet 1 — Month summary (machine-wise, all batches)</div>
-      <div id="pl_summary" style="font-size:12px">Loading…</div>
-      <div class="fgroup-title" style="margin-top:18px">Sheet 2 — TT time cascade (colour change / dish wash planning)</div>
-      <div id="pl_cascade" style="font-size:12px"></div>
+      <div id="pl_ctx" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:7px;padding-top:7px;border-top:1px solid var(--b1);font-size:11.5px;color:var(--t2)"></div>
+    </div>
+    <!-- v55Y item 8: three collapsible sections — the page opens as three headers, the chemist
+         expands the one he is working on. Open/closed state persists per session. -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div class="plsec" onclick="plToggle('alert')"><span class="plchev" id="plchev_alert">&#9656;</span> <b>ALERTS</b> <span id="plcount_alert" class="plbadge"></span></div>
+      <div class="plbody" id="plbody_alert"><div id="pl_alert"></div></div>
+      <div class="plsec" onclick="plToggle('summary')"><span class="plchev" id="plchev_summary">&#9656;</span> <b>MACHINE-WISE PLANNING</b> <span id="plcount_summary" class="plbadge"></span></div>
+      <div class="plbody" id="plbody_summary"><div id="pl_summary" style="font-size:12px">Loading&hellip;</div></div>
+      <div class="plsec" onclick="plToggle('cascade')"><span class="plchev" id="plchev_cascade">&#9656;</span> <b>TT CASCADE</b> <span id="plcount_cascade" class="plbadge"></span></div>
+      <div class="plbody" id="plbody_cascade" style="border-bottom:0"><div id="pl_cascade" style="font-size:12px"></div></div>
     </div>
   </div>
   <div class="page" id="page-mmt">
-    <div class="ftabs" id="mmtFloorTabs"></div>
-    <div class="card">
+    <!-- v56A item 24 (Ishan, 20 Sep): two distinct sections — WORKING (create the charge and
+         allocate it downstream) and HISTORY (filterable register of past, current and upcoming
+         charges; click any row for its full detail). Same rail pattern as the Stock Ledger. -->
+    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <div class="lgrail">
+        <div class="lgnav on" id="mmnav-w" onclick="mmSection('w')"><b>Working</b><span>New charge &amp; allocation</span></div>
+        <div class="lgnav" id="mmnav-h" onclick="mmSection('h')"><b>History</b><span>All charges &amp; detail</span></div>
+      </div>
+      <div style="flex:1;min-width:320px">
+
+      <div id="mmsec-w">
+          <div class="ftabs" id="mmtFloorTabs"></div>
+      <div class="card">
       <div class="card-title">New MMT charge</div>
       <div class="card-sub">The mother charge in the Melter-Mixer Tank. Transfer tanks link back to it for full traceability to the vendor gelatine batch.</div>
       <div class="fgrid">
@@ -333,10 +383,32 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <button class="btn" onclick="clearMmtForm()">Clear</button>
       </div>
     </div>
-    <div class="card">
-      <div class="card-title">Charges — <span id="mmtFloorLabel">All floors</span></div>
-      <div class="card-sub">Starting a charge while another is unexhausted raises an alert, not a block — spare MMT capacity can be used to fast-track a charge.</div>
-      <div id="mmtList" class="tscroll"><div class="empty">Loading…</div></div>
+        <div class="card">
+          <div class="card-title">Open charges on this floor — allocation</div>
+          <div class="card-sub">What is still unexhausted and available to link transfer tanks to. Allocation happens on the TT entry; this is the live position.</div>
+          <div id="mmtOpen"><div class="empty">Loading&hellip;</div></div>
+        </div>
+      </div>
+
+      <div id="mmsec-h" style="display:none">
+        <div class="card">
+          <div class="card-title">Charge history — <span id="mmtFloorLabel">All floors</span></div>
+          <div class="card-sub">Every charge: past, current and upcoming. Filter, then click a row for gelatine, water, chemicals, timestamps and allocation.</div>
+          <div class="fgrid" style="margin-bottom:10px">
+            <div class="field-grp"><label>Reference</label><input id="mm_ref" placeholder="all" onchange="renderMmtHistory()"></div>
+            <div class="field-grp"><label>Vendor</label><input id="mm_vendor" placeholder="all" onchange="renderMmtHistory()"></div>
+            <div class="field-grp"><label>Gelatine batch</label><input id="mm_gbatch" placeholder="all" onchange="renderMmtHistory()"></div>
+            <div class="field-grp"><label>Tank</label><select id="mm_tank" onchange="renderMmtHistory()"><option value="">All tanks</option></select></div>
+            <div class="field-grp"><label>Status</label><select id="mm_status" onchange="renderMmtHistory()"><option value="">All</option><option value="open">Open</option><option value="closed">Closed</option></select></div>
+            <div class="field-grp"><label>From</label><input id="mm_from" type="date" onchange="renderMmtHistory()"></div>
+            <div class="field-grp"><label>To</label><input id="mm_to" type="date" onchange="renderMmtHistory()"></div>
+            <div class="field-grp" style="justify-content:flex-end"><button class="btn teal" onclick="exportMmt()">Export</button></div>
+          </div>
+          <div id="mmtList" class="tscroll"><div class="empty">Loading&hellip;</div></div>
+        </div>
+      </div>
+
+      </div>
     </div>
   </div>
 
@@ -371,6 +443,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
           <table class="dtable"><tbody>
             <tr><td>Link MMT charge</td><td><select id="tc_mmt"><option value="">— select —</option></select></td></tr>
             <tr><td>Colour code (this side)</td><td><input id="tc_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></td></tr>
+            <tr><td colspan="2" style="padding-top:2px"><span id="tc_seqnote"></span></td></tr>
             <tr><td>Tanks planned (N)</td><td><input id="tc_seqtotal" type="number" inputmode="numeric"></td></tr>
             <tr><td>Tank capacity (L)</td><td><input id="tc_cap" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
             <tr><td>Planned fill (L)</td><td><input id="tc_planned" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
@@ -399,6 +472,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
           <table class="dtable"><tbody>
             <tr><td>Link MMT charge</td><td><select id="tb_mmt"><option value="">— select —</option></select></td></tr>
             <tr><td>Colour code (this side)</td><td><input id="tb_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></td></tr>
+            <tr><td colspan="2" style="padding-top:2px"><span id="tb_seqnote"></span></td></tr>
             <tr><td>Tanks planned (N)</td><td><input id="tb_seqtotal" type="number" inputmode="numeric"></td></tr>
             <tr><td>Tank capacity (L)</td><td><input id="tb_cap" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
             <tr><td>Planned fill (L)</td><td><input id="tb_planned" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
@@ -454,36 +528,89 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
   <!-- LEDGER -->
   <div class="page" id="page-ledger">
-    <div class="card">
-      <div class="card-title">Reuse material — Ledger A</div>
-      <div class="card-sub">Four accounts. Cutting and oily salvage are entered here; AIM and printed salvage arrive from Tracking, and cap/body cuttings from DPR, as PENDING receipts above — they join stock when the chemist accepts them.</div>
-      <div id="rcpPanel" style="margin-bottom:14px">
-        <div class="fgroup-title" style="display:flex;align-items:center;gap:10px">Pending receipts — awaiting GPR acceptance
-          <span id="rcpTotal" style="font-family:var(--mono);font-size:12px;color:var(--amber)"></span>
-          <button class="btn" style="margin-left:auto;padding:4px 10px;font-size:11px" onclick="loadReceipts(true)">Refresh</button>
-        </div>
-        <div id="rcpList" style="font-size:12px;color:var(--t3)">Loading…</div>
+    <!-- v56 items 12/18 (Ishan, 20 Sep): three self-contained sections on a vertical left rail,
+         the way Tracking splits AIM / Printing / PI. Only the selected section renders. -->
+    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <div class="lgrail" id="lgRail">
+        <div class="lgnav on" id="lgnav-a" onclick="lgSection('a')"><b>Ledger A</b><span>Reuse material</span></div>
+        <div class="lgnav" id="lgnav-b" onclick="lgSection('b')"><b>Ledger B</b><span>Legacy stock</span></div>
+        <div class="lgnav" id="lgnav-o" onclick="lgSection('o')"><b>Oily salvage</b><span>Entry &amp; corrections</span></div>
       </div>
-      <div id="acctStrip" class="acct-strip"></div>
-      <div class="fgroup-title" style="margin-top:10px">Recent movements</div>
-      <div id="recentMoves" style="font-size:12px;color:var(--t3)">Loading&hellip;</div>
-      <div class="ftabs">
-        <div class="ftab on" id="lv-account" onclick="loadLedger('account',this)">By account</div>
-        <div class="ftab" id="lv-daily" onclick="loadLedger('daily',this)">By production day</div>
-        <div class="ftab" id="lv-colour" onclick="loadLedger('pc',this)">By colour code</div>
-        <div class="ftab" id="lv-lots" onclick="loadLedger('lots',this)">Available lots</div>
-        <div class="ftab" id="lv-movements" onclick="loadLedger('movements',this)">All movements</div>
-      </div>
-      <div class="fgrid" style="margin-bottom:12px">
-        <div class="field-grp"><label>Batch (optional)</label><input id="lg_batch" placeholder="e.g. 26N50"></div>
-        <div class="field-grp"><label>From</label><input id="lg_from" type="date"></div>
-        <div class="field-grp"><label>To</label><input id="lg_to" type="date"></div>
-        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadLedger()">Apply</button></div>
-      </div>
-      <div id="ledgerResult" class="tscroll"><div class="empty">Loading…</div></div>
-    </div>
+      <div style="flex:1;min-width:320px">
 
-    <div class="card">
+      <!-- ── LEDGER A ─────────────────────────────────────────────────────────── -->
+      <div id="lgsec-a">
+        <div class="card">
+          <div class="card-title">Reuse material — Ledger A</div>
+          <div class="card-sub">Four accounts. Cutting and oily salvage are entered by GPR; AIM and printed salvage arrive from Tracking, and cap/body cuttings from DPR, as pending receipts — they join stock when the chemist accepts them.</div>
+          <!-- v56 item 13: KPI bubbles first, before any table -->
+          <div id="acctStrip" class="acct-strip"></div>
+        </div>
+
+        <div class="card">
+          <div class="fgroup-title" style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">Pending receipts — awaiting GPR acceptance
+            <span id="rcpTotal" style="font-family:var(--mono);font-size:12px;color:var(--amber)"></span>
+            <span style="margin-left:auto;display:flex;gap:8px">
+              <button class="btn sm" onclick="rcpSelectAll(true)">Select all</button>
+              <button class="btn sm" onclick="rcpSelectAll(false)">Clear</button>
+              <button class="btn primary sm" id="rcpBulkBtn" onclick="acceptReceiptsBulk()">Accept selected</button>
+              <button class="btn sm" onclick="loadReceipts(true)">Refresh</button>
+            </span>
+          </div>
+          <div class="fgrid" style="margin-bottom:8px">
+            <div class="field-grp"><label>Source</label><select id="rcp_src" onchange="renderReceipts()"><option value="">All</option><option value="dpr">DPR cuttings</option><option value="tracking">Tracking salvage</option></select></div>
+            <div class="field-grp"><label>Account</label><select id="rcp_acct" onchange="renderReceipts()"><option value="">All accounts</option></select></div>
+            <div class="field-grp"><label>Machine</label><input id="rcp_mc" list="mcOpts" placeholder="all" onchange="renderReceipts()"></div>
+            <div class="field-grp"><label>Batch</label><input id="rcp_batch" placeholder="all" onchange="renderReceipts()"></div>
+            <div class="field-grp"><label>Day</label><input id="rcp_day" type="date" onchange="renderReceipts()"></div>
+          </div>
+          <div id="rcpList" style="font-size:12px;color:var(--t3)">Loading&hellip;</div>
+        </div>
+
+        <div class="card">
+          <div class="fgroup-title">Movements &amp; registers</div>
+          <div class="card-sub">Pick a view and apply filters — nothing renders until you ask for it, so the page stays compact.</div>
+          <div class="ftabs">
+            <div class="ftab on" id="lv-account" onclick="loadLedger('account',this)">By account</div>
+            <div class="ftab" id="lv-daily" onclick="loadLedger('daily',this)">By production day &amp; shift</div>
+            <div class="ftab" id="lv-colour" onclick="loadLedger('pc',this)">By colour code</div>
+            <div class="ftab" id="lv-movements" onclick="loadLedger('movements',this)">All movements</div>
+          </div>
+          <div class="fgrid" style="margin-bottom:12px">
+            <div class="field-grp"><label>Batch</label><input id="lg_batch" list="batchOpts" placeholder="all"></div>
+            <div class="field-grp"><label>Machine</label><input id="lg_machine" list="mcOpts" placeholder="all"></div>
+            <div class="field-grp"><label>Account</label><select id="lg_account"><option value="">All accounts</option></select></div>
+            <div class="field-grp"><label>PC code</label><input id="lg_pc" placeholder="all"></div>
+            <div class="field-grp"><label>Floor</label><select id="lg_floor"><option value="">All floors</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
+            <div class="field-grp"><label>From</label><input id="lg_from" type="date"></div>
+            <div class="field-grp"><label>To</label><input id="lg_to" type="date"></div>
+            <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadLedger()">Apply</button></div>
+            <div class="field-grp" style="justify-content:flex-end"><button class="btn teal" onclick="exportLedger()">Export</button></div>
+          </div>
+          <div id="ledgerResult" class="tscroll"><div class="empty">Pick a view and press Apply.</div></div>
+        </div>
+      </div>
+
+      <!-- ── LEDGER B ─────────────────────────────────────────────────────────── -->
+      <div id="lgsec-b" style="display:none">
+      <div class="card">
+      <div class="card-title">Legacy stock — Ledger B</div>
+      <div class="card-sub">The pre-implementation pile. Seed it once before the first tank is issued; after that it only draws down.</div>
+      <div id="legacyBalance" style="margin-bottom:12px"></div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Storage location *</label><input id="lgs_loc" placeholder="e.g. GF Store A"></div>
+        <div class="field-grp"><label>Account</label><select id="lgs_acct"></select></div>
+        <div class="field-grp"><label>Quantity (kg)</label><input id="lgs_kg" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Note</label><input id="lgs_note" placeholder="optional"></div>
+        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="seedLegacy()">Add location</button></div>
+      </div>
+      <div class="hint" style="margin-top:8px">Seed one row per storage location. Draws are recorded against the location they came from, so each area's remaining balance stays accurate.</div>
+    </div>
+      </div>
+
+      <!-- ── OILY SALVAGE ─────────────────────────────────────────────────────── -->
+      <div id="lgsec-o" style="display:none">
+      <div class="card">
       <div class="card-title">Oily salvage entry &amp; corrections</div>
       <div class="card-sub">v55J: cuttings now arrive from DPR and AIM/Printing/PI salvage from Tracking through the pending-receipt queue above &mdash; oily salvage is the one stream with no upstream feed, so it (and corrections) are entered here.</div>
       <div class="fgrid">
@@ -499,19 +626,9 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="saveMovement()">Record</button></div>
       </div>
     </div>
-
-    <div class="card">
-      <div class="card-title">Legacy stock — Ledger B</div>
-      <div class="card-sub">The pre-implementation pile. Seed it once before the first tank is issued; after that it only draws down.</div>
-      <div id="legacyBalance" style="margin-bottom:12px"></div>
-      <div class="fgrid">
-        <div class="field-grp"><label>Storage location *</label><input id="lgs_loc" placeholder="e.g. GF Store A"></div>
-        <div class="field-grp"><label>Account</label><select id="lgs_acct"></select></div>
-        <div class="field-grp"><label>Quantity (kg)</label><input id="lgs_kg" type="number" inputmode="decimal"></div>
-        <div class="field-grp"><label>Note</label><input id="lgs_note" placeholder="optional"></div>
-        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="seedLegacy()">Add location</button></div>
       </div>
-      <div class="hint" style="margin-top:8px">Seed one row per storage location. Draws are recorded against the location they came from, so each area's remaining balance stays accurate.</div>
+
+      </div>
     </div>
   </div>
 
@@ -764,13 +881,13 @@ function showPage(id, btn){
   if(btn) btn.classList.add('on');
   if(id==='sheet')  loadSheet();
   if(id==='plan')   loadPlan();
-  if(id==='mmt')    loadMmt();
+  if(id==='mmt'){   mmSection(window._MMSEC||'w'); loadSuggestions(); }   // v56A item 24 / v56B item 1
   if(id==='mmt'){ try{ document.getElementById('m_tank_wrap').style.display = (CUR_FLOOR==='GF') ? '' : 'none'; }catch(_){}}
   if(id==='yield'){ buildYieldPickers(); }
   if(id==='log'){ buildYieldPickers(); loadBatchOptions(); loadInputsLog(); loadLabelHistory(); }
   if(id==='masters'){ _pcIdx(); }
-  if(id==='issue'){ buildColourantRows(); loadMmtOptions(); loadBatchOptions(); _pcIdx(); }
-  if(id==='ledger'){ loadReceipts(); loadAccountStrip(); loadLedger(); loadLegacyBalance(); loadRecentMoves(); _pcIdx(); }
+  if(id==='issue'){ buildColourantRows(); loadMmtOptions(); loadBatchOptions(); _pcIdx(); loadSuggestions(); }
+  if(id==='ledger'){ lgSection(window._LGSEC||'a'); _pcIdx(); loadSuggestions(); }   // v56 items 12/16: section-driven, nothing auto-renders
   if(id==='crush')  loadCrush('proposed');
   if(id==='masters')renderMasters();
 }
@@ -813,15 +930,10 @@ async function renderModeBanner(){
 }
 
 // ── TT SHEET ───────────────────────────────────────────
-function clearSheetFilters(){
-  ['sh_batch','sh_machine','sh_from','sh_to'].forEach(id=>setVal(id,''));
-  document.getElementById('sh_floor').value = '';
-  document.getElementById('sh_side').value = '';
-  loadSheet();
-}
 async function loadSheet(){
   const out = document.getElementById('sheetResult');
   out.innerHTML = '<div class="empty">Loading…</div>';
+  if(!val('sh_from') && !val('sh_to')) shScope();   // v55Z: default scope = current production day
   const q = new URLSearchParams();
   if(val('sh_batch')) q.set('batch', val('sh_batch'));
   if(val('sh_machine')) q.set('machine', val('sh_machine'));
@@ -833,99 +945,112 @@ async function loadSheet(){
     const d = await api('/api/gpr/tt-sheet?' + q.toString());
     if(!d.ok){ out.innerHTML = '<div class="empty">Could not load the sheet.</div>'; return; }
     SHEET_ROWS = d.rows || [];
-    // v55J item 2: LIVE BOARD — every tank on today's and yesterday's production days, grouped
-    // floor → machine → batch, so the sheet opens as a live consolidated report; the filters
-    // below remain the history search.
-    try{
-      const liveEl = document.getElementById('sheetLive');
-      const _curMo = new Date(Date.now()+330*60000).toISOString().slice(0,7);
-      if(liveEl && G_MONTH !== 'ALL' && G_MONTH !== _curMo){ liveEl.innerHTML = '<div class="empty">Viewing the '+esc(G_MONTH)+' cohort — the live board shows only in the current month.</div>'; }
-      else if(liveEl){
-        const ist = new Date(Date.now()+330*60000);
-        const d0 = ist.toISOString().slice(0,10);
-        const d1 = new Date(ist.getTime()-86400000).toISOString().slice(0,10);
-        const live = SHEET_ROWS.filter(r=>r.production_day===d0 || r.production_day===d1);
-        if(!live.length){ liveEl.innerHTML = '<div class="empty">No tanks issued in the current or previous production day.</div>'; }
-        else{
-          const by = {};
-          live.forEach(r=>{ const k = (r.floor||'?')+'|'+(r.machine_id||'?'); (by[k]=by[k]||[]).push(r); });
-          let lh = '';
-          Object.keys(by).sort().forEach(k=>{
-            const [fl,mc] = k.split('|');
-            lh += '<div style="margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;font-size:12px">'+esc(FLOOR_LABELS[fl]||fl)+' &middot; '+esc(mc)+'</div>';
-            by[k].sort((a,b)=>String(a.batch_number).localeCompare(String(b.batch_number))||String(a.side).localeCompare(String(b.side))||(a.seq_index-b.seq_index));
-            // v55N item 3: the live board is the SCAN IN / SCAN OUT surface — each tank is an
-            // actionable row through its gated lifecycle, with the per-TT movement log one click away.
-            lh += '<table class="gtable" style="margin-bottom:6px"><tbody>';
-            by[k].forEach(r=>{
-              window._TTROWS[r.id] = r;
-              const [,slabel,scolr] = lcStage(r);
-              lh += '<tr>'
-                + '<td class="mono" style="white-space:nowrap"><b>'+esc(r.tt_number||'')+'</b></td>'
-                + '<td class="mono">'+esc(r.batch_number)+' '+esc(String(r.side||'').toUpperCase())+' #'+(r.seq_index||'?')+'</td>'
-                + '<td class="num">'+fmt(r.actual_l,0)+' L</td>'
-                + '<td>'+esc(r.colour_name||r.colour_code||'—')+'</td>'
-                + '<td><b style="font-size:10.5px;color:'+scolr+'">'+slabel+'</b></td>'
-                + '<td style="white-space:nowrap;text-align:right">'+lcActions(r)+'</td>'
-                + '</tr>';
-            });
-            lh += '</tbody></table>';
-          });
-          liveEl.innerHTML = lh;
-        }
-      }
-    }catch(_e){}
-    document.getElementById('sheetKpis').innerHTML =
-      '<div class="kgrid" style="margin-top:14px">'
-      + kpi('Tanks issued', d.totals.tt)
-      + kpi('Solution issued', fmt(d.totals.litres,0)+' L')
-      + kpi('Material charged', fmt(d.totals.charged,0)+' kg')
-      + '</div>';
-    if(!SHEET_ROWS.length){ out.innerHTML = '<div class="empty">No tanks match these filters yet.</div>'; return; }
-    let h = '<table class="gtable"><thead><tr><th>Day</th><th>Batch</th><th>TT</th><th>Side</th><th>Machine</th><th>Floor</th>'
-          + '<th>Colour</th><th class="num">Actual L</th><th class="num">Charged kg</th><th>MMT</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody>';
-    SHEET_ROWS.forEach(r=>{
+    renderSheet();
+  }catch(e){ out.innerHTML = '<div class="empty">Could not load the sheet.</div>'; }
+}
+// v55Z: scope presets — the chemist picks a window instead of typing two dates.
+function shScope(){
+  const s = (document.getElementById('sh_scope')||{}).value || 'cur';
+  if(s === 'custom') return;
+  const ist = new Date(Date.now()+330*60000);
+  const day = n => new Date(ist.getTime()-n*86400000).toISOString().slice(0,10);
+  if(s==='cur'){ setVal('sh_from', day(0)); setVal('sh_to', day(0)); }
+  else if(s==='prev'){ setVal('sh_from', day(1)); setVal('sh_to', day(0)); }
+  else if(s==='7'){ setVal('sh_from', day(6)); setVal('sh_to', day(0)); }
+  else if(s==='month'){ setVal('sh_from', day(0).slice(0,8)+'01'); setVal('sh_to', day(0)); }
+  if(typeof SHEET_ROWS !== 'undefined' && document.getElementById('sheetResult').innerHTML.indexOf('Loading')<0) loadSheet();
+}
+function shCustom(){ const s = document.getElementById('sh_scope'); if(s) s.value = 'custom'; loadSheet(); }
+function clearSheetFilters(){
+  ['sh_batch','sh_machine','sh_pc'].forEach(id=>setVal(id,''));
+  ['sh_floor','sh_side','sh_stage'].forEach(id=>{ const e=document.getElementById(id); if(e) e.value=''; });
+  const sc = document.getElementById('sh_scope'); if(sc) sc.value='cur';
+  shScope(); loadSheet();
+}
+// v55Z item 2: KPI bubbles render BEFORE the table (Tracking's order); stage and PC filter here
+// client-side so the chemist can narrow without a round-trip.
+function renderSheet(){
+  const out = document.getElementById('sheetResult'); if(!out) return;
+  const stage = (document.getElementById('sh_stage')||{}).value || '';
+  const pcf = (val('sh_pc')||'').trim().toUpperCase();
+  let rows = SHEET_ROWS.slice();
+  if(stage) rows = rows.filter(r=>lcStage(r)[0]===stage);
+  if(pcf) rows = rows.filter(r=>String(r.pc_code||'').toUpperCase().includes(pcf));
+  const litres = rows.reduce((a,r)=>a+Number(r.actual_l||0),0);
+  const charged = rows.reduce((a,r)=>a+Number(r.total_charged_kg||0),0);
+  const issued = rows.filter(r=>r.issued_at).length;
+  const ready = rows.filter(r=>lcStage(r)[0]==='released').length;
+  document.getElementById('sheetKpis').innerHTML =
+    '<div class="kgrid">'
+    + kpi('Tanks in view', rows.length)
+    + kpi('Solution', fmt(litres,0)+' L')
+    + kpi('Material charged', fmt(charged,0)+' kg')
+    + kpi('Ready to issue', ready)
+    + kpi('Issued to machine', issued)
+    + '</div>';
+  const ctx = document.getElementById('sh_ctx');
+  if(ctx) ctx.textContent = (val('sh_from')? _dm(val('sh_from'))+' → '+_dm(val('sh_to')) : '') + (stage? ' · '+stage : '');
+  if(!rows.length){ out.innerHTML = '<div class="empty">No tanks match these filters.</div>'; return; }
+  // grouped by floor → machine so the current tanks on each machine read as one block (item 11)
+  const by = {}; rows.forEach(r=>{ const k=(r.floor||'?')+'|'+(r.machine_id||'?'); (by[k]=by[k]||[]).push(r); });
+  let h = '';
+  Object.keys(by).sort().forEach(k=>{
+    const [fl,mc] = k.split('|');
+    const grp = by[k].sort((a,b)=> String(b.production_day||'').localeCompare(String(a.production_day||''))
+      || String(a.batch_number||'').localeCompare(String(b.batch_number||'')) || (a.seq_index-b.seq_index));
+    const gl = grp.reduce((a,r)=>a+Number(r.actual_l||0),0), gc = grp.reduce((a,r)=>a+Number(r.total_charged_kg||0),0);
+    h += '<div style="margin:10px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;font-size:12px">'
+       + esc(FLOOR_LABELS[fl]||fl)+' &middot; '+esc(mc)
+       + '<span style="float:right;font-weight:400;color:var(--t3);font-size:11px">'+grp.length+' tank'+(grp.length===1?'':'s')+' &middot; '+fmt(gl,0)+' L &middot; '+fmt(gc,1)+' kg</span></div>';
+    h += '<table class="gtable" style="margin:2px 0 8px"><thead><tr><th>Day</th><th>Batch</th><th>TT</th><th>Side</th><th>PC</th><th>Colour</th><th>Code</th>'
+       + '<th class="num">Actual L</th><th class="num">Charged kg</th><th>MMT</th><th>Lifecycle</th><th>Actions</th></tr></thead><tbody>';
+    grp.forEach(r=>{
       window._TTROWS[r.id] = r;
-      // v55N: row click opens the per-TT movement log (the old gotoBatch pointed at the Batch tab,
-      // removed in v55H item 16 — the click had been silently dead since).
+      const [,slabel,scolr] = lcStage(r);
       h += `<tr class="clickable" onclick="ttMove(${r.id})">`
-        + `<td class="mono">${esc(r.production_day||'—')}</td>`
-        + `<td class="mono"><b>${esc(r.batch_number)}</b></td>`
+        + `<td class="mono">${esc(_dm(r.production_day)||'—')}</td>`
+        + `<td class="mono" style="text-transform:uppercase"><b>${esc(String(r.batch_number||'').toUpperCase())}</b></td>`
         + `<td class="mono">${esc(r.tt_number||'')}</td>`
-        + `<td>${esc((r.side||'').toUpperCase())}</td>`
-        + `<td class="mono">${esc(r.machine_id||'')}</td>`
-        + `<td>${esc(FLOOR_LABELS[r.floor]||r.floor||'—')}</td>`
-        + `<td>${esc(r.colour_name||r.colour_code||'—')}</td>`
+        + `<td>${esc((r.side||'').toUpperCase())}${r.seq_index?' #'+r.seq_index:''}</td>`
+        + `<td class="mono">${_pcCell(r)}</td>`
+        + `<td>${esc(r.colour_name||'—')}</td>`
+        + `<td class="mono">${esc(r.colour_code||'—')}</td>`
         + `<td class="num">${fmt(r.actual_l,0)}</td>`
         + `<td class="num">${fmt(r.total_charged_kg,1)}</td>`
         + `<td class="mono">${esc(r.mmt_ref||'—')}</td>`
-        + (()=>{ const [,slabel,scolr] = lcStage(r); return `<td><b style="font-size:10.5px;color:${scolr}">${slabel}</b>${r.is_under_fill?' <span class="badge warn">Under-fill</span>':''}</td>`; })()
+        + `<td><b style="font-size:10.5px;color:${scolr}">${slabel}</b>${r.is_under_fill?' <span class="badge warn">Under-fill</span>':''}</td>`
         + `<td style="white-space:nowrap" onclick="event.stopPropagation()">${lcActions(r)}</td></tr>`;
     });
-    out.innerHTML = '<div class="tswrap" style="max-height:460px">' + h + '</tbody></table></div>';
-  }catch(e){ out.innerHTML = '<div class="empty">Could not load the sheet.</div>'; }
+    h += '</tbody></table>';
+  });
+  out.innerHTML = '<div class="tswrap" style="max-height:520px">' + h + '</div>';
 }
 function statusBadge(s){
   const m = { prepared:'planned', holding:'open', released:'closed', issued:'inprod' };   // v55N: full lifecycle
   return `<span class="badge ${m[s]||'planned'}">${esc(s||'')}</span>`;
 }
 function exportSheet(){
-  if(!SHEET_ROWS.length){ toast('Nothing to export yet','err'); return; }
-  const cols = ['production_day','batch_number','tt_number','side','machine_id','floor','pc_code','colour_name','colour_code',
-                'mmt_ref','capacity_l','planned_l','actual_l','virgin_kg','salvage_kg','cutting_kg','colour_kg','fg_remelt_kg',
-                'total_charged_kg','viscosity_cps','temperature_c','status','under_fill_reason','created_by','created_at',
-                'label_generated_at','scan_in_at','scan_out_at','issued_at','issued_by'];
-  const head = ['Production day','Batch','TT number','Side','Machine','Floor','PC code','Colour','Colour code','MMT ref',
-                'Capacity L','Planned L','Actual L','Virgin kg','Salvage kg','Cutting kg','Colour kg','FG remelt kg',
-                'Total charged kg','Viscosity','Temp C','Status','Under-fill reason','Entered by','Entered at',
-                'Label generated at','Scanned in at','Scanned out at','Issued at','Issued by'];
-  const q = v => { const s = v==null?'':String(v); return /[",\n]/.test(s) ? '"'+s.replace(/"/g,'""')+'"' : s; };
-  const csv = [head.join(',')].concat(SHEET_ROWS.map(r=>cols.map(c=>q(r[c])).join(','))).join('\n');
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(new Blob([csv], {type:'text/csv;charset=utf-8;'}));
-  a.download = 'gpr_tt_sheet_' + productionDay() + '.csv';
-  a.click();
-  toast('Exported '+SHEET_ROWS.length+' tanks','ok');
+  gprExport({
+    rows: SHEET_ROWS, title:'GPR — transfer tank sheet',
+    context: [val('sh_from')&&(_dm(val('sh_from'))+' → '+_dm(val('sh_to'))), val('sh_batch')&&('batch '+val('sh_batch')),
+              val('sh_machine')&&('machine '+val('sh_machine'))].filter(Boolean).join(' · '),
+    sheet:'TT sheet', file:'gpr_tt_sheet', totals:true,
+    columns:[ {key:'production_day', label:'Production day', w:14}, {key:'batch_number', label:'Batch', w:12},
+      {key:'tt_number', label:'TT number', w:12}, {key:'side', label:'Side', w:8},
+      {key:'seq_index', label:'Seq', w:6, num:true}, {key:'machine_id', label:'Machine', w:10},
+      {key:'floor', label:'Floor', w:9}, {key:'pc_code', label:'PC code', w:11},
+      {key:'colour_name', label:'Colour', w:18}, {key:'cap_code', label:'Cap code', w:11},
+      {key:'body_code', label:'Body code', w:11}, {key:'mmt_ref', label:'MMT ref', w:18},
+      {key:'capacity_l', label:'Capacity L', w:11, num:true}, {key:'planned_l', label:'Planned L', w:11, num:true},
+      {key:'actual_l', label:'Actual L', w:10, num:true}, {key:'virgin_kg', label:'Virgin kg', w:11, num:true},
+      {key:'salvage_kg', label:'Salvage kg', w:11, num:true}, {key:'cutting_kg', label:'Cutting kg', w:11, num:true},
+      {key:'colour_kg', label:'Colour kg', w:11, num:true}, {key:'fg_remelt_kg', label:'FG remelt kg', w:13, num:true},
+      {key:'total_charged_kg', label:'Total charged kg', w:16, num:true},
+      {key:'viscosity_cps', label:'Viscosity', w:11, num:true}, {key:'temperature_c', label:'Temp °C', w:10, num:true},
+      {key:'status', label:'Status', w:12}, {key:'created_by', label:'Entered by', w:14},
+      {key:'created_at', label:'Entered at', w:18}, {key:'label_generated_at', label:'Label at', w:18},
+      {key:'scan_in_at', label:'Scan in', w:18}, {key:'scan_out_at', label:'Scan out', w:18},
+      {key:'issued_at', label:'Issued at', w:18}, {key:'issued_by', label:'Issued by', w:14} ] });
 }
 // v55N: gotoBatch removed — the Batch tab it targeted was removed in v55H (item 16);
 // TT rows now open the movement log instead.
@@ -952,6 +1077,16 @@ function buildFloorTabs(){
     wrap.appendChild(d);
   });
 }
+// ── v56A item 24: MMT sections — working vs history ─────────────────────────────────────────
+function mmSection(k){
+  window._MMSEC = k;
+  ['w','h'].forEach(x=>{
+    const sec = document.getElementById('mmsec-'+x), nav = document.getElementById('mmnav-'+x);
+    if(sec) sec.style.display = (x===k) ? '' : 'none';
+    if(nav) nav.classList.toggle('on', x===k);
+  });
+  loadMmt();
+}
 async function loadMmt(){
   const out = document.getElementById('mmtList');
   document.getElementById('mmtFloorLabel').textContent = FLOOR_LABELS[CUR_FLOOR] || CUR_FLOOR;
@@ -964,6 +1099,55 @@ async function loadMmt(){
     if(!d.ok || !d.charges.length){ out.innerHTML = '<div class="empty">No charges recorded yet.</div>'; return; }
     window._MMT_ROWS = d.charges;
     const open = d.charges.filter(c=>c.status==='open');
+    window._MMT_OPEN = open;
+    // v56A item 24: the tank filter self-populates from what is actually on this floor.
+    const tk = document.getElementById('mm_tank');
+    if(tk && tk.options.length<=1){
+      const tanks = [...new Set(d.charges.map(c=>c.tank_no).filter(Boolean))];
+      tk.innerHTML = '<option value="">All tanks</option>' + tanks.map(t=>'<option value="'+esc(t)+'">'+esc(t)+'</option>').join('');
+    }
+    renderMmtOpen(open);
+    if((window._MMSEC||'w')!=='h') return;
+    renderMmtHistory();
+  }catch(e){ out.innerHTML = '<div class="empty">Could not load charges.</div>'; }
+}
+// v56A item 24: the history register renders from the cached charges and honours its filters.
+function _mmFiltered(){
+  const rows = window._MMT_ROWS || [];
+  const f = id => (val(id)||'').trim().toUpperCase();
+  const ref=f('mm_ref'), ven=f('mm_vendor'), gb=f('mm_gbatch');
+  const tk=(document.getElementById('mm_tank')||{}).value||'', st=(document.getElementById('mm_status')||{}).value||'';
+  const from=val('mm_from')||'', to=val('mm_to')||'';
+  const dayOf = c => String(c.charge_start||c.created_at||'').slice(0,10);
+  return rows.filter(c=>
+    (!ref || String(c.mmt_ref||'').toUpperCase().includes(ref))
+    && (!ven || String(c.gelatine_vendor||'').toUpperCase().includes(ven))
+    && (!gb || String(c.gelatine_batch||'').toUpperCase().includes(gb))
+    && (!tk || String(c.tank_no||'')===tk)
+    && (!st || String(c.status||'')===st)
+    && (!from || dayOf(c) >= from) && (!to || dayOf(c) <= to));
+}
+function renderMmtOpen(open){
+  const el = document.getElementById('mmtOpen'); if(!el) return;
+  const rows = open || window._MMT_OPEN || [];
+  if(!rows.length){ el.innerHTML = '<div class="empty">No open charge on this floor — create one above.</div>'; return; }
+  let h = '<table class="gtable"><thead><tr><th>Reference</th><th>Tank</th><th>Vendor</th><th>Gelatine batch</th>'
+    + '<th class="num">Total kg</th><th class="num">Allocated</th><th class="num">Remaining</th><th>Started</th></tr></thead><tbody>';
+  rows.forEach(c=>{
+    const rem = Number(c.remaining_kg||0);
+    h += '<tr><td class="mono"><b>'+esc(c.mmt_ref)+'</b></td><td>'+esc(c.tank_no||'—')+'</td>'
+      + '<td>'+esc(c.gelatine_vendor||'—')+'</td><td class="mono">'+esc(c.gelatine_batch||'—')+'</td>'
+      + '<td class="num">'+fmt(c.total_kg,0)+'</td><td class="num">'+fmt(c.allocated_kg,0)+'</td>'
+      + '<td class="num" style="color:'+(rem>0.5?'var(--green)':'var(--t3)')+'"><b>'+fmt(rem,0)+'</b></td>'
+      + '<td class="mono" style="font-size:11px">'+esc(_dm(String(c.charge_start||c.created_at||'').slice(0,10)))+'</td></tr>';
+  });
+  el.innerHTML = h + '</tbody></table>';
+}
+function renderMmtHistory(){
+  const out = document.getElementById('mmtList'); if(!out) return;
+  const d = { charges: _mmFiltered() };
+  if(!d.charges.length){ out.innerHTML = '<div class="empty">No charges match these filters.</div>'; return; }
+   // history renders only when its section is showing
     const chem = a => { try{ const x = typeof a==='string'?JSON.parse(a):(a||{}); return Object.entries(x).filter(([k,v])=>Number(v)>0).map(([k,v])=>k.replace(/^col\d+_/,'')+': '+v+' g').join(' &middot; ') || '&mdash;'; }catch(_){ return '&mdash;'; } };
     const rowHtml = (c,detail) => {
       const rem = Number(c.remaining_kg||0);
@@ -983,52 +1167,11 @@ async function loadMmt(){
     const head = '<table class="gtable"><thead><tr><th>Reference</th><th>Floor</th><th>Vendor</th><th>Gelatine batch</th>'
       + '<th class="num">Total kg</th><th class="num">Allocated</th><th class="num">Remaining</th><th>Started</th><th>Status</th></tr></thead><tbody>';
     let h = '';
-    if(CUR_FLOOR==='ALL'){
-      h += '<div class="fgroup-title" style="color:var(--green)">Charges in play ('+open.length+') &mdash; click a row for full detail</div>';
-      h += open.length ? head + open.map(c=>rowHtml(c)).join('') + '</tbody></table>' : '<div class="empty">No open charges.</div>';
-      h += '<div class="fgroup-title" style="margin-top:16px">History &mdash; every charge taken</div>';
-      h += '<div class="fgrid" style="margin-bottom:8px">'
-        + '<div class="field-grp"><label>Reference / vendor contains</label><input id="mh_q" oninput="mmtHistFilter()"></div>'
-        + '<div class="field-grp"><label>Floor</label><select id="mh_floor" onchange="mmtHistFilter()"><option value="">All</option><option value="GF">Ground Floor</option><option value="FFSF">First + Second</option></select></div>'
-        + '<div class="field-grp"><label>From (started)</label><input id="mh_from" type="date" onchange="mmtHistFilter()"></div>'
-        + '<div class="field-grp"><label>To</label><input id="mh_to" type="date" onchange="mmtHistFilter()"></div></div>'
-        + '<div id="mmtHist"></div>';
-      out.innerHTML = h;
-      const _mb = gMonthBounds();
-      if(_mb){ const f1=document.getElementById('mh_from'), f2=document.getElementById('mh_to'); if(f1) f1.value=_mb.from; if(f2) f2.value=_mb.to; }
-      mmtHistFilter();
-    } else {
-      out.innerHTML = head + d.charges.map(c=>rowHtml(c)).join('') + '</tbody></table>';
-    }
-  }catch(e){ out.innerHTML = '<div class="empty">Could not load charges.</div>'; }
+    out.innerHTML = head + d.charges.map(c=>rowHtml(c)).join('') + '</tbody></table>';
 }
 function mmtToggle(id){ const r = document.getElementById('mmtDet'+id); if(r) r.style.display = (r.style.display==='none') ? '' : 'none'; }
-function mmtHistFilter(){
-  const el = document.getElementById('mmtHist'); if(!el || !window._MMT_ROWS) return;
-  const q = (document.getElementById('mh_q')?.value||'').toLowerCase();
-  const fl = document.getElementById('mh_floor')?.value||'';
-  const from = document.getElementById('mh_from')?.value||'', to = document.getElementById('mh_to')?.value||'';
-  const rows = window._MMT_ROWS.filter(c=>{
-    if(q && !((c.mmt_ref||'')+' '+(c.gelatine_vendor||'')+' '+(c.gelatine_batch||'')).toLowerCase().includes(q)) return false;
-    if(fl && String(c.floor)!==fl && !(fl==='FFSF' && (c.floor==='1F'||c.floor==='2F'))) return false;
-    const st = String(c.charge_start||c.created_at||'').slice(0,10);
-    if(from && st && st < from) return false;
-    if(to && st && st > to) return false;
-    return true;
-  });
-  const chemDummy = 0;
-  const head = '<table class="gtable"><thead><tr><th>Reference</th><th>Floor</th><th>Vendor</th><th>Gelatine batch</th>'
-    + '<th class="num">Total kg</th><th class="num">Allocated</th><th class="num">Remaining</th><th>Started</th><th>Status</th></tr></thead><tbody>';
-  el.innerHTML = rows.length ? '<div class="tswrap" style="max-height:380px">' + head + rows.map(c=>{
-    const rem = Number(c.remaining_kg||0);
-    return `<tr style="cursor:pointer" onclick="mmtToggle(${c.id})"><td class="mono"><b>${esc(c.mmt_ref)}</b></td>`
-      + `<td>${esc(FLOOR_LABELS[c.floor]||c.floor)}</td><td>${esc(c.gelatine_vendor||'—')}</td><td class="mono">${esc(c.gelatine_batch||'—')}</td>`
-      + `<td class="num mono">${fmt(c.total_kg,0)}</td><td class="num mono">${fmt(c.allocated_kg,0)}</td><td class="num mono">${fmt(rem,0)}</td>`
-      + `<td class="mono" style="font-size:11px">${esc(c.charge_start||c.created_at||'—')}</td>`
-      + `<td style="font-size:11px">${esc(c.status||'')}</td></tr>`
-      + `<tr id="mmtDet${c.id}" style="display:none"><td colspan="9" style="background:var(--s2);padding:8px 14px;font-size:12px">gelatine ${fmt(c.gelatine_kg,1)} kg &middot; water ${fmt(c.water_kg,1)} kg &middot; commenced <span class="mono">${esc(c.charge_start||'—')}</span> &middot; completed <span class="mono">${esc(c.charge_complete||'—')}</span></td></tr>`;
-  }).join('') + '</tbody></table></div>' : '<div class="empty">No charges match.</div>';
-}
+// v56A item 24: the old inline ALL-floors filter is superseded by the History section's own
+// filter bar (reference / vendor / gelatine batch / tank / status / dates), so it is removed.
 async function saveMmt(){
   // v55J item 6: manual timestamps sanity-checked against this computer's clock.
   try{
@@ -1054,7 +1197,7 @@ async function saveMmt(){
     charge_start: val('m_start')||null, charge_complete: val('m_complete')||null, tt_prep_start: val('m_ttprep')||null
   });
   if(!d.ok){ toast(d.error||'Could not save the charge','err'); return; }
-  toast(d.warning ? ('Charge saved — ' + d.warning) : 'Charge saved', d.warning ? '' : 'ok');
+  toast(d.warning ? ('Charge saved — ' + d.warning) : 'Charge saved', d.warning ? '' : 'ok'); loadSuggestions(true);   // v56B item 1: remember new entries
   clearMmtForm(); loadMmt(); loadMmtOptions();
 }
 function clearMmtForm(){
@@ -1125,6 +1268,7 @@ function kpi(label, v, cls, sub){
 
 // ── ISSUE TT ───────────────────────────────────────────
 async function buildColourantRows(){
+  setTimeout(()=>{ try{ for(let k=0;k<8;k++) ['tc','tb'].forEach(p=>{ const e=document.getElementById(p+'_col_'+k); if(e && window._SUGG) e.setAttribute('list','sugColourants'); }); }catch(e){} }, 0);
   // v55N item 2: the colourant slots live inside EACH side's compact table.
   const m = await ensureMasters();
   const list = m.colourants || [];
@@ -1174,7 +1318,7 @@ async function loadLabelHistory(){
         + `<td>${esc(t.label_generated_by||'—')}</td>`
         + `<td class="mono"><b>${esc(t.tt_number||'')}</b></td><td class="mono">${esc(t.batch_number||'')}</td>`
         + `<td>${esc((t.side||'').toUpperCase())}${t.seq_index?' #'+t.seq_index:''}</td>`
-        + `<td>${esc(t.machine_id||'—')}</td><td>${esc(t.floor||'—')}</td><td class="mono">${esc(t.pc_code||'—')}</td>`
+        + `<td>${esc(t.machine_id||'—')}</td><td>${esc(t.floor||'—')}</td><td class="mono">${_pcCell(t)}</td>`
         + `<td>${esc(t.colour_name||t.colour_code||'—')}</td><td class="num">${fmt(t.actual_l,0)}</td>`
         + `<td class="num">${t.reprints||0}</td>`
         + `<td><b style="font-size:10.5px;color:${colr}">${label}</b></td>`
@@ -1364,6 +1508,42 @@ async function loadMmtOptions(){
 // on the same button as entry); the printed label is scanned IN to holding; after viscosity set it
 // is scanned OUT ('released'); only then does the gate to ISSUE the tank to the machine open
 // ('issued'). Every stage is stamped server-side and visible per TT in the movement log.
+// ── v55Z item 7 (Ishan, 20 Sep): one click from Planning to a prefilled TT form ─────────────
+// The chemist no longer navigates two screens and retypes what the system already knows: clicking
+// a batch (Planning sheet, alert row or batch-summary modal) opens the Issue tab with the batch
+// set and dualPrefill run — machine, floor, PC, colour, per-side capacity, planned fill and tank
+// count all arrive from the tt-plan/machine master, so only the measured values are typed.
+async function openTtForBatch(batch, machineId){
+  const bn = String(batch||'').trim().toUpperCase();
+  try{ const ov = document.getElementById('ttModal'); if(ov) ov.style.display='none'; }catch(e){}
+  showPage('issue');
+  if(!bn){ toast('Pick a batch first, or type one in the Issue form',''); return; }
+  setVal('td_batch', bn);
+  if(machineId) setVal('td_machine', machineId);
+  await dualPrefill();
+  ttAutoTotals('tc'); ttAutoTotals('tb');
+  toast('TT entry ready for '+bn+' — only measured values left to enter','ok');
+}
+// v55Z item 7: the sums compute themselves the moment the basics are in. Actual litres default to
+// the planned fill (editable), the charge total and fresh/reuse split update live, and the running
+// sequence position for this batch/side is shown so the chemist sees tank n of N without counting.
+function ttAutoTotals(p){
+  const planned = num(p+'_planned');
+  if(planned > 0 && !num(p+'_actual')) setVal(p+'_actual', planned);
+  drawTankSide(p); drawChargeSide(p);
+  const el = document.getElementById(p+'_seqnote');
+  if(el){
+    const side = p==='tc' ? 'cap' : 'body';
+    const bn = String(val('td_batch')||'').toUpperCase();
+    const done = (window._TTLIST||[]).filter(t=>String(t.batch_number||'').toUpperCase()===bn && String(t.side||'').toLowerCase()===side).length;
+    const tot = num(p+'_seqtotal');
+    const cap = num(p+'_cap'), act = num(p+'_actual');
+    const bits = [];
+    if(tot>0) bits.push('tank <b>'+(done+1)+' of '+tot+'</b>');
+    if(cap>0 && act>0) bits.push('fill <b>'+fmt(act/cap*100,0)+'%</b> of '+fmt(cap,0)+' L');
+    el.innerHTML = bits.length ? '<span style="font-size:11px;color:var(--t2)">'+bits.join(' &middot; ')+'</span>' : '';
+  }
+}
 // ── v55W: add / update a PC mapping in-app (GPR develops new PCs/shades continuously) ───────
 async function pcmLookup(){
   const pc = val('pcm_pc').toUpperCase(); const el = document.getElementById('pcmHint');
@@ -1536,7 +1716,7 @@ async function completeDualTt(){
     created.push({ tt_id:d.tt_id, tt_number:d.tt_number, side });
     if(d.warning) toast(side.toUpperCase()+' — '+d.warning,'');
   }
-  toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — generate the labels below','ok');
+  toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — generate the labels below','ok'); loadSuggestions(true);   // v56B item 1: remember new entries
   renderDualCreated(created, false);
   loadTtList(batch); loadMmtOptions();
 }
@@ -1712,6 +1892,7 @@ async function loadTtList(batch){
     if(fb) q.set('batch', fb);
     const d = await api('/api/gpr/tt-sheet?' + q.toString());
     let rows = (d.ok && d.rows) ? d.rows : [];
+    window._TTLIST = rows;   // v55Z item 7: the sequence counter reads the real tanks already entered
     if(fs) rows = rows.filter(t=>lcStage(t)[0]===fs || (fs==='label' && lcStage(t)[0]==='label'));
     if(!rows.length){ out.innerHTML = '<div class="empty">No tanks in the log for these filters.</div>'; return; }
     const shiftOf = t => { const hh = Number(String(t.created_at||'').slice(11,13)); const ih = (hh + 5.5 + 24) % 24; return ih>=6&&ih<14?'A':(ih>=14&&ih<22?'B':'C'); };
@@ -1750,15 +1931,59 @@ function _plBadge(st){
   const [t,c] = m[st] || [st,'var(--t3)'];
   return '<span style="font-weight:700;color:'+c+'">'+t+'</span>';
 }
+// ── v55Y items 8/9: collapsible sections + the always-on context strip ──────────────────────
+// v56B item 2: the gelatine block can be folded away on narrow screens; the rest is unchanged.
+function plToggleGel(){
+  window._PLAN_GEL = (window._PLAN_GEL===false);
+  const b = document.getElementById('pl_gelbtn');
+  if(b) b.textContent = 'Gelatine & TT: ' + (window._PLAN_GEL===false ? 'off' : 'on');
+  return loadPlan();   // returned so callers can await the re-render
+}
+function plToggle(k, force){
+  const b = document.getElementById('plbody_'+k), c = document.getElementById('plchev_'+k);
+  if(!b) return;
+  const open = force==null ? !b.classList.contains('open') : !!force;
+  b.classList.toggle('open', open); if(c) c.classList.toggle('open', open);
+  try{ (window._PLOPEN = window._PLOPEN || {})[k] = open; }catch(e){}
+  if(open && k==='cascade' && typeof renderCascCal==='function') renderCascCal();
+}
+function plRestoreSections(){
+  const st = window._PLOPEN || {};
+  ['alert','summary','cascade'].forEach(k=> plToggle(k, !!st[k]));
+}
+function renderPlCtx(d, perFloor){
+  const el = document.getElementById('pl_ctx'); if(!el) return;
+  const mcs = []; let batches = 0, running = 0;
+  (perFloor||[]).forEach(f=>(f.machines||[]).forEach(m=>{
+    mcs.push(m.machineId); batches += (m.batches||[]).length;
+    running += (m.batches||[]).filter(b=>b.status==='running').length;
+  }));
+  const pill = (lbl, val) => '<span><span style="color:var(--t3)">'+lbl+'</span> <b>'+val+'</b></span>';
+  el.innerHTML = pill('Now', esc((d.now&&d.now.date? _dm(d.now.date):'—')+' shift '+((d.now&&d.now.shift)||'—')))
+    + pill('Floor', esc(CUR_FLOOR==='ALL'?'All':(FLOOR_LABELS[CUR_FLOOR]||CUR_FLOOR)))
+    + pill('Machines', mcs.length)
+    + pill('Batches', batches)
+    + pill('Running', running)
+    + pill('Assumed A', (d.assumedAGradePct!=null? d.assumedAGradePct+'%' : '—'))
+    + pill('TT prep', (d.prepHours!=null? d.prepHours+' h' : '—'));
+}
+// v55Y item 5/14: dates read DD/MM — the year is noise on a shift-planning screen.
+function _dm(iso){ const s = String(iso||''); return /^\d{4}-\d{2}-\d{2}/.test(s) ? s.slice(8,10)+'/'+s.slice(5,7) : s; }
 // v55X: alerts register — scrollable + filterable (status / machine / dish-wash)
 function renderPlAlerts(){
   const al = document.getElementById('pl_alert'); if(!al) return;
   const alerts = window._PLALERTS || [];
-  if(!alerts.length){ al.innerHTML=''; return; }
+  const _bd = document.getElementById('plcount_alert');
+  if(_bd){ const od = alerts.filter(a=>a.status==='overdue').length;
+    _bd.innerHTML = alerts.length ? (od? '<b style="color:var(--red)">'+od+' overdue</b> · ' : '')+alerts.length+' total' : 'none'; }
+  if(!alerts.length){ al.innerHTML='<div class="empty">No TT alerts for these floors.</div>'; return; }
   const fS = (document.getElementById('alf_status')||{}).value || '';
   const fM = ((document.getElementById('alf_mc')||{}).value || '').trim().toUpperCase();
   const fD = (document.getElementById('alf_dw')||{}).value || '';
-  let rows = alerts.slice().sort((a,b)=> (a.status===b.status ? String(a.ttReadyBy.atISO||'').localeCompare(String(b.ttReadyBy.atISO||'')) : (a.status==='overdue' ? -1 : 1)));
+  // v55Y item 5: chronological — by the ready-by moment, then machine within the same shift.
+  let rows = alerts.slice().sort((a,b)=>
+    String(a.ttReadyBy.date+a.ttReadyBy.shift).localeCompare(String(b.ttReadyBy.date+b.ttReadyBy.shift))
+    || String(a.machineId||'').localeCompare(String(b.machineId||''), undefined, {numeric:true}));
   if(fS) rows = rows.filter(a=>a.status===fS);
   if(fM) rows = rows.filter(a=>String(a.machineId||'').toUpperCase().includes(fM));
   if(fD==='yes') rows = rows.filter(a=>a.dishWash);
@@ -1768,14 +1993,15 @@ function renderPlAlerts(){
     + '<div class="field-grp"><label>Machine</label><input id="alf_mc" list="mcOpts" placeholder="all" onchange="renderPlAlerts()"></div>'
     + '<div class="field-grp"><label>Dish wash</label><select id="alf_dw" onchange="renderPlAlerts()"><option value="">All</option><option value="yes">Dish wash only</option><option value="no">Same colour only</option></select></div>'
     + '</div>';
-  h += '<div class="tswrap" style="max-height:240px"><table class="gtable"><thead><tr><th>Status</th><th>Next batch</th><th>Machine</th><th>Colour</th><th>First cap+body TT ready by</th><th>Dish wash</th></tr></thead><tbody>';
+  h += '<div class="tswrap" style="max-height:240px"><table class="gtable"><thead><tr><th>Status</th><th>Next batch</th><th>Machine</th><th>Colour</th><th>First cap+body TT ready by</th><th>Dish wash</th><th>Action</th></tr></thead><tbody>';
   rows.forEach(a=>{
     h += '<tr>'
       + '<td>'+(a.status==='overdue' ? '&#9888; <b style="color:var(--red)">TT OVERDUE</b>' : '&#9200; <b style="color:var(--amber)">BEGIN PREPARATION</b>')+'</td>'
       + '<td><a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(a.toBatch)+'\')" class="mono" style="font-family:var(--mono);color:var(--accent);text-decoration:none"><b>'+esc(a.toBatch)+'</b></a></td>'
       + '<td>'+esc(a.machineId)+'</td><td>'+esc(a.toColour||'?')+'</td>'
-      + '<td><b>'+esc(a.ttReadyBy.date+' '+a.ttReadyBy.shift)+' start</b></td>'
-      + '<td>'+(a.dishWash ? '&#128705; '+esc(a.fromColour||'—')+' &rarr; '+esc(a.toColour||'—') : '<span style="color:var(--t3)">same colour</span>')+'</td></tr>';
+      + '<td><b>'+esc(_dm(a.ttReadyBy.date)+' '+a.ttReadyBy.shift)+' start</b></td>'
+      + '<td>'+(a.dishWash ? '&#128705; '+esc(a.fromColour||'—')+' &rarr; '+esc(a.toColour||'—') : '<span style="color:var(--t3)">same colour</span>')+'</td>'
+      + '<td style="white-space:nowrap"><button class="btn sm primary" onclick="openTtForBatch(\''+esc(a.toBatch)+'\',\''+esc(a.machineId||'')+'\')">Prepare TT</button></td></tr>';
   });
   h += '</tbody></table></div>';
   if(!rows.length) h += '<div class="empty">No alerts match the filters.</div>';
@@ -1784,6 +2010,29 @@ function renderPlAlerts(){
   const se = document.getElementById('alf_status'); if(se) se.value = keep.s;
   const me = document.getElementById('alf_mc'); if(me) me.value = keep.m;
   const de = document.getElementById('alf_dw'); if(de) de.value = keep.d;
+}
+// ── v56B item 2: gelatine & TT cells. Planned figures come from the same solution resolver the
+// TT form uses; issued figures are the tanks actually issued, so the sheet reconciles with the TT
+// screen by construction. "P/I/R" reads planned / issued / remaining. ─────────────────────────
+function _gelCells(b, hl){
+  // self-contained: td/num are locals of the sheet renderer, so they are redefined here rather
+  // than captured — the harness caught this as "td is not defined" on the live plan render.
+  const td = (x,extra) => '<td style="'+(extra||'')+'">'+x+'</td>';
+  const num = (x,d) => (x==null?'&mdash;':Number(x).toFixed(d==null?2:d));
+  const n = 'text-align:right;font-family:var(--mono)';
+  const g2 = b.gel;
+  if(!g2) return td('&mdash;',hl+n)+td('&mdash;',hl+n)+td('&mdash;',hl+n)+td('&mdash;',hl+n)+td('&mdash;',hl+n)+td('&mdash;',hl+n)+td('&mdash;',hl+n);
+  const trio = s => '<span title="planned '+s.ttPlanned+' · issued '+s.ttIssued+' · entered '+s.ttEntered
+    + ' · material '+fmt(s.kgIssued,1)+'/'+fmt(s.kgPlanned,1)+' kg">'
+    + s.ttPlanned+'/<b>'+s.ttIssued+'</b>/'+s.ttRemaining+'</span>';
+  const remStyle = v => hl+n+(Number(v)>0?'':';color:var(--green)');
+  return td(fmt(g2.kgPlanned,1),hl+n)
+    + td('<b>'+fmt(g2.kgIssued,1)+'</b>',hl+n)
+    + td(fmt(g2.kgRemaining,1),remStyle(g2.kgRemaining))
+    + td(trio(g2.cap),hl+n)
+    + td(fmt(g2.cap.litresRemaining,0),remStyle(g2.cap.litresRemaining))
+    + td(trio(g2.body),hl+n)
+    + td(fmt(g2.body.litresRemaining,0),remStyle(g2.body.litresRemaining));
 }
 async function loadPlan(){
   const mEl = document.getElementById('pl_month');
@@ -1841,9 +2090,24 @@ async function loadPlan(){
           + (m.liveAPct!=null ? ' &middot; Live A <b style="color:var(--teal)">'+Number(m.liveAPct).toFixed(1)+'%</b>' : '')+'</span></div>';
         h += '<table class="gtable" style="margin:4px 0 14px"><thead><tr>'
           + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','AIM A-GRADE (LACS)','UNSCANNED WIP @AIM','A-GRADE AIM %'].map(th).join('')
+          + (window._PLAN_GEL===false ? '' :
+             // v56B item 2: the gelatine position — what the batch needs, what has gone in, what is left
+             ['GEL kg PLAN','GEL kg ISSUED','GEL kg REM','CAP TT P/I/R','CAP L REM','BODY TT P/I/R','BODY L REM'].map(th).join(''))
           + '</tr></thead><tbody>';
-        let sOrd=0,sGP=0,sGA=0;
-        m.batches.forEach(b=>{ sOrd+=Number(b.orderQty||0); sGP+=Number(b.grossPlanned||0); sGA+=Number(b.grossActual||0); });
+        // v55Y item 6: the subtotal row carries EVERY numeric column, not just the first three.
+        // Lacs and WIP sum; the A% is the machine's live cohort figure (a sum of percentages is
+        // meaningless — this is the same figure the machine banner shows).
+        let sOrd=0,sGP=0,sGA=0,sLacs=0,sWip=0,nLacs=0,nWip=0;
+        let sGelP=0,sGelI=0,sGelR=0,sCapP=0,sCapI=0,sCapR=0,sBodP=0,sBodI=0,sBodR=0,sCapLR=0,sBodLR=0,nGel=0;
+        m.batches.forEach(b=>{
+          sOrd+=Number(b.orderQty||0); sGP+=Number(b.grossPlanned||0); sGA+=Number(b.grossActual||0);
+          if(b.aimALacs!=null){ sLacs+=Number(b.aimALacs); nLacs++; }
+          if(b.unscannedWipAim!=null){ sWip+=Number(b.unscannedWipAim); nWip++; }
+          if(b.gel){ nGel++;
+            sGelP+=b.gel.kgPlanned; sGelI+=b.gel.kgIssued; sGelR+=b.gel.kgRemaining;
+            sCapP+=b.gel.cap.ttPlanned; sCapI+=b.gel.cap.ttIssued; sCapR+=b.gel.cap.ttRemaining; sCapLR+=b.gel.cap.litresRemaining;
+            sBodP+=b.gel.body.ttPlanned; sBodI+=b.gel.body.ttIssued; sBodR+=b.gel.body.ttRemaining; sBodLR+=b.gel.body.litresRemaining; }
+        });
         // v55R item 2: compact default — one preceding batch, the current one, and the next two;
         // the full month lives in "Open in new tab" with filters. Subtotal still covers the month.
         let vis = m.batches, hiddenN = 0;
@@ -1869,7 +2133,7 @@ async function loadPlan(){
             : (b.estEnd ? '<span title="live estimate">'+esc(b.estEnd.date)+' <b>'+esc(b.estEnd.shift)+'</b> <small style="color:var(--teal)">est</small></span>' : '&mdash;');
           const hl = b.status==='running' ? 'background:var(--teal-l);' : ((b.status==='completed'||b.effectivelyComplete) ? 'color:var(--t3);' : '');
           h += '<tr>'
-            + td(esc(m.machineId),hl) + td('<a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(b.batchNumber)+'\')" class="mono" style="font-family:var(--mono);color:var(--accent);text-decoration:none" title="GPR batch summary — MMT refs, TT planned vs issued, stamps">'+esc(b.batchNumber)+'</a>'
+            + td(esc(m.machineId),hl) + td('<a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(b.batchNumber)+'\')" class="mono" style="font-family:var(--mono);color:var(--accent);text-decoration:none;text-transform:uppercase" title="GPR batch summary — MMT refs, TT planned vs issued, stamps">'+esc(String(b.batchNumber||'').toUpperCase())+'</a>'
                 + (b.status==='running'?' <b style="color:var(--teal);font-size:10px">RUNNING</b>'
                    : b.status==='closed' ? ' <b style="color:var(--t3);font-size:10px">CLOSED</b>'
                    : b.status==='completed' ? ' <b style="color:var(--t3);font-size:10px">DONE</b>'
@@ -1882,17 +2146,34 @@ async function loadPlan(){
             + td(b.aimALacs==null?'&mdash;':num(b.aimALacs),hl+'text-align:right;font-family:var(--mono)')
             + td(num(b.unscannedWipAim),hl+'text-align:right;font-family:var(--mono)')
             + td(b.aGradeAimPct==null?'&mdash;':num(b.aGradeAimPct)+'%',hl+'text-align:right;font-family:var(--mono)')
+            + (window._PLAN_GEL===false ? '' : _gelCells(b,hl))
             + '</tr>';
         });
         if(hiddenN>0){
-          h += '<tr><td colspan="14" style="color:var(--t3);font-size:11px;padding:4px 9px">&hellip; '+hiddenN+' more batch'+(hiddenN===1?'':'es')+' this month &mdash; <a href="javascript:openPlanTab()" style="color:var(--accent)">full view with filters &#8599;</a></td></tr>';
+          h += '<tr><td colspan="'+(window._PLAN_GEL===false?14:21)+'" style="color:var(--t3);font-size:11px;padding:4px 9px">&hellip; '+hiddenN+' more batch'+(hiddenN===1?'':'es')+' this month &mdash; <a href="javascript:openPlanTab()" style="color:var(--accent)">full view with filters &#8599;</a></td></tr>';
         }
-        h += '<tr style="background:var(--s3);font-weight:700"><td colspan="8" style="padding:5px 7px;font-family:var(--fc)">'+esc(m.machineId)+' SUBTOTAL</td>'
-          + td(num(sOrd),'text-align:right;font-family:var(--mono)') + td(num(sGP),'text-align:right;font-family:var(--mono)') + td(num(sGA),'text-align:right;font-family:var(--mono)') + '<td></td><td></td><td></td></tr>';
+        const _stn = 'text-align:right;font-family:var(--mono)';
+        h += '<tr style="background:var(--s3);font-weight:700"><td colspan="8" style="padding:5px 7px;font-family:var(--fc)">'+esc(m.machineId)+' SUBTOTAL &mdash; '+m.batches.length+' batch'+(m.batches.length===1?'':'es')+'</td>'
+          + td(num(sOrd),_stn) + td(num(sGP),_stn) + td(num(sGA),_stn)
+          + td(nLacs?num(sLacs):'&mdash;',_stn) + td(nWip?num(sWip):'&mdash;',_stn)
+          + td(m.liveAPct!=null?Number(m.liveAPct).toFixed(2)+'%':'&mdash;',_stn+';color:var(--teal)')
+          + (window._PLAN_GEL===false ? '' : (nGel
+              ? td(num(sGelP,1),_stn)+td(num(sGelI,1),_stn)+td(num(sGelR,1),_stn)
+                + td(sCapP+'/'+sCapI+'/'+sCapR,_stn)+td(num(sCapLR,0),_stn)
+                + td(sBodP+'/'+sBodI+'/'+sBodR,_stn)+td(num(sBodLR,0),_stn)
+              : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td>'))
+          + '</tr>';
         h += '</tbody></table>';
       });
     });
     sEl.innerHTML = h || '<span style="color:var(--t3)">No batches on the selected floor(s) in this month.</span>';
+    // v55Y items 8/9: context strip + section badges, then restore the chemist's open sections.
+    // v55Y items 8/9: context strip + section badges (meta is the plan payload; the per-floor
+    // loop shadows `d`, so never reach for that name here).
+    renderPlCtx(meta, perFloor);
+    let _mc=0,_bt=0; perFloor.forEach(f=>(f.machines||[]).forEach(m=>{ _mc++; _bt += (m.batches||[]).length; }));
+    const sb = document.getElementById('plcount_summary');
+    if(sb) sb.textContent = _mc+' machine'+(_mc===1?'':'s')+' · '+_bt+' batch'+(_bt===1?'':'es');
     // ── Sheet 2 (v55J item 4): TT time cascade as a DATE × SHIFT calendar — truck-calendar style.
     // Every transition places two events: BEGIN PREP (at beginPrepAt) and TT READY / DISH WASH
     // (at ttReadyBy). Filters: day, batch, PC, customer. Click a cell for its snapshot.
@@ -1915,6 +2196,7 @@ async function loadPlan(){
       + '<div class="field-grp"><label>Customer</label><select id="cf_cust" onchange="renderCascCal()">'+selOpt(custs)+'</select></div>'
       + '</div><div id="cascCal"></div><div id="cascSnap" style="margin-top:10px"></div>';
     renderCascCal();
+    _plAfterLoad();   // v55Y item 8: sections open as the chemist left them
 if(_planTimer) clearInterval(_planTimer);
     _planTimer = setInterval(()=>{ const pg=document.getElementById('page-plan'); if(pg && pg.classList.contains('on')) loadPlan(); else { clearInterval(_planTimer); _planTimer=null; } }, 60000);
   }catch(e){ sEl.innerHTML = '<span style="color:var(--red)">Plan failed: '+esc(e.message||'error')+'</span>'; }
@@ -1954,6 +2236,7 @@ async function gprBatchSummary(bn){
         + '<td class="mono" style="font-size:10px">'+esc(dt(t.scan_in_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.scan_out_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.issued_at))+'</td></tr>').join('')
       + '</tbody></table></div>'
     : '<div class="empty">No tanks entered for this batch yet.</div>';
+  h += '<div style="margin-top:10px"><button class="btn primary" onclick="openTtForBatch(\''+esc(bn)+'\',\''+esc((o.machineId||''))+'\')">Open TT entry for '+esc(bn)+'</button></div>';
   ttModalOpen(esc(bn) + ' — GPR batch summary', h);
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '860px';   // summary needs width
 }
@@ -2021,7 +2304,7 @@ function openPlanTab(){
     + '   if(!rows.length)return;\n'
     + '   var rd=m.ratedPerDay!=null?m.ratedPerDay:(m.ratePerDay!=null?m.ratePerDay:(Number(m.ratePerShift||0)*3).toFixed(1));\n'
     + '   fh+="<div class=\'mcband\'>MACHINE: "+esc(m.machineId)+" \u2014 "+rows.length+" OF "+(m.batches||[]).length+" BATCHES \u00b7 "+rd+" L/day"+(m.avgActualPerDay!=null?" \u00b7 Avg actual <b>"+m.avgActualPerDay+" L/day</b>":"")+(m.liveAPct!=null?" \u00b7 Live A <b>"+Number(m.liveAPct).toFixed(1)+"%</b>":"")+"</div>";\n'
-    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","AIM A-GRADE (LACS)","UNSCANNED WIP @AIM","A-GRADE AIM %"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
+    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","AIM A-GRADE (LACS)","UNSCANNED WIP @AIM","A-GRADE AIM %","GEL kg PLAN","GEL kg ISSUED","GEL kg REM","CAP TT P/I/R","BODY TT P/I/R"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
     + '   var so=0,sp=0,sa=0;\n'
     + '   rows.forEach(function(b){so+=Number(b.orderQty||0);sp+=Number(b.grossPlanned||0);sa+=Number(b.grossActual||0);\n'
     + '    var done=b.status==="completed"||b.effectivelyComplete;\n'
@@ -2030,7 +2313,8 @@ function openPlanTab(){
     + '    fh+="<tr><td>"+esc(m.machineId)+"</td><td class=\'mono\'>"+esc(b.batchNumber)+st+"</td><td>"+esc(b.customer||"\u2014")+"</td><td>"+esc(b.pcCode||"\u2014")+"</td><td>"+esc(b.colour||"\u2014")+"</td><td>"+esc(b.size||"\u2014")+"</td>"\n'
     + '     +"<td>"+esc(b.dprFirst||b.plannedStart||"\u2014")+"</td><td>"+end+"</td>"\n'
     + '     +"<td class=\'num\'>"+num(b.orderQty)+"</td><td class=\'num\'>"+num(b.grossPlanned)+"</td><td class=\'num\'>"+num(b.grossActual)+"</td><td class=\'num\'>"+(b.aimALacs==null?"\u2014":num(b.aimALacs))+"</td>"\n'
-    + '     +"<td class=\'num\'>"+num(b.unscannedWipAim)+"</td><td class=\'num\'>"+(b.aGradeAimPct==null?"\u2014":num(b.aGradeAimPct)+"%")+"</td></tr>";});\n'
+    + '     +"<td class=\'num\'>"+num(b.unscannedWipAim)+"</td><td class=\'num\'>"+(b.aGradeAimPct==null?"\u2014":num(b.aGradeAimPct)+"%")+"</td>"'
+    + '     +(b.gel?("<td class=\'num\'>"+num(b.gel.kgPlanned)+"</td><td class=\'num\'>"+num(b.gel.kgIssued)+"</td><td class=\'num\'>"+num(b.gel.kgRemaining)+"</td><td class=\'num\'>"+b.gel.cap.ttPlanned+"/"+b.gel.cap.ttIssued+"/"+b.gel.cap.ttRemaining+"</td><td class=\'num\'>"+b.gel.body.ttPlanned+"/"+b.gel.body.ttIssued+"/"+b.gel.body.ttRemaining+"</td>"):"<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>")+"</tr>";});\n'
     + '   fh+="<tr style=\'background:var(--s3);font-weight:700\'><td colspan=\'8\'>"+esc(m.machineId)+" SUBTOTAL (shown)</td><td class=\'num\'>"+num(so)+"</td><td class=\'num\'>"+num(sp)+"</td><td class=\'num\'>"+num(sa)+"</td><td></td><td></td><td></td></tr></tbody></table>";});\n'
     + '  if(fh)h+="<div class=\'flband\'>FLOOR: "+esc(FL[d.floor]||d.floor)+"</div>"+fh;});\n'
     + ' document.getElementById("sheet1").innerHTML=h||"<div style=\'color:var(--t3)\'>Nothing matches the filters.</div>";}\n'
@@ -2079,8 +2363,8 @@ function openPlanTab(){
 function exportPlan(){
   if(!_planData || typeof XLSX==='undefined'){ alert('Load the plan first.'); return; }
   const d = { machines: (_planData.floors||[]).flatMap(f=>f.machines||[]) };
-  const s1 = [['Machine','Batch','Status','Customer','Colour','Size','Order (L)','Gross Planned','Gross Actual','Unscanned WIP @AIM','A-Grade AIM %','Est/Actual End']];
-  d.machines.forEach(m=>m.batches.forEach(b=>s1.push([m.machineId,b.batchNumber,b.status,b.customer,b.colour,b.size,b.orderQty,b.grossPlanned,b.grossActual,b.unscannedWipAim,b.aGradeAimPct,(b.status==='completed'?(b.dprLast||b.plannedEnd||''):(b.estEnd?b.estEnd.date+' '+b.estEnd.shift:''))])));
+  const s1 = [['Machine','Batch','Status','Customer','Colour','Size','Order (L)','Gross Planned','Gross Actual','Unscanned WIP @AIM','A-Grade AIM %','Gel kg plan','Gel kg issued','Gel kg rem','Cap TT P/I/R','Body TT P/I/R','Est/Actual End']];
+  d.machines.forEach(m=>m.batches.forEach(b=>s1.push([m.machineId,b.batchNumber,b.status,b.customer,b.colour,b.size,b.orderQty,b.grossPlanned,b.grossActual,b.unscannedWipAim,b.aGradeAimPct,(b.gel?b.gel.kgPlanned:''),(b.gel?b.gel.kgIssued:''),(b.gel?b.gel.kgRemaining:''),(b.gel?(b.gel.cap.ttPlanned+'/'+b.gel.cap.ttIssued+'/'+b.gel.cap.ttRemaining):''),(b.gel?(b.gel.body.ttPlanned+'/'+b.gel.body.ttIssued+'/'+b.gel.body.ttRemaining):''),(b.status==='completed'?(b.dprLast||b.plannedEnd||''):(b.estEnd?b.estEnd.date+' '+b.estEnd.shift:''))])));
   const s2 = [['Machine','Current batch','Current colour','Est end','Next batch','Next colour','Dish wash','TT ready by','Begin prep at','Status','Actual Cap TT out','Actual Body TT out']];
   d.machines.forEach(m=>m.cascade.forEach(t=>s2.push([m.machineId,t.fromBatch,t.fromColour,(t.endEst?t.endEst.date+' '+t.endEst.shift:''),t.toBatch,t.toColour,(t.dishWash?'YES':'no'),t.ttReadyBy.date+' '+t.ttReadyBy.shift,t.beginPrepAt.date+' '+t.beginPrepAt.shift,t.status,(t.actual&&t.actual.cap&&t.actual.cap.firstOut)||'',(t.actual&&t.actual.body&&t.actual.body.firstOut)||''])));
   const wb = XLSX.utils.book_new();
@@ -2121,7 +2405,7 @@ function renderCascCal(){
   const th = x => '<th style="text-align:left;padding:5px 8px;background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px">'+x+'</th>';
   let h = '<table class="gtable" style="table-layout:fixed"><thead><tr>'+th('DATE')+th('SHIFT A (06&ndash;14)')+th('SHIFT B (14&ndash;22)')+th('SHIFT C (22&ndash;06)')+'</tr></thead><tbody>';
   dates.forEach(d=>{
-    h += '<tr><td style="padding:6px 8px;font-family:var(--mono);font-weight:600;border-bottom:1px solid var(--b1);vertical-align:top">'+esc(d)+'</td>';
+    h += '<tr><td style="padding:6px 8px;font-family:var(--mono);font-weight:600;border-bottom:1px solid var(--b1);vertical-align:top">'+esc(_dm(d))+'</td>';
     ['A','B','C'].forEach(sh=>{
       const cell = evs.filter(e=>e.date===d && e.shift===sh);
       let c = '';
@@ -2138,9 +2422,12 @@ function renderCascCal(){
     });
     h += '</tr>';
   });
+  const _cb = document.getElementById('plcount_cascade');
+  if(_cb) _cb.textContent = (window._CASC||[]).length+' transition'+((window._CASC||[]).length===1?'':'s');
   cal.innerHTML = h + '</tbody></table>'
     + '<div style="color:var(--t3);font-size:11px;margin:5px 2px">&#9200; <b style="color:var(--teal)">Blue</b> = begin TT preparation (one prep window before the deadline) &middot; &#128705; <b style="color:var(--amber)">Orange</b> = TT-ready deadline with a DISH WASH (colour change) &middot; &#9654; <b style="color:var(--green)">Green</b> = TT-ready deadline, same colour (no wash). All three are schedule deadlines from the cascade &mdash; actual completion shows as DONE in the transitions table, from real TT scan-outs.</div>' + (cascHiddenN>0 ? '<div style="color:var(--t3);font-size:11px;margin:4px 2px">Showing yesterday / today / tomorrow &mdash; '+cascHiddenN+' event'+(cascHiddenN===1?'':'s')+' on other days in <a href="javascript:openPlanTab()" style="color:var(--accent)">full view &#8599;</a></div>' : '');
 }
+function _plAfterLoad(){ try{ plRestoreSections(); }catch(e){} }
 function cascSnapShow(date, shift){
   const el = document.getElementById('cascSnap'); if(!el) return;
   const evs = window._CASC.filter(t => (t.beginPrepAt.date===date && t.beginPrepAt.shift===shift) || (t.ttReadyBy.date===date && t.ttReadyBy.shift===shift));
@@ -2160,42 +2447,102 @@ function cascSnapShow(date, shift){
 }
 
 // ── v55A item 5+6: pending physical receipts (Tracking salvage/remelt + DPR cuttings) ──
+// ── v56 items 12/18: section switch — only the selected ledger section renders ──────────────
+function lgSection(k){
+  window._LGSEC = k;
+  ['a','b','o'].forEach(x=>{
+    const sec = document.getElementById('lgsec-'+x), nav = document.getElementById('lgnav-'+x);
+    if(sec) sec.style.display = (x===k) ? '' : 'none';
+    if(nav) nav.classList.toggle('on', x===k);
+  });
+  if(k==='a'){ loadAccountStrip(); loadReceipts(); }
+  else if(k==='b'){ loadLegacyBalance(); }
+}
+// ── v56 item 15: receipts are cached, filtered and selectable; bulk accept in one action ─────
+let RCP_ROWS = [], RCP_SEL = {};
 async function loadReceipts(force){
-  // v55X item 7: the server throttles the heavy DPR/Tracking sweeps to once per 2 min; the
-  // Refresh button forces a fresh sweep with ?sync=1. Routine opens serve the queue instantly.
+  // v55X item 7: the server throttles the heavy DPR/Tracking sweeps to once per 2 min; Refresh
+  // forces a fresh sweep with ?sync=1. Routine opens serve the queue instantly.
   const el = document.getElementById('rcpList'); if(!el) return;
   el.innerHTML = '<span style="color:var(--t3)">Loading&hellip;</span>';
   try{
     const fl = (typeof visibleFloors==='function' ? visibleFloors() : [CUR_FLOOR==='ALL' ? 'GF' : CUR_FLOOR]);
-    const rows = []; let tot = 0;
+    const rows = [];
     for(const f of fl){
       const d = await api('/api/gpr/receipts?floor='+encodeURIComponent(f)+(force?'&sync=1':''));
-      if(d.ok){ rows.push(...(d.pending||[])); tot += (d.totalKg||0); }
+      if(d.ok) rows.push(...(d.pending||[]));
     }
-    document.getElementById('rcpTotal').textContent = rows.length ? (tot.toFixed(2)+' kg pending') : '';
-    if(!rows.length){ el.innerHTML = '<div style="padding:10px 14px;border:1px solid var(--green);border-left:5px solid var(--green);border-radius:var(--r);background:var(--green-l);color:var(--green);font-weight:600">Nothing pending &mdash; all generation received into stock.</div>'; return; }
-    const th = x => '<th style="text-align:left;padding:6px 9px;background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px;letter-spacing:.4px;white-space:nowrap">'+x+'</th>';
-    let h = '<div class="tswrap" style="max-height:320px;box-shadow:var(--shadow)"><table class="gtable"><thead><tr>'
-      + ['DAY','SOURCE','BATCH','MC','SIDE','ACCOUNT','FLOOR','KG',''].map(th).join('')+'</tr></thead><tbody>';
-    rows.forEach((r,k)=>{
-      const srcBadge = r.source==='dpr'
-        ? '<span style="background:var(--purple-l);color:var(--purple);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">DPR CUTTING</span>'
-        : '<span style="background:var(--teal-l);color:var(--teal);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">TRACKING</span>';
-      const bg = k%2 ? 'background:var(--s2);' : '';
-      h += '<tr style="'+bg+'">'
-        + '<td style="padding:6px 9px;font-family:var(--mono)">'+esc(r.production_day||'')+'</td>'
-        + '<td style="padding:6px 9px">'+srcBadge+'</td>'
-        + '<td style="padding:6px 9px;font-family:var(--mono);font-weight:600">'+esc(r.batch_number||'—')+'</td>'
-        + '<td style="padding:6px 9px">'+esc(r.machine_id||'—')+'</td>'
-        + '<td style="padding:6px 9px">'+esc((r.side||'—').toUpperCase())+'</td>'
-        + '<td style="padding:6px 9px">'+esc(r.account_label||r.account)+'</td>'
-        + '<td style="padding:6px 9px">'+esc(r.floor||'—')+'</td>'
-        + '<td style="padding:6px 9px;font-family:var(--mono);text-align:right;font-weight:600">'+Number(r.qty_kg||0).toFixed(2)+'</td>'
-        + '<td style="padding:6px 9px;text-align:right"><button class="btn" style="padding:4px 16px;font-size:11px;background:var(--green);border-color:var(--green);color:#fff" onclick="acceptReceipt('+r.id+')">Accept</button></td>'
-        + '</tr>';
-    });
-    el.innerHTML = h + '</tbody></table></div>';
+    RCP_ROWS = rows; RCP_SEL = {};
+    const sel = document.getElementById('rcp_acct');
+    if(sel && sel.options.length<=1){
+      const accts = [...new Set(rows.map(r=>r.account).filter(Boolean))];
+      sel.innerHTML = '<option value="">All accounts</option>' + accts.map(a=>'<option value="'+esc(a)+'">'+esc((rows.find(r=>r.account===a)||{}).account_label||a)+'</option>').join('');
+    }
+    renderReceipts();
   }catch(e){ el.innerHTML = '<span style="color:var(--red)">Receipts failed: '+esc(e.message||'error')+'</span>'; }
+}
+function _rcpFiltered(){
+  const src = (document.getElementById('rcp_src')||{}).value || '';
+  const acct = (document.getElementById('rcp_acct')||{}).value || '';
+  const mc = (val('rcp_mc')||'').trim().toUpperCase();
+  const bt = (val('rcp_batch')||'').trim().toUpperCase();
+  const day = val('rcp_day')||'';
+  return RCP_ROWS.filter(r=>
+    (!src || r.source===src) && (!acct || r.account===acct)
+    && (!mc || String(r.machine_id||'').toUpperCase().includes(mc))
+    && (!bt || String(r.batch_number||'').toUpperCase().includes(bt))
+    && (!day || r.production_day===day));
+}
+function rcpSelectAll(on){ _rcpFiltered().forEach(r=>{ if(on) RCP_SEL[r.id]=1; else delete RCP_SEL[r.id]; }); renderReceipts(); }
+function rcpToggle(id, on){ if(on) RCP_SEL[id]=1; else delete RCP_SEL[id]; _rcpBtn(); }
+function _rcpBtn(){
+  const n = Object.keys(RCP_SEL).length;
+  const b = document.getElementById('rcpBulkBtn');
+  if(b){ b.textContent = n ? 'Accept selected ('+n+')' : 'Accept selected'; b.disabled = !n; b.style.opacity = n?1:.55; }
+}
+function renderReceipts(){
+  const el = document.getElementById('rcpList'); if(!el) return;
+  const rows = _rcpFiltered();
+  const tot = rows.reduce((a,r)=>a+Number(r.qty_kg||0),0);
+  const tEl = document.getElementById('rcpTotal');
+  if(tEl) tEl.textContent = rows.length ? (tot.toFixed(2)+' kg pending in view') : '';
+  if(!RCP_ROWS.length){ el.innerHTML = '<div style="padding:10px 14px;border:1px solid var(--green);border-left:5px solid var(--green);border-radius:var(--r);background:var(--green-l);color:var(--green);font-weight:600">Nothing pending &mdash; all generation received into stock.</div>'; _rcpBtn(); return; }
+  if(!rows.length){ el.innerHTML = '<div class="empty">No pending receipts match these filters.</div>'; _rcpBtn(); return; }
+  let h = '<div class="tswrap" style="max-height:340px"><table class="gtable"><thead><tr><th style="width:26px"></th>'
+    + '<th>Day</th><th>Source</th><th>Batch</th><th>PC · colour code</th><th>MC</th><th>Side</th><th>Account</th><th>Floor</th><th class="num">kg</th><th></th></tr></thead><tbody>';
+  rows.forEach(r=>{
+    const srcBadge = r.source==='dpr'
+      ? '<span style="background:var(--purple-l);color:var(--purple);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">DPR CUTTING</span>'
+      : '<span style="background:var(--teal-l);color:var(--teal);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">TRACKING</span>';
+    h += '<tr>'
+      + '<td><input type="checkbox" '+(RCP_SEL[r.id]?'checked':'')+' onchange="rcpToggle('+r.id+',this.checked)"></td>'
+      + '<td class="mono">'+esc(_dm(r.production_day))+'</td>'
+      + '<td>'+srcBadge+'</td>'
+      + '<td class="mono" style="text-transform:uppercase"><b>'+esc(String(r.batch_number||'—').toUpperCase())+'</b></td>'
+      + '<td class="mono">'+_pcCell(r)+'</td>'
+      + '<td>'+esc(r.machine_id||'—')+'</td><td>'+esc((r.side||'—').toUpperCase())+'</td>'
+      + '<td>'+esc(r.account_label||r.account)+'</td><td>'+esc(r.floor||'—')+'</td>'
+      + '<td class="num"><b>'+Number(r.qty_kg||0).toFixed(2)+'</b></td>'
+      + '<td style="text-align:right"><button class="btn sm" style="background:var(--green);border-color:var(--green);color:#fff" onclick="acceptReceipt('+r.id+')">Accept</button></td>'
+      + '</tr>';
+  });
+  h += '<tr style="background:var(--s3);font-weight:700"><td colspan="9">'+rows.length+' pending in view</td><td class="num">'+tot.toFixed(2)+'</td><td></td></tr>';
+  el.innerHTML = h + '</tbody></table></div>';
+  _rcpBtn();
+}
+async function acceptReceiptsBulk(){
+  const ids = Object.keys(RCP_SEL).map(Number);
+  if(!ids.length){ toast('Select receipts first',''); return; }
+  const kg = RCP_ROWS.filter(r=>RCP_SEL[r.id]).reduce((a,r)=>a+Number(r.qty_kg||0),0);
+  if(!confirm('Accept '+ids.length+' receipt'+(ids.length===1?'':'s')+' into stock — '+kg.toFixed(2)+' kg?')) return;
+  const d = await post('/api/gpr/receipts/accept-bulk', { ids });
+  if(!d.ok){ toast(d.detail||d.error||'Bulk accept failed','err'); return; }
+  const bits = [d.accepted+' accepted'];
+  if(d.skipped) bits.push(d.skipped+' already stock');
+  if((d.failed||[]).length) bits.push((d.failed||[]).length+' failed');
+  toast(bits.join(' · ')+' — '+Number(d.kg||0).toFixed(2)+' kg','ok');
+  RCP_SEL = {};
+  loadReceipts(); if(typeof loadAccountStrip==='function') loadAccountStrip();
 }
 async function acceptReceipt(id){
   try{
@@ -2204,49 +2551,8 @@ async function acceptReceipt(id){
     loadReceipts(); if(typeof loadAccountStrip==='function') loadAccountStrip(); if(typeof loadLedger==='function') loadLedger();
   }catch(e){ alert('Accept failed: '+(e.message||'error')); }
 }
-// v55J item 13: last movements snapshot (the full register stays under All movements).
-async function loadRecentMoves(){
-  const el = document.getElementById('recentMoves'); if(!el) return;
-  try{
-    const q = new URLSearchParams({view:'movements', limit:'50'});
-    const b = gMonthBounds(); if(b){ q.set('from', b.from); q.set('to', b.to); }
-    if(val('rm_batch')) q.set('batch', val('rm_batch'));
-    const d = await api('/api/gpr/ledger/summary?'+q.toString());
-    let rows = (d.ok && d.rows) ? d.rows : [];
-    // client-side filters (item 5): date / PC / accepted-only
-    const fd = val('rm_date'), fpc = val('rm_pc'), acc = document.getElementById('rm_acc')?.value||'';
-    rows = rows.filter(r=>{
-      if(fd && String(r.moved_at||'').slice(0,10)!==fd) return false;
-      if(fpc && String(r.pc_code||'')!==fpc) return false;
-      if(acc==='accepted' && r.receipt_status==='pending') return false;
-      if(acc==='pending' && r.receipt_status!=='pending') return false;
-      return true;
-    });
-    const ctl = '<div class="fgrid" style="margin-bottom:6px">'
-      + '<div class="field-grp"><label>Batch</label><input id="rm_batch" value="'+esc(val('rm_batch'))+'" onchange="loadRecentMoves()" placeholder="e.g. 26N50"></div>'
-      + '<div class="field-grp"><label>Date</label><input id="rm_date" type="date" value="'+esc(fd)+'" onchange="loadRecentMoves()"></div>'
-      + '<div class="field-grp"><label>PC code</label><input id="rm_pc" value="'+esc(fpc)+'" onchange="loadRecentMoves()"></div>'
-      + '<div class="field-grp"><label>Status</label><select id="rm_acc" onchange="loadRecentMoves()"><option value="">All</option><option value="accepted"'+(acc==='accepted'?' selected':'')+'>Accepted/stock only</option><option value="pending"'+(acc==='pending'?' selected':'')+'>Pending only</option></select></div></div>';
-    if(!rows.length){ el.innerHTML = ctl + '<span style="color:var(--t3)">No movements match.</span>'; return; }
-    let tot = 0;
-    const body = rows.map(r=>{
-      const gen = String(r.movement_type||'').includes('gen');
-      tot += gen ? Number(r.qty_kg||0) : -Number(r.qty_kg||0);
-      return '<tr><td class="mono" style="font-size:11px">'+esc((r.moved_at||'').slice(0,16).replace('T',' '))+'</td>'
-        + '<td>'+(gen?'<b style="color:var(--green)">+'+fmt(r.qty_kg,1)+'</b>':'<b style="color:var(--red)">-'+fmt(r.qty_kg,1)+'</b>')+' kg</td>'
-        + '<td>'+esc((ACCOUNTS&&ACCOUNTS[r.account])||r.account||'')+'</td>'
-        + '<td class="mono">'+esc(r.batch_number||'')+'</td>'
-        + '<td class="mono">'+esc(r.pc_code||'—')+'</td>'
-        + '<td>'+esc(r.colour_name||r.colour_code||'—')+'</td>'
-        + '<td style="color:var(--t3);font-size:11px">'+esc(r.source||'')+(r.receipt_status==='pending'?' <b style="color:var(--amber)">PENDING</b>':'')+'</td></tr>';
-    }).join('');
-    el.innerHTML = ctl + '<div class="tswrap" style="max-height:300px"><table class="gtable"><thead><tr><th>When</th><th>Qty</th><th>Account</th><th>Batch</th><th>PC</th><th>Colour</th><th>Source</th></tr></thead><tbody>'
-      + body
-      + '<tr style="background:var(--s3);font-weight:700"><td>NET TOTAL ('+rows.length+' rows)</td><td class="mono">'+(tot>=0?'+':'')+fmt(tot,1)+' kg</td><td colspan="5"></td></tr>'
-      + '</tbody></table></div>';
-   
-  }catch(e){ el.innerHTML = ''; }
-}
+// v56 item 16: the auto-rendering "recent movements" snapshot is gone — the same data is the
+// filter-driven All-movements view, so nothing renders until the chemist asks for it.
 async function loadAccountStrip(){
   const el = document.getElementById('acctStrip');
   try{
@@ -2263,6 +2569,163 @@ async function loadAccountStrip(){
         + `</div>`;
     }).join('');
   }catch(e){ el.innerHTML=''; }
+}
+// ── v56 item 19: shift-wise salvage & cutting register — machine × shift, generated vs consumed,
+// with per-day and grand totals, the way Tracking shows shift-wise salvage per machine. ────────
+async function loadShiftWise(q){
+  const out = document.getElementById('ledgerResult');
+  const d = await api('/api/gpr/ledger/shift-wise?' + q.toString());
+  if(!d.ok){ out.innerHTML = '<div class="empty">Shift register error: '+esc(d.error||'unknown')+'</div>'; return; }
+  const rows = d.rows || [];
+  window._SHIFTROWS = rows;
+  if(!rows.length){ out.innerHTML = '<div class="empty">No movements in this window.</div>'; return; }
+  const T = { A:{g:0,c:0}, B:{g:0,c:0}, C:{g:0,c:0}, g:0, c:0 };
+  const byDay = {};
+  rows.forEach(r=>{ (byDay[r.production_day] = byDay[r.production_day] || []).push(r); });
+  let h = '<table class="gtable"><thead><tr><th>Day</th><th>Machine</th><th>Account</th>'
+    + '<th class="num">A gen</th><th class="num">A used</th><th class="num">B gen</th><th class="num">B used</th>'
+    + '<th class="num">C gen</th><th class="num">C used</th><th class="num">Total gen</th><th class="num">Total used</th><th class="num">Net</th><th>PC · code</th></tr></thead><tbody>';
+  Object.keys(byDay).sort().reverse().forEach(day=>{
+    const D = { A:{g:0,c:0}, B:{g:0,c:0}, C:{g:0,c:0}, g:0, c:0 };
+    byDay[day].forEach(r=>{
+      ['A','B','C'].forEach(s=>{ D[s].g += r[s].gen; D[s].c += r[s].con; T[s].g += r[s].gen; T[s].c += r[s].con; });
+      D.g += r.gen; D.c += r.con; T.g += r.gen; T.c += r.con;
+      h += '<tr><td class="mono">'+esc(_dm(day))+'</td><td>'+esc(r.machine_id)+'</td><td>'+esc(r.account_label)+'</td>'
+        + '<td class="num">'+fmt(r.A.gen,1)+'</td><td class="num">'+fmt(r.A.con,1)+'</td>'
+        + '<td class="num">'+fmt(r.B.gen,1)+'</td><td class="num">'+fmt(r.B.con,1)+'</td>'
+        + '<td class="num">'+fmt(r.C.gen,1)+'</td><td class="num">'+fmt(r.C.con,1)+'</td>'
+        + '<td class="num"><b>'+fmt(r.gen,1)+'</b></td><td class="num">'+fmt(r.con,1)+'</td>'
+        + '<td class="num" style="color:'+(r.net>=0?'var(--green)':'var(--red)')+'"><b>'+fmt(r.net,1)+'</b></td>'
+        + '<td class="mono">'+_pcCell(r)+'</td></tr>';
+    });
+    h += '<tr style="background:var(--s2);font-weight:600"><td colspan="3">'+esc(_dm(day))+' — day total</td>'
+      + ['A','B','C'].map(s=>'<td class="num">'+fmt(D[s].g,1)+'</td><td class="num">'+fmt(D[s].c,1)+'</td>').join('')
+      + '<td class="num">'+fmt(D.g,1)+'</td><td class="num">'+fmt(D.c,1)+'</td><td class="num">'+fmt(D.g-D.c,1)+'</td><td></td></tr>';
+  });
+  h += '<tr style="background:var(--s3);font-weight:700"><td colspan="3">GRAND TOTAL — '+rows.length+' machine-day-account rows</td>'
+    + ['A','B','C'].map(s=>'<td class="num">'+fmt(T[s].g,1)+'</td><td class="num">'+fmt(T[s].c,1)+'</td>').join('')
+    + '<td class="num">'+fmt(T.g,1)+'</td><td class="num">'+fmt(T.c,1)+'</td><td class="num">'+fmt(T.g-T.c,1)+'</td><td></td></tr>';
+  out.innerHTML = '<div class="tswrap" style="max-height:520px">' + h + '</tbody></table></div>';
+}
+// v56 item 25 (early slice): every ledger view exports with proper headers.
+// ── v56B item 1 (Ishan, 20 Sep): remembered entries — the fields the plant retypes every shift
+// (vendor, gelatine batch, colour name, storage location, under-fill reason, colourant) now offer
+// what has been entered before, exactly like Tracking's customer name. Fetched once per session
+// from the existing records, refreshed after any save that could add a new value. ─────────────
+const GPR_SUGGEST_FIELDS = {
+  sugVendors:   { key:'vendors',          inputs:['m_vendor'] },
+  sugGbatch:    { key:'gelatineBatches',  inputs:['m_gbatch'] },
+  sugColours:   { key:'colourNames',      inputs:['td_colname'] },
+  sugLocations: { key:'legacyLocations',  inputs:['lgs_loc','tc_legacyloc','tb_legacyloc'] },
+  sugReasons:   { key:'underFillReasons', inputs:['tc_reason','tb_reason'] },
+  sugColourants:{ key:'colourants',       inputs:[] },
+};
+async function loadSuggestions(force){
+  if(window._SUGG && !force) return window._SUGG;
+  try{
+    const d = await api('/api/gpr/suggest');
+    if(!d.ok) return null;
+    window._SUGG = d;
+    Object.entries(GPR_SUGGEST_FIELDS).forEach(([dlId, cfg])=>{
+      let dl = document.getElementById(dlId);
+      if(!dl){ dl = document.createElement('datalist'); dl.id = dlId; document.body.appendChild(dl); }
+      dl.innerHTML = (d[cfg.key]||[]).map(v=>'<option value="'+esc(v)+'"></option>').join('');
+      cfg.inputs.forEach(id=>{ const e = document.getElementById(id); if(e) e.setAttribute('list', dlId); });
+    });
+    // the colourant slots are built dynamically — wire whatever exists right now
+    for(let k=0;k<8;k++) ['tc','tb'].forEach(p=>{ const e=document.getElementById(p+'_col_'+k); if(e) e.setAttribute('list','sugColourants'); });
+    return d;
+  }catch(e){ return null; }
+}
+// v56A item 22: one renderer for "PC + its colour code(s)" — the row's own side picks the single
+// code when it has one, otherwise cap/body show as the pair. A PC resolved from the batch rather
+// than stored on the row is marked, so the register stays honest about where the value came from.
+function _pcCell(r){
+  if(!r || !r.pc_code) return '<span style="color:var(--t3)">—</span>';
+  const code = r.side_code ? esc(r.side_code)
+    : ((r.cap_code||r.body_code) ? esc((r.cap_code||'?')+'/'+(r.body_code||'?')) : '');
+  return '<b>'+esc(r.pc_code)+'</b>'+(r.pc_resolved?'<span title="resolved from the batch" style="color:var(--t3)">*</span>':'')
+    + (code ? ' <span style="color:var(--t3)">'+code+'</span>' : '');
+}
+// ── v56A item 25 (Ishan, 20 Sep): ONE formatted exporter for every register, Report-E style —
+// a titled sheet with the filter context, bold header band, sized columns, frozen header row and
+// numeric cells kept numeric (CSV made Excel guess). Every export button routes through this. ──
+function gprExport(opts){
+  const rows = opts.rows || [];
+  if(!rows.length){ toast('Nothing to export in this view','err'); return; }
+  const cols = opts.columns;                       // [{key,label,w,num}]
+  const title = opts.title || 'GPR export';
+  const ctx = opts.context || '';
+  const aoa = [];
+  aoa.push([title]);
+  aoa.push([ctx + (ctx?' · ':'') + 'Generated ' + new Date(Date.now()+330*60000).toISOString().slice(0,16).replace('T',' ') + ' IST · build ' + (window.APP_BUILD||'v56A')]);
+  aoa.push([]);
+  aoa.push(cols.map(c=>c.label));
+  rows.forEach(r=>aoa.push(cols.map(c=>{
+    const v = typeof c.key === 'function' ? c.key(r) : r[c.key];
+    if(c.num) { const n = Number(v); return Number.isFinite(n) ? n : (v==null?'':v); }
+    return v==null ? '' : String(v);
+  })));
+  if(opts.totals){
+    aoa.push([]);
+    aoa.push(cols.map((c,k)=> k===0 ? 'TOTAL' : (c.num ? rows.reduce((a,r)=>{
+      const v = typeof c.key==='function' ? c.key(r) : r[c.key]; const n = Number(v); return a + (Number.isFinite(n)?n:0); },0) : '')));
+  }
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!cols'] = cols.map(c=>({ wch: c.w || 14 }));
+  ws['!freeze'] = { xSplit:0, ySplit:4 };
+  ws['!merges'] = [{ s:{r:0,c:0}, e:{r:0,c:Math.max(0,cols.length-1)} }, { s:{r:1,c:0}, e:{r:1,c:Math.max(0,cols.length-1)} }];
+  // bold the title and the header band (SheetJS writes these styles in xlsx)
+  const bold = (addr, sz) => { if(ws[addr]) ws[addr].s = { font:{ bold:true, sz: sz||11 } }; };
+  bold('A1', 14);
+  cols.forEach((_,k)=> bold(XLSX.utils.encode_cell({ r:3, c:k })));
+  const wb = XLSX.utils.book_new();
+  XLSX.utils.book_append_sheet(wb, ws, (opts.sheet||'Data').slice(0,28));
+  XLSX.writeFile(wb, (opts.file||'gpr_export') + '_' + (productionDay()||'') + '.xlsx');
+  toast('Exported '+rows.length+' rows','ok');
+}
+function exportMmt(){
+  gprExport({
+    rows: _mmFiltered(),
+    title: 'GPR — MMT charge history',
+    context: (FLOOR_LABELS[CUR_FLOOR]||CUR_FLOOR),
+    sheet: 'MMT charges', file: 'gpr_mmt_charges',
+    columns: [
+      {key:'mmt_ref', label:'Reference', w:20}, {key:'tank_no', label:'Tank', w:8},
+      {key:'floor', label:'Floor', w:10}, {key:'gelatine_vendor', label:'Vendor', w:20},
+      {key:'gelatine_batch', label:'Gelatine batch', w:18},
+      {key:'total_kg', label:'Total kg', w:11, num:true}, {key:'allocated_kg', label:'Allocated kg', w:13, num:true},
+      {key:'remaining_kg', label:'Remaining kg', w:13, num:true},
+      {key:'gelatine_kg', label:'Gelatine kg', w:12, num:true}, {key:'water_kg', label:'Water kg', w:11, num:true},
+      {key:'water_temp_c', label:'Water °C', w:10, num:true},
+      {key:'charge_start', label:'Commenced', w:18}, {key:'charge_complete', label:'Completed', w:18},
+      {key:'tt_prep_start', label:'TT prep', w:18},
+      {key:'status', label:'Status', w:10}, {key:'created_by', label:'Created by', w:14} ],
+    totals: true });
+}
+function exportLedger(){
+  const daily = document.getElementById('lv-daily').classList.contains('on');
+  const ctx = [val('lg_from')&&('from '+_dm(val('lg_from'))), val('lg_to')&&('to '+_dm(val('lg_to'))),
+               val('lg_batch')&&('batch '+val('lg_batch')), val('lg_machine')&&('machine '+val('lg_machine'))]
+              .filter(Boolean).join(' · ');
+  if(daily){
+    gprExport({ rows: window._SHIFTROWS||[], title:'GPR — shift-wise salvage & cutting register',
+      context: ctx, sheet:'Shift register', file:'gpr_shift_register', totals:true,
+      columns:[ {key:'production_day', label:'Day', w:12}, {key:'machine_id', label:'Machine', w:10},
+        {key:'account_label', label:'Account', w:18}, {key:'pc_code', label:'PC code', w:11},
+        {key:r=>r.A.gen, label:'A generated', w:12, num:true}, {key:r=>r.A.con, label:'A used', w:10, num:true},
+        {key:r=>r.B.gen, label:'B generated', w:12, num:true}, {key:r=>r.B.con, label:'B used', w:10, num:true},
+        {key:r=>r.C.gen, label:'C generated', w:12, num:true}, {key:r=>r.C.con, label:'C used', w:10, num:true},
+        {key:'gen', label:'Total generated', w:15, num:true}, {key:'con', label:'Total used', w:12, num:true},
+        {key:'net', label:'Net', w:10, num:true} ] });
+    return;
+  }
+  const rows = window._LEDGERROWS||[];
+  if(!rows.length){ toast('Nothing to export in this view','err'); return; }
+  const keys = Object.keys(rows[0]);
+  gprExport({ rows, title:'GPR — stock ledger', context: ctx, sheet:'Ledger', file:'gpr_ledger',
+    columns: keys.map(k=>({ key:k, label:k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()), w:14,
+      num: typeof rows[0][k] === 'number' })) });
 }
 async function loadLedger(view, btn){
   if(view) LEDGER_VIEW = view; else view = LEDGER_VIEW;
@@ -2289,13 +2752,21 @@ async function loadLedger(view, btn){
       return;
     }
     q.set('view', view);
+    // v56 item 21: the register honours every filter on the bar, not just batch and dates.
+    if(val('lg_machine')) q.set('machine', val('lg_machine'));
+    if(val('lg_pc')) q.set('pc', val('lg_pc'));
+    if((document.getElementById('lg_account')||{}).value) q.set('account', document.getElementById('lg_account').value);
+    if((document.getElementById('lg_floor')||{}).value) q.set('floor', document.getElementById('lg_floor').value);
     // v55R item 8: the '+' sat INSIDE toString() — the month bound was never sent, so the
     // By-colour view errored and every summary view scanned the ledger unbounded (the slowness).
+    // v56 item 19: "By production day" is now the SHIFT-WISE machine register (Tracking-style).
+    if(view==='daily'){ await loadShiftWise(q); return; }
     const d = await api('/api/gpr/ledger/summary?' + q.toString() + ((view==='daily'||view==='colour'||view==='pc'||view==='movements') ? gMonthQS() : ''));
     // v55T item 4: surface the real server error instead of the blind catch, and treat an empty
     // result as the normal no-stock state (an empty ledger is not a failure).
     if(!d.ok){ out.innerHTML = '<div class="empty">Ledger error: '+esc(d.error||'unknown')+'</div>'; return; }
     if(view!=='pc' && !(d.rows||[]).length){ out.innerHTML = '<div class="empty">No stock movements yet in this cohort.</div>'; return; }
+    window._LEDGERROWS = d.rows || [];   // v56: the export takes exactly what is on screen
     if(view === 'pc'){
       // v55K item 12: PC-grouped view — salvage PC from the Planning order, cutting colour codes
       // from the cuttings master (fills in once the Excel is loaded).
@@ -2400,7 +2871,7 @@ async function seedLegacy(){
   const d = await post('/api/gpr/legacy/seed', { account: document.getElementById('lgs_acct').value,
     location: val('lgs_loc'), qty_kg: num('lgs_kg'), note: val('lgs_note') });
   if(!d.ok){ toast(d.error||'Could not seed legacy stock','err'); return; }
-  toast(val('lgs_loc') + ' added','ok');
+  toast(val('lgs_loc') + ' added','ok'); loadSuggestions(true);   // v56B item 1: remember new entries
   setVal('lgs_loc',''); setVal('lgs_kg',''); setVal('lgs_note','');
   loadLegacyBalance(); loadLegacyLocations();
 }
@@ -2789,7 +3260,7 @@ function gMonthChanged(){
          const pm = document.getElementById('pl_month'); if(pm) pm.value = G_MONTH; }
   else { setVal('sh_from',''); setVal('sh_to',''); }
   const re = { sheet: ()=>loadSheet(), plan: ()=>loadPlan(), mmt: ()=>loadMmt(),
-               ledger: ()=>{ loadLedger(); loadRecentMoves(); }, yield: ()=>{},
+               ledger: ()=>{ if((window._LGSEC||'a')==='a'){ loadAccountStrip(); loadReceipts(); } }, yield: ()=>{},
                crush: ()=>{}, issue: ()=>{} };
   (re[_CUR_TAB]||(()=>{}))();
 }
