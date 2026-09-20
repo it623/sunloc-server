@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v56K</title>
+<title>GPR · build v56M</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -48,7 +48,13 @@ input[readonly]{background:var(--s3);color:var(--t2)}
   z-index:200;display:flex;align-items:center;flex-wrap:wrap;padding:0 16px;gap:0 4px;box-shadow:0 2px 8px rgba(26,19,8,.22)}
 .nbrand{font-family:var(--fc);font-weight:800;font-size:15px;letter-spacing:1px;color:#e0a355;white-space:nowrap;margin-right:10px;flex-shrink:0}
 .nbrand b{color:#fff}
-.nbrand small{font-size:11px;color:rgba(255,255,255,.45);font-weight:400;margin-left:4px}
+/* v56M (Ishan): the header reads "GPR" with the build as a small pill beside it — the
+       ".tracker" suffix added length without saying anything. */
+    .nbrand small{font-size:11px;color:rgba(255,255,255,.45);font-weight:400;margin-left:4px}
+    .vpill{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:9px;
+      background:rgba(255,255,255,.12);color:rgba(255,255,255,.72);
+      font-family:var(--mono);font-size:10px;font-weight:600;letter-spacing:.4px;vertical-align:2px}
+    #login h1 .vpill{background:rgba(224,163,85,.16);color:#a8621f;vertical-align:5px;font-size:11px}
 .ntabs{display:flex;flex-wrap:wrap;flex:1;align-items:center;min-height:var(--nav);min-width:0}
 .ntab{background:transparent;border:none;color:rgba(255,255,255,.62);font-family:var(--fc);font-size:13px;font-weight:600;
   letter-spacing:.5px;padding:8px 13px;cursor:pointer;border-bottom:2px solid transparent;white-space:nowrap;transition:color .15s,border-color .15s}
@@ -281,8 +287,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56K</div>
+    <h1>GPR<span class="vpill">v56M</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56M</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -302,7 +308,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v56K</small></div>
+  <div class="nbrand">GPR<span class="vpill">v56M</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -2162,6 +2168,9 @@ function plToggle(k, force){
   if(open && k==='cascade' && typeof renderCascCal==='function') renderCascCal();
 }
 function plRestoreSections(){
+  // v56L: on a first visit nothing has been toggled yet — open MACHINE-WISE PLANNING so the
+  // chemist lands on the sheet itself rather than three closed headers.
+  if(!window._PLOPEN) window._PLOPEN = { summary: true };
   const st = window._PLOPEN || {};
   ['alert','summary','cascade'].forEach(k=> plToggle(k, !!st[k]));
 }
@@ -3820,7 +3829,8 @@ function buildGMonth(){
   for(let k=0;k<13;k++){
     const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth()-k, 1));
     const v = d.toISOString().slice(0,7);
-    opts.push('<option value="'+v+'">'+d.toLocaleString('en',{month:'short',timeZone:'UTC'})+' '+d.getUTCFullYear()+(k===0?' (current)':'')+'</option>');
+    // v56M: the current month is self-evident from the date — the "(current)" suffix was noise.
+      opts.push('<option value="'+v+'">'+d.toLocaleString('en',{month:'short',timeZone:'UTC'})+' '+d.getUTCFullYear()+'</option>');
   }
   opts.push('<option value="ALL">All time</option>');
   sel.innerHTML = opts.join('');
@@ -3854,7 +3864,14 @@ async function startApp(){
   const _b0 = gMonthBounds();
   if(_b0){ setVal('yd_from', _b0.from); setVal('yd_to', _b0.to); setVal('sh_from', _b0.from); setVal('sh_to', _b0.to); }
   setVal('ym_month', G_MONTH);
-  loadSheet();
+  // v56L FIX: this called loadSheet() — the landing tab before v56C made Planning first. The page
+  // LOOKED like Planning (its markup carries the 'on' class) but loadPlan() never ran, so all three
+  // sections sat on their "Loading…" placeholders and the month picker, which loadPlan fills, stayed
+  // empty. Boot now initialises whatever TABS[0] is, through the same showPage path a click uses,
+  // so a future reorder can never strand the landing tab again.
+  const _first = (TABS[0] && TABS[0].id) || 'plan';
+  const _firstBtn = document.querySelector('#ntabs .ntab');
+  showPage(_first, _firstBtn);
 }
 (async function(){
   if(await verifySession()) startApp();
