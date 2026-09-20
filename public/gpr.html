@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v56H</title>
+<title>GPR.tracker · build v56K</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -282,7 +282,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56H</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56K</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -302,7 +302,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v56H</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v56K</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -1893,7 +1893,9 @@ async function completeDualTt(){
     const planL = num(p+'_planned'), actL = num(p+'_actual'), capL = num(p+'_cap');
     if(planL > 0 && actL > 0){
       const dL = actL - planL, pct = Math.abs(dL)/planL*100;
-      if(pct >= 5) devs.push(S+' fill: '+fmt(actL,0)+' L against a planned '+fmt(planL,0)+' L ('+(dL>0?'+':'')+fmt(dL,0)+' L, '+fmt(pct,0)+'%)');
+      // v56K audit: the same underFillPct master the server uses — not a second hardcoded 5.
+      const _ufp = Number((MASTERS && MASTERS.gpr_constants && MASTERS.gpr_constants.underFillPct) ?? 5);
+      if(pct >= _ufp) devs.push(S+' fill: '+fmt(actL,0)+' L against a planned '+fmt(planL,0)+' L ('+(dL>0?'+':'')+fmt(dL,0)+' L, '+fmt(pct,0)+'%)');
     }
     if(capL > 0 && actL > capL + 0.05) devs.push(S+' fill exceeds tank capacity: '+fmt(actL,0)+' L in a '+fmt(capL,0)+' L tank');
     const tot = num(p+'_seqtotal');
@@ -3321,8 +3323,8 @@ async function loadReconcile(){
   h += '<tr><td><b>2. Capsule weight</b><div style="font-size:11px;color:var(--t3)">Heavier or lighter capsules than planned, from the production labels</div></td>'
     + '<td class="mono" style="font-size:11px">('+fmt(B.actualAvgMg,1)+' &minus; '+fmt(B.plannedAvgMg,1)+' mg) × '+fmt(B.grossActualLacs,2)+' lacs</td>'
     + '<td class="num" style="color:'+col(V.weightEffect)+'"><b>'+sign(V.weightEffect)+'</b></td><td class="num">'+shr(V.weightEffect)+'</td></tr>';
-  h += '<tr><td><b>3. Process / recording</b><div style="font-size:11px;color:var(--t3)">Charged more or less than the output mathematically required &mdash; over-charge, spillage or entry error</div></td>'
-    + '<td class="mono" style="font-size:11px">'+fmt(A.gelatineEquiv,1)+' &minus; '+fmt(V.requiredForActual,1)+' kg</td>'
+  h += '<tr><td><b>3. Process / recording</b><div style="font-size:11px;color:var(--t3)">Everything quantity and weight do not explain &mdash; over-charge, spillage or entry error</div></td>'
+    + '<td class="mono" style="font-size:11px">total &minus; cause 1 &minus; cause 2 <span style="color:var(--t3)">(output required '+fmt(V.requiredForActual,1)+' kg)</span></td>'
     + '<td class="num" style="color:'+col(V.processVariance)+'"><b>'+sign(V.processVariance)+'</b></td><td class="num">'+shr(V.processVariance)+'</td></tr>';
   h += '<tr class="grandrow"><td colspan="2">TOTAL DIFFERENCE</td><td class="num"><b>'+sign(V.totalDifference)+'</b></td><td class="num">100%</td></tr>';
   h += '</tbody></table>';

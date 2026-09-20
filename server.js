@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56H';
+const APP_BUILD = 'v56K';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -2307,6 +2307,13 @@ const GPR_SEED_MASTERS = (() => {
     // Until that column exists the resolver silently falls back to the size master,
     // which is also the correct behaviour at the START of every batch (no labels yet).
     labelNetWeightColumn: 'nett_wt',
+    // v56K formula audit (Ishan, 20 Sep): these three were hardcoded in the code paths below.
+    // They are business thresholds the plant may want to tune, so they belong in masters like every
+    // other constant. Values are exactly what the code used, so behaviour is unchanged on upgrade.
+    minHoldHours: 2,              // a TT released under this is a quality exception (v56G report)
+    underFillPct: 5,              // % below tank capacity that demands a reason (was 0.95 literal)
+    estFactorMin: 0.85,           // end-shift estimate factor floor (was a bare 0.85)
+    estFactorMax: 1.30,           // ceiling (was a bare 1.30)
     ttPrepHours: 8,   // v55D: hours from MMT charge to TT ready (colour-matched, viscosity set) — drives the cascade prep alert   // v55: v50E shipped the column as nett_wt (kg per box; qty is lakhs, so gprAvgMg's (w*10)/q yields mg/capsule)
     // ── Cascade master switch (v42U, confirmed by Ishan) ──
     // 0 = ADDITIVE MODE: GPR records In-Production/Close for its own reporting but
@@ -25635,7 +25642,11 @@ app.post('/api/gpr/tt', async (req, res) => {
 
     const capacityL = Number(b.capacity_l || 0);
     const actualL = Number(b.actual_l || 0);
-    const underFill = capacityL > 0 && actualL < capacityL * 0.95 ? 1 : 0;
+    // v56K: master-driven. Resolved here because this handler has no C in scope — the audit's own
+    // scope check caught the first attempt referencing an undefined binding.
+    const _ufC = (await gprConstants().catch(() => null)) || GPR_SEED_MASTERS.gpr_constants || {};
+    const _ufPct = Number(_ufC.underFillPct ?? 5);
+    const underFill = capacityL > 0 && actualL < capacityL * (1 - _ufPct / 100) ? 1 : 0;
     if (underFill === 1 && !b.under_fill_reason) {
       return res.status(400).json({ ok: false, error: 'UNDER_FILL_REASON_REQUIRED',
         detail: `Actual ${actualL}L is more than 5% below the ${capacityL}L tank capacity — a reason is required.` });
@@ -25969,7 +25980,7 @@ app.get('/api/gpr/performance', async (req, res) => {
         const weightEffect = +((Wa - Wp) * Qa).toFixed(2);
         const processVariance = +(usedGel - requiredForActual).toFixed(2);
         const totalDifference = +(usedGel - plannedGel).toFixed(2);
-        const tt = await _gprTtVariance(bn, planned);
+        const tt = await _gprTtVariance(bn, planned, masters);
         rows.push({
           batch: bn, machineId: o.machineId || '', floor: gprFloorOfMachine(o.machineId, masters) || '',
           customer: o.customer || '', pcCode: o.pcCode || o.pc_code || '', size: o.size || '',
@@ -25988,7 +25999,7 @@ app.get('/api/gpr/performance', async (req, res) => {
         });
       } catch (e) { /* one bad batch must not lose the report */ }
     }
-    res.json({ ok: true, from, to, rows, capped, matched: orders.length, shown: rows.length, minHoldHours: GPR_MIN_HOLD_HOURS });
+    res.json({ ok: true, from, to, rows, capped, matched: orders.length, shown: rows.length, minHoldHours: _gprMinHold(masters) });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -25997,7 +26008,13 @@ app.get('/api/gpr/performance', async (req, res) => {
 // under-fill. Holding time is scan-in → scan-out (the maturation window the solution actually sat
 // for); tanks released in under the required hold are counted and listed, since that is a quality
 // exception, not a statistic. Nothing here is stored — it is derived from the tanks themselves.
-const GPR_MIN_HOLD_HOURS = 2;
+// v56K: the minimum hold is a master value; this is the fallback only.
+const GPR_MIN_HOLD_HOURS_DEFAULT = 2;
+function _gprMinHold(masters) {
+  const C = (masters && masters.gpr_constants) || GPR_SEED_MASTERS.gpr_constants || {};
+  const v = Number(C.minHoldHours);
+  return Number.isFinite(v) && v > 0 ? v : GPR_MIN_HOLD_HOURS_DEFAULT;
+}
 function _gprHoldHours(t) {
   const P = v => { if (!v) return null; let sv = String(v).replace(/(\.\d{3})\d+/, '$1').replace(/([+-]\d{2})$/, '$1:00');
     const ms = Date.parse(sv); return isNaN(ms) ? null : ms; };
@@ -26005,7 +26022,8 @@ function _gprHoldHours(t) {
   if (a == null || b == null || b < a) return null;
   return +((b - a) / 3600000).toFixed(2);
 }
-async function _gprTtVariance(bn, plan) {
+async function _gprTtVariance(bn, plan, masters) {
+  const minHold = _gprMinHold(masters);
   const P = pgPool ? '$1' : '?';
   const sql = `SELECT id, tt_number, side, seq_index, planned_l, actual_l, capacity_l, total_charged_kg,
                       scan_in_at, scan_out_at, issued_at, is_under_fill, under_fill_reason, status
@@ -26029,7 +26047,7 @@ async function _gprTtVariance(bn, plan) {
     const hh = _gprHoldHours(t);
     if (hh != null) {
       a.holdSum += hh; a.holdN++;
-      if (hh < GPR_MIN_HOLD_HOURS) {
+      if (hh < minHold) {
         a.shortHold++;
         shortHoldTanks.push({ tt: t.tt_number, side: k, hours: hh, scanIn: t.scan_in_at, scanOut: t.scan_out_at });
       }
@@ -26055,7 +26073,7 @@ async function _gprTtVariance(bn, plan) {
   };
   tot.ttVariance = tot.issued - tot.planned;
   tot.netFillL = +(out.cap.netFillL + out.body.netFillL).toFixed(1);
-  return { cap: out.cap, body: out.body, total: tot, shortHoldTanks, minHoldHours: GPR_MIN_HOLD_HOURS };
+  return { cap: out.cap, body: out.body, total: tot, shortHoldTanks, minHoldHours: minHold };
 }
 
 // ─── v56F (Ishan, 20 Sep) — MATERIAL RECONCILIATION: planned vs actual, with the difference
@@ -26118,8 +26136,11 @@ app.get('/api/gpr/reconcile/:batch', async (req, res) => {
     const requiredForActual = +(Qa * Wa).toFixed(3);          // what the real output mathematically needed
     const qtyEffect = +((Qa - Qp) * Wp).toFixed(3);
     const weightEffect = +((Wa - Wp) * Qa).toFixed(3);
-    const processVariance = +(actual.gelatineEquiv - requiredForActual).toFixed(3);
     const totalDifference = +(actual.gelatineEquiv - plannedGelatine).toFixed(3);
+    // v56H: the residual bucket — see the plan route. Everything not explained by quantity or
+    // weight lands here, so the three causes always reproduce the total exactly.
+    const processVariance = +((actual.gelatineEquiv - plannedGelatine)
+                              - ((Qa - Qp) * Wp) - ((Wa - Wp) * Qa)).toFixed(3);
     // identity check — the three buckets must reproduce the total exactly
     const check = +(qtyEffect + weightEffect + processVariance - totalDifference).toFixed(3);
 
@@ -26134,7 +26155,7 @@ app.get('/api/gpr/reconcile/:batch', async (req, res) => {
         solutionL: +Number(planned.totalSolutionL || 0).toFixed(1) },
       actual,
       variance: { requiredForActual, totalDifference, qtyEffect, weightEffect, processVariance, identityCheck: check },
-      tt: await _gprTtVariance(bn, planned),   // v56G item 1: TT planned vs issued, fill and hold
+      tt: await _gprTtVariance(bn, planned, masters),   // v56G item 1: TT planned vs issued, fill and hold
     });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
@@ -27560,6 +27581,12 @@ app.get('/api/gpr/plan', async (req, res) => {
       // becomes GPR's single reference, the way Report E is for production.
       const _bns = q.map(o => String(o.batchNumber).toUpperCase());
       const ttAgg = {};
+      // v56H FIX: these were declared with const INSIDE the if (_bns.length) block below but are
+      // read in the per-batch loop outside it — a ReferenceError on every /api/gpr/plan call, which
+      // is why all three Planning sections rendered empty. They are declared at the loop's scope
+      // and merely populated inside the guard.
+      const holdN = {};
+      const wByBatch = {};
       if (_bns.length) {
         const ph = _bns.map((_, k) => pgPool ? `$${k + 1}` : '?').join(',');
         // v56H item 1: the sheet now carries the full reconciliation per batch, so the same
@@ -27581,14 +27608,12 @@ app.get('/api/gpr/plan', async (req, res) => {
         const hSql = `SELECT UPPER(batch_number) AS bn, scan_in_at, scan_out_at FROM gpr_tt
                       WHERE UPPER(batch_number) IN (${ph}) AND scan_in_at IS NOT NULL AND scan_out_at IS NOT NULL`;
         const hRows = pgPool ? (await pgPool.query(hSql, _bns)).rows : db.prepare(hSql).all(..._bns);
-        const holdN = {};
         (hRows || []).forEach(r => {
           const hh = _gprHoldHours(r);
-          if (hh != null && hh < GPR_MIN_HOLD_HOURS) holdN[String(r.bn).toUpperCase()] = (holdN[String(r.bn).toUpperCase()] || 0) + 1;
+          if (hh != null && hh < _gprMinHold(masters)) holdN[String(r.bn).toUpperCase()] = (holdN[String(r.bn).toUpperCase()] || 0) + 1;
         });
         // label-derived actual weight per batch — one query for every batch on this machine
         const wCol = String((masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants).labelNetWeightColumn || 'net_weight_kg');
-        const wByBatch = {};
         if (/^[a-z_][a-z0-9_]*$/i.test(wCol)) {
           try {
             const wSql = `SELECT UPPER(batch_number) AS bn, COALESCE(SUM(${wCol}),0) AS w, COALESCE(SUM(qty),0) AS q
@@ -27628,7 +27653,8 @@ app.get('/api/gpr/plan', async (req, res) => {
         const grossPlanned = Number(o.grossQty || 0);
         const grossActual = live ? Number(live.gross || 0) : 0;
         const aPct = live && live.aimPct != null ? Number(live.aimPct) : null;
-        const f = (aPct && aPct > 5) ? Math.min(1.30, Math.max(0.85, assumedA / aPct)) : 1;
+        const _fMin = Number(C.estFactorMin ?? 0.85), _fMax = Number(C.estFactorMax ?? 1.30);   // v56K
+        const f = (aPct && aPct > 5) ? Math.min(_fMax, Math.max(_fMin, assumedA / aPct)) : 1;
         const requiredGross = grossPlanned * f;
         const plannedShifts = Math.max(1, Math.round(((Date.parse(o.endDate || '') - Date.parse(o.startDate || '')) / 86400000 + 1) * 3) || 0);
         const rateEff = rate > 0 ? rate : (grossPlanned && plannedShifts ? grossPlanned / plannedShifts : 5);
@@ -27721,7 +27747,13 @@ app.get('/api/gpr/plan', async (req, res) => {
             requiredForActual: reqForActual,
             qtyEffect: +((Qa2 - Qp2) * Wp2).toFixed(2),
             weightEffect: +((Wa2 - Wp2) * Qa2).toFixed(2),
-            processVariance: +(usedGel - reqForActual).toFixed(2),
+            // v56H: process is the RESIDUAL bucket — everything the quantity and weight effects do
+            // not explain (over/under charge, spillage, recording, and any rounding in the plan's
+            // own gelatine figure). Defining it this way makes the three causes reproduce the total
+            // EXACTLY; deriving it from requiredForActual left a rounding gap that reads as a real
+            // discrepancy on screen.
+            processVariance: +((usedGel - Number(sPlan.gelatineKg || 0))
+                               - ((Qa2 - Qp2) * Wp2) - ((Wa2 - Wp2) * Qa2)).toFixed(2),
             plannedAvgMg: +Number(sPlan.inputs.avgMg || 0).toFixed(2), actualAvgMg: +WaMg2.toFixed(2),
             weightFromLabels: wByBatch[bn] != null,
             ttPlanned: cap.ttPlanned + body.ttPlanned, ttIssued: cap.ttIssued + body.ttIssued,
