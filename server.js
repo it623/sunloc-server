@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56R';
+const APP_BUILD = 'v56T';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25919,6 +25919,29 @@ app.post('/api/gpr/batch-plan/anchor', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v56T: Tracking's canonical batch order (_v44zk_batchCmp in tracking.html, verbatim) — at SHL the
+// batch number IS the chronology: year, then letter-block length, then letters, then sequence.
+function _gprBatchCmp(a, b) {
+  const re = /^(\d+)([A-Z]+)(\d+)$/i;
+  const ma = String(a).match(re), mb = String(b).match(re);
+  if (!ma || !mb) return String(a).localeCompare(String(b));
+  const ya = parseInt(ma[1], 10), yb = parseInt(mb[1], 10);
+  if (ya !== yb) return ya - yb;
+  const la = ma[2].toUpperCase(), lb = mb[2].toUpperCase();
+  if (la.length !== lb.length) return la.length - lb.length;
+  if (la !== lb) return la < lb ? -1 : 1;
+  return parseInt(ma[3], 10) - parseInt(mb[3], 10);
+}
+// v56T: the cohort month — a verbatim copy of the rule the /api/gpr/plan route applies (itself a
+// verbatim port of planning.html's _v54bCohortMonth): startDate only, planMonth fallbacks, and the
+// conditional v50C July absorption. The picker must scope to the same cohort Planning shows.
+function _gprCohortYm(o) {
+  const _ymIst = d => { const t = Date.parse(String(d || '')); return isNaN(t) ? '' : new Date(t + _GPR_IST_MS).toISOString().slice(0, 7); };
+  let m2 = o.startDate ? _ymIst(o.startDate) : '';
+  if (!m2) m2 = o.planMonth || o.month || o.planningMonth || '';
+  if (m2 && m2 < '2026-07' && o.endDate && _ymIst(o.endDate) >= '2026-07') m2 = '2026-07';
+  return m2;
+}
 // v56R: Planning dates arrive as plain dates, ISO datetimes or parseable strings; normalise to
 // YYYY-MM-DD so they sort chronologically instead of lexicographically.
 function _gprDateStr(d) {
@@ -25933,10 +25956,13 @@ app.get('/api/gpr/batch-list', async (req, res) => {
   try {
     const st = getPlanningState();
     const masters = await gprLoadMasters();
+    const month = String(req.query.month || '').trim();   // '' or 'ALL' = every batch
+    const scoped = month && month.toUpperCase() !== 'ALL';
     const seen = new Set();
     const out = [];
     for (const o of (st.orders || [])) {
       if (!o || o.deleted || !o.batchNumber) continue;
+      if (scoped && _gprCohortYm(o) !== month) continue;
       const bn = String(o.batchNumber).trim().toUpperCase();
       if (seen.has(bn)) continue;
       seen.add(bn);
@@ -25945,18 +25971,13 @@ app.get('/api/gpr/batch-list', async (req, res) => {
         floor: gprFloorOfMachine(o.machineId, masters) || '',
         day: _gprDateStr(o.dprFirstDate || o.startDate) || null });
     }
-    // v56R item 3: strict chronological order, newest first. A plain slice(0,10) was wrong because
-    // Planning dates are not uniformly ISO — a non-ISO value yielded text like "Fri Sep 19", which
-    // sorted lexicographically and scattered the list. Undated batches sort last, not first.
-    out.sort((a, b) => {
-      if (a.day && b.day && a.day !== b.day) return b.day.localeCompare(a.day);
-      if (a.day && !b.day) return -1;
-      if (!a.day && b.day) return 1;
-      return a.batch.localeCompare(b.batch);
-    });
+    // v56T (Ishan): order exactly as Tracking does — by the batch number itself, ascending. The
+    // v56R date sort was wrong twice over: Planning's startDate can be a future planned date, so
+    // date order did not follow the plant's actual batch sequence.
+    out.sort((a, b) => _gprBatchCmp(a.batch, b.batch));
     const customers = Array.from(new Set(out.map(r => r.customer).filter(Boolean))).sort();
     const pcs = Array.from(new Set(out.map(r => r.pcCode).filter(Boolean))).sort();
-    res.json({ ok: true, rows: out, customers, pcs, count: out.length });
+    res.json({ ok: true, month: scoped ? month : 'ALL', rows: out, customers, pcs, count: out.length });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
