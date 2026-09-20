@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56B';
+const APP_BUILD = 'v56C';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25829,6 +25829,28 @@ app.post('/api/gpr/tt/:id/label', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ─── v56C item 4 (Ishan, 20 Sep) — CLOSE BATCH from GPR: the counterpart to order-start. Sets
+// the order's status to 'closed' through Planning's own save path, audited. A closed batch is
+// history: it keeps every figure it earned and stops appearing as a TT target.
+app.post('/api/gpr/order-close', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const bn = String((req.body || {}).batch || '').trim().toUpperCase();
+    if (!bn) return res.status(400).json({ ok: false, error: 'batch required' });
+    const st = getPlanningState();
+    const o = (st.orders || []).find(x => x && !x.deleted && String(x.batchNumber || '').toUpperCase() === bn);
+    if (!o) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
+    if (o.status === 'closed') return res.status(409).json({ ok: false, error: 'ALREADY_CLOSED', detail: bn + ' is already closed.' });
+    if (o.status !== 'running') return res.status(409).json({ ok: false, error: 'NOT_RUNNING', detail: bn + ' is ' + (o.status || 'not running') + ' — only a running batch can be closed here.' });
+    o.status = 'closed';
+    if (!o.endDate) o.endDate = new Date(Date.now() + _GPR_IST_MS).toISOString().slice(0, 10);
+    await savePlanningState(st);
+    logAudit(session.username, session.role, 'gpr', 'GPR_ORDER_CLOSE', `batch=${bn} machine=${o.machineId || '?'}`, req.ip);
+    res.json({ ok: true, batch: bn, status: 'closed' });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ─── v56B item 1 (Ishan, 20 Sep) — REMEMBERED ENTRIES: vendors, gelatine batches, colour names
 // and the other free-text fields are typed over and over. This returns the DISTINCT values the
 // plant has already entered, so the forms can offer them as a pick-list (Tracking's customer-name
@@ -25965,8 +25987,13 @@ app.post('/api/gpr/receipts/accept-bulk', async (req, res) => {
 app.get('/api/gpr/ledger/shift-wise', async (req, res) => {
   try {
     const { floor, account, machine, batch } = req.query;
+    // v56C item 12: this referenced _gprMonthBounds, which never existed anywhere in the codebase.
+    // A bare undeclared identifier throws ReferenceError rather than evaluating falsy, so EVERY
+    // call to the shift register 500'd ("_gprMonthBounds is not defined"). Month bounds are derived
+    // here, the same way the client's month picker does it, and an explicit from/to still wins.
     const isD = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
-    const b = _gprMonthBounds ? _gprMonthBounds(req.query.month) : null;
+    const ym = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : null;
+    const b = ym ? { from: ym + '-01', to: ym + '-31' } : null;
     const from = isD(req.query.from) ? String(req.query.from) : (b ? b.from : null);
     const to = isD(req.query.to) ? String(req.query.to) : (b ? b.to : null);
     const conds = []; const params = [];
@@ -26022,7 +26049,7 @@ app.get('/api/gpr/batch-summary/:batch', async (req, res) => {
     const bn = String(req.params.batch || '').trim().toUpperCase();
     if (!bn) return res.status(400).json({ ok: false, error: 'batch required' });
     const P = n => pgPool ? `$${n}` : '?';
-    const tSql = `SELECT id, tt_number, side, seq_index, actual_l, mmt_ref, status, colour_code,
+    const tSql = `SELECT id, tt_number, side, seq_index, actual_l, total_charged_kg, mmt_ref, status, colour_code,
                          created_at, created_by, label_generated_at, label_generated_by,
                          scan_in_at, scan_out_at, issued_at, issued_by
                   FROM gpr_tt WHERE UPPER(batch_number)=${P(1)} ORDER BY side, seq_index, id`;
@@ -26031,7 +26058,7 @@ app.get('/api/gpr/batch-summary/:batch', async (req, res) => {
     (tanks || []).forEach(t => {
       const k = String(t.side || '').toLowerCase() || '?';
       const a = side[k] = side[k] || { tanks: 0, litres: 0, labelled: 0, scannedIn: 0, scannedOut: 0, issued: 0 };
-      a.tanks++; a.litres += Number(t.actual_l || 0);
+      a.tanks++; a.litres += Number(t.actual_l || 0); a.charged = (a.charged || 0) + Number(t.total_charged_kg || 0);
       if (t.label_generated_at) a.labelled++;
       if (t.scan_in_at) a.scannedIn++;
       if (t.scan_out_at) a.scannedOut++;
@@ -26047,6 +26074,33 @@ app.get('/api/gpr/batch-summary/:batch', async (req, res) => {
     }
     const order = gprFindOrder(bn);
     const live = order ? await _gprBatchLive(bn, order).catch(() => null) : null;
+    // v56C item 2: the modal must answer "planned vs actual vs remaining" for BOTH production and
+    // gelatine, from the same resolver the Planning sheet and the TT form use — so the three
+    // surfaces cannot disagree. Remaining tanks are what the chemist plans next from here.
+    let gel = null;
+    try {
+      if (order) {
+        const masters2 = await gprLoadMasters();
+        const sPlan = gprComputeSolutionPlan({
+          grossLakhs: Number(order.grossQty || order.qty || 0),
+          size: '#' + String(order.size || '').replace(/^#/, ''),
+          machineId: order.machineId, masters: masters2, actualAvgMg: null, resolvedAvgMg: null });
+        const sideOf = k => {
+          const a = side[k] || { tanks: 0, litres: 0, issued: 0 };
+          const p = sPlan[k] || { litres: 0, ttPlanned: 0, fillL: 0 };
+          const frac = sPlan.totalSolutionL > 0 ? (p.litres / sPlan.totalSolutionL) : 0;
+          const issuedL = Number(a.litres || 0);
+          return { ttPlanned: p.ttPlanned, ttEntered: a.tanks, ttIssued: a.issued,
+                   ttRemaining: Math.max(0, p.ttPlanned - a.issued), fillL: p.fillL,
+                   litresPlanned: p.litres, litresIssued: +issuedL.toFixed(1),
+                   litresRemaining: +Math.max(0, p.litres - issuedL).toFixed(1),
+                   kgPlanned: +(sPlan.gelatineKg * frac).toFixed(2) };
+        };
+        gel = { kgPlanned: sPlan.gelatineKg, solutionPlannedL: sPlan.totalSolutionL,
+                avgMg: sPlan.inputs.avgMg, colourKg: sPlan.colourKg,
+                cap: sideOf('cap'), body: sideOf('body') };
+      }
+    } catch (e) { gel = null; }
     const day = v => { if (!v) return null; const sv = String(v); if (/^\d{4}-\d{2}-\d{2}$/.test(sv)) return sv; const t = Date.parse(sv); return isNaN(t) ? null : new Date(t + _GPR_IST_MS).toISOString().slice(0, 10); };
     res.json({ ok: true, batch: bn,
       order: order ? { machineId: order.machineId || null, status: order.status || null, customer: order.customer || '',
@@ -26055,7 +26109,7 @@ app.get('/api/gpr/batch-summary/:batch', async (req, res) => {
         start: day(order.dprFirstDate || order.startDate), end: day(order.dprLastDate || order.endDate) } : null,
       live: live ? { gross: +Number(live.gross || 0).toFixed(2), aimPct: live.aimPct != null ? +Number(live.aimPct).toFixed(2) : null,
         aGradeLacs: +Number(live.aGrade || 0).toFixed(2), unscannedWipAim: +Number(live.preAIM || 0).toFixed(2) } : null,
-      tanks, side, mmt });
+      tanks, side, mmt, gel });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -26964,6 +27018,7 @@ async function gprSyncDprCuttings(days) {
 // Pending receipts, per floor. Sync order: DPR cuttings sweep, then Tracking credits for the
 // floor's live batches (running orders from Planning — capped, newest first).
 let _gprReceiptSyncAt = 0;   // v55X item 7: shared sweep throttle
+let _gprSweepInFlight = null;   // v56C item 10: one shared sweep, never blocking the read
 app.get('/api/gpr/receipts', async (req, res) => {
   try {
     // v55E: open read, matching every other GPR GET (the module gates MUTATIONS by token; reads
@@ -26977,8 +27032,14 @@ app.get('/api/gpr/receipts', async (req, res) => {
     // covers RUNNING batches only — planned batches cannot have tracking salvage yet, and they
     // join the sweep the moment they start. Data freshness is unchanged in substance: accepts
     // re-check server-side, and anything new is at most two minutes from the pending queue.
+    // v56C item 10: throttling was not enough — the READ still waited on the sweep whenever the
+    // window had lapsed, so one unlucky open paid the full 15 s. The sweep now runs in the
+    // BACKGROUND and the queue is served immediately from what is already in the ledger; only an
+    // explicit Refresh (?sync=1) waits for a fresh sweep. Nothing is lost: anything the background
+    // pass discovers is in the queue on the next open, and a chemist who wants it now presses
+    // Refresh. Concurrent callers share one in-flight sweep instead of each starting their own.
     const _force = req.query.sync === '1';
-    if (_force || Date.now() - _gprReceiptSyncAt > 120000) {
+    const _sweep = async () => {
       _gprReceiptSyncAt = Date.now();
       await gprSyncDprCuttings().catch(() => {});
       try {
@@ -26989,6 +27050,12 @@ app.get('/api/gpr/receipts', async (req, res) => {
           (!floor || gprFloorOfMachine(o.machineId, masters) === floor)).slice(-30);
         for (const o of live) { await gprSyncTrackingCredits(o.batchNumber).catch(() => {}); }
       } catch (_) {}
+    };
+    if (_force) {
+      if (!_gprSweepInFlight) _gprSweepInFlight = _sweep().finally(() => { _gprSweepInFlight = null; });
+      await _gprSweepInFlight.catch(() => {});
+    } else if (!_gprSweepInFlight && Date.now() - _gprReceiptSyncAt > 120000) {
+      _gprSweepInFlight = _sweep().finally(() => { _gprSweepInFlight = null; });   // not awaited
     }
     const conds = ["receipt_status='pending'"]; const params = [];
     if (floor) { params.push(floor); conds.push(`floor=${pgPool ? '$' + params.length : '?'}`); }

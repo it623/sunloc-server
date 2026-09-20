@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR.tracker · build v56B</title>
+<title>GPR.tracker · build v56C</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -65,6 +65,29 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 #wrap{padding:calc(var(--nav) + 16px) 18px 60px;max-width:1400px;margin:0 auto}
 .page{display:none}.page.on{display:block}
 .tswrap{max-height:420px;overflow:auto;border:1px solid var(--b1);border-radius:var(--r)}
+    /* v56C items 1/9/11: the control bars are tinted so they read as controls, not as another
+       table, and their filters sit on ONE row that wraps only when the screen truly runs out. */
+    .ctlbar{background:linear-gradient(180deg,#fff9e6,#fff3cd);border:1px solid #e8d68a;
+      border-left:4px solid var(--amber);border-radius:var(--r);padding:10px 14px;margin-bottom:10px}
+    .ctlbar .fgrid{display:flex;flex-wrap:wrap;gap:8px 12px;align-items:flex-end;margin:0}
+    .ctlbar .field-grp{flex:1 1 118px;min-width:98px;margin:0}
+    .ctlbar .field-grp label{font-size:10px;letter-spacing:.3px;color:var(--t3);margin-bottom:2px}
+    .ctlbar .field-grp input,.ctlbar .field-grp select{width:100%;font-size:12px;padding:4px 7px}
+    .ctlbar .ctlrow{display:flex;align-items:center;gap:9px;flex-wrap:wrap;margin-bottom:8px}
+    /* item 3: horizontal scroll with the identity columns frozen */
+    .froze{overflow:auto;max-height:560px}
+    .froze table{border-collapse:separate;border-spacing:0}
+    .froze thead th{position:sticky;top:0;z-index:3;background:var(--s3)}
+    .froze td.fz1,.froze th.fz1{position:sticky;left:0;z-index:2;background:var(--s1)}
+    .froze td.fz2,.froze th.fz2{position:sticky;left:64px;z-index:2;background:var(--s1)}
+    .froze thead th.fz1,.froze thead th.fz2{z-index:4}
+    .froze tr.rowrun td.fz1,.froze tr.rowrun td.fz2{background:#eaf4fb}
+    .froze tr.rowclosed td.fz1,.froze tr.rowclosed td.fz2{background:#ededed}
+    /* items 4/5: batch state reads from the row, not just a chip */
+    tr.rowclosed{background:#ededed;color:#666}
+    tr.rowclosed a{color:#4a6fa5}
+    .btn.go{background:var(--green);border-color:var(--green);color:#fff}
+    .btn.stop{background:#e08a1e;border-color:#e08a1e;color:#fff}
     /* v56 item 18: Stock Ledger vertical section rail */
     .lgrail{display:flex;flex-direction:column;gap:6px;min-width:190px}
     .lgnav{padding:9px 12px;border:1px solid var(--b1);border-radius:var(--r);background:var(--s1);cursor:pointer;user-select:none}
@@ -231,7 +254,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <div id="login">
   <div class="login-card">
     <h1>GPR<b>.</b>tracker</h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56B</div>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56C</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -251,7 +274,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<b>.</b>tracker <small>v56B</small></div>
+  <div class="nbrand">GPR<b>.</b>tracker <small>v56C</small></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -264,13 +287,13 @@ input[readonly]{background:var(--s3);color:var(--t2)}
   <div id="modeBanner"></div>
 
   <!-- TT SHEET (landing) -->
-  <div class="page on" id="page-sheet">
+  <div class="page" id="page-sheet">
     <!-- v55Z items 1/2/11 (Ishan, 20 Sep): the live board and the search/history table were the
          same tanks rendered twice. One filter-driven sheet now serves current, past and expected
          tanks; KPI bubbles render ABOVE the table (Tracking's order); every row stays actionable
          through the gated lifecycle, so this is also the scan/issue surface. -->
-    <div class="card" style="padding:10px 14px">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-bottom:8px">
+    <div class="ctlbar">
+      <div class="ctlrow">
         <b style="font-family:var(--fc);font-size:13px">Transfer Tank Sheet</b>
         <select id="sh_scope" style="font-size:12px;max-width:190px" onchange="shScope()">
           <option value="cur">Current production day</option>
@@ -279,7 +302,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
           <option value="month">This production month</option>
           <option value="custom">Custom range</option>
         </select>
-        <button class="btn primary sm" onclick="openTtForBatch(val('sh_batch'))">+ New TT entry</button>
+        <button class="btn primary sm" onclick="openTtEntry(val('sh_batch'))">+ New TT entry</button>
         <button class="btn sm" onclick="loadSheet()">Refresh</button>
         <button class="btn teal sm" onclick="exportSheet()">Export to Excel</button>
         <span id="sh_ctx" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--t3)"></span>
@@ -296,124 +319,17 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <div class="field-grp"><label>&nbsp;</label><button class="btn" onclick="clearSheetFilters()">Clear filters</button></div>
       </div>
     </div>
-    <div id="sheetKpis"></div>
-    <div class="card">
-      <div id="sheetResult" class="tscroll"><div class="empty">Loading&hellip;</div></div>
-    </div>
-  </div>
-
-  <!-- MMT -->
-  <div class="page" id="page-plan">
-    <!-- v55Y items 4 + 9: the control bar is its own compact strip — always visible, never part of
-         the alert block, and it carries the context the chemist needs at a glance. -->
-    <div class="card" style="padding:10px 14px">
-      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
-        <b style="font-family:var(--fc);font-size:13px">GPR Planning</b>
-        <select id="pl_floor" style="font-size:12px;max-width:170px" onchange="loadPlan()"><option value="">This GPR's floor(s)</option><option value="GF">Ground Floor</option><option value="1F">First Floor</option><option value="2F">Second Floor</option><option value="ALL">All floors</option></select>
-        <select id="pl_month" style="font-size:12px;max-width:120px" onchange="loadPlan()"></select>
-        <button class="btn sm" onclick="loadPlan()">Refresh</button>
-        <button class="btn sm" onclick="exportPlan()">Export XLSX</button>
-        <button class="btn sm" onclick="openPlanTab()">Open in new tab &#8599;</button>
-        <button class="btn sm" id="pl_gelbtn" onclick="plToggleGel()" title="Gelatine kg and TT position per batch">Gelatine &amp; TT: on</button>
-        <span id="pl_now" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--t3)"></span>
-      </div>
-      <div id="pl_ctx" style="display:flex;gap:16px;flex-wrap:wrap;margin-top:7px;padding-top:7px;border-top:1px solid var(--b1);font-size:11.5px;color:var(--t2)"></div>
-    </div>
-    <!-- v55Y item 8: three collapsible sections — the page opens as three headers, the chemist
-         expands the one he is working on. Open/closed state persists per session. -->
-    <div class="card" style="padding:0;overflow:hidden">
-      <div class="plsec" onclick="plToggle('alert')"><span class="plchev" id="plchev_alert">&#9656;</span> <b>ALERTS</b> <span id="plcount_alert" class="plbadge"></span></div>
-      <div class="plbody" id="plbody_alert"><div id="pl_alert"></div></div>
-      <div class="plsec" onclick="plToggle('summary')"><span class="plchev" id="plchev_summary">&#9656;</span> <b>MACHINE-WISE PLANNING</b> <span id="plcount_summary" class="plbadge"></span></div>
-      <div class="plbody" id="plbody_summary"><div id="pl_summary" style="font-size:12px">Loading&hellip;</div></div>
-      <div class="plsec" onclick="plToggle('cascade')"><span class="plchev" id="plchev_cascade">&#9656;</span> <b>TT CASCADE</b> <span id="plcount_cascade" class="plbadge"></span></div>
-      <div class="plbody" id="plbody_cascade" style="border-bottom:0"><div id="pl_cascade" style="font-size:12px"></div></div>
-    </div>
-  </div>
-  <div class="page" id="page-mmt">
-    <!-- v56A item 24 (Ishan, 20 Sep): two distinct sections — WORKING (create the charge and
-         allocate it downstream) and HISTORY (filterable register of past, current and upcoming
-         charges; click any row for its full detail). Same rail pattern as the Stock Ledger. -->
-    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
-      <div class="lgrail">
-        <div class="lgnav on" id="mmnav-w" onclick="mmSection('w')"><b>Working</b><span>New charge &amp; allocation</span></div>
-        <div class="lgnav" id="mmnav-h" onclick="mmSection('h')"><b>History</b><span>All charges &amp; detail</span></div>
-      </div>
-      <div style="flex:1;min-width:320px">
-
-      <div id="mmsec-w">
-          <div class="ftabs" id="mmtFloorTabs"></div>
-      <div class="card">
-      <div class="card-title">New MMT charge</div>
-      <div class="card-sub">The mother charge in the Melter-Mixer Tank. Transfer tanks link back to it for full traceability to the vendor gelatine batch.</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>MMT reference *</label><input id="m_ref" placeholder="AUTO — assigned on save: MMT-FLOOR-DDMMYY-n"></div>
-        <div class="field-grp"><label>Total charge (kg) *</label><input id="m_total" type="number" inputmode="decimal" placeholder="e.g. 1000"></div>
-      </div>
-      <div class="fgroup-title">Virgin gelatine</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>Vendor</label><input id="m_vendor"></div>
-        <div class="field-grp"><label>Gelatine batch no.</label><input id="m_gbatch"></div>
-        <div class="field-grp"><label>Gelatine (kg)</label><input id="m_gkg" type="number" inputmode="decimal"></div>
-      </div>
-      <div class="fgroup-title">Water</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>Purified water (kg)</label><input id="m_wkg" type="number" inputmode="decimal"></div>
-        <div class="field-grp"><label>Water temp (°C)</label><input id="m_wtemp" type="number" inputmode="decimal"></div>
-      </div>
-      <div class="fgroup-title">Chemicals &amp; additives (grams) — per stock sheet 17-09-2026</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>SLS-799 Needles <small style="color:var(--t3)">col0045</small></label><input id="m_sls799" type="number" inputmode="decimal"></div>
-        <div class="field-grp"><label>PEG-6000 (IP Grade) <small style="color:var(--t3)">col0069</small></label><input id="m_peg6000" type="number" inputmode="decimal"></div>
-        <div class="field-grp"><label>Bronopol BP/IP <small style="color:var(--t3)">col0004</small></label><input id="m_bronopol" type="number" inputmode="decimal"></div>
-        <div class="field-grp"><label>Othadd-2 (Finamul DL) <small style="color:var(--t3)">col0056</small></label><input id="m_othadd2" type="number" inputmode="decimal"></div>
-      </div>
-      <div class="fgrid" id="m_tank_wrap" style="display:none">
-        <div class="field-grp"><label>MMT tank (GF has a spare — two charges may run)</label>
-          <select id="m_tank"><option value="">— pick GF1 / GF2 —</option><option value="GF1">MMT GF1</option><option value="GF2">MMT GF2</option></select></div>
-      </div>
-      <div class="fgroup-title">Timestamps</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>Charge commenced</label><input id="m_start" type="datetime-local"></div>
-        <div class="field-grp"><label>Charge completed</label><input id="m_complete" type="datetime-local"></div>
-        <div class="field-grp"><label>TT prep commenced</label><input id="m_ttprep" type="datetime-local"></div>
-      </div>
-      <div class="row" style="margin-top:16px">
-        <button class="btn primary" onclick="saveMmt()">Save charge</button>
-        <button class="btn" onclick="clearMmtForm()">Clear</button>
-      </div>
-    </div>
-        <div class="card">
-          <div class="card-title">Open charges on this floor — allocation</div>
-          <div class="card-sub">What is still unexhausted and available to link transfer tanks to. Allocation happens on the TT entry; this is the live position.</div>
-          <div id="mmtOpen"><div class="empty">Loading&hellip;</div></div>
+    <!-- v56C item 6: the TT entry form is a panel of this page now, not a separate tab. It opens
+         from "+ New TT entry" here or from a batch click in Planning, and closes back to the sheet. -->
+    <div id="ttEntryPanel" style="display:none">
+      <div class="card" style="padding:8px 14px;background:var(--amber-l);border-color:var(--amber)">
+        <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+          <b style="font-family:var(--fc);font-size:13px">TT entry</b>
+          <span id="ttEntryCtx" style="font-family:var(--mono);font-size:11.5px;color:var(--t2)"></span>
+          <button class="btn sm" style="margin-left:auto" onclick="closeTtEntry()">&#10005; Close entry &mdash; back to the sheet</button>
         </div>
       </div>
 
-      <div id="mmsec-h" style="display:none">
-        <div class="card">
-          <div class="card-title">Charge history — <span id="mmtFloorLabel">All floors</span></div>
-          <div class="card-sub">Every charge: past, current and upcoming. Filter, then click a row for gelatine, water, chemicals, timestamps and allocation.</div>
-          <div class="fgrid" style="margin-bottom:10px">
-            <div class="field-grp"><label>Reference</label><input id="mm_ref" placeholder="all" onchange="renderMmtHistory()"></div>
-            <div class="field-grp"><label>Vendor</label><input id="mm_vendor" placeholder="all" onchange="renderMmtHistory()"></div>
-            <div class="field-grp"><label>Gelatine batch</label><input id="mm_gbatch" placeholder="all" onchange="renderMmtHistory()"></div>
-            <div class="field-grp"><label>Tank</label><select id="mm_tank" onchange="renderMmtHistory()"><option value="">All tanks</option></select></div>
-            <div class="field-grp"><label>Status</label><select id="mm_status" onchange="renderMmtHistory()"><option value="">All</option><option value="open">Open</option><option value="closed">Closed</option></select></div>
-            <div class="field-grp"><label>From</label><input id="mm_from" type="date" onchange="renderMmtHistory()"></div>
-            <div class="field-grp"><label>To</label><input id="mm_to" type="date" onchange="renderMmtHistory()"></div>
-            <div class="field-grp" style="justify-content:flex-end"><button class="btn teal" onclick="exportMmt()">Export</button></div>
-          </div>
-          <div id="mmtList" class="tscroll"><div class="empty">Loading&hellip;</div></div>
-        </div>
-      </div>
-
-      </div>
-    </div>
-  </div>
-
-  <!-- ISSUE TT -->
-  <div class="page" id="page-issue">
     <div class="card">
       <div class="card-title">Plan the batch</div>
       <div class="card-sub">Enter a batch to see the solution it needs. Gross comes straight from Planning, so GPR and Planning always agree.</div>
@@ -524,9 +440,126 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       </div>
       <div id="ttList" class="tscroll"><div class="empty">Loading today's log…</div></div>
     </div>
+  
+    </div>
+    <div id="sheetKpis"></div>
+    <div class="card">
+      <div id="sheetResult" class="tscroll"><div class="empty">Loading&hellip;</div></div>
+    </div>
   </div>
 
-  <!-- LEDGER -->
+  <!-- MMT -->
+  <div class="page on" id="page-plan">
+    <!-- v55Y items 4 + 9: the control bar is its own compact strip — always visible, never part of
+         the alert block, and it carries the context the chemist needs at a glance. -->
+    <div class="ctlbar">
+      <div class="ctlrow">
+        <b style="font-family:var(--fc);font-size:13px">GPR Planning</b>
+        <!-- v56C item 1: there is no "this GPR's floor" location — Admin opens on All, and the
+             real floors are Ground and First+Second (the FF/SF pair is one GPR's area). -->
+        <select id="pl_floor" style="font-size:12px;max-width:180px" onchange="loadPlan()"><option value="ALL">All floors</option><option value="GF">Ground Floor</option><option value="FFSF">First + Second Floor</option></select>
+        <select id="pl_month" style="font-size:12px;max-width:120px" onchange="loadPlan()"></select>
+        <button class="btn sm" onclick="loadPlan()">Refresh</button>
+        <button class="btn sm" onclick="exportPlan()">Export XLSX</button>
+        <button class="btn sm" onclick="openPlanTab()">Open in new tab &#8599;</button>
+        <button class="btn sm" id="pl_gelbtn" onclick="plToggleGel()" title="Gelatine kg and TT position per batch">Gelatine &amp; TT: on</button>
+        <span id="pl_now" style="margin-left:auto;font-family:var(--mono);font-size:11px;color:var(--t3)"></span>
+      </div>
+      <div id="pl_ctx" style="display:flex;gap:16px;flex-wrap:wrap;padding-top:7px;border-top:1px solid #e8d68a;font-size:11.5px;color:var(--t2)"></div>
+    </div>
+    <!-- v55Y item 8: three collapsible sections — the page opens as three headers, the chemist
+         expands the one he is working on. Open/closed state persists per session. -->
+    <div class="card" style="padding:0;overflow:hidden">
+      <div class="plsec" onclick="plToggle('alert')"><span class="plchev" id="plchev_alert">&#9656;</span> <b>ALERTS</b> <span id="plcount_alert" class="plbadge"></span></div>
+      <div class="plbody" id="plbody_alert"><div id="pl_alert"></div></div>
+      <div class="plsec" onclick="plToggle('summary')"><span class="plchev" id="plchev_summary">&#9656;</span> <b>MACHINE-WISE PLANNING</b> <span id="plcount_summary" class="plbadge"></span></div>
+      <div class="plbody" id="plbody_summary"><div id="pl_summary" style="font-size:12px">Loading&hellip;</div></div>
+      <div class="plsec" onclick="plToggle('cascade')"><span class="plchev" id="plchev_cascade">&#9656;</span> <b>TT CASCADE</b> <span id="plcount_cascade" class="plbadge"></span></div>
+      <div class="plbody" id="plbody_cascade" style="border-bottom:0"><div id="pl_cascade" style="font-size:12px"></div></div>
+    </div>
+  </div>
+  <div class="page" id="page-mmt">
+    <!-- v56A item 24 (Ishan, 20 Sep): two distinct sections — WORKING (create the charge and
+         allocate it downstream) and HISTORY (filterable register of past, current and upcoming
+         charges; click any row for its full detail). Same rail pattern as the Stock Ledger. -->
+    <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <div class="lgrail">
+        <div class="lgnav on" id="mmnav-w" onclick="mmSection('w')"><b>Working</b><span>New charge &amp; allocation</span></div>
+        <div class="lgnav" id="mmnav-h" onclick="mmSection('h')"><b>History</b><span>All charges &amp; detail</span></div>
+      </div>
+      <div style="flex:1;min-width:320px">
+
+      <div id="mmsec-w">
+          <div class="ftabs" id="mmtFloorTabs"></div>
+      <div class="card">
+      <div class="card-title">New MMT charge</div>
+      <div class="card-sub">The mother charge in the Melter-Mixer Tank. Transfer tanks link back to it for full traceability to the vendor gelatine batch.</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>MMT reference *</label><input id="m_ref" placeholder="AUTO — assigned on save: MMT-FLOOR-DDMMYY-n"></div>
+        <div class="field-grp"><label>Total charge (kg) *</label><input id="m_total" type="number" inputmode="decimal" placeholder="e.g. 1000"></div>
+      </div>
+      <div class="fgroup-title">Virgin gelatine</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Vendor</label><input id="m_vendor"></div>
+        <div class="field-grp"><label>Gelatine batch no.</label><input id="m_gbatch"></div>
+        <div class="field-grp"><label>Gelatine (kg)</label><input id="m_gkg" type="number" inputmode="decimal"></div>
+      </div>
+      <div class="fgroup-title">Water</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Purified water (kg)</label><input id="m_wkg" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Water temp (°C)</label><input id="m_wtemp" type="number" inputmode="decimal"></div>
+      </div>
+      <div class="fgroup-title">Chemicals &amp; additives (grams) — per stock sheet 17-09-2026</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>SLS-799 Needles <small style="color:var(--t3)">col0045</small></label><input id="m_sls799" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>PEG-6000 (IP Grade) <small style="color:var(--t3)">col0069</small></label><input id="m_peg6000" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Bronopol BP/IP <small style="color:var(--t3)">col0004</small></label><input id="m_bronopol" type="number" inputmode="decimal"></div>
+        <div class="field-grp"><label>Othadd-2 (Finamul DL) <small style="color:var(--t3)">col0056</small></label><input id="m_othadd2" type="number" inputmode="decimal"></div>
+      </div>
+      <div class="fgrid" id="m_tank_wrap" style="display:none">
+        <div class="field-grp"><label>MMT tank (GF has a spare — two charges may run)</label>
+          <select id="m_tank"><option value="">— pick GF1 / GF2 —</option><option value="GF1">MMT GF1</option><option value="GF2">MMT GF2</option></select></div>
+      </div>
+      <div class="fgroup-title">Timestamps</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Charge commenced</label><input id="m_start" type="datetime-local"></div>
+        <div class="field-grp"><label>Charge completed</label><input id="m_complete" type="datetime-local"></div>
+        <div class="field-grp"><label>TT prep commenced</label><input id="m_ttprep" type="datetime-local"></div>
+      </div>
+      <div class="row" style="margin-top:16px">
+        <button class="btn primary" onclick="saveMmt()">Save charge</button>
+        <button class="btn" onclick="clearMmtForm()">Clear</button>
+      </div>
+    </div>
+        <div class="card">
+          <div class="card-title">Open charges on this floor — allocation</div>
+          <div class="card-sub">What is still unexhausted and available to link transfer tanks to. Allocation happens on the TT entry; this is the live position.</div>
+          <div id="mmtOpen"><div class="empty">Loading&hellip;</div></div>
+        </div>
+      </div>
+
+      <div id="mmsec-h" style="display:none">
+        <div class="card">
+          <div class="card-title">Charge history — <span id="mmtFloorLabel">All floors</span></div>
+          <div class="card-sub">Every charge: past, current and upcoming. Filter, then click a row for gelatine, water, chemicals, timestamps and allocation.</div>
+          <div class="ctlbar"><div class="fgrid">
+            <div class="field-grp"><label>Reference</label><input id="mm_ref" placeholder="all" onchange="renderMmtHistory()"></div>
+            <div class="field-grp"><label>Vendor</label><input id="mm_vendor" placeholder="all" onchange="renderMmtHistory()"></div>
+            <div class="field-grp"><label>Gelatine batch</label><input id="mm_gbatch" placeholder="all" onchange="renderMmtHistory()"></div>
+            <div class="field-grp"><label>Tank</label><select id="mm_tank" onchange="renderMmtHistory()"><option value="">All tanks</option></select></div>
+            <div class="field-grp"><label>Status</label><select id="mm_status" onchange="renderMmtHistory()"><option value="">All</option><option value="open">Open</option><option value="closed">Closed</option></select></div>
+            <div class="field-grp"><label>From</label><input id="mm_from" type="date" onchange="renderMmtHistory()"></div>
+            <div class="field-grp"><label>To</label><input id="mm_to" type="date" onchange="renderMmtHistory()"></div>
+            <div class="field-grp" style="justify-content:flex-end"><button class="btn teal" onclick="exportMmt()">Export</button></div>
+          </div></div>
+          <div id="mmtList" class="tscroll"><div class="empty">Loading&hellip;</div></div>
+        </div>
+      </div>
+
+      </div>
+    </div>
+  </div>
+
   <div class="page" id="page-ledger">
     <!-- v56 items 12/18 (Ishan, 20 Sep): three self-contained sections on a vertical left rail,
          the way Tracking splits AIM / Printing / PI. Only the selected section renders. -->
@@ -557,13 +590,13 @@ input[readonly]{background:var(--s3);color:var(--t2)}
               <button class="btn sm" onclick="loadReceipts(true)">Refresh</button>
             </span>
           </div>
-          <div class="fgrid" style="margin-bottom:8px">
+          <div class="ctlbar"><div class="fgrid">
             <div class="field-grp"><label>Source</label><select id="rcp_src" onchange="renderReceipts()"><option value="">All</option><option value="dpr">DPR cuttings</option><option value="tracking">Tracking salvage</option></select></div>
             <div class="field-grp"><label>Account</label><select id="rcp_acct" onchange="renderReceipts()"><option value="">All accounts</option></select></div>
             <div class="field-grp"><label>Machine</label><input id="rcp_mc" list="mcOpts" placeholder="all" onchange="renderReceipts()"></div>
             <div class="field-grp"><label>Batch</label><input id="rcp_batch" placeholder="all" onchange="renderReceipts()"></div>
             <div class="field-grp"><label>Day</label><input id="rcp_day" type="date" onchange="renderReceipts()"></div>
-          </div>
+          </div></div>
           <div id="rcpList" style="font-size:12px;color:var(--t3)">Loading&hellip;</div>
         </div>
 
@@ -576,7 +609,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
             <div class="ftab" id="lv-colour" onclick="loadLedger('pc',this)">By colour code</div>
             <div class="ftab" id="lv-movements" onclick="loadLedger('movements',this)">All movements</div>
           </div>
-          <div class="fgrid" style="margin-bottom:12px">
+          <div class="ctlbar" style="margin-top:8px"><div class="fgrid">
             <div class="field-grp"><label>Batch</label><input id="lg_batch" list="batchOpts" placeholder="all"></div>
             <div class="field-grp"><label>Machine</label><input id="lg_machine" list="mcOpts" placeholder="all"></div>
             <div class="field-grp"><label>Account</label><select id="lg_account"><option value="">All accounts</option></select></div>
@@ -586,7 +619,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
             <div class="field-grp"><label>To</label><input id="lg_to" type="date"></div>
             <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadLedger()">Apply</button></div>
             <div class="field-grp" style="justify-content:flex-end"><button class="btn teal" onclick="exportLedger()">Export</button></div>
-          </div>
+          </div></div>
           <div id="ledgerResult" class="tscroll"><div class="empty">Pick a view and press Apply.</div></div>
         </div>
       </div>
@@ -848,12 +881,13 @@ async function verifySession(){
 }
 
 // ── NAV ────────────────────────────────────────────────
+// v56C items 7/8: Planning opens the app; "Issue TT" is gone as a tab — TT entry lives inside
+// the one TT sheet (New TT entry / clicked from Planning). Names and order per Ishan.
 const TABS = [
-  { id:'sheet',   label:'TT Sheet' },
   { id:'plan',    label:'Planning' },
-  { id:'mmt',     label:'MMT Charges' },
-  { id:'issue',   label:'Issue TT' },
-  { id:'ledger',  label:'Stock Ledger' },
+  { id:'mmt',     label:'MMT' },
+  { id:'sheet',   label:'TT' },
+  { id:'ledger',  label:'Stock' },
   { id:'yield',   label:'Yield' },
   { id:'crush',   label:'Crushing' },
   { id:'log',     label:'Log' },   // v55R item 10: unified MMT + TT inputs register
@@ -886,7 +920,7 @@ function showPage(id, btn){
   if(id==='yield'){ buildYieldPickers(); }
   if(id==='log'){ buildYieldPickers(); loadBatchOptions(); loadInputsLog(); loadLabelHistory(); }
   if(id==='masters'){ _pcIdx(); }
-  if(id==='issue'){ buildColourantRows(); loadMmtOptions(); loadBatchOptions(); _pcIdx(); loadSuggestions(); }
+  // v56C item 6: 'issue' is no longer a page — openTtEntry() does this work on the TT page.
   if(id==='ledger'){ lgSection(window._LGSEC||'a'); _pcIdx(); loadSuggestions(); }   // v56 items 12/16: section-driven, nothing auto-renders
   if(id==='crush')  loadCrush('proposed');
   if(id==='masters')renderMasters();
@@ -1469,12 +1503,17 @@ async function loadBatchOptions(){
   // machine, and every batch a dish-wash/colour-change tank must be prepared for (from the
   // cascade). Batch number leads the label — typing "26" matches batches, not "MC26".
   try{
-    const dl = document.getElementById('batchOpts'); if(!dl) return;
+    // v56C item 6: the datalist element never existed in the markup, so every input pointing at
+    // list="batchOpts" (TT entry, plan-the-batch, filters) silently showed NO options — which is
+    // why batches had to be typed by hand. Created on demand here.
+    let dl = document.getElementById('batchOpts');
+    if(!dl){ dl = document.createElement('datalist'); dl.id = 'batchOpts'; document.body.appendChild(dl); }
     const seen = {}; const opts = [];
     const put = (bn, tag, extra) => { const k = String(bn||'').toUpperCase(); if(!k || seen[k]) return; seen[k]=1; opts.push({bn:k, lbl:k+' · '+tag+(extra?' · '+extra:'')}); };
-    for(const f of ['GF','1F','2F']){
-      const d = await api('/api/gpr/plan?floor='+f);
-      if(!d.ok) continue;
+    const plans = await Promise.all(['GF','1F','2F'].map(f =>
+      api('/api/gpr/plan?floor='+f).catch(()=>({ok:false}))));   // v56C: three floors in parallel
+    for(const d of plans){
+      if(!d || !d.ok) continue;
       window._BATCHMETA = window._BATCHMETA || {};
       (d.machines||[]).forEach(m=>{
         m.batches.forEach(b=>{ window._BATCHMETA[String(b.batchNumber).toUpperCase()] = { colour: b.colour||'', pc: b.pcCode||'' }; });
@@ -1516,7 +1555,8 @@ async function loadMmtOptions(){
 async function openTtForBatch(batch, machineId){
   const bn = String(batch||'').trim().toUpperCase();
   try{ const ov = document.getElementById('ttModal'); if(ov) ov.style.display='none'; }catch(e){}
-  showPage('issue');
+  showPage('sheet');
+  openTtEntry(bn, machineId);
   if(!bn){ toast('Pick a batch first, or type one in the Issue form',''); return; }
   setVal('td_batch', bn);
   if(machineId) setVal('td_machine', machineId);
@@ -2017,7 +2057,7 @@ function renderPlAlerts(){
 function _gelCells(b, hl){
   // self-contained: td/num are locals of the sheet renderer, so they are redefined here rather
   // than captured — the harness caught this as "td is not defined" on the live plan render.
-  const td = (x,extra) => '<td style="'+(extra||'')+'">'+x+'</td>';
+  const td = (x,extra,cls) => '<td'+(cls?' class="'+cls+'"':'')+' style="'+(extra||'')+'">'+x+'</td>';
   const num = (x,d) => (x==null?'&mdash;':Number(x).toFixed(d==null?2:d));
   const n = 'text-align:right;font-family:var(--mono)';
   const g2 = b.gel;
@@ -2072,7 +2112,7 @@ async function loadPlan(){
     // ── Sheet 1: Report E format — FLOOR: X → MACHINE: MC — N BATCHES → rows + subtotal ──
     const FLN = { GF:'GF', FF:'FF', SF:'SF' };
     const th = x => '<th style="text-align:left;padding:5px 7px;background:#1a2260;color:#dbe3ff;font-family:var(--fc);font-size:10.5px;letter-spacing:.4px;white-space:nowrap">'+x+'</th>';
-    const td = (x,extra) => '<td style="'+(extra||'')+'">'+x+'</td>';   // v55P: metrics from .gtable
+    const td = (x,extra,cls) => '<td'+(cls?' class="'+cls+'"':'')+' style="'+(extra||'')+'">'+x+'</td>';   // v55P: metrics from .gtable
     const num = (x,d) => (x==null?'&mdash;':Number(x).toFixed(d==null?2:d));
     let h = '';
     perFloor.forEach(d=>{
@@ -2088,8 +2128,8 @@ async function loadPlan(){
           + ' <span style="font-weight:400;color:var(--t3);font-size:11px">&middot; '+rateDay+' L/day'
           + (m.avgActualPerDay!=null ? ' &middot; Avg actual <b>'+m.avgActualPerDay+' L/day</b> <small>DPR</small>' : '')
           + (m.liveAPct!=null ? ' &middot; Live A <b style="color:var(--teal)">'+Number(m.liveAPct).toFixed(1)+'%</b>' : '')+'</span></div>';
-        h += '<table class="gtable" style="margin:4px 0 14px"><thead><tr>'
-          + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','AIM A-GRADE (LACS)','UNSCANNED WIP @AIM','A-GRADE AIM %'].map(th).join('')
+        h += '<div class="froze"><table class="gtable" style="margin:0"><thead><tr>'
+          + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','AIM A-GRADE (LACS)','UNSCANNED WIP @AIM','A-GRADE AIM %'].map((x,ix)=>th(x)+'').map((s2,ix)=> ix===0 ? s2.replace('<th','<th class="fz1"') : (ix===1 ? s2.replace('<th','<th class="fz2"') : s2)).join('')
           + (window._PLAN_GEL===false ? '' :
              // v56B item 2: the gelatine position — what the batch needs, what has gone in, what is left
              ['GEL kg PLAN','GEL kg ISSUED','GEL kg REM','CAP TT P/I/R','CAP L REM','BODY TT P/I/R','BODY L REM'].map(th).join(''))
@@ -2131,14 +2171,23 @@ async function loadPlan(){
           const endTxt = doneB ? esc(b.dprLast||b.plannedEnd||'—')
             : (b.status!=='running' && b.plannedEnd) ? esc(b.plannedEnd)
             : (b.estEnd ? '<span title="live estimate">'+esc(b.estEnd.date)+' <b>'+esc(b.estEnd.shift)+'</b> <small style="color:var(--teal)">est</small></span>' : '&mdash;');
-          const hl = b.status==='running' ? 'background:var(--teal-l);' : ((b.status==='completed'||b.effectivelyComplete) ? 'color:var(--t3);' : '');
-          h += '<tr>'
-            + td(esc(m.machineId),hl) + td('<a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(b.batchNumber)+'\')" class="mono" style="font-family:var(--mono);color:var(--accent);text-decoration:none;text-transform:uppercase" title="GPR batch summary — MMT refs, TT planned vs issued, stamps">'+esc(String(b.batchNumber||'').toUpperCase())+'</a>'
-                + (b.status==='running'?' <b style="color:var(--teal);font-size:10px">RUNNING</b>'
-                   : b.status==='closed' ? ' <b style="color:var(--t3);font-size:10px">CLOSED</b>'
-                   : b.status==='completed' ? ' <b style="color:var(--t3);font-size:10px">DONE</b>'
-                   : b.effectivelyComplete ? ' <b style="color:var(--green);font-size:10px" title="Actuals cover the plan — DPR dates shown">DONE (ACTUALS)</b>'
-                   : ' <button class="btn sm" style="padding:1px 8px;font-size:10px" title="Start production (goes live in Issue TT immediately)" onclick="gprStartOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9654; In production</button>'),hl)
+          // v56C items 4/5: the whole ROW carries the state — running blue, closed grey — and the
+          // two lifecycle actions are colour-coded (green start, orange close) so both read at a
+          // glance. Items 2/3: every batch number opens its summary, and the MC + BATCH cells are
+          // the frozen columns when the sheet scrolls sideways.
+          const hl = b.status==='running' ? 'background:var(--teal-l);' : '';
+          const rowCls = b.status==='running' ? 'rowrun'
+            : ((b.status==='closed'||b.status==='completed'||b.effectivelyComplete) ? 'rowclosed' : '');
+          const act = b.status==='running'
+            ? ' <button class="btn sm stop" style="padding:1px 8px;font-size:10px" title="Close this batch — it becomes history and stops accepting tanks" onclick="event.stopPropagation();gprCloseOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9632; Close batch</button>'
+            : (b.status==='closed' ? ' <b style="color:#555;font-size:10px">CLOSED</b>'
+               : b.status==='completed' ? ' <b style="color:#555;font-size:10px">DONE</b>'
+               : b.effectivelyComplete ? ' <b style="color:var(--green);font-size:10px" title="Actuals cover the plan — DPR dates shown">DONE (ACTUALS)</b>'
+               : ' <button class="btn sm go" style="padding:1px 8px;font-size:10px" title="Start production — the batch goes live for TT entry immediately" onclick="event.stopPropagation();gprStartOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9654; In production</button>');
+          h += '<tr class="'+rowCls+'">'
+            + td(esc(m.machineId),hl,'fz1') + td('<a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(b.batchNumber)+'\')" class="mono" style="font-family:var(--mono);color:var(--accent);text-decoration:none;text-transform:uppercase;cursor:pointer" title="GPR batch summary — planned vs actual vs remaining, and plan the next tanks">'+esc(String(b.batchNumber||'').toUpperCase())+'</a>'
+                + (b.status==='running'?' <b style="color:var(--teal);font-size:10px">RUNNING</b>':'')
+                + act,hl,'fz2')
             + td(esc(b.customer||'—'),hl) + td(esc(b.pcCode||'—'),hl) + td(esc(b.colour||'—'),hl) + td(esc(String(b.size||'—')),hl)
             + td(esc(b.dprFirst||b.plannedStart||'—'),hl) + td(endTxt,hl)
             + td(num(b.orderQty),hl+'text-align:right;font-family:var(--mono)') + td(num(b.grossPlanned),hl+'text-align:right;font-family:var(--mono)')
@@ -2163,7 +2212,7 @@ async function loadPlan(){
                 + td(sBodP+'/'+sBodI+'/'+sBodR,_stn)+td(num(sBodLR,0),_stn)
               : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td>'))
           + '</tr>';
-        h += '</tbody></table>';
+        h += '</tbody></table></div>';   // v56C item 3: closes the freeze-pane scroller
       });
     });
     sEl.innerHTML = h || '<span style="color:var(--t3)">No batches on the selected floor(s) in this month.</span>';
@@ -2214,6 +2263,24 @@ async function gprBatchSummary(bn){
   let h = '<div style="font-size:12px;color:var(--t2);margin-bottom:8px">'+esc(o.machineId||'—')+' · '+esc(o.customer||'—')+' · PC '+esc(o.pcCode||'—')+' · '+esc(o.colour||'—')+' · size '+esc(String(o.size||'—'))
      + ' · <b>'+esc((o.status||'—').toUpperCase())+'</b> · '+esc(o.start||'—')+' → '+esc(o.end||'—')+'</div>';
   if(d.live) h += '<div style="font-size:12px;margin-bottom:8px">Gross actual <b>'+fmt(d.live.gross,2)+' L</b> · A-grade AIM <b>'+(d.live.aimPct==null?'—':fmt(d.live.aimPct,1)+'%')+'</b> · AIM A-grade <b>'+fmt(d.live.aGradeLacs,2)+' lacs</b> · Unscanned WIP <b>'+fmt(d.live.unscannedWipAim,2)+' L</b></div>';
+  // v56C item 2: planned vs actual vs remaining — production AND gelatine — so a running batch is
+  // read and continued from this one modal.
+  if(d.gel){
+    const G = d.gel, rem = (p,a) => Math.max(0, Number(p||0)-Number(a||0));
+    const kgIssued = (((d.side||{}).cap||{}).charged||0) + (((d.side||{}).body||{}).charged||0);
+    h += '<table class="gtable" style="margin-bottom:8px"><thead><tr><th>Position</th><th class="num">Planned</th><th class="num">Actual</th><th class="num">Remaining</th></tr></thead><tbody>'
+      + '<tr><td>Production &mdash; gross (L)</td><td class="num">'+fmt(o.grossPlanned,2)+'</td><td class="num"><b>'+fmt((d.live||{}).gross,2)+'</b></td><td class="num">'+fmt(rem(o.grossPlanned,(d.live||{}).gross),2)+'</td></tr>'
+      + '<tr><td>Gelatine (kg)</td><td class="num">'+fmt(G.kgPlanned,1)+'</td><td class="num"><b>'+fmt(kgIssued,1)+'</b></td><td class="num">'+fmt(rem(G.kgPlanned,kgIssued),1)+'</td></tr>'
+      + '<tr><td>Solution (L)</td><td class="num">'+fmt(G.solutionPlannedL,0)+'</td><td class="num"><b>'+fmt(G.cap.litresIssued+G.body.litresIssued,0)+'</b></td><td class="num">'+fmt(G.cap.litresRemaining+G.body.litresRemaining,0)+'</td></tr>'
+      + '<tr><td>Cap tanks</td><td class="num">'+G.cap.ttPlanned+'</td><td class="num"><b>'+G.cap.ttIssued+'</b></td><td class="num">'+G.cap.ttRemaining+' <span style="color:var(--t3)">('+fmt(G.cap.litresRemaining,0)+' L)</span></td></tr>'
+      + '<tr><td>Body tanks</td><td class="num">'+G.body.ttPlanned+'</td><td class="num"><b>'+G.body.ttIssued+'</b></td><td class="num">'+G.body.ttRemaining+' <span style="color:var(--t3)">('+fmt(G.body.litresRemaining,0)+' L)</span></td></tr>'
+      + '</tbody></table>';
+    const left = G.cap.ttRemaining + G.body.ttRemaining;
+    h += '<div style="font-size:11.5px;color:var(--t2);margin-bottom:6px">'
+      + (left ? 'Still to prepare: <b>'+left+'</b> tank'+(left===1?'':'s')+' &mdash; recipe, colour codes and fill are identical to the tanks already issued, so the entry form arrives filled in; edit only what differs.'
+              : 'Every planned tank has been issued. A further tank can still be entered if the batch needs one.')
+      + '</div>';
+  }
   h += '<table class="gtable"><thead><tr><th>Side</th><th class="num">TT planned</th><th class="num">TT issued</th><th class="num">Entered</th><th class="num">Litres</th><th class="num">Labelled</th><th class="num">Scan IN</th><th class="num">Scan OUT</th></tr></thead><tbody>';
   ['cap','body'].forEach(k=>{
     const a = (d.side||{})[k] || {tanks:0,litres:0,labelled:0,scannedIn:0,scannedOut:0,issued:0};
@@ -2236,7 +2303,10 @@ async function gprBatchSummary(bn){
         + '<td class="mono" style="font-size:10px">'+esc(dt(t.scan_in_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.scan_out_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.issued_at))+'</td></tr>').join('')
       + '</tbody></table></div>'
     : '<div class="empty">No tanks entered for this batch yet.</div>';
-  h += '<div style="margin-top:10px"><button class="btn primary" onclick="openTtForBatch(\''+esc(bn)+'\',\''+esc((o.machineId||''))+'\')">Open TT entry for '+esc(bn)+'</button></div>';
+  h += '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'
+    + '<button class="btn primary" onclick="openTtForBatch(\''+esc(bn)+'\',\''+esc((o.machineId||''))+'\')">Plan next tanks for '+esc(bn)+'</button>'
+    + (o.status==='running' ? '<button class="btn stop" onclick="gprCloseOrder(\''+esc(bn)+'\',\''+esc((o.machineId||''))+'\')">&#9632; Close batch</button>' : '')
+    + '</div>';
   ttModalOpen(esc(bn) + ' — GPR batch summary', h);
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '860px';   // summary needs width
 }
@@ -2467,11 +2537,12 @@ async function loadReceipts(force){
   el.innerHTML = '<span style="color:var(--t3)">Loading&hellip;</span>';
   try{
     const fl = (typeof visibleFloors==='function' ? visibleFloors() : [CUR_FLOOR==='ALL' ? 'GF' : CUR_FLOOR]);
+    // v56C item 10: the three floors were fetched one after another — three round-trips in
+    // series for an Admin. They are independent, so they go in parallel.
+    const res = await Promise.all(fl.map(f =>
+      api('/api/gpr/receipts?floor='+encodeURIComponent(f)+(force?'&sync=1':'')).catch(()=>({ok:false}))));
     const rows = [];
-    for(const f of fl){
-      const d = await api('/api/gpr/receipts?floor='+encodeURIComponent(f)+(force?'&sync=1':''));
-      if(d.ok) rows.push(...(d.pending||[]));
-    }
+    res.forEach(d=>{ if(d && d.ok) rows.push(...(d.pending||[])); });
     RCP_ROWS = rows; RCP_SEL = {};
     const sel = document.getElementById('rcp_acct');
     if(sel && sel.options.length<=1){
@@ -2608,6 +2679,27 @@ async function loadShiftWise(q){
   out.innerHTML = '<div class="tswrap" style="max-height:520px">' + h + '</tbody></table></div>';
 }
 // v56 item 25 (early slice): every ledger view exports with proper headers.
+// v56C item 4: closing a running batch — the counterpart to starting one, audited server-side.
+async function gprCloseOrder(batch, mc){
+  if(!confirm('Close '+batch+' on '+mc+'?\n\nIt becomes history: every figure it earned is kept, and it stops appearing as a TT target.')) return;
+  const d = await post('/api/gpr/order-close', { batch });
+  if(!d.ok){ toast(d.detail || d.error || 'Could not close the batch','err'); return; }
+  toast(batch+' is now CLOSED','ok');
+  try{ const ov = document.getElementById('ttModal'); if(ov) ov.style.display='none'; }catch(e){}
+  loadPlan(); loadBatchOptions();
+}
+// ── v56C item 6: the TT entry panel lives inside the TT page ────────────────────────────────
+function openTtEntry(batch, machineId){
+  const p = document.getElementById('ttEntryPanel'); if(p) p.style.display = '';
+  const c = document.getElementById('ttEntryCtx');
+  if(c) c.textContent = batch ? (batch + (machineId ? ' · ' + machineId : '')) : 'new entry';
+  buildColourantRows(); loadMmtOptions(); loadBatchOptions(); _pcIdx(); loadSuggestions();
+  try{ p.scrollIntoView({behavior:'smooth', block:'start'}); }catch(e){}
+}
+function closeTtEntry(){
+  const p = document.getElementById('ttEntryPanel'); if(p) p.style.display = 'none';
+  loadSheet();
+}
 // ── v56B item 1 (Ishan, 20 Sep): remembered entries — the fields the plant retypes every shift
 // (vendor, gelatine batch, colour name, storage location, under-fill reason, colourant) now offer
 // what has been entered before, exactly like Tracking's customer name. Fetched once per session
@@ -2727,6 +2819,24 @@ function exportLedger(){
     columns: keys.map(k=>({ key:k, label:k.replace(/_/g,' ').replace(/\b\w/g,c=>c.toUpperCase()), w:14,
       num: typeof rows[0][k] === 'number' })) });
 }
+// v56C item 13: the human-readable window/filter line shown above every ledger view.
+function _lgWindowLabel(){
+  const f = val('lg_from'), t = val('lg_to');
+  const bits = [];
+  const mb = (typeof gMonthBounds==='function') ? gMonthBounds() : null;
+  bits.push((f||t) ? ('Period ' + (f?_dm(f):'start') + ' → ' + (t?_dm(t):'today'))
+    : (mb ? ('Period ' + _dm(mb.from) + ' → ' + _dm(mb.to) + ' (selected month)') : 'Period: all dates'));
+  if(val('lg_batch')) bits.push('batch ' + val('lg_batch').toUpperCase());
+  if(val('lg_machine')) bits.push('machine ' + val('lg_machine').toUpperCase());
+  if(val('lg_pc')) bits.push('PC ' + val('lg_pc'));
+  const ac = (document.getElementById('lg_account')||{}).value; if(ac) bits.push('account ' + ac);
+  const fl = (document.getElementById('lg_floor')||{}).value; if(fl) bits.push('floor ' + fl);
+  return bits.join(' · ');
+}
+function _lgHeaderHtml(){
+  return '<div style="font-size:11.5px;color:var(--t2);margin:0 0 7px;padding:4px 9px;background:var(--s2);border-radius:var(--r)">'
+    + esc(window._LGWIN||'') + '</div>';
+}
 async function loadLedger(view, btn){
   if(view) LEDGER_VIEW = view; else view = LEDGER_VIEW;
   document.querySelectorAll('#page-ledger .ftabs .ftab').forEach(x=>x.classList.remove('on'));
@@ -2748,7 +2858,7 @@ async function loadLedger(view, btn){
           + `<td>${esc(l.colour_name||l.colour_code||'—')}</td><td>${esc((l.side||'').toUpperCase()||'—')}</td>`
           + `<td class="num"><b>${fmt(l.balance_kg,1)}</b></td><td class="mono">${esc(String(l.first_seen||'').slice(0,10))}</td></tr>`;
       });
-      out.innerHTML = h + '</tbody></table>';
+      out.innerHTML = _lgHeaderHtml() + h + '</tbody></table>';
       return;
     }
     q.set('view', view);
@@ -2765,6 +2875,9 @@ async function loadLedger(view, btn){
     // v55T item 4: surface the real server error instead of the blind catch, and treat an empty
     // result as the normal no-stock state (an empty ledger is not a failure).
     if(!d.ok){ out.innerHTML = '<div class="empty">Ledger error: '+esc(d.error||'unknown')+'</div>'; return; }
+    // v56C item 13: say exactly what window and filters produced these numbers — a register with
+    // no stated period is unusable as a reference.
+    window._LGWIN = _lgWindowLabel();
     if(view!=='pc' && !(d.rows||[]).length){ out.innerHTML = '<div class="empty">No stock movements yet in this cohort.</div>'; return; }
     window._LEDGERROWS = d.rows || [];   // v56: the export takes exactly what is on screen
     if(view === 'pc'){
@@ -2831,7 +2944,7 @@ async function loadLedger(view, btn){
           + `<td class="num">${fmt(r.consumed,1)}</td><td class="num"><b>${fmt(r.balance,1)}</b></td></tr>`;
       });
     }
-    out.innerHTML = h + '</tbody></table>';
+    out.innerHTML = _lgHeaderHtml() + h + '</tbody></table>';
   }catch(e){ out.innerHTML='<div class="empty">Could not load the ledger.</div>'; }
 }
 async function saveMovement(){
