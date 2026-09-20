@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56M';
+const APP_BUILD = 'v56P';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25919,6 +25919,30 @@ app.post('/api/gpr/batch-plan/anchor', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// v56N item 6: batch/customer/PC picker source - read-only, straight from Planning state.
+app.get('/api/gpr/batch-list', async (req, res) => {
+  try {
+    const st = getPlanningState();
+    const masters = await gprLoadMasters();
+    const seen = new Set();
+    const out = [];
+    for (const o of (st.orders || [])) {
+      if (!o || o.deleted || !o.batchNumber) continue;
+      const bn = String(o.batchNumber).trim().toUpperCase();
+      if (seen.has(bn)) continue;
+      seen.add(bn);
+      out.push({ batch: bn, machineId: o.machineId || '', customer: o.customer || '',
+        pcCode: o.pcCode || o.pc_code || '', status: o.status || '',
+        floor: gprFloorOfMachine(o.machineId, masters) || '',
+        day: String(o.dprFirstDate || o.startDate || '').slice(0, 10) || null });
+    }
+    out.sort((a, b) => String(b.day || '').localeCompare(String(a.day || '')) || a.batch.localeCompare(b.batch));
+    const customers = Array.from(new Set(out.map(r => r.customer).filter(Boolean))).sort();
+    const pcs = Array.from(new Set(out.map(r => r.pcCode).filter(Boolean))).sort();
+    res.json({ ok: true, rows: out, customers, pcs, count: out.length });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ─── v56G item 3 — GPR PERFORMANCE REPORT: planned vs actual for every batch in one place ───
 // One row per batch: material against plan with the variance attributed, TT issued against plan,
 // and the holding-time exceptions. Each batch costs a live-figure lookup, so the set is bounded
@@ -25926,6 +25950,9 @@ app.post('/api/gpr/batch-plan/anchor', async (req, res) => {
 app.get('/api/gpr/performance', async (req, res) => {
   try {
     const { machine, floor, batch, status } = req.query;
+    // v56N item 6: the report can be run for a customer or a product code, not just a batch.
+    const customer = String(req.query.customer || '').trim().toUpperCase();
+    const pc = String(req.query.pc || '').trim().toUpperCase();
     const isD = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
     const ym = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : null;
     const from = isD(req.query.from) ? String(req.query.from) : (ym ? ym + '-01' : null);
@@ -25940,6 +25967,8 @@ app.get('/api/gpr/performance', async (req, res) => {
     if (machine) orders = orders.filter(o => String(o.machineId || '').toUpperCase() === String(machine).toUpperCase());
     if (floor) orders = orders.filter(o => gprFloorOfMachine(o.machineId, masters) === floor);
     if (status) orders = orders.filter(o => String(o.status || '') === String(status));
+    if (customer) orders = orders.filter(o => String(o.customer || '').toUpperCase().includes(customer));
+    if (pc) orders = orders.filter(o => String(o.pcCode || o.pc_code || '').toUpperCase() === pc);
     if (from) orders = orders.filter(o => !dayOf(o) || dayOf(o) >= from);
     if (to) orders = orders.filter(o => !dayOf(o) || dayOf(o) <= to);
     // only batches that actually have tanks or actuals are meaningful here
@@ -26616,7 +26645,7 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
       const mRows = pgPool ? (await pgPool.query(mSql, mParams)).rows : db.prepare(mSql).all(...mParams);
       for (const c of (mRows || [])) {
         const base = { date: c.d, source: 'MMT', ref: c.mmt_ref, batch: null, machine: null, floor: c.floor, side: null, by: c.created_by || null };
-        if (Number(c.gelatine_kg) > 0) rows.push(Object.assign({}, base, { input: 'Gelatine', qty: +Number(c.gelatine_kg).toFixed(3), unit: 'kg' }));
+        if (Number(c.gelatine_kg) > 0) rows.push(Object.assign({}, base, { input: 'Gelatine (MMT melt)', internal: 0, qty: +Number(c.gelatine_kg).toFixed(3), unit: 'kg' }));
         if (Number(c.water_kg) > 0) rows.push(Object.assign({}, base, { input: 'Water', qty: +Number(c.water_kg).toFixed(3), unit: 'kg' }));
         try { for (const a of JSON.parse(c.additives_json || '[]')) {
           const q = Number(a.kg != null ? a.kg : a.qty || 0);
@@ -26631,7 +26660,7 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
     if (floor) { tParams.push(floor); tConds.push(`floor=${P(tParams.length)}`); }
     if (machine) { tParams.push(machine); tConds.push(`machine_id=${P(tParams.length)}`); }
     const tSql = `SELECT id, tt_number, batch_number, machine_id, floor, side, salvage_account, created_by,
-                         virgin_kg, colour_kg, fg_remelt_kg, salvage_kg, cutting_kg,
+                         virgin_kg, colour_kg, fg_remelt_kg, salvage_kg, cutting_kg, mmt_ref,
                          COALESCE(production_day, SUBSTR(created_at,1,10)) AS d
                   FROM gpr_tt WHERE ${tConds.join(' AND ')} ORDER BY d, tt_number`;
     const tRows = pgPool ? (await pgPool.query(tSql, tParams)).rows : db.prepare(tSql).all(...tParams);
@@ -26646,7 +26675,14 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
     const SAL = { aim_salvage: 'AIM Salvage', printing_salvage: 'Printing Salvage', pi_salvage: 'PI Salvage', cutting: 'Cuttings' };
     for (const t of (tRows || [])) {
       const base = { date: t.d, source: 'TT', ref: t.tt_number, batch: t.batch_number, machine: t.machine_id, floor: t.floor, side: t.side, by: t.created_by || null };
-      if (Number(t.virgin_kg) > 0) rows.push(Object.assign({}, base, { input: 'Virgin gelatine', qty: +Number(t.virgin_kg).toFixed(3), unit: 'kg' }));
+      // v56P: virgin charged into a TT that is LINKED to an MMT charge is a draw from a melt whose
+      // gelatine was already counted as consumed at the MMT stage (tt save increments
+      // gpr_mmt_charges.allocated_kg). Adding both to one total would count the same kilogram twice,
+      // so the draw is flagged internal and kept out of the headline consumption figure.
+      if (Number(t.virgin_kg) > 0) rows.push(Object.assign({}, base, {
+        input: t.mmt_ref ? 'Virgin gelatine (drawn from MMT)' : 'Virgin gelatine (direct to TT)',
+        internal: t.mmt_ref ? 1 : 0, mmt_ref: t.mmt_ref || null,
+        qty: +Number(t.virgin_kg).toFixed(3), unit: 'kg' }));
       if (Number(t.colour_kg) > 0) rows.push(Object.assign({}, base, { input: 'Colour + TiO2', qty: +Number(t.colour_kg).toFixed(3), unit: 'kg' }));
       if (Number(t.fg_remelt_kg) > 0) rows.push(Object.assign({}, base, { input: 'FG remelt', qty: +Number(t.fg_remelt_kg).toFixed(3), unit: 'kg' }));
       if (Number(t.salvage_kg) > 0) rows.push(Object.assign({}, base, { input: SAL[t.salvage_account] || 'Salvage', qty: +Number(t.salvage_kg).toFixed(3), unit: 'kg' }));
@@ -26655,7 +26691,9 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
         if (Number(c.grams) > 0) rows.push(Object.assign({}, base, { input: String(c.colourant), qty: +Number(c.grams).toFixed(2), unit: 'g' }));
       }
     }
-    res.json({ ok: true, from, to, rows });
+    rows.forEach(r => { if (r.internal == null) r.internal = 0; });
+    const floors = Array.from(new Set(rows.map(r => r.floor).filter(Boolean))).sort();
+    res.json({ ok: true, from, to, floors, rows });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 

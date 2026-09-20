@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v56M</title>
+<title>GPR · build v56P</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -48,7 +48,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
   z-index:200;display:flex;align-items:center;flex-wrap:wrap;padding:0 16px;gap:0 4px;box-shadow:0 2px 8px rgba(26,19,8,.22)}
 .nbrand{font-family:var(--fc);font-weight:800;font-size:15px;letter-spacing:1px;color:#e0a355;white-space:nowrap;margin-right:10px;flex-shrink:0}
 .nbrand b{color:#fff}
-/* v56M (Ishan): the header reads "GPR" with the build as a small pill beside it — the
+/* v56P (Ishan): the header reads "GPR" with the build as a small pill beside it — the
        ".tracker" suffix added length without saying anything. */
     .nbrand small{font-size:11px;color:rgba(255,255,255,.45);font-weight:400;margin-left:4px}
     .vpill{display:inline-block;margin-left:7px;padding:1px 7px;border-radius:9px;
@@ -287,8 +287,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v56M</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56M</div>
+    <h1>GPR<span class="vpill">v56P</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56P</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -308,7 +308,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v56M</span></div>
+  <div class="nbrand">GPR<span class="vpill">v56P</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -727,6 +727,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <div class="ctlbar"><div class="fgrid">
           <div class="field-grp"><label>Batch</label><input id="pf_batch" list="batchOpts" placeholder="all"></div>
           <div class="field-grp"><label>Machine</label><input id="pf_machine" list="mcOpts" placeholder="all"></div>
+          <div class="field-grp"><label>Customer</label><input id="pf_customer" list="custOpts" placeholder="all"></div>
+          <div class="field-grp"><label>PC code</label><input id="pf_pc" list="pcOptsList" placeholder="all"></div>
           <div class="field-grp"><label>Floor</label><select id="pf_floor"><option value="">All floors</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
           <div class="field-grp"><label>Status</label><select id="pf_status"><option value="">All</option><option value="running">Running</option><option value="closed">Closed</option><option value="completed">Completed</option></select></div>
           <div class="field-grp"><label>From</label><input id="pf_from" type="date"></div>
@@ -739,7 +741,9 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
       <div id="yieldReconPane" style="display:none">
         <div class="ctlbar"><div class="fgrid">
-          <div class="field-grp"><label>Batch</label><input id="rc_batch" list="batchOpts" placeholder="e.g. 26ZD145" onchange="loadReconcile()"></div>
+          <div class="field-grp"><label>Customer</label><input id="rc_cust" list="custOpts" placeholder="any" onchange="rcFillBatches()"></div>
+          <div class="field-grp"><label>PC code</label><input id="rc_pc" list="pcOptsList" placeholder="any" onchange="rcFillBatches()"></div>
+          <div class="field-grp"><label>Batch</label><select id="rc_batch" onchange="loadReconcile()"><option value="">choose a batch</option></select></div>
           <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadReconcile()">Reconcile</button></div>
           <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportReconcile()">Export</button></div>
         </div></div>
@@ -835,8 +839,9 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <div class="field-grp"><label>Floor</label><select id="il_floor" onchange="loadInputsLog()"><option value="">All</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
         <div class="field-grp"><label>Machine</label><input id="il_mc" list="mcOpts" placeholder="all" onchange="loadInputsLog()"></div>
         <div class="field-grp"><label>Input</label><select id="il_input" onchange="renderInputsLog()"><option value="">All inputs</option></select></div>
-        <div class="field-grp"><label>View</label><select id="il_view" onchange="renderInputsLog()"><option value="detail">Detail</option><option value="day">By day</option><option value="batch">By batch</option><option value="input">By input</option></select></div>
+        <div class="field-grp"><label>View</label><select id="il_view" onchange="renderInputsLog()"><option value="floor">Floor summary</option><option value="detail">Detail</option><option value="day">By day</option><option value="batch">By batch</option><option value="input">By input</option></select></div>
         <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadInputsLog()">Load</button></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportInputsLog()">Export</button></div>
       </div>
       <div id="ilOut"><div class="empty">Pick a range and Load.</div></div>
     </div>
@@ -987,7 +992,7 @@ function showPage(id, btn){
   if(id==='plan')   loadPlan();
   if(id==='mmt'){   mmSection(window._MMSEC||'w'); loadSuggestions(); }   // v56A item 24 / v56B item 1
   if(id==='mmt'){ try{ document.getElementById('m_tank_wrap').style.display = (CUR_FLOOR==='GF') ? '' : 'none'; }catch(_){}}
-  if(id==='yield'){ buildYieldPickers(); }
+  if(id==='yield'){ buildYieldPickers(); gprBatchList().then(rcFillBatches); }   // v56P item 6
   if(id==='log'){ buildYieldPickers(); loadBatchOptions(); loadInputsLog(); loadLabelHistory(); }
   if(id==='masters'){ _pcIdx(); }
   // v56C item 6: 'issue' is no longer a page — openTtEntry() does this work on the TT page.
@@ -1482,6 +1487,8 @@ async function loadInputsLog(){
   const now = new Date(Date.now()+330*60000).toISOString().slice(0,10);
   if(!val('il_from')) setVal('il_from', now.slice(0,7)+'-01');
   if(!val('il_to')) setVal('il_to', now);
+  const vw = document.getElementById('il_view'); if(vw && !vw.value) vw.value = 'floor';
+  const flSel = document.getElementById('il_floor'); if(flSel && flSel.value == null) flSel.value = '';
   out.innerHTML = '<div class="empty">Loading…</div>';
   try{
     const q = new URLSearchParams({ from: val('il_from'), to: val('il_to') });
@@ -1498,6 +1505,83 @@ async function loadInputsLog(){
     renderInputsLog();
   }catch(e){ out.innerHTML = '<div class="empty">Could not load the log.</div>'; }
 }
+
+// ── v56P: MATERIAL CONSUMPTION SUMMARY — every input, per floor and summed ─────
+// One kilogram must be counted once. Gelatine melted at MMT is consumed from the store at the
+// MMT stage; when a TT links that MMT charge its virgin draw is an internal transfer of the same
+// material, so it is reported separately and excluded from the consumed total.
+function _ilKg(r){ return r.unit === 'g' ? r.qty / 1000 : r.qty; }
+function _ilMatrix(rows){
+  const floors = [...new Set(rows.map(r => r.floor || '—'))].sort();
+  const M = {};
+  rows.forEach(r => {
+    const k = r.input;
+    M[k] = M[k] || { internal: !!r.internal, by: {}, total: 0, n: 0 };
+    M[k].by[r.floor || '—'] = (M[k].by[r.floor || '—'] || 0) + _ilKg(r);
+    M[k].total += _ilKg(r); M[k].n++;
+  });
+  return { floors, M };
+}
+function renderInputsFloor(rows, out){
+  const { floors, M } = _ilMatrix(rows);
+  const FL = { GF:'Ground', '1F':'First', '2F':'Second' };
+  const names = Object.keys(M).sort((a,b)=> (M[a].internal - M[b].internal) || a.localeCompare(b));
+  const fresh = names.filter(n=>!M[n].internal), internal = names.filter(n=>M[n].internal);
+  const colT = {}; let grand = 0;
+  fresh.forEach(n => { floors.forEach(f => colT[f] = (colT[f]||0) + (M[n].by[f]||0)); grand += M[n].total; });
+  let h = '<table class="gtable"><thead><tr><th>Input material</th>'
+        + floors.map(f=>'<th class="num">'+esc(FL[f]||f)+' ('+esc(f)+')</th>').join('')
+        + '<th class="num">All floors</th><th class="num">Entries</th></tr></thead><tbody>';
+  const line = (n, bold) => {
+    const x = M[n];
+    return '<tr'+(bold?' style="background:var(--s3);font-weight:700"':'')+'><td>'+esc(n)+'</td>'
+      + floors.map(f=>'<td class="num">'+(x.by[f] ? fmt(x.by[f],2) : '&mdash;')+'</td>').join('')
+      + '<td class="num"><b>'+fmt(x.total,2)+'</b></td><td class="num">'+x.n+'</td></tr>';
+  };
+  fresh.forEach(n => h += line(n,false));
+  h += '<tr class="sumrow" style="background:var(--s3);font-weight:700"><td>TOTAL CONSUMED (kg)</td>'
+     + floors.map(f=>'<td class="num">'+fmt(colT[f]||0,2)+'</td>').join('')
+     + '<td class="num">'+fmt(grand,2)+'</td><td></td></tr>';
+  if(internal.length){
+    h += '<tr><td colspan="'+(floors.length+3)+'" style="padding-top:12px;font-size:11px;color:var(--t2)">'
+       + 'Internal transfer &mdash; already counted above at the MMT stage, so excluded from the total.</td></tr>';
+    internal.forEach(n => h += line(n,false));
+  }
+  out.innerHTML = '<div class="tswrap" style="max-height:520px">' + h + '</tbody></table></div>'
+    + '<div class="card-sub" style="margin-top:8px">Quantities in kg; colourants recorded in grams are converted. '
+    + 'MMT rows are floor-level and carry no batch.</div>';
+}
+function exportInputsLog(){
+  const rows = (window._IL_ROWS || []).filter(r => { const f = document.getElementById('il_input').value; return !f || r.input === f; });
+  if(!rows.length){ toast('Nothing to export &mdash; load a range first','err'); return; }
+  const ctx = ['from '+_dm(val('il_from')), 'to '+_dm(val('il_to')),
+               (document.getElementById('il_floor').value ? 'floor '+document.getElementById('il_floor').value : 'all floors'),
+               val('il_batch') && ('batch '+val('il_batch')), val('il_mc') && ('machine '+val('il_mc'))].filter(Boolean).join(' \u00b7 ');
+  if(document.getElementById('il_view').value === 'floor'){
+    const { floors, M } = _ilMatrix(rows);
+    const out = Object.keys(M).sort((a,b)=>(M[a].internal-M[b].internal)||a.localeCompare(b)).map(n=>{
+      const r = { input: n, scope: M[n].internal ? 'Internal transfer (excluded)' : 'Consumed' };
+      floors.forEach(f => r[f] = +(M[n].by[f]||0).toFixed(2));
+      r.all_floors = +M[n].total.toFixed(2); r.entries = M[n].n; return r;
+    });
+    gprExport({ rows: out, title:'GPR \u2014 material consumption by floor', context: ctx,
+      sheet:'Consumption', file:'gpr_material_consumption', totals:true,
+      columns: [{key:'input', label:'Input material', w:30}, {key:'scope', label:'Scope', w:26}]
+        .concat(floors.map(f=>({key:f, label:f+' (kg)', w:12, num:true})))
+        .concat([{key:'all_floors', label:'All floors (kg)', w:16, num:true}, {key:'entries', label:'Entries', w:9, num:true}]) });
+    return;
+  }
+  gprExport({ rows, title:'GPR \u2014 inputs log (every material into MMT & TT)', context: ctx,
+    sheet:'Inputs', file:'gpr_inputs_log', totals:true,
+    columns:[ {key:'date', label:'Date', w:12}, {key:'source', label:'Stage', w:8},
+      {key:'ref', label:'Ref', w:16}, {key:'batch', label:'Batch', w:12},
+      {key:'machine', label:'Machine', w:10}, {key:'floor', label:'Floor', w:8},
+      {key:'side', label:'Side', w:8}, {key:'input', label:'Input material', w:30},
+      {key:'qty', label:'Qty', w:10, num:true}, {key:'unit', label:'Unit', w:7},
+      {key:r=>+_ilKg(r).toFixed(3), label:'Qty (kg)', w:11, num:true},
+      {key:r=>r.internal ? 'Internal transfer' : 'Consumed', label:'Scope', w:20},
+      {key:'by', label:'By', w:14} ] });
+}
 function renderInputsLog(){
   const out = document.getElementById('ilOut'); if(!out) return;
   const fi = document.getElementById('il_input').value;
@@ -1505,15 +1589,18 @@ function renderInputsLog(){
   let rows = window._IL_ROWS.filter(r=>!fi || r.input===fi);
   if(!rows.length){ out.innerHTML = '<div class="empty">No inputs in this window.</div>'; return; }
   const kg = r => r.unit==='g' ? r.qty/1000 : r.qty;
+  if(view==='floor'){ renderInputsFloor(rows, out); return; }
   if(view==='detail'){
-    let h = '<table class="gtable"><thead><tr><th>Date</th><th>Source</th><th>Ref</th><th>Batch</th><th>MC</th><th>Floor</th><th>Side</th><th>Input</th><th class="num">Qty</th><th>Unit</th><th>By</th></tr></thead><tbody>';
+    let h = '<table class="gtable"><thead><tr><th>Date</th><th>Source</th><th>Ref</th><th>Batch</th><th>MC</th><th>Floor</th><th>Side</th><th>Input</th><th class="num">Qty</th><th>Unit</th><th>Scope</th><th>By</th></tr></thead><tbody>';
     rows.forEach(r=>{
       h += `<tr><td class="mono">${esc(r.date)}</td><td>${esc(r.source)}</td><td class="mono">${esc(r.ref||'—')}</td>`
         + `<td class="mono">${esc(r.batch||'—')}</td><td>${esc(r.machine||'—')}</td><td>${esc(r.floor||'—')}</td><td>${esc((r.side||'').toUpperCase()||'—')}</td>`
-        + `<td>${esc(r.input)}</td><td class="num"><b>${fmt(r.qty, r.unit==='g'?1:2)}</b></td><td>${esc(r.unit)}</td><td>${esc(r.by||'—')}</td></tr>`;
+        + `<td>${esc(r.input)}</td><td class="num"><b>${fmt(r.qty, r.unit==='g'?1:2)}</b></td><td>${esc(r.unit)}</td>`
+        + `<td style="font-size:11px;color:${r.internal?'var(--amber,#946200)':'var(--t2)'}">${r.internal?'internal transfer':'consumed'}</td><td>${esc(r.by||'—')}</td></tr>`;
     });
-    const tot = rows.reduce((a,r)=>a+kg(r),0);
-    h += `<tr style="background:var(--s3);font-weight:700"><td colspan="8">TOTAL (${rows.length} rows, g converted)</td><td class="num">${fmt(tot,2)}</td><td>kg</td><td></td></tr>`;
+    const tot = rows.filter(r=>!r.internal).reduce((a,r)=>a+kg(r),0);
+    const intK = rows.filter(r=>r.internal).reduce((a,r)=>a+kg(r),0);
+    h += `<tr style="background:var(--s3);font-weight:700"><td colspan="8">TOTAL CONSUMED (${rows.length} rows, g converted)${intK>0.001?(' \u2014 excludes '+fmt(intK,2)+' kg MMT\u2192TT internal transfer'):''}</td><td class="num">${fmt(tot,2)}</td><td>kg</td><td></td><td></td></tr>`;
     out.innerHTML = '<div class="tswrap" style="max-height:480px">' + h + '</tbody></table></div>';
     return;
   }
@@ -1532,7 +1619,8 @@ function renderInputsLog(){
     const bk = Object.keys(x.inputs).sort().map(nm=>esc(nm)+' '+fmt(x.inputs[nm],1)).join(' · ');
     h += `<tr><td class="mono"><b>${esc(k)}</b></td><td class="num">${x.n}</td><td class="num"><b>${fmt(x.kg,2)}</b></td><td style="font-size:11px;color:var(--t2)">${bk}</td></tr>`;
   });
-  h += `<tr style="background:var(--s3);font-weight:700"><td>GRAND TOTAL</td><td class="num">${rows.length}</td><td class="num">${fmt(gT,2)}</td><td></td></tr>`;
+  const intKg = rows.filter(r=>r.internal).reduce((a,r)=>a+kg(r),0);
+  h += `<tr style="background:var(--s3);font-weight:700"><td>GRAND TOTAL</td><td class="num">${rows.length}</td><td class="num">${fmt(gT-intKg,2)}</td><td style="font-size:11px;font-weight:400">${intKg>0.001?('excludes '+fmt(intKg,2)+' kg of MMT&rarr;TT internal transfer'):''}</td></tr>`;
   out.innerHTML = h + '</tbody></table>';
 }
 async function buildYieldPickers(){
@@ -2041,15 +2129,25 @@ function ttModalOpen(title, bodyHtml){
   if(!ov){
     ov = document.createElement('div');
     ov.id = 'ttModal';
-    ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,33,58,.45);z-index:200;display:flex;align-items:center;justify-content:center;padding:16px';
+    // v56P: align-items:center clipped the TOP of any modal taller than the viewport — the header
+    // and its close button became unreachable because a centred flex child cannot scroll upward.
+    // Start-aligned with the OVERLAY scrolling fixes it at any content height.
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,33,58,.45);z-index:200;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
     ov.onclick = e=>{ if(e.target===ov) ov.style.display='none'; };
-    ov.innerHTML = '<div id="ttModalBox" style="background:var(--s1);border-radius:var(--r);box-shadow:var(--shadow-md);max-width:520px;width:100%;max-height:86vh;overflow:auto;padding:16px 18px"></div>';
+    ov.innerHTML = '<div id="ttModalBox" style="background:var(--s1);border-radius:var(--r);box-shadow:var(--shadow-md);max-width:520px;width:100%;margin:auto;padding:0;overflow:visible"></div>';
     document.body.appendChild(ov);
   }
   document.getElementById('ttModalBox').innerHTML =
-    '<div style="display:flex;align-items:center;margin-bottom:10px"><div class="card-title" style="margin:0">'+title+'</div>'
-    + '<button class="btn sm" style="margin-left:auto" onclick="document.getElementById(\'ttModal\').style.display=\'none\'">✕</button></div>'
-    + bodyHtml;
+    // v56P item 4: the header band is amber and sticks to the top of the box, so the title and the
+    // close control stay distinct from the content and remain reachable however long the body is.
+    '<div style="position:sticky;top:0;z-index:2;display:flex;align-items:center;gap:10px;'
+    + 'background:linear-gradient(180deg,#fff9e6,#fff3cd);border-bottom:1px solid #e8d68a;'
+    + 'border-radius:var(--r) var(--r) 0 0;padding:11px 16px">'
+    + '<div class="card-title" style="margin:0;color:#7a5209">'+title+'</div>'
+    + '<button class="btn sm" style="margin-left:auto" onclick="document.getElementById(\'ttModal\').style.display=\'none\'">&#10005;</button>'
+    + '</div>'
+    + '<div style="padding:14px 16px 16px">' + (bodyHtml||'') + '</div>';
+  ov.scrollTop = 0;
   ov.style.display = 'flex';
 }
 
@@ -2335,7 +2433,7 @@ async function loadPlan(){
           + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','AIM A-GRADE (LACS)','UNSCANNED WIP @AIM','A-GRADE AIM %'].map((x,ix)=>th(x)+'').map((s2,ix)=> ix===0 ? s2.replace('<th','<th class="fz1"') : (ix===1 ? s2.replace('<th','<th class="fz2"') : s2)).join('')
           + (window._PLAN_GEL===false ? '' :
              // v56B item 2: the gelatine position — what the batch needs, what has gone in, what is left
-             ['GEL kg PLAN','GEL kg ISSUED','GEL kg REM','CAP TT P/I/R','CAP L REM','BODY TT P/I/R','BODY L REM'].map(th).join(''))
+             ['GEL kg PLAN','GEL kg ISSUED','GEL kg REM','CAP TT P/I/R','CAP SOLN L REM','BODY TT P/I/R','BODY SOLN L REM'].map(th).join(''))
           // v56H item 1: the reconciliation rides the sheet, so Planning is the complete working
           // summary for GPR the way Report E is for production.
           + (window._PLAN_RECON===false ? '' :
@@ -2391,15 +2489,15 @@ async function loadPlan(){
           const rowCls = b.status==='running' ? 'rowrun'
             : ((b.status==='closed'||b.status==='completed'||b.effectivelyComplete) ? 'rowclosed' : '');
           const act = b.status==='running'
-            ? ' <button class="btn sm stop" style="padding:1px 8px;font-size:10px" title="Close this batch — it becomes history and stops accepting tanks" onclick="event.stopPropagation();gprCloseOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9632; Close batch</button>'
+            ? ' <button class="btn sm stop" style="padding:3px 10px;font-size:10px;margin-left:2px" title="Close this batch — it becomes history and stops accepting tanks" onclick="event.stopPropagation();gprCloseOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9632; Close batch</button>'
             : (b.status==='closed' ? ' <b style="color:#555;font-size:10px">CLOSED</b>'
                : b.status==='completed' ? ' <b style="color:#555;font-size:10px">DONE</b>'
                : b.effectivelyComplete ? ' <b style="color:var(--green);font-size:10px" title="Actuals cover the plan — DPR dates shown">DONE (ACTUALS)</b>'
-               : ' <button class="btn sm go" style="padding:1px 8px;font-size:10px" title="Start production — the batch goes live for TT entry immediately" onclick="event.stopPropagation();gprStartOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9654; In production</button>');
+               : ' <button class="btn sm go" style="padding:3px 10px;font-size:10px;margin-left:2px" title="Start production — the batch goes live for TT entry immediately" onclick="event.stopPropagation();gprStartOrder(\''+esc(b.batchNumber)+'\',\''+esc(m.machineId)+'\')">&#9654; In production</button>');
           h += '<tr class="'+rowCls+'">'
             + td(esc(m.machineId),hl,'fz1') + td('<a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(b.batchNumber)+'\')" class="mono" style="font-family:var(--mono);color:var(--accent);text-decoration:none;text-transform:uppercase;cursor:pointer" title="GPR batch summary — planned vs actual vs remaining, and plan the next tanks">'+esc(String(b.batchNumber||'').toUpperCase())+'</a>'
                 + (b.status==='running'?' <b style="color:var(--teal);font-size:10px">RUNNING</b>':'')
-                + act,hl,'fz2')
+                + '<span style="display:inline-block;width:10px"></span>' + act,hl,'fz2')
             + td(esc(b.customer||'—'),hl) + td(esc(b.pcCode||'—'),hl) + td(esc(b.colour||'—'),hl) + td(esc(String(b.size||'—')),hl)
             + td(esc(b.dprFirst||b.plannedStart||'—'),hl) + td(endTxt,hl)
             + td(num(b.orderQty),hl+'text-align:right;font-family:var(--mono)') + td(num(b.grossPlanned),hl+'text-align:right;font-family:var(--mono)')
@@ -2419,16 +2517,16 @@ async function loadPlan(){
           + td(num(sOrd),_stn) + td(num(sGP),_stn) + td(num(sGA),_stn)
           + td(nLacs?num(sLacs):'&mdash;',_stn) + td(nWip?num(sWip):'&mdash;',_stn)
           + td(m.liveAPct!=null?Number(m.liveAPct).toFixed(2)+'%':'&mdash;',_stn+';color:var(--teal)')
-          + (window._PLAN_RECON===false ? '' : (nRec
-              ? td(num(sMP,1),_stn)+td(num(sMU,1),_stn)+td((sMD>0?'+':'')+num(sMD,1),_stn)
-                + td((sQ>0?'+':'')+num(sQ,1),_stn)+td((sW>0?'+':'')+num(sW,1),_stn)+td((sPr>0?'+':'')+num(sPr,1),_stn)
-                + td('&mdash;',_stn)+td('&mdash;',_stn)+td(sTI+'/'+sTP,_stn)+td(num(sSH,0),_stn)
-              : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'))
-          + (window._PLAN_GEL===false ? '' : (nGel
+                    + (window._PLAN_GEL===false ? '' : (nGel
               ? td(num(sGelP,1),_stn)+td(num(sGelI,1),_stn)+td(num(sGelR,1),_stn)
                 + td(sCapP+'/'+sCapI+'/'+sCapR,_stn)+td(num(sCapLR,0),_stn)
                 + td(sBodP+'/'+sBodI+'/'+sBodR,_stn)+td(num(sBodLR,0),_stn)
               : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td>'))
++ (window._PLAN_RECON===false ? '' : (nRec
+              ? td(num(sMP,1),_stn)+td(num(sMU,1),_stn)+td((sMD>0?'+':'')+num(sMD,1),_stn)
+                + td((sQ>0?'+':'')+num(sQ,1),_stn)+td((sW>0?'+':'')+num(sW,1),_stn)+td((sPr>0?'+':'')+num(sPr,1),_stn)
+                + td('&mdash;',_stn)+td('&mdash;',_stn)+td(sTI+'/'+sTP,_stn)+td(num(sSH,0),_stn)
+              : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'))
           + '</tr>';
         h += '</tbody></table></div>';   // v56C item 3: closes the freeze-pane scroller
       });
@@ -2873,7 +2971,7 @@ async function loadShiftWise(q){
   rows.forEach(r=>{ (byDay[r.production_day] = byDay[r.production_day] || []).push(r); });
   let h = '<table class="gtable"><thead><tr><th>Day</th><th>Machine</th><th>Account</th>'
     + '<th class="num gencol">A gen</th><th class="num usecol">A used</th><th class="num gencol">B gen</th><th class="num usecol">B used</th>'
-    + '<th class="num gencol">C gen</th><th class="num usecol">C used</th><th class="num gencol">Total gen</th><th class="num usecol">Total used</th><th class="num">Net</th><th>PC · code</th></tr></thead><tbody>';
+    + '<th class="num gencol">C gen</th><th class="num usecol">C used</th><th class="num gencol">Total gen</th><th class="num usecol">Total used</th><th class="num">Net</th></tr></thead><tbody>';
   Object.keys(byDay).sort().reverse().forEach(day=>{
     const D = { A:{g:0,c:0}, B:{g:0,c:0}, C:{g:0,c:0}, g:0, c:0 };
     byDay[day].forEach(r=>{
@@ -2884,16 +2982,18 @@ async function loadShiftWise(q){
         + '<td class="num gencol">'+fmt(r.B.gen,1)+'</td><td class="num usecol">'+fmt(r.B.con,1)+'</td>'
         + '<td class="num gencol">'+fmt(r.C.gen,1)+'</td><td class="num usecol">'+fmt(r.C.con,1)+'</td>'
         + '<td class="num gencol"><b>'+fmt(r.gen,1)+'</b></td><td class="num usecol">'+fmt(r.con,1)+'</td>'
-        + '<td class="num" style="color:'+(r.net>=0?'var(--green)':'var(--red)')+'"><b>'+fmt(r.net,1)+'</b></td>'
-        + '<td class="mono">'+_pcCell(r)+'</td></tr>';
+        + '<td class="num" style="color:'+_netCol(r.net)+'"><b>'+fmt(r.net,1)+'</b></td>'
+        + '</tr>';   // v56P item 5: PC column dropped — it added width without informing the shift view
     });
     h += '<tr class="sumrow"><td colspan="3">'+esc(_dm(day))+' &mdash; DAY TOTAL</td>'
       + ['A','B','C'].map(s=>'<td class="num gencol">'+fmt(D[s].g,1)+'</td><td class="num usecol">'+fmt(D[s].c,1)+'</td>').join('')
-      + '<td class="num">'+fmt(D.g,1)+'</td><td class="num">'+fmt(D.c,1)+'</td><td class="num">'+fmt(D.g-D.c,1)+'</td><td></td></tr>';
+      + '<td class="num gencol">'+fmt(D.g,1)+'</td><td class="num usecol">'+fmt(D.c,1)+'</td>'
+      + '<td class="num" style="color:'+_netCol(D.g-D.c)+'"><b>'+fmt(D.g-D.c,1)+'</b></td></tr>';
   });
   h += '<tr class="grandrow"><td colspan="3">GRAND TOTAL &mdash; '+rows.length+' machine-day-account rows</td>'
     + ['A','B','C'].map(s=>'<td class="num gencol">'+fmt(T[s].g,1)+'</td><td class="num usecol">'+fmt(T[s].c,1)+'</td>').join('')
-    + '<td class="num">'+fmt(T.g,1)+'</td><td class="num">'+fmt(T.c,1)+'</td><td class="num">'+fmt(T.g-T.c,1)+'</td><td></td></tr>';
+    + '<td class="num gencol">'+fmt(T.g,1)+'</td><td class="num usecol">'+fmt(T.c,1)+'</td>'
+    + '<td class="num"><b>'+fmt(T.g-T.c,1)+'</b></td></tr>';   // v56P: PC cell dropped
   out.innerHTML = '<div class="tswrap" style="max-height:520px">' + h + '</tbody></table></div>';
 }
 // v56 item 25 (early slice): every ledger view exports with proper headers.
@@ -3082,6 +3182,8 @@ function exportLedger(){
       num: typeof rows[0][k] === 'number' })) });
 }
 // v56C item 13: the human-readable window/filter line shown above every ledger view.
+// v56P item 5: negative net = stock drawn down = green; positive net = accumulating = red.
+function _netCol(v){ const n = Number(v||0); return Math.abs(n)<0.05 ? 'var(--t3)' : (n < 0 ? 'var(--green)' : 'var(--red)'); }
 function _lgColGroup(){ return '<colgroup><col style="width:15%"><col style="width:20%"><col style="width:21%">'+'<col style="width:11%"><col style="width:11%"><col style="width:11%"><col style="width:11%"></colgroup>'; }
 function _lgWindowLabel(){
   const f = val('lg_from'), t = val('lg_to');
@@ -3285,6 +3387,38 @@ function switchYield(which, btn){
   if(which==='daily' && !val('yd_to')){ setVal('yd_to', productionDay()); setVal('yd_from', productionDay()); }
   if(which==='month' && !val('ym_month')) setVal('ym_month', productionDay().slice(0,7));
 }
+// v56P item 6: one batch list feeds every Yield picker, and it carries customer and PC so the
+// chemist can narrow by either before choosing a batch. Fetched once per session.
+async function gprBatchList(){
+  if(window._BLIST) return window._BLIST;
+  try{
+    const d = await api('/api/gpr/batch-list');
+    window._BLIST = (d && d.ok) ? d : { rows:[], customers:[], pcs:[] };
+  }catch(e){ window._BLIST = { rows:[], customers:[], pcs:[] }; }
+  const mk = (id, vals) => {
+    let dl = document.getElementById(id);
+    if(!dl){ dl = document.createElement('datalist'); dl.id = id; document.body.appendChild(dl); }
+    dl.innerHTML = (vals||[]).map(v=>'<option value="'+esc(v)+'">').join('');
+  };
+  mk('custOpts', window._BLIST.customers);
+  mk('pcOptsList', window._BLIST.pcs);
+  return window._BLIST;
+}
+async function rcFillBatches(){
+  const L = await gprBatchList();
+  const cu = (val('rc_cust')||'').toUpperCase(), pc = (val('rc_pc')||'').toUpperCase();
+  const rows = (L.rows||[]).filter(r =>
+    (!cu || String(r.customer||'').toUpperCase().includes(cu)) &&
+    (!pc || String(r.pcCode||'').toUpperCase() === pc));
+  const sel = document.getElementById('rc_batch');
+  if(!sel) return;
+  const keep = sel.value;
+  sel.innerHTML = '<option value="">choose a batch'+(rows.length?' ('+rows.length+')':'')+'</option>'
+    + rows.slice(0,800).map(r=>'<option value="'+esc(r.batch)+'">'+esc(r.batch)
+        + ' \u00b7 ' + esc(r.machineId||'') + (r.pcCode?' \u00b7 PC '+esc(r.pcCode):'')
+        + (r.customer?' \u00b7 '+esc(String(r.customer).slice(0,22)):'') + '</option>').join('');
+  if(keep && rows.some(r=>r.batch===keep)) sel.value = keep;
+}
 // ── v56F (Ishan): material reconciliation — planned vs actual, with the gap ATTRIBUTED ──────
 // Material = quantity × weight per unit, so the variance splits exactly into a quantity effect and
 // a weight effect. The third line is deliberately NOT folded into those two: it is the gap between
@@ -3383,7 +3517,7 @@ async function loadPerf(){
   const out = document.getElementById('perfOut');
   out.innerHTML = '<div class="empty">Running…</div>';
   const q = new URLSearchParams();
-  ['batch','machine','from','to'].forEach(k=>{ const v = val('pf_'+k); if(v) q.set(k, v); });
+  ['batch','machine','from','to','customer','pc'].forEach(k=>{ const v = val('pf_'+k); if(v) q.set(k, v); });
   ['floor','status'].forEach(k=>{ const e = document.getElementById('pf_'+k); if(e && e.value) q.set(k, e.value); });
   const d = await api('/api/gpr/performance?' + q.toString());
   if(!d.ok){ out.innerHTML = '<div class="empty">'+esc(d.error||'Report failed')+'</div>'; return; }
@@ -3829,7 +3963,7 @@ function buildGMonth(){
   for(let k=0;k<13;k++){
     const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth()-k, 1));
     const v = d.toISOString().slice(0,7);
-    // v56M: the current month is self-evident from the date — the "(current)" suffix was noise.
+    // v56P: the current month is self-evident from the date — the "(current)" suffix was noise.
       opts.push('<option value="'+v+'">'+d.toLocaleString('en',{month:'short',timeZone:'UTC'})+' '+d.getUTCFullYear()+'</option>');
   }
   opts.push('<option value="ALL">All time</option>');
