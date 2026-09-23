@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56T';
+const APP_BUILD = 'v56U';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -1011,6 +1011,23 @@ const MIGRATIONS = [
         body_litres REAL, body_fill_l REAL, body_tt INTEGER,
         anchored_by TEXT, anchored_at TEXT NOT NULL DEFAULT (datetime('now'))
       );
+    `
+  },
+  {
+    version: 81,
+    name: 'v56u_gpr_blend_reuse_lines',
+    // v56U (Rahul, 23 Sep): (a) an MMT charge can blend several vendors/gelatine batches — the
+    // lines ride gelatine_lots_json, the old single columns keep the joined summary; (b) a TT's
+    // reuse material is entered as lines (account, source batch, colour code, kg) — kept on the
+    // tank in reuse_json, and the primary account in salvage_account (the Inputs Log has been
+    // selecting that column since v55R although it never existed, so the log 500'd); (c) a
+    // consumption row records the SOURCE lot it drew from in source_batch, while batch_number
+    // stays the consuming batch because batch yield reads consumption by batch_number.
+    sql: `
+      ALTER TABLE gpr_mmt_charges ADD COLUMN gelatine_lots_json TEXT;
+      ALTER TABLE gpr_tt ADD COLUMN salvage_account TEXT;
+      ALTER TABLE gpr_tt ADD COLUMN reuse_json TEXT;
+      ALTER TABLE gpr_ledger ADD COLUMN source_batch TEXT;
     `
   },
   {
@@ -2314,6 +2331,14 @@ const GPR_SEED_MASTERS = (() => {
     underFillPct: 5,              // % below tank capacity that demands a reason (was 0.95 literal)
     estFactorMin: 0.85,           // end-shift estimate factor floor (was a bare 0.85)
     estFactorMax: 1.30,           // ceiling (was a bare 1.30)
+    // v56U (Ishan, 23 Sep): colour and TiO2 go into the tank as prepared solutions and DO add to its
+    // volume. Colour at 10% w/w, except Erythrosine and Brilliant Blue at 5%; TiO2 at 10% w/w. The
+    // solution mass (grams / strength) is counted at 1 kg = 1 L, being an aqueous preparation.
+    colourSolutionPct: 10,
+    colourSolutionPctLow: 5,
+    colourSolutionLowNames: 'Erythrosine,Brilliant Blue',
+    tio2SolutionPct: 10,
+    tio2Names: 'Titanium Dioxide,TiO2',
     ttPrepHours: 8,   // v55D: hours from MMT charge to TT ready (colour-matched, viscosity set) — drives the cascade prep alert   // v55: v50E shipped the column as nett_wt (kg per box; qty is lakhs, so gprAvgMg's (w*10)/q yields mg/capsule)
     // ── Cascade master switch (v42U, confirmed by Ishan) ──
     // 0 = ADDITIVE MODE: GPR records In-Production/Close for its own reporting but
@@ -2438,6 +2463,17 @@ async function _gprUpgradeMastersV55A() {
   try {
     if (!(await get1('mmt_chemicals'))) await put1('mmt_chemicals', GPR_SEED_MASTERS.mmt_chemicals);
     if (!(await get1('cutting_colour_codes'))) await put1('cutting_colour_codes', []);   // v55K item 12 architecture
+    // v56U: constants added in a later build reach an already-seeded store — FILL-IF-ABSENT only, a
+    // value the plant has tuned is never overwritten. Makes the new keys visible/editable in Masters.
+    const gc = await get1('gpr_constants');
+    if (gc && typeof gc === 'object') {
+      const add = Object.keys(GPR_SEED_MASTERS.gpr_constants).filter(k => !(k in gc));
+      if (add.length) {
+        add.forEach(k => { gc[k] = GPR_SEED_MASTERS.gpr_constants[k]; });
+        await put1('gpr_constants', gc);
+        console.log('[v56U GPR] gpr_constants gained ' + add.join(', '));
+      }
+    }
     const cols = await get1('colourants');
     if (Array.isArray(cols) && cols.length && typeof cols[0] === 'string') {
       const byName = {}; GPR_SEED_MASTERS.colourants.forEach(c => { byName[c.name.toLowerCase()] = c.code; });
@@ -4821,6 +4857,11 @@ async function ensurePostgresTables() {
         gross_lakhs REAL, avg_mg REAL, gelatine_kg REAL, solution_l REAL, colour_kg REAL,
         cap_litres REAL, cap_fill_l REAL, cap_tt INTEGER, body_litres REAL, body_fill_l REAL, body_tt INTEGER,
         anchored_by TEXT, anchored_at TEXT NOT NULL DEFAULT (NOW()::TEXT))`,
+      // v56U migration-81 mirror — blend lines, reuse lines, consumption source lot
+      `ALTER TABLE gpr_mmt_charges ADD COLUMN IF NOT EXISTS gelatine_lots_json TEXT`,
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS salvage_account TEXT`,
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS reuse_json TEXT`,
+      `ALTER TABLE gpr_ledger ADD COLUMN IF NOT EXISTS source_batch TEXT`,
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -14191,6 +14232,39 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
 
 // GET DPR record for a floor + date
 // POST save DPR record + extract actuals into bridge table
+// v56U: after a save, bring every REFUSED line in the stored day record back to the figure the
+// database actually holds for that slot (machine, shift, line). A slot held by a different batch, or
+// not held at all, reads as nothing recorded for this line. Returns the lines it corrected.
+async function _v56uReconcileRefused(floor, date, data, rejected) {
+  const rj = (rejected || []).filter(r => r && r.machineId && r.shift && r.runIndex != null);
+  if (!rj.length || !data || !data.shifts) return [];
+  const sql = `SELECT machine_id, shift, run_index, qty_lakhs, batch_number FROM production_actuals WHERE floor=${pgPool ? '$1' : '?'} AND date=${pgPool ? '$2' : '?'}`;
+  const rows = pgPool ? (await pgPool.query(sql, [floor, date])).rows : db.prepare(sql).all(floor, date);
+  const held = {};
+  (rows || []).forEach(r => { held[`${r.machine_id}|${r.shift}|${Number(r.run_index || 0)}`] = r; });
+  const out = [];
+  for (const r of rj) {
+    const md = data.shifts[r.shift] && data.shifts[r.shift].machines && data.shifts[r.shift].machines[r.machineId];
+    const run = md && Array.isArray(md.runs) ? md.runs[Number(r.runIndex)] : null;
+    if (!run) continue;
+    const h = held[`${r.machineId}|${r.shift}|${Number(r.runIndex)}`];
+    const same = h && (!h.batch_number || !r.batchNumber || String(h.batch_number).toUpperCase() === String(r.batchNumber).toUpperCase());
+    const recorded = same ? (Number(h.qty_lakhs) || 0) : 0;
+    const typed = parseFloat(run.qty) || 0;
+    if (Math.abs(typed - recorded) < 0.0005) continue;
+    run.qty = recorded > 0 ? recorded.toFixed(2) : '';
+    out.push({ machineId: r.machineId, shift: r.shift, runIndex: Number(r.runIndex), batchNumber: r.batchNumber || null,
+               typed: +typed.toFixed(2), recorded: +recorded.toFixed(2), reason: r.reason || '' });
+  }
+  if (out.length) {
+    if (pgPool) await pgPool.query('UPDATE dpr_records SET data_json=$1 WHERE floor=$2 AND date=$3', [JSON.stringify(data), floor, date]);
+    else db.prepare('UPDATE dpr_records SET data_json=? WHERE floor=? AND date=?').run(JSON.stringify(data), floor, date);
+    console.log(`[v56U refused] ${floor} ${date}: ${out.length} refused line(s) set back to the recorded figure — ` +
+      out.map(o => `${o.batchNumber || '?'}@${o.machineId}/${o.shift}/L${o.runIndex + 1} typed ${o.typed} → ${o.recorded}`).join('; '));
+  }
+  return out;
+}
+
 app.post('/api/dpr/save', async (req, res) => {
   try {
     const { floor, date, data, actuals } = req.body;
@@ -14424,7 +14498,8 @@ app.post('/api/dpr/save', async (req, res) => {
       if (actuals && actuals.length > 0) {
         for (const a of actuals) {
           if (!a.qty || a.qty <= 0) continue;
-          if (!_gateRow(a.orderId, a.batchNumber, a.machineId, a.shift, a.qty)) continue;
+          const _n56u = _rejected.length;   // v56U: tag a refusal with its line so the JSON can be reconciled
+          if (!_gateRow(a.orderId, a.batchNumber, a.machineId, a.shift, a.qty)) { if (_rejected.length > _n56u) _rejected[_rejected.length - 1].runIndex = a.runIndex || 0; continue; }
           actualsToSave.push([a.orderId||null, (a.batchNumber || _orderBatchById[a.orderId] || null), a.machineId, date, a.shift, a.runIndex||0, a.qty, a.floor||floor]);
         }
       } else {
@@ -14436,7 +14511,8 @@ app.post('/api/dpr/save', async (req, res) => {
             runs.forEach((run,ri) => {
               const qty = parseFloat(run.qty)||0;
               if (qty <= 0) return;
-              if (!_gateRow(run.orderId, run.batchNumber, machineId, shiftName, qty)) return;
+              const _n56u = _rejected.length;
+              if (!_gateRow(run.orderId, run.batchNumber, machineId, shiftName, qty)) { if (_rejected.length > _n56u) _rejected[_rejected.length - 1].runIndex = ri; return; }
               actualsToSave.push([run.orderId||null, (run.batchNumber || _orderBatchById[run.orderId] || null), machineId, date, shiftName, ri, qty, floor]);
             });
           }
@@ -14581,7 +14657,12 @@ app.post('/api/dpr/save', async (req, res) => {
       }
       const upsert = db.prepare(`INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor) VALUES (?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT(machine_id, date, shift, run_index) DO UPDATE SET order_id=excluded.order_id, batch_number=excluded.batch_number, qty_lakhs=excluded.qty_lakhs, synced_at=datetime('now')`);
       const rows = (actuals && actuals.length > 0)
-        ? actuals.filter(a => a.qty > 0 && _gateSq(a.orderId, a.batchNumber, a.machineId, a.shift, a.qty))
+        ? actuals.filter(a => {
+            if (!(a.qty > 0)) return false;
+            const _n56u = _rejectedSq.length;
+            const ok = _gateSq(a.orderId, a.batchNumber, a.machineId, a.shift, a.qty);
+            if (!ok && _rejectedSq.length > _n56u) _rejectedSq[_rejectedSq.length - 1].runIndex = a.runIndex || 0;   // v56U
+            return ok; })
                  .map(a => [a.orderId||null, (a.batchNumber || _orderBatchByIdSq[a.orderId] || null), a.machineId, date, a.shift, a.runIndex||0, a.qty, a.floor||floor])
         : [];
       db.transaction(rows => rows.forEach(r => upsert.run(...r)))(rows);
@@ -14633,11 +14714,20 @@ app.post('/api/dpr/save', async (req, res) => {
     } catch (_) {}
     // v40 P18.14i Fix 2: include any gate rejections so client can alert the operator
     const rejected = res._dprRejected || [];
+    // v56U (Ishan, 23 Sep — 26ZH098): a refused line must not live on in the day's record. The JSON
+    // was written BEFORE the gate ran, so a correction typed after DPR-close sat in dpr_records (and on
+    // screen) while production_actuals kept the old figure — the report and the screen disagreed with
+    // nothing to show it. The refused lines are now set back to what production_actuals actually holds
+    // and the client is told exactly which lines, so it can mark them red.
+    let refused = [];
+    try { refused = await _v56uReconcileRefused(floor, date, data, rejected); }
+    catch (e) { console.warn('[v56U refused-reconcile] skipped:', e.message); }
     res.json({
       ok: true,
       savedAt: new Date().toISOString(),
       rejectedCount: rejected.length,
       rejected: rejected,
+      refused,
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -25200,17 +25290,18 @@ async function gprLedgerMove(row) {
     qty_kg: Number(row.qty_kg || 0),
     production_day: row.production_day || gprProductionDay(),
     note: row.note || null, moved_by: row.moved_by || null,
+    source_batch: row.source_batch || null,   // v56U: the stock lot a consumption drew from
   };
-  const cols = `(movement_type,account,source,pc_code,colour_name,colour_code,side,machine_id,batch_number,tt_id,floor,qty_kg,production_day,note,moved_by)`;
+  const cols = `(movement_type,account,source,pc_code,colour_name,colour_code,side,machine_id,batch_number,tt_id,floor,qty_kg,production_day,note,moved_by,source_batch)`;
   const vals = [r.movement_type, r.account, r.source, r.pc_code, r.colour_name, r.colour_code,
                 r.side, r.machine_id, r.batch_number, r.tt_id, r.floor, r.qty_kg,
-                r.production_day, r.note, r.moved_by];
+                r.production_day, r.note, r.moved_by, r.source_batch];
   if (pgPool) {
     const q = await pgPool.query(
-      `INSERT INTO gpr_ledger ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15) RETURNING id`, vals);
+      `INSERT INTO gpr_ledger ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16) RETURNING id`, vals);
     return q.rows[0].id;
   }
-  const info = db.prepare(`INSERT INTO gpr_ledger ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...vals);
+  const info = db.prepare(`INSERT INTO gpr_ledger ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...vals);
   return info.lastInsertRowid;
 }
 
@@ -25526,15 +25617,30 @@ app.post('/api/gpr/mmt', async (req, res) => {
     }
 
     const additivesJson = JSON.stringify(b.additives || {});
-    const vals = [b.mmt_ref, b.floor, tankNo, b.gelatine_vendor || null, b.gelatine_batch || null,
-                  Number(b.gelatine_kg || 0), Number(b.water_kg || 0),
+    // v56U (Rahul MMT 1-2): a charge may BLEND several vendors and gelatine batches. The lines are
+    // kept whole in gelatine_lots_json; the three single columns carry the joined summary (and the
+    // summed kg) so every existing filter, list, export and suggestion keeps working unchanged.
+    const _lots = (Array.isArray(b.gelatine_lots) ? b.gelatine_lots : [])
+      .map(l => ({ vendor: String((l && l.vendor) || '').trim(), batch: String((l && l.batch) || '').trim(),
+                   kg: +Number((l && l.kg) || 0).toFixed(3) }))
+      .filter(l => l.vendor || l.batch || l.kg > 0);
+    let gVendor = b.gelatine_vendor || null, gBatch = b.gelatine_batch || null, gKg = Number(b.gelatine_kg || 0);
+    if (_lots.length) {
+      const uniq = a => Array.from(new Set(a.filter(Boolean)));
+      gVendor = uniq(_lots.map(l => l.vendor)).join(' + ') || null;
+      gBatch = uniq(_lots.map(l => l.batch)).join(' + ') || null;
+      gKg = +_lots.reduce((a, l) => a + l.kg, 0).toFixed(3);
+    }
+    const lotsJson = _lots.length ? JSON.stringify(_lots) : null;
+    const vals = [b.mmt_ref, b.floor, tankNo, gVendor, gBatch,
+                  gKg, Number(b.water_kg || 0),
                   b.water_temp_c != null ? Number(b.water_temp_c) : null, additivesJson, totalKg,
-                  b.charge_start || null, b.charge_complete || null, b.tt_prep_start || null, session.username];
-    const cols = `(mmt_ref,floor,tank_no,gelatine_vendor,gelatine_batch,gelatine_kg,water_kg,water_temp_c,additives_json,total_kg,charge_start,charge_complete,tt_prep_start,status,created_by)`;
+                  b.charge_start || null, b.charge_complete || null, b.tt_prep_start || null, session.username, lotsJson];
+    const cols = `(mmt_ref,floor,tank_no,gelatine_vendor,gelatine_batch,gelatine_kg,water_kg,water_temp_c,additives_json,total_kg,charge_start,charge_complete,tt_prep_start,status,created_by,gelatine_lots_json)`;
     if (pgPool) {
-      await pgPool.query(`INSERT INTO gpr_mmt_charges ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'open',$14)`, vals);
+      await pgPool.query(`INSERT INTO gpr_mmt_charges ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'open',$14,$15)`, vals);
     } else {
-      db.prepare(`INSERT INTO gpr_mmt_charges ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?)`).run(...vals);
+      db.prepare(`INSERT INTO gpr_mmt_charges ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?)`).run(...vals);
     }
     logAudit(session.username, session.role, 'gpr', 'GPR_MMT_CREATED',
       `ref=${b.mmt_ref} floor=${b.floor} ${totalKg}kg${warning ? ' [alert]' : ''}`, req.ip);
@@ -25652,6 +25758,26 @@ app.post('/api/gpr/tt', async (req, res) => {
         detail: `Actual ${actualL}L is more than 5% below the ${capacityL}L tank capacity — a reason is required.` });
     }
 
+    // v56U (Rahul TT 3): reuse material arrives as LINES — account, source batch, colour code, side,
+    // kg — so one tank can take cuttings and AIM salvage from several batches / colour codes. The
+    // two aggregate columns are DERIVED from the lines (cutting vs every salvage account), so yield,
+    // reconciliation, the plan sheet and every register keep reading exactly what they read before.
+    const GPR_REUSE_ACCTS = ['aim_salvage', 'printing_salvage', 'pi_salvage', 'cutting', 'oily_salvage'];
+    const reuseLines = (Array.isArray(b.reuse_lines) ? b.reuse_lines : [])
+      .map(l => ({ account: String((l && l.account) || '').toLowerCase(),
+                   source_batch: String((l && l.source_batch) || '').trim().toUpperCase() || null,
+                   colour_code: String((l && l.colour_code) || '').trim().toUpperCase() || null,
+                   side: ['cap', 'body'].includes(String((l && l.side) || '').toLowerCase()) ? String(l.side).toLowerCase() : null,
+                   kg: +Number((l && l.kg) || 0).toFixed(3) }))
+      .filter(l => l.kg > 0);
+    const badAcct = reuseLines.find(l => !GPR_REUSE_ACCTS.includes(l.account));
+    if (badAcct) return res.status(400).json({ ok: false, error: 'BAD_REUSE_ACCOUNT', detail: `Unknown reuse account '${badAcct.account}'.` });
+    if (reuseLines.length) {
+      b.cutting_kg = +reuseLines.filter(l => l.account === 'cutting').reduce((a, l) => a + l.kg, 0).toFixed(3);
+      b.salvage_kg = +reuseLines.filter(l => l.account !== 'cutting').reduce((a, l) => a + l.kg, 0).toFixed(3);
+      const sAccts = Array.from(new Set(reuseLines.filter(l => l.account !== 'cutting').map(l => l.account)));
+      b.salvage_account = sAccts.length === 1 ? sAccts[0] : (sAccts.length ? 'mixed' : null);
+    }
     // Total charged weight — the base for the 22.5% cutting estimate (item 4).
     const virginKg  = Number(b.virgin_kg || 0);
     const salvageKg = Number(b.salvage_kg || 0);
@@ -25666,14 +25792,16 @@ app.post('/api/gpr/tt', async (req, res) => {
     // v42U item 7: TT Number replaces the old Box Number on the label.
     const ttNumber = 'TT-' + (side === 'cap' ? 'C' : 'B') + seqIndex + (seqTotal ? ('/' + seqTotal) : '');
 
-    const cols = `(batch_number,pc_code,machine_id,floor,side,seq_index,seq_total,tt_number,mmt_ref,colour_name,colour_code,capacity_l,planned_l,actual_l,virgin_kg,salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by)`;
+    const cols = `(batch_number,pc_code,machine_id,floor,side,seq_index,seq_total,tt_number,mmt_ref,colour_name,colour_code,capacity_l,planned_l,actual_l,virgin_kg,salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by,salvage_account,reuse_json)`;
     const vals = [b.batch_number, b.pc_code || null, b.machine_id, floor, side, seqIndex, seqTotal,
                   ttNumber, b.mmt_ref || null, b.colour_name || null, b.colour_code || null,
                   capacityL || null, Number(b.planned_l || 0), actualL, virginKg, salvageKg, cuttingKg,
                   colourKg, fgRemelt, totalChargedKg,
                   b.viscosity_cps != null ? Number(b.viscosity_cps) : null,
                   b.temperature_c != null ? Number(b.temperature_c) : null,
-                  pday, 'prepared', underFill, b.under_fill_reason || null, session.username];
+                  pday, 'prepared', underFill, b.under_fill_reason || null, session.username,
+                  (salvageKg > 0 ? String(b.salvage_account || 'aim_salvage') : null),   // v56U: the column the Inputs Log always read
+                  reuseLines.length ? JSON.stringify(reuseLines) : null];
     let ttId;
     if (pgPool) {
       const ph = vals.map((_, i) => '$' + (i + 1)).join(',');
@@ -25692,8 +25820,8 @@ app.post('/api/gpr/tt', async (req, res) => {
     if (pgPool) await pgPool.query(`UPDATE gpr_tt SET label_payload=$1 WHERE id=$2`, [finalPayload, ttId]);
     else db.prepare(`UPDATE gpr_tt SET label_payload=? WHERE id=?`).run(finalPayload, ttId);
 
-    // Colourants (up to 8)
-    const colourants = Array.isArray(b.colourants) ? b.colourants.slice(0, 8) : [];
+    // Colourants — v56U (Rahul TT 4): no longer capped at 8 slots; 40 is a sanity ceiling only.
+    const colourants = Array.isArray(b.colourants) ? b.colourants.slice(0, 40) : [];
     for (const c of colourants) {
       if (!c || !c.colourant) continue;
       if (pgPool) await pgPool.query(`INSERT INTO gpr_tt_colourants (tt_id,colourant,grams,slot) VALUES ($1,$2,$3,$4)`,
@@ -25713,12 +25841,27 @@ app.post('/api/gpr/tt', async (req, res) => {
     //     FROM stock. BLOCKER H1 FIX — the v42 branch posted these as GENERATION,
     //     crediting stock instead of debiting it and inverting netRecirc's sign.
     const consumeFrom = String(b.consume_from || 'ledger').toLowerCase(); // 'ledger' | 'legacy'
-    const postConsumption = async (account, kg) => {
+    const postConsumption = async (account, kg, lot) => {
       if (kg <= 0) return;
       if (consumeFrom === 'legacy') {
         await gprLegacyMove({ movement_type: 'draw', account, location: b.legacy_location || null,
           batch_number: bn, tt_id: ttId, floor, qty_kg: kg,
-          note: 'consumed into TT ' + ttNumber, moved_by: session.username });
+          note: 'consumed into TT ' + ttNumber + (lot && lot.source_batch ? ' (from ' + lot.source_batch + ')' : ''), moved_by: session.username });
+      } else if (lot) {
+        // v56U: a reuse LINE draws from a specific lot — the row carries that lot's colour code,
+        // side and PC (so by-colour / by-PC balances fall on the stock actually drawn) and its
+        // batch in source_batch; batch_number stays the CONSUMING batch because gprComputeYield
+        // reads consumption by batch_number.
+        const srcOrd = lot.source_batch ? gprFindOrder(lot.source_batch) : null;
+        await gprLedgerMove({ movement_type: 'consumption', account, source: 'manual',
+          pc_code: (srcOrd && (srcOrd.pcCode || srcOrd.pc_code)) || (lot.source_batch ? null : b.pc_code),
+          colour_name: (srcOrd && srcOrd.colour) || (lot.source_batch ? null : b.colour_name),
+          colour_code: lot.colour_code || (lot.source_batch ? null : b.colour_code),
+          side: lot.side || (account === 'cutting' ? side : null),
+          machine_id: b.machine_id, batch_number: bn, tt_id: ttId, floor, qty_kg: kg,
+          source_batch: lot.source_batch || null,
+          production_day: pday, moved_by: session.username,
+          note: 'consumed into TT ' + ttNumber + (lot.source_batch ? ' from ' + lot.source_batch : '') + (lot.colour_code ? ' ' + lot.colour_code : '') });
       } else {
         await gprLedgerMove({ movement_type: 'consumption', account, source: 'manual',
           pc_code: b.pc_code, colour_name: b.colour_name, colour_code: b.colour_code, side,
@@ -25726,8 +25869,12 @@ app.post('/api/gpr/tt', async (req, res) => {
           production_day: pday, moved_by: session.username, note: 'consumed into TT ' + ttNumber });
       }
     };
-    await postConsumption(String(b.salvage_account || 'aim_salvage'), salvageKg);
-    await postConsumption('cutting', cuttingKg);
+    if (reuseLines.length) {
+      for (const l of reuseLines) await postConsumption(l.account, l.kg, l);
+    } else {
+      await postConsumption(String(b.salvage_account || 'aim_salvage'), salvageKg);
+      await postConsumption('cutting', cuttingKg);
+    }
 
     // (b) GENERATION: cutting this tank will yield back, auto-credited at 22.5% of
     //     TOTAL CHARGED WEIGHT (item 4 — the cutting carries colour weight and the
@@ -25781,6 +25928,14 @@ app.get('/api/gpr/tt-sheet', async (req, res) => {
     if (batch)   add(n => pgPool ? `UPPER(batch_number)=$${n}` : `UPPER(batch_number)=?`, String(batch).toUpperCase());
     if (machine) add(n => pgPool ? `machine_id=$${n}` : `machine_id=?`, machine);
     if (floor)   add(n => pgPool ? `floor=$${n}` : `floor=?`, floor);
+    // v56U (Rahul TT 1): a floor login's "All floors" means ITS floors — the client passes the set.
+    if (!floor && req.query.floors) {
+      const fl = String(req.query.floors).split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+      if (fl.length) {
+        const ph = fl.map(f => { params.push(f); return pgPool ? `$${params.length}` : '?'; });
+        conds.push(`floor IN (${ph.join(',')})`);
+      }
+    }
     if (side)    add(n => pgPool ? `side=$${n}` : `side=?`, String(side).toLowerCase());
     if (status)  add(n => pgPool ? `status=$${n}` : `status=?`, status);
     if (from)    add(n => pgPool ? `production_day >= $${n}` : `production_day >= ?`, from);
@@ -25790,7 +25945,7 @@ app.get('/api/gpr/tt-sheet', async (req, res) => {
                         colour_name,colour_code,mmt_ref,capacity_l,planned_l,actual_l,virgin_kg,
                         salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,
                         temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by,created_at,
-                        label_generated_at,scan_in_at,scan_out_at,issued_at,issued_by
+                        label_generated_at,scan_in_at,scan_out_at,issued_at,issued_by,salvage_account,reuse_json
                  FROM gpr_tt ${where} ORDER BY production_day DESC, batch_number, side, seq_index`;
     const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
     const totals = (rows || []).reduce((a, r) => ({
@@ -25952,6 +26107,41 @@ function _gprDateStr(d) {
   return isNaN(dt) ? '' : dt.toISOString().slice(0, 10);
 }
 // v56N item 6: batch/customer/PC picker source - read-only, straight from Planning state.
+// v56U (Rahul TT 1): the TT entry batch pick-list. It used to call the full /api/gpr/plan for all
+// three floors on every open (live figures, TT aggregates, cascade — ~10 s) and ignored the login's
+// floor, so a GF chemist was offered first/second-floor batches. This reads Planning state only:
+// every RUNNING batch plus the next two queued per machine, on the requested floors.
+app.get('/api/gpr/tt-batch-options', async (req, res) => {
+  try {
+    const st = getPlanningState();
+    const masters = await gprLoadMasters();
+    const want = String(req.query.floors || '').split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+    const byMc = {};
+    for (const o of (st.orders || [])) {
+      if (!o || o.deleted || !o.batchNumber || !o.machineId) continue;
+      const fl = gprFloorOfMachine(o.machineId, masters) || '';
+      if (want.length && !want.includes(fl)) continue;
+      (byMc[o.machineId] = byMc[o.machineId] || { floor: fl, orders: [] }).orders.push(o);
+    }
+    const out = [];
+    const seen = new Set();
+    const put = (o, mc, fl, tag) => {
+      const bn = String(o.batchNumber).trim().toUpperCase();
+      if (seen.has(bn)) return; seen.add(bn);
+      out.push({ batch: bn, machineId: mc, floor: fl, tag, colour: o.colour || '', pc: o.pcCode || o.pc_code || '' });
+    };
+    Object.keys(byMc).sort((a, b) => a.localeCompare(b, undefined, { numeric: true })).forEach(mc => {
+      const g = byMc[mc];
+      g.orders.filter(o => o.status === 'running').forEach(o => put(o, mc, g.floor, 'RUNNING'));
+      g.orders.filter(o => !['running', 'closed', 'completed'].includes(String(o.status || '')))
+        .sort((a, b) => String(_gprDateStr(a.startDate) || '9999').localeCompare(String(_gprDateStr(b.startDate) || '9999'))
+                        || _gprBatchCmp(String(a.batchNumber).toUpperCase(), String(b.batchNumber).toUpperCase()))
+        .slice(0, 2).forEach(o => put(o, mc, g.floor, 'next'));
+    });
+    res.json({ ok: true, floors: want, rows: out });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.get('/api/gpr/batch-list', async (req, res) => {
   try {
     const st = getPlanningState();
@@ -26307,8 +26497,14 @@ app.get('/api/gpr/suggest', async (req, res) => {
       one(`SELECT DISTINCT under_fill_reason AS v FROM gpr_tt WHERE COALESCE(under_fill_reason,'') <> '' ORDER BY 1 LIMIT 100`),
       one(`SELECT DISTINCT colourant AS v FROM gpr_tt_colourants WHERE COALESCE(colourant,'') <> '' ORDER BY 1 LIMIT 200`),
     ]);
-    res.json({ ok: true, vendors, gelatineBatches: gbatches, colourNames: colours,
-      legacyLocations: locations, underFillReasons: reasons, colourants });
+    // v56U: a blended charge stores its summary as "A + B" — suggest the individual names, never the join.
+    const _split = a => Array.from(new Set(a.flatMap(x => String(x).split(' + ').map(s => s.trim())).filter(Boolean)));
+    // v56U: every chemical ever keyed on an MMT charge is offered back (the added-chemical rows).
+    const _chem = await one(`SELECT additives_json AS v FROM gpr_mmt_charges WHERE COALESCE(additives_json,'') <> '' ORDER BY id DESC LIMIT 300`);
+    const chemicals = Array.from(new Set(_chem.flatMap(j => { try { const o = JSON.parse(j); return (o && typeof o === 'object' && !Array.isArray(o)) ? Object.keys(o) : []; } catch (e) { return []; } })
+      .map(k => String(k).replace(/^col\d+_/i, '')).filter(Boolean))).sort();
+    res.json({ ok: true, vendors: _split(vendors), gelatineBatches: _split(gbatches), colourNames: colours,
+      legacyLocations: locations, underFillReasons: reasons, colourants, chemicals });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -26436,10 +26632,17 @@ app.get('/api/gpr/ledger/shift-wise', async (req, res) => {
     if (from) { params.push(from); conds.push(`production_day >= ${P()}`); }
     if (to) { params.push(to); conds.push(`production_day <= ${P()}`); }
     if (floor) { params.push(floor); conds.push(`floor = ${P()}`); }
+    else if (req.query.floors) {   // v56U: a floor login's "my floors"
+      const _fl = String(req.query.floors).split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+      if (_fl.length) conds.push(`floor IN (${_fl.map(f => { params.push(f); return P(); }).join(',')})`);
+    }
     if (account) { params.push(account); conds.push(`account = ${P()}`); }
     if (machine) { params.push(machine); conds.push(`machine_id = ${P()}`); }
     if (batch) { params.push(String(batch).toUpperCase()); conds.push(`UPPER(batch_number) = ${P()}`); }
-    const sql = `SELECT production_day, machine_id, account, movement_type, qty_kg, moved_at, receipt_ref, receipt_status
+    // v56U (Rahul Stock 1): batch- and cap/body-wise — every cell now carries its batch and side.
+    if (req.query.side) { params.push(String(req.query.side).toLowerCase()); conds.push(`LOWER(side) = ${P()}`); }
+    const sql = `SELECT production_day, machine_id, account, movement_type, qty_kg, moved_at, receipt_ref, receipt_status,
+                        UPPER(batch_number) AS batch_number, LOWER(side) AS side, source_batch
                  FROM gpr_ledger ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''}
                  ORDER BY production_day DESC, machine_id LIMIT 5000`;
     const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
@@ -26454,8 +26657,9 @@ app.get('/api/gpr/ledger/shift-wise', async (req, res) => {
     const cells = {};
     (rows || []).forEach(r => {
       const sh = shiftOf(r);
-      const key = `${r.production_day}|${r.machine_id || '—'}|${r.account}`;
+      const key = `${r.production_day}|${r.machine_id || '—'}|${r.batch_number || ''}|${r.side || ''}|${r.account}`;
       const c = cells[key] = cells[key] || { production_day: r.production_day, machine_id: r.machine_id || '—',
+        batch_number: r.batch_number || '', side: r.side || '',
         account: r.account, account_label: GPR_ACCOUNT_LABELS[r.account] || r.account,
         A: { gen: 0, con: 0 }, B: { gen: 0, con: 0 }, C: { gen: 0, con: 0 }, gen: 0, con: 0, pending: 0 };
       const q = Number(r.qty_kg || 0);
@@ -26470,7 +26674,9 @@ app.get('/api/gpr/ledger/shift-wise', async (req, res) => {
       return c;
     }).sort((a, b2) => String(b2.production_day).localeCompare(String(a.production_day))
       || String(a.machine_id).localeCompare(String(b2.machine_id), undefined, { numeric: true })
-      || String(a.account).localeCompare(String(b2.account)));
+      || String(a.batch_number).localeCompare(String(b2.batch_number))
+      || String(a.account).localeCompare(String(b2.account))
+      || String(a.side).localeCompare(String(b2.side)));
     await _gprEnrichPc(out);   // v56A item 22
     res.json({ ok: true, from, to, rows: out });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -26677,18 +26883,35 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
       const mConds = [`COALESCE(SUBSTR(charge_start,1,10), SUBSTR(created_at,1,10)) BETWEEN ${P(1)} AND ${P(2)}`];
       const mParams = [from, to];
       if (floor) { mParams.push(floor); mConds.push(`floor=${P(mParams.length)}`); }
-      const mSql = `SELECT mmt_ref, floor, gelatine_kg, water_kg, additives_json,
+      const mSql = `SELECT mmt_ref, floor, gelatine_kg, water_kg, additives_json, gelatine_lots_json, gelatine_vendor, gelatine_batch,
                            COALESCE(SUBSTR(charge_start,1,10), SUBSTR(created_at,1,10)) AS d, created_by
                     FROM gpr_mmt_charges WHERE ${mConds.join(' AND ')} ORDER BY d, mmt_ref`;
       const mRows = pgPool ? (await pgPool.query(mSql, mParams)).rows : db.prepare(mSql).all(...mParams);
       for (const c of (mRows || [])) {
         const base = { date: c.d, source: 'MMT', ref: c.mmt_ref, batch: null, machine: null, floor: c.floor, side: null, by: c.created_by || null };
-        if (Number(c.gelatine_kg) > 0) rows.push(Object.assign({}, base, { input: 'Gelatine (MMT melt)', internal: 0, qty: +Number(c.gelatine_kg).toFixed(3), unit: 'kg' }));
+        // v56U: a blended charge lists each vendor/batch line; a single-lot charge keeps one row.
+        let _lots = [];
+        try { _lots = JSON.parse(c.gelatine_lots_json || '[]') || []; } catch (e) { _lots = []; }
+        if (Array.isArray(_lots) && _lots.length) {
+          for (const l of _lots) if (Number(l.kg) > 0) rows.push(Object.assign({}, base, {
+            input: 'Gelatine (MMT melt)', detail: [l.vendor, l.batch].filter(Boolean).join(' · ') || null,
+            internal: 0, qty: +Number(l.kg).toFixed(3), unit: 'kg' }));
+        } else if (Number(c.gelatine_kg) > 0) rows.push(Object.assign({}, base, { input: 'Gelatine (MMT melt)',
+            detail: [c.gelatine_vendor, c.gelatine_batch].filter(Boolean).join(' · ') || null,
+            internal: 0, qty: +Number(c.gelatine_kg).toFixed(3), unit: 'kg' }));
         if (Number(c.water_kg) > 0) rows.push(Object.assign({}, base, { input: 'Water', qty: +Number(c.water_kg).toFixed(3), unit: 'kg' }));
-        try { for (const a of JSON.parse(c.additives_json || '[]')) {
-          const q = Number(a.kg != null ? a.kg : a.qty || 0);
-          if (q > 0) rows.push(Object.assign({}, base, { input: String(a.name || a.chemical || 'Additive'), qty: +q.toFixed(3), unit: a.unit || 'kg' }));
-        } } catch (e) {}
+        // v56U: MMT has always SAVED chemicals as an object {key: grams} while this loop iterated an
+        // array — a plain object is not iterable, the TypeError was swallowed, and no MMT chemical ever
+        // reached the log. Both shapes are read now; object keys drop their stock-code prefix.
+        try {
+          const _add = JSON.parse(c.additives_json || '[]');
+          const _list = Array.isArray(_add) ? _add
+            : Object.entries(_add || {}).map(([k, v]) => ({ name: String(k).replace(/^col\d+_/i, ''), qty: v, unit: 'g' }));
+          for (const a of _list) {
+            const q = Number(a.kg != null ? a.kg : a.qty || 0);
+            if (q > 0) rows.push(Object.assign({}, base, { input: String(a.name || a.chemical || 'Additive'), qty: +q.toFixed(3), unit: a.unit || 'kg' }));
+          }
+        } catch (e) {}
       }
     }
     // TT entries in window
@@ -26697,7 +26920,7 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
     if (batch) { tParams.push(String(batch).toUpperCase()); tConds.push(`UPPER(batch_number)=${P(tParams.length)}`); }
     if (floor) { tParams.push(floor); tConds.push(`floor=${P(tParams.length)}`); }
     if (machine) { tParams.push(machine); tConds.push(`machine_id=${P(tParams.length)}`); }
-    const tSql = `SELECT id, tt_number, batch_number, machine_id, floor, side, salvage_account, created_by,
+    const tSql = `SELECT id, tt_number, batch_number, machine_id, floor, side, salvage_account, reuse_json, created_by,
                          virgin_kg, colour_kg, fg_remelt_kg, salvage_kg, cutting_kg, mmt_ref,
                          COALESCE(production_day, SUBSTR(created_at,1,10)) AS d
                   FROM gpr_tt WHERE ${tConds.join(' AND ')} ORDER BY d, tt_number`;
@@ -26723,8 +26946,19 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
         qty: +Number(t.virgin_kg).toFixed(3), unit: 'kg' }));
       if (Number(t.colour_kg) > 0) rows.push(Object.assign({}, base, { input: 'Colour + TiO2', qty: +Number(t.colour_kg).toFixed(3), unit: 'kg' }));
       if (Number(t.fg_remelt_kg) > 0) rows.push(Object.assign({}, base, { input: 'FG remelt', qty: +Number(t.fg_remelt_kg).toFixed(3), unit: 'kg' }));
-      if (Number(t.salvage_kg) > 0) rows.push(Object.assign({}, base, { input: SAL[t.salvage_account] || 'Salvage', qty: +Number(t.salvage_kg).toFixed(3), unit: 'kg' }));
-      if (Number(t.cutting_kg) > 0) rows.push(Object.assign({}, base, { input: 'Cutting', qty: +Number(t.cutting_kg).toFixed(3), unit: 'kg' }));
+      // v56U: reuse material entered as lines lists each line with its source lot; older tanks keep
+      // their two aggregate rows.
+      let _rl = [];
+      try { _rl = JSON.parse(t.reuse_json || '[]') || []; } catch (e) { _rl = []; }
+      if (Array.isArray(_rl) && _rl.length) {
+        for (const l of _rl) if (Number(l.kg) > 0) rows.push(Object.assign({}, base, {
+          input: l.account === 'cutting' ? 'Cutting' : (SAL[l.account] || 'Salvage'),
+          detail: [l.source_batch, l.colour_code, l.side ? String(l.side).toUpperCase() : ''].filter(Boolean).join(' · ') || null,
+          qty: +Number(l.kg).toFixed(3), unit: 'kg' }));
+      } else {
+        if (Number(t.salvage_kg) > 0) rows.push(Object.assign({}, base, { input: SAL[t.salvage_account] || 'Salvage', qty: +Number(t.salvage_kg).toFixed(3), unit: 'kg' }));
+        if (Number(t.cutting_kg) > 0) rows.push(Object.assign({}, base, { input: 'Cutting', qty: +Number(t.cutting_kg).toFixed(3), unit: 'kg' }));
+      }
       for (const c of (colByTt[t.id] || [])) {
         if (Number(c.grams) > 0) rows.push(Object.assign({}, base, { input: String(c.colourant), qty: +Number(c.grams).toFixed(2), unit: 'g' }));
       }
@@ -26759,6 +26993,45 @@ app.post('/api/gpr/tt/:id/issue', async (req, res) => {
 
 // ─── LEDGER A ──────────────────────────────────────────────────────────────
 // NOTE: static paths are registered BEFORE '/:batch' so they are not swallowed.
+// v56U (Rahul TT 3): reuse-material LOTS by source batch + side (+ colour code), for the TT entry's
+// "from batch / colour code" selection. Lot balance = ACCEPTED generation of that batch/side/account
+// less consumption rows that name it as their source_batch. Registered before /ledger/:batch.
+app.get('/api/gpr/ledger/source-lots', async (req, res) => {
+  try {
+    const P = n => pgPool ? `$${n}` : '?';
+    const params = [];
+    const fconds = [];
+    const fl = String(req.query.floors || '').split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+    if (fl.length) fconds.push(`floor IN (${fl.map(f => { params.push(f); return P(params.length); }).join(',')})`);
+    if (req.query.account) { params.push(String(req.query.account)); fconds.push(`account = ${P(params.length)}`); }
+    const fw = fconds.length ? ' AND ' + fconds.join(' AND ') : '';
+    const gSql = `SELECT account, UPPER(batch_number) AS batch_number, LOWER(COALESCE(side,'')) AS side, MAX(pc_code) AS pc_code,
+                         MAX(colour_code) AS colour_code, SUM(qty_kg) AS kg, MAX(production_day) AS last_day
+                  FROM gpr_ledger WHERE movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status='accepted')
+                    AND batch_number IS NOT NULL${fw}
+                  GROUP BY account, UPPER(batch_number), LOWER(COALESCE(side,''))`;
+    const cSql = `SELECT account, UPPER(source_batch) AS batch_number, LOWER(COALESCE(side,'')) AS side, SUM(qty_kg) AS kg
+                  FROM gpr_ledger WHERE movement_type IN ${GPR_A_DEBIT} AND source_batch IS NOT NULL${fw}
+                  GROUP BY account, UPPER(source_batch), LOWER(COALESCE(side,''))`;
+    const gRows = pgPool ? (await pgPool.query(gSql, params)).rows : db.prepare(gSql).all(...params);
+    const cRows = pgPool ? (await pgPool.query(cSql, params)).rows : db.prepare(cSql).all(...params);
+    const used = {};
+    (cRows || []).forEach(r => { used[`${r.account}|${r.batch_number}|${r.side}`] = Number(r.kg || 0); });
+    const lots = (gRows || []).map(r => {
+      const k = `${r.account}|${r.batch_number}|${r.side}`;
+      const bal = +(Number(r.kg || 0) - (used[k] || 0)).toFixed(2);
+      return { account: r.account, account_label: GPR_ACCOUNT_LABELS[r.account] || r.account,
+               batch_number: r.batch_number, side: r.side || null, pc_code: r.pc_code || null,
+               colour_code: r.colour_code || null, generated_kg: +Number(r.kg || 0).toFixed(2),
+               consumed_kg: +(used[k] || 0).toFixed(2), balance_kg: bal, last_day: r.last_day || null };
+    }).filter(l => l.balance_kg > 0.05);
+    await _gprEnrichPc(lots);
+    lots.forEach(l => { if (!l.colour_code) l.colour_code = l.side_code || (l.cap_code ? (l.cap_code + '/' + l.body_code) : null); });
+    lots.sort((a, b) => _gprBatchCmp(b.batch_number, a.batch_number) || String(a.side).localeCompare(String(b.side)));
+    res.json({ ok: true, lots });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.get('/api/gpr/ledger/lots', async (req, res) => {
   try {
     const { account, side, colour_code } = req.query;
@@ -26793,6 +27066,17 @@ app.get('/api/gpr/ledger/summary', async (req, res) => {
     if (req.query.batch) add(n => pgPool ? `UPPER(batch_number)=$${n}` : `UPPER(batch_number)=?`, String(req.query.batch).toUpperCase());
     if (from) add(n => pgPool ? `production_day >= $${n}` : `production_day >= ?`, from);
     if (to)   add(n => pgPool ? `production_day <= $${n}` : `production_day <= ?`, to);
+    // v56U: the bar has always SENT machine / account / PC / floor / side — the server honoured only
+    // batch and dates, so every register silently ignored them.
+    if (req.query.machine) add(n => pgPool ? `UPPER(machine_id)=$${n}` : `UPPER(machine_id)=?`, String(req.query.machine).toUpperCase());
+    if (req.query.account) add(n => pgPool ? `account=$${n}` : `account=?`, String(req.query.account));
+    if (req.query.pc)      add(n => pgPool ? `UPPER(pc_code)=$${n}` : `UPPER(pc_code)=?`, String(req.query.pc).toUpperCase());
+    if (req.query.floor)   add(n => pgPool ? `floor=$${n}` : `floor=?`, String(req.query.floor));
+    else if (req.query.floors) {
+      const _fl = String(req.query.floors).split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+      if (_fl.length) { const _ph = _fl.map(f => { params.push(f); return pgPool ? `$${params.length}` : '?'; }); conds.push(`floor IN (${_ph.join(',')})`); }
+    }
+    if (req.query.side)    add(n => pgPool ? `LOWER(side)=$${n}` : `LOWER(side)=?`, String(req.query.side).toLowerCase());
     const where = conds.length ? ('WHERE ' + conds.join(' AND ')) : '';
     const CR = `SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status='accepted') THEN qty_kg ELSE 0 END)`;   // v55A item 5: pending receipts are not yet stock
     const PEND = `SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} AND receipt_status='pending' THEN qty_kg ELSE 0 END)`;
@@ -26812,6 +27096,36 @@ app.get('/api/gpr/ledger/summary', async (req, res) => {
       const pRows = pgPool ? (await pgPool.query(pSql, params)).rows : db.prepare(pSql).all(...params);
       (pRows || []).forEach(r => { r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account; r.balance_kg = +(Number(r.generated||0) - Number(r.consumed||0)).toFixed(2); });
       return res.json({ ok: true, view, rows: pRows });
+    }
+    if (view === 'colourside') {
+      // v56U (Rahul Stock 2): cutting & salvage by COLOUR CODE and CAP/BODY. A row's code is its
+      // stored colour_code, else its PC's code for its side (read-time, same resolver as every
+      // register); a side-less salvage row (whole capsules) resolves to the PC's cap/body PAIR.
+      const cSql = `SELECT COALESCE(pc_code,'') AS pc_code, COALESCE(colour_code,'') AS colour_code, LOWER(COALESCE(side,'')) AS side,
+                           account, UPPER(COALESCE(batch_number,'')) AS batch_number,
+                           ${CR} AS generated, ${DB_} AS consumed, ${PEND} AS pending_kg
+                    FROM gpr_ledger ${where}
+                    GROUP BY COALESCE(pc_code,''), COALESCE(colour_code,''), LOWER(COALESCE(side,'')), account, UPPER(COALESCE(batch_number,''))`;
+      const cRows = pgPool ? (await pgPool.query(cSql, params)).rows : db.prepare(cSql).all(...params);
+      (cRows || []).forEach(r => { if (!r.pc_code) r.pc_code = null; if (!r.batch_number) r.batch_number = null; });
+      await _gprEnrichPc(cRows);
+      const agg = {};
+      (cRows || []).forEach(r => {
+        const code = String(r.colour_code || r.side_code || (r.cap_code ? r.cap_code + '/' + r.body_code : '') || '').toUpperCase() || '(no code)';
+        const k = `${code}|${r.side || ''}|${r.account}`;
+        const a = agg[k] = agg[k] || { colour_code: code, colour_name: r.pc_colour_name || null, side: r.side || null,
+          account: r.account, account_label: GPR_ACCOUNT_LABELS[r.account] || r.account,
+          generated: 0, consumed: 0, pending_kg: 0, batches: new Set() };
+        a.generated += Number(r.generated || 0); a.consumed += Number(r.consumed || 0); a.pending_kg += Number(r.pending_kg || 0);
+        if (r.batch_number) a.batches.add(r.batch_number);
+        if (!a.colour_name && r.pc_colour_name) a.colour_name = r.pc_colour_name;
+      });
+      const out = Object.values(agg).map(a => ({ colour_code: a.colour_code, colour_name: a.colour_name, side: a.side,
+          account: a.account, account_label: a.account_label, generated: +a.generated.toFixed(2), consumed: +a.consumed.toFixed(2),
+          pending_kg: +a.pending_kg.toFixed(2), balance_kg: +(a.generated - a.consumed).toFixed(2), batches: a.batches.size }))
+        .sort((x, y) => String(x.colour_code).localeCompare(String(y.colour_code)) || String(x.side || 'z').localeCompare(String(y.side || 'z'))
+                        || String(x.account).localeCompare(String(y.account)));
+      return res.json({ ok: true, view, from, to, rows: out });
     }
     if (view === 'movements') {
       // v55J item 13: recent-movements snapshot for the ledger header.
@@ -27397,10 +27711,20 @@ async function gprSyncDprCuttings(days) {
         const floorGpr = (mmNorm[mcN] && mmNorm[mcN].floor) || null;
         const runs = Array.isArray(m.runs) ? m.runs : [];
         const run = runs.find(r => r && String(r.batchNumber || '').trim()) || runs[0] || {};
-        const bn = String(run.batchNumber || '').trim().toUpperCase() || null;
+        // v56U (Rahul DPR 2): cuttings are entered PER LINE, so a machine running two batches in a
+        // shift books each batch's cap/body cut to that batch. A record written by an older client
+        // (machine-level figures only) keeps the old attribution to the first batch. Line 1 keeps the
+        // original receipt reference, so a figure already booked machine-level continues as the same
+        // cumulative stream (no double booking); lines 2+ get their own reference suffix.
+        const perLine = runs.some(r => r && (Object.prototype.hasOwnProperty.call(r, 'capCut') || Object.prototype.hasOwnProperty.call(r, 'bodyCut')));
+        const units = perLine
+          ? runs.map((r, ri) => ({ bn: String((r && r.batchNumber) || '').trim().toUpperCase() || null, ri, src: r || {} }))
+          : [{ bn: String(run.batchNumber || '').trim().toUpperCase() || null, ri: 0, src: m }];
+        for (const u of units) {
+        const bn = u.bn;
         for (const [field, side] of [['capCut', 'cap'], ['bodyCut', 'body']]) {
-          const kg = parseFloat(m[field] || 0) || 0;
-          const ref = `${rec.date}|${sh}|${mcN}|${side}`;
+          const kg = parseFloat(u.src[field] || 0) || 0;
+          const ref = `${rec.date}|${sh}|${mcN}|${side}` + (u.ri > 0 ? `|L${u.ri + 1}` : '');
           // ═══ v55Y item 23 (Ishan, 20 Sep) — DPR cuttings arrive as a CUMULATIVE shift figure ═══
           // 3 kg at 10:00 then 5 kg at 13:20 means 2 kg more was added, not 5 kg more. The old code
           // kept ONE row per (day,shift,machine,side) and rewrote it to the new total — and it reset
@@ -27453,6 +27777,7 @@ async function gprSyncDprCuttings(days) {
             synced++;
           }
         }
+        }   // v56U: per-line units
       }
     }
   }
@@ -27662,6 +27987,7 @@ app.get('/api/gpr/plan', async (req, res) => {
       // is why all three Planning sections rendered empty. They are declared at the loop's scope
       // and merely populated inside the guard.
       const holdN = {};
+      const holdBy = {};   // v56U: per-side holding times
       const wByBatch = {};
       if (_bns.length) {
         const ph = _bns.map((_, k) => pgPool ? `$${k + 1}` : '?').join(',');
@@ -27681,10 +28007,27 @@ app.get('/api/gpr/plan', async (req, res) => {
                       FROM gpr_tt WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number), side`;
         const aRows = pgPool ? (await pgPool.query(aSql, _bns)).rows : db.prepare(aSql).all(..._bns);
         // short holds: computed in JS because the boundary is a duration, not a column
-        const hSql = `SELECT UPPER(batch_number) AS bn, scan_in_at, scan_out_at FROM gpr_tt
-                      WHERE UPPER(batch_number) IN (${ph}) AND scan_in_at IS NOT NULL AND scan_out_at IS NOT NULL`;
+        // v56U (Rahul Planning 2): holding time per SIDE for the sheet's end columns — the average of
+        // completed holds (scan-in → scan-out) and, for a tank still in holding, the time elapsed so
+        // far. The short-hold count below is unchanged: it still counts completed holds only.
+        const hSql = `SELECT UPPER(batch_number) AS bn, LOWER(side) AS side, scan_in_at, scan_out_at FROM gpr_tt
+                      WHERE UPPER(batch_number) IN (${ph}) AND scan_in_at IS NOT NULL`;
         const hRows = pgPool ? (await pgPool.query(hSql, _bns)).rows : db.prepare(hSql).all(..._bns);
+        const _nowIso = new Date().toISOString();
         (hRows || []).forEach(r => {
+          const _bk = String(r.bn).toUpperCase(), _sd = r.side === 'body' ? 'body' : 'cap';
+          const H = holdBy[_bk] = holdBy[_bk] || { cap: { sum: 0, n: 0, min: null, max: null, liveN: 0, liveMaxH: null },
+                                                   body: { sum: 0, n: 0, min: null, max: null, liveN: 0, liveMaxH: null } };
+          const s = H[_sd];
+          if (r.scan_out_at) {
+            const h2 = _gprHoldHours(r);
+            if (h2 != null) { s.sum += h2; s.n++; s.min = s.min == null ? h2 : Math.min(s.min, h2); s.max = s.max == null ? h2 : Math.max(s.max, h2); }
+          } else {
+            const e2 = _gprHoldHours({ scan_in_at: r.scan_in_at, scan_out_at: _nowIso });
+            if (e2 != null) { s.liveN++; s.liveMaxH = s.liveMaxH == null ? e2 : Math.max(s.liveMaxH, e2); }
+          }
+        });
+        (hRows || []).filter(r => r.scan_out_at).forEach(r => {
           const hh = _gprHoldHours(r);
           if (hh != null && hh < _gprMinHold(masters)) holdN[String(r.bn).toUpperCase()] = (holdN[String(r.bn).toUpperCase()] || 0) + 1;
         });
@@ -27848,6 +28191,13 @@ app.get('/api/gpr/plan', async (req, res) => {
             ttPlanned: cap.ttPlanned + body.ttPlanned, ttIssued: cap.ttIssued + body.ttIssued,
             cap, body };
         } catch (e) { row.gel = null; }
+        // v56U (Rahul Planning 2): per-side holding time, independent of the gelatine block.
+        {
+          const _H = holdBy[bn];
+          const _fx = s => ({ avgH: s.n ? +(s.sum / s.n).toFixed(2) : null, n: s.n, minH: s.min, maxH: s.max,
+                              liveN: s.liveN, liveMaxH: s.liveMaxH != null ? +s.liveMaxH.toFixed(2) : null });
+          row.hold = _H ? { cap: _fx(_H.cap), body: _fx(_H.body), minHoldHours: _gprMinHold(masters) } : null;
+        }
         rows.push(row);
       }
       // cascade transitions between consecutive non-completed pairs

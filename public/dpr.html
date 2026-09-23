@@ -91,6 +91,14 @@ input[type=number]{font-family:var(--mono);text-align:right}
 .mtable th.r{text-align:right}
 td.r,th.r{text-align:right}
 .mtable td{padding:6px 8px;border-bottom:1px solid var(--b1);color:var(--t1);font-weight:600}
+/* v56U: per-line cap/body cut inputs sit level with their run rows */
+.run-row{min-height:26px}
+.mtable td.cutcell{vertical-align:top}
+.cutline{display:flex;align-items:center;justify-content:flex-end;gap:3px;min-height:26px}
+.cutln{font-family:var(--mono);font-size:9px;color:var(--t3);width:9px;text-align:right}
+/* v56U: a line the server refused (closed batch etc.) — shown, never silently kept */
+.run-refused{outline:2px solid var(--red)!important;background:rgba(239,68,68,.10)!important}
+.refused-note{font-size:9px;font-weight:700;color:var(--red);font-family:var(--mono);white-space:nowrap}
 .mtable tr:last-child td{border-bottom:none}
 .mtable tr:hover td{background:#fdf5e8}
 .mc-num{font-family:var(--fc);font-weight:800;font-size:14px;color:var(--cyan)}
@@ -198,6 +206,7 @@ td.r,th.r{text-align:right}
   }
   .run-row input[type=text] { width: 72px !important; font-size: 13px !important; min-height: 36px !important; }
   .run-row select { font-size: 11px !important; min-height: 36px !important; padding: 4px !important; border-radius: 6px !important; }
+  .cutline { min-height: 38px; }   /* v56U: keep the per-line cut inputs level with the taller touch rows */
 
   /* ── Staff / operator row ── */
   .staff-row { grid-template-columns: 1fr !important; gap: 8px; }
@@ -474,7 +483,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v56T</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v56U</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1381,6 +1390,19 @@ function migrateMachineData(m){
 
 // Total production for a machine = sum of all runs
 function mcTotalProd(m){ return parseFloat((m.runs||[]).reduce((s,r)=>s+parseFloat(r.qty||0),0).toFixed(2)); }
+// v56U (Rahul DPR 2): cap/body cutting is entered PER LINE. A record saved before v56U carries the
+// figures at machine level only — they read as line 1's, exactly how the GPR sweep attributes them.
+function runCut(m, ri, field){
+  const r = (m.runs||[])[ri] || {};
+  if(Object.prototype.hasOwnProperty.call(r, field)) return r[field];
+  const perLine = (m.runs||[]).some(x=>x && (Object.prototype.hasOwnProperty.call(x,'capCut') || Object.prototype.hasOwnProperty.call(x,'bodyCut')));
+  return (!perLine && ri===0) ? (m[field]||'') : '';
+}
+function mcCut(m){
+  const n = (m.runs||[]).length || 1; let cap=0, body=0;
+  for(let i=0;i<n;i++){ cap += parseFloat(runCut(m,i,'capCut')||0); body += parseFloat(runCut(m,i,'bodyCut')||0); }
+  return { cap: +cap.toFixed(2), body: +body.toFixed(2) };
+}
 function blankDay(fl){ return {floor:fl,shifts:{A:blankShift(fl),B:blankShift(fl),C:blankShift(fl)},remarks:[],resort:[]}; }
 
 function loadDay(fl,d){
@@ -1512,8 +1534,8 @@ function collectForm(){
       m.aim=v(`aim-${sh}-${mc.id}`)||'';
       // v55A item 6 (Ishan, 18 Sep): cap/body cutting generated at this machine this shift, in kg.
       // Flows to the GPR chemist's Pending Receipts (Stock Ledger tab) for physical acceptance.
-      m.capCut=v(`capcut-${sh}-${mc.id}`)||'';
-      m.bodyCut=v(`bodycut-${sh}-${mc.id}`)||'';
+      // v56U: per line — the machine-level pair is kept as the SUM for any older reader.
+      const _hasCutDom = !!document.querySelector(`[id^="capcut-${sh}-${mc.id}-"]`);
       m.operator=v(`op-${sh}-${mc.id}`)||'';
       // Collect group operators (stored on each machine in the group)
       const grpOps=collectGroupOperators(sh,fl,mc.id);
@@ -1529,15 +1551,18 @@ function collectForm(){
           // This ensures orderId is NEVER lost — survives refresh, cleared history, new device
           const savedOrderId = selEl?.value || selEl?.dataset?.orderid || '';
           const savedBatch = v(`run-batch-${sh}-${mc.id}-${ri}`) || selEl?.dataset?.batchnumber || '';
-          return{
+          const _r = {
             orderId: savedOrderId,
             batchNumber: savedBatch,
             qty:v(`run-qty-${sh}-${mc.id}-${ri}`)||'',
             note:v(`run-note-${sh}-${mc.id}-${ri}`)||''
           };
-        }).filter(r=>r.qty||r.batchNumber||r.orderId);
+          if(_hasCutDom){ _r.capCut=v(`capcut-${sh}-${mc.id}-${ri}`)||''; _r.bodyCut=v(`bodycut-${sh}-${mc.id}-${ri}`)||''; }
+          return _r;
+        }).filter(r=>r.qty||r.batchNumber||r.orderId||r.capCut||r.bodyCut);
         if(m.runs.length===0) m.runs=[blankRun()];
       }
+      if(_hasCutDom){ const _c=mcCut(m); m.capCut=_c.cap?String(_c.cap):''; m.bodyCut=_c.body?String(_c.body):''; }
       day.shifts[sh].machines[mc.id]=m;
     });
   });
@@ -1733,6 +1758,26 @@ async function _dprPushRawInner(fl,d,data){
           // batch totals (which cannot date-attribute — Plant Report needs the dated rows fixed).
           _dprShowRejectionModal(lines, closedBatches.length > 0);
         }
+        // v56U (26ZH098 class): the server has set every refused line back to the figure it actually
+        // holds. Mirror that into this device's copy and mark the lines red — the typed figure must
+        // not sit on screen looking saved.
+        try {
+          window._dprRefused = window._dprRefused || {};
+          const pre = fl+'|'+d+'|';
+          Object.keys(window._dprRefused).forEach(k=>{ if(k.indexOf(pre)===0) delete window._dprRefused[k]; });
+          if (Array.isArray(j.refused) && j.refused.length) {
+            const raw = localStorage.getItem(skey(fl,d));
+            const loc = raw ? JSON.parse(raw) : null;
+            j.refused.forEach(rf=>{
+              window._dprRefused[pre+rf.shift+'|'+rf.machineId+'|'+rf.runIndex] = rf;
+              const run = loc && loc.shifts && loc.shifts[rf.shift] && loc.shifts[rf.shift].machines[rf.machineId]
+                && (loc.shifts[rf.shift].machines[rf.machineId].runs||[])[rf.runIndex];
+              if (run) run.qty = rf.recorded > 0 ? Number(rf.recorded).toFixed(2) : '';
+            });
+            if (loc) localStorage.setItem(skey(fl,d), JSON.stringify(loc));
+            if (fl===curFloor && d===getDate() && !_userIsFocused()) { renderShifts(); renderDayKpis(); }
+          }
+        } catch(_e56u) {}
       }catch(_){}
       setSyncBadge('synced'); return true;
     }
@@ -2473,7 +2518,33 @@ function renderDayKpis(){
     <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog===null?'':s.backlog>0?'red':'green'}">${s.backlog===null?'—':(s.backlog>=0?'+':'')+s.backlog.toFixed(2)}</div><div class="kpi-sub">${s.backlog===null?'':'vs AIM (Prod−AIM)'}</div></div>
     <div class="kpi"><div class="kpi-label">Re-Sort</div><div class="kpi-val ${s.totResort>0?'red':'green'}">${s.totResort>0?parseFloat(s.totResort).toFixed(2):'0'}</div><div class="kpi-sub">units</div></div>
     <div class="kpi"><div class="kpi-label">Downtime</div><div class="kpi-val ${dtCls}">${s.totDT>0?parseFloat(s.totDT).toFixed(0):'—'}</div><div class="kpi-sub">${s.totDT>0?s.dtPct.toFixed(1)+'% DT':''}</div></div>
+    <div class="kpi" id="kpiCut"></div>
   `;
+  _renderCutKpi();
+}
+// v56U (Rahul DPR 3): Cutting block — the day's cap and body cuttings, with the shift split. Reads
+// the inputs on screen while the day is open (live as they are typed), else the saved record.
+function _renderCutKpi(){
+  const el = document.getElementById('kpiCut'); if(!el) return;
+  const S = { A:{c:0,b:0}, B:{c:0,b:0}, C:{c:0,b:0} };
+  const onScreen = !!document.querySelector('input[id^="capcut-"],input[id^="bodycut-"]');
+  if(onScreen){
+    SHIFTS.forEach(sh=>{
+      document.querySelectorAll(`input[id^="capcut-${sh}-"]`).forEach(e=>S[sh].c += parseFloat(e.value)||0);
+      document.querySelectorAll(`input[id^="bodycut-${sh}-"]`).forEach(e=>S[sh].b += parseFloat(e.value)||0);
+    });
+  } else {
+    const day = loadDay(curFloor, getDate());
+    SHIFTS.forEach(sh=>getActiveMachines(curFloor).forEach(mc=>{
+      const m = migrateMachineData((day.shifts[sh]&&day.shifts[sh].machines[mc.id])||blankMachine());
+      const c = mcCut(m); S[sh].c += c.cap; S[sh].b += c.body;
+    }));
+  }
+  const cap = SHIFTS.reduce((a,sh)=>a+S[sh].c,0), body = SHIFTS.reduce((a,sh)=>a+S[sh].b,0), tot = cap+body;
+  const f = x => x>0 ? x.toFixed(1) : '0';
+  el.innerHTML = `<div class="kpi-label">Cutting (kg)</div><div class="kpi-val ${tot>0?'cyan':''}">${tot>0?tot.toFixed(2):'—'}</div>`
+    + `<div class="kpi-sub">Cap ${f(cap)} · Body ${f(body)}</div>`
+    + `<div class="kpi-sub" style="margin-top:1px;font-weight:600">${SHIFTS.map(sh=>sh+' '+f(S[sh].c+S[sh].b)).join(' · ')}</div>`;
 }
 
 // ═══ v41 P19.5 Fix #4: Auto-populate running batch across shifts ═══
@@ -2523,6 +2594,26 @@ function _v41_carryForwardRuns(fl, d, day, sh, mcId){
   return null;
 }
 
+// v56U (Rahul DPR 2): one cap and one body cut input PER LINE, stacked to sit level with the line it
+// belongs to (same spacing as the run rows); a small line number shows when the machine has 2+ lines.
+function _cutStack(sh, mcId, m, runs, field, idp){
+  const mult = runs.length > 1;
+  return runs.map((run, ri)=>{
+    const v = runCut(m, ri, field);
+    return `<div class="cutline" style="margin-bottom:${ri<runs.length-1?'5':'0'}px;${mult&&ri>0?'padding-top:5px;border-top:1px dashed var(--b2)':''}">`
+      + (mult?`<span class="cutln">${ri+1}</span>`:'')
+      + `<input type="number" id="${idp}-${sh}-${mcId}-${ri}" value="${v||''}" placeholder="0" min="0" step="0.01" style="width:52px" title="${esc(run.batchNumber||'line '+(ri+1))} — ${field==='capCut'?'cap':'body'} cutting kg" oninput="markUnsaved();updateCutTotals('${sh}')" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''"></div>`;
+  }).join('');
+}
+// live shift footer + the Cutting KPI, straight from the inputs on screen
+function updateCutTotals(sh){
+  const sum = pre => [...document.querySelectorAll(`input[id^="${pre}-${sh}-"]`)].reduce((a,e)=>a+(parseFloat(e.value)||0),0);
+  const c = sum('capcut'), b = sum('bodycut');
+  const ce = document.getElementById(`shcap-${sh}`), be = document.getElementById(`shbody-${sh}`);
+  if(ce) ce.textContent = c>0 ? c.toFixed(2) : '—';
+  if(be) be.textContent = b>0 ? b.toFixed(2) : '—';
+  _renderCutKpi();
+}
 function renderShifts(){
   const fl=curFloor, d=getDate();
   const day=loadDay(fl,d);
@@ -2571,7 +2662,7 @@ function renderShifts(){
           </tr></thead>
           <tbody>`;
 
-    let shTgt=0,shProd=0,shAim=0,shResort=0;
+    let shTgt=0,shProd=0,shAim=0,shResort=0,shCap=0,shBody=0;   // v56U: cap/body cut shift totals
     mcs.forEach(mc=>{
       const mRaw=sd.machines[mc.id]||blankMachine();
       const m=migrateMachineData(mRaw);
@@ -2581,6 +2672,7 @@ function renderShifts(){
       const vs=p>0?parseFloat((p-t).toFixed(2)):null;
       const bl=p>0?parseFloat(Math.max(0,p-a).toFixed(2)):null;
       shTgt+=t; shProd+=p; shAim+=a;
+      { const _c=mcCut(m); shCap+=_c.cap; shBody+=_c.body; }
       const mcResort=(day.resort||[]).filter(r=>r.mc===mc.id&&r.shift===sh).reduce((s,r)=>s+parseFloat(r.qty||0),0);
       shResort+=mcResort;
 
@@ -2619,6 +2711,7 @@ function renderShifts(){
         const ordOpts=`<option value="">— Order —</option>`+orphanOpt+orders.map(o=>`<option value="${esc(o.id)}" data-status="${esc(o.status||'')}" ${effectiveOrderId===o.id?'selected':''}>${_statusMark(o)}${esc(o.batchNumber||o.poNumber||'No Batch')} | ${esc(o.customer)} | Sz${o.size}${o.isTemp?' ['+o.labelCount+' labels]':''}</option>`).join('');
         const runColour = run.colour || matchedOrder?.colour || '';
         const isMult=runs.length>1;
+        const _rf = (window._dprRefused||{})[curFloor+'|'+getDate()+'|'+sh+'|'+mc.id+'|'+ri];   // v56U
         runsHtml+=`
           <div class="run-row" data-sh="${sh}" data-mc="${mc.id}" data-ri="${ri}" style="display:flex;align-items:center;gap:5px;margin-bottom:${ri<runs.length-1?'5':'0'}px;${isMult&&ri>0?'padding-top:5px;border-top:1px dashed var(--b2)':''}">
             ${isMult?`<span style="font-family:var(--mono);font-size:9px;color:var(--t3);width:14px;flex-shrink:0">${ri+1}</span>`:''}
@@ -2626,8 +2719,9 @@ function renderShifts(){
               ${ordOpts}
             </select>
             <input type="text" id="run-batch-${sh}-${mc.id}-${ri}" value="${esc(run.batchNumber||'')}" placeholder="Batch #" readonly style="width:80px;font-size:10px;font-family:var(--mono);flex-shrink:0;background:var(--s2);cursor:default;opacity:0.8" title="Auto-filled from order selection">
-            <input type="number" id="run-qty-${sh}-${mc.id}-${ri}" value="${run.qty||''}" placeholder="Qty" min="0" style="width:60px;font-size:14px;font-family:var(--mono);flex-shrink:0;font-weight:600" step="0.01" oninput="markUnsaved();updateMcTotals('${sh}','${mc.id}');updateBacklog('${sh}','${mc.id}')" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''" onkeydown="dprQtyNav(event,'${sh}','${mc.id}')" title="Production in Lakhs">
+            <input type="number" id="run-qty-${sh}-${mc.id}-${ri}"${_rf?` class="run-refused" title="NOT SAVED — you entered ${_rf.typed}; the record holds ${_rf.recorded}. ${esc(_rf.reason||'')}"`:''} value="${run.qty||''}" placeholder="Qty" min="0" style="width:60px;font-size:14px;font-family:var(--mono);flex-shrink:0;font-weight:600" step="0.01" oninput="markUnsaved();updateMcTotals('${sh}','${mc.id}');updateBacklog('${sh}','${mc.id}')" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''" onkeydown="dprQtyNav(event,'${sh}','${mc.id}')" title="Production in Lakhs">
             <span id="run-colour-${sh}-${mc.id}-${ri}" style="font-size:10px;font-weight:700;color:var(--cyan);font-family:var(--mono);flex-shrink:0;min-width:60px">${esc(runColour)}</span>
+            ${_rf?`<span class="refused-note" title="${esc(_rf.reason||'')}">✕ NOT SAVED · typed ${_rf.typed} · recorded ${_rf.recorded}</span>`:''}
             <input type="text" id="run-note-${sh}-${mc.id}-${ri}" value="${esc(run.note||'')}" placeholder="Note" style="width:80px;font-size:10px;color:var(--t3);flex-shrink:0" oninput="markUnsaved()" title="e.g. Colour change, Batch closed">
             ${isMult?`<button onclick="removeRun('${sh}','${mc.id}',${ri})" style="background:transparent;border:none;color:var(--t3);cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0" title="Remove this run">✕</button>`:''}
             ${(()=>{ 
@@ -2678,7 +2772,7 @@ function renderShifts(){
               </div>`).join('')}
             </div>
           </td>
-          <td colspan="7"></td>
+          <td colspan="9"></td>
         </tr>`;
       }
       html+=`<tr id="mcrow-${sh}-${mc.id}" ${isInGrp&&!isFirstInGrp?'style="border-top:1px dashed rgba(30,38,56,.6)"':''}>
@@ -2730,8 +2824,8 @@ function renderShifts(){
         <td><input type="number" id="aim-${sh}-${mc.id}" value="${m.aim||''}" placeholder="0" min="0" style="width:52px" step="0.01" oninput="markUnsaved();updateBacklog('${sh}','${mc.id}');updateShiftTotals('${sh}')" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''" onkeydown="dprAimNav(event,'${sh}','${mc.id}')">  </td>
         <td class="r" id="bl-${sh}-${mc.id}" style="font-family:var(--mono);color:var(--amber)">${bl===null?'—':bl}</td>
         <td class="r" style="font-family:var(--mono);color:var(--red)">${mcResort||`<span style="color:var(--t3)">0</span>`}</td>
-        <td class="r"><input type="number" id="capcut-${sh}-${mc.id}" value="${m.capCut||''}" placeholder="0" min="0" style="width:52px" step="0.01" oninput="markUnsaved()" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''"></td>
-        <td class="r"><input type="number" id="bodycut-${sh}-${mc.id}" value="${m.bodyCut||''}" placeholder="0" min="0" style="width:52px" step="0.01" oninput="markUnsaved()" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''"></td>
+        <td class="r cutcell" id="cutstack-cap-${sh}-${mc.id}">${_cutStack(sh, mc.id, m, runs, 'capCut', 'capcut')}</td>
+        <td class="r cutcell" id="cutstack-body-${sh}-${mc.id}">${_cutStack(sh, mc.id, m, runs, 'bodyCut', 'bodycut')}</td>
       </tr>`;
     });
 
@@ -2742,11 +2836,14 @@ function renderShifts(){
       <td class="r" id="shtot-${sh}" style="font-family:var(--mono)">${shProd>0?parseFloat(shProd).toFixed(2):'—'}</td>
       <td class="r">${shVs===null?'<span class="vs-zero">—</span>':shVs>=0?`<span class="vs-pos">+${parseFloat(shVs).toFixed(2)}</span>`:`<span class="vs-neg">${parseFloat(shVs).toFixed(2)}</span>`}</td>
       <td class="r" id="shaim-${sh}" style="font-family:var(--mono)">${shAim>0?parseFloat(shAim).toFixed(2):'—'}</td>
-      <td class="r" style="font-family:var(--mono);color:var(--amber)">${shResort>0?`<span style="color:var(--red)">${parseFloat(shResort).toFixed(2)}</span>`:'<span style="color:var(--t3)">0</span>'}</td>
       <td></td>
+      <td class="r" style="font-family:var(--mono);color:var(--amber)">${shResort>0?`<span style="color:var(--red)">${parseFloat(shResort).toFixed(2)}</span>`:'<span style="color:var(--t3)">0</span>'}</td>
+      <td class="r" id="shcap-${sh}" style="font-family:var(--mono);color:var(--cyan)">${shCap>0?shCap.toFixed(2):'—'}</td>
+      <td class="r" id="shbody-${sh}" style="font-family:var(--mono);color:var(--cyan)">${shBody>0?shBody.toFixed(2):'—'}</td>
     </tr></tfoot></table></div></div></div>`;
   });
   document.getElementById('shiftsArea').innerHTML=html;
+  _renderCutKpi();   // v56U: the Cutting block follows the inputs now on screen
 }
 
 // ── Run management ─────────────────────────────────────────────
@@ -2782,6 +2879,11 @@ function addRun(sh, mcId){
       <button onclick="removeRun('${sh}','${mcId}',${ri})" style="background:transparent;border:none;color:var(--t3);cursor:pointer;font-size:13px;padding:0 2px;flex-shrink:0" title="Remove this run">✕</button>
     `;
     runsContainer.appendChild(div);
+    // v56U: the new line gets its own cap/body cut inputs, level with it
+    [['cap','capCut','capcut'],['body','bodyCut','bodycut']].forEach(([k,f,idp])=>{
+      const st = document.getElementById(`cutstack-${k}-${sh}-${mcId}`);
+      if(st) st.innerHTML = _cutStack(sh, mcId, m, m.runs, f, idp);
+    });
 /* scrollIntoView removed */
   } else {
     // Fallback: full re-render
