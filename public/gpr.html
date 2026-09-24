@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v56V</title>
+<title>GPR · build v56W</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -138,6 +138,29 @@ input[readonly]{background:var(--s3);color:var(--t2)}
     .plchev{display:inline-block;transition:transform .12s;color:var(--t3);font-size:11px}
     .plchev.open{transform:rotate(90deg)}
     .plbadge{margin-left:auto;font-family:var(--mono);font-size:10.5px;color:var(--t3);font-weight:400;letter-spacing:0}
+    /* v56W: TT hold & release board */
+    .hbbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;padding:10px 14px;border-bottom:1px solid var(--b1);background:var(--s1)}
+    .seg{display:inline-flex;border:1px solid var(--b1);border-radius:var(--r);overflow:hidden}
+    .seg button{border:0;background:var(--s1);padding:5px 14px;font-family:var(--fc);font-size:11.5px;font-weight:700;letter-spacing:.4px;color:var(--t2);cursor:pointer}
+    .seg button+button{border-left:1px solid var(--b1)}
+    .seg button.on{background:var(--accent);color:#fff}
+    .hbnote{font-size:11px;color:var(--t3)}
+    .hbwrap{padding:10px 14px 14px}
+    .hbtable td{vertical-align:top}
+    .hbtable td.hbside{width:38%}
+    .ttchips{display:flex;flex-wrap:wrap;gap:5px}
+    .ttchip{display:inline-flex;flex-direction:column;gap:2px;min-width:112px;padding:4px 7px 5px;border:1px solid var(--b1);border-radius:6px;background:var(--s1);font-size:11px;line-height:1.25}
+    .ttchip .tn{font-family:var(--mono);font-weight:700;font-size:11px;color:var(--t1)}
+    .ttchip .tm{font-family:var(--mono);font-size:10.5px;color:var(--t2)}
+    .ttchip .tbar{height:3px;border-radius:2px;background:var(--s3);overflow:hidden}
+    .ttchip .tbar i{display:block;height:100%;background:var(--amber)}
+    .ttchip.hold{border-color:#f3d19c;background:#fffaf0}
+    .ttchip.ready{border-color:#9fd8b0;background:#f0fbf3}
+    .ttchip.ready .tbar i{background:var(--green)}
+    .ttchip.rel{border-color:#cfe0f5;background:#f5f9ff}
+    .ttchip.short{border-color:#f2b8b8;background:#fff5f5}
+    .ttchip .btn.sm{padding:2px 8px;font-size:10.5px;margin-top:2px}
+    .hbempty{padding:14px;color:var(--t3);font-size:12px}
     .plbody{display:none;padding:12px 14px;border-bottom:1px solid var(--b1)}
     .plbody.open{display:block}   /* v55M items 6/8: every register scrolls instead of growing unbounded */
 .tswrap table thead th{position:sticky;top:0;z-index:2}
@@ -309,8 +332,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v56V</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56V</div>
+    <h1>GPR<span class="vpill">v56W</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56W</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -330,7 +353,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v56V</span></div>
+  <div class="nbrand">GPR<span class="vpill">v56W</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -368,7 +391,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <div class="field-grp"><label>Machine</label><input id="sh_machine" list="mcOpts" placeholder="all" onchange="loadSheet()"></div>
         <div class="field-grp"><label>Floor</label><select id="sh_floor" onchange="loadSheet()"></select></div>
         <div class="field-grp"><label>Side</label><select id="sh_side" onchange="loadSheet()"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
-        <div class="field-grp"><label>Stage</label><select id="sh_stage" onchange="renderSheet()"><option value="">All stages</option><option value="prepared">Entered (no label)</option><option value="label">Label generated</option><option value="holding">Scanned in — holding</option><option value="released">Scanned out — ready to issue</option><option value="issued">Issued to machine</option></select></div>
+        <div class="field-grp"><label>Stage</label><select id="sh_stage" onchange="renderSheet()"><option value="">All stages</option><option value="prepared">Prepared — not on hold</option><option value="holding">On hold</option><option value="ready">Ready to release</option><option value="released">Released to production</option></select></div>
         <div class="field-grp"><label>PC code</label><input id="sh_pc" placeholder="all" onchange="renderSheet()"></div>
         <div class="field-grp"><label>From (production day)</label><input id="sh_from" type="date" onchange="shCustom()"></div>
         <div class="field-grp"><label>To</label><input id="sh_to" type="date" onchange="shCustom()"></div>
@@ -499,7 +522,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div class="fgrid" style="margin-bottom:8px">
         <div class="field-grp"><label>Batch</label><input id="tl_batch" placeholder="blank = all batches" list="batchOpts" onchange="loadTtList()"></div>
         <div class="field-grp"><label>Date</label><input id="tl_date" type="date" onchange="loadTtList()"></div>
-        <div class="field-grp"><label>Status</label><select id="tl_status" onchange="loadTtList()"><option value="">All stages</option><option value="prepared">Entered</option><option value="label">Label ready</option><option value="holding">Holding</option><option value="released">Scanned out</option><option value="issued">Issued</option></select></div>
+        <div class="field-grp"><label>Status</label><select id="tl_status" onchange="loadTtList()"><option value="">All stages</option><option value="prepared">Prepared</option><option value="holding">On hold</option><option value="ready">Ready to release</option><option value="released">Released</option></select></div>
         <div class="field-grp"><label>&nbsp;</label><button class="btn" onclick="loadTtList()">Refresh</button></div>
       </div>
       <div id="ttList" class="tscroll"><div class="empty">Loading today's log…</div></div>
@@ -541,7 +564,10 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div class="plsec" onclick="plToggle('summary')"><span class="plchev" id="plchev_summary">&#9656;</span> <b>MACHINE-WISE PLANNING</b> <span id="plcount_summary" class="plbadge"></span></div>
       <div class="plbody" id="plbody_summary"><div id="pl_summary" style="font-size:12px">Loading&hellip;</div></div>
       <div class="plsec" onclick="plToggle('cascade')"><span class="plchev" id="plchev_cascade">&#9656;</span> <b>TT CASCADE</b> <span id="plcount_cascade" class="plbadge"></span></div>
-      <div class="plbody" id="plbody_cascade" style="border-bottom:0"><div id="pl_cascade" style="font-size:12px"></div></div>
+      <div class="plbody" id="plbody_cascade"><div id="pl_cascade" style="font-size:12px"></div></div>
+      <!-- v56W (Ishan, 24 Sep): TT HOLD & RELEASE — every tank on hold right now, or released on a day -->
+      <div class="plsec" onclick="plToggle('hold')"><span class="plchev" id="plchev_hold">&#9656;</span> <b>TT HOLD &amp; RELEASE</b> <span id="plcount_hold" class="plbadge"></span></div>
+      <div class="plbody" id="plbody_hold" style="border-bottom:0"><div id="pl_hold" style="font-size:12px"></div></div>
     </div>
   </div>
   <div class="page" id="page-mmt">
@@ -1147,14 +1173,16 @@ function renderSheet(){
   const litres = rows.reduce((a,r)=>a+Number(r.actual_l||0),0);
   const charged = rows.reduce((a,r)=>a+Number(r.total_charged_kg||0),0);
   const issued = rows.filter(r=>r.issued_at).length;
-  const ready = rows.filter(r=>lcStage(r)[0]==='released').length;
+  const ready = rows.filter(r=>lcStage(r)[0]==='ready').length;
+  const onHold = rows.filter(r=>lcStage(r)[0]==='holding').length;
   document.getElementById('sheetKpis').innerHTML =
     '<div class="kgrid">'
     + kpi('Tanks in view', rows.length)
     + kpi('Solution', fmt(litres,0)+' L')
     + kpi('Material charged', fmt(charged,0)+' kg')
-    + kpi('Ready to issue', ready)
-    + kpi('Issued to machine', issued)
+    + kpi('On hold', onHold)
+    + kpi('Ready to release', ready)
+    + kpi('Released', issued)
     + '</div>';
   const ctx = document.getElementById('sh_ctx');
   if(ctx) ctx.textContent = (val('sh_from')? _dm(val('sh_from'))+' → '+_dm(val('sh_to')) : '') + (stage? ' · '+stage : '');
@@ -2308,7 +2336,7 @@ async function completeDualTt(){
     created.push({ tt_id:d.tt_id, tt_number:d.tt_number, side });
     if(d.warning) toast(side.toUpperCase()+' — '+d.warning,'');
   }
-  toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — generate the labels below','ok'); loadSuggestions(true);   // v56B item 1: remember new entries
+  toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — put each on HOLD below','ok'); loadSuggestions(true);   // v56B item 1: remember new entries
   renderDualCreated(created, false);
   loadTtList(batch); loadMmtOptions();
 }
@@ -2316,59 +2344,148 @@ function renderDualCreated(created, partial){
   const el = document.getElementById('dualCreated'); if(!el) return;
   el.innerHTML = '<div class="fgroup-title" style="margin-top:14px">Tanks created'
     + (partial?' <span style="color:var(--red)">(partial — fix the failed side and complete again)</span>':'')
-    + ' — generate each label (separate step; the tank is scanned IN by its label)</div>'
+    + ' — put each tank on HOLD when it enters holding (release opens after '+_minHoldMin()+' min)</div>'
     + '<div style="display:flex;gap:10px;flex-wrap:wrap">'
     + created.map(c=>'<div style="border:1px solid var(--b1);border-radius:var(--r);padding:8px 12px;background:var(--s1)">'
         + '<b class="mono">'+esc(c.tt_number)+'</b> <span style="color:var(--t3);font-size:11px">'+esc(c.side.toUpperCase())+'</span>'
-        + ' <button class="btn sm primary" style="margin-left:8px" onclick="ttGenLabel('+c.tt_id+')">🏷 Generate label</button>'
+        + ' <button class="btn sm primary" style="margin-left:8px" onclick="ttHold('+c.tt_id+');this.disabled=true;this.textContent=\'On hold\'">&#9208; Hold</button>'
         + '</div>').join('')
     + '</div>';
 }
 
 // ── TT lifecycle actions, label modal, movement log ──────────────────────────
 window._TTROWS = window._TTROWS || {};
+// ═══ v56W (Ishan, 24 Sep): TT HOLD & RELEASE — two buttons replace label / scan-in / scan-out / issue.
+// HOLD starts the holding period; RELEASE appears once the tank has held the minimum (masters
+// minHoldHours, 2 h) and releases it to production (the server refuses an early release).
+function _minHoldMin(){ const C = (MASTERS && MASTERS.gpr_constants) || {}; const h = Number(C.minHoldHours); return Math.round((h>0?h:2)*60); }
+function _tsMs(v){ if(!v) return null; let s = String(v).replace(' ','T').replace(/(\.\d{3})\d+/,'$1').replace(/([+-]\d{2})$/,'$1:00');
+  if(!/[zZ]|[+-]\d{2}:?\d{2}$/.test(s)) s += 'Z'; const ms = Date.parse(s); return isNaN(ms) ? null : ms; }
+function _heldMin(t){ const a = _tsMs(t.scan_in_at); if(a==null) return null; const b = _tsMs(t.scan_out_at||t.issued_at) ?? Date.now(); return Math.max(0, Math.floor((b-a)/60000)); }
+function _hm(m){ if(m==null) return '—'; return Math.floor(m/60)+'h '+String(m%60).padStart(2,'0')+'m'; }
 function lcStage(t){
-  if(t.issued_at) return ['issued','ISSUED TO MACHINE','var(--green)'];
-  if(t.scan_out_at) return ['released','SCANNED OUT — ready to issue','var(--teal)'];
-  if(t.scan_in_at) return ['holding','IN HOLDING','var(--amber)'];
-  if(t.label_generated_at) return ['label','LABEL READY — scan in','var(--accent)'];
-  return ['prepared','ENTERED — generate label','var(--t3)'];
+  if(t.issued_at) return ['released','RELEASED TO PRODUCTION','var(--green)'];
+  if(t.scan_out_at) return ['ready','OUT OF HOLD — release','var(--teal)'];   // legacy: scanned out, never issued
+  if(t.scan_in_at){
+    const m = _heldMin(t);
+    return m!=null && m >= _minHoldMin() ? ['ready','HELD '+_hm(m)+' — READY TO RELEASE','var(--green)']
+                                         : ['holding','ON HOLD '+_hm(m)+' / '+_hm(_minHoldMin()),'var(--amber)'];
+  }
+  return ['prepared','PREPARED — put on hold','var(--t3)'];
 }
 function lcActions(t){
   const b = [];
-  if(!t.label_generated_at){
-    b.push('<button class="btn sm primary" onclick="ttGenLabel('+t.id+')">🏷 Label</button>');
-  } else if(!t.scan_in_at){
-    b.push('<button class="btn sm" onclick="ttGenLabel('+t.id+')" title="Reprint">🏷</button>');
-    b.push('<button class="btn sm primary" onclick="ttScanLc('+t.id+',\'in\')">Scan IN</button>');
-  } else if(!t.scan_out_at){
-    b.push('<button class="btn sm primary" onclick="ttScanLc('+t.id+',\'out\')">Scan OUT</button>');
-  } else if(!t.issued_at){
-    b.push('<button class="btn sm ok" onclick="ttIssue('+t.id+')">Issue tank</button>');
+  const st = lcStage(t)[0];
+  if(st==='prepared') b.push('<button class="btn sm primary" onclick="ttHold('+t.id+')">&#9208; Hold</button>');
+  else if(st==='holding'){
+    const left = Math.max(0, _minHoldMin() - (_heldMin(t)||0));
+    b.push('<span class="badge" style="background:var(--s3);color:var(--t2);text-transform:none" title="Release opens after '+_minHoldMin()+' min">release in '+_hm(left)+'</span>');
   }
+  else if(st==='ready') b.push('<button class="btn sm ok" onclick="ttRelease('+t.id+')">&#9654; Release</button>');
   b.push('<button class="btn sm" onclick="ttMove('+t.id+')" title="Movement log">Log</button>');
   return b.join(' ');
 }
+async function ttHold(id){
+  const d = await post('/api/gpr/tt/'+id+'/hold', {});
+  if(!d.ok){ toast(d.detail || d.error || 'Could not put the tank on hold','err'); return; }
+  toast('On hold — release opens in '+_minHoldMin()+' min','ok');
+  refreshTtViews();
+}
+async function ttRelease(id){
+  const d = await post('/api/gpr/tt/'+id+'/release', {});
+  if(!d.ok){ toast(d.detail || d.error || 'Could not release the tank','err'); return; }
+  toast('Released to production','ok');
+  refreshTtViews();
+}
+// label printing survives only as a reprint from the Log tab's label history (no longer a gate)
 async function ttGenLabel(id){
   const d = await post('/api/gpr/tt/'+id+'/label', {});
   if(!d.ok){ toast(d.detail || d.error || 'Could not generate the label','err'); return; }
   if(d.tt) window._TTROWS[d.tt.id] = Object.assign(window._TTROWS[d.tt.id]||{}, d.tt);
   showLabelRow(d.tt);
-  toast(d.reprint ? 'Label reprinted' : 'Label generated — scan the tank IN when it enters holding','ok');
-  refreshTtViews();
+  toast(d.reprint ? 'Label reprinted' : 'Label generated','ok');
 }
-async function ttScanLc(id, type){
-  const d = await post('/api/gpr/tt/'+id+'/scan', { type });
-  if(!d.ok){ toast(d.detail || d.error || 'Scan failed','err'); return; }
-  toast(type==='in' ? 'Scanned IN — tank holding' : 'Scanned OUT — the issue gate is open', 'ok');
-  refreshTtViews();
+async function ttScanLc(id, type){ return type==='in' ? ttHold(id) : ttRelease(id); }   // v56W: legacy callers
+async function ttIssue(id){ return ttRelease(id); }
+
+// ── v56W: Planning → TT HOLD & RELEASE board ───────────────────────────────────────────────
+window._HB = window._HB || { view:'holding', day:'', data:null };
+function _hbFloors(){
+  const pf = (document.getElementById('pl_floor')||{}).value || CUR_FLOOR;
+  return ((pf==='ALL') ? ['GF','1F','2F'] : (pf==='FFSF' ? ['1F','2F'] : [pf])).filter(f=>visibleFloors().includes(f));
 }
-async function ttIssue(id){
-  const d = await post('/api/gpr/tt/'+id+'/issue', {});
-  if(!d.ok){ toast(d.detail || d.error || 'Could not issue the tank','err'); return; }
-  toast('Tank issued to the machine','ok');
-  refreshTtViews();
+async function loadHoldBoard(){
+  const box = document.getElementById('pl_hold'); if(!box) return;
+  const HB = window._HB;
+  if(!HB.day) HB.day = new Date(Date.now()+330*60000-6*3600000).toISOString().slice(0,10);
+  try{
+    const q = new URLSearchParams({ view: HB.view, floors: _hbFloors().join(',') });
+    if(HB.view==='released') q.set('day', HB.day);
+    const [d, other] = await Promise.all([
+      api('/api/gpr/tt-board?'+q.toString()),
+      api('/api/gpr/tt-board?view='+(HB.view==='holding'?'released':'holding')+'&floors='+_hbFloors().join(',')+(HB.view==='holding'?'&day='+HB.day:'')) ]);
+    HB.data = d; HB.otherN = (other && other.ok) ? (other.rows||[]).length : null;
+  }catch(e){ HB.data = { ok:false, error: e.message }; }
+  renderHoldBoard();
 }
+function hbView(v){ window._HB.view = v; loadHoldBoard(); }
+function hbDay(v){ window._HB.day = v; loadHoldBoard(); }
+function renderHoldBoard(){
+  const box = document.getElementById('pl_hold'); if(!box) return;
+  const HB = window._HB, d = HB.data;
+  if(!d){ box.innerHTML = '<div class="hbempty">Loading&hellip;</div>'; return; }
+  if(!d.ok){ box.innerHTML = '<div class="hbempty" style="color:var(--red)">'+esc(d.error||'Could not load the board')+'</div>'; return; }
+  const rows = d.rows || [];
+  const minM = d.minHoldMin || _minHoldMin();
+  // elapsed ticks locally between refreshes (server minutes + time since the read)
+  const drift = Math.max(0, Math.floor((Date.now() - (_tsMs(d.now)||Date.now()))/60000));
+  const heldOf = r => r.held_min==null ? null : r.held_min + (HB.view==='holding' ? drift : 0);
+  const nHold = HB.view==='holding' ? rows.length : HB.otherN, nRel = HB.view==='released' ? rows.length : HB.otherN;
+  const nReady = HB.view==='holding' ? rows.filter(r=>(heldOf(r)||0) >= minM).length : 0;
+  const cnt = document.getElementById('plcount_hold');
+  if(cnt) cnt.textContent = HB.view==='holding' ? (rows.length+' on hold'+(nReady?' · '+nReady+' ready':'')) : (rows.length+' released '+_dm(HB.day));
+  let h = '<div class="hbbar"><span class="seg">'
+    + '<button class="'+(HB.view==='holding'?'on':'')+'" onclick="hbView(\'holding\')">HOLDING'+(nHold!=null?' · '+nHold:'')+'</button>'
+    + '<button class="'+(HB.view==='released'?'on':'')+'" onclick="hbView(\'released\')">RELEASED'+(nRel!=null?' · '+nRel:'')+'</button></span>'
+    + (HB.view==='released' ? '<input type="date" value="'+esc(HB.day)+'" onchange="hbDay(this.value)" style="width:auto;padding:4px 8px;font-size:12px">' : '')
+    + '<span class="hbnote">'+(HB.view==='holding'
+        ? 'Real time &middot; release opens at <b>'+minM+' min</b> &middot; refreshes every minute'
+        : 'Tanks released to production on production day '+esc(_dm(HB.day))+' (06:00 &rarr; 06:00)')+'</span></div>';
+  if(!rows.length){ box.innerHTML = h + '<div class="hbempty">'+(HB.view==='holding'?'No tank is on hold right now.':'No tank released on this production day.')+'</div>'; return; }
+  // batch-wise, CAP and BODY side by side
+  const by = {};
+  rows.forEach(r=>{ const k = r.batch_number; (by[k] = by[k] || { bn:k, mc:r.machine_id, fl:r.floor, colour:r.colour_name||r.colour_code||'', cap:[], body:[] })[r.side==='body'?'body':'cap'].push(r); });
+  const chip = r => {
+    const m = heldOf(r), seq = (r.side==='body'?'B':'C')+(r.seq_index||'?')+'/'+(r.seq_total||'?');
+    if(HB.view==='holding'){
+      const ready = (m||0) >= minM, pct = Math.min(100, Math.round(((m||0)/minM)*100));
+      return '<div class="ttchip '+(ready?'ready':'hold')+'" title="'+esc(r.tt_number)+' · on hold since '+esc(String(r.scan_in_at||'').slice(0,16).replace('T',' '))+'">'
+        + '<span class="tn">'+esc(seq)+' <span style="font-weight:400;color:var(--t3)">'+fmt(r.actual_l,0)+' L</span></span>'
+        + '<span class="tm">'+(ready ? 'held '+_hm(m) : _hm(m)+' · '+_hm(Math.max(0,minM-(m||0)))+' left')+'</span>'
+        + '<span class="tbar"><i style="width:'+pct+'%"></i></span>'
+        + (ready ? '<button class="btn sm ok" onclick="event.stopPropagation();ttRelease('+r.id+')">&#9654; Release</button>' : '')
+        + '</div>';
+    }
+    const t = _tsMs(r.issued_at), hhmm = t ? new Date(t+330*60000).toISOString().slice(11,16) : '—';
+    return '<div class="ttchip '+(r.short_hold?'short':'rel')+'" title="'+esc(r.tt_number)+(r.issued_by?' · released by '+esc(r.issued_by):'')+'">'
+      + '<span class="tn">'+esc(seq)+' <span style="font-weight:400;color:var(--t3)">'+fmt(r.actual_l,0)+' L</span></span>'
+      + '<span class="tm">out '+hhmm+' · held '+_hm(m)+(r.short_hold?' <b style="color:var(--red)">&lt; '+minM+'m</b>':'')+'</span></div>';
+  };
+  const list = Object.values(by).sort((a,b)=>String(a.fl).localeCompare(String(b.fl)) || String(a.mc).localeCompare(String(b.mc),undefined,{numeric:true}) || String(a.bn).localeCompare(String(b.bn)));
+  h += '<div class="hbwrap"><table class="gtable hbtable"><thead><tr><th style="width:7%">MC</th><th style="width:11%">Batch</th><th style="width:13%">Colour</th><th class="hbside">CAP</th><th class="hbside">BODY</th></tr></thead><tbody>';
+  let lastFl = null;
+  list.forEach(g=>{
+    if(g.fl !== lastFl && _hbFloors().length > 1){ h += '<tr class="sumrow"><td colspan="5">'+esc(FLOOR_LABELS[g.fl]||g.fl||'—')+'</td></tr>'; lastFl = g.fl; }
+    h += '<tr><td class="mono">'+esc(g.mc||'—')+'</td>'
+      + '<td class="mono"><a href="javascript:void(0)" onclick="gprBatchSummary(\''+esc(g.bn)+'\')" style="color:var(--accent);text-decoration:none" title="GPR batch summary"><b>'+esc(g.bn)+'</b></a></td>'
+      + '<td>'+esc(g.colour||'—')+'</td>'
+      + '<td class="hbside"><div class="ttchips">'+(g.cap.length ? g.cap.map(chip).join('') : '<span style="color:var(--t3)">&mdash;</span>')+'</div></td>'
+      + '<td class="hbside"><div class="ttchips">'+(g.body.length ? g.body.map(chip).join('') : '<span style="color:var(--t3)">&mdash;</span>')+'</div></td></tr>';
+  });
+  box.innerHTML = h + '</tbody></table></div>';
+}
+// the holding clock moves between reads — repaint every 30 s while the section is open
+setInterval(()=>{ const b = document.getElementById('plbody_hold'); if(b && b.classList.contains('open') && window._HB.view==='holding') renderHoldBoard(); }, 30000);
 function refreshTtViews(){
   loadTtList();
   const sp = document.getElementById('page-sheet');
@@ -2395,12 +2512,10 @@ function ttMove(id){
   const t = window._TTROWS[id];
   if(!t){ toast('Row not loaded — refresh the list','err'); return; }
   const rows = [
-    ['Entry created', t.created_at, t.created_by],
-    ['Label generated', t.label_generated_at, t.label_generated_by],
-    ['Scanned IN — holding', t.scan_in_at, null],
-    ['Scanned OUT — released', t.scan_out_at, null],
-    ['Issued to machine', t.issued_at, t.issued_by],
-  ];
+    ['Prepared (entry)', t.created_at, t.created_by],
+    ['Put on hold', t.scan_in_at, null],
+    ['Released to production' + (t.scan_in_at && (t.issued_at||t.scan_out_at) ? ' — held '+_hm(_heldMin(t)) : ''), t.issued_at || t.scan_out_at, t.issued_by],
+  ];   // v56W: hold & release
   let h = '<table class="gtable"><thead><tr><th>Stage</th><th>When</th><th>By</th></tr></thead><tbody>';
   rows.forEach(([st, at, by])=>{
     h += '<tr'+(at?'':' style="opacity:.5"')+'><td>'+(at?'✅ ':'▫ ')+st+'</td>'
@@ -2500,7 +2615,7 @@ async function loadTtList(batch){
     const d = await api('/api/gpr/tt-sheet?' + q.toString());
     let rows = (d.ok && d.rows) ? d.rows : [];
     window._TTLIST = rows;   // v55Z item 7: the sequence counter reads the real tanks already entered
-    if(fs) rows = rows.filter(t=>lcStage(t)[0]===fs || (fs==='label' && lcStage(t)[0]==='label'));
+    if(fs) rows = rows.filter(t=>lcStage(t)[0]===fs);
     if(!rows.length){ out.innerHTML = '<div class="empty">No tanks in the log for these filters.</div>'; return; }
     const shiftOf = t => { const hh = Number(String(t.created_at||'').slice(11,13)); const ih = (hh + 5.5 + 24) % 24; return ih>=6&&ih<14?'A':(ih>=14&&ih<22?'B':'C'); };
     const groups = { A:[], B:[], C:[] };
@@ -2559,13 +2674,14 @@ function plToggle(k, force){
   b.classList.toggle('open', open); if(c) c.classList.toggle('open', open);
   try{ (window._PLOPEN = window._PLOPEN || {})[k] = open; }catch(e){}
   if(open && k==='cascade' && typeof renderCascCal==='function') renderCascCal();
+  if(open && k==='hold') loadHoldBoard();
 }
 function plRestoreSections(){
   // v56L: on a first visit nothing has been toggled yet — open MACHINE-WISE PLANNING so the
   // chemist lands on the sheet itself rather than three closed headers.
   if(!window._PLOPEN) window._PLOPEN = { summary: true };
   const st = window._PLOPEN || {};
-  ['alert','summary','cascade'].forEach(k=> plToggle(k, !!st[k]));
+  ['alert','summary','cascade','hold'].forEach(k=> plToggle(k, !!st[k]));
 }
 function renderPlCtx(d, perFloor){
   const el = document.getElementById('pl_ctx'); if(!el) return;
@@ -2883,7 +2999,7 @@ h += '<tr><td colspan="'+(16+(window._PLAN_GEL===false?0:7)+(window._PLAN_RECON=
     renderCascCal();
     _plAfterLoad();   // v55Y item 8: sections open as the chemist left them
 if(_planTimer) clearInterval(_planTimer);
-    _planTimer = setInterval(()=>{ const pg=document.getElementById('page-plan'); if(pg && pg.classList.contains('on')) loadPlan(); else { clearInterval(_planTimer); _planTimer=null; } }, 60000);
+    _planTimer = setInterval(()=>{ const pg=document.getElementById('page-plan'); if(pg && pg.classList.contains('on')){ loadPlan(); loadHoldBoard(); } else { clearInterval(_planTimer); _planTimer=null; } }, 60000);
   }catch(e){ sEl.innerHTML = '<span style="color:var(--red)">Plan failed: '+esc(e.message||'error')+'</span>'; }
 }
 // v55X item 5: GPR batch summary — any batch in the sheet is clickable; the modal shows the
@@ -2922,12 +3038,14 @@ async function gprBatchSummary(bn){
               : 'Every planned tank has been issued. A further tank can still be entered if the batch needs one.')
       + '</div>';
   }
-  h += '<table class="gtable"><thead><tr><th>Side</th><th class="num">TT planned</th><th class="num">TT issued</th><th class="num">Entered</th><th class="num">Litres</th><th class="num">Labelled</th><th class="num">Scan IN</th><th class="num">Scan OUT</th></tr></thead><tbody>';
+  // v56W: hold & release replaces label / scan columns
+  h += '<table class="gtable"><thead><tr><th>Side</th><th class="num">TT planned</th><th class="num">TT released</th><th class="num">Entered</th><th class="num">Litres</th><th class="num">On hold now</th><th class="num">Prepared</th></tr></thead><tbody>';
   ['cap','body'].forEach(k=>{
     const a = (d.side||{})[k] || {tanks:0,litres:0,labelled:0,scannedIn:0,scannedOut:0,issued:0};
     const pln = pl && pl[k] ? pl[k].ttPlanned : null;
     h += '<tr><td><b>'+k.toUpperCase()+'</b></td><td class="num">'+(pln==null?'—':pln)+'</td><td class="num"><b>'+a.issued+'</b></td>'
-       + '<td class="num">'+a.tanks+'</td><td class="num">'+fmt(a.litres,1)+'</td><td class="num">'+a.labelled+'</td><td class="num">'+a.scannedIn+'</td><td class="num">'+a.scannedOut+'</td></tr>';
+       + '<td class="num">'+a.tanks+'</td><td class="num">'+fmt(a.litres,1)+'</td>'
+       + '<td class="num" style="color:var(--amber)">'+Math.max(0,(a.scannedIn||0)-(a.issued||0))+'</td><td class="num">'+Math.max(0,(a.tanks||0)-(a.scannedIn||0))+'</td></tr>';
   });
   h += '</tbody></table>';
   h += '<div style="font-family:var(--fc);font-weight:600;font-size:12px;margin:8px 0 3px">MMT charge references</div>';
@@ -2938,10 +3056,11 @@ async function gprBatchSummary(bn){
     : '<div class="empty">No MMT charge linked to this batch\'s tanks.</div>';
   h += '<div style="font-family:var(--fc);font-weight:600;font-size:12px;margin:8px 0 3px">Tanks — full lifecycle stamps</div>';
   h += (d.tanks||[]).length
-    ? '<div class="tswrap" style="max-height:260px"><table class="gtable"><thead><tr><th>TT</th><th>Side</th><th class="num">L</th><th>MMT</th><th>Entered</th><th>Label</th><th>Scan IN</th><th>Scan OUT</th><th>Issued</th></tr></thead><tbody>'
+    ? '<div class="tswrap" style="max-height:260px"><table class="gtable"><thead><tr><th>TT</th><th>Side</th><th class="num">L</th><th>MMT</th><th>Entered</th><th>Hold</th><th>Release</th><th class="num">Held</th></tr></thead><tbody>'
       + d.tanks.map(t=>'<tr><td class="mono"><b>'+esc(t.tt_number||'')+'</b></td><td>'+esc((t.side||'').toUpperCase())+(t.seq_index?' #'+t.seq_index:'')+'</td><td class="num">'+fmt(t.actual_l,0)+'</td><td class="mono">'+esc(t.mmt_ref||'—')+'</td>'
-        + '<td class="mono" style="font-size:10px">'+esc(dt(t.created_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.label_generated_at))+'</td>'
-        + '<td class="mono" style="font-size:10px">'+esc(dt(t.scan_in_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.scan_out_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.issued_at))+'</td></tr>').join('')
+        + '<td class="mono" style="font-size:10px">'+esc(dt(t.created_at))+'</td>'
+        + '<td class="mono" style="font-size:10px">'+esc(dt(t.scan_in_at))+'</td><td class="mono" style="font-size:10px">'+esc(dt(t.issued_at||t.scan_out_at))+'</td>'
+        + '<td class="num" style="font-size:11px'+(t.scan_in_at && (t.issued_at||t.scan_out_at) && _heldMin(t) < _minHoldMin() ? ';color:var(--red)' : '')+'">'+(t.scan_in_at ? _hm(_heldMin(t)) : '—')+'</td></tr>').join('')
       + '</tbody></table></div>'
     : '<div class="empty">No tanks entered for this batch yet.</div>';
   h += '<div style="margin-top:10px;display:flex;gap:8px;flex-wrap:wrap">'

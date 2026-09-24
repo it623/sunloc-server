@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56V';
+const APP_BUILD = 'v56W';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25974,13 +25974,10 @@ app.post('/api/gpr/tt/:id/scan', async (req, res) => {
     // v55N item 3 (Ishan, 18 Sep): the label comes FIRST — a tank is scanned IN to holding by
     // scanning its printed label, so scan-in requires the label to have been generated. This is a
     // GPR-internal entry validation (live during dormancy by design, like the other entry gates).
-    if (type === 'in' && !tt.label_generated_at) {
-      return res.status(409).json({ ok: false, error: 'LABEL_REQUIRED', detail: `Generate ${tt.tt_number}'s label first — the tank is scanned IN by scanning its label.` });
-    }
-    if (type === 'out') {
-      if (!tt.scan_in_at) return res.status(409).json({ ok: false, error: 'NOT_SCANNED_IN', detail: `${tt.tt_number} must be scanned IN before it can be released.` });
-      if (tt.scan_out_at) return res.status(409).json({ ok: false, error: 'ALREADY_SCANNED_OUT', detail: `${tt.tt_number} was already released at ${String(tt.scan_out_at).slice(0, 16)}.` });
-    }
+    // v56W (Ishan, 24 Sep): the label system no longer gates holding — a tank goes on HOLD by a
+    // button. This legacy scan route now runs the same Hold / Release workflow as the new routes.
+    if (type === 'in') return _gprTtHoldRelease(req, res, 'hold');
+    if (type === 'out') return _gprTtHoldRelease(req, res, 'release');
     const now = new Date().toISOString();
     const newStatus = type === 'in' ? 'holding' : 'released';
     // Column name written as two explicit literal statements rather than an
@@ -25995,6 +25992,149 @@ app.post('/api/gpr/tt/:id/scan', async (req, res) => {
     }
     logAudit(session.username, session.role, 'gpr', 'GPR_TT_SCAN_' + type.toUpperCase(), `tt=${tt.tt_number}`, req.ip);
     res.json({ ok: true, tt_id: req.params.id, type, at: now, status: newStatus });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ─── v56W (Ishan, 24 Sep) — TT HOLD & RELEASE WORKFLOW ─────────────────────────────────────
+// Two buttons replace label → scan-in → scan-out → issue:
+//   HOLD    stamps scan_in_at (status 'holding') — the start of the holding period.
+//   RELEASE appears once the tank has held for the minimum (gpr_constants.minHoldHours, 2 h =
+//           120 min) and is refused before it; it stamps scan_out_at AND issued_at together
+//           (status 'issued'), i.e. the tank is released to production.
+// The stamps are the same columns every consumer already reads — holding time and short-hold
+// (scan_in → scan_out), the planning sheet's TT issued/remaining and litres (issued_at), and the
+// cascade's first scan-out — so Planning updates the moment a tank is released.
+// A tank scanned OUT under the old flow but never issued can still be Released (issue stamp only).
+async function _gprTtHoldRelease(req, res, action) {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const P = pgPool ? '$1' : '?';
+    const gSql = `SELECT id, tt_number, batch_number, side, scan_in_at, scan_out_at, issued_at FROM gpr_tt WHERE id=${P}`;
+    const tt = pgPool ? (await pgPool.query(gSql, [req.params.id])).rows[0] : db.prepare(gSql).get(req.params.id);
+    if (!tt) return res.status(404).json({ ok: false, error: 'TT not found' });
+    const now = new Date().toISOString();
+    if (action === 'hold') {
+      if (tt.scan_in_at) return res.status(409).json({ ok: false, error: 'ALREADY_HOLDING', detail: `${tt.tt_number} went on hold at ${String(tt.scan_in_at).slice(0, 16)}.` });
+      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET scan_in_at=$1, status='holding', updated_at=NOW()::TEXT WHERE id=$2`, [now, req.params.id]);
+      else db.prepare(`UPDATE gpr_tt SET scan_in_at=?, status='holding', updated_at=datetime('now') WHERE id=?`).run(now, req.params.id);
+      logAudit(session.username, session.role, 'gpr', 'GPR_TT_HOLD', `tt=${tt.tt_number} batch=${tt.batch_number}`, req.ip);
+      return res.json({ ok: true, tt_id: req.params.id, action, at: now, status: 'holding' });
+    }
+    // release
+    if (tt.issued_at) return res.status(409).json({ ok: false, error: 'ALREADY_RELEASED', detail: `${tt.tt_number} was released at ${String(tt.issued_at).slice(0, 16)}.` });
+    if (!tt.scan_in_at) return res.status(409).json({ ok: false, error: 'NOT_ON_HOLD', detail: `${tt.tt_number} must be put on HOLD before it can be released.` });
+    if (!tt.scan_out_at) {
+      const masters = await gprLoadMasters();
+      const minH = _gprMinHold(masters);
+      const held = _gprHoldHours({ scan_in_at: tt.scan_in_at, scan_out_at: now });
+      if (held == null || held < minH) {
+        const leftMin = Math.max(1, Math.ceil((minH - (held || 0)) * 60));
+        return res.status(409).json({ ok: false, error: 'HOLD_NOT_COMPLETE', minHoldHours: minH, heldHours: held,
+          detail: `${tt.tt_number} has held ${held == null ? '?' : Math.floor(held * 60)} min — release opens after ${Math.round(minH * 60)} min (${leftMin} min to go).` });
+      }
+      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET scan_out_at=$1, issued_at=$1, issued_by=$2, status='issued', updated_at=NOW()::TEXT WHERE id=$3`, [now, session.username, req.params.id]);
+      else db.prepare(`UPDATE gpr_tt SET scan_out_at=?, issued_at=?, issued_by=?, status='issued', updated_at=datetime('now') WHERE id=?`).run(now, now, session.username, req.params.id);
+    } else {
+      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET issued_at=$1, issued_by=$2, status='issued', updated_at=NOW()::TEXT WHERE id=$3`, [now, session.username, req.params.id]);
+      else db.prepare(`UPDATE gpr_tt SET issued_at=?, issued_by=?, status='issued', updated_at=datetime('now') WHERE id=?`).run(now, session.username, req.params.id);
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_TT_RELEASE', `tt=${tt.tt_number} batch=${tt.batch_number}`, req.ip);
+    return res.json({ ok: true, tt_id: req.params.id, action, at: now, status: 'issued' });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+}
+app.post('/api/gpr/tt/:id/hold', (req, res) => _gprTtHoldRelease(req, res, 'hold'));
+app.post('/api/gpr/tt/:id/release', (req, res) => _gprTtHoldRelease(req, res, 'release'));
+
+// v56W: the Hold & Release board — every tank IN HOLDING now (view=holding, any day), or every
+// tank RELEASED on a production day (view=released, 06:00 IST day). Batch-wise, cap/body split
+// client-side. Elapsed minutes are computed here against the server clock so every screen agrees.
+app.get('/api/gpr/tt-board', async (req, res) => {
+  try {
+    const view = String(req.query.view || 'holding') === 'released' ? 'released' : 'holding';
+    const masters = await gprLoadMasters();
+    const minH = _gprMinHold(masters);
+    const params = [];
+    const P = () => pgPool ? `$${params.length}` : '?';
+    const conds = [];
+    const fl = String(req.query.floors || '').split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+    if (fl.length) conds.push(`floor IN (${fl.map(f => { params.push(f); return P(); }).join(',')})`);
+    let day = null;
+    if (view === 'holding') conds.push(`scan_in_at IS NOT NULL AND issued_at IS NULL`);
+    else {
+      day = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.day || '')) ? String(req.query.day)
+        : new Date(Date.now() + 330 * 60000 - 6 * 3600000).toISOString().slice(0, 10);   // IST production day (06:00 start)
+      // production day D runs D 06:00 IST → D+1 06:00 IST = D 00:30Z → D+1 00:30Z
+      const from = day + 'T00:30:00.000Z';
+      const toD = new Date(Date.parse(day + 'T00:00:00Z') + 86400000).toISOString().slice(0, 10) + 'T00:30:00.000Z';
+      params.push(from); const pf = P(); params.push(toD); const pt = P();
+      conds.push(`issued_at IS NOT NULL AND issued_at >= ${pf} AND issued_at < ${pt}`);
+    }
+    const sql = `SELECT id, tt_number, batch_number, machine_id, floor, side, seq_index, seq_total, colour_name, colour_code,
+                        pc_code, planned_l, actual_l, scan_in_at, scan_out_at, issued_at, issued_by, created_at, status
+                 FROM gpr_tt WHERE ${conds.join(' AND ')} ORDER BY machine_id, batch_number, side, seq_index LIMIT 1000`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    const nowIso = new Date().toISOString();
+    (rows || []).forEach(r => {
+      const end = view === 'holding' ? nowIso : (r.scan_out_at || r.issued_at);
+      const h = _gprHoldHours({ scan_in_at: r.scan_in_at, scan_out_at: end });
+      r.held_min = h == null ? null : Math.floor(h * 60);
+      r.releasable = view === 'holding' && h != null && h >= minH;
+      r.short_hold = view === 'released' && h != null && h < minH;
+      r.batch_number = String(r.batch_number || '').toUpperCase();
+    });
+    res.json({ ok: true, view, day, minHoldMin: Math.round(minH * 60), now: nowIso, rows: rows || [] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// v56W: per-batch TT hold/release status for DPR's data-entry sheet — every batch on the floor with
+// a tank on hold now, or planned/released TT this cohort. DPR shows it under each line, and as its
+// own line for an UPCOMING batch whose tanks GPR has already put on hold.
+app.get('/api/gpr/tt-status', async (req, res) => {
+  try {
+    const floor = String(req.query.floor || '');
+    const fls = floor === 'FFSF' ? ['1F', '2F'] : (/^(GF|1F|2F)$/.test(floor) ? [floor] : []);
+    const masters = await gprLoadMasters();
+    const minH = _gprMinHold(masters);
+    const since = new Date(Date.now() - 20 * 86400000).toISOString().slice(0, 10);
+    const params = [since];
+    const ph = pgPool ? '$1' : '?';
+    let fc = '';
+    if (fls.length) fc = ` AND floor IN (${fls.map(f => { params.push(f); return pgPool ? `$${params.length}` : '?'; }).join(',')})`;
+    const sql = `SELECT UPPER(batch_number) AS bn, machine_id, LOWER(side) AS side, scan_in_at, scan_out_at, issued_at, created_at
+                 FROM gpr_tt WHERE (issued_at IS NULL OR production_day >= ${ph})${fc}`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    const nowIso = new Date().toISOString();
+    const out = {};
+    (rows || []).forEach(r => {
+      const b = out[r.bn] = out[r.bn] || { batch: r.bn, machineId: r.machine_id,
+        cap: { prepared: 0, holding: 0, ready: 0, released: 0, nextReleaseMin: null, lastReleasedAt: null },
+        body: { prepared: 0, holding: 0, ready: 0, released: 0, nextReleaseMin: null, lastReleasedAt: null } };
+      const s = b[r.side === 'body' ? 'body' : 'cap'];
+      if (r.issued_at) { s.released++; if (!s.lastReleasedAt || String(r.issued_at) > String(s.lastReleasedAt)) s.lastReleasedAt = r.issued_at; }
+      else if (r.scan_in_at) {
+        const h = _gprHoldHours({ scan_in_at: r.scan_in_at, scan_out_at: nowIso });
+        if (h != null && h >= minH) s.ready++;
+        else {
+          s.holding++;
+          const left = h == null ? null : Math.max(0, Math.ceil((minH - h) * 60));
+          if (left != null && (s.nextReleaseMin == null || left < s.nextReleaseMin)) s.nextReleaseMin = left;
+        }
+      } else s.prepared++;
+    });
+    // planned TT per side from the anchored/computed plan, where the batch is known to Planning
+    const st = getPlanningState();
+    for (const bn of Object.keys(out)) {
+      const o = (st.orders || []).find(x => x && !x.deleted && String(x.batchNumber || '').toUpperCase() === bn);
+      if (o) {
+        out[bn].status = o.status || null;
+        try {
+          const a = await _gprPlanAnchor(bn);
+          if (a) { out[bn].cap.planned = a.cap.ttPlanned || null; out[bn].body.planned = a.body.ttPlanned || null; }
+        } catch (e) {}
+      }
+    }
+    res.json({ ok: true, floor, minHoldMin: Math.round(minH * 60), now: nowIso, batches: Object.values(out) });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 

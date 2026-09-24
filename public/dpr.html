@@ -99,6 +99,22 @@ td.r,th.r{text-align:right}
 /* v56U: a line the server refused (closed batch etc.) — shown, never silently kept */
 .run-refused{outline:2px solid var(--red)!important;background:rgba(239,68,68,.10)!important}
 .refused-note{font-size:9px;font-weight:700;color:var(--red);font-family:var(--mono);white-space:nowrap}
+/* v56W: GPR TT hold & release strip under each machine (current shift, today) */
+.ttstrip{margin-top:5px;padding:4px 7px;border:1px solid var(--b1);border-left:3px solid var(--cyan);border-radius:4px;background:rgba(14,165,233,.05);font-size:10px;font-weight:600}
+.ttstrip:empty{display:none}
+.tts-title{display:block;font-family:var(--fc);font-size:9px;letter-spacing:.8px;color:var(--t3);margin-bottom:2px}
+.tts-line{display:flex;flex-wrap:wrap;align-items:center;gap:4px 10px;padding:1px 0}
+.tts-line.next{border-top:1px dashed var(--b2);margin-top:2px;padding-top:3px}
+.tts-line.next .tts-bn{color:var(--amber)}
+.tts-bn{font-family:var(--mono);font-weight:700;color:var(--t1);min-width:96px}
+.tts-side{display:inline-flex;align-items:center;gap:5px;min-width:230px}
+.tts-side b{font-family:var(--fc);font-size:9px;letter-spacing:.6px;color:var(--t3)}
+.tts-hold,.tts-ready,.tts-rel,.tts-prep{font-family:var(--mono);padding:0 5px;border-radius:8px;white-space:nowrap}
+.tts-hold{background:rgba(245,158,11,.15);color:#b45309}
+.tts-ready{background:rgba(34,197,94,.15);color:#15803d}
+.tts-rel{background:rgba(14,165,233,.12);color:var(--cyan)}
+.tts-prep{color:var(--t3)}
+.tts-note{color:var(--t3);font-weight:500}
 .mtable tr:last-child td{border-bottom:none}
 .mtable tr:hover td{background:#fdf5e8}
 .mc-num{font-family:var(--fc);font-weight:800;font-size:14px;color:var(--cyan)}
@@ -483,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v56V</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v56W</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -2594,6 +2610,67 @@ function _v41_carryForwardRuns(fl, d, day, sh, mcId){
   return null;
 }
 
+// ═══ v56W (Ishan, 24 Sep): GPR TT HOLD & RELEASE status on the data-entry sheet ═══════════════
+// Under every machine in the CURRENT shift of TODAY's sheet: each line's batch with its CAP / BODY
+// tanks on hold (time to release), ready to release, and released vs planned — plus, as its own
+// line, any UPCOMING batch on that machine whose tanks GPR has already put on hold. Read-only; it
+// refreshes every minute from GPR and never touches the entry fields.
+window._TTS = window._TTS || { at:0, floor:null, batches:[], minHold:120 };
+function _ttLiveShift(){
+  const t = new Date(), m = t.getHours()*60 + t.getMinutes();
+  return m >= 360 && m < 840 ? 'A' : (m >= 840 && m < 1320 ? 'B' : 'C');
+}
+function _ttStripShift(sh){
+  // today's sheet (the production day turns at 06:00 — C shift after midnight still belongs to it)
+  const t = new Date(), m = t.getHours()*60 + t.getMinutes();
+  const pday = m < 360 ? _localYMD(new Date(t.getTime() - 86400000)) : today();
+  return getDate() === pday && sh === _ttLiveShift();
+}
+async function _ttStatusLoad(force){
+  const T = window._TTS;
+  if(!force && T.floor === curFloor && Date.now() - T.at < 55000) return;
+  try{
+    const r = await fetch(serverUrl + '/api/gpr/tt-status?floor=' + encodeURIComponent(curFloor), { signal: AbortSignal.timeout(8000) });
+    const j = await r.json();
+    if(j && j.ok){ T.at = Date.now(); T.floor = curFloor; T.batches = j.batches || []; T.minHold = j.minHoldMin || 120; }
+  }catch(e){ return; }
+  // repaint only the strips — never re-render the entry sheet for this
+  document.querySelectorAll('.ttstrip').forEach(el=>{
+    const m = el.id.match(/^ttstrip-([ABC])-(.+)$/); if(!m) return;
+    const day = loadDay(curFloor, getDate());
+    const mdat = migrateMachineData((day.shifts[m[1]] && day.shifts[m[1]].machines[m[2]]) || blankMachine());
+    el.innerHTML = _ttStripHtml(m[2], mdat.runs || []);
+  });
+}
+function _ttSideHtml(label, s){
+  if(!s) return '';
+  const hm = n => n==null ? '' : (n >= 60 ? Math.floor(n/60)+'h '+String(n%60).padStart(2,'0')+'m' : n+'m');
+  const parts = [];
+  if(s.holding) parts.push(`<span class="tts-hold" title="on hold — release opens at ${window._TTS.minHold} min">hold ${s.holding}${s.nextReleaseMin!=null?` · ${hm(s.nextReleaseMin)} left`:''}</span>`);
+  if(s.ready) parts.push(`<span class="tts-ready" title="held ${window._TTS.minHold} min — ready to release">✓ ${s.ready} ready</span>`);
+  parts.push(`<span class="tts-rel" title="released to production${s.planned?' / planned':''}">▶ ${s.released}${s.planned?'/'+s.planned:''}</span>`);
+  if(s.prepared) parts.push(`<span class="tts-prep" title="prepared, not yet on hold">○ ${s.prepared}</span>`);
+  return `<span class="tts-side"><b>${label}</b>${parts.join('')}</span>`;
+}
+function _ttStripHtml(mcId, runs){
+  const T = window._TTS;
+  if(T.floor !== curFloor || !T.at){ setTimeout(()=>_ttStatusLoad(), 0); return '<span class="tts-note">TT status loading…</span>'; }
+  const inRuns = (runs||[]).map(r=>String(r.batchNumber||'').toUpperCase()).filter(Boolean);
+  const byBn = {}; (T.batches||[]).forEach(b=>{ byBn[b.batch] = b; });
+  const line = (bn, next) => {
+    const b = byBn[bn];
+    const body = b ? _ttSideHtml('CAP', b.cap) + _ttSideHtml('BODY', b.body) : '<span class="tts-note">no TT recorded in GPR yet</span>';
+    return `<div class="tts-line${next?' next':''}"><span class="tts-bn">${next?'NEXT ':''}${esc(bn)}</span>${body}</div>`;
+  };
+  let h = inRuns.map(bn=>line(bn,false)).join('');
+  // upcoming batches on this machine that GPR has already started holding for
+  (T.batches||[]).filter(b=>b.machineId===mcId && !inRuns.includes(b.batch)
+      && (b.cap.holding+b.cap.ready+b.body.holding+b.body.ready+b.cap.prepared+b.body.prepared) > 0
+      && !['closed','completed'].includes(String(b.status||'')))
+    .forEach(b=>{ h += line(b.batch, true); });
+  return h ? `<span class="tts-title">GPR TT</span>${h}` : '';
+}
+setInterval(()=>{ if(document.querySelector('.ttstrip')) _ttStatusLoad(); }, 60000);
 // v56U (Rahul DPR 2): one cap and one body cut input PER LINE, stacked to sit level with the line it
 // belongs to (same spacing as the run rows); a small line number shows when the machine has 2+ lines.
 function _cutStack(sh, mcId, m, runs, field, idp){
@@ -2781,6 +2858,7 @@ function renderShifts(){
         <td style="color:var(--t3);font-size:10px">${isInGrp?'↑ group':''}</td>
         <td>
           <div id="runs-${sh}-${mc.id}">${runsHtml}</div>
+          ${_ttStripShift(sh) ? `<div class="ttstrip" id="ttstrip-${sh}-${mc.id}">${_ttStripHtml(mc.id, runs)}</div>` : ''}
           <div style="display:flex;gap:6px;margin-top:5px;flex-wrap:wrap">
             <button onclick="addRun('${sh}','${mc.id}')" style="padding:2px 8px;background:transparent;border:1px dashed var(--b2);border-radius:3px;color:var(--t3);font-size:10px;font-family:var(--fc);letter-spacing:.5px;cursor:pointer" title="Add another batch/colour change run">+ Add Run</button>
             ${runs.filter(r=>r.orderId||r.batchNumber).map(r=>{
