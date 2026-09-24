@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56W';
+const APP_BUILD = 'v56X';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -1028,6 +1028,17 @@ const MIGRATIONS = [
       ALTER TABLE gpr_tt ADD COLUMN salvage_account TEXT;
       ALTER TABLE gpr_tt ADD COLUMN reuse_json TEXT;
       ALTER TABLE gpr_ledger ADD COLUMN source_batch TEXT;
+    `
+  },
+  {
+    version: 82,
+    name: 'v56x_tt_card',
+    // v56X (Ishan, 24 Sep): the TT CARD (format GDP029-F12) replaces the label as the tank's record.
+    // Everything GPR already holds is filled from the tank; the few values GPR does not record
+    // (vessel code, required viscosity, solution weight, viscosity reading time, loading temperature,
+    // checked by) are kept here, entered once on the card, audited on every change.
+    sql: `
+      ALTER TABLE gpr_tt ADD COLUMN card_json TEXT;
     `
   },
   {
@@ -2339,6 +2350,10 @@ const GPR_SEED_MASTERS = (() => {
     colourSolutionLowNames: 'Erythrosine,Brilliant Blue',
     tio2SolutionPct: 10,
     tio2Names: 'Titanium Dioxide,TiO2',
+    // v56X: printed on every TT card as "Required Viscosity (in Cps.) at 50°C" unless the card says otherwise
+    requiredViscosityCps: '',
+    // v56X: card header lines (format GDP029-F12)
+    ttCardFormatNo: 'GDP029-F12',
     ttPrepHours: 8,   // v55D: hours from MMT charge to TT ready (colour-matched, viscosity set) — drives the cascade prep alert   // v55: v50E shipped the column as nett_wt (kg per box; qty is lakhs, so gprAvgMg's (w*10)/q yields mg/capsule)
     // ── Cascade master switch (v42U, confirmed by Ishan) ──
     // 0 = ADDITIVE MODE: GPR records In-Production/Close for its own reporting but
@@ -4862,6 +4877,7 @@ async function ensurePostgresTables() {
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS salvage_account TEXT`,
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS reuse_json TEXT`,
       `ALTER TABLE gpr_ledger ADD COLUMN IF NOT EXISTS source_batch TEXT`,
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS card_json TEXT`,   // v56X migration-82 mirror
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -26966,6 +26982,73 @@ app.post('/api/gpr/order-start', async (req, res) => {
 // ─── v55S (Ishan, 19 Sep) — LABEL HISTORY: complete register of every generated TT label,
 // filterable by batch / PC / machine / floor / side / date, Tracking-style. Reprints are counted
 // from the audit trail (GPR_TT_LABEL_REPRINT), so the register shows first generation + reprints.
+// ─── v56X (Ishan, 24 Sep): TT CARDS — format GDP029-F12, one per tank (cap and body separately) ──
+// The card is the tank's Batch Manufacturing Record entry. It is built from the tank itself: batch,
+// PC, charge (MMT ref), machine, colour, the PC's cap/body codes, size, preparation date/shift/time,
+// supplied viscosity and temperature, loading (= release) date/time, prepared by / released by.
+// The values GPR does not otherwise record live in card_json.
+const GPR_CARD_FIELDS = ['tank_code', 'required_visc', 'gel_sol_kg', 'visc_time', 'loading_temp', 'checked_by'];
+app.get('/api/gpr/tt-cards', async (req, res) => {
+  try {
+    const P = n => pgPool ? `$${n}` : '?';
+    const conds = []; const params = [];
+    const add = (frag, v) => { params.push(v); conds.push(frag(params.length)); };
+    const d = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null;
+    if (req.query.batch) add(n => `UPPER(batch_number)=${P(n)}`, String(req.query.batch).trim().toUpperCase());
+    if (req.query.side) add(n => `LOWER(side)=${P(n)}`, String(req.query.side).toLowerCase());
+    if (req.query.machine) add(n => `UPPER(machine_id)=${P(n)}`, String(req.query.machine).toUpperCase());
+    if (d(req.query.from)) add(n => `production_day >= ${P(n)}`, d(req.query.from));
+    if (d(req.query.to)) add(n => `production_day <= ${P(n)}`, d(req.query.to));
+    const fl = String(req.query.floors || '').split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+    if (fl.length) conds.push(`floor IN (${fl.map(f => { params.push(f); return P(params.length); }).join(',')})`);
+    const sql = `SELECT id, tt_number, batch_number, pc_code, machine_id, floor, side, seq_index, seq_total, mmt_ref,
+                        colour_name, colour_code, actual_l, total_charged_kg, viscosity_cps, temperature_c, production_day,
+                        created_at, created_by, scan_in_at, scan_out_at, issued_at, issued_by, status, card_json
+                 FROM gpr_tt ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''}
+                 ORDER BY production_day DESC, UPPER(batch_number), side, seq_index LIMIT 600`;
+    const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+    await _gprEnrichPc(rows);
+    const masters = await gprLoadMasters();
+    const C = (masters && masters.gpr_constants) || {};
+    (rows || []).forEach(r => {
+      let card = {};
+      try { card = JSON.parse(r.card_json || '{}') || {}; } catch (e) { card = {}; }
+      delete r.card_json;
+      const o = gprFindOrder(r.batch_number) || {};
+      r.size = o.size || o.capsuleSize || null;
+      r.customer = o.customer || null;
+      if (!r.pc_code) r.pc_code = o.pcCode || o.pc_code || null;
+      r.card = Object.assign({ required_visc: C.requiredViscosityCps || '' }, card);
+      r.card_missing = GPR_CARD_FIELDS.filter(k => k !== 'checked_by' && (r.card[k] == null || String(r.card[k]).trim() === '')).length;
+    });
+    res.json({ ok: true, formatNo: C.ttCardFormatNo || 'GDP029-F12', rows: rows || [] });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+app.post('/api/gpr/tt/:id/card', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const Pn = pgPool ? '$1' : '?';
+    const cur = pgPool ? (await pgPool.query(`SELECT id, tt_number, batch_number, card_json FROM gpr_tt WHERE id=${Pn}`, [req.params.id])).rows[0]
+                       : db.prepare(`SELECT id, tt_number, batch_number, card_json FROM gpr_tt WHERE id=?`).get(req.params.id);
+    if (!cur) return res.status(404).json({ ok: false, error: 'TT not found' });
+    let card = {};
+    try { card = JSON.parse(cur.card_json || '{}') || {}; } catch (e) { card = {}; }
+    const changed = [];
+    for (const k of GPR_CARD_FIELDS) {
+      if (!(k in (req.body || {}))) continue;
+      const v = String(req.body[k] == null ? '' : req.body[k]).trim().slice(0, 60);
+      if (String(card[k] || '') !== v) { changed.push(`${k}: ${card[k] || '—'} → ${v || '—'}`); card[k] = v; }
+    }
+    if (!changed.length) return res.json({ ok: true, card, changed: 0 });
+    card.updated_at = new Date().toISOString(); card.updated_by = session.username;
+    if (pgPool) await pgPool.query(`UPDATE gpr_tt SET card_json=$1, updated_at=NOW()::TEXT WHERE id=$2`, [JSON.stringify(card), req.params.id]);
+    else db.prepare(`UPDATE gpr_tt SET card_json=?, updated_at=datetime('now') WHERE id=?`).run(JSON.stringify(card), req.params.id);
+    logAudit(session.username, session.role, 'gpr', 'GPR_TT_CARD', `tt=${cur.tt_number} batch=${cur.batch_number} ${changed.join('; ')}`, req.ip);
+    res.json({ ok: true, card, changed: changed.length });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.get('/api/gpr/label-history', async (req, res) => {
   try {
     const { batch, pc, machine, floor, side } = req.query;

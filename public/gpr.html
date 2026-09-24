@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v56W</title>
+<title>GPR · build v56X</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -326,14 +326,38 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 }
 </style>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
+<style id="ttcardcss">
+/* v56X: TT card (GDP029-F12) — screen and print share this sheet */
+.ttcard{box-sizing:border-box;border:1px solid #333;background:#fff;color:#111;padding:10px 12px;font-family:Arial,Helvetica,sans-serif;font-size:11.5px;line-height:1.25;display:flex;flex-direction:column}
+.ttcard .tchead{text-align:center;margin-bottom:5px}
+.ttcard .tchead div{font-size:11.5px}
+.ttcard .tchead .tcco{font-weight:700;font-size:13px;letter-spacing:.3px}
+.ttcard .tchead .b{font-weight:700}
+.ttcard .tcmeta{display:flex;justify-content:space-between;font-size:10px!important;margin-top:3px}
+.ttcard .tcbox{border:2px solid #222;flex:1;display:flex;flex-direction:column}
+.ttcard .tctitle{font-family:Georgia,'Times New Roman',serif;font-weight:700;font-size:15px;letter-spacing:.6px;text-align:center;border-bottom:1.5px solid #222;padding:3px 0}
+.ttcard .tcno{font-weight:700;font-size:12.5px;padding:3px 7px;border-bottom:1.5px solid #222;display:flex;gap:6px}
+.ttcard .tcbody{border:1px solid #222;margin:4px;padding:4px 7px;flex:1;display:flex;flex-direction:column;justify-content:space-between}
+.ttcard .tcrow{display:flex;align-items:baseline;gap:5px;min-height:17px}
+.ttcard .tcl{white-space:nowrap}
+.ttcard .tcl.b{font-weight:700}
+.ttcard .tcv{flex:1;border-bottom:1px dotted #888;font-family:'Courier New',monospace;font-weight:700;font-size:11.5px;min-height:13px;padding:0 3px;color:#0b2a6f}
+.ttcard .tcu{white-space:nowrap}
+.ttcard .tchint{font-size:10px;color:#777;white-space:nowrap}
+.ttcard .tcside{font-family:Arial,sans-serif;font-size:9.5px;color:#15803d}
+.ttcard .tcsign{display:flex;justify-content:space-between;gap:10px;margin-top:10px}
+.ttcard .tcsign>div{flex:1;text-align:center;font-weight:600;display:flex;flex-direction:column;gap:2px}
+.ttcard .tcin{flex:1;min-width:0;border:0;border-bottom:1px solid #0284c7;background:#eef7ff;font-family:'Courier New',monospace;font-weight:700;font-size:11.5px;padding:1px 4px;color:#0b2a6f;border-radius:2px}
+.tcmodal .ttcard{max-width:520px;margin:0 auto}
+</style>
 </head>
 <body>
 
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v56W</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56W</div>
+    <h1>GPR<span class="vpill">v56X</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56X</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -353,7 +377,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v56W</span></div>
+  <div class="nbrand">GPR<span class="vpill">v56X</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -909,21 +933,20 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div id="ilOut"><div class="empty">Pick a range and Load.</div></div>
     </div>
 
-    <!-- v55S: label-generation history — Tracking-style register -->
+    <!-- v56X (Ishan, 24 Sep): TT CARDS (GDP029-F12) replace the label record — one card per tank,
+         cap and body separately, pre-filled from the tank; printable per batch for the BMR. -->
     <div class="card">
-      <div class="card-title">Label history — every generated TT label</div>
-      <div class="card-sub">Complete register of label generations, like Tracking's label history. Filter by batch, PC, machine, floor, side or date; a row's Log opens its full movement trail, 🏷 reprints the label.</div>
-      <div class="fgrid">
-        <div class="field-grp"><label>From</label><input id="lh_from" type="date" onchange="loadLabelHistory()"></div>
-        <div class="field-grp"><label>To</label><input id="lh_to" type="date" onchange="loadLabelHistory()"></div>
-        <div class="field-grp"><label>Batch</label><input id="lh_batch" list="batchOpts" placeholder="all" onchange="loadLabelHistory()"></div>
-        <div class="field-grp"><label>PC code</label><input id="lh_pc" placeholder="all" onchange="loadLabelHistory()"></div>
-        <div class="field-grp"><label>Machine</label><input id="lh_mc" list="mcOpts" placeholder="all" onchange="loadLabelHistory()"></div>
-        <div class="field-grp"><label>Floor</label><select id="lh_floor" onchange="loadLabelHistory()"><option value="">All</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
-        <div class="field-grp"><label>Side</label><select id="lh_side" onchange="loadLabelHistory()"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
-        <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadLabelHistory()">Load</button></div>
-      </div>
-      <div id="lhOut"><div class="empty">Pick filters and Load.</div></div>
+      <div class="card-title">TT cards — transfer tank information &middot; <span id="tc_fmt" class="mono" style="font-size:12px">GDP029-F12</span></div>
+      <div class="card-sub">One card per transfer tank, cap and body separately, filled from the tank's own record. Complete the few values GPR does not capture (vessel code, required viscosity, solution weight, reading time, loading temperature, checked by) and print a batch's cards for the BMR.</div>
+      <div class="ctlbar"><div class="fgrid">
+        <div class="field-grp"><label>Batch</label><input id="tcd_batch" list="batchOpts" placeholder="all" onchange="loadTtCards()" style="text-transform:uppercase"></div>
+        <div class="field-grp"><label>Side</label><select id="tcd_side" onchange="loadTtCards()"><option value="">Cap &amp; body</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp"><label>From</label><input id="tcd_from" type="date" onchange="loadTtCards()"></div>
+        <div class="field-grp"><label>To</label><input id="tcd_to" type="date" onchange="loadTtCards()"></div>
+        <div class="field-grp"><label>Machine</label><input id="tcd_mc" list="mcOpts" placeholder="all" onchange="loadTtCards()"></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadTtCards()">Load</button></div>
+      </div></div>
+      <div id="tcdOut"><div class="empty">Pick a batch (or a date range) and Load.</div></div>
     </div>
   </div>
 
@@ -1077,7 +1100,7 @@ function showPage(id, btn){
   if(id==='mmt'){   mmSection(window._MMSEC||'w'); loadSuggestions(); }   // v56A item 24 / v56B item 1
   if(id==='mmt'){ try{ document.getElementById('m_tank_wrap').style.display = (CUR_FLOOR==='GF') ? '' : 'none'; }catch(_){}}
   if(id==='yield'){ buildYieldPickers(); gprBatchList().then(rcFillBatches); }   // v56T item 6
-  if(id==='log'){ buildYieldPickers(); loadBatchOptions(); loadInputsLog(); loadLabelHistory(); }
+  if(id==='log'){ buildYieldPickers(); loadBatchOptions(); loadInputsLog(); loadTtCards(); }   // v56X: TT cards replace the label history
   if(id==='masters'){ _pcIdx(); }
   // v56C item 6: 'issue' is no longer a page — openTtEntry() does this work on the TT page.
   if(id==='ledger'){ lgSection(window._LGSEC||'a'); _pcIdx(); loadSuggestions(); }   // v56 items 12/16: section-driven, nothing auto-renders
@@ -1605,6 +1628,146 @@ async function buildColourantRows(){
 // ═══ v55K item 15 — yield cascades: month → machine → batch (plan API is the batch source) ═══
 let _YC_PLAN = null;
 // ── v55S: LABEL HISTORY register ──────────────────────────────────────────────
+// ═══ v56X (Ishan, 24 Sep): TT CARDS — format GDP029-F12 ═══════════════════════════════════════
+window._TCD = window._TCD || { rows: [], fmt: 'GDP029-F12' };
+const TCD_EDIT = [['tank_code','T. Tank code no.'],['required_visc','Required viscosity (cps @ 50°C)'],['gel_sol_kg','Gel solution wt (kg)'],
+                  ['visc_time','Viscosity reading time'],['loading_temp','T. Tank temp at loading (°C)'],['checked_by','Checked by']];
+function _istParts(v){ const ms = _tsMs(v); if(ms==null) return null; const d = new Date(ms+330*60000);
+  const iso = d.toISOString(); const hh = d.getUTCHours(), mm = d.getUTCMinutes();
+  const m = hh*60+mm, sh = m>=360 && m<840 ? 'A' : (m>=840 && m<1320 ? 'B' : 'C');
+  const pd = new Date(ms+330*60000-6*3600000).toISOString().slice(0,10);
+  return { date: iso.slice(8,10)+'/'+iso.slice(5,7)+'/'+iso.slice(0,4), pday: pd.slice(8,10)+'/'+pd.slice(5,7)+'/'+pd.slice(0,4), time: iso.slice(11,16), shift: sh }; }
+async function loadTtCards(){
+  const out = document.getElementById('tcdOut'); if(!out) return;
+  const q = new URLSearchParams();
+  const bn = (val('tcd_batch')||'').trim().toUpperCase();
+  if(bn) q.set('batch', bn);
+  if(val('tcd_side')) q.set('side', val('tcd_side'));
+  if(val('tcd_mc')) q.set('machine', val('tcd_mc'));
+  if(!bn && !val('tcd_from')){ setVal('tcd_from', new Date(Date.now()+330*60000-6*3600000-2*86400000).toISOString().slice(0,10)); }
+  if(val('tcd_from')) q.set('from', val('tcd_from'));
+  if(val('tcd_to')) q.set('to', val('tcd_to'));
+  if(floorScoped()) q.set('floors', visibleFloors().join(','));
+  out.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  const d = await api('/api/gpr/tt-cards?'+q.toString());
+  if(!d || !d.ok){ out.innerHTML = '<div class="empty" style="color:var(--red)">'+esc((d&&d.error)||'Could not load the cards')+'</div>'; return; }
+  window._TCD = { rows: d.rows||[], fmt: d.formatNo||'GDP029-F12' };
+  const f = document.getElementById('tc_fmt'); if(f) f.textContent = window._TCD.fmt;
+  renderTtCards();
+}
+function renderTtCards(){
+  const out = document.getElementById('tcdOut'); if(!out) return;
+  const rows = window._TCD.rows;
+  if(!rows.length){ out.innerHTML = '<div class="empty">No transfer tanks for these filters.</div>'; return; }
+  const by = {};
+  rows.forEach(r=>{ const k = String(r.batch_number).toUpperCase(); (by[k] = by[k] || []).push(r); });
+  const stat = r => r.issued_at ? '<span class="sdtag" style="background:var(--green-l,#e7f6ec);color:var(--green)">RELEASED</span>'
+                  : r.scan_in_at ? '<span class="sdtag" style="background:#fff4df;color:#b45309">ON HOLD</span>' : '<span class="sdtag">PREPARED</span>';
+  let h = '<div class="tswrap" style="max-height:520px"><table class="gtable"><thead><tr><th style="width:11%">Batch</th><th style="width:8%">TT</th><th style="width:7%">Side</th><th style="width:7%">MC</th>'
+    + '<th style="width:9%">Charge</th><th style="width:13%">Prepared</th><th style="width:13%">Loaded (released)</th><th style="width:10%">Status</th><th style="width:10%">Card</th><th style="width:12%"></th></tr></thead><tbody>';
+  Object.keys(by).forEach(bn=>{
+    const L = by[bn].sort((a,b)=>((a.side==='cap'?0:1)-(b.side==='cap'?0:1)) || (a.seq_index||0)-(b.seq_index||0));
+    const ids = L.map(r=>r.id).join(',');
+    h += '<tr class="sumrow"><td colspan="8"><span class="mono">'+esc(bn)+'</span> &middot; '+esc(L[0].machine_id||'')+' &middot; '+esc(L[0].colour_name||'')
+      + ' &middot; '+L.filter(r=>r.side==='cap').length+' cap / '+L.filter(r=>r.side==='body').length+' body</td>'
+      + '<td colspan="2" style="text-align:right"><button class="btn sm primary" onclick="ttCardPrint(['+ids+'])">&#128424; Print batch cards (BMR)</button></td></tr>';
+    L.forEach(r=>{
+      const p = _istParts(r.created_at), l = _istParts(r.issued_at);
+      h += '<tr><td class="mono">'+esc(bn)+'</td><td class="mono"><b>'+esc(String(r.tt_number||'').replace(/^TT-/,''))+'</b></td>'
+        + '<td><span class="sdtag sd-'+esc(r.side)+'">'+esc(String(r.side).toUpperCase())+'</span></td><td>'+esc(r.machine_id||'')+'</td>'
+        + '<td class="mono" style="font-size:11px">'+esc(r.mmt_ref||'—')+'</td>'
+        + '<td class="mono" style="font-size:11px">'+(p?esc(p.date+' '+p.shift+' '+p.time):'—')+'</td>'
+        + '<td class="mono" style="font-size:11px">'+(l?esc(l.date+' '+l.time):'—')+'</td>'
+        + '<td>'+stat(r)+'</td>'
+        + '<td>'+(r.card_missing ? '<span style="color:var(--amber);font-size:11px">'+r.card_missing+' to fill</span>' : '<span style="color:var(--green);font-size:11px">complete</span>')+'</td>'
+        + '<td style="white-space:nowrap;text-align:right"><button class="btn sm" onclick="ttCardOpen('+r.id+')">Open</button> <button class="btn sm" onclick="ttCardPrint(['+r.id+'])">&#128424;</button></td></tr>';
+    });
+  });
+  out.innerHTML = h + '</tbody></table></div>';
+}
+// the card itself — same layout as the printed format; `ed` puts inputs in the values GPR doesn't hold
+function ttCardHtml(r, ed){
+  const c = r.card || {}, p = _istParts(r.created_at), l = _istParts(r.issued_at);
+  const v = (k, txt) => ed ? '<input class="tcin" data-k="'+k+'" value="'+esc(c[k]||'')+'">' : '<span class="tcv">'+esc(txt!=null?txt:(c[k]||''))+'</span>';
+  const tick = s => r.side===s ? ' <b class="tcside">&#10004; this tank</b>' : '';
+  const capC = r.cap_code || (r.side==='cap' ? r.colour_code : '') || '', bodyC = r.body_code || (r.side==='body' ? r.colour_code : '') || '';
+  const row = (lbl, val2, bold) => '<div class="tcrow"><span class="tcl'+(bold?' b':'')+'">'+lbl+'</span>'+val2+'</div>';
+  const fx = t => '<span class="tcv">'+esc(t==null||t===''?'':String(t))+'</span>';
+  return '<div class="ttcard">'
+    + '<div class="tchead"><div class="tcco">SUNIL HEALTHCARE LIMITED</div><div>17/18, Old Industrial Area, Alwar</div><div class="b">Gel Preparation Room</div>'
+    + '<div class="tcmeta"><span>Frequency : Every Tank</span><span>Format No.:'+esc(window._TCD.fmt||'GDP029-F12')+'</span></div></div>'
+    + '<div class="tcbox"><div class="tctitle">TRANSFER TANK INFORMATION</div>'
+    + '<div class="tcno">T. TANK No. <span class="tcv">'+esc(r.tt_number||'')+'</span></div>'
+    + '<div class="tcbody">'
+    + row('Batch No. :', fx(r.batch_number))
+    + row('Product Code No. :', fx(r.pc_code))
+    + row('Charge No. :', fx(r.mmt_ref))
+    + row('T. Tank Code No. :', v('tank_code'), true)
+    + row('For Machine No. :', fx(r.machine_id), true)
+    + row('Colour :', fx(r.colour_name))
+    + '<div class="tcrow"><span class="tcl b" style="min-width:0">CAP :</span><span class="tcv" style="flex:1">'+esc(capC)+tick('cap')+'</span>'
+    +   '<span class="tcl b" style="min-width:0">BODY :</span><span class="tcv" style="flex:1">'+esc(bodyC)+tick('body')+'</span></div>'
+    + row('Colour Code :', fx(r.colour_code || r.side_code || (r.side==='cap'?capC:bodyC)))
+    + row('Size :', fx(r.size))
+    + row('Date/Shift of Preparation :', fx(p ? p.pday+' / '+p.shift : ''))
+    + row('Time of Preparation :', fx(p ? p.time : ''))
+    + row('Gel Sol.wt. :', v('gel_sol_kg')+' <span class="tcu">Kgs.</span>'+(ed && r.actual_l ? ' <span class="tchint">('+fmt(r.actual_l,0)+' L issued)</span>' : ''))
+    + row('Required Viscosity (in Cps.) :', v('required_visc')+' <span class="tcu">at 50&deg;C</span>')
+    + row('Supplied Viscosity (in Cps.) :', fx(r.viscosity_cps)+' <span class="tcu">at 50&deg;C</span>')
+    + '<div class="tcrow"><span class="tcl">Time</span>'+v('visc_time')+'<span class="tcl" style="min-width:0">Temp&deg;C</span>'+fx(r.temperature_c)+'</div>'
+    + row('Date and Time of Loading :', fx(l ? l.date+' '+l.time : ''))
+    + row('T. Tank Temperature &deg;C at Loading Time', v('loading_temp'))
+    + '<div class="tcsign"><div><span class="tcv">'+esc(r.created_by||'')+'</span>Prepared by</div><div><span class="tcv">'+esc(r.issued_by||'')+'</span>Released by</div><div>'+(ed?v('checked_by'):'<span class="tcv">'+esc(c.checked_by||'')+'</span>')+'Checked by</div></div>'
+    + '</div></div></div>';
+}
+function ttCardOpen(id){
+  const r = window._TCD.rows.find(x=>x.id===id); if(!r) return;
+  ttModalOpen('TT card — '+esc(r.batch_number)+' · '+esc(r.tt_number),
+    '<div class="tcmodal">'+ttCardHtml(r, true)+'</div>'
+    + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">'
+    + '<button class="btn" onclick="ttCardPrint(['+id+'])">&#128424; Print</button>'
+    + '<button class="btn primary" onclick="ttCardSave('+id+')">Save card</button></div>'
+    + '<div style="font-size:11px;color:var(--t3);margin-top:6px">Grey values come from the tank record and cannot be edited here; every saved change is audited.'
+    + (r.card && r.card.updated_by ? ' Last updated by '+esc(r.card.updated_by)+' '+esc(dt(r.card.updated_at))+'.' : '')+'</div>');
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '560px';
+}
+// open a tank's card from anywhere (TT sheet, shift log): load that batch's cards, then open it
+async function ttCardFor(id, bn){
+  if(!window._TCD.rows.some(r=>r.id===id)){
+    const d = await api('/api/gpr/tt-cards?batch='+encodeURIComponent(bn));
+    if(!d || !d.ok){ toast('Could not load the card','err'); return; }
+    window._TCD = { rows: d.rows||[], fmt: d.formatNo||'GDP029-F12' };
+  }
+  ttCardOpen(id);
+}
+async function ttCardSave(id){
+  const body = {};
+  document.querySelectorAll('.tcmodal .tcin').forEach(i=>{ body[i.dataset.k] = i.value; });
+  const d = await post('/api/gpr/tt/'+id+'/card', body);
+  if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not save the card','err'); return; }
+  const r = window._TCD.rows.find(x=>x.id===id);
+  if(r){ r.card = d.card; r.card_missing = TCD_EDIT.filter(([k])=>k!=='checked_by' && !String(d.card[k]||'').trim()).length; }
+  toast(d.changed ? 'Card saved' : 'No change','ok');
+  renderTtCards();
+}
+// print: A4, four cards to a page (2 × 2), cap cards first then body, in tank order
+function ttCardPrint(ids){
+  const rows = window._TCD.rows.filter(r=>ids.includes(r.id))
+    .sort((a,b)=>String(a.batch_number).localeCompare(String(b.batch_number)) || ((a.side==='cap'?0:1)-(b.side==='cap'?0:1)) || (a.seq_index||0)-(b.seq_index||0));
+  if(!rows.length) return;
+  const css = document.getElementById('ttcardcss').textContent;
+  const w = window.open('', '_blank');
+  if(!w){ toast('Allow pop-ups to print the cards','err'); return; }
+  w.document.write('<!doctype html><html><head><title>TT cards '+esc(rows[0].batch_number)+'</title><style>'+css
+    + '@page{size:A4;margin:8mm} body{margin:0;font-family:Arial,Helvetica,sans-serif} .sheet{display:grid;grid-template-columns:1fr 1fr;gap:6mm;page-break-after:always}'
+    + '.sheet:last-child{page-break-after:auto} .ttcard{height:136mm} .pfoot{grid-column:1/-1;font-size:8pt;color:#666;text-align:right}</style></head><body>');
+  for(let i=0;i<rows.length;i+=4){
+    w.document.write('<div class="sheet">'+rows.slice(i,i+4).map(r=>ttCardHtml(r,false)).join('')
+      + '<div class="pfoot">GPR &middot; printed '+esc(new Date(Date.now()+330*60000).toISOString().slice(0,16).replace('T',' '))+' IST by '+esc(SESSION.username||'')+' &middot; page '+(i/4+1)+' of '+Math.ceil(rows.length/4)+'</div></div>');
+  }
+  w.document.write('<script>setTimeout(function(){window.print()},300)<\/script></body></html>');
+  w.document.close();
+}
 async function loadLabelHistory(){
   const out = document.getElementById('lhOut'); if(!out) return;
   const now = new Date(Date.now()+330*60000).toISOString().slice(0,10);
@@ -2383,6 +2546,7 @@ function lcActions(t){
   }
   else if(st==='ready') b.push('<button class="btn sm ok" onclick="ttRelease('+t.id+')">&#9654; Release</button>');
   b.push('<button class="btn sm" onclick="ttMove('+t.id+')" title="Movement log">Log</button>');
+  b.push('<button class="btn sm" onclick="ttCardFor('+t.id+',\''+esc(t.batch_number||'')+'\')" title="TT card (GDP029-F12)">Card</button>');   // v56X
   return b.join(' ');
 }
 async function ttHold(id){
