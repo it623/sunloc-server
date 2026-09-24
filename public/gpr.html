@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v56U</title>
+<title>GPR · build v56V</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -309,8 +309,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v56U</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56U</div>
+    <h1>GPR<span class="vpill">v56V</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56V</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -330,7 +330,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v56U</span></div>
+  <div class="nbrand">GPR<span class="vpill">v56V</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -2085,12 +2085,18 @@ async function ttLoadLots(force){
     const d = await api('/api/gpr/ledger/source-lots'+q);
     window._LOTS = { at: Date.now(), rows: (d && d.ok) ? (d.lots||[]) : [] };
   }catch(e){ window._LOTS = { at: Date.now(), rows: [] }; }
-  let dl = document.getElementById('lotOpts');
-  if(!dl){ dl = document.createElement('datalist'); dl.id = 'lotOpts'; document.body.appendChild(dl); }
-  const seen = {};
-  dl.innerHTML = window._LOTS.rows.filter(l=>{ const k=l.batch_number; if(seen[k]) return false; seen[k]=1; return true; })
-    .map(l=>'<option value="'+esc(l.batch_number)+'">'+esc(window._LOTS.rows.filter(x=>x.batch_number===l.batch_number)
-      .map(x=>x.account_label+' '+(x.side?x.side.toUpperCase():'CAP+BODY')+' '+(x.colour_code||'')+' '+fmt(x.balance_kg,1)+'kg').join(' | '))+'</option>').join('');
+  // v56V (Rahul): one batch list PER ACCOUNT — a Cuttings line offers only batches with cutting
+  // stock (cap and body shown separately), an AIM Salvage line only batches with AIM salvage.
+  REUSE_ACCTS.forEach(([acct])=>{
+    const id = 'lotOpts_'+acct;
+    let dl = document.getElementById(id);
+    if(!dl){ dl = document.createElement('datalist'); dl.id = id; document.body.appendChild(dl); }
+    const rows = window._LOTS.rows.filter(l=>l.account===acct);
+    const bns = [...new Set(rows.map(l=>l.batch_number))];
+    dl.innerHTML = bns.map(bn=>'<option value="'+esc(bn)+'">'+esc(rows.filter(x=>x.batch_number===bn)
+      .map(x=>(x.side?x.side.toUpperCase():'C+B')+' '+(x.colour_code||'')+' '+fmt(x.balance_kg,1)+' kg').join('  |  '))+'</option>').join('');
+  });
+  ttReuseRefresh();
   return window._LOTS.rows;
 }
 function ttAddReuse(p, pre){
@@ -2098,36 +2104,75 @@ function ttAddReuse(p, pre){
   const side = p==='tc' ? 'cap' : 'body';
   if(!w.querySelector('.rlhead')) w.insertAdjacentHTML('afterbegin','<div class="rline rlhead"><span>Account</span><span>From batch</span><span>Colour code</span><span>Side</span><span>kg</span><span></span></div>');
   const d = document.createElement('div'); d.className = 'rline';
-  d.innerHTML = '<select class="rl_a" onchange="ttReuseLot(this)" title="Account">'+REUSE_ACCTS.map(([k,l])=>'<option value="'+k+'">'+l+'</option>').join('')+'</select>'
-    + '<input class="rl_b" list="lotOpts" placeholder="batch" onchange="ttReuseLot(this)" style="text-transform:uppercase">'
+  d.innerHTML = '<select class="rl_a" onchange="ttReuseAcct(this)" title="Account">'+REUSE_ACCTS.map(([k,l])=>'<option value="'+k+'">'+l+'</option>').join('')+'</select>'
+    + '<input class="rl_b" list="lotOpts_cutting" placeholder="batch" onchange="ttReuseLot(this)" style="text-transform:uppercase">'
     + '<input class="rl_c" list="cutColourOpts" placeholder="code" style="text-transform:uppercase">'
-    + '<select class="rl_s" title="Cap / body of the material (C+B = whole capsules)"><option value="">C+B</option><option value="cap">Cap</option><option value="body">Body</option></select>'
+    + '<select class="rl_s" onchange="ttReuseLot(this,true)" title="Cap / body of the material (C+B = whole capsules)"><option value="">C+B</option><option value="cap">Cap</option><option value="body">Body</option></select>'
     + '<input class="rl_k" type="number" inputmode="decimal" placeholder="kg" oninput="ttCalc(\''+p+'\')">'
     + '<button class="mlx" title="Remove" onclick="const w=this.closest(\'.rline\').parentNode;this.closest(\'.rline\').remove();if(!w.querySelector(\'.rline:not(.rlhead)\'))w.innerHTML=\'\';ttCalc(\''+p+'\')">&#10005;</button>'
     + '<div class="rl_n"></div>';
   w.appendChild(d);
-  d.querySelector('.rl_s').value = (pre && pre.side!=null) ? pre.side : side;   // a cutting line defaults to this tank's side
-  if(pre){ d.querySelector('.rl_a').value = pre.account||'cutting'; d.querySelector('.rl_b').value = pre.source_batch||'';
-           d.querySelector('.rl_c').value = pre.colour_code||''; d.querySelector('.rl_k').value = pre.kg||''; }
+  const acct = (pre && pre.account) || 'cutting';
+  d.querySelector('.rl_a').value = acct;
+  d.querySelector('.rl_b').setAttribute('list', 'lotOpts_'+acct);
+  // cuttings default to this tank's side; salvage is whole capsules (C+B)
+  d.querySelector('.rl_s').value = (pre && pre.side!=null) ? pre.side : (acct==='cutting' ? side : '');
+  if(pre){ d.querySelector('.rl_b').value = pre.source_batch||''; d.querySelector('.rl_c').value = pre.colour_code||''; d.querySelector('.rl_k').value = pre.kg||''; }
   ttLoadLots();
 }
-// picking a source batch fills that lot's colour code and side, and states its available balance
-async function ttReuseLot(el){
+// account changed: the batch list follows the account; a batch not holding that account is cleared
+function ttReuseAcct(el){
+  const d = el.closest('.rline'); if(!d) return;
+  const acct = el.value, p = d.parentNode.id.slice(0,2);
+  d.querySelector('.rl_b').setAttribute('list', 'lotOpts_'+acct);
+  const bn = d.querySelector('.rl_b').value.trim().toUpperCase();
+  const lots = (window._LOTS && window._LOTS.rows) || [];
+  if(bn && !lots.some(l=>l.batch_number===bn && l.account===acct)){ d.querySelector('.rl_b').value=''; d.querySelector('.rl_c').value=''; }
+  d.querySelector('.rl_s').value = acct==='cutting' ? (p==='tc'?'cap':'body') : '';
+  ttReuseLot(el, true);
+}
+// batch (or side) chosen: take that lot's colour code; a batch pick also takes the side that holds
+// stock when the current side has none. The note is then drawn by ttReuseRefresh.
+async function ttReuseLot(el, sideFixed){
   const d = el.closest('.rline'); if(!d) return;
   const acct = d.querySelector('.rl_a').value, bn = d.querySelector('.rl_b').value.trim().toUpperCase();
-  const note = d.querySelector('.rl_n');
-  if(!bn){ note.textContent = ''; return; }
-  const lots = await ttLoadLots();
-  const cand = lots.filter(l=>l.batch_number===bn && l.account===acct);
-  const want = d.querySelector('.rl_s').value;
-  const hit = cand.find(l=>(l.side||'')===want) || cand[0];
-  if(hit){
-    if(hit.colour_code) d.querySelector('.rl_c').value = hit.colour_code;
-    d.querySelector('.rl_s').value = hit.side || '';
-    note.innerHTML = esc(hit.account_label)+' from <b>'+esc(bn)+'</b> '+esc(hit.side?hit.side.toUpperCase():'cap+body')+' · <b>'+fmt(hit.balance_kg,1)+' kg</b> available';
-  } else {
-    note.innerHTML = '<span style="color:var(--amber)">No accepted '+esc(acct.replace('_',' '))+' stock recorded for '+esc(bn)+' — it will still be booked, against '+esc(bn)+'.</span>';
+  if(bn){
+    const lots = await ttLoadLots();
+    const cand = lots.filter(l=>l.batch_number===bn && l.account===acct);
+    const sEl = d.querySelector('.rl_s');
+    let hit = cand.find(l=>(l.side||'')===sEl.value);
+    if(!hit && !sideFixed && cand.length){ hit = cand[0]; sEl.value = hit.side || ''; }
+    if(hit && hit.colour_code) d.querySelector('.rl_c').value = hit.colour_code;
   }
+  const p = d.parentNode.id.slice(0,2);
+  ttCalc(p);
+}
+// v56V (Rahul): every line states the lot's AVAILABLE kg for its account + batch + side, what the
+// open lines on BOTH tanks are taking from that same lot, and what REMAINS — live as kg is typed.
+function ttReuseRefresh(){
+  const lots = (window._LOTS && window._LOTS.rows) || [];
+  const all = [...document.querySelectorAll('#tc_reuse .rline:not(.rlhead), #tb_reuse .rline:not(.rlhead)')];
+  const key = d => d.querySelector('.rl_a').value+'|'+d.querySelector('.rl_b').value.trim().toUpperCase()+'|'+d.querySelector('.rl_s').value;
+  const taking = {};
+  all.forEach(d=>{ const k = key(d); taking[k] = (taking[k]||0) + (parseFloat(d.querySelector('.rl_k').value)||0); });
+  all.forEach(d=>{
+    const note = d.querySelector('.rl_n');
+    const acct = d.querySelector('.rl_a').value, bn = d.querySelector('.rl_b').value.trim().toUpperCase(), sd = d.querySelector('.rl_s').value;
+    if(!bn){ note.innerHTML = ''; return; }
+    const lbl = (REUSE_ACCTS.find(a=>a[0]===acct)||[acct,acct])[1];
+    const lot = lots.find(l=>l.batch_number===bn && l.account===acct && (l.side||'')===sd);
+    const others = lots.filter(l=>l.batch_number===bn && l.account===acct && (l.side||'')!==sd)
+      .map(l=>(l.side?l.side.toUpperCase():'C+B')+' '+fmt(l.balance_kg,1)+' kg').join(' · ');
+    if(!lot){
+      note.innerHTML = '<span style="color:var(--amber)">No '+esc(lbl)+' '+esc(sd?sd.toUpperCase():'C+B')+' stock recorded for '+esc(bn)
+        + (others ? ' — available: '+esc(others) : '') + '. It will still be booked against '+esc(bn)+'.</span>';
+      return;
+    }
+    const tk = taking[key(d)]||0, rem = lot.balance_kg - tk;
+    note.innerHTML = esc(lbl)+' '+esc(bn)+' <b>'+esc(sd?sd.toUpperCase():'C+B')+'</b> · available <b>'+fmt(lot.balance_kg,1)+'</b>'
+      + (tk>0 ? ' · taking '+fmt(tk,1)+' · remaining <b style="color:'+(rem<-0.05?'var(--red)':'var(--green)')+'">'+fmt(rem,1)+' kg</b>'+(rem<-0.05?' (over stock)':'') : ' kg')
+      + (others ? ' <span style="color:var(--t3)">· also '+esc(others)+'</span>' : '');
+  });
 }
 function _reuseLines(p){
   return [...document.querySelectorAll('#'+p+'_reuse .rline:not(.rlhead)')].map(d=>({
@@ -2169,6 +2214,7 @@ function ttCalc(p){
   const note = document.getElementById(p+'_calcL');
   if(act && calcL > 0 && act.dataset.manual!=='1') act.value = calcL.toFixed(1);
   _ttSeqNote(p);
+  ttReuseRefresh();   // v56V: available / taking / remaining per lot, both tanks
   if(note){
     note.innerHTML = calcL > 0
       ? 'calc <b>'+fmt(calcL,1)+' L</b> = '+fmt(gelKg,1)+' kg ÷ '+gPerL+(solKg>0?' + colour soln '+fmt(solKg,1)+' L':'')
