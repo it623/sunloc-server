@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v56X</title>
+<title>GPR · build v56Y</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -349,6 +349,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 .ttcard .tcsign>div{flex:1;text-align:center;font-weight:600;display:flex;flex-direction:column;gap:2px}
 .ttcard .tcin{flex:1;min-width:0;border:0;border-bottom:1px solid #0284c7;background:#eef7ff;font-family:'Courier New',monospace;font-weight:700;font-size:11.5px;padding:1px 4px;color:#0b2a6f;border-radius:2px}
 .tcmodal .ttcard{max-width:520px;margin:0 auto}
+.ttcard .tcin.tcnow{background:#fff4d6;border-bottom-color:#d97706}
+.tcreleased{max-width:520px;margin:0 auto 8px;padding:7px 10px;border:1px solid #9fd8b0;border-radius:6px;background:#f0fbf3;font-family:Arial,sans-serif;font-size:12px;color:#14532d}
 </style>
 </head>
 <body>
@@ -356,8 +358,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v56X</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56X</div>
+    <h1>GPR<span class="vpill">v56Y</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56Y</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -377,7 +379,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v56X</span></div>
+  <div class="nbrand">GPR<span class="vpill">v56Y</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -939,6 +941,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
       <div class="card-title">TT cards — transfer tank information &middot; <span id="tc_fmt" class="mono" style="font-size:12px">GDP029-F12</span></div>
       <div class="card-sub">One card per transfer tank, cap and body separately, filled from the tank's own record. Complete the few values GPR does not capture (vessel code, required viscosity, solution weight, reading time, loading temperature, checked by) and print a batch's cards for the BMR.</div>
       <div class="ctlbar"><div class="fgrid">
+        <div class="field-grp"><label>Show</label><select id="tcd_show" onchange="loadTtCards()"><option value="todo">Cards to fill</option><option value="all">All cards</option></select></div>
         <div class="field-grp"><label>Batch</label><input id="tcd_batch" list="batchOpts" placeholder="all" onchange="loadTtCards()" style="text-transform:uppercase"></div>
         <div class="field-grp"><label>Side</label><select id="tcd_side" onchange="loadTtCards()"><option value="">Cap &amp; body</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
         <div class="field-grp"><label>From</label><input id="tcd_from" type="date" onchange="loadTtCards()"></div>
@@ -1644,7 +1647,11 @@ async function loadTtCards(){
   if(bn) q.set('batch', bn);
   if(val('tcd_side')) q.set('side', val('tcd_side'));
   if(val('tcd_mc')) q.set('machine', val('tcd_mc'));
-  if(!bn && !val('tcd_from')){ setVal('tcd_from', new Date(Date.now()+330*60000-6*3600000-2*86400000).toISOString().slice(0,10)); }
+  // v56Y: "Cards to fill" (default) lists every incomplete card on the floor — no date needed;
+  // "All cards" keeps the two-day default window.
+  const todo = (val('tcd_show')||'todo') === 'todo';
+  if(todo) q.set('todo','1');
+  else if(!bn && !val('tcd_from')){ setVal('tcd_from', new Date(Date.now()+330*60000-6*3600000-2*86400000).toISOString().slice(0,10)); }
   if(val('tcd_from')) q.set('from', val('tcd_from'));
   if(val('tcd_to')) q.set('to', val('tcd_to'));
   if(floorScoped()) q.set('floors', visibleFloors().join(','));
@@ -1657,20 +1664,22 @@ async function loadTtCards(){
 }
 function renderTtCards(){
   const out = document.getElementById('tcdOut'); if(!out) return;
-  const rows = window._TCD.rows;
-  if(!rows.length){ out.innerHTML = '<div class="empty">No transfer tanks for these filters.</div>'; return; }
+  const todo = (val('tcd_show')||'todo') === 'todo';
+  const rows = todo ? window._TCD.rows.filter(r=>r.card_missing>0) : window._TCD.rows;   // a card saved complete drops off at once
+  if(!rows.length){ out.innerHTML = '<div class="empty">'+(todo ? '<span style="color:var(--green)">&#10004;</span> Every card is complete — nothing left to fill.' : 'No transfer tanks for these filters.')+'</div>'; return; }
   const by = {};
   rows.forEach(r=>{ const k = String(r.batch_number).toUpperCase(); (by[k] = by[k] || []).push(r); });
   const stat = r => r.issued_at ? '<span class="sdtag" style="background:var(--green-l,#e7f6ec);color:var(--green)">RELEASED</span>'
                   : r.scan_in_at ? '<span class="sdtag" style="background:#fff4df;color:#b45309">ON HOLD</span>' : '<span class="sdtag">PREPARED</span>';
-  let h = '<div class="tswrap" style="max-height:520px"><table class="gtable"><thead><tr><th style="width:11%">Batch</th><th style="width:8%">TT</th><th style="width:7%">Side</th><th style="width:7%">MC</th>'
+  let h = (todo ? '<div class="hbnote" style="margin:0 0 6px"><b style="color:var(--amber)">'+rows.length+' card'+(rows.length===1?'':'s')+' to fill</b> on '+Object.keys(rows.reduce((a,r)=>(a[String(r.batch_number).toUpperCase()]=1,a),{})).length+' batch(es) &middot; prepared in the last 14 days &middot; a completed card drops off this list</div>' : '')
+    + '<div class="tswrap" style="max-height:520px"><table class="gtable"><thead><tr><th style="width:11%">Batch</th><th style="width:8%">TT</th><th style="width:7%">Side</th><th style="width:7%">MC</th>'
     + '<th style="width:9%">Charge</th><th style="width:13%">Prepared</th><th style="width:13%">Loaded (released)</th><th style="width:10%">Status</th><th style="width:10%">Card</th><th style="width:12%"></th></tr></thead><tbody>';
   Object.keys(by).forEach(bn=>{
     const L = by[bn].sort((a,b)=>((a.side==='cap'?0:1)-(b.side==='cap'?0:1)) || (a.seq_index||0)-(b.seq_index||0));
     const ids = L.map(r=>r.id).join(',');
     h += '<tr class="sumrow"><td colspan="8"><span class="mono">'+esc(bn)+'</span> &middot; '+esc(L[0].machine_id||'')+' &middot; '+esc(L[0].colour_name||'')
       + ' &middot; '+L.filter(r=>r.side==='cap').length+' cap / '+L.filter(r=>r.side==='body').length+' body</td>'
-      + '<td colspan="2" style="text-align:right"><button class="btn sm primary" onclick="ttCardPrint(['+ids+'])">&#128424; Print batch cards (BMR)</button></td></tr>';
+      + '<td colspan="2" style="text-align:right"><button class="btn sm primary" onclick="ttCardPrintBatch(\''+esc(bn)+'\')" title="Prints EVERY card of the batch, filled or not">&#128424; Print batch cards (BMR)</button></td></tr>';
     L.forEach(r=>{
       const p = _istParts(r.created_at), l = _istParts(r.issued_at);
       h += '<tr><td class="mono">'+esc(bn)+'</td><td class="mono"><b>'+esc(String(r.tt_number||'').replace(/^TT-/,''))+'</b></td>'
@@ -1720,16 +1729,23 @@ function ttCardHtml(r, ed){
     + '<div class="tcsign"><div><span class="tcv">'+esc(r.created_by||'')+'</span>Prepared by</div><div><span class="tcv">'+esc(r.issued_by||'')+'</span>Released by</div><div>'+(ed?v('checked_by'):'<span class="tcv">'+esc(c.checked_by||'')+'</span>')+'Checked by</div></div>'
     + '</div></div></div>';
 }
-function ttCardOpen(id){
+function ttCardOpen(id, justReleased){
   const r = window._TCD.rows.find(x=>x.id===id); if(!r) return;
   ttModalOpen('TT card — '+esc(r.batch_number)+' · '+esc(r.tt_number),
-    '<div class="tcmodal">'+ttCardHtml(r, true)+'</div>'
+    (justReleased ? '<div class="tcreleased">&#10004; <b>'+esc(r.tt_number)+'</b> released to production. Record the <b>T. Tank code</b> and <b>temperature at loading</b> now &mdash; fill the rest here too, or later from Log &rarr; TT cards.</div>' : '')
+    + '<div class="tcmodal">'+ttCardHtml(r, true)+'</div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">'
     + '<button class="btn" onclick="ttCardPrint(['+id+'])">&#128424; Print</button>'
     + '<button class="btn primary" onclick="ttCardSave('+id+')">Save card</button></div>'
     + '<div style="font-size:11px;color:var(--t3);margin-top:6px">Grey values come from the tank record and cannot be edited here; every saved change is audited.'
     + (r.card && r.card.updated_by ? ' Last updated by '+esc(r.card.updated_by)+' '+esc(dt(r.card.updated_at))+'.' : '')+'</div>');
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '560px';
+  // focus the first empty field — on release, the loading temperature / tank code come first
+  const order = justReleased ? ['loading_temp','tank_code','gel_sol_kg','required_visc','visc_time','checked_by'] : TCD_EDIT.map(x=>x[0]);
+  const ins = [...document.querySelectorAll('.tcmodal .tcin')];
+  if(justReleased) ins.filter(i=>['loading_temp','tank_code'].includes(i.dataset.k)).forEach(i=>i.classList.add('tcnow'));
+  const first = order.map(k=>ins.find(i=>i.dataset.k===k)).find(i=>i && !i.value);
+  if(first) setTimeout(()=>first.focus(), 60);
 }
 // open a tank's card from anywhere (TT sheet, shift log): load that batch's cards, then open it
 async function ttCardFor(id, bn){
@@ -1739,6 +1755,26 @@ async function ttCardFor(id, bn){
     window._TCD = { rows: d.rows||[], fmt: d.formatNo||'GDP029-F12' };
   }
   ttCardOpen(id);
+}
+// v56Y: the BMR print always takes the WHOLE batch (the to-fill list shows only incomplete cards)
+async function ttCardPrintBatch(bn){
+  const d = await api('/api/gpr/tt-cards?batch='+encodeURIComponent(bn));
+  if(!d || !d.ok || !(d.rows||[]).length){ toast('Could not load the batch cards','err'); return; }
+  const keep = (window._TCD.rows||[]).filter(r=>String(r.batch_number).toUpperCase()!==String(bn).toUpperCase());
+  window._TCD = { rows: keep.concat(d.rows), fmt: d.formatNo||'GDP029-F12' };
+  const left = d.rows.filter(r=>r.card_missing>0).length;
+  if(left && !confirm(left+' of '+d.rows.length+' cards for '+bn+' still have blanks — they print with dotted lines to fill by hand.\n\nPrint all '+d.rows.length+' cards?')) return;
+  ttCardPrint(d.rows.map(r=>r.id));
+  renderTtCards();
+}
+// v56Y: right after Release — open that tank's card with the loading-time fields first in line
+async function ttCardAfterRelease(id){
+  const d = await api('/api/gpr/tt-cards?id='+encodeURIComponent(id));
+  if(!d || !d.ok || !(d.rows||[]).length) return;
+  const r = d.rows[0];
+  const rest = (window._TCD.rows||[]).filter(x=>x.id!==id);
+  window._TCD = { rows: rest.concat([r]), fmt: d.formatNo||'GDP029-F12' };
+  ttCardOpen(id, true);
 }
 async function ttCardSave(id){
   const body = {};
@@ -2558,8 +2594,10 @@ async function ttHold(id){
 async function ttRelease(id){
   const d = await post('/api/gpr/tt/'+id+'/release', {});
   if(!d.ok){ toast(d.detail || d.error || 'Could not release the tank','err'); return; }
-  toast('Released to production','ok');
+  toast('Released to production — complete its TT card','ok');
   refreshTtViews();
+  if(typeof loadHoldBoard==='function' && document.getElementById('plbody_hold')?.classList.contains('open')) loadHoldBoard();
+  ttCardAfterRelease(id);   // v56Y: the card opens at the moment the loading values are known
 }
 // label printing survives only as a reprint from the Log tab's label history (no longer a gate)
 async function ttGenLabel(id){

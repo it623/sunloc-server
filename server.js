@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v56X';
+const APP_BUILD = 'v56Y';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -26994,8 +26994,13 @@ app.get('/api/gpr/tt-cards', async (req, res) => {
     const conds = []; const params = [];
     const add = (frag, v) => { params.push(v); conds.push(frag(params.length)); };
     const d = v => /^\d{4}-\d{2}-\d{2}$/.test(String(v || '')) ? String(v) : null;
+    if (req.query.id) add(n => `id=${P(n)}`, Number(req.query.id) || 0);   // v56Y: one tank's card (opened on release)
     if (req.query.batch) add(n => `UPPER(batch_number)=${P(n)}`, String(req.query.batch).trim().toUpperCase());
     if (req.query.side) add(n => `LOWER(side)=${P(n)}`, String(req.query.side).toLowerCase());
+    // v56Y: "cards to fill" — every incomplete card on the floor, no date filter needed. Bounded to
+    // tanks prepared in the last 14 days (or a From date if given) so the pre-card history doesn't flood it.
+    const todo = String(req.query.todo || '') === '1';
+    if (todo && !d(req.query.from)) add(n => `production_day >= ${P(n)}`, new Date(Date.now() - 14 * 86400000).toISOString().slice(0, 10));
     if (req.query.machine) add(n => `UPPER(machine_id)=${P(n)}`, String(req.query.machine).toUpperCase());
     if (d(req.query.from)) add(n => `production_day >= ${P(n)}`, d(req.query.from));
     if (d(req.query.to)) add(n => `production_day <= ${P(n)}`, d(req.query.to));
@@ -27021,7 +27026,8 @@ app.get('/api/gpr/tt-cards', async (req, res) => {
       r.card = Object.assign({ required_visc: C.requiredViscosityCps || '' }, card);
       r.card_missing = GPR_CARD_FIELDS.filter(k => k !== 'checked_by' && (r.card[k] == null || String(r.card[k]).trim() === '')).length;
     });
-    res.json({ ok: true, formatNo: C.ttCardFormatNo || 'GDP029-F12', rows: rows || [] });
+    const outRows = todo ? (rows || []).filter(r => r.card_missing > 0) : (rows || []);
+    res.json({ ok: true, formatNo: C.ttCardFormatNo || 'GDP029-F12', todo, rows: outRows });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 app.post('/api/gpr/tt/:id/card', async (req, res) => {
