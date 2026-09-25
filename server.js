@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57B';
+const APP_BUILD = 'v57J';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -1039,6 +1039,16 @@ const MIGRATIONS = [
     // checked by) are kept here, entered once on the card, audited on every change.
     sql: `
       ALTER TABLE gpr_tt ADD COLUMN card_json TEXT;
+    `
+  },
+  {
+    version: 83,
+    name: 'v57c_tt_excess_series',
+    // v57C (Ishan, 25 Sep): a tank beyond the batch's planned count is an EXCESS tank — numbered in its
+    // own E series (TT-CE1, TT-BE1 …, like Tracking's E-series labels) and carrying the reason given.
+    sql: `
+      ALTER TABLE gpr_tt ADD COLUMN excess_index INTEGER;
+      ALTER TABLE gpr_tt ADD COLUMN excess_reason TEXT;
     `
   },
   {
@@ -4878,6 +4888,8 @@ async function ensurePostgresTables() {
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS reuse_json TEXT`,
       `ALTER TABLE gpr_ledger ADD COLUMN IF NOT EXISTS source_batch TEXT`,
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS card_json TEXT`,   // v56X migration-82 mirror
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS excess_index INTEGER`,   // v57C migration-83 mirror
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS excess_reason TEXT`,
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -9040,7 +9052,22 @@ async function _allocationsForRequest(reqRow) {
                ORDER BY i.invoice_date ASC, a.line_num ASC`;
   const _rowsRaw = pgPool ? (await pgPool.query(sql, [batch])).rows
                           : db.prepare(sql.replace(/\$1/g, '?')).all(batch);
-  const rows = (_rowsRaw || []).filter(r => _v51wInvoiceNotBeforeRequest(r, reqRow));
+  let rows = (_rowsRaw || []).filter(r => _v51wInvoiceNotBeforeRequest(r, reqRow));
+  // v57J: a line already answered by a RECONCILED request (reconciled_with_invoice_id = its invoice,
+  // same batch, same quantity) is not free — even when its invoice_invoice_request_id was never set
+  // (a request closed by the SO step or by hand). Without this, invoice 2614's 17.5 L line for 26P056
+  // (already the answer to a reconciled request) was offered to the open 10.5 L request.
+  try {
+    const rSql = `SELECT reconciled_with_invoice_id AS inv, qty_lakhs FROM invoice_requests
+                   WHERE status='reconciled' AND UPPER(TRIM(batch_number))=UPPER(TRIM(${pgPool ? '$1' : '?'})) AND reconciled_with_invoice_id IS NOT NULL`;
+    const rec = pgPool ? (await pgPool.query(rSql, [batch])).rows : db.prepare(rSql).all(batch);
+    const used = rec.slice();
+    rows = rows.filter(a => {
+      const k = used.findIndex(r => r.inv === a.invoice_id && Math.abs((+r.qty_lakhs || 0) - (+a.qty_lakhs || 0)) < 0.011);
+      if (k >= 0) { used.splice(k, 1); return false; }
+      return true;
+    });
+  } catch (e) { console.warn('[v57J alloc-taken]', e.message); }
   if ((_rowsRaw || []).length - rows.length > 0) {
     console.log(`[v51W age-guard alloc] ${batch}: ignored ${(_rowsRaw||[]).length - rows.length} allocation(s) on invoices raised before the request`);
   }
@@ -9084,6 +9111,20 @@ async function _applyAllocationReconcile(reqRow, alloc) {
                  WHERE id=? AND status='pending_reconciliation'`)
       .run(String(alloc.inv_doc_num || ''), alloc.sap_doc_entry || null, alloc.invoice_id, reqRow.id);
   }
+  // v57J (DM via Ishan, 25 Sep — invoice 2616 / 26T118 showed "SAP-direct"): since v57B the
+  // allocation path also runs the moment an invoice ARRIVES — before the poller's SO-match step, which
+  // is what used to promote the invoice to source='sunloc'. The request was reconciled here, the SO step
+  // then found nothing pending, and the invoice stayed 'direct_sap': hidden as a Sunloc invoice and its
+  // request gone from Pending Reconciliation. The allocation path now promotes the invoice exactly as
+  // the SO step does — only while it is still 'direct_sap', so a multi-batch invoice keeps the first
+  // request it was linked to.
+  try {
+    if (pgPool) await pgPool.query(
+      `UPDATE invoices_received SET source='sunloc', invoice_request_id=$1, batch_number=COALESCE(NULLIF(batch_number,''),$2)
+        WHERE id=$3 AND source='direct_sap'`, [reqRow.id, reqRow.batch_number || null, alloc.invoice_id]);
+    else db.prepare(`UPDATE invoices_received SET source='sunloc', invoice_request_id=?, batch_number=COALESCE(NULLIF(batch_number,''),?)
+        WHERE id=? AND source='direct_sap'`).run(reqRow.id, reqRow.batch_number || null, alloc.invoice_id);
+  } catch (e) { console.warn('[v57J promote]', e.message); }
   const _cd = (_v48t_custKey(reqRow.customer || '') && _v48t_custKey(alloc.inv_customer || '')
                && _v48t_custKey(reqRow.customer) !== _v48t_custKey(alloc.inv_customer))
     ? ` [customer differs: request "${reqRow.customer}" vs invoice "${alloc.inv_customer}"]` : '';
@@ -9121,7 +9162,32 @@ async function _v48x_sweepInvoiceRequests(invoiceId) {
 // v57B: SELF-HEALING SWEEP of every still-pending request against arrived invoice lines, on boot and
 // every 10 minutes — so a request whose invoice arrived before this rule existed (or while the
 // sweep was down) closes itself without SQL. Same reconcile routine as the invoice-side sweep.
+// v57J: SELF-HEAL for invoices demoted by the v57B ordering — an invoice still 'direct_sap' although a
+// request was reconciled against it (reconciled_with_invoice_id) is promoted to 'sunloc' and linked to
+// the earliest such request. Only invoices fetched from 25 Sep 2026 (v57B go-live) are touched, so
+// historical SAP-direct invoices matched by the older orphan fallback keep their standing.
+async function _v57jPromoteReconciledInvoices() {
+  try {
+    const sql = `SELECT i.id AS inv_id, (SELECT r.id FROM invoice_requests r WHERE r.reconciled_with_invoice_id = i.id AND r.status='reconciled'
+                                         ORDER BY r.created_at ASC LIMIT 1) AS req_id,
+                        (SELECT r.batch_number FROM invoice_requests r WHERE r.reconciled_with_invoice_id = i.id AND r.status='reconciled'
+                                         ORDER BY r.created_at ASC LIMIT 1) AS req_bn
+                   FROM invoices_received i
+                  WHERE i.source='direct_sap' AND COALESCE(i.fetched_at,'') >= '2026-09-25'`;
+    const rows = (pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all()).filter(r => r.req_id);
+    for (const r of rows) {
+      if (pgPool) await pgPool.query(`UPDATE invoices_received SET source='sunloc', invoice_request_id=$1, batch_number=COALESCE(NULLIF(batch_number,''),$2) WHERE id=$3 AND source='direct_sap'`, [r.req_id, r.req_bn || null, r.inv_id]);
+      else db.prepare(`UPDATE invoices_received SET source='sunloc', invoice_request_id=?, batch_number=COALESCE(NULLIF(batch_number,''),?) WHERE id=? AND source='direct_sap'`).run(r.req_id, r.req_bn || null, r.inv_id);
+    }
+    if (rows.length) {
+      console.log(`[v57J] promoted ${rows.length} invoice(s) direct_sap → sunloc (request already reconciled against them): ${rows.map(r => r.inv_id).join(', ')}`);
+      try { logAudit('system', 'system', 'invoice', 'INVOICE_PROMOTE_SUNLOC', `v57J self-heal: ${rows.map(r => r.inv_id + '←' + r.req_id).join(', ')}`, null); } catch (e) {}
+    }
+    return rows.length;
+  } catch (e) { console.warn('[v57J promote-heal]', e && e.message); return 0; }
+}
 async function _v57bSweepPendingRequests() {
+  await _v57jPromoteReconciledInvoices();   // v57J
   try {
     const sql = `SELECT * FROM invoice_requests WHERE status='pending_reconciliation'
                    AND COALESCE(batch_number,'') <> '' ORDER BY created_at ASC`;
@@ -25687,6 +25753,79 @@ app.get('/api/gpr/mmt', async (req, res) => {
 // Chemists legitimately use spare MMT capacity to fast-track a gelatine charge and
 // better plan onward TTs. The response carries `warning` so the UI can surface it;
 // the charge is always created.
+// ═══ v57E (Ishan, 25 Sep): an OPEN MMT charge can be corrected, and CLOSED by distributing what is
+// left of it into the tanks that actually took it (those still unreleased on its floor). Each tank's
+// virgin gelatine and charged total rise by its share and it is linked to the charge; the charge's
+// allocated kg rises by the total. Every change is audited with before → after.
+app.post('/api/gpr/mmt/:id/update', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const P = pgPool ? '$1' : '?';
+    const cur = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_charges WHERE id=${P}`, [req.params.id])).rows[0]
+                       : db.prepare(`SELECT * FROM gpr_mmt_charges WHERE id=?`).get(req.params.id);
+    if (!cur) return res.status(404).json({ ok: false, error: 'Charge not found' });
+    const b = req.body || {};
+    const F = { total_kg: 'num', water_kg: 'num', water_temp_c: 'num', tank_no: 'txt', charge_start: 'txt', charge_complete: 'txt', tt_prep_start: 'txt' };
+    const sets = [], vals = [], changed = [];
+    for (const [k, t] of Object.entries(F)) {
+      if (!(k in b)) continue;
+      const v = t === 'num' ? (b[k] === '' || b[k] == null ? null : Number(b[k])) : (String(b[k] || '').trim() || null);
+      if (t === 'num' && v != null && isNaN(v)) return res.status(400).json({ ok: false, error: `${k} must be a number` });
+      if (String(cur[k] ?? '') === String(v ?? '')) continue;
+      if (k === 'total_kg' && !(v > 0)) return res.status(400).json({ ok: false, error: 'Total charge must be above 0' });
+      vals.push(v); sets.push(`${k}=${pgPool ? '$' + vals.length : '?'}`); changed.push(`${k}: ${cur[k] ?? '—'} → ${v ?? '—'}`);
+    }
+    if (!sets.length) return res.json({ ok: true, changed: 0 });
+    vals.push(req.params.id);
+    const sql = `UPDATE gpr_mmt_charges SET ${sets.join(', ')}, updated_at=${pgPool ? 'NOW()::TEXT' : "datetime('now')"} WHERE id=${pgPool ? '$' + vals.length : '?'}`;
+    if (pgPool) await pgPool.query(sql, vals); else db.prepare(sql).run(...vals);
+    logAudit(session.username, session.role, 'gpr', 'GPR_MMT_UPDATE', `mmt=${cur.mmt_ref} ${changed.join('; ')}`, req.ip);
+    res.json({ ok: true, changed: changed.length });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+app.post('/api/gpr/mmt/:id/distribute', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const P1 = pgPool ? '$1' : '?';
+    const mmt = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_charges WHERE id=${P1}`, [req.params.id])).rows[0]
+                       : db.prepare(`SELECT * FROM gpr_mmt_charges WHERE id=?`).get(req.params.id);
+    if (!mmt) return res.status(404).json({ ok: false, error: 'Charge not found' });
+    if (mmt.status && mmt.status !== 'open') return res.status(409).json({ ok: false, error: 'CHARGE_NOT_OPEN', detail: `${mmt.mmt_ref} is ${mmt.status}.` });
+    const floorsOk = mmt.floor === 'FFSF' ? ['1F', '2F'] : [mmt.floor];
+    const lines = (Array.isArray(req.body && req.body.lines) ? req.body.lines : [])
+      .map(l => ({ tt_id: Number(l && l.tt_id), kg: +Number((l && l.kg) || 0).toFixed(3) })).filter(l => l.tt_id && l.kg > 0);
+    const close = !!(req.body && req.body.close);
+    if (!lines.length && !close) return res.status(400).json({ ok: false, error: 'Nothing to distribute' });
+    const done = [];
+    for (const l of lines) {
+      const t = pgPool ? (await pgPool.query(`SELECT id, tt_number, batch_number, floor, mmt_ref, issued_at, virgin_kg FROM gpr_tt WHERE id=$1`, [l.tt_id])).rows[0]
+                       : db.prepare(`SELECT id, tt_number, batch_number, floor, mmt_ref, issued_at, virgin_kg FROM gpr_tt WHERE id=?`).get(l.tt_id);
+      if (!t) return res.status(404).json({ ok: false, error: `Tank ${l.tt_id} not found` });
+      if (!floorsOk.includes(t.floor)) return res.status(409).json({ ok: false, error: 'WRONG_FLOOR', detail: `${t.tt_number} (${t.batch_number}) is on ${t.floor}; ${mmt.mmt_ref} serves ${floorsOk.join('/')}.` });
+      if (t.mmt_ref && t.mmt_ref !== mmt.mmt_ref) return res.status(409).json({ ok: false, error: 'OTHER_CHARGE', detail: `${t.tt_number} (${t.batch_number}) already draws from ${t.mmt_ref}.` });
+      done.push({ l, t });
+    }
+    const total = +lines.reduce((a, l) => a + l.kg, 0).toFixed(3);
+    for (const { l, t } of done) {
+      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET virgin_kg=COALESCE(virgin_kg,0)+$1, total_charged_kg=COALESCE(total_charged_kg,0)+$1, mmt_ref=COALESCE(mmt_ref,$2), updated_at=NOW()::TEXT WHERE id=$3`, [l.kg, mmt.mmt_ref, t.id]);
+      else db.prepare(`UPDATE gpr_tt SET virgin_kg=COALESCE(virgin_kg,0)+?, total_charged_kg=COALESCE(total_charged_kg,0)+?, mmt_ref=COALESCE(mmt_ref,?), updated_at=datetime('now') WHERE id=?`).run(l.kg, l.kg, mmt.mmt_ref, t.id);
+    }
+    if (total > 0) {
+      if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, updated_at=NOW()::TEXT WHERE id=$2`, [total, mmt.id]);
+      else db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, updated_at=datetime('now') WHERE id=?`).run(total, mmt.id);
+    }
+    if (close) {
+      if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET status='closed', updated_at=NOW()::TEXT WHERE id=$1`, [mmt.id]);
+      else db.prepare(`UPDATE gpr_mmt_charges SET status='closed', updated_at=datetime('now') WHERE id=?`).run(mmt.id);
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_MMT_DISTRIBUTE',
+      `mmt=${mmt.mmt_ref} +${total}kg → ${done.map(x => x.t.tt_number + '/' + x.t.batch_number + ' ' + x.l.kg).join(', ') || '—'}${close ? ' · CLOSED' : ''}`, req.ip);
+    res.json({ ok: true, distributed: total, tanks: done.length, closed: close });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 app.post('/api/gpr/mmt', async (req, res) => {
   try {
     const session = gprSession(req);
@@ -25904,9 +26043,29 @@ app.post('/api/gpr/tt', async (req, res) => {
     const nowIso = new Date().toISOString();
     const pday = gprProductionDay(nowIso);
     // v42U item 7: TT Number replaces the old Box Number on the label.
-    const ttNumber = 'TT-' + (side === 'cap' ? 'C' : 'B') + seqIndex + (seqTotal ? ('/' + seqTotal) : '');
+    let ttNumber = 'TT-' + (side === 'cap' ? 'C' : 'B') + seqIndex + (seqTotal ? ('/' + seqTotal) : '');
+    // v57C (Ishan, 25 Sep): EXCESS SERIES. A tank beyond the planned count for its side is an excess
+    // tank — numbered TT-CE1, TT-CE2 … / TT-BE1 … (the Tracking E-series convention) and refused
+    // unless a reason is given. The ordinary series (and every count that reads seq_index) is unchanged.
+    let excessIndex = null, excessReason = null;
+    if (seqTotal && seqIndex > seqTotal) {
+      const R = { higher_avg_weight: 'Higher average weight', higher_wastage: 'Higher wastage', higher_gross: 'Higher gross quantity', other: 'Other' };
+      const rk = String(b.excess_reason || '');
+      const note = String(b.excess_note || '').trim().slice(0, 200);
+      if (!R[rk] || (rk === 'other' && !note)) {
+        return res.status(409).json({ ok: false, error: 'EXCESS_REASON_REQUIRED', planned: seqTotal, next: seqIndex,
+          detail: `${side.toUpperCase()} has ${seqTotal} tank(s) planned — this would be excess tank ${seqIndex - seqTotal}. Choose the reason${rk === 'other' ? ' and describe it' : ''}.` });
+      }
+      const xSql = `SELECT COALESCE(MAX(excess_index),0) AS m FROM gpr_tt WHERE UPPER(batch_number)=${pgPool ? '$1' : '?'} AND side=${pgPool ? '$2' : '?'}`;
+      const xRow = pgPool ? (await pgPool.query(xSql, [bn, side])).rows[0] : db.prepare(xSql).get(bn, side);
+      excessIndex = Number(xRow?.m || 0) + 1;
+      excessReason = rk === 'other' ? ('Other: ' + note) : (R[rk] + (note ? ' — ' + note : ''));
+      ttNumber = 'TT-' + (side === 'cap' ? 'C' : 'B') + 'E' + excessIndex;
+    }
+    // v57C (Rahul): the T. Tank code entered at preparation rides onto the TT card
+    const _card0 = String(b.tank_code || '').trim() ? JSON.stringify({ tank_code: String(b.tank_code).trim().toUpperCase().slice(0, 30) }) : null;
 
-    const cols = `(batch_number,pc_code,machine_id,floor,side,seq_index,seq_total,tt_number,mmt_ref,colour_name,colour_code,capacity_l,planned_l,actual_l,virgin_kg,salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by,salvage_account,reuse_json)`;
+    const cols = `(batch_number,pc_code,machine_id,floor,side,seq_index,seq_total,tt_number,mmt_ref,colour_name,colour_code,capacity_l,planned_l,actual_l,virgin_kg,salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by,salvage_account,reuse_json,excess_index,excess_reason,card_json)`;
     const vals = [b.batch_number, b.pc_code || null, b.machine_id, floor, side, seqIndex, seqTotal,
                   ttNumber, b.mmt_ref || null, b.colour_name || null, b.colour_code || null,
                   capacityL || null, Number(b.planned_l || 0), actualL, virginKg, salvageKg, cuttingKg,
@@ -25915,7 +26074,8 @@ app.post('/api/gpr/tt', async (req, res) => {
                   b.temperature_c != null ? Number(b.temperature_c) : null,
                   pday, 'prepared', underFill, b.under_fill_reason || null, session.username,
                   (salvageKg > 0 ? String(b.salvage_account || 'aim_salvage') : null),   // v56U: the column the Inputs Log always read
-                  reuseLines.length ? JSON.stringify(reuseLines) : null];
+                  reuseLines.length ? JSON.stringify(reuseLines) : null,
+                  excessIndex, excessReason, _card0];
     let ttId;
     if (pgPool) {
       const ph = vals.map((_, i) => '$' + (i + 1)).join(',');
@@ -26059,7 +26219,8 @@ app.get('/api/gpr/tt-sheet', async (req, res) => {
                         colour_name,colour_code,mmt_ref,capacity_l,planned_l,actual_l,virgin_kg,
                         salvage_kg,cutting_kg,colour_kg,fg_remelt_kg,total_charged_kg,viscosity_cps,
                         temperature_c,production_day,status,is_under_fill,under_fill_reason,created_by,created_at,
-                        label_generated_at,scan_in_at,scan_out_at,issued_at,issued_by,salvage_account,reuse_json
+                        label_generated_at,scan_in_at,scan_out_at,issued_at,issued_by,salvage_account,reuse_json,
+                        excess_index,excess_reason
                  FROM gpr_tt ${where} ORDER BY production_day DESC, batch_number, side, seq_index`;
     const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
     const totals = (rows || []).reduce((a, r) => ({
@@ -27085,7 +27246,22 @@ app.post('/api/gpr/order-start', async (req, res) => {
 // PC, charge (MMT ref), machine, colour, the PC's cap/body codes, size, preparation date/shift/time,
 // supplied viscosity and temperature, loading (= release) date/time, prepared by / released by.
 // The values GPR does not otherwise record live in card_json.
-const GPR_CARD_FIELDS = ['tank_code', 'required_visc', 'gel_sol_kg', 'visc_time', 'loading_temp', 'checked_by'];
+const GPR_CARD_FIELDS = ['tank_code', 'required_visc', 'gel_sol_kg', 'visc_time', 'loading_temp', 'checked_by',
+                         'prepared_by_name', 'released_by_name'];   // v57D: manual names when DPR has none
+// v57D (Ishan, 25 Sep): the IST shift and PRODUCTION day an instant falls in — A 06–14, B 14–22,
+// C 22–06; the production day starts at 06:00, so C after midnight belongs to the previous date.
+// This is exactly how DPR files a shift, so the names read back are the ones DPR recorded.
+function _v57dShiftOf(iso) {
+  const s0 = String(iso || '').trim().replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1').replace(/([+-]\d{2})$/, '$1:00');
+  const ms = Date.parse(s0 + (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s0) ? '' : 'Z'));
+  if (isNaN(ms)) return null;
+  const ist = new Date(ms + 330 * 60000);
+  const m = ist.getUTCHours() * 60 + ist.getUTCMinutes();
+  const shift = m >= 360 && m < 840 ? 'A' : (m >= 840 && m < 1320 ? 'B' : 'C');
+  const day = new Date(ms + 330 * 60000 - 6 * 3600000).toISOString().slice(0, 10);
+  return { day, shift };
+}
+const _v57dNames = v => (Array.isArray(v) ? v : (v ? [v] : [])).map(s => String(s || '').trim()).filter(Boolean);
 app.get('/api/gpr/tt-cards', async (req, res) => {
   try {
     const P = n => pgPool ? `$${n}` : '?';
@@ -27106,13 +27282,44 @@ app.get('/api/gpr/tt-cards', async (req, res) => {
     if (fl.length) conds.push(`floor IN (${fl.map(f => { params.push(f); return P(params.length); }).join(',')})`);
     const sql = `SELECT id, tt_number, batch_number, pc_code, machine_id, floor, side, seq_index, seq_total, mmt_ref,
                         colour_name, colour_code, actual_l, total_charged_kg, viscosity_cps, temperature_c, production_day,
-                        created_at, created_by, scan_in_at, scan_out_at, issued_at, issued_by, status, card_json
+                        created_at, created_by, scan_in_at, scan_out_at, issued_at, issued_by, status, card_json,
+                        excess_index, excess_reason
                  FROM gpr_tt ${conds.length ? 'WHERE ' + conds.join(' AND ') : ''}
                  ORDER BY production_day DESC, UPPER(batch_number), side, seq_index LIMIT 600`;
     const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
     await _gprEnrichPc(rows);
     const masters = await gprLoadMasters();
     const C = (masters && masters.gpr_constants) || {};
+    // v57D: PREPARED BY = the shift chemist(s), RELEASED BY = the shift incharge(s), exactly as DPR
+    // recorded them for that FLOOR, DATE and SHIFT — the shift the tank was prepared in, and the shift
+    // it was released in. One read of the DPR days involved.
+    const need = new Set();
+    (rows || []).forEach(r => {
+      r._prep = _v57dShiftOf(r.created_at); r._rel = r.issued_at ? _v57dShiftOf(r.issued_at) : null;
+      if (r._prep) need.add(r._prep.day); if (r._rel) need.add(r._rel.day);
+    });
+    const dprDay = {};
+    if (need.size) {
+      try {
+        const D = [...need];
+        const dSql = `SELECT floor, date, data_json FROM dpr_records WHERE date IN (${D.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',')})`;
+        const dRows = pgPool ? (await pgPool.query(dSql, D)).rows : db.prepare(dSql).all(...D);
+        (dRows || []).forEach(d => { try { dprDay[d.floor + '|' + d.date] = JSON.parse(d.data_json || '{}'); } catch (e) {} });
+      } catch (e) { console.warn('[v57D tt-cards] DPR names read:', e.message); }
+    }
+    const _who = (floor, at, key) => {
+      if (!at) return [];
+      const d = dprDay[floor + '|' + at.day];
+      const sd = d && d.shifts && d.shifts[at.shift];
+      return sd ? _v57dNames(sd[key]) : [];
+    };
+    (rows || []).forEach(r => {
+      r.prep_shift = r._prep ? (r._prep.day + ' ' + r._prep.shift) : null;
+      r.rel_shift = r._rel ? (r._rel.day + ' ' + r._rel.shift) : null;
+      r.dpr_chemist = _who(r.floor, r._prep, 'chemist').join(', ') || null;
+      r.dpr_incharge = _who(r.floor, r._rel, 'incharge').join(', ') || null;
+      delete r._prep; delete r._rel;
+    });
     (rows || []).forEach(r => {
       let card = {};
       try { card = JSON.parse(r.card_json || '{}') || {}; } catch (e) { card = {}; }
@@ -27122,7 +27329,14 @@ app.get('/api/gpr/tt-cards', async (req, res) => {
       r.customer = o.customer || null;
       if (!r.pc_code) r.pc_code = o.pcCode || o.pc_code || null;
       r.card = Object.assign({ required_visc: C.requiredViscosityCps || '' }, card);
-      r.card_missing = GPR_CARD_FIELDS.filter(k => k !== 'checked_by' && (r.card[k] == null || String(r.card[k]).trim() === '')).length;
+      // v57C (Rahul / Ishan, 25 Sep): the card no longer repeats values — viscosity, temperature and
+      // time come straight from the tank, gel solution weight defaults to the issued volume. Only the
+      // T. Tank code (entered at preparation) can be missing now; Checked by is signed on paper.
+      r.card_missing = ((r.card.tank_code == null || String(r.card.tank_code).trim() === '') ? 1 : 0)
+                     + ((!(Number(r.actual_l) > 0) && !String(r.card.gel_sol_kg || '').trim()) ? 1 : 0)
+                     // v57D: a name DPR does not hold (and nobody has typed) must be supplied before print
+                     + ((!r.dpr_chemist && !String(r.card.prepared_by_name || '').trim()) ? 1 : 0)
+                     + ((r.issued_at && !r.dpr_incharge && !String(r.card.released_by_name || '').trim()) ? 1 : 0);
     });
     const outRows = todo ? (rows || []).filter(r => r.card_missing > 0) : (rows || []);
     res.json({ ok: true, formatNo: C.ttCardFormatNo || 'GDP029-F12', todo, rows: outRows });
@@ -27209,7 +27423,9 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
     if (!batch) {
       const mConds = [`COALESCE(SUBSTR(charge_start,1,10), SUBSTR(created_at,1,10)) BETWEEN ${P(1)} AND ${P(2)}`];
       const mParams = [from, to];
-      if (floor) { mParams.push(floor); mConds.push(`floor=${P(mParams.length)}`); }
+      // v57E: a First/Second-floor view must also take its share of the combined FF/SF MMT charges
+      if (floor === '1F' || floor === '2F') { mParams.push(floor); mConds.push(`floor IN (${P(mParams.length)}, 'FFSF')`); }
+      else if (floor) { mParams.push(floor); mConds.push(`floor=${P(mParams.length)}`); }
       const mSql = `SELECT mmt_ref, floor, gelatine_kg, water_kg, additives_json, gelatine_lots_json, gelatine_vendor, gelatine_batch,
                            COALESCE(SUBSTR(charge_start,1,10), SUBSTR(created_at,1,10)) AS d, created_by
                     FROM gpr_mmt_charges WHERE ${mConds.join(' AND ')} ORDER BY d, mmt_ref`;
@@ -27233,7 +27449,7 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
         try {
           const _add = JSON.parse(c.additives_json || '[]');
           const _list = Array.isArray(_add) ? _add
-            : Object.entries(_add || {}).map(([k, v]) => ({ name: String(k).replace(/^col\d+_/i, ''), qty: v, unit: 'g' }));
+            : Object.entries(_add || {}).map(([k, v]) => ({ name: ({ col0045_sls799: 'SLS-799', col0069_peg6000: 'PEG-6000', col0004_bronopol: 'Bronopol', col0056_othadd2: 'Othadd-2' })[k] || String(k).replace(/^col\d+_/i, ''), qty: v, unit: 'g' }));   // v57E: readable names
           for (const a of _list) {
             const q = Number(a.kg != null ? a.kg : a.qty || 0);
             if (q > 0) rows.push(Object.assign({}, base, { input: String(a.name || a.chemical || 'Additive'), qty: +q.toFixed(3), unit: a.unit || 'kg' }));
@@ -27290,6 +27506,33 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
         if (Number(c.grams) > 0) rows.push(Object.assign({}, base, { input: String(c.colourant), qty: +Number(c.grams).toFixed(2), unit: 'g' }));
       }
     }
+    // v57E (Ishan, 25 Sep): there is no "FFSF" floor. First and Second floor share ONE MMT, so a
+    // charge made there is floor 'FFSF' — it is now SPLIT between 1F and 2F in proportion to the
+    // virgin gelatine each floor's tanks actually drew from that charge (evenly if nothing has been
+    // drawn yet), every component alike (gelatine, water, chemicals). Totals are unchanged.
+    const ffsfRefs = Array.from(new Set(rows.filter(r => r.source === 'MMT' && r.floor === 'FFSF').map(r => r.ref).filter(Boolean)));
+    if (ffsfRefs.length) {
+      const share = {};
+      try {
+        const dSql = `SELECT mmt_ref, floor, SUM(virgin_kg) AS kg FROM gpr_tt WHERE mmt_ref IN (${ffsfRefs.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',')}) AND floor IN ('1F','2F') GROUP BY mmt_ref, floor`;
+        const dRows = pgPool ? (await pgPool.query(dSql, ffsfRefs)).rows : db.prepare(dSql).all(...ffsfRefs);
+        (dRows || []).forEach(d => { (share[d.mmt_ref] = share[d.mmt_ref] || { '1F': 0, '2F': 0 })[d.floor] += Number(d.kg || 0); });
+      } catch (e) { console.warn('[v57E inputs-log] FF/SF split read:', e.message); }
+      const out = [];
+      for (const r of rows) {
+        if (!(r.source === 'MMT' && r.floor === 'FFSF')) { out.push(r); continue; }
+        const s = share[r.ref] || { '1F': 0, '2F': 0 }, tot = s['1F'] + s['2F'];
+        // v57F (Ishan): nothing drawn yet → split by rated output, FF 40 L : SF 120 L = 25% : 75%
+        const f1 = tot > 0 ? s['1F'] / tot : 0.25;
+        const note = tot > 0 ? `FF/SF charge split by TT draws (FF ${Math.round(f1 * 100)}% · SF ${Math.round((1 - f1) * 100)}%)` : 'FF/SF charge not yet drawn — split by rated output (FF 25% · SF 75%)';
+        for (const [fl, fr] of [['1F', f1], ['2F', 1 - f1]]) {
+          if (fr <= 0) continue;
+          out.push(Object.assign({}, r, { floor: fl, qty: +(Number(r.qty || 0) * fr).toFixed(3), detail: (r.detail ? r.detail + ' · ' : '') + note }));
+        }
+      }
+      rows.length = 0; out.forEach(x => rows.push(x));
+      if (floor === '1F' || floor === '2F') { const keep = rows.filter(r => r.floor === floor); rows.length = 0; keep.forEach(x => rows.push(x)); }
+    }
     rows.forEach(r => { if (r.internal == null) r.internal = 0; });
     const floors = Array.from(new Set(rows.map(r => r.floor).filter(Boolean))).sort();
     res.json({ ok: true, from, to, floors, rows });
@@ -27332,9 +27575,14 @@ app.get('/api/gpr/ledger/source-lots', async (req, res) => {
     if (fl.length) fconds.push(`floor IN (${fl.map(f => { params.push(f); return P(params.length); }).join(',')})`);
     if (req.query.account) { params.push(String(req.query.account)); fconds.push(`account = ${P(params.length)}`); }
     const fw = fconds.length ? ' AND ' + fconds.join(' AND ') : '';
+    // v57E: PENDING receipts are returned too (not yet accepted into stock) so the TT picker can show
+    // them — the operator sees what is physically on its way; only accepted stock counts as available.
     const gSql = `SELECT account, UPPER(batch_number) AS batch_number, LOWER(COALESCE(side,'')) AS side, MAX(pc_code) AS pc_code,
-                         MAX(colour_code) AS colour_code, SUM(qty_kg) AS kg, MAX(production_day) AS last_day
-                  FROM gpr_ledger WHERE movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status='accepted')
+                         MAX(colour_code) AS colour_code,
+                         SUM(CASE WHEN receipt_status IS NULL OR receipt_status='accepted' THEN qty_kg ELSE 0 END) AS kg,
+                         SUM(CASE WHEN receipt_status='pending' THEN qty_kg ELSE 0 END) AS pend,
+                         MAX(production_day) AS last_day
+                  FROM gpr_ledger WHERE movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status IN ('accepted','pending'))
                     AND batch_number IS NOT NULL${fw}
                   GROUP BY account, UPPER(batch_number), LOWER(COALESCE(side,''))`;
     const cSql = `SELECT account, UPPER(source_batch) AS batch_number, LOWER(COALESCE(side,'')) AS side, SUM(qty_kg) AS kg
@@ -27350,8 +27598,9 @@ app.get('/api/gpr/ledger/source-lots', async (req, res) => {
       return { account: r.account, account_label: GPR_ACCOUNT_LABELS[r.account] || r.account,
                batch_number: r.batch_number, side: r.side || null, pc_code: r.pc_code || null,
                colour_code: r.colour_code || null, generated_kg: +Number(r.kg || 0).toFixed(2),
-               consumed_kg: +(used[k] || 0).toFixed(2), balance_kg: bal, last_day: r.last_day || null };
-    }).filter(l => l.balance_kg > 0.05);
+               consumed_kg: +(used[k] || 0).toFixed(2), balance_kg: bal, pending_kg: +Number(r.pend || 0).toFixed(2),
+               last_day: r.last_day || null };
+    }).filter(l => l.balance_kg > 0.05 || l.pending_kg > 0.05);
     await _gprEnrichPc(lots);
     lots.forEach(l => { if (!l.colour_code) l.colour_code = l.side_code || (l.cap_code ? (l.cap_code + '/' + l.body_code) : null); });
     lots.sort((a, b) => _gprBatchCmp(b.batch_number, a.batch_number) || String(a.side).localeCompare(String(b.side)));
@@ -27774,34 +28023,99 @@ app.get('/api/gpr/yield-report', async (req, res) => {
 // Daily yield per floor (item 8). The day is DPR's production day (06:00-06:00),
 // so GPR groups exactly as DPR does. Same formula as batch/monthly yield: the
 // aggregate is SUM(numerators) / SUM(denominators), never an average of percents.
+// ═══ v57F (Ishan, 25 Sep — his definition, verbatim in effect): a floor's yield for a day is the
+// PACKABLE output of that day's production, all batches together, over the NET MATERIAL CONSUMED on
+// that floor that day. No batch-to-date figures on the material side.
+//   Output (day, floor)   = Σ over batches that produced that day: that day's DPR production (lakhs)
+//                           × the batch's packable weight per lakh produced (packed + WIP weight to date
+//                           ÷ DPR production to date — the batch's own avg weight and packable share).
+//   Material (day, floor) = fresh charged into that day's tanks (virgin + colour/TiO2 + FG remelt)
+//                           + cutting/salvage charged into them − cutting/salvage GENERATED that day
+//                           (+ approved crushing, added by the routes as before).
+// A month is the sum of its days.
+async function _v57fDayYield(from, to, floorFilter) {
+  const q = async (sql, p) => pgPool ? (await pgPool.query(sql, p)).rows : db.prepare(sql).all(...p);
+  const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
+  const grid = {};
+  const cell = (d, fl) => ((grid[d] = grid[d] || {})[fl] = grid[d][fl] || { num: 0, den: 0, batches: 0, working: [], crushKg: 0,
+    material: { virginKg: 0, colourKg: 0, fgRemeltKg: 0, reuseInKg: 0, generatedKg: 0, tanks: 0 } });
+  // ── material: NET consumption — a tank counts on the production day it was RELEASED to the
+  //    machine (Hold & Release), not the day it was charged. Until then it is WIP and stays out of
+  //    consumption: charged today and run tomorrow = tomorrow's material. Likewise an MMT charge not
+  //    yet drawn into a tank is never counted (the basis is tank charges), and cutting/salvage
+  //    generated (pending receipt or accepted) comes off. Tanks from before Hold & Release went live
+  //    (24 Sep 2026) that carry no lifecycle stamp count on their preparation day, as before.
+  const HR_LIVE = '2026-09-24';
+  const shift = (x) => { const d = new Date(Date.parse(from + 'T00:00:00Z') + x * 86400000); return d.toISOString().slice(0, 10); };
+  const tt = await q(`SELECT floor, production_day, issued_at, scan_out_at, scan_in_at, created_at,
+                             COALESCE(virgin_kg,0) AS v, COALESCE(colour_kg,0) AS c, COALESCE(fg_remelt_kg,0) AS f,
+                             COALESCE(salvage_kg,0) + COALESCE(cutting_kg,0) AS r
+                        FROM gpr_tt WHERE production_day BETWEEN ${P1} AND ${P2}
+                           OR SUBSTR(COALESCE(issued_at, scan_out_at, ''),1,10) BETWEEN ${P1} AND ${P2}`, [shift(-30), (() => { const d = new Date(Date.parse(to + 'T00:00:00Z') + 86400000); return d.toISOString().slice(0, 10); })()]);
+  tt.forEach(r => {
+    const fl = r.floor || 'unknown'; if (floorFilter && fl !== floorFilter) return;
+    const rel = r.issued_at || r.scan_out_at;
+    let d = null;
+    if (rel) { const x = _v57dShiftOf(rel); d = x && x.day; }
+    else if (!r.scan_in_at && String(r.production_day || '') < HR_LIVE) d = r.production_day;   // legacy, no lifecycle
+    if (!d || d < from || d > to) return;                                                      // WIP, or outside the window
+    const m = cell(d, fl).material;
+    m.virginKg += +r.v || 0; m.colourKg += +r.c || 0; m.fgRemeltKg += +r.f || 0; m.reuseInKg += +r.r || 0; m.tanks += 1;
+  });
+  // ── material: cutting / salvage generated that day on that floor (returned to stock, not consumed) ──
+  const gen = await q(`SELECT production_day AS d, floor, SUM(qty_kg) AS kg FROM gpr_ledger
+                        WHERE movement_type='generation' AND COALESCE(receipt_status,'') <> 'rejected'
+                          AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor`, [from, to]);
+  gen.forEach(r => { const fl = r.floor || 'unknown'; if (floorFilter && fl !== floorFilter) return;
+    cell(r.d, fl).material.generatedKg += +r.kg || 0; });
+  // ── output: the day's DPR production, converted to packable kg per batch ──
+  const dp = await q(`SELECT UPPER(batch_number) AS bn, date AS d, SUM(COALESCE(qty_lakhs,0)) AS l FROM production_actuals
+                       WHERE date BETWEEN ${P1} AND ${P2} AND COALESCE(batch_number,'') <> '' GROUP BY UPPER(batch_number), date`, [from, to]);
+  const bns = Array.from(new Set(dp.map(r => r.bn)));
+  if (bns.length) {
+    const ph = bns.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',');
+    const flOf = {}, dpTot = {};
+    (await q(`SELECT UPPER(batch_number) AS bn, MIN(floor) AS floor FROM gpr_tt WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`, bns))
+      .forEach(r => { flOf[r.bn] = r.floor; });
+    (await q(`SELECT UPPER(batch_number) AS bn, SUM(COALESCE(qty_lakhs,0)) AS l FROM production_actuals WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`, bns))
+      .forEach(r => { dpTot[r.bn] = +r.l || 0; });
+    const yc = {};
+    for (const r of dp) {
+      const fl = flOf[r.bn]; if (!fl) continue;            // a batch with no GPR tank is not on a GPR floor yet
+      if (floorFilter && fl !== floorFilter) continue;
+      const dD = +r.l || 0, dTot = dpTot[r.bn] || 0;
+      if (!(dD > 0) || !(dTot > 0)) continue;
+      const y = yc[r.bn] = yc[r.bn] || await gprComputeYield(r.bn);
+      // v57H (Ishan): weight = the batch's LABEL average weight (gprAvgMg — the same weight the TTs are
+      // issued on); packable share = packable lakhs to date (packed + WIP) ÷ DPR production to date.
+      const packL = Number(y.numerator.packedLakhs || 0) + Number(y.numerator.wipLakhs || 0);
+      const share = Math.min(1, dTot > 0 ? packL / dTot : 0);
+      const packDayL = dD * share;
+      const mg = Number(y.avgMg || 0);
+      const outKg = packDayL * mg / 10;                      // lakhs × mg ÷ 10 = kg (as the batch yield)
+      const c = cell(r.d, fl);
+      c.num += outKg; c.batches += 1;
+      c.working.push({ batch: r.bn, avgMg: +mg.toFixed(2), weightBasis: (y.weightBasis && y.weightBasis.basis) || null,
+        dprDayL: +dD.toFixed(2), dprToDateL: +dTot.toFixed(2), packableSharePct: +(share * 100).toFixed(1),
+        packableDayL: +packDayL.toFixed(3), outputKg: +outKg.toFixed(1) });
+    }
+  }
+  // net material per cell
+  Object.values(grid).forEach(fls => Object.values(fls).forEach(c => {
+    const m = c.material;
+    c.den = Math.max(0, m.virginKg + m.colourKg + m.fgRemeltKg + m.reuseInKg - m.generatedKg);
+    Object.keys(m).forEach(k => { m[k] = +Number(m[k]).toFixed(2); });
+  }));
+  return grid;
+}
+
 app.get('/api/gpr/yield-daily', async (req, res) => {
   try {
     const to   = req.query.to   || gprProductionDay();
     const from = req.query.from || to;
     const floorFilter = req.query.floor || null;
     const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
-    const bSql = `SELECT DISTINCT batch_number, floor, production_day FROM gpr_tt
-                  WHERE production_day BETWEEN ${P1} AND ${P2}`;
-    const rows = pgPool ? (await pgPool.query(bSql, [from, to])).rows : db.prepare(bSql).all(from, to);
-
-    // day -> floor -> {num, den}. A batch contributes to the days its TTs were issued.
-    const grid = {};
-    const yieldCache = {};
-    for (const r of (rows || [])) {
-      const fl = r.floor || 'unknown';
-      if (floorFilter && fl !== floorFilter) continue;
-      const day = r.production_day;
-      if (!day) continue;
-      const key = String(r.batch_number).toUpperCase();
-      if (!yieldCache[key]) yieldCache[key] = await gprComputeYield(key);
-      const y = yieldCache[key];
-      grid[day] = grid[day] || {};
-      grid[day][fl] = grid[day][fl] || { num: 0, den: 0, batches: 0 };
-      grid[day][fl].num += y.numerator.total;
-      grid[day][fl].den += y.denominator.total;
-      grid[day][fl].batches += 1;
-    }
-    // Approved crushing lands on the floor/day denominator only, never a batch.
+    const grid = await _v57fDayYield(from, to, floorFilter);   // v57F: day-split, not whole-batch per day
     const cSql = `SELECT production_day AS day, floor, COALESCE(SUM(qty_kg),0) AS kg FROM gpr_crush
                   WHERE status='approved' AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor`;
     const crush = pgPool ? (await pgPool.query(cSql, [from, to])).rows : db.prepare(cSql).all(from, to);
@@ -27810,8 +28124,9 @@ app.get('/api/gpr/yield-daily', async (req, res) => {
       if (floorFilter && fl !== floorFilter) return;
       if (!c.day) return;
       grid[c.day] = grid[c.day] || {};
-      grid[c.day][fl] = grid[c.day][fl] || { num: 0, den: 0, batches: 0 };
+      grid[c.day][fl] = grid[c.day][fl] || { num: 0, den: 0, batches: 0, working: [], crushKg: 0 };
       grid[c.day][fl].den += Number(c.kg || 0);
+      grid[c.day][fl].crushKg += Number(c.kg || 0);
     });
 
     const masters = await gprLoadMasters();
@@ -27821,6 +28136,7 @@ app.get('/api/gpr/yield-daily', async (req, res) => {
         floor, batches: v.batches,
         numeratorKg: +v.num.toFixed(1), denominatorKg: +v.den.toFixed(1),
         yieldPct: v.den > 0 ? +((v.num / v.den) * 100).toFixed(2) : null,
+        working: v.working || [], crushKg: +Number(v.crushKg || 0).toFixed(1), material: v.material || null,
       }));
       const n = floors.reduce((s, f) => s + f.numeratorKg, 0);
       const d = floors.reduce((s, f) => s + f.denominatorKg, 0);
@@ -27844,22 +28160,16 @@ app.get('/api/gpr/yield-live', async (req, res) => {
     const hi = month + '-' + String(hiDate.getDate()).padStart(2, '0');
     const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
 
-    const bSql = `SELECT DISTINCT batch_number, floor FROM gpr_tt WHERE production_day BETWEEN ${P1} AND ${P2}`;
-    const batches = pgPool ? (await pgPool.query(bSql, [lo, hi])).rows : db.prepare(bSql).all(lo, hi);
+    // v57F: the month is the sum of its days — the same day-split as the daily view
+    const _g = await _v57fDayYield(lo, hi, floorFilter);
     const byFloor = {};
-    const seen = new Set();
-    for (const b of (batches || [])) {
-      const fl = b.floor || 'unknown';
-      if (floorFilter && fl !== floorFilter) continue;
-      const key = fl + '|' + String(b.batch_number).toUpperCase();
-      if (seen.has(key)) continue;
-      seen.add(key);
-      const y = await gprComputeYield(b.batch_number);
+    const _bset = {};
+    Object.values(_g).forEach(fls => Object.entries(fls).forEach(([fl, v]) => {
       byFloor[fl] = byFloor[fl] || { num: 0, den: 0, batches: 0 };
-      byFloor[fl].num += y.numerator.total;
-      byFloor[fl].den += y.denominator.total;
-      byFloor[fl].batches += 1;
-    }
+      byFloor[fl].num += v.num; byFloor[fl].den += v.den;
+      (v.working || []).forEach(w => { (_bset[fl] = _bset[fl] || new Set()).add(w.batch); });
+    }));
+    Object.keys(byFloor).forEach(fl => { byFloor[fl].batches = _bset[fl] ? _bset[fl].size : 0; });
     const cSql = `SELECT floor, COALESCE(SUM(qty_kg),0) AS kg FROM gpr_crush
                   WHERE status='approved' AND production_day BETWEEN ${P1} AND ${P2} GROUP BY floor`;
     const crush = pgPool ? (await pgPool.query(cSql, [lo, hi])).rows : db.prepare(cSql).all(lo, hi);

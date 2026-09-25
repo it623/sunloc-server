@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v57B</title>
+<title>GPR · build v57J</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -167,6 +167,32 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 /* v55N item 2: dual Cap|Body compact entry tables */
 .dgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
 .dgrid.single{grid-template-columns:minmax(0,640px)}
+.xsbox{margin-top:5px;padding:6px 8px;border:1px solid #f3d19c;border-left:3px solid var(--amber);border-radius:6px;background:#fffaf0}
+.xshead{font-family:var(--fc);font-size:10.5px;font-weight:700;letter-spacing:.5px;color:#b45309;margin-bottom:4px}
+.xsrow{display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:5px}
+.xsrow select,.xsrow input{font-size:11.5px;padding:4px 6px}
+.tspbar{display:grid;grid-template-columns:minmax(0,2.2fr) minmax(0,1fr) minmax(0,1fr) auto;gap:8px;align-items:center}
+.tspbar input,.tspbar select{padding:6px 9px;font-size:12.5px}
+.tspchk{display:flex;align-items:center;gap:5px;font-size:11.5px;color:var(--t2);white-space:nowrap}
+.tspchk input{width:auto}
+.tspfoot{display:flex;align-items:center;gap:8px;margin-top:10px}
+.cxsnap{border:1px solid var(--b1);border-radius:var(--r);background:var(--s1);overflow:hidden;margin-top:6px}
+.cxhead{display:flex;align-items:center;gap:10px;padding:7px 12px;background:var(--s3);font-family:var(--fc);font-weight:700;font-size:12.5px}
+.cxcount{font-family:var(--mono);font-weight:400;font-size:11px;color:var(--t3)}
+.cxclose{margin-left:auto;color:var(--t3);text-decoration:none;font-size:12px}
+.cxgrp{border-left:4px solid;margin:6px 8px 8px;border-radius:4px;overflow:hidden}
+.cxgt{padding:4px 9px;font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.5px;text-transform:uppercase}
+.cxt{width:100%;border-collapse:collapse;font-size:11.5px;table-layout:fixed}
+.cxn{display:inline-block;min-width:18px;text-align:center;margin-left:6px;padding:0 6px;border-radius:8px;background:rgba(0,0,0,.08);font-family:var(--mono)}
+.cxt td{overflow:hidden;text-overflow:ellipsis}
+.cxt th{text-align:left;font-family:var(--fc);font-size:9.5px;letter-spacing:.5px;text-transform:uppercase;color:var(--t3);padding:3px 8px;border-bottom:1px solid var(--b1);font-weight:700}
+.cxt td{padding:3px 8px;border-bottom:1px solid var(--b1);white-space:nowrap}
+.cxt td.cxcust{white-space:normal;max-width:260px}
+.cxpc{font-family:var(--mono);font-size:10.5px;color:var(--t3)}
+.cxwash{display:inline-block;font-size:9px;font-weight:800;letter-spacing:.4px;padding:1px 5px;border-radius:6px;background:var(--amber-l);color:#b45309}
+.mmesum{display:flex;gap:18px;align-items:center;flex-wrap:wrap;font-size:12.5px;margin:2px 0 8px}
+.ywcols{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1fr);gap:16px;align-items:start}
+.ywf{font-size:13px;margin:0 0 10px;padding:8px 12px;background:var(--s2);border:1px solid var(--b1);border-radius:var(--r)}
 .prepbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding:8px 10px;border:1px solid var(--b1);border-radius:var(--r);background:var(--s2)}
 .preplbl{font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--t3)}
 @media(max-width:860px){.dgrid{grid-template-columns:1fr}}
@@ -183,6 +209,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 .rline.rlhead span{font-family:var(--fc);font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:var(--t3)}
 .rline .rl_n{grid-column:1/-1;font-size:10.5px;color:var(--t3);line-height:1.2}
 .rline .rl_n:empty{display:none}
+table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-family:var(--fc);font-weight:700;font-size:11px;letter-spacing:.8px;text-transform:uppercase;padding-top:7px}
 .mlgrid{display:grid;grid-template-columns:minmax(0,1.3fr) minmax(0,1.3fr) minmax(0,.8fr) 30px;gap:6px 11px;align-items:center;margin-bottom:6px;max-width:760px}
 .mlgrid.mlhead{margin:4px 0 3px}
 .mlgrid.mlhead span{font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--t3)}
@@ -340,6 +367,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 .ttcard .tcbox{border:2px solid #222;flex:1;display:flex;flex-direction:column}
 .ttcard .tctitle{font-family:Georgia,'Times New Roman',serif;font-weight:700;font-size:15px;letter-spacing:.6px;text-align:center;border-bottom:1.5px solid #222;padding:3px 0}
 .ttcard .tcno{font-weight:700;font-size:12.5px;padding:3px 7px;border-bottom:1.5px solid #222;display:flex;gap:6px}
+.ttcard .tcsh{display:block;font-weight:400;font-size:8.5px;color:#777;font-family:'Courier New',monospace}
+.ttcard .tcxs{font-size:10px;font-weight:700;color:#b45309;padding:2px 7px;border-bottom:1px solid #222;background:#fff7e6}
 .ttcard .tcbody{border:1px solid #222;margin:4px;padding:4px 7px;flex:1;display:flex;flex-direction:column;justify-content:space-between}
 .ttcard .tcrow{display:flex;align-items:baseline;gap:5px;min-height:17px}
 .ttcard .tcl{white-space:nowrap}
@@ -352,6 +381,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 .ttcard .tcsign>div{flex:1;text-align:center;font-weight:600;display:flex;flex-direction:column;gap:2px}
 .ttcard .tcin{flex:1;min-width:0;border:0;border-bottom:1px solid #0284c7;background:#eef7ff;font-family:'Courier New',monospace;font-weight:700;font-size:11.5px;padding:1px 4px;color:#0b2a6f;border-radius:2px}
 .tcmodal .ttcard{max-width:520px;margin:0 auto}
+.tnm{padding:4px 7px;font-size:12px;width:100%;box-sizing:border-box}
 .ttcard .tcin.tcnow{background:#fff4d6;border-bottom-color:#d97706}
 .tcreleased{max-width:520px;margin:0 auto 8px;padding:7px 10px;border:1px solid #9fd8b0;border-radius:6px;background:#f0fbf3;font-family:Arial,sans-serif;font-size:12px;color:#14532d}
 </style>
@@ -361,8 +391,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v57B</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57B</div>
+    <h1>GPR<span class="vpill">v57J</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57J</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -382,7 +412,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v57B</span></div>
+  <div class="nbrand">GPR<span class="vpill">v57J</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -475,7 +505,15 @@ input[readonly]{background:var(--s3);color:var(--t2)}
           <table class="dtable"><tbody>
             <tr><td>Link MMT charge</td><td><select id="tc_mmt"><option value="">— select —</option></select></td></tr>
             <tr><td>Colour code (this side)</td><td><input id="tc_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></td></tr>
-            <tr><td colspan="2" style="padding-top:2px"><span id="tc_seqnote"></span></td></tr>
+            <tr class="dkey"><td>T. Tank code no.</td><td><input id="tc_tankcode" placeholder="e.g. T-07 (printed on the TT card)"></td></tr>
+            <tr><td colspan="2" style="padding-top:2px"><span id="tc_seqnote"></span>
+              <!-- v57C: excess tank (beyond the planned count) — E series, reason required -->
+              <div id="tc_xs" class="xsbox" style="display:none">
+                <div class="xshead">EXCESS TANK <span id="tc_xsno"></span> &mdash; beyond the <span id="tc_xsplan"></span> planned</div>
+                <div class="xsrow"><select id="tc_xsreason" onchange="document.getElementById('tc_xsnote').placeholder=this.value==='other'?'describe the reason (required)':'note (optional)'">
+                  <option value="">— reason for the excess tank —</option><option value="higher_avg_weight">Higher average weight</option>
+                  <option value="higher_wastage">Higher wastage</option><option value="higher_gross">Higher gross quantity</option><option value="other">Other</option></select>
+                <input id="tc_xsnote" placeholder="note (optional)"></div></div></td></tr>
             <tr><td>Tanks planned (N)</td><td><input id="tc_seqtotal" type="number" inputmode="numeric"></td></tr>
             <tr><td>Tank capacity (L)</td><td><input id="tc_cap" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
             <tr><td>Planned fill (L)</td><td><input id="tc_planned" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
@@ -483,7 +521,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
             <tr><td>Virgin gelatine (kg)</td><td><input id="tc_virgin" type="number" inputmode="decimal" oninput="ttCalc('tc')"></td></tr>
             <tr><td>Colour + TiO₂ (kg)</td><td><input id="tc_colourkg" type="number" inputmode="decimal" oninput="this.dataset.manual='1';ttCalc('tc')" placeholder="auto from colourants"></td></tr>
             <tr><td>FG remelt (kg)</td><td><input id="tc_fgremelt" type="number" inputmode="decimal" oninput="ttCalc('tc')"></td></tr>
-            <tr><td>Draw from</td><td><select id="tc_source" onchange="toggleLegacySide('tc')"><option value="ledger">Ledger A — online register</option><option value="legacy">Ledger B — legacy stock</option></select></td></tr>
+            <tr><td>Draw from</td><td><select id="tc_source" onchange="toggleLegacySide('tc')"><option value="ledger">Ledger A — online register</option><option value="oily">Oily salvage (Ledger A)</option><option value="legacy">Ledger B — legacy stock</option></select></td></tr>
             <tr id="tc_legacywrap" style="display:none"><td>Legacy location</td><td><select id="tc_legacyloc"></select></td></tr>
             <tr><td>Salvage added (kg)</td><td><input id="tc_salvage" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the salvage lines below"></td></tr>
             <tr><td>Cutting added (kg)</td><td><input id="tc_cutting" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the cutting lines below"></td></tr>
@@ -493,7 +531,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
           <!-- v56U (Rahul TT 3): cutting and salvage as LINES — from a batch and colour code, any number. -->
           <div class="fgroup-title" style="margin-top:8px;font-size:11px">Cutting &amp; salvage added — by batch / colour code</div>
           <div id="tc_reuse"></div>
-          <button class="btn sm" style="margin-top:3px" onclick="ttAddReuse('tc')">+ Add cutting / salvage</button>
+          <button class="btn sm" style="margin-top:3px" onclick="ttStockPicker('tc')">+ Add cutting / salvage</button>
           <div class="fgroup-title" style="margin-top:8px;font-size:11px">Colourants (grams)</div>
           <div id="tc_colourants" class="dcolgrid"></div>
           <button class="btn sm" style="margin-top:3px" onclick="ttAddColourant('tc')">+ Add colourant</button>
@@ -508,7 +546,15 @@ input[readonly]{background:var(--s3);color:var(--t2)}
           <table class="dtable"><tbody>
             <tr><td>Link MMT charge</td><td><select id="tb_mmt"><option value="">— select —</option></select></td></tr>
             <tr><td>Colour code (this side)</td><td><input id="tb_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></td></tr>
-            <tr><td colspan="2" style="padding-top:2px"><span id="tb_seqnote"></span></td></tr>
+            <tr class="dkey"><td>T. Tank code no.</td><td><input id="tb_tankcode" placeholder="e.g. T-07 (printed on the TT card)"></td></tr>
+            <tr><td colspan="2" style="padding-top:2px"><span id="tb_seqnote"></span>
+              <!-- v57C: excess tank (beyond the planned count) — E series, reason required -->
+              <div id="tb_xs" class="xsbox" style="display:none">
+                <div class="xshead">EXCESS TANK <span id="tb_xsno"></span> &mdash; beyond the <span id="tb_xsplan"></span> planned</div>
+                <div class="xsrow"><select id="tb_xsreason" onchange="document.getElementById('tb_xsnote').placeholder=this.value==='other'?'describe the reason (required)':'note (optional)'">
+                  <option value="">— reason for the excess tank —</option><option value="higher_avg_weight">Higher average weight</option>
+                  <option value="higher_wastage">Higher wastage</option><option value="higher_gross">Higher gross quantity</option><option value="other">Other</option></select>
+                <input id="tb_xsnote" placeholder="note (optional)"></div></div></td></tr>
             <tr><td>Tanks planned (N)</td><td><input id="tb_seqtotal" type="number" inputmode="numeric"></td></tr>
             <tr><td>Tank capacity (L)</td><td><input id="tb_cap" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
             <tr><td>Planned fill (L)</td><td><input id="tb_planned" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
@@ -516,7 +562,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
             <tr><td>Virgin gelatine (kg)</td><td><input id="tb_virgin" type="number" inputmode="decimal" oninput="ttCalc('tb')"></td></tr>
             <tr><td>Colour + TiO₂ (kg)</td><td><input id="tb_colourkg" type="number" inputmode="decimal" oninput="this.dataset.manual='1';ttCalc('tb')" placeholder="auto from colourants"></td></tr>
             <tr><td>FG remelt (kg)</td><td><input id="tb_fgremelt" type="number" inputmode="decimal" oninput="ttCalc('tb')"></td></tr>
-            <tr><td>Draw from</td><td><select id="tb_source" onchange="toggleLegacySide('tb')"><option value="ledger">Ledger A — online register</option><option value="legacy">Ledger B — legacy stock</option></select></td></tr>
+            <tr><td>Draw from</td><td><select id="tb_source" onchange="toggleLegacySide('tb')"><option value="ledger">Ledger A — online register</option><option value="oily">Oily salvage (Ledger A)</option><option value="legacy">Ledger B — legacy stock</option></select></td></tr>
             <tr id="tb_legacywrap" style="display:none"><td>Legacy location</td><td><select id="tb_legacyloc"></select></td></tr>
             <tr><td>Salvage added (kg)</td><td><input id="tb_salvage" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the salvage lines below"></td></tr>
             <tr><td>Cutting added (kg)</td><td><input id="tb_cutting" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the cutting lines below"></td></tr>
@@ -526,7 +572,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
           <!-- v56U (Rahul TT 3): cutting and salvage as LINES — from a batch and colour code, any number. -->
           <div class="fgroup-title" style="margin-top:8px;font-size:11px">Cutting &amp; salvage added — by batch / colour code</div>
           <div id="tb_reuse"></div>
-          <button class="btn sm" style="margin-top:3px" onclick="ttAddReuse('tb')">+ Add cutting / salvage</button>
+          <button class="btn sm" style="margin-top:3px" onclick="ttStockPicker('tb')">+ Add cutting / salvage</button>
           <div class="fgroup-title" style="margin-top:8px;font-size:11px">Colourants (grams)</div>
           <div id="tb_colourants" class="dcolgrid"></div>
           <button class="btn sm" style="margin-top:3px" onclick="ttAddColourant('tb')">+ Add colourant</button>
@@ -1449,13 +1495,78 @@ function renderMmtOpen(open){
     + '<th class="num">Total kg</th><th class="num">Allocated</th><th class="num">Remaining</th><th>Started</th></tr></thead><tbody>';
   rows.forEach(c=>{
     const rem = Number(c.remaining_kg||0);
-    h += '<tr><td class="mono"><b>'+esc(c.mmt_ref)+'</b></td><td>'+esc(c.tank_no||'—')+'</td>'
+    // v57E: every open charge opens its own editor (correct it / distribute what is left and close it)
+    h += '<tr class="clickable" style="cursor:pointer" onclick="mmtOpenEdit('+c.id+')" title="Open to correct or close this charge"><td class="mono"><b>'+esc(c.mmt_ref)+'</b></td><td>'+esc(c.tank_no||'—')+'</td>'
       + '<td>'+esc(c.gelatine_vendor||'—')+'</td><td class="mono">'+esc(c.gelatine_batch||'—')+'</td>'
       + '<td class="num">'+fmt(c.total_kg,0)+'</td><td class="num">'+fmt(c.allocated_kg,0)+'</td>'
-      + '<td class="num" style="color:'+(rem>0.5?'var(--green)':'var(--t3)')+'"><b>'+fmt(rem,0)+'</b></td>'
+      + '<td class="num" style="color:'+(rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'"><b>'+fmt(rem,0)+'</b></td>'
       + '<td class="mono" style="font-size:11px">'+esc(_dm(String(c.charge_start||c.created_at||'').slice(0,10)))+'</td></tr>';
   });
   el.innerHTML = h + '</tbody></table>';
+}
+// ── v57E: open-charge editor — correct the charge, or distribute its remainder into tanks & close ──
+async function mmtOpenEdit(id){
+  const c = (window._MMT_OPEN||[]).find(x=>x.id===id) || (window._MMT_ROWS||[]).find(x=>x.id===id); if(!c) return;
+  const rem = +(Number(c.total_kg||0) - Number(c.allocated_kg||0)).toFixed(1);
+  const fl = c.floor==='FFSF' ? ['1F','2F'] : [c.floor];
+  let tanks = [];
+  try{
+    const from = new Date(Date.now()+330*60000-4*86400000).toISOString().slice(0,10);
+    const d = await api('/api/gpr/tt-sheet?from='+from+'&floors='+encodeURIComponent(fl.join(',')));
+    tanks = ((d && d.ok && d.rows) || []).filter(t => !t.issued_at && (!t.mmt_ref || t.mmt_ref===c.mmt_ref))
+      .sort((a,b)=>String(b.created_at||'').localeCompare(String(a.created_at||'')));
+  }catch(e){}
+  window._MME = { c, rem, tanks };
+  const dtv = v => v ? String(v).slice(0,16) : '';
+  const inp = (k,lbl,type,v) => '<div class="field-grp"><label>'+lbl+'</label><input id="mme_'+k+'" type="'+type+'" value="'+esc(v==null?'':v)+'"></div>';
+  ttModalOpen('MMT charge '+esc(c.mmt_ref)+' &mdash; '+esc(FLOOR_LABELS[c.floor]||c.floor),
+    '<div class="fgroup-title" style="margin-top:0">Charge</div><div class="fgrid">'
+    + inp('total_kg','Total charge (kg)','number',c.total_kg) + inp('water_kg','Water (kg)','number',c.water_kg) + inp('water_temp_c','Water temp (&deg;C)','number',c.water_temp_c)
+    + inp('tank_no','MMT tank','text',c.tank_no) + inp('charge_start','Charge commenced','datetime-local',dtv(c.charge_start))
+    + inp('charge_complete','Charge completed','datetime-local',dtv(c.charge_complete)) + '</div>'
+    + '<div style="display:flex;justify-content:flex-end;margin-top:6px"><button class="btn" onclick="mmtSaveEdit()">Save changes</button></div>'
+    + '<div class="fgroup-title">Close the charge &mdash; distribute what is left</div>'
+    + '<div class="mmesum"><span>Total <b>'+fmt(c.total_kg,0)+'</b> kg</span><span>Allocated <b>'+fmt(c.allocated_kg,0)+'</b> kg</span>'
+    + '<span>Remaining <b style="color:'+(rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'">'+fmt(rem,1)+'</b> kg</span><span id="mme_dist" class="hbnote"></span></div>'
+    + (rem > 0.5
+        ? (tanks.length
+            ? '<div class="tswrap" style="max-height:300px"><table class="gtable"><thead><tr><th>Tank</th><th>Batch</th><th>Side</th><th>MC</th><th>Status</th><th class="num">Virgin kg now</th><th class="num" style="width:110px">Add kg</th></tr></thead><tbody>'
+              + tanks.map(t=>'<tr><td class="mono"><b>'+esc(String(t.tt_number||'').replace(/^TT-/,''))+'</b></td><td class="mono">'+esc(t.batch_number)+'</td>'
+                + '<td><span class="sdtag sd-'+esc(t.side)+'">'+esc(String(t.side||'').toUpperCase())+'</span></td><td>'+esc(t.machine_id||'')+'</td>'
+                + '<td style="font-size:11px">'+esc(lcStage(t)[1])+'</td><td class="num">'+fmt(t.virgin_kg,1)+'</td>'
+                + '<td class="num"><input type="number" min="0" step="0.1" class="mme_add" data-id="'+t.id+'" oninput="mmtDistSum()" style="width:90px;padding:3px 6px;text-align:right"></td></tr>').join('')
+              + '</tbody></table></div><div style="margin-top:6px"><a href="javascript:void(0)" onclick="mmtSpread()" style="font-size:11.5px">Spread the remainder evenly across these tanks</a></div>'
+            : '<div class="empty" style="padding:10px">No unreleased tank on this floor in the last 4 days to distribute into.</div>')
+        : '<div class="hbnote" style="margin:4px 0">Nothing left to distribute'+(rem<-0.5?' &mdash; the charge is <b style="color:var(--red)">over-allocated by '+fmt(-rem,1)+' kg</b>; correct the total above if it was under-recorded':'')+'.</div>')
+    + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">'
+    + (rem > 0.5 && tanks.length ? '<button class="btn" onclick="mmtDistribute(false)">Distribute only</button>' : '')
+    + '<button class="btn primary" onclick="mmtDistribute(true)">'+(rem > 0.5 && tanks.length ? 'Distribute &amp; close charge' : 'Close charge')+'</button></div>');
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '860px';
+  mmtDistSum();
+}
+function mmtDistSum(){ const M = window._MME; const el = document.getElementById('mme_dist'); if(!M||!el) return;
+  const t = [...document.querySelectorAll('.mme_add')].reduce((a,i)=>a+(parseFloat(i.value)||0),0);
+  el.innerHTML = t>0 ? 'distributing <b>'+fmt(t,1)+'</b> kg &middot; left after: <b style="color:'+(Math.abs(M.rem-t)<0.5?'var(--green)':'var(--amber)')+'">'+fmt(M.rem-t,1)+'</b> kg' : ''; }
+function mmtSpread(){ const M = window._MME; const ins = [...document.querySelectorAll('.mme_add')]; if(!M||!ins.length) return;
+  const each = Math.floor(M.rem / ins.length * 10) / 10; let left = +(M.rem - each*ins.length).toFixed(1);
+  ins.forEach((i,k)=>{ i.value = (k===0 ? +(each+left).toFixed(1) : each); }); mmtDistSum(); }
+async function mmtSaveEdit(){
+  const M = window._MME; if(!M) return;
+  const body = {}; ['total_kg','water_kg','water_temp_c','tank_no','charge_start','charge_complete'].forEach(k=>{ const e = document.getElementById('mme_'+k); if(e) body[k] = e.value; });
+  const d = await post('/api/gpr/mmt/'+M.c.id+'/update', body);
+  if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not save','err'); return; }
+  toast(d.changed ? 'Charge updated' : 'No change','ok'); await loadMmt(); mmtOpenEdit(M.c.id);
+}
+async function mmtDistribute(close){
+  const M = window._MME; if(!M) return;
+  const lines = [...document.querySelectorAll('.mme_add')].map(i=>({ tt_id:Number(i.dataset.id), kg:parseFloat(i.value)||0 })).filter(l=>l.kg>0);
+  const t = lines.reduce((a,l)=>a+l.kg,0);
+  if(!close && !lines.length){ toast('Enter kg against at least one tank','err'); return; }
+  if(close && M.rem > 0.5 && Math.abs(M.rem - t) >= 0.5 && !confirm(fmt(M.rem - t,1)+' kg of '+M.c.mmt_ref+' will be left undistributed when it closes. Close anyway?')) return;
+  const d = await post('/api/gpr/mmt/'+M.c.id+'/distribute', { lines, close });
+  if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not distribute','err'); return; }
+  toast((d.distributed ? fmt(d.distributed,1)+' kg into '+d.tanks+' tank'+(d.tanks>1?'s':'') : 'Charge')+(d.closed?' &middot; charge closed':''),'ok');
+  ttModalClose(); loadMmt();
 }
 function renderMmtHistory(){
   const out = document.getElementById('mmtList'); if(!out) return;
@@ -1644,8 +1755,15 @@ let _YC_PLAN = null;
 // ── v55S: LABEL HISTORY register ──────────────────────────────────────────────
 // ═══ v56X (Ishan, 24 Sep): TT CARDS — format GDP029-F12 ═══════════════════════════════════════
 window._TCD = window._TCD || { rows: [], fmt: 'GDP029-F12' };
-const TCD_EDIT = [['tank_code','T. Tank code no.'],['required_visc','Required viscosity (cps @ 50°C)'],['gel_sol_kg','Gel solution wt (kg)'],
-                  ['visc_time','Viscosity reading time'],['loading_temp','T. Tank temp at loading (°C)'],['checked_by','Checked by']];
+// v57C (Rahul / Ishan): the card no longer asks for values it already has — only the T. Tank code
+// (normally entered at preparation), the gel solution weight (defaults to the issued volume) and
+// Checked by remain editable.
+const TCD_EDIT = [['tank_code','T. Tank code no.'],['gel_sol_kg','Gel solution wt (kg)'],['prepared_by_name','Prepared by'],['released_by_name','Released by']];
+// v57D: which names a card still lacks (DPR had none for that shift and nobody has typed one)
+function _tcNamesMissing(r){ const c = r.card||{}, m = [];
+  if(!r.dpr_chemist && !String(c.prepared_by_name||'').trim()) m.push('prepared_by_name');
+  if(r.issued_at && !r.dpr_incharge && !String(c.released_by_name||'').trim()) m.push('released_by_name');
+  return m; }
 function _istParts(v){ const ms = _tsMs(v); if(ms==null) return null; const d = new Date(ms+330*60000);
   const iso = d.toISOString(); const hh = d.getUTCHours(), mm = d.getUTCMinutes();
   const m = hh*60+mm, sh = m>=360 && m<840 ? 'A' : (m>=840 && m<1320 ? 'B' : 'C');
@@ -1708,7 +1826,9 @@ function renderTtCards(){
 // the card itself — same layout as the printed format; `ed` puts inputs in the values GPR doesn't hold
 function ttCardHtml(r, ed){
   const c = r.card || {}, p = _istParts(r.created_at), l = _istParts(r.issued_at);
-  const v = (k, txt) => ed ? '<input class="tcin" data-k="'+k+'" value="'+esc(c[k]||'')+'">' : '<span class="tcv">'+esc(txt!=null?txt:(c[k]||''))+'</span>';
+  const v = (k, txt, dflt) => { const cur = (c[k]!=null && String(c[k]).trim()!=='') ? c[k] : (dflt!=null ? dflt : '');
+    return ed ? '<input class="tcin" data-k="'+k+'" value="'+esc(cur)+'">' : '<span class="tcv">'+esc(txt!=null?txt:cur)+'</span>'; };
+  const gelDflt = Number(r.actual_l) > 0 ? String(+Number(r.actual_l).toFixed(1)) : '';
   const tick = s => r.side===s ? ' <b class="tcside">&#10004; this tank</b>' : '';
   const capC = r.cap_code || (r.side==='cap' ? r.colour_code : '') || '', bodyC = r.body_code || (r.side==='body' ? r.colour_code : '') || '';
   const row = (lbl, val2, bold) => '<div class="tcrow"><span class="tcl'+(bold?' b':'')+'">'+lbl+'</span>'+val2+'</div>';
@@ -1718,6 +1838,7 @@ function ttCardHtml(r, ed){
     + '<div class="tcmeta"><span>Frequency : Every Tank</span><span>Format No.:'+esc(window._TCD.fmt||'GDP029-F12')+'</span></div></div>'
     + '<div class="tcbox"><div class="tctitle">TRANSFER TANK INFORMATION</div>'
     + '<div class="tcno">T. TANK No. <span class="tcv">'+esc(r.tt_number||'')+'</span></div>'
+    + (r.excess_index ? '<div class="tcxs">EXCESS TANK &middot; '+esc(r.excess_reason||'')+'</div>' : '')
     + '<div class="tcbody">'
     + row('Batch No. :', fx(r.batch_number))
     + row('Product Code No. :', fx(r.pc_code))
@@ -1731,19 +1852,23 @@ function ttCardHtml(r, ed){
     + row('Size :', fx(r.size))
     + row('Date/Shift of Preparation :', fx(p ? p.pday+' / '+p.shift : ''))
     + row('Time of Preparation :', fx(p ? p.time : ''))
-    + row('Gel Sol.wt. :', v('gel_sol_kg')+' <span class="tcu">Kgs.</span>'+(ed && r.actual_l ? ' <span class="tchint">('+fmt(r.actual_l,0)+' L issued)</span>' : ''))
-    + row('Required Viscosity (in Cps.) :', v('required_visc')+' <span class="tcu">at 50&deg;C</span>')
-    + row('Supplied Viscosity (in Cps.) :', fx(r.viscosity_cps)+' <span class="tcu">at 50&deg;C</span>')
-    + '<div class="tcrow"><span class="tcl">Time</span>'+v('visc_time')+'<span class="tcl" style="min-width:0">Temp&deg;C</span>'+fx(r.temperature_c)+'</div>'
+    + row('Gel Sol.wt. :', v('gel_sol_kg', null, gelDflt)+' <span class="tcu">Kgs.</span>')
+    + row('Viscosity (in Cps.) :', fx(r.viscosity_cps)+' <span class="tcu">at 50&deg;C</span>')
+    + row('T. Tank Temperature &deg;C :', fx(r.temperature_c))
     + row('Date and Time of Loading :', fx(l ? l.date+' '+l.time : ''))
-    + row('T. Tank Temperature &deg;C at Loading Time', v('loading_temp'))
-    + '<div class="tcsign"><div><span class="tcv">'+esc(r.created_by||'')+'</span>Prepared by</div><div><span class="tcv">'+esc(r.issued_by||'')+'</span>Released by</div><div>'+(ed?v('checked_by'):'<span class="tcv">'+esc(c.checked_by||'')+'</span>')+'Checked by</div></div>'
+    // v57D: Prepared by = shift chemist, Released by = shift incharge — as DPR recorded them for this
+    // floor and that shift; typed by hand only where DPR has no name. Checked by stays blank to sign.
+    + '<div class="tcsign">'
+    +   '<div>'+(r.dpr_chemist ? '<span class="tcv">'+esc(r.dpr_chemist)+'</span>' : (ed ? v('prepared_by_name') : '<span class="tcv">'+esc(c.prepared_by_name||'')+'</span>'))+'Prepared by'+(r.prep_shift?'<small class="tcsh">'+esc(r.prep_shift)+'</small>':'')+'</div>'
+    +   '<div>'+(!r.issued_at ? '<span class="tcv"></span>' : (r.dpr_incharge ? '<span class="tcv">'+esc(r.dpr_incharge)+'</span>' : (ed ? v('released_by_name') : '<span class="tcv">'+esc(c.released_by_name||'')+'</span>')))+'Released by'+(r.rel_shift?'<small class="tcsh">'+esc(r.rel_shift)+'</small>':'')+'</div>'
+    +   '<div><span class="tcv"></span>Checked by</div></div>'
     + '</div></div></div>';
 }
 function ttCardOpen(id, justReleased){
   const r = window._TCD.rows.find(x=>x.id===id); if(!r) return;
   ttModalOpen('TT card — '+esc(r.batch_number)+' · '+esc(r.tt_number),
-    (justReleased ? '<div class="tcreleased">&#10004; <b>'+esc(r.tt_number)+'</b> released to production. Record the <b>T. Tank code</b> and <b>temperature at loading</b> now &mdash; fill the rest here too, or later from Log &rarr; TT cards.</div>' : '')
+    (justReleased ? '<div class="tcreleased">&#10004; <b>'+esc(r.tt_number)+'</b> released to production. '
+      + (String((r.card||{}).tank_code||'').trim() ? 'The card is complete &mdash; print it now or later from Log &rarr; TT cards.' : 'Enter the <b>T. Tank code</b> to complete the card (or later from Log &rarr; TT cards).') + '</div>' : '')
     + '<div class="tcmodal">'+ttCardHtml(r, true)+'</div>'
     + '<div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">'
     + '<button class="btn" onclick="ttCardPrint(['+id+'])">&#128424; Print</button>'
@@ -1766,6 +1891,33 @@ async function ttCardFor(id, bn){
     window._TCD = { rows: d.rows||[], fmt: d.formatNo||'GDP029-F12' };
   }
   ttCardOpen(id);
+}
+// v57D: names DPR does not hold for a shift — entered here once, saved to each card (audited), then print
+function ttCardNamesPrompt(miss, ids){
+  const inp = (r,k,ph) => _tcNamesMissing(r).includes(k) ? '<input class="tnm" data-id="'+r.id+'" data-k="'+k+'" placeholder="'+ph+'">' : '<span style="color:var(--t3)">from DPR</span>';
+  ttModalOpen('Names needed before printing',
+    '<div style="font-size:12px;color:var(--t2);margin-bottom:8px">DPR has no shift chemist / shift incharge entered for the shift(s) below. Enter the names &mdash; they are saved to the card and printed.</div>'
+    + '<div class="tswrap" style="max-height:360px"><table class="gtable"><thead><tr><th>Tank</th><th>Prepared (shift)</th><th>Prepared by</th><th>Released (shift)</th><th>Released by</th></tr></thead><tbody>'
+    + miss.map(r=>'<tr><td class="mono"><b>'+esc(r.batch_number)+'</b> '+esc(String(r.tt_number||'').replace(/^TT-/,''))+'</td>'
+        + '<td class="mono" style="font-size:11px">'+esc(r.prep_shift||'—')+' &middot; '+esc(r.floor||'')+'</td><td>'+inp(r,'prepared_by_name','shift chemist')+'</td>'
+        + '<td class="mono" style="font-size:11px">'+esc(r.rel_shift||'—')+'</td><td>'+inp(r,'released_by_name','shift incharge')+'</td></tr>').join('')
+    + '</tbody></table></div>'
+    + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn" onclick="ttModalClose&&ttModalClose()">Cancel</button>'
+    + '<button class="btn primary" onclick="ttCardNamesSave(['+ids.join(',')+'])">Save names &amp; print</button></div>');
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '820px';
+}
+async function ttCardNamesSave(ids){
+  const byId = {};
+  document.querySelectorAll('.tnm').forEach(i=>{ const v = i.value.trim(); (byId[i.dataset.id] = byId[i.dataset.id] || {})[i.dataset.k] = v; });
+  for(const [id, body] of Object.entries(byId)){ if(Object.values(body).some(v=>!v)){ toast('Enter every name shown (or Cancel)','err'); return; } }
+  for(const [id, body] of Object.entries(byId)){
+    const d = await post('/api/gpr/tt/'+id+'/card', body);
+    if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not save a name','err'); return; }
+    const r = window._TCD.rows.find(x=>String(x.id)===String(id)); if(r){ r.card = d.card; r.card_missing = Math.max(0,(r.card_missing||0) - Object.keys(body).length); }
+  }
+  if(typeof ttModalClose==='function') ttModalClose();
+  renderTtCards();
+  ttCardPrint(ids, true);
 }
 // v56Y: the BMR print always takes the WHOLE batch (the to-fill list shows only incomplete cards)
 async function ttCardPrintBatch(bn){
@@ -1793,12 +1945,17 @@ async function ttCardSave(id){
   const d = await post('/api/gpr/tt/'+id+'/card', body);
   if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not save the card','err'); return; }
   const r = window._TCD.rows.find(x=>x.id===id);
-  if(r){ r.card = d.card; r.card_missing = TCD_EDIT.filter(([k])=>k!=='checked_by' && !String(d.card[k]||'').trim()).length; }
+  if(r){ r.card = d.card; r.card_missing = (String(d.card.tank_code||'').trim() ? 0 : 1) + ((!(Number(r.actual_l)>0) && !String(d.card.gel_sol_kg||'').trim()) ? 1 : 0) + _tcNamesMissing(r).length; }
   toast(d.changed ? 'Card saved' : 'No change','ok');
   renderTtCards();
 }
 // print: A4, four cards to a page (2 × 2), cap cards first then body, in tank order
-function ttCardPrint(ids){
+function ttCardPrint(ids, skipGate){
+  // v57D: a card whose Prepared by / Released by name DPR does not hold must get it before printing
+  if(!skipGate){
+    const miss = window._TCD.rows.filter(r=>ids.includes(r.id) && _tcNamesMissing(r).length);
+    if(miss.length){ ttCardNamesPrompt(miss, ids); return; }
+  }
   const rows = window._TCD.rows.filter(r=>ids.includes(r.id))
     .sort((a,b)=>String(a.batch_number).localeCompare(String(b.batch_number)) || ((a.side==='cap'?0:1)-(b.side==='cap'?0:1)) || (a.seq_index||0)-(b.seq_index||0));
   if(!rows.length) return;
@@ -1806,13 +1963,17 @@ function ttCardPrint(ids){
   const w = window.open('', '_blank');
   if(!w){ toast('Allow pop-ups to print the cards','err'); return; }
   w.document.write('<!doctype html><html><head><title>TT cards '+esc(rows[0].batch_number)+'</title><style>'+css
-    + '@page{size:A4;margin:8mm} body{margin:0;font-family:Arial,Helvetica,sans-serif} .sheet{display:grid;grid-template-columns:1fr 1fr;gap:6mm;page-break-after:always}'
-    + '.sheet:last-child{page-break-after:auto} .ttcard{height:136mm} .pfoot{grid-column:1/-1;font-size:8pt;color:#666;text-align:right}</style></head><body>');
+    // v57C (Rahul): FOUR cards per A4 sheet (2 × 2) — each sheet is a fixed 194 × 281 mm box, so a
+    // card can never push its neighbour onto the next page; a batch of 5 prints 4 + 1, not 5 pages.
+    + '@page{size:A4 portrait;margin:8mm} html,body{margin:0;padding:0;font-family:Arial,Helvetica,sans-serif;-webkit-print-color-adjust:exact;print-color-adjust:exact}'
+    + '.sheet{width:194mm;height:279mm;box-sizing:border-box;display:grid;grid-template-columns:1fr 1fr;grid-template-rows:134mm 134mm 5mm;gap:3mm 4mm;page-break-after:always;break-after:page;overflow:hidden}'
+    + '.sheet:last-child{page-break-after:auto;break-after:auto} .ttcard{height:134mm;break-inside:avoid;font-size:11px;padding:8px 10px} .ttcard .tcrow{min-height:15px}'
+    + '.pfoot{grid-column:1/-1;font-size:7.5pt;color:#666;text-align:right;align-self:end}</style></head><body>');
   for(let i=0;i<rows.length;i+=4){
     w.document.write('<div class="sheet">'+rows.slice(i,i+4).map(r=>ttCardHtml(r,false)).join('')
       + '<div class="pfoot">GPR &middot; printed '+esc(new Date(Date.now()+330*60000).toISOString().slice(0,16).replace('T',' '))+' IST by '+esc(SESSION.username||'')+' &middot; page '+(i/4+1)+' of '+Math.ceil(rows.length/4)+'</div></div>');
   }
-  w.document.write('<script>setTimeout(function(){window.print()},300)<\/script></body></html>');
+  w.document.write('<script>('+_gprDmyInstall.toString()+')(document);setTimeout(function(){window.print()},300)<\/script></body></html>');   // v57E: DD/MM/YYYY
   w.document.close();
 }
 async function loadLabelHistory(){
@@ -1883,12 +2044,25 @@ async function loadInputsLog(){
 // MMT stage; when a TT links that MMT charge its virgin draw is an internal transfer of the same
 // material, so it is reported separately and excluded from the consumed total.
 function _ilKg(r){ return r.unit === 'g' ? r.qty / 1000 : r.qty; }
+// v57E (Ishan, 25 Sep): the floor summary is BLOCKED — Gelatine (MMT melt, virgin, cuttings and
+// salvage by account, FG remelt) · Colour · Chemicals · Water — each with its subtotal, then the grand
+// total; columns are always GF · FF · SF · Total (combined FF/SF MMT charges are split server-side).
+const IL_BLOCKS = [['gel','Gelatine'],['col','Colour'],['chem','Chemicals'],['water','Water']];
+function _ilBlockOf(r){
+  const n = String(r.input||'');
+  if(/^water$/i.test(n)) return 'water';
+  if(r.source==='MMT' && !/^gelatine/i.test(n)) return 'chem';
+  if(r.source!=='MMT' && r.unit==='g') return 'col';
+  return 'gel';
+}
 function _ilMatrix(rows){
-  const floors = [...new Set(rows.map(r => r.floor || '—'))].sort();
+  const std = ['GF','1F','2F'];
+  const extra = [...new Set(rows.map(r => r.floor || '—'))].filter(f => !std.includes(f)).sort();
+  const floors = std.concat(extra);
   const M = {};
   rows.forEach(r => {
     const k = r.input;
-    M[k] = M[k] || { internal: !!r.internal, by: {}, total: 0, n: 0 };
+    M[k] = M[k] || { internal: !!r.internal, block: _ilBlockOf(r), by: {}, total: 0, n: 0 };
     M[k].by[r.floor || '—'] = (M[k].by[r.floor || '—'] || 0) + _ilKg(r);
     M[k].total += _ilKg(r); M[k].n++;
   });
@@ -1896,32 +2070,38 @@ function _ilMatrix(rows){
 }
 function renderInputsFloor(rows, out){
   const { floors, M } = _ilMatrix(rows);
-  const FL = { GF:'Ground', '1F':'First', '2F':'Second' };
-  const names = Object.keys(M).sort((a,b)=> (M[a].internal - M[b].internal) || a.localeCompare(b));
-  const fresh = names.filter(n=>!M[n].internal), internal = names.filter(n=>M[n].internal);
-  const colT = {}; let grand = 0;
-  fresh.forEach(n => { floors.forEach(f => colT[f] = (colT[f]||0) + (M[n].by[f]||0)); grand += M[n].total; });
-  let h = '<table class="gtable"><thead><tr><th>Input material</th>'
-        + floors.map(f=>'<th class="num">'+esc(FL[f]||f)+' ('+esc(f)+')</th>').join('')
-        + '<th class="num">All floors</th><th class="num">Entries</th></tr></thead><tbody>';
-  const line = (n, bold) => {
-    const x = M[n];
-    return '<tr'+(bold?' style="background:var(--s3);font-weight:700"':'')+'><td>'+esc(n)+'</td>'
-      + floors.map(f=>'<td class="num">'+(x.by[f] ? fmt(x.by[f],2) : '&mdash;')+'</td>').join('')
-      + '<td class="num"><b>'+fmt(x.total,2)+'</b></td><td class="num">'+x.n+'</td></tr>';
-  };
-  fresh.forEach(n => h += line(n,false));
-  h += '<tr class="sumrow" style="background:var(--s3);font-weight:700"><td>TOTAL CONSUMED (kg)</td>'
-     + floors.map(f=>'<td class="num">'+fmt(colT[f]||0,2)+'</td>').join('')
-     + '<td class="num">'+fmt(grand,2)+'</td><td></td></tr>';
+  const FL = { GF:'Ground (GF)', '1F':'First (FF)', '2F':'Second (SF)', '—':'Unattributed' };
+  const names = Object.keys(M);
+  const fresh = names.filter(n=>!M[n].internal), internal = names.filter(n=>M[n].internal).sort();
+  const nc = floors.length + 3;
+  const cells = (by, tot, bold) => floors.map(f=>'<td class="num">'+(by[f] ? (bold?'<b>'+fmt(by[f],2)+'</b>':fmt(by[f],2)) : '&mdash;')+'</td>').join('')
+    + '<td class="num"><b>'+fmt(tot,2)+'</b></td>';
+  let h = '<table class="gtable ilfloor"><thead><tr><th>Input material</th>'
+        + floors.map(f=>'<th class="num">'+esc(FL[f]||f)+'</th>').join('')
+        + '<th class="num">Total</th><th class="num">Entries</th></tr></thead><tbody>';
+  const G = {}, gT = { by:{}, t:0 };
+  IL_BLOCKS.forEach(([bk, label])=>{
+    const ns = fresh.filter(n=>M[n].block===bk).sort((a,b)=>M[b].total-M[a].total);
+    if(!ns.length) return;
+    const bT = { by:{}, t:0, n:0 };
+    h += '<tr class="ilblk"><td colspan="'+nc+'">'+esc(label)+'</td></tr>';
+    ns.forEach(n=>{ const x = M[n];
+      floors.forEach(f=>{ bT.by[f] = (bT.by[f]||0) + (x.by[f]||0); });
+      bT.t += x.total; bT.n += x.n;
+      h += '<tr><td style="padding-left:18px">'+esc(n)+'</td>'+cells(x.by, x.total)+'<td class="num">'+x.n+'</td></tr>';
+    });
+    h += '<tr class="sumrow"><td>'+esc(label)+' &mdash; subtotal</td>'+cells(bT.by, bT.t, true)+'<td class="num">'+bT.n+'</td></tr>';
+    floors.forEach(f=>{ gT.by[f] = (gT.by[f]||0) + (bT.by[f]||0); }); gT.t += bT.t;
+  });
+  h += '<tr class="grandrow"><td>GRAND TOTAL CONSUMED (kg)</td>'+cells(gT.by, gT.t, true)+'<td></td></tr>';
   if(internal.length){
-    h += '<tr><td colspan="'+(floors.length+3)+'" style="padding-top:12px;font-size:11px;color:var(--t2)">'
+    h += '<tr><td colspan="'+nc+'" style="padding-top:12px;font-size:11px;color:var(--t2)">'
        + 'Internal transfer &mdash; already counted above at the MMT stage, so excluded from the total.</td></tr>';
-    internal.forEach(n => h += line(n,false));
+    internal.forEach(n => { const x = M[n]; h += '<tr style="color:var(--t3)"><td style="padding-left:18px">'+esc(n)+'</td>'+cells(x.by, x.total)+'<td class="num">'+x.n+'</td></tr>'; });
   }
-  out.innerHTML = '<div class="tswrap" style="max-height:520px">' + h + '</tbody></table></div>'
+  out.innerHTML = '<div class="tswrap" style="max-height:560px">' + h + '</tbody></table></div>'
     + '<div class="card-sub" style="margin-top:8px">Quantities in kg; colourants recorded in grams are converted. '
-    + 'MMT rows are floor-level and carry no batch.</div>';
+    + 'MMT rows are floor-level and carry no batch; a First + Second floor MMT charge is split between FF and SF by what each floor\'s tanks drew from it.</div>';
 }
 function exportInputsLog(){
   const rows = (window._IL_ROWS || []).filter(r => { const f = document.getElementById('il_input').value; return !f || r.input === f; });
@@ -1931,15 +2111,16 @@ function exportInputsLog(){
                val('il_batch') && ('batch '+val('il_batch')), val('il_mc') && ('machine '+val('il_mc'))].filter(Boolean).join(' \u00b7 ');
   if(document.getElementById('il_view').value === 'floor'){
     const { floors, M } = _ilMatrix(rows);
-    const out = Object.keys(M).sort((a,b)=>(M[a].internal-M[b].internal)||a.localeCompare(b)).map(n=>{
-      const r = { input: n, scope: M[n].internal ? 'Internal transfer (excluded)' : 'Consumed' };
+    const _bo = { gel:0, col:1, chem:2, water:3 }, _bl = { gel:'Gelatine', col:'Colour', chem:'Chemicals', water:'Water' };
+    const out = Object.keys(M).sort((a,b)=>(M[a].internal-M[b].internal)||(_bo[M[a].block]-_bo[M[b].block])||a.localeCompare(b)).map(n=>{
+      const r = { block: _bl[M[n].block], input: n, scope: M[n].internal ? 'Internal transfer (excluded)' : 'Consumed' };
       floors.forEach(f => r[f] = +(M[n].by[f]||0).toFixed(2));
       r.all_floors = +M[n].total.toFixed(2); r.entries = M[n].n; return r;
     });
     gprExport({ rows: out, title:'GPR \u2014 material consumption by floor', context: ctx,
       sheet:'Consumption', file:'gpr_material_consumption', totals:true,
-      columns: [{key:'input', label:'Input material', w:30}, {key:'scope', label:'Scope', w:26}]
-        .concat(floors.map(f=>({key:f, label:f+' (kg)', w:12, num:true})))
+      columns: [{key:'block', label:'Group', w:12}, {key:'input', label:'Input material', w:30}, {key:'scope', label:'Scope', w:26}]
+        .concat(floors.map(f=>({key:f, label:({GF:'GF','1F':'FF','2F':'SF'}[f]||f)+' (kg)', w:12, num:true})))
         .concat([{key:'all_floors', label:'All floors (kg)', w:16, num:true}, {key:'entries', label:'Entries', w:9, num:true}]) });
     return;
   }
@@ -2158,16 +2339,36 @@ function ttAutoTotals(p){
   _ttSeqNote(p);
 }
 // tank n of N and the fill % — refreshed whenever the litres change (v56U: ttCalc calls it too)
+// v57C: every tank of the batch (all days) — the "tank n of N" counter and the excess test need the
+// batch's full history, not just today's shift log (the log is day-scoped).
+async function _ttBatchLoad(bn, force){
+  if(!bn) return;
+  if(!force && window._TTB && window._TTB.bn===bn && Date.now()-window._TTB.at < 30000) return;
+  window._TTB = { bn, at: Date.now(), rows: (window._TTB && window._TTB.bn===bn) ? window._TTB.rows : null };
+  try{
+    const d = await api('/api/gpr/tt-sheet?batch='+encodeURIComponent(bn));
+    window._TTB = { bn, at: Date.now(), rows: (d && d.ok) ? (d.rows||[]) : [] };
+  }catch(e){ window._TTB = { bn, at: Date.now(), rows: [] }; }
+  ['tc','tb'].forEach(p=>{ try{ _ttSeqNote(p); }catch(e){} });
+}
 function _ttSeqNote(p){
   const el = document.getElementById(p+'_seqnote');
   if(el){
     const side = p==='tc' ? 'cap' : 'body';
     const bn = String(val('td_batch')||'').toUpperCase();
-    const done = (window._TTLIST||[]).filter(t=>String(t.batch_number||'').toUpperCase()===bn && String(t.side||'').toLowerCase()===side).length;
+    if(bn && (!window._TTB || window._TTB.bn!==bn || !window._TTB.rows)) _ttBatchLoad(bn);
+    const _src = (window._TTB && window._TTB.bn===bn && window._TTB.rows) ? window._TTB.rows : (window._TTLIST||[]);
+    const done = _src.filter(t=>String(t.batch_number||'').toUpperCase()===bn && String(t.side||'').toLowerCase()===side).length;
     const tot = num(p+'_seqtotal');
     const cap = num(p+'_cap'), act = num(p+'_actual');
     const bits = [];
-    if(tot>0) bits.push('tank <b>'+(done+1)+' of '+tot+'</b>');
+    // v57C: beyond the planned count → excess tank in the E series, with a reason
+    const exN = _src.filter(t=>String(t.batch_number||'').toUpperCase()===bn && String(t.side||'').toLowerCase()===side && t.excess_index).length;
+    const isX = tot>0 && (done+1) > tot;
+    const xs = document.getElementById(p+'_xs');
+    if(xs){ xs.style.display = isX ? '' : 'none';
+      if(isX){ document.getElementById(p+'_xsno').textContent = 'TT-'+(side==='cap'?'C':'B')+'E'+(exN+1); document.getElementById(p+'_xsplan').textContent = tot; } }
+    if(tot>0) bits.push(isX ? '<b style="color:#b45309">excess tank '+((done+1)-tot)+' (planned '+tot+')</b>' : 'tank <b>'+(done+1)+' of '+tot+'</b>');
     if(cap>0 && act>0) bits.push('fill <b>'+fmt(act/cap*100,0)+'%</b> of '+fmt(cap,0)+' L');
     el.innerHTML = bits.length ? '<span style="font-size:11px;color:var(--t2)">'+bits.join(' &middot; ')+'</span>' : '';
   }
@@ -2252,7 +2453,7 @@ function ttResetForBatch(bn){
   window._TT_FORM_BATCH = key;
   ['td_machine','td_floor','td_pc','td_colname','td_colcode'].forEach(id=>setVal(id,''));
   ['tc','tb'].forEach(p=>{
-    ['_colcode','_cap','_planned','_actual','_seqtotal','_virgin','_colourkg','_fgremelt','_salvage','_cutting','_visc','_temp','_reason'].forEach(f=>setVal(p+f,''));
+    ['_colcode','_cap','_planned','_actual','_seqtotal','_virgin','_colourkg','_fgremelt','_salvage','_cutting','_visc','_temp','_reason','_tankcode','_xsreason','_xsnote'].forEach(f=>setVal(p+f,''));
     const mm = document.getElementById(p+'_mmt'); if(mm) mm.value='';
     const sn = document.getElementById(p+'_seqnote'); if(sn) sn.innerHTML='';
     // v56U: reuse lines, colourant grams and the hand-entered flags belong to the old batch too
@@ -2348,8 +2549,8 @@ function ttAddReuse(p, pre){
   if(!w.querySelector('.rlhead')) w.insertAdjacentHTML('afterbegin','<div class="rline rlhead"><span>Account</span><span>From batch</span><span>Colour code</span><span>Side</span><span>kg</span><span></span></div>');
   const d = document.createElement('div'); d.className = 'rline';
   d.innerHTML = '<select class="rl_a" onchange="ttReuseAcct(this)" title="Account">'+REUSE_ACCTS.map(([k,l])=>'<option value="'+k+'">'+l+'</option>').join('')+'</select>'
-    + '<input class="rl_b" list="lotOpts_cutting" placeholder="batch" onchange="ttReuseLot(this)" style="text-transform:uppercase">'
-    + '<input class="rl_c" list="cutColourOpts" placeholder="code" style="text-transform:uppercase">'
+    + '<input class="rl_b" list="lotOpts_cutting" placeholder="batch" onchange="ttReuseLot(this)" onclick="ttPickFor(this)" style="text-transform:uppercase">'
+    + '<input class="rl_c" list="cutColourOpts" placeholder="code" onclick="ttPickFor(this)" style="text-transform:uppercase">'
     + '<select class="rl_s" onchange="ttReuseLot(this,true)" title="Cap / body of the material (C+B = whole capsules)"><option value="">C+B</option><option value="cap">Cap</option><option value="body">Body</option></select>'
     + '<input class="rl_k" type="number" inputmode="decimal" placeholder="kg" oninput="ttCalc(\''+p+'\')">'
     + '<button class="mlx" title="Remove" onclick="const w=this.closest(\'.rline\').parentNode;this.closest(\'.rline\').remove();if(!w.querySelector(\'.rline:not(.rlhead)\'))w.innerHTML=\'\';ttCalc(\''+p+'\')">&#10005;</button>'
@@ -2362,6 +2563,82 @@ function ttAddReuse(p, pre){
   d.querySelector('.rl_s').value = (pre && pre.side!=null) ? pre.side : (acct==='cutting' ? side : '');
   if(pre){ d.querySelector('.rl_b').value = pre.source_batch||''; d.querySelector('.rl_c').value = pre.colour_code||''; d.querySelector('.rl_k').value = pre.kg||''; }
   ttLoadLots();
+}
+// ═══ v57E (Ishan, 25 Sep): STOCK PICKER — the whole Ledger A cutting / salvage stock in one screen,
+// searchable, with available and pending kg per batch, side and colour code. The operator enters the
+// kg to take against any lots and confirms; the lines drop into the tank's table ready-filled.
+window._TSP = window._TSP || null;
+async function ttStockPicker(p, replaceLine){
+  const src = val(p+'_source') || 'ledger';
+  if(src === 'legacy'){ toast('Ledger B holds lump-sum stock with no batch detail — add the line by hand','warn'); ttAddReuse(p); return; }
+  const rows = await ttLoadLots(true);
+  window._TSP = { p, replaceLine: replaceLine || null, oily: src === 'oily', rows: rows.slice(), take: {} };
+  const acctOpts = [['','All accounts']].concat(REUSE_ACCTS);
+  ttModalOpen('Cutting &amp; salvage stock &mdash; '+(p==='tc'?'CAP':'BODY')+' tank',
+    '<div class="tspbar"><input id="tsp_q" placeholder="Search batch, colour code or account&hellip;" oninput="_tspRender()" autofocus>'
+    + '<select id="tsp_acct" onchange="_tspRender()"'+(window._TSP.oily?' disabled':'')+'>'+acctOpts.map(([k,l])=>'<option value="'+k+'"'+(window._TSP.oily&&k==='oily_salvage'?' selected':'')+'>'+l+'</option>').join('')+'</select>'
+    + '<select id="tsp_side" onchange="_tspRender()"><option value="">Cap, body &amp; C+B</option><option value="cap">Cap</option><option value="body">Body</option><option value="c+b">C+B (whole capsules)</option></select>'
+    + '<label class="tspchk"><input type="checkbox" id="tsp_pend" onchange="_tspRender()"> show pending receipts</label></div>'
+    + '<div id="tsp_list" class="tswrap" style="max-height:52vh;margin-top:8px"></div>'
+    + '<div class="tspfoot"><span id="tsp_sum" class="hbnote"></span><span style="flex:1"></span>'
+    + '<button class="btn" onclick="ttModalClose();ttAddReuse(\''+p+'\')">Manual line</button>'
+    + '<button class="btn primary" onclick="_tspConfirm()">Add to tank</button></div>');
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '980px';
+  _tspRender();
+}
+function _tspRender(){
+  const T = window._TSP; if(!T) return;
+  const q = (val('tsp_q')||'').trim().toUpperCase(), a = T.oily ? 'oily_salvage' : (val('tsp_acct')||''), sd = val('tsp_side')||'';
+  const showPend = !!(document.getElementById('tsp_pend')||{}).checked;
+  const L = T.rows.filter(l => (!a || l.account===a)
+      && (!sd || (sd==='c+b' ? !l.side : l.side===sd))
+      && (showPend || l.balance_kg > 0.05)
+      && (!q || [l.batch_number, l.colour_code, l.account_label].some(x=>String(x||'').toUpperCase().includes(q))));
+  const key = l => l.account+'|'+l.batch_number+'|'+(l.side||'');
+  const tag = s => s ? '<span class="sdtag sd-'+s+'">'+s.toUpperCase()+'</span>' : '<span class="sdtag">C+B</span>';
+  let h = '<table class="gtable"><thead><tr><th>Batch</th><th>Account</th><th>Side</th><th>Colour code</th><th class="num">Available kg</th><th class="num">Pending kg</th><th class="num" style="width:110px">Take kg</th></tr></thead><tbody>';
+  if(!L.length) h += '<tr><td colspan="7" style="color:var(--t3);padding:14px">No stock matches'+(showPend?'':' &mdash; tick <b>show pending receipts</b> to include stock not yet accepted')+'.</td></tr>';
+  L.forEach(l=>{
+    const k = key(l), tk = T.take[k] || '';
+    h += '<tr'+(tk?' style="background:var(--accent-l)"':'')+'><td class="mono"><b>'+esc(l.batch_number)+'</b></td><td>'+esc(l.account_label)+'</td><td>'+tag(l.side)+'</td>'
+      + '<td class="mono">'+esc(l.colour_code||'—')+'</td>'
+      + '<td class="num" style="color:'+(l.balance_kg>0.05?'var(--green)':'var(--t3)')+'"><b>'+fmt(l.balance_kg,1)+'</b></td>'
+      + '<td class="num" style="color:#b45309">'+(l.pending_kg>0.05?fmt(l.pending_kg,1):'&mdash;')+'</td>'
+      + '<td class="num"><input type="number" inputmode="decimal" min="0" step="0.1" value="'+esc(tk)+'" data-k="'+esc(k)+'" oninput="_tspTake(this)" style="width:90px;padding:3px 6px;text-align:right"></td></tr>';
+  });
+  document.getElementById('tsp_list').innerHTML = h + '</tbody></table>';
+  _tspSum();
+}
+function _tspTake(el){ const T = window._TSP; const v = parseFloat(el.value)||0; if(v>0) T.take[el.dataset.k] = el.value; else delete T.take[el.dataset.k];
+  const tr = el.closest('tr'); if(tr) tr.style.background = v>0 ? 'var(--accent-l)' : ''; _tspSum(); }
+function _tspSum(){ const T = window._TSP, s = document.getElementById('tsp_sum'); if(!T||!s) return;
+  const ks = Object.keys(T.take), kg = ks.reduce((a,k)=>a+(parseFloat(T.take[k])||0),0);
+  s.innerHTML = ks.length ? '<b>'+ks.length+'</b> lot'+(ks.length>1?'s':'')+' &middot; <b>'+fmt(kg,1)+' kg</b> selected' : 'Enter the kg to take against one or more lots'; }
+function _tspConfirm(){
+  const T = window._TSP; if(!T) return;
+  const picks = Object.keys(T.take).map(k=>{ const [account, bn, side] = k.split('|');
+    const l = T.rows.find(x=>x.account===account && x.batch_number===bn && (x.side||'')===side) || {};
+    return { account, source_batch: bn, side: side || '', colour_code: l.colour_code || '', kg: parseFloat(T.take[k])||0 }; }).filter(x=>x.kg>0);
+  if(!picks.length){ toast('Enter a kg against at least one lot','err'); return; }
+  if(T.replaceLine && picks.length === 1){
+    const d = T.replaceLine, x = picks[0];
+    d.querySelector('.rl_a').value = x.account; d.querySelector('.rl_b').setAttribute('list','lotOpts_'+x.account);
+    d.querySelector('.rl_b').value = x.source_batch; d.querySelector('.rl_c').value = x.colour_code;
+    d.querySelector('.rl_s').value = x.side; d.querySelector('.rl_k').value = x.kg;
+  } else {
+    if(T.replaceLine){ T.replaceLine.remove(); }
+    picks.forEach(x=>ttAddReuse(T.p, x));
+  }
+  ttModalClose(); ttCalc(T.p);
+  toast(picks.length+' line'+(picks.length>1?'s':'')+' added &mdash; '+fmt(picks.reduce((a,x)=>a+x.kg,0),1)+' kg','ok');
+}
+// clicking a line's batch / colour code opens the picker to replace that line (Ledger A / oily only)
+function ttPickFor(el){
+  const d = el.closest('.rline'); if(!d) return;
+  const p = d.parentNode.id.slice(0,2);
+  if((val(p+'_source')||'ledger') === 'legacy') return;   // Ledger B: typed by hand
+  if(el.value) return;                                       // a filled line is edited in place
+  ttStockPicker(p, d);
 }
 // account changed: the batch list follows the account; a batch not holding that account is cleared
 function ttReuseAcct(el){
@@ -2497,6 +2774,9 @@ function _sidePayload(p, side){
     salvage_kg: num(p+'_salvage'), cutting_kg: num(p+'_cutting'),
     salvage_account: sAccts.length===1 ? sAccts[0] : (sAccts.length ? 'mixed' : 'aim_salvage'),
     reuse_lines: reuse,   // v56U: the server books each line against its source lot
+    tank_code: (val(p+'_tankcode')||'').trim().toUpperCase() || null,   // v57C → TT card
+    excess_reason: (document.getElementById(p+'_xs')||{}).style && document.getElementById(p+'_xs').style.display!=='none' ? val(p+'_xsreason') : null,
+    excess_note: val(p+'_xsnote') || null,
     consume_from: document.getElementById(p+'_source').value,
     legacy_location: document.getElementById(p+'_legacyloc') ? document.getElementById(p+'_legacyloc').value : null,
     viscosity_cps: num(p+'_visc'), temperature_c: num(p+'_temp'),
@@ -2530,6 +2810,14 @@ async function completeDualTt(){
     return;
   }
   const sides = want;
+  // v57C: an excess tank needs its reason before anything is created
+  for(const [p, sd] of sides){
+    const xs = document.getElementById(p+'_xs');
+    if(xs && xs.style.display!=='none'){
+      if(!val(p+'_xsreason')){ toast(sd.toUpperCase()+' is an excess tank — choose the reason','err'); return; }
+      if(val(p+'_xsreason')==='other' && !val(p+'_xsnote').trim()){ toast('Describe the reason for the excess '+sd.toUpperCase()+' tank','err'); return; }
+    }
+  }
   for(const [p, side] of sides){
     const cap = num(p+'_cap'), act = num(p+'_actual');
     if(cap>0 && act < cap*0.95 && !val(p+'_reason')){
@@ -2579,7 +2867,8 @@ async function completeDualTt(){
     created.push({ tt_id:d.tt_id, tt_number:d.tt_number, side });
     if(d.warning) toast(side.toUpperCase()+' — '+d.warning,'');
   }
-  toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — put each on HOLD below','ok'); loadSuggestions(true);   // v56B item 1: remember new entries
+  toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — put each on HOLD below','ok'); loadSuggestions(true);
+  _ttBatchLoad(String(batch||'').toUpperCase(), true);   // v57C: the next tank's number / excess test sees these at once   // v56B item 1: remember new entries
   renderDualCreated(created, false);
   loadTtList(batch); loadMmtOptions();
 }
@@ -2702,7 +2991,7 @@ function renderHoldBoard(){
   const by = {};
   rows.forEach(r=>{ const k = r.batch_number; (by[k] = by[k] || { bn:k, mc:r.machine_id, fl:r.floor, colour:r.colour_name||r.colour_code||'', cap:[], body:[] })[r.side==='body'?'body':'cap'].push(r); });
   const chip = r => {
-    const m = heldOf(r), seq = (r.side==='body'?'B':'C')+(r.seq_index||'?')+'/'+(r.seq_total||'?');
+    const m = heldOf(r), seq = r.tt_number ? String(r.tt_number).replace(/^TT-/,'') : ((r.side==='body'?'B':'C')+(r.seq_index||'?')+'/'+(r.seq_total||'?'));   // v57C: CE1 / BE1 show as such
     if(HB.view==='holding'){
       const ready = (m||0) >= minM, pct = Math.min(100, Math.round(((m||0)/minM)*100));
       return '<div class="ttchip '+(ready?'ready':'hold')+'" title="'+esc(r.tt_number)+' · on hold since '+esc(String(r.scan_in_at||'').slice(0,16).replace('T',' '))+'">'
@@ -2775,6 +3064,29 @@ function ttMove(id){
     + esc(String(t.side||'').toUpperCase())+' · '+fmt(t.actual_l,0)+' L · '
     + '<b style="color:'+colr+'">'+label+'</b></div>' + h);
 }
+// ═══ v57E (Ishan, 25 Sep): every date on screen reads DAY/MONTH/YEAR. Dates arrive from the server
+// and from many renderers as ISO (2026-09-25, 2026-09-25 14:05); rather than chase each renderer, the
+// DISPLAYED TEXT is rewritten as it appears — inputs, their values, data and exports are untouched.
+function _gprDmyInstall(doc){
+  const RX = /\b(20\d{2})-(\d{2})-(\d{2})\b/g;
+  const SKIP = { SCRIPT:1, STYLE:1, TEXTAREA:1, INPUT:1, NOSCRIPT:1 };
+  const fixNode = n => { if(n.nodeValue && RX.test(n.nodeValue)){ RX.lastIndex = 0; n.nodeValue = n.nodeValue.replace(RX, '$3/$2/$1'); } RX.lastIndex = 0; };
+  const ok = p => p && !SKIP[p.nodeName] && !(p.closest && p.closest('.nodmy'));
+  const walk = root => {
+    if(!root) return;
+    if(root.nodeType === 3){ if(ok(root.parentNode)) fixNode(root); return; }
+    if(root.nodeType !== 1 || SKIP[root.nodeName] || (root.classList && root.classList.contains('nodmy'))) return;
+    const tw = doc.createTreeWalker(root, 4);
+    let t; while((t = tw.nextNode())){ if(ok(t.parentNode)) fixNode(t); }
+  };
+  walk(doc.body);
+  new MutationObserver(ms => ms.forEach(m => {
+    if(m.type === 'characterData') walk(m.target);
+    else m.addedNodes.forEach(walk);
+  })).observe(doc.body, { childList: true, subtree: true, characterData: true });
+}
+if(document.readyState === 'loading') document.addEventListener('DOMContentLoaded', () => _gprDmyInstall(document)); else _gprDmyInstall(document);
+function ttModalClose(){ const ov = document.getElementById('ttModal'); if(ov) ov.style.display='none'; }   // v57D
 function ttModalOpen(title, bodyHtml){
   let ov = document.getElementById('ttModal');
   if(!ov){
@@ -2783,7 +3095,7 @@ function ttModalOpen(title, bodyHtml){
     // v56T: align-items:center clipped the TOP of any modal taller than the viewport — the header
     // and its close button became unreachable because a centred flex child cannot scroll upward.
     // Start-aligned with the OVERLAY scrolling fixes it at any content height.
-    ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,33,58,.45);z-index:240;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
+    ov.style.cssText = 'position:fixed;inset:0;background:rgba(22,33,58,.45);z-index:250;display:flex;align-items:flex-start;justify-content:center;padding:16px;overflow:auto';
     ov.onclick = e=>{ if(e.target===ov) ov.style.display='none'; };
     ov.innerHTML = '<div id="ttModalBox" style="background:var(--s1);border-radius:var(--r);box-shadow:var(--shadow-md);max-width:520px;width:100%;margin:auto;padding:0;overflow:visible"></div>';
     document.body.appendChild(ov);
@@ -2835,7 +3147,7 @@ function downloadZpl(){
 function clearTtForm(){
   ['td_colname','td_colcode'].forEach(id=>setVal(id,''));
   for(const p of ['tc','tb']){
-    ['_actual','_virgin','_salvage','_cutting','_colourkg','_fgremelt','_visc','_temp','_reason','_colcode'].forEach(sf=>setVal(p+sf,''));
+    ['_actual','_virgin','_salvage','_cutting','_colourkg','_fgremelt','_visc','_temp','_reason','_colcode','_tankcode','_xsreason','_xsnote'].forEach(sf=>setVal(p+sf,''));
     for(let i=0;i<_colCount(p);i++){ setVal(p+'_col_'+i,''); setVal(p+'_colg_'+i,''); }
     // v56U: reuse lines and hand-entered flags clear with the rest
     const rw = document.getElementById(p+'_reuse'); if(rw) rw.innerHTML = '';
@@ -3430,7 +3742,7 @@ function openPlanTab(){
     + '<div><label>PC code</label><select id="c_pc" onchange="rerender()"></select></div>'
     + '<div><label>Customer</label><select id="c_cust" onchange="rerender()"></select></div>'
     + '</div><div id="casc"></div>'
-    + '<script>'+pageJs+'<\/script></body></html>';
+    + '<script>'+pageJs+'<\/script><script>('+_gprDmyInstall.toString()+')(document)<\/script></body></html>';   // v57E: DD/MM/YYYY here too
   const url = URL.createObjectURL(new Blob([html], {type:'text/html'}));
   try{
     if(window._gprPlanTab && !window._gprPlanTab.closed){ window._gprPlanTab.location.href = url; }
@@ -3507,22 +3819,41 @@ function renderCascCal(){
     + '<div style="color:var(--t3);font-size:11px;margin:5px 2px">&#9200; <b style="color:var(--teal)">Blue</b> = begin TT preparation (one prep window before the deadline) &middot; &#128705; <b style="color:var(--amber)">Orange</b> = TT-ready deadline with a DISH WASH (colour change) &middot; &#9654; <b style="color:var(--green)">Green</b> = TT-ready deadline, same colour (no wash). All three are schedule deadlines from the cascade &mdash; actual completion shows as DONE in the transitions table, from real TT scan-outs.</div>' + (cascHiddenN>0 ? '<div style="color:var(--t3);font-size:11px;margin:4px 2px">Showing yesterday / today / tomorrow &mdash; '+cascHiddenN+' event'+(cascHiddenN===1?'':'s')+' on other days in <a href="javascript:openPlanTab()" style="color:var(--accent)">full view &#8599;</a></div>' : '');
 }
 function _plAfterLoad(){ try{ plRestoreSections(); }catch(e){} }
+// v57E (Ishan, 25 Sep): the snapshot is ACTION-GROUPED and compact — Overdue (must be READY now),
+// Prepare now, Due this shift — each colour-coded, and in each group the batches run in deadline order.
 function cascSnapShow(date, shift){
   const el = document.getElementById('cascSnap'); if(!el) return;
-  const evs = window._CASC.filter(t => (t.beginPrepAt.date===date && t.beginPrepAt.shift===shift) || (t.ttReadyBy.date===date && t.ttReadyBy.shift===shift));
+  const evs = (window._CASC||[]).filter(t => (t.beginPrepAt.date===date && t.beginPrepAt.shift===shift) || (t.ttReadyBy.date===date && t.ttReadyBy.shift===shift));
   if(!evs.length){ el.innerHTML=''; return; }
-  el.innerHTML = '<div style="border:1px solid var(--accent);border-left:5px solid var(--accent);border-radius:var(--r);background:var(--accent-l);padding:10px 14px">'
-    + '<b style="font-family:var(--fc)">Snapshot &mdash; '+esc(date)+' shift '+esc(shift)+'</b><br>'
-    + evs.map(t=>{
-        const prepHere = t.beginPrepAt.date===date && t.beginPrepAt.shift===shift;
-        return '&bull; '+(prepHere?'Begin preparing first cap+body TT for ':'First cap+body TT must be READY for ')
-          + '<b class="mono">'+esc(t.toBatch)+'</b> on '+esc(t.machineId)
-          + (t.customer?' ('+esc(t.customer)+(t.pc?' &middot; PC '+esc(t.pc):'')+')':'')
-          + (t.dishWash?' &mdash; <b style="color:var(--amber)">DISH WASH</b>: colour change '+esc(t.fromColour||'—')+' &rarr; '+esc(t.toColour||'—'):' &mdash; same colour, no dish wash')
-          + ' &middot; current batch <span class="mono">'+esc(t.fromBatch)+'</span> est end '+esc(t.endEst?t.endEst.date+' '+t.endEst.shift:'—')
-          + ' &middot; status: '+t.status;
-      }).join('<br>')
-    + '</div>';
+  const ord = x => (x && x.date ? x.date : '9999') + ({A:1,B:2,C:3}[x && x.shift] || 9);
+  const grp = t => {
+    const st = String(t.status||'').toLowerCase();
+    if(st === 'done') return 'done';
+    if(st === 'overdue') return 'over';
+    if(st === 'prepare-now' || (t.beginPrepAt.date===date && t.beginPrepAt.shift===shift)) return 'prep';
+    return 'due';
+  };
+  const G = [['over','Overdue — first TT must be READY now','#b91c1c','#fef2f2'],
+             ['prep','Prepare now — begin the first cap + body TT','var(--teal)','var(--teal-l)'],
+             ['due','Due — TT ready by this shift','var(--green)','var(--green-l,#ecfdf3)'],
+             ['done','Done','var(--t3)','var(--s2)']];
+  let h = '<div class="cxsnap"><div class="cxhead">Snapshot &middot; '+esc(_dm(date))+' shift '+esc(shift)
+        + '<span class="cxcount">'+evs.length+' transition'+(evs.length===1?'':'s')+'</span>'
+        + '<a href="javascript:void(0)" onclick="document.getElementById(\'cascSnap\').innerHTML=\'\'" class="cxclose">&#10005;</a></div>';
+  G.forEach(([k,label,col,bg])=>{
+    const L = evs.filter(t=>grp(t)===k).sort((a,b)=>ord(a.ttReadyBy).localeCompare(ord(b.ttReadyBy)) || String(a.machineId).localeCompare(String(b.machineId),undefined,{numeric:true}));
+    if(!L.length) return;
+    h += '<div class="cxgrp" style="border-left-color:'+col+'"><div class="cxgt" style="color:'+col+';background:'+bg+'">'+esc(label)+' <span class="cxn">'+L.length+'</span></div>'
+       + '<table class="cxt"><colgroup><col style="width:7%"><col style="width:11%"><col style="width:28%"><col style="width:26%"><col style="width:17%"><col style="width:11%"></colgroup><thead><tr><th>MC</th><th>Next batch</th><th>Customer &middot; PC</th><th>Colour</th><th>Current batch ends</th><th>Ready by</th></tr></thead><tbody>'
+       + L.map(t=>'<tr><td class="mono">'+esc(t.machineId)+'</td>'
+          + '<td class="mono"><b>'+esc(t.toBatch)+'</b></td>'
+          + '<td class="cxcust">'+esc(t.customer||'—')+(t.pc?' <span class="cxpc">'+esc(t.pc)+'</span>':'')+'</td>'
+          + '<td>'+(t.dishWash ? '<span class="cxwash" title="Dish wash — colour change">WASH</span> '+esc(t.fromColour||'—')+' &rarr; '+esc(t.toColour||'—') : '<span style="color:var(--t3)">same colour</span>')+'</td>'
+          + '<td class="mono">'+esc(t.fromBatch||'—')+' &middot; '+esc(t.endEst?(_dm(t.endEst.date)+' '+t.endEst.shift):'—')+'</td>'
+          + '<td class="mono">'+esc(t.ttReadyBy?(_dm(t.ttReadyBy.date)+' '+t.ttReadyBy.shift):'—')+'</td></tr>').join('')
+       + '</tbody></table></div>';
+  });
+  el.innerHTML = h + '</div>';
 }
 
 // ── v55A item 5+6: pending physical receipts (Tracking salvage/remelt + DPR cuttings) ──
@@ -4399,16 +4730,20 @@ async function loadYieldDaily(){
         d.days.forEach(day=>(day.floors||[]).forEach(f=>{
           const k = f.floor; flAgg[k] = flAgg[k]||{mtdIn:0, mtdOut:0, last:null};
           flAgg[k].mtdIn += Number(f.denominatorKg||0); flAgg[k].mtdOut += Number(f.numeratorKg||0);   // real daily fields: numeratorKg/denominatorKg
-          flAgg[k].last = f;
+          // v57E: days arrive newest first — "prev day" is the latest COMPLETED production day
+          // (the old loop kept overwriting and ended on the OLDEST day of the range)
+          if(!flAgg[k].last && day.day !== productionDay()){ flAgg[k].last = f; flAgg[k].lastDay = day.day; }
+          if(!flAgg[k].anyDay){ flAgg[k].anyDay = day.day; flAgg[k].anyF = f; }
         }));
         const el2 = document.getElementById('ydSummary');
         if(el2){
           el2.innerHTML = '<table class="gtable"><thead><tr><th>Floor</th><th class="num">Prev day yield %</th><th class="num">MTD yield %</th></tr></thead><tbody>'
             + Object.keys(flAgg).sort().map(k=>{
                 const a = flAgg[k];
+                if(!a.last){ a.last = a.anyF; a.lastDay = a.anyDay; }
                 const prev = a.last ? a.last.yieldPct : null;
                 const mtd = a.mtdIn>0 ? a.mtdOut/a.mtdIn*100 : null;
-                return '<tr><td><b>'+esc(FLOOR_LABELS[k]||k)+'</b></td><td class="num mono">'+(prev==null?'—':fmt(prev,1)+'%')+'</td><td class="num mono">'+(mtd==null?'—':fmt(mtd,1)+'%')+'</td></tr>';
+                return '<tr class="clickable" style="cursor:pointer" title="Show the working for the latest day" onclick="yieldWorking(\''+esc(a.lastDay)+'\',\''+esc(k)+'\')"><td><b>'+esc(FLOOR_LABELS[k]||k)+'</b> <span style="font-size:10.5px;color:var(--accent)">working &rsaquo;</span></td><td class="num mono">'+(prev==null?'—':fmt(prev,1)+'%')+'</td><td class="num mono">'+(mtd==null?'—':fmt(mtd,1)+'%')+'</td></tr>';
               }).join('') + '</tbody></table>';
         }
       }
@@ -4426,7 +4761,8 @@ async function loadYieldDaily(){
          + '<th class="num">Output kg</th><th class="num">Material kg</th><th class="num">Batches</th></tr></thead><tbody>';
       day.floors.forEach(f=>{
         const fc = yCls(f.yieldPct, d.target);
-        h += `<tr><td>${esc(FLOOR_LABELS[f.floor]||f.floor)}</td>`
+        window._YW = window._YW || {}; window._YW[day.day+'|'+f.floor] = { day: day.day, f, target: d.target };
+        h += `<tr class="clickable" style="cursor:pointer" title="Show how this yield is worked out" onclick="yieldWorking('${esc(day.day)}','${esc(f.floor)}')"><td>${esc(FLOOR_LABELS[f.floor]||f.floor)} <span style="font-size:10.5px;color:var(--accent)">working &rsaquo;</span></td>`
           + `<td class="num"><b style="color:var(--${fc==='green'?'green':fc==='red'?'red':fc==='amber'?'amber':'t1'})">`
           + (f.yieldPct!=null?fmt(f.yieldPct,2)+'%':'—')+'</b></td>'
           + `<td class="num">${f.yieldPct!=null?((f.yieldPct-d.target)>=0?'+':'')+fmt(f.yieldPct-d.target,2):'—'}</td>`
@@ -4437,6 +4773,38 @@ async function loadYieldDaily(){
     });
     out.innerHTML = h;
   }catch(e){ out.innerHTML='<div class="empty">Could not compute daily yield.</div>'; }
+}
+// v57E (Ishan, 25 Sep): the working behind a floor's daily yield — batch by batch, output (packed +
+// WIP weight) over material (fresh virgin + colour + FG remelt + net recirculated cutting/salvage),
+// plus approved crushing, so the percentage can be checked line by line.
+// v57F (Ishan, 25 Sep): the working behind a floor's daily yield — PACKABLE output of the day's
+// production (all batches) over the NET material consumed on the floor that day.
+function yieldWorking(day, floor){
+  const W = (window._YW||{})[day+'|'+floor]; if(!W) return;
+  const f = W.f, L = (f.working||[]).slice().sort((a,b)=>String(a.batch).localeCompare(String(b.batch)));
+  const m = f.material || {}, n = (x,d) => fmt(Number(x||0), d==null?1:d);
+  let h = '<div class="ywf">Yield = <b>Packable output</b> &divide; <b>Net material</b> &times; 100 = <b>'+fmt(f.numeratorKg,1)+'</b> &divide; <b>'+fmt(f.denominatorKg,1)+'</b> &times; 100 = '
+        + '<b style="font-size:15px">'+(f.yieldPct!=null?fmt(f.yieldPct,2)+'%':'—')+'</b> <span style="color:var(--t3)">(target '+W.target+'%)</span></div>'
+        + '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:0">Packable output &mdash; this day\'s production only</div>'
+        + '<div class="tswrap" style="max-height:48vh"><table class="gtable"><thead><tr><th>Batch</th><th class="num">Produced today (L)</th>'
+        + '<th class="num" title="packed + WIP lakhs to date ÷ DPR production to date">Packable %</th><th class="num">Packable today (L)</th>'
+        + '<th class="num" title="average weight from the batch\'s labels — the weight TTs are issued on">Avg wt (mg, labels)</th><th class="num">Packable kg</th></tr></thead><tbody>'
+        + (L.length ? L.map(w=>'<tr><td class="mono"><b>'+esc(w.batch)+'</b></td><td class="num">'+n(w.dprDayL,2)+'</td><td class="num">'+n(w.packableSharePct,1)+'%</td>'
+              + '<td class="num">'+n(w.packableDayL,2)+'</td><td class="num"'+(w.weightBasis && !/label/.test(w.weightBasis)?' title="no label weight yet — size master used" style="color:var(--amber)"':'')+'>'+n(w.avgMg,1)+'</td><td class="num"><b>'+n(w.outputKg)+'</b></td></tr>').join('')
+                    : '<tr><td colspan="6" style="color:var(--t3)">No production on this floor this day</td></tr>')
+        + '<tr class="sumrow"><td>Total</td><td class="num">'+n(L.reduce((a,w)=>a+(w.dprDayL||0),0),2)+'</td><td></td><td class="num">'+n(L.reduce((a,w)=>a+(w.packableDayL||0),0),2)+'</td><td></td><td class="num">'+fmt(f.numeratorKg,1)+'</td></tr></tbody></table></div></div>'
+        + '<div><div class="fgroup-title" style="margin-top:0">Net material consumed &mdash; this day</div>'
+        + '<div class="hbnote" style="margin:-2px 0 6px">Tanks count on the day they are <b>released</b> to the machine; tanks still on hold, MMT not yet drawn, and cutting/salvage generated stay out.</div>'
+        + '<table class="gtable"><tbody>'
+        + '<tr><td>Virgin gelatine'+(m.tanks?' <span style="color:var(--t3)">('+m.tanks+' tank'+(m.tanks===1?'':'s')+' released)</span>':'')+'</td><td class="num">'+n(m.virginKg)+'</td></tr>'
+        + '<tr><td>Colour + TiO&#8322;</td><td class="num">'+n(m.colourKg)+'</td></tr>'
+        + '<tr><td>FG remelt</td><td class="num">'+n(m.fgRemeltKg)+'</td></tr>'
+        + '<tr><td>Cutting &amp; salvage charged</td><td class="num">'+n(m.reuseInKg)+'</td></tr>'
+        + '<tr><td>less: cutting &amp; salvage generated</td><td class="num" style="color:var(--red)">&minus;'+n(m.generatedKg)+'</td></tr>'
+        + (f.crushKg > 0.05 ? '<tr><td>Approved crushing</td><td class="num">'+n(f.crushKg)+'</td></tr>' : '')
+        + '<tr class="sumrow"><td>Net material</td><td class="num">'+fmt(f.denominatorKg,1)+'</td></tr></tbody></table></div></div>';
+  ttModalOpen('Yield working &mdash; '+esc(FLOOR_LABELS[floor]||floor)+' &middot; '+esc(_dm(day)), h);
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '1000px';
 }
 async function loadYieldMonth(){
   const out = document.getElementById('yieldMonthResult');
