@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v57A</title>
+<title>Sunloc Tracking Suite v1.0 · build v57B</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57A</p>
+      <p>Tracking Suite v1.0 · build v57B</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57A</p>
+      <p>Tracking Suite v1.0 · build v57B</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -17854,7 +17854,8 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       merges.push({s:{r:0,c:0},e:{r:0,c:NC-1}});
       _push(['NSR Planning — Net Packable Quantity × Indent Price'],'title');
       merges.push({s:{r:1,c:0},e:{r:1,c:NC-1}});
-      _push([`Generated ${new Date().toLocaleString()}  |  Net Packable = AIM A-Grade + Unscanned WIP − Print Rej − PI Rej  ·  unstarted orders (Gross 0): Net Packable = Planned Qty  ·  Balance floored at 0  ·  Total Sale Value = Dispatched Value + Balance Value (over-invoiced dispatch counts in full — physically shipped)`],'subtitle');
+      if (window._v57bNsrPriceErr) { try { toast('NSR prices could not be fetched (' + window._v57bNsrPriceErr + ') — price cells left blank', '#b45309'); } catch (e) {} }
+      _push([`${window._v57bNsrPriceErr ? '⚠ PRICES NOT FETCHED (' + window._v57bNsrPriceErr + ') — re-export, or enter prices by hand  |  ' : ''}Generated ${new Date().toLocaleString()}  |  Net Packable = AIM A-Grade + Unscanned WIP − Print Rej − PI Rej  ·  unstarted orders (Gross 0): Net Packable = Planned Qty  ·  Balance floored at 0  ·  Total Sale Value = Dispatched Value + Balance Value (over-invoiced dispatch counts in full — physically shipped)`],'subtitle');
       _push(['USD → INR RATE:', 0, '◀ enter today\'s exchange rate here — every USD price and all values recalculate instantly'],'rate');
       _push([],'spacer');
       const hdrRowIdx = aoa.length;
@@ -18100,11 +18101,19 @@ function _v52lAppendNsrSheet(wb, rows, done) {
     } catch (e) { console.warn('[v52L NSR] sheet build failed:', e && e.message); }
     done();
   };
+  // v57B: the price call used to fail SILENTLY (20 s timeout, then an empty price map) — the sheet
+  // looked finished with every price blank and nothing said why. Now: 90 s allowance, and if prices
+  // still can't be fetched the sheet says so in its subtitle and the user gets a toast.
+  window._v57bNsrPriceErr = null;
   fetch(serverUrl + '/api/nsr/prices', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ batches }), signal: AbortSignal.timeout(20000)
-  }).then(r => r.json()).then(j => _build((j && j.ok && j.prices) || {}))
-    .catch(() => _build({}));   // offline → sheet still builds, price cells blank for manual entry
+    body: JSON.stringify({ batches }), signal: AbortSignal.timeout(90000)
+  }).then(r => r.json()).then(j => {
+      if (!(j && j.ok)) window._v57bNsrPriceErr = (j && j.error) || 'price service returned an error';
+      _build((j && j.ok && j.prices) || {});
+    })
+    .catch(e => { window._v57bNsrPriceErr = (e && e.name === 'TimeoutError') ? 'price lookup timed out' : ((e && e.message) || 'price lookup failed');
+                  _build({}); });   // offline → sheet still builds, price cells blank for manual entry
 }
 
 function exportReportE(){

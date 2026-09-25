@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57A';
+const APP_BUILD = 'v57B';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -7306,33 +7306,61 @@ app.post('/api/nsr/prices', async (req, res) => {
         if (bn && !byBatch[bn]) byBatch[bn] = o;
       } catch (_) {}
     }
+    // v57B (Ishan, 25 Sep — Report E NSR sheet came out with NO price on any row): this used to run
+    // 3–5 sequential queries PER BATCH (indent lookup, snapshot upsert, snapshot read, invoice sum).
+    // At ~280 batches the call outlived the export's 20 s timeout, the client silently fell back to
+    // an empty price map, and every row read ENTER MANUALLY. Same three sources, same precedence
+    // (live indent → snapshot → realized invoice), now read in FOUR bulk queries; snapshot writes
+    // happen only when the captured price actually changed.
     const prices = {};
+    const qAll = async (sql, params) => pgPool ? (await pgPool.query(sql, params || [])).rows
+                                              : db.prepare(sql).all(...(params || []));
+    // 2. indent cache — every SO the wanted batches point at, in one read
+    const entries = new Set(), nums = new Set();
+    for (const bn of wanted) { const o = byBatch[bn]; if (!o) continue;
+      if (o.sapDocEntry) entries.add(parseInt(o.sapDocEntry, 10)); if (o.sapDocNum) nums.add(String(o.sapDocNum)); }
+    const indByEntry = {}, indByNum = {};
+    try {
+      const E = [...entries].filter(n => !isNaN(n)), N = [...nums];
+      if (E.length || N.length) {
+        const conds = [], params = [];
+        if (E.length) { conds.push(pgPool ? `sap_doc_entry = ANY($${params.length + 1}::int[])` : `sap_doc_entry IN (${E.map(() => '?').join(',')})`); pgPool ? params.push(E) : params.push(...E); }
+        if (N.length) { conds.push(pgPool ? `sap_doc_num = ANY($${params.length + 1}::text[])` : `sap_doc_num IN (${N.map(() => '?').join(',')})`); pgPool ? params.push(N) : params.push(...N); }
+        const rows = await qAll(`SELECT sap_doc_entry, sap_doc_num, payload_json FROM sap_indent_cache WHERE ${conds.join(' OR ')}`, params);
+        for (const r of rows) {
+          if (r.sap_doc_entry != null && !indByEntry[r.sap_doc_entry]) indByEntry[r.sap_doc_entry] = r;
+          if (r.sap_doc_num != null && !indByNum[String(r.sap_doc_num)]) indByNum[String(r.sap_doc_num)] = r;
+        }
+      }
+    } catch (e) { console.warn('[v57B nsr] indent bulk read:', e.message); }
+    // snapshots — one read
+    const snaps = {};
+    try { (await qAll(`SELECT batch_number, price_per_lakh, currency FROM nsr_price_snapshots`)).forEach(r => { snaps[String(r.batch_number).toUpperCase()] = r; }); }
+    catch (e) { console.warn('[v57B nsr] snapshot bulk read:', e.message); }
+    // realized invoice price — one read (single-batch invoices, as before)
+    const realized = {};
+    try {
+      (await qAll(`SELECT UPPER(TRIM(batch_number)) AS bn, SUM(taxable_amount) AS t, SUM(total_qty_lakhs) AS q FROM invoices_received
+                    WHERE COALESCE(total_qty_lakhs,0)>0 AND COALESCE(taxable_amount,0)>0 GROUP BY UPPER(TRIM(batch_number))`))
+        .forEach(r => { realized[r.bn] = r; });
+    } catch (e) { console.warn('[v57B nsr] invoice bulk read:', e.message); }
     for (const bn of wanted) {
       const o = byBatch[bn];
       let out = null;
-      // 2. Indent-cache line price (open SOs).
-      if (o && (o.sapDocEntry || o.sapDocNum)) {
-        try {
-          let ind;
-          if (o.sapDocEntry) {
-            if (pgPool) ind = (await pgPool.query(`SELECT payload_json FROM sap_indent_cache WHERE sap_doc_entry=$1 LIMIT 1`, [parseInt(o.sapDocEntry, 10)])).rows[0];
-            else ind = db.prepare(`SELECT payload_json FROM sap_indent_cache WHERE sap_doc_entry=? LIMIT 1`).get(parseInt(o.sapDocEntry, 10));
-          }
-          if (!ind && o.sapDocNum) {
-            if (pgPool) ind = (await pgPool.query(`SELECT payload_json FROM sap_indent_cache WHERE sap_doc_num=$1 LIMIT 1`, [String(o.sapDocNum)])).rows[0];
-            else ind = db.prepare(`SELECT payload_json FROM sap_indent_cache WHERE sap_doc_num=? LIMIT 1`).get(String(o.sapDocNum));
-          }
-          if (ind) {
-            const so = JSON.parse(ind.payload_json || '{}');
+      if (o) {
+        const ind = (o.sapDocEntry && indByEntry[parseInt(o.sapDocEntry, 10)]) || (o.sapDocNum && indByNum[String(o.sapDocNum)]) || null;
+        if (ind) {
+          try {
+            const so = typeof ind.payload_json === 'string' ? JSON.parse(ind.payload_json || '{}') : (ind.payload_json || {});
             const pc = String(o.pcCode || '').trim();
             const line = (so.DocumentLines || []).find(l => String(l.ItemCode || '') === pc) || (so.DocumentLines || [])[0] || null;
-            if (line) {
+            const p = line ? (parseFloat(line.Price) || 0) : 0;
+            if (p > 0) {
               const scale = _sapUomScale(line) || 1;
-              const p = parseFloat(line.Price) || 0;
-              if (p > 0) {
-                out = { pricePerLakh: Math.round((p / scale) * 100) / 100, currency: so.DocCurrency || 'INR', source: 'indent' };
-                // v52M (correction 1): capture the indent price PERMANENTLY — when this SO later
-                // closes and leaves the cache, the batch keeps this price (it does not change).
+              out = { pricePerLakh: Math.round((p / scale) * 100) / 100, currency: so.DocCurrency || 'INR', source: 'indent' };
+              // v52M: capture permanently — written only when it differs from the stored snapshot
+              const sn = snaps[bn];
+              if (!sn || Math.abs((parseFloat(sn.price_per_lakh) || 0) - out.pricePerLakh) > 0.004 || String(sn.currency || 'INR') !== out.currency) {
                 try {
                   const _cap = new Date().toISOString();
                   if (pgPool) await pgPool.query(
@@ -7348,32 +7376,22 @@ app.post('/api/nsr/prices', async (req, res) => {
                 } catch (e) { console.warn('[v52M nsr] snapshot write ' + bn + ':', e.message); }
               }
             }
-          }
-        } catch (e) { console.warn('[v52L nsr] indent lookup ' + bn + ':', e.message); }
+          } catch (e) { console.warn('[v52L nsr] indent parse ' + bn + ':', e.message); }
+        }
       }
-      // v52M (correction 1): SNAPSHOT ahead of the invoice fallback — the price the batch carried
-      // while its SO was open wins over any later invoice-derived figure.
       if (!out) {
-        try {
-          let snap;
-          if (pgPool) snap = (await pgPool.query(`SELECT price_per_lakh, currency FROM nsr_price_snapshots WHERE batch_number=$1`, [bn])).rows[0];
-          else snap = db.prepare(`SELECT price_per_lakh, currency FROM nsr_price_snapshots WHERE batch_number=?`).get(bn);
-          const sp = parseFloat(snap && snap.price_per_lakh) || 0;
-          if (sp > 0) out = { pricePerLakh: sp, currency: (snap.currency || 'INR'), source: 'indent_snapshot' };
-        } catch (e) { console.warn('[v52M nsr] snapshot read ' + bn + ':', e.message); }
+        const sp = parseFloat(snaps[bn] && snaps[bn].price_per_lakh) || 0;
+        if (sp > 0) out = { pricePerLakh: sp, currency: (snaps[bn].currency || 'INR'), source: 'indent_snapshot' };
       }
-      // 3. Fallback: realized price from received invoices (taxable ÷ qty, INR).
       if (!out) {
-        try {
-          let inv;
-          if (pgPool) inv = (await pgPool.query(`SELECT SUM(taxable_amount) AS t, SUM(total_qty_lakhs) AS q FROM invoices_received WHERE UPPER(batch_number)=$1 AND COALESCE(total_qty_lakhs,0)>0 AND COALESCE(taxable_amount,0)>0`, [bn])).rows[0];
-          else inv = db.prepare(`SELECT SUM(taxable_amount) AS t, SUM(total_qty_lakhs) AS q FROM invoices_received WHERE UPPER(batch_number)=? AND COALESCE(total_qty_lakhs,0)>0 AND COALESCE(taxable_amount,0)>0`).get(bn);
-          const t = parseFloat(inv && inv.t) || 0, q = parseFloat(inv && inv.q) || 0;
-          if (t > 0 && q > 0) out = { pricePerLakh: Math.round((t / q) * 100) / 100, currency: 'INR', source: 'invoice_realized' };
-        } catch (e) { console.warn('[v52L nsr] invoice fallback ' + bn + ':', e.message); }
+        const r = realized[bn];
+        const t = parseFloat(r && r.t) || 0, q = parseFloat(r && r.q) || 0;
+        if (t > 0 && q > 0) out = { pricePerLakh: Math.round((t / q) * 100) / 100, currency: 'INR', source: 'invoice_realized' };
       }
       prices[bn] = out;
     }
+    const _nPriced = Object.values(prices).filter(Boolean).length;
+    console.log(`[v57B nsr] ${_nPriced}/${wanted.length} batches priced`);
     return res.json({ ok: true, prices });
   } catch (e) {
     console.error('[v52L nsr/prices]', e.message);
@@ -8995,6 +9013,15 @@ async function _applyFallbackReconcile(reqRow, inv) {
 // The safety shape of the old matcher is preserved exactly: single unambiguous candidate,
 // the same _RECON_UNDER/_RECON_OVER quantity band, and anything ambiguous is proposed, not applied.
 // ─────────────────────────────────────────────────────────────────────────────
+// v57B (Ishan, 25 Sep — invoice 2614): the allocation path required the invoice to be DISPATCHED.
+// A request is answered the moment its invoice ARRIVES — dispatch comes later — and the invoice-side
+// sweep runs exactly then, when no new invoice is dispatched yet. So for a multi-batch Sunloc invoice
+// (which links only ONE request in invoices_received.invoice_request_id) every other batch's request
+// found no candidate and stayed pending_reconciliation for good: 2614 left 26O057 14, 26P056 17.5
+// and 26ZF140 22.5 open, doubling them in Over-invoiced. The dispatch condition is dropped; the
+// safety of this path never rested on it — it rests on the line naming THIS batch, the quantity
+// band, the v51W age guard and the single-unambiguous-candidate rule, all unchanged. The header
+// fallback (_orphanInvoicesForRequest) keeps its own dispatched condition untouched.
 async function _allocationsForRequest(reqRow) {
   const batch = (reqRow.batch_number || '').trim();
   if (!batch) return [];
@@ -9009,7 +9036,6 @@ async function _allocationsForRequest(reqRow) {
                JOIN invoices_received i ON i.id = a.invoice_id
                WHERE a.invoice_request_id IS NULL
                  AND a.status = 'attributed'
-                 AND i.dispatch_status = 'dispatched'
                  AND UPPER(TRIM(a.batch_number)) = UPPER(TRIM($1))
                ORDER BY i.invoice_date ASC, a.line_num ASC`;
   const _rowsRaw = pgPool ? (await pgPool.query(sql, [batch])).rows
@@ -9091,6 +9117,28 @@ async function _v48x_sweepInvoiceRequests(invoiceId) {
     return cleared;
   } catch (e) { console.warn('[v48X sweep]', e && e.message); return 0; }
 }
+
+// v57B: SELF-HEALING SWEEP of every still-pending request against arrived invoice lines, on boot and
+// every 10 minutes — so a request whose invoice arrived before this rule existed (or while the
+// sweep was down) closes itself without SQL. Same reconcile routine as the invoice-side sweep.
+async function _v57bSweepPendingRequests() {
+  try {
+    const sql = `SELECT * FROM invoice_requests WHERE status='pending_reconciliation'
+                   AND COALESCE(batch_number,'') <> '' ORDER BY created_at ASC`;
+    const reqs = pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
+    let cleared = 0;
+    for (const rq of (reqs || [])) {
+      const r = await _v48x_reconcileByAllocation(rq);
+      if (r && r.reconciled) cleared++;
+    }
+    if (cleared) {
+      console.log(`[v57B sweep] closed ${cleared} pending request(s) whose invoice line had already arrived`);
+      try { logAudit('system', 'system', 'invoice', 'INVOICE_REQUEST_AUTOCLOSE', `v57B sweep closed ${cleared} request(s) against arrived invoice lines`, null); } catch (e) {}
+    }
+    return cleared;
+  } catch (e) { console.warn('[v57B sweep]', e && e.message); return 0; }
+}
+setTimeout(() => { _v57bSweepPendingRequests(); setInterval(_v57bSweepPendingRequests, 10 * 60 * 1000); }, 90 * 1000);
 
 // Returns { reconciled } | { proposal } | null — same contract as the header fallback.
 async function _v48x_reconcileByAllocation(reqRow) {
