@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v56Y</title>
+<title>GPR · build v57</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -166,6 +166,9 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 .tswrap table thead th{position:sticky;top:0;z-index:2}
 /* v55N item 2: dual Cap|Body compact entry tables */
 .dgrid{display:grid;grid-template-columns:1fr 1fr;gap:14px;margin-top:12px}
+.dgrid.single{grid-template-columns:minmax(0,640px)}
+.prepbar{display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:12px;padding:8px 10px;border:1px solid var(--b1);border-radius:var(--r);background:var(--s2)}
+.preplbl{font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--t3)}
 @media(max-width:860px){.dgrid{grid-template-columns:1fr}}
 .dside{border:1px solid var(--b1);border-radius:var(--r);padding:10px 12px;background:var(--s1)}
 .dside-head{font-family:var(--fc);font-weight:700;font-size:13px;letter-spacing:1px;color:var(--accent);margin-bottom:8px;padding-bottom:5px;border-bottom:2px solid var(--accent-l)}
@@ -358,8 +361,8 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v56Y</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v56Y</div>
+    <h1>GPR<span class="vpill">v57</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -379,7 +382,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v56Y</span></div>
+  <div class="nbrand">GPR<span class="vpill">v57</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -447,9 +450,9 @@ input[readonly]{background:var(--s3);color:var(--t2)}
     </div>
 
     <div class="card" id="ttEntryCard">
-      <div class="card-title">Enter transfer tanks — Cap &amp; Body together</div>
-      <div class="card-sub">Pick the batch and both side tables auto-fill from Planning and the machine master. Enter each tank's actuals in its side, then <b>Complete TT entry</b> — the tanks are created and their labels are printed from the panel below (separate action). Material movements post to the ledger on completion.</div>
-      <div class="fgroup-title">Batch — shared by both sides</div>
+      <div class="card-title">Enter transfer tanks</div>
+      <div class="card-sub">Pick the batch, choose what this shift prepares — <b>Cap</b>, <b>Body</b> or <b>Both</b> — and the table(s) fill from Planning and the machine master. Enter the tank actuals, then <b>Complete TT entry</b>; put each new tank on <b>Hold</b> from the panel below. Material movements post to the ledger on completion.</div>
+      <div class="fgroup-title">Batch</div>
       <div class="fgrid">
         <div class="field-grp"><label>Batch number *</label><input id="td_batch" placeholder="e.g. 26N50" onblur="dualPrefill()" list="batchOpts"></div>
         <div class="field-grp"><label>Machine</label><input id="td_machine" placeholder="from batch"></div>
@@ -458,7 +461,15 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         <div class="field-grp"><label>Colour name</label><input id="td_colname"></div>
         <div class="field-grp"><label>Colour code (cap/body)</label><input id="td_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></div>
       </div>
-      <div class="dgrid">
+      <!-- v57 (Rahul / Ishan, 24 Sep): a shift may prepare one side only — chosen here, explicitly -->
+      <div class="prepbar"><span class="preplbl">Prepare</span>
+        <span class="seg" id="prepSel">
+          <button data-m="cap" onclick="setPrep('cap')">CAP only</button>
+          <button data-m="body" onclick="setPrep('body')">BODY only</button>
+          <button data-m="both" class="on" onclick="setPrep('both')">CAP + BODY</button>
+        </span>
+        <span class="hbnote" id="prepNote">Both tanks are created together.</span></div>
+      <div class="dgrid" id="dualGrid">
         <div class="dside" id="ds_tc">
           <div class="dside-head">CAP</div>
           <table class="dtable"><tbody>
@@ -527,7 +538,7 @@ input[readonly]{background:var(--s3);color:var(--t2)}
         </div>
       </div>
       <div class="row" style="margin-top:18px">
-        <button class="btn primary" onclick="completeDualTt()">Complete TT entry — create tanks</button>
+        <button class="btn primary" id="prepGo" onclick="completeDualTt()">Complete TT entry — create CAP + BODY tanks</button>
         <button class="btn" onclick="clearTtForm()">Clear</button>
       </div>
       <div id="dualCreated"></div>
@@ -2051,6 +2062,7 @@ async function prepSide(side){
     const pl = (window._TTPLAN55K||{})[side]; if(!pl){ toast('Compute the plan first','err'); return; }
     setVal('td_batch', pl.batch);
     const p = side==='cap' ? 'tc' : 'tb';
+    setPrep(side);   // v57: "Prepare next CAP/BODY tank" opens that side only
     const mc = MASTERS && MASTERS.tt_machine_master && MASTERS.tt_machine_master[pl.machine];
     if(mc) setVal(p+'_cap', side==='cap' ? mc.capCapL : mc.bodyCapL);
     setVal(p+'_planned', pl.fillL);
@@ -2138,7 +2150,10 @@ async function openTtForBatch(batch, machineId){
 // sequence position for this batch/side is shown so the chemist sees tank n of N without counting.
 function ttAutoTotals(p){
   const planned = num(p+'_planned');
-  if(planned > 0 && !num(p+'_actual')) setVal(p+'_actual', planned);   // v56U: replaced by the calc once kg is entered
+  // v56Z (Rahul, 24 Sep): actual litres are NO LONGER pre-set to the planned fill. Pre-filling both
+  // sides made the untouched side look "filled", so a single-side (cap-only / body-only) tank was
+  // refused for the OTHER side's under-fill reason. Actual now comes only from the charge calc or
+  // a figure the chemist types; planned stays visible in its own field and in the gauge.
   ttCalc(p);
   _ttSeqNote(p);
 }
@@ -2278,7 +2293,8 @@ function drawTankSide(p){
   const cap = num(p+'_cap'), act = num(p+'_actual'), plan = num(p+'_planned');
   const el = document.getElementById(p+'_gauge'); if(!el) return;
   drawChargeSide(p);
-  if(cap<=0 || act<=0){ el.innerHTML=''; const u=document.getElementById(p+'_underfill'); if(u) u.style.display='none'; return; }
+  // v56Z: an untouched side shows no gauge and never asks for an under-fill reason
+  if(cap<=0 || act<=0 || !_sideFilled(p)){ el.innerHTML = (plan>0 && !_sideFilled(p)) ? '<div style="font-size:11px;margin-top:6px;color:var(--t3)">Not being prepared &middot; planned '+fmt(plan,0)+' L of '+fmt(cap,0)+' L</div>' : ''; const u=document.getElementById(p+'_underfill'); if(u) u.style.display='none'; return; }
   const pct = Math.max(0, Math.min(100, (act/cap)*100));
   const under = act < cap*0.95;
   document.getElementById(p+'_underfill').style.display = under ? 'block' : 'none';
@@ -2452,7 +2468,17 @@ function ttCalc(p){
   drawTankSide(p);
 }
 function ttUseCalc(p){ const a = document.getElementById(p+'_actual'); if(a) delete a.dataset.manual; ttCalc(p); }
-function _sideFilled(p){ return num(p+'_actual') > 0; }
+// v56Z: a side is being prepared only when the chemist has put something into it — charge kg,
+// reuse lines, colourant grams, or a hand-typed actual. Litres alone (e.g. carried in from the
+// plan) never make a side count, so the other side can be prepared on its own.
+function _sideFilled(p){
+  if(!(num(p+'_actual') > 0)) return false;
+  const a = document.getElementById(p+'_actual');
+  if(a && a.dataset.manual==='1') return true;
+  if(num(p+'_virgin') + num(p+'_fgremelt') + num(p+'_salvage') + num(p+'_cutting') + num(p+'_colourkg') > 0) return true;
+  for(let i=0;i<_colCount(p);i++) if(val(p+'_col_'+i) && num(p+'_colg_'+i) > 0) return true;
+  return false;
+}
 function _sidePayload(p, side){
   const colourants = [];
   for(let i=0;i<_colCount(p);i++){
@@ -2477,15 +2503,33 @@ function _sidePayload(p, side){
     colourants, under_fill_reason: val(p+'_reason')||null
   };
 }
+// ═══ v57: Prepare CAP only / BODY only / CAP + BODY — an explicit choice, no guessing ═════════
+window._PREP = 'both';
+function setPrep(m){
+  window._PREP = (m==='cap'||m==='body') ? m : 'both';
+  const M = window._PREP;
+  document.querySelectorAll('#prepSel button').forEach(b=>b.classList.toggle('on', b.dataset.m===M));
+  const tc = document.getElementById('ds_tc'), tb = document.getElementById('ds_tb'), g = document.getElementById('dualGrid');
+  if(tc) tc.style.display = M==='body' ? 'none' : '';
+  if(tb) tb.style.display = M==='cap' ? 'none' : '';
+  if(g) g.classList.toggle('single', M!=='both');
+  const n = document.getElementById('prepNote');
+  if(n) n.textContent = M==='both' ? 'Both tanks are created together.' : ('Only the '+M.toUpperCase()+' tank is created — the other side is left for a later shift.');
+  const go = document.getElementById('prepGo');
+  if(go) go.textContent = 'Complete TT entry — create ' + (M==='both' ? 'CAP + BODY tanks' : M.toUpperCase()+' tank');
+}
 async function completeDualTt(){
   const batch = val('td_batch');
   if(!batch){ toast('A batch number is required','err'); return; }
-  const sides = [['tc','cap'],['tb','body']].filter(([p])=>_sideFilled(p));
-  if(!sides.length){ toast('Enter actual litres in the Cap and/or Body table first','err'); return; }
-  if(sides.length===1){
-    const done = sides[0][1].toUpperCase(), missing = done==='CAP' ? 'BODY' : 'CAP';
-    if(!confirm('The '+missing+' table is empty — complete '+done+' only?')) return;
+  // v57: the sides are the ones chosen under Prepare; each chosen side must have its charge entered
+  const want = window._PREP==='cap' ? [['tc','cap']] : (window._PREP==='body' ? [['tb','body']] : [['tc','cap'],['tb','body']]);
+  const empty = want.filter(([p])=>!_sideFilled(p));
+  if(empty.length){
+    const s = empty.map(x=>x[1].toUpperCase()).join(' and ');
+    toast(s+' table is empty — enter its charge'+(window._PREP==='both' && empty.length===1 ? ', or switch Prepare to '+(empty[0][1]==='cap'?'BODY':'CAP')+' only' : ''),'err');
+    return;
   }
+  const sides = want;
   for(const [p, side] of sides){
     const cap = num(p+'_cap'), act = num(p+'_actual');
     if(cap>0 && act < cap*0.95 && !val(p+'_reason')){
@@ -3680,6 +3724,7 @@ async function openTtEntry(batch, machineId){
   const c = document.getElementById('ttEntryCtx');
   if(c) c.textContent = batch ? (batch + (machineId ? ' · ' + machineId : '')) : 'new entry';
   buildColourantRows(); loadMmtOptions(); loadBatchOptions(); _pcIdx(); loadSuggestions();
+  setPrep('both');   // v57: every fresh entry starts as a pair; the chemist narrows it if needed
   const bn = String(batch||'').trim().toUpperCase();
   if(bn){
     setVal('tp_batch', bn); setVal('td_batch', bn);
