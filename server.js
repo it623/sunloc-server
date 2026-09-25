@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57';
+const APP_BUILD = 'v57A';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -10864,13 +10864,9 @@ app.get('/api/invoice/allocation-totals', async (req, res) => {
     // v48X: request IDs already covered by an allocation. planning.html must NOT also count these
     // as in-flight asks — the quantity would be counted twice (once as the ask, once as the
     // allocated line), understating what is still available to invoice on a partly-invoiced batch.
-    const lSql = `SELECT DISTINCT invoice_request_id FROM invoice_batch_alloc
-                   WHERE invoice_request_id IS NOT NULL AND status='attributed'`;
+    // v57A: one shared rule (_v57aAnsweredRequestIds) — the same set the Over-invoiced tab nets off.
     let linked = [];
-    try {
-      const lRows = pgPool ? (await pgPool.query(lSql)).rows : db.prepare(lSql).all();
-      linked = lRows.map(r => r.invoice_request_id).filter(Boolean);
-    } catch (e) { linked = []; }
+    try { linked = Array.from(await _v57aAnsweredRequestIds()); } catch (e) { linked = []; }
     // v49C: per-batch INVOICE STATE, from the same authoritative per-line attribution.
     // WHY: planning.html attributes an UNLINKED invoice to its batch_number key AS STORED — that is
     // deliberate (v47R), so bulk invoice 9038 could not stamp 26X082 as dispatched. The side effect is
@@ -15329,6 +15325,54 @@ app.post('/api/admin/repair-export-invoice-qty', async (req, res) => {
 // (1) invoice_batch_alloc rows, (2) per-batch tracking_dispatch_records under the invoice's
 // number, (3) single-token batch column → whole invoice, (4) otherwise the invoice lands in the
 // `unattributed` list so nothing is silently dropped.
+// ═══ v57A (Vipin via Ishan, 25 Sep — 26ZF140 / 26O057 / 26P056 over-invoiced doubled) ══════════
+// An invoice request that is still 'pending_reconciliation' but whose invoice has ALREADY ARRIVED
+// must not be counted again as an in-flight ask. Planning has netted such asks off since v48X (by
+// the allocation line's invoice_request_id); the Over-invoiced tab never did — it added every
+// pending ask on top of the received invoices, so each batch on a multi-batch Sunloc invoice whose
+// own request was never closed (2614 → 26O057 14, 26P056 17.5, 26ZF140 22.5) was counted twice.
+// A request counts as ANSWERED when either:
+//   (1) an attributed invoice_batch_alloc line carries its id (the v48X rule, unchanged), or
+//   (2) an attributed allocation line on an invoice to the SAME customer, raised on/after the day the
+//       request was created (the v51W age guard), names the SAME batch with the SAME quantity, and
+//       that line is not already taken by a reconciled request or by another request in this pass.
+// (2) is deliberately exact (±0.01 L) — it answers a request only with the line that is plainly its
+// own, and never a larger or partial one. Used by BOTH consumers, so they cannot disagree again.
+async function _v57aAnsweredRequestIds() {
+  const q = async sql => pgPool ? (await pgPool.query(sql)).rows : db.prepare(sql).all();
+  const answered = new Set();
+  const linked = await q(`SELECT DISTINCT invoice_request_id FROM invoice_batch_alloc
+                           WHERE invoice_request_id IS NOT NULL AND status='attributed'`);
+  linked.forEach(r => r.invoice_request_id && answered.add(r.invoice_request_id));
+  const pend = await q(`SELECT id, batch_number, customer, qty_lakhs, created_at FROM invoice_requests
+                         WHERE status='pending_reconciliation' AND COALESCE(batch_number,'') <> '' ORDER BY created_at ASC`);
+  const open = pend.filter(r => !answered.has(r.id));
+  if (!open.length) return answered;
+  const lines = await q(`SELECT a.id AS line_id, a.invoice_id, a.batch_number, a.qty_lakhs, a.invoice_request_id,
+                                i.customer, i.invoice_date, i.fetched_at
+                           FROM invoice_batch_alloc a JOIN invoices_received i ON i.id = a.invoice_id
+                          WHERE a.status='attributed' AND COALESCE(a.batch_number,'') <> ''`);
+  const recon = await q(`SELECT reconciled_with_invoice_id AS inv, UPPER(TRIM(batch_number)) AS bn, qty_lakhs
+                           FROM invoice_requests WHERE status='reconciled' AND reconciled_with_invoice_id IS NOT NULL`);
+  const taken = new Set();
+  const norm = s => String(s || '').trim().toUpperCase();
+  // lines already answered: carrying a request id, or matching a reconciled request (inv + batch + qty)
+  lines.forEach(l => {
+    if (l.invoice_request_id) { taken.add(l.line_id); return; }
+    const hit = recon.find(r => r.inv === l.invoice_id && r.bn === norm(l.batch_number) && Math.abs((+r.qty_lakhs || 0) - (+l.qty_lakhs || 0)) < 0.011);
+    if (hit) taken.add(l.line_id);
+  });
+  for (const r of open) {
+    const m = lines.find(l => !taken.has(l.line_id)
+      && norm(l.batch_number) === norm(r.batch_number)
+      && norm(l.customer) === norm(r.customer)
+      && Math.abs((+l.qty_lakhs || 0) - (+r.qty_lakhs || 0)) < 0.011
+      && _v51wInvoiceNotBeforeRequest(l, r));
+    if (m) { taken.add(m.line_id); answered.add(r.id); }
+  }
+  return answered;
+}
+
 app.get('/api/invoice/over-invoiced', async (req, res) => {
   try {
     if (!pgPool) return res.json({ ok: true, rows: [], unattributed: [] });
@@ -15345,10 +15389,13 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
       `SELECT invoice_no, batch_number, SUM(qty) AS q FROM tracking_dispatch_records
         WHERE COALESCE(invoice_no,'') <> '' AND COALESCE(batch_number,'') <> ''
         GROUP BY invoice_no, batch_number`)).rows;
+    // v57A: pending asks per REQUEST (not pre-summed), so an ask already answered by an arrived
+    // invoice is netted off exactly as Planning does, and each genuinely open ask can be listed.
+    const _answered = await _v57aAnsweredRequestIds();
     const pendRows = (await pgPool.query(
-      `SELECT batch_number, SUM(qty_lakhs) AS q FROM invoice_requests
-        WHERE status='pending_reconciliation' AND COALESCE(batch_number,'') <> ''
-        GROUP BY batch_number`)).rows;
+      `SELECT id, batch_number, qty_lakhs AS q, created_at FROM invoice_requests
+        WHERE status='pending_reconciliation' AND COALESCE(batch_number,'') <> ''`)).rows
+      .filter(r => !_answered.has(r.id));
     const invs = (await pgPool.query(
       `SELECT id, sap_invoice_no, sap_doc_num, customer, batch_number, total_qty_lakhs, source, invoice_date
          FROM invoices_received`)).rows;
@@ -15379,7 +15426,10 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
     pendRows.forEach(r => {
       const bn = String(r.batch_number).trim().toUpperCase();
       const b = perBatch[bn] = perBatch[bn] || { batch: bn, customer: '', received: 0, pending: 0, invoices: [] };
-      b.pending += parseFloat(r.q)||0;
+      const q = parseFloat(r.q)||0;
+      b.pending += q;
+      // v57A: an open ask is shown in the invoice list too, so the row always adds up on screen
+      b.invoices.push({ no: 'Request (not yet invoiced)', qty: Math.round(q*100)/100, date: (r.created_at ? String(r.created_at).slice(0,10) : null), pending: true, requestId: r.id });
     });
     const rows = [];
     for (const b of Object.values(perBatch)) {
