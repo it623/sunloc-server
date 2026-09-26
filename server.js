@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57J';
+const APP_BUILD = 'v57K';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25918,16 +25918,89 @@ app.get('/api/gpr/mmt/:ref', async (req, res) => {
 
 // ─── TT PLANNING ───────────────────────────────────────────────────────────
 // Gross comes straight from Planning. GPR applies NO A-Grade factor of its own.
+// ═══ v57K (Ishan, 26 Sep): a new batch's TT plan is built on the MACHINE'S ACTUALS for the month —
+// its live AIM A-grade (same cohort rule as the Planning sheet's "Live A") and its average capsule
+// weight from Tracking LABELS of the machine's batches of the same size this month — not on masters.
+// The batch's own figures win once it has them (A-grade from its inspections, weight from its labels);
+// masters are used only when neither the batch nor the machine has data yet (e.g. month beginning).
+const _v57kCache = new Map();
+async function _v57kMachineActuals(mc, sizeKey, masters) {
+  const now = new Date(Date.now() + 330 * 60000 - 6 * 3600000);
+  const month = now.toISOString().slice(0, 7);
+  const key = mc + '|' + sizeKey + '|' + month;
+  const hit = _v57kCache.get(key);
+  if (hit && Date.now() - hit.at < 5 * 60000) return hit.v;
+  const out = { month, aPct: null, aInspected: 0, avgMg: null, labelLakhs: 0, batches: [] };
+  try {
+    const st = getPlanningState();
+    const ords = (st.orders || []).filter(o => o && !o.deleted && o.batchNumber && o.machineId === mc && _gprCohortYm(o) === month);
+    let aG = 0, insp = 0;
+    for (const o of ords) {
+      const started = o.status === 'running' || o.status === 'completed' || o.status === 'closed' || !!o.dprFirstDate;
+      if (!started) continue;
+      const live = await _gprBatchLive(String(o.batchNumber).toUpperCase(), o).catch(() => null);
+      const outInsp = live ? (Number(live.aimOut || 0) + Number(live.aimSal || 0) + Number(live.aimRem || 0)) : 0;
+      if (live && outInsp > 0) { aG += Number(live.aGrade || 0); insp += Number(live.inspected || 0); }
+    }
+    if (insp > 0) { out.aPct = +((aG / insp) * 100).toFixed(2); out.aInspected = +insp.toFixed(2); }
+    const same = ords.filter(o => ('#' + String(o.size || '').replace(/^#/, '')) === sizeKey).map(o => String(o.batchNumber).toUpperCase());
+    out.batches = same;
+    if (same.length) {
+      const C = (masters && masters.gpr_constants) || {};
+      const col = String(C.labelNetWeightColumn || 'net_weight_kg');
+      if (/^[a-z_][a-z0-9_]*$/i.test(col)) {
+        const ph = same.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',');
+        const sql = `SELECT COALESCE(SUM(${col}),0) AS w, COALESCE(SUM(qty),0) AS q FROM tracking_labels
+                      WHERE UPPER(batch_number) IN (${ph}) AND COALESCE(voided,0)=0 AND ${col} IS NOT NULL AND ${col} > 0`;
+        const r = pgPool ? (await pgPool.query(sql, same)).rows[0] : db.prepare(sql).get(...same);
+        const w = Number(r && r.w || 0), q = Number(r && r.q || 0);
+        if (w > 0 && q > 0) {
+          let mg = (w * 10) / q;
+          const masterMg = Number(((masters && masters.capsule_weights) || {})[sizeKey]?.avgMg || 0);
+          const tol = Number(C.weightTolerance ?? 0.10);
+          if (masterMg > 0) mg = Math.min(masterMg * (1 + tol), Math.max(masterMg * (1 - tol), mg));   // same clamp as gprAvgMg
+          out.avgMg = +mg.toFixed(3); out.labelLakhs = +q.toFixed(2);
+        }
+      }
+    }
+  } catch (e) { console.warn('[v57K machine actuals]', mc, e.message); }
+  _v57kCache.set(key, { at: Date.now(), v: out });
+  return out;
+}
+// The inputs a batch's solution plan is built on: gross from the order quantity at the actual A-grade
+// (printing / PI allowances kept as Planning's standard 1% each), weight from labels.
+async function _v57kPlanInputs(bn, order, sizeKey, masters) {
+  const wtB = await gprAvgMg(bn, sizeKey, masters).catch(() => ({ avgMg: 0, actualMg: null, basis: 'size-master' }));
+  const agB = await gprInheritedAGrade(bn, order).catch(() => ({ aimPct: null, basis: 'default' }));
+  const mcx = await _v57kMachineActuals(order.machineId, sizeKey, masters);
+  let avgMg = wtB.avgMg, mgBasis = wtB.basis || 'size-master';
+  if (wtB.actualMg == null && mcx.avgMg) { avgMg = mcx.avgMg; mgBasis = 'machine-labels-' + mcx.month; }
+  let aPct = null, aBasis = null;
+  if (agB.basis === 'batch-live' && agB.aimPct > 0) { aPct = agB.aimPct; aBasis = 'batch-live'; }
+  else if (mcx.aPct > 0) { aPct = mcx.aPct; aBasis = 'machine-live-' + mcx.month; }
+  const orderQty = Number(order.qty || 0);
+  let grossLakhs = Number(order.grossQty || order.qty || 0), grossBasis = 'planning';
+  if (aPct > 0 && orderQty > 0) {
+    grossLakhs = orderQty * (100 / aPct) * (order.isPrinted ? 1.01 * 1.01 : 1);
+    grossBasis = 'order ÷ ' + aBasis + ' A-grade';
+  }
+  return { grossLakhs: +grossLakhs.toFixed(2), grossBasis, avgMg, mgBasis, aPct: aPct != null ? +Number(aPct).toFixed(2) : null,
+           aBasis: aBasis || (agB.basis || 'master'), machine: mcx, weightBatch: wtB };
+}
+
 app.get('/api/gpr/tt-plan/:batch', async (req, res) => {
   try {
     const batch = req.params.batch;
     const order = gprFindOrder(batch);
     if (!order) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
     const masters = await gprLoadMasters();
-    const grossLakhs = Number(order.grossQty || order.qty || 0);
-    const ag = await gprInheritedAGrade(batch, order);
     const sizeKey = '#' + String(order.size || '').replace(/^#/, '');
-    const wt = await gprAvgMg(batch, sizeKey, masters);   // same resolver as yield + credits
+    // v57K: machine actuals (A-grade + label weight) for the month, masters only as the last resort
+    const _pi = await _v57kPlanInputs(batch, order, sizeKey, masters);
+    const grossLakhs = _pi.grossLakhs;
+    const ag = await gprInheritedAGrade(batch, order);
+    if (_pi.aPct != null) { ag.aimPct = _pi.aPct; ag.basis = _pi.aBasis; }
+    const wt = Object.assign({}, _pi.weightBatch, { avgMg: _pi.avgMg, basis: _pi.mgBasis, planBasis: { gross: _pi.grossBasis, machine: _pi.machine } });
 
     const anchor = await _gprPlanAnchor(batch);
     // v56D: an override recomputes for display, but the anchored plan is what the batch is
@@ -26469,9 +26542,10 @@ app.post('/api/gpr/batch-plan/anchor', async (req, res) => {
     if (!order) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
     const masters = await gprLoadMasters();
     const sizeKey = '#' + String(order.size || '').replace(/^#/, '');
-    const wt = await gprAvgMg(bn, sizeKey, masters).catch(() => ({ avgMg: 0 }));
+    const _pi = await _v57kPlanInputs(bn, order, sizeKey, masters);   // v57K: machine actuals, masters last
+    const wt = { avgMg: _pi.avgMg };
     const p = gprComputeSolutionPlan({
-      grossLakhs: Number(order.grossQty || order.qty || 0), size: sizeKey, machineId: order.machineId,
+      grossLakhs: _pi.grossLakhs, size: sizeKey, machineId: order.machineId,
       masters, actualAvgMg: Number((req.body || {}).avgMg) > 0 ? Number(req.body.avgMg) : null,
       resolvedAvgMg: wt.avgMg });
     const cols = [bn, order.machineId || null, sizeKey, p.inputs.grossLakhs, p.inputs.avgMg,
@@ -26849,9 +26923,10 @@ app.post('/api/gpr/batch-plan/reanchor', async (req, res) => {
     if (!order) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
     const masters = await gprLoadMasters();
     const sizeKey = '#' + String(order.size || '').replace(/^#/, '');
-    const wt = await gprAvgMg(bn, sizeKey, masters).catch(() => ({ avgMg: 0 }));
+    const _pi = await _v57kPlanInputs(bn, order, sizeKey, masters);   // v57K: machine actuals, masters last
+    const wt = { avgMg: _pi.avgMg };
     const p = gprComputeSolutionPlan({
-      grossLakhs: Number(order.grossQty || order.qty || 0), size: sizeKey, machineId: order.machineId,
+      grossLakhs: _pi.grossLakhs, size: sizeKey, machineId: order.machineId,
       masters, actualAvgMg: Number((req.body || {}).avgMg) > 0 ? Number(req.body.avgMg) : null,
       resolvedAvgMg: wt.avgMg });
     const up = `UPDATE gpr_batch_plan SET gross_lakhs=${pgPool ? '$1' : '?'}, avg_mg=${pgPool ? '$2' : '?'},
@@ -28765,9 +28840,12 @@ app.get('/api/gpr/plan', async (req, res) => {
         try {
           // v56D item 1: the ANCHORED plan wins once the batch's first tank was prepared, so the
           // sheet keeps quoting what the batch was actually planned against.
-          const sPlan = (await _gprPlanAnchor(bn)) || gprComputeSolutionPlan({
-            grossLakhs: grossPlanned, size: '#' + String(o.size || '').replace(/^#/, ''),
-            machineId: mc, masters, actualAvgMg: null, resolvedAvgMg: null });
+          // v57K: an un-anchored batch is planned on the machine's actuals, exactly as the TT screen plans it
+          const _sk57 = '#' + String(o.size || '').replace(/^#/, '');
+          const sPlan = (await _gprPlanAnchor(bn)) || await (async () => {
+            const _pi = await _v57kPlanInputs(bn, o, _sk57, masters);
+            return gprComputeSolutionPlan({ grossLakhs: _pi.grossLakhs, size: _sk57, machineId: mc, masters, actualAvgMg: null, resolvedAvgMg: _pi.avgMg });
+          })();
           const agg = ttAgg[bn] || {};
           const side = k2 => {
             const a = agg[k2] || { tt: 0, litres: 0, charged: 0, ttIssued: 0, litresIssued: 0 };
