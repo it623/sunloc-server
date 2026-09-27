@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v57P</title>
+<title>GPR · build v57R</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -395,8 +395,8 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v57P</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57P</div>
+    <h1>GPR<span class="vpill">v57R</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57R</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -416,7 +416,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v57P</span></div>
+  <div class="nbrand">GPR<span class="vpill">v57R</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -669,14 +669,19 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
          allocate it downstream) and HISTORY (filterable register of past, current and upcoming
          charges; click any row for its full detail). Same rail pattern as the Stock Ledger. -->
     <div style="display:flex;gap:14px;align-items:flex-start;flex-wrap:wrap">
+      <!-- v57R (Ishan, 27 Sep): one section per step on the rail — the page shows only the tab picked,
+           instead of four tables stacked on one scroll. -->
       <div class="lgrail">
-        <div class="lgnav on" id="mmnav-w" onclick="mmSection('w')"><b>Working</b><span>New charge &amp; allocation</span></div>
+        <div class="lgnav on" id="mmnav-c" onclick="mmSection('c')"><b>MMT Charge Create</b><span>Recipe &amp; start</span></div>
+        <div class="lgnav" id="mmnav-p" onclick="mmSection('p')"><b>Charges Under Preparation</b><span id="mmcnt-p">Started, not yet done</span></div>
+        <div class="lgnav" id="mmnav-o" onclick="mmSection('o')"><b>Open Charges</b><span id="mmcnt-o">Position &amp; correction</span></div>
+        <div class="lgnav" id="mmnav-a" onclick="mmSection('a')"><b>Allocation</b><span id="mmcnt-a">Charge &rarr; transfer tanks</span></div>
         <div class="lgnav" id="mmnav-h" onclick="mmSection('h')"><b>History</b><span>All charges &amp; detail</span></div>
       </div>
       <div style="flex:1;min-width:320px">
+      <div class="ftabs" id="mmtFloorTabs"></div>
 
-      <div id="mmsec-w">
-          <div class="ftabs" id="mmtFloorTabs"></div>
+      <div id="mmsec-c">
       <div class="card">
       <div class="card-title">New MMT charge</div>
       <div class="card-sub">The mother charge in the Melter-Mixer Tank. Transfer tanks link back to it for full traceability to the vendor gelatine batch.</div>
@@ -718,7 +723,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
       <div class="fgrid">
         <!-- v57P: charge start / completion are stamped by Start and Done below; the charge has the same
              Start → (3 h) → Done cascade as a transfer tank, with no hard block. -->
-        <div class="field-grp" style="grid-column:1/-1"><span class="hbnote" id="m_lifenote">Saving starts the preparation clock. <b>Done</b> appears against the charge below — amber until 3 h have run (done earlier needs a reason), green after. Only a charge marked Done can be allocated to transfer tanks.</span></div>
+        <div class="field-grp" style="grid-column:1/-1"><span class="hbnote" id="m_lifenote">Saving starts the preparation clock and moves the charge to <b>Charges Under Preparation</b> — <b>Done</b> is amber until 3 h have run (done earlier needs a reason), green after. Only a charge marked Done can be allocated to transfer tanks.</span></div>
       </div>
       <div class="row" style="margin-top:16px">
         <button class="btn primary" onclick="saveMmt()">&#9654; Start charge preparation</button>
@@ -728,22 +733,31 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
         <button class="btn" onclick="clearMmtForm()">Clear</button>
       </div>
     </div>
+      </div>
+
+      <div id="mmsec-p" style="display:none">
         <div class="card" id="mmtPrepCard">
           <div class="card-title">Charges in preparation <span id="mmtPrepCount" style="font-weight:400;color:var(--t3);font-size:12px"></span></div>
-          <div class="card-sub">Started, not yet done. <b>Done</b> turns green once the preparation time has run; before that it is amber and asks for a reason (a short close, flagged in the log). Until Done, the charge cannot be allocated or linked to a tank.</div>
+          <div class="card-sub">Started, not yet done. <b>Done</b> turns green once the preparation time has run; before that it is amber and asks for a reason (a short close, flagged in the log). Once done, the charge moves to <b>Open Charges</b> and can be allocated.</div>
           <div id="mmtPrep"><div class="empty">Loading&hellip;</div></div>
         </div>
+      </div>
+
+      <div id="mmsec-o" style="display:none">
         <div class="card">
           <div class="card-title">Open charges on this floor — position</div>
-          <div class="card-sub">What is still unexhausted. Allocate it to transfer tanks below; click a charge to correct or close it.</div>
+          <div class="card-sub">What is still unexhausted. Allocate it on the <b>Allocation</b> tab; click a charge to correct or close it.</div>
           <div id="mmtOpen"><div class="empty">Loading&hellip;</div></div>
         </div>
+      </div>
+
+      <div id="mmsec-a" style="display:none">
         <!-- v57L (Ishan, 27 Sep): the SOURCE flow. The completed charge is the reservoir: allocate it to a
              machine, a batch (current / next) and a side; the litres split per masters into tanks. Every
              allocated tank then appears on the TT tab, where the operator prepares it from a pre-filled form. -->
         <div class="card" id="alCard">
           <div class="card-title">TT allocation — from the charge</div>
-          <div class="card-sub">Pick the charge, then per machine: the batch, the side and the litres. The split into cap / body and into tanks follows the masters; the tanks appear on the <b>TT</b> tab ready to prepare. What is not yet allocated stays available to any of the three flows (MMT, Planning, New TT entry).</div>
+          <div class="card-sub">Pick a charge marked Done, then per machine: the batch, the side and the litres. The split into cap / body and into tanks follows the masters; the tanks appear on the <b>TT</b> tab ready to prepare. What is not yet allocated stays available to any of the three flows (MMT, Planning, New TT entry).</div>
           <div class="ctlbar"><div class="ctlrow">
             <span style="font-family:var(--fc);font-size:12.5px"><b>Charge</b></span>
             <select id="al_ref" style="font-size:12px;max-width:320px" onchange="alSelect(this.value)"></select>
@@ -1472,13 +1486,23 @@ function _mmChems(){
 }
 // ── v56A item 24: MMT sections — working vs history ─────────────────────────────────────────
 function mmSection(k){
+  if(k==='w' || !['c','p','o','a','h'].includes(k)) k = 'c';   // v57R: five sections; the old Working key opens Create
   window._MMSEC = k;
-  ['w','h'].forEach(x=>{
+  ['c','p','o','a','h'].forEach(x=>{
     const sec = document.getElementById('mmsec-'+x), nav = document.getElementById('mmnav-'+x);
     if(sec) sec.style.display = (x===k) ? '' : 'none';
     if(nav) nav.classList.toggle('on', x===k);
   });
   loadMmt();
+}
+// v57R: the rail carries live counts so the chemist sees where work is waiting without opening each tab
+function mmRailCounts(){
+  const set = (id, txt) => { const e = document.getElementById(id); if(e) e.textContent = txt; };
+  const prep = (window._MMT_PREP||[]).length, open = (window._MMT_OPEN||[]);
+  const toAlloc = open.filter(c=>Number(c.remaining_kg)>0.5).length, resv = open.reduce((a,c)=>a+Number(c.alloc_open||0),0);
+  set('mmcnt-p', prep ? prep+' in preparation' : 'None in preparation');
+  set('mmcnt-o', open.length ? open.length+' open · '+toAlloc+' with kg left' : 'No open charge');
+  set('mmcnt-a', resv ? resv+' tank'+(resv===1?'':'s')+' allocated, to prepare' : (toAlloc ? toAlloc+' charge'+(toAlloc===1?'':'s')+' to allocate' : 'Nothing to allocate'));
 }
 async function loadMmt(){
   const out = document.getElementById('mmtList');
@@ -1491,7 +1515,7 @@ async function loadMmt(){
   try{
     const d = await api('/api/gpr/mmt' + (CUR_FLOOR && CUR_FLOOR!=='ALL' ? ('?floor='+encodeURIComponent(CUR_FLOOR)) : ''));
     window._MMT_PREPMIN = (d && d.prepMin) || window._MMT_PREPMIN || 180; window._MMT_SRVNOW = d && d.now;   // v57P
-    if(!d.ok || !d.charges.length){ out.innerHTML = '<div class="empty">No charges recorded yet.</div>'; window._MMT_ROWS = []; window._MMT_OPEN = []; window._MMT_PREP = []; renderMmtOpen([]); renderMmtPreparing(); alLoad(); return; }
+    if(!d.ok || !d.charges.length){ out.innerHTML = '<div class="empty">No charges recorded yet.</div>'; window._MMT_ROWS = []; window._MMT_OPEN = []; window._MMT_PREP = []; renderMmtOpen([]); renderMmtPreparing(); mmRailCounts(); alLoad(); return; }
     window._MMT_ROWS = d.charges;
     const open = d.charges.filter(c=>c.status==='open');
     window._MMT_OPEN = open;
@@ -1503,8 +1527,9 @@ async function loadMmt(){
       tk.innerHTML = '<option value="">All tanks</option>' + tanks.map(t=>'<option value="'+esc(t)+'">'+esc(t)+'</option>').join('');
     }
     renderMmtOpen(open);
+    mmRailCounts();   // v57R
     alLoad();   // v57L: the allocation card follows the open charges
-    if((window._MMSEC||'w')!=='h') return;
+    if((window._MMSEC||'c')!=='h') return;
     renderMmtHistory();
   }catch(e){ out.innerHTML = '<div class="empty">Could not load charges.</div>'; }
 }
