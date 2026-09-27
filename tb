@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v57P</title>
+<title>GPR · build v57K</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -379,10 +379,6 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 .ttcard .tcside{font-family:Arial,sans-serif;font-size:9.5px;color:#15803d}
 .ttcard .tcsign{display:flex;justify-content:space-between;gap:10px;margin-top:10px}
 .ttcard .tcsign>div{flex:1;text-align:center;font-weight:600;display:flex;flex-direction:column;gap:2px}
-.mmbar{height:3px;border-radius:2px;background:var(--s3);overflow:hidden}.mmbar i{display:block;height:100%;background:var(--amber)}   /* v57P */
-.ttcard .tcsig{height:34px;border:1px solid #888;border-radius:2px;margin-top:4px;background:#fff}
-.ttcard .tcsl{font-size:7.5px;font-weight:400;color:#777;margin-top:-1px}
-.ttcard .tcrole{font-size:10px} .ttcard .tcrole small{font-weight:400;color:#555}
 .ttcard .tcin{flex:1;min-width:0;border:0;border-bottom:1px solid #0284c7;background:#eef7ff;font-family:'Courier New',monospace;font-weight:700;font-size:11.5px;padding:1px 4px;color:#0b2a6f;border-radius:2px}
 .tcmodal .ttcard{max-width:520px;margin:0 auto}
 .tnm{padding:4px 7px;font-size:12px;width:100%;box-sizing:border-box}
@@ -395,8 +391,8 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v57P</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57P</div>
+    <h1>GPR<span class="vpill">v57K</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57K</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -416,7 +412,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v57P</span></div>
+  <div class="nbrand">GPR<span class="vpill">v57K</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -716,23 +712,18 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
       </div>
       <div class="fgroup-title">Timestamps</div>
       <div class="fgrid">
-        <!-- v57P: charge start / completion are stamped by Start and Done below; the charge has the same
-             Start → (3 h) → Done cascade as a transfer tank, with no hard block. -->
-        <div class="field-grp" style="grid-column:1/-1"><span class="hbnote" id="m_lifenote">Saving starts the preparation clock. <b>Done</b> appears against the charge below — amber until 3 h have run (done earlier needs a reason), green after. Only a charge marked Done can be allocated to transfer tanks.</span></div>
+        <div class="field-grp"><label>Charge commenced</label><input id="m_start" type="datetime-local"></div>
+        <div class="field-grp"><label>Charge completed</label><input id="m_complete" type="datetime-local"></div>
+        <div class="field-grp"><label>TT prep commenced</label><input id="m_ttprep" type="datetime-local"></div>
       </div>
       <div class="row" style="margin-top:16px">
-        <button class="btn primary" onclick="saveMmt()">&#9654; Start charge preparation</button>
+        <button class="btn primary" onclick="saveMmt()">Save charge</button>
         <!-- v56D item 4: the recipe is stable charge to charge — copy the last one and edit the few
              fields that differ, rather than retyping the whole form every time. -->
         <button class="btn aplc" onclick="mmtAsPerLast()" title="Copy the last charge on this floor — quantities, chemicals and temperature; gelatine batch, tank and timestamps stay blank">&#128203; AS PER LAST CHARGE</button>
         <button class="btn" onclick="clearMmtForm()">Clear</button>
       </div>
     </div>
-        <div class="card" id="mmtPrepCard">
-          <div class="card-title">Charges in preparation <span id="mmtPrepCount" style="font-weight:400;color:var(--t3);font-size:12px"></span></div>
-          <div class="card-sub">Started, not yet done. <b>Done</b> turns green once the preparation time has run; before that it is amber and asks for a reason (a short close, flagged in the log). Until Done, the charge cannot be allocated or linked to a tank.</div>
-          <div id="mmtPrep"><div class="empty">Loading&hellip;</div></div>
-        </div>
         <div class="card">
           <div class="card-title">Open charges on this floor — position</div>
           <div class="card-sub">What is still unexhausted. Allocate it to transfer tanks below; click a charge to correct or close it.</div>
@@ -1490,12 +1481,10 @@ async function loadMmt(){
   out.innerHTML = '<div class="empty">Loading&hellip;</div>';
   try{
     const d = await api('/api/gpr/mmt' + (CUR_FLOOR && CUR_FLOOR!=='ALL' ? ('?floor='+encodeURIComponent(CUR_FLOOR)) : ''));
-    window._MMT_PREPMIN = (d && d.prepMin) || window._MMT_PREPMIN || 180; window._MMT_SRVNOW = d && d.now;   // v57P
-    if(!d.ok || !d.charges.length){ out.innerHTML = '<div class="empty">No charges recorded yet.</div>'; window._MMT_ROWS = []; window._MMT_OPEN = []; window._MMT_PREP = []; renderMmtOpen([]); renderMmtPreparing(); alLoad(); return; }
+    if(!d.ok || !d.charges.length){ out.innerHTML = '<div class="empty">No charges recorded yet.</div>'; window._MMT_ROWS = []; window._MMT_OPEN = []; renderMmtOpen([]); alLoad(); return; }
     window._MMT_ROWS = d.charges;
     const open = d.charges.filter(c=>c.status==='open');
     window._MMT_OPEN = open;
-    window._MMT_PREP = d.charges.filter(c=>c.status==='preparing'); renderMmtPreparing();   // v57P
     // v56A item 24: the tank filter self-populates from what is actually on this floor.
     const tk = document.getElementById('mm_tank');
     if(tk && tk.options.length<=1){
@@ -1623,14 +1612,12 @@ function renderMmtHistory(){
         + `<td class="num mono">${fmt(c.total_kg,0)}</td><td class="num mono">${fmt(c.allocated_kg,0)}</td>`
         + `<td class="num mono" style="color:${rem>0.5?'var(--green)':'var(--t3)'}">${fmt(rem,0)}</td>`
         + `<td class="mono" style="font-size:11px">${esc(c.charge_start||c.created_at||'—')}</td>`
-        + `<td>${c.status==='open'?'<span style="background:var(--green-l);color:var(--green);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">OPEN</span>':(c.status==='preparing'?'<span style="background:var(--amber-l);color:var(--amber);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">PREPARING</span>':'<span style="color:var(--t3);font-size:11px">'+esc(c.status||'')+'</span>')}`
-        + (c.short_close_reason ? ' <span class="badge" style="background:var(--red-l);color:var(--red);text-transform:none" title="'+esc(c.short_close_reason)+'">&#9888; SHORT CLOSE '+_mmPrepHm(c)+'</span>' : '')+`</td></tr>`;   // v57P: done under the preparation time is an exception
+        + `<td>${c.status==='open'?'<span style="background:var(--green-l);color:var(--green);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">OPEN</span>':'<span style="color:var(--t3);font-size:11px">'+esc(c.status||'')+'</span>'}</td></tr>`;
       h += `<tr id="mmtDet${c.id}" style="display:none"><td colspan="9" style="background:var(--s2);padding:10px 14px;font-size:12px;border-bottom:2px solid var(--b2)">`
         + `<b style="font-family:var(--fc)">Charge detail</b> &mdash; gelatine ${fmt(c.gelatine_kg,1)} kg &middot; water ${fmt(c.water_kg,1)} kg${c.water_temp_c?(' @ '+c.water_temp_c+'&deg;C'):''}`
         + (_mmLotsOf(c).length > 1 ? '<br>Blend: ' + _mmLotsOf(c).map(l=>esc(l.vendor||'—')+' / <span class="mono">'+esc(l.batch||'—')+'</span> '+fmt(l.kg,1)+' kg').join(' &middot; ') : '')
         + `<br>Chemicals: ${chem(c.additives_json)}`
-        + `<br>Timestamps &mdash; started: <span class="mono">${esc(_alWhen(c.charge_start)||'—')}</span> &middot; done: <span class="mono">${esc(c.charge_complete?_alWhen(c.charge_complete):'—')}</span>${c.charge_complete?' ('+_mmPrepHm(c)+' of '+_hm(window._MMT_PREPMIN||180)+(c.completed_by?', by '+esc(c.completed_by):'')+')':''}`
-        + (c.short_close_reason ? `<br><b style="color:var(--red)">Short close:</b> ${esc(c.short_close_reason)}` : '')
+        + `<br>Timestamps &mdash; commenced: <span class="mono">${esc(c.charge_start||'—')}</span> &middot; completed: <span class="mono">${esc(c.charge_complete||'—')}</span> &middot; TT prep: <span class="mono">${esc(c.tt_prep_start||'—')}</span>`
         + `<br>Allocated ${fmt(c.allocated_kg,1)} / ${fmt(c.total_kg,1)} kg &middot; created by ${esc(c.created_by||'—')}</td></tr>`;
       return h;
     };
@@ -1640,55 +1627,13 @@ function renderMmtHistory(){
     out.innerHTML = head + d.charges.map(c=>rowHtml(c)).join('') + '</tbody></table>';
 }
 function mmtToggle(id){ const r = document.getElementById('mmtDet'+id); if(r) r.style.display = (r.style.display==='none') ? '' : 'none'; }
-// ═══ v57P (Ishan, 27 Sep): MMT charge timescale — Start → (mmtPrepHours) → Done, no hard block ═══
-function _mmElapsedMin(c){ const a = _tsMs(c.charge_start||c.created_at); if(a==null) return null; const b = _tsMs(c.charge_complete) ?? Date.now(); return Math.max(0, Math.floor((b-a)/60000)); }
-function _mmPrepHm(c){ const m = _mmElapsedMin(c); return m==null ? '—' : _hm(m); }
-function renderMmtPreparing(){
-  const el = document.getElementById('mmtPrep'), cnt = document.getElementById('mmtPrepCount'); if(!el) return;
-  const rows = (window._MMT_PREP||[]).slice().sort((a,b)=>String(a.charge_start||a.created_at||'').localeCompare(String(b.charge_start||b.created_at||'')));
-  const need = window._MMT_PREPMIN || 180;
-  if(cnt) cnt.textContent = rows.length ? rows.length+' in preparation' : '';
-  if(!rows.length){ el.innerHTML = '<div class="empty">No charge in preparation. Fill the form above and press <b>Start charge preparation</b>.</div>'; return; }
-  let h = '<table class="gtable"><thead><tr><th>Reference</th><th>Tank</th><th>Gelatine</th><th class="num">Total kg</th><th>Started</th><th>Elapsed</th><th style="width:220px"></th></tr></thead><tbody>';
-  rows.forEach(c=>{
-    const m = _mmElapsedMin(c)||0, ready = m >= need, left = Math.max(0, need-m), pct = Math.min(100, Math.round(m/need*100));
-    const tip = ready ? 'Preparation time complete — '+_hm(m)+' since start' : _hm(m)+' since start · '+_hm(left)+' to '+_hm(need)+' — Done now needs a reason';
-    h += '<tr><td class="mono"><b>'+esc(c.mmt_ref)+'</b></td><td>'+esc(c.tank_no||'—')+'</td><td class="mono" style="font-size:11px">'+esc(c.gelatine_batch||'—')+'</td><td class="num">'+fmt(c.total_kg,0)+'</td>'
-      + '<td class="mono" style="font-size:11px">'+esc(_alWhen(c.charge_start||c.created_at))+'</td>'
-      + '<td><b style="color:'+(ready?'var(--green)':'var(--amber)')+'">'+_hm(m)+'</b> <span style="color:var(--t3);font-size:10.5px">/ '+_hm(need)+'</span><span class="mmbar" style="display:block;width:110px;margin-top:2px"><i style="width:'+pct+'%'+(ready?';background:var(--green)':'')+'"></i></span></td>'
-      + '<td style="white-space:nowrap"><button class="btn sm '+(ready?'ok':'')+'" style="'+(ready?'':'background:var(--amber-l);border-color:var(--amber);color:var(--amber)')+'" title="'+esc(tip)+'" onclick="mmtDone('+c.id+')">&#10004; Done'+(ready?'':' (early)')+'</button> '
-      + '<button class="btn sm" onclick="mmtOpenEdit('+c.id+')" title="Correct the charge">Edit</button></td></tr>';
-  });
-  el.innerHTML = h + '</tbody></table>';
-}
-async function mmtDone(id, reason){
-  const c = (window._MMT_PREP||[]).find(x=>x.id===id); if(!c) return;
-  const need = window._MMT_PREPMIN || 180, m = _mmElapsedMin(c)||0;
-  if(m < need && !reason){ _gprReasonPrompt('Mark '+c.mmt_ref+' done early', 'The charge has run <b>'+_hm(m)+'</b> of '+_hm(need)+' ('+_hm(need-m)+' short). Give the reason for closing it early — it is saved on the charge, audited and shown in the log as a short close.', r=>mmtDone(id, r)); return; }
-  const d = await post('/api/gpr/mmt/'+id+'/done', reason ? { reason } : {});
-  if(!d || !d.ok){ if(d && d.needsReason){ _gprReasonPrompt('Mark '+c.mmt_ref+' done early', esc(d.detail||''), r=>mmtDone(id, r)); return; } toast((d&&(d.detail||d.error))||'Could not mark the charge done','err'); return; }
-  toast(c.mmt_ref+' done after '+_hm(d.elapsedMin)+(d.short?' — SHORT CLOSE recorded':'')+' · now open to allocate', d.short ? '' : 'ok');
-  loadMmt(); loadMmtOptions();
-}
-// one reason prompt for both cascades (MMT done early, TT release early)
-function _gprReasonPrompt(title, why, cb){
-  ttModalOpen(title, '<div style="font-size:12.5px;color:var(--t2);margin-bottom:8px">'+why+'</div>'
-    + '<textarea id="gprReasonTxt" rows="3" style="width:100%;font-size:12.5px" placeholder="Reason (required)"></textarea>'
-    + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn" onclick="ttModalClose()">Cancel</button>'
-    + '<button class="btn primary" id="gprReasonGo">Confirm</button></div>');
-  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '520px';
-  const go = document.getElementById('gprReasonGo'), ta = document.getElementById('gprReasonTxt');
-  if(go) go.onclick = ()=>{ const r = (ta&&ta.value||'').trim(); if(r.length < 5){ toast('Give a reason (at least a few words)','err'); return; } ttModalClose(); cb(r); };
-  if(ta) setTimeout(()=>ta.focus(), 60);
-}
-setInterval(()=>{ const pg = document.getElementById('page-mmt'); if(pg && pg.classList.contains('on') && (window._MMT_PREP||[]).length) renderMmtPreparing(); }, 60000);   // v57P: the clock ticks
 // v56A item 24: the old inline ALL-floors filter is superseded by the History section's own
 // filter bar (reference / vendor / gelatine batch / tank / status / dates), so it is removed.
 async function saveMmt(){
   // v55J item 6: manual timestamps sanity-checked against this computer's clock.
   try{
     const _nowMs = Date.now();
-    for(const [id,lbl] of [['m_start','Charge commenced'],['m_complete','Charge completed'],['m_ttprep','TT prep commenced']]){   // v57P: fields removed from the form; loop kept for any legacy field
+    for(const [id,lbl] of [['m_start','Charge commenced'],['m_complete','Charge completed'],['m_ttprep','TT prep commenced']]){
       const v = val(id); if(!v) continue;
       const t = Date.parse(v); if(isNaN(t)) continue;
       if(t > _nowMs + 5*60000 && !confirm(lbl+' is AHEAD of this computer\'s clock ('+new Date(_nowMs).toLocaleString()+'). Keep it?')) return;
@@ -1707,265 +1652,19 @@ async function saveMmt(){
     gelatine_lots: _mmLots(), water_kg: num('m_wkg'), water_temp_c: num('m_wtemp'),
     additives: Object.assign({ col0045_sls799: num('m_sls799'), col0069_peg6000: num('m_peg6000'),
                  col0004_bronopol: num('m_bronopol'), col0056_othadd2: num('m_othadd2') }, _mmChems()),
-      tank_no: (CUR_FLOOR==='GF') ? (document.getElementById('m_tank')?.value || '') : undefined
-    // v57P: no manual timestamps — the server stamps charge_start now; Done stamps charge_complete
+      tank_no: (CUR_FLOOR==='GF') ? (document.getElementById('m_tank')?.value || '') : undefined,
+    charge_start: val('m_start')||null, charge_complete: val('m_complete')||null, tt_prep_start: val('m_ttprep')||null
   });
   if(!d.ok){ toast(d.error||'Could not save the charge','err'); return; }
-  toast(d.warning ? ('Charge started — ' + d.warning) : ('Charge '+d.mmt_ref+' started — mark it Done when the melt is complete'), d.warning ? '' : 'ok'); loadSuggestions(true);   // v56B item 1: remember new entries
+  toast(d.warning ? ('Charge saved — ' + d.warning) : 'Charge saved', d.warning ? '' : 'ok'); loadSuggestions(true);   // v56B item 1: remember new entries
   clearMmtForm(); loadMmt(); loadMmtOptions();
 }
 function clearMmtForm(){
   // v56U: the old list cleared m_sls/m_fin/m_peg/m_pres/m_sio2 — none exist — so chemicals survived Clear.
-  ['m_ref','m_total','m_wkg','m_wtemp','m_sls799','m_peg6000','m_bronopol','m_othadd2']   // v57P: no manual timestamps
+  ['m_ref','m_total','m_wkg','m_wtemp','m_sls799','m_peg6000','m_bronopol','m_othadd2','m_start','m_complete','m_ttprep']
     .forEach(id=>setVal(id,''));
   const L = document.getElementById('m_lots'); if(L){ L.innerHTML = ''; mmAddLot(); }
   const C = document.getElementById('m_chems'); if(C) C.innerHTML = '';
-}
-
-// ═══ v57L (Ishan, 27 Sep): MMT → TT ALLOCATION — the source flow ═══════════════════════════════
-// The charge is the reservoir. Per machine on the charge's floor(s) the chemist picks the batch
-// (running / next, from Planning), the side and the litres; the split into cap / body and into
-// tanks follows the masters exactly as the server books it (same function, same constants). Each
-// allocated tank is one row on the TT tab's queue; preparing it opens the usual entry form with the
-// charge, planned litres and virgin kg filled from the allocation.
-window._AL = { ref: null, opts: null, rows: [], plans: {} };
-function _alC(){ return (MASTERS && MASTERS.gpr_constants) || {}; }
-function _alGperL(){ const g = Number(_alC().gelatineKgPerLitre ?? 0.33); return g > 0 ? g : 0.33; }
-function _alL(kg){ return Number(kg||0) / _alGperL(); }
-function _alKg(l){ return Number(l||0) * _alGperL(); }
-function _alSplit(litres, side, mc){
-  // verbatim mirror of the server's _v57lAllocSplit — the preview is what will be booked
-  const C = _alC(); const capFrac = Number(C.capFrac ?? 0.40), bodyFrac = Number(C.bodyFrac ?? 0.60);
-  const out = { cap:{ litres:0, fillL:Number(mc.capFillL||0), capL:Number(mc.capCapL||0), tanks:[] },
-                body:{ litres:0, fillL:Number(mc.bodyFillL||0), capL:Number(mc.bodyCapL||0), tanks:[] } };
-  const L = Number(litres||0);
-  if(side==='cap') out.cap.litres = L; else if(side==='body') out.body.litres = L;
-  else { const tot = capFrac + bodyFrac || 1; out.cap.litres = L*capFrac/tot; out.body.litres = L*bodyFrac/tot; }
-  ['cap','body'].forEach(k=>{ const s = out[k]; s.litres = +s.litres.toFixed(1); if(s.litres<=0) return;
-    const fill = s.fillL>0 ? s.fillL : s.litres; let left = s.litres;
-    while(left > 0.05){ const t = +Math.min(fill,left).toFixed(1); s.tanks.push(t); left = +(left-t).toFixed(1); } });
-  return out;
-}
-function _alFloorsOf(c){ return c.floor==='FFSF' ? ['1F','2F'] : [c.floor]; }
-async function alLoad(force){
-  const sel = document.getElementById('al_ref'); if(!sel) return;
-  const open = (window._MMT_OPEN||[]).slice();
-  const keep = window._AL.ref;
-  sel.innerHTML = open.length
-    ? open.map(c=>'<option value="'+esc(c.mmt_ref)+'">'+esc(c.mmt_ref)+(c.tank_no?' · '+esc(c.tank_no):'')+' · '+fmt(c.remaining_kg,0)+' kg ≈ '+fmt(_alL(c.remaining_kg),0)+' L left</option>').join('')
-    : '<option value="">— no open charge on this floor —</option>';
-  const pick = (keep && open.some(c=>c.mmt_ref===keep)) ? keep : ((open.find(c=>Number(c.remaining_kg)>0.5) || open[0] || {}).mmt_ref || null);
-  sel.value = pick || '';
-  window._AL.ref = pick;
-  if(force){ window._AL.opts = null; window._AL.plans = {}; }
-  await alSelect(pick, true);
-}
-async function alSelect(ref, keepPlans){
-  window._AL.ref = ref || null;
-  if(!keepPlans) window._AL.plans = {};
-  const c = (window._MMT_OPEN||[]).find(x=>x.mmt_ref===ref);
-  const pos = document.getElementById('alPos'), mEl = document.getElementById('alMachines'), lEl = document.getElementById('alList'), ctx = document.getElementById('al_ctx');
-  if(!c){ if(pos) pos.innerHTML=''; if(mEl) mEl.innerHTML='<div class="empty">Take a charge first — it becomes the reservoir the tanks are allocated from.</div>'; if(lEl) lEl.innerHTML=''; if(ctx) ctx.textContent=''; return; }
-  const m = await ensureMasters();
-  const floors = _alFloorsOf(c);
-  if(ctx) ctx.textContent = floors.map(f=>FLOOR_LABELS[f]||f).join(' + ');
-  // batches per machine (running / next) — one light read for the charge's floors
-  if(!window._AL.opts || window._AL.opts.key!==floors.join(',')){
-    try{ const d = await api('/api/gpr/tt-batch-options?floors='+encodeURIComponent(floors.join(','))); window._AL.opts = { key: floors.join(','), rows: (d&&d.ok&&d.rows)||[] }; }
-    catch(e){ window._AL.opts = { key: floors.join(','), rows: [] }; }
-  }
-  try{ const d = await api('/api/gpr/mmt-alloc?status=all&mmt_ref='+encodeURIComponent(ref)); window._AL.rows = (d&&d.ok&&d.rows)||[]; }catch(e){ window._AL.rows = []; }
-  alRender(c, m);
-}
-function alRender(c, m){
-  const pos = document.getElementById('alPos'), mEl = document.getElementById('alMachines');
-  const rem = Number(c.remaining_kg||0), resv = Number(c.reserved_kg||0), prep = Number(c.allocated_kg||0) - resv;
-  const kgL = (kg, cls) => '<b'+(cls?' style="color:'+cls+'"':'')+'>'+fmt(kg,0)+'</b> kg <span style="color:var(--t3)">&asymp; '+fmt(_alL(kg),0)+' L</span>';
-  pos.innerHTML = '<span>Charge '+kgL(c.total_kg)+'</span><span>Prepared '+kgL(prep)+'</span><span>Allocated, to prepare '+kgL(resv,'var(--amber)')+'</span>'
-    + '<span>Remaining to allocate '+kgL(rem, rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'</span>';
-  const mm = (m.tt_machine_master)||{}; const floors = _alFloorsOf(c);
-  const mcs = Object.keys(mm).filter(k=>floors.includes(mm[k].floor)).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
-  if(!mcs.length){ mEl.innerHTML = '<div class="empty">No machine on '+esc(floors.join('/'))+' in the machine master.</div>'; return; }
-  const opts = (window._AL.opts||{}).rows||[];
-  const open = window._AL.rows.filter(r=>r.status==='allocated');
-  let h = '<div class="tswrap"><table class="gtable"><thead><tr><th>Machine</th><th>Floor</th><th>Batch</th><th>Side</th><th class="num" style="width:110px">Litres</th><th>Split per masters</th><th>Already allocated<br><span style="font-weight:400">(this charge, to prepare)</span></th><th></th></tr></thead><tbody>';
-  mcs.forEach(mc=>{
-    const bo = opts.filter(o=>o.machineId===mc);
-    const cur = window._AL.plans[mc] || {};
-    const batchSel = '<select id="al_b_'+mc+'" style="min-width:150px;font-size:12px" onchange="alBatchChanged(\''+mc+'\')">'
-      + '<option value="">— batch —</option>' + bo.map(o=>'<option value="'+esc(o.batch)+'"'+(cur.batch===o.batch?' selected':'')+'>'+esc(o.batch)+' · '+esc(o.tag)+(o.colour?' · '+esc(o.colour):'')+'</option>').join('')
-      + '<option value="__other"'+(cur.other?' selected':'')+'>other batch…</option></select>'
-      + '<input id="al_bo_'+mc+'" list="batchOpts" placeholder="type batch" style="display:'+(cur.other?'':'none')+';width:110px;margin-left:4px;font-size:12px" value="'+esc(cur.other?cur.batch||'':'')+'" onchange="alBatchChanged(\''+mc+'\')">';
-    const sideSel = '<select id="al_s_'+mc+'" style="font-size:12px" onchange="alSideChanged(\''+mc+'\')"><option value="both"'+((cur.side||'both')==='both'?' selected':'')+'>CAP + BODY</option><option value="cap"'+(cur.side==='cap'?' selected':'')+'>CAP only</option><option value="body"'+(cur.side==='body'?' selected':'')+'>BODY only</option></select>';
-    const mine = open.filter(r=>r.machine_id===mc);
-    const mineTxt = mine.length ? mine.map(r=>'<span class="sdtag sd-'+esc(r.side)+'">'+esc(String(r.side).toUpperCase())+r.alloc_seq+'</span> '+esc(r.batch_number)+' '+fmt(r.planned_l,0)+' L').join('<br>') : '<span style="color:var(--t4)">—</span>';
-    h += '<tr><td class="mono"><b>'+esc(mc)+'</b><div style="font-size:10px;color:var(--t3)">cap '+fmt(mm[mc].capFillL,0)+' / body '+fmt(mm[mc].bodyFillL,0)+' L per tank</div></td><td>'+esc(FLOOR_LABELS[mm[mc].floor]||mm[mc].floor)+'</td>'
-      + '<td>'+batchSel+'</td><td>'+sideSel+'</td>'
-      + '<td class="num"><input id="al_l_'+mc+'" type="number" inputmode="decimal" min="0" step="1" style="width:95px;text-align:right;font-size:12px" value="'+(cur.litres!=null?esc(cur.litres):'')+'" oninput="alPreview(\''+mc+'\')"></td>'
-      + '<td id="al_p_'+mc+'" style="font-size:11.5px"></td><td style="font-size:11.5px">'+mineTxt+'</td>'
-      + '<td><button class="btn primary sm" id="al_go_'+mc+'" onclick="alAllocate(\''+mc+'\')">Allocate &rarr; TT</button></td></tr>';
-  });
-  mEl.innerHTML = h + '</tbody></table></div>';
-  mcs.forEach(mc=>{ alPreview(mc); });
-  alRenderList();
-}
-function _alBatchOf(mc){
-  const sel = document.getElementById('al_b_'+mc); if(!sel) return '';
-  if(sel.value==='__other') return String(val('al_bo_'+mc)||'').trim().toUpperCase();
-  return sel.value;
-}
-async function alBatchChanged(mc){
-  const sel = document.getElementById('al_b_'+mc), oth = document.getElementById('al_bo_'+mc);
-  if(oth) oth.style.display = (sel && sel.value==='__other') ? '' : 'none';
-  const bn = _alBatchOf(mc);
-  window._AL.plans[mc] = Object.assign(window._AL.plans[mc]||{}, { batch: bn, other: sel && sel.value==='__other', side: (document.getElementById('al_s_'+mc)||{}).value||'both' });
-  if(!bn){ setVal('al_l_'+mc,''); alPreview(mc); return; }
-  const pEl = document.getElementById('al_p_'+mc); if(pEl) pEl.innerHTML = '<span style="color:var(--t3)">reading the plan&hellip;</span>';
-  try{
-    const d = await api('/api/gpr/tt-plan/'+encodeURIComponent(bn));
-    if(!d.ok){ if(pEl) pEl.innerHTML = '<span style="color:var(--red)">'+esc(d.error||'batch not in Planning')+'</span>'; return; }
-    if(_alBatchOf(mc)!==bn) return;   // changed meanwhile
-    // still needed per side = planned litres − litres already in tanks − litres allocated but not yet prepared (any charge)
-    let openAll = [];
-    try{ const a = await api('/api/gpr/mmt-alloc?status=allocated&batch='+encodeURIComponent(bn)); openAll = (a&&a.ok&&a.rows)||[]; }catch(e){}
-    const need = {};
-    ['cap','body'].forEach(k=>{ const pl = Number((d.plan&&d.plan[k]&&d.plan[k].litres)||0), iss = Number((d.issued&&d.issued[k]&&d.issued[k].litres)||0);
-      const al = openAll.filter(r=>r.side===k).reduce((a,r)=>a+Number(r.planned_l||0),0);
-      need[k] = { plan: pl, issued: iss, alloc: al, left: Math.max(0, +(pl-iss-al).toFixed(1)) }; });
-    window._AL.plans[mc].need = need; window._AL.plans[mc].order = d.order;
-    if(d.order && d.order.machineId && d.order.machineId!==mc){ if(pEl) pEl.innerHTML = '<span style="color:var(--red)">'+esc(bn)+' is planned on '+esc(d.order.machineId)+', not '+esc(mc)+'</span>'; setVal('al_l_'+mc,''); return; }
-    alSuggest(mc);
-  }catch(e){ if(pEl) pEl.innerHTML = '<span style="color:var(--red)">could not read the plan</span>'; }
-}
-function alSideChanged(mc){ const P = window._AL.plans[mc] = window._AL.plans[mc]||{}; P.side = (document.getElementById('al_s_'+mc)||{}).value||'both'; if(P.need) alSuggest(mc); else alPreview(mc); }
-function alSuggest(mc){
-  // litres pre-filled = what the batch still needs for the chosen side(s), capped at what the charge has left
-  const P = window._AL.plans[mc]||{}; const need = P.need; if(!need) return;
-  const side = (document.getElementById('al_s_'+mc)||{}).value||'both';
-  let L = side==='cap' ? need.cap.left : (side==='body' ? need.body.left : need.cap.left + need.body.left);
-  const c = (window._MMT_OPEN||[]).find(x=>x.mmt_ref===window._AL.ref);
-  const remL = c ? Math.max(0, _alL(c.remaining_kg)) : Infinity;
-  const capped = L > remL + 0.05;
-  if(capped) L = remL;
-  setVal('al_l_'+mc, L>0 ? Math.round(L) : '');
-  P.litres = L>0 ? Math.round(L) : ''; P.capped = capped;
-  alPreview(mc);
-}
-function alPreview(mc){
-  const el = document.getElementById('al_p_'+mc); if(!el) return;
-  const P = window._AL.plans[mc] = window._AL.plans[mc]||{};
-  const L = num('al_l_'+mc); P.litres = L||'';
-  const side = (document.getElementById('al_s_'+mc)||{}).value||'both';
-  const mm = ((MASTERS&&MASTERS.tt_machine_master)||{})[mc]; if(!mm) return;
-  if(!(L>0)){ el.innerHTML = P.need ? '<span style="color:var(--t3)">'+esc(_alBatchOf(mc))+' still needs: cap '+fmt(P.need.cap.left,0)+' · body '+fmt(P.need.body.left,0)+' L'+(P.capped?' <span style="color:var(--amber)">(the charge has nothing left to allocate)</span>':'')+'</span>' : ''; return; }
-  const sp = _alSplit(L, side, mm);
-  const line = (k,lbl,cls) => sp[k].tanks.length ? '<div><span class="sdtag sd-'+k+'">'+lbl+'</span> '+fmt(sp[k].litres,0)+' L &rarr; <b>'+sp[k].tanks.length+'</b> tank'+(sp[k].tanks.length>1?'s':'')+' ('+sp[k].tanks.map(t=>fmt(t,0)).join(' + ')+' L)</div>' : '';
-  const kg = _alKg(L);
-  const needTxt = P.need ? '<div style="color:var(--t3);font-size:10.5px">still needed: cap '+fmt(P.need.cap.left,0)+' · body '+fmt(P.need.body.left,0)+' L'+(P.capped?' · <span style="color:var(--amber)">capped to what the charge has left</span>':'')+'</div>' : '';
-  el.innerHTML = line('cap','CAP') + line('body','BODY') + '<div style="color:var(--t3);font-size:10.5px">= '+fmt(kg,1)+' kg of the charge</div>' + needTxt;
-}
-async function alAllocate(mc){
-  const ref = window._AL.ref; if(!ref){ toast('Pick a charge first','err'); return; }
-  const bn = _alBatchOf(mc); if(!bn){ toast(mc+': pick the batch','err'); return; }
-  const side = (document.getElementById('al_s_'+mc)||{}).value||'both';
-  const L = num('al_l_'+mc); if(!(L>0)){ toast(mc+': enter the litres to allocate','err'); return; }
-  const P = window._AL.plans[mc]||{};
-  if(P.need){ const left = side==='cap' ? P.need.cap.left : (side==='body' ? P.need.body.left : P.need.cap.left+P.need.body.left);
-    if(L > left + 0.5 && !confirm(bn+' still needs about '+fmt(left,0)+' L for '+side.toUpperCase()+'; you are allocating '+fmt(L,0)+' L. Allocate anyway?')) return; }
-  const btn = document.getElementById('al_go_'+mc); if(btn) btn.disabled = true;
-  const d = await post('/api/gpr/mmt-alloc', { mmt_ref: ref, machine_id: mc, batch_number: bn, side, litres: L });
-  if(btn) btn.disabled = false;
-  if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not allocate','err'); return; }
-  toast('Allocated '+d.created.map(x=>x.side.toUpperCase()+x.alloc_seq+' '+fmt(x.planned_l,0)+' L').join(', ')+' of '+bn+' from '+ref+' — on the TT tab to prepare','ok');
-  delete window._AL.plans[mc];
-  await loadMmt(); loadMmtOptions();
-}
-function alRenderList(){
-  const el = document.getElementById('alList'); if(!el) return;
-  const rows = window._AL.rows||[];
-  if(!rows.length){ el.innerHTML = '<div class="empty">Nothing allocated from this charge yet.</div>'; return; }
-  const ST = { allocated:['TO PREPARE','var(--amber)'], prepared:['PREPARED','var(--green)'], cancelled:['CANCELLED','var(--t3)'] };
-  let h = '<div class="tswrap" style="max-height:320px"><table class="gtable"><thead><tr><th>When</th><th>Machine</th><th>Batch</th><th>Side</th><th class="num">Planned L</th><th class="num">Reserved kg</th><th>Status</th><th>Tank</th><th>By</th><th></th></tr></thead><tbody>';
-  rows.slice().sort((a,b)=>String(b.allocated_at||'').localeCompare(String(a.allocated_at||''))).forEach(r=>{
-    const st = ST[r.status]||[r.status,'var(--t3)'];
-    h += '<tr'+(r.status==='cancelled'?' style="opacity:.55"':'')+'><td class="mono" style="font-size:11px">'+esc(_alWhen(r.allocated_at))+'</td><td class="mono">'+esc(r.machine_id)+'</td><td class="mono"><b>'+esc(r.batch_number)+'</b></td>'
-      + '<td><span class="sdtag sd-'+esc(r.side)+'">'+esc(String(r.side).toUpperCase())+r.alloc_seq+'</span></td>'
-      + '<td class="num">'+fmt(r.planned_l,0)+'</td><td class="num">'+fmt(r.reserved_kg,1)+(r.status==='prepared'&&r.actual_kg!=null?' <span style="color:var(--t3);font-size:10px">act '+fmt(r.actual_kg,1)+'</span>':'')+'</td>'
-      + '<td><b style="font-size:10.5px;color:'+st[1]+'">'+st[0]+'</b></td><td class="mono">'+(r.tt?esc(String(r.tt.tt_number||'').replace(/^TT-/,''))+' <span style="color:var(--t3);font-size:10px">'+esc(lcStage(r.tt)[1])+'</span>':'—')+'</td>'
-      + '<td style="font-size:11px">'+esc(r.allocated_by||'—')+'</td>'
-      + '<td style="white-space:nowrap">'+(r.status==='allocated' ? '<button class="btn sm primary" onclick="alPrepare('+r.id+')">Prepare</button> <button class="btn sm" onclick="alCancel('+r.id+')" title="Release the reserved kg back to the charge">&#10005;</button>' : '')+'</td></tr>';
-  });
-  el.innerHTML = h + '</tbody></table></div>';
-}
-function _alWhen(v){ const p = _istParts(v); return p ? (p.date+' '+p.time+' '+p.shift) : String(v||'').slice(0,16); }
-async function alCancel(id){
-  const r = (window._AL.rows||[]).find(x=>x.id===id) || (window._ALB||[]).find(x=>x.id===id);
-  if(!confirm('Cancel this allocation'+(r?(' — '+r.batch_number+' '+String(r.side).toUpperCase()+r.alloc_seq+' '+fmt(r.planned_l,0)+' L'):'')+'? The reserved kg goes back to the charge.')) return;
-  const d = await post('/api/gpr/mmt-alloc/'+id+'/cancel', {});
-  if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not cancel','err'); return; }
-  toast('Allocation cancelled — '+fmt(d.released_kg,1)+' kg back to the charge','ok');
-  if(document.getElementById('page-mmt') && document.getElementById('page-mmt').classList.contains('on')) loadMmt(); else loadAllocBoard();
-  loadMmtOptions();
-}
-function alPrepare(id){ showPage('sheet', [...document.querySelectorAll('.ntab')].find(b=>b.textContent==='TT')); ttPrepareFromAlloc(id); }
-// ── TT tab: the queue of allocated tanks ─────────────────────────────────────────────────────
-async function loadAllocBoard(){
-  const el = document.getElementById('alBoard'), cnt = document.getElementById('alBoardCount'); if(!el) return;
-  try{
-    const q = floorScoped() ? ('&floors='+encodeURIComponent(visibleFloors().join(','))) : '';
-    const d = await api('/api/gpr/mmt-alloc?status=allocated'+q);
-    const rows = (d&&d.ok&&d.rows)||[]; window._ALB = rows;
-    if(cnt) cnt.textContent = rows.length ? (rows.length+' tank'+(rows.length===1?'':'s')+' · '+fmt(rows.reduce((a,r)=>a+Number(r.planned_l||0),0),0)+' L') : '';
-    if(!rows.length){ el.innerHTML = '<div class="empty">No allocated tank waiting. Allocate from a charge on the <b>MMT</b> tab, or use <b>+ New TT entry</b>.</div>'; return; }
-    const by = {}; rows.forEach(r=>{ const k=(r.floor||'?')+'|'+(r.machine_id||'?'); (by[k]=by[k]||[]).push(r); });
-    let h = '';
-    Object.keys(by).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).forEach(k=>{
-      const [fl,mc] = k.split('|'); const grp = by[k].sort((a,b)=>_gprBatchCmpC(a.batch_number,b.batch_number)||(a.side===b.side?0:(a.side==='cap'?-1:1))||(a.alloc_seq-b.alloc_seq));
-      h += '<div style="margin:10px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;font-size:12px">'+esc(FLOOR_LABELS[fl]||fl)+' &middot; '+esc(mc)
-         + '<span style="float:right;font-weight:400;color:var(--t3);font-size:11px">'+grp.length+' tank'+(grp.length===1?'':'s')+' &middot; '+fmt(grp.reduce((a,r)=>a+Number(r.planned_l||0),0),0)+' L</span></div>';
-      h += '<table class="gtable" style="margin:2px 0 8px"><thead><tr><th>Batch</th><th>Side</th><th>PC</th><th>Colour</th><th class="num">Planned L</th><th class="num">Virgin kg</th><th>MMT charge</th><th>Allocated</th><th></th></tr></thead><tbody>';
-      grp.forEach(r=>{
-        h += '<tr class="clickable" onclick="ttPrepareFromAlloc('+r.id+')"><td class="mono"><b>'+esc(r.batch_number)+'</b>'+(r.batch_status?' <span style="color:var(--t3);font-size:10px">'+esc(r.batch_status)+'</span>':'')+'</td>'
-          + '<td><span class="sdtag sd-'+esc(r.side)+'">'+esc(String(r.side).toUpperCase())+'</span> <span style="color:var(--t3);font-size:10.5px">alloc '+r.alloc_seq+'</span></td>'
-          + '<td class="mono">'+esc(r.pc_code||'—')+'</td><td>'+esc(r.colour_name||'—')+'</td>'
-          + '<td class="num"><b>'+fmt(r.planned_l,0)+'</b></td><td class="num">'+fmt(r.reserved_kg,1)+'</td>'
-          + '<td class="mono">'+esc(r.mmt_ref)+(r.mmt_tank_no?' <span style="color:var(--t3);font-size:10px">'+esc(r.mmt_tank_no)+'</span>':'')+(r.mmt_status&&r.mmt_status!=='open'?' <span class="badge planned">'+esc(r.mmt_status)+'</span>':'')+'</td>'
-          + '<td style="font-size:11px">'+esc(_alWhen(r.allocated_at))+'<br><span style="color:var(--t3)">'+esc(r.allocated_by||'')+'</span></td>'
-          + '<td style="white-space:nowrap" onclick="event.stopPropagation()"><button class="btn sm primary" onclick="ttPrepareFromAlloc('+r.id+')">Prepare &rarr;</button> <button class="btn sm" onclick="alCancel('+r.id+')" title="Cancel this allocation">&#10005;</button></td></tr>';
-      });
-      h += '</tbody></table>';
-    });
-    el.innerHTML = '<div class="tswrap" style="max-height:360px">'+h+'</div>';
-  }catch(e){ el.innerHTML = '<div class="empty">Could not load the allocated tanks.</div>'; }
-}
-function _gprBatchCmpC(a,b){ const re=/^(\d+)([A-Z]+)(\d+)$/i; const ma=String(a).match(re), mb=String(b).match(re);
-  if(!ma||!mb) return String(a).localeCompare(String(b)); if(+ma[1]!==+mb[1]) return +ma[1]-+mb[1];
-  if(ma[2].length!==mb[2].length) return ma[2].length-mb[2].length; if(ma[2]!==mb[2]) return ma[2]<mb[2]?-1:1; return +ma[3]-+mb[3]; }
-// The hand-off: open the usual entry form for the allocation's batch and side, then lay the
-// allocation over the plan pre-fill — charge, planned litres and virgin kg; ttCalc turns the kg
-// into the actual litres, so only the measured values (tank code, viscosity, temperature) remain.
-async function ttPrepareFromAlloc(id){
-  let r = (window._ALB||[]).find(x=>x.id===id) || (window._AL.rows||[]).find(x=>x.id===id);
-  if(!r){ try{ const d = await api('/api/gpr/mmt-alloc?status=all'); r = ((d&&d.ok&&d.rows)||[]).find(x=>x.id===id); }catch(e){} }
-  if(!r){ toast('Allocation not found','err'); return; }
-  if(r.status!=='allocated'){ toast('This allocation is already '+r.status,'err'); return; }
-  const bn = String(r.batch_number).toUpperCase();
-  try{ const d = await post('/api/gpr/batch-plan/anchor', { batch: bn }); if(d.ok && !d.alreadyAnchored) toast('Plan anchored for '+bn,'ok'); }catch(e){}   // same as Prepare next CAP/BODY
-  await openTtEntry(bn, r.machine_id);
-  setPrep(r.side);
-  const p = r.side==='cap' ? 'tc' : 'tb';
-  const mm = document.getElementById(p+'_mmt');
-  if(mm){ if(![...mm.options].some(o=>o.value===r.mmt_ref)) mm.insertAdjacentHTML('beforeend','<option value="'+esc(r.mmt_ref)+'">'+esc(r.mmt_ref)+'</option>'); mm.value = r.mmt_ref; }
-  if(r.capacity_l>0 && !num(p+'_cap')) setVal(p+'_cap', r.capacity_l);
-  setVal(p+'_planned', r.planned_l);
-  setVal(p+'_virgin', r.reserved_kg);
-  const a = document.getElementById(p+'_actual'); if(a) delete a.dataset.manual;   // litres follow the charge calc
-  window._TTALLOC = Object.assign(window._TTALLOC||{}, { [p]: r.id });
-  const n = document.getElementById(p+'_allocnote');
-  if(n) n.innerHTML = '<div class="hbnote" style="margin:3px 0;padding:4px 8px;border-left:3px solid var(--amber);background:var(--amber-l)">From allocation <b>'+esc(String(r.side).toUpperCase())+r.alloc_seq+'</b> of <b class="mono">'+esc(r.mmt_ref)+'</b> &middot; '+fmt(r.planned_l,0)+' L &middot; '+fmt(r.reserved_kg,1)+' kg reserved &middot; completing this entry settles it</div>';
-  ttCalc(p);
-  const el = document.getElementById('ds_'+p); if(el) el.scrollIntoView({behavior:'smooth', block:'center'});
-  toast(String(r.side).toUpperCase()+' tank pre-filled from the allocation — enter the measured values and Complete','ok');
 }
 
 // ── TT PLAN ────────────────────────────────────────────
@@ -2088,14 +1787,11 @@ window._TCD = window._TCD || { rows: [], fmt: 'GDP029-F12' };
 // v57C (Rahul / Ishan): the card no longer asks for values it already has — only the T. Tank code
 // (normally entered at preparation), the gel solution weight (defaults to the issued volume) and
 // Checked by remain editable.
-const TCD_EDIT = [['tank_code','T. Tank code no.'],['gel_sol_kg','Gel solution wt (kg)'],['prepared_by_name','Prepared by'],['released_by_name','Released by'],['checked_by','Checked by (QA)']];   // v57M
+const TCD_EDIT = [['tank_code','T. Tank code no.'],['gel_sol_kg','Gel solution wt (kg)'],['prepared_by_name','Prepared by'],['released_by_name','Released by']];
 // v57D: which names a card still lacks (DPR had none for that shift and nobody has typed one)
-// v57M: the server resolves the three names (prepared_by / released_by / checked_by); a card is
-// short only of a name it could not resolve — typed once here, saved on the card, printed.
-function _tcNamesMissing(r){ const m = [];
-  if(!r.prepared_by) m.push('prepared_by_name');
-  if(r.issued_at && !r.released_by) m.push('released_by_name');
-  if(r.issued_at && !r.checked_by) m.push('checked_by');
+function _tcNamesMissing(r){ const c = r.card||{}, m = [];
+  if(!r.dpr_chemist && !String(c.prepared_by_name||'').trim()) m.push('prepared_by_name');
+  if(r.issued_at && !r.dpr_incharge && !String(c.released_by_name||'').trim()) m.push('released_by_name');
   return m; }
 function _istParts(v){ const ms = _tsMs(v); if(ms==null) return null; const d = new Date(ms+330*60000);
   const iso = d.toISOString(); const hh = d.getUTCHours(), mm = d.getUTCMinutes();
@@ -2189,27 +1885,13 @@ function ttCardHtml(r, ed){
     + row('Viscosity (in Cps.) :', fx(r.viscosity_cps)+' <span class="tcu">at 50&deg;C</span>')
     + row('T. Tank Temperature &deg;C :', fx(r.temperature_c))
     + row('Date and Time of Loading :', fx(l ? l.date+' '+l.time : ''))
-    // v57M (Ishan, 27 Sep): Prepared by = the GPR chemist who initiated the preparation in the system,
-    // Released by = the GPR chemist who released it in the system, Checked by = the QA chemist of the
-    // release shift (from DPR). Each name prints with a signature box beneath it for the person to sign.
+    // v57D: Prepared by = shift chemist, Released by = shift incharge — as DPR recorded them for this
+    // floor and that shift; typed by hand only where DPR has no name. Checked by stays blank to sign.
     + '<div class="tcsign">'
-    +   _tcSign('Prepared by', r.prepared_by, ed && !r.prepared_by ? ((r.prepared_by_options||[]).length>1 ? _tcPick('prepared_by_name', r.prepared_by_options) : v('prepared_by_name')) : null, r.prep_shift, 'GPR chemist')
-    +   _tcSign('Released by', r.released_by, ed && r.issued_at && !r.released_by ? ((r.released_by_options||[]).length>1 ? _tcPick('released_by_name', r.released_by_options) : v('released_by_name')) : null, r.issued_at ? r.rel_shift : '', 'GPR chemist')
-    +   _tcSign('Checked by', r.checked_by, ed && r.issued_at && !r.checked_by ? ((r.checked_by_options||[]).length>1 ? _tcPick('checked_by', r.checked_by_options) : v('checked_by')) : null, r.issued_at ? r.rel_shift : '', 'QA chemist')
-    + '</div>'
+    +   '<div>'+(r.dpr_chemist ? '<span class="tcv">'+esc(r.dpr_chemist)+'</span>' : (ed ? v('prepared_by_name') : '<span class="tcv">'+esc(c.prepared_by_name||'')+'</span>'))+'Prepared by'+(r.prep_shift?'<small class="tcsh">'+esc(r.prep_shift)+'</small>':'')+'</div>'
+    +   '<div>'+(!r.issued_at ? '<span class="tcv"></span>' : (r.dpr_incharge ? '<span class="tcv">'+esc(r.dpr_incharge)+'</span>' : (ed ? v('released_by_name') : '<span class="tcv">'+esc(c.released_by_name||'')+'</span>')))+'Released by'+(r.rel_shift?'<small class="tcsh">'+esc(r.rel_shift)+'</small>':'')+'</div>'
+    +   '<div><span class="tcv"></span>Checked by</div></div>'
     + '</div></div></div>';
-}
-// v57M: a typed name wins — mirror the server's resolution on the cached row after a save
-function _tcApplyTyped(r, card){ const c = card||{};
-  if(String(c.prepared_by_name||'').trim()){ r.prepared_by = String(c.prepared_by_name).trim(); r.prepared_by_src='card'; }
-  if(r.issued_at && String(c.released_by_name||'').trim()){ r.released_by = String(c.released_by_name).trim(); r.released_by_src='card'; }
-  if(r.issued_at && String(c.checked_by||'').trim()){ r.checked_by = String(c.checked_by).trim(); r.checked_by_src='card'; } }
-function _tcPick(k, opts){   // v57N: editor pick-list when DPR lists several names for the shift
-  return '<select class="tcin" data-k="'+k+'"><option value="">— pick —</option>'+(opts||[]).map(n=>'<option value="'+esc(n)+'">'+esc(n)+'</option>').join('')+'</select>'; }
-function _tcSign(lbl, name, editHtml, shift, role){
-  return '<div>'+(editHtml || '<span class="tcv">'+esc(name||'')+'</span>')
-    + '<div class="tcsig"></div><span class="tcsl">Signature</span>'
-    + '<span class="tcrole">'+lbl+' <small>('+role+')</small></span>'+(shift?'<small class="tcsh">'+esc(shift)+'</small>':'')+'</div>';
 }
 function ttCardOpen(id, justReleased){
   const r = window._TCD.rows.find(x=>x.id===id); if(!r) return;
@@ -2241,26 +1923,14 @@ async function ttCardFor(id, bn){
 }
 // v57D: names DPR does not hold for a shift — entered here once, saved to each card (audited), then print
 function ttCardNamesPrompt(miss, ids){
-  // v57M: three names; the ones the system resolved show their source, the rest are typed once.
-  // Suggestions: DPR's GPR team of that shift for the chemists, DPR's QA/shift chemist for Checked by.
-  const dl = (id, list) => (list&&list.length) ? '<datalist id="'+id+'">'+list.map(n=>'<option value="'+esc(n)+'">').join('')+'</datalist>' : '';
-  const src = { card:'typed', dpr:'from DPR' };
-  // v57N: several DPR names for the shift → pick one; none → type it
-  const inp = (r,k,ph,have,how,listId,opts) => _tcNamesMissing(r).includes(k)
-    ? ((opts&&opts.length>1)
-        ? '<select class="tnm" data-id="'+r.id+'" data-k="'+k+'" style="font-size:12px"><option value="">— pick ('+opts.length+' in DPR) —</option>'+opts.map(n=>'<option value="'+esc(n)+'">'+esc(n)+'</option>').join('')+'</select>'
-        : '<input class="tnm" data-id="'+r.id+'" data-k="'+k+'" placeholder="'+ph+' (not in DPR — type)"'+(listId?' list="'+listId+'"':'')+'>')
-    : '<span class="mono">'+esc(have||'')+'</span> <span style="color:var(--t3);font-size:10.5px">'+esc(src[how]||'')+'</span>';
-  let dls = '';
+  const inp = (r,k,ph) => _tcNamesMissing(r).includes(k) ? '<input class="tnm" data-id="'+r.id+'" data-k="'+k+'" placeholder="'+ph+'">' : '<span style="color:var(--t3)">from DPR</span>';
   ttModalOpen('Names needed before printing',
-    '<div style="font-size:12px;color:var(--t2);margin-bottom:8px">Names come from DPR\'s shift-wise entry: Prepared by = GPR chemist of the preparation shift, Released by = GPR chemist of the release shift, Checked by = QA / shift chemist of the release shift. Where DPR lists several, pick one; where it lists none, type the name. Saved to the card and printed.</div>'
-    + '<div class="tswrap" style="max-height:360px"><table class="gtable"><thead><tr><th>Tank</th><th>Prepared (shift)</th><th>Prepared by</th><th>Released (shift)</th><th>Released by</th><th>Checked by (QA)</th></tr></thead><tbody>'
-    + miss.map(r=>{ dls += dl('tnmp'+r.id, r.dpr_gpr_prep) + dl('tnmr'+r.id, r.dpr_gpr_release);
-        return '<tr><td class="mono"><b>'+esc(r.batch_number)+'</b> '+esc(String(r.tt_number||'').replace(/^TT-/,''))+'</td>'
-        + '<td class="mono" style="font-size:11px">'+esc(r.prep_shift||'—')+' &middot; '+esc(r.floor||'')+'</td><td>'+inp(r,'prepared_by_name','GPR chemist',r.prepared_by,r.prepared_by_src,(r.dpr_gpr_prep||[]).length?'tnmp'+r.id:'',r.prepared_by_options)+'</td>'
-        + '<td class="mono" style="font-size:11px">'+esc(r.rel_shift||'—')+'</td><td>'+(r.issued_at?inp(r,'released_by_name','GPR chemist',r.released_by,r.released_by_src,(r.dpr_gpr_release||[]).length?'tnmr'+r.id:'',r.released_by_options):'<span style="color:var(--t4)">not released</span>')+'</td>'
-        + '<td>'+(r.issued_at?inp(r,'checked_by','QA chemist',r.checked_by,r.checked_by_src,'',r.checked_by_options):'<span style="color:var(--t4)">not released</span>')+'</td></tr>'; }).join('')
-    + '</tbody></table></div>' + dls
+    '<div style="font-size:12px;color:var(--t2);margin-bottom:8px">DPR has no shift chemist / shift incharge entered for the shift(s) below. Enter the names &mdash; they are saved to the card and printed.</div>'
+    + '<div class="tswrap" style="max-height:360px"><table class="gtable"><thead><tr><th>Tank</th><th>Prepared (shift)</th><th>Prepared by</th><th>Released (shift)</th><th>Released by</th></tr></thead><tbody>'
+    + miss.map(r=>'<tr><td class="mono"><b>'+esc(r.batch_number)+'</b> '+esc(String(r.tt_number||'').replace(/^TT-/,''))+'</td>'
+        + '<td class="mono" style="font-size:11px">'+esc(r.prep_shift||'—')+' &middot; '+esc(r.floor||'')+'</td><td>'+inp(r,'prepared_by_name','shift chemist')+'</td>'
+        + '<td class="mono" style="font-size:11px">'+esc(r.rel_shift||'—')+'</td><td>'+inp(r,'released_by_name','shift incharge')+'</td></tr>').join('')
+    + '</tbody></table></div>'
     + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px"><button class="btn" onclick="ttModalClose&&ttModalClose()">Cancel</button>'
     + '<button class="btn primary" onclick="ttCardNamesSave(['+ids.join(',')+'])">Save names &amp; print</button></div>');
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '820px';
@@ -2272,7 +1942,7 @@ async function ttCardNamesSave(ids){
   for(const [id, body] of Object.entries(byId)){
     const d = await post('/api/gpr/tt/'+id+'/card', body);
     if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not save a name','err'); return; }
-    const r = window._TCD.rows.find(x=>String(x.id)===String(id)); if(r){ r.card = d.card; _tcApplyTyped(r, d.card); r.card_missing = Math.max(0,(r.card_missing||0) - Object.keys(body).length); }
+    const r = window._TCD.rows.find(x=>String(x.id)===String(id)); if(r){ r.card = d.card; r.card_missing = Math.max(0,(r.card_missing||0) - Object.keys(body).length); }
   }
   if(typeof ttModalClose==='function') ttModalClose();
   renderTtCards();
@@ -2304,7 +1974,7 @@ async function ttCardSave(id){
   const d = await post('/api/gpr/tt/'+id+'/card', body);
   if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not save the card','err'); return; }
   const r = window._TCD.rows.find(x=>x.id===id);
-  if(r){ r.card = d.card; _tcApplyTyped(r, d.card); r.card_missing = (String(d.card.tank_code||'').trim() ? 0 : 1) + ((!(Number(r.actual_l)>0) && !String(d.card.gel_sol_kg||'').trim()) ? 1 : 0) + _tcNamesMissing(r).length; }
+  if(r){ r.card = d.card; r.card_missing = (String(d.card.tank_code||'').trim() ? 0 : 1) + ((!(Number(r.actual_l)>0) && !String(d.card.gel_sol_kg||'').trim()) ? 1 : 0) + _tcNamesMissing(r).length; }
   toast(d.changed ? 'Card saved' : 'No change','ok');
   renderTtCards();
 }
@@ -3238,7 +2908,7 @@ function renderDualCreated(created, partial){
   const el = document.getElementById('dualCreated'); if(!el) return;
   el.innerHTML = '<div class="fgroup-title" style="margin-top:14px">Tanks created'
     + (partial?' <span style="color:var(--red)">(partial — fix the failed side and complete again)</span>':'')
-    + ' — put each tank on HOLD when it enters holding (release turns green after '+_minHoldMin()+' min; earlier needs a reason)</div>'
+    + ' — put each tank on HOLD when it enters holding (release opens after '+_minHoldMin()+' min)</div>'
     + '<div style="display:flex;gap:10px;flex-wrap:wrap">'
     + created.map(c=>'<div style="border:1px solid var(--b1);border-radius:var(--r);padding:8px 12px;background:var(--s1)">'
         + '<b class="mono">'+esc(c.tt_number)+'</b> <span style="color:var(--t3);font-size:11px">'+esc(c.side.toUpperCase())+'</span>'
@@ -3273,8 +2943,7 @@ function lcActions(t){
   if(st==='prepared') b.push('<button class="btn sm primary" onclick="ttHold('+t.id+')">&#9208; Hold</button>');
   else if(st==='holding'){
     const left = Math.max(0, _minHoldMin() - (_heldMin(t)||0));
-    // v57P: no hard block — the amber button releases early with a reason; it turns green (Release) at the minimum
-    b.push('<button class="btn sm" style="background:var(--amber-l);border-color:var(--amber);color:var(--amber)" title="Held '+_hm(_heldMin(t))+' of '+_hm(_minHoldMin())+' · '+_hm(left)+' to go — releasing now needs a reason (short hold)" onclick="ttRelease('+t.id+')">&#9654; Release early</button>');
+    b.push('<span class="badge" style="background:var(--s3);color:var(--t2);text-transform:none" title="Release opens after '+_minHoldMin()+' min">release in '+_hm(left)+'</span>');
   }
   else if(st==='ready') b.push('<button class="btn sm ok" onclick="ttRelease('+t.id+')">&#9654; Release</button>');
   b.push('<button class="btn sm" onclick="ttMove('+t.id+')" title="Movement log">Log</button>');
@@ -3284,16 +2953,13 @@ function lcActions(t){
 async function ttHold(id){
   const d = await post('/api/gpr/tt/'+id+'/hold', {});
   if(!d.ok){ toast(d.detail || d.error || 'Could not put the tank on hold','err'); return; }
-  toast('On hold — green to release in '+_minHoldMin()+' min (earlier needs a reason)','ok');
+  toast('On hold — release opens in '+_minHoldMin()+' min','ok');
   refreshTtViews();
 }
-async function ttRelease(id, reason){
-  const d = await post('/api/gpr/tt/'+id+'/release', reason ? { reason } : {});
-  if(!d.ok){
-    // v57P: under the minimum hold the server asks for a reason instead of refusing
-    if(d.needsReason){ _gprReasonPrompt('Release early', esc(d.detail||'')+'<br>The reason is saved on the tank, audited and reported as a short hold.', r=>ttRelease(id, r)); return; }
-    toast(d.detail || d.error || 'Could not release the tank','err'); return; }
-  toast(reason ? 'Released early — SHORT HOLD recorded; complete its TT card' : 'Released to production — complete its TT card', reason ? '' : 'ok');
+async function ttRelease(id){
+  const d = await post('/api/gpr/tt/'+id+'/release', {});
+  if(!d.ok){ toast(d.detail || d.error || 'Could not release the tank','err'); return; }
+  toast('Released to production — complete its TT card','ok');
   refreshTtViews();
   if(typeof loadHoldBoard==='function' && document.getElementById('plbody_hold')?.classList.contains('open')) loadHoldBoard();
   ttCardAfterRelease(id);   // v56Y: the card opens at the moment the loading values are known
@@ -3350,7 +3016,7 @@ function renderHoldBoard(){
     + '<button class="'+(HB.view==='released'?'on':'')+'" onclick="hbView(\'released\')">RELEASED'+(nRel!=null?' · '+nRel:'')+'</button></span>'
     + (HB.view==='released' ? '<input type="date" value="'+esc(HB.day)+'" onchange="hbDay(this.value)" style="width:auto;padding:4px 8px;font-size:12px">' : '')
     + '<span class="hbnote">'+(HB.view==='holding'
-        ? 'Real time &middot; green at <b>'+minM+' min</b>; amber releases early with a reason (short hold) &middot; refreshes every minute'
+        ? 'Real time &middot; release opens at <b>'+minM+' min</b> &middot; refreshes every minute'
         : 'Tanks released to production on production day '+esc(_dm(HB.day))+' (06:00 &rarr; 06:00)')+'</span></div>';
   if(!rows.length){ box.innerHTML = h + '<div class="hbempty">'+(HB.view==='holding'?'No tank is on hold right now.':'No tank released on this production day.')+'</div>'; return; }
   // batch-wise, CAP and BODY side by side
@@ -3364,8 +3030,7 @@ function renderHoldBoard(){
         + '<span class="tn">'+esc(seq)+' <span style="font-weight:400;color:var(--t3)">'+fmt(r.actual_l,0)+' L</span></span>'
         + '<span class="tm">'+(ready ? 'held '+_hm(m) : _hm(m)+' · '+_hm(Math.max(0,minM-(m||0)))+' left')+'</span>'
         + '<span class="tbar"><i style="width:'+pct+'%"></i></span>'
-        + (ready ? '<button class="btn sm ok" onclick="event.stopPropagation();ttRelease('+r.id+')">&#9654; Release</button>'
-                 : '<button class="btn sm" style="background:var(--amber-l);border-color:var(--amber);color:var(--amber)" title="'+_hm(Math.max(0,minM-(m||0)))+' to go — releasing now needs a reason (short hold)" onclick="event.stopPropagation();ttRelease('+r.id+')">&#9654; Early</button>')   // v57P
+        + (ready ? '<button class="btn sm ok" onclick="event.stopPropagation();ttRelease('+r.id+')">&#9654; Release</button>' : '')
         + '</div>';
     }
     const t = _tsMs(r.issued_at), hhmm = t ? new Date(t+330*60000).toISOString().slice(11,16) : '—';
@@ -3975,9 +3640,8 @@ async function gprBatchSummary(bn){
   h += '</tbody></table>';
   h += '<div style="font-family:var(--fc);font-weight:600;font-size:12px;margin:8px 0 3px">MMT charge references</div>';
   h += (d.mmt||[]).length
-    ? '<table class="gtable"><thead><tr><th>MMT ref</th><th>Floor</th><th>Tank</th><th>Status</th><th>Started</th><th>Done</th><th>Prep time</th><th>By</th></tr></thead><tbody>'
-      + d.mmt.map(m=>'<tr><td class="mono">'+esc(m.mmt_ref)+'</td><td>'+esc(m.floor||'—')+'</td><td>'+esc(String(m.tank_no||'—'))+'</td><td>'+esc(m.status||'—')+'</td><td class="mono">'+esc(dt(m.charge_start||m.created_at))+'</td><td class="mono">'+esc(m.charge_complete?dt(m.charge_complete):'—')+'</td>'
-          + '<td>'+(m.charge_complete ? _mmPrepHm(m) : '—')+(m.short_close_reason ? ' <span class="badge" style="background:var(--red-l);color:var(--red);text-transform:none" title="'+esc(m.short_close_reason)+'">&#9888; SHORT CLOSE</span>' : '')+'</td><td>'+esc(m.completed_by||m.created_by||'—')+'</td></tr>').join('')   // v57P
+    ? '<table class="gtable"><thead><tr><th>MMT ref</th><th>Floor</th><th>Tank</th><th>Status</th><th>Opened</th><th>By</th></tr></thead><tbody>'
+      + d.mmt.map(m=>'<tr><td class="mono">'+esc(m.mmt_ref)+'</td><td>'+esc(m.floor||'—')+'</td><td>'+esc(String(m.tank_no||'—'))+'</td><td>'+esc(m.status||'—')+'</td><td class="mono">'+esc(dt(m.created_at))+'</td><td>'+esc(m.created_by||'—')+'</td></tr>').join('')
       + '</tbody></table>'
     : '<div class="empty">No MMT charge linked to this batch\'s tanks.</div>';
   h += '<div style="font-family:var(--fc);font-weight:600;font-size:12px;margin:8px 0 3px">Tanks — full lifecycle stamps</div>';

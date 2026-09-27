@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57K';
+const APP_BUILD = 'v57P';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -1049,6 +1049,52 @@ const MIGRATIONS = [
     sql: `
       ALTER TABLE gpr_tt ADD COLUMN excess_index INTEGER;
       ALTER TABLE gpr_tt ADD COLUMN excess_reason TEXT;
+    `
+  },
+  {
+    version: 84,
+    name: 'v57l_mmt_tt_allocation',
+    // v57L (Ishan, 27 Sep): the MMT charge is the RESERVOIR for transfer tanks. An allocation reserves
+    // part of a charge for one tank of one batch/side on one machine (split cap/body per masters), so
+    // the operator sees every tank still to prepare and prepares each from a fully pre-filled form.
+    // reserved_kg is booked against the charge's allocated_kg at allocation time; preparing the tank
+    // settles the difference to the actual virgin kg, cancelling releases it.
+    sql: `
+      CREATE TABLE IF NOT EXISTS gpr_mmt_alloc (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        mmt_ref TEXT NOT NULL,
+        floor TEXT,
+        machine_id TEXT NOT NULL,
+        batch_number TEXT NOT NULL,
+        side TEXT NOT NULL,
+        alloc_seq INTEGER,
+        planned_l REAL NOT NULL DEFAULT 0,
+        reserved_kg REAL NOT NULL DEFAULT 0,
+        capacity_l REAL,
+        status TEXT NOT NULL DEFAULT 'allocated',
+        tt_id INTEGER,
+        actual_kg REAL,
+        allocated_by TEXT,
+        allocated_at TEXT NOT NULL DEFAULT (datetime('now')),
+        prepared_at TEXT,
+        cancelled_at TEXT,
+        cancelled_by TEXT,
+        note TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_gpr_alloc_mmt ON gpr_mmt_alloc(mmt_ref, status);
+      CREATE INDEX IF NOT EXISTS idx_gpr_alloc_batch ON gpr_mmt_alloc(batch_number, side, status);
+    `
+  },
+  {
+    version: 85,
+    name: 'v57p_mmt_tt_timescale',
+    // v57P (Ishan, 27 Sep): the MMT charge gets the same cascade as a TT — Start → (3 h) → Done — with
+    // no hard block: done early needs a reason (short close, an exception in the log). The TT hold
+    // hard block goes the same way: release early needs a reason (short hold).
+    sql: `
+      ALTER TABLE gpr_mmt_charges ADD COLUMN short_close_reason TEXT;
+      ALTER TABLE gpr_mmt_charges ADD COLUMN completed_by TEXT;
+      ALTER TABLE gpr_tt ADD COLUMN short_hold_reason TEXT;
     `
   },
   {
@@ -2349,6 +2395,7 @@ const GPR_SEED_MASTERS = (() => {
     // They are business thresholds the plant may want to tune, so they belong in masters like every
     // other constant. Values are exactly what the code used, so behaviour is unchanged on upgrade.
     minHoldHours: 2,              // a TT released under this is a quality exception (v56G report)
+    mmtPrepHours: 3,              // v57P: an MMT charge marked done under this is a short close (reason required)
     underFillPct: 5,              // % below tank capacity that demands a reason (was 0.95 literal)
     estFactorMin: 0.85,           // end-shift estimate factor floor (was a bare 0.85)
     estFactorMax: 1.30,           // ceiling (was a bare 1.30)
@@ -4890,6 +4937,17 @@ async function ensurePostgresTables() {
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS card_json TEXT`,   // v56X migration-82 mirror
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS excess_index INTEGER`,   // v57C migration-83 mirror
       `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS excess_reason TEXT`,
+      // v57L migration-84 mirror — MMT → TT allocation (the charge as the reservoir)
+      `CREATE TABLE IF NOT EXISTS gpr_mmt_alloc (id SERIAL PRIMARY KEY, mmt_ref TEXT NOT NULL, floor TEXT,
+        machine_id TEXT NOT NULL, batch_number TEXT NOT NULL, side TEXT NOT NULL, alloc_seq INTEGER,
+        planned_l REAL NOT NULL DEFAULT 0, reserved_kg REAL NOT NULL DEFAULT 0, capacity_l REAL,
+        status TEXT NOT NULL DEFAULT 'allocated', tt_id INTEGER, actual_kg REAL, allocated_by TEXT,
+        allocated_at TEXT NOT NULL DEFAULT (NOW()::TEXT), prepared_at TEXT, cancelled_at TEXT, cancelled_by TEXT, note TEXT)`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_alloc_mmt ON gpr_mmt_alloc(mmt_ref, status)`,
+      `CREATE INDEX IF NOT EXISTS idx_gpr_alloc_batch ON gpr_mmt_alloc(batch_number, side, status)`,
+      `ALTER TABLE gpr_mmt_charges ADD COLUMN IF NOT EXISTS short_close_reason TEXT`,   // v57P migration-85 mirror
+      `ALTER TABLE gpr_mmt_charges ADD COLUMN IF NOT EXISTS completed_by TEXT`,
+      `ALTER TABLE gpr_tt ADD COLUMN IF NOT EXISTS short_hold_reason TEXT`,
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -18881,7 +18939,8 @@ app.get('/api/admin/export', (req, res) => {
       // v55: GPR module tables (branch parity — omitting them meant a backup silently
       // excluded every charge, tank and ledger movement; export now round-trips GPR).
       'gpr_mmt_charges', 'gpr_tt', 'gpr_tt_colourants', 'gpr_batch_status',
-      'gpr_masters', 'gpr_ledger', 'gpr_legacy_stock', 'gpr_crush'
+      'gpr_masters', 'gpr_ledger', 'gpr_legacy_stock', 'gpr_crush',
+      'gpr_pc_colour_map', 'gpr_batch_plan', 'gpr_mmt_alloc'   // v57L: the three newer GPR tables round-trip too
     ];
 
     const exportData = {
@@ -18940,7 +18999,8 @@ app.post('/api/admin/import', (req, res) => {
         'tracking_wastage', 'tracking_dispatch_records', 'tracking_alerts',
         // v55: GPR module tables — importable so an export restores GPR alongside the rest.
         'gpr_mmt_charges', 'gpr_tt', 'gpr_tt_colourants', 'gpr_batch_status',
-        'gpr_masters', 'gpr_ledger', 'gpr_legacy_stock', 'gpr_crush'
+        'gpr_masters', 'gpr_ledger', 'gpr_legacy_stock', 'gpr_crush',
+        'gpr_pc_colour_map', 'gpr_batch_plan', 'gpr_mmt_alloc'   // v57L
       ];
 
       for (const table of importableTables) {
@@ -25745,7 +25805,16 @@ app.get('/api/gpr/mmt', async (req, res) => {
     const sql = `SELECT * FROM gpr_mmt_charges ${where} ORDER BY created_at DESC`;
     const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
     (rows || []).forEach(r => { r.remaining_kg = +(Number(r.total_kg || 0) - Number(r.allocated_kg || 0)).toFixed(1); });
-    res.json({ ok: true, charges: rows });
+    // v57L: kg reserved by allocations still to be prepared (already inside allocated_kg) — shown apart
+    try {
+      const rSql = `SELECT mmt_ref, COALESCE(SUM(reserved_kg),0) AS kg, COUNT(*) AS n FROM gpr_mmt_alloc WHERE status='allocated' GROUP BY mmt_ref`;
+      const rRows = pgPool ? (await pgPool.query(rSql)).rows : db.prepare(rSql).all();
+      const rm = {}; (rRows || []).forEach(x => { rm[x.mmt_ref] = x; });
+      (rows || []).forEach(r => { const x = rm[r.mmt_ref]; r.reserved_kg = +Number(x ? x.kg : 0).toFixed(1); r.alloc_open = Number(x ? x.n : 0); });
+    } catch (e) { console.warn('[v57L mmt reserved]', e.message); }
+    // v57P: the preparation timescale, so every screen counts against the same clock and threshold
+    let prepMin = 180; try { prepMin = Math.round(_gprMmtPrepHours(await gprLoadMasters()) * 60); } catch (e) {}
+    res.json({ ok: true, charges: rows, prepMin, now: new Date().toISOString() });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -25885,19 +25954,26 @@ app.post('/api/gpr/mmt', async (req, res) => {
       gKg = +_lots.reduce((a, l) => a + l.kg, 0).toFixed(3);
     }
     const lotsJson = _lots.length ? JSON.stringify(_lots) : null;
+    // v57P: saving the form STARTS the charge preparation — charge_start is stamped now (server clock)
+    // and the charge is 'preparing' until Done. A charge saved with its completion time already
+    // given (a backfilled, finished charge) opens at once, as before.
+    const nowIso = new Date().toISOString();
+    const startAt = b.charge_start || nowIso;
+    const doneAt = b.charge_complete || null;
+    const status0 = doneAt ? 'open' : 'preparing';
     const vals = [b.mmt_ref, b.floor, tankNo, gVendor, gBatch,
                   gKg, Number(b.water_kg || 0),
                   b.water_temp_c != null ? Number(b.water_temp_c) : null, additivesJson, totalKg,
-                  b.charge_start || null, b.charge_complete || null, b.tt_prep_start || null, session.username, lotsJson];
+                  startAt, doneAt, b.tt_prep_start || null, status0, session.username, lotsJson];
     const cols = `(mmt_ref,floor,tank_no,gelatine_vendor,gelatine_batch,gelatine_kg,water_kg,water_temp_c,additives_json,total_kg,charge_start,charge_complete,tt_prep_start,status,created_by,gelatine_lots_json)`;
     if (pgPool) {
-      await pgPool.query(`INSERT INTO gpr_mmt_charges ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,'open',$14,$15)`, vals);
+      await pgPool.query(`INSERT INTO gpr_mmt_charges ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)`, vals);
     } else {
-      db.prepare(`INSERT INTO gpr_mmt_charges ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,'open',?,?)`).run(...vals);
+      db.prepare(`INSERT INTO gpr_mmt_charges ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...vals);
     }
     logAudit(session.username, session.role, 'gpr', 'GPR_MMT_CREATED',
-      `ref=${b.mmt_ref} floor=${b.floor} ${totalKg}kg${warning ? ' [alert]' : ''}`, req.ip);
-    res.json({ ok: true, mmt_ref: b.mmt_ref, warning, createdAt: new Date().toISOString() });
+      `ref=${b.mmt_ref} floor=${b.floor} ${totalKg}kg ${status0 === 'preparing' ? 'STARTED ' + startAt.slice(0, 16) : 'backfilled (complete)'}${warning ? ' [alert]' : ''}`, req.ip);
+    res.json({ ok: true, mmt_ref: b.mmt_ref, status: status0, charge_start: startAt, warning, createdAt: nowIso });
   } catch (err) {
     if (String(err.message).match(/unique|duplicate/i)) {
       return res.status(409).json({ ok: false, error: 'MMT reference already exists' });
@@ -25913,6 +25989,204 @@ app.get('/api/gpr/mmt/:ref', async (req, res) => {
     if (!row) return res.status(404).json({ ok: false, error: 'Not found' });
     row.remaining_kg = +(Number(row.total_kg || 0) - Number(row.allocated_kg || 0)).toFixed(1);
     res.json({ ok: true, charge: row });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// ═══ v57P (Ishan, 27 Sep): MMT CHARGE TIMESCALE — Start → Done, no hard block ═══════════════════
+// Saving the charge form starts the preparation (status 'preparing', charge_start = now). Done stamps
+// charge_complete and opens the charge to allocation / TT linking. Done before mmtPrepHours (3 h)
+// is allowed but must carry a reason — it is stored, audited and shows in the log as an exception.
+function _gprMmtPrepHours(masters) {
+  const C = (masters && masters.gpr_constants) || {};
+  const v = Number(C.mmtPrepHours);
+  return Number.isFinite(v) && v > 0 ? v : 3;
+}
+function _gprIsoMs(v) {
+  const s0 = String(v || '').trim().replace(' ', 'T');
+  const ms = Date.parse(s0 + (/[zZ]$|[+-]\d{2}:?\d{2}$/.test(s0) ? '' : 'Z'));
+  return isNaN(ms) ? null : ms;
+}
+app.post('/api/gpr/mmt/:id/done', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const P1 = pgPool ? '$1' : '?';
+    const mmt = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_charges WHERE id=${P1}`, [req.params.id])).rows[0]
+                       : db.prepare(`SELECT * FROM gpr_mmt_charges WHERE id=?`).get(req.params.id);
+    if (!mmt) return res.status(404).json({ ok: false, error: 'Charge not found' });
+    if (mmt.status !== 'preparing') return res.status(409).json({ ok: false, error: 'NOT_PREPARING', detail: `${mmt.mmt_ref} is ${mmt.status}${mmt.charge_complete ? ' (done ' + String(mmt.charge_complete).slice(0, 16) + ')' : ''}.` });
+    const masters = await gprLoadMasters();
+    const prepH = _gprMmtPrepHours(masters);
+    const now = new Date();
+    const startMs = _gprIsoMs(mmt.charge_start || mmt.created_at);
+    const elapsedMin = startMs == null ? null : Math.max(0, Math.floor((now.getTime() - startMs) / 60000));
+    const short = elapsedMin != null && elapsedMin < prepH * 60;
+    const reason = String((req.body && req.body.reason) || '').trim().slice(0, 200);
+    if (short && !reason) {
+      return res.status(409).json({ ok: false, error: 'SHORT_CLOSE_REASON', needsReason: true, elapsedMin, prepMin: Math.round(prepH * 60),
+        detail: `${mmt.mmt_ref} has run ${Math.floor(elapsedMin / 60)}h ${String(elapsedMin % 60).padStart(2, '0')}m of ${prepH} h — a reason is needed to mark it done early.` });
+    }
+    const nowIso = now.toISOString();
+    if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET status='open', charge_complete=$1, completed_by=$2, short_close_reason=$3, updated_at=NOW()::TEXT WHERE id=$4`, [nowIso, session.username, short ? reason : null, mmt.id]);
+    else db.prepare(`UPDATE gpr_mmt_charges SET status='open', charge_complete=?, completed_by=?, short_close_reason=?, updated_at=datetime('now') WHERE id=?`).run(nowIso, session.username, short ? reason : null, mmt.id);
+    logAudit(session.username, session.role, 'gpr', short ? 'GPR_MMT_DONE_SHORT' : 'GPR_MMT_DONE',
+      `ref=${mmt.mmt_ref} ${elapsedMin == null ? '?' : elapsedMin + ' min'} of ${Math.round(prepH * 60)}${short ? ' SHORT CLOSE: ' + reason : ''}`, req.ip);
+    res.json({ ok: true, mmt_ref: mmt.mmt_ref, status: 'open', charge_complete: nowIso, elapsedMin, short, prepMin: Math.round(prepH * 60) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+// ═══ v57L (Ishan, 27 Sep): MMT → TT ALLOCATION — the source flow ═══════════════════════════════
+// The completed MMT charge is the reservoir. From it the chemist ALLOCATES to a machine, a batch
+// (current or next) and a side (cap / body / both); the litres split per masters (capFrac/bodyFrac,
+// then the machine's fill per tank), and one allocation row is written PER TANK. Each row reserves
+// its kg (litres × gelatineKgPerLitre) against the charge's allocated_kg at once, so "remaining to
+// allocate" is honest from the moment of allocation. The TT tab lists every allocated tank still to
+// prepare; preparing it (POST /api/gpr/tt with alloc_id, or auto-matched by mmt/batch/side) settles
+// the reservation to the actual virgin kg and marks the row prepared. Cancelling releases the kg.
+function _v57lAllocSplit(litres, side, mc, C) {
+  const capFrac = Number(C.capFrac ?? 0.40), bodyFrac = Number(C.bodyFrac ?? 0.60);
+  const out = { cap: { litres: 0, fillL: Number(mc.capFillL || 0), capL: Number(mc.capCapL || 0), tanks: [] },
+                body: { litres: 0, fillL: Number(mc.bodyFillL || 0), capL: Number(mc.bodyCapL || 0), tanks: [] } };
+  const L = Number(litres || 0);
+  if (side === 'cap') out.cap.litres = L;
+  else if (side === 'body') out.body.litres = L;
+  else { const tot = capFrac + bodyFrac || 1; out.cap.litres = L * capFrac / tot; out.body.litres = L * bodyFrac / tot; }
+  for (const k of ['cap', 'body']) {
+    const s = out[k]; s.litres = +s.litres.toFixed(1);
+    if (s.litres <= 0) continue;
+    const fill = s.fillL > 0 ? s.fillL : s.litres;
+    let left = s.litres;
+    while (left > 0.05) { const t = +Math.min(fill, left).toFixed(1); s.tanks.push(t); left = +(left - t).toFixed(1); }
+  }
+  return out;
+}
+async function _v57lAllocRows(where, params) {
+  const sql = `SELECT * FROM gpr_mmt_alloc ${where} ORDER BY allocated_at ASC, id ASC`;
+  const rows = pgPool ? (await pgPool.query(sql, params)).rows : db.prepare(sql).all(...params);
+  const P = n => pgPool ? `$${n}` : '?';
+  const refs = [...new Set((rows || []).map(r => r.mmt_ref).filter(Boolean))];
+  const tanks = {};
+  if (refs.length) {
+    const mSql = `SELECT mmt_ref, tank_no, status, floor FROM gpr_mmt_charges WHERE mmt_ref IN (${refs.map((_, i) => P(i + 1)).join(',')})`;
+    const mRows = pgPool ? (await pgPool.query(mSql, refs)).rows : db.prepare(mSql).all(...refs);
+    (mRows || []).forEach(m => { tanks[m.mmt_ref] = m; });
+  }
+  const ids = (rows || []).map(r => r.tt_id).filter(Boolean);
+  const tts = {};
+  if (ids.length) {
+    const tSql = `SELECT id, tt_number, status, scan_in_at, scan_out_at, issued_at, actual_l FROM gpr_tt WHERE id IN (${ids.map((_, i) => P(i + 1)).join(',')})`;
+    const tRows = pgPool ? (await pgPool.query(tSql, ids)).rows : db.prepare(tSql).all(...ids);
+    (tRows || []).forEach(t => { tts[t.id] = t; });
+  }
+  for (const r of (rows || [])) {
+    const o = gprFindOrder(r.batch_number);
+    r.pc_code = o ? (o.pcCode || o.pc_code || '') : '';
+    r.colour_name = o ? (o.colour || '') : '';
+    r.customer = o ? (o.customer || '') : '';
+    r.size = o ? ('#' + String(o.size || '').replace(/^#/, '')) : '';
+    r.batch_status = o ? (o.status || '') : '';
+    r.mmt_tank_no = (tanks[r.mmt_ref] || {}).tank_no || null;
+    r.mmt_status = (tanks[r.mmt_ref] || {}).status || null;
+    r.tt = r.tt_id ? (tts[r.tt_id] || null) : null;
+  }
+  return rows || [];
+}
+app.get('/api/gpr/mmt-alloc', async (req, res) => {
+  try {
+    const P = n => pgPool ? `$${n}` : '?';
+    const conds = [], params = [];
+    const st = String(req.query.status || 'allocated').toLowerCase();
+    if (st && st !== 'all') { params.push(st); conds.push(`status=${P(params.length)}`); }
+    if (req.query.mmt_ref) { params.push(String(req.query.mmt_ref)); conds.push(`mmt_ref=${P(params.length)}`); }
+    if (req.query.batch) { params.push(String(req.query.batch).trim().toUpperCase()); conds.push(`UPPER(batch_number)=${P(params.length)}`); }
+    if (req.query.machine) { params.push(String(req.query.machine).trim().toUpperCase()); conds.push(`UPPER(machine_id)=${P(params.length)}`); }
+    const floors = String(req.query.floors || '').split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+    if (floors.length) { conds.push(`floor IN (${floors.map(f => { params.push(f); return P(params.length); }).join(',')})`); }
+    const rows = await _v57lAllocRows(conds.length ? ('WHERE ' + conds.join(' AND ')) : '', params);
+    res.json({ ok: true, rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+app.post('/api/gpr/mmt-alloc', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const b = req.body || {};
+    const ref = String(b.mmt_ref || '').trim();
+    const mcId = String(b.machine_id || '').trim().toUpperCase();
+    const bn = String(b.batch_number || '').trim().toUpperCase();
+    const side = String(b.side || 'both').toLowerCase();
+    if (!ref || !mcId || !bn) return res.status(400).json({ ok: false, error: 'mmt_ref, machine_id and batch_number required' });
+    if (!['cap', 'body', 'both'].includes(side)) return res.status(400).json({ ok: false, error: "side must be 'cap', 'body' or 'both'" });
+    const litres = Number(b.litres || 0);
+    if (!(litres > 0)) return res.status(400).json({ ok: false, error: 'litres must be above 0' });
+    const P1 = pgPool ? '$1' : '?';
+    const mmt = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_charges WHERE mmt_ref=${P1}`, [ref])).rows[0]
+                       : db.prepare(`SELECT * FROM gpr_mmt_charges WHERE mmt_ref=?`).get(ref);
+    if (!mmt) return res.status(404).json({ ok: false, error: 'MMT charge not found' });
+    if (mmt.status && mmt.status !== 'open') return res.status(409).json({ ok: false, error: 'CHARGE_NOT_OPEN', detail: mmt.status === 'preparing' ? `${ref} is still being prepared — mark it Done first.` : `${ref} is ${mmt.status}.` });   // v57P
+    const masters = await gprLoadMasters();
+    const C = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
+    const gPerL = Number(C.gelatineKgPerLitre ?? 0.33) || 0.33;
+    const mc = (masters.tt_machine_master || GPR_SEED_MASTERS.tt_machine_master)[mcId];
+    if (!mc) return res.status(404).json({ ok: false, error: `Machine ${mcId} is not in the machine master` });
+    const floorsOk = mmt.floor === 'FFSF' ? ['1F', '2F'] : [mmt.floor];
+    if (!floorsOk.includes(mc.floor)) return res.status(409).json({ ok: false, error: 'WRONG_FLOOR', detail: `${mcId} is on ${mc.floor}; ${ref} serves ${floorsOk.join('/')}.` });
+    const order = gprFindOrder(bn);
+    if (!order) return res.status(404).json({ ok: false, error: 'Batch not found in Planning' });
+    if (order.machineId && String(order.machineId).toUpperCase() !== mcId) {
+      return res.status(409).json({ ok: false, error: 'BATCH_ON_OTHER_MACHINE', detail: `${bn} is planned on ${order.machineId}, not ${mcId}.` });
+    }
+    const split = _v57lAllocSplit(litres, side, mc, C);
+    const tanksL = [...split.cap.tanks.map(t => ['cap', t]), ...split.body.tanks.map(t => ['body', t])];
+    if (!tanksL.length) return res.status(400).json({ ok: false, error: 'Nothing to allocate' });
+    const needKg = +tanksL.reduce((a, [, t]) => a + t * gPerL, 0).toFixed(3);
+    const remaining = +(Number(mmt.total_kg || 0) - Number(mmt.allocated_kg || 0)).toFixed(3);
+    if (needKg > remaining + 0.05) {
+      return res.status(409).json({ ok: false, error: 'INSUFFICIENT_CHARGE', remaining_kg: remaining, need_kg: needKg,
+        detail: `${ref} has ${remaining.toFixed(1)} kg (≈ ${(remaining / gPerL).toFixed(0)} L) left to allocate; this needs ${needKg.toFixed(1)} kg (${litres} L).` });
+    }
+    // sequence per (batch, side) across live allocations — the tank's position in the queue
+    const seqSql = `SELECT side, COALESCE(MAX(alloc_seq),0) AS m FROM gpr_mmt_alloc WHERE UPPER(batch_number)=${P1} AND status IN ('allocated','prepared') GROUP BY side`;
+    const seqRows = pgPool ? (await pgPool.query(seqSql, [bn])).rows : db.prepare(seqSql).all(bn);
+    const seq = { cap: 0, body: 0 };
+    (seqRows || []).forEach(r => { if (seq[r.side] != null) seq[r.side] = Number(r.m || 0); });
+    const created = [];
+    const cols = `(mmt_ref,floor,machine_id,batch_number,side,alloc_seq,planned_l,reserved_kg,capacity_l,status,allocated_by,note)`;
+    for (const [sd, L] of tanksL) {
+      seq[sd] += 1;
+      const kg = +(L * gPerL).toFixed(3);
+      const vals = [ref, mc.floor, mcId, bn, sd, seq[sd], L, kg, sd === 'cap' ? split.cap.capL : split.body.capL, 'allocated', session.username, String(b.note || '').trim().slice(0, 200) || null];
+      let id;
+      if (pgPool) id = (await pgPool.query(`INSERT INTO gpr_mmt_alloc ${cols} VALUES (${vals.map((_, i) => '$' + (i + 1)).join(',')}) RETURNING id`, vals)).rows[0].id;
+      else id = db.prepare(`INSERT INTO gpr_mmt_alloc ${cols} VALUES (${vals.map(() => '?').join(',')})`).run(...vals).lastInsertRowid;
+      created.push({ id, side: sd, alloc_seq: seq[sd], planned_l: L, reserved_kg: kg });
+    }
+    if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, updated_at=NOW()::TEXT WHERE id=$2`, [needKg, mmt.id]);
+    else db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, updated_at=datetime('now') WHERE id=?`).run(needKg, mmt.id);
+    logAudit(session.username, session.role, 'gpr', 'GPR_MMT_ALLOC',
+      `mmt=${ref} → ${mcId} ${bn} ${side} ${litres}L = ${needKg}kg: ${created.map(c => c.side.toUpperCase() + c.alloc_seq + ' ' + c.planned_l + 'L').join(', ')}`, req.ip);
+    res.json({ ok: true, created, reserved_kg: needKg, split: { cap: split.cap.litres, body: split.body.litres },
+               remaining_kg: +(remaining - needKg).toFixed(3) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+app.post('/api/gpr/mmt-alloc/:id/cancel', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    const P1 = pgPool ? '$1' : '?';
+    const a = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_alloc WHERE id=${P1}`, [req.params.id])).rows[0]
+                     : db.prepare(`SELECT * FROM gpr_mmt_alloc WHERE id=?`).get(req.params.id);
+    if (!a) return res.status(404).json({ ok: false, error: 'Allocation not found' });
+    if (a.status !== 'allocated') return res.status(409).json({ ok: false, error: 'NOT_OPEN', detail: `This allocation is already ${a.status}${a.tt_id ? ' (tank ' + a.tt_id + ')' : ''}.` });
+    const kg = Number(a.reserved_kg || 0);
+    if (pgPool) {
+      await pgPool.query(`UPDATE gpr_mmt_alloc SET status='cancelled', cancelled_at=NOW()::TEXT, cancelled_by=$1 WHERE id=$2`, [session.username, a.id]);
+      await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg-$1, updated_at=NOW()::TEXT WHERE mmt_ref=$2`, [kg, a.mmt_ref]);
+    } else {
+      db.prepare(`UPDATE gpr_mmt_alloc SET status='cancelled', cancelled_at=datetime('now'), cancelled_by=? WHERE id=?`).run(session.username, a.id);
+      db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg-?, updated_at=datetime('now') WHERE mmt_ref=?`).run(kg, a.mmt_ref);
+    }
+    logAudit(session.username, session.role, 'gpr', 'GPR_MMT_ALLOC_CANCEL', `alloc=${a.id} mmt=${a.mmt_ref} ${a.machine_id} ${a.batch_number} ${a.side}${a.alloc_seq} ${a.planned_l}L released ${kg}kg`, req.ip);
+    res.json({ ok: true, released_kg: kg });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -26053,13 +26327,36 @@ app.post('/api/gpr/tt', async (req, res) => {
     const masters = await gprLoadMasters();
     const C = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
 
+    // v57L: a tank prepared against an MMT → TT ALLOCATION settles that allocation. alloc_id comes
+    // from the TT tab's allocated-tank list; a tank entered without one (New TT entry / Planning
+    // route) but linked to the same charge is matched to the oldest open allocation for its
+    // batch and side, so every one of the three flows draws the reservation down.
+    let alloc = null;
+    {
+      const P1 = pgPool ? '$1' : '?';
+      if (b.alloc_id) {
+        alloc = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_alloc WHERE id=${P1}`, [Number(b.alloc_id)])).rows[0]
+                       : db.prepare(`SELECT * FROM gpr_mmt_alloc WHERE id=?`).get(Number(b.alloc_id));
+        if (!alloc) return res.status(404).json({ ok: false, error: 'Allocation not found' });
+        if (alloc.status !== 'allocated') return res.status(409).json({ ok: false, error: 'ALLOC_NOT_OPEN', detail: `Allocation ${alloc.id} is already ${alloc.status}.` });
+        if (String(alloc.batch_number).toUpperCase() !== bn || String(alloc.side).toLowerCase() !== side) {
+          return res.status(409).json({ ok: false, error: 'ALLOC_MISMATCH', detail: `Allocation ${alloc.id} is for ${alloc.batch_number} ${String(alloc.side).toUpperCase()}, not ${bn} ${side.toUpperCase()}.` });
+        }
+        if (!b.mmt_ref) b.mmt_ref = alloc.mmt_ref;
+        else if (String(b.mmt_ref) !== String(alloc.mmt_ref)) return res.status(409).json({ ok: false, error: 'ALLOC_OTHER_CHARGE', detail: `Allocation ${alloc.id} draws from ${alloc.mmt_ref}, not ${b.mmt_ref}.` });
+      } else if (b.mmt_ref) {
+        const aSql = `SELECT * FROM gpr_mmt_alloc WHERE mmt_ref=${P1} AND UPPER(batch_number)=${pgPool ? '$2' : '?'} AND side=${pgPool ? '$3' : '?'} AND status='allocated' ORDER BY alloc_seq ASC, id ASC LIMIT 1`;
+        alloc = pgPool ? (await pgPool.query(aSql, [b.mmt_ref, bn, side])).rows[0] : db.prepare(aSql).get(b.mmt_ref, bn, side);
+        if (alloc) b.alloc_id = alloc.id;
+      }
+    }
     // MMT allocation — ALERT, never a block (item 6 applies to the whole MMT rule set).
     let mmtWarning = null;
     if (b.mmt_ref) {
       const mSql = `SELECT total_kg, allocated_kg FROM gpr_mmt_charges WHERE mmt_ref=${pgPool ? '$1' : '?'}`;
       const mmt = pgPool ? (await pgPool.query(mSql, [b.mmt_ref])).rows[0] : db.prepare(mSql).get(b.mmt_ref);
       if (!mmt) return res.status(404).json({ ok: false, error: 'Linked MMT charge not found' });
-      const remaining = Number(mmt.total_kg || 0) - Number(mmt.allocated_kg || 0);
+      const remaining = Number(mmt.total_kg || 0) - Number(mmt.allocated_kg || 0) + (alloc ? Number(alloc.reserved_kg || 0) : 0);   // v57L: this tank's own reservation is available to it
       const thisKg = Number(b.virgin_kg || 0);
       if (thisKg > remaining + 0.001) {
         mmtWarning = `MMT ${b.mmt_ref} has ${remaining.toFixed(1)} kg left; this TT draws ${thisKg.toFixed(1)} kg.`;
@@ -26178,7 +26475,19 @@ app.post('/api/gpr/tt', async (req, res) => {
     }
 
     // MMT allocation
-    if (b.mmt_ref && virginKg > 0) {
+    // v57L: against an allocation, only the DIFFERENCE between the actual virgin kg and the kg
+    // already reserved moves the charge (the reservation was booked at allocation time); the
+    // allocation row becomes 'prepared' and points at this tank.
+    if (alloc) {
+      const delta = +(virginKg - Number(alloc.reserved_kg || 0)).toFixed(3);
+      if (pgPool) {
+        if (delta !== 0) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, updated_at=NOW()::TEXT WHERE mmt_ref=$2`, [delta, alloc.mmt_ref]);
+        await pgPool.query(`UPDATE gpr_mmt_alloc SET status='prepared', tt_id=$1, actual_kg=$2, prepared_at=NOW()::TEXT WHERE id=$3`, [ttId, virginKg, alloc.id]);
+      } else {
+        if (delta !== 0) db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(delta, alloc.mmt_ref);
+        db.prepare(`UPDATE gpr_mmt_alloc SET status='prepared', tt_id=?, actual_kg=?, prepared_at=datetime('now') WHERE id=?`).run(ttId, virginKg, alloc.id);
+      }
+    } else if (b.mmt_ref && virginKg > 0) {
       if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, updated_at=NOW()::TEXT WHERE mmt_ref=$2`, [virginKg, b.mmt_ref]);
       else db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(virginKg, b.mmt_ref);
     }
@@ -26240,10 +26549,10 @@ app.post('/api/gpr/tt', async (req, res) => {
     }
 
     logAudit(session.username, session.role, 'gpr', 'GPR_TT_CREATED',
-      `batch=${bn} ${side} ${ttNumber} ${actualL}L charged=${totalChargedKg}kg`, req.ip);
+      `batch=${bn} ${side} ${ttNumber} ${actualL}L charged=${totalChargedKg}kg${alloc ? ' alloc=' + alloc.id + ' (' + alloc.mmt_ref + ' reserved ' + alloc.reserved_kg + 'kg)' : ''}`, req.ip);
     res.json({ ok: true, tt_id: ttId, tt_number: ttNumber, seq_index: seqIndex,
       label_payload: finalPayload, production_day: pday, total_charged_kg: totalChargedKg,
-      cutting_generated_kg: genCutting, warning: mmtWarning });
+      cutting_generated_kg: genCutting, warning: mmtWarning, alloc_id: alloc ? alloc.id : null });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -26376,13 +26685,19 @@ async function _gprTtHoldRelease(req, res, action) {
       const masters = await gprLoadMasters();
       const minH = _gprMinHold(masters);
       const held = _gprHoldHours({ scan_in_at: tt.scan_in_at, scan_out_at: now });
-      if (held == null || held < minH) {
+      // v57P (Ishan, 27 Sep): the hard block is lifted — a tank may be released before the minimum
+      // hold, but only with a reason; it is stored on the tank, audited, and stays a short-hold
+      // exception in every report exactly as before (scan_in → scan_out under minHoldHours).
+      const shortHold = held == null || held < minH;
+      const reason = String((req.body && req.body.reason) || '').trim().slice(0, 200);
+      if (shortHold && !reason) {
         const leftMin = Math.max(1, Math.ceil((minH - (held || 0)) * 60));
-        return res.status(409).json({ ok: false, error: 'HOLD_NOT_COMPLETE', minHoldHours: minH, heldHours: held,
-          detail: `${tt.tt_number} has held ${held == null ? '?' : Math.floor(held * 60)} min — release opens after ${Math.round(minH * 60)} min (${leftMin} min to go).` });
+        return res.status(409).json({ ok: false, error: 'HOLD_NOT_COMPLETE', needsReason: true, minHoldHours: minH, heldHours: held, leftMin,
+          detail: `${tt.tt_number} has held ${held == null ? '?' : Math.floor(held * 60)} min of ${Math.round(minH * 60)} (${leftMin} min to go) — a reason is needed to release it early.` });
       }
-      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET scan_out_at=$1, issued_at=$1, issued_by=$2, status='issued', updated_at=NOW()::TEXT WHERE id=$3`, [now, session.username, req.params.id]);
-      else db.prepare(`UPDATE gpr_tt SET scan_out_at=?, issued_at=?, issued_by=?, status='issued', updated_at=datetime('now') WHERE id=?`).run(now, now, session.username, req.params.id);
+      if (pgPool) await pgPool.query(`UPDATE gpr_tt SET scan_out_at=$1, issued_at=$1, issued_by=$2, status='issued', short_hold_reason=$3, updated_at=NOW()::TEXT WHERE id=$4`, [now, session.username, shortHold ? reason : null, req.params.id]);
+      else db.prepare(`UPDATE gpr_tt SET scan_out_at=?, issued_at=?, issued_by=?, status='issued', short_hold_reason=?, updated_at=datetime('now') WHERE id=?`).run(now, now, session.username, shortHold ? reason : null, req.params.id);
+      if (shortHold) logAudit(session.username, session.role, 'gpr', 'GPR_TT_RELEASE_SHORT', `tt=${tt.tt_number} batch=${tt.batch_number} held ${held == null ? '?' : Math.floor(held * 60)} of ${Math.round(minH * 60)} min: ${reason}`, req.ip);
     } else {
       if (pgPool) await pgPool.query(`UPDATE gpr_tt SET issued_at=$1, issued_by=$2, status='issued', updated_at=NOW()::TEXT WHERE id=$3`, [now, session.username, req.params.id]);
       else db.prepare(`UPDATE gpr_tt SET issued_at=?, issued_by=?, status='issued', updated_at=datetime('now') WHERE id=?`).run(now, session.username, req.params.id);
@@ -27200,7 +27515,7 @@ app.get('/api/gpr/batch-summary/:batch', async (req, res) => {
     let mmt = [];
     if (refs.length) {
       const ph = refs.map((_, k) => P(k + 1)).join(',');
-      const mSql = `SELECT mmt_ref, floor, tank_no, status, created_at, created_by FROM gpr_mmt_charges WHERE mmt_ref IN (${ph})`;
+      const mSql = `SELECT mmt_ref, floor, tank_no, status, created_at, created_by, charge_start, charge_complete, short_close_reason, completed_by FROM gpr_mmt_charges WHERE mmt_ref IN (${ph})`;   // v57P: lifecycle + short close
       mmt = pgPool ? (await pgPool.query(mSql, refs)).rows : db.prepare(mSql).all(...refs);
     }
     const order = gprFindOrder(bn);
@@ -27388,11 +27703,25 @@ app.get('/api/gpr/tt-cards', async (req, res) => {
       const sd = d && d.shifts && d.shifts[at.shift];
       return sd ? _v57dNames(sd[key]) : [];
     };
+    // ═══ v57M/v57N (Ishan, 27 Sep) — card names: PREPARED BY = the GPR chemist of the shift the tank
+    // was prepared in, RELEASED BY = the GPR chemist of the shift it was released in, CHECKED BY = the
+    // QA / shift chemist of the release shift — all from DPR's shift-wise entry for that floor, production
+    // day and shift. A typed card name always wins. dpr_chemist / dpr_incharge stay for older callers.
     (rows || []).forEach(r => {
       r.prep_shift = r._prep ? (r._prep.day + ' ' + r._prep.shift) : null;
       r.rel_shift = r._rel ? (r._rel.day + ' ' + r._rel.shift) : null;
       r.dpr_chemist = _who(r.floor, r._prep, 'chemist').join(', ') || null;
       r.dpr_incharge = _who(r.floor, r._rel, 'incharge').join(', ') || null;
+      r.dpr_qa_release = _who(r.floor, r._rel, 'chemist').join(', ') || null;         // v57M: QA chemist of the RELEASE shift
+      r.dpr_gpr_prep = _who(r.floor, r._prep, 'gpr_staff');                            // v57M: suggestions when the login is shared
+      r.dpr_gpr_release = _who(r.floor, r._rel, 'gpr_staff');
+      // v57N (Ishan, 27 Sep): the names come from DPR's SHIFT-WISE entry, not the login. Prepared by =
+      // the GPR team DPR recorded for the floor and shift the tank was prepared in; Released by = the
+      // GPR team of the release shift; Checked by = the QA / shift chemist of the release shift. One
+      // name in DPR fills automatically; several are offered to pick from; none → typed once.
+      r.prepared_by_options = r.dpr_gpr_prep || [];
+      r.released_by_options = r.issued_at ? (r.dpr_gpr_release || []) : [];
+      r.checked_by_options = r.issued_at ? _who(r.floor, r._rel, 'chemist') : [];
       delete r._prep; delete r._rel;
     });
     (rows || []).forEach(r => {
@@ -27404,14 +27733,22 @@ app.get('/api/gpr/tt-cards', async (req, res) => {
       r.customer = o.customer || null;
       if (!r.pc_code) r.pc_code = o.pcCode || o.pc_code || null;
       r.card = Object.assign({ required_visc: C.requiredViscosityCps || '' }, card);
+      // v57M: the three resolved names, and where each came from (card = typed, login = system user,
+      // dpr = DPR shift record, null = missing and must be typed before print)
+      const tP = String(r.card.prepared_by_name || '').trim(), tR = String(r.card.released_by_name || '').trim(), tC = String(r.card.checked_by || '').trim();
+      // v57N: DPR shift entry is the source — a single DPR name resolves by itself, several must be picked
+      const one = a => (Array.isArray(a) && a.length === 1) ? a[0] : null;
+      r.prepared_by = tP || one(r.prepared_by_options) || null;                 r.prepared_by_src = tP ? 'card' : (r.prepared_by ? 'dpr' : null);
+      r.released_by = r.issued_at ? (tR || one(r.released_by_options) || null) : null;   r.released_by_src = r.issued_at ? (tR ? 'card' : (r.released_by ? 'dpr' : null)) : null;
+      r.checked_by = r.issued_at ? (tC || one(r.checked_by_options) || null) : null;     r.checked_by_src = r.issued_at ? (tC ? 'card' : (r.checked_by ? 'dpr' : null)) : null;
       // v57C (Rahul / Ishan, 25 Sep): the card no longer repeats values — viscosity, temperature and
-      // time come straight from the tank, gel solution weight defaults to the issued volume. Only the
-      // T. Tank code (entered at preparation) can be missing now; Checked by is signed on paper.
+      // time come straight from the tank, gel solution weight defaults to the issued volume.
       r.card_missing = ((r.card.tank_code == null || String(r.card.tank_code).trim() === '') ? 1 : 0)
                      + ((!(Number(r.actual_l) > 0) && !String(r.card.gel_sol_kg || '').trim()) ? 1 : 0)
-                     // v57D: a name DPR does not hold (and nobody has typed) must be supplied before print
-                     + ((!r.dpr_chemist && !String(r.card.prepared_by_name || '').trim()) ? 1 : 0)
-                     + ((r.issued_at && !r.dpr_incharge && !String(r.card.released_by_name || '').trim()) ? 1 : 0);
+                     // v57M: every name the system cannot resolve must be supplied before print
+                     + (!r.prepared_by ? 1 : 0)
+                     + ((r.issued_at && !r.released_by) ? 1 : 0)
+                     + ((r.issued_at && !r.checked_by) ? 1 : 0);
     });
     const outRows = todo ? (rows || []).filter(r => r.card_missing > 0) : (rows || []);
     res.json({ ok: true, formatNo: C.ttCardFormatNo || 'GDP029-F12', todo, rows: outRows });
