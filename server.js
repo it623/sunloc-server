@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57R';
+const APP_BUILD = 'v57S';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -16083,22 +16083,39 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
          AND NOT EXISTS (SELECT 1 FROM live s
                           WHERE s.label_id = t.label_id AND s.dept = $1 AND s.type = 'out')
        GROUP BY t.batch_number`;
+    // v57S (Ishan, 29 Sep — Aashish's "29 out, 26 in, but 5 missing" mails): reconciliation INs at the
+    // to-dept (synthetic 'recon-%' rows written by the Report Z WIP reconcile — quantity, no box label)
+    // are counted per batch so Report F can show Scanned IN as REAL box scans with the recon entries
+    // beside it, and the on-screen arithmetic (out − in = gap) adds up again. Reversed rows excluded
+    // like every other scan aggregate.
+    const reconSql = `
+      SELECT s.batch_number AS bn, COUNT(*) AS n
+        FROM tracking_scans s
+       WHERE s.dept = $1 AND s.type = 'in' AND s.label_id LIKE 'recon-%'
+         AND s.batch_number IS NOT NULL AND s.batch_number <> ''
+         AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id = s.id)
+       GROUP BY s.batch_number`;
     const transitions = {};
     for (const [from, to] of pairs) {
       const key = from + '\u2192' + to; // from→to
       transitions[key] = {};
-      let gRows, eRows;
+      let gRows, eRows, rRows = [];
       if (pgPool) {
         gRows = (await _v51zaTimedQuery(gapSql, [from, to])).rows;   // v51ZA fence
         eRows = (await _v51zaTimedQuery(extraSql, [from, to])).rows;   // v51ZA fence
+        try { rRows = (await _v51zaTimedQuery(reconSql, [to])).rows; } catch (e) { rRows = []; }   // v57S: best-effort
       } else {
         gRows = db.prepare(gapSql.replace(/\$1/g,'?1').replace(/\$2/g,'?2')).all(from, to);   // v51ZA: ?NNN
         eRows = db.prepare(extraSql.replace(/\$1/g,'?1').replace(/\$2/g,'?2')).all(from, to); // v51ZA: ?NNN binds by NUMBER — (from, to) like PG; the v45ZG textual-order swap no longer applies
+        try { rRows = db.prepare(reconSql.replace(/\$1/g,'?')).all(to); } catch (e) { rRows = []; }
       }
-      for (const r of (gRows||[])) transitions[key][r.bn] = { gap: parseInt(r.gap,10)||0, gapQty: parseFloat(r.gap_qty)||0, extraIn: 0 };
+      for (const r of (gRows||[])) transitions[key][r.bn] = { gap: parseInt(r.gap,10)||0, gapQty: parseFloat(r.gap_qty)||0, extraIn: 0, reconIn: 0 };
       for (const r of (eRows||[])) {
-        if (!transitions[key][r.bn]) transitions[key][r.bn] = { gap: 0, gapQty: 0, extraIn: 0 };
+        if (!transitions[key][r.bn]) transitions[key][r.bn] = { gap: 0, gapQty: 0, extraIn: 0, reconIn: 0 };
         transitions[key][r.bn].extraIn = parseInt(r.extra,10)||0;
+      }
+      for (const r of (rRows||[])) {   // v57S: only annotated onto batches that HAVE a gap row — the report shows recon beside a gap
+        if (transitions[key][r.bn]) transitions[key][r.bn].reconIn = parseInt(r.n,10)||0;
       }
     }
     // v51ZH (Ishan, 15 Aug — Report F vs Report Z divergence, 26ZA075): the v46M precedence rule —
@@ -16117,7 +16134,7 @@ app.get('/api/tracking/handover-gap-counts', async (req, res) => {
       const _closed51zh = new Set([...Object.keys(_reconWipMap || {}), ..._retiredBatchSet]);
       if (_closed51zh.size) {
         for (const key of Object.keys(transitions)) {
-          for (const bn of _closed51zh) transitions[key][bn] = { gap: 0, gapQty: 0, extraIn: 0, reconciled: true };
+          for (const bn of _closed51zh) transitions[key][bn] = { gap: 0, gapQty: 0, extraIn: 0, reconIn: 0, reconciled: true };
         }
       }
     } catch (e) { /* precedence overlay must never break the endpoint */ }

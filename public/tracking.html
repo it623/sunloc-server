@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v57R</title>
+<title>Sunloc Tracking Suite v1.0 · build v57S</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57R</p>
+      <p>Tracking Suite v1.0 · build v57S</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57R</p>
+      <p>Tracking Suite v1.0 · build v57S</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -11604,8 +11604,9 @@ async function _rptH_toggleGapBoxes(batch, fromKey, toKey, rowId){
     }).join('');
     const _dispN54k = data.boxes.filter(b=>b.dispatchedTs).length;
     const _anno54k = _dispN54k>0 ? `<div class="text-sm" style="margin-top:6px;color:#b45309">🚚 ${_dispN54k} box(es) above were DISPATCHED without a Packing IN scan (amber) — physically gone, not pending. New dispatches of unpacked boxes are blocked since v54K.</div>` : '';
+    // v57S: plain words — a reconciliation entry is an IN record without a box, so it can never close a box gap
     const _anno45 = (data.extraIn>0||data.reconIn>0)
-      ? `<div class="text-sm" style="margin-top:6px;color:#b45309">⚠ ${data.extraIn>0?`${data.extraIn} box(es) scanned IN at ${DEPT_LABELS[toKey]||toKey} without an OUT scan at ${DEPT_LABELS[fromKey]||fromKey}. `:''}${data.reconIn>0?`${data.reconIn} reconciliation IN(s) recorded at ${DEPT_LABELS[toKey]||toKey}. `:''}These offset the simple out−in count — the box list above is the per-box truth.</div>` : '';
+      ? `<div class="text-sm" style="margin-top:6px;color:#b45309">⚠ ${data.reconIn>0?`${data.reconIn} of the IN records at ${DEPT_LABELS[toKey]||toKey} ${data.reconIn>1?'are':'is a'} <b>reconciliation entr${data.reconIn>1?'ies':'y'}</b> — quantity booked by an admin WIP reconcile, not a box scan — so the Scanned IN total overstates the boxes actually scanned. `:''}${data.extraIn>0?`${data.extraIn} box(es) were scanned IN at ${DEPT_LABELS[toKey]||toKey} without an OUT scan at ${DEPT_LABELS[fromKey]||fromKey}. `:''}The box numbers listed above are the ones still without a scan IN; each clears when that box is scanned.</div>` : '';
     cell.innerHTML = `<div class="text-sm" style="margin-bottom:4px;color:var(--text2)"><b>${data.count}</b> box${data.count>1?'es':''} scanned OUT of ${DEPT_LABELS[fromKey]||fromKey} with no scan IN at ${DEPT_LABELS[toKey]||toKey}:</div>${chips}${_anno54k}${_anno45}`;
   };
   if(window._rptHGapBoxCache[cacheKey]){ paint(window._rptHGapBoxCache[cacheKey]); return; }
@@ -11726,6 +11727,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       const _srvOn45 = (to!=='dispatch' && !!window._rptHGapSrv);
       const gap     = _srvOn45 ? (_srv45 ? _srv45.gap : 0) : (fromOut - toIn);
       const extraIn = _srv45 ? (_srv45.extraIn||0) : 0;
+      const reconIn = _srv45 ? (_srv45.reconIn||0) : 0;   // v57S: reconciliation INs at `to` (quantity entries, no box label)
       if(gap > 0){
         totalGaps++;
         // v47G (confirmed by Ishan): gap QUANTITY = the summed ACTUAL label qty of the exact gap boxes
@@ -11744,7 +11746,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
           machineId: b.machineId||'-', pcCode: b.pcCode||'-', colour: b.colour||'-',
           from: DEPT_LABELS[from]||from, to: DEPT_LABELS[to]||to,
           fromKey: from, toKey: to,
-          fromOut, toIn, gap, gapQty, extraIn,
+          fromOut, toIn, gap, gapQty, extraIn, reconIn,
           transKey: `${from}→${to}`
         });
       }
@@ -11881,7 +11883,7 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
       <td class="text-sm" style="color:#7c3aed;font-weight:600">${r.from}</td>
       <td class="text-sm" style="color:#7c3aed;font-weight:600">${r.to}</td>
       <td class="td-mono">${r.fromOut}</td>
-      <td class="td-mono">${r.toIn}</td>
+      <td class="td-mono">${Math.max(0,(r.toIn||0)-(r.reconIn||0))}${r.reconIn>0?` <span style="font-size:10px;color:var(--text3);font-family:var(--font)" title="${r.reconIn} reconciliation entr${r.reconIn>1?'ies':'y'} at ${r.to}: quantity booked by an admin WIP reconcile with no box label — counted as IN records, not as boxes. ${r.fromOut} out − ${Math.max(0,(r.toIn||0)-(r.reconIn||0))} box scans = ${r.gap} missing.">+${r.reconIn} recon</span>`:''}</td>
       <td class="td-mono fw-bold" style="color:var(--accent4);cursor:pointer;white-space:nowrap" title="Click to see which box numbers are unaccounted"
           onclick="_rptH_toggleGapBoxes('${r.batch}','${r.fromKey}','${r.toKey}','${_rid}')">${r.gap}${r.extraIn>0?` <span style="color:#b45309" title="${r.extraIn} box(es) scanned IN at ${r.to} without an OUT scan at ${r.from} — this offset made the old count-net smaller than the real per-box gap">⚠</span>`:''} <span style="font-size:9px">▾</span></td>
       <td class="td-mono" style="color:var(--accent4)">${fmt(r.gapQty)}L</td>
@@ -11890,7 +11892,8 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
 
   // v41ZB: totals across the filtered tab rows
   const _hOut = tabRows.reduce((s,r)=>s+(r.fromOut||0),0);
-  const _hIn  = tabRows.reduce((s,r)=>s+(r.toIn||0),0);
+  const _hIn  = tabRows.reduce((s,r)=>s+Math.max(0,(r.toIn||0)-(r.reconIn||0)),0);   // v57S: real box scans
+  const _hRec = tabRows.reduce((s,r)=>s+(r.reconIn||0),0);
   const _hGap = tabRows.reduce((s,r)=>s+(r.gap||0),0);
   const _hGapQ= tabRows.reduce((s,r)=>s+(r.gapQty||0),0);
 
@@ -11915,13 +11918,13 @@ function _v41_renderReportHInner(){ window._activeReport = renderReportF; if(win
              <thead><tr>
                <th>Batch</th><th>Customer</th><th>Colour</th><th>M/C</th><th>Size</th>
                <th>From Dept</th><th>To Dept</th>
-               <th>Scanned OUT</th><th>Scanned IN</th>
+               <th>Scanned OUT</th><th title="Real box scans at the to-dept. Reconciliation entries (quantity booked by an admin WIP reconcile, no box label) are shown beside it in grey and are not boxes.">Scanned IN (boxes)</th>
                <th>Gap (Boxes)</th><th>Gap (L)</th>
              </tr></thead>
              <tbody>${detailRows}</tbody>
              <tfoot><tr style="background:var(--surface2);font-weight:800">
                <td colspan="7" class="text-right" style="padding-right:8px">TOTAL (${tabRows.length})</td>
-               <td class="td-mono">${_hOut}</td><td class="td-mono">${_hIn}</td>
+               <td class="td-mono">${_hOut}</td><td class="td-mono">${_hIn}${_hRec>0?` <span style="font-size:10px;color:var(--text3);font-family:var(--font);font-weight:400">+${_hRec} recon</span>`:''}</td>
                <td class="td-mono" style="color:var(--accent4)">${_hGap}</td>
                <td class="td-mono" style="color:var(--accent4)">${fmt(_hGapQ)}L</td>
              </tr></tfoot>
@@ -11950,7 +11953,7 @@ function exportReportH(){
   const getTransitions=(batch)=>batch.isPrinted
     ?[['aim','printing'],['printing','pi'],['pi','packing'],['packing','dispatch']]
     :[['aim','packing'],['packing','dispatch']];
-  const rows=[['Batch','Customer','Colour','Machine','Size','From Dept','To Dept','Scanned OUT','Scanned IN','Gap (Boxes)','Gap (L)']];
+  const rows=[['Batch','Customer','Colour','Machine','Size','From Dept','To Dept','Scanned OUT','Scanned IN (boxes)','Recon entries','Gap (Boxes)','Gap (L)']];   // v57S
   batches.forEach(b=>{
     getTransitions(b).forEach(([from,to])=>{
       const fromOut = hasScanSummary()
@@ -11970,7 +11973,8 @@ function exportReportH(){
         : (_srvE && _srvE.gapQty != null)
             ? _srvE.gapQty
             : Math.max(0, _scanLakhs(b.batchNumber, from, 'out', b.size) - _scanLakhs(b.batchNumber, to, 'in', b.size));
-      if(gap>0) rows.push([b.batchNumber,b.customer||'',b.colour||'',b.machineId||'',b.size,DEPT_LABELS[from]||from,DEPT_LABELS[to]||to,fromOut,toIn,gap,parseFloat(fmt(gapQtyL))]);
+      const _recE = _srvE ? (_srvE.reconIn||0) : 0;   // v57S
+      if(gap>0) rows.push([b.batchNumber,b.customer||'',b.colour||'',b.machineId||'',b.size,DEPT_LABELS[from]||from,DEPT_LABELS[to]||to,fromOut,Math.max(0,toIn-_recE),_recE,gap,parseFloat(fmt(gapQtyL))]);
     });
   });
   if(typeof XLSX!=='undefined'){
