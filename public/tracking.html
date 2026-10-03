@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v57S</title>
+<title>Sunloc Tracking Suite v1.0 · build v57T</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57S</p>
+      <p>Tracking Suite v1.0 · build v57T</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57S</p>
+      <p>Tracking Suite v1.0 · build v57T</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -13525,6 +13525,20 @@ function _rptBRow(batchNo, dept, U){
   const _piSal49d     = (dept === 'pi' && hasWastage) ? (w.salvage || 0) : 0;
   const _piRem49d     = (dept === 'pi' && hasWastage) ? (w.remelt || 0) : 0;
   const _piRemBox49d  = _piRem49d > 0 ? Math.round(_piRem49d / ps) : 0;
+  // v57T (Ishan, 2 Oct — Vipin's 26X133 review; frozen-region fix, explicitly authorised): v52D
+  // meant the PI row to net the PRINTING rejection as well (labels in PI carry nominal qty until
+  // the short final label), but it reused _dplSal51z / _prRem51z, which the dept guard zeroes for
+  // every dept except printing — so Report B / D's PI row kept the phantom (30.30 − 28.50 − 1.30 =
+  // 0.50 on 26X133) while Report E, riding getBatchWIPBreakdown, already read 0.00. The PI row
+  // now computes the printing-stage wastage on its own base — DPL cumulative salvage % × Printing
+  // scan-out qty (the same base as the breakdown's printSalvageDPL) plus printing remelt — so
+  // B ≡ D ≡ E for the PI leg. Printing-row figures are untouched.
+  const _prSalPi57t = (dept === 'pi') ? (() => {
+    const pct = (window._printSalvagePct && window._printSalvagePct[(batchNo||'').toUpperCase()]) || 0;
+    const prOut = _bMd ? ((((_bMd.summary||{})[batchNo]||{}).printing||{}).outRealQty||0) + ((((_bMd.summary||{})[batchNo]||{}).printing||{}).outReconQty||0)
+                       : _scanLakhs(batchNo, 'printing', 'out', _bSize45y);
+    return prOut * (pct / 100); })() : 0;
+  const _prRemPi57t = (dept === 'pi') ? (_bMd ? (((((_bMd.wastage||{})[batchNo]||{}).printing||{}).remelt)||0) : (getTotalWastage(batchNo, 'printing').remelt || 0)) : 0;
   // ═══ v51Z PRINTING WASTAGE SOURCE (Ishan, 12 Aug) ════════════════════════════════════════════
   // Printing wastage lives in the Planning Daily Printing Log — v44J made that the single source
   // for the A-grade cascade, Report E and the frozen WIP formula (all net DPL% and IGNORE tracking
@@ -13568,7 +13582,9 @@ function _rptBRow(batchNo, dept, U){
       // NOMINAL qty until the short final label, so print-stage wastage otherwise lingers here as
       // phantom (see the core piWIP comment). Same subtraction on BOTH the server-wipQtys path and
       // the v52A qty-exact fallback; clamp protects any batch whose labels were already reduced.
-                                           - _dplSal51z - _prRem51z)
+      // v57T: _dplSal51z / _prRem51z were always 0 here (printing-only guard) — the PI-row values
+      // _prSalPi57t / _prRemPi57t carry what v52D intended.
+                                           - _prSalPi57t - _prRemPi57t)
       : dept==='printing'
         ? Math.max(0, innQty - outQty - _dplSal51z - _prRem51z)
         : boxToLakh(wip,_bSize45y);
