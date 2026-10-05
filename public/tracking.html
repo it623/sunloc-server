@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v57T</title>
+<title>Sunloc Tracking Suite v1.0 · build v57V</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57T</p>
+      <p>Tracking Suite v1.0 · build v57V</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57T</p>
+      <p>Tracking Suite v1.0 · build v57V</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -17856,7 +17856,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       // export time and stays PM-editable; both sections' prices are cell references to the single
       // INR price (price never differs), values multiply live, and Balance = Net Packable − Dispatched
       // by formula — so Dispatched + Balance always reconciles to Net Packable as anyone edits.
-      const HDR = ['MACHINE','FLOOR','BATCH','CUSTOMER','PC CODE','SIZE','ZONE','PLANNED (L)','GROSS (L)',
+      const HDR = ['MACHINE','FLOOR','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','ZONE','PLANNED (L)','GROSS (L)',   // v57V: COLOUR beside PC CODE, as on the other Report E sheets
         'AIM A-GRADE (L)','UNSCANNED WIP (L)','PRINT REJ (L)','PI REJ (L)','NET PACKABLE (L)',
         'DISPATCHED (L)','DISP PRICE/L (INR)','DISPATCHED VALUE (INR)',
         'BALANCE (L)','BAL PRICE/L (INR)','BALANCE VALUE (INR)',
@@ -17919,7 +17919,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           const mainIdx = aoa.length;
           dataRowIdxs.push(mainIdx);
           if (_splitExcess) capIdxs[mainIdx] = true;
-          _push([r.machine, r.floor, r.batchNo, r.customer || '—', r.pcCode || '—', String(r.size), zone,
+          _push([r.machine, r.floor, r.batchNo, r.customer || '—', r.pcCode || '—', r.colour || '—', String(r.size), zone,
             _n(r._plannedQty), _n(r._grossProd), _n(r._aimAGrade), _n(r._unscannedWip), P('_printRej'), P('_piSalRem'),
             null, _dispMain, null, null, null, null, null,
             (pr ? pr.pricePerLakh : ''), (pr ? pr.currency : ''), null, null, srcLbl, null, 'SZ' + String(r.size)],'data');
@@ -17927,24 +17927,24 @@ function _v52lAppendNsrSheet(wb, rows, done) {
             const exIdx = aoa.length;
             dataRowIdxs.push(exIdx);
             excessIdxs[exIdx] = mainIdx;
-            _push([r.machine, r.floor, r.batchNo + ' (EXCESS)', '⚠ RE-CUSTOMER — enter buyer', r.pcCode || '—', String(r.size), zone,
+            _push([r.machine, r.floor, r.batchNo + ' (EXCESS)', '⚠ RE-CUSTOMER — enter buyer', r.pcCode || '—', r.colour || '—', String(r.size), zone,
               0, 0, 0, 0, 0, 0,
               null, _dispEx, null, null, null, null, null,
               '', '', null, null, 'ENTER MANUALLY (excess — re-customer via new SO)', null, 'SZ' + String(r.size)],'data');
           }
         });
         mcBlocks.push({ mc, start, end: aoa.length - 1 });
-        merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:6}});
+        merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:7}});
         _push([`${mc} SUBTOTAL`],'sub');
         _push([],'spacer');
       });
       const grandIdx = aoa.length;
-      merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:6}});
+      merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:7}});
       _push([`GRAND TOTAL (${dataRowIdxs.length} batches)`],'grand');
       const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!autofilter'] = { ref: XLSX.utils.encode_range({ s:{ r:hdrRowIdx, c:0 }, e:{ r:aoa.length-1, c:NC-1 } }) };   // v53Y: filter spans all machines
       ws['!merges'] = merges;
-      ws['!cols'] = [{wch:9},{wch:6},{wch:13},{wch:24},{wch:9},{wch:6},{wch:9},...Array(7).fill({wch:12}),{wch:12},{wch:12},{wch:15},{wch:11},{wch:12},{wch:15},{wch:13},{wch:10},{wch:12},{wch:15},{wch:14},{wch:16},{wch:8}];
+      ws['!cols'] = [{wch:9},{wch:6},{wch:13},{wch:24},{wch:9},{wch:16},{wch:6},{wch:9},...Array(7).fill({wch:12}),{wch:12},{wch:12},{wch:15},{wch:11},{wch:12},{wch:15},{wch:13},{wch:10},{wch:12},{wch:15},{wch:14},{wch:16},{wch:8}];   // v57V: COLOUR at F
       const _fc = (r, c, f, z) => { ws[XLSX.utils.encode_cell({r,c})] = { t:'n', f, z: z || '0.00' }; };
       const _row1 = i => i + 1;   // aoa index → 1-based Excel row
       // Per-data-row formulas: Net Packable (N=13), Price INR (Q=16), Order Value (R=17)
@@ -17953,10 +17953,10 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         if (excessIdxs[i] != null) {
           // v52M excess row: quantity = the main row's uncapped packable minus Planned, floored at 0.
           const M1 = _row1(excessIdxs[i]);
-          _fc(i, 13, `ROUND(MAX(J${M1}+K${M1}-L${M1}-M${M1}-H${M1},0),2)`);
+          _fc(i, 14, `ROUND(MAX(K${M1}+L${M1}-M${M1}-N${M1}-I${M1},0),2)`);
         } else if (capIdxs[i]) {
           // v52M capped main row: bills the PLANNED quantity only; the balance sits on the excess row.
-          _fc(i, 13, `ROUND(MIN(J${R1}+K${R1}-L${R1}-M${R1},H${R1}),2)`);
+          _fc(i, 14, `ROUND(MIN(K${R1}+L${R1}-M${R1}-N${R1},I${R1}),2)`);
         } else {
           // v52U (Ishan, 24 Aug — observation C): a FUTURE plan order with no production yet used to
           // compute Net Packable 0, so the whole money side stayed blank and the sheet could not show
@@ -17964,26 +17964,26 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           // now falls back to the PLANNED quantity itself, live in the formula: the moment real
           // production figures are entered in J..M (or gross in I), the row reverts to the produced
           // computation on its own. Produced rows (I>0) are byte-identical to v52N behaviour.
-          _fc(i, 13, `IF(I${R1}=0,H${R1},ROUND(J${R1}+K${R1}-L${R1}-M${R1},2))`);
+          _fc(i, 14, `IF(J${R1}=0,I${R1},ROUND(K${R1}+L${R1}-M${R1}-N${R1},2))`);
         }
         // v52N ready-reckoner: O = dispatched qty (static prefill, PM-editable). Prices in both
         // sections mirror the single INR price cell W; values and balance are pure formulas.
         // (v53F pairing invariant applied after this loop — see below.)
-        _fc(i, 15, `W${R1}`);                              // P  disp price = INR price
+        _fc(i, 16, `X${R1}`);                              // P  disp price = INR price
         // v53G (Ishan, 29 Aug — overruling the v53F cap): over-invoiced quantity PHYSICALLY
         // dispatched IS sales — it is the production-side packable that understates, not sales that
         // overstates. Dispatched value counts in full; the identity is structural instead:
         // X = Q + T by formula, so 50 planned / 48 dispatched / 7 in packable WIP values 55.
-        _fc(i, 16, `ROUND(O${R1}*P${R1},0)`, '#,##0');     // Q  dispatched value (full — physically shipped)
+        _fc(i, 17, `ROUND(P${R1}*Q${R1},0)`, '#,##0');     // Q  dispatched value (full — physically shipped)
         // v52U (Ishan, 24 Aug — observation B): balance is floored at ZERO. When dispatch exceeds
         // packable (over-invoicing), the balance shows 0 — never a negative — and the balance VALUE
         // (T = R×S) and every total that sums R/T follow automatically.
-        _fc(i, 17, `ROUND(MAX(N${R1}-O${R1},0),2)`);       // R  balance qty (≥ 0)
-        _fc(i, 25, `IF(O${R1}>N${R1}+0.005,"OVER by "&TEXT(O${R1}-N${R1},"0.00")&" L","")`);   // Z  v53J over-invoiced flag (live)
-        _fc(i, 18, `W${R1}`);                              // S  bal price = INR price
-        _fc(i, 19, `ROUND(R${R1}*S${R1},0)`, '#,##0');     // T  balance value
-        _fc(i, 22, `IF(V${R1}="USD",ROUND(N(U${R1})*$${XR.slice(0,1)}$${XR.slice(1)},2),N(U${R1}))`);
-        _fc(i, 23, `Q${R1}+T${R1}`, '#,##0');
+        _fc(i, 18, `ROUND(MAX(O${R1}-P${R1},0),2)`);       // R  balance qty (≥ 0)
+        _fc(i, 26, `IF(P${R1}>O${R1}+0.005,"OVER by "&TEXT(P${R1}-O${R1},"0.00")&" L","")`);   // Z  v53J over-invoiced flag (live)
+        _fc(i, 19, `X${R1}`);                              // S  bal price = INR price
+        _fc(i, 20, `ROUND(S${R1}*T${R1},0)`, '#,##0');     // T  balance value
+        _fc(i, 23, `IF(W${R1}="USD",ROUND(N(V${R1})*$${XR.slice(0,1)}$${XR.slice(1)},2),N(V${R1}))`);
+        _fc(i, 24, `R${R1}+U${R1}`, '#,##0');
       });
       // ═══ v53F (Ishan, 29 Aug — 26ZC110/116/124, 26ZB109) — CAP↔EXCESS PAIRING INVARIANT ═══════
       // A capped main row without its excess sibling silently loses (packable − planned): the live
@@ -17997,7 +17997,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           const i = parseInt(k, 10);
           if (!_pairedMains.has(i)) {
             const R1 = _row1(i);
-            _fc(i, 13, `IF(I${R1}=0,H${R1},ROUND(J${R1}+K${R1}-L${R1}-M${R1},2))`);
+            _fc(i, 14, `IF(J${R1}=0,I${R1},ROUND(K${R1}+L${R1}-M${R1}-N${R1},2))`);
             console.warn('[v53F] NSR: capped row without excess sibling at sheet row', R1, '— rewritten lossless; please report this batch');
           }
         });
@@ -18006,21 +18006,21 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       mcBlocks.forEach(b => {
         const subA = b.end + 1;                 // subtotal aoa index (row right after last data row)
         const s1 = _row1(b.start), e1 = _row1(b.end), R1 = _row1(subA);
-        for (const c of [7,8,9,10,11,12,13,14,17]) {          // v52N: + dispatched(O) and balance(R) qty
+        for (const c of [8,9,10,11,12,13,14,15,18]) {          // v52N: + dispatched(O) and balance(R) qty
           const col = String.fromCharCode(65 + c);
           _fc(subA, c, `ROUND(SUM(${col}${s1}:${col}${e1}),2)`);
         }
-        for (const c of [16,19,23]) {                          // v52N: disp/bal/order VALUE sums
+        for (const c of [17,20,24]) {                          // v52N: disp/bal/order VALUE sums
           const col = String.fromCharCode(65 + c);
           _fc(subA, c, `ROUND(SUM(${col}${s1}:${col}${e1}),0)`, '#,##0');
         }
-        _fc(subA, 22, `IFERROR(ROUND(X${R1}/(O${R1}+R${R1}),0),"")`, '#,##0');   // v53G: machine NSR per SOLD lakh (disp+bal)
+        _fc(subA, 23, `IFERROR(ROUND(Y${R1}/(P${R1}+S${R1}),0),"")`, '#,##0');   // v53G: machine NSR per SOLD lakh (disp+bal)
         // v52U (Ishan, 24 Aug — observation A): weighted-average NSR of the machine's DISPATCHED and
         // BALANCE quantities, sitting in the same price columns (P, S) the data rows use — value ÷
         // qty, so a hand-edited price on any row reweights the average live. Blank when qty is 0.
-        _fc(subA, 15, `IFERROR(ROUND(Q${R1}/O${R1},0),"")`, '#,##0');   // P  machine wtd-avg disp NSR/L
-        _fc(subA, 18, `IFERROR(ROUND(T${R1}/R${R1},0),"")`, '#,##0');   // S  machine wtd-avg bal NSR/L
-        _fc(subA, 25, `COUNTIF(Z${s1}:Z${e1},"OVER*")&" over-invoiced"`);   // Z  v53J machine count
+        _fc(subA, 16, `IFERROR(ROUND(R${R1}/P${R1},0),"")`, '#,##0');   // P  machine wtd-avg disp NSR/L
+        _fc(subA, 19, `IFERROR(ROUND(U${R1}/S${R1},0),"")`, '#,##0');   // S  machine wtd-avg bal NSR/L
+        _fc(subA, 26, `COUNTIF(AA${s1}:AA${e1},"OVER*")&" over-invoiced"`);   // Z  v53J machine count
       });
       // Grand total: SUMIF on nonblank BATCH column (C) so band/subtotal rows never double-count.
       const dFirst = _row1(hdrRowIdx + 1), dLast = _row1(grandIdx - 1), G1 = _row1(grandIdx);
@@ -18029,20 +18029,20 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       // SUMIF "<>" treats an empty string as non-empty, so subtotal rows' sums were counted on top
       // of the data rows they summarise (exactly 2×, as PM's manual /2 showed). SIZE on data rows
       // is text with ≥1 character → matches "?*"; the '' cells on band/subtotal rows do not.
-      for (const c of [7,8,9,10,11,12,13,14,17]) {
+      for (const c of [8,9,10,11,12,13,14,15,18]) {
         const col = String.fromCharCode(65 + c);
-        _fc(grandIdx, c, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"?*",${col}${dFirst}:${col}${dLast}),2)`);
+        _fc(grandIdx, c, `ROUND(SUMIF($G$${dFirst}:$G$${dLast},"?*",${col}${dFirst}:${col}${dLast}),2)`);
       }
-      for (const c of [16,19,23]) {
+      for (const c of [17,20,24]) {
         const col = String.fromCharCode(65 + c);
-        _fc(grandIdx, c, `ROUND(SUMIF($F$${dFirst}:$F$${dLast},"?*",${col}${dFirst}:${col}${dLast}),0)`, '#,##0');
+        _fc(grandIdx, c, `ROUND(SUMIF($G$${dFirst}:$G$${dLast},"?*",${col}${dFirst}:${col}${dLast}),0)`, '#,##0');
       }
-      _fc(grandIdx, 22, `IFERROR(ROUND(X${G1}/(O${G1}+R${G1}),0),"")`, '#,##0');   // v53G
+      _fc(grandIdx, 23, `IFERROR(ROUND(Y${G1}/(P${G1}+S${G1}),0),"")`, '#,##0');   // v53G
       // v52U (observation A): grand-row weighted-average dispatched / balance NSR — the grand row's
       // own value ÷ qty cells, which are already "?*"-guarded SUMIFs over data rows only.
-      _fc(grandIdx, 15, `IFERROR(ROUND(Q${G1}/O${G1},0),"")`, '#,##0');   // P  overall wtd-avg disp NSR/L
-      _fc(grandIdx, 18, `IFERROR(ROUND(T${G1}/R${G1},0),"")`, '#,##0');   // S  overall wtd-avg bal NSR/L
-      _fc(grandIdx, 25, `COUNTIF($Z$${dFirst}:$Z$${dLast},"OVER*")&" over-invoiced"`);   // Z  v53J overall count
+      _fc(grandIdx, 16, `IFERROR(ROUND(R${G1}/P${G1},0),"")`, '#,##0');   // P  overall wtd-avg disp NSR/L
+      _fc(grandIdx, 19, `IFERROR(ROUND(U${G1}/S${G1},0),"")`, '#,##0');   // S  overall wtd-avg bal NSR/L
+      _fc(grandIdx, 26, `COUNTIF($AA$${dFirst}:$AA$${dLast},"OVER*")&" over-invoiced"`);   // Z  v53J overall count
       // ── NSR SUMMARY (all formulas — recalc live with the rate cell) ──
       let si = grandIdx + 1;
       const _sp = (row, kind) => { XLSX.utils.sheet_add_aoa(ws, [row], { origin: { r: si, c: 0 } }); kinds[si] = kind; si++; };
@@ -18050,11 +18050,11 @@ function _v52lAppendNsrSheet(wb, rows, done) {
       merges.push({s:{r:si,c:0},e:{r:si,c:5}});
       _sp(['NSR SUMMARY (₹ / Lakh) — Value ÷ Net Packable'], 'floor');
       _sp(['SIZE', 'OVERALL NSR', 'DOMESTIC NSR', 'EXPORT NSR'], 'hdr2');
-      const F = `$F$${dFirst}:$F$${dLast}`, G = `$G$${dFirst}:$G$${dLast}`,
-            N = `$N$${dFirst}:$N$${dLast}`, RR = `$X$${dFirst}:$X$${dLast}`,       // v52N: order value now col X
-            DQ = `$O$${dFirst}:$O$${dLast}`, DV = `$Q$${dFirst}:$Q$${dLast}`,      // dispatched qty/value
-            BQ = `$R$${dFirst}:$R$${dLast}`, BV = `$T$${dFirst}:$T$${dLast}`;      // balance qty/value
-      const KEY = `$AA$${dFirst}:$AA$${dLast}`;   // v53J size key helper
+      const F = `$G$${dFirst}:$G$${dLast}`, G = `$H$${dFirst}:$H$${dLast}`,
+            N = `$O$${dFirst}:$O$${dLast}`, RR = `$Y$${dFirst}:$Y$${dLast}`,       // v52N: order value now col X
+            DQ = `$P$${dFirst}:$P$${dLast}`, DV = `$R$${dFirst}:$R$${dLast}`,      // dispatched qty/value
+            BQ = `$S$${dFirst}:$S$${dLast}`, BV = `$U$${dFirst}:$U$${dLast}`;      // balance qty/value
+      const KEY = `$AB$${dFirst}:$AB$${dLast}`;   // v53J size key helper
       const sizesAll = [...new Set(rows.map(r => String(r.size)))].sort();
       sizesAll.forEach(sz => {
         const r1 = si + 1;
@@ -18111,9 +18111,9 @@ function _v52lAppendNsrSheet(wb, rows, done) {
             if (kind === 'hdr' || kind === 'hdr2') _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
             else if (kind === 'mc')    _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.MC } }, border:_bAll });
             else if (kind === 'floor') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.FLOOR } }, border:_bAll });
-            else if (kind === 'sub')   _set(r, c, { font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.SUB } }, border:_bAll, alignment:{ horizontal: c>=7?'right':'left' } });
-            else if (kind === 'grand') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.GRAND } }, border:_bAll, alignment:{ horizontal: c>=7?'right':'left' } });
-            else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal: c>=7?'right':'left' }, font:{ sz:10 } }; }
+            else if (kind === 'sub')   _set(r, c, { font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.SUB } }, border:_bAll, alignment:{ horizontal: c>=8?'right':'left' } });
+            else if (kind === 'grand') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.GRAND } }, border:_bAll, alignment:{ horizontal: c>=8?'right':'left' } });
+            else if (kind === 'data') { const a = XLSX.utils.encode_cell({r,c}); if (ws[a]) ws[a].s = { border:_bAll, alignment:{ horizontal: c>=8?'right':'left' }, font:{ sz:10 } }; }
           }
         });
       } catch (e) { console.warn('[v52L NSR] style pass skipped:', e && e.message); }

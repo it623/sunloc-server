@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v57T</title>
+<title>GPR · build v57V</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -395,8 +395,8 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v57T</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57T</div>
+    <h1>GPR<span class="vpill">v57V</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57V</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -416,7 +416,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v57T</span></div>
+  <div class="nbrand">GPR<span class="vpill">v57V</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -507,7 +507,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
         <div class="dside" id="ds_tc">
           <div class="dside-head">CAP</div>
           <table class="dtable"><tbody>
-            <tr><td>Link MMT charge</td><td><select id="tc_mmt"><option value="">— select —</option></select></td></tr>
+            <tr><td>Link MMT charge</td><td><select id="tc_mmt" onchange="ttCalc('tc')"><option value="">— select —</option></select></td></tr>
             <tr><td>Colour code (this side)</td><td><input id="tc_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></td></tr>
             <tr class="dkey"><td>T. Tank code no.</td><td><input id="tc_tankcode" placeholder="e.g. T-07 (printed on the TT card)"></td></tr>
             <tr><td colspan="2" style="padding-top:2px"><span id="tc_seqnote"></span><div id="tc_allocnote"></div>
@@ -548,7 +548,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
         <div class="dside" id="ds_tb">
           <div class="dside-head">BODY</div>
           <table class="dtable"><tbody>
-            <tr><td>Link MMT charge</td><td><select id="tb_mmt"><option value="">— select —</option></select></td></tr>
+            <tr><td>Link MMT charge</td><td><select id="tb_mmt" onchange="ttCalc('tb')"><option value="">— select —</option></select></td></tr>
             <tr><td>Colour code (this side)</td><td><input id="tb_colcode" list="cutColourOpts" placeholder="auto from PC" onchange="pcReverseLookup(this)"></td></tr>
             <tr class="dkey"><td>T. Tank code no.</td><td><input id="tb_tankcode" placeholder="e.g. T-07 (printed on the TT card)"></td></tr>
             <tr><td colspan="2" style="padding-top:2px"><span id="tb_seqnote"></span><div id="tb_allocnote"></div>
@@ -690,8 +690,11 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
         <span style="font-size:11.5px;color:var(--t3);margin-left:8px">fills the recipe from the last charge on this floor &mdash; gelatine batch, tank and timestamps stay blank</span></div>
       <div class="fgrid">
         <div class="field-grp"><label>MMT reference *</label><input id="m_ref" placeholder="AUTO — assigned on save: MMT-FLOOR-DDMMYY-n"></div>
-        <div class="field-grp"><label>Total charge (kg) *</label><input id="m_total" type="number" inputmode="decimal" placeholder="e.g. 1000"></div>
+        <div class="field-grp"><label>Total charge (L) *</label><input id="m_total" type="number" inputmode="decimal" placeholder="e.g. 2700" oninput="mmtConcHint()"></div>
       </div>
+      <!-- v57U (Ishan, 5 Oct): the charge is accounted in LITRES from here to every tank. Gelatine stays in
+           kg; kg ÷ L is this charge's own concentration, which prices every litre drawn from it. -->
+      <div class="hbnote" id="m_conc" style="margin:2px 0 6px">Enter the charge volume in litres and the virgin gelatine in kg below &mdash; the concentration (kg/L) is worked out from the two and used to convert every litre allocated to a tank into virgin gelatine kg.</div>
       <!-- v56U (Rahul MMT 1-2): one charge can BLEND several vendors and gelatine batches — one line
            each; "+ Add vendor / batch" adds a line. The kg total is the sum of the lines. -->
       <div class="fgroup-title" style="display:flex;align-items:center;gap:10px">Virgin gelatine
@@ -1417,7 +1420,7 @@ async function mmtAsPerLast(){
   // v56U: this wrote into m_gel / m_water / m_temp and m_col0045_sls799 — ids that never existed —
   // so only the total and vendor were ever copied. It now fills the real fields and the blend lines.
   clearMmtForm();
-  setVal('m_total', last.total_kg || '');
+  setVal('m_total', last.total_l || last.total_kg || '');   // v57U: litres (an old charge's kg figure was the solution weight)
   setVal('m_wkg', last.water_kg || '');
   setVal('m_wtemp', last.water_temp_c || '');
   const lots = _mmLotsOf(last);
@@ -1462,6 +1465,7 @@ function mmLotTotal(){
   const el = document.getElementById('m_gkg_total'); if(!el) return;
   const L = _mmLots(), t = L.reduce((a,l)=>a+l.kg,0);
   el.textContent = L.length > 1 ? ('blend of '+L.length+' lines · '+fmt(t,1)+' kg') : (t>0 ? fmt(t,1)+' kg' : '');
+  mmtConcHint();   // v57U: the concentration follows the gelatine
 }
 function mmAddChem(pre){
   const w = document.getElementById('m_chems'); if(!w) return;
@@ -1499,9 +1503,9 @@ function mmSection(k){
 function mmRailCounts(){
   const set = (id, txt) => { const e = document.getElementById(id); if(e) e.textContent = txt; };
   const prep = (window._MMT_PREP||[]).length, open = (window._MMT_OPEN||[]);
-  const toAlloc = open.filter(c=>Number(c.remaining_kg)>0.5).length, resv = open.reduce((a,c)=>a+Number(c.alloc_open||0),0);
+  const toAlloc = open.filter(c=>Number(c.remaining_l)>0.5).length, resv = open.reduce((a,c)=>a+Number(c.alloc_open||0),0);   // v57U: litres
   set('mmcnt-p', prep ? prep+' in preparation' : 'None in preparation');
-  set('mmcnt-o', open.length ? open.length+' open · '+toAlloc+' with kg left' : 'No open charge');
+  set('mmcnt-o', open.length ? open.length+' open · '+toAlloc+' with litres left' : 'No open charge');
   set('mmcnt-a', resv ? resv+' tank'+(resv===1?'':'s')+' allocated, to prepare' : (toAlloc ? toAlloc+' charge'+(toAlloc===1?'':'s')+' to allocate' : 'Nothing to allocate'));
 }
 async function loadMmt(){
@@ -1553,17 +1557,19 @@ function renderMmtOpen(open){
   const el = document.getElementById('mmtOpen'); if(!el) return;
   const rows = open || window._MMT_OPEN || [];
   if(!rows.length){ el.innerHTML = '<div class="empty">No open charge on this floor — create one above.</div>'; return; }
+  // v57U: the position is in LITRES — total, allocated, still to prepare, remaining — with the charge's
+  // gelatine and concentration beside it so the kg behind any litre is one glance away.
   let h = '<table class="gtable"><thead><tr><th>Reference</th><th>Tank</th><th>Vendor</th><th>Gelatine batch</th>'
-    + '<th class="num">Total kg</th><th class="num">Allocated</th><th class="num" title="Allocated to tanks not yet prepared (inside Allocated)">of which to prepare</th><th class="num">Remaining</th><th class="num">&asymp; L</th><th>Started</th></tr></thead><tbody>';
+    + '<th class="num">Total L</th><th class="num">Allocated L</th><th class="num" title="Allocated to tanks not yet prepared (inside Allocated)">of which to prepare</th><th class="num">Remaining L</th><th class="num" title="Virgin gelatine in the charge and its concentration">Gelatine kg · kg/L</th><th>Started</th></tr></thead><tbody>';
   rows.forEach(c=>{
-    const rem = Number(c.remaining_kg||0);
+    const rem = Number(c.remaining_l||0);
     // v57E: every open charge opens its own editor (correct it / distribute what is left and close it)
     h += '<tr class="clickable" style="cursor:pointer" onclick="mmtOpenEdit('+c.id+')" title="Open to correct or close this charge"><td class="mono"><b>'+esc(c.mmt_ref)+'</b></td><td>'+esc(c.tank_no||'—')+'</td>'
       + '<td>'+esc(c.gelatine_vendor||'—')+'</td><td class="mono">'+esc(c.gelatine_batch||'—')+'</td>'
-      + '<td class="num">'+fmt(c.total_kg,0)+'</td><td class="num">'+fmt(c.allocated_kg,0)+'</td>'
-      + '<td class="num" style="color:var(--amber)">'+(Number(c.reserved_kg)>0 ? fmt(c.reserved_kg,0)+' <span style="font-size:10px;color:var(--t3)">('+c.alloc_open+' tank'+(c.alloc_open===1?'':'s')+')</span>' : '—')+'</td>'
+      + '<td class="num">'+fmt(c.total_l,0)+'</td><td class="num">'+fmt(c.allocated_l,0)+'</td>'
+      + '<td class="num" style="color:var(--amber)">'+(Number(c.reserved_l)>0 ? fmt(c.reserved_l,0)+' <span style="font-size:10px;color:var(--t3)">('+c.alloc_open+' tank'+(c.alloc_open===1?'':'s')+')</span>' : '—')+'</td>'
       + '<td class="num" style="color:'+(rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'"><b>'+fmt(rem,0)+'</b></td>'
-      + '<td class="num" style="color:var(--t3)">'+fmt(_alL(rem),0)+'</td>'
+      + '<td class="num" style="color:var(--t3);font-size:11px">'+fmt(c.gelatine_kg,0)+' · '+_mmConc(c).toFixed(3)+'</td>'
       + '<td class="mono" style="font-size:11px">'+esc(_dm(String(c.charge_start||c.created_at||'').slice(0,10)))+'</td></tr>';
   });
   el.innerHTML = h + '</tbody></table>';
@@ -1571,7 +1577,7 @@ function renderMmtOpen(open){
 // ── v57E: open-charge editor — correct the charge, or distribute its remainder into tanks & close ──
 async function mmtOpenEdit(id){
   const c = (window._MMT_OPEN||[]).find(x=>x.id===id) || (window._MMT_ROWS||[]).find(x=>x.id===id); if(!c) return;
-  const rem = +(Number(c.total_kg||0) - Number(c.allocated_kg||0)).toFixed(1);
+  const rem = +(Number(c.total_l||0) - Number(c.allocated_l||0)).toFixed(1);   // v57U: litres
   const fl = c.floor==='FFSF' ? ['1F','2F'] : [c.floor];
   let tanks = [];
   try{
@@ -1585,23 +1591,23 @@ async function mmtOpenEdit(id){
   const inp = (k,lbl,type,v) => '<div class="field-grp"><label>'+lbl+'</label><input id="mme_'+k+'" type="'+type+'" value="'+esc(v==null?'':v)+'"></div>';
   ttModalOpen('MMT charge '+esc(c.mmt_ref)+' &mdash; '+esc(FLOOR_LABELS[c.floor]||c.floor),
     '<div class="fgroup-title" style="margin-top:0">Charge</div><div class="fgrid">'
-    + inp('total_kg','Total charge (kg)','number',c.total_kg) + inp('water_kg','Water (kg)','number',c.water_kg) + inp('water_temp_c','Water temp (&deg;C)','number',c.water_temp_c)
+    + inp('total_l','Total charge (L)','number',c.total_l) + inp('water_kg','Water (kg)','number',c.water_kg) + inp('water_temp_c','Water temp (&deg;C)','number',c.water_temp_c)
     + inp('tank_no','MMT tank','text',c.tank_no) + inp('charge_start','Charge commenced','datetime-local',dtv(c.charge_start))
     + inp('charge_complete','Charge completed','datetime-local',dtv(c.charge_complete)) + '</div>'
     + '<div style="display:flex;justify-content:flex-end;margin-top:6px"><button class="btn" onclick="mmtSaveEdit()">Save changes</button></div>'
     + '<div class="fgroup-title">Close the charge &mdash; distribute what is left</div>'
-    + '<div class="mmesum"><span>Total <b>'+fmt(c.total_kg,0)+'</b> kg</span><span>Allocated <b>'+fmt(c.allocated_kg,0)+'</b> kg</span>'
-    + '<span>Remaining <b style="color:'+(rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'">'+fmt(rem,1)+'</b> kg</span><span id="mme_dist" class="hbnote"></span></div>'
+    + '<div class="mmesum"><span>Total <b>'+fmt(c.total_l,0)+'</b> L</span><span>Allocated <b>'+fmt(c.allocated_l,0)+'</b> L</span>'
+    + '<span>Remaining <b style="color:'+(rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'">'+fmt(rem,0)+'</b> L</span><span style="color:var(--t3)">gelatine '+fmt(c.gelatine_kg,0)+' kg &middot; '+_mmConc(c).toFixed(3)+' kg/L</span><span id="mme_dist" class="hbnote"></span></div>'
     + (rem > 0.5
         ? (tanks.length
-            ? '<div class="tswrap" style="max-height:300px"><table class="gtable"><thead><tr><th>Tank</th><th>Batch</th><th>Side</th><th>MC</th><th>Status</th><th class="num">Virgin kg now</th><th class="num" style="width:110px">Add kg</th></tr></thead><tbody>'
+            ? '<div class="tswrap" style="max-height:300px"><table class="gtable"><thead><tr><th>Tank</th><th>Batch</th><th>Side</th><th>MC</th><th>Status</th><th class="num">Litres now</th><th class="num">Virgin kg now</th><th class="num" style="width:110px">Add L</th></tr></thead><tbody>'
               + tanks.map(t=>'<tr><td class="mono"><b>'+esc(String(t.tt_number||'').replace(/^TT-/,''))+'</b></td><td class="mono">'+esc(t.batch_number)+'</td>'
                 + '<td><span class="sdtag sd-'+esc(t.side)+'">'+esc(String(t.side||'').toUpperCase())+'</span></td><td>'+esc(t.machine_id||'')+'</td>'
-                + '<td style="font-size:11px">'+esc(lcStage(t)[1])+'</td><td class="num">'+fmt(t.virgin_kg,1)+'</td>'
-                + '<td class="num"><input type="number" min="0" step="0.1" class="mme_add" data-id="'+t.id+'" oninput="mmtDistSum()" style="width:90px;padding:3px 6px;text-align:right"></td></tr>').join('')
+                + '<td style="font-size:11px">'+esc(lcStage(t)[1])+'</td><td class="num">'+fmt(t.actual_l,0)+'</td><td class="num">'+fmt(t.virgin_kg,1)+'</td>'
+                + '<td class="num"><input type="number" min="0" step="1" class="mme_add" data-id="'+t.id+'" oninput="mmtDistSum()" style="width:90px;padding:3px 6px;text-align:right"></td></tr>').join('')
               + '</tbody></table></div><div style="margin-top:6px"><a href="javascript:void(0)" onclick="mmtSpread()" style="font-size:11.5px">Spread the remainder evenly across these tanks</a></div>'
             : '<div class="empty" style="padding:10px">No unreleased tank on this floor in the last 4 days to distribute into.</div>')
-        : '<div class="hbnote" style="margin:4px 0">Nothing left to distribute'+(rem<-0.5?' &mdash; the charge is <b style="color:var(--red)">over-allocated by '+fmt(-rem,1)+' kg</b>; correct the total above if it was under-recorded':'')+'.</div>')
+        : '<div class="hbnote" style="margin:4px 0">Nothing left to distribute'+(rem<-0.5?' &mdash; the charge is <b style="color:var(--red)">over-allocated by '+fmt(-rem,0)+' L</b>; correct the total above if it was under-recorded':'')+'.</div>')
     + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">'
     + (rem > 0.5 && tanks.length ? '<button class="btn" onclick="mmtDistribute(false)">Distribute only</button>' : '')
     + '<button class="btn primary" onclick="mmtDistribute(true)">'+(rem > 0.5 && tanks.length ? 'Distribute &amp; close charge' : 'Close charge')+'</button></div>');
@@ -1610,27 +1616,27 @@ async function mmtOpenEdit(id){
 }
 function mmtDistSum(){ const M = window._MME; const el = document.getElementById('mme_dist'); if(!M||!el) return;
   const t = [...document.querySelectorAll('.mme_add')].reduce((a,i)=>a+(parseFloat(i.value)||0),0);
-  el.innerHTML = t>0 ? 'distributing <b>'+fmt(t,1)+'</b> kg &middot; left after: <b style="color:'+(Math.abs(M.rem-t)<0.5?'var(--green)':'var(--amber)')+'">'+fmt(M.rem-t,1)+'</b> kg' : ''; }
+  el.innerHTML = t>0 ? 'distributing <b>'+fmt(t,0)+'</b> L (= '+fmt(_alKg(t,M.c),1)+' kg) &middot; left after: <b style="color:'+(Math.abs(M.rem-t)<0.5?'var(--green)':'var(--amber)')+'">'+fmt(M.rem-t,0)+'</b> L' : ''; }
 function mmtSpread(){ const M = window._MME; const ins = [...document.querySelectorAll('.mme_add')]; if(!M||!ins.length) return;
-  const each = Math.floor(M.rem / ins.length * 10) / 10; let left = +(M.rem - each*ins.length).toFixed(1);
+  const each = Math.floor(M.rem / ins.length); let left = +(M.rem - each*ins.length).toFixed(1);   // v57U: whole litres
   ins.forEach((i,k)=>{ i.value = (k===0 ? +(each+left).toFixed(1) : each); }); mmtDistSum(); }
 async function mmtSaveEdit(){
   const M = window._MME; if(!M) return;
-  const body = {}; ['total_kg','water_kg','water_temp_c','tank_no','charge_start','charge_complete'].forEach(k=>{ const e = document.getElementById('mme_'+k); if(e) body[k] = e.value; });
+  const body = {}; ['total_l','water_kg','water_temp_c','tank_no','charge_start','charge_complete'].forEach(k=>{ const e = document.getElementById('mme_'+k); if(e) body[k] = e.value; });   // v57U
   const d = await post('/api/gpr/mmt/'+M.c.id+'/update', body);
   if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not save','err'); return; }
   toast(d.changed ? 'Charge updated' : 'No change','ok'); await loadMmt(); mmtOpenEdit(M.c.id);
 }
 async function mmtDistribute(close){
   const M = window._MME; if(!M) return;
-  const lines = [...document.querySelectorAll('.mme_add')].map(i=>({ tt_id:Number(i.dataset.id), kg:parseFloat(i.value)||0 })).filter(l=>l.kg>0);
-  const t = lines.reduce((a,l)=>a+l.kg,0);
-  if(!close && !lines.length){ toast('Enter kg against at least one tank','err'); return; }
-  if(close && M.rem > 0.5 && Math.abs(M.rem - t) >= 0.5 && !confirm(fmt(M.rem - t,1)+' kg of '+M.c.mmt_ref+' will be left undistributed when it closes. Close anyway?')) return;
+  const lines = [...document.querySelectorAll('.mme_add')].map(i=>({ tt_id:Number(i.dataset.id), l:parseFloat(i.value)||0 })).filter(l=>l.l>0);   // v57U: litres
+  const t = lines.reduce((a,l)=>a+l.l,0);
+  if(!close && !lines.length){ toast('Enter litres against at least one tank','err'); return; }
+  if(close && M.rem > 0.5 && Math.abs(M.rem - t) >= 0.5 && !confirm(fmt(M.rem - t,0)+' L of '+M.c.mmt_ref+' will be left undistributed when it closes. Close anyway?')) return;
   if(close && Number(M.c.alloc_open)>0 && !confirm(M.c.alloc_open+' allocated tank'+(M.c.alloc_open>1?'s':'')+' from '+M.c.mmt_ref+' '+(M.c.alloc_open>1?'are':'is')+' still to be prepared (see the TT tab). They stay in the queue after the charge closes. Close anyway?')) return;   // v57L
   const d = await post('/api/gpr/mmt/'+M.c.id+'/distribute', { lines, close });
   if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not distribute','err'); return; }
-  toast((d.distributed ? fmt(d.distributed,1)+' kg into '+d.tanks+' tank'+(d.tanks>1?'s':'') : 'Charge')+(d.closed?' &middot; charge closed':''),'ok');
+  toast((d.distributed_l ? fmt(d.distributed_l,0)+' L ('+fmt(d.distributed,1)+' kg) into '+d.tanks+' tank'+(d.tanks>1?'s':'') : 'Charge')+(d.closed?' &middot; charge closed':''),'ok');
   ttModalClose(); loadMmt();
 }
 function renderMmtHistory(){
@@ -1642,10 +1648,10 @@ function renderMmtHistory(){
     const CHN = { col0045_sls799:'SLS-799', col0069_peg6000:'PEG-6000', col0004_bronopol:'Bronopol', col0056_othadd2:'Othadd-2' };
     const chem = a => { try{ const x = typeof a==='string'?JSON.parse(a):(a||{}); return Object.entries(x).filter(([k,v])=>Number(v)>0).map(([k,v])=>esc(CHN[k]||k.replace(/^col\d+_/,''))+' '+v+' g').join(' &middot; ') || '&mdash;'; }catch(_){ return '&mdash;'; } };
     const rowHtml = (c,detail) => {
-      const rem = Number(c.remaining_kg||0);
+      const rem = Number(c.remaining_l||0);   // v57U
       let h = `<tr style="cursor:pointer" onclick="mmtToggle(${c.id})"><td class="mono"><b>${esc(c.mmt_ref)}</b>${c.tank_no?(' <span style="background:var(--accent-l);color:var(--accent);padding:0 6px;border-radius:8px;font-size:10px;font-weight:700">'+esc(c.tank_no)+'</span>'):''}</td>`
         + `<td>${esc(FLOOR_LABELS[c.floor]||c.floor)}</td><td>${esc(c.gelatine_vendor||'—')}</td><td class="mono">${esc(c.gelatine_batch||'—')}</td>`
-        + `<td class="num mono">${fmt(c.total_kg,0)}</td><td class="num mono">${fmt(c.allocated_kg,0)}</td>`
+        + `<td class="num mono">${fmt(c.total_l,0)}</td><td class="num mono">${fmt(c.allocated_l,0)}</td>`
         + `<td class="num mono" style="color:${rem>0.5?'var(--green)':'var(--t3)'}">${fmt(rem,0)}</td>`
         + `<td class="mono" style="font-size:11px">${esc(c.charge_start||c.created_at||'—')}</td>`
         + `<td>${c.status==='open'?'<span style="background:var(--green-l);color:var(--green);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">OPEN</span>':(c.status==='preparing'?'<span style="background:var(--amber-l);color:var(--amber);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">PREPARING</span>':'<span style="color:var(--t3);font-size:11px">'+esc(c.status||'')+'</span>')}`
@@ -1656,11 +1662,11 @@ function renderMmtHistory(){
         + `<br>Chemicals: ${chem(c.additives_json)}`
         + `<br>Timestamps &mdash; started: <span class="mono">${esc(_alWhen(c.charge_start)||'—')}</span> &middot; done: <span class="mono">${esc(c.charge_complete?_alWhen(c.charge_complete):'—')}</span>${c.charge_complete?' ('+_mmPrepHm(c)+' of '+_hm(window._MMT_PREPMIN||180)+(c.completed_by?', by '+esc(c.completed_by):'')+')':''}`
         + (c.short_close_reason ? `<br><b style="color:var(--red)">Short close:</b> ${esc(c.short_close_reason)}` : '')
-        + `<br>Allocated ${fmt(c.allocated_kg,1)} / ${fmt(c.total_kg,1)} kg &middot; created by ${esc(c.created_by||'—')}</td></tr>`;
+        + `<br>Allocated ${fmt(c.allocated_l,0)} / ${fmt(c.total_l,0)} L &middot; concentration ${_mmConc(c).toFixed(3)} kg/L (gelatine ${fmt(c.gelatine_kg,1)} kg) &middot; kg basis ${fmt(c.allocated_kg,1)} / ${fmt(c.total_kg,1)} &middot; created by ${esc(c.created_by||'—')}</td></tr>`;
       return h;
     };
     const head = '<table class="gtable"><thead><tr><th>Reference</th><th>Floor</th><th>Vendor</th><th>Gelatine batch</th>'
-      + '<th class="num">Total kg</th><th class="num">Allocated</th><th class="num">Remaining</th><th>Started</th><th>Status</th></tr></thead><tbody>';
+      + '<th class="num">Total L</th><th class="num">Allocated L</th><th class="num">Remaining L</th><th>Started</th><th>Status</th></tr></thead><tbody>';
     let h = '';
     out.innerHTML = head + d.charges.map(c=>rowHtml(c)).join('') + '</tbody></table>';
 }
@@ -1674,11 +1680,11 @@ function renderMmtPreparing(){
   const need = window._MMT_PREPMIN || 180;
   if(cnt) cnt.textContent = rows.length ? rows.length+' in preparation' : '';
   if(!rows.length){ el.innerHTML = '<div class="empty">No charge in preparation. Fill the form above and press <b>Start charge preparation</b>.</div>'; return; }
-  let h = '<table class="gtable"><thead><tr><th>Reference</th><th>Tank</th><th>Gelatine</th><th class="num">Total kg</th><th>Started</th><th>Elapsed</th><th style="width:220px"></th></tr></thead><tbody>';
+  let h = '<table class="gtable"><thead><tr><th>Reference</th><th>Tank</th><th>Gelatine</th><th class="num">Total L</th><th>Started</th><th>Elapsed</th><th style="width:220px"></th></tr></thead><tbody>';   // v57U: litres
   rows.forEach(c=>{
     const m = _mmElapsedMin(c)||0, ready = m >= need, left = Math.max(0, need-m), pct = Math.min(100, Math.round(m/need*100));
     const tip = ready ? 'Preparation time complete — '+_hm(m)+' since start' : _hm(m)+' since start · '+_hm(left)+' to '+_hm(need)+' — Done now needs a reason';
-    h += '<tr><td class="mono"><b>'+esc(c.mmt_ref)+'</b></td><td>'+esc(c.tank_no||'—')+'</td><td class="mono" style="font-size:11px">'+esc(c.gelatine_batch||'—')+'</td><td class="num">'+fmt(c.total_kg,0)+'</td>'
+    h += '<tr><td class="mono"><b>'+esc(c.mmt_ref)+'</b></td><td>'+esc(c.tank_no||'—')+'</td><td class="mono" style="font-size:11px">'+esc(c.gelatine_batch||'—')+'</td><td class="num">'+fmt(c.total_l,0)+' <span style="font-size:10px;color:var(--t3)">'+fmt(c.gelatine_kg,0)+' kg</span></td>'
       + '<td class="mono" style="font-size:11px">'+esc(_alWhen(c.charge_start||c.created_at))+'</td>'
       + '<td><b style="color:'+(ready?'var(--green)':'var(--amber)')+'">'+_hm(m)+'</b> <span style="color:var(--t3);font-size:10.5px">/ '+_hm(need)+'</span><span class="mmbar" style="display:block;width:110px;margin-top:2px"><i style="width:'+pct+'%'+(ready?';background:var(--green)':'')+'"></i></span></td>'
       + '<td style="white-space:nowrap"><button class="btn sm '+(ready?'ok':'')+'" style="'+(ready?'':'background:var(--amber-l);border-color:var(--amber);color:var(--amber)')+'" title="'+esc(tip)+'" onclick="mmtDone('+c.id+')">&#10004; Done'+(ready?'':' (early)')+'</button> '
@@ -1723,11 +1729,11 @@ async function saveMmt(){
 
   // v56U: the reference is AUTO-assigned when left blank (the server only does so for 'AUTO' — the old
   // client check refused a blank reference outright despite the "AUTO" placeholder).
-  if(num('m_total') <= 0){ toast('Enter the total charge in kg','err'); return; }
+  if(num('m_total') <= 0){ toast('Enter the total charge in litres','err'); return; }
   if(!_mmLots().length){ toast('Enter at least one gelatine line (vendor / batch / kg)','err'); return; }
   const floor = (CUR_FLOOR && CUR_FLOOR!=='ALL') ? CUR_FLOOR : visibleFloors()[0];
   const d = await post('/api/gpr/mmt', {
-    mmt_ref: val('m_ref') || 'AUTO', floor, total_kg: num('m_total'),
+    mmt_ref: val('m_ref') || 'AUTO', floor, total_l: num('m_total'),   // v57U: litres
     // v56U: the gelatine arrives as blend LINES; the server derives the vendor/batch summary and kg.
     gelatine_lots: _mmLots(), water_kg: num('m_wkg'), water_temp_c: num('m_wtemp'),
     additives: Object.assign({ col0045_sls799: num('m_sls799'), col0069_peg6000: num('m_peg6000'),
@@ -1736,7 +1742,7 @@ async function saveMmt(){
     // v57P: no manual timestamps — the server stamps charge_start now; Done stamps charge_complete
   });
   if(!d.ok){ toast(d.error||'Could not save the charge','err'); return; }
-  toast(d.warning ? ('Charge started — ' + d.warning) : ('Charge '+d.mmt_ref+' started — mark it Done when the melt is complete'), d.warning ? '' : 'ok'); loadSuggestions(true);   // v56B item 1: remember new entries
+  toast(d.warning ? ('Charge started — ' + d.warning) : ('Charge '+d.mmt_ref+' started — '+fmt(d.total_l,0)+' L at '+(Number(d.conc_kg_per_l)||0).toFixed(3)+' kg/L; mark it Done when the melt is complete'), d.warning ? '' : 'ok'); loadSuggestions(true);   // v56B item 1: remember new entries
   clearMmtForm(); loadMmt(); loadMmtOptions();
 }
 function clearMmtForm(){
@@ -1756,8 +1762,16 @@ function clearMmtForm(){
 window._AL = { ref: null, opts: null, rows: [], plans: {} };
 function _alC(){ return (MASTERS && MASTERS.gpr_constants) || {}; }
 function _alGperL(){ const g = Number(_alC().gelatineKgPerLitre ?? 0.33); return g > 0 ? g : 0.33; }
-function _alL(kg){ return Number(kg||0) / _alGperL(); }
-function _alKg(l){ return Number(l||0) * _alGperL(); }
+// v57U: a charge's own concentration (kg/L) — gelatine kg ÷ litres as entered; the seed factor otherwise
+function _mmConc(c){ const v = Number(c && c.conc_kg_per_l); return v > 0 ? v : _alGperL(); }
+function _alL(kg, c){ return Number(kg||0) / _mmConc(c); }
+function _alKg(l, c){ return Number(l||0) * _mmConc(c); }
+function mmtConcHint(){
+  const el = document.getElementById('m_conc'); if(!el) return;
+  const L = num('m_total'); const g = _mmLots().reduce((a,l)=>a+l.kg,0);
+  if(L > 0 && g > 0) el.innerHTML = 'Concentration <b>'+(g/L).toFixed(3)+' kg/L</b> = gelatine '+fmt(g,1)+' kg &divide; '+fmt(L,0)+' L &mdash; every litre allocated from this charge carries '+(g/L*1000).toFixed(0)+' g of virgin gelatine.';
+  else el.innerHTML = 'Enter the charge volume in litres and the virgin gelatine in kg below &mdash; the concentration (kg/L) is worked out from the two and used to convert every litre allocated to a tank into virgin gelatine kg'+(L>0&&!(g>0)?' (no gelatine yet: the seed '+_alGperL()+' kg/L would apply)':'')+'.';
+}
 function _alSplit(litres, side, mc){
   // verbatim mirror of the server's _v57lAllocSplit — the preview is what will be booked
   const C = _alC(); const capFrac = Number(C.capFrac ?? 0.40), bodyFrac = Number(C.bodyFrac ?? 0.60);
@@ -1777,9 +1791,9 @@ async function alLoad(force){
   const open = (window._MMT_OPEN||[]).slice();
   const keep = window._AL.ref;
   sel.innerHTML = open.length
-    ? open.map(c=>'<option value="'+esc(c.mmt_ref)+'">'+esc(c.mmt_ref)+(c.tank_no?' · '+esc(c.tank_no):'')+' · '+fmt(c.remaining_kg,0)+' kg ≈ '+fmt(_alL(c.remaining_kg),0)+' L left</option>').join('')
+    ? open.map(c=>'<option value="'+esc(c.mmt_ref)+'">'+esc(c.mmt_ref)+(c.tank_no?' · '+esc(c.tank_no):'')+' · '+fmt(c.remaining_l,0)+' L left</option>').join('')
     : '<option value="">— no open charge on this floor —</option>';
-  const pick = (keep && open.some(c=>c.mmt_ref===keep)) ? keep : ((open.find(c=>Number(c.remaining_kg)>0.5) || open[0] || {}).mmt_ref || null);
+  const pick = (keep && open.some(c=>c.mmt_ref===keep)) ? keep : ((open.find(c=>Number(c.remaining_l)>0.5) || open[0] || {}).mmt_ref || null);
   sel.value = pick || '';
   window._AL.ref = pick;
   if(force){ window._AL.opts = null; window._AL.plans = {}; }
@@ -1804,10 +1818,11 @@ async function alSelect(ref, keepPlans){
 }
 function alRender(c, m){
   const pos = document.getElementById('alPos'), mEl = document.getElementById('alMachines');
-  const rem = Number(c.remaining_kg||0), resv = Number(c.reserved_kg||0), prep = Number(c.allocated_kg||0) - resv;
-  const kgL = (kg, cls) => '<b'+(cls?' style="color:'+cls+'"':'')+'>'+fmt(kg,0)+'</b> kg <span style="color:var(--t3)">&asymp; '+fmt(_alL(kg),0)+' L</span>';
-  pos.innerHTML = '<span>Charge '+kgL(c.total_kg)+'</span><span>Prepared '+kgL(prep)+'</span><span>Allocated, to prepare '+kgL(resv,'var(--amber)')+'</span>'
-    + '<span>Remaining to allocate '+kgL(rem, rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'</span>';
+  // v57U: litres first; the kg behind them at this charge's concentration
+  const rem = Number(c.remaining_l||0), resv = Number(c.reserved_l||0), prep = Number(c.allocated_l||0) - resv;
+  const kgL = (L, cls) => '<b'+(cls?' style="color:'+cls+'"':'')+'>'+fmt(L,0)+'</b> L <span style="color:var(--t3)">= '+fmt(_alKg(L,c),0)+' kg</span>';
+  pos.innerHTML = '<span>Charge '+kgL(c.total_l)+'</span><span>Prepared '+kgL(prep)+'</span><span>Allocated, to prepare '+kgL(resv,'var(--amber)')+'</span>'
+    + '<span>Remaining to allocate '+kgL(rem, rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'</span><span style="color:var(--t3)">'+_mmConc(c).toFixed(3)+' kg/L</span>';
   const mm = (m.tt_machine_master)||{}; const floors = _alFloorsOf(c);
   const mcs = Object.keys(mm).filter(k=>floors.includes(mm[k].floor)).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
   if(!mcs.length){ mEl.innerHTML = '<div class="empty">No machine on '+esc(floors.join('/'))+' in the machine master.</div>'; return; }
@@ -1869,7 +1884,7 @@ function alSuggest(mc){
   const side = (document.getElementById('al_s_'+mc)||{}).value||'both';
   let L = side==='cap' ? need.cap.left : (side==='body' ? need.body.left : need.cap.left + need.body.left);
   const c = (window._MMT_OPEN||[]).find(x=>x.mmt_ref===window._AL.ref);
-  const remL = c ? Math.max(0, _alL(c.remaining_kg)) : Infinity;
+  const remL = c ? Math.max(0, Number(c.remaining_l||0)) : Infinity;   // v57U
   const capped = L > remL + 0.05;
   if(capped) L = remL;
   setVal('al_l_'+mc, L>0 ? Math.round(L) : '');
@@ -1885,9 +1900,9 @@ function alPreview(mc){
   if(!(L>0)){ el.innerHTML = P.need ? '<span style="color:var(--t3)">'+esc(_alBatchOf(mc))+' still needs: cap '+fmt(P.need.cap.left,0)+' · body '+fmt(P.need.body.left,0)+' L'+(P.capped?' <span style="color:var(--amber)">(the charge has nothing left to allocate)</span>':'')+'</span>' : ''; return; }
   const sp = _alSplit(L, side, mm);
   const line = (k,lbl,cls) => sp[k].tanks.length ? '<div><span class="sdtag sd-'+k+'">'+lbl+'</span> '+fmt(sp[k].litres,0)+' L &rarr; <b>'+sp[k].tanks.length+'</b> tank'+(sp[k].tanks.length>1?'s':'')+' ('+sp[k].tanks.map(t=>fmt(t,0)).join(' + ')+' L)</div>' : '';
-  const kg = _alKg(L);
+  const kg = _alKg(L, (window._MMT_OPEN||[]).find(x=>x.mmt_ref===window._AL.ref));   // v57U: this charge's concentration
   const needTxt = P.need ? '<div style="color:var(--t3);font-size:10.5px">still needed: cap '+fmt(P.need.cap.left,0)+' · body '+fmt(P.need.body.left,0)+' L'+(P.capped?' · <span style="color:var(--amber)">capped to what the charge has left</span>':'')+'</div>' : '';
-  el.innerHTML = line('cap','CAP') + line('body','BODY') + '<div style="color:var(--t3);font-size:10.5px">= '+fmt(kg,1)+' kg of the charge</div>' + needTxt;
+  el.innerHTML = line('cap','CAP') + line('body','BODY') + '<div style="color:var(--t3);font-size:10.5px">= '+fmt(kg,1)+' kg virgin gelatine at this charge\'s concentration</div>' + needTxt;
 }
 async function alAllocate(mc){
   const ref = window._AL.ref; if(!ref){ toast('Pick a charge first','err'); return; }
@@ -1901,7 +1916,7 @@ async function alAllocate(mc){
   const d = await post('/api/gpr/mmt-alloc', { mmt_ref: ref, machine_id: mc, batch_number: bn, side, litres: L });
   if(btn) btn.disabled = false;
   if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not allocate','err'); return; }
-  toast('Allocated '+d.created.map(x=>x.side.toUpperCase()+x.alloc_seq+' '+fmt(x.planned_l,0)+' L').join(', ')+' of '+bn+' from '+ref+' — on the TT tab to prepare','ok');
+  toast('Allocated '+d.created.map(x=>x.side.toUpperCase()+x.alloc_seq+' '+fmt(x.planned_l,0)+' L').join(', ')+' of '+bn+' from '+ref+' ('+fmt(d.reserved_l,0)+' L = '+fmt(d.reserved_kg,1)+' kg) — '+fmt(d.remaining_l,0)+' L left · on the TT tab to prepare','ok');
   delete window._AL.plans[mc];
   await loadMmt(); loadMmtOptions();
 }
@@ -1928,7 +1943,7 @@ async function alCancel(id){
   if(!confirm('Cancel this allocation'+(r?(' — '+r.batch_number+' '+String(r.side).toUpperCase()+r.alloc_seq+' '+fmt(r.planned_l,0)+' L'):'')+'? The reserved kg goes back to the charge.')) return;
   const d = await post('/api/gpr/mmt-alloc/'+id+'/cancel', {});
   if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not cancel','err'); return; }
-  toast('Allocation cancelled — '+fmt(d.released_kg,1)+' kg back to the charge','ok');
+  toast('Allocation cancelled — '+fmt(d.released_l,0)+' L back to the charge','ok');
   if(document.getElementById('page-mmt') && document.getElementById('page-mmt').classList.contains('on')) loadMmt(); else loadAllocBoard();
   loadMmtOptions();
 }
@@ -1986,6 +2001,7 @@ async function ttPrepareFromAlloc(id){
   setVal(p+'_virgin', r.reserved_kg);
   const a = document.getElementById(p+'_actual'); if(a) delete a.dataset.manual;   // litres follow the charge calc
   window._TTALLOC = Object.assign(window._TTALLOC||{}, { [p]: r.id });
+  window._MMT_CONC = window._MMT_CONC || {}; if(r.mmt_conc > 0) window._MMT_CONC[r.mmt_ref] = Number(r.mmt_conc);   // v57U: the allocation carries its charge's concentration
   const n = document.getElementById(p+'_allocnote');
   if(n) n.innerHTML = '<div class="hbnote" style="margin:3px 0;padding:4px 8px;border-left:3px solid var(--amber);background:var(--amber-l)">From allocation <b>'+esc(String(r.side).toUpperCase())+r.alloc_seq+'</b> of <b class="mono">'+esc(r.mmt_ref)+'</b> &middot; '+fmt(r.planned_l,0)+' L &middot; '+fmt(r.reserved_kg,1)+' kg reserved &middot; completing this entry settles it</div>';
   ttCalc(p);
@@ -2683,8 +2699,9 @@ async function loadMmtOptions(){
       const d = await api('/api/gpr/mmt?floor='+encodeURIComponent(f)+'&status=open');
       if(d.ok) all.push(...d.charges);
     }
+    window._MMT_CONC = window._MMT_CONC || {}; all.forEach(c=>{ window._MMT_CONC[c.mmt_ref] = _mmConc(c); });   // v57U: the linked charge prices litres → virgin kg
     const html = '<option value="">— none —</option>' + all.map(c=>
-      `<option value="${esc(c.mmt_ref)}">${esc(c.mmt_ref)} · ${fmt(c.remaining_kg,0)} kg left</option>`).join('');
+      `<option value="${esc(c.mmt_ref)}">${esc(c.mmt_ref)} · ${fmt(c.remaining_l,0)} L left · ${_mmConc(c).toFixed(3)} kg/L</option>`).join('');
     sels.forEach(sel=>{ const keep = sel.value; sel.innerHTML = html; if(keep) sel.value = keep; });
   }catch(e){}
 }
@@ -3112,17 +3129,27 @@ function ttCalc(p){
   // litres = gelatine-basis kg ÷ gelatineKgPerLitre (virgin, FG remelt, salvage and cutting — reuse
   // material brings the water it is melted in) + the colour/TiO2 solution volume.
   const C = (MASTERS && MASTERS.gpr_constants) || {};
-  const gPerL = Number(C.gelatineKgPerLitre ?? 0.33) || 0.33;
+  // v57U: with a charge linked, litres and kg convert at THAT charge's concentration (gelatine kg ÷
+  // litres as entered on the MMT form); the seed factor only when no charge is linked or known.
+  const _ref57u = val(p+'_mmt');
+  const _concU = (_ref57u && window._MMT_CONC && window._MMT_CONC[_ref57u] > 0) ? window._MMT_CONC[_ref57u] : null;
+  const gPerL = _concU || (Number(C.gelatineKgPerLitre ?? 0.33) || 0.33);
+  const act = document.getElementById(p+'_actual');
+  const virginEl = document.getElementById(p+'_virgin');
+  // v57U: the operator thinks in litres — litres typed by hand against a linked charge, with no
+  // virgin kg and no reuse material entered, give the virgin gelatine kg at the charge's concentration
+  if(_concU && act && act.dataset.manual==='1' && virginEl && !(num(p+'_virgin')>0) && !(num(p+'_fgremelt')+num(p+'_salvage')+num(p+'_cutting')>0) && num(p+'_actual')>0){
+    virginEl.value = (+(Math.max(0, num(p+'_actual') - solKg) * _concU).toFixed(2)) || '';
+  }
   const gelKg = num(p+'_virgin') + num(p+'_fgremelt') + num(p+'_salvage') + num(p+'_cutting');
   const calcL = gelKg > 0 ? gelKg / gPerL + solKg : 0;
-  const act = document.getElementById(p+'_actual');
   const note = document.getElementById(p+'_calcL');
   if(act && calcL > 0 && act.dataset.manual!=='1') act.value = calcL.toFixed(1);
   _ttSeqNote(p);
   ttReuseRefresh();   // v56V: available / taking / remaining per lot, both tanks
   if(note){
     note.innerHTML = calcL > 0
-      ? 'calc <b>'+fmt(calcL,1)+' L</b> = '+fmt(gelKg,1)+' kg ÷ '+gPerL+(solKg>0?' + colour soln '+fmt(solKg,1)+' L':'')
+      ? 'calc <b>'+fmt(calcL,1)+' L</b> = '+fmt(gelKg,1)+' kg ÷ '+(+gPerL.toFixed(3))+(_concU?' <span style="color:var(--t3)">('+esc(_ref57u)+')</span>':'')+(solKg>0?' + colour soln '+fmt(solKg,1)+' L':'')
         + (act && act.dataset.manual==='1' && Math.abs(num(p+'_actual')-calcL) >= 0.5
            ? ' · <span style="color:var(--amber)">entered by hand</span> <a href="javascript:void(0)" onclick="ttUseCalc(\''+p+'\')">use calc</a>' : '')
       : '';
@@ -4569,7 +4596,9 @@ function exportMmt(){
       {key:'mmt_ref', label:'Reference', w:20}, {key:'tank_no', label:'Tank', w:8},
       {key:'floor', label:'Floor', w:10}, {key:'gelatine_vendor', label:'Vendor', w:20},
       {key:'gelatine_batch', label:'Gelatine batch', w:18},
-      {key:'total_kg', label:'Total kg', w:11, num:true}, {key:'allocated_kg', label:'Allocated kg', w:13, num:true},
+      {key:'total_l', label:'Total L', w:11, num:true}, {key:'allocated_l', label:'Allocated L', w:13, num:true},
+      {key:'remaining_l', label:'Remaining L', w:13, num:true}, {key:'conc_kg_per_l', label:'kg/L', w:8, num:true},   // v57U: litres first
+      {key:'total_kg', label:'Total kg (basis)', w:11, num:true}, {key:'allocated_kg', label:'Allocated kg', w:13, num:true},
       {key:'remaining_kg', label:'Remaining kg', w:13, num:true},
       {key:'gelatine_kg', label:'Gelatine kg', w:12, num:true}, {key:'water_kg', label:'Water kg', w:11, num:true},
       {key:'water_temp_c', label:'Water °C', w:10, num:true},
@@ -5332,10 +5361,10 @@ async function loadBatch(){
 
     h += '<div class="fgroup-title">MMT charges</div>';
     if(d.mmts.length){
-      h += '<div class="tscroll"><table class="gtable"><thead><tr><th>Reference</th><th>Floor</th><th>Vendor</th><th>Gelatine batch</th><th class="num">Total kg</th><th class="num">Allocated</th></tr></thead><tbody>';
+      h += '<div class="tscroll"><table class="gtable"><thead><tr><th>Reference</th><th>Floor</th><th>Vendor</th><th>Gelatine batch</th><th class="num">Total L</th><th class="num">Allocated L</th><th class="num">Gelatine kg · kg/L</th></tr></thead><tbody>';   // v57U: litres
       d.mmts.forEach(m=>{ h += `<tr><td class="mono">${esc(m.mmt_ref)}</td><td>${esc(FLOOR_LABELS[m.floor]||m.floor)}</td>`
         + `<td>${esc(m.gelatine_vendor||'—')}</td><td class="mono">${esc(m.gelatine_batch||'—')}</td>`
-        + `<td class="num">${fmt(m.total_kg,0)}</td><td class="num">${fmt(m.allocated_kg,0)}</td></tr>`; });
+        + `<td class="num">${fmt(m.total_l,0)}</td><td class="num">${fmt(m.allocated_l,0)}</td><td class="num" style="color:var(--t3);font-size:11px">${fmt(m.gelatine_kg,0)} · ${_mmConc(m).toFixed(3)}</td></tr>`; });
       h += '</tbody></table></div>';
     } else h += '<div class="empty">No charges linked.</div>';
 

@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v57T</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v57V</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -4589,6 +4589,14 @@ async function renderPlantReport(){
   const floorDataMap = {};
   let serverFetched = false;
 
+  // v57U (Ishan, 5 Oct — "plant report taking too long"): the day blob and the cumulative are
+  // independent, so both requests leave together instead of one after the other — the wait is the
+  // slower of the two, not their sum. The cumulative fetch below consumes _cumPromise57u.
+  const _scopeFrom45x = _dprCumulativeMode ? '' : (_v50eScopeMonth(selectedDate) + '-01');   // v50E
+  const _cumPromise57u = serverUrl
+    ? fetch(serverUrl + '/api/dpr/plant-cum?to=' + selectedDate + (_scopeFrom45x ? ('&from=' + _scopeFrom45x) : ''), { signal: AbortSignal.timeout(8000) }).catch(e => { console.warn('[plant-report] server cum unavailable — falling back to local grid:', e?.message); return null; })
+    : Promise.resolve(null);
+  const _t0_57u = Date.now();
   if(serverUrl){
     try {
       const r = await fetch(serverUrl + `/api/dpr/plant-report/${selectedDate}`, {
@@ -4623,10 +4631,10 @@ async function renderPlantReport(){
   let _serverCum45x = null;
   if (serverUrl) {
     try {
-      const _scopeFrom45x = _dprCumulativeMode ? '' : (_v50eScopeMonth(selectedDate) + '-01');   // v50E
-      const cr = await fetch(serverUrl + '/api/dpr/plant-cum?to=' + selectedDate + (_scopeFrom45x ? ('&from=' + _scopeFrom45x) : ''), { signal: AbortSignal.timeout(8000) });
-      if (cr.ok) { const cj = await cr.json(); if (cj && cj.ok && cj.machines) _serverCum45x = cj.machines; }
+      const cr = await _cumPromise57u;   // v57U: already in flight since Step 1
+      if (cr && cr.ok) { const cj = await cr.json(); if (cj && cj.ok && cj.machines) _serverCum45x = cj.machines; }
     } catch(e) { console.warn('[plant-report] server cum unavailable — falling back to local grid:', e?.message); }
+    console.log('[renderPlantReport] server data in ' + (Date.now() - _t0_57u) + 'ms (day blob + cumulative, parallel)');
   }
 
   // v41ZD #3: cumulative totals were built only from days already in localStorage, so on a fresh
