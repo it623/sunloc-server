@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v57V</title>
+<title>GPR · build v57W</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -395,8 +395,8 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v57V</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57V</div>
+    <h1>GPR<span class="vpill">v57W</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57W</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -416,7 +416,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v57V</span></div>
+  <div class="nbrand">GPR<span class="vpill">v57W</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -1916,7 +1916,7 @@ async function alAllocate(mc){
   const d = await post('/api/gpr/mmt-alloc', { mmt_ref: ref, machine_id: mc, batch_number: bn, side, litres: L });
   if(btn) btn.disabled = false;
   if(!d || !d.ok){ toast((d&&(d.detail||d.error))||'Could not allocate','err'); return; }
-  toast('Allocated '+d.created.map(x=>x.side.toUpperCase()+x.alloc_seq+' '+fmt(x.planned_l,0)+' L').join(', ')+' of '+bn+' from '+ref+' ('+fmt(d.reserved_l,0)+' L = '+fmt(d.reserved_kg,1)+' kg) — '+fmt(d.remaining_l,0)+' L left · on the TT tab to prepare','ok');
+  toast('Allocated '+d.created.map(x=>x.side.toUpperCase()+x.alloc_seq+' '+fmt(x.planned_l,0)+' L').join(', ')+' of '+bn+' from '+ref+' ('+fmt(d.reserved_l,0)+' L = '+fmt(d.reserved_kg,1)+' kg) — '+(d.mmt_exhausted ? 'charge fully allocated and CLOSED; further tanks need a new charge' : fmt(d.remaining_l,0)+' L left')+' · on the TT tab to prepare', d.mmt_exhausted ? '' : 'ok');
   delete window._AL.plans[mc];
   await loadMmt(); loadMmtOptions();
 }
@@ -2700,7 +2700,7 @@ async function loadMmtOptions(){
       if(d.ok) all.push(...d.charges);
     }
     window._MMT_CONC = window._MMT_CONC || {}; all.forEach(c=>{ window._MMT_CONC[c.mmt_ref] = _mmConc(c); });   // v57U: the linked charge prices litres → virgin kg
-    const html = '<option value="">— none —</option>' + all.map(c=>
+    const html = '<option value="">— none —</option>' + all.filter(c=>Number(c.remaining_l)>0.5).map(c=>   // v57W: a charge with nothing left is not offered
       `<option value="${esc(c.mmt_ref)}">${esc(c.mmt_ref)} · ${fmt(c.remaining_l,0)} L left · ${_mmConc(c).toFixed(3)} kg/L</option>`).join('');
     sels.forEach(sel=>{ const keep = sel.value; sel.innerHTML = html; if(keep) sel.value = keep; });
   }catch(e){}
@@ -3273,12 +3273,15 @@ async function completeDualTt(){
   for(const [p, side] of sides){
     const d = await post('/api/gpr/tt', _sidePayload(p, side));
     if(!d.ok){
+      // v57W: an exhausted charge is a stop, not a warning — say what to do, keep the form as typed
+      if(d.error==='CHARGE_EXHAUSTED'){ toast(side.toUpperCase()+' — '+(d.detail||'The linked MMT charge has no litres left. Take a new charge and link it.'),'err'); loadMmtOptions(); if(created.length) renderDualCreated(created, true); return; }
       toast(side.toUpperCase()+': '+(d.detail || d.error || 'could not create the tank'),'err');
       if(created.length) renderDualCreated(created, true);
       return;
     }
     created.push({ tt_id:d.tt_id, tt_number:d.tt_number, side });
     if(d.warning) toast(side.toUpperCase()+' — '+d.warning,'');
+    if(d.mmt_exhausted) toast('MMT '+esc(val(p+'_mmt'))+' is now fully drawn and has closed — the next tank needs a new charge','');   // v57W
   }
   toast('Created ' + created.map(c=>c.tt_number).join(' + ') + ' — put each on HOLD below','ok'); loadSuggestions(true);
   window._TTALLOC = {}; ['tc','tb'].forEach(p=>{ const n=document.getElementById(p+'_allocnote'); if(n) n.innerHTML=''; }); loadAllocBoard();   // v57L: the queue moves on
