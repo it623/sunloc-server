@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57W';
+const APP_BUILD = 'v57X';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -2418,6 +2418,7 @@ const GPR_SEED_MASTERS = (() => {
     // other constant. Values are exactly what the code used, so behaviour is unchanged on upgrade.
     minHoldHours: 2,              // a TT released under this is a quality exception (v56G report)
     mmtPrepHours: 3,              // v57P: an MMT charge marked done under this is a short close (reason required)
+    gprLiveFrom: '2026-10-07',    // v57X: GPR went live 7 Oct 2026 A shift — no DPR cutting receipt is posted for a production day before this
     underFillPct: 5,              // % below tank capacity that demands a reason (was 0.95 literal)
     estFactorMin: 0.85,           // end-shift estimate factor floor (was a bare 0.85)
     estFactorMax: 1.30,           // ceiling (was a bare 1.30)
@@ -28861,7 +28862,15 @@ app.get('/api/gpr/active-batches', async (req, res) => {
 function _gprNormMc(id) { return String(id || '').toUpperCase().replace(/[^A-Z0-9]/g, ''); }
 async function gprSyncDprCuttings(days) {
   const lookback = Math.max(7, Math.min(90, Number(days) || 45));
-  const since = new Date(Date.now() - lookback * 86400000).toISOString().slice(0, 10);
+  let since = new Date(Date.now() - lookback * 86400000).toISOString().slice(0, 10);
+  // v57X (Ishan, 8 Oct — after the 7 Oct purge): the feed re-posted every pre-live cutting receipt
+  // (1,092 rows) the first time the Stock tab was opened, because its only bound was the look-back.
+  // GPR's live date (masters: gprLiveFrom) is now a hard floor — DPR days before it are never fed.
+  try {
+    const _mL = await gprLoadMasters();
+    const liveFrom = String(((_mL && _mL.gpr_constants) || {}).gprLiveFrom || GPR_SEED_MASTERS.gpr_constants.gprLiveFrom || '');
+    if (/^\d{4}-\d{2}-\d{2}$/.test(liveFrom) && liveFrom > since) since = liveFrom;
+  } catch (_) {}
   let rows;
   try {
     const sql = `SELECT floor, date, data_json FROM dpr_records WHERE date >= ${pgPool ? '$1' : '?'}`;
