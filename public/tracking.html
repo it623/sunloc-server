@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v57X</title>
+<title>Sunloc Tracking Suite v1.0 · build v57Z</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57X</p>
+      <p>Tracking Suite v1.0 · build v57Z</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v57X</p>
+      <p>Tracking Suite v1.0 · build v57Z</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -1256,15 +1256,21 @@ function _v53pIsLegacyLabel(l){ return !!(l && (l.isLegacy || (parseInt(l.labelN
 // O(1) legacy lookups. state.labels is ~10k rows and _scanLakhs' pre-summary fallback walks up to
 // 2,000 scans per call across every batch × dept × report — a per-scan array scan would freeze Report
 // E/B on a cold load. The index is rebuilt only when the label array identity or length changes.
-let _v53pIdx = { ref:null, len:-1, ids:new Set(), byBatch:new Map() };
+let _v53pIdx = { ref:null, len:-1, ids:new Set(), byBatch:new Map(), retIds:new Set() };
+// v57Y (Ishan, 9 Oct): R-labels drawn from RETURN STOCK carry legacy ref `<batch>-RET`. They are legacy
+// labels for every scanning / dispatch / invoicing purpose (Packing IN → Dispatch OUT, nothing between),
+// but they are NOT part of routine Reports A–F: the goods were produced — and reported — in the original
+// batch's own production month. Report E carries them on a separate "Dispatch from Return" sheet instead.
+function _v57yIsReturnLabel(l){ return !!(l && /-RET$/i.test(String(l.legacyRef||''))); }
 function _v53pIndex(){
   const arr = state.labels||[];
   if(_v53pIdx.ref===arr && _v53pIdx.len===arr.length) return _v53pIdx;
-  const ids=new Set(), byBatch=new Map();
-  for(const l of arr){ if(_v53pIsLegacyLabel(l)){ ids.add(l.id); if(!l.voided && !l.isOrange){ const a=byBatch.get(l.batchNumber)||[]; a.push(l); byBatch.set(l.batchNumber,a); } } }
-  _v53pIdx = { ref:arr, len:arr.length, ids, byBatch };
+  const ids=new Set(), byBatch=new Map(), retIds=new Set();
+  for(const l of arr){ if(_v53pIsLegacyLabel(l)){ ids.add(l.id); if(_v57yIsReturnLabel(l)) retIds.add(l.id); if(!l.voided && !l.isOrange){ const a=byBatch.get(l.batchNumber)||[]; a.push(l); byBatch.set(l.batchNumber,a); } } }
+  _v53pIdx = { ref:arr, len:arr.length, ids, byBatch, retIds };
   return _v53pIdx;
 }
+function _v57yIsReturnScan(sc){ const lid = sc && (sc.labelId||sc.label_id); return !!lid && _v53pIndex().retIds.has(lid); }
 function _v53pIsLegacyScan(sc){
   if(!sc) return false;
   const n = parseInt(sc.labelNumber!=null?sc.labelNumber:sc.label_number);
@@ -1301,16 +1307,25 @@ function _v53tSyncVirtualBatches(){
 }
 function _v53tMfgText(ym){ if(!/^\d{4}-\d{2}$/.test(String(ym||''))) return ''; const d=new Date(ym+'-01T00:00:00'); return d.toLocaleDateString('en-IN',{month:'short',year:'numeric'}).toUpperCase(); }
 function _v53pNegBox(n){ const a=Math.abs(n); return n <= -_V53P_R_BASE ? 'R-'+(a-_V53P_R_BASE) : 'E-'+a; }
+// v57Y: both helpers are REPORT primitives — the return-stock subset (server return* fields, a subset
+// of legacy*) is taken back out, so Reports A–F never carry returned goods.
 function _v53pLegacyLakhs(batchNo, dept, type, size){
   let q = 0;
-  if (hasScanSummary()){ const s=_ss(batchNo,dept); q += (type==='in' ? (s.legacyInQty||0) : (s.legacyOutQty||0)); }
-  q += (state.scans||[]).filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && (hasScanSummary()?sc._local:true) && _v53pIsLegacyScan(sc)).reduce((a,sc)=>a+_boxLakh(sc,size),0);
+  if (hasScanSummary()){ const s=_ss(batchNo,dept); q += (type==='in' ? ((s.legacyInQty||0)-(s.returnInQty||0)) : ((s.legacyOutQty||0)-(s.returnOutQty||0))); }
+  q += (state.scans||[]).filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && (hasScanSummary()?sc._local:true) && _v53pIsLegacyScan(sc) && !_v57yIsReturnScan(sc)).reduce((a,sc)=>a+_boxLakh(sc,size),0);
   return q;
 }
 function _v53pLegacyBoxes(batchNo, dept, type){
   let n = 0;
-  if (hasScanSummary()){ const s=_ss(batchNo,dept); n += (type==='in' ? (s.legacyIn||0) : (s.legacyOut||0)); }
-  n += (state.scans||[]).filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && (hasScanSummary()?sc._local:true) && _v53pIsLegacyScan(sc)).length;
+  if (hasScanSummary()){ const s=_ss(batchNo,dept); n += (type==='in' ? ((s.legacyIn||0)-(s.returnIn||0)) : ((s.legacyOut||0)-(s.returnOut||0))); }
+  n += (state.scans||[]).filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && (hasScanSummary()?sc._local:true) && _v53pIsLegacyScan(sc) && !_v57yIsReturnScan(sc)).length;
+  return n;
+}
+// v57Y: the return-stock leg on its own (dispatch-side surfaces that reconcile physical boxes).
+function _v57yReturnBoxes(batchNo, dept, type){
+  let n = 0;
+  if (hasScanSummary()){ const s=_ss(batchNo,dept); n += (type==='in' ? (s.returnIn||0) : (s.returnOut||0)); }
+  n += (state.scans||[]).filter(sc=>sc.batchNumber===batchNo && sc.dept===dept && sc.type===type && (hasScanSummary()?sc._local:true) && _v57yIsReturnScan(sc)).length;
   return n;
 }
 // Re-batch summary for a batch from its R-labels: total lakhs re-batched in + distinct legacy refs.
@@ -1319,7 +1334,16 @@ function _v53pRebatchInfo(batchNo){
   if(!ls.length) return null;
   const qty = ls.reduce((a,l)=>a+(parseFloat(l.qty)||0),0);
   const refs = [...new Set(ls.map(l=>l.legacyRef).filter(Boolean))];
-  return { boxes: ls.length, qty: Math.round(qty*100)/100, refs, remark: `Re-batch of ${(Math.round(qty*100)/100).toFixed(2)} L from ${refs.join(', ')||'legacy stock'} has caused it` };
+  // v57Y: R-labels drawn from RETURN STOCK carry legacy ref `<batch>-RET` (merge) in both modes (a re-customer child `<batch>A` too)
+  // standalone batch — they are identified separately as "dispatch from Return", never as legacy stock.
+  const _isRet = _v57yIsReturnLabel;
+  const retQty = Math.round(ls.filter(_isRet).reduce((a,l)=>a+(parseFloat(l.qty)||0),0)*100)/100;
+  const legQty = Math.round((qty-retQty)*100)/100;
+  const parts = [];
+  if (legQty>0) parts.push(`Re-batch of ${legQty.toFixed(2)} L from ${refs.filter(r=>!/-RET$/i.test(r)).join(', ')||'legacy stock'} has caused it`);
+  if (retQty>0) parts.push(`Return stock ${retQty.toFixed(2)} L from ${[...new Set(ls.filter(_isRet).map(l=>String(l.legacyRef||'').replace(/-RET$/i,'')))].join(', ')||'a return'} ships under this batch — not in these figures, see the "Dispatch from Return" sheet`);
+  if (!(legQty>0) && retQty>0) return { boxes: ls.length, qty: 0, refs, returnQty: retQty, legacyQty: 0, remark: parts.join('; '), returnOnly: true };   // v57Y: nothing of it is in the report's numbers
+  return { boxes: ls.length, qty: legQty, refs, returnQty: retQty, legacyQty: legQty, remark: parts.join('; ') };
 }
 function _scanLakhs(batchNo, dept, type, size){
   if (hasScanSummary()){
@@ -1357,10 +1381,10 @@ function _grossFor(batchNo, b) {
 // different granularity (label-level scans vs invoice-level truck records) so they can't
 // represent the same boxes — sum is correct.
 function _v40_dispatchedLakhs(batchNumber, batchSize) {
-  const localOut = state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out' && s._local).length;
+  const localOut = state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out' && s._local && !_v57yIsReturnScan(s)).length;
   const legacyBoxes = hasScanSummary()
-    ? (_ss(batchNumber, 'dispatch').out + (_ss(batchNumber,'dispatch').legacyOut||0) + localOut)
-    : state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out').length;
+    ? (_ss(batchNumber, 'dispatch').out + (_ss(batchNumber,'dispatch').legacyOut||0) - (_ss(batchNumber,'dispatch').returnOut||0) + localOut)   // v57Y
+    : state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out' && !_v57yIsReturnScan(s)).length;
   const legacyLakhs = _scanLakhs(batchNumber,'dispatch','out',batchSize) + _v53pLegacyLakhs(batchNumber,'dispatch','out',batchSize);  // v47G: per-box label sum · v53P: + R-boxes
   const phase18Lakhs = state.dispatchRecs.filter(r => r.batchNumber === batchNumber).reduce((s, r) => s + (r.qty || 0), 0);
   return legacyLakhs + phase18Lakhs;
@@ -1369,10 +1393,10 @@ function _v40_dispatchedLakhs(batchNumber, batchSize) {
 // v40 Phase 18.14: combined-source dispatch BOX count (used where Lakhs not needed).
 // v40 Phase 18.14d: sum() not max() — see above.
 function _v40_dispatchedBoxes(batchNumber) {
-  const localOut = state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out' && s._local).length;
+  const localOut = state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out' && s._local && !_v57yIsReturnScan(s)).length;   // v57Y: return boxes out
   const legacyBoxes = hasScanSummary()
-    ? (_ss(batchNumber, 'dispatch').out + (_ss(batchNumber,'dispatch').legacyOut||0) + localOut)
-    : state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out').length;
+    ? (_ss(batchNumber, 'dispatch').out + (_ss(batchNumber,'dispatch').legacyOut||0) - (_ss(batchNumber,'dispatch').returnOut||0) + localOut)   // v57Y: − return-stock boxes (reports A–F)
+    : state.scans.filter(s => s.batchNumber === batchNumber && s.dept === 'dispatch' && s.type === 'out' && !_v57yIsReturnScan(s)).length;
   // v45Y (confirmed by Ishan): EXPORT dispatch records carry a unit/capsule count in r.boxes, not
   // label boxes — 26ZB074 showed "Dispatched: 6600 / 15000%". Box count now derives from the
   // record's qty (Lakhs, the reliable field _v40_dispatchedLakhs already trusts) via the batch's
@@ -6106,9 +6130,13 @@ function _exuRender(){
              &&(!_ef.c||(b.customer||'').toLowerCase().includes(_ef.c));
     const _attrs=`class="exu-row" data-b="${(b.batchNumber||'').toLowerCase()}" data-c="${(b.customer||'').toLowerCase().replace(/"/g,'&quot;')}"${_vis?'':' style="display:none"'}`;
     const pendNote=b.pendingBoxes?` <span class="badge badge-amber" title="Excluded from selection below">${b.pendingBoxes} on pending req</span>`:'';
+    // v57Z (Ishan, 9 Oct — 26ZB139): an invoiced batch is no longer frozen; the server caps how many
+    // held boxes may be carved out so the SAP invoice is still honoured by the rest (maxBoxes).
+    const _cap=(b.maxBoxes!=null)?b.maxBoxes:null;
+    const capNote=(_cap!=null)?` <span class="badge badge-amber" style="cursor:help" title="${(b.sapNote||'').replace(/"/g,'&quot;')}">⚠ SAP-invoiced · max ${_cap} box(es)</span>`:'';
     const main=`<tr ${_attrs}>
       <td class="td-bold td-mono">${b.batchNumber}</td>
-      <td class="text-sm">${b.customer||'—'}${pendNote}</td>
+      <td class="text-sm">${b.customer||'—'}${pendNote}${capNote}</td>
       <td class="td-mono">${b.boxes.length}</td>
       <td class="td-mono">${(b.boxes.length*b.packSize).toFixed(2)}L</td>
       <td class="td-mono" style="color:var(--accent)">${nSel?`${nSel} (${(nSel*b.packSize).toFixed(2)}L)`:'—'}</td>
@@ -6116,9 +6144,10 @@ function _exuRender(){
     </tr>`;
     const detail=open?`<tr ${_attrs}><td colspan="6" style="background:var(--surface)">
       <div style="padding:8px 4px">
-        <label class="text-sm" style="display:inline-flex;gap:6px;align-items:center;margin-bottom:6px"><input type="checkbox" ${nSel===b.boxes.length&&b.boxes.length?'checked':''} onchange="_exuAll('${b.batchNumber}',this.checked)"> Select all</label>
+        <label class="text-sm" style="display:inline-flex;gap:6px;align-items:center;margin-bottom:6px"><input type="checkbox" ${nSel===Math.min(b.boxes.length,_cap==null?b.boxes.length:_cap)&&b.boxes.length?'checked':''} onchange="_exuAll('${b.batchNumber}',this.checked)"> Select all${_cap!=null&&_cap<b.boxes.length?` <span class="text-muted">(first ${_cap} — SAP cap)</span>`:''}</label>
+        ${_cap!=null?`<div class="text-sm" style="margin-bottom:6px;padding:6px 8px;border-radius:6px;background:#fffbeb;border:1px solid #fde68a;color:#92400e">⚠ ${b.sapNote||''}${_cap<b.boxes.length?` — ${b.boxes.length} box(es) are held in printing, <b>${_cap}</b> may be proposed.`:''}</div>`:''}
         <div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(86px,1fr));gap:4px;max-height:180px;overflow:auto;border:1px solid var(--border);border-radius:6px;padding:8px">
-          ${b.boxes.map(x=>`<label class="text-sm td-mono" style="display:inline-flex;gap:4px;align-items:center"><input type="checkbox" ${sel[x.labelId]?'checked':''} onchange="_exuBox('${b.batchNumber}','${x.labelId}',this.checked)"> #${x.labelNumber}</label>`).join('')}
+          ${b.boxes.map(x=>`<label class="text-sm td-mono" style="display:inline-flex;gap:4px;align-items:center${(_cap!=null&&!sel[x.labelId]&&nSel>=_cap)?';opacity:.45':''}"><input type="checkbox" ${sel[x.labelId]?'checked':''} ${(_cap!=null&&!sel[x.labelId]&&nSel>=_cap)?'disabled':''} onchange="_exuBox('${b.batchNumber}','${x.labelId}',this.checked)"> #${x.labelNumber}</label>`).join('')}
         </div>
         <div style="display:flex;flex-wrap:wrap;gap:8px;align-items:center;margin-top:8px">
           <input id="exu-cust-${b.batchNumber}" placeholder="New customer (optional — blank = colour stock)" value="${(f.cust||'').replace(/"/g,'&quot;')}" oninput="(window._exuF['${b.batchNumber}']=window._exuF['${b.batchNumber}']||{}).cust=this.value" style="width:280px;padding:6px 8px;font-size:12px;border:1px solid var(--border);border-radius:6px">
@@ -6172,8 +6201,10 @@ function _exuFiltClear(){
   _exuFilt(true);
 }
 function _exuToggle(bn){ window._exuOpen[bn]=!window._exuOpen[bn]; _exuRender(); }
-function _exuBox(bn,id,on){ const s=window._exuSel[bn]=window._exuSel[bn]||{}; if(on)s[id]=true; else delete s[id]; _exuRender(); }
-function _exuAll(bn,on){ const b=(window._exuData.batches||[]).find(x=>x.batchNumber===bn); if(!b)return; window._exuSel[bn]={}; if(on)b.boxes.forEach(x=>window._exuSel[bn][x.labelId]=true); _exuRender(); }
+function _exuBox(bn,id,on){ const s=window._exuSel[bn]=window._exuSel[bn]||{}; const b=(window._exuData.batches||[]).find(x=>x.batchNumber===bn);
+  if(on && b && b.maxBoxes!=null && Object.keys(s).length>=b.maxBoxes){ toast(`Only ${b.maxBoxes} box(es) of ${bn} can be carved out — the rest are needed to honour the SAP invoice`, '#b45309', 5000); _exuRender(); return; }   // v57Z cap
+  if(on)s[id]=true; else delete s[id]; _exuRender(); }
+function _exuAll(bn,on){ const b=(window._exuData.batches||[]).find(x=>x.batchNumber===bn); if(!b)return; window._exuSel[bn]={}; if(on){ const lim=b.maxBoxes!=null?b.maxBoxes:b.boxes.length; b.boxes.slice(0,lim).forEach(x=>window._exuSel[bn][x.labelId]=true); } _exuRender(); }   // v57Z: Select all honours the SAP cap
 async function _exuPropose(bn){
   const b=(window._exuData.batches||[]).find(x=>x.batchNumber===bn); if(!b)return;
   const sel=window._exuSel[bn]||{}; const ids=b.boxes.filter(x=>sel[x.labelId]).map(x=>x.labelId);
@@ -7202,7 +7233,11 @@ function openRebatch(preBatch){
   const opts=cands.map(bn=>{const b=getBatch(bn);return `<option value="${bn}" ${bn===preBatch?'selected':''}>${bn}${b?` — ${b.customer||'—'} · size ${b.size??'?'} · ${b.status||''}`:''}</option>`;}).join('');
   const sizeOpts = Object.keys(PACK_SIZES).map(s=>`<option value="${s}">${s} (${PACK_SIZES[s]} L/box)</option>`).join('');
   const mode = window._rbMode || 'merge';
-  openModal('Re-batch Legacy Stock', 'Fresh blue R-series labels for pre-Sunloc stock', `
+  const RET = window._rbReturn || null;   // v57Y: re-batch / re-customer drawn from return stock
+  openModal(RET ? `Return Stock — ${mode==='standalone'?'Re-customer':'Re-batch'}` : 'Re-batch Legacy Stock', RET ? `Credit note ${RET.cnNo} against invoice ${RET.invoiceNo||'—'} (${RET.origBatch}) — ${(RET.available||0).toFixed(2)} L available` : 'Fresh blue R-series labels for pre-Sunloc stock', `
+    ${RET ? `<div class="alert alert-info" style="font-size:12px;margin-bottom:10px">↩ <b>Return stock.</b> ${mode==='standalone'
+      ? `The returned capsules become a <b>new child batch of ${RET.origBatch}</b> for a <b>new customer</b> — numbered like any re-customer (${RET.origBatch}A, B, … — the next free letter is allocated on confirm; nothing on the label says "return"). Fresh blue R-labels (orange twins if printed) and a Dispatch Planning row for fresh invoicing. Size, colour, PC code and mfg month are pre-filled from the original invoice; enter the new customer and the SAP Sales Order for them.`
+      : `The returned capsules are merged into a <b>current Sunloc batch</b> and ship under its labels and invoice. Quantity is capped at what is still available on the credit note.`}</div>` : ''}
     <div class="alert alert-warning" style="font-size:12px;margin-bottom:10px">R-labels are recorded apart from production: they never enter WIP, A-grade or packed counts. They are scanned <b>IN at Packing</b>, then <b>OUT at Dispatch</b>, and count in Dispatch and invoice reconciliation.</div>
     <div id="rb-err-top" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;font-size:12px"></div>
     <div style="display:flex;gap:14px;margin-bottom:10px;font-size:12px">
@@ -7246,7 +7281,8 @@ function openRebatch(preBatch){
     <div class="text-sm text-muted mb-8">The batch keeps its own number on the blue label. It is not in Planning, so it never appears in production reports; a SAP invoice raised against it shows in Over-invoiced with the legacy remark. Printed → matching orange labels are created too.</div>`}
     <div class="form-group"><label>Note</label><input type="text" id="rb-note" class="form-control" placeholder="(optional — reason / customer instruction)"></div>
     <div id="rb-err" style="font-size:12px;color:#dc2626"></div>`,
-    [{label:'Cancel',cls:'btn-secondary',onclick:closeModal},{label:'Next → box plan',cls:'btn-primary',onclick:()=>{ try{ _rbPreview(); }catch(e){ _rbShowErr('Cannot proceed: '+e.message); } }}]);
+    [{label:'Cancel',cls:'btn-secondary',onclick:()=>{ window._rbReturn=null; closeModal(); }},{label:'Next → box plan',cls:'btn-primary',onclick:()=>{ try{ _rbPreview(); }catch(e){ _rbShowErr('Cannot proceed: '+e.message); } }}]);
+  if (RET) _v57yPrefillRebatch();   // v57Y
 }
 async function _rbPost(body){
   const r=await fetch(serverUrl+'/api/tracking/rebatch',{method:'POST',headers:{'Content-Type':'application/json','x-session-token':currentUser?.token||''},body:JSON.stringify(body),signal:AbortSignal.timeout(30000)});
@@ -7256,6 +7292,7 @@ function _rbGather(){
   const v=id=>(document.getElementById(id)?.value||'').trim();
   const mode=window._rbMode||'merge';
   const body={ mode, legacyRef:v('rb-legacy').toUpperCase(), qtyLakhs:parseFloat(v('rb-qty')||'0')||0, note:v('rb-note') };
+  if(window._rbReturn) body.returnId=window._rbReturn.id;   // v57Y: drawn from return stock — server caps at the available balance
   if(mode==='merge') body.targetBatch=v('rb-target');
   else Object.assign(body,{ size:v('rb-size'), customer:v('rb-customer'), shipTo:v('rb-shipto'), billTo:v('rb-billto'), colourCap:v('rb-cap').toUpperCase(), colourBody:v('rb-body').toUpperCase(), pcCode:v('rb-pc'), poNumber:v('rb-po'), mfg:v('rb-mfg'), isPrinted:v('rb-printed')==='1', printMatter:v('rb-pm'), sapDocNum:v('rb-so'), cardCode:v('rb-cardcode') });
   return body;
@@ -7282,6 +7319,7 @@ async function _rbPreview(){
       ${p.soWarning?`<div style="margin-bottom:8px;padding:8px 10px;border-radius:6px;background:#fffbeb;color:#92400e;border:1px solid #fde68a;font-size:12px">⚠️ ${p.soWarning}</div>`:''}
       <div style="font-size:12px;color:var(--text2);margin-bottom:8px">Labels below carry <b>${p.targetBatch}</b>'s ${p.mode==='standalone'?'hand-entered':'own'} blue-label details (${p.isPrinted?'printed':'unprinted'} flow) and print as R-${p.startFrom}…R-${p.startFrom+p.boxes-1}.${p.oranges?` <b>${p.targetBatch} is a printed batch</b>, so ${p.oranges} matching <span style="color:#c2410c">orange</span> PI-verification label(s) (R-${p.startFrom}…R-${p.startFrom+p.boxes-1}) are created too.`:''} Nothing is written until you confirm. After confirming you get two print commands — blues from the GF AIM PC, oranges from the PI PC.</div>
       <div class="tbl-wrap" style="max-height:320px;overflow:auto"><table><thead><tr><th>Label</th><th>Batch</th><th>Customer</th><th>Colour</th><th>PC</th><th>Size</th><th style="text-align:right">Qty (L)</th></tr></thead><tbody>${rows}</tbody></table></div>
+      ${p.returnId?`<div style="margin-bottom:8px;padding:8px 10px;border-radius:6px;background:#ecfdf5;color:#065f46;border:1px solid #a7f3d0;font-size:12px">↩ Drawn from <b>return stock</b> — credit note ${p.returnCn} against invoice ${p.returnInvoice||'—'}; ${(p.returnAvailable||0).toFixed(2)} L available before this, ${Math.max(0,(p.returnAvailable||0)-p.qtyLakhs).toFixed(2)} L will remain.</div>`:''}
       <div style="font-size:11px;color:var(--text3);margin-top:8px">Legacy ref <b>${legacyRef}</b> is stored on every label and in the Re-batch Log${note?` · note: ${note}`:''}.</div>
       <div id="rb-err2" style="font-size:12px;color:#dc2626"></div>`,
       [{label:'← Back',cls:'btn-secondary',onclick:()=>openRebatch(targetBatch)},{label:`Confirm — create ${p.boxes} label(s)${p.oranges?` + ${p.oranges} orange`:''}`,cls:'btn-primary',onclick:()=>_rbConfirm(window._rbLastBody||body)}]);
@@ -7297,7 +7335,8 @@ async function _rbConfirm(body){
     ls.concat(os).forEach(l=>{ if(!state.labels.find(x=>x.id===l.id)) state.labels.push(l); });
     os.forEach(o=>{ if(!o.qrData) o.qrData=generateQRData(o); });   // v53Q: orange QR built client-side like autoGenerateOrangeLabel
     _v53tSyncVirtualBatches();   // v53T: a standalone legacy batch becomes resolvable immediately
-    try{ trkAuditLog('REBATCH_LEGACY_CLIENT', `${body.legacyRef} → ${j.plan.targetBatch}: ${j.plan.qtyLakhs} L, ${ls.length} R-label(s)${os.length?` + ${os.length} orange`:''}`); }catch(_){}
+    try{ trkAuditLog(body.returnId?'RETURN_REBATCH_CLIENT':'REBATCH_LEGACY_CLIENT', `${body.legacyRef} → ${j.plan.targetBatch}: ${j.plan.qtyLakhs} L, ${ls.length} R-label(s)${os.length?` + ${os.length} orange`:''}${body.returnId?` (return stock CN ${j.plan.returnCn||''})`:''}`); }catch(_){}
+    window._rbReturn=null; _v57yRSRows=null;   // v57Y: the Return Stock view reloads with the new balance
     closeModal();
     toast(`♻️ Re-batched ${body.legacyRef} → ${j.plan.targetBatch}: ${ls.length} R-label(s)${os.length?` + ${os.length} orange`:''}`,'var(--green)');
     renderPage(currentPage);
@@ -8565,6 +8604,431 @@ function _v51dExportOverInv() {
   XLSX.utils.book_append_sheet(wb, ws, 'Over-invoiced');
   XLSX.writeFile(wb, `over-invoiced-${new Date().toISOString().slice(0,10)}.xlsx`);
 }
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// v57Y (Ishan, 9 Oct) — GENERATED INVOICES: cancellations, returns, Gross/Net, Return Stock
+//   • Gross / Net selector: GROSS = every invoice SAP raised (cancelled ones included, struck through);
+//     NET = cancelled invoices out, credit-note quantities / amounts netted off their invoices. KPI
+//     tiles and the Excel export follow the selection; the export always adds a Reconciliation sheet.
+//   • ↩ Return & Cancel view: one row per cancelled invoice (↔ its A/R Invoice-Cancellation number)
+//     and per returned invoice (↔ its credit note number). Over-invoiced filters + Nature. Export.
+//   • 📦 Return Stock view (PM / Dispatch / Admin): per credit note — original invoice, credit note,
+//     returned, re-deployed, dispatched from return (by calendar month), available. PM / Admin can
+//     ♻ Re-batch (merge into a current batch) or 🔄 Re-customer (next child letter, `<batch>A`) the available
+//     stock — fresh R-labels through the existing re-batch machinery, fresh invoicing through the
+//     existing flows; shipped boxes show as "dispatch from Return" with their own identification.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+function _v57yFig(inv) {
+  const net = window._giBasis === 'net';
+  const boxes = parseInt(inv.total_boxes) || 0, qty = parseFloat(inv.total_qty_lakhs) || 0, amount = parseFloat(inv.total_amount) || 0;
+  if (!net) return { boxes, qty, amount };
+  const cq = parseFloat(inv.cn_qty) || 0, cb = parseInt(inv.cn_boxes) || 0, ca = parseFloat(inv.cn_amount) || 0;
+  return { boxes: Math.max(0, boxes - cb), qty: Math.max(0, Math.round((qty - cq) * 100) / 100), amount: Math.max(0, amount - ca) };
+}
+function _v57yBasisRows(list) {
+  if (window._giBasis !== 'net') return list;
+  return (list || []).filter(i => (i.inv_kind || 'invoice') !== 'cancelled');
+}
+function _v57ySetBasis() {
+  window._giBasis = (document.getElementById('v57y-gi-basis')?.value === 'net') ? 'net' : 'gross';
+  try { localStorage.setItem('sunloc_gi_basis', window._giBasis); } catch (_) {}
+  _v39_renderInvoiceTable();
+}
+try { window._giBasis = localStorage.getItem('sunloc_gi_basis') === 'net' ? 'net' : 'gross'; } catch (_) { window._giBasis = 'gross'; }
+function _v57yBtn(id, on, colour) {
+  const b = document.getElementById(id); if (!b) return;
+  if (on) { b.style.background = colour; b.style.color = '#fff'; b.classList.remove('btn-secondary'); }
+  else { b.style.background = ''; b.style.color = ''; b.classList.add('btn-secondary'); }
+}
+function _v57yResetViews() {
+  window._giRC = false; window._giRS = false; _v57yRCRows = null; _v57yRSRows = null;
+  _v57yBtn('v57y-rc-toggle', false); _v57yBtn('v57y-rs-toggle', false);
+}
+let _v57yRCRows = null, _v57yRSRows = null, _v57yTimer = null;
+function _v57yStatus(txt) { const st = document.getElementById('v39-gi-status-text'); if (st) st.textContent = txt; }
+async function _v57yToggleRC() {
+  const on = !window._giRC;
+  _v57yResetViews();
+  if (window._giOverInv) { window._giOverInv = false; _v51dOverInvRows = null; _v51dOverInvUnattr = null; _v57yBtn('v51d-overinv-toggle', false); }
+  window._giRC = on; _v57yBtn('v57y-rc-toggle', on, '#b45309');
+  if (on) await _v57yLoadRC(); else { _v39_renderInvoiceTable(); _v57yStatus(`${_v39_invoiceList.length} invoice${_v39_invoiceList.length===1?'':'s'} loaded`); }
+}
+async function _v57yToggleRS() {
+  const on = !window._giRS;
+  _v57yResetViews();
+  if (window._giOverInv) { window._giOverInv = false; _v51dOverInvRows = null; _v51dOverInvUnattr = null; _v57yBtn('v51d-overinv-toggle', false); }
+  window._giRS = on; _v57yBtn('v57y-rs-toggle', on, '#047857');
+  if (on) await _v57yLoadRS(); else { _v39_renderInvoiceTable(); _v57yStatus(`${_v39_invoiceList.length} invoice${_v39_invoiceList.length===1?'':'s'} loaded`); }
+}
+async function _v57yLoadRC() {
+  const el = document.getElementById('v39-gi-table');
+  if (el) el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3)">Loading returns & cancellations…</div>';
+  try {
+    const r = await fetch(serverUrl + '/api/invoice/returns-cancels', { signal: AbortSignal.timeout(30000) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'unknown');
+    _v57yRCRows = j.rows || [];
+    _v57yStatus(`${j.counts?.cancel ?? 0} cancelled · ${j.counts?.return ?? 0} returned`);
+    _v57yRenderRC();
+  } catch (e) { if (el) el.innerHTML = `<div style="padding:20px;text-align:center;color:var(--red)">Could not load: ${e.message}</div>`; }
+}
+async function _v57yLoadRS() {
+  const el = document.getElementById('v39-gi-table');
+  if (el) el.innerHTML = '<div style="padding:20px;text-align:center;color:var(--text3)">Loading return stock…</div>';
+  try {
+    const r = await fetch(serverUrl + '/api/invoice/return-stock', { signal: AbortSignal.timeout(30000) });
+    const j = await r.json();
+    if (!j.ok) throw new Error(j.error || 'unknown');
+    _v57yRSRows = j.rows || [];
+    _v57yStatus(`${_v57yRSRows.length} credit note${_v57yRSRows.length===1?'':'s'} · ${_v57yRSRows.filter(x=>x.available_qty>0).length} with stock available`);
+    _v57yRenderRS();
+  } catch (e) { if (el) el.innerHTML = `<div style="padding:20px;text-align:center;color:var(--red)">Could not load: ${e.message}</div>`; }
+}
+// Shared filter bar (the Over-invoiced set + Nature where asked). Debounced like v51ZC so typing keeps focus.
+function _v57yFilters(p) {
+  return {
+    fb: (document.getElementById(p + '-fbatch')?.value || '').trim().toUpperCase(),
+    fc: (document.getElementById(p + '-fcust')?.value || '').trim().toUpperCase(),
+    df: (document.getElementById(p + '-dfrom')?.value || '').trim(),
+    dt: (document.getElementById(p + '-dto')?.value || '').trim(),
+    pm: (document.getElementById(p + '-pmonth')?.value || '').trim(),
+    nat: (document.getElementById(p + '-nature')?.value || '').trim(),
+  };
+}
+function _v57yInput(renderFn, p) {
+  clearTimeout(_v57yTimer);
+  _v57yTimer = setTimeout(() => {
+    const el = document.activeElement;
+    const id = el && (el.id === p + '-fbatch' || el.id === p + '-fcust') ? el.id : null;
+    const pos = id ? el.selectionStart : 0;
+    renderFn();
+    if (id) { const n = document.getElementById(id); if (n) { n.focus(); try { n.setSelectionRange(pos, pos); } catch (e) {} } }
+  }, 250);
+}
+function _v57yPmLabel(ym) { if (!ym) return '—'; const [y, m] = ym.split('-'); return new Date(parseInt(y, 10), parseInt(m, 10) - 1, 1).toLocaleString('en-IN', { month: 'short', year: '2-digit' }); }
+function _v57yD(d) { return _v51dOverInvDateFmt(d); }
+function _v57yFilterBar(p, f, rows, withNature, extra) {
+  const pmOpts = [...new Set((rows || []).map(r => r.prodMonth).filter(Boolean))].sort().reverse().map(ym => `<option value="${ym}" ${f.pm===ym?'selected':''}>${_v57yPmLabel(ym)}</option>`).join('');
+  const rf = p === 'v57y-rc' ? '_v57yRenderRC' : '_v57yRenderRS';
+  return `
+      <input id="${p}-fbatch" placeholder="Filter batch…" value="${f.fb}" oninput="_v57yInput(${rf},'${p}')" class="form-control" style="width:130px;padding:5px 8px;font-size:12px;font-family:var(--mono)">
+      <input id="${p}-fcust" placeholder="Filter customer…" value="${f.fc}" oninput="_v57yInput(${rf},'${p}')" class="form-control" style="width:170px;padding:5px 8px;font-size:12px">
+      <span style="font-size:11px;color:var(--text3)">Inv. date</span>
+      <input id="${p}-dfrom" type="date" value="${f.df}" onchange="${rf}()" class="form-control" style="width:135px;padding:4px 6px;font-size:11px" title="Invoice date from">
+      <span style="font-size:11px;color:var(--text3)">→</span>
+      <input id="${p}-dto" type="date" value="${f.dt}" onchange="${rf}()" class="form-control" style="width:135px;padding:4px 6px;font-size:11px" title="Invoice date to">
+      <select id="${p}-pmonth" onchange="${rf}()" class="form-control" style="width:150px;padding:4px 6px;font-size:11px" title="Month of production of the invoiced batch (frozen v51G rule)">
+        <option value="">All prod. months</option>${pmOpts}
+      </select>
+      ${withNature ? `<select id="${p}-nature" onchange="${rf}()" class="form-control" style="width:130px;padding:4px 6px;font-size:11px" title="Nature of the entry">
+        <option value="">Return + Cancel</option><option value="return" ${f.nat==='return'?'selected':''}>Return only</option><option value="cancel" ${f.nat==='cancel'?'selected':''}>Cancel only</option>
+      </select>` : ''}
+      ${extra || ''}`;
+}
+function _v57yInRange(d, df, dt) { if (!df && !dt) return true; if (!d) return false; const x = String(d).slice(0, 10); if (df && x < df) return false; if (dt && x > dt) return false; return true; }
+function _v57yFilteredRC() {
+  const f = _v57yFilters('v57y-rc');
+  return (_v57yRCRows || []).filter(r =>
+    (!f.fb || String(r.batch || '').toUpperCase().includes(f.fb)) &&
+    (!f.fc || String(r.customer || '').toUpperCase().includes(f.fc)) &&
+    (!f.pm || (r.prodMonth || '') === f.pm) &&
+    (!f.nat || r.nature === f.nat) &&
+    _v57yInRange(r.invoice_date || r.linked_date, f.df, f.dt));
+}
+function _v57yRenderRC() {
+  const el = document.getElementById('v39-gi-table');
+  if (!el || !_v57yRCRows) return;
+  const f = _v57yFilters('v57y-rc');
+  const rows = _v57yFilteredRC();
+  const canAct = currentDept === 'admin' || currentDept === 'planning';
+  const natBadge = r => r.nature === 'cancel'
+    ? '<span style="background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">✖ CANCEL</span>'
+    : '<span style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;padding:1px 6px;border-radius:3px;font-size:10px;font-weight:700">↩ RETURN</span>';
+  const body = rows.map(r => `<tr>
+      <td style="text-align:center">${natBadge(r)}</td>
+      <td class="td-mono fw-bold" style="color:#0891b2">${r.invoice_no || '—'}${r.orig_missing ? ' <span style="color:#b45309;font-size:9px" title="The original invoice is not in Sunloc (older than every SAP pull) — only the linked document is">not in Sunloc</span>' : ''}</td>
+      <td class="td-mono" style="font-size:11px">${_v57yD(r.invoice_date) || '—'}</td>
+      <td>${(r.customer || '—').substring(0, 32)}</td>
+      <td class="td-mono">${r.batch || '—'}</td>
+      <td class="td-mono" style="text-align:center">${_v57yPmLabel(r.prodMonth)}</td>
+      <td class="td-mono" style="font-size:11px">${r.pc_code || '—'}</td><td style="font-size:11px">${r.size || '—'}</td><td style="font-size:11px">${(r.colour || '—').substring(0, 18)}</td>
+      <td class="td-mono" style="text-align:right">${r.boxes || 0}</td>
+      <td class="td-mono" style="text-align:right">${(r.qty || 0).toFixed(2)}${r.nature === 'return' && r.invoice_qty ? `<div style="font-size:9px;color:var(--text3)">of ${r.invoice_qty.toFixed(2)} invoiced</div>` : ''}</td>
+      <td class="td-mono" style="text-align:right">₹${Math.round(r.amount || 0).toLocaleString('en-IN')}</td>
+      <td class="td-mono fw-bold" style="${r.nature === 'cancel' ? 'color:#b91c1c' : 'color:#92400e'}">${r.linked_no || '—'}<div style="font-size:9px;font-weight:400;color:var(--text3)">${r.linked_kind}${r.linked_date ? ' · ' + _v57yD(r.linked_date) : ''}${r.link_method ? ' · link: ' + r.link_method.replace('_', ' ') : ''}</div>
+        ${r.nature === 'return' && canAct ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px" onclick="event.stopPropagation();_v57yLinkCn('${r.cn_id}','${r.invoice_no && r.invoice_no !== '—' ? r.invoice_no : ''}')" title="Hand-link this credit note to the invoice it returns against">${r.orig_missing ? '🔗 link invoice' : '✎ re-link'}</button>` : ''}</td>
+      <td style="text-align:center;font-size:11px">${r.nature === 'cancel' ? 'Full' : (r.full === null ? '—' : (r.full ? 'Full' : '<span style="color:#b45309;font-weight:600">Partial</span>'))}${r.nature === 'return' && r.available_qty != null ? `<div style="font-size:9px;color:#047857">${r.available_qty.toFixed(2)} L available</div>` : ''}</td>
+    </tr>`).join('');
+  const nC = rows.filter(r => r.nature === 'cancel'), nR = rows.filter(r => r.nature === 'return');
+  const sum = (arr, k) => arr.reduce((a, r) => a + (r[k] || 0), 0);
+  el.innerHTML = `
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <b style="font-size:13px;color:#b45309">↩ Return &amp; Cancel — SAP cancellations and credit notes</b>
+      ${_v57yFilterBar('v57y-rc', f, _v57yRCRows, true, `
+      <button class="btn btn-sm btn-secondary" onclick="_v57yExportRC()">📤 Export Excel</button>
+      ${canAct ? `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v57yRepullCn()" title="Pull A/R credit memos (one year back) and re-run the cancellation pairing now — the 5-minute poller keeps both current otherwise">🔄 Re-pull returns &amp; cancels</button>` : ''}
+      <span style="margin-left:auto;font-size:11px;color:var(--text3)">${rows.length} of ${_v57yRCRows.length} shown</span>`)}
+    </div>
+    <div style="padding:8px 12px;font-size:11px;color:var(--text2);border-bottom:1px solid var(--border);display:flex;gap:18px;flex-wrap:wrap">
+      <span><b style="color:#b91c1c">${nC.length}</b> cancelled · ${sum(nC,'qty').toFixed(2)} L · ₹${Math.round(sum(nC,'amount')).toLocaleString('en-IN')}</span>
+      <span><b style="color:#92400e">${nR.length}</b> returned · ${sum(nR,'qty').toFixed(2)} L · ₹${Math.round(sum(nR,'amount')).toLocaleString('en-IN')} on credit notes</span>
+      <span style="color:var(--text3)">A cancelled invoice is paired with the A/R Invoice-Cancellation SAP raised against it (e.g. 2667 ↔ 2668); a returned invoice with its A/R Credit Memo.</span>
+    </div>
+    <div style="max-height:520px;overflow:auto">
+      <table style="width:100%">
+        <thead style="position:sticky;top:0;background:var(--bg2,#fff);z-index:1"><tr>
+          <th style="text-align:center">NATURE</th><th>INVOICE #</th><th>INV DATE</th><th>CUSTOMER</th><th>BATCH</th><th style="text-align:center">PROD MONTH</th>
+          <th>PC</th><th>SIZE</th><th>COLOUR</th><th style="text-align:right">BOXES</th><th style="text-align:right" title="Cancel: the invoice quantity. Return: the credit-note quantity">QTY (L)</th><th style="text-align:right" title="Cancel: the invoice value. Return: the credit-note value">AMOUNT</th>
+          <th>LINKED DOC #</th><th style="text-align:center">FULL / PARTIAL</th>
+        </tr></thead>
+        <tbody>${body || '<tr><td colspan="14" style="text-align:center;padding:16px;color:var(--text3)">No returns or cancellations for these filters</td></tr>'}</tbody>
+        ${rows.length ? `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">
+          <td>TOTAL (${rows.length})</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>
+          <td class="td-mono" style="text-align:right">${sum(rows,'boxes')}</td>
+          <td class="td-mono" style="text-align:right">${sum(rows,'qty').toFixed(2)}</td>
+          <td class="td-mono" style="text-align:right">₹${Math.round(sum(rows,'amount')).toLocaleString('en-IN')}</td><td></td><td></td>
+        </tr></tfoot>` : ''}
+      </table>
+    </div>`;
+}
+// Report-E colour language (v50W): cyan header, pink total, thin borders.
+function _v57yStyleSheet(ws, kinds, NC, redCol) {
+  try {
+    const _thin = { style: 'thin', color: { rgb: '9AA5B1' } };
+    const _bAll = { top: _thin, bottom: _thin, left: _thin, right: _thin };
+    const _set = (r, c, st) => { const a = XLSX.utils.encode_cell({ r, c }); if (!ws[a]) ws[a] = { t: 's', v: '' }; ws[a].s = st; };
+    kinds.forEach((kind, r) => {
+      if (kind === 'title') { _set(r, 0, { font: { bold: true, sz: 14 } }); return; }
+      if (kind === 'subtitle') { _set(r, 0, { font: { italic: true, sz: 10, color: { rgb: '555555' } } }); return; }
+      if (kind === 'spacer') return;
+      for (let c = 0; c < NC; c++) {
+        if (kind === 'hdr') _set(r, c, { font: { bold: true, sz: 10 }, fill: { patternType: 'solid', fgColor: { rgb: '20FFFF' } }, border: _bAll, alignment: { horizontal: 'center', vertical: 'center', wrapText: true } });
+        else if (kind === 'grand') _set(r, c, { font: { bold: true, sz: 10 }, fill: { patternType: 'solid', fgColor: { rgb: 'FC02FF' } }, border: _bAll });
+        else if (kind === 'data') _set(r, c, { font: { sz: 10, ...(c === redCol ? { bold: true, color: { rgb: 'DC2626' } } : {}) }, border: _bAll });
+      }
+    });
+  } catch (_e) {}
+}
+function _v57yExportRC() {
+  if (!_v57yRCRows) return;
+  const rows = _v57yFilteredRC();
+  const f = _v57yFilters('v57y-rc');
+  const wb = XLSX.utils.book_new();
+  const HDR = ['NATURE','INVOICE #','INV DATE','CUSTOMER','BATCH','PROD MONTH','PC CODE','SIZE','COLOUR','BOXES','QTY (L)','INVOICE QTY (L)','TAXABLE','IGST','AMOUNT','LINKED DOC #','LINKED DOC TYPE','LINKED DOC DATE','LINK METHOD','FULL / PARTIAL','AVAILABLE RETURN STOCK (L)'];
+  const NC = HDR.length; const aoa = [], kinds = [], merges = [];
+  const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
+  merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: NC - 1 } }); _push(['Return & Cancel — SAP cancellations and A/R credit notes against Sunloc invoices'], 'title');
+  const note = [(f.df || f.dt) ? `Invoice date ${f.df || '…'} → ${f.dt || '…'}` : '', f.pm ? `Prod. month ${f.pm}` : '', f.nat ? `Nature: ${f.nat}` : '', f.fb ? `Batch: ${f.fb}` : '', f.fc ? `Customer: ${f.fc}` : ''].filter(Boolean).join('  |  ');
+  merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: NC - 1 } }); _push([`Cancel: the invoice is paired with the A/R Invoice-Cancellation SAP raised against it. Return: the invoice is paired with its A/R Credit Memo.${note ? '  |  ' + note : ''}  |  Generated ${new Date().toLocaleString()}`], 'subtitle');
+  _push([], 'spacer'); _push(HDR, 'hdr');
+  rows.forEach(r => _push([r.nature === 'cancel' ? 'CANCEL' : 'RETURN', r.invoice_no || '—', r.invoice_date ? String(r.invoice_date).slice(0, 10) : '—', r.customer || '—', r.batch || '—', r.prodMonth || '—', r.pc_code || '—', r.size || '—', r.colour || '—',
+    r.boxes || 0, r.qty || 0, r.invoice_qty != null ? r.invoice_qty : '—', Math.round(r.taxable || 0), Math.round(r.igst || 0), Math.round(r.amount || 0),
+    r.linked_no || '—', r.linked_kind || '', r.linked_date ? String(r.linked_date).slice(0, 10) : '—', r.link_method || (r.nature === 'cancel' ? 'cancellation doc' : '—'),
+    r.nature === 'cancel' ? 'FULL' : (r.full === null ? '—' : (r.full ? 'FULL' : 'PARTIAL')), r.nature === 'return' && r.available_qty != null ? r.available_qty : ''], 'data'));
+  const sum = (arr, k) => arr.reduce((a, r) => a + (r[k] || 0), 0);
+  _push([`TOTAL (${rows.length}: ${rows.filter(r=>r.nature==='cancel').length} cancel, ${rows.filter(r=>r.nature==='return').length} return)`, '', '', '', '', '', '', '', '', sum(rows, 'boxes'), Math.round(sum(rows, 'qty') * 100) / 100, '', Math.round(sum(rows, 'taxable')), Math.round(sum(rows, 'igst')), Math.round(sum(rows, 'amount')), '', '', '', '', '', Math.round(sum(rows.filter(r=>r.nature==='return'), 'available_qty') * 100) / 100], 'grand');
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = merges;
+  ws['!cols'] = [{ wch: 9 }, { wch: 11 }, { wch: 11 }, { wch: 28 }, { wch: 14 }, { wch: 11 }, { wch: 9 }, { wch: 6 }, { wch: 16 }, { wch: 8 }, { wch: 10 }, { wch: 13 }, { wch: 12 }, { wch: 11 }, { wch: 13 }, { wch: 13 }, { wch: 24 }, { wch: 13 }, { wch: 12 }, { wch: 12 }, { wch: 16 }];
+  const R = XLSX.utils.decode_range(ws['!ref']);
+  for (let r = R.s.r; r <= R.e.r; r++) for (const c of [10, 11, 20]) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = '0.00'; }
+  for (let r = R.s.r; r <= R.e.r; r++) for (const c of [12, 13, 14]) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = '#,##0'; }
+  _v57yStyleSheet(ws, kinds, NC, 15);
+  XLSX.utils.book_append_sheet(wb, ws, 'Return & Cancel');
+  XLSX.writeFile(wb, `return-cancel-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+async function _v57yRepullCn() {
+  _v57yStatus('🔄 Pulling credit notes + pairing cancellations…');
+  try {
+    const r = await fetch(serverUrl + '/api/sap/refresh-credit-notes', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': (currentUser?.token || '') }, body: JSON.stringify({ lookbackDays: 365 }), signal: AbortSignal.timeout(120000) });
+    const j = await r.json();
+    if (j.ok) toast(`Returns & cancels [backend ${j.serverBuild || '?'}]: credit notes fetched ${j.creditNotes?.fetched ?? '?'}, linked ${j.creditNotes?.linked ?? '?'}; cancellations flagged ${j.cancellations?.flagged ?? 0}, paired ${j.cancellations?.paired ?? 0}`, 'var(--accent3)', 7000);
+    else toast('Re-pull failed: ' + (j.error || 'unknown'), '#b91c1c', 7000);
+  } catch (e) { toast('Re-pull error: ' + (e?.message || e), '#b91c1c', 6000); }
+  if (window._giRC) await _v57yLoadRC(); else if (window._giRS) await _v57yLoadRS(); else await _v39_applyInvoiceFilters();
+}
+async function _v57yLinkCn(cnId, current) {
+  const num = prompt(`Credit note → original invoice.\n\nEnter the SAP invoice NUMBER this credit note returns against (blank clears the link):`, current || '');
+  if (num === null) return;
+  try {
+    const r = await fetch(serverUrl + '/api/invoice/credit-note/' + encodeURIComponent(cnId) + '/link', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': (currentUser?.token || '') }, body: JSON.stringify({ invoiceDocNum: num.trim() }), signal: AbortSignal.timeout(20000) });
+    const j = await r.json();
+    if (!j.ok) { toast('Link failed: ' + (j.error || 'unknown'), '#b91c1c', 6000); return; }
+    toast(j.linked ? `🔗 Linked to invoice ${j.linked.doc_num}` : 'Link cleared', 'var(--green)');
+    if (window._giRC) await _v57yLoadRC(); else if (window._giRS) await _v57yLoadRS();
+  } catch (e) { toast('Link error: ' + e.message, '#b91c1c', 6000); }
+}
+// ── Return Stock ───────────────────────────────────────────────────────────────────────────────
+function _v57yFilteredRS() {
+  const f = _v57yFilters('v57y-rs');
+  const onlyAvail = !!document.getElementById('v57y-rs-avail')?.checked;
+  return (_v57yRSRows || []).filter(r =>
+    (!f.fb || String(r.batch || '').toUpperCase().includes(f.fb)) &&
+    (!f.fc || String(r.customer || '').toUpperCase().includes(f.fc)) &&
+    (!f.pm || (r.prodMonth || '') === f.pm) &&
+    (!onlyAvail || r.available_qty > 0) &&
+    _v57yInRange(r.invoice_date || r.cn_date, f.df, f.dt));
+}
+function _v57yRenderRS() {
+  const el = document.getElementById('v39-gi-table');
+  if (!el || !_v57yRSRows) return;
+  const f = _v57yFilters('v57y-rs');
+  const onlyAvail = document.getElementById('v57y-rs-avail') ? !!document.getElementById('v57y-rs-avail').checked : false;
+  const rows = _v57yFilteredRS();
+  const canAct = currentDept === 'admin' || currentDept === 'planning';
+  // dispatch from Return, by calendar month, over the filtered set
+  const byM = {}; rows.forEach(r => Object.entries(r.dispatched_by_month || {}).forEach(([ym, q]) => { byM[ym] = Math.round(((byM[ym] || 0) + q) * 100) / 100; }));
+  const monthChips = Object.keys(byM).sort().reverse().map(ym => `<span style="background:#ecfdf5;border:1px solid #6ee7b7;color:#047857;border-radius:4px;padding:2px 8px;font-family:var(--mono);font-size:11px" title="Boxes re-batched / re-customered from return stock and scanned OUT at Dispatch in this calendar month">${_v57yPmLabel(ym)}: ${byM[ym].toFixed(2)} L</span>`).join(' ');
+  const body = rows.map(r => `<tr style="${r.available_qty > 0 ? '' : 'opacity:.75'}">
+      <td class="td-mono fw-bold" style="color:#92400e">${r.cn_no || '—'}<div style="font-size:9px;font-weight:400;color:var(--text3)">${_v57yD(r.cn_date) || ''}${r.num_at_card ? ' · ref ' + r.num_at_card : ''}</div></td>
+      <td class="td-mono fw-bold" style="color:#0891b2">${r.invoice_no || '<span style="color:#b45309">not linked</span>'}<div style="font-size:9px;font-weight:400;color:var(--text3)">${_v57yD(r.invoice_date) || ''}${r.invoice_qty ? ' · ' + r.invoice_qty.toFixed(2) + ' L invoiced' : ''}</div>
+        ${canAct ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px" onclick="_v57yLinkCn('${r.id}','${r.invoice_no || ''}')" title="Hand-link this credit note to the invoice it returns against">${r.invoice_no ? '✎' : '🔗 link'}</button>` : ''}</td>
+      <td>${(r.customer || '—').substring(0, 32)}</td>
+      <td class="td-mono">${r.batch || '—'}<div style="font-size:9px;color:var(--text3)">${_v57yPmLabel(r.prodMonth)}</div></td>
+      <td style="font-size:11px"><span class="td-mono">${r.pc_code || '—'}</span> · ${r.size || '—'} · ${(r.colour || '—').substring(0, 16)}</td>
+      <td class="td-mono" style="text-align:right">${r.returned_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${r.returned_boxes} box${r.returned_boxes===1?'':'es'} · ${r.full === null ? '—' : (r.full ? 'full' : '<span style="color:#b45309">partial</span>')}</div></td>
+      <td class="td-mono" style="text-align:right">${r.redeployed_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${(r.redeploys || []).map(d => `${d.mode === 'standalone' ? '🔄' : '♻'} ${d.targetBatch} ${d.qty.toFixed(2)} L`).join('<br>') || '—'}</div></td>
+      <td class="td-mono" style="text-align:right;color:#047857">${r.dispatched_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${Object.keys(r.dispatched_by_month || {}).sort().map(ym => `${_v57yPmLabel(ym)}: ${r.dispatched_by_month[ym].toFixed(2)}`).join('<br>') || '—'}</div></td>
+      <td class="td-mono fw-bold" style="text-align:right;${r.available_qty > 0 ? 'color:#047857' : 'color:var(--text3)'}">${r.available_qty.toFixed(2)}<div style="font-size:9px;font-weight:400;color:var(--text3)">${r.available_boxes} box${r.available_boxes===1?'':'es'}</div></td>
+      <td style="text-align:center;white-space:nowrap">${canAct && r.available_qty > 0 ? `
+        <button class="btn btn-sm" style="background:#047857;color:#fff;border:none;font-size:10px;padding:3px 7px" onclick="_v57yRebatchFromReturn('${r.id}','merge')" title="Merge this return stock into a current Sunloc batch — fresh R-labels with that batch's details; invoice through the batch's usual flow">♻ Re-batch</button>
+        <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;font-size:10px;padding:3px 7px" onclick="_v57yRebatchFromReturn('${r.id}','standalone')" title="Re-customer: the return stock becomes the next child batch of ${(r.batch||'').split(/[\s,]+/)[0] || ''} (A, B, …) for a new customer, numbered like any re-customer — fresh R-labels; a Dispatch Planning row is created for fresh invoicing">🔄 Re-customer</button>` : (r.available_qty > 0 ? '<span style="font-size:10px;color:var(--text3)">PM / Admin</span>' : '<span style="font-size:10px;color:var(--text3)">fully re-deployed</span>')}</td>
+    </tr>`).join('');
+  const sum = k => rows.reduce((a, r) => a + (r[k] || 0), 0);
+  el.innerHTML = `
+    <div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
+      <b style="font-size:13px;color:#047857">📦 Return Stock — material returned on credit notes</b>
+      ${_v57yFilterBar('v57y-rs', f, _v57yRSRows, false, `
+      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="v57y-rs-avail" ${onlyAvail?'checked':''} onchange="_v57yRenderRS()"> available only</label>
+      <button class="btn btn-sm btn-secondary" onclick="_v57yExportRS()">📤 Export Excel</button>
+      ${canAct ? `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v57yRepullCn()" title="Pull A/R credit memos (one year back) now">🔄 Re-pull from SAP</button>` : ''}
+      <span style="margin-left:auto;font-size:11px;color:var(--text3)">${rows.length} of ${_v57yRSRows.length} shown</span>`)}
+    </div>
+    <div style="padding:8px 12px;font-size:11px;color:var(--text2);border-bottom:1px solid var(--border);display:flex;gap:18px;flex-wrap:wrap;align-items:center">
+      <span>Returned <b>${sum('returned_qty').toFixed(2)} L</b></span>
+      <span>Re-deployed <b>${sum('redeployed_qty').toFixed(2)} L</b></span>
+      <span>Available <b style="color:#047857">${sum('available_qty').toFixed(2)} L</b></span>
+      <span style="border-left:1px solid var(--border);padding-left:14px">Dispatch from Return by month: ${monthChips || '<span style="color:var(--text3)">none yet</span>'}</span>
+    </div>
+    <div style="max-height:520px;overflow:auto">
+      <table style="width:100%">
+        <thead style="position:sticky;top:0;background:var(--bg2,#fff);z-index:1"><tr>
+          <th>CREDIT NOTE</th><th>ORIGINAL INVOICE</th><th>CUSTOMER</th><th>BATCH · PROD MONTH</th><th>PC · SIZE · COLOUR</th>
+          <th style="text-align:right" title="Quantity on the credit note">RETURNED (L)</th>
+          <th style="text-align:right" title="Re-batched / re-customered out of this return (fresh R-labels)">RE-DEPLOYED (L)</th>
+          <th style="text-align:right" title="Of the re-deployed stock, what has been scanned OUT at Dispatch — by calendar month">DISPATCHED FROM RETURN (L)</th>
+          <th style="text-align:right" title="Returned − re-deployed">AVAILABLE (L)</th><th style="text-align:center">ACTION</th>
+        </tr></thead>
+        <tbody>${body || '<tr><td colspan="10" style="text-align:center;padding:16px;color:var(--text3)">No return stock for these filters</td></tr>'}</tbody>
+        ${rows.length ? `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">
+          <td>TOTAL (${rows.length})</td><td></td><td></td><td></td><td></td>
+          <td class="td-mono" style="text-align:right">${sum('returned_qty').toFixed(2)}</td>
+          <td class="td-mono" style="text-align:right">${sum('redeployed_qty').toFixed(2)}</td>
+          <td class="td-mono" style="text-align:right;color:#047857">${sum('dispatched_qty').toFixed(2)}</td>
+          <td class="td-mono" style="text-align:right;color:#047857">${sum('available_qty').toFixed(2)}</td><td></td>
+        </tr></tfoot>` : ''}
+      </table>
+    </div>
+    <div style="padding:6px 12px;font-size:10px;color:var(--text3)">Available = returned − re-deployed. Re-batched / re-customered boxes carry R-labels (legacy ref <span class="td-mono">&lt;batch&gt;-RET</span>) and follow the short flow only: <b>scan IN at Packing → scan OUT at Dispatch</b> — no AIM / Printing / PI scanning. Once out they count as "dispatch from Return" in that calendar month (Report E → "Dispatch from Return" sheet), never in Reports A–F's production or dispatch figures; the original batch keeps its own production-month record. The undispatched balance stays available here.</div>`;
+}
+function _v57yExportRS() {
+  if (!_v57yRSRows) return;
+  const rows = _v57yFilteredRS();
+  const f = _v57yFilters('v57y-rs');
+  const wb = XLSX.utils.book_new();
+  const HDR = ['CREDIT NOTE #','CN DATE','CN REF (NumAtCard)','ORIGINAL INVOICE #','INVOICE DATE','INVOICE QTY (L)','CUSTOMER','CARD CODE','BATCH','PROD MONTH','PC CODE','SIZE','COLOUR','RETURNED (L)','RETURNED BOXES','FULL / PARTIAL','CN AMOUNT','RE-DEPLOYED (L)','RE-DEPLOYED TO','DISPATCHED FROM RETURN (L)','DISPATCHED BY MONTH','AVAILABLE (L)','AVAILABLE BOXES','LINK METHOD','CN REMARKS'];
+  const NC = HDR.length; const aoa = [], kinds = [], merges = [];
+  const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
+  merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: NC - 1 } }); _push(['Return Stock — material returned on A/R credit notes: original invoice, credit note, re-deployment and availability'], 'title');
+  const note = [(f.df || f.dt) ? `Invoice date ${f.df || '…'} → ${f.dt || '…'}` : '', f.pm ? `Prod. month ${f.pm}` : '', f.fb ? `Batch: ${f.fb}` : '', f.fc ? `Customer: ${f.fc}` : '', document.getElementById('v57y-rs-avail')?.checked ? 'Available only' : ''].filter(Boolean).join('  |  ');
+  merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: NC - 1 } }); _push([`Available = returned − re-deployed (re-batch / re-customer). Dispatched from Return = re-deployed boxes scanned OUT at Dispatch, by calendar month.${note ? '  |  ' + note : ''}  |  Generated ${new Date().toLocaleString()}`], 'subtitle');
+  _push([], 'spacer'); _push(HDR, 'hdr');
+  rows.forEach(r => _push([r.cn_no || '—', r.cn_date ? String(r.cn_date).slice(0, 10) : '—', r.num_at_card || '', r.invoice_no || '—', r.invoice_date ? String(r.invoice_date).slice(0, 10) : '—', r.invoice_qty || 0,
+    r.customer || '—', r.card_code || '', r.batch || '—', r.prodMonth || '—', r.pc_code || '—', r.size || '—', r.colour || '—',
+    r.returned_qty, r.returned_boxes, r.full === null ? '—' : (r.full ? 'FULL' : 'PARTIAL'), Math.round(r.amount || 0),
+    r.redeployed_qty, (r.redeploys || []).map(d => `${d.targetBatch} (${d.mode}, ${d.qty.toFixed(2)} L, ${String(d.ts).slice(0, 10)})`).join('; '),
+    r.dispatched_qty, Object.keys(r.dispatched_by_month || {}).sort().map(ym => `${ym}: ${r.dispatched_by_month[ym].toFixed(2)} L`).join('; '),
+    r.available_qty, r.available_boxes, r.link_method || '—', r.comments || ''], 'data'));
+  const sum = k => rows.reduce((a, r) => a + (r[k] || 0), 0);
+  _push([`TOTAL (${rows.length} credit notes)`, '', '', '', '', Math.round(sum('invoice_qty') * 100) / 100, '', '', '', '', '', '', '', Math.round(sum('returned_qty') * 100) / 100, sum('returned_boxes'), '', Math.round(sum('amount')), Math.round(sum('redeployed_qty') * 100) / 100, '', Math.round(sum('dispatched_qty') * 100) / 100, '', Math.round(sum('available_qty') * 100) / 100, sum('available_boxes'), '', ''], 'grand');
+  const ws = XLSX.utils.aoa_to_sheet(aoa);
+  ws['!merges'] = merges;
+  ws['!cols'] = [{ wch: 13 }, { wch: 11 }, { wch: 18 }, { wch: 13 }, { wch: 11 }, { wch: 12 }, { wch: 28 }, { wch: 10 }, { wch: 14 }, { wch: 11 }, { wch: 9 }, { wch: 6 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 11 }, { wch: 12 }, { wch: 13 }, { wch: 40 }, { wch: 14 }, { wch: 30 }, { wch: 12 }, { wch: 10 }, { wch: 11 }, { wch: 48 }];
+  const R = XLSX.utils.decode_range(ws['!ref']);
+  for (let r = R.s.r; r <= R.e.r; r++) for (const c of [5, 13, 17, 19, 21]) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = '0.00'; }
+  for (let r = R.s.r; r <= R.e.r; r++) { const cell = ws[XLSX.utils.encode_cell({ r, c: 16 })]; if (cell && cell.t === 'n') cell.z = '#,##0'; }
+  _v57yStyleSheet(ws, kinds, NC, -1);
+  XLSX.utils.book_append_sheet(wb, ws, 'Return Stock');
+  XLSX.writeFile(wb, `return-stock-${new Date().toISOString().slice(0, 10)}.xlsx`);
+}
+// Report E sheet: "Dispatch from Return" — return-stock boxes scanned OUT at Dispatch in the selected
+// calendar month, grouped by the invoice they went out on, with credit note and original invoice.
+function _v57yAppendReturnSheet(wb, done) {
+  if (!['admin', 'planning', 'dispatch'].includes(currentDept)) { done(); return; }
+  const ym = (typeof _trkSelectedMonth === 'string' && _trkSelectedMonth) ? _trkSelectedMonth : today().slice(0, 7);
+  let finished = false; const once = () => { if (!finished) { finished = true; done(); } };
+  try {
+    fetch(serverUrl + '/api/invoice/return-dispatch?month=' + encodeURIComponent(ym), { signal: AbortSignal.timeout(15000) })
+      .then(r => r.json())
+      .then(j => {
+        try {
+          const rows = (j && j.ok && Array.isArray(j.rows)) ? j.rows : [];
+          const HDR = ['INVOICE NO', 'INVOICE DATE', 'CUSTOMER (SHIPPED TO)', 'SHIPPED UNDER BATCH', 'MODE', 'CREDIT NOTE', 'CN DATE', 'ORIGINAL INVOICE', 'ORIG. INV DATE', 'ORIGINAL CUSTOMER', 'ORIGINAL BATCH', 'SIZE', 'BOXES', 'QTY (L)', 'DISPATCH DATES', 'VEHICLE'];
+          const NC = HDR.length; const aoa = [], kinds = [], merges = [];
+          const push = (row, kind) => { aoa.push(row); kinds.push(kind); };
+          merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: NC - 1 } }); push([`Dispatch from Return — ${_v57yPmLabel(ym)}: return-stock boxes shipped this calendar month (NOT part of the production figures on the WIP sheet)`], 'title');
+          merges.push({ s: { r: 1, c: 0 }, e: { r: 1, c: NC - 1 } }); push([`Goods returned on an A/R credit note and re-batched / re-customered with fresh R-labels (Packing IN → Dispatch OUT). The original batch reported them in its own production month.  |  Generated ${new Date().toLocaleString()}`], 'subtitle');
+          push([], 'spacer'); push(HDR, 'hdr');
+          const g = {};
+          rows.forEach(r => {
+            const k = [r.invoice_no || '(no invoice yet)', r.target_batch, r.cn_no || ''].join('|');
+            const o = g[k] = g[k] || { invoice_no: r.invoice_no, invoice_date: r.invoice_date, customer: r.customer, target_batch: r.target_batch, mode: r.mode, cn_no: r.cn_no, cn_date: r.cn_date, orig_invoice_no: r.orig_invoice_no, orig_invoice_date: r.orig_invoice_date, orig_customer: r.orig_customer, orig_batch: r.orig_batch, size: r.size, boxes: 0, qty: 0, dates: new Set(), vehicles: new Set() };
+            o.boxes++; o.qty = Math.round((o.qty + (r.qty || 0)) * 100) / 100; o.dates.add(r.date); if (r.vehicle_no) o.vehicles.add(r.vehicle_no);
+          });
+          const list = Object.values(g).sort((a, b) => String(a.invoice_date || '').localeCompare(String(b.invoice_date || '')) || String(a.invoice_no || '').localeCompare(String(b.invoice_no || '')));
+          list.forEach(o => push([o.invoice_no || '(no invoice yet)', o.invoice_date ? String(o.invoice_date).slice(0, 10) : '—', o.customer || '—', o.target_batch || '—', o.mode === 'standalone' ? 'Re-customer' : 'Re-batch', o.cn_no || '—', o.cn_date ? String(o.cn_date).slice(0, 10) : '—', o.orig_invoice_no || '—', o.orig_invoice_date ? String(o.orig_invoice_date).slice(0, 10) : '—', o.orig_customer || '—', o.orig_batch || '—', o.size || '', o.boxes, o.qty, [...o.dates].sort().join(', '), [...o.vehicles].join(', ')], 'data'));
+          if (!list.length) push([`No return-stock dispatch in ${_v57yPmLabel(ym)}`], 'subtitle');
+          push([`TOTAL (${list.length} invoice line${list.length === 1 ? '' : 's'})`, '', '', '', '', '', '', '', '', '', '', '', list.reduce((a, o) => a + o.boxes, 0), Math.round(list.reduce((a, o) => a + o.qty, 0) * 100) / 100, '', ''], 'grand');
+          const ws = XLSX.utils.aoa_to_sheet(aoa);
+          ws['!merges'] = merges;
+          ws['!cols'] = [{ wch: 13 }, { wch: 12 }, { wch: 28 }, { wch: 16 }, { wch: 12 }, { wch: 13 }, { wch: 11 }, { wch: 14 }, { wch: 12 }, { wch: 28 }, { wch: 14 }, { wch: 6 }, { wch: 8 }, { wch: 10 }, { wch: 24 }, { wch: 14 }];
+          const R = XLSX.utils.decode_range(ws['!ref']);
+          for (let r = R.s.r; r <= R.e.r; r++) { const cell = ws[XLSX.utils.encode_cell({ r, c: 13 })]; if (cell && cell.t === 'n') cell.z = '0.00'; }
+          _v57yStyleSheet(ws, kinds, NC, -1);
+          XLSX.utils.book_append_sheet(wb, ws, 'Dispatch from Return');
+        } catch (e) { console.warn('[v57Y return sheet]', e && e.message); }
+        once();
+      })
+      .catch(() => once());
+  } catch (e) { once(); }
+}
+// Re-batch / re-customer FROM RETURN STOCK — the proven v53P/T modal, pre-filled from the credit note
+// and the original invoice; the server holds the available balance (cannot be over-drawn).
+function _v57yRebatchFromReturn(id, mode) {
+  const r = (_v57yRSRows || []).find(x => x.id === id);
+  if (!r) return;
+  if (currentDept !== 'admin' && currentDept !== 'planning') { alert('Admin / Planning Manager only.'); return; }
+  const origBatch = String(r.batch || '').split(/[\s,]+/)[0] || '';
+  const colour = String(r.colour || ''); const cap = colour.split('/')[0] || '', bodyC = colour.split('/')[1] || '';
+  window._rbReturn = { id: r.id, cnNo: r.cn_no, invoiceNo: r.invoice_no, origBatch, available: r.available_qty, customer: r.customer || '', size: String(r.size || ''), cap: cap.trim(), body: bodyC.trim(), pc: r.pc_code || '', mfg: r.prodMonth || (r.invoice_date ? String(r.invoice_date).slice(0, 7) : ''), cardCode: r.card_code || '' };
+  window._rbMode = mode === 'standalone' ? 'standalone' : 'merge';
+  openRebatch();
+}
+function _v57yPrefillRebatch() {
+  const R = window._rbReturn; if (!R) return;
+  const set = (id, v) => { const e = document.getElementById(id); if (e && v != null && v !== '') e.value = v; };
+  const mode = window._rbMode || 'merge';
+  set('rb-legacy', mode === 'standalone' ? R.origBatch : (R.origBatch ? R.origBatch + '-RET' : 'RET-' + R.cnNo));
+  set('rb-qty', R.available);
+  if (mode === 'standalone') {
+    const lg = document.getElementById('rb-legacy');
+    if (lg) { lg.readOnly = true; lg.title = 'Numbered by the server on confirm: next free child letter of ' + R.origBatch + ' (A, B, …), like a normal re-customer'; lg.style.background = 'var(--surface2)'; }
+    set('rb-size', R.size); set('rb-cap', R.cap); set('rb-body', R.body); set('rb-pc', R.pc); set('rb-mfg', R.mfg);
+    set('rb-note', `Return stock — credit note ${R.cnNo} against invoice ${R.invoiceNo || '—'} (${R.origBatch}); new customer: `);
+  } else {
+    set('rb-note', `Return stock — credit note ${R.cnNo} against invoice ${R.invoiceNo || '—'} (${R.origBatch})`);
+  }
+}
+
 
 // v41ZS: one-step admin regularisation for legacy / return / no-SO invoices. Optionally attach a
 // batch, then mark the invoice dispatched + legacy-closed (admin-approved) via a single endpoint.
@@ -10253,6 +10717,13 @@ async function renderGeneratedInvoices() {
         <button class="btn btn-sm" style="background:#10b981;color:white;border:none" onclick="_v39_exportInvoicesCsv()">📥 Export Excel</button>
         <button id="v39-gi-realloc-toggle" class="btn btn-sm btn-secondary" onclick="_v44zjToggleNeedsRealloc()" title="Show only regularised invoices whose dispatch landed under a multi-batch (concatenated) key — these need re-allocation to drop from the truck plan.">⚠ Needs re-allocation</button>
         <button id="v51d-overinv-toggle" class="btn btn-sm btn-secondary" onclick="_v51dToggleOverInv()" title="Show every over-invoiced batch in one table: invoiced (received + pending) exceeds packed quantity — the v49C definition, consolidated.">🔺 Over-invoiced</button>
+        <!-- v57Y: basis selector + Return & Cancel / Return Stock views -->
+        <select id="v57y-gi-basis" class="form-control" style="width:auto;padding:5px 8px;font-size:12px;font-weight:600" onchange="_v57ySetBasis()" title="GROSS = every invoice SAP raised, cancelled ones included at full value. NET = cancelled invoices removed and credit-note (return) quantities and amounts netted off their invoices. The KPI tiles and the export follow this choice.">
+          <option value="gross" ${window._giBasis!=='net'?'selected':''}>Gross (all invoices)</option>
+          <option value="net" ${window._giBasis==='net'?'selected':''}>Net of cancel &amp; return</option>
+        </select>
+        <button id="v57y-rc-toggle" class="btn btn-sm btn-secondary" onclick="_v57yToggleRC()" title="Cancelled invoices (each paired with its SAP cancellation document) and returned invoices (each paired with its A/R credit note). Same filters as Over-invoiced plus Nature.">↩ Return &amp; Cancel</button>
+        ${['admin','planning','dispatch'].includes(currentDept)?`<button id="v57y-rs-toggle" class="btn btn-sm btn-secondary" onclick="_v57yToggleRS()" title="Stock that came back against a credit note: original invoice, credit note, what has been re-batched / re-customered out of it, what has shipped from it, and what is still available.">📦 Return Stock</button>`:''}
         ${currentDept==='admin'?`<button class="btn btn-sm" style="background:#7c3aed;color:white;border:none" onclick="_v44zjReconcileMultibatch()" title="Auto-pair each multi-batch regularised invoice by matching invoice lines to batches by PC; rewrites clean per-batch records so the lots drop. Ambiguous ones are left for manual re-allocation.">🔧 Auto-pair reconcile</button>`:''}
         <span id="v39-gi-status-text" style="margin-left:auto;font-size:11px;color:var(--text3)"></span>
       </div>
@@ -10394,6 +10865,7 @@ function _v39_clearInvoiceFilters() {
   window._giOverInv = false; _v51dOverInvRows = null; _v51dOverInvUnattr = null;
   const _ot = document.getElementById('v51d-overinv-toggle');
   if (_ot) { _ot.style.background=''; _ot.style.color=''; _ot.classList.add('btn-secondary'); }
+  _v57yResetViews();   // v57Y: Return & Cancel / Return Stock toggles reset too (basis is kept)
   _v39_applyInvoiceFilters();
 }
 
@@ -10425,7 +10897,10 @@ function _v39_renderInvoiceTable() {
   if (!tableEl) return;
   // v51D: while the over-invoiced view is toggled on, background refreshes must not stomp it
   if (window._giOverInv && _v51dOverInvRows) { _v51dRenderOverInv(); return; }
-  const invoices = _v39_invoiceList || [];
+  if (window._giRC) { _v57yRenderRC(); return; }   // v57Y
+  if (window._giRS) { _v57yRenderRS(); return; }   // v57Y
+  const _basisNet = window._giBasis === 'net';   // v57Y: Gross (default) or Net of cancel & return
+  const invoices = _v57yBasisRows(_v39_invoiceList || []);
   if (invoices.length === 0) {
     tableEl.innerHTML = `<div style="padding:20px;text-align:center;color:var(--text3)">No invoices match current filters.</div>`;
     return;
@@ -10436,14 +10911,27 @@ function _v39_renderInvoiceTable() {
   // quantity share for partial invoices (marked ≈), so a multi-month invoice no longer bunches its
   // whole value into this month.
   const _pmView = invoices.some(i => i.pm);
-  const totalBoxes = invoices.reduce((sum, i) => sum + (i.pm ? (parseInt(i.pm.boxes) || 0) : (parseInt(i.total_boxes) || 0)), 0);
-  const totalQty   = invoices.reduce((sum, i) => sum + (i.pm ? (parseFloat(i.pm.qty) || 0) : (parseFloat(i.total_qty_lakhs) || 0)), 0);
+  // v57Y: in NET basis each invoice's boxes / qty / amount are its gross less the credit notes raised
+  // against it (_v57yFig); cancelled invoices are already out of the list. GROSS = unchanged v53D maths.
+  const totalBoxes = invoices.reduce((sum, i) => sum + (i.pm ? (parseInt(i.pm.boxes) || 0) : _v57yFig(i).boxes), 0);
+  const totalQty   = invoices.reduce((sum, i) => sum + (i.pm ? (parseFloat(i.pm.qty) || 0) : _v57yFig(i).qty), 0);
   const totalAmount = invoices.reduce((sum, i) => {
-    const amt = parseFloat(i.total_amount) || 0;
+    const amt = _v57yFig(i).amount;
     if (!i.pm || !i.pm.is_partial) return sum + amt;
     const tq = parseFloat(i.total_qty_lakhs) || 0;
     return sum + (tq > 0 ? amt * ((parseFloat(i.pm.qty) || 0) / tq) : amt);
   }, 0);
+  const _allRows = _v39_invoiceList || [];
+  const _cancelled = _allRows.filter(i => (i.inv_kind || 'invoice') === 'cancelled');
+  const _returned = _allRows.filter(i => (parseFloat(i.cn_qty) || 0) > 0);
+  const _cQty = _cancelled.reduce((a, i) => a + (parseFloat(i.total_qty_lakhs) || 0), 0), _cAmt = _cancelled.reduce((a, i) => a + (parseFloat(i.total_amount) || 0), 0);
+  const _rQty = _returned.reduce((a, i) => a + (parseFloat(i.cn_qty) || 0), 0), _rAmt = _returned.reduce((a, i) => a + (parseFloat(i.cn_amount) || 0), 0);
+  const _basisStrip = `<div style="margin-bottom:10px;padding:7px 10px;border-radius:6px;font-size:11px;display:flex;gap:14px;flex-wrap:wrap;align-items:center;${_basisNet?'background:#ecfdf5;border:1px solid #a7f3d0;color:#065f46':'background:#eff6ff;border:1px solid #bfdbfe;color:#1e3a8a'}">
+      <b>${_basisNet?'NET basis':'GROSS basis'}</b>
+      <span>${_cancelled.length} cancelled invoice${_cancelled.length===1?'':'s'} (${_cQty.toFixed(2)} L · ₹${Math.round(_cAmt).toLocaleString('en-IN')}) ${_basisNet?'excluded':'included — shown struck through'}</span>
+      <span>${_returned.length} invoice${_returned.length===1?'':'s'} with returns (${_rQty.toFixed(2)} L · ₹${Math.round(_rAmt).toLocaleString('en-IN')} on credit notes) ${_basisNet?'netted off':'at full invoiced value'}</span>
+      <span style="margin-left:auto;color:var(--text3)">Detail: ↩ Return &amp; Cancel</span>
+    </div>`;
   const dispatched = invoices.filter(i => i.dispatch_status === 'dispatched').length;
   const pending    = invoices.filter(i => i.dispatch_status === 'pending').length;
   // Table rows
@@ -10460,6 +10948,13 @@ function _v39_renderInvoiceTable() {
     const adminBadge = inv.admin_approved_at
       ? '<span style="color:#10b981;font-size:10px;margin-left:4px" title="Admin approved">✓</span>'
       : '';
+    // v57Y: nature badges — cancelled (↔ its cancellation document), returned (↔ credit note), from return stock
+    const _isCanc = (inv.inv_kind || 'invoice') === 'cancelled';
+    const _cnq = parseFloat(inv.cn_qty) || 0;
+    const natureBadge = (_isCanc ? `<span style="background:#fee2e2;color:#b91c1c;border:1px solid #fca5a5;padding:1px 5px;border-radius:3px;font-size:9px;margin-left:4px;white-space:nowrap" title="Cancelled in SAP${inv.cancelled_by_doc_num?' by A/R Invoice-Cancellation '+inv.cancelled_by_doc_num:''}${inv.cancelled_at?' on '+String(inv.cancelled_at).slice(0,10):''}">✖ CANCELLED${inv.cancelled_by_doc_num?' → '+inv.cancelled_by_doc_num:''}</span>` : '')
+      + (_cnq > 0 ? `<span style="background:#fef3c7;color:#92400e;border:1px solid #fcd34d;padding:1px 5px;border-radius:3px;font-size:9px;margin-left:4px;white-space:nowrap" title="Material returned — credit note(s) ${(inv.cn_refs||[]).map(r=>r.no+' ('+r.qty+' L'+(r.date?', '+String(r.date).slice(0,10):'')+')').join(', ')}">↩ RETURN ${_cnq.toFixed(2)} L · CN ${(inv.cn_refs||[]).map(r=>r.no).join(', ')}</span>` : '')
+      + (inv.from_return ? `<span style="background:#ecfdf5;color:#047857;border:1px solid #6ee7b7;padding:1px 5px;border-radius:3px;font-size:9px;margin-left:4px;white-space:nowrap" title="This batch carries stock re-batched / re-customered out of a return (R-labels) — see Return Stock">♻ from Return</span>` : '');
+    const _fig = _v57yFig(inv);
     const invDate = inv.invoice_date ? new Date(inv.invoice_date).toLocaleDateString() : '—';
     const qtyLakhs = parseFloat(inv.total_qty_lakhs) || (parseInt(inv.total_boxes)||0)/100;
     // v41s Q2: parse line count for the "+N more" indicator on multi-line invoices
@@ -10470,8 +10965,8 @@ function _v39_renderInvoiceTable() {
     } catch {}
     const linesHint = lineCount > 1 ? `<span style="color:var(--text3);font-size:10px" title="${lineCount} lines on this invoice — click row for per-line detail">+${lineCount-1}</span>` : '';
     return `
-      <tr style="border-bottom:1px solid var(--border);cursor:pointer" onclick="_v39_showInvoiceDetail('${inv.id}')">
-        <td style="padding:6px 8px;font-family:var(--mono);font-weight:700;color:#0891b2">${inv.sap_doc_num || '—'}${sourceBadge}${adminBadge}</td>
+      <tr style="border-bottom:1px solid var(--border);cursor:pointer${_isCanc?';background:rgba(220,38,38,0.04)':''}" onclick="_v39_showInvoiceDetail('${inv.id}')">
+        <td style="padding:6px 8px;font-family:var(--mono);font-weight:700;color:#0891b2"><span style="${_isCanc?'text-decoration:line-through;color:#b91c1c':''}">${inv.sap_doc_num || '—'}</span>${sourceBadge}${adminBadge}${natureBadge}</td>
         <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.sap_doc_entry || '—'}</td>
         <td style="padding:6px 8px;font-size:11px">${invDate}</td>
         <td style="padding:6px 8px;font-size:12px">${(inv.customer||'—').substring(0,32)}</td>
@@ -10479,17 +10974,18 @@ function _v39_renderInvoiceTable() {
         <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.pc_code || '—'} ${linesHint}</td>
         <td style="padding:6px 8px;font-size:11px">${inv.size || '—'}</td>
         <td style="padding:6px 8px;font-size:11px">${(inv.colour||'—').substring(0,18)}</td>
-        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${inv.pm ? inv.pm.boxes : (inv.total_boxes || 0)}${inv.pm && inv.pm.is_partial ? `<br><span style="color:var(--text3);font-size:9px">of ${inv.total_boxes||0}</span>` : ''}</td>
-        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${inv.pm ? (parseFloat(inv.pm.qty)||0).toFixed(2) : qtyLakhs.toFixed(2)} L${inv.pm && inv.pm.is_partial ? `<br><span style="color:var(--text3);font-size:9px" title="This invoice spans production months — ${(parseFloat(inv.pm.other_qty)||0).toFixed(2)} L belongs to other months">of ${qtyLakhs.toFixed(2)} L</span>` : ''}</td>
-        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">₹${(parseFloat(inv.total_amount)||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${inv.pm ? inv.pm.boxes : _fig.boxes}${inv.pm && inv.pm.is_partial ? `<br><span style="color:var(--text3);font-size:9px">of ${inv.total_boxes||0}</span>` : (_basisNet && _cnq>0 ? `<br><span style="color:#92400e;font-size:9px">of ${inv.total_boxes||0} gross</span>` : '')}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">${inv.pm ? (parseFloat(inv.pm.qty)||0).toFixed(2) : _fig.qty.toFixed(2)} L${inv.pm && inv.pm.is_partial ? `<br><span style="color:var(--text3);font-size:9px" title="This invoice spans production months — ${(parseFloat(inv.pm.other_qty)||0).toFixed(2)} L belongs to other months">of ${qtyLakhs.toFixed(2)} L</span>` : (_basisNet && _cnq>0 ? `<br><span style="color:#92400e;font-size:9px" title="Net of ${_cnq.toFixed(2)} L returned on credit note">of ${qtyLakhs.toFixed(2)} L gross</span>` : '')}</td>
+        <td style="padding:6px 8px;text-align:right;font-family:var(--mono);font-size:11px">₹${_fig.amount.toLocaleString('en-IN',{maximumFractionDigits:0})}${_basisNet && _cnq>0 ? `<br><span style="color:#92400e;font-size:9px">of ₹${(parseFloat(inv.total_amount)||0).toLocaleString('en-IN',{maximumFractionDigits:0})}</span>` : ''}</td>
         <td style="padding:6px 8px;font-family:var(--mono);font-size:11px">${inv.vehicle_no || '—'}</td>
         <td style="padding:6px 8px;text-align:center"><span style="color:${statusColor};font-size:11px;font-weight:600">${statusLabel}</span></td>
       </tr>`;
   }).join('');
   tableEl.innerHTML = `
+    ${_basisStrip}
     <div style="display:grid;grid-template-columns:repeat(5,1fr);gap:8px;margin-bottom:12px">
       <div style="background:var(--surface2);padding:8px 10px;border-radius:4px;border-left:3px solid #0891b2">
-        <div style="font-size:10px;color:var(--text3);letter-spacing:.5px">📑 INVOICES</div>
+        <div style="font-size:10px;color:var(--text3);letter-spacing:.5px">📑 INVOICES <span style="font-weight:600;color:${_basisNet?'#047857':'#1d4ed8'}">(${_basisNet?'NET':'GROSS'})</span></div>
         <div style="font-size:18px;font-weight:700">${totalCount}</div>
       </div>
       <div style="background:var(--surface2);padding:8px 10px;border-radius:4px;border-left:3px solid #10b981">
@@ -10548,7 +11044,20 @@ function _v39_showInvoiceDetail(invoiceId) {
       <strong>🗂️ Legacy Closed</strong> — this invoice was marked as legacy by <strong>${inv.legacy_closed_by||'admin'}</strong> on <strong>${(inv.legacy_closed_at||'').slice(0,16)}</strong>.<br>
       <span style="font-style:italic">Reason: ${inv.legacy_close_reason || '(none)'}</span>
     </div>` : '';
+  // v57Y: nature banner — cancelled (↔ cancellation document) / returned (↔ credit notes) / from return stock
+  const _cnq57 = parseFloat(inv.cn_qty) || 0;
+  const natureBanner = ((inv.inv_kind||'invoice') === 'cancelled' ? `
+    <div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#991b1b;line-height:1.5">
+      <strong>✖ CANCELLED in SAP</strong>${inv.cancelled_by_doc_num ? ` — by A/R Invoice-Cancellation <strong>${inv.cancelled_by_doc_num}</strong>` : ''}${inv.cancelled_at ? ` on ${String(inv.cancelled_at).slice(0,10)}` : ''}. Counted in the GROSS view only; excluded from NET and from Over-invoiced.
+    </div>` : '') + (_cnq57 > 0 ? `
+    <div style="background:#fffbeb;border:1px solid #fcd34d;border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#92400e;line-height:1.5">
+      <strong>↩ MATERIAL RETURNED</strong> — ${_cnq57.toFixed(2)} L of ${(parseFloat(inv.total_qty_lakhs)||0).toFixed(2)} L on credit note${(inv.cn_refs||[]).length===1?'':'s'} ${(inv.cn_refs||[]).map(r=>`<strong>${r.no}</strong> (${r.qty} L${r.date?', '+String(r.date).slice(0,10):''})`).join(', ')}. The NET view nets this off; the stock is in <strong>Return Stock</strong>.
+    </div>` : '') + (inv.from_return ? `
+    <div style="background:#ecfdf5;border:1px solid #6ee7b7;border-radius:6px;padding:10px 14px;margin-bottom:12px;font-size:12px;color:#065f46;line-height:1.5">
+      <strong>♻ Dispatch from Return</strong> — this batch carries stock re-batched / re-customered out of a return (R-labels tagged to a credit note).
+    </div>` : '');
   const body = `
+    ${natureBanner}
     ${legacyBanner}
     <div style="font-size:12px;line-height:1.7">
       <div style="font-weight:700;color:#0e7490;margin-bottom:8px;font-size:13px">SAP Reference</div>
@@ -10771,7 +11280,10 @@ function _v39_exportInvoicesCsv() {
   // v52D (Ishan, 19 Aug): raw CSV replaced with a styled xlsx in the Report E mould — title bar,
   // styled headers, sensible widths, ₹/number formats, red pending status, and a totals row. The
   // function name is kept so every existing call site and button keeps working.
-  const invoices = _v39_invoiceList || [];
+  // v57Y: the export follows the Gross / Net selector exactly as the table does, and carries a
+  // Reconciliation sheet (gross → less cancelled → less returned → net) for every export.
+  const _basisNet = window._giBasis === 'net';
+  const invoices = _v57yBasisRows(_v39_invoiceList || []);
   if (invoices.length === 0) { alert('No invoices to export. Adjust filters and try again.'); return; }
   const S = {
     title:{font:{bold:true,sz:15,color:{rgb:'FFFFFF'}},fill:{fgColor:{rgb:'1F4E79'}},alignment:{vertical:'center'}},
@@ -10786,14 +11298,17 @@ function _v39_exportInvoicesCsv() {
   // v53D attribution the on-screen table shows — alongside the invoice totals, so the two can never
   // diverge again. In all-months view the slice columns stay blank and the sheet is unchanged.
   const _pmExp = document.getElementById('v39-gi-pm')?.value || '';
-  const headers = ['Sales Order Number','Sales Order ID','Invoice Date','Source','Customer','Card Code','PO Number','Batch','PC Code','Size','Colour','Total Boxes','Total Qty (L)','Month Boxes','Month Qty (L)','Other-Month Qty (L)','Month Batches','Taxable Amount','IGST','Total Amount','Month Amount (≈)','IRN','Dispatch Status','Scanned Boxes','Dispatched At','Dispatched By','Vehicle','LR No','Admin Approved At','Admin Approved By','Remarks'];
+  const headers = ['Sales Order Number','Sales Order ID','Invoice Date','Source','Customer','Card Code','PO Number','Batch','PC Code','Size','Colour','Total Boxes','Total Qty (L)','Month Boxes','Month Qty (L)','Other-Month Qty (L)','Month Batches','Taxable Amount','IGST','Total Amount','Month Amount (≈)','IRN','Dispatch Status','Scanned Boxes','Dispatched At','Dispatched By','Vehicle','LR No','Admin Approved At','Admin Approved By','Remarks',
+                   'Nature','Linked Doc (cancellation / credit note)','Returned Qty (L)','Returned Amount','Net Qty (L)','Net Amount','From Return Stock'];   // v57Y
   const monthSel = _pmExp || 'all-months';   // v53E: the label is the FILTER actually applied
-  const aoa = [[{v:`SUNLOC — INVOICE LEDGER  ·  ${monthSel}${_pmExp?' (month-slice attribution)':''}  ·  exported ${today()}`,s:S.title}],[],
+  const aoa = [[{v:`SUNLOC — INVOICE LEDGER  ·  ${_basisNet?'NET of cancel & return':'GROSS (all invoices)'}  ·  ${monthSel}${_pmExp?' (month-slice attribution)':''}  ·  exported ${today()}`,s:S.title}],[],
                headers.map(h=>({v:h,s:S.hdr}))];
   let tBoxes=0,tQty=0,tTaxable=0,tIgst=0,tTotal=0,tmBoxes=0,tmQty=0,tmOther=0,tmAmt=0;
   for (const inv of invoices) {
-    const qtyLakhs = parseFloat(inv.total_qty_lakhs) || (parseInt(inv.total_boxes)||0)/100;
-    const boxes=parseInt(inv.total_boxes)||0, taxable=parseFloat(inv.taxable_amount)||0, igst=parseFloat(inv.igst_amount)||0, total=parseFloat(inv.total_amount)||0;
+    const _g = _v57yFig(inv);   // v57Y: NET basis → boxes / qty / amount are net of this invoice's credit notes
+    const qtyLakhs = _basisNet ? _g.qty : (parseFloat(inv.total_qty_lakhs) || (parseInt(inv.total_boxes)||0)/100);
+    const boxes=_basisNet ? _g.boxes : (parseInt(inv.total_boxes)||0), taxable=parseFloat(inv.taxable_amount)||0, igst=parseFloat(inv.igst_amount)||0, total=_basisNet ? _g.amount : (parseFloat(inv.total_amount)||0);
+    const _isCanc = (inv.inv_kind||'invoice')==='cancelled', _cnq = parseFloat(inv.cn_qty)||0;
     const pm = inv.pm || null;   // v53E: the v53D month slice, when a month filter is active
     const mBoxes = pm ? (parseInt(pm.boxes)||0) : null;
     const mQty = pm ? (parseFloat(pm.qty)||0) : null;
@@ -10819,6 +11334,11 @@ function _v39_exportInvoicesCsv() {
       {v:inv.scanned_boxes??'',s:S.mono},{v:inv.dispatched_at||'',s:S.mono},{v:inv.dispatched_by||'',s:S.mono},
       {v:inv.vehicle_no||'',s:S.mono},{v:inv.lr_no||'',s:S.mono},{v:inv.admin_approved_at||'',s:S.mono},
       {v:inv.admin_approved_by||'',s:S.mono},{v:inv.remarks||'',s:S.mono},
+      {v:_isCanc?'CANCELLED':(_cnq>0?'RETURNED':'INVOICE'),s:_isCanc?S.pend:(_cnq>0?{font:{sz:10,bold:true,color:{rgb:'92400E'}},fill:{fgColor:{rgb:'FEF3C7'}}}:S.mono)},
+      {v:_isCanc?(inv.cancelled_by_doc_num?'Cancellation '+inv.cancelled_by_doc_num:'cancelled'):(inv.cn_refs||[]).map(r=>'CN '+r.no+' ('+r.qty+' L)').join(', '),s:S.mono},
+      {v:_cnq,s:S.num},{v:Math.round(parseFloat(inv.cn_amount)||0),s:S.inr},
+      {v:_isCanc?0:Math.round(((parseFloat(inv.total_qty_lakhs)||0)-_cnq)*100)/100,s:S.num},{v:_isCanc?0:Math.round((parseFloat(inv.total_amount)||0)-(parseFloat(inv.cn_amount)||0)),s:S.inr},
+      {v:inv.from_return?'YES':'',s:S.mono},
     ]);
   }
   const totRow=new Array(headers.length).fill('');
@@ -10828,7 +11348,8 @@ function _v39_exportInvoicesCsv() {
   totRow[20]={v:_pmExp?Math.round(tmAmt):'',s:{...S.tot,numFmt:'#,##0'}};
   aoa.push(totRow);
   const ws=XLSX.utils.aoa_to_sheet(aoa);
-  ws['!cols']=[{wch:12},{wch:10},{wch:11},{wch:10},{wch:26},{wch:9},{wch:12},{wch:12},{wch:9},{wch:5},{wch:16},{wch:8},{wch:11},{wch:9},{wch:11},{wch:13},{wch:26},{wch:13},{wch:11},{wch:13},{wch:12},{wch:14},{wch:11},{wch:9},{wch:16},{wch:12},{wch:12},{wch:9},{wch:16},{wch:12},{wch:20}];
+  ws['!cols']=[{wch:12},{wch:10},{wch:11},{wch:10},{wch:26},{wch:9},{wch:12},{wch:12},{wch:9},{wch:5},{wch:16},{wch:8},{wch:11},{wch:9},{wch:11},{wch:13},{wch:26},{wch:13},{wch:11},{wch:13},{wch:12},{wch:14},{wch:11},{wch:9},{wch:16},{wch:12},{wch:12},{wch:9},{wch:16},{wch:12},{wch:20},
+               {wch:11},{wch:30},{wch:12},{wch:13},{wch:11},{wch:13},{wch:10}];   // v57Y
   ws['!rows']=[{hpt:24}];
   const wb=XLSX.utils.book_new();
   XLSX.utils.book_append_sheet(wb, ws, 'Invoices');
@@ -10860,7 +11381,38 @@ function _v39_exportInvoicesCsv() {
     aws['!merges']=[{s:{r:0,c:0},e:{r:0,c:7}}];
     XLSX.utils.book_append_sheet(wb, aws, 'Batch Allocation');
   }
-  XLSX.writeFile(wb, `Sunloc_Invoices_${String(monthSel).replace(/[^\w-]/g,'')}.xlsx`);
+  // v57Y: RECONCILIATION — gross → less cancelled → less returned → net, over the SAME filtered set
+  // (whatever basis is selected the sheet shows both sides), then the cancelled and returned lists.
+  try {
+    const all = _v39_invoiceList || [];
+    const live = all.filter(i => (i.inv_kind||'invoice') !== 'cancelled');
+    const canc = all.filter(i => (i.inv_kind||'invoice') === 'cancelled');
+    const rets = live.filter(i => (parseFloat(i.cn_qty)||0) > 0);
+    const sum = (arr, f) => arr.reduce((a, i) => a + (f(i) || 0), 0);
+    const gQ = sum(all, i => parseFloat(i.total_qty_lakhs)), gB = sum(all, i => parseInt(i.total_boxes)), gA = sum(all, i => parseFloat(i.total_amount));
+    const cQ = sum(canc, i => parseFloat(i.total_qty_lakhs)), cB = sum(canc, i => parseInt(i.total_boxes)), cA = sum(canc, i => parseFloat(i.total_amount));
+    const rQ = sum(rets, i => parseFloat(i.cn_qty)), rB = sum(rets, i => parseInt(i.cn_boxes)), rA = sum(rets, i => parseFloat(i.cn_amount));
+    const R = [[{v:`RECONCILIATION — gross vs net  ·  ${monthSel}  ·  exported ${today()}`,s:S.title}],[],
+      ['Line','Invoices','Boxes','Qty (L)','Amount (₹)'].map(h=>({v:h,s:S.hdr})),
+      [{v:'GROSS — all invoices raised in SAP (filtered set)',s:S.mono},{v:all.length,s:S.num},{v:gB,s:S.num},{v:Math.round(gQ*100)/100,s:S.num},{v:Math.round(gA),s:S.inr}],
+      [{v:'Less: cancelled invoices (A/R Invoice-Cancellation raised)',s:S.pend},{v:canc.length,s:S.num},{v:-cB,s:S.num},{v:-Math.round(cQ*100)/100,s:S.num},{v:-Math.round(cA),s:S.inr}],
+      [{v:'Less: material returned on A/R credit notes',s:{font:{sz:10,bold:true,color:{rgb:'92400E'}},fill:{fgColor:{rgb:'FEF3C7'}}}},{v:rets.length,s:S.num},{v:-rB,s:S.num},{v:-Math.round(rQ*100)/100,s:S.num},{v:-Math.round(rA),s:S.inr}],
+      [{v:'NET',s:S.tot},{v:live.length,s:S.tot},{v:gB-cB-rB,s:S.tot},{v:Math.round((gQ-cQ-rQ)*100)/100,s:S.tot},{v:Math.round(gA-cA-rA),s:{...S.tot,numFmt:'#,##0'}}],
+      [],
+      [{v:'This sheet is independent of the Gross / Net selector: the Invoices sheet is on the ' + (_basisNet?'NET':'GROSS') + ' basis.',s:{font:{italic:true,sz:9,color:{rgb:'555555'}}}}],
+      [],
+      ['CANCELLED INVOICES','Invoice Date','Customer','Batch','Boxes','Qty (L)','Amount (₹)','Cancellation Doc','Cancelled On'].map(h=>({v:h,s:S.hdr})),
+      ...canc.map(i => [{v:i.sap_doc_num||'',s:S.mono},{v:i.invoice_date||'',s:S.mono},{v:i.customer||'',s:S.mono},{v:i.batch_number||'',s:S.mono},{v:parseInt(i.total_boxes)||0,s:S.num},{v:parseFloat(i.total_qty_lakhs)||0,s:S.num},{v:Math.round(parseFloat(i.total_amount)||0),s:S.inr},{v:i.cancelled_by_doc_num||'',s:S.mono},{v:String(i.cancelled_at||'').slice(0,10),s:S.mono}]),
+      [],
+      ['RETURNED INVOICES','Invoice Date','Customer','Batch','Invoice Qty (L)','Returned Qty (L)','Returned Amount (₹)','Credit Note(s)','Full / Partial'].map(h=>({v:h,s:S.hdr})),
+      ...rets.map(i => { const tq=parseFloat(i.total_qty_lakhs)||0, cq=parseFloat(i.cn_qty)||0; return [{v:i.sap_doc_num||'',s:S.mono},{v:i.invoice_date||'',s:S.mono},{v:i.customer||'',s:S.mono},{v:i.batch_number||'',s:S.mono},{v:tq,s:S.num},{v:cq,s:S.num},{v:Math.round(parseFloat(i.cn_amount)||0),s:S.inr},{v:(i.cn_refs||[]).map(r=>r.no+(r.date?' ('+String(r.date).slice(0,10)+')':'')).join(', '),s:S.mono},{v:tq>0&&cq>=tq-0.005?'FULL':'PARTIAL',s:S.mono}]; }),
+    ];
+    const rws = XLSX.utils.aoa_to_sheet(R);
+    rws['!cols']=[{wch:52},{wch:12},{wch:28},{wch:16},{wch:14},{wch:14},{wch:16},{wch:28},{wch:13}];
+    rws['!merges']=[{s:{r:0,c:0},e:{r:0,c:8}}];
+    XLSX.utils.book_append_sheet(wb, rws, 'Reconciliation');
+  } catch (e) { console.warn('[v57Y reconciliation sheet]', e); }
+  XLSX.writeFile(wb, `Sunloc_Invoices_${_basisNet?'NET_':'GROSS_'}${String(monthSel).replace(/[^\w-]/g,'')}.xlsx`);
 }
 
 // ═══════════════════════════════════════════════════════
@@ -14749,8 +15301,8 @@ function _v41_renderReportEInnerBody(){
     const packUnptd=!b.isPrinted?_packInQty:0;
     const packPtd=b.isPrinted?_packInQty:0;
     // v40 Phase 18.14d: sum legacy + Phase 18 (straddle batches have both flows for different shipments)
-    const _legBoxes = useSS ? (_ss(b.batchNumber,'dispatch').out + (_ss(b.batchNumber,'dispatch').legacyOut||0) + localExtra('dispatch','out'))   // v53P: + R-boxes
-                            : scansForBatch.filter(s=>s.dept==='dispatch'&&s.type==='out').length;
+    const _legBoxes = useSS ? (_ss(b.batchNumber,'dispatch').out + (_ss(b.batchNumber,'dispatch').legacyOut||0) - (_ss(b.batchNumber,'dispatch').returnOut||0) + localExtra('dispatch','out'))   // v53P: + R-boxes · v57Y: − return-stock boxes
+                            : scansForBatch.filter(s=>s.dept==='dispatch'&&s.type==='out'&&!_v57yIsReturnScan(s)).length;
     const _legLakhs = _scanLakhs(b.batchNumber,'dispatch','out',b.size) + _v53pLegacyLakhs(b.batchNumber,'dispatch','out',b.size);  // v47G: per-box label sum · v53P (Ishan): re-batched R-boxes are part of dispatch
     const _p18 = state.dispatchRecs.filter(r=>r.batchNumber===b.batchNumber).reduce((s,r)=>s+r.qty,0); // v45E: date-bounding handled by the as-of state swap (cumulative-through-date)
     const disp = _legLakhs + _p18;
@@ -14919,7 +15471,7 @@ function _v41_renderReportEInnerBody(){
         return `<tr data-batch="${r.batchNo}" data-customer="${(r.customer||'').toLowerCase()}" data-zone="${(r.zone||'').toLowerCase()}" data-pc="${(r.pcCode||'').toLowerCase()}" data-colour="${(r.colour||'').toLowerCase()}" data-pp-num="${r._agNum||0}" data-pp-den="${r._agDen||0}" data-aim-num="${r._aimAGrade||0}" data-aim-den="${r._aimInspNew||0}">
         <td class="sticky-col" style="left:0;min-width:70px;border-right:1px solid #d4b896">${r.machine}</td>
         <td class="sticky-col" style="left:70px;min-width:50px;border-right:1px solid #d4b896">${r.floor}</td>
-        <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}${_reconBadge(!!_reconOverride(r.batchNo),(_reconTips(r.batchNo)||{}).title)}${_ovrBadge(r.batchNo)}${r.rebatch?` <span class="badge" style="background:#ecfdf5;color:#047857;border:1px solid #6ee7b7;font-size:9px;cursor:help" title="${r.rebatch.remark}. Dispatch and Balance include the R-boxes; production figures do not.">♻ RB +${r.rebatch.qty.toFixed(2)} L</span>`:''}</td>
+        <td class="sticky-col" style="left:120px;min-width:90px;border-right:1px solid #d4b896">${r.batchNo}${_reconBadge(!!_reconOverride(r.batchNo),(_reconTips(r.batchNo)||{}).title)}${_ovrBadge(r.batchNo)}${r.rebatch?` <span class="badge" style="background:#ecfdf5;color:#047857;border:1px solid #6ee7b7;font-size:9px;cursor:help" title="${r.rebatch.remark}. ${r.rebatch.returnOnly?'Return stock is excluded from every figure on this report.':'Dispatch and Balance include the legacy R-boxes; production figures do not.'}">${r.rebatch.returnOnly?`↩ Return ${r.rebatch.returnQty.toFixed(2)} L (excl.)`:(r.rebatch.returnQty>0?`♻ RB +${r.rebatch.legacyQty.toFixed(2)} L · ↩ Return ${r.rebatch.returnQty.toFixed(2)} L (excl.)`:`♻ RB +${r.rebatch.qty.toFixed(2)} L`)}</span>`:''}</td>
         <td class="sticky-col" style="left:210px;min-width:180px;border-right:2px solid #d4b896">${r.customer||'—'}</td>
         <td style="white-space:nowrap">${r.zone||'—'}</td><td>${r.pcCode||'—'}</td><td>${r.colour||'—'}</td><td>${r.size}</td><td style="white-space:nowrap;font-size:11px">${r.startDate?new Date(r.startDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td><td style="white-space:nowrap;font-size:11px">${r.endDate?new Date(r.endDate).toLocaleDateString('en-GB',{day:'2-digit',month:'short',year:'numeric'}):'—'}</td>
         <td>${fmtN(r._plannedQty)}</td><td>${fmtN(r._grossProd)}</td>
@@ -18201,7 +18753,7 @@ function exportReportE(){
       _n(sum(arr,'aimScanOut')), _n(sum(arr,'deptWip')), _n(sum(arr,'wip')), _n(sum(arr,'printingTD')), _n(sum(arr,'printRej')), _n(sum(arr,'printingWip')),
       _n(sum(arr,'piInspect')), _n(sum(arr,'piSalRem')), _n(sum(arr,'piWip')), (agDen>0 ? _n(Math.max(0,agNum/agDen*100)) : '—'),
       _n(sum(arr,'packingWip')), _n(sum(arr,'consolWip')), _n(sum(arr,'packingUP')), _n(sum(arr,'packingPTD')), _n(sum(arr,'dispatch')), _n(sumBalX(arr)),
-      (arr.filter(r=>r.rebatch).length ? `${arr.filter(r=>r.rebatch).length} re-batched (+${_n(arr.reduce((a,r)=>a+(r.rebatch?r.rebatch.qty:0),0))} L)` : '')];   // v53P REMARK
+      (arr.filter(r=>r.rebatch&&r.rebatch.qty>0).length ? `${arr.filter(r=>r.rebatch&&r.rebatch.qty>0).length} re-batched (+${_n(arr.reduce((a,r)=>a+(r.rebatch?r.rebatch.qty:0),0))} L)` : '')];   // v53P REMARK · v57Y: legacy only (return stock excluded)
   };
   const _lblMerge = () => merges.push({s:{r:aoa.length,c:0},e:{r:aoa.length,c:9}});
   const floors = [...new Set(rows.map(r=>r.floor))];
@@ -18265,7 +18817,7 @@ function exportReportE(){
   // with legacy ref, quantity and scan status, so re-batched stock is auditable without being
   // conflated with the production columns.
   try {
-    const _rbLabels = (state.labels||[]).filter(l=>!l.voided && !l.isOrange && _v53pIsLegacyLabel(l))   // v53T: every R-label, both modes
+    const _rbLabels = (state.labels||[]).filter(l=>!l.voided && !l.isOrange && _v53pIsLegacyLabel(l) && !_v57yIsReturnLabel(l))   // v53T: every R-label, both modes · v57Y: return-stock R-labels go to their own sheet
       .sort((a,b)=>(a.batchNumber||'').localeCompare(b.batchNumber||'') || ((a.legacyNum||0)-(b.legacyNum||0)));
     const _rbAoa = [['Legacy Re-batch — R-series labels (dispatch-side only; excluded from production, WIP, A-grade and packed)'],[`Generated ${new Date().toLocaleString()}`],[],
       ['BATCH ON LABEL','MODE','LEGACY REF (X)','LABEL','CUSTOMER','SIZE','QTY (L)','MFG','EXP','PRINTED','ORANGE TWIN','PACKED IN','DISPATCHED OUT']];
@@ -18290,7 +18842,11 @@ function exportReportE(){
   // appends the third sheet (async price fetch) and then writes; for other roles, and on any
   // failure, it writes the workbook exactly as before. The NSR sheet can never block the export.
   const _write = () => XLSX.writeFile(wb, `Sunloc_WIP_Report_${today()}.xlsx`);
-  const _finish = () => { try { _v52lAppendNsrSheet(wb, rows, _write); } catch (e) { console.warn('[v52L NSR] skipped:', e && e.message); _write(); } };
+  // v57Y (Ishan, 9 Oct, tweak 3): PM / Admin / Dispatch exports carry a "Dispatch from Return" sheet —
+  // every return-stock box that left in the selected calendar month, with the invoice it went out on —
+  // kept apart from the production flow in the main sheet. Can never block the export.
+  const _finishNsr = () => { try { _v52lAppendNsrSheet(wb, rows, _write); } catch (e) { console.warn('[v52L NSR] skipped:', e && e.message); _write(); } };
+  const _finish = () => { try { _v57yAppendReturnSheet(wb, _finishNsr); } catch (e) { console.warn('[v57Y return sheet] skipped:', e && e.message); _finishNsr(); } };
   try {
     fetch(serverUrl + '/api/invoice/batch-dispatch-detail', { signal: AbortSignal.timeout(12000) })
       .then(r => r.json())

@@ -652,6 +652,47 @@ class SapClient {
     return { ok: true, invoices };
   }
 
+  /**
+   * v57Y: pull A/R Credit Memos (material returns) raised in SAP within the last N days.
+   * Same paging discipline as fetchRecentInvoices — full entity, no $select, so a missing UDF can
+   * never fail the request. Entity `CreditNotes` = ORIN (A/R Credit Memo).
+   */
+  async fetchRecentCreditNotes({ lookbackDays = 60 } = {}) {
+    const lookbackDate = new Date(Date.now() - lookbackDays * 86400_000);
+    const dateStr = lookbackDate.toISOString().slice(0, 10);
+    const filter = `$filter=DocDate ge '${dateStr}'`;
+    const notes = [];
+    const seen = new Set();
+    let skip = 0, pageSize = 0, pageGuard = 0;
+    while (pageGuard < 500) {
+      pageGuard++;
+      const r = await this.call({ method: 'GET', path: 'CreditNotes', query: `${filter}&$orderby=DocEntry desc&$skip=${skip}` });
+      if (!r.ok) {
+        if (notes.length > 0) return { ok: true, notes, degraded: true };
+        return { ok: false, error: r.error, degraded: r.degraded };
+      }
+      const page = r.data?.value || [];
+      if (page.length === 0) break;
+      if (pageSize === 0) pageSize = page.length;
+      for (const cn of page) {
+        const key = String(cn.DocEntry);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        notes.push(cn);
+      }
+      if (page.length < pageSize) break;
+      skip += page.length;
+    }
+    return { ok: true, notes };
+  }
+
+  /** v57Y: single A/R Credit Memo by DocEntry. */
+  async getCreditNote(docEntry) {
+    const r = await this.call({ method: 'GET', path: `CreditNotes(${docEntry})` });
+    if (!r.ok) return { ok: false, error: r.error, degraded: r.degraded };
+    return { ok: true, note: r.data };
+  }
+
   /** Get a single invoice by DocEntry — used for verifying after creation. */
   async getInvoice(docEntry) {
     const r = await this.call({ method: 'GET', path: `Invoices(${docEntry})` });

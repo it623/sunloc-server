@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57X';
+const APP_BUILD = 'v57Z';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -132,8 +132,8 @@ async function _v53pEnsureRebatchLog() {
   const ddl = `CREATE TABLE IF NOT EXISTS rebatch_log (
     id TEXT PRIMARY KEY, ts TEXT NOT NULL, by_user TEXT, legacy_ref TEXT NOT NULL, target_batch TEXT NOT NULL,
     qty_lakhs REAL NOT NULL, boxes INTEGER NOT NULL, size TEXT, label_ids TEXT, note TEXT, orange_ids TEXT, mode TEXT, details_json TEXT)`;
-  if (pgPool) { await pgPool.query(ddl); for (const col of ['orange_ids TEXT','mode TEXT','details_json TEXT']) await pgPool.query(`ALTER TABLE rebatch_log ADD COLUMN IF NOT EXISTS ${col}`).catch(()=>{}); }
-  else { db.exec(ddl); for (const col of ['orange_ids TEXT','mode TEXT','details_json TEXT']) { try { db.exec(`ALTER TABLE rebatch_log ADD COLUMN ${col}`); } catch (_) {} } }
+  if (pgPool) { await pgPool.query(ddl); for (const col of ['orange_ids TEXT','mode TEXT','details_json TEXT','return_id TEXT']) await pgPool.query(`ALTER TABLE rebatch_log ADD COLUMN IF NOT EXISTS ${col}`).catch(()=>{}); }   // v57Y: return_id
+  else { db.exec(ddl); for (const col of ['orange_ids TEXT','mode TEXT','details_json TEXT','return_id TEXT']) { try { db.exec(`ALTER TABLE rebatch_log ADD COLUMN ${col}`); } catch (_) {} } }
 }
 
 // v53U (Ishan, 03 Sep): standalone legacy batches have no DPR actuals and no order start date, so
@@ -1117,6 +1117,55 @@ const MIGRATIONS = [
         conc_kg_per_l = CASE WHEN COALESCE(gelatine_kg,0) > 0 AND COALESCE(total_kg,0) > 0 THEN ROUND(gelatine_kg * 1.0 / total_kg, 4) ELSE 0.33 END
         WHERE total_l IS NULL;
       UPDATE gpr_mmt_charges SET allocated_l = ROUND(COALESCE(allocated_kg,0) / conc_kg_per_l, 1) WHERE allocated_l = 0 AND COALESCE(allocated_kg,0) <> 0 AND conc_kg_per_l > 0;
+    `
+  },
+  {
+    version: 87,
+    name: 'v57y_returns_cancels',
+    // v57Y (Ishan, 9 Oct; Shri Kant Gupta's mail): SAP cancellations and material returns.
+    //  • invoices_received.inv_kind: 'invoice' | 'cancelled' (an A/R Invoice SAP has cancelled) |
+    //    'cancellation' (the A/R Invoice-Cancellation document SAP raises against it, e.g. 2668 ↔ 2667).
+    //    cancel_of_doc_num / cancelled_by_doc_num hold the pair in both directions.
+    //  • sap_credit_notes: A/R Credit Memos (material returns) pulled from SAP, each linked to the
+    //    original invoice it returns against (link_method says how the link was established).
+    //  • rebatch_log.return_id: a re-batch / re-customer drawn from return stock points at its credit note.
+    sql: `
+      ALTER TABLE invoices_received ADD COLUMN inv_kind TEXT NOT NULL DEFAULT 'invoice';
+      ALTER TABLE invoices_received ADD COLUMN cancel_of_doc_num TEXT;
+      ALTER TABLE invoices_received ADD COLUMN cancelled_by_doc_num TEXT;
+      ALTER TABLE invoices_received ADD COLUMN cancelled_at TEXT;
+      CREATE TABLE IF NOT EXISTS sap_credit_notes (
+        id TEXT PRIMARY KEY,
+        sap_doc_entry INTEGER UNIQUE,
+        sap_doc_num TEXT,
+        doc_date TEXT,
+        customer TEXT,
+        card_code TEXT,
+        num_at_card TEXT,
+        comments TEXT,
+        total_qty_lakhs REAL DEFAULT 0,
+        total_boxes INTEGER DEFAULT 0,
+        taxable_amount REAL DEFAULT 0,
+        igst_amount REAL DEFAULT 0,
+        total_amount REAL DEFAULT 0,
+        pc_code TEXT,
+        size TEXT,
+        colour TEXT,
+        batch_number TEXT,
+        orig_invoice_doc_entry INTEGER,
+        orig_invoice_doc_num TEXT,
+        link_method TEXT,
+        linked_by TEXT,
+        linked_at TEXT,
+        payload_json TEXT,
+        fetched_at TEXT,
+        updated_at TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_scn_orig ON sap_credit_notes(orig_invoice_doc_num);
+      CREATE TABLE IF NOT EXISTS rebatch_log (
+        id TEXT PRIMARY KEY, ts TEXT NOT NULL, by_user TEXT, legacy_ref TEXT NOT NULL, target_batch TEXT NOT NULL,
+        qty_lakhs REAL NOT NULL, boxes INTEGER NOT NULL, size TEXT, label_ids TEXT, note TEXT, orange_ids TEXT, mode TEXT, details_json TEXT);
+      ALTER TABLE rebatch_log ADD COLUMN return_id TEXT;
     `
   },
   {
@@ -4976,6 +5025,18 @@ async function ensurePostgresTables() {
       `ALTER TABLE gpr_mmt_charges ADD COLUMN IF NOT EXISTS conc_kg_per_l REAL`,
       `UPDATE gpr_mmt_charges SET total_l = ROUND(COALESCE(total_kg,0)::numeric, 1), conc_kg_per_l = CASE WHEN COALESCE(gelatine_kg,0) > 0 AND COALESCE(total_kg,0) > 0 THEN ROUND((gelatine_kg / total_kg)::numeric, 4) ELSE 0.33 END WHERE total_l IS NULL`,
       `UPDATE gpr_mmt_charges SET allocated_l = ROUND((COALESCE(allocated_kg,0) / conc_kg_per_l)::numeric, 1) WHERE allocated_l = 0 AND COALESCE(allocated_kg,0) <> 0 AND conc_kg_per_l > 0`,
+      // v57Y migration-87 mirror — SAP cancellations + A/R credit memos (returns)
+      `ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS inv_kind TEXT NOT NULL DEFAULT 'invoice'`,
+      `ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS cancel_of_doc_num TEXT`,
+      `ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS cancelled_by_doc_num TEXT`,
+      `ALTER TABLE invoices_received ADD COLUMN IF NOT EXISTS cancelled_at TEXT`,
+      `CREATE TABLE IF NOT EXISTS sap_credit_notes (id TEXT PRIMARY KEY, sap_doc_entry INTEGER UNIQUE, sap_doc_num TEXT,
+        doc_date TEXT, customer TEXT, card_code TEXT, num_at_card TEXT, comments TEXT,
+        total_qty_lakhs REAL DEFAULT 0, total_boxes INTEGER DEFAULT 0, taxable_amount REAL DEFAULT 0, igst_amount REAL DEFAULT 0, total_amount REAL DEFAULT 0,
+        pc_code TEXT, size TEXT, colour TEXT, batch_number TEXT, orig_invoice_doc_entry INTEGER, orig_invoice_doc_num TEXT,
+        link_method TEXT, linked_by TEXT, linked_at TEXT, payload_json TEXT, fetched_at TEXT, updated_at TEXT)`,
+      `CREATE INDEX IF NOT EXISTS idx_scn_orig ON sap_credit_notes(orig_invoice_doc_num)`,
+      `ALTER TABLE rebatch_log ADD COLUMN IF NOT EXISTS return_id TEXT`,
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -6575,8 +6636,12 @@ async function _doRefreshSapInvoices() {
     const poUdf = inv.U_SunlocPO || '';
     let invReqId = null;
     let source = 'direct_sap';
+    // v57Y: classify before anything else — an A/R Invoice-Cancellation document (e.g. 2668, "Based On
+    // A/R Invoices 2667") is a mirror of the invoice it cancels, never an invoice of its own: it is stored
+    // (so the Return & Cancel tab can show the pair) but never matched to a request, attributed or swept.
+    const _k57y = _v57yClassifyInvoice(inv);
     try {
-      if (batchUdf) {
+      if (batchUdf && _k57y.kind !== 'cancellation') {
         if (pgPool) {
           const m = await pgPool.query(
             `SELECT id FROM invoice_requests WHERE batch_number=$1 AND status IN ('pending','sent_to_sap','pending_reconciliation') ORDER BY created_at DESC LIMIT 1`,
@@ -6812,6 +6877,16 @@ async function _doRefreshSapInvoices() {
             pcCode, size, colour,
             totalBoxes, taxable, vatSum, docTotal, inv.U_IRN || null, source, invReqId, payload, totalQtyLakhs);
       }
+      // v57Y: record the document's nature. Never downgraded here — a row the link pass marked
+      // 'cancelled' (from its cancellation document) keeps that even when its own payload is stale.
+      if (_k57y.kind !== 'invoice') {
+        try {
+          const _cAt = _k57y.kind === 'cancelled' ? (inv.UpdateDate || inv.DocDate || null) : null;
+          if (pgPool) await pgPool.query(`UPDATE invoices_received SET inv_kind=$1, cancel_of_doc_num=COALESCE($2, cancel_of_doc_num), cancelled_at=COALESCE(cancelled_at, $3) WHERE id=$4`, [_k57y.kind, _k57y.cancelOf, _cAt, recId]);
+          else db.prepare(`UPDATE invoices_received SET inv_kind=?, cancel_of_doc_num=COALESCE(?, cancel_of_doc_num), cancelled_at=COALESCE(cancelled_at, ?) WHERE id=?`).run(_k57y.kind, _k57y.cancelOf, _cAt, recId);
+        } catch (e) { console.warn('[v57Y kind]', e.message); }
+      }
+      if (_k57y.kind === 'cancellation') { upserted++; continue; }   // v57Y: nothing below applies to a cancellation document
       // v44ZC (v44AD): capture the real SO NUMBER from the invoice's Comments ("Based On Sales
       // Orders 237 ...") and store it separately from the invoice number (sap_doc_num=DocNum). The
       // modal can then show the true SO instead of the invoice number, and reconciliation matches on it.
@@ -7070,6 +7145,14 @@ async function _doRefreshSapInvoices() {
       console.warn('[SAP] invoice upsert error for DocEntry', inv.DocEntry, ':', e.message);
     }
   }
+  // v57Y: A/R Credit Memos (material returns) ride the same poll; then the cancellation link pass.
+  let _cn57y = { fetched: 0, upserted: 0, linked: 0 };
+  try {
+    // first successful pull of this process goes a year back so the tab is complete from day one
+    _cn57y = await _v57yIngestCreditNotes(global._v57yDeepCnDone ? Math.max(lookback, 30) : 365);
+    if (!_cn57y.error) global._v57yDeepCnDone = true;
+  } catch (e) { console.warn('[v57Y credit-notes] ingestion failed (next poll retries):', e.message); }
+  try { await _v57yHealCancellations(); } catch (e) { console.warn('[v57Y cancel-heal]', e.message); }
   try {
     if (pgPool) {
       await pgPool.query(`UPDATE sap_config SET last_invoice_poll_at = NOW()::TEXT WHERE id=1`);
@@ -7092,7 +7175,7 @@ async function _doRefreshSapInvoices() {
       const unmatched = await pgPool.query(
         `SELECT iv.id, iv.sap_doc_entry, iv.sap_invoice_no, iv.total_boxes, iv.total_qty_lakhs, iv.payload_json, iv.batch_number
          FROM invoices_received iv
-         WHERE iv.invoice_request_id IS NULL AND iv.source = 'direct_sap'`
+         WHERE iv.invoice_request_id IS NULL AND iv.source = 'direct_sap' AND COALESCE(iv.inv_kind,'invoice') <> 'cancellation'`
       );
       for (const iv of unmatched.rows) {
         try {
@@ -7265,8 +7348,417 @@ async function _doRefreshSapInvoices() {
     }
   } catch (e) { console.warn('[SAP] v44P line-enrich pass error:', e.message); }
 
-  return { ok: true, fetched: invoices.length, upserted, serverBuild: APP_BUILD };
+  return { ok: true, fetched: invoices.length, upserted, creditNotes: _cn57y, serverBuild: APP_BUILD };
 }
+
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+// v57Y (Ishan, 9 Oct; Shri Kant Gupta's mail) — SAP CANCELLATIONS + A/R CREDIT MEMOS (RETURNS)
+// Two SAP realities the Generated Invoices tab never saw:
+//   • CANCEL: SAP cancels an A/R Invoice (2667 → status "Canceled") by raising an A/R
+//     Invoice-Cancellation document (2668, Remarks "Based On A/R Invoices 2667"). Both live in the
+//     `Invoices` entity, so 2668 used to arrive as one more invoice (double-counted) and 2667 stayed
+//     an ordinary invoice. Now: inv_kind 'cancelled' / 'cancellation', linked both ways.
+//   • RETURN: material comes back and SAP raises an A/R Credit Memo (`CreditNotes`, ARCM-25 27226,
+//     NumAtCard "11323/28.09.2025", Remarks "...material return vide our invoice No 11323..."). Pulled
+//     into sap_credit_notes and linked to the invoice it returns against. Returned stock is then
+//     available for re-batch / re-customer (fresh R-labels, fresh invoicing) from the Return Stock tab.
+// Pull discipline = the invoice poller's (every 5 min + Re-pull button): full entity, no $select, paged.
+// ═══════════════════════════════════════════════════════════════════════════════════════════════
+function _v57yClassifyInvoice(inv) {
+  const cs = String((inv && inv.CancelStatus) || '');
+  const comments = String((inv && inv.Comments) || '');
+  const m = comments.match(/Based On A\/R Invoices?\s+(\d+)/i);
+  if (cs === 'csCancel' || m) return { kind: 'cancellation', cancelOf: m ? m[1] : null };
+  if (cs === 'csYes' || String((inv && inv.Cancelled) || '') === 'tYES') return { kind: 'cancelled', cancelOf: null };
+  return { kind: 'invoice', cancelOf: null };
+}
+
+async function _v57yPcLookup(itemCode) {
+  const out = { pc: String(itemCode || '').trim(), size: '', colour: '' };
+  if (!out.pc) return out;
+  try {
+    let pcRow;
+    if (pgPool) pcRow = (await pgPool.query(`SELECT size, code, colour FROM pc_codes WHERE code=$1 LIMIT 1`, [out.pc])).rows[0];
+    else pcRow = db.prepare(`SELECT size, code, colour FROM pc_codes WHERE code=? LIMIT 1`).get(out.pc);
+    if (pcRow) { out.size = pcRow.size || ''; out.colour = pcRow.colour || ''; }
+    if (!out.size || !out.colour) { const pm = _pcMasterLookup(out.pc); if (pm) { if (!out.size) out.size = pm.size || ''; if (!out.colour) out.colour = pm.colour || ''; } }
+  } catch (_) {}
+  return out;
+}
+
+async function _v57yFindInvoice(where, args) {
+  const sql = `SELECT id, sap_doc_entry, sap_doc_num, card_code, customer, batch_number, pc_code, size, colour, total_qty_lakhs, total_boxes, invoice_date, inv_kind
+                 FROM invoices_received WHERE ${where} LIMIT 1`;
+  if (pgPool) return (await pgPool.query(sql, args)).rows[0] || null;
+  return db.prepare(sql.replace(/\$\d+/g, '?')).get(...args) || null;
+}
+
+// Link a credit memo to the invoice it returns against. Priority: the memo's own line base reference
+// (BaseType 13 = A/R Invoice) → NumAtCard "11323/28.09.2025" → the remark's "invoice No 11323" → none.
+async function _v57yLinkCreditNote(cn) {
+  const lines = (cn && cn.DocumentLines) || [];
+  for (const l of lines) {
+    if (parseInt(l.BaseType, 10) === 13 && l.BaseEntry) {
+      const e = parseInt(l.BaseEntry, 10);
+      const row = await _v57yFindInvoice(`sap_doc_entry=$1`, [e]);
+      if (row) return { row, method: 'line_base' };
+    }
+  }
+  const card = String((cn && cn.CardCode) || '');
+  const byNum = async (num) => {
+    if (!num) return null;
+    const sql = `sap_doc_num=$1 AND COALESCE(inv_kind,'invoice') <> 'cancellation' ORDER BY (card_code=$2) DESC, invoice_date DESC`;
+    return _v57yFindInvoice(sql, [String(num), card]);
+  };
+  const nac = String((cn && cn.NumAtCard) || '').trim();
+  const mn = nac.match(/^\s*(\d{2,})/);
+  if (mn) { const row = await byNum(mn[1]); if (row) return { row, method: 'numatcard' }; }
+  const cm = String((cn && cn.Comments) || '').match(/invoice\s*(?:no\.?|number|#)?\s*:?\s*(\d{2,})/i);
+  if (cm) { const row = await byNum(cm[1]); if (row) return { row, method: 'comments' }; }
+  return { row: null, method: null };
+}
+
+async function _v57yIngestCreditNotes(lookbackDays) {
+  const r = await sap.fetchRecentCreditNotes({ lookbackDays: lookbackDays || 30 });
+  if (!r.ok) { console.warn('[v57Y credit-notes] fetch failed:', r.error); return { fetched: 0, upserted: 0, linked: 0, error: r.error }; }
+  const notes = r.notes || [];
+  let upserted = 0, linked = 0;
+  for (const cn of notes) {
+    try {
+      const id = `cn_${cn.DocEntry}`;
+      if (!cn.DocumentLines || !cn.DocumentLines.length) {
+        try { const full = await sap.getCreditNote(cn.DocEntry); if (full && full.ok && full.note && Array.isArray(full.note.DocumentLines)) cn.DocumentLines = full.note.DocumentLines; } catch (_) {}
+      }
+      const lines = cn.DocumentLines || [];
+      const qty = Math.round(lines.reduce((s, l) => s + ((parseFloat(l.Quantity) || 0) * _sapUomScale(l)), 0) * 100) / 100;
+      const link = await _v57yLinkCreditNote(cn);
+      const orig = link.row;
+      const first = lines[0] || {};
+      const pcl = await _v57yPcLookup(first.ItemCode || (orig && orig.pc_code) || '');
+      const pc = pcl.pc || (orig && orig.pc_code) || '';
+      const size = pcl.size || (orig && orig.size) || '';
+      const colour = pcl.colour || (orig && orig.colour) || '';
+      let boxes = 0;
+      const rc = _v52sRecomputeTotals(lines);
+      if (rc.ok && rc.boxes > 0) boxes = rc.boxes;
+      else { const ps = _V44ZJ_PACK_SIZES[String(size || '')] || 0; if (ps > 0 && qty > 0) boxes = Math.ceil(qty / ps - 1e-9); }
+      const batch = (orig && orig.batch_number) || (_extractSapInvoiceBatch(cn, cn.U_SunlocBatch || '').batch) || '';
+      const docTotal = parseFloat(cn.DocTotal) || 0, vat = parseFloat(cn.VatSum) || 0;
+      const payload = JSON.stringify(cn);
+      const vals = [id, cn.DocEntry, String(cn.DocNum || ''), cn.DocDate || null, cn.CardName || '', cn.CardCode || '', String(cn.NumAtCard || ''), String(cn.Comments || ''),
+                    qty, boxes, docTotal - vat, vat, docTotal, pc, size, colour, batch,
+                    orig ? orig.sap_doc_entry : null, orig ? String(orig.sap_doc_num || '') : null, link.method, payload];
+      if (pgPool) {
+        await pgPool.query(`
+          INSERT INTO sap_credit_notes (id, sap_doc_entry, sap_doc_num, doc_date, customer, card_code, num_at_card, comments,
+            total_qty_lakhs, total_boxes, taxable_amount, igst_amount, total_amount, pc_code, size, colour, batch_number,
+            orig_invoice_doc_entry, orig_invoice_doc_num, link_method, payload_json, fetched_at, updated_at)
+          VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,NOW()::TEXT,NOW()::TEXT)
+          ON CONFLICT (sap_doc_entry) DO UPDATE SET
+            sap_doc_num=$3, doc_date=$4, customer=$5, card_code=$6, num_at_card=$7, comments=$8,
+            total_qty_lakhs=CASE WHEN $9>0 THEN $9 ELSE sap_credit_notes.total_qty_lakhs END,
+            total_boxes=CASE WHEN $10>0 THEN $10 ELSE sap_credit_notes.total_boxes END,
+            taxable_amount=$11, igst_amount=$12, total_amount=$13,
+            pc_code=COALESCE(NULLIF($14,''), sap_credit_notes.pc_code), size=COALESCE(NULLIF($15,''), sap_credit_notes.size), colour=COALESCE(NULLIF($16,''), sap_credit_notes.colour),
+            batch_number=CASE WHEN sap_credit_notes.link_method='manual' THEN sap_credit_notes.batch_number ELSE COALESCE(NULLIF($17,''), sap_credit_notes.batch_number) END,
+            orig_invoice_doc_entry=CASE WHEN sap_credit_notes.link_method='manual' THEN sap_credit_notes.orig_invoice_doc_entry ELSE COALESCE($18, sap_credit_notes.orig_invoice_doc_entry) END,
+            orig_invoice_doc_num=CASE WHEN sap_credit_notes.link_method='manual' THEN sap_credit_notes.orig_invoice_doc_num ELSE COALESCE($19, sap_credit_notes.orig_invoice_doc_num) END,
+            link_method=CASE WHEN sap_credit_notes.link_method='manual' THEN 'manual' ELSE COALESCE($20, sap_credit_notes.link_method) END,
+            payload_json=$21, updated_at=NOW()::TEXT`, vals);
+      } else {
+        db.prepare(`
+          INSERT INTO sap_credit_notes (id, sap_doc_entry, sap_doc_num, doc_date, customer, card_code, num_at_card, comments,
+            total_qty_lakhs, total_boxes, taxable_amount, igst_amount, total_amount, pc_code, size, colour, batch_number,
+            orig_invoice_doc_entry, orig_invoice_doc_num, link_method, payload_json, fetched_at, updated_at)
+          VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,datetime('now'),datetime('now'))
+          ON CONFLICT(sap_doc_entry) DO UPDATE SET
+            sap_doc_num=excluded.sap_doc_num, doc_date=excluded.doc_date, customer=excluded.customer, card_code=excluded.card_code, num_at_card=excluded.num_at_card, comments=excluded.comments,
+            total_qty_lakhs=CASE WHEN excluded.total_qty_lakhs>0 THEN excluded.total_qty_lakhs ELSE sap_credit_notes.total_qty_lakhs END,
+            total_boxes=CASE WHEN excluded.total_boxes>0 THEN excluded.total_boxes ELSE sap_credit_notes.total_boxes END,
+            taxable_amount=excluded.taxable_amount, igst_amount=excluded.igst_amount, total_amount=excluded.total_amount,
+            pc_code=COALESCE(NULLIF(excluded.pc_code,''), sap_credit_notes.pc_code), size=COALESCE(NULLIF(excluded.size,''), sap_credit_notes.size), colour=COALESCE(NULLIF(excluded.colour,''), sap_credit_notes.colour),
+            batch_number=CASE WHEN sap_credit_notes.link_method='manual' THEN sap_credit_notes.batch_number ELSE COALESCE(NULLIF(excluded.batch_number,''), sap_credit_notes.batch_number) END,
+            orig_invoice_doc_entry=CASE WHEN sap_credit_notes.link_method='manual' THEN sap_credit_notes.orig_invoice_doc_entry ELSE COALESCE(excluded.orig_invoice_doc_entry, sap_credit_notes.orig_invoice_doc_entry) END,
+            orig_invoice_doc_num=CASE WHEN sap_credit_notes.link_method='manual' THEN sap_credit_notes.orig_invoice_doc_num ELSE COALESCE(excluded.orig_invoice_doc_num, sap_credit_notes.orig_invoice_doc_num) END,
+            link_method=CASE WHEN sap_credit_notes.link_method='manual' THEN 'manual' ELSE COALESCE(excluded.link_method, sap_credit_notes.link_method) END,
+            payload_json=excluded.payload_json, updated_at=datetime('now')`).run(...vals);
+      }
+      upserted++; if (orig) linked++;
+    } catch (e) { console.warn('[v57Y credit-notes] upsert error for DocEntry', cn && cn.DocEntry, ':', e.message); }
+  }
+  // Memos stored earlier without a link: retry (their invoice may have been pulled since).
+  try {
+    const sel = `SELECT id, payload_json FROM sap_credit_notes WHERE orig_invoice_doc_entry IS NULL AND orig_invoice_doc_num IS NULL AND payload_json IS NOT NULL LIMIT 300`;
+    const pend = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+    for (const p of pend) {
+      let cn; try { cn = JSON.parse(p.payload_json); } catch { continue; }
+      const link = await _v57yLinkCreditNote(cn);
+      if (!link.row) continue;
+      const o = link.row;
+      if (pgPool) await pgPool.query(`UPDATE sap_credit_notes SET orig_invoice_doc_entry=$1, orig_invoice_doc_num=$2, link_method=$3, batch_number=COALESCE(NULLIF(batch_number,''), $4), pc_code=COALESCE(NULLIF(pc_code,''), $5), size=COALESCE(NULLIF(size,''), $6), colour=COALESCE(NULLIF(colour,''), $7), updated_at=NOW()::TEXT WHERE id=$8`, [o.sap_doc_entry, String(o.sap_doc_num || ''), link.method, o.batch_number || '', o.pc_code || '', o.size || '', o.colour || '', p.id]);
+      else db.prepare(`UPDATE sap_credit_notes SET orig_invoice_doc_entry=?, orig_invoice_doc_num=?, link_method=?, batch_number=COALESCE(NULLIF(batch_number,''), ?), pc_code=COALESCE(NULLIF(pc_code,''), ?), size=COALESCE(NULLIF(size,''), ?), colour=COALESCE(NULLIF(colour,''), ?), updated_at=datetime('now') WHERE id=?`).run(o.sap_doc_entry, String(o.sap_doc_num || ''), link.method, o.batch_number || '', o.pc_code || '', o.size || '', o.colour || '', p.id);
+      linked++;
+    }
+  } catch (e) { console.warn('[v57Y credit-notes] relink pass:', e.message); }
+  if (notes.length) console.log(`[v57Y credit-notes] fetched ${notes.length}, upserted ${upserted}, linked ${linked}${r.degraded ? ' (degraded)' : ''}`);
+  return { fetched: notes.length, upserted, linked, degraded: !!r.degraded };
+}
+
+// Cancellation self-heal, every poll (idempotent): (1) rows ingested before v57Y whose stored payload
+// already says cancelled / cancellation; (2) every cancellation document marks the invoice it cancels
+// (so an invoice older than the poll lookback is still flagged the moment its cancellation arrives);
+// (3) cancellation documents never hold batch attribution rows.
+async function _v57yHealCancellations() {
+  let flagged = 0, paired = 0;
+  const sel = `SELECT id, sap_doc_num, payload_json FROM invoices_received
+                WHERE COALESCE(inv_kind,'invoice')='invoice' AND payload_json IS NOT NULL
+                  AND (payload_json LIKE '%Based On A/R Invoices%' OR payload_json LIKE '%"Cancelled":"tYES"%' OR payload_json LIKE '%csCancel%' OR payload_json LIKE '%csYes%')`;
+  const rows = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+  for (const r of rows) {
+    let inv; try { inv = JSON.parse(r.payload_json); } catch { continue; }
+    const k = _v57yClassifyInvoice(inv);
+    if (k.kind === 'invoice') continue;
+    const cAt = k.kind === 'cancelled' ? (inv.UpdateDate || inv.DocDate || null) : null;
+    if (pgPool) await pgPool.query(`UPDATE invoices_received SET inv_kind=$1, cancel_of_doc_num=COALESCE($2, cancel_of_doc_num), cancelled_at=COALESCE(cancelled_at,$3) WHERE id=$4`, [k.kind, k.cancelOf, cAt, r.id]);
+    else db.prepare(`UPDATE invoices_received SET inv_kind=?, cancel_of_doc_num=COALESCE(?, cancel_of_doc_num), cancelled_at=COALESCE(cancelled_at,?) WHERE id=?`).run(k.kind, k.cancelOf, cAt, r.id);
+    flagged++;
+    console.log(`[v57Y cancel-heal] ${r.id} (${r.sap_doc_num}) → ${k.kind}${k.cancelOf ? ' of ' + k.cancelOf : ''}`);
+  }
+  const cs = `SELECT id, sap_doc_num, invoice_date, cancel_of_doc_num FROM invoices_received WHERE inv_kind='cancellation' AND COALESCE(cancel_of_doc_num,'') <> ''`;
+  const cancs = pgPool ? (await pgPool.query(cs)).rows : db.prepare(cs).all();
+  for (const c of cancs) {
+    const upd = pgPool
+      ? await pgPool.query(`UPDATE invoices_received SET inv_kind='cancelled', cancelled_by_doc_num=$1, cancelled_at=COALESCE(cancelled_at,$2)
+                              WHERE sap_doc_num=$3 AND id<>$4 AND COALESCE(inv_kind,'invoice') <> 'cancellation' AND (COALESCE(inv_kind,'invoice') <> 'cancelled' OR cancelled_by_doc_num IS NULL)`, [c.sap_doc_num, c.invoice_date || null, c.cancel_of_doc_num, c.id])
+      : db.prepare(`UPDATE invoices_received SET inv_kind='cancelled', cancelled_by_doc_num=?, cancelled_at=COALESCE(cancelled_at,?)
+                      WHERE sap_doc_num=? AND id<>? AND COALESCE(inv_kind,'invoice') <> 'cancellation' AND (COALESCE(inv_kind,'invoice') <> 'cancelled' OR cancelled_by_doc_num IS NULL)`).run(c.sap_doc_num, c.invoice_date || null, c.cancel_of_doc_num, c.id);
+    const n = pgPool ? upd.rowCount : upd.changes;
+    if (n) { paired += n; console.log(`[v57Y cancel-heal] invoice ${c.cancel_of_doc_num} marked cancelled by ${c.sap_doc_num}`); }
+  }
+  try {
+    const del = pgPool
+      ? await pgPool.query(`DELETE FROM invoice_batch_alloc WHERE invoice_id IN (SELECT id FROM invoices_received WHERE inv_kind='cancellation')`)
+      : db.prepare(`DELETE FROM invoice_batch_alloc WHERE invoice_id IN (SELECT id FROM invoices_received WHERE inv_kind='cancellation')`).run();
+    const n = pgPool ? del.rowCount : del.changes;
+    if (n) console.log(`[v57Y cancel-heal] ${n} attribution row(s) removed from cancellation documents`);
+  } catch (e) { console.warn('[v57Y cancel-heal] alloc purge:', e.message); }
+  try {
+    const q = `SELECT id, sap_doc_num, invoice_request_id FROM invoices_received WHERE inv_kind='cancellation' AND invoice_request_id IS NOT NULL`;
+    const bad = pgPool ? (await pgPool.query(q)).rows : db.prepare(q).all();
+    for (const b of bad) console.warn(`[v57Y cancel-heal] REVIEW: cancellation document ${b.sap_doc_num} is linked to invoice request ${b.invoice_request_id} — un-link it from Planning so the request can meet its real invoice`);
+  } catch (_) {}
+  return { flagged, paired };
+}
+
+// Production month per batch — the frozen v51G rule (MIN(production_actuals.date) → order startDate →
+// admin-entered legacy month), shared by the Return & Cancel and Return Stock views.
+async function _v57yProdMonthMap(bnsIn) {
+  const bns = [...new Set((bnsIn || []).map(b => String(b || '').trim().toUpperCase()).filter(Boolean))];
+  const pmMap = {};
+  if (!bns.length) return pmMap;
+  try {
+    let pa;
+    if (pgPool) pa = (await pgPool.query(`SELECT batch_number, MIN(date) AS d0 FROM production_actuals WHERE UPPER(TRIM(batch_number)) = ANY($1) AND COALESCE(date,'') <> '' GROUP BY batch_number`, [bns])).rows;
+    else { const ph = bns.map(() => '?').join(','); pa = db.prepare(`SELECT batch_number, MIN(date) AS d0 FROM production_actuals WHERE UPPER(TRIM(batch_number)) IN (${ph}) AND COALESCE(date,'') <> '' GROUP BY batch_number`).all(...bns); }
+    for (const r of (pa || [])) if (r.batch_number && r.d0) pmMap[String(r.batch_number).trim().toUpperCase()] = String(r.d0).slice(0, 7);
+    const missing = bns.filter(b => !pmMap[b]);
+    if (missing.length) {
+      let po;
+      if (pgPool) po = (await pgPool.query(`SELECT batch_number, data_json FROM production_orders WHERE UPPER(TRIM(batch_number)) = ANY($1)`, [missing])).rows;
+      else { const ph = missing.map(() => '?').join(','); po = db.prepare(`SELECT batch_number, data_json FROM production_orders WHERE UPPER(TRIM(batch_number)) IN (${ph})`).all(...missing); }
+      for (const r of (po || [])) {
+        try { const d = typeof r.data_json === 'string' ? JSON.parse(r.data_json) : (r.data_json || {});
+          const sd = d.startDate || d.start_date || null;
+          if (sd) pmMap[String(r.batch_number).trim().toUpperCase()] = String(sd).slice(0, 7);
+        } catch (_) {}
+      }
+    }
+    const still = bns.filter(b => !pmMap[b]);
+    if (still.length) { const lm = await _v53uLegacyMonths(still); for (const k of Object.keys(lm)) pmMap[k] = lm[k]; }
+  } catch (e) { console.warn('[v57Y prodMonth]', e.message); }
+  return pmMap;
+}
+
+const _v57yFirstBatch = s => String(s || '').split(/[\s,]+/).map(t => t.trim().toUpperCase()).filter(Boolean)[0] || '';
+
+// Per credit note: what was re-deployed (re-batch / re-customer rows carrying return_id), what of that
+// has physically left (dispatch OUT scans on those R-labels, by calendar month), and what is still
+// available. Full or partial return is read against the original invoice's quantity.
+async function _v57yReturnStockRows() {
+  const sel = `SELECT c.*, i.id AS inv_id, i.invoice_date AS inv_date, i.total_qty_lakhs AS inv_qty, i.total_boxes AS inv_boxes, i.customer AS inv_customer, i.batch_number AS inv_batch, i.inv_kind AS inv_kind
+                 FROM sap_credit_notes c LEFT JOIN invoices_received i ON i.sap_doc_entry = c.orig_invoice_doc_entry
+                ORDER BY c.doc_date DESC, c.sap_doc_entry DESC`;
+  const cns = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+  const lg = pgPool ? (await pgPool.query(`SELECT * FROM rebatch_log WHERE COALESCE(return_id,'') <> '' ORDER BY ts`)).rows
+                    : db.prepare(`SELECT * FROM rebatch_log WHERE COALESCE(return_id,'') <> '' ORDER BY ts`).all();
+  const byRet = {}; const allIds = [];
+  for (const r of lg) {
+    let ids = []; try { ids = JSON.parse(r.label_ids || '[]'); } catch (_) {}
+    (byRet[r.return_id] = byRet[r.return_id] || []).push({ id: r.id, ts: r.ts, by: r.by_user, mode: r.mode || 'merge', targetBatch: r.target_batch, legacyRef: r.legacy_ref, qty: parseFloat(r.qty_lakhs) || 0, boxes: parseInt(r.boxes, 10) || 0, labelIds: ids, dispatchedQty: 0, dispatchedBoxes: 0, byMonth: {} });
+    allIds.push(...ids);
+  }
+  const dispByLabel = {};
+  if (allIds.length) {
+    const dr = pgPool
+      ? (await pgPool.query(`SELECT s.label_id, MAX(s.ts) AS ts, MAX(l.qty) AS qty FROM tracking_scans s JOIN tracking_labels l ON l.id=s.label_id
+                               WHERE s.label_id = ANY($1) AND s.dept='dispatch' AND s.type='out' AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id=s.id) GROUP BY s.label_id`, [allIds])).rows
+      : db.prepare(`SELECT s.label_id, MAX(s.ts) AS ts, MAX(l.qty) AS qty FROM tracking_scans s JOIN tracking_labels l ON l.id=s.label_id
+                      WHERE s.label_id IN (${allIds.map(() => '?').join(',')}) AND s.dept='dispatch' AND s.type='out' GROUP BY s.label_id`).all(...allIds);
+    for (const d of dr) dispByLabel[d.label_id] = { ts: d.ts, qty: parseFloat(d.qty) || 0 };
+  }
+  for (const list of Object.values(byRet)) for (const rd of list) {
+    for (const lid of rd.labelIds) { const d = dispByLabel[lid]; if (!d) continue; rd.dispatchedQty += d.qty; rd.dispatchedBoxes++; const ym = String(d.ts || '').slice(0, 7); rd.byMonth[ym] = Math.round(((rd.byMonth[ym] || 0) + d.qty) * 100) / 100; }
+    rd.dispatchedQty = Math.round(rd.dispatchedQty * 100) / 100;
+  }
+  const pmMap = await _v57yProdMonthMap(cns.map(c => _v57yFirstBatch(c.batch_number || c.inv_batch)));
+  const rows = [];
+  for (const c of cns) {
+    const rds = byRet[c.id] || [];
+    const retQ = Math.round((parseFloat(c.total_qty_lakhs) || 0) * 100) / 100, retB = parseInt(c.total_boxes, 10) || 0;
+    const redQ = Math.round(rds.reduce((s, r) => s + r.qty, 0) * 100) / 100, redB = rds.reduce((s, r) => s + r.boxes, 0);
+    const invQ = Math.round((parseFloat(c.inv_qty) || 0) * 100) / 100;
+    const bn = _v57yFirstBatch(c.batch_number || c.inv_batch);
+    const dispQ = Math.round(rds.reduce((s, r) => s + r.dispatchedQty, 0) * 100) / 100;
+    const byMonth = {}; rds.forEach(r => Object.entries(r.byMonth).forEach(([ym, q]) => { byMonth[ym] = Math.round(((byMonth[ym] || 0) + q) * 100) / 100; }));
+    rows.push({
+      id: c.id, cn_no: c.sap_doc_num, cn_doc_entry: c.sap_doc_entry, cn_date: c.doc_date, num_at_card: c.num_at_card, comments: c.comments,
+      invoice_no: c.orig_invoice_doc_num || null, invoice_doc_entry: c.orig_invoice_doc_entry || null, invoice_id: c.inv_id || null, invoice_date: c.inv_date || null,
+      invoice_qty: invQ, invoice_boxes: parseInt(c.inv_boxes, 10) || 0, invoice_kind: c.inv_kind || null,
+      customer: c.customer || c.inv_customer || '', card_code: c.card_code || '', batch: c.batch_number || c.inv_batch || '', prodMonth: pmMap[bn] || null,
+      pc_code: c.pc_code || '', size: c.size || '', colour: c.colour || '',
+      returned_qty: retQ, returned_boxes: retB, amount: parseFloat(c.total_amount) || 0, taxable: parseFloat(c.taxable_amount) || 0, igst: parseFloat(c.igst_amount) || 0,
+      full: invQ > 0 ? retQ >= invQ - 0.005 : null,
+      redeployed_qty: redQ, redeployed_boxes: redB, available_qty: Math.max(0, Math.round((retQ - redQ) * 100) / 100), available_boxes: Math.max(0, retB - redB),
+      dispatched_qty: dispQ, dispatched_by_month: byMonth, redeploys: rds, link_method: c.link_method || null,
+    });
+  }
+  return rows;
+}
+
+// GET /api/invoice/returns-cancels — one row per cancelled invoice (↔ its cancellation document) and
+// one per returned invoice (↔ its credit note). Filters are applied on the client (small set).
+app.get('/api/invoice/returns-cancels', async (req, res) => {
+  try {
+    const sel = `SELECT id, sap_doc_entry, sap_doc_num, invoice_date, customer, card_code, batch_number, pc_code, size, colour, total_boxes, total_qty_lakhs, taxable_amount, igst_amount, total_amount,
+                        inv_kind, cancel_of_doc_num, cancelled_by_doc_num, cancelled_at, source, dispatch_status
+                   FROM invoices_received WHERE inv_kind IN ('cancelled','cancellation') ORDER BY invoice_date DESC, sap_doc_entry DESC`;
+    const inv = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+    const cancByOf = {}; for (const r of inv) if (r.inv_kind === 'cancellation' && r.cancel_of_doc_num) cancByOf[String(r.cancel_of_doc_num)] = r;
+    const rows = [];
+    const seenCanc = new Set();
+    for (const r of inv) {
+      if (r.inv_kind !== 'cancelled') continue;
+      const c = cancByOf[String(r.sap_doc_num)] || null; if (c) seenCanc.add(c.id);
+      rows.push({ nature: 'cancel', invoice_id: r.id, invoice_no: r.sap_doc_num, invoice_doc_entry: r.sap_doc_entry, invoice_date: r.invoice_date, customer: r.customer, card_code: r.card_code,
+        batch: r.batch_number || '', pc_code: r.pc_code || '', size: r.size || '', colour: r.colour || '', boxes: parseInt(r.total_boxes, 10) || 0, qty: Math.round((parseFloat(r.total_qty_lakhs) || 0) * 100) / 100,
+        invoice_qty: Math.round((parseFloat(r.total_qty_lakhs) || 0) * 100) / 100, amount: parseFloat(r.total_amount) || 0, taxable: parseFloat(r.taxable_amount) || 0, igst: parseFloat(r.igst_amount) || 0,
+        linked_no: (c && c.sap_doc_num) || r.cancelled_by_doc_num || null, linked_doc_entry: c ? c.sap_doc_entry : null, linked_date: (c && c.invoice_date) || r.cancelled_at || null, linked_kind: 'A/R Invoice-Cancellation',
+        source: r.source, dispatch_status: r.dispatch_status, full: true });
+    }
+    // Cancellation documents whose original is not in Sunloc (older than every pull) — still listed.
+    for (const r of inv) {
+      if (r.inv_kind !== 'cancellation' || seenCanc.has(r.id)) continue;
+      rows.push({ nature: 'cancel', invoice_id: null, invoice_no: r.cancel_of_doc_num || '—', invoice_doc_entry: null, invoice_date: null, customer: r.customer, card_code: r.card_code,
+        batch: r.batch_number || '', pc_code: r.pc_code || '', size: r.size || '', colour: r.colour || '', boxes: parseInt(r.total_boxes, 10) || 0, qty: Math.round((parseFloat(r.total_qty_lakhs) || 0) * 100) / 100,
+        invoice_qty: null, amount: parseFloat(r.total_amount) || 0, taxable: parseFloat(r.taxable_amount) || 0, igst: parseFloat(r.igst_amount) || 0,
+        linked_no: r.sap_doc_num, linked_doc_entry: r.sap_doc_entry, linked_date: r.invoice_date, linked_kind: 'A/R Invoice-Cancellation', source: r.source, dispatch_status: null, full: true, orig_missing: true });
+    }
+    const rets = await _v57yReturnStockRows();
+    for (const t of rets) rows.push({ nature: 'return', invoice_id: t.invoice_id, invoice_no: t.invoice_no || '—', invoice_doc_entry: t.invoice_doc_entry, invoice_date: t.invoice_date, customer: t.customer, card_code: t.card_code,
+      batch: t.batch, pc_code: t.pc_code, size: t.size, colour: t.colour, boxes: t.returned_boxes, qty: t.returned_qty, invoice_qty: t.invoice_qty, amount: t.amount, taxable: t.taxable, igst: t.igst,
+      linked_no: t.cn_no, linked_doc_entry: t.cn_doc_entry, linked_date: t.cn_date, linked_kind: 'A/R Credit Memo', link_method: t.link_method, full: t.full, available_qty: t.available_qty, prodMonth: t.prodMonth, cn_id: t.id, orig_missing: !t.invoice_no });
+    const pmMap = await _v57yProdMonthMap(rows.map(r => _v57yFirstBatch(r.batch)));
+    for (const r of rows) if (r.prodMonth === undefined || r.prodMonth === null) r.prodMonth = pmMap[_v57yFirstBatch(r.batch)] || null;
+    rows.sort((a, b) => String(b.linked_date || b.invoice_date || '').localeCompare(String(a.linked_date || a.invoice_date || '')));
+    res.json({ ok: true, rows, counts: { cancel: rows.filter(r => r.nature === 'cancel').length, return: rows.filter(r => r.nature === 'return').length } });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/invoice/return-dispatch?month=YYYY-MM — every return-stock R-box scanned OUT at Dispatch in
+// the IST calendar month (all months when blank): credit note, original invoice / batch, the batch it
+// shipped under, the dispatch record and invoice it went out on. Feeds Report E's "Dispatch from
+// Return" sheet (v57Y tweak 3) — kept apart from the production flow on purpose.
+app.get('/api/invoice/return-dispatch', async (req, res) => {
+  try {
+    const month = String(req.query.month || '').trim();
+    const lg = pgPool ? (await pgPool.query(`SELECT * FROM rebatch_log WHERE COALESCE(return_id,'') <> ''`)).rows
+                      : db.prepare(`SELECT * FROM rebatch_log WHERE COALESCE(return_id,'') <> ''`).all();
+    if (!lg.length) return res.json({ ok: true, month, rows: [] });
+    const cnIds = [...new Set(lg.map(r => r.return_id))];
+    const cns = pgPool ? (await pgPool.query(`SELECT c.*, i.customer AS inv_customer, i.invoice_date AS inv_date FROM sap_credit_notes c LEFT JOIN invoices_received i ON i.sap_doc_entry=c.orig_invoice_doc_entry WHERE c.id = ANY($1)`, [cnIds])).rows
+                       : db.prepare(`SELECT c.*, i.customer AS inv_customer, i.invoice_date AS inv_date FROM sap_credit_notes c LEFT JOIN invoices_received i ON i.sap_doc_entry=c.orig_invoice_doc_entry WHERE c.id IN (${cnIds.map(()=>'?').join(',')})`).all(...cnIds);
+    const cnById = {}; cns.forEach(c => { cnById[c.id] = c; });
+    const labelToLog = {}; const allIds = [];
+    for (const r of lg) { let ids = []; try { ids = JSON.parse(r.label_ids || '[]'); } catch (_) {} ids.forEach(id => { labelToLog[id] = r; allIds.push(id); }); }
+    if (!allIds.length) return res.json({ ok: true, month, rows: [] });
+    const sc = pgPool
+      ? (await pgPool.query(`SELECT s.label_id, MAX(s.ts) AS ts, MAX(l.qty) AS qty, MAX(l.size) AS size, MAX(l.legacy_num) AS legacy_num, MAX(l.customer) AS customer, MAX(l.batch_number) AS batch_number
+                               FROM tracking_scans s JOIN tracking_labels l ON l.id=s.label_id
+                              WHERE s.label_id = ANY($1) AND s.dept='dispatch' AND s.type='out' AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals rv WHERE rv.reversed_scan_id=s.id) GROUP BY s.label_id`, [allIds])).rows
+      : db.prepare(`SELECT s.label_id, MAX(s.ts) AS ts, MAX(l.qty) AS qty, MAX(l.size) AS size, MAX(l.legacy_num) AS legacy_num, MAX(l.customer) AS customer, MAX(l.batch_number) AS batch_number
+                      FROM tracking_scans s JOIN tracking_labels l ON l.id=s.label_id WHERE s.label_id IN (${allIds.map(()=>'?').join(',')}) AND s.dept='dispatch' AND s.type='out' GROUP BY s.label_id`).all(...allIds);
+    const istMonth = ts => { const d = new Date(ts); if (isNaN(d)) return String(ts || '').slice(0, 7); const x = new Date(d.getTime() + 330 * 60000); return x.toISOString().slice(0, 7); };
+    const istDate = ts => { const d = new Date(ts); if (isNaN(d)) return String(ts || '').slice(0, 10); const x = new Date(d.getTime() + 330 * 60000); return x.toISOString().slice(0, 10); };
+    const hits = sc.filter(x => !month || istMonth(x.ts) === month);
+    if (!hits.length) return res.json({ ok: true, month, rows: [] });
+    // dispatch record (→ invoice no, vehicle) that carried each box: scanned_labels_json holds the label ids
+    const bns = [...new Set(hits.map(h => h.batch_number).filter(Boolean))];
+    const recs = pgPool ? (await pgPool.query(`SELECT id, batch_number, customer, invoice_no, vehicle_no, ts, scanned_labels_json FROM tracking_dispatch_records WHERE batch_number = ANY($1)`, [bns])).rows
+                        : db.prepare(`SELECT id, batch_number, customer, invoice_no, vehicle_no, ts, scanned_labels_json FROM tracking_dispatch_records WHERE batch_number IN (${bns.map(()=>'?').join(',') || "''"})`).all(...bns);
+    const recByLabel = {};
+    for (const rc of recs) { const sj = String(rc.scanned_labels_json || ''); if (!sj || sj === '[]') continue; for (const h of hits) if (!recByLabel[h.label_id] && sj.includes('"' + h.label_id + '"')) recByLabel[h.label_id] = rc; }
+    const recIds = [...new Set(Object.values(recByLabel).map(r => r.id))];
+    const invByRec = {};
+    if (recIds.length) {
+      const iv = pgPool ? (await pgPool.query(`SELECT dispatch_record_id, sap_doc_num, invoice_date, customer FROM invoices_received WHERE dispatch_record_id = ANY($1)`, [recIds])).rows
+                        : db.prepare(`SELECT dispatch_record_id, sap_doc_num, invoice_date, customer FROM invoices_received WHERE dispatch_record_id IN (${recIds.map(()=>'?').join(',')})`).all(...recIds);
+      iv.forEach(i => { invByRec[i.dispatch_record_id] = i; });
+    }
+    const rows = hits.map(h => {
+      const r = labelToLog[h.label_id] || {}; const c = cnById[r.return_id] || {}; const rc = recByLabel[h.label_id] || null; const iv = rc ? invByRec[rc.id] : null;
+      return { ts: h.ts, date: istDate(h.ts), month: istMonth(h.ts), label: 'R-' + (h.legacy_num || ''), label_id: h.label_id, size: h.size, qty: Math.round((parseFloat(h.qty) || 0) * 100) / 100,
+        cn_no: c.sap_doc_num || null, cn_date: c.doc_date || null, orig_invoice_no: c.orig_invoice_doc_num || null, orig_invoice_date: c.inv_date || null, orig_customer: c.inv_customer || c.customer || '', orig_batch: c.batch_number || '',
+        target_batch: h.batch_number || r.target_batch || '', mode: r.mode || 'merge', redeployed_at: r.ts || null, redeployed_by: r.by_user || null,
+        customer: (rc && rc.customer) || (iv && iv.customer) || h.customer || '', invoice_no: (iv && iv.sap_doc_num) || (rc && rc.invoice_no) || null, invoice_date: (iv && iv.invoice_date) || null, dispatch_record_id: rc ? rc.id : null, vehicle_no: rc ? rc.vehicle_no : null };
+    }).sort((a, b) => String(a.ts).localeCompare(String(b.ts)));
+    res.json({ ok: true, month, rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// GET /api/invoice/return-stock — credit-note level: original invoice, credit note, re-deployments, available.
+app.get('/api/invoice/return-stock', async (req, res) => {
+  try {
+    const rows = await _v57yReturnStockRows();
+    res.json({ ok: true, rows });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
+// POST /api/invoice/credit-note/:id/link { invoiceDocNum } — admin / PM: hand-link (or re-link) a credit
+// memo to the invoice it returns against when SAP carried no usable reference. Empty = clear the link.
+app.post('/api/invoice/credit-note/:id/link', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!['admin', 'tracking_planning', 'planning_manager'].includes(String(session.role || '').trim().toLowerCase()))
+      return res.status(403).json({ ok: false, error: 'Admin or Planning Manager required' });
+    const id = String(req.params.id || '');
+    const num = String(req.body?.invoiceDocNum || '').trim();
+    const cn = pgPool ? (await pgPool.query(`SELECT * FROM sap_credit_notes WHERE id=$1`, [id])).rows[0] : db.prepare(`SELECT * FROM sap_credit_notes WHERE id=?`).get(id);
+    if (!cn) return res.status(404).json({ ok: false, error: 'Credit note not found' });
+    let orig = null;
+    if (num) {
+      orig = await _v57yFindInvoice(`sap_doc_num=$1 AND COALESCE(inv_kind,'invoice') <> 'cancellation' ORDER BY (card_code=$2) DESC, invoice_date DESC`, [num, cn.card_code || '']);
+      if (!orig) return res.status(404).json({ ok: false, error: `Invoice ${num} is not in Sunloc (pull it from SAP first)` });
+    }
+    const who = session.username || 'admin', now = new Date().toISOString();
+    if (pgPool) await pgPool.query(`UPDATE sap_credit_notes SET orig_invoice_doc_entry=$1, orig_invoice_doc_num=$2, link_method=$3, linked_by=$4, linked_at=$5, batch_number=COALESCE(NULLIF($6,''), batch_number), updated_at=$5 WHERE id=$7`,
+      [orig ? orig.sap_doc_entry : null, orig ? String(orig.sap_doc_num) : null, orig ? 'manual' : null, who, now, orig ? (orig.batch_number || '') : '', id]);
+    else db.prepare(`UPDATE sap_credit_notes SET orig_invoice_doc_entry=?, orig_invoice_doc_num=?, link_method=?, linked_by=?, linked_at=?, batch_number=COALESCE(NULLIF(?,''), batch_number), updated_at=? WHERE id=?`)
+      .run(orig ? orig.sap_doc_entry : null, orig ? String(orig.sap_doc_num) : null, orig ? 'manual' : null, who, now, orig ? (orig.batch_number || '') : '', now, id);
+    try { logAudit(who, session.role, 'tracking', 'CREDIT_NOTE_LINK', `Credit note ${cn.sap_doc_num} ${orig ? '→ invoice ' + orig.sap_doc_num : 'link cleared'}`, req.ip); } catch (_) {}
+    res.json({ ok: true, linked: orig ? { doc_entry: orig.sap_doc_entry, doc_num: orig.sap_doc_num } : null });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 
 // v39 Phase 9a helper: for each dispatch_plans row matching the batch, merge
 // invoice annotations into data_json and write back. Sets the row's status
@@ -7568,6 +8060,22 @@ app.post('/api/sap/refresh-invoices', async (req, res) => {
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
   }
+});
+
+// v57Y: POST /api/sap/refresh-credit-notes { lookbackDays } — admin / PM: deep pull of A/R Credit Memos
+// (default 365 days, so history is in from day one) + the cancellation link pass. The 5-minute poller
+// keeps both current afterwards; this is the on-demand / first-day button.
+app.post('/api/sap/refresh-credit-notes', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!['admin', 'tracking_planning', 'planning_manager'].includes(String(session.role || '').trim().toLowerCase()))
+      return res.status(403).json({ ok: false, error: 'Admin or Planning Manager required' });
+    const days = Math.min(Math.max(parseInt(req.body?.lookbackDays, 10) || 365, 1), 1500);
+    const cn = await _v57yIngestCreditNotes(days);
+    const heal = await _v57yHealCancellations();
+    res.json({ ok: !cn.error, lookbackDays: days, creditNotes: cn, cancellations: heal, error: cn.error, serverBuild: APP_BUILD });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
 // GET /api/sap/indents?status=unprocessed|all — read cached SAP indents.
@@ -7881,9 +8389,21 @@ app.post('/api/invoice/request', async (req, res) => {
         return res.status(400).json({ ok: false, error: `Missing required field: ${f}` });
       }
     }
+    // v57Y (Ishan, 9 Oct): a standalone legacy / return-stock batch (a re-customer child `<batch>A`) stores the SO NUMBER the
+    // PM typed; when the SO was not yet in Sunloc's indent cache at re-batch time the row has no
+    // DocEntry. Resolve it here from the cache (the indent poller pulls open SOs every 5 min), so the
+    // v53W promise — "resolved when the invoice request is raised" — actually holds.
+    if (!body.sapDocEntry && body.sapDocNum) {
+      try {
+        const soNum = String(body.sapDocNum).trim();
+        const so = pgPool ? (await pgPool.query(`SELECT sap_doc_entry, card_code FROM sap_indent_cache WHERE TRIM(sap_doc_num)=$1 ORDER BY fetched_at DESC LIMIT 1`, [soNum])).rows[0]
+                          : db.prepare(`SELECT sap_doc_entry, card_code FROM sap_indent_cache WHERE TRIM(sap_doc_num)=? ORDER BY fetched_at DESC LIMIT 1`).get(soNum);
+        if (so && so.sap_doc_entry) { body.sapDocEntry = parseInt(so.sap_doc_entry, 10); if (!body.cardCode) body.cardCode = so.card_code || ''; console.log(`[v57Y invoice-request] SO ${soNum} resolved late → DocEntry ${body.sapDocEntry}`); }
+      } catch (e) { console.warn('[v57Y invoice-request] late SO resolve:', e.message); }
+    }
     // SAP DocEntry is mandatory (per v39 spec — no SAP ref = can't invoice)
     if (!body.sapDocEntry) {
-      return res.status(400).json({ ok: false, error: 'sapDocEntry required — cannot trigger SAP invoice without source SO reference' });
+      return res.status(400).json({ ok: false, error: body.sapDocNum ? `Sales Order ${body.sapDocNum} is not in Sunloc's SAP cache yet — raise it in SAP, wait for the 5-minute indent pull (or Re-pull indents), then try again` : 'sapDocEntry required — cannot trigger SAP invoice without source SO reference' });
     }
     // v50Y (confirmed by Ishan — confirm option): DUPLICATE-REQUEST GUARD. The 6-Aug morning showed
     // DM double-submissions (26ZE120 twice in the same second, 26ZG162 twice) and a wrong-SO retry
@@ -7987,7 +8507,7 @@ app.post('/api/invoice/request', async (req, res) => {
           const r = await pgPool.query(
             `SELECT id, sap_doc_num, sap_doc_entry, batch_number, payload_json
                FROM invoices_received
-              WHERE source='direct_sap' AND invoice_request_id IS NULL
+              WHERE source='direct_sap' AND invoice_request_id IS NULL AND COALESCE(inv_kind,'invoice') <> 'cancellation'
                 AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
               ORDER BY fetched_at DESC LIMIT 200`
           );
@@ -7996,7 +8516,7 @@ app.post('/api/invoice/request', async (req, res) => {
           candidates = db.prepare(
             `SELECT id, sap_doc_num, sap_doc_entry, batch_number, payload_json
                FROM invoices_received
-              WHERE source='direct_sap' AND invoice_request_id IS NULL
+              WHERE source='direct_sap' AND invoice_request_id IS NULL AND COALESCE(inv_kind,'invoice') <> 'cancellation'
                 AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
               ORDER BY fetched_at DESC LIMIT 200`
           ).all();
@@ -8225,7 +8745,7 @@ app.post('/api/invoice/request-batch', async (req, res) => {
               const r = await pgPool.query(
                 `SELECT id, sap_doc_num, sap_doc_entry, batch_number, payload_json
                    FROM invoices_received
-                  WHERE source='direct_sap' AND invoice_request_id IS NULL
+                  WHERE source='direct_sap' AND invoice_request_id IS NULL AND COALESCE(inv_kind,'invoice') <> 'cancellation'
                     AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
                   ORDER BY fetched_at DESC LIMIT 200`
               );
@@ -8234,7 +8754,7 @@ app.post('/api/invoice/request-batch', async (req, res) => {
               cands = db.prepare(
                 `SELECT id, sap_doc_num, sap_doc_entry, batch_number, payload_json
                    FROM invoices_received
-                  WHERE source='direct_sap' AND invoice_request_id IS NULL
+                  WHERE source='direct_sap' AND invoice_request_id IS NULL AND COALESCE(inv_kind,'invoice') <> 'cancellation'
                     AND dispatch_status='pending' AND COALESCE(is_legacy_closed,0)=0
                   ORDER BY fetched_at DESC LIMIT 200`
               ).all();
@@ -8549,6 +9069,31 @@ app.get('/api/invoice/received', async (req, res) => {
         for (const a of (ar || [])) (byInv[a.invoice_id] = byInv[a.invoice_id] || []).push({ batch: String(a.batch_number).trim(), qty: parseFloat(a.qty_lakhs) || 0, boxes: parseInt(a.boxes, 10) || 0 });
         for (const r of rows) r.allocs = byInv[r.id] || [];
       } catch (e) { console.warn('[v53H allocs] attach failed (export will mark rows unallocated):', e.message); }
+    }
+    // v57Y: cancellation documents are never listed as invoices (they live in Return & Cancel); every
+    // row carries inv_kind + the credit notes raised against it (cn_qty / cn_amount / cn_refs, so the
+    // client's Net view = gross − cancelled − returned) and from_return (the invoice ships stock that
+    // was re-batched / re-customered out of a return).
+    rows = rows.filter(r => String(r.inv_kind || 'invoice') !== 'cancellation');
+    if (rows.length) {
+      try {
+        const des = rows.map(r => parseInt(r.sap_doc_entry, 10)).filter(Number.isFinite);
+        let cn;
+        if (pgPool) cn = (await pgPool.query(`SELECT orig_invoice_doc_entry AS de, sap_doc_num, doc_date, total_qty_lakhs, total_boxes, total_amount FROM sap_credit_notes WHERE orig_invoice_doc_entry = ANY($1)`, [des])).rows;
+        else { const ph = des.map(() => '?').join(',') || 'NULL'; cn = db.prepare(`SELECT orig_invoice_doc_entry AS de, sap_doc_num, doc_date, total_qty_lakhs, total_boxes, total_amount FROM sap_credit_notes WHERE orig_invoice_doc_entry IN (${ph})`).all(...des); }
+        const byDe = {};
+        for (const c of (cn || [])) { const k = String(c.de); const o = byDe[k] = byDe[k] || { qty: 0, boxes: 0, amount: 0, refs: [] }; o.qty += parseFloat(c.total_qty_lakhs) || 0; o.boxes += parseInt(c.total_boxes, 10) || 0; o.amount += parseFloat(c.total_amount) || 0; o.refs.push({ no: c.sap_doc_num, date: c.doc_date, qty: Math.round((parseFloat(c.total_qty_lakhs) || 0) * 100) / 100 }); }
+        let retTargets;
+        if (pgPool) retTargets = (await pgPool.query(`SELECT DISTINCT UPPER(TRIM(target_batch)) AS bn FROM rebatch_log WHERE COALESCE(return_id,'') <> ''`)).rows;
+        else retTargets = db.prepare(`SELECT DISTINCT UPPER(TRIM(target_batch)) AS bn FROM rebatch_log WHERE COALESCE(return_id,'') <> ''`).all();
+        const retSet = new Set((retTargets || []).map(r => r.bn));
+        for (const r of rows) {
+          r.inv_kind = r.inv_kind || 'invoice';
+          const o = byDe[String(r.sap_doc_entry)];
+          r.cn_qty = o ? Math.round(o.qty * 100) / 100 : 0; r.cn_boxes = o ? o.boxes : 0; r.cn_amount = o ? Math.round(o.amount * 100) / 100 : 0; r.cn_refs = o ? o.refs : [];
+          r.from_return = String(r.batch_number || '').split(/[\s,]+/).some(t => retSet.has(t.trim().toUpperCase()));
+        }
+      } catch (e) { console.warn('[v57Y received cn-attach]', e.message); }
     }
 res.json({ ok: true, pm_supported: true, count: rows.length, invoices: rows });
   } catch (err) {
@@ -9026,7 +9571,7 @@ async function _orphanInvoicesForRequest(reqRow) {
   if (pgPool) {
     const r = await pgPool.query(
       `SELECT * FROM invoices_received
-        WHERE invoice_request_id IS NULL
+        WHERE invoice_request_id IS NULL AND COALESCE(inv_kind,'invoice') <> 'cancellation'
           AND dispatch_status='dispatched'
           AND LOWER(TRIM(batch_number)) = LOWER(TRIM($1))
           AND LOWER(TRIM(customer))     = LOWER(TRIM($2))
@@ -9037,7 +9582,7 @@ async function _orphanInvoicesForRequest(reqRow) {
   } else {
     rows = db.prepare(
       `SELECT * FROM invoices_received
-        WHERE invoice_request_id IS NULL
+        WHERE invoice_request_id IS NULL AND COALESCE(inv_kind,'invoice') <> 'cancellation'
           AND dispatch_status='dispatched'
           AND LOWER(TRIM(batch_number)) = LOWER(TRIM(?))
           AND LOWER(TRIM(customer))     = LOWER(TRIM(?))
@@ -11334,7 +11879,7 @@ app.get('/api/invoice/pending-direct-sap-approval', async (req, res) => {
     if (pgPool) {
       const r = await pgPool.query(
         `SELECT * FROM invoices_received
-         WHERE source = 'direct_sap' AND admin_approved_at IS NULL
+         WHERE source = 'direct_sap' AND admin_approved_at IS NULL AND COALESCE(inv_kind,'invoice') <> 'cancellation'
          ORDER BY invoice_date DESC, fetched_at DESC
          LIMIT ${limit}`
       );
@@ -11342,7 +11887,7 @@ app.get('/api/invoice/pending-direct-sap-approval', async (req, res) => {
     } else {
       rows = db.prepare(
         `SELECT * FROM invoices_received
-         WHERE source = 'direct_sap' AND admin_approved_at IS NULL
+         WHERE source = 'direct_sap' AND admin_approved_at IS NULL AND COALESCE(inv_kind,'invoice') <> 'cancellation'
          ORDER BY invoice_date DESC, fetched_at DESC
          LIMIT ?`
       ).all(limit);
@@ -15602,9 +16147,10 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
       `SELECT id, batch_number, qty_lakhs AS q, created_at FROM invoice_requests
         WHERE status='pending_reconciliation' AND COALESCE(batch_number,'') <> ''`)).rows
       .filter(r => !_answered.has(r.id));
+    // v57Y: a cancelled invoice and its cancellation document are not invoiced quantity
     const invs = (await pgPool.query(
       `SELECT id, sap_invoice_no, sap_doc_num, customer, batch_number, total_qty_lakhs, source, invoice_date
-         FROM invoices_received`)).rows;
+         FROM invoices_received WHERE COALESCE(inv_kind,'invoice') = 'invoice'`)).rows;
 
     const packed = {}; packedRows.forEach(r => { if (r.batch_number) packed[r.batch_number.trim()] = parseFloat(r.packed)||0; });
     const allocByInv = {}; allocRows.forEach(r => { (allocByInv[r.invoice_id] = allocByInv[r.invoice_id]||[]).push({ batch: String(r.batch_number).trim(), q: parseFloat(r.q)||0 }); });
@@ -15658,7 +16204,7 @@ app.get('/api/invoice/over-invoiced', async (req, res) => {
              FROM rebatch_log WHERE UPPER(TRIM(target_batch)) = ANY($1) GROUP BY UPPER(TRIM(target_batch))`,
           [_bnsL.map(b => String(b).trim().toUpperCase())])).rows;
         const lgMap = {}; lg.forEach(r => { lgMap[r.bn] = { qty: Math.round((parseFloat(r.q)||0)*100)/100, refs: r.refs||'', mode: r.mode||'merge' }; });
-        rows.forEach(r => { const m = lgMap[String(r.batch).trim().toUpperCase()]; if (m && m.qty > 0) { r.legacyQty = m.qty; r.legacyRefs = m.refs; r.legacyMode = m.mode; r.legacyRemark = m.mode === 'standalone' ? `Legacy stock ${m.refs} relabelled (${m.qty.toFixed(2)} L) — pre-Sunloc, no production record` : `Re-batch of ${m.qty.toFixed(2)} L from ${m.refs} has caused it`; } });
+        rows.forEach(r => { const m = lgMap[String(r.batch).trim().toUpperCase()]; if (m && m.qty > 0) { r.legacyQty = m.qty; r.legacyRefs = m.refs; r.legacyMode = m.mode; r.legacyRemark = /-RET\b/.test(String(m.refs)) ? `Return stock ${m.refs} re-deployed here (${m.qty.toFixed(2)} L) — credit-note goods, not this batch's production` : (m.mode === 'standalone' ? `Legacy stock ${m.refs} relabelled (${m.qty.toFixed(2)} L) — pre-Sunloc, no production record` : `Re-batch of ${m.qty.toFixed(2)} L from ${m.refs} has caused it`); } });   // v57Y: return wording
       }
     } catch (e) { console.warn('[v53P over-invoiced legacy remark] skipped:', e.message); }
     // v51G (Ishan): production month per over-invoiced batch, for the month-of-production filter.
@@ -20863,7 +21409,7 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
       // cap had firstPackIn=null → daysInInv=null → could never classify stale_7d/15d, and the
       // Stale toggles filtered to a status no row ever received. Additive fields only; every
       // existing consumer reads in/out/inQty/outQty unchanged.
-      const scanSql = `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty, MIN(s.ts) as first_ts, MAX(s.ts) as last_ts FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${pgCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;   // v53P: legacy R-labels grouped apart
+      const scanSql = `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END AS rt, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty, MIN(s.ts) as first_ts, MAX(s.ts) as last_ts FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${pgCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0), CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END`;   // v53P: legacy R-labels grouped apart
       const wasteSql = `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number, dept, type`;
       const dispSql  = `SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number`;
       [scanRows, wastageRows, dispatchRows] = await Promise.all([
@@ -20875,7 +21421,7 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
     } else {
       const sc = (sql, params) => { try { return db.prepare(sql).all(...(params||[])); } catch(e) { return []; } };
       const liteCut = col => `datetime(${col}) < datetime(?, '+1 day', '+30 minutes')`;
-      scanRows     = sc(`SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty, MIN(s.ts) as first_ts, MAX(s.ts) as last_ts FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`, asof?[asof]:[]);   // v51ZF: same MIN/MAX as PG
+      scanRows     = sc(`SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END AS rt, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty, MIN(s.ts) as first_ts, MAX(s.ts) as last_ts FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0), CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END`, asof?[asof]:[]);   // v51ZF: same MIN/MAX as PG
       wastageRows  = sc(`SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number, dept, type`, asof?[asof]:[]);
       dispatchRows = sc(`SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number`, asof?[asof]:[]);
       if (asof) grossRows = sc(`SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE substr(date,1,10) <= ? GROUP BY batch_number`, [asof]);
@@ -20897,6 +21443,15 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
         const d = summary[bn][r.dept];
         if (r.type === 'in')  { d.legacyIn  = (d.legacyIn ||0) + parseInt(r.cnt||0); d.legacyInQty  = (d.legacyInQty ||0) + parseFloat(r.total_qty||0); }
         if (r.type === 'out') { d.legacyOut = (d.legacyOut||0) + parseInt(r.cnt||0); d.legacyOutQty = (d.legacyOutQty||0) + parseFloat(r.total_qty||0); }
+        // v57Y (Ishan, 9 Oct): R-labels drawn from RETURN STOCK (legacy_ref `<batch>-RET`) are ALSO
+        // counted in return* — a SUBSET of legacy* — so Tracking's Reports A–F can leave them out
+        // (returned goods are not this month's production; the original batch already reported them
+        // in its own production month) while Planning's dispatch / invoicing surfaces, which read
+        // legacy*, keep seeing them as dispatchable stock.
+        if (Number(r.rt) === 1) {
+          if (r.type === 'in')  { d.returnIn  = (d.returnIn ||0) + parseInt(r.cnt||0); d.returnInQty  = (d.returnInQty ||0) + parseFloat(r.total_qty||0); }
+          if (r.type === 'out') { d.returnOut = (d.returnOut||0) + parseInt(r.cnt||0); d.returnOutQty = (d.returnOutQty||0) + parseFloat(r.total_qty||0); }
+        }
         return;
       }
       if (r.type === 'in')  { summary[bn][r.dept].in  += parseInt(r.cnt||0); summary[bn][r.dept].inQty  += parseFloat(r.total_qty||0); }
@@ -22143,8 +22698,8 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
         batchSet = bs.rows.map(r => r.batch_number);
       }
       const scanSql = batchSet
-        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number = ANY($1) AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`
-        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;
+        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END AS rt, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number = ANY($1) AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0), CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END`
+        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END AS rt, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0), CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END`;
       const wasteSql = batchSet
         ? 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE batch_number = ANY($1) GROUP BY batch_number, dept, type'
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
@@ -22172,8 +22727,8 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       }
       const _ph = batchSet ? batchSet.map(() => '?').join(',') : '';
       const scanSql = batchSet
-        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number IN (${_ph || "''"}) AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`
-        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0)`;
+        ? `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END AS rt, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE s.batch_number IN (${_ph || "''"}) AND NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0), CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END`
+        : `SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END AS rt, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id) GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0), CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END`;
       const wasteSql = batchSet
         ? `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage WHERE batch_number IN (${_ph || "''"}) GROUP BY batch_number, dept, type`
         : 'SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage GROUP BY batch_number, dept, type';
@@ -22212,6 +22767,7 @@ app.get('/api/tracking/agrade-summary', async (req, res) => {
       if (Number(s.lg) === 1) {
         const d = batches[bn][s.dept]; const k = s.type === 'in' ? 'legacyIn' : 'legacyOut';
         d[k] = (d[k]||0) + parseInt(s.cnt||0, 10); d[k+'Qty'] = (d[k+'Qty']||0) + parseFloat(s.total_qty||0);
+        if (Number(s.rt) === 1) { const kr = s.type === 'in' ? 'returnIn' : 'returnOut'; d[kr] = (d[kr]||0) + parseInt(s.cnt||0, 10); d[kr+'Qty'] = (d[kr+'Qty']||0) + parseFloat(s.total_qty||0); }   // v57Y: return-stock subset
         return;
       }
       batches[bn][s.dept][s.type] = (batches[bn][s.dept][s.type]||0) + parseInt(s.cnt||0, 10);
@@ -23584,7 +24140,27 @@ app.post('/api/tracking/rebatch', async (req, res) => {
     // colour, PC code, printed + print matter, mfg month, expiry, qty) is typed by admin because the
     // batch predates Sunloc. Both print blue R-labels (+ orange twins when printed).
     const mode = String(req.body?.mode || 'merge').trim().toLowerCase() === 'standalone' ? 'standalone' : 'merge';
-    const legacyRef = String(req.body?.legacyRef || req.body?.legacyBatch || '').trim().toUpperCase();
+    // v57Y: a re-batch / re-customer drawn from RETURN STOCK (a credit note). The server, not the
+    // client, is the authority on what is still available: returned − already re-deployed.
+    const returnId = String(req.body?.returnId || '').trim();
+    let _ret57y = null;
+    if (returnId) {
+      const rs = (await _v57yReturnStockRows()).find(x => x.id === returnId);
+      if (!rs) return res.status(404).json({ ok:false, error:`Return ${returnId} not found` });
+      _ret57y = rs;
+    }
+    let legacyRef = String(req.body?.legacyRef || req.body?.legacyBatch || '').trim().toUpperCase();
+    // v57Y (Ishan, 9 Oct): a RE-CUSTOMER from return stock is numbered exactly like a normal re-customer
+    // split — the original batch plus the next free child letter (26ZA060 → 26ZA060A), via the same
+    // allocator (v51T). No "R" suffix: the new customer must see nothing that reads as "returned".
+    // The client's typed number is ignored for this case; the server owns the numbering.
+    if (_ret57y && mode === 'standalone') {
+      const _orig = String(_ret57y.batch || '').split(/[\s,]+/)[0].trim().toUpperCase();
+      if (!_orig) return res.status(400).json({ ok:false, error:`Credit note ${_ret57y.cn_no} has no original batch — link it to its invoice first` });
+      const _child = await _v51tNextChildBatch(_orig, await getPlanningStateAsync());
+      if (!_child) return res.status(409).json({ ok:false, error:`All 26 child suffixes (A–Z) of ${_orig} are already in use` });
+      legacyRef = _child;
+    }
     const targetBatch = mode === 'standalone' ? legacyRef : String(req.body?.targetBatch || '').trim().toUpperCase();
     const qty = Math.round((parseFloat(req.body?.qtyLakhs) || 0) * 1000) / 1000;
     const note = String(req.body?.note || '').trim();
@@ -23593,6 +24169,8 @@ app.post('/api/tracking/rebatch', async (req, res) => {
     if (!targetBatch) return res.status(400).json({ ok:false, error:'Target batch (Y) is required' });
     if (!(qty > 0)) return res.status(400).json({ ok:false, error:'Quantity must be > 0 lakhs' });
     if (mode === 'merge' && legacyRef === targetBatch) return res.status(400).json({ ok:false, error:'Legacy and target batch cannot be the same' });
+    if (_ret57y && qty > _ret57y.available_qty + 0.0005)
+      return res.status(400).json({ ok:false, error:`Only ${_ret57y.available_qty.toFixed(2)} L of return stock is available on credit note ${_ret57y.cn_no} (returned ${_ret57y.returned_qty.toFixed(2)} L, already re-deployed ${_ret57y.redeployed_qty.toFixed(2)} L)` });
     let ord = null;
     if (pgPool) {
       const r = await pgPool.query(`SELECT batch_number, status, data_json FROM production_orders WHERE UPPER(TRIM(batch_number))=$1 AND COALESCE(deleted,false)=false LIMIT 1`, [targetBatch]);   // v53W: deleted is BOOLEAN in pg
@@ -23633,6 +24211,9 @@ app.post('/api/tracking/rebatch', async (req, res) => {
              sapDocEntry: soEntry, sapDocNum: soNum || '', cardCode, soWarning };
       ord = { batch_number: legacyRef, status: 'legacy' };
     }
+    // v57Y: return-stock labels carry legacy ref `<original batch>-RET` in BOTH modes (for standalone the
+    // batch number is the next child letter, `<batch>A`) — the one marker every report, scan summary and sheet keys on.
+    const labelRef = _ret57y ? `${(String(_ret57y.batch || '').split(/[\s,]+/)[0] || legacyRef).toUpperCase()}-RET` : legacyRef;
     const size = String(od.size ?? '');
     const ps = _V44ZJ_PACK_SIZES[size];
     if (!ps) return res.status(400).json({ ok:false, error:`Target batch ${targetBatch} has no pack size for capsule size '${size}'` });
@@ -23650,7 +24231,7 @@ app.post('/api/tracking/rebatch', async (req, res) => {
       const isLast = i === boxes - 1 && rem > 0.0005;
       labels.push({
         id: 'rb-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8) + '-' + n,
-        batchNumber: ord.batch_number, labelNumber: -(_V53P_R_BASE + n), legacyNum: n, isLegacy: true, legacyRef,
+        batchNumber: ord.batch_number, labelNumber: -(_V53P_R_BASE + n), legacyNum: n, isLegacy: true, legacyRef: labelRef,   // v57Y: `<batch>-RET` for return stock
         legacyMode: mode, legacyMfg: od.legacyMfg || null, legacyExp: od.legacyExp || null, legacyPrinted: !!od.isPrinted,   // v53T
         legacySapDocEntry: mode === 'standalone' ? (od.sapDocEntry || null) : null, legacySapDocNum: mode === 'standalone' ? (od.sapDocNum || null) : null, legacyCardCode: mode === 'standalone' ? (od.cardCode || null) : null,   // v53U
         isExcess: false, excessNum: null, excessTotal: null, normalTotal: null,
@@ -23669,7 +24250,7 @@ app.post('/api/tracking/rebatch', async (req, res) => {
     if (od.isPrinted) {
       for (const l of labels) {
         oranges.push({
-          id: 'ol-' + l.id, batchNumber: l.batchNumber, labelNumber: _ORANGE_LEGACY_NUM_BASE + l.legacyNum, legacyNum: l.legacyNum, isLegacy: true, legacyRef,
+          id: 'ol-' + l.id, batchNumber: l.batchNumber, labelNumber: _ORANGE_LEGACY_NUM_BASE + l.legacyNum, legacyNum: l.legacyNum, isLegacy: true, legacyRef: labelRef,   // v57Y
           legacyMode: mode, legacyMfg: l.legacyMfg, legacyExp: l.legacyExp, legacyPrinted: true,   // v53T
           legacySapDocEntry: l.legacySapDocEntry || null, legacySapDocNum: l.legacySapDocNum || null, legacyCardCode: l.legacyCardCode || null,   // v53U
           isOrange: true, parentLabelId: l.id, isExcess: false, excessNum: null, excessTotal: null, normalTotal: null,
@@ -23680,12 +24261,14 @@ app.post('/api/tracking/rebatch', async (req, res) => {
         });
       }
     }
-    const plan = { mode, legacyRef, targetBatch: ord.batch_number, qtyLakhs: qty, size, packSize: ps, boxes, fullBoxes: full, partialQty: rem > 0.0005 ? rem : 0,
-                   customer: od.customer || '', colour: od.colour || '', pcCode: od.pcCode || '', isPrinted: !!od.isPrinted, printMatter: od.printMatter || '', mfg: od.legacyMfg || null, exp: od.legacyExp || null, sapDocEntry: od.sapDocEntry || null, sapDocNum: od.sapDocNum || '', cardCode: od.cardCode || '', soWarning: od.soWarning || null, startFrom: existing + 1, status: ord.status, oranges: oranges.length };
+    const plan = { mode, legacyRef: labelRef, targetBatch: ord.batch_number, qtyLakhs: qty, size, packSize: ps, boxes, fullBoxes: full, partialQty: rem > 0.0005 ? rem : 0,
+                   customer: od.customer || '', colour: od.colour || '', pcCode: od.pcCode || '', isPrinted: !!od.isPrinted, printMatter: od.printMatter || '', mfg: od.legacyMfg || null, exp: od.legacyExp || null, sapDocEntry: od.sapDocEntry || null, sapDocNum: od.sapDocNum || '', cardCode: od.cardCode || '', soWarning: od.soWarning || null, startFrom: existing + 1, status: ord.status, oranges: oranges.length,
+                   returnId: returnId || null, returnCn: _ret57y ? _ret57y.cn_no : null, returnInvoice: _ret57y ? _ret57y.invoice_no : null, returnAvailable: _ret57y ? _ret57y.available_qty : null };   // v57Y
     if (preview) return res.json({ ok:true, preview:true, plan, labels, oranges });
     const logId = 'rbl-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
     const who = session.username || 'admin';
-    const _details = { customer: od.customer || '', shipTo: od.shipTo || '', billTo: od.billTo || '', size, colour: od.colour || '', pcCode: od.pcCode || '', isPrinted: !!od.isPrinted, printMatter: od.printMatter || '', mfg: od.legacyMfg || null, exp: od.legacyExp || null, sapDocEntry: od.sapDocEntry || null, sapDocNum: od.sapDocNum || '', cardCode: od.cardCode || '', poNumber: od.poNumber || '' };
+    const _details = { customer: od.customer || '', shipTo: od.shipTo || '', billTo: od.billTo || '', size, colour: od.colour || '', pcCode: od.pcCode || '', isPrinted: !!od.isPrinted, printMatter: od.printMatter || '', mfg: od.legacyMfg || null, exp: od.legacyExp || null, sapDocEntry: od.sapDocEntry || null, sapDocNum: od.sapDocNum || '', cardCode: od.cardCode || '', poNumber: od.poNumber || '',
+                       returnId: returnId || null, returnCn: _ret57y ? _ret57y.cn_no : null, returnInvoice: _ret57y ? _ret57y.invoice_no : null };   // v57Y
     const rowVals = l => [l.id,l.batchNumber,l.labelNumber,l.size,l.qty,l.isPartial?1:0,l.isOrange?1:0,l.parentLabelId||null,l.customer||null,l.colour||null,l.pcCode||null,l.poNumber||null,l.machineId||null,l.printingMatter||null,l.generated,0,null,0,null,null,null,null,l.woStatus||null,l.shipTo||null,l.billTo||null,0,null,null,null,1,l.legacyRef,l.legacyNum,l.legacyMode||null,l.legacyMfg||null,l.legacyExp||null,l.legacyPrinted?1:0,l.legacySapDocEntry||null,l.legacySapDocNum||null,l.legacyCardCode||null];
     const COLS = `(id,batch_number,label_number,size,qty,is_partial,is_orange,parent_label_id,customer,colour,pc_code,po_number,machine_id,printing_matter,generated,printed,printed_at,voided,void_reason,voided_at,voided_by,qr_data,wo_status,ship_to,bill_to,is_excess,excess_num,excess_total,normal_total,is_legacy_rebatch,legacy_ref,legacy_num,legacy_mode,legacy_mfg,legacy_exp,legacy_printed,legacy_sap_doc_entry,legacy_sap_doc_num,legacy_card_code)`;
     if (pgPool) {
@@ -23695,8 +24278,8 @@ app.post('/api/tracking/rebatch', async (req, res) => {
         for (const l of labels.concat(oranges)) {
           await client.query(`INSERT INTO tracking_labels ${COLS} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33,$34,$35,$36,$37,$38,$39) ON CONFLICT (id) DO NOTHING`, rowVals(l));
         }
-        await client.query(`INSERT INTO rebatch_log (id,ts,by_user,legacy_ref,target_batch,qty_lakhs,boxes,size,label_ids,note,orange_ids,mode,details_json) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-          [logId, nowIso, who, legacyRef, ord.batch_number, qty, boxes, size, JSON.stringify(labels.map(l => l.id)), note || null, JSON.stringify(oranges.map(o => o.id)), mode, JSON.stringify(_details)]);
+        await client.query(`INSERT INTO rebatch_log (id,ts,by_user,legacy_ref,target_batch,qty_lakhs,boxes,size,label_ids,note,orange_ids,mode,details_json,return_id) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+          [logId, nowIso, who, labelRef, ord.batch_number, qty, boxes, size, JSON.stringify(labels.map(l => l.id)), note || null, JSON.stringify(oranges.map(o => o.id)), mode, JSON.stringify(_details), returnId || null]);
         await client.query('COMMIT');
       } catch (e) { await client.query('ROLLBACK').catch(()=>{}); throw e; }
       finally { client.release(); }
@@ -23704,8 +24287,8 @@ app.post('/api/tracking/rebatch', async (req, res) => {
       const ins = db.prepare(`INSERT OR IGNORE INTO tracking_labels ${COLS} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`);
       db.transaction(() => {
         labels.concat(oranges).forEach(l => ins.run(...rowVals(l)));
-        db.prepare(`INSERT INTO rebatch_log (id,ts,by_user,legacy_ref,target_batch,qty_lakhs,boxes,size,label_ids,note,orange_ids,mode,details_json) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)`)
-          .run(logId, nowIso, who, legacyRef, ord.batch_number, qty, boxes, size, JSON.stringify(labels.map(l => l.id)), note || null, JSON.stringify(oranges.map(o => o.id)), mode, JSON.stringify(_details));
+        db.prepare(`INSERT INTO rebatch_log (id,ts,by_user,legacy_ref,target_batch,qty_lakhs,boxes,size,label_ids,note,orange_ids,mode,details_json,return_id) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)`)
+          .run(logId, nowIso, who, labelRef, ord.batch_number, qty, boxes, size, JSON.stringify(labels.map(l => l.id)), note || null, JSON.stringify(oranges.map(o => o.id)), mode, JSON.stringify(_details), returnId || null);
       })();
     }
     // v53W (Ishan, 04 Sep): a STANDALONE legacy batch gets a Dispatch Planning row so the Dispatch Manager
@@ -23736,7 +24319,7 @@ app.post('/api/tracking/rebatch', async (req, res) => {
         console.log(`[v53W rebatch] dispatch plan ${dpId}: ${totalQty} L / ${totalBoxes} box(es)`);
       } catch (e) { console.warn('[v53W rebatch] dispatch plan row skipped:', e.message); }
     }
-    try { logAudit(who, session.role, 'tracking', mode === 'standalone' ? 'REBATCH_LEGACY_STANDALONE' : 'REBATCH_LEGACY', `${legacyRef} → ${ord.batch_number}: ${qty} L as ${boxes} R-label(s) R-${existing+1}..R-${existing+boxes}${oranges.length?` + ${oranges.length} orange twin(s)`:''} (size ${size}, pack ${ps} L)${note?' — '+note:''}`, req.ip); } catch (_) {}
+    try { logAudit(who, session.role, 'tracking', _ret57y ? (mode === 'standalone' ? 'RETURN_RECUSTOMER' : 'RETURN_REBATCH') : (mode === 'standalone' ? 'REBATCH_LEGACY_STANDALONE' : 'REBATCH_LEGACY'), `${_ret57y ? `Return stock (CN ${_ret57y.cn_no} / inv ${_ret57y.invoice_no}) ` : ''}${legacyRef} → ${ord.batch_number}: ${qty} L as ${boxes} R-label(s) R-${existing+1}..R-${existing+boxes}${oranges.length?` + ${oranges.length} orange twin(s)`:''} (size ${size}, pack ${ps} L)${note?' — '+note:''}`, req.ip); } catch (_) {}   // v57Y
     console.log(`[v53P rebatch] ${who}: ${legacyRef} → ${ord.batch_number} ${qty} L, ${boxes} R-label(s) from R-${existing+1}`);
     res.json({ ok:true, plan, labels, oranges, logId });
   } catch (e) {
@@ -23776,7 +24359,7 @@ app.get('/api/tracking/rebatch-log', async (req, res) => {
         lr.forEach(x => { const q = parseFloat(x.qty)||0; if (Number(x.printed)) printed++; if (Number(x.voided)) voided++; if (x.pk && Number(x.pk)!==0) { packed++; pq += q; } if (x.dp && Number(x.dp)!==0) { dispatched++; dq += q; } });
       }
       let det = null; try { det = r.details_json ? JSON.parse(r.details_json) : null; } catch (_) {}
-      out.push({ id: r.id, ts: r.ts, byUser: r.by_user, mode: r.mode || 'merge', details: det, legacyRef: r.legacy_ref, targetBatch: r.target_batch, qtyLakhs: parseFloat(r.qty_lakhs)||0, boxes: r.boxes, size: r.size, note: r.note,
+      out.push({ id: r.id, ts: r.ts, byUser: r.by_user, mode: r.mode || 'merge', details: det, legacyRef: r.legacy_ref, targetBatch: r.target_batch, qtyLakhs: parseFloat(r.qty_lakhs)||0, boxes: r.boxes, size: r.size, note: r.note, returnId: r.return_id || null,   // v57Y
                  labelIds: ids, printed, voided, packed, packedQty: Math.round(pq*100)/100, dispatched, dispatchedQty: Math.round(dq*100)/100, orangeIds: oids, oranges: oids.length, orangesPrinted });
     }
     res.json({ ok:true, rows: out });
@@ -24009,13 +24592,30 @@ async function _v51tNextChildBatch(batchNumber, planState) {
 async function _exuSapGuard(batchNumber) {
   const c = await _v51tSapCommitment(batchNumber);
   const invoicedIds = c.committed;
-  // Condition is byte-equivalent to v48W — a RECEIVED invoice with a wholly unresolvable box set
-  // fails closed. Only the resolution widened, so batches that used to freeze because their invoice
-  // was SAP-direct now resolve through L2/L3 and their free boxes become eligible again.
-  if (c.receivedCount && !invoicedIds.size) {
-    return { blocked: true, why: 'a SAP invoice exists for this batch and its boxes cannot be identified', invoicedIds };
+  // v57Z (Ishan, 9 Oct — 26ZB139 / Maan Singh's mail): the fail-closed rule is replaced by the SAME
+  // quantity argument the re-customer split already uses. A SAP invoice whose boxes cannot be named
+  // (SAP-direct + deemed scan-out, as on 26ZB139: 15 boxes invoiced, 0 identified) no longer freezes
+  // the whole batch — the unidentified claim is honoured by the batch's OTHER live boxes, and only
+  // what is left beyond that claim may be carved out of printing. 26ZB139: 20 live boxes − 15
+  // unidentified-invoiced = 5 carve-able; the 4 held in printing all qualify. The block survives only
+  // when every live box is needed to honour the invoice(s).
+  let live = 0;
+  try {
+    const lb = pgPool ? (await pgPool.query(`SELECT COUNT(*) AS n FROM tracking_labels WHERE batch_number=$1 AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`, [batchNumber])).rows[0]
+                      : db.prepare(`SELECT COUNT(*) AS n FROM tracking_labels WHERE batch_number=? AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`).get(batchNumber);
+    live = parseInt(lb && lb.n, 10) || 0;
+  } catch (e) { console.warn('[v57Z exu-guard] live count skipped:', e.message); }
+  const unidentified = parseInt(c.unidentified, 10) || 0;
+  const docs = (c.sapDocs || []).join(', ');
+  if (unidentified > 0) {
+    const allowance = Math.max(0, (live - invoicedIds.size) - unidentified);
+    if (allowance <= 0) {
+      return { blocked: true, why: `every box of this batch is needed to honour SAP invoice${c.sapDocs && c.sapDocs.length > 1 ? 's' : ''}${docs ? ' ' + docs : ''} (${c.claimed} box(es) invoiced against ${live} live box(es))`, invoicedIds, maxBoxes: 0, unidentified, claimed: c.claimed, sapDocs: c.sapDocs };
+    }
+    return { blocked: false, why: '', invoicedIds, maxBoxes: allowance, unidentified, claimed: c.claimed, sapDocs: c.sapDocs,
+             sapNote: `SAP invoice${c.sapDocs && c.sapDocs.length > 1 ? 's' : ''} ${docs} cover ${c.claimed} box(es) that cannot be identified box-by-box — at most ${allowance} box(es) can be carved out so the invoice is still honoured by the rest` };
   }
-  return { blocked: false, why: '', invoicedIds };
+  return { blocked: false, why: '', invoicedIds, maxBoxes: null, unidentified: 0, claimed: c.claimed, sapDocs: c.sapDocs };
 }
 
 // Label ids already committed to another PENDING excess-unprint request (no double-proposal).
@@ -24056,6 +24656,7 @@ app.get('/api/printing/excess-unprint/eligible', async (req, res) => {
       batches.push({
         batchNumber: bn, customer: ord.customer||'', size, packSize: ps,
         sapBlocked: guard.blocked, sapWhy: guard.why,
+        maxBoxes: (guard.maxBoxes == null) ? null : Math.max(0, guard.maxBoxes - pendingIds.size), sapNote: guard.sapNote || '',   // v57Z: quantity cap (pending proposals already count against it)
         pendingBoxes: pendingIds.size,
         boxes: boxes.map(b => ({ labelId: String(b.label_id), labelNumber: b.label_number })).sort((a,b)=>{
           const na=parseInt(a.labelNumber,10)||0, nb=parseInt(b.labelNumber,10)||0; return na-nb;
@@ -24092,6 +24693,9 @@ app.post('/api/printing/excess-unprint/propose', async (req, res) => {
     const bad = ids.filter(id => !eligibleIds.has(id) || guard.invoicedIds.has(id) || pendingIds.has(id));
     if (bad.length) {
       return res.status(409).json({ ok:false, error:`${bad.length} of ${ids.length} selected box(es) are not eligible (already printed out, SAP-committed, or on another pending request). Refresh and reselect.`, ineligible: bad });
+    }
+    if (guard.maxBoxes != null && ids.length + pendingIds.size > guard.maxBoxes) {   // v57Z: quantity cap
+      return res.status(409).json({ ok:false, sap_capped:true, error:`Only ${Math.max(0, guard.maxBoxes - pendingIds.size)} box(es) of ${batchNumber} can be carved out: ${guard.sapNote}${pendingIds.size ? ` (${pendingIds.size} already on a pending request)` : ''}.` });
     }
     if (ids.length >= eligible.length && eligibleIds.size === ids.length) {
       // Carving EVERY held box is allowed only when some boxes have printed out (a residual
@@ -24216,6 +24820,10 @@ app.post('/api/printing/excess-unprint/approve/:id', async (req, res) => {
       if (bad.length) {
         await _v51zUnclaim(reqId);
         return res.status(409).json({ ok:false, error:`${bad.length} of ${ids.length} box(es) are no longer eligible (printed out or SAP-committed since the proposal). Reject this request and re-propose with current boxes.`, ineligible: bad });
+      }
+      if (guard.maxBoxes != null && ids.length > guard.maxBoxes) {   // v57Z: re-check the quantity cap at approval time
+        await _v51zUnclaim(reqId);
+        return res.status(409).json({ ok:false, error:`Cannot approve: only ${guard.maxBoxes} box(es) of ${batchNumber} can be carved out now — ${guard.sapNote}. Reject and re-propose with fewer boxes.` });
       }
     }
 
@@ -24471,7 +25079,7 @@ async function _v51BatchExactPass() {
     const cand = await pgPool.query(
       `SELECT id, sap_invoice_no, sap_doc_entry, batch_number, total_qty_lakhs, total_boxes
          FROM invoices_received
-        WHERE invoice_request_id IS NULL AND source = 'direct_sap'
+        WHERE invoice_request_id IS NULL AND source = 'direct_sap' AND COALESCE(inv_kind,'invoice') <> 'cancellation'
           AND COALESCE(batch_number,'') <> '' AND batch_number NOT LIKE '%,%' AND batch_number NOT LIKE '% %'`);
     for (const iv of cand.rows) {
       const bn = String(iv.batch_number).trim().toUpperCase();
