@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v57Z</title>
+<title>GPR · build v58A</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -307,6 +307,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 .acct[data-a="aim_salvage"]{border-left-color:var(--teal)}
 .acct[data-a="printed_salvage"]{border-left-color:var(--purple)}
 .acct[data-a="oily_salvage"]{border-left-color:var(--amber)}
+.acct[data-a="return_remelt"]{border-left-color:#b45309}   /* v58A */
 .acct-name{font-family:var(--fc);font-size:11px;font-weight:700;letter-spacing:.6px;text-transform:uppercase;color:var(--t2);margin-bottom:5px;line-height:1.25}
 .acct-bal{font-family:var(--mono);font-size:20px;font-weight:500;color:var(--t1);line-height:1}
 .acct-bal span{font-size:11px;color:var(--t3);margin-left:3px}
@@ -395,8 +396,8 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v57Z</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v57Z</div>
+    <h1>GPR<span class="vpill">v58A</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58A</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -416,7 +417,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v57Z</span></div>
+  <div class="nbrand">GPR<span class="vpill">v58A</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -827,7 +828,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
             </span>
           </div>
           <div class="ctlbar"><div class="fgrid">
-            <div class="field-grp"><label>Source</label><select id="rcp_src" onchange="renderReceipts()"><option value="">All</option><option value="dpr">DPR cuttings</option><option value="tracking">Tracking salvage</option></select></div>
+            <div class="field-grp"><label>Source</label><select id="rcp_src" onchange="renderReceipts()"><option value="">All</option><option value="dpr">DPR cuttings</option><option value="tracking">Tracking salvage</option><option value="return">Return stock (remelt)</option></select></div>
             <div class="field-grp"><label>Account</label><select id="rcp_acct" onchange="renderReceipts()"><option value="">All accounts</option></select></div>
             <div class="field-grp"><label>Machine</label><input id="rcp_mc" list="mcOpts" placeholder="all" onchange="renderReceipts()"></div>
             <div class="field-grp"><label>Batch</label><input id="rcp_batch" placeholder="all" onchange="renderReceipts()"></div>
@@ -2923,7 +2924,7 @@ function drawChargeSide(p){
     + ' · fresh '+fmt(virgin+colour+fg,1)+' · reuse '+fmt(salv+cut,1)+' kg</div>';
 }
 // ═══ v56U (Rahul TT 2-6): reuse lines, colour auto-total, litres from everything charged ═══════
-const REUSE_ACCTS = [['cutting','Cuttings'],['aim_salvage','AIM Salvage'],['printing_salvage','Printing Salvage'],['pi_salvage','PI Salvage'],['oily_salvage','Oily Salvage']];
+const REUSE_ACCTS = [['cutting','Cuttings'],['aim_salvage','AIM Salvage'],['printing_salvage','Printing Salvage'],['pi_salvage','PI Salvage'],['oily_salvage','Oily Salvage'],['return_remelt','Return Stock (remelt)']];   // v58A: customer-returned capsules sent for remelt from Tracking
 async function ttLoadLots(force){
   if(window._LOTS && !force && Date.now()-window._LOTS.at < 60000) return window._LOTS.rows;
   try{
@@ -4347,7 +4348,9 @@ function renderReceipts(){
   rows.forEach(r=>{
     const srcBadge = r.source==='dpr'
       ? '<span style="background:var(--purple-l);color:var(--purple);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">DPR CUTTING</span>'
-      : '<span style="background:var(--teal-l);color:var(--teal);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">TRACKING</span>';
+      : (r.source==='return'
+        ? '<span style="background:var(--amber-l,#fef3c7);color:var(--amber,#b45309);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700" title="Customer-returned capsules sent for remelt from Tracking → Return Stock (lakhs × average capsule weight); accepting books the kg into Ledger A under Return Stock (remelt), PC-code wise">RETURN STOCK</span>'   /* v58A */
+        : '<span style="background:var(--teal-l);color:var(--teal);padding:1px 8px;border-radius:10px;font-size:10.5px;font-weight:700">TRACKING</span>');
     h += '<tr>'
       + '<td><input type="checkbox" '+(RCP_SEL[r.id]?'checked':'')+' onchange="rcpToggle('+r.id+',this.checked)"></td>'
       + '<td class="mono">'+esc(_dm(r.production_day))+'</td>'

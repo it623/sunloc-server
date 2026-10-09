@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v57Z';
+const APP_BUILD = 'v58A';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -1166,6 +1166,41 @@ const MIGRATIONS = [
         id TEXT PRIMARY KEY, ts TEXT NOT NULL, by_user TEXT, legacy_ref TEXT NOT NULL, target_batch TEXT NOT NULL,
         qty_lakhs REAL NOT NULL, boxes INTEGER NOT NULL, size TEXT, label_ids TEXT, note TEXT, orange_ids TEXT, mode TEXT, details_json TEXT);
       ALTER TABLE rebatch_log ADD COLUMN return_id TEXT;
+    `
+  },
+  {
+    version: 88,
+    name: 'v58a_return_actions',
+    // v58A (Ishan, 9 Oct): return stock has two disposal flows — RE-DISPATCH (rebatch_log rows carrying
+    // return_id) and REMELT. A remelt is proposed in Tracking (lakhs → kg at the batch's average capsule
+    // weight) and lands in GPR's Stock tab as a pending receipt; it leaves Tracking's available balance
+    // the moment it is proposed (reserved) and is final when the GPR chemist accepts the receipt.
+    sql: `
+      CREATE TABLE IF NOT EXISTS return_actions (
+        id TEXT PRIMARY KEY,
+        return_id TEXT NOT NULL,
+        action TEXT NOT NULL,
+        qty_lakhs REAL NOT NULL DEFAULT 0,
+        boxes INTEGER NOT NULL DEFAULT 0,
+        kg REAL,
+        avg_mg REAL,
+        avg_basis TEXT,
+        pc_code TEXT,
+        size TEXT,
+        colour TEXT,
+        batch_number TEXT,
+        floor TEXT,
+        ledger_id INTEGER,
+        status TEXT NOT NULL DEFAULT 'pending',
+        note TEXT,
+        by_user TEXT,
+        ts TEXT NOT NULL,
+        accepted_at TEXT,
+        accepted_by TEXT,
+        cancelled_at TEXT,
+        cancelled_by TEXT
+      );
+      CREATE INDEX IF NOT EXISTS idx_return_actions_ret ON return_actions(return_id, status);
     `
   },
   {
@@ -5037,6 +5072,11 @@ async function ensurePostgresTables() {
         link_method TEXT, linked_by TEXT, linked_at TEXT, payload_json TEXT, fetched_at TEXT, updated_at TEXT)`,
       `CREATE INDEX IF NOT EXISTS idx_scn_orig ON sap_credit_notes(orig_invoice_doc_num)`,
       `ALTER TABLE rebatch_log ADD COLUMN IF NOT EXISTS return_id TEXT`,
+      // v58A migration-88 mirror — return-stock disposal actions (remelt)
+      `CREATE TABLE IF NOT EXISTS return_actions (id TEXT PRIMARY KEY, return_id TEXT NOT NULL, action TEXT NOT NULL, qty_lakhs REAL NOT NULL DEFAULT 0, boxes INTEGER NOT NULL DEFAULT 0,
+        kg REAL, avg_mg REAL, avg_basis TEXT, pc_code TEXT, size TEXT, colour TEXT, batch_number TEXT, floor TEXT, ledger_id INTEGER, status TEXT NOT NULL DEFAULT 'pending', note TEXT,
+        by_user TEXT, ts TEXT NOT NULL, accepted_at TEXT, accepted_by TEXT, cancelled_at TEXT, cancelled_by TEXT)`,
+      `CREATE INDEX IF NOT EXISTS idx_return_actions_ret ON return_actions(return_id, status)`,
     ]) { await pgPool.query(stmt).catch(()=>{}); }
     console.log('[DB] GPR tables verified/created (v42U, merged in v55)');
 
@@ -7611,11 +7651,35 @@ async function _v57yReturnStockRows() {
     rd.dispatchedQty = Math.round(rd.dispatchedQty * 100) / 100;
   }
   const pmMap = await _v57yProdMonthMap(cns.map(c => _v57yFirstBatch(c.batch_number || c.inv_batch)));
+  // v58A: REMELT actions (return_actions) — proposed in Tracking, pending until the GPR chemist accepts
+  // the receipt (gpr_ledger.receipt_status). Status is read live from the ledger row and written back.
+  const acts = pgPool ? (await pgPool.query(`SELECT a.*, l.receipt_status AS lg_status, l.accepted_at AS lg_accepted_at, l.accepted_by AS lg_accepted_by FROM return_actions a LEFT JOIN gpr_ledger l ON l.id = a.ledger_id WHERE a.status <> 'cancelled' ORDER BY a.ts`)).rows
+                      : db.prepare(`SELECT a.*, l.receipt_status AS lg_status, l.accepted_at AS lg_accepted_at, l.accepted_by AS lg_accepted_by FROM return_actions a LEFT JOIN gpr_ledger l ON l.id = a.ledger_id WHERE a.status <> 'cancelled' ORDER BY a.ts`).all();
+  const actsByRet = {};
+  for (const a of acts) {
+    if (a.status === 'pending' && a.lg_status === 'accepted') {
+      try {
+        if (pgPool) await pgPool.query(`UPDATE return_actions SET status='accepted', accepted_at=$1, accepted_by=$2 WHERE id=$3`, [a.lg_accepted_at || new Date().toISOString(), a.lg_accepted_by || null, a.id]);
+        else db.prepare(`UPDATE return_actions SET status='accepted', accepted_at=?, accepted_by=? WHERE id=?`).run(a.lg_accepted_at || new Date().toISOString(), a.lg_accepted_by || null, a.id);
+        a.status = 'accepted'; a.accepted_at = a.lg_accepted_at; a.accepted_by = a.lg_accepted_by;
+      } catch (e) { console.warn('[v58A remelt accept-sync]', e.message); }
+    }
+    (actsByRet[a.return_id] = actsByRet[a.return_id] || []).push({ id: a.id, action: a.action, ts: a.ts, by: a.by_user, qty: parseFloat(a.qty_lakhs) || 0, boxes: parseInt(a.boxes, 10) || 0, kg: parseFloat(a.kg) || 0, avgMg: parseFloat(a.avg_mg) || 0, avgBasis: a.avg_basis || '', floor: a.floor || '', status: a.status, acceptedAt: a.accepted_at || null, acceptedBy: a.accepted_by || null, ledgerId: a.ledger_id || null, note: a.note || '', month: _v58aIstMonth(a.ts) });
+  }
   const rows = [];
   for (const c of cns) {
     const rds = byRet[c.id] || [];
+    const rms = actsByRet[c.id] || [];
     const retQ = Math.round((parseFloat(c.total_qty_lakhs) || 0) * 100) / 100, retB = parseInt(c.total_boxes, 10) || 0;
     const redQ = Math.round(rds.reduce((s, r) => s + r.qty, 0) * 100) / 100, redB = rds.reduce((s, r) => s + r.boxes, 0);
+    const rmPend = Math.round(rms.filter(a => a.status === 'pending').reduce((s, a) => s + a.qty, 0) * 100) / 100;
+    const rmAcc = Math.round(rms.filter(a => a.status === 'accepted').reduce((s, a) => s + a.qty, 0) * 100) / 100;
+    const rmQ = Math.round((rmPend + rmAcc) * 100) / 100, rmB = rms.reduce((s, a) => s + a.boxes, 0), rmKg = Math.round(rms.reduce((s, a) => s + a.kg, 0) * 100) / 100;
+    // month-wise processing (point 5): what happened to this return in each calendar month
+    const byActionMonth = {};
+    rds.forEach(r => { const m = _v58aIstMonth(r.ts); const o = byActionMonth[m] = byActionMonth[m] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0 }; o.redeployed = Math.round((o.redeployed + r.qty) * 100) / 100; });
+    rds.forEach(r => Object.entries(r.byMonth).forEach(([m, q]) => { const o = byActionMonth[m] = byActionMonth[m] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0 }; o.dispatched = Math.round((o.dispatched + q) * 100) / 100; }));
+    rms.forEach(a => { const o = byActionMonth[a.month] = byActionMonth[a.month] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0 }; o.remelt = Math.round((o.remelt + a.qty) * 100) / 100; o.remelt_kg = Math.round((o.remelt_kg + a.kg) * 100) / 100; });
     const invQ = Math.round((parseFloat(c.inv_qty) || 0) * 100) / 100;
     const bn = _v57yFirstBatch(c.batch_number || c.inv_batch);
     const dispQ = Math.round(rds.reduce((s, r) => s + r.dispatchedQty, 0) * 100) / 100;
@@ -7628,12 +7692,91 @@ async function _v57yReturnStockRows() {
       pc_code: c.pc_code || '', size: c.size || '', colour: c.colour || '',
       returned_qty: retQ, returned_boxes: retB, amount: parseFloat(c.total_amount) || 0, taxable: parseFloat(c.taxable_amount) || 0, igst: parseFloat(c.igst_amount) || 0,
       full: invQ > 0 ? retQ >= invQ - 0.005 : null,
-      redeployed_qty: redQ, redeployed_boxes: redB, available_qty: Math.max(0, Math.round((retQ - redQ) * 100) / 100), available_boxes: Math.max(0, retB - redB),
+      redeployed_qty: redQ, redeployed_boxes: redB,
+      remelt_qty: rmQ, remelt_pending_qty: rmPend, remelt_accepted_qty: rmAcc, remelt_boxes: rmB, remelt_kg: rmKg, remelts: rms,   // v58A
+      available_qty: Math.max(0, Math.round((retQ - redQ - rmQ) * 100) / 100), available_boxes: Math.max(0, retB - redB - rmB),
+      received_month: _v58aIstMonth(c.doc_date || c.fetched_at), by_action_month: byActionMonth,   // v58A: calendar-month ledger
       dispatched_qty: dispQ, dispatched_by_month: byMonth, redeploys: rds, link_method: c.link_method || null,
     });
   }
   return rows;
 }
+
+function _v58aIstMonth(ts) { if (!ts) return ''; const d = new Date(ts); if (isNaN(d)) return String(ts).slice(0, 7); return new Date(d.getTime() + 330 * 60000).toISOString().slice(0, 7); }
+
+// ═══ v58A (Ishan, 9 Oct) — RETURN STOCK → REMELT ════════════════════════════════════════════════
+// POST /api/invoice/return-stock/:id/remelt { qtyLakhs, floor, note, preview }  (PM / Admin)
+//   lakhs → kg at the ORIGINAL batch's average capsule weight (gprAvgMg: label-actual within tolerance,
+//   else the size master) = lakhs × avgMg ÷ 10. Writes a return_actions row and a PENDING gpr_ledger
+//   receipt (account return_remelt, source 'return', PC / colour of the return) on the chosen floor —
+//   GPR accepts it in the Stock tab like any DPR cutting or Tracking salvage; Ledger A then carries it
+//   PC-code-wise. Reserved from Tracking's available balance from the moment it is proposed.
+app.post('/api/invoice/return-stock/:id/remelt', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!['admin', 'tracking_planning', 'planning_manager'].includes(String(session.role || '').trim().toLowerCase()))
+      return res.status(403).json({ ok: false, error: 'Admin or Planning Manager required' });
+    const id = String(req.params.id || '');
+    const rs = (await _v57yReturnStockRows()).find(x => x.id === id);
+    if (!rs) return res.status(404).json({ ok: false, error: 'Return not found' });
+    const qty = Math.round((parseFloat(req.body?.qtyLakhs) || 0) * 1000) / 1000;
+    const floor = String(req.body?.floor || '').trim().toUpperCase();
+    const note = String(req.body?.note || '').trim();
+    const preview = req.body?.preview === true;
+    if (!(qty > 0)) return res.status(400).json({ ok: false, error: 'Quantity must be > 0 lakhs' });
+    if (qty > rs.available_qty + 0.0005) return res.status(400).json({ ok: false, error: `Only ${rs.available_qty.toFixed(2)} L of return stock is available on credit note ${rs.cn_no}` });
+    if (!['GF', '1F', '2F'].includes(floor)) return res.status(400).json({ ok: false, error: 'Floor must be GF, 1F or 2F' });
+    const size = String(rs.size || '').trim();
+    if (!size) return res.status(400).json({ ok: false, error: 'The return has no capsule size (link the credit note to its invoice first)' });
+    const sizeKey = '#' + size.replace(/^#/, '');
+    const masters = await gprLoadMasters();
+    const origBatch = _v57yFirstBatch(rs.batch);
+    const aw = await gprAvgMg(origBatch, sizeKey, masters);
+    const avgMg = Number(aw.avgMg) || 0;
+    if (!(avgMg > 0)) return res.status(400).json({ ok: false, error: `No average capsule weight for size ${sizeKey} — add it in GPR Masters` });
+    const kg = Math.round(qty * avgMg / 10 * 100) / 100;
+    const ps = _V44ZJ_PACK_SIZES[size] || 0;
+    const boxes = ps > 0 ? Math.ceil(qty / ps - 1e-9) : 0;
+    const plan = { returnId: rs.id, cnNo: rs.cn_no, invoiceNo: rs.invoice_no, batch: origBatch, customer: rs.customer, pcCode: rs.pc_code, size: sizeKey, colour: rs.colour, qtyLakhs: qty, boxes, avgMg, avgBasis: aw.basis, kg, floor, available: rs.available_qty, remaining: Math.round((rs.available_qty - qty) * 100) / 100 };
+    if (preview) return res.json({ ok: true, preview: true, plan });
+    const actId = 'rta-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+    const now = new Date().toISOString();
+    const who = session.username || 'admin';
+    const ledgerId = await gprLedgerMove({ movement_type: 'generation', account: 'return_remelt', source: 'return',
+      pc_code: rs.pc_code || null, colour_name: rs.colour || null, batch_number: origBatch || null, floor, qty_kg: kg,
+      production_day: gprProductionDay(), moved_by: who,
+      note: `Return stock remelt — CN ${rs.cn_no} / invoice ${rs.invoice_no || '—'} (${rs.customer || ''}): ${qty} L (${boxes} box${boxes === 1 ? '' : 'es'}) × ${avgMg} mg (${aw.basis}) = ${kg} kg${note ? ' — ' + note : ''} (pending GPR receipt)` });
+    const mk = `UPDATE gpr_ledger SET receipt_status='pending', receipt_ref=${pgPool ? '$1' : '?'} WHERE id=${pgPool ? '$2' : '?'}`;
+    if (pgPool) await pgPool.query(mk, ['return|' + actId, ledgerId]); else db.prepare(mk).run('return|' + actId, ledgerId);
+    const vals = [actId, rs.id, 'remelt', qty, boxes, kg, avgMg, aw.basis, rs.pc_code || null, sizeKey, rs.colour || null, origBatch || null, floor, ledgerId, 'pending', note || null, who, now];
+    if (pgPool) await pgPool.query(`INSERT INTO return_actions (id, return_id, action, qty_lakhs, boxes, kg, avg_mg, avg_basis, pc_code, size, colour, batch_number, floor, ledger_id, status, note, by_user, ts) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)`, vals);
+    else db.prepare(`INSERT INTO return_actions (id, return_id, action, qty_lakhs, boxes, kg, avg_mg, avg_basis, pc_code, size, colour, batch_number, floor, ledger_id, status, note, by_user, ts) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...vals);
+    try { logAudit(who, session.role, 'tracking', 'RETURN_REMELT_PROPOSED', `CN ${rs.cn_no} / inv ${rs.invoice_no || '—'} (${origBatch}): ${qty} L → ${kg} kg @ ${avgMg} mg (${aw.basis}) to GPR ${floor}${note ? ' — ' + note : ''}`, req.ip); } catch (_) {}
+    res.json({ ok: true, id: actId, ledgerId, plan });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+// POST /api/invoice/return-stock/remelt/:actionId/cancel — only while GPR has not accepted it.
+app.post('/api/invoice/return-stock/remelt/:actionId/cancel', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!['admin', 'tracking_planning', 'planning_manager'].includes(String(session.role || '').trim().toLowerCase()))
+      return res.status(403).json({ ok: false, error: 'Admin or Planning Manager required' });
+    const id = String(req.params.actionId || '');
+    const a = pgPool ? (await pgPool.query(`SELECT * FROM return_actions WHERE id=$1`, [id])).rows[0] : db.prepare(`SELECT * FROM return_actions WHERE id=?`).get(id);
+    if (!a) return res.status(404).json({ ok: false, error: 'Remelt action not found' });
+    if (a.status !== 'pending') return res.status(409).json({ ok: false, error: `This remelt is ${a.status} — it can no longer be cancelled` });
+    const lg = a.ledger_id ? (pgPool ? (await pgPool.query(`SELECT receipt_status FROM gpr_ledger WHERE id=$1`, [a.ledger_id])).rows[0] : db.prepare(`SELECT receipt_status FROM gpr_ledger WHERE id=?`).get(a.ledger_id)) : null;
+    if (lg && lg.receipt_status === 'accepted') return res.status(409).json({ ok: false, error: 'GPR has already accepted this material into stock — it cannot be cancelled from Tracking' });
+    const now = new Date().toISOString(), who = session.username || 'admin';
+    if (a.ledger_id) { if (pgPool) await pgPool.query(`DELETE FROM gpr_ledger WHERE id=$1 AND receipt_status='pending'`, [a.ledger_id]); else db.prepare(`DELETE FROM gpr_ledger WHERE id=? AND receipt_status='pending'`).run(a.ledger_id); }
+    if (pgPool) await pgPool.query(`UPDATE return_actions SET status='cancelled', cancelled_at=$1, cancelled_by=$2 WHERE id=$3`, [now, who, id]);
+    else db.prepare(`UPDATE return_actions SET status='cancelled', cancelled_at=?, cancelled_by=? WHERE id=?`).run(now, who, id);
+    try { logAudit(who, session.role, 'tracking', 'RETURN_REMELT_CANCELLED', `${id}: ${a.qty_lakhs} L / ${a.kg} kg (${a.batch_number || ''}) withdrawn before GPR receipt`, req.ip); } catch (_) {}
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 
 // GET /api/invoice/returns-cancels — one row per cancelled invoice (↔ its cancellation document) and
 // one per returned invoice (↔ its credit note). Filters are applied on the client (small set).
@@ -9087,11 +9230,51 @@ app.get('/api/invoice/received', async (req, res) => {
         if (pgPool) retTargets = (await pgPool.query(`SELECT DISTINCT UPPER(TRIM(target_batch)) AS bn FROM rebatch_log WHERE COALESCE(return_id,'') <> ''`)).rows;
         else retTargets = db.prepare(`SELECT DISTINCT UPPER(TRIM(target_batch)) AS bn FROM rebatch_log WHERE COALESCE(return_id,'') <> ''`).all();
         const retSet = new Set((retTargets || []).map(r => r.bn));
+        // v58A (Ishan, 9 Oct — NET = PRODUCTION BASIS): each invoice's return_qty / return_boxes /
+        // return_amount = the part of it that shipped as RETURN-STOCK R-boxes (legacy ref `<batch>-RET`),
+        // found through its dispatch record(s)' box list; an invoice on a batch whose live labels are
+        // all return stock (a re-customer child) is return stock in full. Net deducts THIS, in the month
+        // the stock is re-invoiced; credit notes stay informational on the original invoice.
+        const retLabels = pgPool ? (await pgPool.query(`SELECT id, qty, UPPER(TRIM(batch_number)) AS bn FROM tracking_labels WHERE legacy_ref LIKE '%-RET' AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`)).rows
+                                 : db.prepare(`SELECT id, qty, UPPER(TRIM(batch_number)) AS bn FROM tracking_labels WHERE legacy_ref LIKE '%-RET' AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0`).all();
+        const retQtyById = {}; const retBns = new Set();
+        for (const l of retLabels) { retQtyById[l.id] = parseFloat(l.qty) || 0; retBns.add(l.bn); }
+        let retOnly = new Set();
+        if (retBns.size) {
+          const bl = [...retBns];
+          const mix = pgPool ? (await pgPool.query(`SELECT UPPER(TRIM(batch_number)) AS bn, COUNT(*) AS n FROM tracking_labels WHERE UPPER(TRIM(batch_number)) = ANY($1) AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0 AND COALESCE(legacy_ref,'') NOT LIKE '%-RET' GROUP BY UPPER(TRIM(batch_number))`, [bl])).rows
+                              : db.prepare(`SELECT UPPER(TRIM(batch_number)) AS bn, COUNT(*) AS n FROM tracking_labels WHERE UPPER(TRIM(batch_number)) IN (${bl.map(()=>'?').join(',')}) AND COALESCE(voided,0)=0 AND COALESCE(is_orange,0)=0 AND COALESCE(legacy_ref,'') NOT LIKE '%-RET' GROUP BY UPPER(TRIM(batch_number))`).all(...bl);
+          const mixed = new Set(mix.map(m => m.bn)); retOnly = new Set(bl.filter(b => !mixed.has(b)));
+        }
+        const recById = {};
+        if (retLabels.length) {
+          const recIds = rows.map(r => r.dispatch_record_id).filter(Boolean);
+          const nums = rows.map(r => String(r.sap_doc_num || '').trim()).filter(Boolean);
+          let recs = [];
+          if (pgPool) recs = (await pgPool.query(`SELECT id, invoice_no, scanned_labels_json FROM tracking_dispatch_records WHERE (id = ANY($1) OR invoice_no = ANY($2)) AND COALESCE(scanned_labels_json,'') NOT IN ('', '[]')`, [recIds, nums])).rows;
+          else { const q = `SELECT id, invoice_no, scanned_labels_json FROM tracking_dispatch_records WHERE (id IN (${recIds.map(()=>'?').join(',') || "''"}) OR invoice_no IN (${nums.map(()=>'?').join(',') || "''"})) AND COALESCE(scanned_labels_json,'') NOT IN ('', '[]')`; recs = db.prepare(q).all(...recIds, ...nums); }
+          for (const rc of recs) {
+            let arr = []; try { arr = JSON.parse(rc.scanned_labels_json || '[]'); } catch (_) {}
+            let q = 0, b = 0;
+            for (const it of arr) { const lid = (it && typeof it === 'object') ? (it.labelId || it.label_id || it.id) : it; if (lid && retQtyById[lid] != null) { q += retQtyById[lid]; b++; } }
+            recById[rc.id] = { q, b, inv: String(rc.invoice_no || '').trim() };
+          }
+        }
         for (const r of rows) {
           r.inv_kind = r.inv_kind || 'invoice';
           const o = byDe[String(r.sap_doc_entry)];
           r.cn_qty = o ? Math.round(o.qty * 100) / 100 : 0; r.cn_boxes = o ? o.boxes : 0; r.cn_amount = o ? Math.round(o.amount * 100) / 100 : 0; r.cn_refs = o ? o.refs : [];
-          r.from_return = String(r.batch_number || '').split(/[\s,]+/).some(t => retSet.has(t.trim().toUpperCase()));
+          const toks = String(r.batch_number || '').split(/[\s,]+/).map(t => t.trim().toUpperCase()).filter(Boolean);
+          r.from_return = toks.some(t => retSet.has(t));
+          let rq = 0, rb = 0;
+          const seen = new Set();
+          for (const [rid, rc] of Object.entries(recById)) { if ((rid === r.dispatch_record_id || (rc.inv && rc.inv === String(r.sap_doc_num || '').trim())) && !seen.has(rid)) { seen.add(rid); rq += rc.q; rb += rc.b; } }
+          const tq = parseFloat(r.total_qty_lakhs) || 0;
+          if (!(rq > 0) && toks.length && toks.every(t => retOnly.has(t))) { rq = tq; rb = parseInt(r.total_boxes, 10) || 0; }
+          rq = Math.min(tq > 0 ? tq : rq, Math.round(rq * 100) / 100);
+          r.return_qty = rq; r.return_boxes = rb;
+          r.return_amount = tq > 0 ? Math.round((parseFloat(r.total_amount) || 0) * rq / tq * 100) / 100 : 0;
+          if (rq > 0) r.from_return = true;
         }
       } catch (e) { console.warn('[v57Y received cn-attach]', e.message); }
     }
@@ -25852,7 +26035,7 @@ assistantEngine.init({ pgPool, db, port: PORT, log: console.log });
 //                production_day = date(ts - 6h).
 // ═══════════════════════════════════════════════════════════════════════════
 
-const GPR_ACCOUNTS = ['cutting', 'aim_salvage', 'printed_salvage', 'oily_salvage'];
+const GPR_ACCOUNTS = ['cutting', 'aim_salvage', 'printed_salvage', 'oily_salvage', 'return_remelt'];   // v58A: + return stock
 const GPR_ACCOUNT_LABELS = {
   cutting:          'Cutting',
   aim_salvage:      'AIM Salvage',
@@ -25860,6 +26043,7 @@ const GPR_ACCOUNT_LABELS = {
   pi_salvage:       'PI Salvage',            //   (done while the ledger was empty on live)
   oily_salvage:     'Oily Salvage',
   printed_salvage:  'Printed Salvage (legacy combined)',   // display-only for any pre-split rows
+  return_remelt:    'Return Stock (remelt)',  // v58A: customer-returned capsules sent for remelt from Tracking → Return Stock
 };
 // Ledger A balance signs. generation + correction CREDIT; consumption + draw DEBIT.
 const GPR_A_CREDIT = `('generation','correction')`;
@@ -27111,7 +27295,7 @@ app.post('/api/gpr/tt', async (req, res) => {
     // kg — so one tank can take cuttings and AIM salvage from several batches / colour codes. The
     // two aggregate columns are DERIVED from the lines (cutting vs every salvage account), so yield,
     // reconciliation, the plan sheet and every register keep reading exactly what they read before.
-    const GPR_REUSE_ACCTS = ['aim_salvage', 'printing_salvage', 'pi_salvage', 'cutting', 'oily_salvage'];
+    const GPR_REUSE_ACCTS = ['aim_salvage', 'printing_salvage', 'pi_salvage', 'cutting', 'oily_salvage', 'return_remelt'];   // v58A
     const reuseLines = (Array.isArray(b.reuse_lines) ? b.reuse_lines : [])
       .map(l => ({ account: String((l && l.account) || '').toLowerCase(),
                    source_batch: String((l && l.source_batch) || '').trim().toUpperCase() || null,
@@ -28619,7 +28803,7 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
       const cRows = pgPool ? (await pgPool.query(cSql, ids)).rows : db.prepare(cSql).all(...ids);
       (cRows || []).forEach(c => { (colByTt[c.tt_id] = colByTt[c.tt_id] || []).push(c); });
     }
-    const SAL = { aim_salvage: 'AIM Salvage', printing_salvage: 'Printing Salvage', pi_salvage: 'PI Salvage', cutting: 'Cuttings' };
+    const SAL = { aim_salvage: 'AIM Salvage', printing_salvage: 'Printing Salvage', pi_salvage: 'PI Salvage', cutting: 'Cuttings', oily_salvage: 'Oily Salvage', return_remelt: 'Return Stock (remelt)' };   // v58A
     for (const t of (tRows || [])) {
       const base = { date: t.d, source: 'TT', ref: t.tt_number, batch: t.batch_number, machine: t.machine_id, floor: t.floor, side: t.side, by: t.created_by || null };
       // v56P: virgin charged into a TT that is LINKED to an MMT charge is a draw from a melt whose
