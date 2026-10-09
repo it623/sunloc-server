@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58A';
+const APP_BUILD = 'v58B';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -26876,6 +26876,52 @@ function _gprMmtConc(mmt, masters) {
   const d = Number(C.gelatineKgPerLitre ?? 0.33);
   return d > 0 ? d : 0.33;
 }
+// ═══ v58B — MMT position rebuilt from the tanks (Rahul, 9 Oct: charge 1449 read 2 L left, 645 L stood
+// in the MMT). allocated_l = Σ prepared tanks' virgin kg ÷ the charge's concentration + litres still
+// reserved by un-prepared allocations; allocated_kg = Σ virgin kg + reserved kg. A charge the system
+// closed as "exhausted" on the wrong basis is reopened when the rebuilt position has litres left.
+// Idempotent; runs once at boot and on demand (POST /api/gpr/mmt/recompute).
+async function _v58bRebuildMmtPositions(session, ip) {
+  const masters = await gprLoadMasters();
+  const P = (n) => pgPool ? '$' + n : '?';
+  const charges = pgPool ? (await pgPool.query(`SELECT * FROM gpr_mmt_charges`)).rows : db.prepare(`SELECT * FROM gpr_mmt_charges`).all();
+  const ttSql = `SELECT mmt_ref, COALESCE(SUM(virgin_kg),0) AS kg, COUNT(*) AS n FROM gpr_tt WHERE mmt_ref IS NOT NULL AND mmt_ref <> '' GROUP BY mmt_ref`;
+  const alSql = `SELECT mmt_ref, COALESCE(SUM(planned_l),0) AS l, COALESCE(SUM(reserved_kg),0) AS kg FROM gpr_mmt_alloc WHERE status='allocated' GROUP BY mmt_ref`;
+  const tts = {}; (pgPool ? (await pgPool.query(ttSql)).rows : db.prepare(ttSql).all()).forEach(r => { tts[r.mmt_ref] = r; });
+  const als = {}; (pgPool ? (await pgPool.query(alSql)).rows : db.prepare(alSql).all()).forEach(r => { als[r.mmt_ref] = r; });
+  let fixed = 0, reopened = 0; const log = [];
+  for (const c of charges) {
+    const conc = _gprMmtConc(c, masters);
+    const tKg = Number((tts[c.mmt_ref] || {}).kg || 0), aL = Number((als[c.mmt_ref] || {}).l || 0), aKg = Number((als[c.mmt_ref] || {}).kg || 0);
+    const newL = +((conc > 0 ? tKg / conc : 0) + aL).toFixed(1), newKg = +(tKg + aKg).toFixed(3);
+    const oldL = +Number(c.allocated_l || 0).toFixed(1), oldKg = +Number(c.allocated_kg || 0).toFixed(3);
+    const left = +(Number(c.total_l || 0) - newL).toFixed(1);
+    let reopen = false;
+    if (c.status === 'closed' && left > 0.5) {
+      const aq = `SELECT 1 FROM audit_log WHERE action='GPR_MMT_EXHAUSTED' AND details LIKE ${P(1)} LIMIT 1`;
+      const ex = pgPool ? (await pgPool.query(aq, [`ref=${c.mmt_ref} %`])).rows[0] : db.prepare(aq).get(`ref=${c.mmt_ref} %`);
+      reopen = !!ex;
+    }
+    if (Math.abs(newL - oldL) < 0.05 && Math.abs(newKg - oldKg) < 0.005 && !reopen) continue;
+    const sets = [`allocated_l=${P(1)}`, `allocated_kg=${P(2)}`]; const vals = [newL, newKg];
+    if (reopen) sets.push(`status='open'`);
+    vals.push(c.id);
+    const sql = `UPDATE gpr_mmt_charges SET ${sets.join(', ')}, updated_at=${pgPool ? 'NOW()::TEXT' : "datetime('now')"} WHERE id=${P(3)}`;
+    if (pgPool) await pgPool.query(sql, vals); else db.prepare(sql).run(...vals);
+    fixed++; if (reopen) reopened++;
+    const line = `${c.mmt_ref}: allocated ${oldL} L → ${newL} L (${oldKg} → ${newKg} kg; ${Number((tts[c.mmt_ref] || {}).n || 0)} tank(s) at ${conc} kg/L${aL ? ` + ${aL} L reserved` : ''}), ${left} L left${reopen ? ' — REOPENED (was closed as exhausted on the tank-volume basis)' : ''}`;
+    log.push(line); console.log('[v58B mmt rebuild] ' + line);
+  }
+  if (fixed) logAudit((session && session.username) || 'system', (session && session.role) || 'system', 'gpr', 'GPR_MMT_REBUILD', `${fixed} charge(s) re-based on virgin kg ÷ concentration; ${reopened} reopened — ${log.join(' | ').slice(0, 1800)}`, ip || null);
+  return { charges: charges.length, fixed, reopened, log };
+}
+app.post('/api/gpr/mmt/recompute', async (req, res) => {
+  try {
+    const session = gprSession(req);
+    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    res.json(Object.assign({ ok: true }, await _v58bRebuildMmtPositions(session, req.ip)));
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 // v57W: a charge whose litres are fully drawn closes itself ('closed', reason exhausted) — it stops
 // being offered for allocation or linking; the tanks already allocated from it still prepare.
 async function _gprMmtAutoClose(mmtRef, session, ip) {
@@ -27253,6 +27299,7 @@ app.post('/api/gpr/tt', async (req, res) => {
     }
     // MMT allocation — ALERT, never a block (item 6 applies to the whole MMT rule set).
     let mmtWarning = null;
+    let _mmtDrawL = 0;   // v58B: litres this tank draws from its charge (virgin kg ÷ concentration)
     if (b.mmt_ref) {
       const mSql = `SELECT total_kg, allocated_kg, total_l, allocated_l, conc_kg_per_l FROM gpr_mmt_charges WHERE mmt_ref=${pgPool ? '$1' : '?'}`;
       const mmt = pgPool ? (await pgPool.query(mSql, [b.mmt_ref])).rows[0] : db.prepare(mSql).get(b.mmt_ref);
@@ -27260,7 +27307,13 @@ app.post('/api/gpr/tt', async (req, res) => {
       const remaining = Number(mmt.total_kg || 0) - Number(mmt.allocated_kg || 0) + (alloc ? Number(alloc.reserved_kg || 0) : 0);   // v57L: this tank's own reservation is available to it
       const thisKg = Number(b.virgin_kg || 0);
       const remainingL = Number(mmt.total_l || 0) - Number(mmt.allocated_l || 0) + (alloc ? Number(alloc.planned_l || 0) : 0);
-      const thisL = Number(b.actual_l || 0);
+      // v58B (Rahul via Ishan, 9 Oct — charge 1449): what a tank DRAWS from the charge is the MMT
+      // solution carrying its virgin gelatine = virgin kg ÷ the charge's own concentration (10 kg at
+      // 0.333 kg/L = 30 L). The tank's "actual litres" is its whole volume — reuse material, colour
+      // solution and water included — and was wrongly booked against the charge (145 L for a 10 kg
+      // tank), draining 1050 L to "2 L left" while 645 L stood in the MMT.
+      _mmtDrawL = thisKg > 0 ? +(thisKg / _gprMmtConc(mmt, await gprLoadMasters())).toFixed(1) : 0;
+      const thisL = _mmtDrawL;
       // v57W (Rahul via Ishan, 7 Oct) — RULING: a charge never goes below zero. A tank that would draw
       // more litres than the charge has left is REFUSED (supersedes the v56R "alert, never block"
       // rule for this check); the chemist draws the balance and links the rest to a new charge.
@@ -27392,7 +27445,7 @@ app.post('/api/gpr/tt', async (req, res) => {
     // (difference to the allocation's planned litres when it settles one; the whole draw otherwise).
     if (alloc) {
       const delta = +(virginKg - Number(alloc.reserved_kg || 0)).toFixed(3);
-      const deltaL = +(actualL - Number(alloc.planned_l || 0)).toFixed(1);
+      const deltaL = +(_mmtDrawL - Number(alloc.planned_l || 0)).toFixed(1);   // v58B: the draw, not the tank volume
       if (pgPool) {
         if (delta !== 0 || deltaL !== 0) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, allocated_l=allocated_l+$2, updated_at=NOW()::TEXT WHERE mmt_ref=$3`, [delta, deltaL, alloc.mmt_ref]);
         await pgPool.query(`UPDATE gpr_mmt_alloc SET status='prepared', tt_id=$1, actual_kg=$2, prepared_at=NOW()::TEXT WHERE id=$3`, [ttId, virginKg, alloc.id]);
@@ -27400,9 +27453,9 @@ app.post('/api/gpr/tt', async (req, res) => {
         if (delta !== 0 || deltaL !== 0) db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, allocated_l=allocated_l+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(delta, deltaL, alloc.mmt_ref);
         db.prepare(`UPDATE gpr_mmt_alloc SET status='prepared', tt_id=?, actual_kg=?, prepared_at=datetime('now') WHERE id=?`).run(ttId, virginKg, alloc.id);
       }
-    } else if (b.mmt_ref && (virginKg > 0 || actualL > 0)) {
-      if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, allocated_l=allocated_l+$2, updated_at=NOW()::TEXT WHERE mmt_ref=$3`, [virginKg, actualL, b.mmt_ref]);
-      else db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, allocated_l=allocated_l+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(virginKg, actualL, b.mmt_ref);
+    } else if (b.mmt_ref && virginKg > 0) {
+      if (pgPool) await pgPool.query(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+$1, allocated_l=allocated_l+$2, updated_at=NOW()::TEXT WHERE mmt_ref=$3`, [virginKg, _mmtDrawL, b.mmt_ref]);   // v58B
+      else db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg+?, allocated_l=allocated_l+?, updated_at=datetime('now') WHERE mmt_ref=?`).run(virginKg, _mmtDrawL, b.mmt_ref);
     }
     let mmtExhausted = false;
     if (b.mmt_ref) mmtExhausted = await _gprMmtAutoClose(b.mmt_ref, session, req.ip);   // v57W: zero → closed
@@ -30444,6 +30497,7 @@ app.listen(PORT, () => {
     _gprUpgradeMastersV55A().catch(e => console.warn('[v55A GPR] masters upgrade failed:', e?.message));
     _gprUpgradeMastersV55V().catch(e => console.warn('[v55V GPR] seed upgrade failed:', e?.message));
     _gprBackfillLedgerPc().catch(e => console.warn('[v56A GPR] PC backfill failed:', e?.message));
+    _v58bRebuildMmtPositions(null, null).catch(e => console.warn('[v58B GPR] MMT position rebuild failed:', e?.message));   // v58B: charges re-based on virgin kg ÷ concentration
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion

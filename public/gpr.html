@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v58A</title>
+<title>GPR · build v58B</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -396,8 +396,8 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v58A</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58A</div>
+    <h1>GPR<span class="vpill">v58B</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58B</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -417,7 +417,7 @@ table.ilfloor tr.ilblk td{background:var(--accent-l);color:var(--accent);font-fa
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v58A</span></div>
+  <div class="nbrand">GPR<span class="vpill">v58B</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -1601,10 +1601,10 @@ async function mmtOpenEdit(id){
     + '<span>Remaining <b style="color:'+(rem>0.5?'var(--green)':(rem<-0.5?'var(--red)':'var(--t3)'))+'">'+fmt(rem,0)+'</b> L</span><span style="color:var(--t3)">gelatine '+fmt(c.gelatine_kg,0)+' kg &middot; '+_mmConc(c).toFixed(3)+' kg/L</span><span id="mme_dist" class="hbnote"></span></div>'
     + (rem > 0.5
         ? (tanks.length
-            ? '<div class="tswrap" style="max-height:300px"><table class="gtable"><thead><tr><th>Tank</th><th>Batch</th><th>Side</th><th>MC</th><th>Status</th><th class="num">Litres now</th><th class="num">Virgin kg now</th><th class="num" style="width:110px">Add L</th></tr></thead><tbody>'
+            ? '<div class="tswrap" style="max-height:300px"><table class="gtable"><thead><tr><th>Tank</th><th>Batch</th><th>Side</th><th>MC</th><th>Status</th><th class="num" title="Litres this tank has drawn from the charge = virgin kg ÷ the charge concentration (v58B — not the tank volume)">MMT L drawn</th><th class="num">Virgin kg now</th><th class="num" style="width:110px">Add L</th></tr></thead><tbody>'
               + tanks.map(t=>'<tr><td class="mono"><b>'+esc(String(t.tt_number||'').replace(/^TT-/,''))+'</b></td><td class="mono">'+esc(t.batch_number)+'</td>'
                 + '<td><span class="sdtag sd-'+esc(t.side)+'">'+esc(String(t.side||'').toUpperCase())+'</span></td><td>'+esc(t.machine_id||'')+'</td>'
-                + '<td style="font-size:11px">'+esc(lcStage(t)[1])+'</td><td class="num">'+fmt(t.actual_l,0)+'</td><td class="num">'+fmt(t.virgin_kg,1)+'</td>'
+                + '<td style="font-size:11px">'+esc(lcStage(t)[1])+'</td><td class="num">'+fmt((Number(t.virgin_kg)||0)/_mmConc(c),0)+' <span style="color:var(--t3);font-size:10px">/ '+fmt(t.actual_l,0)+' L tank</span></td><td class="num">'+fmt(t.virgin_kg,1)+'</td>'   /* v58B */
                 + '<td class="num"><input type="number" min="0" step="1" class="mme_add" data-id="'+t.id+'" oninput="mmtDistSum()" style="width:90px;padding:3px 6px;text-align:right"></td></tr>').join('')
               + '</tbody></table></div><div style="margin-top:6px"><a href="javascript:void(0)" onclick="mmtSpread()" style="font-size:11.5px">Spread the remainder evenly across these tanks</a></div>'
             : '<div class="empty" style="padding:10px">No unreleased tank on this floor in the last 4 days to distribute into.</div>')
@@ -3149,10 +3149,14 @@ function ttCalc(p){
   _ttSeqNote(p);
   ttReuseRefresh();   // v56V: available / taking / remaining per lot, both tanks
   if(note){
+    // v58B (Rahul, 9 Oct): say plainly what the tank DRAWS from the charge — virgin kg ÷ the charge's
+    // concentration — apart from the tank's own volume. Only the draw moves the MMT position.
+    const _drawL = (_concU && num(p+'_virgin') > 0) ? num(p+'_virgin') / _concU : 0;
     note.innerHTML = calcL > 0
       ? 'calc <b>'+fmt(calcL,1)+' L</b> = '+fmt(gelKg,1)+' kg ÷ '+(+gPerL.toFixed(3))+(_concU?' <span style="color:var(--t3)">('+esc(_ref57u)+')</span>':'')+(solKg>0?' + colour soln '+fmt(solKg,1)+' L':'')
         + (act && act.dataset.manual==='1' && Math.abs(num(p+'_actual')-calcL) >= 0.5
            ? ' · <span style="color:var(--amber)">entered by hand</span> <a href="javascript:void(0)" onclick="ttUseCalc(\''+p+'\')">use calc</a>' : '')
+        + (_drawL > 0 ? ' · <b style="color:var(--accent)">draws '+fmt(_drawL,1)+' L of MMT '+esc(_ref57u)+'</b> <span style="color:var(--t3)">('+fmt(num(p+'_virgin'),1)+' kg virgin ÷ '+(+_concU.toFixed(3))+' kg/L — the tank\'s own litres do not move the charge)</span>' : '')
       : '';
   }
   drawTankSide(p);
