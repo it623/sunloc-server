@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v58B</title>
+<title>Sunloc Tracking Suite v1.0 · build v58C</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v58B</p>
+      <p>Tracking Suite v1.0 · build v58C</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v58B</p>
+      <p>Tracking Suite v1.0 · build v58C</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -8732,12 +8732,16 @@ function _v57yFilterBar(p, f, rows, withNature, extra) {
 function _v57yInRange(d, df, dt) { if (!df && !dt) return true; if (!d) return false; const x = String(d).slice(0, 10); if (df && x < df) return false; if (dt && x > dt) return false; return true; }
 function _v57yFilteredRC() {
   const f = _v57yFilters('v57y-rc');
-  return (_v57yRCRows || []).filter(r =>
+  const srt = (document.getElementById('v57y-rc-sort')?.value || 'inv_desc');   // v58C: chronological, chosen order
+  const key = r => String((srt.startsWith('cn') ? (r.linked_date || r.invoice_date) : (r.invoice_date || r.linked_date)) || '').slice(0, 10);
+  const out = (_v57yRCRows || []).filter(r =>
     (!f.fb || String(r.batch || '').toUpperCase().includes(f.fb)) &&
     (!f.fc || String(r.customer || '').toUpperCase().includes(f.fc)) &&
     (!f.pm || (r.prodMonth || '') === f.pm) &&
     (!f.nat || r.nature === f.nat) &&
     _v57yInRange(r.invoice_date || r.linked_date, f.df, f.dt));
+  out.sort((a, b) => (srt.endsWith('asc') ? 1 : -1) * key(a).localeCompare(key(b)) || String(a.invoice_no || '').localeCompare(String(b.invoice_no || ''), undefined, { numeric: true }));
+  return out;
 }
 function _v57yRenderRC() {
   const el = document.getElementById('v39-gi-table');
@@ -8769,6 +8773,9 @@ function _v57yRenderRC() {
     <div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <b style="font-size:13px;color:#b45309">↩ Return &amp; Cancel — SAP cancellations and credit notes</b>
       ${_v57yFilterBar('v57y-rc', f, _v57yRCRows, true, `
+      <select id="v57y-rc-sort" onchange="_v57yRenderRC()" class="form-control" style="width:170px;padding:4px 6px;font-size:11px" title="Order of the list">
+        ${[['inv_desc','Invoice date — newest first'],['inv_asc','Invoice date — oldest first'],['cn_desc','Credit note / cancellation date — newest first'],['cn_asc','Credit note / cancellation date — oldest first']].map(([v,l]) => `<option value="${v}" ${(document.getElementById('v57y-rc-sort')?.value || 'inv_desc')===v?'selected':''}>${l}</option>`).join('')}
+      </select>
       <button class="btn btn-sm btn-secondary" onclick="_v57yExportRC()">📤 Export Excel</button>
       ${canAct ? `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v57yRepullCn()" title="Pull A/R credit memos (one year back) and re-run the cancellation pairing now — the 5-minute poller keeps both current otherwise">🔄 Re-pull returns &amp; cancels</button>` : ''}
       <span style="margin-left:auto;font-size:11px;color:var(--text3)">${rows.length} of ${_v57yRCRows.length} shown</span>`)}
@@ -8888,9 +8895,10 @@ function _v58aMonthMatrix(rows) {
   // action month → { redeployed, dispatched, remelt, remelt_kg } summed over the rows
   const m = {};
   rows.forEach(r => Object.entries(r.by_action_month || {}).forEach(([ym, o]) => {
-    const t = m[ym] = m[ym] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0 };
+    const t = m[ym] = m[ym] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0, archived: 0 };
     t.redeployed = Math.round((t.redeployed + (o.redeployed || 0)) * 100) / 100; t.dispatched = Math.round((t.dispatched + (o.dispatched || 0)) * 100) / 100;
     t.remelt = Math.round((t.remelt + (o.remelt || 0)) * 100) / 100; t.remelt_kg = Math.round((t.remelt_kg + (o.remelt_kg || 0)) * 100) / 100;
+    t.archived = Math.round((t.archived + (o.archived || 0)) * 100) / 100;   // v58C
   }));
   return m;
 }
@@ -8902,85 +8910,161 @@ function _v57yRenderRS() {
   const rmSel = (document.getElementById('v57y-rs-rmonth')?.value || '').trim();
   const rows = _v57yFilteredRS();
   const canAct = currentDept === 'admin' || currentDept === 'planning';
+  window._v58cSel = window._v58cSel || {};
+  const nSel = rows.filter(r => window._v58cSel[r.id] && r.available_qty > 0).length;
   const rmOpts = [...new Set((_v57yRSRows || []).map(r => r.received_month).filter(Boolean))].sort().reverse().map(ym => `<option value="${ym}" ${rmSel===ym?'selected':''}>${_v57yPmLabel(ym)}</option>`).join('');
   const sum = k => rows.reduce((a, r) => a + (r[k] || 0), 0);
   const matrix = _v58aMonthMatrix(rows);
-  const matrixHtml = Object.keys(matrix).sort().map(ym => { const o = matrix[ym]; return `<tr><td class="td-mono" style="font-weight:600">${_v57yPmLabel(ym)}</td><td class="td-mono" style="text-align:right">${o.redeployed.toFixed(2)}</td><td class="td-mono" style="text-align:right;color:#047857">${o.dispatched.toFixed(2)}</td><td class="td-mono" style="text-align:right;color:#b45309">${o.remelt.toFixed(2)}<span style="color:var(--text3);font-size:9px"> · ${o.remelt_kg.toFixed(2)} kg</span></td></tr>`; }).join('');
+  const _mo = Object.keys(matrix).sort();
+  const _mt = _mo.reduce((a, ym) => { const o = matrix[ym]; a.r += o.redeployed; a.d += o.dispatched; a.m += o.remelt; a.k += o.remelt_kg; a.x += (o.archived || 0); return a; }, { r: 0, d: 0, m: 0, k: 0, x: 0 });
+  const tile = (label, val, sub, colour) => `<div style="background:var(--surface2);padding:8px 10px;border-radius:4px;border-left:3px solid ${colour}"><div style="font-size:10px;color:var(--text3);letter-spacing:.5px">${label}</div><div style="font-size:18px;font-weight:700;color:${colour}">${val}</div>${sub ? `<div style="font-size:11px;color:var(--text3)">${sub}</div>` : ''}</div>`;
+  const kpis = `<div style="display:grid;grid-template-columns:repeat(6,1fr);gap:8px;margin:10px 12px 0">
+      ${tile('📦 RECEIVED' + (rmSel ? ' · ' + _v57yPmLabel(rmSel) : ''), sum('returned_qty').toFixed(2) + ' L', `${rows.length} credit note${rows.length===1?'':'s'} · ${sum('returned_boxes')} boxes`, '#92400e')}
+      ${tile('♻ RE-DISPATCH (LABELS)', sum('redeployed_qty').toFixed(2) + ' L', `${sum('redeployed_boxes')} R-boxes issued`, '#047857')}
+      ${tile('🚚 SHIPPED FROM RETURN', sum('dispatched_qty').toFixed(2) + ' L', 'scanned OUT at Dispatch', '#059669')}
+      ${tile('🔥 REMELT', sum('remelt_qty').toFixed(2) + ' L', `${sum('remelt_kg').toFixed(2)} kg${sum('remelt_pending_qty') > 0 ? ` · ${sum('remelt_pending_qty').toFixed(2)} L awaiting GPR` : ''}`, '#b45309')}
+      ${tile('🗄 ARCHIVED', sum('archived_qty').toFixed(2) + ' L', 'handled before the flow', '#6b7280')}
+      ${tile('✅ AVAILABLE', sum('available_qty').toFixed(2) + ' L', `${sum('available_boxes')} boxes to re-dispatch / remelt`, '#1d4ed8')}
+    </div>`;
+  const matrixCard = `<div style="margin:10px 12px 0;border:1px solid var(--border);border-radius:6px;overflow:hidden">
+      <div style="padding:6px 10px;background:var(--surface2);font-size:11px;font-weight:700;color:var(--text2)">Processing by month — ${rmSel ? `returns received ${_v57yPmLabel(rmSel)}` : 'all returns shown'} <span style="font-weight:400;color:var(--text3)">· the calendar month in which each action was taken</span></div>
+      <table style="width:100%;border-collapse:collapse;font-size:11px;table-layout:fixed">
+        <thead><tr style="background:var(--surface2)">
+          <th style="padding:5px 10px;text-align:left;width:16%">ACTION MONTH</th>
+          <th style="padding:5px 10px;text-align:right;width:21%" title="Fresh R-labels issued (re-batch / re-customer)">RE-DISPATCH — LABELS (L)</th>
+          <th style="padding:5px 10px;text-align:right;width:21%" title="Scanned OUT at Dispatch">SHIPPED (L)</th>
+          <th style="padding:5px 10px;text-align:right;width:21%">REMELT (L · KG)</th>
+          <th style="padding:5px 10px;text-align:right;width:21%">ARCHIVED (L)</th>
+        </tr></thead>
+        <tbody>${_mo.map(ym => { const o = matrix[ym]; return `<tr style="border-top:1px solid var(--border)"><td class="td-mono" style="padding:4px 10px;font-weight:600">${_v57yPmLabel(ym)}</td><td class="td-mono" style="padding:4px 10px;text-align:right">${o.redeployed.toFixed(2)}</td><td class="td-mono" style="padding:4px 10px;text-align:right;color:#059669">${o.dispatched.toFixed(2)}</td><td class="td-mono" style="padding:4px 10px;text-align:right;color:#b45309">${o.remelt.toFixed(2)} <span style="color:var(--text3)">· ${o.remelt_kg.toFixed(2)} kg</span></td><td class="td-mono" style="padding:4px 10px;text-align:right;color:#6b7280">${(o.archived || 0).toFixed(2)}</td></tr>`; }).join('') || '<tr><td colspan="5" style="padding:8px 10px;color:var(--text3)">No action yet on these returns.</td></tr>'}</tbody>
+        ${_mo.length ? `<tfoot><tr style="border-top:2px solid var(--border);font-weight:700;background:var(--surface2)"><td style="padding:4px 10px">TOTAL</td><td class="td-mono" style="padding:4px 10px;text-align:right">${_mt.r.toFixed(2)}</td><td class="td-mono" style="padding:4px 10px;text-align:right;color:#059669">${_mt.d.toFixed(2)}</td><td class="td-mono" style="padding:4px 10px;text-align:right;color:#b45309">${_mt.m.toFixed(2)} <span style="color:var(--text3)">· ${_mt.k.toFixed(2)} kg</span></td><td class="td-mono" style="padding:4px 10px;text-align:right;color:#6b7280">${_mt.x.toFixed(2)}</td></tr></tfoot>` : ''}
+      </table></div>`;
+  const td = (extra) => `style="padding:6px 8px;vertical-align:top;${extra || ''}"`;
   const body = rows.map(r => {
     const open = !!window._v58aRsOpen[r.id];
     const rmPend = r.remelt_pending_qty || 0, rmAcc = r.remelt_accepted_qty || 0;
-    const hist = open ? `<tr><td colspan="11" style="background:var(--surface2);padding:8px 14px">
+    const hist = open ? `<tr><td colspan="13" style="background:var(--surface2);padding:8px 14px">
         <div style="font-size:11px;font-weight:700;color:var(--text2);margin-bottom:4px">Processing history — credit note ${r.cn_no} (received ${_v57yPmLabel(r.received_month)}) · returned ${r.returned_qty.toFixed(2)} L</div>
-        <table style="width:auto;min-width:640px;font-size:11px"><thead><tr><th>MONTH</th><th>ACTION</th><th>DETAIL</th><th style="text-align:right">QTY (L)</th><th>STATUS</th><th></th></tr></thead><tbody>
-        ${(r.redeploys || []).map(d => `<tr><td class="td-mono">${_v57yPmLabel(_v58aIstMonthC(d.ts))}</td><td>${d.mode === 'standalone' ? '🔄 Re-customer' : '♻ Re-batch'}</td><td>→ <span class="td-mono">${d.targetBatch}</span> · ${d.boxes} box${d.boxes===1?'':'es'} · by ${d.by || '—'} on ${_v57yD(d.ts)}${Object.keys(d.byMonth || {}).length ? ` · dispatched ${Object.keys(d.byMonth).sort().map(ym => `${_v57yPmLabel(ym)}: ${d.byMonth[ym].toFixed(2)} L`).join(', ')}` : ' · not yet dispatched'}</td><td class="td-mono" style="text-align:right">${d.qty.toFixed(2)}</td><td>${d.dispatchedQty >= d.qty - 0.005 ? '<span style="color:#047857">dispatched</span>' : (d.dispatchedQty > 0 ? `<span style="color:#b45309">${d.dispatchedQty.toFixed(2)} L dispatched</span>` : '<span style="color:var(--text3)">labels issued</span>')}</td><td></td></tr>`).join('')}
-        ${(r.remelts || []).map(a => `<tr><td class="td-mono">${_v57yPmLabel(a.month)}</td><td>🔥 Remelt</td><td>${a.kg.toFixed(2)} kg @ ${a.avgMg} mg (${a.avgBasis}) → GPR ${a.floor} · by ${a.by || '—'} on ${_v57yD(a.ts)}${a.note ? ' · ' + a.note : ''}</td><td class="td-mono" style="text-align:right">${a.qty.toFixed(2)}</td><td>${a.status === 'accepted' ? `<span style="color:#047857">accepted by GPR${a.acceptedBy ? ' (' + a.acceptedBy + ')' : ''}${a.acceptedAt ? ' ' + _v57yD(a.acceptedAt) : ''}</span>` : '<span style="color:#b45309">pending GPR receipt</span>'}</td><td>${a.status === 'pending' && canAct ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px" onclick="_v58aCancelRemelt('${a.id}')">withdraw</button>` : ''}</td></tr>`).join('')}
-        ${!(r.redeploys || []).length && !(r.remelts || []).length ? '<tr><td colspan="6" style="color:var(--text3)">No action yet — the whole return is available.</td></tr>' : ''}
+        <table style="width:auto;min-width:640px;font-size:11px;border-collapse:collapse"><thead><tr><th style="padding:3px 8px;text-align:left">MONTH</th><th style="padding:3px 8px;text-align:left">ACTION</th><th style="padding:3px 8px;text-align:left">DETAIL</th><th style="padding:3px 8px;text-align:right">QTY (L)</th><th style="padding:3px 8px;text-align:left">STATUS</th><th></th></tr></thead><tbody>
+        ${(r.redeploys || []).map(d => `<tr><td class="td-mono" style="padding:3px 8px">${_v57yPmLabel(_v58aIstMonthC(d.ts))}</td><td style="padding:3px 8px">${d.mode === 'standalone' ? '🔄 Re-customer' : '♻ Re-batch'}</td><td style="padding:3px 8px">→ <span class="td-mono">${d.targetBatch}</span> · ${d.boxes} box${d.boxes===1?'':'es'} · by ${d.by || '—'} on ${_v57yD(d.ts)}${Object.keys(d.byMonth || {}).length ? ` · dispatched ${Object.keys(d.byMonth).sort().map(ym => `${_v57yPmLabel(ym)}: ${d.byMonth[ym].toFixed(2)} L`).join(', ')}` : ' · not yet dispatched'}</td><td class="td-mono" style="padding:3px 8px;text-align:right">${d.qty.toFixed(2)}</td><td style="padding:3px 8px">${d.dispatchedQty >= d.qty - 0.005 ? '<span style="color:#047857">dispatched</span>' : (d.dispatchedQty > 0 ? `<span style="color:#b45309">${d.dispatchedQty.toFixed(2)} L dispatched</span>` : '<span style="color:var(--text3)">labels issued</span>')}</td><td></td></tr>`).join('')}
+        ${(r.remelts || []).map(a => `<tr><td class="td-mono" style="padding:3px 8px">${_v57yPmLabel(a.month)}</td><td style="padding:3px 8px">🔥 Remelt</td><td style="padding:3px 8px">${a.kg.toFixed(2)} kg @ ${a.avgMg} mg (${a.avgBasis}) → GPR ${a.floor} · by ${a.by || '—'} on ${_v57yD(a.ts)}${a.note ? ' · ' + a.note : ''}</td><td class="td-mono" style="padding:3px 8px;text-align:right">${a.qty.toFixed(2)}</td><td style="padding:3px 8px">${a.status === 'accepted' ? `<span style="color:#047857">accepted by GPR${a.acceptedBy ? ' (' + a.acceptedBy + ')' : ''}${a.acceptedAt ? ' ' + _v57yD(a.acceptedAt) : ''}</span>` : '<span style="color:#b45309">pending GPR receipt</span>'}</td><td style="padding:3px 8px">${a.status === 'pending' && canAct ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px" onclick="_v58aCancelRemelt('${a.id}')">withdraw</button>` : ''}</td></tr>`).join('')}
+        ${(r.archives || []).map(a => `<tr><td class="td-mono" style="padding:3px 8px">${_v57yPmLabel(a.month)}</td><td style="padding:3px 8px">🗄 Archived</td><td style="padding:3px 8px">by ${a.by || '—'} on ${_v57yD(a.ts)}${a.note ? ' · ' + a.note : ''}</td><td class="td-mono" style="padding:3px 8px;text-align:right">${a.qty.toFixed(2)}</td><td style="padding:3px 8px;color:#6b7280">handled outside the flow</td><td style="padding:3px 8px">${canAct ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px" onclick="_v58cRestoreArchive('${a.id}')">restore</button>` : ''}</td></tr>`).join('')}
+        ${!(r.redeploys || []).length && !(r.remelts || []).length && !(r.archives || []).length ? '<tr><td colspan="6" style="padding:3px 8px;color:var(--text3)">No action yet — the whole return is available.</td></tr>' : ''}
         </tbody></table></div></td></tr>` : '';
-    return `<tr style="${r.available_qty > 0 ? '' : 'opacity:.75'}">
-      <td class="td-mono" style="text-align:center;font-weight:600">${_v57yPmLabel(r.received_month)}</td>
-      <td class="td-mono fw-bold" style="color:#92400e">${r.cn_no || '—'}<div style="font-size:9px;font-weight:400;color:var(--text3)">${_v57yD(r.cn_date) || ''}${r.num_at_card ? ' · ref ' + r.num_at_card : ''}</div></td>
-      <td class="td-mono fw-bold" style="color:#0891b2">${r.invoice_no || '<span style="color:#b45309">not linked</span>'}<div style="font-size:9px;font-weight:400;color:var(--text3)">${_v57yD(r.invoice_date) || ''}${r.invoice_qty ? ' · ' + r.invoice_qty.toFixed(2) + ' L invoiced' : ''}</div>
-        ${canAct ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px" onclick="_v57yLinkCn('${r.id}','${r.invoice_no || ''}')" title="Hand-link this credit note to the invoice it returns against">${r.invoice_no ? '✎' : '🔗 link'}</button>` : ''}</td>
-      <td>${(r.customer || '—').substring(0, 32)}<div style="font-size:9px;color:var(--text3)"><span class="td-mono">${r.batch || '—'}</span> · prod ${_v57yPmLabel(r.prodMonth)} · <span class="td-mono">${r.pc_code || '—'}</span> · ${r.size || '—'} · ${(r.colour || '—').substring(0, 16)}</div></td>
-      <td class="td-mono" style="text-align:right">${r.returned_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${r.returned_boxes} box${r.returned_boxes===1?'':'es'} · ${r.full === null ? '—' : (r.full ? 'full' : '<span style="color:#b45309">partial</span>')}</div></td>
-      <td class="td-mono" style="text-align:right">${r.redeployed_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${(r.redeploys || []).map(d => `${d.mode === 'standalone' ? '🔄' : '♻'} ${d.targetBatch}`).join('<br>') || '—'}</div></td>
-      <td class="td-mono" style="text-align:right;color:#047857">${r.dispatched_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${Object.keys(r.dispatched_by_month || {}).sort().map(ym => `${_v57yPmLabel(ym)}: ${r.dispatched_by_month[ym].toFixed(2)}`).join('<br>') || '—'}</div></td>
-      <td class="td-mono" style="text-align:right;color:#b45309">${(r.remelt_qty || 0).toFixed(2)}<div style="font-size:9px;color:var(--text3)">${r.remelt_qty > 0 ? `${(r.remelt_kg || 0).toFixed(2)} kg${rmPend > 0 ? ` · <span style="color:#b45309">${rmPend.toFixed(2)} L pending GPR</span>` : ''}${rmAcc > 0 ? ` · ${rmAcc.toFixed(2)} L accepted` : ''}` : '—'}</div></td>
-      <td class="td-mono fw-bold" style="text-align:right;${r.available_qty > 0 ? 'color:#047857' : 'color:var(--text3)'}">${r.available_qty.toFixed(2)}<div style="font-size:9px;font-weight:400;color:var(--text3)">${r.available_boxes} box${r.available_boxes===1?'':'es'}</div></td>
-      <td style="text-align:center;white-space:nowrap">${canAct && r.available_qty > 0 ? `
-        <button class="btn btn-sm" style="background:#047857;color:#fff;border:none;font-size:10px;padding:3px 7px" onclick="_v57yRebatchFromReturn('${r.id}','merge')" title="Re-dispatch: merge this return stock into a current Sunloc batch — fresh R-labels with that batch's details; invoiced through the batch's usual flow">♻ Re-batch</button>
-        <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;font-size:10px;padding:3px 7px" onclick="_v57yRebatchFromReturn('${r.id}','standalone')" title="Re-dispatch: re-customer — the return stock becomes the next child batch of ${(r.batch||'').split(/[\s,]+/)[0] || ''} (A, B, …) for a new customer, numbered like any re-customer">🔄 Re-customer</button>
-        <button class="btn btn-sm" style="background:#b45309;color:#fff;border:none;font-size:10px;padding:3px 7px" onclick="_v58aRemelt('${r.id}')" title="Remelt: send this return stock to GPR — lakhs converted to kg at the batch's average capsule weight; appears in GPR → Stock as a pending receipt (PC-code wise) until the chemist accepts it">🔥 Remelt</button>` : (r.available_qty > 0 ? '<span style="font-size:10px;color:var(--text3)">PM / Admin</span>' : '<span style="font-size:10px;color:var(--text3)">fully processed</span>')}</td>
-      <td style="text-align:center"><button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px" onclick="_v58aRsToggle('${r.id}')" title="Month-wise processing history of this return">${open ? '▲' : '▼'}</button></td>
+    return `<tr style="border-bottom:1px solid var(--border);${r.available_qty > 0 ? '' : 'opacity:.7'}">
+      <td ${td('text-align:center')}>${canAct && r.available_qty > 0 ? `<input type="checkbox" ${window._v58cSel[r.id] ? 'checked' : ''} onchange="_v58cSelRow('${r.id}',this.checked)" title="Select for bulk archive">` : ''}</td>
+      <td ${td('text-align:center;font-weight:600')} class="td-mono">${_v57yPmLabel(r.received_month)}</td>
+      <td ${td()}><span class="td-mono fw-bold" style="color:#92400e">${r.cn_no || '—'}</span><div style="font-size:9px;color:var(--text3)">${_v57yD(r.cn_date) || ''}${r.num_at_card ? '<br>ref ' + r.num_at_card : ''}</div></td>
+      <td ${td()}><span class="td-mono fw-bold" style="color:#0891b2">${r.invoice_no || '<span style="color:#b45309">not linked</span>'}</span><div style="font-size:9px;color:var(--text3)">${_v57yD(r.invoice_date) || ''}${r.invoice_qty ? '<br>' + r.invoice_qty.toFixed(2) + ' L invoiced' : ''}</div>${canAct ? `<button class="btn btn-ghost btn-sm" style="font-size:10px;padding:0 5px" onclick="_v57yLinkCn('${r.id}','${r.invoice_no || ''}')" title="Hand-link this credit note to the invoice it returns against">${r.invoice_no ? '✎' : '🔗 link'}</button>` : ''}</td>
+      <td ${td('white-space:normal;min-width:170px')}><div style="font-size:12px">${(r.customer || '—')}</div><div style="font-size:9px;color:var(--text3)"><span class="td-mono">${r.batch || '—'}</span> · prod ${_v57yPmLabel(r.prodMonth)}<br><span class="td-mono">${r.pc_code || '—'}</span> · size ${r.size || '—'} · ${(r.colour || '—')}</div></td>
+      <td ${td('text-align:right')} class="td-mono">${r.returned_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${r.returned_boxes} box${r.returned_boxes===1?'':'es'} · ${r.full === null ? '—' : (r.full ? 'full' : '<span style="color:#b45309">partial</span>')}</div></td>
+      <td ${td('text-align:right')} class="td-mono">${r.redeployed_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${(r.redeploys || []).map(d => `${d.mode === 'standalone' ? '🔄' : '♻'} ${d.targetBatch}`).join('<br>') || '—'}</div></td>
+      <td ${td('text-align:right;color:#059669')} class="td-mono">${r.dispatched_qty.toFixed(2)}<div style="font-size:9px;color:var(--text3)">${Object.keys(r.dispatched_by_month || {}).sort().map(ym => `${_v57yPmLabel(ym)}: ${r.dispatched_by_month[ym].toFixed(2)}`).join('<br>') || '—'}</div></td>
+      <td ${td('text-align:right;color:#b45309')} class="td-mono">${(r.remelt_qty || 0).toFixed(2)}<div style="font-size:9px;color:var(--text3)">${r.remelt_qty > 0 ? `${(r.remelt_kg || 0).toFixed(2)} kg${rmPend > 0 ? `<br><span style="color:#b45309">${rmPend.toFixed(2)} L pending GPR</span>` : ''}${rmAcc > 0 ? `<br>${rmAcc.toFixed(2)} L accepted` : ''}` : '—'}</div></td>
+      <td ${td('text-align:right;color:#6b7280')} class="td-mono">${(r.archived_qty || 0).toFixed(2)}<div style="font-size:9px;color:var(--text3)">${r.archived_qty > 0 ? `${r.archived_boxes} box${r.archived_boxes===1?'':'es'}` : '—'}</div></td>
+      <td ${td('text-align:right;font-weight:700;' + (r.available_qty > 0 ? 'color:#1d4ed8' : 'color:var(--text3)'))} class="td-mono">${r.available_qty.toFixed(2)}<div style="font-size:9px;font-weight:400;color:var(--text3)">${r.available_boxes} box${r.available_boxes===1?'':'es'}</div></td>
+      <td ${td('text-align:center;min-width:150px')}>${canAct && r.available_qty > 0 ? `<div style="display:flex;flex-wrap:wrap;gap:3px;justify-content:center">
+        <button class="btn btn-sm" style="background:#047857;color:#fff;border:none;font-size:10px;padding:2px 6px" onclick="_v57yRebatchFromReturn('${r.id}','merge')" title="Re-dispatch: merge this return stock into a current Sunloc batch — fresh R-labels with that batch's details; invoiced through the batch's usual flow">♻ Re-batch</button>
+        <button class="btn btn-sm" style="background:#7c3aed;color:#fff;border:none;font-size:10px;padding:2px 6px" onclick="_v57yRebatchFromReturn('${r.id}','standalone')" title="Re-dispatch: re-customer — the return stock becomes the next child batch of ${(r.batch||'').split(/[\s,]+/)[0] || ''} (A, B, …) for a new customer">🔄 Re-customer</button>
+        <button class="btn btn-sm" style="background:#b45309;color:#fff;border:none;font-size:10px;padding:2px 6px" onclick="_v58aRemelt('${r.id}')" title="Remelt: send to GPR — lakhs converted to kg at the batch's average capsule weight; a pending receipt in GPR → Stock until the chemist accepts">🔥 Remelt</button>
+        <button class="btn btn-sm" style="background:#6b7280;color:#fff;border:none;font-size:10px;padding:2px 6px" onclick="_v58cArchive('${r.id}')" title="Archive: this quantity was already re-dispatched or remelted before the return flow went live — take it off the available balance (reversible from the history)">🗄 Archive</button>
+      </div>` : (r.available_qty > 0 ? '<span style="font-size:10px;color:var(--text3)">PM / Admin</span>' : '<span style="font-size:10px;color:var(--text3)">fully processed</span>')}</td>
+      <td ${td('text-align:center')}><button class="btn btn-ghost btn-sm" style="font-size:10px;padding:1px 6px" onclick="_v58aRsToggle('${r.id}')" title="Month-wise processing history of this return">${open ? '▲' : '▼'}</button></td>
     </tr>${hist}`;
   }).join('');
   el.innerHTML = `
     <div style="padding:10px 12px;border-bottom:1px solid var(--border);display:flex;gap:8px;align-items:center;flex-wrap:wrap">
       <b style="font-size:13px;color:#047857">📦 Return Stock — calendar-month ledger of returns</b>
-      <select id="v57y-rs-rmonth" onchange="_v57yRenderRS()" class="form-control" style="width:160px;padding:4px 6px;font-size:11px;font-weight:600" title="Month the return was received (credit-note month). Whatever is not yet re-dispatched or remelted stays available in every later month.">
+      <select id="v57y-rs-rmonth" onchange="_v57yRenderRS()" class="form-control" style="width:160px;padding:4px 6px;font-size:11px;font-weight:600" title="Month the return was received (credit-note month). Whatever is not yet re-dispatched, remelted or archived stays available in every later month.">
         <option value="">All receipt months</option>${rmOpts}
       </select>
       ${_v57yFilterBar('v57y-rs', f, _v57yRSRows, false, `
       <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" id="v57y-rs-avail" ${onlyAvail?'checked':''} onchange="_v57yRenderRS()"> available only</label>
       <button class="btn btn-sm btn-secondary" onclick="_v57yExportRS()">📤 Export Excel</button>
-      ${canAct ? `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v57yRepullCn()" title="Pull A/R credit memos (one year back) now">🔄 Re-pull from SAP</button>` : ''}
+      ${canAct ? `<button class="btn btn-sm" style="background:#0891b2;color:white;border:none" onclick="_v57yRepullCn()" title="Pull A/R credit memos (one year back) now">🔄 Re-pull from SAP</button>
+      <button class="btn btn-sm ${nSel ? '' : 'btn-secondary'}" style="${nSel ? 'background:#6b7280;color:#fff;border:none' : ''}" ${nSel ? '' : 'disabled'} onclick="_v58cArchiveBulk()" title="Archive the full available quantity of every selected return (handled before the flow went live)">🗄 Archive selected${nSel ? ` (${nSel})` : ''}</button>
+      <label style="font-size:11px;display:flex;align-items:center;gap:4px;cursor:pointer"><input type="checkbox" onchange="_v58cSelAll(this.checked)"> select all shown</label>` : ''}
       <span style="margin-left:auto;font-size:11px;color:var(--text3)">${rows.length} of ${_v57yRSRows.length} shown</span>`)}
     </div>
-    <div style="padding:8px 12px;border-bottom:1px solid var(--border);display:grid;grid-template-columns:1fr auto;gap:14px;align-items:start">
-      <div style="font-size:11px;color:var(--text2);display:flex;gap:18px;flex-wrap:wrap;align-items:center">
-        <span>Received <b>${sum('returned_qty').toFixed(2)} L</b>${rmSel ? ` in ${_v57yPmLabel(rmSel)}` : ''}</span>
-        <span>Re-dispatched (labels issued) <b>${sum('redeployed_qty').toFixed(2)} L</b> · shipped <b style="color:#047857">${sum('dispatched_qty').toFixed(2)} L</b></span>
-        <span>Remelt <b style="color:#b45309">${sum('remelt_qty').toFixed(2)} L</b> (${sum('remelt_kg').toFixed(2)} kg${sum('remelt_pending_qty') > 0 ? `; ${sum('remelt_pending_qty').toFixed(2)} L awaiting GPR` : ''})</span>
-        <span>Available <b style="color:#047857">${sum('available_qty').toFixed(2)} L</b></span>
-      </div>
-      <div style="font-size:11px;border:1px solid var(--border);border-radius:6px;padding:6px 10px;min-width:380px">
-        <div style="font-weight:700;color:var(--text2);margin-bottom:4px">Processing by month${rmSel ? ` — returns received ${_v57yPmLabel(rmSel)}` : ' — all returns shown'}</div>
-        <table style="width:100%;font-size:11px"><thead><tr><th>ACTION MONTH</th><th style="text-align:right" title="Fresh R-labels issued (re-batch / re-customer)">RE-DISPATCH (L)</th><th style="text-align:right" title="Scanned OUT at Dispatch">SHIPPED (L)</th><th style="text-align:right">REMELT (L · kg)</th></tr></thead>
-        <tbody>${matrixHtml || '<tr><td colspan="4" style="color:var(--text3)">no action yet</td></tr>'}</tbody></table>
-      </div>
-    </div>
-    <div style="max-height:520px;overflow:auto">
-      <table style="width:100%">
-        <thead style="position:sticky;top:0;background:var(--bg2,#fff);z-index:1"><tr>
-          <th style="text-align:center" title="Month the credit note was raised (IST)">RECEIVED</th><th>CREDIT NOTE</th><th>ORIGINAL INVOICE</th><th>CUSTOMER · BATCH · PC</th>
-          <th style="text-align:right" title="Quantity on the credit note">RETURNED (L)</th>
-          <th style="text-align:right" title="Re-batched / re-customered out of this return (fresh R-labels)">RE-DISPATCH (L)</th>
-          <th style="text-align:right" title="Of the re-dispatched stock, what has been scanned OUT at Dispatch — by calendar month">SHIPPED (L)</th>
-          <th style="text-align:right" title="Sent to GPR for remelt (pending until the chemist accepts the receipt)">REMELT (L)</th>
-          <th style="text-align:right" title="Returned − re-dispatched − remelt">AVAILABLE (L)</th><th style="text-align:center">ACTION</th><th></th>
+    ${kpis}
+    ${matrixCard}
+    <div style="margin:10px 12px 0;font-size:11px;font-weight:700;color:var(--text2)">Returns${rmSel ? ` received ${_v57yPmLabel(rmSel)}` : ''} — one row per credit note</div>
+    <div style="max-height:560px;overflow:auto;margin:6px 0 0">
+      <table style="width:100%;border-collapse:collapse;font-size:12px">
+        <thead style="position:sticky;top:0;background:var(--surface2);z-index:1"><tr>
+          <th style="padding:8px 6px;width:24px"></th>
+          <th style="padding:8px;text-align:center;font-size:11px" title="Month the credit note was raised (IST)">RECEIVED</th><th style="padding:8px;text-align:left;font-size:11px">CREDIT NOTE</th><th style="padding:8px;text-align:left;font-size:11px">ORIGINAL INVOICE</th><th style="padding:8px;text-align:left;font-size:11px">CUSTOMER · BATCH · PC</th>
+          <th style="padding:8px;text-align:right;font-size:11px" title="Quantity on the credit note">RETURNED (L)</th>
+          <th style="padding:8px;text-align:right;font-size:11px" title="Re-batched / re-customered out of this return (fresh R-labels)">RE-DISPATCH (L)</th>
+          <th style="padding:8px;text-align:right;font-size:11px" title="Of the re-dispatched stock, what has been scanned OUT at Dispatch — by calendar month">SHIPPED (L)</th>
+          <th style="padding:8px;text-align:right;font-size:11px" title="Sent to GPR for remelt (pending until the chemist accepts the receipt)">REMELT (L)</th>
+          <th style="padding:8px;text-align:right;font-size:11px" title="Handled before the return flow went live — off the available balance only">ARCHIVED (L)</th>
+          <th style="padding:8px;text-align:right;font-size:11px" title="Returned − re-dispatched − remelt − archived">AVAILABLE (L)</th><th style="padding:8px;text-align:center;font-size:11px">ACTION</th><th style="width:30px"></th>
         </tr></thead>
-        <tbody>${body || '<tr><td colspan="11" style="text-align:center;padding:16px;color:var(--text3)">No return stock for these filters</td></tr>'}</tbody>
-        ${rows.length ? `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">
-          <td>TOTAL (${rows.length})</td><td></td><td></td><td></td>
-          <td class="td-mono" style="text-align:right">${sum('returned_qty').toFixed(2)}</td>
-          <td class="td-mono" style="text-align:right">${sum('redeployed_qty').toFixed(2)}</td>
-          <td class="td-mono" style="text-align:right;color:#047857">${sum('dispatched_qty').toFixed(2)}</td>
-          <td class="td-mono" style="text-align:right;color:#b45309">${sum('remelt_qty').toFixed(2)}</td>
-          <td class="td-mono" style="text-align:right;color:#047857">${sum('available_qty').toFixed(2)}</td><td></td><td></td>
+        <tbody>${body || '<tr><td colspan="13" style="text-align:center;padding:16px;color:var(--text3)">No return stock for these filters</td></tr>'}</tbody>
+        ${rows.length ? `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border);background:var(--surface2)">
+          <td></td><td style="padding:6px 8px">TOTAL (${rows.length})</td><td></td><td></td><td></td>
+          <td class="td-mono" style="padding:6px 8px;text-align:right">${sum('returned_qty').toFixed(2)}</td>
+          <td class="td-mono" style="padding:6px 8px;text-align:right">${sum('redeployed_qty').toFixed(2)}</td>
+          <td class="td-mono" style="padding:6px 8px;text-align:right;color:#059669">${sum('dispatched_qty').toFixed(2)}</td>
+          <td class="td-mono" style="padding:6px 8px;text-align:right;color:#b45309">${sum('remelt_qty').toFixed(2)}</td>
+          <td class="td-mono" style="padding:6px 8px;text-align:right;color:#6b7280">${sum('archived_qty').toFixed(2)}</td>
+          <td class="td-mono" style="padding:6px 8px;text-align:right;color:#1d4ed8">${sum('available_qty').toFixed(2)}</td><td></td><td></td>
         </tr></tfoot>` : ''}
       </table>
     </div>
-    <div style="padding:6px 12px;font-size:10px;color:var(--text3)">Available = returned − re-dispatched − remelt. Two disposal flows: <b>Re-dispatch</b> (♻ Re-batch / 🔄 Re-customer — fresh R-labels with legacy ref <span class="td-mono">&lt;batch&gt;-RET</span>, scan IN at Packing → scan OUT at Dispatch only; invoiced through the usual flow; deducted on the NET basis and shown on Report E's "Dispatch from Return" sheet in the month re-invoiced) and <b>Remelt</b> (🔥 — lakhs × average capsule weight ÷ 10 = kg; a pending receipt in GPR → Stock, PC-code wise, final when the chemist accepts). Neither enters Reports A–F; the original batch keeps its own production-month record.</div>`;
+    <div style="padding:8px 12px;font-size:10px;color:var(--text3);line-height:1.5">Available = returned − re-dispatched − remelt − archived. <b>Re-dispatch</b> (♻ Re-batch / 🔄 Re-customer): fresh R-labels with legacy ref <span class="td-mono">&lt;batch&gt;-RET</span>, scan IN at Packing → scan OUT at Dispatch only, invoiced through the usual flow, deducted on the NET basis and shown on Report E's "Dispatch from Return" sheet in the month re-invoiced. <b>Remelt</b> (🔥): lakhs × average capsule weight ÷ 10 = kg, a pending receipt in GPR → Stock (PC-code wise), final when the chemist accepts. <b>Archive</b> (🗄): quantity already handled before this flow went live — off the available balance, reversible from the row's history. None of these enter Reports A–F; the original batch keeps its own production-month record.</div>`;
+}
+function _v58cSelRow(id, on) { window._v58cSel = window._v58cSel || {}; if (on) window._v58cSel[id] = true; else delete window._v58cSel[id]; _v57yRenderRS(); }
+function _v58cSelAll(on) { window._v58cSel = {}; if (on) _v57yFilteredRS().filter(r => r.available_qty > 0).forEach(r => { window._v58cSel[r.id] = true; }); _v57yRenderRS(); }
+// v58C — ARCHIVE: quantity handled before the return flow went live (re-dispatched / remelted outside Sunloc).
+async function _v58cArchive(id) {
+  const r = (_v57yRSRows || []).find(x => x.id === id);
+  if (!r) return;
+  if (currentDept !== 'admin' && currentDept !== 'planning') { alert('Admin / Planning Manager only.'); return; }
+  openModal('🗄 Archive return stock', `Credit note ${r.cn_no} against invoice ${r.invoice_no || '—'} (${r.batch || '—'}) — ${r.available_qty.toFixed(2)} L available`, `
+    <div class="alert alert-info" style="font-size:12px;margin-bottom:10px">For returns that were already re-dispatched or remelted <b>before</b> the Return Stock flow went live. Archiving takes the quantity off the available balance only — the credit note, the original invoice and every report stay exactly as they are. Reversible from the row's history.</div>
+    <div id="ar-err" style="display:none;margin-bottom:10px;padding:8px 10px;border-radius:6px;background:#fef2f2;color:#b91c1c;border:1px solid #fecaca;font-size:12px"></div>
+    <div class="form-row cols-2">
+      <div class="form-group"><label>Quantity to archive (lakhs) *</label><input type="number" id="ar-qty" class="form-control" step="0.01" min="0.01" max="${r.available_qty}" value="${r.available_qty}"><div class="text-sm text-muted">Whatever you leave stays available for re-dispatch or remelt.</div></div>
+      <div class="form-group"><label>Reason *</label><input type="text" id="ar-note" class="form-control" value="Handled before the Sunloc return flow went live"></div>
+    </div>`,
+    [{ label: 'Cancel', cls: 'btn-secondary', onclick: closeModal }, { label: '🗄 Archive', cls: 'btn-primary', onclick: async () => {
+        const qty = parseFloat(document.getElementById('ar-qty')?.value || '0') || 0, note = (document.getElementById('ar-note')?.value || '').trim();
+        const err = document.getElementById('ar-err');
+        try {
+          const x = await fetch(serverUrl + '/api/invoice/return-stock/' + encodeURIComponent(id) + '/archive', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '' }, body: JSON.stringify({ qtyLakhs: qty, note }), signal: AbortSignal.timeout(20000) });
+          const j = await x.json();
+          if (!j.ok) { if (err) { err.textContent = j.error || 'error'; err.style.display = ''; } return; }
+          closeModal(); toast(`🗄 ${qty.toFixed(2)} L archived — ${j.remaining.toFixed(2)} L still available`, 'var(--green)');
+          _v57yRSRows = null; await _v57yLoadRS();
+        } catch (e) { if (err) { err.textContent = e.message; err.style.display = ''; } }
+      } }]);
+}
+async function _v58cArchiveBulk() {
+  const ids = Object.keys(window._v58cSel || {}).filter(id => (_v57yRSRows || []).some(r => r.id === id && r.available_qty > 0));
+  if (!ids.length) { toast('Select returns first', '#b45309'); return; }
+  const q = ids.reduce((a, id) => a + ((_v57yRSRows || []).find(r => r.id === id) || {}).available_qty, 0);
+  const note = prompt(`Archive the full available quantity of ${ids.length} return(s) — ${q.toFixed(2)} L in all?\n\nReason (required):`, 'Handled before the Sunloc return flow went live');
+  if (note === null) return;
+  try {
+    const x = await fetch(serverUrl + '/api/invoice/return-stock/archive-bulk', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '' }, body: JSON.stringify({ ids, note: note.trim() }), signal: AbortSignal.timeout(60000) });
+    const j = await x.json();
+    if (!j.ok) { toast('Archive failed: ' + (j.error || 'error'), '#b91c1c', 6000); return; }
+    window._v58cSel = {};
+    toast(`🗄 ${j.archived} return(s), ${j.qty.toFixed(2)} L archived`, 'var(--green)', 5000);
+    _v57yRSRows = null; await _v57yLoadRS();
+  } catch (e) { toast('Archive error: ' + e.message, '#b91c1c', 6000); }
+}
+async function _v58cRestoreArchive(actionId) {
+  if (!confirm('Restore this archived quantity to the available balance?')) return;
+  try {
+    const x = await fetch(serverUrl + '/api/invoice/return-stock/archive/' + encodeURIComponent(actionId) + '/restore', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-session-token': currentUser?.token || '' }, body: '{}', signal: AbortSignal.timeout(20000) });
+    const j = await x.json();
+    if (!j.ok) { toast('Cannot restore: ' + (j.error || 'error'), '#b91c1c', 6000); return; }
+    toast('Restored to available', 'var(--green)');
+    _v57yRSRows = null; await _v57yLoadRS();
+  } catch (e) { toast('Error: ' + e.message, '#b91c1c', 6000); }
 }
 function _v58aIstMonthC(ts) { if (!ts) return ''; const d = new Date(ts); if (isNaN(d)) return String(ts).slice(0, 7); return new Date(d.getTime() + 330 * 60000).toISOString().slice(0, 7); }
 function _v57yExportRS() {
@@ -8989,7 +9073,7 @@ function _v57yExportRS() {
   const f = _v57yFilters('v57y-rs');
   const rmSel = (document.getElementById('v57y-rs-rmonth')?.value || '').trim();
   const wb = XLSX.utils.book_new();
-  const HDR = ['RECEIVED MONTH','CREDIT NOTE #','CN DATE','CN REF (NumAtCard)','ORIGINAL INVOICE #','INVOICE DATE','INVOICE QTY (L)','CUSTOMER','CARD CODE','BATCH','PROD MONTH','PC CODE','SIZE','COLOUR','RETURNED (L)','RETURNED BOXES','FULL / PARTIAL','CN AMOUNT','RE-DISPATCH (L)','RE-DISPATCHED TO','SHIPPED FROM RETURN (L)','SHIPPED BY MONTH','REMELT (L)','REMELT (KG)','REMELT STATUS','AVAILABLE (L)','AVAILABLE BOXES','LINK METHOD','CN REMARKS'];
+  const HDR = ['RECEIVED MONTH','CREDIT NOTE #','CN DATE','CN REF (NumAtCard)','ORIGINAL INVOICE #','INVOICE DATE','INVOICE QTY (L)','CUSTOMER','CARD CODE','BATCH','PROD MONTH','PC CODE','SIZE','COLOUR','RETURNED (L)','RETURNED BOXES','FULL / PARTIAL','CN AMOUNT','RE-DISPATCH (L)','RE-DISPATCHED TO','SHIPPED FROM RETURN (L)','SHIPPED BY MONTH','REMELT (L)','REMELT (KG)','REMELT STATUS','ARCHIVED (L)','ARCHIVE NOTE','AVAILABLE (L)','AVAILABLE BOXES','LINK METHOD','CN REMARKS'];   // v58C: archived
   const NC = HDR.length; const aoa = [], kinds = [], merges = [];
   const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
   merges.push({ s: { r: 0, c: 0 }, e: { r: 0, c: NC - 1 } }); _push([`Return Stock — calendar-month ledger of returns${rmSel ? ' received ' + _v57yPmLabel(rmSel) : ''}: original invoice, credit note, re-dispatch, remelt and availability`], 'title');
@@ -9002,29 +9086,30 @@ function _v57yExportRS() {
     r.redeployed_qty, (r.redeploys || []).map(d => `${d.targetBatch} (${d.mode}, ${d.qty.toFixed(2)} L, ${String(d.ts).slice(0, 10)})`).join('; '),
     r.dispatched_qty, Object.keys(r.dispatched_by_month || {}).sort().map(ym => `${ym}: ${r.dispatched_by_month[ym].toFixed(2)} L`).join('; '),
     r.remelt_qty || 0, r.remelt_kg || 0, (r.remelts || []).map(a => `${a.qty.toFixed(2)} L / ${a.kg.toFixed(2)} kg → GPR ${a.floor} ${String(a.ts).slice(0, 10)} (${a.status})`).join('; '),
+    r.archived_qty || 0, (r.archives || []).map(a => `${a.qty.toFixed(2)} L ${String(a.ts).slice(0, 10)} by ${a.by || ''}${a.note ? ' — ' + a.note : ''}`).join('; '),
     r.available_qty, r.available_boxes, r.link_method || '—', r.comments || ''], 'data'));
   const sum = k => rows.reduce((a, r) => a + (r[k] || 0), 0);
-  _push([`TOTAL (${rows.length} credit notes)`, '', '', '', '', '', Math.round(sum('invoice_qty') * 100) / 100, '', '', '', '', '', '', '', Math.round(sum('returned_qty') * 100) / 100, sum('returned_boxes'), '', Math.round(sum('amount')), Math.round(sum('redeployed_qty') * 100) / 100, '', Math.round(sum('dispatched_qty') * 100) / 100, '', Math.round(sum('remelt_qty') * 100) / 100, Math.round(sum('remelt_kg') * 100) / 100, '', Math.round(sum('available_qty') * 100) / 100, sum('available_boxes'), '', ''], 'grand');
+  _push([`TOTAL (${rows.length} credit notes)`, '', '', '', '', '', Math.round(sum('invoice_qty') * 100) / 100, '', '', '', '', '', '', '', Math.round(sum('returned_qty') * 100) / 100, sum('returned_boxes'), '', Math.round(sum('amount')), Math.round(sum('redeployed_qty') * 100) / 100, '', Math.round(sum('dispatched_qty') * 100) / 100, '', Math.round(sum('remelt_qty') * 100) / 100, Math.round(sum('remelt_kg') * 100) / 100, '', Math.round(sum('archived_qty') * 100) / 100, '', Math.round(sum('available_qty') * 100) / 100, sum('available_boxes'), '', ''], 'grand');
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
-  ws['!cols'] = [{ wch: 10 }, { wch: 13 }, { wch: 11 }, { wch: 18 }, { wch: 13 }, { wch: 11 }, { wch: 12 }, { wch: 28 }, { wch: 10 }, { wch: 14 }, { wch: 11 }, { wch: 9 }, { wch: 6 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 11 }, { wch: 12 }, { wch: 13 }, { wch: 40 }, { wch: 14 }, { wch: 30 }, { wch: 10 }, { wch: 11 }, { wch: 44 }, { wch: 12 }, { wch: 10 }, { wch: 11 }, { wch: 48 }];
+  ws['!cols'] = [{ wch: 10 }, { wch: 13 }, { wch: 11 }, { wch: 18 }, { wch: 13 }, { wch: 11 }, { wch: 12 }, { wch: 28 }, { wch: 10 }, { wch: 14 }, { wch: 11 }, { wch: 9 }, { wch: 6 }, { wch: 16 }, { wch: 12 }, { wch: 10 }, { wch: 11 }, { wch: 12 }, { wch: 13 }, { wch: 40 }, { wch: 14 }, { wch: 30 }, { wch: 10 }, { wch: 11 }, { wch: 44 }, { wch: 12 }, { wch: 40 }, { wch: 12 }, { wch: 10 }, { wch: 11 }, { wch: 48 }];
   const R = XLSX.utils.decode_range(ws['!ref']);
-  for (let r = R.s.r; r <= R.e.r; r++) for (const c of [6, 14, 18, 20, 22, 23, 25]) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = '0.00'; }
+  for (let r = R.s.r; r <= R.e.r; r++) for (const c of [6, 14, 18, 20, 22, 23, 25, 27]) { const cell = ws[XLSX.utils.encode_cell({ r, c })]; if (cell && cell.t === 'n') cell.z = '0.00'; }
   for (let r = R.s.r; r <= R.e.r; r++) { const cell = ws[XLSX.utils.encode_cell({ r, c: 17 })]; if (cell && cell.t === 'n') cell.z = '#,##0'; }
   _v57yStyleSheet(ws, kinds, NC, -1);
   XLSX.utils.book_append_sheet(wb, ws, 'Return Stock');
   // v58A: processing by month — how the returns in this set were handled, month by month, plus every action
   {
     const m = _v58aMonthMatrix(rows);
-    const H2 = ['ACTION MONTH', 'RE-DISPATCH — LABELS ISSUED (L)', 'SHIPPED FROM RETURN (L)', 'REMELT (L)', 'REMELT (KG)'];
+    const H2 = ['ACTION MONTH', 'RE-DISPATCH — LABELS ISSUED (L)', 'SHIPPED FROM RETURN (L)', 'REMELT (L)', 'REMELT (KG)', 'ARCHIVED (L)'];
     const a2 = [], k2 = [], m2 = [];
     const p2 = (row, kind) => { a2.push(row); k2.push(kind); };
     m2.push({ s: { r: 0, c: 0 }, e: { r: 0, c: H2.length - 1 } }); p2([`Processing by month — returns${rmSel ? ' received ' + _v57yPmLabel(rmSel) : ' in this export'} (${rows.length} credit note${rows.length === 1 ? '' : 's'}, ${Math.round(sum('returned_qty') * 100) / 100} L received)`], 'title');
     m2.push({ s: { r: 1, c: 0 }, e: { r: 1, c: H2.length - 1 } }); p2([`Each row is the calendar month in which the action was taken on these returns. Available after all actions: ${Math.round(sum('available_qty') * 100) / 100} L.  |  Generated ${new Date().toLocaleString()}`], 'subtitle');
     p2([], 'spacer'); p2(H2, 'hdr');
-    Object.keys(m).sort().forEach(ym => p2([ym, m[ym].redeployed, m[ym].dispatched, m[ym].remelt, m[ym].remelt_kg], 'data'));
-    const tot = Object.values(m).reduce((a, o) => ({ r: a.r + o.redeployed, d: a.d + o.dispatched, m: a.m + o.remelt, k: a.k + o.remelt_kg }), { r: 0, d: 0, m: 0, k: 0 });
-    p2(['TOTAL', Math.round(tot.r * 100) / 100, Math.round(tot.d * 100) / 100, Math.round(tot.m * 100) / 100, Math.round(tot.k * 100) / 100], 'grand');
+    Object.keys(m).sort().forEach(ym => p2([ym, m[ym].redeployed, m[ym].dispatched, m[ym].remelt, m[ym].remelt_kg, m[ym].archived || 0], 'data'));
+    const tot = Object.values(m).reduce((a, o) => ({ r: a.r + o.redeployed, d: a.d + o.dispatched, m: a.m + o.remelt, k: a.k + o.remelt_kg, x: a.x + (o.archived || 0) }), { r: 0, d: 0, m: 0, k: 0, x: 0 });
+    p2(['TOTAL', Math.round(tot.r * 100) / 100, Math.round(tot.d * 100) / 100, Math.round(tot.m * 100) / 100, Math.round(tot.k * 100) / 100, Math.round(tot.x * 100) / 100], 'grand');
     p2([], 'spacer');
     const H3 = ['ACTION MONTH', 'DATE', 'ACTION', 'CREDIT NOTE', 'ORIGINAL INVOICE', 'ORIGINAL BATCH', 'CUSTOMER', 'TARGET BATCH / GPR FLOOR', 'QTY (L)', 'BOXES', 'KG', 'STATUS', 'BY', 'NOTE'];
     m2.push({ s: { r: a2.length, c: 0 }, e: { r: a2.length, c: H3.length - 1 } }); p2(['Every action on these returns'], 'title');
@@ -9033,6 +9118,7 @@ function _v57yExportRS() {
     rows.forEach(r => {
       (r.redeploys || []).forEach(d => acts.push({ ym: _v58aIstMonthC(d.ts), ts: d.ts, action: d.mode === 'standalone' ? 'Re-customer' : 'Re-batch', cn: r.cn_no, inv: r.invoice_no, bn: r.batch, cust: r.customer, tgt: d.targetBatch, qty: d.qty, boxes: d.boxes, kg: '', status: d.dispatchedQty >= d.qty - 0.005 ? 'dispatched' : (d.dispatchedQty > 0 ? `${d.dispatchedQty.toFixed(2)} L dispatched` : 'labels issued'), by: d.by || '', note: Object.keys(d.byMonth || {}).sort().map(ym => `${ym}: ${d.byMonth[ym].toFixed(2)} L`).join('; ') }));
       (r.remelts || []).forEach(a => acts.push({ ym: a.month, ts: a.ts, action: 'Remelt', cn: r.cn_no, inv: r.invoice_no, bn: r.batch, cust: r.customer, tgt: 'GPR ' + a.floor, qty: a.qty, boxes: a.boxes, kg: a.kg, status: a.status === 'accepted' ? `accepted by GPR${a.acceptedBy ? ' (' + a.acceptedBy + ')' : ''}` : 'pending GPR receipt', by: a.by || '', note: `${a.avgMg} mg (${a.avgBasis})${a.note ? ' — ' + a.note : ''}` }));
+      (r.archives || []).forEach(a => acts.push({ ym: a.month, ts: a.ts, action: 'Archived', cn: r.cn_no, inv: r.invoice_no, bn: r.batch, cust: r.customer, tgt: '—', qty: a.qty, boxes: a.boxes, kg: '', status: 'handled outside the flow', by: a.by || '', note: a.note || '' }));   // v58C
     });
     acts.sort((x, y) => String(x.ts).localeCompare(String(y.ts)));
     acts.forEach(a => p2([a.ym, String(a.ts).slice(0, 10), a.action, a.cn || '', a.inv || '', a.bn || '', a.cust || '', a.tgt || '', a.qty, a.boxes, a.kg, a.status, a.by, a.note], 'data'));
@@ -10863,6 +10949,10 @@ async function renderGeneratedInvoices() {
     <div id="v39-gi-table" class="card">
       <div style="padding:20px;text-align:center;color:var(--text3)">⏳ Loading invoices...</div>
     </div>`;
+  // v58C: the scaffold is rebuilt on every visit, so the sub-views (Over-invoiced / Return & Cancel /
+  // Return Stock) start closed — a flag left on from the last visit kept the main table from rendering.
+  window._giOverInv = false; _v51dOverInvRows = null; _v51dOverInvUnattr = null;
+  if (typeof _v57yResetViews === 'function') _v57yResetViews();
   // Trigger initial load with no filters
   await _v39_applyInvoiceFilters();
   // v39 Phase 16: Load admin direct-SAP approval queue (silent if not admin)

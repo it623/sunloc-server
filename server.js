@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58B';
+const APP_BUILD = 'v58C';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -7666,10 +7666,15 @@ async function _v57yReturnStockRows() {
     }
     (actsByRet[a.return_id] = actsByRet[a.return_id] || []).push({ id: a.id, action: a.action, ts: a.ts, by: a.by_user, qty: parseFloat(a.qty_lakhs) || 0, boxes: parseInt(a.boxes, 10) || 0, kg: parseFloat(a.kg) || 0, avgMg: parseFloat(a.avg_mg) || 0, avgBasis: a.avg_basis || '', floor: a.floor || '', status: a.status, acceptedAt: a.accepted_at || null, acceptedBy: a.accepted_by || null, ledgerId: a.ledger_id || null, note: a.note || '', month: _v58aIstMonth(a.ts) });
   }
+  // v58C: ARCHIVE actions — quantity already handled before the return flow went live (re-dispatched or
+  // remelted outside Sunloc). Booked by PM / Admin with a reason; comes off "available", never off Reports.
+  for (const k of Object.keys(actsByRet)) { const all = actsByRet[k]; actsByRet[k] = all.filter(a => a.action !== 'archive'); actsByRet[k + '|archive'] = all.filter(a => a.action === 'archive'); }
   const rows = [];
   for (const c of cns) {
     const rds = byRet[c.id] || [];
     const rms = actsByRet[c.id] || [];
+    const arcs = actsByRet[c.id + '|archive'] || [];   // v58C
+    const arcQ = Math.round(arcs.reduce((s, a) => s + a.qty, 0) * 100) / 100, arcB = arcs.reduce((s, a) => s + a.boxes, 0);
     const retQ = Math.round((parseFloat(c.total_qty_lakhs) || 0) * 100) / 100, retB = parseInt(c.total_boxes, 10) || 0;
     const redQ = Math.round(rds.reduce((s, r) => s + r.qty, 0) * 100) / 100, redB = rds.reduce((s, r) => s + r.boxes, 0);
     const rmPend = Math.round(rms.filter(a => a.status === 'pending').reduce((s, a) => s + a.qty, 0) * 100) / 100;
@@ -7680,6 +7685,7 @@ async function _v57yReturnStockRows() {
     rds.forEach(r => { const m = _v58aIstMonth(r.ts); const o = byActionMonth[m] = byActionMonth[m] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0 }; o.redeployed = Math.round((o.redeployed + r.qty) * 100) / 100; });
     rds.forEach(r => Object.entries(r.byMonth).forEach(([m, q]) => { const o = byActionMonth[m] = byActionMonth[m] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0 }; o.dispatched = Math.round((o.dispatched + q) * 100) / 100; }));
     rms.forEach(a => { const o = byActionMonth[a.month] = byActionMonth[a.month] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0 }; o.remelt = Math.round((o.remelt + a.qty) * 100) / 100; o.remelt_kg = Math.round((o.remelt_kg + a.kg) * 100) / 100; });
+    arcs.forEach(a => { const o = byActionMonth[a.month] = byActionMonth[a.month] || { redeployed: 0, dispatched: 0, remelt: 0, remelt_kg: 0 }; o.archived = Math.round(((o.archived || 0) + a.qty) * 100) / 100; });   // v58C
     const invQ = Math.round((parseFloat(c.inv_qty) || 0) * 100) / 100;
     const bn = _v57yFirstBatch(c.batch_number || c.inv_batch);
     const dispQ = Math.round(rds.reduce((s, r) => s + r.dispatchedQty, 0) * 100) / 100;
@@ -7694,7 +7700,8 @@ async function _v57yReturnStockRows() {
       full: invQ > 0 ? retQ >= invQ - 0.005 : null,
       redeployed_qty: redQ, redeployed_boxes: redB,
       remelt_qty: rmQ, remelt_pending_qty: rmPend, remelt_accepted_qty: rmAcc, remelt_boxes: rmB, remelt_kg: rmKg, remelts: rms,   // v58A
-      available_qty: Math.max(0, Math.round((retQ - redQ - rmQ) * 100) / 100), available_boxes: Math.max(0, retB - redB - rmB),
+      archived_qty: arcQ, archived_boxes: arcB, archives: arcs,   // v58C
+      available_qty: Math.max(0, Math.round((retQ - redQ - rmQ - arcQ) * 100) / 100), available_boxes: Math.max(0, retB - redB - rmB - arcB),
       received_month: _v58aIstMonth(c.doc_date || c.fetched_at), by_action_month: byActionMonth,   // v58A: calendar-month ledger
       dispatched_qty: dispQ, dispatched_by_month: byMonth, redeploys: rds, link_method: c.link_method || null,
     });
@@ -7756,6 +7763,73 @@ app.post('/api/invoice/return-stock/:id/remelt', async (req, res) => {
     res.json({ ok: true, id: actId, ledgerId, plan });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
+// v58C — ARCHIVE return stock that was handled before the flow went live (PM / Admin).
+// POST /api/invoice/return-stock/:id/archive { qtyLakhs, note }  — qty ≤ available; comes off "available"
+// only (Reports and the credit note itself are untouched). POST …/archive/:actionId/restore puts it back.
+// POST /api/invoice/return-stock/archive-bulk { ids:[...], note } — each listed return's full available.
+async function _v58cArchiveOne(rs, qty, note, who) {
+  const size = String(rs.size || '').trim(); const ps = _V44ZJ_PACK_SIZES[size] || 0;
+  const boxes = ps > 0 ? Math.ceil(qty / ps - 1e-9) : 0;
+  const actId = 'rtx-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 8);
+  const now = new Date().toISOString();
+  const vals = [actId, rs.id, 'archive', qty, boxes, null, null, null, rs.pc_code || null, size ? '#' + size.replace(/^#/, '') : null, rs.colour || null, _v57yFirstBatch(rs.batch) || null, null, null, 'accepted', note || null, who, now, now, who];
+  if (pgPool) await pgPool.query(`INSERT INTO return_actions (id, return_id, action, qty_lakhs, boxes, kg, avg_mg, avg_basis, pc_code, size, colour, batch_number, floor, ledger_id, status, note, by_user, ts, accepted_at, accepted_by) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, vals);
+  else db.prepare(`INSERT INTO return_actions (id, return_id, action, qty_lakhs, boxes, kg, avg_mg, avg_basis, pc_code, size, colour, batch_number, floor, ledger_id, status, note, by_user, ts, accepted_at, accepted_by) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...vals);
+  return { id: actId, qty, boxes };
+}
+const _v58cArchiveRole = s => s && ['admin', 'tracking_planning', 'planning_manager'].includes(String(s.role || '').trim().toLowerCase());
+app.post('/api/invoice/return-stock/:id/archive', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!_v58cArchiveRole(session)) return res.status(403).json({ ok: false, error: 'Admin or Planning Manager required' });
+    const id = String(req.params.id || '');
+    const rs = (await _v57yReturnStockRows()).find(x => x.id === id);
+    if (!rs) return res.status(404).json({ ok: false, error: 'Return not found' });
+    const qty = Math.round((parseFloat(req.body?.qtyLakhs) || 0) * 1000) / 1000;
+    const note = String(req.body?.note || '').trim();
+    if (!(qty > 0)) return res.status(400).json({ ok: false, error: 'Quantity must be > 0 lakhs' });
+    if (qty > rs.available_qty + 0.0005) return res.status(400).json({ ok: false, error: `Only ${rs.available_qty.toFixed(2)} L is available on credit note ${rs.cn_no}` });
+    if (!note) return res.status(400).json({ ok: false, error: 'A reason is required (e.g. "handled before the Sunloc return flow went live")' });
+    const who = session.username || 'admin';
+    const r = await _v58cArchiveOne(rs, qty, note, who);
+    try { logAudit(who, session.role, 'tracking', 'RETURN_ARCHIVED', `CN ${rs.cn_no} / inv ${rs.invoice_no || '—'} (${rs.batch || ''}): ${qty} L archived — ${note}`, req.ip); } catch (_) {}
+    res.json({ ok: true, id: r.id, qty, remaining: Math.round((rs.available_qty - qty) * 100) / 100 });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+app.post('/api/invoice/return-stock/archive-bulk', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!_v58cArchiveRole(session)) return res.status(403).json({ ok: false, error: 'Admin or Planning Manager required' });
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(String) : [];
+    const note = String(req.body?.note || '').trim();
+    if (!ids.length) return res.status(400).json({ ok: false, error: 'No returns selected' });
+    if (!note) return res.status(400).json({ ok: false, error: 'A reason is required' });
+    const rows = await _v57yReturnStockRows();
+    const who = session.username || 'admin';
+    let n = 0, q = 0;
+    for (const id of ids) { const rs = rows.find(x => x.id === id); if (!rs || !(rs.available_qty > 0)) continue; await _v58cArchiveOne(rs, rs.available_qty, note, who); n++; q += rs.available_qty; }
+    try { logAudit(who, session.role, 'tracking', 'RETURN_ARCHIVED_BULK', `${n} return(s), ${q.toFixed(2)} L archived — ${note}`, req.ip); } catch (_) {}
+    res.json({ ok: true, archived: n, qty: Math.round(q * 100) / 100 });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+app.post('/api/invoice/return-stock/archive/:actionId/restore', async (req, res) => {
+  try {
+    const session = verifyToken(req.headers['x-session-token'] || req.body?.token);
+    if (!session) return res.status(401).json({ ok: false, error: 'Not authenticated' });
+    if (!_v58cArchiveRole(session)) return res.status(403).json({ ok: false, error: 'Admin or Planning Manager required' });
+    const id = String(req.params.actionId || '');
+    const a = pgPool ? (await pgPool.query(`SELECT * FROM return_actions WHERE id=$1 AND action='archive'`, [id])).rows[0] : db.prepare(`SELECT * FROM return_actions WHERE id=? AND action='archive'`).get(id);
+    if (!a) return res.status(404).json({ ok: false, error: 'Archive entry not found' });
+    if (a.status === 'cancelled') return res.json({ ok: true });
+    const now = new Date().toISOString(), who = session.username || 'admin';
+    if (pgPool) await pgPool.query(`UPDATE return_actions SET status='cancelled', cancelled_at=$1, cancelled_by=$2 WHERE id=$3`, [now, who, id]);
+    else db.prepare(`UPDATE return_actions SET status='cancelled', cancelled_at=?, cancelled_by=? WHERE id=?`).run(now, who, id);
+    try { logAudit(who, session.role, 'tracking', 'RETURN_ARCHIVE_RESTORED', `${id}: ${a.qty_lakhs} L (${a.batch_number || ''}) restored to available`, req.ip); } catch (_) {}
+    res.json({ ok: true });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 // POST /api/invoice/return-stock/remelt/:actionId/cancel — only while GPR has not accepted it.
 app.post('/api/invoice/return-stock/remelt/:actionId/cancel', async (req, res) => {
   try {
@@ -7812,7 +7886,9 @@ app.get('/api/invoice/returns-cancels', async (req, res) => {
       linked_no: t.cn_no, linked_doc_entry: t.cn_doc_entry, linked_date: t.cn_date, linked_kind: 'A/R Credit Memo', link_method: t.link_method, full: t.full, available_qty: t.available_qty, prodMonth: t.prodMonth, cn_id: t.id, orig_missing: !t.invoice_no });
     const pmMap = await _v57yProdMonthMap(rows.map(r => _v57yFirstBatch(r.batch)));
     for (const r of rows) if (r.prodMonth === undefined || r.prodMonth === null) r.prodMonth = pmMap[_v57yFirstBatch(r.batch)] || null;
-    rows.sort((a, b) => String(b.linked_date || b.invoice_date || '').localeCompare(String(a.linked_date || a.invoice_date || '')));
+    // v58C: chronological on the ORIGINAL invoice date (newest first; credit-note / cancellation date only
+    // when the invoice is not in Sunloc), then linked-document date — the client offers the other orders.
+    rows.sort((a, b) => String(b.invoice_date || b.linked_date || '').localeCompare(String(a.invoice_date || a.linked_date || '')) || String(b.linked_date || '').localeCompare(String(a.linked_date || '')));
     res.json({ ok: true, rows, counts: { cancel: rows.filter(r => r.nature === 'cancel').length, return: rows.filter(r => r.nature === 'return').length } });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
