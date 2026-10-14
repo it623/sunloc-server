@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v58E</title>
+<title>GPR · build v58F</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -409,8 +409,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v58E</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58E</div>
+    <h1>GPR<span class="vpill">v58F</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58F</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -430,7 +430,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v58E</span></div>
+  <div class="nbrand">GPR<span class="vpill">v58F</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -542,9 +542,9 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
             <tr><td>Tank capacity (L)</td><td><input id="tc_cap" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
             <tr><td>Planned fill (L)</td><td><input id="tc_planned" type="number" inputmode="decimal" oninput="drawTankSide('tc')"></td></tr>
             <tr class="dkey"><td>Actual issued (L) *</td><td><input id="tc_actual" type="number" inputmode="decimal" oninput="this.dataset.manual='1';drawTankSide('tc')"><div id="tc_calcL" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
-            <tr><td>Virgin from MMT &mdash; enter as</td><td><select id="tc_vmode" onchange="ttVmode('tc')"><option value="kg">kg of virgin gelatine</option><option value="l">litres of MMT solution drawn</option></select></td></tr>   <!-- v58E item 7 -->
-            <tr id="tc_mmtLrow" style="display:none"><td>MMT solution drawn (L)</td><td><input id="tc_mmtL" type="number" inputmode="decimal" oninput="ttCalc('tc')"><div id="tc_mmtLnote" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
-            <tr><td>Virgin gelatine (kg)</td><td><input id="tc_virgin" type="number" inputmode="decimal" oninput="ttCalc('tc')"></td></tr>
+            <input type="hidden" id="tc_vmode" value="l">   <!-- v58F item 5: the virgin draw is always entered in LITRES of MMT solution; kg is derived -->
+            <tr class="dkey" id="tc_mmtLrow"><td>MMT solution drawn (L) *</td><td><input id="tc_mmtL" type="number" inputmode="decimal" oninput="ttCalc('tc')"><div id="tc_mmtLnote" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
+            <tr><td>Virgin gelatine (kg) <span style="font-size:10px;color:var(--t3)">auto</span></td><td><input id="tc_virgin" type="number" inputmode="decimal" readonly style="background:var(--s3)" oninput="ttCalc('tc')"></td></tr>
             <tr><td>Colour + TiO₂ (kg)</td><td><input id="tc_colourkg" type="number" inputmode="decimal" oninput="this.dataset.manual='1';ttCalc('tc')" placeholder="auto from colourants"></td></tr>
             <tr><td>FG remelt (kg)</td><td><input id="tc_fgremelt" type="number" inputmode="decimal" oninput="ttCalc('tc')"></td></tr>
             <tr><td>Draw from</td><td><select id="tc_source" onchange="toggleLegacySide('tc')"><option value="ledger">Ledger A — online register</option><option value="oily">Oily salvage (Ledger A)</option><option value="legacy">Ledger B — legacy stock</option></select></td></tr>
@@ -585,9 +585,9 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
             <tr><td>Tank capacity (L)</td><td><input id="tb_cap" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
             <tr><td>Planned fill (L)</td><td><input id="tb_planned" type="number" inputmode="decimal" oninput="drawTankSide('tb')"></td></tr>
             <tr class="dkey"><td>Actual issued (L) *</td><td><input id="tb_actual" type="number" inputmode="decimal" oninput="this.dataset.manual='1';drawTankSide('tb')"><div id="tb_calcL" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
-            <tr><td>Virgin from MMT &mdash; enter as</td><td><select id="tb_vmode" onchange="ttVmode('tb')"><option value="kg">kg of virgin gelatine</option><option value="l">litres of MMT solution drawn</option></select></td></tr>   <!-- v58E item 7 -->
-            <tr id="tb_mmtLrow" style="display:none"><td>MMT solution drawn (L)</td><td><input id="tb_mmtL" type="number" inputmode="decimal" oninput="ttCalc('tb')"><div id="tb_mmtLnote" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
-            <tr><td>Virgin gelatine (kg)</td><td><input id="tb_virgin" type="number" inputmode="decimal" oninput="ttCalc('tb')"></td></tr>
+            <input type="hidden" id="tb_vmode" value="l">   <!-- v58F item 5: the virgin draw is always entered in LITRES of MMT solution; kg is derived -->
+            <tr class="dkey" id="tb_mmtLrow"><td>MMT solution drawn (L) *</td><td><input id="tb_mmtL" type="number" inputmode="decimal" oninput="ttCalc('tb')"><div id="tb_mmtLnote" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>
+            <tr><td>Virgin gelatine (kg) <span style="font-size:10px;color:var(--t3)">auto</span></td><td><input id="tb_virgin" type="number" inputmode="decimal" readonly style="background:var(--s3)" oninput="ttCalc('tb')"></td></tr>
             <tr><td>Colour + TiO₂ (kg)</td><td><input id="tb_colourkg" type="number" inputmode="decimal" oninput="this.dataset.manual='1';ttCalc('tb')" placeholder="auto from colourants"></td></tr>
             <tr><td>FG remelt (kg)</td><td><input id="tb_fgremelt" type="number" inputmode="decimal" oninput="ttCalc('tb')"></td></tr>
             <tr><td>Draw from</td><td><select id="tb_source" onchange="toggleLegacySide('tb')"><option value="ledger">Ledger A — online register</option><option value="oily">Oily salvage (Ledger A)</option><option value="legacy">Ledger B — legacy stock</option></select></td></tr>
@@ -1684,9 +1684,11 @@ async function mmtOpenEdit(id){
               + '</tbody></table></div><div style="margin-top:6px"><a href="javascript:void(0)" onclick="mmtSpread()" style="font-size:11.5px">Spread the remainder evenly across these tanks</a></div>'
             : '<div class="empty" style="padding:10px">No unreleased tank on this floor in the last 4 days to distribute into.</div>')
         : '<div class="hbnote" style="margin:4px 0">Nothing left to distribute'+(rem<-0.5?' &mdash; the charge is <b style="color:var(--red)">over-allocated by '+fmt(-rem,0)+' L</b>; correct the total above if it was under-recorded':'')+'.</div>')
-    + '<div style="display:flex;justify-content:flex-end;gap:8px;margin-top:10px">'
+    + '<div style="display:flex;justify-content:space-between;gap:8px;margin-top:10px;flex-wrap:wrap">'
+    + '<div>'+(rem > 0.5 && c.status==='open' ? '<button class="btn primary" onclick="mmtGoAllocate(\''+esc(c.mmt_ref)+'\')" title="Allocate the remaining litres to transfer tanks on the Allocation section">&#10140; Allocate '+fmt(rem,0)+' L to TT</button>' : '')+'</div>'   // v58F item 2
+    + '<div style="display:flex;gap:8px">'
     + (rem > 0.5 && tanks.length ? '<button class="btn" onclick="mmtDistribute(false)">Distribute only</button>' : '')
-    + '<button class="btn primary" onclick="mmtDistribute(true)">'+(rem > 0.5 && tanks.length ? 'Distribute &amp; close charge' : 'Close charge')+'</button></div>');
+    + '<button class="btn primary" onclick="mmtDistribute(true)">'+(rem > 0.5 && tanks.length ? 'Distribute &amp; close charge' : 'Close charge')+'</button></div></div>');
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '900px';
   mmtDistSum();
   _v58dLoadDraws(c.mmt_ref, 'mme_draws');   // v58D item 4
@@ -1762,6 +1764,16 @@ function mmtView(id){
   ttModalOpen('MMT charge '+esc(c.mmt_ref)+' &mdash; detail', h);
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '900px';
   _v58dLoadDraws(c.mmt_ref, 'mmv_draws');
+}
+// v58F item 2 (Ishan, 14 Oct): from the open-charge editor straight to the Allocation section with
+// this charge selected — the editor only offered "distribute into existing tanks" or close.
+async function mmtGoAllocate(ref){
+  ttModalClose();
+  window._AL = window._AL || {}; window._AL.ref = ref;
+  mmSection('a');
+  await alLoad(true);
+  const sel = document.getElementById('al_ref'); if(sel && [...sel.options].some(o=>o.value===ref)){ sel.value = ref; await alSelect(ref); }
+  const card = document.getElementById('alMachines'); if(card && card.scrollIntoView) card.scrollIntoView({ behavior:'smooth', block:'start' });
 }
 function mmtDistSum(){ const M = window._MME; const el = document.getElementById('mme_dist'); if(!M||!el) return;
   const t = [...document.querySelectorAll('.mme_add')].reduce((a,i)=>a+(parseFloat(i.value)||0),0);
@@ -2213,6 +2225,7 @@ async function ttPrepareFromAlloc(id){
   if(mm){ if(![...mm.options].some(o=>o.value===r.mmt_ref)) mm.insertAdjacentHTML('beforeend','<option value="'+esc(r.mmt_ref)+'">'+esc(r.mmt_ref)+'</option>'); mm.value = r.mmt_ref; }
   if(r.capacity_l>0 && !num(p+'_cap')) setVal(p+'_cap', r.capacity_l);
   setVal(p+'_planned', r.planned_l);
+  setVal(p+'_mmtL', r.planned_l);   // v58F item 5: the draw is entered in litres; kg follows from the charge's concentration
   setVal(p+'_virgin', r.reserved_kg);
   const a = document.getElementById(p+'_actual'); if(a) delete a.dataset.manual;   // litres follow the charge calc
   window._TTALLOC = Object.assign(window._TTALLOC||{}, { [p]: r.id });
@@ -3160,7 +3173,7 @@ function ttResetForBatch(bn){
   window._TTALLOC = {};   // v57L: an allocation belongs to the batch it was opened for
   ['td_machine','td_floor','td_pc','td_colname','td_colcode'].forEach(id=>setVal(id,''));
   ['tc','tb'].forEach(p=>{
-    ['_colcode','_cap','_planned','_actual','_seqtotal','_virgin','_colourkg','_fgremelt','_salvage','_cutting','_visc','_temp','_reason','_tankcode','_xsreason','_xsnote'].forEach(f=>setVal(p+f,''));
+    ['_colcode','_cap','_planned','_actual','_seqtotal','_virgin','_mmtL','_colourkg','_fgremelt','_salvage','_cutting','_visc','_temp','_reason','_tankcode','_xsreason','_xsnote'].forEach(f=>setVal(p+f,''));   // v58F: + MMT litres
     const mm = document.getElementById(p+'_mmt'); if(mm) mm.value='';
     const sn = document.getElementById(p+'_seqnote'); if(sn) sn.innerHTML='';
     // v56U: reuse lines, colourant grams and the hand-entered flags belong to the old batch too
@@ -3898,7 +3911,7 @@ function downloadZpl(){
 function clearTtForm(){
   ['td_colname','td_colcode'].forEach(id=>setVal(id,''));
   for(const p of ['tc','tb']){
-    ['_actual','_virgin','_salvage','_cutting','_colourkg','_fgremelt','_visc','_temp','_reason','_colcode','_tankcode','_xsreason','_xsnote'].forEach(sf=>setVal(p+sf,''));
+    ['_actual','_virgin','_mmtL','_salvage','_cutting','_colourkg','_fgremelt','_visc','_temp','_reason','_colcode','_tankcode','_xsreason','_xsnote'].forEach(sf=>setVal(p+sf,''));   // v58F: + MMT litres
     for(let i=0;i<_colCount(p);i++){ setVal(p+'_col_'+i,''); setVal(p+'_colg_'+i,''); }
     // v56U: reuse lines and hand-entered flags clear with the rest
     const rw = document.getElementById(p+'_reuse'); if(rw) rw.innerHTML = '';
@@ -4734,6 +4747,8 @@ async function loadReceipts(force){
       if(d.diag && !diag) diag = d.diag;
     });
     window._RCP_ERRS = errs; window._RCP_DIAG = diag;
+    // v58F item 4: the read no longer waits for the feed sweep; if one is running, re-read once when it should be done
+    if(diag && diag.sweep_in_flight && !window._RCP_RETRY) window._RCP_RETRY = setTimeout(()=>{ window._RCP_RETRY = null; loadReceipts(); }, 8000);
     RCP_ROWS = rows; RCP_SEL = {};
     const sel = document.getElementById('rcp_acct');
     if(sel && sel.options.length<=1){

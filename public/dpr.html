@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v58E</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v58F</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1416,7 +1416,7 @@ function runCut(m, ri, field){
 }
 function mcCut(m){
   const n = (m.runs||[]).length || 1; let cap=0, body=0;
-  for(let i=0;i<n;i++){ cap += parseFloat(runCut(m,i,'capCut')||0); body += parseFloat(runCut(m,i,'bodyCut')||0); }
+  for(let i=0;i<n;i++){ cap += parseFloat(runCut(m,i,'capCut')||0) + parseFloat(runCut(m,i,'capCut2')||0); body += parseFloat(runCut(m,i,'bodyCut')||0) + parseFloat(runCut(m,i,'bodyCut2')||0); }   // v58F item 1: both entries
   return { cap: +cap.toFixed(2), body: +body.toFixed(2) };
 }
 function blankDay(fl){ return {floor:fl,shifts:{A:blankShift(fl),B:blankShift(fl),C:blankShift(fl)},remarks:[],resort:[]}; }
@@ -1573,9 +1573,10 @@ function collectForm(){
             qty:v(`run-qty-${sh}-${mc.id}-${ri}`)||'',
             note:v(`run-note-${sh}-${mc.id}-${ri}`)||''
           };
-          if(_hasCutDom){ _r.capCut=v(`capcut-${sh}-${mc.id}-${ri}`)||''; _r.bodyCut=v(`bodycut-${sh}-${mc.id}-${ri}`)||''; }
+          if(_hasCutDom){ _r.capCut=v(`capcut-${sh}-${mc.id}-${ri}`)||''; _r.bodyCut=v(`bodycut-${sh}-${mc.id}-${ri}`)||'';
+                          _r.capCut2=v(`capcut2-${sh}-${mc.id}-${ri}`)||''; _r.bodyCut2=v(`bodycut2-${sh}-${mc.id}-${ri}`)||''; }   // v58F item 1: 2nd entry
           return _r;
-        }).filter(r=>r.qty||r.batchNumber||r.orderId||r.capCut||r.bodyCut);
+        }).filter(r=>r.qty||r.batchNumber||r.orderId||r.capCut||r.bodyCut||r.capCut2||r.bodyCut2);
         if(m.runs.length===0) m.runs=[blankRun()];
       }
       if(_hasCutDom){ const _c=mcCut(m); m.capCut=_c.cap?String(_c.cap):''; m.bodyCut=_c.body?String(_c.body):''; }
@@ -2677,15 +2678,21 @@ function _cutStack(sh, mcId, m, runs, field, idp){
   const mult = runs.length > 1;
   return runs.map((run, ri)=>{
     const v = runCut(m, ri, field);
+    // v58F item 1 (Ishan, 14 Oct): cuttings are weighed TWICE a shift — two entries per line (1st / 2nd);
+    // the line's cutting is their sum, which the GPR feed receives as the shift total as before.
+    const v2 = runCut(m, ri, field+'2');
+    const sideLbl = field==='capCut'?'cap':'body';
     return `<div class="cutline" style="margin-bottom:${ri<runs.length-1?'5':'0'}px;${mult&&ri>0?'padding-top:5px;border-top:1px dashed var(--b2)':''}">`
       + (mult?`<span class="cutln">${ri+1}</span>`:'')
-      + `<input type="number" id="${idp}-${sh}-${mcId}-${ri}" value="${v||''}" placeholder="0" min="0" step="0.01" style="width:52px" title="${esc(run.batchNumber||'line '+(ri+1))} — ${field==='capCut'?'cap':'body'} cutting kg" oninput="markUnsaved();updateCutTotals('${sh}')" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''"></div>`;
+      + `<input type="number" id="${idp}-${sh}-${mcId}-${ri}" value="${v||''}" placeholder="1st" min="0" step="0.01" style="width:46px" title="${esc(run.batchNumber||'line '+(ri+1))} — ${sideLbl} cutting kg, 1st entry" oninput="markUnsaved();updateCutTotals('${sh}')" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''">`
+      + `<span style="color:var(--t4);font-size:10px">+</span>`
+      + `<input type="number" id="${idp}2-${sh}-${mcId}-${ri}" value="${v2||''}" placeholder="2nd" min="0" step="0.01" style="width:46px" title="${esc(run.batchNumber||'line '+(ri+1))} — ${sideLbl} cutting kg, 2nd entry" oninput="markUnsaved();updateCutTotals('${sh}')" onblur="this.value=this.value?parseFloat(this.value).toFixed(2):''"></div>`;
   }).join('');
 }
 // live shift footer + the Cutting KPI, straight from the inputs on screen
 function updateCutTotals(sh){
   const sum = pre => [...document.querySelectorAll(`input[id^="${pre}-${sh}-"]`)].reduce((a,e)=>a+(parseFloat(e.value)||0),0);
-  const c = sum('capcut'), b = sum('bodycut');
+  const c = sum('capcut') + sum('capcut2'), b = sum('bodycut') + sum('bodycut2');   // v58F item 1
   const ce = document.getElementById(`shcap-${sh}`), be = document.getElementById(`shbody-${sh}`);
   if(ce) ce.textContent = c>0 ? c.toFixed(2) : '—';
   if(be) be.textContent = b>0 ? b.toFixed(2) : '—';

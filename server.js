@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58E';
+const APP_BUILD = 'v58F';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -27401,8 +27401,25 @@ app.post('/api/gpr/mmt-alloc/:id/cancel', async (req, res) => {
       db.prepare(`UPDATE gpr_mmt_alloc SET status='cancelled', cancelled_at=datetime('now'), cancelled_by=? WHERE id=?`).run(session.username, a.id);
       db.prepare(`UPDATE gpr_mmt_charges SET allocated_kg=allocated_kg-?, allocated_l=allocated_l-?, updated_at=datetime('now') WHERE mmt_ref=?`).run(kg, L, a.mmt_ref);
     }
-    logAudit(session.username, session.role, 'gpr', 'GPR_MMT_ALLOC_CANCEL', `alloc=${a.id} mmt=${a.mmt_ref} ${a.machine_id} ${a.batch_number} ${a.side}${a.alloc_seq} ${a.planned_l}L released ${kg}kg`, req.ip);
-    res.json({ ok: true, released_kg: kg, released_l: L });
+    // v58F item 3 (Ishan, 14 Oct): an allocation that had exhausted the charge CLOSED it; cancelling
+    // gave the litres back to the position but the closed charge was no longer offered for allocation.
+    // A closed charge whose litres come back beyond the rounding tolerance reopens here.
+    let reopened = false;
+    try {
+      const cSql = `SELECT id, status, total_l, allocated_l FROM gpr_mmt_charges WHERE mmt_ref=${P1}`;
+      const c = pgPool ? (await pgPool.query(cSql, [a.mmt_ref])).rows[0] : db.prepare(cSql).get(a.mmt_ref);
+      if (c && c.status === 'closed') {
+        const left = Number(c.total_l || 0) - Number(c.allocated_l || 0);
+        if (left > Math.max(5, 0.01 * Number(c.total_l || 0)) || left >= L - 0.05) {
+          const uSql = `UPDATE gpr_mmt_charges SET status='open', updated_at=${pgPool ? 'NOW()::TEXT' : "datetime('now')"} WHERE id=${pgPool ? '$1' : '?'}`;
+          if (pgPool) await pgPool.query(uSql, [c.id]); else db.prepare(uSql).run(c.id);
+          reopened = true;
+          logAudit(session.username, session.role, 'gpr', 'GPR_MMT_REOPENED', `ref=${a.mmt_ref} reopened — ${L} L released by cancelling allocation ${a.id}; ${left.toFixed(0)} L available again`, req.ip);
+        }
+      }
+    } catch (_) {}
+    logAudit(session.username, session.role, 'gpr', 'GPR_MMT_ALLOC_CANCEL', `alloc=${a.id} mmt=${a.mmt_ref} ${a.machine_id} ${a.batch_number} ${a.side}${a.alloc_seq} ${a.planned_l}L released ${kg}kg${reopened ? ' — charge reopened' : ''}`, req.ip);
+    res.json({ ok: true, released_kg: kg, released_l: L, reopened });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -30104,7 +30121,7 @@ async function gprSyncDprCuttings(days) {
         for (const u of units) {
         const bn = u.bn;
         for (const [field, side] of [['capCut', 'cap'], ['bodyCut', 'body']]) {
-          const kg = parseFloat(u.src[field] || 0) || 0;
+          const kg = (parseFloat(u.src[field] || 0) || 0) + (parseFloat(u.src[field + '2'] || 0) || 0);   // v58F item 1: 1st + 2nd entry of the shift
           const ref = `${rec.date}|${sh}|${mcN}|${side}` + (u.ri > 0 ? `|L${u.ri + 1}` : '');
           // ═══ v55Y item 23 (Ishan, 20 Sep) — DPR cuttings arrive as a CUMULATIVE shift figure ═══
           // 3 kg at 10:00 then 5 kg at 13:20 means 2 kg more was added, not 5 kg more. The old code
@@ -30211,8 +30228,11 @@ app.get('/api/gpr/receipts', async (req, res) => {
       } catch (e) { last.error = (last.error ? last.error + '; ' : '') + 'credits: ' + e.message; }
       last.ms = Date.now() - t0; _gprSweepLast = last;
     };
-    const _neverSwept = _gprReceiptSyncAt === 0;
-    if (_force || _neverSwept) {
+    // v58F item 4 (Ishan, 14 Oct): waiting for the first sweep after a restart made the Stock tab sit
+    // on "Loading…" for the whole DPR/Tracking sweep. The read never waits now (only Refresh does);
+    // the first sweep is started at boot (below, app.listen) so it is normally done before anyone opens
+    // the tab, and the client shows "a sweep is running" and re-reads once if it is still going.
+    if (_force) {
       if (!_gprSweepInFlight) _gprSweepInFlight = _sweep().finally(() => { _gprSweepInFlight = null; });
       await _gprSweepInFlight.catch(() => {});
     } else if (!_gprSweepInFlight && Date.now() - _gprReceiptSyncAt > 120000) {
@@ -30883,6 +30903,9 @@ app.listen(PORT, () => {
     _gprBackfillLedgerPc().catch(e => console.warn('[v56A GPR] PC backfill failed:', e?.message));
     _v58bRebuildMmtPositions(null, null).catch(e => console.warn('[v58B GPR] MMT position rebuild failed:', e?.message));   // v58B: charges re-based on virgin kg ÷ concentration
     _v58eRepairMmtTimes().catch(e => console.warn('[v58E GPR] MMT time repair failed:', e?.message));   // v58E: naive IST stamps → UTC
+    // v58F item 4: warm the GPR receipts feed in the background so the first Stock-tab open after a
+    // restart is served from a swept queue instead of waiting on (or missing) the sweep.
+    setTimeout(() => { try { require('http').get(`http://127.0.0.1:${PORT}/api/gpr/receipts?sync=1&floor=GF`, r => r.resume()).on('error', () => {}); } catch (_) {} }, 4000);
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
