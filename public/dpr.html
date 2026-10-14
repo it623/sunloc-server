@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v58F</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v58G</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1594,16 +1594,22 @@ function calcDayStats(fl,d){
   const day=loadDay(fl,d);
   const mcs=getActiveMachines(fl);
   let totTgt=0,totProd=0,totAim=0,totResort=0,totDT=0;
+  const byShift = {};   // v58G (Rahul, 14 Oct): shift-wise split behind the day tiles
   SHIFTS.forEach(sh=>{
+    const S = byShift[sh] = { prod:0, aim:0, dt:0 };
     mcs.forEach(mc=>{
       const m=migrateMachineData(day.shifts[sh].machines[mc.id]||blankMachine());
       totTgt+=tgt(fl,mc.id);
-      totProd+=mcTotalProd(m);
-      totAim+=parseFloat(m.aim||0);
-      DT_CATS.forEach(c=>totDT+=parseFloat(m[c]||0));
+      const _p = mcTotalProd(m), _a = parseFloat(m.aim||0); let _d = 0;
+      DT_CATS.forEach(c=>{ _d += parseFloat(m[c]||0); });
+      totProd+=_p; totAim+=_a; totDT+=_d;
+      S.prod += _p; S.aim += _a; S.dt += _d;
     });
+    S.prod = parseFloat(S.prod.toFixed(2)); S.aim = parseFloat(S.aim.toFixed(2)); S.dt = parseFloat(S.dt.toFixed(0));
+    S.backlog = S.aim>0 ? parseFloat((S.prod - S.aim).toFixed(2)) : null;
   });
-  (day.resort||[]).forEach(r=>totResort+=parseFloat(r.qty||0));
+  SHIFTS.forEach(sh=>{ byShift[sh].resort = 0; });
+  (day.resort||[]).forEach(r=>{ const q = parseFloat(r.qty||0); totResort+=q; if(byShift[r.shift]) byShift[r.shift].resort = parseFloat((byShift[r.shift].resort + q).toFixed(2)); });   // v58G: re-sort is a shift-wise entry too
   const dtPct = mcs.length>0 ? (totDT/(480*mcs.length*3)*100) : 0;
   const eff = totTgt>0 ? (totProd/totTgt*100):0;
   const backlog = totAim>0 ? parseFloat((totProd - totAim).toFixed(2)) : null;
@@ -1612,7 +1618,7 @@ function calcDayStats(fl,d){
     totProd:   parseFloat(totProd.toFixed(2)),
     totAim:    parseFloat(totAim.toFixed(2)),
     totResort: parseFloat(totResort.toFixed(2)),
-    totDT, dtPct, eff, backlog
+    totDT, dtPct, eff, backlog, byShift
   };
 }
 
@@ -2522,6 +2528,13 @@ function renderEntry(){
   if(_f)setTimeout(()=>_restoreFocus(_f),0);
 }
 
+// v58G (Rahul, 14 Oct): the Production / AIM / Net backlog / Downtime tiles carry the shift split under
+// the day total, the way the Cutting tile does. Backlog is signed per shift; a shift with no AIM shows —.
+function _shiftSplit(s, key, dp, signed){
+  const B = s.byShift || {}; if(!SHIFTS.some(sh=>B[sh] && (key==='backlog' ? B[sh].backlog!==null : B[sh][key]>0))) return '';
+  const f = v => v==null ? '—' : ((signed && v>=0 ? '+' : '') + Number(v).toFixed(dp));
+  return `<div class="kpi-sub" style="margin-top:1px;font-weight:600">${SHIFTS.map(sh=>sh+' '+f(B[sh] ? B[sh][key] : null)).join(' · ')}</div>`;
+}
 function renderDayKpis(){
   const fl=curFloor, d=getDate();
   const s=calcDayStats(fl,d);
@@ -2529,12 +2542,12 @@ function renderDayKpis(){
   const dtCls=s.dtPct<=5?'green':s.dtPct<=10?'amber':'red';
   document.getElementById('dayKpis').innerHTML=`
     <div class="kpi"><div class="kpi-label">Target</div><div class="kpi-val cyan">${s.totTgt>0?parseFloat(s.totTgt).toFixed(2):'—'}</div><div class="kpi-sub">units/day</div></div>
-    <div class="kpi"><div class="kpi-label">Production</div><div class="kpi-val ${s.totProd>0?'green':'t2'}">${s.totProd>0?parseFloat(s.totProd).toFixed(2):'—'}</div><div class="kpi-sub">units today</div></div>
+    <div class="kpi"><div class="kpi-label">Production</div><div class="kpi-val ${s.totProd>0?'green':'t2'}">${s.totProd>0?parseFloat(s.totProd).toFixed(2):'—'}</div><div class="kpi-sub">units today</div>${_shiftSplit(s,'prod',2)}</div>
     <div class="kpi"><div class="kpi-label">VS Target</div><div class="kpi-val ${effCls}">${s.totTgt>0?(s.totProd-s.totTgt>=0?'+':'')+parseFloat((s.totProd-s.totTgt).toFixed(2)):'—'}</div><div class="kpi-sub">${s.totTgt>0?s.eff.toFixed(1)+'%':''}</div></div>
-    <div class="kpi"><div class="kpi-label">AIM Output</div><div class="kpi-val cyan">${s.totAim>0?parseFloat(s.totAim).toFixed(2):'—'}</div><div class="kpi-sub">planned today</div></div>
-    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog===null?'':s.backlog>0?'red':'green'}">${s.backlog===null?'—':(s.backlog>=0?'+':'')+s.backlog.toFixed(2)}</div><div class="kpi-sub">${s.backlog===null?'':'vs AIM (Prod−AIM)'}</div></div>
-    <div class="kpi"><div class="kpi-label">Re-Sort</div><div class="kpi-val ${s.totResort>0?'red':'green'}">${s.totResort>0?parseFloat(s.totResort).toFixed(2):'0'}</div><div class="kpi-sub">units</div></div>
-    <div class="kpi"><div class="kpi-label">Downtime</div><div class="kpi-val ${dtCls}">${s.totDT>0?parseFloat(s.totDT).toFixed(0):'—'}</div><div class="kpi-sub">${s.totDT>0?s.dtPct.toFixed(1)+'% DT':''}</div></div>
+    <div class="kpi"><div class="kpi-label">AIM Output</div><div class="kpi-val cyan">${s.totAim>0?parseFloat(s.totAim).toFixed(2):'—'}</div><div class="kpi-sub">planned today</div>${_shiftSplit(s,'aim',2)}</div>
+    <div class="kpi"><div class="kpi-label">Net Backlog</div><div class="kpi-val ${s.backlog===null?'':s.backlog>0?'red':'green'}">${s.backlog===null?'—':(s.backlog>=0?'+':'')+s.backlog.toFixed(2)}</div><div class="kpi-sub">${s.backlog===null?'':'vs AIM (Prod−AIM)'}</div>${_shiftSplit(s,'backlog',2,true)}</div>
+    <div class="kpi"><div class="kpi-label">Re-Sort</div><div class="kpi-val ${s.totResort>0?'red':'green'}">${s.totResort>0?parseFloat(s.totResort).toFixed(2):'0'}</div><div class="kpi-sub">units</div>${_shiftSplit(s,'resort',2)}</div>
+    <div class="kpi"><div class="kpi-label">Downtime</div><div class="kpi-val ${dtCls}">${s.totDT>0?parseFloat(s.totDT).toFixed(0):'—'}</div><div class="kpi-sub">${s.totDT>0?s.dtPct.toFixed(1)+'% DT':''}</div>${_shiftSplit(s,'dt',0)}</div>
     <div class="kpi" id="kpiCut"></div>
   `;
   _renderCutKpi();
@@ -2547,8 +2560,9 @@ function _renderCutKpi(){
   const onScreen = !!document.querySelector('input[id^="capcut-"],input[id^="bodycut-"]');
   if(onScreen){
     SHIFTS.forEach(sh=>{
-      document.querySelectorAll(`input[id^="capcut-${sh}-"]`).forEach(e=>S[sh].c += parseFloat(e.value)||0);
-      document.querySelectorAll(`input[id^="bodycut-${sh}-"]`).forEach(e=>S[sh].b += parseFloat(e.value)||0);
+      // v58G (Rahul, 14 Oct): the tile read only the 1st-entry boxes — the 2nd entry (v58F) never reached it
+      document.querySelectorAll(`input[id^="capcut-${sh}-"],input[id^="capcut2-${sh}-"]`).forEach(e=>S[sh].c += parseFloat(e.value)||0);
+      document.querySelectorAll(`input[id^="bodycut-${sh}-"],input[id^="bodycut2-${sh}-"]`).forEach(e=>S[sh].b += parseFloat(e.value)||0);
     });
   } else {
     const day = loadDay(curFloor, getDate());
