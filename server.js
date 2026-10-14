@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58D';
+const APP_BUILD = 'v58E';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -26775,8 +26775,13 @@ app.post('/api/gpr/mmt/:id/update', async (req, res) => {
     const sets = [], vals = [], changed = [];
     for (const [k, t] of Object.entries(F)) {
       if (!(k in b)) continue;
-      const v = t === 'num' ? (b[k] === '' || b[k] == null ? null : Number(b[k])) : (String(b[k] || '').trim() || null);
+      let v = t === 'num' ? (b[k] === '' || b[k] == null ? null : Number(b[k])) : (String(b[k] || '').trim() || null);
       if (t === 'num' && v != null && isNaN(v)) return res.status(400).json({ ok: false, error: `${k} must be a number` });
+      if (k === 'charge_start' || k === 'charge_complete' || k === 'tt_prep_start') {
+        v = _v58eTimeIn(v);   // v58E: typed = IST; stored as UTC ISO
+        const curMs = _v58eMs(cur[k]), vMs = _v58eMs(v);
+        if (curMs != null && vMs != null && Math.abs(curMs - vMs) < 60000) continue;   // same minute → unchanged
+      }
       if (String(cur[k] ?? '') === String(v ?? '')) continue;
       if ((k === 'total_kg' || k === 'total_l') && !(v > 0)) return res.status(400).json({ ok: false, error: 'Total charge must be above 0' });
       vals.push(v); sets.push(`${k}=${pgPool ? '$' + vals.length : '?'}`); changed.push(`${k}: ${cur[k] ?? '—'} → ${v ?? '—'}`);
@@ -26897,19 +26902,29 @@ app.post('/api/gpr/mmt', async (req, res) => {
     const openSql = `SELECT mmt_ref, total_kg, allocated_kg, total_l, allocated_l, tank_no, status FROM gpr_mmt_charges WHERE floor=${pgPool ? '$1' : '?'} AND status IN ('open','preparing')`;
     const openRows = pgPool ? (await pgPool.query(openSql, [b.floor])).rows : db.prepare(openSql).all(b.floor);
     const scope = (openRows || []).filter(r => b.floor !== 'GF' || String(r.tank_no || 'GF1').toUpperCase() === tankNo);
-    const blocking = scope.find(r => Number(r.allocated_l) < Number(r.total_l) - 0.05);   // v57U: litres
+    // v58E item 6 (Ishan, 13 Oct): the gate named the OLDEST open charge in scope (an old charge with
+    // 1–2 L of rounding residue), not the charge actually being replaced. A charge now counts as fully
+    // allocated when what is left is within the rounding tolerance (≤ 1 % of the charge, min 5 L);
+    // the deviation is recorded against the LATEST blocking charge and the message lists them all.
+    const _v58eLeft = r => Number(r.total_l || 0) - Number(r.allocated_l || 0);
+    const _v58eTol = r => Math.max(5, 0.01 * Number(r.total_l || 0));
+    const blockers = scope.filter(r => r.status === 'preparing' || _v58eLeft(r) > _v58eTol(r))
+                          .sort((a, b2) => String(b2.charge_start || '').localeCompare(String(a.charge_start || '')));
+    const blocking = blockers[0] || null;
     let deviationReason = null, deviationAgainst = null;
     if (blocking) {
-      const leftL = (Number(blocking.total_l) - Number(blocking.allocated_l)).toFixed(0);
+      const leftL = _v58eLeft(blocking).toFixed(0);
       const where = b.floor === 'GF' ? ` on ${tankNo}` : ' on the FF/SF MMT';
-      const msg = `MMT ${blocking.mmt_ref}${where} is ${blocking.status === 'preparing' ? 'still under preparation' : 'still open'} with ${leftL} L unallocated. A new charge${b.floor === 'GF' ? ' on the same tank' : ''} is not allowed until it is fully allocated${b.floor === 'GF' ? ' — use the other tank, or' : ';'} give a reason to proceed as a deviation.`;
+      const others = blockers.slice(1).map(r => `${r.mmt_ref} (${_v58eLeft(r).toFixed(0)} L)`).join(', ');
+      const msg = `MMT ${blocking.mmt_ref}${where} is ${blocking.status === 'preparing' ? 'still under preparation' : 'still open'} with ${leftL} L unallocated${others ? '; also open: ' + others : ''}. A new charge${b.floor === 'GF' ? ' on the same tank' : ''} is not allowed until it is fully allocated${b.floor === 'GF' ? ' — use the other tank, or' : ';'} give a reason to proceed as a deviation.`;
       const reason = String(b.deviation_reason || '').trim();
       if (reason.length < 5) {
         return res.status(409).json({ ok: false, error: 'OPEN_CHARGE_BLOCK', detail: msg,
-          blocking: { mmt_ref: blocking.mmt_ref, tank_no: blocking.tank_no || null, status: blocking.status, left_l: Number(leftL) } });
+          blocking: { mmt_ref: blocking.mmt_ref, tank_no: blocking.tank_no || null, status: blocking.status, left_l: Number(leftL) },
+          others: blockers.slice(1).map(r => ({ mmt_ref: r.mmt_ref, left_l: +_v58eLeft(r).toFixed(0) })) });
       }
       deviationReason = reason.slice(0, 600);
-      deviationAgainst = `${blocking.mmt_ref}${b.floor === 'GF' ? ' (' + tankNo + ')' : ''} ${leftL} L unallocated`;
+      deviationAgainst = `${blocking.mmt_ref}${b.floor === 'GF' ? ' (' + tankNo + ')' : ''} ${leftL} L unallocated${others ? ' [also ' + others + ']' : ''}`;
       warning = `Deviation recorded: ${deviationAgainst}.`;
     }
 
@@ -26936,13 +26951,13 @@ app.post('/api/gpr/mmt', async (req, res) => {
     // and the charge is 'preparing' until Done. A charge saved with its completion time already
     // given (a backfilled, finished charge) opens at once, as before.
     const nowIso = new Date().toISOString();
-    const startAt = b.charge_start || nowIso;
-    const doneAt = b.charge_complete || null;
+    const startAt = _v58eTimeIn(b.charge_start) || nowIso;   // v58E: a typed time is IST
+    const doneAt = _v58eTimeIn(b.charge_complete) || null;
     const status0 = doneAt ? 'open' : 'preparing';
     const vals = [b.mmt_ref, b.floor, tankNo, gVendor, gBatch,
                   gKg, Number(b.water_kg || 0),
                   b.water_temp_c != null ? Number(b.water_temp_c) : null, additivesJson, totalKg,
-                  startAt, doneAt, b.tt_prep_start || null, status0, session.username, lotsJson, totalL, concU, deviationReason, deviationAgainst];
+                  startAt, doneAt, _v58eTimeIn(b.tt_prep_start) || null, status0, session.username, lotsJson, totalL, concU, deviationReason, deviationAgainst];
     const cols = `(mmt_ref,floor,tank_no,gelatine_vendor,gelatine_batch,gelatine_kg,water_kg,water_temp_c,additives_json,total_kg,charge_start,charge_complete,tt_prep_start,status,created_by,gelatine_lots_json,total_l,conc_kg_per_l,deviation_reason,deviation_against)`;
     if (pgPool) {
       await pgPool.query(`INSERT INTO gpr_mmt_charges ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)`, vals);
@@ -26981,8 +26996,8 @@ app.get('/api/gpr/mmt/:ref', async (req, res) => {
 // open-charge editor shows this table in full so the chemist sees where every litre went.
 app.get('/api/gpr/mmt/:ref/draws', async (req, res) => {
   try {
-    const session = gprSession(req);
-    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    // v58E item 2: open read like every other GPR GET (the token travels in POST bodies only — the
+    // session check here made the allocation detail fail with "GPR login required" on every open)
     const ref = req.params.ref;
     const P1 = pgPool ? '$1' : '?';
     const cSql = `SELECT * FROM gpr_mmt_charges WHERE mmt_ref=${P1}`;
@@ -27004,7 +27019,7 @@ app.get('/api/gpr/mmt/:ref/draws', async (req, res) => {
       return { kind: 'tt', tt_id: t.id, tt_number: t.tt_number, batch_number: t.batch_number, pc_code: t.pc_code, machine_id: t.machine_id,
                floor: t.floor, side: t.side, seq_index: t.seq_index, seq_total: t.seq_total, capacity_l: t.capacity_l, actual_l: t.actual_l,
                virgin_kg: kg, drawn_l: +(conc > 0 ? kg / conc : 0).toFixed(1), status: t.status, is_under_fill: !!t.is_under_fill,
-               production_day: t.production_day, prepared_at: t.created_at, issued_at: t.issued_at, scan_out_at: t.scan_out_at, by: t.created_by,
+               production_day: t.production_day, prepared_at: t.created_at, issued_at: t.issued_at, scan_in_at: t.scan_in_at, scan_out_at: t.scan_out_at, by: t.created_by,
                alloc_id: a ? a.id : null, alloc_seq: a ? a.alloc_seq : null, allocated_at: a ? a.allocated_at : null };
     });
     const pending = allocs.filter(a => a.status === 'allocated').map(a => ({
@@ -27027,8 +27042,7 @@ app.get('/api/gpr/mmt/:ref/draws', async (req, res) => {
 // (short_hold_reason) and excess tanks (excess_reason). Newest first; floor-scoped like everything else.
 app.get('/api/gpr/exceptions', async (req, res) => {
   try {
-    const session = gprSession(req);
-    if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
+    // v58E item 2: open read (see /draws)
     const floors = (req.query.floors ? String(req.query.floors).split(',') : []).map(f => f.trim()).filter(Boolean);
     const from = req.query.from ? String(req.query.from) : null, to = req.query.to ? String(req.query.to) : null;
     const mSql = `SELECT mmt_ref, floor, tank_no, status, charge_start, charge_complete, created_by, completed_by, deviation_reason, deviation_against, short_close_reason FROM gpr_mmt_charges
@@ -27138,6 +27152,65 @@ function _gprMmtPrepHours(masters) {
   const C = (masters && masters.gpr_constants) || {};
   const v = Number(C.mmtPrepHours);
   return Number.isFinite(v) && v > 0 ? v : 3;
+}
+// ═══ v58E item 1 (Ishan, 13 Oct): MMT timestamps are IST on the floor ═══════════════════════════
+// The charge editor's datetime-local fields were stored as typed ("2026-10-13T10:31", no zone) and
+// then read as UTC everywhere, so a charge the chemist entered as 10:31 IST displayed as 16:01. Every
+// time value that arrives without a zone is now taken as IST and stored as a proper UTC ISO stamp.
+function _v58eTimeIn(v) {
+  const s = String(v || '').trim();
+  if (!s) return null;
+  if (/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(s)) {   // naive = IST as typed
+    const ms = Date.parse(s + '+05:30'); return isNaN(ms) ? s : new Date(ms).toISOString();
+  }
+  const ms = _v58eMs(s); return ms == null ? s : new Date(ms).toISOString();
+}
+// tolerant parse: ISO with Z / ±hh:mm, Postgres "YYYY-MM-DD HH:MM:SS.ffffff+00", naive → UTC
+function _v58eMs(v) {
+  let s = String(v || '').trim().replace(' ', 'T').replace(/(\.\d{3})\d+/, '$1').replace(/([+-]\d{2})$/, '$1:00');
+  if (!/[zZ]$|[+-]\d{2}:\d{2}$/.test(s)) s += 'Z';
+  const ms = Date.parse(s); return isNaN(ms) ? null : ms;
+}
+// One-time repair of charges already stored with naive stamps. A naive value is either the editor
+// re-saving an untouched server stamp (then it is UTC — it matches created_at / the Done audit entry
+// within 3 min) or a time the chemist typed (then it is IST). Idempotent: repaired stamps carry Z.
+async function _v58eRepairMmtTimes() {
+  const naive = v => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(String(v || '').trim());
+  const rows = pgPool ? (await pgPool.query(`SELECT id, mmt_ref, charge_start, charge_complete, created_at FROM gpr_mmt_charges`)).rows
+                      : db.prepare(`SELECT id, mmt_ref, charge_start, charge_complete, created_at FROM gpr_mmt_charges`).all();
+  const todo = (rows || []).filter(r => naive(r.charge_start) || naive(r.charge_complete));
+  if (!todo.length) return { fixed: 0 };
+  const P = n => pgPool ? '$' + n : '?';
+  let fixed = 0; const log = [];
+  for (const r of todo) {
+    const sets = [], vals = [];
+    const decide = async (v, anchorMs, label) => {
+      const asUtc = Date.parse(String(v).trim() + 'Z'), asIst = Date.parse(String(v).trim() + '+05:30');
+      const utcMeaning = anchorMs != null && Math.abs(asUtc - anchorMs) <= 3 * 60000;
+      const out = new Date(utcMeaning ? asUtc : asIst).toISOString();
+      log.push(`${r.mmt_ref} ${label} ${v} → ${out} (${utcMeaning ? 'untouched server stamp' : 'typed as IST'})`);
+      return out;
+    };
+    if (naive(r.charge_start)) {
+      vals.push(await decide(r.charge_start, _v58eMs(r.created_at), 'start')); sets.push(`charge_start=${P(vals.length)}`);
+    }
+    if (naive(r.charge_complete)) {
+      let anchor = null;
+      try {
+        const aSql = `SELECT ts FROM audit_log WHERE action IN ('GPR_MMT_DONE','GPR_MMT_DONE_SHORT') AND details LIKE ${P(1)} ORDER BY id DESC LIMIT 1`;
+        const a = pgPool ? (await pgPool.query(aSql, [`ref=${r.mmt_ref} %`])).rows[0] : db.prepare(aSql).get(`ref=${r.mmt_ref} %`);
+        if (a && a.ts) anchor = _v58eMs(a.ts);
+      } catch (_) {}
+      vals.push(await decide(r.charge_complete, anchor, 'complete')); sets.push(`charge_complete=${P(vals.length)}`);
+    }
+    vals.push(r.id);
+    const sql = `UPDATE gpr_mmt_charges SET ${sets.join(', ')} WHERE id=${P(vals.length)}`;
+    if (pgPool) await pgPool.query(sql, vals); else db.prepare(sql).run(...vals);
+    fixed++;
+  }
+  logAudit('system', 'system', 'gpr', 'GPR_MMT_TIME_REPAIR', `${fixed} charge(s) re-stamped as UTC from naive IST/UTC values — ${log.join(' | ').slice(0, 1800)}`, null);
+  console.log(`[v58E GPR] MMT time repair: ${fixed} charge(s) — ${log.join(' | ')}`);
+  return { fixed, log };
 }
 function _gprIsoMs(v) {
   const s0 = String(v || '').trim().replace(' ', 'T');
@@ -29318,6 +29391,19 @@ app.get('/api/gpr/ledger/summary', async (req, res) => {
       const mRows = pgPool ? (await pgPool.query(mSql, params)).rows : db.prepare(mSql).all(...params);
       return res.json({ ok: true, view, rows: mRows });
     }
+    if (view === 'position') {
+      // v58E item 9 (Ishan, 13 Oct): stock POSITION of an account by batch · machine · PC — what was
+      // generated (accepted), what has been consumed, what is left — so a consumption entry can be
+      // picked from the generation lines it draws on, like the main stock ledger.
+      const pSql = `SELECT UPPER(COALESCE(batch_number,'')) AS batch_number, COALESCE(machine_id,'') AS machine_id, COALESCE(pc_code,'') AS pc_code, COALESCE(floor,'') AS floor,
+                           ${CR} AS generated, ${DB_} AS consumed, ${PEND} AS pending_kg, MIN(production_day) AS first_day, MAX(production_day) AS last_day, COUNT(*) AS n
+                    FROM gpr_ledger ${where} GROUP BY UPPER(COALESCE(batch_number,'')), COALESCE(machine_id,''), COALESCE(pc_code,''), COALESCE(floor,'')
+                    ORDER BY MAX(production_day) DESC, UPPER(COALESCE(batch_number,''))`;
+      const pRows = pgPool ? (await pgPool.query(pSql, params)).rows : db.prepare(pSql).all(...params);
+      (pRows || []).forEach(r => { r.generated = +Number(r.generated || 0).toFixed(3); r.consumed = +Number(r.consumed || 0).toFixed(3); r.pending_kg = +Number(r.pending_kg || 0).toFixed(3); r.balance_kg = +(r.generated - r.consumed).toFixed(3); r.n = Number(r.n); });
+      await _gprEnrichPc(pRows);
+      return res.json({ ok: true, view, rows: pRows, total_balance_kg: +(pRows || []).reduce((a, r) => a + r.balance_kg, 0).toFixed(3) });
+    }
     if (view === 'register') {
       // v58D item 9 (Ishan, 11 Oct): a proper CREDIT / DEBIT register with a running balance — the
       // oily-salvage ledger (and any account the bar filters to). Every movement in the window in
@@ -30796,6 +30882,7 @@ app.listen(PORT, () => {
     _gprUpgradeMastersV55V().catch(e => console.warn('[v55V GPR] seed upgrade failed:', e?.message));
     _gprBackfillLedgerPc().catch(e => console.warn('[v56A GPR] PC backfill failed:', e?.message));
     _v58bRebuildMmtPositions(null, null).catch(e => console.warn('[v58B GPR] MMT position rebuild failed:', e?.message));   // v58B: charges re-based on virgin kg ÷ concentration
+    _v58eRepairMmtTimes().catch(e => console.warn('[v58E GPR] MMT time repair failed:', e?.message));   // v58E: naive IST stamps → UTC
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
