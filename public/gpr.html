@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v58I</title>
+<title>GPR · build v58K</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -409,8 +409,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v58I</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58I</div>
+    <h1>GPR<span class="vpill">v58K</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58K</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -430,7 +430,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v58I</span></div>
+  <div class="nbrand">GPR<span class="vpill">v58K</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -969,6 +969,17 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
         <div class="ftab on" id="yv-recon" onclick="switchYield('recon',this)">Material reconciliation &mdash; by batch</div>
         <div class="ftab" id="yv-daily" onclick="switchYield('daily',this)">Daily by floor</div>
         <div class="ftab" id="yv-month" onclick="switchYield('month',this)">Monthly by floor</div>
+        <div class="ftab" id="yv-issue" onclick="switchYield('issue',this)">Material issuance</div>   <!-- v58J item 2 -->
+      </div>
+
+      <div id="yieldIssuePane" style="display:none">
+        <div class="card-sub" style="margin-bottom:8px">Gelatine to issue for the <b>next production day</b>, floor-wise, on three bases: yesterday, the last 7 days and the month to date. Packable production = machine-wise DPR lakhs × the batch's packable share (packed + WIP × A-grade, over gross) × the batch's label weight &mdash; the same working as Daily by floor; gelatine to issue = packable kg per day &divide; the planning yield.</div>
+        <div class="fgrid" style="margin-bottom:10px">
+          <div class="field-grp"><label>Planning yield %</label><input id="mi_yield" type="number" step="0.5" value="105" onchange="loadMaterialIssuance()"></div>
+          <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadMaterialIssuance()">Recompute</button></div>
+          <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportMaterialIssuance()">Export</button></div>
+        </div>
+        <div id="miOut"><div class="empty">Computing&hellip;</div></div>
       </div>
 
       <div id="yieldReconPane">
@@ -4105,6 +4116,13 @@ function _reconCells(b, hl){
 }
 // v56U (Rahul Planning 2): CAP / BODY holding time. Average of completed holds (scan-in → scan-out);
 // a tank still in holding shows its elapsed time. Below the minimum hold → red.
+// v58J item 1: the batch's yield cell — LIVE (running) or actual (closed); click opens the working
+function _yieldCell(b, hl){
+  const y = b.yield;
+  if(!y || y.pct==null) return '<td style="'+hl+'text-align:right;color:var(--t4)">&mdash;</td>';
+  const c = yCls(y.pct, y.target||103); const col = c==='green'?'var(--green)':(c==='red'?'var(--red)':'var(--amber)');
+  return '<td style="'+hl+'text-align:right;font-family:var(--mono);white-space:nowrap;cursor:pointer" title="'+(y.live?'LIVE — ':'')+fmt(y.outputKg,0)+' kg packable ÷ '+fmt(y.netKg,0)+' kg net material · click for the working" onclick="event.stopPropagation();mrOpen(\''+esc(b.batchNumber)+'\')"><b style="color:'+col+'">'+Number(y.pct).toFixed(1)+'%</b>'+(y.live?' <span style="font-size:9px;color:var(--teal);font-weight:700">LIVE</span>':'')+'</td>';
+}
 function _holdCells(b, hl){
   const n = 'text-align:right;font-family:var(--mono)';
   const H = b.hold;
@@ -4192,7 +4210,9 @@ async function loadPlan(){
         h += '<div style="margin:8px 0 2px;padding:4px 10px;background:var(--s3);font-family:var(--fc);font-weight:600;color:var(--t2);font-size:12px">MACHINE: '+esc(m.machineId)+' &mdash; '+m.batches.length+' BATCH'+(m.batches.length===1?'':'ES')
           + ' <span style="font-weight:400;color:var(--t3);font-size:11px">&middot; '+rateDay+' L/day'
           + (m.avgActualPerDay!=null ? ' &middot; Avg actual <b>'+m.avgActualPerDay+' L/day</b> <small>DPR</small>' : '')
-          + (m.liveAPct!=null ? ' &middot; Live A <b style="color:var(--teal)">'+Number(m.liveAPct).toFixed(1)+'%</b>' : '')+'</span></div>';
+          + (m.liveAPct!=null ? ' &middot; Live A <b style="color:var(--teal)">'+Number(m.liveAPct).toFixed(1)+'%</b>' : '')
+          + (m.yieldCum ? ' &middot; Yield to date <b style="color:var(--'+(yCls(m.yieldCum.pct, m.yieldCum.target)==='green'?'green':yCls(m.yieldCum.pct, m.yieldCum.target)==='red'?'red':'amber')+')" title="Σ packable output ÷ Σ net material of '+m.yieldCum.batches+' batch'+(m.yieldCum.batches===1?'':'es')+' — '+fmt(m.yieldCum.outputKg,0)+' / '+fmt(m.yieldCum.netKg,0)+' kg">'+Number(m.yieldCum.pct).toFixed(1)+'%</b> <small>'+m.yieldCum.batches+' batch'+(m.yieldCum.batches===1?'':'es')+'</small>' : '')   // v58J item 1
+          +'</span></div>';
         h += '<div class="froze"><table class="gtable" style="margin:0"><thead><tr>'
           + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','AIM A-GRADE (LACS)','UNSCANNED WIP @AIM','A-GRADE AIM %'].map((x,ix)=>th(x)+'').map((s2,ix)=> ix===0 ? s2.replace('<th','<th class="fz1"') : (ix===1 ? s2.replace('<th','<th class="fz2"') : s2)).join('')
           + (window._PLAN_GEL===false ? '' :
@@ -4204,6 +4224,7 @@ async function loadPlan(){
              ['MAT PLAN kg','MAT USED kg','MAT DIFF','QTY CAUSE','WEIGHT CAUSE','PROCESS CAUSE','PLAN mg','ACTUAL mg','TT I/P','HOLD &lt;2h'].map(th).join(''))
           // v56U (Rahul Planning 2): holding time per side — always the last two columns.
           + ['HOLD CAP (h)','HOLD BODY (h)'].map(th).join('')
+          + th('YIELD %')   // v58J item 1: live for running, actual for closed — always the last column
           + '</tr></thead><tbody>';
         // v55Y item 6: the subtotal row carries EVERY numeric column, not just the first three.
         // Lacs and WIP sum; the A% is the machine's live cohort figure (a sum of percentages is
@@ -4278,10 +4299,11 @@ async function loadPlan(){
             + (window._PLAN_GEL===false ? '' : _gelCells(b,hl))
             + (window._PLAN_RECON===false ? '' : _reconCells(b,hl))
             + _holdCells(b,hl)
+            + _yieldCell(b,hl)   // v58J item 1
             + '</tr>';
         });
         if(hiddenN>0){
-h += '<tr><td colspan="'+(16+(window._PLAN_GEL===false?0:7)+(window._PLAN_RECON===false?0:10))+'" style="color:var(--t3);font-size:11px;padding:4px 9px">&hellip; '+hiddenN+' more batch'+(hiddenN===1?'':'es')+' this month &mdash; <a href="javascript:openPlanTab()" style="color:var(--accent)">full view with filters &#8599;</a></td></tr>';
+h += '<tr><td colspan="'+(17+(window._PLAN_GEL===false?0:7)+(window._PLAN_RECON===false?0:10))+'" style="color:var(--t3);font-size:11px;padding:4px 9px">&hellip; '+hiddenN+' more batch'+(hiddenN===1?'':'es')+' this month &mdash; <a href="javascript:openPlanTab()" style="color:var(--accent)">full view with filters &#8599;</a></td></tr>';
         }
         const _stn = 'text-align:right;font-family:var(--mono)';
         h += '<tr style="background:var(--s3);font-weight:700"><td colspan="8" style="padding:5px 7px;font-family:var(--fc)">'+esc(m.machineId)+' SUBTOTAL &mdash; '+m.batches.length+' batch'+(m.batches.length===1?'':'es')+'</td>'
@@ -4300,6 +4322,7 @@ h += '<tr><td colspan="'+(16+(window._PLAN_GEL===false?0:7)+(window._PLAN_RECON=
               : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'))
           // v56U: machine hold = tank-weighted average of the month's completed holds, per side
           + td(nHc ? (sHc/nHc).toFixed(1) : '&mdash;',_stn) + td(nHb ? (sHb/nHb).toFixed(1) : '&mdash;',_stn)
+          + td(m.yieldCum ? '<b>'+Number(m.yieldCum.pct).toFixed(1)+'%</b>' : '&mdash;', _stn+';color:var(--'+(m.yieldCum?(yCls(m.yieldCum.pct,m.yieldCum.target)==='green'?'green':yCls(m.yieldCum.pct,m.yieldCum.target)==='red'?'red':'amber'):'t3')+')')   // v58J: weighted to date
           + '</tr>';
         h += '</tbody></table></div>';   // v56C item 3: closes the freeze-pane scroller
       });
@@ -4475,7 +4498,7 @@ function openPlanTab(){
     + '   if(!rows.length)return;\n'
     + '   var rd=m.ratedPerDay!=null?m.ratedPerDay:(m.ratePerDay!=null?m.ratePerDay:(Number(m.ratePerShift||0)*3).toFixed(1));\n'
     + '   fh+="<div class=\'mcband\'>MACHINE: "+esc(m.machineId)+" \u2014 "+rows.length+" OF "+(m.batches||[]).length+" BATCHES \u00b7 "+rd+" L/day"+(m.avgActualPerDay!=null?" \u00b7 Avg actual <b>"+m.avgActualPerDay+" L/day</b>":"")+(m.liveAPct!=null?" \u00b7 Live A <b>"+Number(m.liveAPct).toFixed(1)+"%</b>":"")+"</div>";\n'
-    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","AIM A-GRADE (LACS)","UNSCANNED WIP @AIM","A-GRADE AIM %","GEL kg PLAN","GEL kg ISSUED","GEL kg REM","CAP TT P/I/R","BODY TT P/I/R","HOLD CAP (h)","HOLD BODY (h)"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
+    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","AIM A-GRADE (LACS)","UNSCANNED WIP @AIM","A-GRADE AIM %","GEL kg PLAN","GEL kg ISSUED","GEL kg REM","CAP TT P/I/R","BODY TT P/I/R","HOLD CAP (h)","HOLD BODY (h)","YIELD %"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
     + '   var so=0,sp=0,sa=0;\n'
     + '   rows.forEach(function(b){so+=Number(b.orderQty||0);sp+=Number(b.grossPlanned||0);sa+=Number(b.grossActual||0);\n'
     + '    var done=b.status==="completed"||b.effectivelyComplete;\n'
@@ -4485,8 +4508,8 @@ function openPlanTab(){
     + '     +"<td>"+esc(b.dprFirst||b.plannedStart||"\u2014")+"</td><td>"+end+"</td>"\n'
     + '     +"<td class=\'num\'>"+num(b.orderQty)+"</td><td class=\'num\'>"+num(b.grossPlanned)+"</td><td class=\'num\'>"+num(b.grossActual)+"</td><td class=\'num\'>"+(b.aimALacs==null?"\u2014":num(b.aimALacs))+"</td>"\n'
     + '     +"<td class=\'num\'>"+num(b.unscannedWipAim)+"</td><td class=\'num\'>"+(b.aGradeAimPct==null?"\u2014":num(b.aGradeAimPct)+"%")+"</td>"'
-    + '     +(b.gel?("<td class=\'num\'>"+num(b.gel.kgPlanned)+"</td><td class=\'num\'>"+num(b.gel.kgIssued)+"</td><td class=\'num\'>"+num(b.gel.kgRemaining)+"</td><td class=\'num\'>"+b.gel.cap.ttPlanned+"/"+b.gel.cap.ttIssued+"/"+b.gel.cap.ttRemaining+"</td><td class=\'num\'>"+b.gel.body.ttPlanned+"/"+b.gel.body.ttIssued+"/"+b.gel.body.ttRemaining+"</td>"):"<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>")+HC(b)+"</tr>";});\n'
-    + '   fh+="<tr style=\'background:var(--s3);font-weight:700\'><td colspan=\'8\'>"+esc(m.machineId)+" SUBTOTAL (shown)</td><td class=\'num\'>"+num(so)+"</td><td class=\'num\'>"+num(sp)+"</td><td class=\'num\'>"+num(sa)+"</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td></tr></tbody></table>";});\n'
+    + '     +(b.gel?("<td class=\'num\'>"+num(b.gel.kgPlanned)+"</td><td class=\'num\'>"+num(b.gel.kgIssued)+"</td><td class=\'num\'>"+num(b.gel.kgRemaining)+"</td><td class=\'num\'>"+b.gel.cap.ttPlanned+"/"+b.gel.cap.ttIssued+"/"+b.gel.cap.ttRemaining+"</td><td class=\'num\'>"+b.gel.body.ttPlanned+"/"+b.gel.body.ttIssued+"/"+b.gel.body.ttRemaining+"</td>"):"<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>")+HC(b)+"<td class=\'num\'>"+(b.yield&&b.yield.pct!=null?(Number(b.yield.pct).toFixed(1)+"%"+(b.yield.live?" <small>LIVE</small>":"")):"\u2014")+"</td></tr>";});\n'
+    + '   fh+="<tr style=\'background:var(--s3);font-weight:700\'><td colspan=\'8\'>"+esc(m.machineId)+" SUBTOTAL (shown)</td><td class=\'num\'>"+num(so)+"</td><td class=\'num\'>"+num(sp)+"</td><td class=\'num\'>"+num(sa)+"</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class=\'num\'>"+(m.yieldCum?Number(m.yieldCum.pct).toFixed(1)+"%":"\u2014")+"</td></tr></tbody></table>";});\n'
     + '  if(fh)h+="<div class=\'flband\'>FLOOR: "+esc(FL[d.floor]||d.floor)+"</div>"+fh;});\n'
     + ' document.getElementById("sheet1").innerHTML=h||"<div style=\'color:var(--t3)\'>Nothing matches the filters.</div>";}\n'
     + 'function renderCasc(){var fd=v("c_day"),fb=v("c_batch"),fp=v("c_pc"),fc=v("c_cust");var evs=[];\n'
@@ -4534,8 +4557,8 @@ function openPlanTab(){
 function exportPlan(){
   if(!_planData || typeof XLSX==='undefined'){ alert('Load the plan first.'); return; }
   const d = { machines: (_planData.floors||[]).flatMap(f=>f.machines||[]) };
-  const s1 = [['Machine','Batch','Status','Customer','Colour','Size','Order (L)','Gross Planned','Gross Actual','Unscanned WIP @AIM','A-Grade AIM %','Gel kg plan','Gel kg issued','Gel kg rem','Cap TT P/I/R','Body TT P/I/R','Est/Actual End','Hold CAP avg h','Hold BODY avg h']];
-  d.machines.forEach(m=>m.batches.forEach(b=>s1.push([m.machineId,b.batchNumber,b.status,b.customer,b.colour,b.size,b.orderQty,b.grossPlanned,b.grossActual,b.unscannedWipAim,b.aGradeAimPct,(b.gel?b.gel.kgPlanned:''),(b.gel?b.gel.kgIssued:''),(b.gel?b.gel.kgRemaining:''),(b.gel?(b.gel.cap.ttPlanned+'/'+b.gel.cap.ttIssued+'/'+b.gel.cap.ttRemaining):''),(b.gel?(b.gel.body.ttPlanned+'/'+b.gel.body.ttIssued+'/'+b.gel.body.ttRemaining):''),(b.status==='completed'?(b.dprLast||b.plannedEnd||''):(b.estEnd?b.estEnd.date+' '+b.estEnd.shift:'')),(b.hold&&b.hold.cap&&b.hold.cap.avgH!=null?b.hold.cap.avgH:''),(b.hold&&b.hold.body&&b.hold.body.avgH!=null?b.hold.body.avgH:'')])));
+  const s1 = [['Machine','Batch','Status','Customer','Colour','Size','Order (L)','Gross Planned','Gross Actual','Unscanned WIP @AIM','A-Grade AIM %','Gel kg plan','Gel kg issued','Gel kg rem','Cap TT P/I/R','Body TT P/I/R','Est/Actual End','Hold CAP avg h','Hold BODY avg h','Yield %','Yield basis']];
+  d.machines.forEach(m=>m.batches.forEach(b=>s1.push([m.machineId,b.batchNumber,b.status,b.customer,b.colour,b.size,b.orderQty,b.grossPlanned,b.grossActual,b.unscannedWipAim,b.aGradeAimPct,(b.gel?b.gel.kgPlanned:''),(b.gel?b.gel.kgIssued:''),(b.gel?b.gel.kgRemaining:''),(b.gel?(b.gel.cap.ttPlanned+'/'+b.gel.cap.ttIssued+'/'+b.gel.cap.ttRemaining):''),(b.gel?(b.gel.body.ttPlanned+'/'+b.gel.body.ttIssued+'/'+b.gel.body.ttRemaining):''),(b.status==='completed'?(b.dprLast||b.plannedEnd||''):(b.estEnd?b.estEnd.date+' '+b.estEnd.shift:'')),(b.hold&&b.hold.cap&&b.hold.cap.avgH!=null?b.hold.cap.avgH:''),(b.hold&&b.hold.body&&b.hold.body.avgH!=null?b.hold.body.avgH:''),(b.yield&&b.yield.pct!=null?b.yield.pct:''),(b.yield?(b.yield.live?'live':'actual'):'')])));   // v58J
   const s2 = [['Machine','Current batch','Current colour','Est end','Next batch','Next colour','Dish wash','TT ready by','Begin prep at','Status','Actual Cap TT out','Actual Body TT out']];
   d.machines.forEach(m=>m.cascade.forEach(t=>s2.push([m.machineId,t.fromBatch,t.fromColour,(t.endEst?t.endEst.date+' '+t.endEst.shift:''),t.toBatch,t.toColour,(t.dishWash?'YES':'no'),t.ttReadyBy.date+' '+t.ttReadyBy.shift,t.beginPrepAt.date+' '+t.beginPrepAt.shift,t.status,(t.actual&&t.actual.cap&&t.actual.cap.firstOut)||'',(t.actual&&t.actual.body&&t.actual.body.firstOut)||''])));
   const wb = XLSX.utils.book_new();
@@ -5346,6 +5369,8 @@ function switchYield(which, btn){
   document.getElementById('yieldDailyPane').style.display = which==='daily'?'block':'none';
   document.getElementById('yieldMonthPane').style.display = which==='month'?'block':'none';
   document.getElementById('yieldReconPane').style.display = which==='recon'?'block':'none';
+  const ip = document.getElementById('yieldIssuePane'); if(ip) ip.style.display = which==='issue'?'block':'none';   // v58J item 2
+  if(which==='issue') loadMaterialIssuance();
   const ys = document.getElementById('ydSummary'); if(ys) ys.style.display = which==='daily'?'block':'none';
   if(which==='daily' && !val('yd_to')){ setVal('yd_to', productionDay()); setVal('yd_from', productionDay()); }
   if(which==='month' && !val('ym_month')) setVal('ym_month', productionDay().slice(0,7));
@@ -5591,6 +5616,44 @@ function yCls(pct, target){
   const v = pct - target;
   return Math.abs(v) <= 2 ? 'green' : (v < 0 ? 'red' : 'amber');
 }
+// ═══ v58J item 2: MATERIAL ISSUANCE — gelatine to issue tomorrow, floor-wise on three bases ═══════
+async function loadMaterialIssuance(){
+  const out = document.getElementById('miOut'); if(!out) return;
+  out.innerHTML = '<div class="empty">Computing from the daily packable production&hellip;</div>';
+  try{
+    const y = num('mi_yield') || 105;
+    const d = await api('/api/gpr/material-issuance?yield='+encodeURIComponent(y));
+    if(!d || !d.ok){ out.innerHTML = '<div class="empty">'+esc((d&&d.error)||'Could not compute')+'</div>'; return; }
+    window._MI = d;
+    const W = d.windows, K = [['yesterday','Yesterday'],['last7','Last 7 days'],['month','Month to date']];
+    const fl = (typeof visibleFloors==='function') ? visibleFloors() : ['GF','1F','2F'];
+    const floors = ['GF','1F','2F'].filter(f=>fl.includes(f));
+    const rowOf = (k, f) => ((W[k]||{}).rows||[]).find(r=>r.floor===f) || { packableKg:0, packableLakhs:0, days:0, batches:0, packablePerDayKg:0, issueKg:0 };
+    let h = '<div class="kgrid">'
+      + K.map(([k,l])=>{ const t = floors.reduce((a,f)=>a+rowOf(k,f).issueKg,0); return kpi('Issue tomorrow — '+l+' basis', fmt(t,0)+' kg', k==='last7'?'amber':'', _dm(W[k].from)+(W[k].from!==W[k].to?' → '+_dm(W[k].to):'')); }).join('')
+      + '</div>';
+    h += '<div class="tswrap" style="max-height:none"><table class="gtable"><thead><tr><th rowspan="2">Floor</th>'
+      + K.map(([k,l])=>'<th colspan="4" style="text-align:center;border-left:2px solid var(--b2)">'+esc(l)+' <span style="font-weight:400;color:var(--t3)">'+esc(_dm(W[k].from))+(W[k].from!==W[k].to?' → '+esc(_dm(W[k].to)):'')+'</span></th>').join('')
+      + '</tr><tr>' + K.map(()=>'<th class="num" style="border-left:2px solid var(--b2)">Packable L</th><th class="num">Packable kg</th><th class="num" title="packable kg ÷ production days in the window">kg / day</th><th class="num" title="kg per day ÷ planning yield">Gelatine to issue kg</th>').join('')
+      + '</tr></thead><tbody>';
+    floors.forEach(f=>{
+      h += '<tr><td><b>'+esc(FLOOR_LABELS[f]||f)+'</b></td>' + K.map(([k])=>{ const r = rowOf(k,f);
+        return '<td class="num" style="border-left:2px solid var(--b2)">'+fmt(r.packableLakhs,2)+'</td><td class="num">'+fmt(r.packableKg,0)+' <span style="color:var(--t3);font-size:10px">'+r.days+'d · '+r.batches+' b</span></td><td class="num">'+fmt(r.packablePerDayKg,0)+'</td><td class="num"><b>'+fmt(r.issueKg,0)+'</b></td>'; }).join('') + '</tr>';
+    });
+    h += '<tr style="background:var(--s3);font-weight:700"><td>TOTAL — gelatine to issue for the day</td>' + K.map(([k])=>{ const t = floors.reduce((a,f)=>a+rowOf(k,f).issueKg,0), p = floors.reduce((a,f)=>a+rowOf(k,f).packablePerDayKg,0), L = floors.reduce((a,f)=>a+rowOf(k,f).packableLakhs,0), kg = floors.reduce((a,f)=>a+rowOf(k,f).packableKg,0);
+      return '<td class="num" style="border-left:2px solid var(--b2)">'+fmt(L,2)+'</td><td class="num">'+fmt(kg,0)+'</td><td class="num">'+fmt(p,0)+'</td><td class="num"><b>'+fmt(t,0)+'</b></td>'; }).join('') + '</tr>';
+    h += '</tbody></table></div>';
+    h += '<div class="hint" style="margin-top:8px">For production day <b>'+esc(_dm(d.forDay))+'</b>; basis ends '+esc(_dm(d.basisEndsOn))+' (the last completed production day). Gelatine to issue = packable kg per day &divide; '+d.planYieldPct+'% — virgin plus reuse, before the cutting/salvage that will come back. A floor with no production in a window shows 0.</div>';
+    out.innerHTML = h;
+  }catch(e){ out.innerHTML = '<div class="empty">Could not compute the issuance.</div>'; }
+}
+function exportMaterialIssuance(){
+  const d = window._MI; if(!d){ toast('Compute first','err'); return; }
+  const rows = []; Object.entries(d.windows).forEach(([k,w])=>(w.rows||[]).forEach(r=>rows.push(Object.assign({ basis:k, from:w.from, to:w.to, floor_label: FLOOR_LABELS[r.floor]||r.floor }, r))));
+  gprExport({ rows, title:'GPR — material issuance (gelatine to issue, floor-wise)', context:'for '+_dm(d.forDay)+' · basis to '+_dm(d.basisEndsOn)+' · planning yield '+d.planYieldPct+'%', sheet:'Issuance', file:'gpr_material_issuance',
+    columns:[ {key:'basis',label:'Basis',w:12},{key:'from',label:'From',w:12},{key:'to',label:'To',w:12},{key:'floor_label',label:'Floor',w:12},{key:'packableLakhs',label:'Packable L',w:12,num:true},{key:'packableKg',label:'Packable kg',w:12,num:true},
+      {key:'days',label:'Days',w:7,num:true},{key:'batches',label:'Batches',w:9,num:true},{key:'packablePerDayKg',label:'kg / day',w:10,num:true},{key:'issueKg',label:'Gelatine to issue kg',w:18,num:true} ] });
+}
 // ═══ v58H item 7: MATERIAL RECONCILIATION — by batch, one row = yield + planned vs actual ═══════
 async function loadMaterialRecon(){
   const out = document.getElementById('mrOut'); if(!out) return;
@@ -5688,8 +5751,8 @@ async function mrOpen(bn){
         + '<b style="font-size:15px;color:var(--'+(cls==='green'?'green':cls==='red'?'red':cls==='amber'?'amber':'t1')+')">'+(y.yieldPct!=null?fmt(y.yieldPct,2)+'%':'—')+'</b> <span style="color:var(--t3)">(target '+y.target+'%'+(y.variance!=null?' · '+(y.variance>=0?'+':'')+fmt(y.variance,2):'')+')</span></div>'
         + '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:0">Packable output</div><table class="gtable"><tbody>'
         + '<tr><td>Packed (Tracking, packing IN)</td><td class="num">'+n2(N.packedLakhs)+' L</td><td class="num">× '+n1(y.avgMg)+' mg ÷ 10 =</td><td class="num"><b>'+n1(N.packedWeightKg)+'</b> kg</td></tr>'
-        + '<tr><td>WIP (consolidated, Report E)</td><td class="num">'+n2(N.wipLakhs)+' L</td><td class="num">× '+n1(y.avgMg)+' mg ÷ 10 =</td><td class="num"><b>'+n1(N.wipWeightKg)+'</b> kg</td></tr>'
-        + '<tr class="sumrow"><td>Packable output</td><td class="num">'+n2(Number(N.packedLakhs)+Number(N.wipLakhs))+' L</td><td></td><td class="num"><b>'+n1(N.total)+'</b> kg</td></tr></tbody></table>'
+        + '<tr><td>WIP (consolidated, Report E) '+n2(N.wipLakhs)+' L × A-grade '+(N.aPct!=null?n1(N.aPct)+'%':'—')+(N.aBasis&&N.aBasis!=='none'?' <span style="color:var(--t3)">('+esc(N.aBasis)+')</span>':'')+'</td><td class="num">'+n2(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs)+' L</td><td class="num">× '+n1(y.avgMg)+' mg ÷ 10 =</td><td class="num"><b>'+n1(N.wipWeightKg)+'</b> kg</td></tr>'   /* v58K */
+        + '<tr class="sumrow"><td>Packable output</td><td class="num">'+n2(Number(N.packedLakhs)+Number(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs))+' L</td><td></td><td class="num"><b>'+n1(N.total)+'</b> kg</td></tr></tbody></table>'
         + '<div class="hbnote" style="margin-top:6px">Average weight '+n1(y.avgMg)+' mg'+(y.weightBasis&&y.weightBasis.basis?' ('+esc(y.weightBasis.basis)+')':'')+' · DPR gross '+n2(y.grossProd)+' L · '+y.ttCount+' tank'+(y.ttCount===1?'':'s')+', '+n1(y.ttLitres)+' L'+(y.denominator.aimRemeltKg>0?' · AIM remelt '+n1(y.denominator.aimRemeltKg)+' kg (out of process, not in the yield)':'')+'</div></div>'
         + '<div><div class="fgroup-title" style="margin-top:0">Net material</div><table class="gtable"><tbody>'
         + '<tr><td>Virgin gelatine (tanks)</td><td class="num">'+n1(D.virginKg)+'</td></tr>'
@@ -5700,6 +5763,7 @@ async function mrOpen(bn){
         + '<tr><td>&minus; Cutting &amp; salvage generated by this batch (DPR cuttings, GPR entries)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.generatedManualKg)+'</td></tr>'
         + '<tr class="sumrow"><td>= Net recirculation</td><td class="num">'+(D.netRecirc>=0?'+':'')+n1(D.netRecirc)+'</td></tr>'
         + '<tr><td>&minus; AIM / printing salvage recovered (Tracking, '+n2(D.salvageLakhs)+' L × '+n1(y.avgMg)+' mg)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.salvageRecoveredKg)+'</td></tr>'
+        + (Number(D.expectedSalvageKg)>0.005 ? '<tr><td>&minus; Salvage the WIP is expected to return ('+n2(D.expectedSalvageLakhs)+' L = WIP × (100 − A) %, × '+n1(y.avgMg)+' mg)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.expectedSalvageKg)+'</td></tr>' : '')   /* v58K */
         + '<tr class="sumrow"><td>Net material</td><td class="num"><b>'+n1(D.total)+'</b></td></tr></tbody></table>'
         + '<div class="hbnote" style="margin-top:6px">Total charged into the tanks (all material): '+n1(D.totalChargedKg)+' kg. Recovery credited is not recovery used: material recovered but not reused reduces the denominator; recovered and reused nets to neutral.</div></div></div>';
     }
@@ -5804,7 +5868,7 @@ function yieldWorking(day, floor){
         + '<b style="font-size:15px">'+(f.yieldPct!=null?fmt(f.yieldPct,2)+'%':'—')+'</b> <span style="color:var(--t3)">(target '+W.target+'%)</span></div>'
         + '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:0">Packable output &mdash; this day\'s production only</div>'
         + '<div class="tswrap" style="max-height:48vh"><table class="gtable"><thead><tr><th>Batch</th><th class="num">Produced today (L)</th>'
-        + '<th class="num" title="packed + WIP lakhs to date ÷ DPR production to date">Packable %</th><th class="num">Packable today (L)</th>'
+        + '<th class="num" title="(packed + WIP × A-grade) lakhs to date ÷ DPR production to date">Packable %</th><th class="num">Packable today (L)</th>'
         + '<th class="num" title="average weight from the batch\'s labels — the weight TTs are issued on">Avg wt (mg, labels)</th><th class="num">Packable kg</th></tr></thead><tbody>'
         + (L.length ? L.map(w=>'<tr><td class="mono"><b>'+esc(w.batch)+'</b></td><td class="num">'+n(w.dprDayL,2)+'</td><td class="num">'+n(w.packableSharePct,1)+'%</td>'
               + '<td class="num">'+n(w.packableDayL,2)+'</td><td class="num"'+(w.weightBasis && !/label/.test(w.weightBasis)?' title="no label weight yet — size master used" style="color:var(--amber)"':'')+'>'+n(w.avgMg,1)+'</td><td class="num"><b>'+n(w.outputKg)+'</b></td></tr>').join('')

@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58I';
+const APP_BUILD = 'v58K';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -26657,10 +26657,28 @@ async function gprComputeYield(batchNumber) {
   const _wipFrozenA = Math.max(0, grossProd - totalWastageForWIP - packLakhs);
   const wipLakhs = _live55a.consolidatedWip;
 
+  // ═══ v58K (Ishan, 18 Oct): WIP is not all packable — the part that has not yet been inspected will
+  // give up (100 − A-grade) % as salvage. The numerator counts WIP × A %, and the salvage that WIP is
+  // expected to return (WIP × (100 − A) %, in kg) comes off the denominator the same way recovered
+  // salvage does, so both sides move together. A % = the batch's own live AIM figure when it has
+  // inspections; else the machine's live A for the month; else the masters' default. A closed batch
+  // with no WIP is unchanged.
+  let aPct = null, aBasis = 'none';
+  if (wipLakhs > 0.0005) {
+    if (_live55a && _live55a.aimPct != null && Number(_live55a.aimPct) > 0) { aPct = Number(_live55a.aimPct); aBasis = 'batch-live'; }
+    else {
+      try { const ma = order && order.machineId ? await _v57kMachineActuals(order.machineId, sizeKey, masters) : null; if (ma && ma.aPct != null) { aPct = Number(ma.aPct); aBasis = 'machine-live'; } } catch (_) {}
+      if (aPct == null) { const Cq = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants; aPct = Number(Cq.defaultAGradePct || 93); aBasis = 'default'; }
+    }
+    aPct = Math.max(0, Math.min(100, aPct));
+  }
+  const packableWipLakhs = aPct != null ? +(wipLakhs * aPct / 100).toFixed(3) : +wipLakhs.toFixed(3);
+  const expectedSalvageLakhs = +(wipLakhs - packableWipLakhs).toFixed(3);
+  const expectedSalvageKg = +(expectedSalvageLakhs * avgMg / 10).toFixed(2);
   const packedWeightKg = +(packLakhs * avgMg / 10).toFixed(2);
-  const wipWeightKg    = +(wipLakhs * avgMg / 10).toFixed(2);
+  const wipWeightKg    = +(packableWipLakhs * avgMg / 10).toFixed(2);
   const numerator      = +(packedWeightKg + wipWeightKg).toFixed(2);
-  const denominator    = +(freshMaterial + netRecirc - salvageRecoveredKg).toFixed(2);
+  const denominator    = +(freshMaterial + netRecirc - salvageRecoveredKg - expectedSalvageKg).toFixed(2);
   const yieldPct = denominator > 0 ? +((numerator / denominator) * 100).toFixed(2) : null;
   const C = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
   const target = Number(C.yieldTargetPct || 103);
@@ -26669,6 +26687,7 @@ async function gprComputeYield(batchNumber) {
     batch: bn, avgMg, weightBasis: wt, grossProd: +grossProd.toFixed(3),
     numerator: {
       packedLakhs: +packLakhs.toFixed(3), wipLakhs: +wipLakhs.toFixed(3),
+      packableWipLakhs, aPct: aPct != null ? +aPct.toFixed(2) : null, aBasis,   // v58K
       packedWeightKg, wipWeightKg, total: numerator,
     },
     denominator: {
@@ -26682,6 +26701,7 @@ async function gprComputeYield(batchNumber) {
       generatedTrackingKg: +generatedTracking.toFixed(2),
       netRecirc,
       salvageLakhs: +salvageLakhs.toFixed(3), salvageRecoveredKg,
+      expectedSalvageLakhs, expectedSalvageKg,   // v58K: salvage the un-inspected WIP is expected to return
       aimRemeltKg,
       total: denominator,
     },
@@ -29881,14 +29901,14 @@ async function _v57fDayYield(from, to, floorFilter) {
       const y = yc[r.bn] = yc[r.bn] || await gprComputeYield(r.bn);
       // v57H (Ishan): weight = the batch's LABEL average weight (gprAvgMg — the same weight the TTs are
       // issued on); packable share = packable lakhs to date (packed + WIP) ÷ DPR production to date.
-      const packL = Number(y.numerator.packedLakhs || 0) + Number(y.numerator.wipLakhs || 0);
+      const packL = Number(y.numerator.packedLakhs || 0) + Number(y.numerator.packableWipLakhs != null ? y.numerator.packableWipLakhs : y.numerator.wipLakhs || 0);   // v58K: WIP × A-grade
       const share = Math.min(1, dTot > 0 ? packL / dTot : 0);
       const packDayL = dD * share;
       const mg = Number(y.avgMg || 0);
       const outKg = packDayL * mg / 10;                      // lakhs × mg ÷ 10 = kg (as the batch yield)
       const c = cell(r.d, fl);
       c.num += outKg; c.batches += 1;
-      c.working.push({ batch: r.bn, avgMg: +mg.toFixed(2), weightBasis: (y.weightBasis && y.weightBasis.basis) || null,
+      c.working.push({ batch: r.bn, avgMg: +mg.toFixed(2), weightBasis: (y.weightBasis && y.weightBasis.basis) || null, aPct: y.numerator.aPct, aBasis: y.numerator.aBasis,
         dprDayL: +dD.toFixed(2), dprToDateL: +dTot.toFixed(2), packableSharePct: +(share * 100).toFixed(1),
         packableDayL: +packDayL.toFixed(3), outputKg: +outKg.toFixed(1) });
     }
@@ -30382,6 +30402,58 @@ async function _gprMachineRate(mc) {   // avg lakhs/shift over last 6 producing 
   const qs = (rows || []).map(r => Number(r.q || 0)).filter(q => q > 0);
   return qs.length ? qs.reduce((a, b) => a + b, 0) / qs.length : 0;
 }
+// v58J: short memo so the Planning sheet (a dozen batches per machine) does not recompute every yield on
+// every open — a batch's figure is at most 45 s old, which is "real time" against tank entries.
+const _v58jYieldCache = new Map();
+async function _v58jYieldMemo(bn) {
+  const k = String(bn || '').toUpperCase(); const hit = _v58jYieldCache.get(k);
+  if (hit && Date.now() - hit.t < 45000) return hit.y;
+  const y = await gprComputeYield(k); _v58jYieldCache.set(k, { t: Date.now(), y });
+  if (_v58jYieldCache.size > 400) { const first = _v58jYieldCache.keys().next().value; _v58jYieldCache.delete(first); }
+  return y;
+}
+// ═══ v58J item 2 (Ishan, 18 Oct): MATERIAL ISSUANCE — gelatine to issue tomorrow, floor-wise ═══════
+// Three bases — yesterday (the last completed production day), the last 7 days, the month to date —
+// each: packable production kg (machine-wise DPR lakhs × the batch's label weight, as the daily yield
+// works it) ÷ days with production = packable kg per day; gelatine to issue = packable kg per day ÷
+// the planning yield (105 %). Same numerator as Daily by floor, so the two always agree.
+app.get('/api/gpr/material-issuance', async (req, res) => {
+  try {
+    const masters = await gprLoadMasters();
+    const C = Object.assign({}, GPR_SEED_MASTERS.gpr_constants, masters.gpr_constants || {});
+    const planYield = Number(req.query.yield || C.issuancePlanYieldPct || 105);
+    const today = gprProductionDay();
+    const dayShift = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
+    const yday = dayShift(today, -1);
+    const from7 = dayShift(yday, -6);
+    const monthFrom = yday.slice(0, 7) + '-01';
+    const from = monthFrom < from7 ? monthFrom : from7;
+    const grid = await _v57fDayYield(from, yday, null);
+    const FL = ['GF', '1F', '2F'];
+    const win = { yesterday: [yday, yday], last7: [from7, yday], month: [monthFrom, yday] };
+    const out = {};
+    Object.entries(win).forEach(([k, [a, b]]) => {
+      const floors = {};
+      FL.forEach(fl => { floors[fl] = { packableKg: 0, days: 0, lakhs: 0, batches: new Set() }; });
+      Object.entries(grid).forEach(([d, fls]) => {
+        if (d < a || d > b) return;
+        Object.entries(fls).forEach(([fl, c]) => {
+          if (!floors[fl]) floors[fl] = { packableKg: 0, days: 0, lakhs: 0, batches: new Set() };
+          if (c.num > 0) { floors[fl].packableKg += c.num; floors[fl].days += 1; }
+          (c.working || []).forEach(w => { floors[fl].lakhs += Number(w.packableDayL || 0); floors[fl].batches.add(w.batch); });
+        });
+      });
+      const rows = Object.keys(floors).sort(_v58hFloorSort2).map(fl => {
+        const f = floors[fl]; const perDay = f.days > 0 ? f.packableKg / f.days : 0;
+        return { floor: fl, packableKg: +f.packableKg.toFixed(1), packableLakhs: +f.lakhs.toFixed(2), days: f.days, batches: f.batches.size,
+                 packablePerDayKg: +perDay.toFixed(1), issueKg: +(perDay / (planYield / 100)).toFixed(1) };
+      });
+      out[k] = { from: a, to: b, rows, totalIssueKg: +rows.reduce((x, r) => x + r.issueKg, 0).toFixed(1), totalPackablePerDayKg: +rows.reduce((x, r) => x + r.packablePerDayKg, 0).toFixed(1) };
+    });
+    res.json({ ok: true, forDay: dayShift(today, 1), today, basisEndsOn: yday, planYieldPct: planYield, windows: out });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+function _v58hFloorSort2(a, b) { const O = { GF: 0, '1F': 1, '2F': 2 }; return (O[a] ?? 9) - (O[b] ?? 9) || String(a).localeCompare(String(b)); }
 app.get('/api/gpr/plan', async (req, res) => {
   try {
     // v55E: open read-only route, matching the module's GET convention (see receipts above).
@@ -30675,6 +30747,15 @@ app.get('/api/gpr/plan', async (req, res) => {
                               liveN: s.liveN, liveMaxH: s.liveMaxH != null ? +s.liveMaxH.toFixed(2) : null });
           row.hold = _H ? { cap: _fx(_H.cap), body: _fx(_H.body), minHoldHours: _gprMinHold(masters) } : null;
         }
+        // v58J item 1 (Ishan, 18 Oct): the batch's yield rides the Planning sheet — live for a running
+        // batch, actual for a closed one — so the chemist sees it where the rest of the batch is read.
+        row.yield = null;
+        try {
+          if ((row.status === 'running' || row.status === 'closed' || row.status === 'completed') && row.gel && Number(row.gel.kgIssued) > 0) {
+            const y = await _v58jYieldMemo(bn);
+            if (y) row.yield = { pct: y.yieldPct, target: y.target, variance: y.variance, outputKg: y.numerator.total, netKg: y.denominator.total, live: row.status === 'running' };
+          }
+        } catch (_) {}
         rows.push(row);
       }
       // cascade transitions between consecutive non-completed pairs
@@ -30702,7 +30783,11 @@ app.get('/api/gpr/plan', async (req, res) => {
           beginPrepAt: { date: prepInfo.date, shift: prepInfo.shift, atISO: new Date(prep.ms + _GPR_IST_MS).toISOString().replace('Z', '+05:30').replace(/\.\d{3}/, '') },
           prepHours, status, actual: act });
       }
+      // v58J item 1: machine cumulative yield = Σ output ÷ Σ net material of its yielded batches (weighted, never an average of percentages)
+      const _yr = rows.filter(r => r.yield && r.yield.pct != null);
+      const _yOut = _yr.reduce((a, r) => a + Number(r.yield.outputKg || 0), 0), _yNet = _yr.reduce((a, r) => a + Number(r.yield.netKg || 0), 0);
       machines.push({ machineId: mc,
+        yieldCum: _yNet > 0 ? { pct: +((_yOut / _yNet) * 100).toFixed(2), outputKg: +_yOut.toFixed(1), netKg: +_yNet.toFixed(1), batches: _yr.length, target: (_yr[0] && _yr[0].yield.target) || 103 } : null,
         ratedPerDay: mmRated[mc] != null ? mmRated[mc] : +(rate * 3).toFixed(1),          // Planning machine master cap (L/day)
         avgActualPerDay: mcAvg[mc] != null ? mcAvg[mc] : null,                            // DPR plant-cum avg, same as Planning header
         liveAPct: mcA.insp > 0 ? +((mcA.aG / mcA.insp) * 100).toFixed(1) : null,          // v54B cohort rule
