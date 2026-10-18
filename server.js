@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58G';
+const APP_BUILD = 'v58I';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -26602,9 +26602,13 @@ async function gprComputeYield(batchNumber) {
   // Ledger A — consumption (all accounts) vs MANUAL generation only
   const lSql = `SELECT
                   COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} THEN qty_kg ELSE 0 END),0) AS consumed,
-                  COALESCE(SUM(CASE WHEN movement_type='generation' AND source<>'tracking' THEN qty_kg ELSE 0 END),0) AS gen_manual,
-                  COALESCE(SUM(CASE WHEN movement_type='generation' AND source='tracking' THEN qty_kg ELSE 0 END),0) AS gen_tracking
+                  COALESCE(SUM(CASE WHEN movement_type='generation' AND source NOT IN ('tracking','estimate','return') AND account<>'return_remelt' AND COALESCE(receipt_status,'')<>'rejected' THEN qty_kg ELSE 0 END),0) AS gen_manual,
+                  COALESCE(SUM(CASE WHEN movement_type='generation' AND source='tracking' AND COALESCE(receipt_status,'')<>'rejected' THEN qty_kg ELSE 0 END),0) AS gen_tracking
                 FROM gpr_ledger WHERE UPPER(batch_number)=${P}`;
+  // v58I: gen_manual = cutting / salvage the batch GENERATED and put back to stock — DPR cuttings and
+  // GPR-entered oily salvage. Excluded: 'estimate' rows (the voided 22.5 % auto-credit), voided
+  // ('rejected') rows, and customer-return remelt (returned finished goods are not generated from this
+  // batch's tank material). Tracking salvage is the separate salvageRecovered term, so it is counted once.
   const led = pgPool ? (await pgPool.query(lSql, [bn])).rows[0] : db.prepare(lSql).get(bn);
   const consumed = Number(led?.consumed || 0);
   const generatedManual = Number(led?.gen_manual || 0);
@@ -27174,6 +27178,24 @@ function _v58eMs(v) {
 // One-time repair of charges already stored with naive stamps. A naive value is either the editor
 // re-saving an untouched server stamp (then it is UTC — it matches created_at / the Done audit entry
 // within 3 min) or a time the chemist typed (then it is IST). Idempotent: repaired stamps carry Z.
+// ═══ v58I: void the 22.5 % cutting ESTIMATE rows posted at tank creation from the day the DPR cuttings
+// feed went live (masters gprLiveFrom, 7 Oct 2026) — from then on the actual was being booked as well,
+// so every one of these is a second count. Voided = receipt_status 'rejected' (kept for the audit
+// trail, excluded from stock, yield and the registers). Earlier estimates, where no DPR feed existed,
+// stay as the only cutting record of their day. Idempotent.
+async function _v58iVoidCuttingEstimates() {
+  let liveFrom = '2026-10-07';
+  try { const m = await gprLoadMasters(); const v = String(((m && m.gpr_constants) || {}).gprLiveFrom || ''); if (/^\d{4}-\d{2}-\d{2}$/.test(v)) liveFrom = v; } catch (_) {}
+  const P1 = pgPool ? '$1' : '?';
+  const cSql = `SELECT COUNT(*) AS n, COALESCE(SUM(qty_kg),0) AS kg FROM gpr_ledger WHERE movement_type='generation' AND source='estimate' AND COALESCE(receipt_status,'') <> 'rejected' AND COALESCE(production_day, SUBSTR(moved_at,1,10)) >= ${P1}`;
+  const c = pgPool ? (await pgPool.query(cSql, [liveFrom])).rows[0] : db.prepare(cSql).get(liveFrom);
+  if (!Number((c || {}).n || 0)) return { voided: 0 };
+  const uSql = `UPDATE gpr_ledger SET receipt_status='rejected', note = COALESCE(note,'') || ' — voided v58I: estimate superseded by DPR cuttings' WHERE movement_type='generation' AND source='estimate' AND COALESCE(receipt_status,'') <> 'rejected' AND COALESCE(production_day, SUBSTR(moved_at,1,10)) >= ${P1}`;
+  if (pgPool) await pgPool.query(uSql, [liveFrom]); else db.prepare(uSql).run(liveFrom);
+  logAudit('system', 'system', 'gpr', 'GPR_CUTTING_ESTIMATES_VOIDED', `${c.n} estimate row(s), ${Number(c.kg).toFixed(1)} kg, from ${liveFrom} voided — cuttings are booked once, from DPR`, null);
+  console.log(`[v58I GPR] voided ${c.n} cutting estimate rows (${Number(c.kg).toFixed(1)} kg) from ${liveFrom}`);
+  return { voided: Number(c.n), kg: Number(c.kg) };
+}
 async function _v58eRepairMmtTimes() {
   const naive = v => /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}(:\d{2}(\.\d+)?)?$/.test(String(v || '').trim());
   const rows = pgPool ? (await pgPool.query(`SELECT id, mmt_ref, charge_start, charge_complete, created_at FROM gpr_mmt_charges`)).rows
@@ -27790,23 +27812,27 @@ app.post('/api/gpr/tt', async (req, res) => {
     //     TOTAL CHARGED WEIGHT (item 4 — the cutting carries colour weight and the
     //     3% moisture gain back with it). Guidance only: the chemist's actual entry
     //     overrides, and consumption entries self-correct the running balance.
+    // ═══ v58I (Ishan, 18 Oct — yield principles review): the 22.5 % ESTIMATE is gone. Since v55A the
+    // actual cuttings arrive per machine per shift from DPR (gprSyncDprCuttings) and are received by the
+    // chemist; posting an estimate here as well booked every batch's cuttings TWICE — once estimated at
+    // tank creation, once actual from DPR (ZD158: 76.0 estimated + 93.4 actual = 169.4 "generated",
+    // which drove its yield to 218 %) and inflated cutting stock by the same amount. Only an explicit
+    // chemist figure is posted now (the form does not send one; DPR is the source of truth).
     const cutPct = Number(C.cuttingPctOfChargedWeight ?? 22.5);
-    const estCutting = +(totalChargedKg * cutPct / 100).toFixed(2);
-    const genCutting = (b.cutting_generated_kg != null) ? Number(b.cutting_generated_kg) : estCutting;
+    const estCutting = +(totalChargedKg * cutPct / 100).toFixed(2);   // reported back as guidance only
+    const genCutting = (b.cutting_generated_kg != null) ? Number(b.cutting_generated_kg) : 0;
     if (genCutting > 0) {
-      await gprLedgerMove({ movement_type: 'generation', account: 'cutting',
-        source: (b.cutting_generated_kg != null) ? 'manual' : 'estimate',
+      await gprLedgerMove({ movement_type: 'generation', account: 'cutting', source: 'manual',
         pc_code: b.pc_code, colour_name: b.colour_name, colour_code: b.colour_code, side,
         machine_id: b.machine_id, batch_number: bn, tt_id: ttId, floor, qty_kg: genCutting,
-        production_day: pday, moved_by: session.username,
-        note: (b.cutting_generated_kg != null) ? 'chemist actual' : `auto ${cutPct}% of charged weight` });
+        production_day: pday, moved_by: session.username, note: 'chemist actual' });
     }
 
     logAudit(session.username, session.role, 'gpr', 'GPR_TT_CREATED',
       `batch=${bn} ${side} ${ttNumber} ${actualL}L charged=${totalChargedKg}kg${alloc ? ' alloc=' + alloc.id + ' (' + alloc.mmt_ref + ' reserved ' + alloc.reserved_kg + 'kg)' : ''}`, req.ip);
     res.json({ ok: true, tt_id: ttId, tt_number: ttNumber, seq_index: seqIndex,
       label_payload: finalPayload, production_day: pday, total_charged_kg: totalChargedKg,
-      cutting_generated_kg: genCutting, warning: mmtWarning, alloc_id: alloc ? alloc.id : null, mmt_exhausted: mmtExhausted });
+      cutting_generated_kg: genCutting, cutting_expected_kg: estCutting, warning: mmtWarning, alloc_id: alloc ? alloc.id : null, mmt_exhausted: mmtExhausted });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -28296,7 +28322,15 @@ app.get('/api/gpr/performance', async (req, res) => {
         const processVariance = +(usedGel - requiredForActual).toFixed(2);
         const totalDifference = +(usedGel - plannedGel).toFixed(2);
         const tt = await _gprTtVariance(bn, planned, masters);
-        rows.push({
+        // v58H item 7 (Ishan, 18 Oct): the By-batch yield, the reconciliation and this report are ONE
+        // tab now — each row carries the batch's yield figures when the caller asks (includeYield=1).
+        let yv = null;
+        if (String(req.query.includeYield || '') === '1') {
+          try { const y = await gprComputeYield(bn); yv = { yieldPct: y.yieldPct, yieldTarget: y.target, yieldVariance: y.variance, outputKg: y.numerator.total, netMaterialKg: y.denominator.total,
+                   packedLakhs: y.numerator.packedLakhs, wipLakhs: y.numerator.wipLakhs, ttCount: y.ttCount, freshMaterialKg: y.denominator.freshMaterialKg, netRecircKg: y.denominator.netRecirc,
+                   salvageRecoveredKg: y.denominator.salvageRecoveredKg, generatedManualKg: y.denominator.generatedManualKg, consumedKg: y.denominator.consumedKg, yieldAvgMg: y.avgMg }; } catch (_) {}
+        }
+        rows.push(Object.assign(yv || {}, {
           batch: bn, machineId: o.machineId || '', floor: gprFloorOfMachine(o.machineId, masters) || '',
           customer: o.customer || '', pcCode: o.pcCode || o.pc_code || '', size: o.size || '',
           status: o.status || '', day: dayOf(o) || null, anchored: !!anchorRow,
@@ -28311,7 +28345,7 @@ app.get('/api/gpr/performance', async (req, res) => {
           shortHold: tt.total.shortHold,
           capPlanned: tt.cap.planned, capIssued: tt.cap.issued, bodyPlanned: tt.body.planned, bodyIssued: tt.body.issued,
           avgHoldCap: tt.cap.avgHoldHours, avgHoldBody: tt.body.avgHoldHours,
-        });
+        }));
       } catch (e) { /* one bad batch must not lose the report */ }
     }
     res.json({ ok: true, from, to, rows, capped, matched: orders.length, shown: rows.length, minHoldHours: _gprMinHold(masters) });
@@ -29178,9 +29212,13 @@ app.get('/api/gpr/inputs-log', async (req, res) => {
       // gelatine was already counted as consumed at the MMT stage (tt save increments
       // gpr_mmt_charges.allocated_kg). Adding both to one total would count the same kilogram twice,
       // so the draw is flagged internal and kept out of the headline consumption figure.
+      // v58H item 8 (Ishan, 18 Oct): ALL virgin gelatine in a tank comes out of an MMT charge — there is
+      // no "direct to TT" stream. A tank saved without its charge linked is a recording gap, not fresh
+      // consumption; it was being counted a second time on top of the MMT melt. Every virgin draw is
+      // internal now; the unlinked ones are flagged so they can be chased.
       if (Number(t.virgin_kg) > 0) rows.push(Object.assign({}, base, {
-        input: t.mmt_ref ? 'Virgin gelatine (drawn from MMT)' : 'Virgin gelatine (direct to TT)',
-        internal: t.mmt_ref ? 1 : 0, mmt_ref: t.mmt_ref || null,
+        input: 'Virgin gelatine (drawn from MMT)', internal: 1, mmt_ref: t.mmt_ref || null, unlinked: t.mmt_ref ? 0 : 1,
+        detail: t.mmt_ref ? null : 'MMT charge not linked on the tank',
         qty: +Number(t.virgin_kg).toFixed(3), unit: 'kg' }));
       if (Number(t.colour_kg) > 0) rows.push(Object.assign({}, base, { input: 'Colour + TiO2', qty: +Number(t.colour_kg).toFixed(3), unit: 'kg' }));
       if (Number(t.fg_remelt_kg) > 0) rows.push(Object.assign({}, base, { input: 'FG remelt', qty: +Number(t.fg_remelt_kg).toFixed(3), unit: 'kg' }));
@@ -29453,11 +29491,12 @@ app.get('/api/gpr/ledger/summary', async (req, res) => {
       (rRows || []).forEach(r => {
         const q = Number(r.qty_kg || 0);
         const isCr = r.movement_type === 'generation' || r.movement_type === 'correction';
-        const pending = r.receipt_status === 'pending';
-        r.credit_kg = isCr && !pending ? +q.toFixed(3) : 0;
-        r.debit_kg = !isCr ? +q.toFixed(3) : 0;
+        const pending = r.receipt_status === 'pending', voided = r.receipt_status === 'rejected';   // v58I: voided rows move nothing
+        r.credit_kg = isCr && !pending && !voided ? +q.toFixed(3) : 0;
+        r.debit_kg = !isCr && !voided ? +q.toFixed(3) : 0;
         r.pending_kg = isCr && pending ? +q.toFixed(3) : 0;
-        if (!pending) bal += isCr ? q : -q;
+        r.voided = voided ? 1 : 0;
+        if (!pending && !voided) bal += isCr ? q : -q;
         r.balance_kg = +bal.toFixed(3);
         crT += r.credit_kg; dbT += r.debit_kg; pendT += r.pending_kg;
         r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account;
@@ -29818,6 +29857,7 @@ async function _v57fDayYield(from, to, floorFilter) {
   // ── material: cutting / salvage generated that day on that floor (returned to stock, not consumed) ──
   const gen = await q(`SELECT production_day AS d, floor, SUM(qty_kg) AS kg FROM gpr_ledger
                         WHERE movement_type='generation' AND COALESCE(receipt_status,'') <> 'rejected'
+                          AND source <> 'estimate' AND source <> 'return' AND account <> 'return_remelt'   -- v58I: no estimates, no returned FG
                           AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor`, [from, to]);
   gen.forEach(r => { const fl = r.floor || 'unknown'; if (floorFilter && fl !== floorFilter) return;
     cell(r.d, fl).material.generatedKg += +r.kg || 0; });
@@ -29862,6 +29902,9 @@ async function _v57fDayYield(from, to, floorFilter) {
   return grid;
 }
 
+// v58H item 6 (Ishan, 18 Oct): floors always read Ground → First → Second
+const _V58H_FLOOR_ORDER = { GF: 0, '1F': 1, '2F': 2 };
+function _v58hFloorSort(a, b) { const x = _V58H_FLOOR_ORDER[a.floor] ?? 9, y = _V58H_FLOOR_ORDER[b.floor] ?? 9; return x - y || String(a.floor).localeCompare(String(b.floor)); }
 app.get('/api/gpr/yield-daily', async (req, res) => {
   try {
     const to   = req.query.to   || gprProductionDay();
@@ -29891,6 +29934,7 @@ app.get('/api/gpr/yield-daily', async (req, res) => {
         yieldPct: v.den > 0 ? +((v.num / v.den) * 100).toFixed(2) : null,
         working: v.working || [], crushKg: +Number(v.crushKg || 0).toFixed(1), material: v.material || null,
       }));
+      floors.sort(_v58hFloorSort);   // v58H item 6
       const n = floors.reduce((s, f) => s + f.numeratorKg, 0);
       const d = floors.reduce((s, f) => s + f.denominatorKg, 0);
       return { day, floors, consolidated: { numeratorKg: +n.toFixed(1), denominatorKg: +d.toFixed(1),
@@ -29938,6 +29982,7 @@ app.get('/api/gpr/yield-live', async (req, res) => {
       numeratorKg: +v.num.toFixed(1), denominatorKg: +v.den.toFixed(1),
       yieldPct: v.den > 0 ? +((v.num / v.den) * 100).toFixed(2) : null,
     }));
+    floors.sort(_v58hFloorSort);   // v58H item 6
     const totN = floors.reduce((s, f) => s + f.numeratorKg, 0);
     const totD = floors.reduce((s, f) => s + f.denominatorKg, 0);
     const masters = await gprLoadMasters();
@@ -30903,6 +30948,7 @@ app.listen(PORT, () => {
     _gprBackfillLedgerPc().catch(e => console.warn('[v56A GPR] PC backfill failed:', e?.message));
     _v58bRebuildMmtPositions(null, null).catch(e => console.warn('[v58B GPR] MMT position rebuild failed:', e?.message));   // v58B: charges re-based on virgin kg ÷ concentration
     _v58eRepairMmtTimes().catch(e => console.warn('[v58E GPR] MMT time repair failed:', e?.message));   // v58E: naive IST stamps → UTC
+    _v58iVoidCuttingEstimates().catch(e => console.warn('[v58I GPR] estimate void failed:', e?.message));   // v58I: cuttings counted once
     // v58F item 4: warm the GPR receipts feed in the background so the first Stock-tab open after a
     // restart is served from a swept queue instead of waiting on (or missing) the sweep.
     setTimeout(() => { try { require('http').get(`http://127.0.0.1:${PORT}/api/gpr/receipts?sync=1&floor=GF`, r => r.resume()).on('error', () => {}); } catch (_) {} }, 4000);
