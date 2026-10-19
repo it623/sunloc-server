@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v58K</title>
+<title>GPR · build v58L</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -409,8 +409,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v58K</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58K</div>
+    <h1>GPR<span class="vpill">v58L</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58L</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -430,7 +430,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v58K</span></div>
+  <div class="nbrand">GPR<span class="vpill">v58L</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -884,6 +884,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
             <div class="field-grp"><label>PC code</label><input id="lg_pc" placeholder="all"></div>
             <div class="field-grp"><label>Floor</label><select id="lg_floor"><option value="">All floors</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
             <div class="field-grp"><label>Cap / Body</label><select id="lg_side"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
+            <div class="field-grp"><label>Movement</label><select id="lg_move"><option value="">Generation + consumption</option><option value="gen">Generation only</option><option value="con">Consumption only</option></select></div>   <!-- v58L item 3 -->
             <div class="field-grp"><label>From</label><input id="lg_from" type="date"></div>
             <div class="field-grp"><label>To</label><input id="lg_to" type="date"></div>
             <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadLedger()">Apply</button></div>
@@ -993,8 +994,10 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
           <div class="field-grp"><label>Customer</label><input id="mr_customer" list="custOpts" placeholder="all"></div>
           <div class="field-grp"><label>PC code</label><input id="mr_pc" list="pcOptsList" placeholder="all"></div>
           <div class="field-grp"><label>Status</label><select id="mr_status"><option value="">All</option><option value="running">Running</option><option value="closed">Closed</option><option value="completed">Completed</option></select></div>
+          <div class="field-grp"><label>Show</label><select id="mr_exc" onchange="renderMaterialReconFromCache()"><option value="">All batches</option><option value="ylow">Yield below 100%</option><option value="yhigh">Yield above 110%</option><option value="hold">Tanks released under hold time</option><option value="under">Under-filled tanks</option><option value="over">Over-filled tanks</option><option value="ttvar">TT issued ≠ planned</option><option value="matover">Charged &gt; plan by 10%+</option><option value="noplan">No anchored plan</option></select></div>   <!-- v58L item 4 -->
           <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="loadMaterialRecon()">Run report</button></div>
-          <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportMaterialRecon()">Export</button></div>
+          <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportMaterialRecon()">Export XLSX</button></div>
+          <div class="field-grp"><label>&nbsp;</label><button class="btn" onclick="openMaterialReconTab()">Open in new tab &#8599;</button></div>
         </div></div>
         <div id="mrOut"><div class="empty">Set the filters and run the report. Click a batch row for its full working &mdash; yield and planned vs actual.</div></div>
       </div>
@@ -4117,9 +4120,25 @@ function _reconCells(b, hl){
 // v56U (Rahul Planning 2): CAP / BODY holding time. Average of completed holds (scan-in → scan-out);
 // a tank still in holding shows its elapsed time. Below the minimum hold → red.
 // v58J item 1: the batch's yield cell — LIVE (running) or actual (closed); click opens the working
+// v58L item 1: after the sheet is on screen, one light call per floor brings the yields (running
+// batches live, closed ones from the server's 15-min memo) and fills the cells + machine banners.
+async function _plFillYields(perFloor, month){
+  for(const d of perFloor){
+    try{
+      const r = await api('/api/gpr/plan-yields?floor='+encodeURIComponent(d.floor)+'&month='+encodeURIComponent(month||''));
+      if(!r || !r.ok) continue;
+      (d.machines||[]).forEach(m=>{
+        (m.batches||[]).forEach(b=>{ const y = r.yields[String(b.batchNumber).toUpperCase()]; if(y){ b.yield = y; const td = document.getElementById('py_'+_plId(b.batchNumber)); if(td) td.outerHTML = _yieldCell(b, td.dataset.hl||''); } });
+        const mc = r.machines[m.machineId]; if(mc){ m.yieldCum = mc; const sp = document.getElementById('pym_'+_plId(d.floor+'_'+m.machineId)); if(sp) sp.innerHTML = _plMcYieldHtml(mc); const st = document.getElementById('pyms_'+_plId(d.floor+'_'+m.machineId)); if(st){ const c = yCls(mc.pct, mc.target); st.innerHTML = '<b>'+Number(mc.pct).toFixed(1)+'%</b>'; st.style.color = 'var(--'+(c==='green'?'green':c==='red'?'red':'amber')+')'; } }
+      });
+    }catch(e){}
+  }
+}
+function _plId(x){ return String(x||'').replace(/[^A-Za-z0-9_]/g,'_'); }
+function _plMcYieldHtml(mc){ if(!mc) return ''; const c = yCls(mc.pct, mc.target); return ' &middot; Yield to date <b style="color:var(--'+(c==='green'?'green':c==='red'?'red':'amber')+')" title="Σ packable output ÷ Σ net material of '+mc.batches+' batch'+(mc.batches===1?'':'es')+' — '+fmt(mc.outputKg,0)+' / '+fmt(mc.netKg,0)+' kg">'+Number(mc.pct).toFixed(1)+'%</b> <small>'+mc.batches+' batch'+(mc.batches===1?'':'es')+'</small>'; }
 function _yieldCell(b, hl){
   const y = b.yield;
-  if(!y || y.pct==null) return '<td style="'+hl+'text-align:right;color:var(--t4)">&mdash;</td>';
+  if(!y || y.pct==null) return '<td id="py_'+_plId(b.batchNumber)+'" data-hl="'+esc(hl)+'" style="'+hl+'text-align:right;color:var(--t4)" title="yield loading">&hellip;</td>';
   const c = yCls(y.pct, y.target||103); const col = c==='green'?'var(--green)':(c==='red'?'var(--red)':'var(--amber)');
   return '<td style="'+hl+'text-align:right;font-family:var(--mono);white-space:nowrap;cursor:pointer" title="'+(y.live?'LIVE — ':'')+fmt(y.outputKg,0)+' kg packable ÷ '+fmt(y.netKg,0)+' kg net material · click for the working" onclick="event.stopPropagation();mrOpen(\''+esc(b.batchNumber)+'\')"><b style="color:'+col+'">'+Number(y.pct).toFixed(1)+'%</b>'+(y.live?' <span style="font-size:9px;color:var(--teal);font-weight:700">LIVE</span>':'')+'</td>';
 }
@@ -4181,9 +4200,13 @@ async function loadPlan(){
     for(const f of floors){
       const d = await api('/api/gpr/plan?floor='+encodeURIComponent(f)+'&month='+encodeURIComponent(mEl?mEl.value:''));
       if(!d.ok){ sEl.innerHTML = '<span style="color:var(--red)">'+esc(d.error||'plan failed')+'</span>'; return; }
+      // v58L item 1: yields are NOT computed inline any more (that made the sheet take a minute to
+      // appear) — they are fetched after render and written into the cells, see _plFillYields
+      (d.machines||[]).forEach(m=>{ (m.batches||[]).forEach(b=>{ if(b.yield===undefined) b.yield = null; }); if(m.yieldCum===undefined) m.yieldCum = null; });
       meta = d; perFloor.push(d);
     }
     _planData = { floors: perFloor, month: meta.month };
+    setTimeout(()=>_plFillYields(perFloor, meta.month), 50);
     document.getElementById('pl_now').textContent = 'now: '+meta.now.date+' shift '+meta.now.shift+' · assumed A '+meta.assumedAGradePct+'% · prep '+meta.prepHours+'h';
     // alert banner (all fetched floors)
     const alerts = perFloor.flatMap(d=>d.alerts||[]);
@@ -4211,7 +4234,7 @@ async function loadPlan(){
           + ' <span style="font-weight:400;color:var(--t3);font-size:11px">&middot; '+rateDay+' L/day'
           + (m.avgActualPerDay!=null ? ' &middot; Avg actual <b>'+m.avgActualPerDay+' L/day</b> <small>DPR</small>' : '')
           + (m.liveAPct!=null ? ' &middot; Live A <b style="color:var(--teal)">'+Number(m.liveAPct).toFixed(1)+'%</b>' : '')
-          + (m.yieldCum ? ' &middot; Yield to date <b style="color:var(--'+(yCls(m.yieldCum.pct, m.yieldCum.target)==='green'?'green':yCls(m.yieldCum.pct, m.yieldCum.target)==='red'?'red':'amber')+')" title="Σ packable output ÷ Σ net material of '+m.yieldCum.batches+' batch'+(m.yieldCum.batches===1?'':'es')+' — '+fmt(m.yieldCum.outputKg,0)+' / '+fmt(m.yieldCum.netKg,0)+' kg">'+Number(m.yieldCum.pct).toFixed(1)+'%</b> <small>'+m.yieldCum.batches+' batch'+(m.yieldCum.batches===1?'':'es')+'</small>' : '')   // v58J item 1
+          + '<span id="pym_'+_plId(d.floor+'_'+m.machineId)+'">'+_plMcYieldHtml(m.yieldCum)+'</span>'   // v58J item 1 / v58L: filled after render
           +'</span></div>';
         h += '<div class="froze"><table class="gtable" style="margin:0"><thead><tr>'
           + ['MC','BATCH','CUSTOMER','PC CODE','COLOUR','SIZE','START','END','ORDER (L)','GROSS PLAN','GROSS ACTUAL','AIM A-GRADE (LACS)','UNSCANNED WIP @AIM','A-GRADE AIM %'].map((x,ix)=>th(x)+'').map((s2,ix)=> ix===0 ? s2.replace('<th','<th class="fz1"') : (ix===1 ? s2.replace('<th','<th class="fz2"') : s2)).join('')
@@ -4322,7 +4345,7 @@ h += '<tr><td colspan="'+(17+(window._PLAN_GEL===false?0:7)+(window._PLAN_RECON=
               : '<td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td>'))
           // v56U: machine hold = tank-weighted average of the month's completed holds, per side
           + td(nHc ? (sHc/nHc).toFixed(1) : '&mdash;',_stn) + td(nHb ? (sHb/nHb).toFixed(1) : '&mdash;',_stn)
-          + td(m.yieldCum ? '<b>'+Number(m.yieldCum.pct).toFixed(1)+'%</b>' : '&mdash;', _stn+';color:var(--'+(m.yieldCum?(yCls(m.yieldCum.pct,m.yieldCum.target)==='green'?'green':yCls(m.yieldCum.pct,m.yieldCum.target)==='red'?'red':'amber'):'t3')+')')   // v58J: weighted to date
+          + '<td id="pyms_'+_plId(d.floor+'_'+m.machineId)+'" style="'+_stn+';color:var(--'+(m.yieldCum?(yCls(m.yieldCum.pct,m.yieldCum.target)==='green'?'green':yCls(m.yieldCum.pct,m.yieldCum.target)==='red'?'red':'amber'):'t3')+')">'+(m.yieldCum ? '<b>'+Number(m.yieldCum.pct).toFixed(1)+'%</b>' : '&hellip;')+'</td>'   // v58J: weighted to date; v58L: filled after render
           + '</tr>';
         h += '</tbody></table></div>';   // v56C item 3: closes the freeze-pane scroller
       });
@@ -5187,6 +5210,9 @@ async function loadLedger(view, btn){
     // By-colour view errored and every summary view scanned the ledger unbounded (the slowness).
     // v56 item 19: "By production day" is now the SHIFT-WISE machine register (Tracking-style).
     if(view==='daily'){ await loadShiftWise(q); return; }
+    // v58L item 3: "All movements" was the 10-row recent-movements snapshot — it is the full register
+    // now (every generation and consumption in the window, chronological, with the running balance)
+    if(view==='movements') q.set('view', 'register');
     const d = await api('/api/gpr/ledger/summary?' + q.toString() + ((view==='daily'||view==='colour'||view==='pc'||view==='colourside'||view==='movements') ? gMonthQS() : ''));
     // v55T item 4: surface the real server error instead of the blind catch, and treat an empty
     // result as the normal no-stock state (an empty ledger is not a failure).
@@ -5264,16 +5290,26 @@ async function loadLedger(view, btn){
     if(!d.ok || !d.rows.length){ out.innerHTML='<div class="empty">No movements for this selection.</div>'; return; }
     let h = '';
     if(view==='movements'){
-      h = '<table class="gtable"><thead><tr><th>Day</th><th>Batch</th><th>TT</th><th>Account</th><th>Movement</th><th>Source</th><th class="num">kg</th><th>By</th></tr></thead><tbody>';
-      d.rows.forEach(r=>{
-        const dir = ['consumption','draw'].includes(r.movement_type);
-        h += `<tr><td class="mono">${esc(r.production_day||'')}</td><td class="mono">${esc(r.batch_number||'—')}</td>`
-          + `<td class="mono">${r.tt_id||'—'}</td><td>${esc(ACCOUNTS[r.account]||r.account)}</td>`
-          + `<td><span class="badge ${dir?'warn':'inprod'}">${esc(r.movement_type)}</span></td>`
-          + `<td><span class="badge ${r.source==='tracking'?'info':'planned'}">${esc(r.source)}</span></td>`
-          + `<td class="num" style="color:${dir?'var(--red)':'var(--green)'}">${dir?'−':'+'}${fmt(r.qty_kg,1)}</td>`
-          + `<td>${esc(r.moved_by||'')}</td></tr>`;
+      const mv = (document.getElementById('lg_move')||{}).value || '';
+      let rows = d.rows || [];
+      if(mv==='gen') rows = rows.filter(r=>r.credit_kg>0 || r.pending_kg>0); else if(mv==='con') rows = rows.filter(r=>r.debit_kg>0);
+      window._LEDGERROWS = rows;
+      const nG = rows.filter(r=>r.credit_kg>0).length, nC = rows.filter(r=>r.debit_kg>0).length;
+      h = '<div class="mmesum" style="margin-bottom:6px"><span>Opening <b>'+fmt(d.opening_kg,1)+'</b> kg</span><span>Generated <b style="color:var(--green)">+'+fmt(d.credit_kg,1)+'</b> kg ('+nG+')</span><span>Consumed <b style="color:var(--red)">−'+fmt(d.debit_kg,1)+'</b> kg ('+nC+')</span>'+(Number(d.pending_kg)>0?'<span>Pending receipt <b style="color:var(--amber)">'+fmt(d.pending_kg,1)+'</b> kg</span>':'')+'<span>Closing <b>'+fmt(d.closing_kg,1)+'</b> kg</span></div>'
+        + '<div class="tswrap" style="max-height:60vh"><table class="gtable"><thead><tr><th>Day</th><th>When</th><th>Batch</th><th>TT</th><th>Account</th><th>Movement</th><th>Source</th><th>PC · colour</th><th>MC</th><th>Floor</th><th class="num" style="color:var(--green)">Generated kg</th><th class="num" style="color:var(--red)">Consumed kg</th><th class="num">Balance kg</th><th>Note</th><th>By</th></tr></thead><tbody>';
+      rows.forEach(r=>{
+        const pend = r.receipt_status==='pending', voided = r.voided===1;
+        h += '<tr'+(pend?' style="background:var(--amber-l)"':(voided?' style="color:var(--t3);text-decoration:line-through"':''))+'><td class="mono">'+esc(_dm(r.production_day)||'—')+'</td><td class="mono" style="font-size:11px;white-space:nowrap">'+esc(_v58dDt(r.moved_at))+'</td>'
+          + '<td class="mono">'+esc(r.batch_number||'—')+(r.source_batch?' <span style="color:var(--t3);font-size:10px">from '+esc(r.source_batch)+'</span>':'')+'</td><td class="mono">'+(r.tt_id?'#'+r.tt_id:'—')+'</td><td>'+esc(ACCOUNTS[r.account]||r.account_label||r.account)+'</td>'
+          + '<td><span class="badge '+(r.debit_kg>0?'warn':'inprod')+'">'+esc(r.movement_type)+'</span>'+(pend?' <span class="badge" style="background:var(--amber-l);color:var(--amber)">PENDING</span>':'')+(voided?' <span class="badge">VOID</span>':'')+'</td>'
+          + '<td><span class="badge '+(r.source==='tracking'?'info':'planned')+'">'+esc(r.source||'')+'</span></td><td class="mono" style="font-size:11px">'+esc(r.pc_code||'')+(r.colour_code?' · '+esc(r.colour_code):'')+(r.side?' '+esc(String(r.side).toUpperCase()):'')+'</td>'
+          + '<td>'+esc(r.machine_id||'—')+'</td><td>'+esc(FLOOR_LABELS[r.floor]||r.floor||'—')+'</td>'
+          + '<td class="num" style="color:var(--green)">'+(r.credit_kg>0?'+'+fmt(r.credit_kg,2):(r.pending_kg>0?'<span style="color:var(--amber)">('+fmt(r.pending_kg,2)+')</span>':''))+'</td>'
+          + '<td class="num" style="color:var(--red)">'+(r.debit_kg>0?'−'+fmt(r.debit_kg,2):'')+'</td><td class="num"><b>'+fmt(r.balance_kg,2)+'</b></td>'
+          + '<td style="font-size:11px;max-width:260px;white-space:normal">'+esc(r.note||'')+'</td><td style="font-size:11px">'+esc(r.moved_by||'')+'</td></tr>';
       });
+      h += '</tbody></table></div>';
+      out.innerHTML = _lgHeaderHtml() + h; return;
     } else if(view==='daily'){
       h = '<table class="gtable"><thead><tr><th>Production day</th><th>Account</th><th class="num">Generated</th><th class="num">Consumed</th><th class="num">Net</th></tr></thead><tbody>';
       d.rows.forEach(r=>{
@@ -5669,9 +5705,38 @@ async function loadMaterialRecon(){
     window._PERF = d; window._MR = d;
     let rows = d.rows || [];
     if(floorScoped() && visibleFloors().length>1) rows = rows.filter(r=>!r.floor || visibleFloors().includes(r.floor));
-    if(!rows.length){ out.innerHTML = '<div class="empty">No batches match these filters'+(d.matched?' on this page':'')+'. A batch appears once it has transfer tanks or DPR production; widen the dates or clear the machine / batch filter.</div>'; return; }
-    renderMaterialRecon(rows, d);
+    d.rows = rows;
+    renderMaterialReconFromCache();
   }catch(e){ out.innerHTML = '<div class="empty">Could not run the report.</div>'; }
+}
+// v58L item 4: the exception filter works on the loaded rows (no re-run); rows are grouped machine-wise,
+// batches in start-date order inside each machine, like Report E.
+function _mrException(r, k){
+  if(!k) return true;
+  const yT = r.yieldTarget || 103;
+  switch(k){
+    case 'ylow': return r.yieldPct!=null && r.yieldPct < 100;
+    case 'yhigh': return r.yieldPct!=null && r.yieldPct > 110;
+    case 'hold': return Number(r.shortHold||0) > 0;
+    case 'under': return Number(r.underFillTanks||0) > 0;
+    case 'over': return Number(r.overFillTanks||0) > 0;
+    case 'ttvar': return Number(r.ttVariance||0) !== 0;
+    case 'matover': return r.pctOfPlan!=null && r.pctOfPlan >= 10;
+    case 'noplan': return !r.anchored;
+  }
+  return true;
+}
+function _mrGrouped(rows){
+  const by = {}; rows.forEach(r=>{ (by[r.machineId||'—'] = by[r.machineId||'—'] || []).push(r); });
+  const mcs = Object.keys(by).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true}));
+  return mcs.map(mc=>({ mc, floor: (by[mc][0]||{}).floor||'', rows: by[mc].slice().sort((a,b)=>String(a.day||'').localeCompare(String(b.day||'')) || String(a.batch).localeCompare(String(b.batch))) }));
+}
+function renderMaterialReconFromCache(){
+  const d = window._MR; const out = document.getElementById('mrOut'); if(!d || !out) return;
+  const k = (document.getElementById('mr_exc')||{}).value || '';
+  const rows = (d.rows||[]).filter(r=>_mrException(r,k));
+  if(!rows.length){ out.innerHTML = '<div class="empty">'+(k ? 'No batch matches this exception in the loaded set ('+(d.rows||[]).length+' batches).' : 'No batches match these filters'+(d.matched?' on this page':'')+'. A batch appears once it has transfer tanks or DPR production; widen the dates or clear the machine / batch filter.')+'</div>'; return; }
+  renderMaterialRecon(rows, d);
 }
 function renderMaterialRecon(rows, d){
   const out = document.getElementById('mrOut');
@@ -5698,11 +5763,18 @@ function renderMaterialRecon(rows, d){
     + '<th class="num">Qty cause</th><th class="num">Weight cause</th><th class="num">Process cause</th>'
     + '<th class="num">Plan mg</th><th class="num">Actual mg</th>'
     + '<th class="num" style="border-left:2px solid var(--b2)">TT plan</th><th class="num">TT issued</th><th class="num">Over-fill</th><th class="num">Under-fill</th><th class="num">Hold &lt;'+d.minHoldHours+'h</th></tr></thead><tbody>';
-  rows.forEach(r=>{
+  const groups = _mrGrouped(rows);
+  const mcSum = g => { const o = g.rows.reduce((a,r)=>a+Number(r.outputKg||0),0), n = g.rows.reduce((a,r)=>a+Number(r.netMaterialKg||0),0); return { out:o, net:n, y: n>0 ? o/n*100 : null, plan: g.rows.reduce((a,r)=>a+Number(r.plannedGel||0),0), used: g.rows.reduce((a,r)=>a+Number(r.usedGel||0),0), sh: g.rows.reduce((a,r)=>a+Number(r.shortHold||0),0) }; };
+  groups.forEach(g=>{
+    const ms = mcSum(g); const mc = yCls(ms.y, yT);
+    h += '<tr class="shgrp"><td class="fz1" colspan="5" style="background:var(--s3)">MACHINE '+esc(g.mc)+(g.floor?' · '+esc(FLOOR_LABELS[g.floor]||g.floor):'')+' <span style="font-weight:400;color:var(--t3)">'+g.rows.length+' batch'+(g.rows.length===1?'':'es')+'</span></td>'
+      + '<td class="num" style="border-left:2px solid var(--b2)"><b style="color:var(--'+(mc==='green'?'green':mc==='red'?'red':mc==='amber'?'amber':'t3')+')">'+(ms.y!=null?fmt(ms.y,2)+'%':'—')+'</b></td><td class="num">'+(ms.y!=null?((ms.y-yT)>=0?'+':'')+fmt(ms.y-yT,2):'—')+'</td><td class="num">'+fmt(ms.out,0)+'</td><td class="num">'+fmt(ms.net,0)+'</td><td></td><td></td>'
+      + '<td class="num" style="border-left:2px solid var(--b2)">'+fmt(ms.plan,0)+'</td><td class="num">'+fmt(ms.used,0)+'</td><td class="num">'+sign(ms.used-ms.plan)+'</td><td colspan="6"></td><td colspan="4" style="border-left:2px solid var(--b2)"></td><td class="num" style="color:'+(ms.sh?'var(--red)':'var(--t3)')+'"><b>'+ms.sh+'</b></td></tr>';
+  g.rows.forEach(r=>{
     const rowCls = r.status==='running' ? 'rowrun' : ((r.status==='closed'||r.status==='completed') ? 'rowclosed' : '');
     const yc = yCls(r.yieldPct, r.yieldTarget||yT);
     h += '<tr class="'+rowCls+' clickable" style="cursor:pointer" title="Open the full working for this batch" onclick="mrOpen(\''+esc(r.batch)+'\')">'
-      + '<td class="fz1 mono"><b style="color:var(--accent)">'+esc(r.batch)+'</b>'+(r.anchored?'':' <span title="no anchored plan" style="color:var(--amber)">*</span>')+'</td>'
+      + '<td class="fz1 mono"><b style="color:var(--accent)">'+esc(r.batch)+'</b>'+(r.anchored?'':' <span title="no anchored plan" style="color:var(--amber)">*</span>')+(r.day?'<div style="font-size:10px;color:var(--t3)">'+esc(_dm(r.day))+'</div>':'')+'</td>'
       + '<td class="fz2">'+esc(r.machineId||'—')+'</td><td style="font-size:11px">'+esc((r.status||'').toUpperCase())+'</td><td class="mono">'+esc(r.pcCode||'—')+'</td><td style="font-size:11px;max-width:150px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap" title="'+esc(r.customer||'')+'">'+esc(r.customer||'—')+'</td>'
       + '<td class="num" style="border-left:2px solid var(--b2)"><b style="color:var(--'+(yc==='green'?'green':yc==='red'?'red':yc==='amber'?'amber':'t1')+')">'+(r.yieldPct!=null?fmt(r.yieldPct,2)+'%':'—')+'</b></td>'
       + '<td class="num">'+(r.yieldVariance!=null?(r.yieldVariance>=0?'+':'')+fmt(r.yieldVariance,2):'—')+'</td>'
@@ -5719,6 +5791,7 @@ function renderMaterialRecon(rows, d){
       + '<td class="num">'+(r.overFillTanks?r.overFillTanks+' · '+fmt(r.overFillL,0)+'L':'—')+'</td>'
       + '<td class="num">'+(r.underFillTanks?r.underFillTanks+' · '+fmt(r.underFillL,0)+'L':'—')+'</td>'
       + '<td class="num" style="color:'+(r.shortHold?'var(--red)':'var(--t3)')+'"><b>'+r.shortHold+'</b></td></tr>';
+  });
   });
   h += '<tr class="grandrow"><td class="fz1" colspan="5">TOTAL — '+rows.length+' batches</td>'
     + '<td class="num" style="border-left:2px solid var(--b2)"><b>'+(consY!=null?fmt(consY,2)+'%':'—')+'</b></td><td class="num">'+(consY!=null?((consY-yT)>=0?'+':'')+fmt(consY-yT,2):'—')+'</td>'
@@ -5770,7 +5843,60 @@ async function mrOpen(bn){
   }catch(e){ yEl.innerHTML = '<div class="empty">Could not compute the yield.</div>'; }
   const rEl = document.getElementById('mrR'); if(rEl){ rEl.innerHTML = '<div class="fgroup-title">Planned vs actual &mdash; reconciliation</div><div id="mrRin"></div>'; loadReconcile(bn, document.getElementById('mrRin')); }
 }
+// v58L item 4: Report-E style export — Summary by machine + Batches (grouped, chronological) sheets
+function _mrVisibleRows(){ const d = window._MR; const k = (document.getElementById('mr_exc')||{}).value || ''; return ((d&&d.rows)||[]).filter(r=>_mrException(r,k)); }
 function exportMaterialRecon(){
+  const d = window._MR; const rows = _mrVisibleRows();
+  if(!d || !rows.length){ toast('Run the report first','err'); return; }
+  const ctx = [val('mr_from')&&(_dm(val('mr_from'))+' → '+_dm(val('mr_to'))), val('mr_machine')&&('machine '+val('mr_machine')), (document.getElementById('mr_floor')||{}).value&&('floor '+FLOOR_LABELS[document.getElementById('mr_floor').value]), (document.getElementById('mr_exc')||{}).value&&('exception: '+document.getElementById('mr_exc').selectedOptions[0].textContent)].filter(Boolean).join(' · ');
+  const groups = _mrGrouped(rows);
+  const s1 = [['GPR — Material reconciliation by batch'], [ctx], [],
+    ['Machine','Floor','Batches','Yield %','vs target','Packable output kg','Net material kg','Planned kg','Charged kg','Difference kg','% of plan','Qty cause kg','Weight cause kg','Process cause kg','TT planned','TT issued','Over-fill tanks','Under-fill tanks','Holds under min']];
+  const T = { n:0,out:0,net:0,plan:0,used:0,q:0,w:0,p:0,tp:0,ti:0,of:0,uf:0,sh:0 };
+  groups.forEach(g=>{
+    const S = { n:g.rows.length }; ['outputKg','netMaterialKg','plannedGel','usedGel','qtyEffect','weightEffect','processVariance','ttPlanned','ttIssued','overFillTanks','underFillTanks','shortHold'].forEach(k=>{ S[k] = g.rows.reduce((a,r)=>a+Number(r[k]||0),0); });
+    const y = S.netMaterialKg>0 ? S.outputKg/S.netMaterialKg*100 : null, yT = (g.rows[0]||{}).yieldTarget||103;
+    s1.push([g.mc, FLOOR_LABELS[g.floor]||g.floor, S.n, y!=null?+y.toFixed(2):'', y!=null?+(y-yT).toFixed(2):'', +S.outputKg.toFixed(1), +S.netMaterialKg.toFixed(1), +S.plannedGel.toFixed(1), +S.usedGel.toFixed(1), +(S.usedGel-S.plannedGel).toFixed(1), S.plannedGel>0?+((S.usedGel-S.plannedGel)/S.plannedGel*100).toFixed(1):'', +S.qtyEffect.toFixed(1), +S.weightEffect.toFixed(1), +S.processVariance.toFixed(1), S.ttPlanned, S.ttIssued, S.overFillTanks, S.underFillTanks, S.shortHold]);
+    T.n+=S.n; T.out+=S.outputKg; T.net+=S.netMaterialKg; T.plan+=S.plannedGel; T.used+=S.usedGel; T.q+=S.qtyEffect; T.w+=S.weightEffect; T.p+=S.processVariance; T.tp+=S.ttPlanned; T.ti+=S.ttIssued; T.of+=S.overFillTanks; T.uf+=S.underFillTanks; T.sh+=S.shortHold;
+  });
+  s1.push(['TOTAL','',T.n, T.net>0?+(T.out/T.net*100).toFixed(2):'', '', +T.out.toFixed(1), +T.net.toFixed(1), +T.plan.toFixed(1), +T.used.toFixed(1), +(T.used-T.plan).toFixed(1), T.plan>0?+((T.used-T.plan)/T.plan*100).toFixed(1):'', +T.q.toFixed(1), +T.w.toFixed(1), +T.p.toFixed(1), T.tp, T.ti, T.of, T.uf, T.sh]);
+  const cols = [['machineId','Machine'],['floor','Floor'],['batch','Batch'],['day','Start'],['status','Status'],['customer','Customer'],['pcCode','PC'],['size','Size'],
+    ['yieldPct','Yield %'],['yieldVariance','vs target'],['outputKg','Packable output kg'],['netMaterialKg','Net material kg'],['freshMaterialKg','Fresh material kg'],['consumedKg','Reuse charged kg'],['generatedManualKg','Generated kg'],['salvageRecoveredKg','Salvage recovered kg'],['packedLakhs','Packed L'],['wipLakhs','WIP L'],['yieldAvgMg','Avg mg (labels)'],
+    ['plannedGel','Planned kg'],['usedGel','Charged kg'],['totalDifference','Difference kg'],['pctOfPlan','% of plan'],['qtyEffect','Cause: quantity'],['weightEffect','Cause: weight'],['processVariance','Cause: process'],
+    ['grossPlannedLacs','Gross planned (lacs)'],['grossActualLacs','Gross actual (lacs)'],['plannedAvgMg','Planned mg'],['actualAvgMg','Actual mg'],['aimPct','A-grade %'],
+    ['capPlanned','Cap TT plan'],['capIssued','Cap TT issued'],['bodyPlanned','Body TT plan'],['bodyIssued','Body TT issued'],['ttVariance','TT variance'],['overFillTanks','Over-fill tanks'],['overFillL','Over-fill L'],['underFillTanks','Under-fill tanks'],['underFillL','Under-fill L'],['avgHoldCap','Avg hold cap (h)'],['avgHoldBody','Avg hold body (h)'],['shortHold','Holds under min'],['anchored','Anchored plan']];
+  const s2 = [cols.map(c=>c[1])];
+  groups.forEach(g=>g.rows.forEach(r=>s2.push(cols.map(c=>{ const v = r[c[0]]; if(c[0]==='floor') return FLOOR_LABELS[v]||v||''; if(c[0]==='anchored') return v?'yes':'no'; return v==null?'':v; }))));
+  const wb = XLSX.utils.book_new();
+  const w1 = XLSX.utils.aoa_to_sheet(s1); w1['!cols'] = s1[3].map((_,i)=>({wch:i<2?12:(i===2?9:16)}));
+  const w2 = XLSX.utils.aoa_to_sheet(s2); w2['!cols'] = cols.map(c=>({wch: c[0]==='customer'?26:14}));
+  XLSX.utils.book_append_sheet(wb, w1, 'Summary by machine');
+  XLSX.utils.book_append_sheet(wb, w2, 'Batches');
+  XLSX.writeFile(wb, 'GPR_Material_Reconciliation_'+(val('mr_month')||val('mr_from')||'')+'.xlsx');
+}
+function openMaterialReconTab(){
+  const d = window._MR; const rows = _mrVisibleRows();
+  if(!d || !rows.length){ toast('Run the report first','err'); return; }
+  const groups = _mrGrouped(rows); const yT = (rows[0]||{}).yieldTarget||103;
+  const sign = v => (v>0?'+':'')+fmt(v,1);
+  let body = '';
+  groups.forEach(g=>{
+    const o = g.rows.reduce((a,r)=>a+Number(r.outputKg||0),0), n = g.rows.reduce((a,r)=>a+Number(r.netMaterialKg||0),0), y = n>0?o/n*100:null;
+    body += '<h2>MACHINE '+esc(g.mc)+' · '+esc(FLOOR_LABELS[g.floor]||g.floor||'')+' <small>'+g.rows.length+' batches · yield to date <b>'+(y!=null?fmt(y,2)+'%':'—')+'</b> · planned '+fmt(g.rows.reduce((a,r)=>a+Number(r.plannedGel||0),0),0)+' kg · charged '+fmt(g.rows.reduce((a,r)=>a+Number(r.usedGel||0),0),0)+' kg</small></h2>';
+    body += '<table><thead><tr><th>Batch</th><th>Start</th><th>Status</th><th>PC</th><th>Customer</th><th class="n">Yield %</th><th class="n">vs target</th><th class="n">Output kg</th><th class="n">Net material kg</th><th class="n">Packed L</th><th class="n">WIP L</th><th class="n">Planned kg</th><th class="n">Charged kg</th><th class="n">Diff kg</th><th class="n">% of plan</th><th class="n">Qty</th><th class="n">Weight</th><th class="n">Process</th><th class="n">Plan mg</th><th class="n">Actual mg</th><th class="n">TT plan</th><th class="n">TT issued</th><th class="n">Over-fill</th><th class="n">Under-fill</th><th class="n">Hold &lt;min</th></tr></thead><tbody>';
+    g.rows.forEach(r=>{ body += '<tr><td><b>'+esc(r.batch)+'</b>'+(r.anchored?'':' *')+'</td><td>'+esc(_dm(r.day)||'')+'</td><td>'+esc((r.status||'').toUpperCase())+'</td><td>'+esc(r.pcCode||'')+'</td><td>'+esc(r.customer||'')+'</td>'
+      + '<td class="n">'+(r.yieldPct!=null?fmt(r.yieldPct,2)+'%':'—')+'</td><td class="n">'+(r.yieldVariance!=null?sign(r.yieldVariance):'—')+'</td><td class="n">'+(r.outputKg!=null?fmt(r.outputKg,0):'—')+'</td><td class="n">'+(r.netMaterialKg!=null?fmt(r.netMaterialKg,0):'—')+'</td><td class="n">'+fmt(r.packedLakhs,2)+'</td><td class="n">'+fmt(r.wipLakhs,2)+'</td>'
+      + '<td class="n">'+fmt(r.plannedGel,1)+'</td><td class="n">'+fmt(r.usedGel,1)+'</td><td class="n">'+sign(r.totalDifference)+'</td><td class="n">'+(r.pctOfPlan==null?'—':fmt(r.pctOfPlan,1)+'%')+'</td><td class="n">'+sign(r.qtyEffect)+'</td><td class="n">'+sign(r.weightEffect)+'</td><td class="n">'+sign(r.processVariance)+'</td><td class="n">'+fmt(r.plannedAvgMg,1)+'</td><td class="n">'+fmt(r.actualAvgMg,1)+'</td>'
+      + '<td class="n">'+r.ttPlanned+'</td><td class="n">'+r.ttIssued+'</td><td class="n">'+(r.overFillTanks?r.overFillTanks+' · '+fmt(r.overFillL,0)+'L':'—')+'</td><td class="n">'+(r.underFillTanks?r.underFillTanks+' · '+fmt(r.underFillL,0)+'L':'—')+'</td><td class="n">'+r.shortHold+'</td></tr>'; });
+    body += '</tbody></table>';
+  });
+  const ctx = [val('mr_from')&&(_dm(val('mr_from'))+' → '+_dm(val('mr_to'))), (document.getElementById('mr_floor')||{}).value&&(FLOOR_LABELS[document.getElementById('mr_floor').value]), (document.getElementById('mr_exc')||{}).value&&('exception: '+document.getElementById('mr_exc').selectedOptions[0].textContent)].filter(Boolean).join(' · ');
+  const css = 'body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:11.5px;color:#1f2937;margin:18px}h1{font-size:18px;margin:0 0 2px}.sub{color:#6b7280;margin-bottom:14px}h2{font-size:13px;margin:16px 0 4px;padding:5px 8px;background:#f3f4f6;border-left:4px solid #a8621f}h2 small{font-weight:400;color:#6b7280;float:right}table{border-collapse:collapse;width:100%}th,td{border:1px solid #e5e7eb;padding:3px 6px;text-align:left;white-space:nowrap}th{background:#f9fafb;font-size:10.5px;text-transform:uppercase;letter-spacing:.4px}td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}tr:nth-child(even) td{background:#fcfcfd}@media print{h2{break-after:avoid}table{font-size:9px}}';
+  const w = window.open('', '_blank'); if(!w){ toast('Allow pop-ups to open the report','err'); return; }
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>GPR — material reconciliation · '+esc(ctx)+'</title><style>'+css+'</style></head><body><h1>GPR &mdash; material reconciliation by batch</h1><div class="sub">'+esc(ctx)+' · '+rows.length+' batches · target '+yT+'% · generated '+esc(_alWhen(new Date().toISOString()))+' · <a href="javascript:window.print()">print</a> · * = no anchored plan</div>'+body+'</body></html>');
+  w.document.close();
+}
+function exportMaterialReconFlat(){
   const d = window._MR;
   if(!d || !(d.rows||[]).length){ toast('Run the report first','err'); return; }
   gprExport({ rows: d.rows, title:'GPR — material reconciliation by batch (yield + planned vs actual)',

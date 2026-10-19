@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58K';
+const APP_BUILD = 'v58L';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -26146,10 +26146,14 @@ function gprPDaySql(col) {
     : `date(datetime(${col}, '-6 hours'))`;
 }
 // JS twin — used when stamping production_day at write time.
+// v58L (Ishan, 19 Oct): the production day turns at 06:00 IST, exactly as DPR counts it. This helper
+// subtracted 6 h from UTC — a 06:00 UTC = 11:30 IST turn — so at 08:11 IST on the 19th it still said
+// the 18th, Material issuance's "yesterday" sat on the 17th, and a tank prepared between 06:00 and
+// 11:30 IST was stamped on the previous day. Same day-split as _v57dShiftOf now.
 function gprProductionDay(iso) {
   const d = iso ? new Date(iso) : new Date();
   if (isNaN(d)) return null;
-  return new Date(d.getTime() - 6 * 3600 * 1000).toISOString().slice(0, 10);
+  return new Date(d.getTime() + 330 * 60000 - 6 * 3600 * 1000).toISOString().slice(0, 10);
 }
 
 // Load all GPR masters into a plain object (engine-aware).
@@ -27848,6 +27852,7 @@ app.post('/api/gpr/tt', async (req, res) => {
         production_day: pday, moved_by: session.username, note: 'chemist actual' });
     }
 
+    _v58lYieldForget(bn);   // v58L: the batch's live yield recomputes on the next read
     logAudit(session.username, session.role, 'gpr', 'GPR_TT_CREATED',
       `batch=${bn} ${side} ${ttNumber} ${actualL}L charged=${totalChargedKg}kg${alloc ? ' alloc=' + alloc.id + ' (' + alloc.mmt_ref + ' reserved ' + alloc.reserved_kg + 'kg)' : ''}`, req.ip);
     res.json({ ok: true, tt_id: ttId, tt_number: ttNumber, seq_index: seqIndex,
@@ -28346,7 +28351,7 @@ app.get('/api/gpr/performance', async (req, res) => {
         // tab now — each row carries the batch's yield figures when the caller asks (includeYield=1).
         let yv = null;
         if (String(req.query.includeYield || '') === '1') {
-          try { const y = await gprComputeYield(bn); yv = { yieldPct: y.yieldPct, yieldTarget: y.target, yieldVariance: y.variance, outputKg: y.numerator.total, netMaterialKg: y.denominator.total,
+          try { const y = await _v58jYieldMemo(bn, o.status); yv = { yieldPct: y.yieldPct, yieldTarget: y.target, yieldVariance: y.variance, outputKg: y.numerator.total, netMaterialKg: y.denominator.total,
                    packedLakhs: y.numerator.packedLakhs, wipLakhs: y.numerator.wipLakhs, ttCount: y.ttCount, freshMaterialKg: y.denominator.freshMaterialKg, netRecircKg: y.denominator.netRecirc,
                    salvageRecoveredKg: y.denominator.salvageRecoveredKg, generatedManualKg: y.denominator.generatedManualKg, consumedKg: y.denominator.consumedKg, yieldAvgMg: y.avgMg }; } catch (_) {}
         }
@@ -29504,7 +29509,7 @@ app.get('/api/gpr/ledger/summary', async (req, res) => {
         const o = pgPool ? (await pgPool.query(oSql, op)).rows[0] : db.prepare(oSql).get(...op);
         opening = +(Number((o || {}).cr || 0) - Number((o || {}).db || 0)).toFixed(3);
       }
-      const rSql = `SELECT id, moved_at, production_day, batch_number, tt_id, account, movement_type, source, side, colour_code, colour_name, pc_code, machine_id, floor, qty_kg, note, moved_by, receipt_status, receipt_ref, accepted_by, accepted_at
+      const rSql = `SELECT id, moved_at, production_day, batch_number, source_batch, tt_id, account, movement_type, source, side, colour_code, colour_name, pc_code, machine_id, floor, qty_kg, note, moved_by, receipt_status, receipt_ref, accepted_by, accepted_at
                     FROM gpr_ledger ${where} ORDER BY production_day, moved_at, id`;
       const rRows = pgPool ? (await pgPool.query(rSql, params)).rows : db.prepare(rSql).all(...params);
       let bal = opening, crT = 0, dbT = 0, pendT = 0;
@@ -29560,6 +29565,7 @@ app.post('/api/gpr/ledger/generate', async (req, res) => {
       machine_id: b.machine_id, batch_number: b.batch_number ? String(b.batch_number).toUpperCase() : null,
       floor: gprFloorOfMachine(b.machine_id, masters) || b.floor, qty_kg: qty,
       moved_by: session.username, note: b.note || 'manual generation' });
+    _v58lYieldForget(b.batch_number);   // v58L
     logAudit(session.username, session.role, 'gpr', 'GPR_LEDGER_GENERATE', `${account} ${qty}kg`, req.ip);
     res.json({ ok: true, id, account, qty_kg: qty });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -29601,6 +29607,7 @@ app.post('/api/gpr/ledger/consume', async (req, res) => {
       machine_id: b.machine_id, batch_number: b.batch_number ? String(b.batch_number).toUpperCase() : null,
       tt_id: b.tt_id || null, floor: gprFloorOfMachine(b.machine_id, masters) || b.floor,
       qty_kg: qty, moved_by: session.username, note: b.note || 'consumed into TT' });
+    _v58lYieldForget(b.batch_number);   // v58L
     logAudit(session.username, session.role, 'gpr', 'GPR_LEDGER_CONSUME', `${account} ${qty}kg batch=${b.batch_number || ''}`, req.ip);
     res.json({ ok: true, id, account, qty_kg: qty });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -30317,7 +30324,10 @@ app.get('/api/gpr/receipts', async (req, res) => {
     await _gprEnrichPc(rows);   // v56A item 22: resolve missing PC + attach cap/body colour codes
     const totalKg = +(rows || []).reduce((a, r) => a + Number(r.qty_kg || 0), 0).toFixed(2);
     // v58D item 8: diagnostic block — what is pending overall, so an empty floor queue is explainable
+    // v58L item 2: three summary queries per floor call added up on the Stock tab's first open — the
+    // block is shared across the three floor calls and kept for 20 s.
     let diag = null;
+    if (global._v58lDiag && Date.now() - global._v58lDiag.t < 20000) diag = global._v58lDiag.d; else
     try {
       const dSql = `SELECT COALESCE(floor,'') AS floor, COUNT(*) AS n, COALESCE(SUM(qty_kg),0) AS kg, MAX(production_day) AS last_day FROM gpr_ledger WHERE receipt_status='pending' GROUP BY COALESCE(floor,'')`;
       const dRows = pgPool ? (await pgPool.query(dSql)).rows : db.prepare(dSql).all();
@@ -30330,6 +30340,7 @@ app.get('/api/gpr/receipts', async (req, res) => {
                cutting_rows_total: Number((cRow || {}).n || 0), cutting_last_day: (cRow || {}).last_day || null, cutting_last_at: (cRow || {}).last_at || null,
                dpr_records: Number((rRow || {}).n || 0), dpr_last_day: (rRow || {}).last_day || null,
                sweep: _gprSweepLast, sweep_in_flight: !!_gprSweepInFlight };
+      global._v58lDiag = { t: Date.now(), d: diag };
     } catch (e) { diag = { error: e.message }; }
     res.json({ ok: true, floor, pending: rows, totalKg, diag });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
@@ -30405,9 +30416,14 @@ async function _gprMachineRate(mc) {   // avg lakhs/shift over last 6 producing 
 // v58J: short memo so the Planning sheet (a dozen batches per machine) does not recompute every yield on
 // every open — a batch's figure is at most 45 s old, which is "real time" against tank entries.
 const _v58jYieldCache = new Map();
-async function _v58jYieldMemo(bn) {
+// v58L item 1: a closed batch's yield only moves when its packing / wastage moves — cache it 15 min;
+// a running batch 60 s. Anything that writes a tank, a ledger row or a wastage figure can call
+// _v58lYieldForget(bn) to drop the entry.
+function _v58lYieldForget(bn) { try { _v58jYieldCache.delete(String(bn || '').toUpperCase()); } catch (_) {} }
+async function _v58jYieldMemo(bn, status) {
   const k = String(bn || '').toUpperCase(); const hit = _v58jYieldCache.get(k);
-  if (hit && Date.now() - hit.t < 45000) return hit.y;
+  const ttl = (status === 'closed' || status === 'completed') ? 15 * 60000 : 60000;
+  if (hit && Date.now() - hit.t < ttl) return hit.y;
   const y = await gprComputeYield(k); _v58jYieldCache.set(k, { t: Date.now(), y });
   if (_v58jYieldCache.size > 400) { const first = _v58jYieldCache.keys().next().value; _v58jYieldCache.delete(first); }
   return y;
@@ -30422,7 +30438,11 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
     const masters = await gprLoadMasters();
     const C = Object.assign({}, GPR_SEED_MASTERS.gpr_constants, masters.gpr_constants || {});
     const planYield = Number(req.query.yield || C.issuancePlanYieldPct || 105);
-    const today = gprProductionDay();
+    // v58L item 5: DPR entries for a production day are complete 2 h after it turns (08:00 IST), so the
+    // basis day is "yesterday" relative to the production day as of 2 h ago — the 18th becomes the
+    // basis from 08:00 on the 19th, and the 7-day / month windows roll with it.
+    const graceH = Number(C.issuanceDprGraceHours || 2);
+    const today = gprProductionDay(new Date(Date.now() - graceH * 3600000).toISOString());
     const dayShift = (d, n) => new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000).toISOString().slice(0, 10);
     const yday = dayShift(today, -1);
     const from7 = dayShift(yday, -6);
@@ -30450,10 +30470,50 @@ app.get('/api/gpr/material-issuance', async (req, res) => {
       });
       out[k] = { from: a, to: b, rows, totalIssueKg: +rows.reduce((x, r) => x + r.issueKg, 0).toFixed(1), totalPackablePerDayKg: +rows.reduce((x, r) => x + r.packablePerDayKg, 0).toFixed(1) };
     });
-    res.json({ ok: true, forDay: dayShift(today, 1), today, basisEndsOn: yday, planYieldPct: planYield, windows: out });
+    res.json({ ok: true, forDay: dayShift(today, 1), today, basisEndsOn: yday, planYieldPct: planYield, graceHours: graceH, windows: out });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 function _v58hFloorSort2(a, b) { const O = { GF: 0, '1F': 1, '2F': 2 }; return (O[a] ?? 9) - (O[b] ?? 9) || String(a).localeCompare(String(b)); }
+// v58L item 1: yields for the Planning sheet, fetched AFTER the sheet is on screen. Running batches
+// first (live, 60 s memo), closed ones from a 15-min memo; the machine's cumulative figure is
+// Σ output ÷ Σ net material of the batches returned.
+app.get('/api/gpr/plan-yields', async (req, res) => {
+  try {
+    const floor = String(req.query.floor || 'GF');
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : new Date(Date.now() + _GPR_IST_MS).toISOString().slice(0, 7);
+    const masters = await gprLoadMasters();
+    const st = getPlanningState();
+    const inMonth = d => typeof d === 'string' && d.slice(0, 7) === month;
+    const orders = (st.orders || []).filter(o => o && !o.deleted && o.batchNumber && o.machineId &&
+      gprFloorOfMachine(o.machineId, masters) === floor &&
+      (o.status === 'running' || o.status === 'closed' || o.status === 'completed') &&
+      (inMonth(String(o.dprFirstDate || '').slice(0, 10)) || inMonth(String(o.startDate || '').slice(0, 10)) || inMonth(String(o.dprLastDate || o.endDate || '').slice(0, 10)) || o.status === 'running'));
+    const P1 = pgPool ? '$1' : '?';
+    const bns = Array.from(new Set(orders.map(o => String(o.batchNumber).toUpperCase())));
+    const withTanks = new Set();
+    if (bns.length) {
+      const ph = bns.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',');
+      const tr = pgPool ? (await pgPool.query(`SELECT DISTINCT UPPER(batch_number) AS bn FROM gpr_tt WHERE UPPER(batch_number) IN (${ph})`, bns)).rows
+                        : db.prepare(`SELECT DISTINCT UPPER(batch_number) AS bn FROM gpr_tt WHERE UPPER(batch_number) IN (${ph})`).all(...bns);
+      tr.forEach(r => withTanks.add(r.bn));
+    }
+    orders.sort((a, b) => (a.status === 'running' ? 0 : 1) - (b.status === 'running' ? 0 : 1));
+    const yields = {}, byMc = {};
+    for (const o of orders) {
+      const bn = String(o.batchNumber).toUpperCase(); if (!withTanks.has(bn)) continue;
+      try {
+        const y = await _v58jYieldMemo(bn, o.status);
+        if (!y || y.yieldPct == null) continue;
+        yields[bn] = { pct: y.yieldPct, target: y.target, variance: y.variance, outputKg: y.numerator.total, netKg: y.denominator.total, live: o.status === 'running' };
+        const m = byMc[o.machineId] = byMc[o.machineId] || { out: 0, net: 0, n: 0, target: y.target };
+        m.out += Number(y.numerator.total || 0); m.net += Number(y.denominator.total || 0); m.n += 1;
+      } catch (_) {}
+    }
+    const machines = {};
+    Object.entries(byMc).forEach(([mc, m]) => { machines[mc] = m.net > 0 ? { pct: +((m.out / m.net) * 100).toFixed(2), outputKg: +m.out.toFixed(1), netKg: +m.net.toFixed(1), batches: m.n, target: m.target } : null; });
+    res.json({ ok: true, floor, month, yields, machines });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 app.get('/api/gpr/plan', async (req, res) => {
   try {
     // v55E: open read-only route, matching the module's GET convention (see receipts above).
@@ -30751,8 +30811,10 @@ app.get('/api/gpr/plan', async (req, res) => {
         // batch, actual for a closed one — so the chemist sees it where the rest of the batch is read.
         row.yield = null;
         try {
-          if ((row.status === 'running' || row.status === 'closed' || row.status === 'completed') && row.gel && Number(row.gel.kgIssued) > 0) {
-            const y = await _v58jYieldMemo(bn);
+          // v58L item 1: the sheet renders first; yields come from /api/gpr/plan-yields afterwards
+          // (served from the memo). Only ?yields=1 computes them inline.
+          if (String(req.query.yields || '') === '1' && (row.status === 'running' || row.status === 'closed' || row.status === 'completed') && row.gel && Number(row.gel.kgIssued) > 0) {
+            const y = await _v58jYieldMemo(bn, row.status);
             if (y) row.yield = { pct: y.yieldPct, target: y.target, variance: y.variance, outputKg: y.numerator.total, netKg: y.denominator.total, live: row.status === 'running' };
           }
         } catch (_) {}
