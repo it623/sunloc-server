@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58N';
+const APP_BUILD = 'v58P';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -28891,7 +28891,7 @@ app.post('/api/gpr/order-close', async (req, res) => {
         const id = await _v58mRsMove({ movement_type: 'generation', batch_number: bn, side: sd, machine_id: o.machineId || null,
           floor: gprFloorOfMachine(o.machineId, masters), pc_code: col.pc_code, colour_code: col.colour_code, colour_name: col.colour_name,
           litres: rsIn[sd], conc_kg_per_l: cc.conc, virgin_kg: kg, moved_by: session.username,
-          note: `recovered at batch close (${cc.basis}, ${cc.conc} kg/L)${rb.return_note ? ' — ' + String(rb.return_note).slice(0, 200) : ''}` });
+          note: `at close${rb.return_note ? ' — ' + String(rb.return_note).slice(0, 200) : ''} [${cc.basis}]` });   // v58P: short note; basis in brackets, shown on hover
         rsOut.push({ id, side: sd, litres: rsIn[sd], conc_kg_per_l: cc.conc, virgin_kg: kg, basis: cc.basis });
         _v58lYieldForget(bn);
       } catch (e) { console.warn('[v58M return solution]', bn, sd, e.message); }
@@ -28998,7 +28998,7 @@ app.post('/api/gpr/return-solution/entry', async (req, res) => {
     const id = await _v58mRsMove({ movement_type: kind, batch_number: bn, side, machine_id: o.machineId || null, floor: gprFloorOfMachine(o.machineId, masters),
       pc_code: col.pc_code, colour_code: col.colour_code, colour_name: col.colour_name, litres, conc_kg_per_l: cc.conc, virgin_kg: kg, moved_by: session.username,
       production_day: /^\d{4}-\d{2}-\d{2}$/.test(String(b.production_day || '')) ? String(b.production_day) : null,
-      note: (kind === 'generation' ? `recovered at batch close — entered later (${cc.basis}, ${cc.conc} kg/L)` : `correction (${cc.conc} kg/L)`) + (note ? ' — ' + note : '') });
+      note: (kind === 'generation' ? 'at close — entered later' : 'correction') + (note ? ' — ' + note : '') + ` [${cc.basis}]` });   // v58P: short note; basis in brackets, shown on hover
     _v58lYieldForget(bn);
     logAudit(session.username, session.role, 'gpr', kind === 'correction' ? 'GPR_RETURN_SOLUTION_CORRECTION' : 'GPR_RETURN_SOLUTION', `batch=${bn} ${side} ${litres} L = ${kg} kg @ ${cc.conc}${note ? ' — ' + note : ''}`, req.ip);
     res.json({ ok: true, id, batch: bn, side, litres, conc_kg_per_l: cc.conc, virgin_kg: kg, basis: cc.basis });
@@ -29024,7 +29024,8 @@ app.get('/api/gpr/batch-movements/:batch', async (req, res) => {
     let rs = [];
     try { rs = await q(`SELECT * FROM gpr_return_solution WHERE UPPER(batch_number)=${P1} OR UPPER(source_batch)=${P1} ORDER BY production_day, moved_at, id`, two); } catch (_) {}
     const generated = [], consumedInto = [], consumedByOthers = [];
-    const S = { generatedAccepted: 0, generatedPending: 0, generatedVoided: 0, consumedOwn: 0, consumedOther: 0, consumedLegacy: 0, consumedByOthers: 0, byAccountGen: {}, byAccountCon: {} };
+    const S = { generatedAccepted: 0, generatedPending: 0, generatedVoided: 0, consumedOwn: 0, consumedOther: 0, consumedLegacy: 0, consumedByOthers: 0, byAccountGen: {}, byAccountCon: {},
+                generatedTrackingAccepted: 0, generatedOwnAccepted: 0, fromOtherByBatch: {}, byOthersByBatch: {}, byAccountOwnCon: {}, byAccountByOthers: {} };   // v58P item 2: split + reconciliation
     (led || []).forEach(r => {
       const isCr = r.movement_type === 'generation' || r.movement_type === 'correction';
       const own = String(r.batch_number || '').toUpperCase() === bn;
@@ -29033,16 +29034,21 @@ app.get('/api/gpr/batch-movements/:batch', async (req, res) => {
       if (isCr && own) {
         r.state = r.receipt_status === 'rejected' ? 'voided' : (r.receipt_status === 'pending' ? 'pending' : 'accepted');
         generated.push(r);
-        if (r.state === 'accepted') { S.generatedAccepted += kg; S.byAccountGen[r.account] = (S.byAccountGen[r.account] || 0) + kg; }
+        if (r.state === 'accepted') { S.generatedAccepted += kg; S.byAccountGen[r.account] = (S.byAccountGen[r.account] || 0) + kg;
+          // v58P: the Tracking salvage credit is the yield's own "salvage recovered" line — shown apart so the KPI ties to the yield rows
+          if (r.source === 'tracking') S.generatedTrackingAccepted += kg; else S.generatedOwnAccepted += kg; }
         else if (r.state === 'pending') S.generatedPending += kg; else S.generatedVoided += kg;
       } else if (!isCr && own) {
         const src = String(r.source_batch || '').toUpperCase();
         r.from = src && src !== bn ? 'other' : 'own';
-        if (r.from === 'other') S.consumedOther += kg; else S.consumedOwn += kg;
+        if (r.from === 'other') { S.consumedOther += kg; S.fromOtherByBatch[src] = (S.fromOtherByBatch[src] || 0) + kg; }
+        else { S.consumedOwn += kg; S.byAccountOwnCon[r.account] = (S.byAccountOwnCon[r.account] || 0) + kg; }
         S.byAccountCon[r.account] = (S.byAccountCon[r.account] || 0) + kg;
         consumedInto.push(r);
       } else if (!isCr && !own) {
         consumedByOthers.push(r); S.consumedByOthers += kg;
+        const into = String(r.batch_number || '').toUpperCase();
+        S.byOthersByBatch[into] = (S.byOthersByBatch[into] || 0) + kg; S.byAccountByOthers[r.account] = (S.byAccountByOthers[r.account] || 0) + kg;
       }
     });
     (legacy || []).forEach(r => { if (r.movement_type !== 'draw') return; r.from = 'legacy'; r.source = 'legacy'; r.account_label = (GPR_ACCOUNT_LABELS[r.account] || r.account || 'legacy') + ' (Ledger B ' + (r.location || '') + ')';
@@ -29061,8 +29067,16 @@ app.get('/api/gpr/batch-movements/:batch', async (req, res) => {
     rsRows.forEach(r => { if (r.direction === 'recovered') { rsSum.recoveredL += Number(r.litres || 0); rsSum.recoveredKg += Number(r.virgin_kg || 0); }
       else if (r.direction === 'used') { rsSum.usedL += Number(r.litres || 0); rsSum.usedKg += Number(r.virgin_kg || 0); } else rsSum.drawnByOthersL += Number(r.litres || 0); });
     const r2 = o => { Object.keys(o).forEach(k => { if (typeof o[k] === 'number') o[k] = +o[k].toFixed(2); }); return o; };
-    res.json({ ok: true, batch: bn, generated, consumedInto, consumedByOthers, returnSolution: rsRows, excess,
-               summary: Object.assign(r2(S), { byAccountGen: r2(S.byAccountGen), byAccountCon: r2(S.byAccountCon), returnSolution: r2(rsSum) }) });
+    // v58P item 2: RECONCILIATION of the batch's own stock — generated (accepted) − consumed into its own
+    // tanks − drawn by other batches = closing unused stock of this batch, per account and overall.
+    const accs = Array.from(new Set([...Object.keys(S.byAccountGen), ...Object.keys(S.byAccountOwnCon), ...Object.keys(S.byAccountByOthers)]));
+    const reconByAccount = accs.map(a => { const g = S.byAccountGen[a] || 0, o = S.byAccountOwnCon[a] || 0, x = S.byAccountByOthers[a] || 0;
+      return { account: a, account_label: GPR_ACCOUNT_LABELS[a] || a, generated: +g.toFixed(2), consumedOwn: +o.toFixed(2), drawnByOthers: +x.toFixed(2), closing: +(g - o - x).toFixed(2) }; })
+      .sort((a, b) => String(a.account).localeCompare(String(b.account)));
+    const recon = { generated: +S.generatedAccepted.toFixed(2), consumedOwn: +S.consumedOwn.toFixed(2), drawnByOthers: +S.consumedByOthers.toFixed(2),
+                    closing: +(S.generatedAccepted - S.consumedOwn - S.consumedByOthers).toFixed(2), pending: +S.generatedPending.toFixed(2), byAccount: reconByAccount };
+    res.json({ ok: true, batch: bn, generated, consumedInto, consumedByOthers, returnSolution: rsRows, excess, recon,
+               summary: Object.assign(r2(S), { byAccountGen: r2(S.byAccountGen), byAccountCon: r2(S.byAccountCon), fromOtherByBatch: r2(S.fromOtherByBatch), byOthersByBatch: r2(S.byOthersByBatch), returnSolution: r2(rsSum) }) });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
