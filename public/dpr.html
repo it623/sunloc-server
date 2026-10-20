@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v58P</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v58T</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1036,14 +1036,17 @@ function go(page) {
     }, 50);
   }
 }
-let _dprSelectedMonth = today().slice(0,7); // 'YYYY-MM'
+let _dprSelectedMonth = dprCurrentYM(); // 'YYYY-MM' — v58S: production month (06:00 IST turn), was the local calendar month
 let _dprMonthArchiveCache = {};
 let _dprCumulativeMode = false; // false = This Month, true = Up To This Month
 let _histSyncedMonth = null; // v41ZG #4: guards the one-time History month sync (avoids re-sync loop)
 let _dprDatesListCache = {}; // v41ZG #5: fl -> {dates:[...], ts} cache for /api/dpr/dates (report perf)
 const _DPR_DATES_TTL = 90000; // 90s — short enough that other devices' new days appear soon
 
-function dprCurrentYM(){ const n=new Date(); return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}`; }
+// v58S (Ishan, 20 Oct): the current month is the PRODUCTION month — the month of the IST production day, which
+// turns at 06:00 IST on the 1st (same rule in Tracking, GPR and Planning). Was the browser's calendar month.
+function _dprProdToday(){ return new Date(Date.now() + 330*60000 - 6*3600*1000).toISOString().slice(0,10); }
+function dprCurrentYM(){ return _dprProdToday().slice(0,7); }
 
 function dprGetMonthEditStatus(ym) {
   const now = dprCurrentYM();
@@ -1131,7 +1134,7 @@ function restrictDprDatePicker() {
   // If current date value is outside month range, reset to first day of month
   const cur = input.value;
   if (cur < minD || cur > maxD) {
-    input.value = _dprSelectedMonth === dprCurrentYM() ? today() : minD;
+    input.value = _dprSelectedMonth === dprCurrentYM() ? _dprProdToday() : minD;   // v58S: the production day, which always sits inside the production month
     onDateChange();
   }
 }

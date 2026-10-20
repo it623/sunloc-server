@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58P';
+const APP_BUILD = 'v58T';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -25891,7 +25891,7 @@ app.get('/api/archives/check/:month', async (req, res) => {
   try {
     const { month } = req.params;
     const now = new Date();
-    const currentYM = `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')}`;
+    const currentYM = gprProductionMonth();   // v58S: production month (06:00 IST turn), not the server's UTC calendar
     if (month === currentYM) return res.json({ ok: true, status: 'current', editable: true });
     if (month > currentYM) return res.json({ ok: true, status: 'future', editable: true });
     if (!pgPool) return res.json({ ok: true, status: 'unarchived', editable: true });
@@ -26206,6 +26206,9 @@ function gprProductionDay(iso) {
   if (isNaN(d)) return null;
   return new Date(d.getTime() + 330 * 60000 - 6 * 3600 * 1000).toISOString().slice(0, 10);
 }
+// v58S (Ishan, 20 Oct): THE production month = the month of the production day — it turns at 06:00 IST
+// on the 1st, never at midnight (local or UTC). One rule for DPR, Tracking, GPR and Planning.
+function gprProductionMonth(iso) { const d = gprProductionDay(iso); return d ? d.slice(0, 7) : null; }
 
 // Load all GPR masters into a plain object (engine-aware).
 async function gprLoadMasters() {
@@ -26605,6 +26608,52 @@ async function _v58mSideColour(order, side) {
   try { await _gprEnrichPc([t]); } catch (_) {}
   return { pc_code: t.pc_code || null, colour_code: t.side_code || null, colour_name: (order && order.colour) || t.pc_colour_name || null };
 }
+// ═══ v58R item 3 (Ishan, 20 Oct): PER-BATCH LOT BALANCE — a batch's cuttings / salvage stock is what it
+// generated (accepted) minus EVERYTHING drawn from it: its own tanks (consumption rows with source_batch
+// NULL or = the batch) and other batches' tanks (source_batch = the batch). Until now only the
+// account-wide (floor) balance was guarded, so a tank could draw more from one batch than that batch ever
+// generated (26V132: 153.8 kg cuttings generated, 215.3 kg drawn). Debits are keyed on
+// COALESCE(source_batch, batch_number) so the aggregate (pre-v56U) consumption path counts too.
+async function _v58rLotBalances(pairs) {
+  // pairs: [{ batch, account }] → { 'BATCH|account': { generated, pending, drawn, balance } }
+  const out = {};
+  const uniq = Array.from(new Set((pairs || []).map(p => String(p.batch || '').toUpperCase() + '|' + String(p.account || '').toLowerCase()))).filter(k => k.split('|')[0] && k.split('|')[1]);
+  for (const k of uniq) {
+    const [bn, acc] = k.split('|');
+    const P = i => pgPool ? `$${i}` : '?';
+    const sql = `SELECT
+        COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_CREDIT} AND UPPER(batch_number)=${P(1)} AND (receipt_status IS NULL OR receipt_status='accepted') THEN qty_kg ELSE 0 END),0) AS gen,
+        COALESCE(SUM(CASE WHEN movement_type='generation' AND UPPER(batch_number)=${P(2)} AND receipt_status='pending' THEN qty_kg ELSE 0 END),0) AS pend,
+        COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} AND UPPER(COALESCE(source_batch, batch_number))=${P(3)} THEN qty_kg ELSE 0 END),0) AS drawn
+      FROM gpr_ledger WHERE account=${P(4)} AND (UPPER(batch_number)=${P(5)} OR UPPER(source_batch)=${P(6)})`;
+    const prm = [bn, bn, bn, acc, bn, bn];
+    const r = pgPool ? (await pgPool.query(sql, prm)).rows[0] : db.prepare(sql).get(...prm);
+    const gen = Number((r && r.gen) || 0), pend = Number((r && r.pend) || 0), drawn = Number((r && r.drawn) || 0);
+    out[k] = { batch: bn, account: acc, generated: +gen.toFixed(3), pending: +pend.toFixed(3), drawn: +drawn.toFixed(3), balance: +(gen - drawn).toFixed(3) };
+  }
+  return out;
+}
+// Returns null when every need fits, else the 409 body for the first lot that does not.
+async function _v58rLotGuard(needs) {
+  // needs: [{ batch, account, kg }] (kg summed per batch+account)
+  const need = {};
+  (needs || []).forEach(x => { const kg = Number(x.kg || 0); if (!(kg > 0) || !x.batch) return; const k = String(x.batch).toUpperCase() + '|' + String(x.account || 'cutting').toLowerCase(); need[k] = (need[k] || 0) + kg; });
+  const keys = Object.keys(need);
+  if (!keys.length) return null;
+  const bal = await _v58rLotBalances(keys.map(k => ({ batch: k.split('|')[0], account: k.split('|')[1] })));
+  for (const k of keys) {
+    const B = bal[k] || { generated: 0, pending: 0, drawn: 0, balance: 0 };
+    if (need[k] > B.balance + 0.005) {
+      const label = GPR_ACCOUNT_LABELS[B.account || k.split('|')[1]] || k.split('|')[1];
+      return { ok: false, error: 'LOT_STOCK_INSUFFICIENT', batch: B.batch || k.split('|')[0], account: k.split('|')[1],
+               available_kg: +Math.max(0, B.balance).toFixed(2), need_kg: +need[k].toFixed(2), generated_kg: B.generated, drawn_kg: B.drawn, pending_kg: B.pending,
+               detail: `${label} of ${B.batch || k.split('|')[0]}: ${Math.max(0, B.balance).toFixed(1)} kg left (generated ${B.generated.toFixed(1)} − already drawn ${B.drawn.toFixed(1)}), this tank takes ${need[k].toFixed(1)} kg.`
+                     + (B.pending > 0.005 ? ` ${B.pending.toFixed(1)} kg is awaiting receipt acceptance — accept it first.` : '') };
+    }
+  }
+  return null;
+}
+
 async function _v58mRsMove(row) {
   const cols = `(movement_type,batch_number,source_batch,side,machine_id,floor,pc_code,colour_code,colour_name,litres,conc_kg_per_l,virgin_kg,tt_id,production_day,note,moved_by)`;
   const vals = [row.movement_type, String(row.batch_number || '').toUpperCase(), row.source_batch ? String(row.source_batch).toUpperCase() : null,
@@ -27945,6 +27994,16 @@ app.post('/api/gpr/tt', async (req, res) => {
       returnSolL = +returnLines.reduce((a, l) => a + l.litres, 0).toFixed(2);
       returnSolKg = +returnLines.reduce((a, l) => a + l.kg, 0).toFixed(3);
     }
+    // v58R item 3: no tank may draw more cuttings / salvage from a batch than that batch has left —
+    // own batch or another one. Legacy (Ledger B) draws are not lot-tracked and stay outside this guard.
+    if (String(b.consume_from || 'ledger').toLowerCase() !== 'legacy') {
+      const needs = reuseLines.length
+        ? reuseLines.map(l => ({ batch: l.source_batch || bn, account: l.account, kg: l.kg }))
+        : [{ batch: bn, account: 'cutting', kg: Number(b.cutting_kg || 0) },
+           { batch: bn, account: String(b.salvage_account || 'aim_salvage'), kg: Number(b.salvage_kg || 0) }].filter(x => x.account !== 'mixed');
+      const short = await _v58rLotGuard(needs);
+      if (short) return res.status(409).json(short);
+    }
     // Total charged weight — the base for the 22.5% cutting estimate (item 4).
     const virginKg  = Number(b.virgin_kg || 0);
     const salvageKg = Number(b.salvage_kg || 0);
@@ -28484,9 +28543,14 @@ app.get('/api/gpr/tt-batch-options', async (req, res) => {
     const st = getPlanningState();
     const masters = await gprLoadMasters();
     const want = String(req.query.floors || '').split(',').map(s => s.trim()).filter(s => /^(GF|1F|2F)$/.test(s));
+    // v58S added an optional ?month cohort filter; v58T (Ishan, 20 Oct): the GPR client no longer sends it —
+    // carry-forward batches must stay on the entry screens (Tracking's model; cohort is by batch, not by
+    // entry date). The parameter remains for reports / tooling only.
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : null;
     const byMc = {};
     for (const o of (st.orders || [])) {
       if (!o || o.deleted || !o.batchNumber || !o.machineId) continue;
+      if (month && _gprCohortYm(o) !== month) continue;
       const fl = gprFloorOfMachine(o.machineId, masters) || '';
       if (want.length && !want.includes(fl)) continue;
       (byMc[o.machineId] = byMc[o.machineId] || { floor: fl, orders: [] }).orders.push(o);
@@ -28506,7 +28570,7 @@ app.get('/api/gpr/tt-batch-options', async (req, res) => {
                         || _gprBatchCmp(String(a.batchNumber).toUpperCase(), String(b.batchNumber).toUpperCase()))
         .slice(0, 2).forEach(o => put(o, mc, g.floor, 'next'));
     });
-    res.json({ ok: true, floors: want, rows: out });
+    res.json({ ok: true, floors: want, month: month || 'ALL', rows: out });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
@@ -29829,9 +29893,11 @@ app.get('/api/gpr/ledger/source-lots', async (req, res) => {
                   FROM gpr_ledger WHERE movement_type IN ${GPR_A_CREDIT} AND (receipt_status IS NULL OR receipt_status IN ('accepted','pending'))
                     AND batch_number IS NOT NULL${fw}
                   GROUP BY account, UPPER(batch_number), LOWER(COALESCE(side,''))`;
-    const cSql = `SELECT account, UPPER(source_batch) AS batch_number, LOWER(COALESCE(side,'')) AS side, SUM(qty_kg) AS kg
-                  FROM gpr_ledger WHERE movement_type IN ${GPR_A_DEBIT} AND source_batch IS NOT NULL${fw}
-                  GROUP BY account, UPPER(source_batch), LOWER(COALESCE(side,''))`;
+    // v58R item 3: a draw with no source_batch is the consuming batch's OWN stock (the aggregate path) —
+    // it was never subtracted here, so the picker overstated own-batch availability.
+    const cSql = `SELECT account, UPPER(COALESCE(source_batch, batch_number)) AS batch_number, LOWER(COALESCE(side,'')) AS side, SUM(qty_kg) AS kg
+                  FROM gpr_ledger WHERE movement_type IN ${GPR_A_DEBIT} AND COALESCE(source_batch, batch_number) IS NOT NULL${fw}
+                  GROUP BY account, UPPER(COALESCE(source_batch, batch_number)), LOWER(COALESCE(side,''))`;
     const gRows = pgPool ? (await pgPool.query(gSql, params)).rows : db.prepare(gSql).all(...params);
     const cRows = pgPool ? (await pgPool.query(cSql, params)).rows : db.prepare(cSql).all(...params);
     const used = {};
@@ -30089,12 +30155,16 @@ app.post('/api/gpr/ledger/consume', async (req, res) => {
           availableKg: +_bal.toFixed(2), pendingKg: +Number(_pRow?.p || 0).toFixed(2) });
       }
     } catch (_e55a) { /* balance check must never 500 a consume — worst case falls through */ }
+    // v58R item 3: and the BATCH the material comes from must hold it (source_batch, else the consuming batch)
+    { const lotBn = String(b.source_batch || b.batch_number || '').toUpperCase();
+      if (lotBn) { const short = await _v58rLotGuard([{ batch: lotBn, account, kg: qty }]); if (short) return res.status(409).json(short); } }
 
     const masters = await gprLoadMasters();
     const id = await gprLedgerMove({ movement_type: 'consumption', account, source: 'manual',
       pc_code: b.pc_code, colour_name: b.colour_name, colour_code: b.colour_code, side: b.side,
       machine_id: b.machine_id, batch_number: b.batch_number ? String(b.batch_number).toUpperCase() : null,
       tt_id: b.tt_id || null, floor: gprFloorOfMachine(b.machine_id, masters) || b.floor,
+      source_batch: b.source_batch ? String(b.source_batch).toUpperCase() : null,   // v58R: the lot it came from
       qty_kg: qty, moved_by: session.username, note: b.note || 'consumed into TT' });
     _v58lYieldForget(b.batch_number);   // v58L
     logAudit(session.username, session.role, 'gpr', 'GPR_LEDGER_CONSUME', `${account} ${qty}kg batch=${b.batch_number || ''}`, req.ip);
@@ -30132,6 +30202,9 @@ app.post('/api/gpr/ledger/draw', async (req, res) => {
           availableKg: +_bal.toFixed(2), pendingKg: +Number(_pRow?.p || 0).toFixed(2) });
       }
     } catch (_e55a) { /* balance check must never 500 a consume — worst case falls through */ }
+    // v58R item 3: batch-level guard when the draw names a batch
+    { const lotBn = String(b.source_batch || b.batch_number || '').toUpperCase();
+      if (lotBn) { const short = await _v58rLotGuard([{ batch: lotBn, account: b.account || 'cutting', kg: qty }]); if (short) return res.status(409).json(short); } }
 
     const masters = await gprLoadMasters();
     const id = await gprLedgerMove({ movement_type: 'draw', account: b.account || 'cutting', source: 'manual',
@@ -30977,7 +31050,7 @@ function _v58hFloorSort2(a, b) { const O = { GF: 0, '1F': 1, '2F': 2 }; return (
 app.get('/api/gpr/plan-yields', async (req, res) => {
   try {
     const floor = String(req.query.floor || 'GF');
-    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : new Date(Date.now() + _GPR_IST_MS).toISOString().slice(0, 7);
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : gprProductionMonth();   // v58S
     const masters = await gprLoadMasters();
     const st = getPlanningState();
     const inMonth = d => typeof d === 'string' && d.slice(0, 7) === month;
@@ -31015,7 +31088,7 @@ app.get('/api/gpr/plan', async (req, res) => {
   try {
     // v55E: open read-only route, matching the module's GET convention (see receipts above).
     const floor = String(req.query.floor || 'GF');
-    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : new Date(Date.now() + _GPR_IST_MS).toISOString().slice(0, 7);
+    const month = /^\d{4}-\d{2}$/.test(String(req.query.month || '')) ? String(req.query.month) : gprProductionMonth();   // v58S
     const masters = await gprLoadMasters();
     const C = Object.assign({}, GPR_SEED_MASTERS.gpr_constants, masters.gpr_constants || {});
     const assumedA = Number(C.defaultAGradePct || 93);

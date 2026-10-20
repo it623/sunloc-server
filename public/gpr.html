@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v58P</title>
+<title>GPR · build v58T</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -308,6 +308,11 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 /* ── KPI ───────────────────────────────────────────── */
 .kgrid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin-bottom:16px}
+/* v58R item 2: the batch-movements KPI row — five cards, one line, in reading order: generated → consumed → drawn to others → reconciliation → return solution */
+.kgrid.mv5{grid-template-columns:repeat(5,minmax(0,1fr));gap:8px;margin-bottom:10px}
+.kgrid.mv5 .kpi{padding:8px 10px;min-width:0}.kgrid.mv5 .kpi-label{font-size:9.5px;line-height:1.25}.kgrid.mv5 .kpi-val{font-size:17px;margin:2px 0}.kgrid.mv5 .kpi-sub{font-size:10px;line-height:1.3;word-break:break-word}
+.kgrid.mv5 .kpi-sub b{color:var(--t1);font-weight:600}.kgrid.mv5 .kpi-sub .dim{color:var(--t3)}
+@media (max-width:1100px){.kgrid.mv5{grid-template-columns:repeat(3,minmax(0,1fr))}}@media (max-width:640px){.kgrid.mv5{grid-template-columns:1fr 1fr}}
 .kpi{background:var(--s2);border:1px solid var(--b1);border-radius:var(--r);padding:11px 13px}
 .kpi-label{font-family:var(--fc);font-size:10.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--t3);margin-bottom:4px}
 .kpi-val{font-family:var(--mono);font-size:19px;font-weight:500;color:var(--t1);line-height:1.1}
@@ -415,8 +420,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v58P</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58P</div>
+    <h1>GPR<span class="vpill">v58T</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58T</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -436,10 +441,13 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v58P</span></div>
+  <div class="nbrand">GPR<span class="vpill">v58T</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
-    <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
+    <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
+      <select id="gMonth" onchange="gMonthChanged(true)" style="font-size:12px;padding:2px 4px;border:0;background:transparent;color:#dbe3ff"></select>
+      <span id="gMonthBadge" style="font-size:10px;padding:1px 6px;border-radius:999px;font-weight:700;background:rgba(0,212,255,.15);color:#7fe9ff">●</span>
+    </span>
     <span class="nuser" id="navUser"></span>
     <button class="nbtn danger" onclick="doLogout()">Exit</button>
   </div>
@@ -996,8 +1004,9 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
         <div class="field-grp"><label>Side</label><select id="rse_side" onchange="rseConc()"><option value="cap">Cap</option><option value="body">Body</option></select></div>
         <div class="field-grp"><label>Litres</label><input id="rse_l" type="number" inputmode="decimal" step="0.1" oninput="rseConc(true)"></div>
         <div class="field-grp"><label>Production day</label><input id="rse_day" type="date" title="leave blank for today"></div>
-        <div class="field-grp" style="min-width:220px"><label>Note</label><input id="rse_note" placeholder="reason (required for a correction)"></div>
-        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="rseSave()">Record</button></div>
+        <!-- v58R item 1: the note spans two grid cells (its 220px min-width used to spill under the Record button) -->
+        <div class="field-grp dtw"><label>Note</label><input id="rse_note" placeholder="reason (required for a correction)"></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn primary" onclick="rseSave()" style="height:36px;align-self:flex-start;padding:0 28px">Record</button></div>
       </div>
       <div id="rse_note2" class="hbnote" style="margin-top:6px"></div>
     </div>
@@ -1986,6 +1995,7 @@ setInterval(()=>{ const pg = document.getElementById('page-mmt'); if(pg && pg.cl
 // v56A item 24: the old inline ALL-floors filter is superseded by the History section's own
 // filter bar (reference / vendor / gelatine batch / tank / status / dates), so it is removed.
 async function saveMmt(deviationReason){
+  if(!gMonthEditable('taking a charge')) return;   // v58S
   // v55J item 6: manual timestamps sanity-checked against this computer's clock.
   try{
     const _nowMs = Date.now();
@@ -2091,7 +2101,7 @@ async function alSelect(ref, keepPlans){
   const floors = _alFloorsOf(c);
   if(ctx) ctx.textContent = floors.map(f=>FLOOR_LABELS[f]||f).join(' + ');
   // batches per machine (running / next) — one light read for the charge's floors
-  if(!window._AL.opts || window._AL.opts.key!==floors.join(',')){
+  if(!window._AL.opts || window._AL.opts.key!==floors.join(',')){   // v58T: running / next batches regardless of month (carry-forward)
     try{ const d = await api('/api/gpr/tt-batch-options?floors='+encodeURIComponent(floors.join(','))); window._AL.opts = { key: floors.join(','), rows: (d&&d.ok&&d.rows)||[] }; }
     catch(e){ window._AL.opts = { key: floors.join(','), rows: [] }; }
   }
@@ -3109,6 +3119,8 @@ async function loadBatchOptions(){
       rows.forEach(r=>{ window._BATCHMETA[r.batch] = { colour: r.colour||'', pc: r.pc||'', machineId: r.machineId||'' }; });
       dl.innerHTML = rows.map(r=>'<option value="'+esc(r.batch)+'">'+esc(r.batch+' · '+r.machineId+' '+r.tag+(r.colour?' · '+r.colour:''))+'</option>').join('');
     };
+    // v58T (Ishan, 20 Oct): NOT month-scoped — as in Tracking, a batch carried forward from October keeps
+    // appearing on the working screens in November; its entries count in October's cohort by batch.
     const ck = visibleFloors().join(',');
     if(window._BOPTS && window._BOPTS.key===ck){ paint(window._BOPTS.rows); if(Date.now()-window._BOPTS.at < 60000) return; }
     const d = await api('/api/gpr/tt-batch-options?floors='+encodeURIComponent(ck));
@@ -3745,6 +3757,7 @@ function setPrep(m){
   if(go) go.textContent = 'Complete TT entry — create ' + (M==='both' ? 'CAP + BODY tanks' : M.toUpperCase()+' tank');
 }
 async function completeDualTt(){
+  if(!gMonthEditable('tank entry')) return;   // v58S
   const batch = val('td_batch');
   if(!batch){ toast('A batch number is required','err'); return; }
   // v57: the sides are the ones chosen under Prepare; each chosen side must have its charge entered
@@ -4965,7 +4978,7 @@ async function rseMachineChanged(){
   document.getElementById('rse_batch_other').style.display = 'none';
   if(!mc){ sel.innerHTML = '<option value="">— pick a machine first —</option>'; rseConc(); return; }
   sel.innerHTML = '<option value="">loading…</option>';
-  if(!window._RSE_BL){ try{ const d = await api('/api/gpr/batch-list?month=ALL'); window._RSE_BL = (d&&d.ok&&d.rows)||[]; }catch(e){ window._RSE_BL = []; } }
+  if(!window._RSE_BL){ try{ const d = await api('/api/gpr/batch-list?month=ALL'); window._RSE_BL = (d&&d.ok&&d.rows)||[]; }catch(e){ window._RSE_BL = []; } }   // v58T: every batch — a closed October batch gets its return solution recorded in November
   const rows = window._RSE_BL.filter(r=>String(r.machineId||'').toUpperCase()===mc.toUpperCase() && ['running','closed','completed'].includes(String(r.status||'')))
     .sort((a,b)=>_gprBatchCmpC(b.batch,a.batch)).slice(0,40);
   sel.innerHTML = '<option value="">— batch —</option>' + rows.map(r=>'<option value="'+esc(r.batch)+'">'+esc(r.batch)+' · '+esc(String(r.status||'').toUpperCase())+(r.pcCode?' · '+esc(r.pcCode):'')+(r.customer?' · '+esc(r.customer):'')+'</option>').join('')
@@ -4984,6 +4997,7 @@ async function rseConc(onlyKg){
     + (window._RSE.order&&window._RSE.order.status!=='closed'?' &middot; <span style="color:var(--amber)">batch is '+esc(window._RSE.order.status||'not closed')+'</span>':'')) : '<span style="color:var(--red)">'+esc(bn)+' not found in Planning</span>';
 }
 async function rseSave(){
+  if(!gMonthEditable('return solution entry')) return;   // v58S
   const bn = _rseBatch(), sd = val('rse_side')||'cap', kind = val('rse_kind')||'generation', L = parseFloat(val('rse_l'));
   if(!bn){ toast('Enter the batch','err'); return; }
   if(!Number.isFinite(L) || L===0){ toast('Enter the litres','err'); return; }
@@ -5327,6 +5341,7 @@ async function loadShiftWise(q){
 // body tanks (litres). It is credited to the Return Solution stock head at the batch's own
 // concentration — shown here as the operator types — and comes off the batch's net material.
 async function gprCloseOrder(batch, mc){
+  if(!gMonthEditable('closing a batch')) return;   // v58S
   const bn = String(batch||'').toUpperCase();
   let cc = null; try{ cc = await api('/api/gpr/return-solution/conc/'+encodeURIComponent(bn)); }catch(e){}
   const conc = sd => Number((cc && cc[sd] && cc[sd].conc) || 0) || 0.33;
@@ -5726,6 +5741,7 @@ async function loadLedger(view, btn){
   }catch(e){ out.innerHTML='<div class="empty">Could not load the ledger.</div>'; }
 }
 async function saveMovement(){
+  if(!gMonthEditable('ledger entry')) return;   // v58S
   const type = document.getElementById('mv_type').value;
   const account = 'oily_salvage' /* v55M item 7: oily-only entry */;
   if(num('mv_kg') <= 0){ toast('Enter a quantity in kg','err'); return; }
@@ -6290,16 +6306,25 @@ async function loadBatchMovements(bn, target){
   const acc = a => esc(ACCOUNTS[a]||a||''), sideTag = sd => sd ? '<span class="sdtag sd-'+esc(sd)+'">'+esc(String(sd).toUpperCase())+'</span>' : '<span class="sdtag" title="whole capsules">C+B</span>';
   const list = o => Object.entries(o||{}).sort((a,b)=>b[1]-a[1]).map(([k,v])=>esc(k)+' '+n1(v)).join(' · ');
   const fromOther = Number(S.consumedOther||0), byOthers = Number(S.consumedByOthers||0);
-  let h = '<div class="kgrid">'
-    + kpi('Generated by this batch (accepted)', n1(S.generatedAccepted)+' kg', 'green', 'cuttings & GPR entries '+n1(S.generatedOwnAccepted)+' · Tracking salvage '+n1(S.generatedTrackingAccepted)+(S.generatedPending>0.005?' · pending '+n1(S.generatedPending):'')+(S.generatedVoided>0.005?' · voided '+n1(S.generatedVoided):''))
-    + kpi('Consumed into its tanks', n1(S.consumedOwn+fromOther+S.consumedLegacy)+' kg', '', 'own stock '+n1(S.consumedOwn)+(fromOther>0.005?' · other batches '+n1(fromOther):'')+(S.consumedLegacy>0.005?' · legacy '+n1(S.consumedLegacy):''))
-    + kpi('Drawn FROM other batches', n1(fromOther)+' kg', fromOther>0.005?'amber':'', fromOther>0.005 ? list(S.fromOtherByBatch) : 'nothing drawn from other batches\' stock')
-    + kpi('Drawn BY other batches', n1(byOthers)+' kg', byOthers>0.005?'amber':'', byOthers>0.005 ? list(S.byOthersByBatch) : 'nothing drawn from this batch\'s stock')
-    + kpi('Reconciliation — own stock', n1(R.closing)+' kg unused', R.closing<-0.005?'red':(R.closing>0.005?'teal':''), 'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' · +'+n1(R.pending)+' pending receipt':''))
-    + kpi('Return solution', n1((S.returnSolution||{}).recoveredL)+' L recovered', 'teal', 'used '+n1((S.returnSolution||{}).usedL)+' L'+((S.returnSolution||{}).drawnByOthersL>0.005?' · drawn by others '+n1(S.returnSolution.drawnByOthersL)+' L':''))
+  // v58R item 2 (Ishan, 20 Oct): five KPIs in one line, in the order the material flows —
+  // Generated → Consumed (own · from other batches) → Drawn to other batches → Reconciliation → Return solution.
+  const kpiH = (label, v, cls, subHtml) => '<div class="kpi"><div class="kpi-label">'+esc(label)+'</div><div class="kpi-val '+(cls||'')+'">'+esc(v)+'</div>'+(subHtml?'<div class="kpi-sub">'+subHtml+'</div>':'')+'</div>';
+  const consumedTotal = Number(S.consumedOwn||0)+fromOther+Number(S.consumedLegacy||0);
+  let h = '<div class="kgrid mv5">'
+    + kpiH('Generated by this batch', n1(S.generatedAccepted)+' kg', 'green',
+        'cuttings &amp; GPR entries <b>'+n1(S.generatedOwnAccepted)+'</b> · Tracking salvage <b>'+n1(S.generatedTrackingAccepted)+'</b>'
+        +(S.generatedPending>0.005?' · <span style="color:var(--amber)">pending '+n1(S.generatedPending)+'</span>':'')+(S.generatedVoided>0.005?' · <span class="dim">voided '+n1(S.generatedVoided)+'</span>':''))
+    + kpiH('Consumed into its tanks', n1(consumedTotal)+' kg', '',
+        'from own batch <b>'+n1(S.consumedOwn)+'</b><br>from other batches <b'+(fromOther>0.005?' style="color:var(--amber)"':'')+'>'+n1(fromOther)+'</b>'
+        +(fromOther>0.005?' <span class="dim">('+list(S.fromOtherByBatch)+')</span>':'')+(S.consumedLegacy>0.005?'<br>legacy stock <b>'+n1(S.consumedLegacy)+'</b>':''))
+    + kpiH('Drawn TO other batches', n1(byOthers)+' kg', byOthers>0.005?'amber':'', byOthers>0.005 ? '<span class="dim">'+list(S.byOthersByBatch)+'</span>' : '<span class="dim">nothing drawn from this batch\'s stock</span>')
+    + kpiH('Reconciliation — own stock', n1(R.closing)+' kg', R.closing<-0.005?'red':(R.closing>0.005?'teal':''),
+        (R.closing<-0.005?'<b style="color:var(--red)">over-drawn</b> · ':'<b>unused</b> · ')+'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span class="dim">· +'+n1(R.pending)+' pending</span>':''))
+    + kpiH('Return solution', n1((S.returnSolution||{}).recoveredL)+' L', 'teal',
+        'recovered · used <b>'+n1((S.returnSolution||{}).usedL)+' L</b>'+((S.returnSolution||{}).drawnByOthersL>0.005?' · drawn by others <b>'+n1(S.returnSolution.drawnByOthersL)+' L</b>':''))
     + '</div>';
   if((R.byAccount||[]).length > 1 || (R.byAccount||[]).some(a=>a.closing<-0.005)){
-    h += '<table class="gtable" style="margin:4px 0 8px;font-size:11.5px"><thead><tr><th>Account</th><th class="num">Generated kg</th><th class="num">Into own tanks</th><th class="num">Drawn by others</th><th class="num">Unused stock</th></tr></thead><tbody>'
+    h += '<table class="gtable" style="margin:4px 0 8px;font-size:11.5px"><thead><tr><th>Account</th><th class="num">Generated kg</th><th class="num">Into own tanks</th><th class="num">Drawn to others</th><th class="num">Unused stock</th></tr></thead><tbody>'
       + R.byAccount.map(a=>'<tr><td>'+esc(a.account_label)+'</td><td class="num">'+n2(a.generated)+'</td><td class="num">'+n2(a.consumedOwn)+'</td><td class="num">'+n2(a.drawnByOthers)+'</td><td class="num" style="color:'+(a.closing<-0.005?'var(--red)':'var(--t1)')+'"><b>'+n2(a.closing)+'</b></td></tr>').join('')
       + '</tbody></table>';
   }
@@ -6334,7 +6359,7 @@ async function loadBatchMovements(bn, target){
     kg: g.kg, n: g.n,
     sub: g.rows.sort((a,b)=>String(a.production_day||'').localeCompare(String(b.production_day||''))).map(r=>({ cells: [esc(_dm(r.production_day)||''), r.tt_id?'#'+r.tt_id:'—', acc(r.account), esc(String(r.side||'').toUpperCase())+(r.colour_code?' '+esc(r.colour_code):''), n2(r.qty_kg)] })) }; });
   if(othGroups.length){
-    h += '<div class="fgroup-title" style="margin-top:8px;font-size:11px">Drawn by other batches from this batch\'s stock &mdash; '+(d.consumedByOthers||[]).length+' entries</div>'
+    h += '<div class="fgroup-title" style="margin-top:8px;font-size:11px">Drawn TO other batches from this batch\'s stock &mdash; '+(d.consumedByOthers||[]).length+' entries</div>'
       + _mvGroupTable('o', ['Into batch','Account(s)','Days','Entries','kg'], ['Day','TT','Account','Side · code','kg'], othGroups, '');
   }
   if((d.returnSolution||[]).length){
@@ -6760,30 +6785,92 @@ async function saveConstant(key){
 // (stock balances, available lots, pending receipts, open MMT charges) — stock is current
 // reality, exactly as Tracking separates stock from period reports. Default = current month;
 // history via the dropdown; 'All time' removes the scope.
-let G_MONTH = new Date(Date.now()+330*60000).toISOString().slice(0,7);
+// ═══ v58S (Ishan, 20 Oct) — ONE MONTH RULE ACROSS THE SUITE ══════════════════════════════════
+// The current production month is the month of the current PRODUCTION DAY (06:00 IST turn): on
+// 1 Nov at 06:01 IST the app shows November; until then it is still October. To keep entering
+// October data after that, pick October in the header for October's period views and reports. Entry
+// screens are NOT month-scoped (Tracking's model): a batch carried forward from October stays on the
+// TT / MMT / close-batch screens in November and everything entered on it counts in October's cohort,
+// because cohort membership is by BATCH (start month), never by entry date. Same status model as
+// Tracking / DPR / Planning: current ● · grace ✎ (archived ≤ 7 days) · locked 🔒 (admin only) · future ◆.
+function gProdMonth(){ return productionDay().slice(0,7); }
+let G_MONTH = gProdMonth();
+let _G_MONTH_MANUAL = false;          // the user picked a month → the 06:00 auto-roll leaves it alone
+let _G_ARCH = {};                     // month → archive row (/api/archives/list), for the grace / locked status
 function gMonthBounds(){
   if(!G_MONTH || G_MONTH==='ALL') return null;
   const [y,m] = G_MONTH.split('-').map(Number);
   return { from: G_MONTH+'-01', to: new Date(Date.UTC(y, m, 0)).toISOString().slice(0,10) };
 }
 function gMonthQS(){ const b = gMonthBounds(); return b ? ('&from='+b.from+'&to='+b.to) : '&cumulative=1'; }
+function gMonthLabel(ym){ if(!ym || ym==='ALL') return 'All time'; const [y,m]=ym.split('-').map(Number); return new Date(Date.UTC(y,m-1,1)).toLocaleString('en',{month:'long',timeZone:'UTC'})+' '+y; }
+function gMonthStatus(ym){
+  if(!ym || ym==='ALL') return 'all';
+  const now = gProdMonth();
+  if(ym===now) return 'current';
+  if(ym>now) return 'future';
+  const a = _G_ARCH[ym]; if(!a) return 'grace';
+  const days = (Date.now() - new Date(a.archived_at).getTime())/86400000;
+  return days <= 7 ? 'grace' : 'locked';
+}
+// Entry guard — every data-entry action (new tank, close batch, ledger / oily / return-solution entries,
+// MMT charge) passes through here. Returns true when entry is allowed in the selected month.
+function gMonthEditable(what){
+  const st = gMonthStatus(G_MONTH);
+  if(st==='current' || st==='grace' || st==='all') return true;
+  if(st==='locked' && SESSION && SESSION.role==='admin') return true;
+  const lbl = gMonthLabel(G_MONTH);
+  toast(st==='future' ? lbl+' has not started yet — '+(what||'entry')+' is not open for a future month. Pick the current month in the header.'
+                      : lbl+' is locked (archived more than 7 days ago) — '+(what||'entry')+' needs an Admin login. Pick the current month in the header to continue.', 'err');
+  return false;
+}
+async function gLoadArchives(){
+  try{ const d = await api('/api/archives/list'); _G_ARCH = {}; ((d&&d.archives)||[]).forEach(a=>{ _G_ARCH[a.month] = a; }); }catch(e){}
+  gMonthBadge();
+}
+function gMonthBadge(){
+  const b = document.getElementById('gMonthBadge'); if(!b) return;
+  const st = gMonthStatus(G_MONTH);
+  const C = { current:['rgba(0,212,255,.15)','#7fe9ff','●','Current production month — entry open'],
+              grace:['rgba(255,171,0,.18)','#ffd166','✎','Past month — still open for entry (within 7 days of archive)'],
+              locked:['rgba(255,82,82,.18)','#ff8a80','🔒','Archived month — Admin only for entry; viewing is open'],
+              future:['rgba(0,230,118,.15)','#8df0b3','◆','Future month — viewing only'],
+              all:['rgba(255,255,255,.12)','#dbe3ff','∞','All time — no month scope'] }[st] || [];
+  b.style.background = C[0]||''; b.style.color = C[1]||''; b.textContent = C[2]||'●'; b.title = C[3]||'';
+}
 function buildGMonth(){
   const sel = document.getElementById('gMonth'); if(!sel) return;
-  const now = new Date(Date.now()+330*60000);
+  const [ny, nm] = gProdMonth().split('-').map(Number);
   const opts = [];
-  for(let k=0;k<13;k++){
-    const d = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth()-k, 1));
+  for(let k=1;k>=-12;k--){                 // next month first, then current, then 12 back (Tracking / DPR order)
+    const d = new Date(Date.UTC(ny, nm-1+k, 1));
     const v = d.toISOString().slice(0,7);
-    // v56T: the current month is self-evident from the date — the "(current)" suffix was noise.
-      opts.push('<option value="'+v+'">'+d.toLocaleString('en',{month:'short',timeZone:'UTC'})+' '+d.getUTCFullYear()+'</option>');
+    opts.push('<option value="'+v+'">'+d.toLocaleString('en',{month:'short',timeZone:'UTC'})+' '+d.getUTCFullYear()+'</option>');
   }
   opts.push('<option value="ALL">All time</option>');
   sel.innerHTML = opts.join('');
+  if(![...sel.options].some(o=>o.value===G_MONTH)) G_MONTH = gProdMonth();
   sel.value = G_MONTH;
+  gMonthBadge();
 }
+// 06:00 IST auto-roll: a tab left open over the month turn moves to the new month on its own, unless
+// the user has deliberately picked a month in this session.
+setInterval(()=>{
+  try{
+    const now = gProdMonth();
+    if(_G_MONTH_MANUAL || G_MONTH==='ALL' || G_MONTH===now) { gMonthBadge(); return; }
+    if(!document.getElementById('gMonth') || document.getElementById('nav').style.display==='none') return;
+    G_MONTH = now; buildGMonth(); gMonthChanged(false);
+    toast('Production month is now '+gMonthLabel(now)+' — pick the previous month in the header to keep entering its data','');
+  }catch(e){}
+}, 60000);
 let _CUR_TAB = 'sheet';
-function gMonthChanged(){
+function gMonthChanged(manual){
   G_MONTH = document.getElementById('gMonth').value;
+  if(manual) _G_MONTH_MANUAL = true;
+  gMonthBadge();
+  // v58T: entry pickers (TT batch list, allocation board, return-solution batches) are deliberately NOT
+  // month-scoped — carry-forward batches stay on the working screens; only period views / reports follow the month.
   const b = gMonthBounds();
   // prefill the per-tab date controls so what's on screen states the cohort explicitly
   if(b){ setVal('sh_from', b.from); setVal('sh_to', b.to);
@@ -6793,7 +6880,7 @@ function gMonthChanged(){
   window._BLIST = null;   // v56T: the batch picker is month-scoped — drop the cache on a month change
   if(_CUR_TAB === 'yield') gprBatchList().then(rcFillBatches).catch(()=>{});
   const re = { sheet: ()=>loadSheet(), plan: ()=>loadPlan(), mmt: ()=>loadMmt(),
-               ledger: ()=>{ if((window._LGSEC||'a')==='a'){ loadAccountStrip(); loadReceipts(); } }, yield: ()=>{},
+               ledger: ()=>{ if((window._LGSEC||'a')==='a'){ loadAccountStrip(); loadReceipts(); } else if(window._LGSEC==='r'){ rseFillMachines(); } }, yield: ()=>{},
                crush: ()=>{}, issue: ()=>{} };
   (re[_CUR_TAB]||(()=>{}))();
 }
@@ -6809,6 +6896,7 @@ async function startApp(){
   fillAccountSelects();
   renderModeBanner();
   buildGMonth();
+  gLoadArchives();   // v58S: month status badge (grace / locked)
   const _b0 = gMonthBounds();
   if(_b0){ setVal('yd_from', _b0.from); setVal('yd_to', _b0.to); setVal('sh_from', _b0.from); setVal('sh_to', _b0.to); }
   setVal('ym_month', G_MONTH);
