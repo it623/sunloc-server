@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v58L</title>
+<title>GPR · build v58N</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -306,7 +306,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 .kpi-label{font-family:var(--fc);font-size:10.5px;font-weight:700;letter-spacing:.7px;text-transform:uppercase;color:var(--t3);margin-bottom:4px}
 .kpi-val{font-family:var(--mono);font-size:19px;font-weight:500;color:var(--t1);line-height:1.1}
 .kpi-val.green{color:var(--green)}.kpi-val.red{color:var(--red)}
-.kpi-val.amber{color:var(--amber)}.kpi-val.accent{color:var(--accent)}
+.kpi-val.amber{color:var(--amber)}.kpi-val.accent{color:var(--accent)}.kpi-val.teal{color:var(--teal)}   /* v58M */
 .kpi-sub{font-size:10.5px;color:var(--t4);margin-top:3px;font-weight:500}
 
 /* ── SIGNATURE 1: four-account ledger strip ────────── */
@@ -409,8 +409,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v58L</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58L</div>
+    <h1>GPR<span class="vpill">v58N</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58N</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -430,7 +430,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v58L</span></div>
+  <div class="nbrand">GPR<span class="vpill">v58N</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <select id="gMonth" onchange="gMonthChanged()" title="Production month — data across the app is scoped to this cohort; stock balances and pending receipts always show the live position" style="margin-right:10px;font-size:12px;padding:3px 6px;border-radius:6px;border:1px solid #3949ab;background:#232b6e;color:#dbe3ff"></select>
@@ -556,6 +556,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
             <tr id="tc_legacywrap" style="display:none"><td>Legacy location</td><td><select id="tc_legacyloc"></select></td></tr>
             <tr><td>Salvage added (kg)</td><td><input id="tc_salvage" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the salvage lines below"></td></tr>
             <tr><td>Cutting added (kg)</td><td><input id="tc_cutting" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the cutting lines below"></td></tr>
+            <tr><td>Return solution (L) <span style="font-size:10px;color:var(--t3)">auto</span></td><td><input id="tc_retsol" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the return-solution lines below — pick from the Return Solution stock"><div id="tc_retsolnote" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>   <!-- v58M item 5 -->
             <tr><td>Viscosity (cps)</td><td><input id="tc_visc" type="number" inputmode="decimal"></td></tr>
             <tr><td>Temperature (°C)</td><td><input id="tc_temp" type="number" inputmode="decimal"></td></tr>
           </tbody></table>
@@ -563,6 +564,10 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
           <div class="fgroup-title" style="margin-top:8px;font-size:11px">Cutting &amp; salvage added — by batch / colour code</div>
           <div id="tc_reuse"></div>
           <button class="btn sm" style="margin-top:3px" onclick="ttStockPicker('tc')">+ Add cutting / salvage</button>
+          <!-- v58M item 5: return solution drawn from a closed batch's lot, in litres -->
+          <div class="fgroup-title" style="margin-top:8px;font-size:11px">Return solution added — by batch / side (litres)</div>
+          <div id="tc_retlines"></div>
+          <button class="btn sm" style="margin-top:3px" onclick="ttRsPicker('tc')">+ Add return solution</button>
           <div class="fgroup-title" style="margin-top:8px;font-size:11px">Colourants (grams)</div>
           <div id="tc_colourants" class="dcolgrid"></div>
           <button class="btn sm" style="margin-top:3px" onclick="ttAddColourant('tc')">+ Add colourant</button>
@@ -599,6 +604,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
             <tr id="tb_legacywrap" style="display:none"><td>Legacy location</td><td><select id="tb_legacyloc"></select></td></tr>
             <tr><td>Salvage added (kg)</td><td><input id="tb_salvage" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the salvage lines below"></td></tr>
             <tr><td>Cutting added (kg)</td><td><input id="tb_cutting" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the cutting lines below"></td></tr>
+            <tr><td>Return solution (L) <span style="font-size:10px;color:var(--t3)">auto</span></td><td><input id="tb_retsol" type="number" readonly tabindex="-1" style="background:var(--s3)" title="Sum of the return-solution lines below — pick from the Return Solution stock"><div id="tb_retsolnote" style="font-size:10.5px;color:var(--t3);margin-top:2px"></div></td></tr>   <!-- v58M item 5 -->
             <tr><td>Viscosity (cps)</td><td><input id="tb_visc" type="number" inputmode="decimal"></td></tr>
             <tr><td>Temperature (°C)</td><td><input id="tb_temp" type="number" inputmode="decimal"></td></tr>
           </tbody></table>
@@ -606,6 +612,10 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
           <div class="fgroup-title" style="margin-top:8px;font-size:11px">Cutting &amp; salvage added — by batch / colour code</div>
           <div id="tb_reuse"></div>
           <button class="btn sm" style="margin-top:3px" onclick="ttStockPicker('tb')">+ Add cutting / salvage</button>
+          <!-- v58M item 5: return solution drawn from a closed batch's lot, in litres -->
+          <div class="fgroup-title" style="margin-top:8px;font-size:11px">Return solution added — by batch / side (litres)</div>
+          <div id="tb_retlines"></div>
+          <button class="btn sm" style="margin-top:3px" onclick="ttRsPicker('tb')">+ Add return solution</button>
           <div class="fgroup-title" style="margin-top:8px;font-size:11px">Colourants (grams)</div>
           <div id="tb_colourants" class="dcolgrid"></div>
           <button class="btn sm" style="margin-top:3px" onclick="ttAddColourant('tb')">+ Add colourant</button>
@@ -835,6 +845,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
         <div class="lgnav on" id="lgnav-a" onclick="lgSection('a')"><b>Ledger A</b><span>Reuse material</span></div>
         <div class="lgnav" id="lgnav-b" onclick="lgSection('b')"><b>Ledger B</b><span>Legacy stock</span></div>
         <div class="lgnav" id="lgnav-o" onclick="lgSection('o')"><b>Oily salvage</b><span>Entry &amp; corrections</span></div>
+        <div class="lgnav" id="lgnav-r" onclick="lgSection('r')"><b>Return solution</b><span id="lgcnt-r">Recovered at batch close</span></div>   <!-- v58M items 4–7 -->
       </div>
       <div style="flex:1;min-width:320px">
 
@@ -884,7 +895,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
             <div class="field-grp"><label>PC code</label><input id="lg_pc" placeholder="all"></div>
             <div class="field-grp"><label>Floor</label><select id="lg_floor"><option value="">All floors</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
             <div class="field-grp"><label>Cap / Body</label><select id="lg_side"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
-            <div class="field-grp"><label>Movement</label><select id="lg_move"><option value="">Generation + consumption</option><option value="gen">Generation only</option><option value="con">Consumption only</option></select></div>   <!-- v58L item 3 -->
+            <div class="field-grp"><label>Movement</label><select id="lg_move"><option value="">Generation + consumption</option><option value="gen">Generation only</option><option value="con">Consumption only</option><option value="void">Voided entries only</option></select></div>   <!-- v58L item 3; v58M item 12: voided rows hidden unless asked for -->
             <div class="field-grp"><label>From</label><input id="lg_from" type="date"></div>
             <div class="field-grp"><label>To</label><input id="lg_to" type="date"></div>
             <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="loadLedger()">Apply</button></div>
@@ -950,6 +961,53 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
       <div id="olPos"><div class="empty">Loading&hellip;</div></div>
       <div class="fgroup-title">Movements &mdash; credit / debit register</div>
       <div id="olOut"><div class="empty">Loading&hellip;</div></div>
+    </div>
+      </div>
+
+      <!-- ── RETURN SOLUTION (v58M items 4–7, Ishan 19 Oct) ───────────────────────────────── -->
+      <div id="lgsec-r" style="display:none">
+    <div class="card" style="border-left:4px solid var(--teal)">
+      <div class="card-title">Return solution &mdash; stock position <span id="rsCount" style="font-weight:400;color:var(--t3);font-size:12px"></span></div>
+      <div class="card-sub">Gelatine solution left in the cap and body tanks when GPR closes a batch, recovered in solution form and kept in <b>litres</b>, batch-wise and cap / body-wise with the colour code. The virgin gelatine it carries is valued at the batch's own concentration (kg = L &times; conc). A later tank draws it from the <b>Return Solution (L)</b> field of the TT entry; every draw debits the lot here.</div>
+      <div class="fgrid" style="margin-bottom:8px">
+        <div class="field-grp"><label>Floor</label><select id="rs_floor" onchange="loadReturnSolution()"><option value="">All visible</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></div>
+        <div class="field-grp"><label>Lots</label><select id="rs_showall" onchange="renderRsPosition()"><option value="">With stock only</option><option value="1">All lots incl. exhausted</option></select></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn" onclick="loadReturnSolution()">Refresh</button></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportRsPosition()">Export position</button></div>
+      </div>
+      <div id="rsKpis"></div>
+      <div id="rsPos"><div class="empty">Loading&hellip;</div></div>
+    </div>
+    <div class="card">
+      <div class="card-title">Record return solution</div>
+      <div class="card-sub">Normally entered in the <b>Close batch</b> dialog. Use this for a batch that was closed before this build, or (Admin / GPR Manager) a correction &mdash; a negative correction writes litres off.</div>
+      <div class="fgrid">
+        <div class="field-grp"><label>Kind</label><select id="rse_kind"><option value="generation">Recovered at close (credit)</option><option value="correction">Correction (&plusmn;, manager)</option></select></div>
+        <div class="field-grp"><label>Batch</label><input id="rse_batch" list="batchOpts" placeholder="batch number" style="text-transform:uppercase" onchange="rseConc()"></div>
+        <div class="field-grp"><label>Side</label><select id="rse_side" onchange="rseConc()"><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp"><label>Litres</label><input id="rse_l" type="number" inputmode="decimal" step="0.1" oninput="rseConc(true)"></div>
+        <div class="field-grp"><label>Production day</label><input id="rse_day" type="date" title="leave blank for today"></div>
+        <div class="field-grp" style="min-width:220px"><label>Note</label><input id="rse_note" placeholder="reason (required for a correction)"></div>
+        <div class="field-grp" style="justify-content:flex-end"><button class="btn primary" onclick="rseSave()">Record</button></div>
+      </div>
+      <div id="rse_note2" class="hbnote" style="margin-top:6px"></div>
+    </div>
+    <div class="card" style="border-left:4px solid var(--teal)">
+      <div class="card-title">Return solution ledger <span id="rsmCount" style="font-weight:400;color:var(--t3);font-size:12px"></span></div>
+      <div class="card-sub">Every credit (recovered at close, corrections) and debit (drawn into a tank), in date order with the running balance in litres and the virgin gelatine kg behind it.</div>
+      <div class="fgrid" style="margin-bottom:8px">
+        <div class="field-grp"><label>From</label><input id="rsm_from" type="date" onchange="loadRsMovements()"></div>
+        <div class="field-grp"><label>To</label><input id="rsm_to" type="date" onchange="loadRsMovements()"></div>
+        <div class="field-grp"><label>Batch</label><input id="rsm_batch" list="batchOpts" placeholder="all" onchange="loadRsMovements()"></div>
+        <div class="field-grp"><label>Side</label><select id="rsm_side" onchange="loadRsMovements()"><option value="">Both</option><option value="cap">Cap</option><option value="body">Body</option></select></div>
+        <div class="field-grp"><label>Machine</label><input id="rsm_mc" list="mcOpts" placeholder="all" onchange="loadRsMovements()"></div>
+        <div class="field-grp"><label>PC code</label><input id="rsm_pc" placeholder="all" onchange="loadRsMovements()"></div>
+        <div class="field-grp"><label>Show</label><select id="rsm_kind" onchange="loadRsMovements()"><option value="">Credits &amp; debits</option><option value="cr">Credits only</option><option value="db">Debits only</option></select></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn" onclick="loadRsMovements()">Apply</button></div>
+        <div class="field-grp"><label>&nbsp;</label><button class="btn teal" onclick="exportRsMovements()">Export</button></div>
+      </div>
+      <div id="rsmKpis"></div>
+      <div id="rsmOut"><div class="empty">Loading&hellip;</div></div>
     </div>
       </div>
 
@@ -1191,9 +1249,11 @@ async function post(path, body){
 }
 // Production day (DPR rule): the day runs 06:00 to 06:00, so anything before
 // 06:00 belongs to the previous day. Mirrors the server's gprProductionDay.
+// v58M item 13 (Ishan, 19 Oct): the day turns at 06:00 IST, as DPR and Tracking count it — this
+// subtracted 6 h from UTC (an 11:30 IST turn), so every default day here lagged the server by 5½ h.
 function productionDay(d){
   const t = d ? new Date(d) : new Date();
-  return new Date(t.getTime() - 6*3600*1000).toISOString().slice(0,10);
+  return new Date(t.getTime() + 330*60000 - 6*3600*1000).toISOString().slice(0,10);
 }
 
 // ── AUTH ───────────────────────────────────────────────
@@ -1333,8 +1393,9 @@ async function loadSheet(){
 function shScope(){
   const s = (document.getElementById('sh_scope')||{}).value || 'cur';
   if(s === 'custom') return;
-  const ist = new Date(Date.now()+330*60000);
-  const day = n => new Date(ist.getTime()-n*86400000).toISOString().slice(0,10);
+  // v58M item 13: scope on the PRODUCTION day (06:00 IST turn), not the calendar day
+  const pd0 = Date.parse(productionDay()+'T00:00:00Z');
+  const day = n => new Date(pd0-n*86400000).toISOString().slice(0,10);
   if(s==='cur'){ setVal('sh_from', day(0)); setVal('sh_to', day(0)); }
   else if(s==='prev'){ setVal('sh_from', day(1)); setVal('sh_to', day(0)); }
   else if(s==='7'){ setVal('sh_from', day(6)); setVal('sh_to', day(0)); }
@@ -2102,7 +2163,7 @@ async function alBatchChanged(mc){
     ['cap','body'].forEach(k=>{ const pl = Number((d.plan&&d.plan[k]&&d.plan[k].litres)||0), iss = Number((d.issued&&d.issued[k]&&d.issued[k].litres)||0);
       const al = openAll.filter(r=>r.side===k).reduce((a,r)=>a+Number(r.planned_l||0),0);
       need[k] = { plan: pl, issued: iss, alloc: al, left: Math.max(0, +(pl-iss-al).toFixed(1)) }; });
-    window._AL.plans[mc].need = need; window._AL.plans[mc].order = d.order;
+    window._AL.plans[mc].need = need; window._AL.plans[mc].order = d.order; window._AL.plans[mc].prod = d.production || null;   // v58M item 3: gross produced / remaining
     if(d.order && d.order.machineId && d.order.machineId!==mc){ if(pEl) pEl.innerHTML = '<span style="color:var(--red)">'+esc(bn)+' is planned on '+esc(d.order.machineId)+', not '+esc(mc)+'</span>'; setVal('al_l_'+mc,''); return; }
     alSuggest(mc);
   }catch(e){ if(pEl) pEl.innerHTML = '<span style="color:var(--red)">could not read the plan</span>'; }
@@ -2139,13 +2200,16 @@ function alPreview(mc){
   const Ls = _alLitresOf(mc); const L = Ls.cap + Ls.body;
   if(side==='both'){ P.capL = Ls.cap||''; P.bodyL = Ls.body||''; } else P.litres = L||'';
   const mm = ((MASTERS&&MASTERS.tt_machine_master)||{})[mc]; if(!mm) return;
-  if(!(L>0)){ el.innerHTML = P.need ? '<span style="color:var(--t3)">'+esc(_alBatchOf(mc))+' still needs: cap '+fmt(P.need.cap.left,0)+' · body '+fmt(P.need.body.left,0)+' L'+(P.capped?' <span style="color:var(--amber)">(the charge has nothing left to allocate)</span>':'')+'</span>' : ''; return; }
+  // v58M item 3 (Ishan, 19 Oct): the batch's production position beside the plan — gross produced so far
+  // (DPR) against the gross the plan is built on, and what is still to be produced.
+  const prodTxt = P.prod ? '<div style="font-size:11px;margin-bottom:2px"><b>'+esc(_alBatchOf(mc))+'</b> gross: produced <b>'+fmt(P.prod.grossActualLakhs,2)+'</b> of '+fmt(P.prod.grossPlannedLakhs,2)+' L'+(P.prod.pctDone!=null?' ('+fmt(P.prod.pctDone,0)+'%)':'')+' · <b style="color:'+(P.prod.remainingLakhs>0?'var(--teal)':'var(--green)')+'">'+fmt(P.prod.remainingLakhs,2)+' L to go</b>'+(P.order&&P.order.status?' <span style="color:var(--t3)">· '+esc(P.order.status)+'</span>':'')+'</div>' : '';
+  if(!(L>0)){ el.innerHTML = prodTxt + (P.need ? '<span style="color:var(--t3)">'+esc(_alBatchOf(mc))+' still needs: cap '+fmt(P.need.cap.left,0)+' · body '+fmt(P.need.body.left,0)+' L'+(P.capped?' <span style="color:var(--amber)">(the charge has nothing left to allocate)</span>':'')+'</span>' : ''); return; }
   // v58E item 5: each side split on its own litres (CAP + BODY no longer splits one figure by capFrac/bodyFrac)
   const sp = { cap: _alSplit(Ls.cap, 'cap', mm).cap, body: _alSplit(Ls.body, 'body', mm).body };
   const line = (k,lbl,cls) => sp[k].tanks.length ? '<div><span class="sdtag sd-'+k+'">'+lbl+'</span> '+fmt(sp[k].litres,0)+' L &rarr; <b>'+sp[k].tanks.length+'</b> tank'+(sp[k].tanks.length>1?'s':'')+' ('+sp[k].tanks.map(t=>fmt(t,0)).join(' + ')+' L)</div>' : '';
   const kg = _alKg(L, (window._MMT_OPEN||[]).find(x=>x.mmt_ref===window._AL.ref));   // v57U: this charge's concentration
   const needTxt = P.need ? '<div style="color:var(--t3);font-size:10.5px">still needed: cap '+fmt(P.need.cap.left,0)+' · body '+fmt(P.need.body.left,0)+' L'+(P.capped?' · <span style="color:var(--amber)">capped to what the charge has left</span>':'')+'</div>' : '';
-  el.innerHTML = line('cap','CAP') + line('body','BODY') + '<div style="color:var(--t3);font-size:10.5px">= '+fmt(kg,1)+' kg virgin gelatine at this charge\'s concentration</div>' + needTxt;
+  el.innerHTML = prodTxt + line('cap','CAP') + line('body','BODY') + '<div style="color:var(--t3);font-size:10.5px">= '+fmt(kg,1)+' kg virgin gelatine at this charge\'s concentration</div>' + needTxt;
 }
 async function alAllocate(mc){
   const ref = window._AL.ref; if(!ref){ toast('Pick a charge first','err'); return; }
@@ -2216,7 +2280,18 @@ async function loadAllocBoard(){
     const d = await api('/api/gpr/mmt-alloc?status=allocated'+q);
     const rows = (d&&d.ok&&d.rows)||[]; window._ALB = rows;
     if(cnt) cnt.textContent = rows.length ? (rows.length+' tank'+(rows.length===1?'':'s')+' · '+fmt(rows.reduce((a,r)=>a+Number(r.planned_l||0),0),0)+' L') : '';
-    if(!rows.length){ el.innerHTML = '<div class="empty">No allocated tank waiting. Allocate from a charge on the <b>MMT</b> tab, or use <b>+ New TT entry</b>.</div>'; return; }
+    if(!rows.length){
+      // v58M item 11 (Ishan, 19 Oct): say WHY the queue is empty — allocations exist but were all prepared or
+      // cancelled, or none has been made — so an empty table is never mistaken for a display fault.
+      const dg = (d&&d.diag)||null; let why = '';
+      if(dg && !dg.error){
+        const by = {}; (dg.byStatus||[]).forEach(x=>{ by[x.status] = x; });
+        const parts = ['prepared','cancelled','allocated'].filter(k=>by[k]).map(k=>'<b>'+by[k].n+'</b> '+k);
+        why = parts.length ? 'Last 14 days: '+parts.join(' · ')+' — every allocation made has been prepared or cancelled.' : 'No allocation has been made in the last 14 days.';
+        if(dg.last) why += ' Latest: '+esc(dg.last.batch_number)+' '+esc(String(dg.last.side||'').toUpperCase())+(dg.last.alloc_seq||'')+' '+fmt(dg.last.planned_l,0)+' L from '+esc(dg.last.mmt_ref)+' ('+esc(dg.last.status)+', '+esc(_v58dDt(dg.last.allocated_at))+').';
+        if(floorScoped()) why += ' Scope: '+visibleFloors().join(' / ')+'.';
+      }
+      el.innerHTML = '<div class="empty">No allocated tank waiting. Allocate from a charge on the <b>MMT</b> tab, or use <b>+ New TT entry</b>.'+(why?'<div style="font-size:11px;color:var(--t3);margin-top:4px">'+why+'</div>':'')+'</div>'; return; }
     const by = {}; rows.forEach(r=>{ const k=(r.floor||'?')+'|'+(r.machine_id||'?'); (by[k]=by[k]||[]).push(r); });
     let h = '';
     Object.keys(by).sort((a,b)=>a.localeCompare(b,undefined,{numeric:true})).forEach(k=>{
@@ -2523,7 +2598,7 @@ function ttCardOpen(id, justReleased){
     + '<button class="btn" onclick="ttCardPrint(['+id+'])">&#128424; Print</button>'
     + '<button class="btn primary" onclick="ttCardSave('+id+')">Save card</button></div>'
     + '<div style="font-size:11px;color:var(--t3);margin-top:6px">Grey values come from the tank record and cannot be edited here; every saved change is audited.'
-    + (r.card && r.card.updated_by ? ' Last updated by '+esc(r.card.updated_by)+' '+esc(dt(r.card.updated_at))+'.' : '')+'</div>');
+    + (r.card && r.card.updated_by ? ' Last updated by '+esc(r.card.updated_by)+' '+esc(_v58dDt(r.card.updated_at))+'.'   /* v58M audit: dt() never existed — the card failed to reopen once saved */ : '')+'</div>');
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '560px';
   // focus the first empty field — on release, the loading temperature / tank code come first
   const order = justReleased ? ['loading_temp','tank_code','gel_sol_kg','required_visc','visc_time','checked_by'] : TCD_EDIT.map(x=>x[0]);
@@ -3199,7 +3274,8 @@ function ttResetForBatch(bn){
   window._TTALLOC = {};   // v57L: an allocation belongs to the batch it was opened for
   ['td_machine','td_floor','td_pc','td_colname','td_colcode'].forEach(id=>setVal(id,''));
   ['tc','tb'].forEach(p=>{
-    ['_colcode','_cap','_planned','_actual','_seqtotal','_virgin','_mmtL','_colourkg','_fgremelt','_salvage','_cutting','_visc','_temp','_reason','_tankcode','_xsreason','_xsnote'].forEach(f=>setVal(p+f,''));   // v58F: + MMT litres
+    ['_colcode','_cap','_planned','_actual','_seqtotal','_virgin','_mmtL','_colourkg','_fgremelt','_salvage','_cutting','_retsol','_visc','_temp','_reason','_tankcode','_xsreason','_xsnote'].forEach(f=>setVal(p+f,''));   // v58F: + MMT litres; v58M: + return solution
+    const _rl = document.getElementById(p+'_retlines'); if(_rl) _rl.innerHTML = '';   // v58M
     const mm = document.getElementById(p+'_mmt'); if(mm) mm.value='';
     const sn = document.getElementById(p+'_seqnote'); if(sn) sn.innerHTML='';
     // v56U: reuse lines, colourant grams and the hand-entered flags belong to the old batch too
@@ -3260,11 +3336,12 @@ function toggleLegacySide(p){
 function drawChargeSide(p){
   const virgin=num(p+'_virgin'), colour=num(p+'_colourkg'), fg=num(p+'_fgremelt');
   const salv=num(p+'_salvage'), cut=num(p+'_cutting');
-  const total = virgin+colour+fg+salv+cut;
+  const rsKg = _returnLines(p).reduce((a,l)=>a+(l.kg||0),0);   // v58M: virgin kg carried by return solution
+  const total = virgin+colour+fg+salv+cut+rsKg;
   const el = document.getElementById(p+'_charge'); if(!el) return;
   if(total<=0){ el.innerHTML=''; return; }
   el.innerHTML = '<div style="font-size:11px;margin-top:2px;color:var(--t2)">Charged <b>'+fmt(total,1)+' kg</b>'
-    + ' · fresh '+fmt(virgin+colour+fg,1)+' · reuse '+fmt(salv+cut,1)+' kg</div>';
+    + ' · fresh '+fmt(virgin+colour+fg,1)+' · reuse '+fmt(salv+cut,1)+' kg'+(rsKg>0?' · return solution '+fmt(num(p+'_retsol'),1)+' L ('+fmt(rsKg,1)+' kg)':'')+'</div>';
 }
 // ═══ v56U (Rahul TT 2-6): reuse lines, colour auto-total, litres from everything charged ═══════
 const REUSE_ACCTS = [['cutting','Cuttings'],['aim_salvage','AIM Salvage'],['printing_salvage','Printing Salvage'],['pi_salvage','PI Salvage'],['oily_salvage','Oily Salvage'],['return_remelt','Return Stock (remelt)']];   // v58A: customer-returned capsules sent for remelt from Tracking
@@ -3309,6 +3386,78 @@ function ttAddReuse(p, pre){
   d.querySelector('.rl_s').value = (pre && pre.side!=null) ? pre.side : (acct==='cutting' ? side : '');
   if(pre){ d.querySelector('.rl_b').value = pre.source_batch||''; d.querySelector('.rl_c').value = pre.colour_code||''; d.querySelector('.rl_k').value = pre.kg||''; }
   ttLoadLots();
+}
+// ═══ v58M item 5 (Ishan, 19 Oct): RETURN SOLUTION lines + picker — litres from a closed batch's lot ═══
+function _returnLines(p){
+  return [...document.querySelectorAll('#'+p+'_retlines .rline:not(.rlhead)')].map(d=>({
+    source_batch: (d.dataset.bn||'').toUpperCase(), side: d.dataset.side||'', litres: parseFloat(d.querySelector('.rl_l').value)||0,
+    conc: parseFloat(d.dataset.conc)||0, kg: (parseFloat(d.querySelector('.rl_l').value)||0) * (parseFloat(d.dataset.conc)||0), colour_code: d.dataset.cc||'' })).filter(l=>l.litres>0 && l.source_batch);
+}
+function ttAddReturnLine(p, pre){
+  const w = document.getElementById(p+'_retlines'); if(!w || !pre) return;
+  if(!w.querySelector('.rlhead')) w.insertAdjacentHTML('afterbegin','<div class="rline rlhead"><span>From batch</span><span>Side</span><span>Colour code</span><span>kg/L</span><span>Litres</span><span></span></div>');
+  const d = document.createElement('div'); d.className = 'rline';
+  d.dataset.bn = pre.source_batch; d.dataset.side = pre.side; d.dataset.conc = pre.conc||0; d.dataset.cc = pre.colour_code||'';
+  d.innerHTML = '<input class="rl_b" value="'+esc(pre.source_batch)+'" readonly style="background:var(--s3)">'
+    + '<input value="'+esc(String(pre.side).toUpperCase())+'" readonly style="background:var(--s3)">'
+    + '<input class="rl_c" value="'+esc(pre.colour_code||'')+'" readonly style="background:var(--s3)">'
+    + '<input value="'+Number(pre.conc||0).toFixed(3)+'" readonly style="background:var(--s3)">'
+    + '<input class="rl_l" type="number" inputmode="decimal" step="0.1" value="'+esc(pre.litres||'')+'" placeholder="L" oninput="ttCalc(\''+p+'\')" title="up to '+fmt(pre.available||0,1)+' L in stock">'
+    + '<button class="mlx" title="Remove" onclick="const w=this.closest(\'.rline\').parentNode;this.closest(\'.rline\').remove();if(!w.querySelector(\'.rline:not(.rlhead)\'))w.innerHTML=\'\';ttCalc(\''+p+'\')">&#10005;</button>'
+    + '<div class="rl_n"></div>';
+  w.appendChild(d);
+}
+window._TRS = window._TRS || null;
+async function ttRsPicker(p){
+  let lots = [];
+  try{ const d = await api('/api/gpr/return-solution/lots'+(floorScoped()?'?floors='+encodeURIComponent(visibleFloors().join(',')):'')); lots = (d&&d.ok&&d.lots)||[]; }catch(e){}
+  // litres already on lines in BOTH tanks count against the lot
+  const taken = {}; ['tc','tb'].forEach(q=>_returnLines(q).forEach(l=>{ const k=l.source_batch+'|'+l.side; taken[k]=(taken[k]||0)+l.litres; }));
+  window._TRS = { p, lots, taken, take: {} };
+  ttModalOpen('Return solution stock &mdash; '+(p==='tc'?'CAP':'BODY')+' tank',
+    '<div class="tspbar"><input id="trs_q" placeholder="Search batch, colour code or PC&hellip;" oninput="_trsRender()" autofocus>'
+    + '<select id="trs_side" onchange="_trsRender()"><option value="">Cap &amp; body</option><option value="cap"'+(p==='tc'?' selected':'')+'>Cap</option><option value="body"'+(p==='tb'?' selected':'')+'>Body</option></select></div>'
+    + '<div class="hbnote" style="margin-top:6px">Solution recovered when a batch was closed, in litres, at that batch\'s own virgin-gelatine concentration. Enter the litres to take against one or more lots.</div>'
+    + '<div id="trs_list" class="tswrap" style="max-height:52vh;margin-top:8px"></div>'
+    + '<div class="tspfoot"><span id="trs_sum" class="hbnote"></span><span style="flex:1"></span><button class="btn" onclick="ttModalClose()">Cancel</button><button class="btn primary" onclick="_trsConfirm()">Add to tank</button></div>');
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '980px';
+  _trsRender();
+}
+function _trsRender(){
+  const T = window._TRS; if(!T) return;
+  const q = (val('trs_q')||'').trim().toUpperCase(), sd = val('trs_side')||'';
+  const L = T.lots.filter(l => (!sd || l.side===sd) && (!q || [l.batch_number, l.colour_code, l.pc_code, l.colour_name].some(x=>String(x||'').toUpperCase().includes(q))));
+  const tag = s => '<span class="sdtag sd-'+esc(s)+'">'+esc(String(s).toUpperCase())+'</span>';
+  let h = '<table class="gtable"><thead><tr><th>Batch</th><th>Side</th><th>Colour code</th><th>PC</th><th>Machine</th><th>Closed / recovered</th><th class="num">Available L</th><th class="num">kg/L</th><th class="num" style="width:110px">Take L</th></tr></thead><tbody>';
+  if(!L.length) h += '<tr><td colspan="9" style="color:var(--t3);padding:14px">No return solution in stock'+(sd?' for '+sd.toUpperCase():'')+'.</td></tr>';
+  L.forEach(l=>{
+    const k = l.batch_number+'|'+l.side, tk = T.take[k] || '', avail = Math.max(0, l.balance_l - (T.taken[k]||0));
+    h += '<tr'+(tk?' style="background:var(--accent-l)"':'')+'><td class="mono"><b>'+esc(l.batch_number)+'</b></td><td>'+tag(l.side)+'</td><td class="mono">'+esc(l.colour_code||'—')+(l.colour_name?' <span style="color:var(--t3);font-size:10px">'+esc(l.colour_name)+'</span>':'')+'</td>'
+      + '<td class="mono" style="font-size:11px">'+esc(l.pc_code||'—')+'</td><td>'+esc(l.machine_id||'—')+'</td><td class="mono" style="font-size:11px">'+esc(_dm(l.last_day)||'')+'</td>'
+      + '<td class="num" style="color:'+(avail>0.05?'var(--green)':'var(--t3)')+'"><b>'+fmt(avail,1)+'</b>'+(T.taken[k]?' <span style="color:var(--t3);font-size:10px">('+fmt(T.taken[k],1)+' already on a line)</span>':'')+'</td>'
+      + '<td class="num">'+(l.conc_kg_per_l!=null?Number(l.conc_kg_per_l).toFixed(3):'—')+'</td>'
+      + '<td class="num"><input type="number" inputmode="decimal" min="0" step="0.1" max="'+avail.toFixed(1)+'" value="'+esc(tk)+'" data-k="'+esc(k)+'" oninput="_trsTake(this)" style="width:90px;padding:3px 6px;text-align:right"></td></tr>';
+  });
+  document.getElementById('trs_list').innerHTML = h + '</tbody></table>';
+  _trsSum();
+}
+function _trsTake(el){ const T = window._TRS; const v = parseFloat(el.value)||0; if(v>0) T.take[el.dataset.k] = el.value; else delete T.take[el.dataset.k];
+  const tr = el.closest('tr'); if(tr) tr.style.background = v>0 ? 'var(--accent-l)' : ''; _trsSum(); }
+function _trsSum(){ const T = window._TRS, s = document.getElementById('trs_sum'); if(!T||!s) return;
+  const ks = Object.keys(T.take), L = ks.reduce((a,k)=>a+(parseFloat(T.take[k])||0),0);
+  const kg = ks.reduce((a,k)=>{ const [bn,sd]=k.split('|'); const l = T.lots.find(x=>x.batch_number===bn&&x.side===sd)||{}; return a+(parseFloat(T.take[k])||0)*Number(l.conc_kg_per_l||0); },0);
+  s.innerHTML = ks.length ? '<b>'+ks.length+'</b> lot'+(ks.length>1?'s':'')+' &middot; <b>'+fmt(L,1)+' L</b> = '+fmt(kg,1)+' kg virgin gelatine' : 'Enter the litres to take against one or more lots'; }
+function _trsConfirm(){
+  const T = window._TRS; if(!T) return;
+  const picks = Object.keys(T.take).map(k=>{ const [bn, sd] = k.split('|'); const l = T.lots.find(x=>x.batch_number===bn && x.side===sd) || {};
+    const avail = Math.max(0, Number(l.balance_l||0) - (T.taken[k]||0));
+    return { source_batch: bn, side: sd, litres: parseFloat(T.take[k])||0, conc: Number(l.conc_kg_per_l||0), colour_code: l.colour_code||'', available: avail }; }).filter(x=>x.litres>0);
+  if(!picks.length){ toast('Enter the litres against at least one lot','err'); return; }
+  const over = picks.find(x=>x.litres > x.available + 0.05);
+  if(over){ toast(over.source_batch+' '+over.side.toUpperCase()+' has only '+fmt(over.available,1)+' L available','err'); return; }
+  picks.forEach(x=>ttAddReturnLine(T.p, x));
+  ttModalClose(); ttCalc(T.p);
+  toast(picks.length+' line'+(picks.length>1?'s':'')+' added &mdash; '+fmt(picks.reduce((a,x)=>a+x.litres,0),1)+' L return solution','ok');
 }
 // ═══ v57E (Ishan, 25 Sep): STOCK PICKER — the whole Ledger A cutting / salvage stock in one screen,
 // searchable, with available and pending kg per batch, side and colour code. The operator enters the
@@ -3495,7 +3644,11 @@ function ttCalc(p){
     virginEl.value = (+(Math.max(0, num(p+'_actual') - solKg) * _concU).toFixed(2)) || '';
   }
   const gelKg = num(p+'_virgin') + num(p+'_fgremelt') + num(p+'_salvage') + num(p+'_cutting');
-  const calcL = gelKg > 0 ? gelKg / gPerL + solKg : 0;
+  // v58M item 5: return solution is already solution — its litres add to the tank's volume as they are
+  const RL = _returnLines(p); const rsL = RL.reduce((a,l)=>a+l.litres,0), rsKg = RL.reduce((a,l)=>a+(l.kg||0),0);
+  setVal(p+'_retsol', rsL>0 ? +rsL.toFixed(1) : '');
+  { const rn = document.getElementById(p+'_retsolnote'); if(rn) rn.innerHTML = rsL>0 ? '= <b>'+fmt(rsKg,1)+' kg</b> virgin gelatine at the lots\' concentration · '+RL.map(l=>esc(l.source_batch)+' '+esc(String(l.side).toUpperCase())+' '+fmt(l.litres,1)+' L').join(', ') : ''; }
+  const calcL = (gelKg > 0 || rsL > 0) ? (gelKg > 0 ? gelKg / gPerL : 0) + solKg + rsL : 0;
   const note = document.getElementById(p+'_calcL');
   if(act && calcL > 0 && act.dataset.manual!=='1') act.value = calcL.toFixed(1);
   _ttSeqNote(p);
@@ -3505,7 +3658,7 @@ function ttCalc(p){
     // concentration — apart from the tank's own volume. Only the draw moves the MMT position.
     const _drawL = (_concU && num(p+'_virgin') > 0) ? num(p+'_virgin') / _concU : 0;
     note.innerHTML = calcL > 0
-      ? 'calc <b>'+fmt(calcL,1)+' L</b> = '+fmt(gelKg,1)+' kg ÷ '+(+gPerL.toFixed(3))+(_concU?' <span style="color:var(--t3)">('+esc(_ref57u)+')</span>':'')+(solKg>0?' + colour soln '+fmt(solKg,1)+' L':'')
+      ? 'calc <b>'+fmt(calcL,1)+' L</b> = '+fmt(gelKg,1)+' kg ÷ '+(+gPerL.toFixed(3))+(_concU?' <span style="color:var(--t3)">('+esc(_ref57u)+')</span>':'')+(solKg>0?' + colour soln '+fmt(solKg,1)+' L':'')+(rsL>0?' + return soln '+fmt(rsL,1)+' L':'')
         + (act && act.dataset.manual==='1' && Math.abs(num(p+'_actual')-calcL) >= 0.5
            ? ' · <span style="color:var(--amber)">entered by hand</span> <a href="javascript:void(0)" onclick="ttUseCalc(\''+p+'\')">use calc</a>' : '')
         + (_drawL > 0 ? ' · <b style="color:var(--accent)">draws '+fmt(_drawL,1)+' L of MMT '+esc(_ref57u)+'</b> <span style="color:var(--t3)">('+fmt(num(p+'_virgin'),1)+' kg virgin ÷ '+(+_concU.toFixed(3))+' kg/L — the tank\'s own litres do not move the charge)</span>' : '')
@@ -3532,7 +3685,7 @@ function _sideFilled(p){
   if(!(num(p+'_actual') > 0)) return false;
   const a = document.getElementById(p+'_actual');
   if(a && a.dataset.manual==='1') return true;
-  if(num(p+'_virgin') + num(p+'_fgremelt') + num(p+'_salvage') + num(p+'_cutting') + num(p+'_colourkg') > 0) return true;
+  if(num(p+'_virgin') + num(p+'_fgremelt') + num(p+'_salvage') + num(p+'_cutting') + num(p+'_colourkg') + num(p+'_retsol') > 0) return true;   // v58M: + return solution
   for(let i=0;i<_colCount(p);i++) if(val(p+'_col_'+i) && num(p+'_colg_'+i) > 0) return true;
   return false;
 }
@@ -3554,6 +3707,8 @@ function _sidePayload(p, side){
     salvage_kg: num(p+'_salvage'), cutting_kg: num(p+'_cutting'),
     salvage_account: sAccts.length===1 ? sAccts[0] : (sAccts.length ? 'mixed' : 'aim_salvage'),
     reuse_lines: reuse,   // v56U: the server books each line against its source lot
+    return_lines: _returnLines(p).map(l=>({ source_batch: l.source_batch, side: l.side, litres: l.litres })),   // v58M item 5: return solution lots (litres)
+    return_solution_l: num(p+'_retsol'),
     tank_code: (val(p+'_tankcode')||'').trim().toUpperCase() || null,   // v57C → TT card
     alloc_id: (window._TTALLOC||{})[p] || null,   // v57L: the allocation this tank settles
     excess_reason: (document.getElementById(p+'_xs')||{}).style && document.getElementById(p+'_xs').style.display!=='none' ? val(p+'_xsreason') : null,
@@ -4106,8 +4261,8 @@ function _reconCells(b, hl){
   if(!R) return new Array(10).fill(td('&mdash;',hl+n)).join('');   // a batch with no figures still needs its cells
   const sign = v => (v>0?'+':'')+Number(v||0).toFixed(1);
   const col = v => Math.abs(Number(v||0))<0.05 ? '' : (Number(v)>0 ? ';color:var(--red)' : ';color:var(--green)');
-  return td(Number(R.plannedGel||0).toFixed(1),hl+n)
-    + td('<b>'+Number(R.usedGel||0).toFixed(1)+'</b>',hl+n)
+  return td('<span title="'+(R.plannedColourBasis?('gelatine '+Number(R.plannedGelOnly||0).toFixed(1)+' + colour '+Number(R.plannedColour||0).toFixed(1)+' ('+(R.plannedColourBasis.basis==='pc-history'?'PC history, '+R.plannedColourBasis.tanks+' tanks':R.plannedColourBasis.basis)+')'):'')+'">'+Number(R.plannedGel||0).toFixed(1)+'</span>',hl+n)   /* v58N */
+    + td('<b title="'+(R.net?('net: virgin '+Number(R.net.virginKg).toFixed(1)+' + FG '+Number(R.net.fgRemeltKg).toFixed(1)+' + reuse in '+Number(R.net.reuseInKg).toFixed(1)+' − generated '+Number(R.net.generatedManualKg).toFixed(1)+' − Tracking salvage '+Number(R.net.salvageRecoveredKg).toFixed(1)+(R.net.expectedSalvageKg>0.005?' − WIP salvage '+Number(R.net.expectedSalvageKg).toFixed(1):'')+(R.net.returnUsedKg>0.005?' + return soln used '+Number(R.net.returnUsedKg).toFixed(1):'')+(R.net.returnRecoveredKg>0.005?' − return soln recovered '+Number(R.net.returnRecoveredKg).toFixed(1):'')+' + colour '+Number(R.net.colourKg).toFixed(1)+' · gross issued '+Number(R.usedGelGross||0).toFixed(1)+' + colour'):'')+'">'+Number(R.usedGel||0).toFixed(1)+'</b>',hl+n)   /* v58M: net incl. colour */
     + td('<b>'+sign(R.totalDifference)+'</b>',hl+n+col(R.totalDifference))
     + td(sign(R.qtyEffect),hl+n+col(R.qtyEffect))
     + td(sign(R.weightEffect),hl+n+col(R.weightEffect))
@@ -4123,6 +4278,7 @@ function _reconCells(b, hl){
 // v58L item 1: after the sheet is on screen, one light call per floor brings the yields (running
 // batches live, closed ones from the server's 15-min memo) and fills the cells + machine banners.
 async function _plFillYields(perFloor, month){
+  window._PL_YIELDS_DONE = false;   // v58M item 1: the full-view tab waits briefly for the yields
   for(const d of perFloor){
     try{
       const r = await api('/api/gpr/plan-yields?floor='+encodeURIComponent(d.floor)+'&month='+encodeURIComponent(month||''));
@@ -4133,6 +4289,7 @@ async function _plFillYields(perFloor, month){
       });
     }catch(e){}
   }
+  window._PL_YIELDS_DONE = true;
 }
 function _plId(x){ return String(x||'').replace(/[^A-Za-z0-9_]/g,'_'); }
 function _plMcYieldHtml(mc){ if(!mc) return ''; const c = yCls(mc.pct, mc.target); return ' &middot; Yield to date <b style="color:var(--'+(c==='green'?'green':c==='red'?'red':'amber')+')" title="Σ packable output ÷ Σ net material of '+mc.batches+' batch'+(mc.batches===1?'':'es')+' — '+fmt(mc.outputKg,0)+' / '+fmt(mc.netKg,0)+' kg">'+Number(mc.pct).toFixed(1)+'%</b> <small>'+mc.batches+' batch'+(mc.batches===1?'':'es')+'</small>'; }
@@ -4244,7 +4401,7 @@ async function loadPlan(){
           // v56H item 1: the reconciliation rides the sheet, so Planning is the complete working
           // summary for GPR the way Report E is for production.
           + (window._PLAN_RECON===false ? '' :
-             ['MAT PLAN kg','MAT USED kg','MAT DIFF','QTY CAUSE','WEIGHT CAUSE','PROCESS CAUSE','PLAN mg','ACTUAL mg','TT I/P','HOLD &lt;2h'].map(th).join(''))
+             ['<span title="v58M: planned gelatine + planned colour / TiO₂">MAT PLAN kg</span>','<span title="v58M: NET material — virgin + colour + FG remelt + (cutting/salvage consumed − generated) − Tracking salvage − expected WIP salvage + return solution used − recovered; the same figure as the yield denominator">MAT USED kg (net)</span>','MAT DIFF','QTY CAUSE','WEIGHT CAUSE','PROCESS CAUSE','PLAN mg','ACTUAL mg','TT I/P','HOLD &lt;2h'].map(th).join(''))
           // v56U (Rahul Planning 2): holding time per side — always the last two columns.
           + ['HOLD CAP (h)','HOLD BODY (h)'].map(th).join('')
           + th('YIELD %')   // v58J item 1: live for running, actual for closed — always the last column
@@ -4466,11 +4623,13 @@ async function gprStartOrder(batch, mc){
 // v55R item 2: the separate tab is now the FULL interactive view — every batch of the month and
 // the whole cascade calendar, each with its own filters — while the in-app tab stays compact.
 // Same blob-URL mechanism as Report E; data is embedded, so the page is self-contained.
-function openPlanTab(){
+function openPlanTab(_wait){
   const sEl = document.getElementById('pl_summary');
   if(!_planData || !sEl || !sEl.innerHTML || sEl.innerHTML.indexOf('Loading')>=0){
     loadPlan(); setTimeout(openPlanTab, 400); return;
   }
+  // v58M item 1: the exception filters need the yields — wait up to ~6 s for the deferred fill
+  if(window._PL_YIELDS_DONE===false && (_wait||0) < 20){ setTimeout(()=>openPlanTab((_wait||0)+1), 300); return; }
   const mo = (document.getElementById('pl_month')||{}).value || '';
   const now = new Date(Date.now()+330*60000).toISOString().slice(0,16).replace('T',' ');
   const css = ':root{--bg:#f6f8fc;--s1:#ffffff;--s2:#fafbfe;--s3:#eef2f9;--b1:#dbe3ef;--b2:#b9c6da;'
@@ -4493,6 +4652,7 @@ function openPlanTab(){
     + '.flband{margin:12px 0 4px;padding:5px 10px;background:var(--accent-l);border-left:5px solid var(--accent);font-family:var(--fc);font-weight:700;color:var(--accent)}'
     + '.sect{font-family:var(--fc);font-size:12px;font-weight:700;letter-spacing:.8px;text-transform:uppercase;color:var(--accent);margin:20px 0 6px;padding-bottom:5px;border-bottom:1px solid var(--b1)}'
     + '.ev{margin:2px 0;padding:3px 8px;border-left:4px solid var(--teal);background:var(--teal-l);border-radius:4px;font-size:11px}'
+    + '.xk{display:inline-flex;align-items:center;gap:4px;font-size:11.5px;margin:0 10px 4px 0;text-transform:none;letter-spacing:0;font-weight:500;color:var(--t2)}'
     + '@media print{.flt,.noprint{display:none}body{padding:8px}}';
   const dataJson = JSON.stringify({ floors:_planData.floors, month:mo }).replace(/</g,'\\u003c');
   const pageJs = ''
@@ -4511,17 +4671,35 @@ function openPlanTab(){
     + ' fillSel("f_mc",ms.sort());fillSel("f_batch",bs.sort());fillSel("f_pc",ps.sort());fillSel("f_cust",cs.sort());\n'
     + ' fillSel("c_batch",bs.sort());fillSel("c_pc",ps.sort());fillSel("c_cust",cs.sort());\n'
     + ' var ds=[];CASC.forEach(function(t){[t.beginPrepAt,t.ttReadyBy].forEach(function(e){if(e&&e.date&&ds.indexOf(e.date)<0)ds.push(e.date);});});fillSel("c_day",ds.sort());}\n'
-    + 'function v(id){return document.getElementById(id).value;}\n'
-    + 'function renderSheet(){var fm=v("f_mc"),fb=v("f_batch"),fp=v("f_pc"),fc=v("f_cust"),fs=v("f_status");var h="";\n'
-    + ' D.floors.forEach(function(d){var mcs=(d.machines||[]).filter(function(m){return !fm||m.machineId===fm;});if(!mcs.length)return;var fh="";\n'
-    + '  mcs.forEach(function(m){var rows=(m.batches||[]).filter(function(b){\n'
+    + 'function v(id){var e=document.getElementById(id);return e?e.value:"";}\n'
+    + 'function ck(id){var e=document.getElementById(id);return !!(e&&e.checked);}\n'
+    // v58M item 1 (Ishan, 19 Oct): EXCEPTION filters on the full view — under-fill, over-fill, hold under the
+    // minimum, yield below 100 % / below target, excess TT issued vs planned, material over plan — plus floor,
+    // machine and a date range (a batch counts when its production window overlaps the range).
+    + 'var MINH='+JSON.stringify(Number(((MASTERS&&MASTERS.gpr_constants)||{}).minHoldHours||2))+';\n'
+    + 'function bStart(b){return b.dprFirst||b.plannedStart||(b.estStart&&b.estStart.date)||"";}\n'
+    + 'function bEnd(b){return b.dprLast||b.plannedEnd||(b.estEnd&&b.estEnd.date)||bStart(b);}\n'
+    + 'function EX(b){var R=b.recon||{},Y=b.yield||null;var e=[];\n'
+    + ' if(R.underFillTanks>0)e.push("UNDER-FILL "+R.underFillTanks);if(R.overFillTanks>0)e.push("OVER-FILL "+R.overFillTanks);\n'
+    + ' if(R.shortHold>0)e.push("HOLD<"+MINH+"H "+R.shortHold);if(Y&&Y.pct!=null&&Y.pct<100)e.push("YIELD "+Number(Y.pct).toFixed(1)+"%");else if(Y&&Y.pct!=null&&Y.target&&Y.pct<Y.target)e.push("YIELD<TARGET");\n'
+    + ' if(R.ttVariance>0)e.push("EXCESS TT +"+R.ttVariance);if(R.plannedGel>0&&R.totalDifference>0.05*R.plannedGel)e.push("MATERIAL +"+Number(R.totalDifference/R.plannedGel*100).toFixed(0)+"%");return e;}\n'
+    + 'function passEx(b){var R=b.recon||{},Y=b.yield||null;var any=false;\n'
+    + ' if(ck("x_under")){any=true;if(R.underFillTanks>0)return true;}if(ck("x_over")){any=true;if(R.overFillTanks>0)return true;}\n'
+    + ' if(ck("x_hold")){any=true;if(R.shortHold>0)return true;}if(ck("x_y100")){any=true;if(Y&&Y.pct!=null&&Y.pct<100)return true;}\n'
+    + ' if(ck("x_ytgt")){any=true;if(Y&&Y.pct!=null&&Y.target&&Y.pct<Y.target)return true;}if(ck("x_xtt")){any=true;if(R.ttVariance>0)return true;}\n'
+    + ' if(ck("x_mat")){any=true;if(R.plannedGel>0&&R.totalDifference>0.05*R.plannedGel)return true;}return !any;}\n'
+    + 'function renderSheet(){var fm=v("f_mc"),fb=v("f_batch"),fp=v("f_pc"),fc=v("f_cust"),fs=v("f_status"),ff=v("f_floor"),fr=v("f_from"),ft=v("f_to");var h="",shown=0,total=0;\n'
+    + ' D.floors.forEach(function(d){if(ff&&d.floor!==ff)return;var mcs=(d.machines||[]).filter(function(m){return !fm||m.machineId===fm;});if(!mcs.length)return;var fh="";\n'
+    + '  mcs.forEach(function(m){total+=(m.batches||[]).length;var rows=(m.batches||[]).filter(function(b){\n'
     + '    if(fb&&b.batchNumber!==fb)return false;if(fp&&b.pcCode!==fp)return false;if(fc&&b.customer!==fc)return false;\n'
-    + '    var done=b.status==="completed"||b.effectivelyComplete;\n'
-    + '    if(fs==="running"&&b.status!=="running")return false;if(fs==="done"&&!done)return false;if(fs==="planned"&&(b.status==="running"||done))return false;return true;});\n'
-    + '   if(!rows.length)return;\n'
+    + '    var done=b.status==="completed"||b.effectivelyComplete||b.status==="closed";\n'
+    + '    if(fs==="running"&&b.status!=="running")return false;if(fs==="done"&&!done)return false;if(fs==="planned"&&(b.status==="running"||done))return false;\n'
+    + '    if(fr&&bEnd(b)&&bEnd(b)<fr)return false;if(ft&&bStart(b)&&bStart(b)>ft)return false;\n'
+    + '    return passEx(b);});\n'
+    + '   if(!rows.length)return;shown+=rows.length;\n'
     + '   var rd=m.ratedPerDay!=null?m.ratedPerDay:(m.ratePerDay!=null?m.ratePerDay:(Number(m.ratePerShift||0)*3).toFixed(1));\n'
     + '   fh+="<div class=\'mcband\'>MACHINE: "+esc(m.machineId)+" \u2014 "+rows.length+" OF "+(m.batches||[]).length+" BATCHES \u00b7 "+rd+" L/day"+(m.avgActualPerDay!=null?" \u00b7 Avg actual <b>"+m.avgActualPerDay+" L/day</b>":"")+(m.liveAPct!=null?" \u00b7 Live A <b>"+Number(m.liveAPct).toFixed(1)+"%</b>":"")+"</div>";\n'
-    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","AIM A-GRADE (LACS)","UNSCANNED WIP @AIM","A-GRADE AIM %","GEL kg PLAN","GEL kg ISSUED","GEL kg REM","CAP TT P/I/R","BODY TT P/I/R","HOLD CAP (h)","HOLD BODY (h)","YIELD %"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
+    + '   fh+="<table class=\'gtable\'><thead><tr>"+["MC","BATCH","CUSTOMER","PC CODE","COLOUR","SIZE","START","END","ORDER (L)","GROSS PLAN","GROSS ACTUAL","AIM A-GRADE (LACS)","UNSCANNED WIP @AIM","A-GRADE AIM %","GEL kg PLAN","GEL kg ISSUED","GEL kg REM","CAP TT P/I/R","BODY TT P/I/R","HOLD CAP (h)","HOLD BODY (h)","MAT PLAN kg","MAT USED kg (net)","MAT DIFF","TT I/P","UNDER-FILL","OVER-FILL","HOLD<"+MINH+"H","YIELD %","EXCEPTIONS"].map(function(x){return "<th>"+x+"</th>";}).join("")+"</tr></thead><tbody>";\n'
     + '   var so=0,sp=0,sa=0;\n'
     + '   rows.forEach(function(b){so+=Number(b.orderQty||0);sp+=Number(b.grossPlanned||0);sa+=Number(b.grossActual||0);\n'
     + '    var done=b.status==="completed"||b.effectivelyComplete;\n'
@@ -4531,10 +4709,16 @@ function openPlanTab(){
     + '     +"<td>"+esc(b.dprFirst||b.plannedStart||"\u2014")+"</td><td>"+end+"</td>"\n'
     + '     +"<td class=\'num\'>"+num(b.orderQty)+"</td><td class=\'num\'>"+num(b.grossPlanned)+"</td><td class=\'num\'>"+num(b.grossActual)+"</td><td class=\'num\'>"+(b.aimALacs==null?"\u2014":num(b.aimALacs))+"</td>"\n'
     + '     +"<td class=\'num\'>"+num(b.unscannedWipAim)+"</td><td class=\'num\'>"+(b.aGradeAimPct==null?"\u2014":num(b.aGradeAimPct)+"%")+"</td>"'
-    + '     +(b.gel?("<td class=\'num\'>"+num(b.gel.kgPlanned)+"</td><td class=\'num\'>"+num(b.gel.kgIssued)+"</td><td class=\'num\'>"+num(b.gel.kgRemaining)+"</td><td class=\'num\'>"+b.gel.cap.ttPlanned+"/"+b.gel.cap.ttIssued+"/"+b.gel.cap.ttRemaining+"</td><td class=\'num\'>"+b.gel.body.ttPlanned+"/"+b.gel.body.ttIssued+"/"+b.gel.body.ttRemaining+"</td>"):"<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>")+HC(b)+"<td class=\'num\'>"+(b.yield&&b.yield.pct!=null?(Number(b.yield.pct).toFixed(1)+"%"+(b.yield.live?" <small>LIVE</small>":"")):"\u2014")+"</td></tr>";});\n'
-    + '   fh+="<tr style=\'background:var(--s3);font-weight:700\'><td colspan=\'8\'>"+esc(m.machineId)+" SUBTOTAL (shown)</td><td class=\'num\'>"+num(so)+"</td><td class=\'num\'>"+num(sp)+"</td><td class=\'num\'>"+num(sa)+"</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class=\'num\'>"+(m.yieldCum?Number(m.yieldCum.pct).toFixed(1)+"%":"\u2014")+"</td></tr></tbody></table>";});\n'
+    + '     +(b.gel?("<td class=\'num\'>"+num(b.gel.kgPlanned)+"</td><td class=\'num\'>"+num(b.gel.kgIssued)+"</td><td class=\'num\'>"+num(b.gel.kgRemaining)+"</td><td class=\'num\'>"+b.gel.cap.ttPlanned+"/"+b.gel.cap.ttIssued+"/"+b.gel.cap.ttRemaining+"</td><td class=\'num\'>"+b.gel.body.ttPlanned+"/"+b.gel.body.ttIssued+"/"+b.gel.body.ttRemaining+"</td>"):"<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>")+HC(b)\n'
+    + '     +(function(R){if(!R)return "<td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td><td>&mdash;</td>";var sg=function(x){return (x>0?"+":"")+Number(x||0).toFixed(1);};var cl=function(x){return Math.abs(x||0)<0.05?"":(x>0?" style=\'color:var(--red)\'":" style=\'color:var(--green)\'");};\n'
+    + '       return "<td class=\'num\'>"+num(R.plannedGel,1)+"</td><td class=\'num\'><b>"+num(R.usedGel,1)+"</b></td><td class=\'num\'"+cl(R.totalDifference)+">"+sg(R.totalDifference)+"</td><td class=\'num\'>"+R.ttIssued+"/"+R.ttPlanned+(R.ttVariance>0?" <b style=\'color:var(--red)\'>+"+R.ttVariance+"</b>":"")+"</td><td class=\'num\'"+(R.underFillTanks>0?" style=\'color:var(--red)\'":"")+">"+(R.underFillTanks||0)+"</td><td class=\'num\'"+(R.overFillTanks>0?" style=\'color:var(--amber)\'":"")+">"+(R.overFillTanks||0)+"</td><td class=\'num\'"+(R.shortHold>0?" style=\'color:var(--red)\'":"")+">"+(R.shortHold||0)+"</td>";})(b.recon)\n'
+    + '     +"<td class=\'num\'"+(b.yield&&b.yield.pct!=null&&b.yield.pct<100?" style=\'color:var(--red)\'":"")+">"+(b.yield&&b.yield.pct!=null?(Number(b.yield.pct).toFixed(1)+"%"+(b.yield.live?" <small>LIVE</small>":"")):"\u2014")+"</td>"\n'
+    + '     +"<td style=\'font-size:10.5px;white-space:normal\'>"+(function(e){return e.length?e.map(function(x){return "<span style=\'display:inline-block;margin:1px 3px 1px 0;padding:1px 5px;border-radius:4px;background:var(--amber-l);color:var(--amber);font-weight:700\'>"+esc(x)+"</span>";}).join(""):"<span style=\'color:var(--t3)\'>\u2014</span>";})(EX(b))+"</td></tr>";});\n'
+    + '   fh+="<tr style=\'background:var(--s3);font-weight:700\'><td colspan=\'8\'>"+esc(m.machineId)+" SUBTOTAL (shown)</td><td class=\'num\'>"+num(so)+"</td><td class=\'num\'>"+num(sp)+"</td><td class=\'num\'>"+num(sa)+"</td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td></td><td class=\'num\'>"+(m.yieldCum?Number(m.yieldCum.pct).toFixed(1)+"%":"\u2014")+"</td><td></td></tr></tbody></table>";});\n'
     + '  if(fh)h+="<div class=\'flband\'>FLOOR: "+esc(FL[d.floor]||d.floor)+"</div>"+fh;});\n'
+    + ' var cnt=document.getElementById("f_count");if(cnt)cnt.textContent=shown+" of "+total+" batches shown";\n'
     + ' document.getElementById("sheet1").innerHTML=h||"<div style=\'color:var(--t3)\'>Nothing matches the filters.</div>";}\n'
+    + 'function clearEx(){["x_under","x_over","x_hold","x_y100","x_ytgt","x_xtt","x_mat"].forEach(function(id){var e=document.getElementById(id);if(e)e.checked=false;});["f_mc","f_batch","f_pc","f_cust","f_status","f_floor","f_from","f_to"].forEach(function(id){var e=document.getElementById(id);if(e)e.value="";});rerender();}\n'
     + 'function renderCasc(){var fd=v("c_day"),fb=v("c_batch"),fp=v("c_pc"),fc=v("c_cust");var evs=[];\n'
     + ' CASC.forEach(function(t){if(fb&&t.toBatch!==fb)return;if(fp&&t.pc!==fp)return;if(fc&&t.customer!==fc)return;\n'
     + '  evs.push({date:t.beginPrepAt.date,shift:t.beginPrepAt.shift,kind:"prep",t:t});evs.push({date:t.ttReadyBy.date,shift:t.ttReadyBy.shift,kind:"ready",t:t});});\n'
@@ -4559,8 +4743,23 @@ function openPlanTab(){
     + '<div><label>Batch</label><select id="f_batch" onchange="rerender()"></select></div>'
     + '<div><label>PC code</label><select id="f_pc" onchange="rerender()"></select></div>'
     + '<div><label>Customer</label><select id="f_cust" onchange="rerender()"></select></div>'
-    + '<div><label>Status</label><select id="f_status" onchange="rerender()"><option value="">All</option><option value="running">Running</option><option value="planned">Planned</option><option value="done">Done</option></select></div>'
-    + '</div><div id="sheet1"></div>'
+    + '<div><label>Status</label><select id="f_status" onchange="rerender()"><option value="">All</option><option value="running">Running</option><option value="planned">Planned</option><option value="done">Done / closed</option></select></div>'
+    + '<div><label>Floor</label><select id="f_floor" onchange="rerender()"><option value="">All</option>'+(_planData.floors||[]).map(f=>'<option value="'+esc(f.floor)+'">'+esc(FLOOR_LABELS[f.floor]||f.floor)+'</option>').join('')+'</select></div>'
+    + '<div><label>From</label><input id="f_from" type="date" onchange="rerender()"></div>'
+    + '<div><label>To</label><input id="f_to" type="date" onchange="rerender()"></div>'
+    + '</div>'
+    // v58M item 1: exception toggles — any ticked box narrows the sheet to batches with THAT exception (OR across boxes)
+    + '<div class="flt" style="margin-top:-4px"><div><label>Exceptions</label>'
+    + '<label class="xk"><input type="checkbox" id="x_under" onchange="rerender()"> Under-fill</label>'
+    + '<label class="xk"><input type="checkbox" id="x_over" onchange="rerender()"> Over-fill</label>'
+    + '<label class="xk"><input type="checkbox" id="x_hold" onchange="rerender()"> Holding under '+esc(String(Number(((MASTERS&&MASTERS.gpr_constants)||{}).minHoldHours||2)))+' h</label>'
+    + '<label class="xk"><input type="checkbox" id="x_y100" onchange="rerender()"> Yield below 100 % (live or closed)</label>'
+    + '<label class="xk"><input type="checkbox" id="x_ytgt" onchange="rerender()"> Yield below target</label>'
+    + '<label class="xk"><input type="checkbox" id="x_xtt" onchange="rerender()"> Excess TT issued vs planned</label>'
+    + '<label class="xk"><input type="checkbox" id="x_mat" onchange="rerender()"> Material &gt;5 % over plan</label>'
+    + '</div><div><label>&nbsp;</label><button onclick="clearEx()" style="font-size:11px">Clear all filters</button></div>'
+    + '<div style="align-self:center;font-size:11.5px;color:var(--t3)" id="f_count"></div></div>'
+    + '<div id="sheet1"></div>'
     + '<div class="sect" style="margin-top:26px">Sheet 2 — TT time cascade (full calendar)</div>'
     + '<div class="flt">'
     + '<div><label>Day</label><select id="c_day" onchange="rerender()"></select></div>'
@@ -4686,7 +4885,7 @@ function cascSnapShow(date, shift){
 // ── v56 items 12/18: section switch — only the selected ledger section renders ──────────────
 function lgSection(k){
   window._LGSEC = k;
-  ['a','b','o'].forEach(x=>{
+  ['a','b','o','r'].forEach(x=>{
     const sec = document.getElementById('lgsec-'+x), nav = document.getElementById('lgnav-'+x);
     if(sec) sec.style.display = (x===k) ? '' : 'none';
     if(nav) nav.classList.toggle('on', x===k);
@@ -4694,6 +4893,126 @@ function lgSection(k){
   if(k==='a'){ loadAccountStrip(); loadReceipts(); }
   else if(k==='b'){ loadLegacyBalance(); }
   else if(k==='o'){ loadOilyLedger(); }   // v58D item 9
+  else if(k==='r'){ loadReturnSolution(); }   // v58M items 4–7
+}
+// ═══ v58M items 4–7: RETURN SOLUTION stock head — position (lots), entry, movements register ═══════
+window._RS = { lots: null, mov: null };
+function _rsFloorQS(){ const fl = val('rs_floor')||''; if(fl) return 'floors='+encodeURIComponent(fl); return floorScoped() ? ('floors='+encodeURIComponent(visibleFloors().join(','))) : ''; }
+async function loadReturnSolution(){
+  const el = document.getElementById('rsPos'); if(!el) return;
+  el.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  try{
+    const d = await api('/api/gpr/return-solution/lots?all=1'+(_rsFloorQS()?'&'+_rsFloorQS():''));
+    if(!d||!d.ok){ el.innerHTML = '<div class="empty" style="color:var(--red)">Could not load the position'+(d&&d.error?' — '+esc(d.error):'')+'.</div>'; return; }
+    window._RS.lots = d; renderRsPosition();
+  }catch(e){ el.innerHTML = '<div class="empty" style="color:var(--red)">Could not load the position.</div>'; }
+  if(!val('rsm_from')){ const pd0 = Date.parse(productionDay()+'T00:00:00Z'); setVal('rsm_from', new Date(pd0-29*86400000).toISOString().slice(0,10)); setVal('rsm_to', productionDay()); }
+  loadRsMovements();
+}
+function renderRsPosition(){
+  const el = document.getElementById('rsPos'), kp = document.getElementById('rsKpis'), cnt = document.getElementById('rsCount'); if(!el) return;
+  const d = window._RS.lots; if(!d) return;
+  const all = (document.getElementById('rs_showall')||{}).value==='1';
+  const lots = (d.lots||[]).filter(l=>all || l.balance_l>0.005);
+  const live = (d.lots||[]).filter(l=>l.balance_l>0.005);
+  const totL = live.reduce((a,l)=>a+l.balance_l,0), totKg = live.reduce((a,l)=>a+l.balance_kg,0);
+  if(kp) kp.innerHTML = '<div class="kgrid">'+kpi('In stock', fmt(totL,1)+' L', 'teal', live.length+' lot'+(live.length===1?'':'s'))+kpi('Virgin gelatine in it', fmt(totKg,1)+' kg','', 'at each batch\'s concentration')
+    + kpi('Cap', fmt(live.filter(l=>l.side==='cap').reduce((a,l)=>a+l.balance_l,0),1)+' L') + kpi('Body', fmt(live.filter(l=>l.side==='body').reduce((a,l)=>a+l.balance_l,0),1)+' L') + '</div>';
+  if(cnt) cnt.textContent = live.length ? live.length+' lot'+(live.length===1?'':'s')+' · '+fmt(totL,1)+' L' : '';
+  if(!lots.length){ el.innerHTML = '<div class="empty">No return solution in stock'+(all?'':' — no batch has been closed with solution left since this ledger went live')+'.</div>'; return; }
+  let h = '<div class="tswrap" style="max-height:340px"><table class="gtable"><thead><tr><th>Batch</th><th>Side</th><th>Colour code</th><th>PC</th><th>Machine</th><th>Floor</th><th>Days</th><th class="num" style="color:var(--green)">Recovered L</th><th class="num" style="color:var(--red)">Drawn L</th><th class="num">In stock L</th><th class="num">kg/L</th><th class="num">Virgin kg in stock</th><th></th></tr></thead><tbody>';
+  lots.forEach(l=>{
+    const tag = '<span class="sdtag sd-'+esc(l.side)+'">'+esc(String(l.side).toUpperCase())+'</span>';
+    h += '<tr'+(l.balance_l>0.005?'':' style="color:var(--t3)"')+'><td class="mono"><b>'+esc(l.batch_number)+'</b></td><td>'+tag+'</td><td class="mono">'+esc(l.colour_code||'—')+(l.colour_name?' <span style="color:var(--t3);font-size:10px">'+esc(l.colour_name)+'</span>':'')+'</td>'
+      + '<td class="mono" style="font-size:11px">'+esc(l.pc_code||'—')+'</td><td>'+esc(l.machine_id||'—')+'</td><td>'+esc(FLOOR_LABELS[l.floor]||l.floor||'—')+'</td>'
+      + '<td class="mono" style="font-size:11px;white-space:nowrap">'+esc(_dm(l.first_day)||'')+(l.last_day&&l.last_day!==l.first_day?' → '+esc(_dm(l.last_day)):'')+'</td>'
+      + '<td class="num" style="color:var(--green)">'+fmt(l.generated_l,1)+'</td><td class="num" style="color:var(--red)">'+fmt(l.consumed_l,1)+'</td><td class="num"><b>'+fmt(l.balance_l,1)+'</b></td>'
+      + '<td class="num">'+(l.conc_kg_per_l!=null?Number(l.conc_kg_per_l).toFixed(3):'—')+'</td><td class="num">'+fmt(l.balance_kg,1)+'</td>'
+      + '<td style="white-space:nowrap"><button class="btn sm" onclick="rsmFor(\''+esc(l.batch_number)+'\',\''+esc(l.side)+'\')" title="movements of this lot">Log</button></td></tr>';
+  });
+  h += '<tr style="background:var(--s3);font-weight:700"><td colspan="9">Total in stock</td><td class="num">'+fmt(totL,1)+'</td><td></td><td class="num">'+fmt(totKg,1)+'</td><td></td></tr>';
+  el.innerHTML = h + '</tbody></table></div>';
+}
+function rsmFor(bn, side){ setVal('rsm_batch', bn); const sd = document.getElementById('rsm_side'); if(sd) sd.value = side||''; setVal('rsm_from',''); setVal('rsm_to',''); loadRsMovements(); const o = document.getElementById('rsmOut'); if(o&&o.scrollIntoView) o.scrollIntoView({behavior:'smooth',block:'start'}); }
+async function rseConc(onlyKg){
+  const bn = (val('rse_batch')||'').toUpperCase(), sd = val('rse_side')||'cap', n = document.getElementById('rse_note2'); if(!n) return;
+  if(!bn){ n.innerHTML=''; return; }
+  if(!onlyKg || !window._RSE || window._RSE.bn!==bn){ try{ window._RSE = Object.assign({ bn }, await api('/api/gpr/return-solution/conc/'+encodeURIComponent(bn))); }catch(e){ window._RSE = { bn }; } }
+  const c = window._RSE && window._RSE[sd]; const L = num('rse_l');
+  const lot = ((window._RSE&&window._RSE.existing)||[]).find(l=>l.side===sd);
+  n.innerHTML = c ? ('<b>'+esc(bn)+' '+sd.toUpperCase()+'</b> &middot; concentration <b>'+Number(c.conc).toFixed(3)+' kg/L</b> <span style="color:var(--t3)">('+esc(c.basis)+')</span>'+(L?' &middot; '+fmt(L,1)+' L = <b>'+fmt(L*c.conc,1)+' kg</b> virgin gelatine':'')
+    + (lot?' &middot; on record: recovered '+fmt(lot.generated_l,1)+' L, in stock '+fmt(lot.balance_l,1)+' L':'')
+    + (window._RSE.order&&window._RSE.order.status!=='closed'?' &middot; <span style="color:var(--amber)">batch is '+esc(window._RSE.order.status||'not closed')+'</span>':'')) : '<span style="color:var(--red)">'+esc(bn)+' not found in Planning</span>';
+}
+async function rseSave(){
+  const bn = (val('rse_batch')||'').toUpperCase(), sd = val('rse_side')||'cap', kind = val('rse_kind')||'generation', L = parseFloat(val('rse_l'));
+  if(!bn){ toast('Enter the batch','err'); return; }
+  if(!Number.isFinite(L) || L===0){ toast('Enter the litres','err'); return; }
+  if(kind==='generation' && L<0){ toast('Recovered litres cannot be negative — use a correction','err'); return; }
+  if(kind==='correction' && (val('rse_note')||'').trim().length<5){ toast('A correction needs a reason','err'); return; }
+  if(!confirm((kind==='correction'?'Correct':'Record')+' return solution for '+bn+' '+sd.toUpperCase()+': '+L+' L?')) return;
+  const d = await post('/api/gpr/return-solution/entry', { batch: bn, side: sd, kind, litres: L, note: val('rse_note')||null, production_day: val('rse_day')||null });
+  if(!d||!d.ok){ toast((d&&(d.detail||d.error))||'Could not record','err'); return; }
+  toast(bn+' '+sd.toUpperCase()+' '+fmt(d.litres,1)+' L = '+fmt(d.virgin_kg,1)+' kg recorded','ok');
+  setVal('rse_l',''); setVal('rse_note',''); window._RSE = null; const n = document.getElementById('rse_note2'); if(n) n.innerHTML='';
+  loadReturnSolution();
+}
+async function loadRsMovements(){
+  const el = document.getElementById('rsmOut'); if(!el) return;
+  el.innerHTML = '<div class="empty">Loading&hellip;</div>';
+  const q = [];
+  if(val('rsm_from')) q.push('from='+encodeURIComponent(val('rsm_from'))); if(val('rsm_to')) q.push('to='+encodeURIComponent(val('rsm_to')));
+  if((val('rsm_batch')||'').trim()) q.push('batch='+encodeURIComponent(val('rsm_batch').trim()));
+  if(val('rsm_side')) q.push('side='+encodeURIComponent(val('rsm_side')));
+  if((val('rsm_mc')||'').trim()) q.push('machine='+encodeURIComponent(val('rsm_mc').trim()));
+  if((val('rsm_pc')||'').trim()) q.push('pc='+encodeURIComponent(val('rsm_pc').trim()));
+  if(val('rsm_kind')) q.push('kind='+encodeURIComponent(val('rsm_kind')));
+  if(_rsFloorQS()) q.push(_rsFloorQS());
+  try{
+    const d = await api('/api/gpr/return-solution/movements'+(q.length?'?'+q.join('&'):''));
+    if(!d||!d.ok){ el.innerHTML = '<div class="empty" style="color:var(--red)">Could not load the ledger'+(d&&d.error?' — '+esc(d.error):'')+'.</div>'; return; }
+    window._RS.mov = d; renderRsMovements();
+  }catch(e){ el.innerHTML = '<div class="empty" style="color:var(--red)">Could not load the ledger.</div>'; }
+}
+function renderRsMovements(){
+  const el = document.getElementById('rsmOut'), kp = document.getElementById('rsmKpis'), cnt = document.getElementById('rsmCount'); if(!el) return;
+  const d = window._RS.mov; if(!d) return; const rows = d.rows||[];
+  if(kp) kp.innerHTML = '<div class="kgrid">'+kpi('Opening', fmt(d.opening_l,1)+' L','', fmt(d.opening_kg,1)+' kg')+kpi('Credits (recovered)', fmt(d.credit_l,1)+' L','teal', fmt(d.credit_kg,1)+' kg')+kpi('Debits (drawn into tanks)', fmt(d.debit_l,1)+' L','', fmt(d.debit_kg,1)+' kg')+kpi('Closing', fmt(d.closing_l,1)+' L','', fmt(d.closing_kg,1)+' kg')+'</div>';
+  if(cnt) cnt.textContent = rows.length ? rows.length+' movement'+(rows.length===1?'':'s') : '';
+  if(!rows.length){ el.innerHTML = '<div class="empty">No return-solution movements for this selection.</div>'; return; }
+  const KIND = { generation:'RECOVERED', consumption:'DRAWN', correction:'CORRECTION' };
+  let h = '<div class="tswrap" style="max-height:460px"><table class="gtable"><thead><tr><th>Day</th><th>When</th><th>Type</th><th>Lot (batch · side)</th><th>Into batch / TT</th><th>Colour code</th><th>PC</th><th>MC</th><th>Floor</th><th class="num" style="color:var(--green)">Credit L</th><th class="num" style="color:var(--red)">Debit L</th><th class="num">Balance L</th><th class="num">kg/L</th><th class="num">kg</th><th class="num">Balance kg</th><th>Note</th><th>By</th></tr></thead><tbody>';
+  if(d.from) h += '<tr><td colspan="11" style="color:var(--t3);font-size:11px">Opening balance brought forward</td><td class="num"><b>'+fmt(d.opening_l,1)+'</b></td><td></td><td></td><td class="num"><b>'+fmt(d.opening_kg,1)+'</b></td><td colspan="2"></td></tr>';
+  rows.forEach(r=>{
+    const isCr = r.movement_type!=='consumption';
+    const lot = isCr ? r.batch_number : (r.source_batch||r.batch_number);
+    const kg = Number(r.virgin_kg||0);
+    h += '<tr><td class="mono">'+esc(_dm(r.production_day)||'—')+'</td><td class="mono" style="font-size:11px;white-space:nowrap">'+esc(_v58dDt(r.moved_at))+'</td>'
+      + '<td><span class="badge '+(isCr?'inprod':'warn')+'">'+esc(KIND[r.movement_type]||r.movement_type)+'</span></td>'
+      + '<td class="mono"><b>'+esc(lot||'—')+'</b> <span class="sdtag sd-'+esc(r.side)+'">'+esc(String(r.side||'').toUpperCase())+'</span></td>'
+      + '<td class="mono" style="font-size:11px">'+(isCr?'—':esc(r.batch_number||'')+(r.tt_id?' · TT #'+r.tt_id:''))+'</td>'
+      + '<td class="mono">'+esc(r.colour_code||'—')+'</td><td class="mono" style="font-size:11px">'+esc(r.pc_code||'—')+'</td><td>'+esc(r.machine_id||'—')+'</td><td>'+esc(FLOOR_LABELS[r.floor]||r.floor||'—')+'</td>'
+      + '<td class="num" style="color:var(--green)">'+(isCr?fmt(r.litres,1):'')+'</td><td class="num" style="color:var(--red)">'+(isCr?'':fmt(r.litres,1))+'</td><td class="num"><b>'+fmt(r.balance_l,1)+'</b></td>'
+      + '<td class="num">'+(r.conc_kg_per_l!=null?Number(r.conc_kg_per_l).toFixed(3):'—')+'</td><td class="num">'+(isCr?'+':'−')+fmt(kg,1)+'</td><td class="num">'+fmt(r.balance_kg,1)+'</td>'
+      + '<td style="font-size:11px;max-width:260px;white-space:normal">'+esc(r.note||'')+'</td><td style="font-size:11px">'+esc(r.moved_by||'')+'</td></tr>';
+  });
+  h += '<tr style="background:var(--s3);font-weight:700"><td colspan="9">Totals</td><td class="num" style="color:var(--green)">'+fmt(d.credit_l,1)+'</td><td class="num" style="color:var(--red)">'+fmt(d.debit_l,1)+'</td><td class="num">'+fmt(d.closing_l,1)+'</td><td></td><td></td><td class="num">'+fmt(d.closing_kg,1)+'</td><td colspan="2"></td></tr>';
+  el.innerHTML = h + '</tbody></table></div>';
+}
+function exportRsPosition(){
+  const all = (document.getElementById('rs_showall')||{}).value==='1';
+  const rows = (((window._RS.lots||{}).lots)||[]).filter(l=>all||l.balance_l>0.005).map(l=>Object.assign({}, l, { side_u: String(l.side).toUpperCase(), floor_label: FLOOR_LABELS[l.floor]||l.floor }));
+  gprExport({ rows, title:'GPR — return solution stock position', context:'litres recovered at batch close · kg at each batch\'s concentration', sheet:'Return solution', file:'gpr_return_solution_position', totals:true,
+    columns:[ {key:'batch_number',label:'Batch',w:12},{key:'side_u',label:'Side',w:7},{key:'colour_code',label:'Colour code',w:12},{key:'colour_name',label:'Colour',w:16},{key:'pc_code',label:'PC',w:10},{key:'machine_id',label:'Machine',w:9},{key:'floor_label',label:'Floor',w:12},
+      {key:'first_day',label:'First day',w:11},{key:'last_day',label:'Last day',w:11},{key:'generated_l',label:'Recovered L',w:12,num:true},{key:'consumed_l',label:'Drawn L',w:10,num:true},{key:'balance_l',label:'In stock L',w:11,num:true},{key:'conc_kg_per_l',label:'kg/L',w:8,num:true},{key:'balance_kg',label:'Virgin kg in stock',w:14,num:true} ] });
+}
+function exportRsMovements(){
+  const d = window._RS.mov; const rows = ((d&&d.rows)||[]).map(r=>Object.assign({}, r, { when_ist: _v58dDt(r.moved_at), side_u: String(r.side||'').toUpperCase(), lot: r.movement_type==='consumption'?(r.source_batch||r.batch_number):r.batch_number, into: r.movement_type==='consumption'?r.batch_number:'', floor_label: FLOOR_LABELS[r.floor]||r.floor }));
+  if(!rows.length){ toast('Nothing to export','err'); return; }
+  gprExport({ rows, title:'GPR — return solution ledger', context:[d.from?(_dm(d.from)+' → '+_dm(d.to||d.from)):'', 'opening '+fmt(d.opening_l,1)+' L', 'closing '+fmt(d.closing_l,1)+' L'].filter(Boolean).join(' · '), sheet:'Return solution', file:'gpr_return_solution_ledger', totals:true,
+    columns:[ {key:'production_day',label:'Production day',w:14},{key:'when_ist',label:'When (IST)',w:14},{key:'movement_type',label:'Type',w:12},{key:'lot',label:'Lot batch',w:12},{key:'side_u',label:'Side',w:7},{key:'into',label:'Into batch',w:12},{key:'tt_id',label:'TT id',w:8},
+      {key:'colour_code',label:'Colour code',w:12},{key:'pc_code',label:'PC',w:10},{key:'machine_id',label:'Machine',w:9},{key:'floor_label',label:'Floor',w:12},{key:'credit_l',label:'Credit L',w:10,num:true},{key:'debit_l',label:'Debit L',w:10,num:true},{key:'balance_l',label:'Balance L',w:11,num:true},
+      {key:'conc_kg_per_l',label:'kg/L',w:8,num:true},{key:'virgin_kg',label:'Virgin kg',w:10,num:true},{key:'balance_kg',label:'Balance kg',w:11,num:true},{key:'note',label:'Note',w:40},{key:'moved_by',label:'By',w:12} ] });
 }
 // ═══ v58D item 9: oily salvage ledger — credit / debit register with running balance ═══════════════
 window._OL = null;
@@ -4965,13 +5284,46 @@ async function loadShiftWise(q){
 }
 // v56 item 25 (early slice): every ledger view exports with proper headers.
 // v56C item 4: closing a running batch — the counterpart to starting one, audited server-side.
+// ═══ v58M item 4 (Ishan, 19 Oct): closing a batch asks for the RETURN SOLUTION left in the cap and
+// body tanks (litres). It is credited to the Return Solution stock head at the batch's own
+// concentration — shown here as the operator types — and comes off the batch's net material.
 async function gprCloseOrder(batch, mc){
-  if(!confirm('Close '+batch+' on '+mc+'?\n\nIt becomes history: every figure it earned is kept, and it stops appearing as a TT target.')) return;
-  const d = await post('/api/gpr/order-close', { batch });
-  if(!d.ok){ toast(d.detail || d.error || 'Could not close the batch','err'); return; }
-  toast(batch+' is now CLOSED','ok');
-  try{ const ov = document.getElementById('ttModal'); if(ov) ov.style.display='none'; }catch(e){}
+  const bn = String(batch||'').toUpperCase();
+  let cc = null; try{ cc = await api('/api/gpr/return-solution/conc/'+encodeURIComponent(bn)); }catch(e){}
+  const conc = sd => Number((cc && cc[sd] && cc[sd].conc) || 0) || 0.33;
+  const basis = sd => (cc && cc[sd] && cc[sd].basis) || 'seed factor';
+  const prior = (cc && cc.existing) || [];
+  ttModalOpen('Close batch '+esc(bn)+' &mdash; '+esc(mc||''),
+    '<div class="hbnote" style="margin-bottom:8px">The batch becomes history: every figure it earned is kept and it stops appearing as a TT target. Before it closes, enter the <b>solution left in the tanks</b> &mdash; it is recovered as <b>Return Solution</b> stock (litres) at this batch\'s own virgin-gelatine concentration and comes off its material consumption.</div>'
+    + (prior.length ? '<div class="banner warn" style="margin-bottom:8px"><b>Return solution already on record for this batch:</b><span>'+prior.map(l=>esc(String(l.side).toUpperCase())+' '+fmt(l.generated_l,1)+' L').join(' · ')+' &mdash; a new entry here ADDS to it.</span></div>' : '')
+    + '<table class="gtable"><thead><tr><th>Side</th><th class="num" style="width:160px">Return solution (L) *</th><th>Concentration</th><th class="num">Virgin gelatine kg</th></tr></thead><tbody>'
+    + ['cap','body'].map(sd=>'<tr><td><span class="sdtag sd-'+sd+'">'+sd.toUpperCase()+'</span></td>'
+        + '<td class="num"><input id="rs_'+sd+'" type="number" inputmode="decimal" min="0" step="0.1" placeholder="0" style="width:120px;text-align:right" oninput="_rsKgNote(\''+sd+'\','+conc(sd)+')"></td>'
+        + '<td style="font-size:11px"><b>'+conc(sd).toFixed(3)+' kg/L</b><div style="color:var(--t3)">'+esc(basis(sd))+'</div></td>'
+        + '<td class="num"><span id="rs_kg_'+sd+'" class="mono">0.0</span></td></tr>').join('')
+    + '</tbody></table>'
+    + '<div class="field-grp" style="margin-top:8px"><label>Note (optional)</label><input id="rs_note" placeholder="e.g. tanks drained to drums"></div>'
+    + '<div style="font-size:11px;color:var(--t3);margin-top:4px">Enter <b>0</b> for a side with nothing left. Both fields are required.</div>'
+    + '<div class="tspfoot" style="margin-top:10px"><span style="flex:1"></span><button class="btn" onclick="ttModalClose()">Cancel</button><button class="btn primary" id="rs_go" onclick="_rsCloseConfirm(\''+esc(bn)+'\',\''+esc(mc||'')+'\')">Record return solution &amp; close batch</button></div>');
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '720px';
+  setTimeout(()=>{ const e = document.getElementById('rs_cap'); if(e) e.focus(); }, 50);
+}
+function _rsKgNote(sd, conc){ const el = document.getElementById('rs_kg_'+sd); if(el) el.textContent = fmt(num('rs_'+sd)*conc, 1); }
+async function _rsCloseConfirm(bn, mc){
+  const capEl = document.getElementById('rs_cap'), bodyEl = document.getElementById('rs_body');
+  const capV = (capEl&&capEl.value||'').trim(), bodyV = (bodyEl&&bodyEl.value||'').trim();
+  if(capV==='' || bodyV===''){ toast('Enter the return solution for BOTH sides (0 if nothing is left)','err'); return; }
+  const cap = parseFloat(capV), body = parseFloat(bodyV);
+  if(!(cap>=0) || !(body>=0)){ toast('Litres must be 0 or more','err'); return; }
+  if(!confirm('Close '+bn+' on '+mc+' with return solution CAP '+cap+' L · BODY '+body+' L?')) return;
+  const go = document.getElementById('rs_go'); if(go) go.disabled = true;
+  const d = await post('/api/gpr/order-close', { batch: bn, return_cap_l: cap, return_body_l: body, return_note: val('rs_note')||null });
+  if(!d.ok){ if(go) go.disabled = false; toast(d.detail || d.error || 'Could not close the batch','err'); return; }
+  const rs = (d.returnSolution||[]).map(r=>r.side.toUpperCase()+' '+fmt(r.litres,1)+' L = '+fmt(r.virgin_kg,1)+' kg').join(' · ');
+  toast(bn+' is now CLOSED'+(rs?' — return solution '+rs:''),'ok');
+  ttModalClose();
   loadPlan(); loadBatchOptions();
+  if(window._LGSEC==='r' && document.getElementById('page-ledger').classList.contains('on')) loadReturnSolution();
 }
 // ── v56C item 6: the TT entry panel lives inside the TT page ────────────────────────────────
 // v56E: re-anchoring is deliberate and audited — the planner chooses to move the ESTIMATE onto
@@ -5212,7 +5564,7 @@ async function loadLedger(view, btn){
     if(view==='daily'){ await loadShiftWise(q); return; }
     // v58L item 3: "All movements" was the 10-row recent-movements snapshot — it is the full register
     // now (every generation and consumption in the window, chronological, with the running balance)
-    if(view==='movements') q.set('view', 'register');
+    if(view==='movements'){ q.set('view', 'register'); if(((document.getElementById('lg_move')||{}).value||'')==='void') q.set('voided','1'); }   // v58M item 12
     const d = await api('/api/gpr/ledger/summary?' + q.toString() + ((view==='daily'||view==='colour'||view==='pc'||view==='colourside'||view==='movements') ? gMonthQS() : ''));
     // v55T item 4: surface the real server error instead of the blind catch, and treat an empty
     // result as the normal no-stock state (an empty ledger is not a failure).
@@ -5292,7 +5644,7 @@ async function loadLedger(view, btn){
     if(view==='movements'){
       const mv = (document.getElementById('lg_move')||{}).value || '';
       let rows = d.rows || [];
-      if(mv==='gen') rows = rows.filter(r=>r.credit_kg>0 || r.pending_kg>0); else if(mv==='con') rows = rows.filter(r=>r.debit_kg>0);
+      if(mv==='gen') rows = rows.filter(r=>r.credit_kg>0 || r.pending_kg>0); else if(mv==='con') rows = rows.filter(r=>r.debit_kg>0); else if(mv==='void') rows = rows.filter(r=>r.voided===1);   // v58M item 12: voided rows only when asked (the server leaves them out otherwise)
       window._LEDGERROWS = rows;
       const nG = rows.filter(r=>r.credit_kg>0).length, nC = rows.filter(r=>r.debit_kg>0).length;
       h = '<div class="mmesum" style="margin-bottom:6px"><span>Opening <b>'+fmt(d.opening_kg,1)+'</b> kg</span><span>Generated <b style="color:var(--green)">+'+fmt(d.credit_kg,1)+'</b> kg ('+nG+')</span><span>Consumed <b style="color:var(--red)">−'+fmt(d.debit_kg,1)+'</b> kg ('+nC+')</span>'+(Number(d.pending_kg)>0?'<span>Pending receipt <b style="color:var(--amber)">'+fmt(d.pending_kg,1)+'</b> kg</span>':'')+'<span>Closing <b>'+fmt(d.closing_kg,1)+'</b> kg</span></div>'
@@ -5460,29 +5812,38 @@ async function loadReconcile(bnArg, target){
   const d = await api('/api/gpr/reconcile/' + encodeURIComponent(bn));
   if(!d.ok){ out.innerHTML = '<div class="empty">'+esc(d.error||'Could not reconcile')+'</div>'; return; }
   window._RECON = d;
-  const B = d.basis, P = d.planned, A = d.actual, V = d.variance;
+  const B = d.basis, P = d.planned, A = d.actual, V = d.variance, NT = A.net || null;   // v58M: the net breakdown
+  const PM = P.material!=null ? Number(P.material) : Number(P.gelatine||0)+Number(P.colour||0), AM = A.netMaterial!=null ? Number(A.netMaterial) : Number(A.gelatineEquiv||0)+Number(A.colour||0);   // v58M: planned / used incl. colour
   const sign = v => (v>0?'+':'') + fmt(v,1);
   const col = v => Math.abs(v)<0.05 ? 'var(--t3)' : (v>0 ? 'var(--red)' : 'var(--green)');
   let h = '<div class="kgrid">'
-    + kpi('Planned material', fmt(P.gelatine,1)+' kg', 'amber', B.anchored ? 'anchored plan' : 'live plan')
-    + kpi('Actually charged', fmt(A.gelatineEquiv,1)+' kg', '', A.tanks+' tank'+(A.tanks===1?'':'s'))
+    + kpi('Planned material', fmt(PM,1)+' kg', 'amber', (B.anchored ? 'anchored plan' : 'live plan')+' · gelatine '+fmt(P.gelatine,1)+' + colour '+fmt(P.colour,1)+(P.colourBasis&&P.colourBasis.basis==='pc-history'?' (PC history, '+P.colourBasis.tanks+' tanks)':(P.colourBasis&&P.colourBasis.basis==='default'?' (2.5 % default — no PC history yet)':'')))   /* v58N */
+    + kpi('Net material charged', fmt(AM,1)+' kg', '', A.tanks+' tank'+(A.tanks===1?'':'s')+' · incl. colour'+(A.gelatineEquivGross!=null?' · gross issued '+fmt(A.gelatineEquivGross+A.colour,1)+' kg':''))   /* v58M items 9/10: net incl. colour, not gross */
     + kpi('Difference', sign(V.totalDifference)+' kg', V.totalDifference>0?'red':'green',
-          P.gelatine>0 ? fmt(V.totalDifference/P.gelatine*100,1)+'% of plan' : '')
+          PM>0 ? fmt(V.totalDifference/PM*100,1)+'% of plan' : '')
     + kpi('Required for actual output', fmt(V.requiredForActual,1)+' kg', '', 'gross × actual weight')
     + '</div>';
 
   h += '<div class="fgroup-title" style="margin-top:12px">A &mdash; Planned vs B &mdash; Actual, by component</div>';
   h += '<table class="gtable"><thead><tr><th>Component</th><th class="num">Planned kg</th><th class="num">Actual kg</th><th class="num">Difference</th></tr></thead><tbody>'
     + '<tr><td>Virgin gelatine</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.virgin,1)+'</td><td class="num">&mdash;</td></tr>'
-    + '<tr><td>Salvage</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.salvage,1)+'</td><td class="num">&mdash;</td></tr>'
-    + '<tr><td>Cutting</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.cutting,1)+'</td><td class="num">&mdash;</td></tr>'
     + '<tr><td>FG remelt</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.fgRemelt,1)+'</td><td class="num">&mdash;</td></tr>'
-    + '<tr class="sumrow"><td>GELATINE-EQUIVALENT TOTAL</td><td class="num">'+fmt(P.gelatine,1)+'</td><td class="num">'+fmt(A.gelatineEquiv,1)+'</td>'
-      + '<td class="num" style="color:'+col(V.totalDifference)+'">'+sign(V.totalDifference)+'</td></tr>'
-    + '<tr><td>Colour + TiO&#8322;</td><td class="num">'+fmt(P.colour,1)+'</td><td class="num">'+fmt(A.colour,1)+'</td>'
+    + (NT ? ('<tr><td>+ Cutting &amp; salvage charged into the tanks</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(NT.reuseInKg,1)+'</td><td class="num">&mdash;</td></tr>'
+      + '<tr><td>&minus; Cutting &amp; salvage generated by this batch</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num" style="color:var(--red)">&minus;'+fmt(NT.generatedManualKg,1)+'</td><td class="num">&mdash;</td></tr>'
+      + '<tr><td>&minus; Tracking salvage recovered</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num" style="color:var(--red)">&minus;'+fmt(NT.salvageRecoveredKg,1)+'</td><td class="num">&mdash;</td></tr>'
+      + (NT.expectedSalvageKg>0.005?'<tr><td>&minus; Salvage the WIP is expected to return</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num" style="color:var(--red)">&minus;'+fmt(NT.expectedSalvageKg,1)+'</td><td class="num">&mdash;</td></tr>':'')
+      + (NT.returnUsedKg>0.005?'<tr><td>+ Return solution drawn into the tanks ('+fmt(NT.returnUsedL,1)+' L)</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(NT.returnUsedKg,1)+'</td><td class="num">&mdash;</td></tr>':'')
+      + (NT.returnRecoveredKg>0.005?'<tr><td>&minus; Return solution recovered at close ('+fmt(NT.returnRecoveredL,1)+' L)</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num" style="color:var(--red)">&minus;'+fmt(NT.returnRecoveredKg,1)+'</td><td class="num">&mdash;</td></tr>':''))
+      : ('<tr><td>Salvage</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.salvage,1)+'</td><td class="num">&mdash;</td></tr>'
+      + '<tr><td>Cutting</td><td class="num" style="color:var(--t3)">&mdash;</td><td class="num">'+fmt(A.cutting,1)+'</td><td class="num">&mdash;</td></tr>'))
+    + '<tr class="sumrow"><td>NET GELATINE-EQUIVALENT</td><td class="num">'+fmt(P.gelatine,1)+'</td><td class="num">'+fmt(A.gelatineEquiv,1)+'</td>'
+      + '<td class="num" style="color:'+col(A.gelatineEquiv-P.gelatine)+'">'+sign(A.gelatineEquiv-P.gelatine)+'</td></tr>'
+    + '<tr><td>Colour + TiO&#8322;'+(P.colourBasis?' <span style="color:var(--t3);font-size:10.5px">planned from '+(P.colourBasis.basis==='pc-history'?'this PC\'s '+P.colourBasis.tanks+' previous tank'+(P.colourBasis.tanks===1?'':'s')+' ('+P.colourBasis.batches+' batch'+(P.colourBasis.batches===1?'':'es')+')':(P.colourBasis.basis==='anchored'?'the anchored plan':'the 2.5 % master default'))+'</span>':'')+'</td><td class="num">'+fmt(P.colour,1)+'</td><td class="num">'+fmt(A.colour,1)+'</td>'   /* v58N: colour basis */
       + '<td class="num" style="color:'+col(A.colour-P.colour)+'">'+sign(A.colour-P.colour)+'</td></tr>'
+    + '<tr class="grandrow"><td>NET MATERIAL (incl. colour) &mdash; the reconciled figure</td><td class="num">'+fmt(PM,1)+'</td><td class="num"><b>'+fmt(AM,1)+'</b></td>'
+      + '<td class="num" style="color:'+col(V.totalDifference)+'"><b>'+sign(V.totalDifference)+'</b></td></tr>'   /* v58M: colour included on both sides */
     + '</tbody></table>'
-    + '<div style="font-size:11.5px;color:var(--t3);margin-top:4px">The virgin / salvage / cutting split is a sourcing decision taken at issue time, not something the plan fixes &mdash; so only the gelatine-equivalent total carries a planned figure.</div>';
+    + '<div style="font-size:11.5px;color:var(--t3);margin-top:4px">Only the NET gelatine-equivalent carries a planned figure: the virgin / salvage / cutting split is a sourcing decision taken at issue time, and cutting &amp; salvage the batch generated came out of its own virgin gelatine, so only consumed-over-generated stays in (v58M). Gross issued into the tanks: '+fmt(A.gelatineEquivGross!=null?A.gelatineEquivGross:(A.virgin+A.salvage+A.cutting+A.fgRemelt),1)+' kg.</div>';
 
   h += '<div class="fgroup-title" style="margin-top:14px">C &mdash; Where the difference came from</div>';
   h += '<table class="gtable"><thead><tr><th>Cause</th><th>Basis</th><th class="num">kg</th><th class="num">Share</th></tr></thead><tbody>';
@@ -5558,7 +5919,7 @@ async function loadPerf(){
   let h = '<div class="kgrid">'
     + kpi('Batches in report', rows.length, '', d.capped ? ('of '+d.matched+' — capped') : '')
     + kpi('Planned material', fmt(sum('plannedGel'),0)+' kg')
-    + kpi('Actual material', fmt(sum('usedGel'),0)+' kg')
+    + kpi('Net material charged', fmt(sum('usedGel'),0)+' kg')
     + kpi('Net difference', sign(sum('totalDifference'))+' kg', sum('totalDifference')>0?'red':'green')
     + kpi('TT issued vs planned', sum('ttIssued')+' / '+sum('ttPlanned'), '', sign(sum('ttVariance'))+' tanks')
     + kpi('Holds under '+d.minHoldHours+' h', sum('shortHold'), sum('shortHold')?'red':'green')
@@ -5610,7 +5971,7 @@ function exportPerf(){
     columns:[ {key:'batch',label:'Batch',w:12},{key:'machineId',label:'Machine',w:9},{key:'floor',label:'Floor',w:8},
       {key:'status',label:'Status',w:10},{key:'customer',label:'Customer',w:26},{key:'pcCode',label:'PC',w:10},
       {key:'day',label:'Start',w:12},
-      {key:'plannedGel',label:'Planned kg',w:12,num:true},{key:'usedGel',label:'Actual kg',w:12,num:true},
+      {key:'plannedGel',label:'Planned kg',w:12,num:true},{key:'usedGel',label:'Net charged kg',w:12,num:true},
       {key:'totalDifference',label:'Difference kg',w:13,num:true},{key:'pctOfPlan',label:'% of plan',w:10,num:true},
       {key:'qtyEffect',label:'Cause: quantity',w:15,num:true},{key:'weightEffect',label:'Cause: weight',w:14,num:true},
       {key:'processVariance',label:'Cause: process',w:14,num:true},
@@ -5752,14 +6113,14 @@ function renderMaterialRecon(rows, d){
     + kpi('Packable output', fmt(outK,0)+' kg', '', 'packed + WIP × label weight')
     + kpi('Net material', fmt(netK,0)+' kg', '', 'fresh + net recirc − salvage recovered')
     + kpi('Planned material', fmt(sum('plannedGel'),0)+' kg')
-    + kpi('Actual charged', fmt(sum('usedGel'),0)+' kg', '', sign(sum('totalDifference'))+' kg vs plan')
+    + kpi('Net material charged', fmt(sum('usedGel'),0)+' kg', '', sign(sum('totalDifference'))+' kg vs plan · net of cutting/salvage generated (v58M)')
     + kpi('TT issued vs planned', sum('ttIssued')+' / '+sum('ttPlanned'), '', sign(sum('ttVariance'))+' tanks')
     + kpi('Holds under '+d.minHoldHours+' h', sum('shortHold'), sum('shortHold')?'red':'green')
     + '</div>';
   h += '<div class="froze" style="max-height:560px"><table class="gtable" style="margin:0"><thead><tr>'
     + '<th class="fz1">Batch</th><th class="fz2">MC</th><th>Status</th><th>PC</th><th>Customer</th>'
     + '<th class="num" style="border-left:2px solid var(--b2)">Yield %</th><th class="num">vs target</th><th class="num">Output kg</th><th class="num">Net material kg</th><th class="num">Packed L</th><th class="num">WIP L</th>'
-    + '<th class="num" style="border-left:2px solid var(--b2)">Planned kg</th><th class="num">Charged kg</th><th class="num">Diff kg</th><th class="num">% of plan</th>'
+    + '<th class="num" style="border-left:2px solid var(--b2)">Planned kg</th><th class="num" title="net material charged — v58M">Charged kg (net)</th><th class="num">Diff kg</th><th class="num">% of plan</th>'
     + '<th class="num">Qty cause</th><th class="num">Weight cause</th><th class="num">Process cause</th>'
     + '<th class="num">Plan mg</th><th class="num">Actual mg</th>'
     + '<th class="num" style="border-left:2px solid var(--b2)">TT plan</th><th class="num">TT issued</th><th class="num">Over-fill</th><th class="num">Under-fill</th><th class="num">Hold &lt;'+d.minHoldHours+'h</th></tr></thead><tbody>';
@@ -5811,7 +6172,7 @@ function renderMaterialRecon(rows, d){
 // the working behind one row — yield components + the three-cause reconciliation + TT variance
 async function mrOpen(bn){
   ttModalOpen('Batch '+esc(bn)+' &mdash; yield working &amp; material reconciliation',
-    '<div id="mrY"><div class="empty">Working out the yield&hellip;</div></div><div id="mrR" style="margin-top:14px"></div>');
+    '<div id="mrY"><div class="empty">Working out the yield&hellip;</div></div><div id="mrM" style="margin-top:14px"></div><div id="mrR" style="margin-top:14px"></div>');   // v58M item 2: + movements section
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '1080px';
   const yEl = document.getElementById('mrY');
   try{
@@ -5832,16 +6193,64 @@ async function mrOpen(bn){
         + '<tr><td>Colour + TiO&#8322;</td><td class="num">'+n1(D.colourKg)+'</td></tr>'
         + '<tr><td>FG remelt</td><td class="num">'+n1(D.fgRemeltKg)+'</td></tr>'
         + '<tr class="sumrow"><td>Fresh material</td><td class="num">'+n1(D.freshMaterialKg)+'</td></tr>'
-        + '<tr><td>+ Cutting &amp; salvage charged into the tanks (Ledger A consumption)</td><td class="num">'+n1(D.consumedKg)+'</td></tr>'
+        + '<tr><td>+ Cutting &amp; salvage charged into the tanks (Ledger A'+(Number(D.legacyDrawKg)>0.005?' + Ledger B '+n1(D.legacyDrawKg):'')+')</td><td class="num">'+n1(D.reuseInKg!=null?D.reuseInKg:D.consumedKg)+'</td></tr>'
         + '<tr><td>&minus; Cutting &amp; salvage generated by this batch (DPR cuttings, GPR entries)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.generatedManualKg)+'</td></tr>'
         + '<tr class="sumrow"><td>= Net recirculation</td><td class="num">'+(D.netRecirc>=0?'+':'')+n1(D.netRecirc)+'</td></tr>'
         + '<tr><td>&minus; AIM / printing salvage recovered (Tracking, '+n2(D.salvageLakhs)+' L × '+n1(y.avgMg)+' mg)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.salvageRecoveredKg)+'</td></tr>'
         + (Number(D.expectedSalvageKg)>0.005 ? '<tr><td>&minus; Salvage the WIP is expected to return ('+n2(D.expectedSalvageLakhs)+' L = WIP × (100 − A) %, × '+n1(y.avgMg)+' mg)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.expectedSalvageKg)+'</td></tr>' : '')   /* v58K */
+        + (Number(D.returnUsedKg)>0.005 ? '<tr><td>+ Return solution drawn into the tanks ('+n1(D.returnUsedL)+' L at the lots\' concentration)</td><td class="num">+'+n1(D.returnUsedKg)+'</td></tr>' : '')   /* v58M item 8 */
+        + (Number(D.returnRecoveredKg)>0.005 ? '<tr><td>&minus; Return solution recovered at batch close ('+n1(D.returnRecoveredL)+' L at this batch\'s concentration)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.returnRecoveredKg)+'</td></tr>' : '')   /* v58M item 8 */
         + '<tr class="sumrow"><td>Net material</td><td class="num"><b>'+n1(D.total)+'</b></td></tr></tbody></table>'
-        + '<div class="hbnote" style="margin-top:6px">Total charged into the tanks (all material): '+n1(D.totalChargedKg)+' kg. Recovery credited is not recovery used: material recovered but not reused reduces the denominator; recovered and reused nets to neutral.</div></div></div>';
+        + '<div class="hbnote" style="margin-top:6px"><b>Net material charged '+n1(D.total)+' kg</b> (gelatine-equivalent '+n1(D.gelatineEquivalentKg)+' kg + colour '+n1(D.colourKg)+' kg)'+(Number(D.totalChargedKg)>0?' · gross issued into the tanks '+n1(D.totalChargedKg)+' kg before netting':'')+'. Cutting / salvage is counted once: what the batch generated came out of the virgin gelatine already in this figure, so only the net of consumed over generated stays in. Return solution follows the same rule (used in, recovered out).</div></div></div>';
     }
   }catch(e){ yEl.innerHTML = '<div class="empty">Could not compute the yield.</div>'; }
+  // v58M item 2: how the batch's cutting / salvage was generated and consumed, and from whose stock
+  const mEl = document.getElementById('mrM'); if(mEl){ mEl.innerHTML = '<div class="fgroup-title">Cutting, salvage &amp; return solution &mdash; movements of this batch</div><div id="mrMin"><div class="empty">Loading the movements&hellip;</div></div>'; loadBatchMovements(bn, document.getElementById('mrMin')); }
   const rEl = document.getElementById('mrR'); if(rEl){ rEl.innerHTML = '<div class="fgroup-title">Planned vs actual &mdash; reconciliation</div><div id="mrRin"></div>'; loadReconcile(bn, document.getElementById('mrRin')); }
+}
+// ═══ v58M item 2 (Ishan, 19 Oct): the batch's material MOVEMENTS — generated (how, status), consumed
+// into its tanks (own stock / another batch's / legacy — flagged), drawn by other batches, and return
+// solution recovered / used. Own-stock draws beyond own generation are flagged as excess.
+async function loadBatchMovements(bn, target){
+  const out = target || document.getElementById('mrMin'); if(!out) return;
+  let d = null; try{ d = await api('/api/gpr/batch-movements/'+encodeURIComponent(bn)); }catch(e){}
+  if(!d || !d.ok){ out.innerHTML = '<div class="empty">'+esc((d&&d.error)||'Could not load the movements')+'</div>'; return; }
+  const S = d.summary||{}, n1 = v => fmt(Number(v||0),1), n2 = v => fmt(Number(v||0),2);
+  const SRC = { dpr:'DPR cuttings', tracking:'Tracking salvage', manual:'GPR entry', estimate:'estimate (voided)', return:'return stock', legacy:'Ledger B' };
+  const acc = a => esc(ACCOUNTS[a]||a||'');
+  let h = '<div class="kgrid">'
+    + kpi('Generated (accepted)', n1(S.generatedAccepted)+' kg', 'green', (S.generatedPending>0.005?'+'+n1(S.generatedPending)+' kg pending':'')+(S.generatedVoided>0.005?(S.generatedPending>0.005?' · ':'')+n1(S.generatedVoided)+' kg voided':''))
+    + kpi('Consumed into its tanks', n1(S.consumedOwn+S.consumedOther+S.consumedLegacy)+' kg', '', 'own stock '+n1(S.consumedOwn)+(S.consumedOther>0.005?' · other batches '+n1(S.consumedOther):'')+(S.consumedLegacy>0.005?' · legacy '+n1(S.consumedLegacy):''))
+    + kpi('Drawn by other batches', n1(S.consumedByOthers)+' kg', S.consumedByOthers>0.005?'amber':'', 'from this batch\'s stock')
+    + kpi('Return solution', n1((S.returnSolution||{}).recoveredL)+' L recovered', 'teal', 'used '+n1((S.returnSolution||{}).usedL)+' L'+((S.returnSolution||{}).drawnByOthersL>0.005?' · drawn by others '+n1(S.returnSolution.drawnByOthersL)+' L':''))
+    + '</div>';
+  const ex = Object.keys(d.excess||{});
+  if(ex.length) h += '<div class="banner warn"><b>Consumed from own stock beyond what this batch generated.</b><span>'+ex.map(a=>acc(a)+': drew '+n1(d.excess[a].consumedOwn)+' kg against '+n1(d.excess[a].generated)+' kg generated (+'+n1(d.excess[a].excess)+' kg)').join(' · ')+' &mdash; the stock came from another batch\'s or earlier material; check the source batch on the lines below.</span></div>';
+  if(S.consumedOther>0.005) h += '<div class="banner info" style="margin-top:4px"><b>'+n1(S.consumedOther)+' kg was drawn from other batches\' stock</b><span>(marked FROM OTHER BATCH below). It counts in this batch\'s material; the generating batch keeps its own credit.</span></div>';
+  const stateBadge = r => r.state==='voided' ? ' <span class="badge">VOID</span>' : (r.state==='pending' ? ' <span class="badge" style="background:var(--amber-l);color:var(--amber)">PENDING</span>' : '');
+  const fromBadge = r => r.from==='other' ? ' <span class="badge warn">FROM OTHER BATCH</span>' : (r.from==='legacy' ? ' <span class="badge planned">LEGACY STOCK</span>' : '');
+  h += '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:8px;font-size:11px">Generated by this batch ('+(d.generated||[]).length+')</div>';
+  if(!(d.generated||[]).length) h += '<div class="empty" style="padding:8px">Nothing generated yet.</div>';
+  else { h += '<div class="tswrap" style="max-height:260px"><table class="gtable"><thead><tr><th>Day</th><th>Account</th><th>Side</th><th>How</th><th>MC</th><th class="num">kg</th><th>Status</th></tr></thead><tbody>';
+    (d.generated||[]).forEach(r=>{ h += '<tr'+(r.state==='voided'?' style="color:var(--t3);text-decoration:line-through"':(r.state==='pending'?' style="background:var(--amber-l)"':''))+'><td class="mono">'+esc(_dm(r.production_day)||'')+'</td><td>'+acc(r.account)+'</td><td>'+esc(String(r.side||'').toUpperCase()||'—')+'</td><td style="font-size:11px">'+esc(SRC[r.source]||r.source||'')+(r.movement_type==='correction'?' (correction)':'')+'</td><td>'+esc(r.machine_id||'—')+'</td><td class="num">'+n2(r.qty_kg)+'</td><td style="font-size:11px">'+esc(r.state)+stateBadge(r)+(r.accepted_by?'<div style="color:var(--t3)">'+esc(r.accepted_by)+'</div>':'')+'</td></tr>'; });
+    h += '</tbody></table></div>'; }
+  h += '</div><div><div class="fgroup-title" style="margin-top:8px;font-size:11px">Consumed into this batch\'s tanks ('+(d.consumedInto||[]).length+')</div>';
+  if(!(d.consumedInto||[]).length) h += '<div class="empty" style="padding:8px">No cutting / salvage drawn into its tanks.</div>';
+  else { h += '<div class="tswrap" style="max-height:260px"><table class="gtable"><thead><tr><th>Day</th><th>TT</th><th>Account</th><th>From batch</th><th>Side · code</th><th class="num">kg</th></tr></thead><tbody>';
+    (d.consumedInto||[]).forEach(r=>{ h += '<tr'+(r.from==='other'?' style="background:var(--amber-l)"':'')+'><td class="mono">'+esc(_dm(r.production_day)||'')+'</td><td class="mono">'+(r.tt_id?'#'+r.tt_id:'—')+'</td><td>'+esc(r.account_label||ACCOUNTS[r.account]||r.account||'')+'</td><td class="mono">'+esc(r.source_batch||(r.from==='legacy'?'Ledger B':bn))+fromBadge(r)+'</td><td class="mono" style="font-size:11px">'+esc(String(r.side||'').toUpperCase())+(r.colour_code?' '+esc(r.colour_code):'')+'</td><td class="num">'+n2(r.qty_kg)+'</td></tr>'; });
+    h += '</tbody></table></div>'; }
+  h += '</div></div>';
+  if((d.consumedByOthers||[]).length){
+    h += '<div class="fgroup-title" style="margin-top:8px;font-size:11px">Drawn by other batches from this batch\'s stock ('+d.consumedByOthers.length+')</div><div class="tswrap" style="max-height:200px"><table class="gtable"><thead><tr><th>Day</th><th>Into batch</th><th>TT</th><th>Account</th><th>Side · code</th><th class="num">kg</th></tr></thead><tbody>';
+    d.consumedByOthers.forEach(r=>{ h += '<tr><td class="mono">'+esc(_dm(r.production_day)||'')+'</td><td class="mono"><b>'+esc(r.batch_number)+'</b></td><td class="mono">'+(r.tt_id?'#'+r.tt_id:'—')+'</td><td>'+acc(r.account)+'</td><td class="mono" style="font-size:11px">'+esc(String(r.side||'').toUpperCase())+(r.colour_code?' '+esc(r.colour_code):'')+'</td><td class="num">'+n2(r.qty_kg)+'</td></tr>'; });
+    h += '</tbody></table></div>';
+  }
+  if((d.returnSolution||[]).length){
+    h += '<div class="fgroup-title" style="margin-top:8px;font-size:11px">Return solution ('+d.returnSolution.length+')</div><div class="tswrap" style="max-height:200px"><table class="gtable"><thead><tr><th>Day</th><th>Movement</th><th>Lot</th><th>Into batch / TT</th><th class="num">L</th><th class="num">kg/L</th><th class="num">kg</th><th>Note</th></tr></thead><tbody>';
+    d.returnSolution.forEach(r=>{ const isCr = r.movement_type!=='consumption'; h += '<tr'+(r.from==='other'?' style="background:var(--amber-l)"':'')+'><td class="mono">'+esc(_dm(r.production_day)||'')+'</td><td><span class="badge '+(isCr?'inprod':'warn')+'">'+esc(r.direction==='drawn-by-other'?'DRAWN BY '+(r.batch_number||''):(isCr?'RECOVERED':'USED'))+'</span>'+(r.from==='other'?' <span class="badge warn">FROM OTHER BATCH</span>':'')+'</td><td class="mono">'+esc((isCr?r.batch_number:(r.source_batch||r.batch_number))||'')+' '+esc(String(r.side||'').toUpperCase())+'</td><td class="mono" style="font-size:11px">'+(isCr?'—':esc(r.batch_number||'')+(r.tt_id?' · TT #'+r.tt_id:''))+'</td><td class="num">'+n1(r.litres)+'</td><td class="num">'+(r.conc_kg_per_l!=null?Number(r.conc_kg_per_l).toFixed(3):'—')+'</td><td class="num">'+n1(r.virgin_kg)+'</td><td style="font-size:11px;white-space:normal">'+esc(r.note||'')+'</td></tr>'; });
+    h += '</tbody></table></div>';
+  }
+  out.innerHTML = h;
 }
 // v58L item 4: Report-E style export — Summary by machine + Batches (grouped, chronological) sheets
 function _mrVisibleRows(){ const d = window._MR; const k = (document.getElementById('mr_exc')||{}).value || ''; return ((d&&d.rows)||[]).filter(r=>_mrException(r,k)); }
@@ -5851,7 +6260,7 @@ function exportMaterialRecon(){
   const ctx = [val('mr_from')&&(_dm(val('mr_from'))+' → '+_dm(val('mr_to'))), val('mr_machine')&&('machine '+val('mr_machine')), (document.getElementById('mr_floor')||{}).value&&('floor '+FLOOR_LABELS[document.getElementById('mr_floor').value]), (document.getElementById('mr_exc')||{}).value&&('exception: '+document.getElementById('mr_exc').selectedOptions[0].textContent)].filter(Boolean).join(' · ');
   const groups = _mrGrouped(rows);
   const s1 = [['GPR — Material reconciliation by batch'], [ctx], [],
-    ['Machine','Floor','Batches','Yield %','vs target','Packable output kg','Net material kg','Planned kg','Charged kg','Difference kg','% of plan','Qty cause kg','Weight cause kg','Process cause kg','TT planned','TT issued','Over-fill tanks','Under-fill tanks','Holds under min']];
+    ['Machine','Floor','Batches','Yield %','vs target','Packable output kg','Net material kg','Planned kg','Net charged kg','Difference kg','% of plan','Qty cause kg','Weight cause kg','Process cause kg','TT planned','TT issued','Over-fill tanks','Under-fill tanks','Holds under min']];
   const T = { n:0,out:0,net:0,plan:0,used:0,q:0,w:0,p:0,tp:0,ti:0,of:0,uf:0,sh:0 };
   groups.forEach(g=>{
     const S = { n:g.rows.length }; ['outputKg','netMaterialKg','plannedGel','usedGel','qtyEffect','weightEffect','processVariance','ttPlanned','ttIssued','overFillTanks','underFillTanks','shortHold'].forEach(k=>{ S[k] = g.rows.reduce((a,r)=>a+Number(r[k]||0),0); });
@@ -5862,7 +6271,7 @@ function exportMaterialRecon(){
   s1.push(['TOTAL','',T.n, T.net>0?+(T.out/T.net*100).toFixed(2):'', '', +T.out.toFixed(1), +T.net.toFixed(1), +T.plan.toFixed(1), +T.used.toFixed(1), +(T.used-T.plan).toFixed(1), T.plan>0?+((T.used-T.plan)/T.plan*100).toFixed(1):'', +T.q.toFixed(1), +T.w.toFixed(1), +T.p.toFixed(1), T.tp, T.ti, T.of, T.uf, T.sh]);
   const cols = [['machineId','Machine'],['floor','Floor'],['batch','Batch'],['day','Start'],['status','Status'],['customer','Customer'],['pcCode','PC'],['size','Size'],
     ['yieldPct','Yield %'],['yieldVariance','vs target'],['outputKg','Packable output kg'],['netMaterialKg','Net material kg'],['freshMaterialKg','Fresh material kg'],['consumedKg','Reuse charged kg'],['generatedManualKg','Generated kg'],['salvageRecoveredKg','Salvage recovered kg'],['packedLakhs','Packed L'],['wipLakhs','WIP L'],['yieldAvgMg','Avg mg (labels)'],
-    ['plannedGel','Planned kg'],['usedGel','Charged kg'],['totalDifference','Difference kg'],['pctOfPlan','% of plan'],['qtyEffect','Cause: quantity'],['weightEffect','Cause: weight'],['processVariance','Cause: process'],
+    ['plannedGel','Planned kg'],['usedGel','Net charged kg'],['totalDifference','Difference kg'],['pctOfPlan','% of plan'],['qtyEffect','Cause: quantity'],['weightEffect','Cause: weight'],['processVariance','Cause: process'],
     ['grossPlannedLacs','Gross planned (lacs)'],['grossActualLacs','Gross actual (lacs)'],['plannedAvgMg','Planned mg'],['actualAvgMg','Actual mg'],['aimPct','A-grade %'],
     ['capPlanned','Cap TT plan'],['capIssued','Cap TT issued'],['bodyPlanned','Body TT plan'],['bodyIssued','Body TT issued'],['ttVariance','TT variance'],['overFillTanks','Over-fill tanks'],['overFillL','Over-fill L'],['underFillTanks','Under-fill tanks'],['underFillL','Under-fill L'],['avgHoldCap','Avg hold cap (h)'],['avgHoldBody','Avg hold body (h)'],['shortHold','Holds under min'],['anchored','Anchored plan']];
   const s2 = [cols.map(c=>c[1])];
@@ -5883,7 +6292,7 @@ function openMaterialReconTab(){
   groups.forEach(g=>{
     const o = g.rows.reduce((a,r)=>a+Number(r.outputKg||0),0), n = g.rows.reduce((a,r)=>a+Number(r.netMaterialKg||0),0), y = n>0?o/n*100:null;
     body += '<h2>MACHINE '+esc(g.mc)+' · '+esc(FLOOR_LABELS[g.floor]||g.floor||'')+' <small>'+g.rows.length+' batches · yield to date <b>'+(y!=null?fmt(y,2)+'%':'—')+'</b> · planned '+fmt(g.rows.reduce((a,r)=>a+Number(r.plannedGel||0),0),0)+' kg · charged '+fmt(g.rows.reduce((a,r)=>a+Number(r.usedGel||0),0),0)+' kg</small></h2>';
-    body += '<table><thead><tr><th>Batch</th><th>Start</th><th>Status</th><th>PC</th><th>Customer</th><th class="n">Yield %</th><th class="n">vs target</th><th class="n">Output kg</th><th class="n">Net material kg</th><th class="n">Packed L</th><th class="n">WIP L</th><th class="n">Planned kg</th><th class="n">Charged kg</th><th class="n">Diff kg</th><th class="n">% of plan</th><th class="n">Qty</th><th class="n">Weight</th><th class="n">Process</th><th class="n">Plan mg</th><th class="n">Actual mg</th><th class="n">TT plan</th><th class="n">TT issued</th><th class="n">Over-fill</th><th class="n">Under-fill</th><th class="n">Hold &lt;min</th></tr></thead><tbody>';
+    body += '<table><thead><tr><th>Batch</th><th>Start</th><th>Status</th><th>PC</th><th>Customer</th><th class="n">Yield %</th><th class="n">vs target</th><th class="n">Output kg</th><th class="n">Net material kg</th><th class="n">Packed L</th><th class="n">WIP L</th><th class="n">Planned kg</th><th class="n">Net charged kg</th><th class="n">Diff kg</th><th class="n">% of plan</th><th class="n">Qty</th><th class="n">Weight</th><th class="n">Process</th><th class="n">Plan mg</th><th class="n">Actual mg</th><th class="n">TT plan</th><th class="n">TT issued</th><th class="n">Over-fill</th><th class="n">Under-fill</th><th class="n">Hold &lt;min</th></tr></thead><tbody>';
     g.rows.forEach(r=>{ body += '<tr><td><b>'+esc(r.batch)+'</b>'+(r.anchored?'':' *')+'</td><td>'+esc(_dm(r.day)||'')+'</td><td>'+esc((r.status||'').toUpperCase())+'</td><td>'+esc(r.pcCode||'')+'</td><td>'+esc(r.customer||'')+'</td>'
       + '<td class="n">'+(r.yieldPct!=null?fmt(r.yieldPct,2)+'%':'—')+'</td><td class="n">'+(r.yieldVariance!=null?sign(r.yieldVariance):'—')+'</td><td class="n">'+(r.outputKg!=null?fmt(r.outputKg,0):'—')+'</td><td class="n">'+(r.netMaterialKg!=null?fmt(r.netMaterialKg,0):'—')+'</td><td class="n">'+fmt(r.packedLakhs,2)+'</td><td class="n">'+fmt(r.wipLakhs,2)+'</td>'
       + '<td class="n">'+fmt(r.plannedGel,1)+'</td><td class="n">'+fmt(r.usedGel,1)+'</td><td class="n">'+sign(r.totalDifference)+'</td><td class="n">'+(r.pctOfPlan==null?'—':fmt(r.pctOfPlan,1)+'%')+'</td><td class="n">'+sign(r.qtyEffect)+'</td><td class="n">'+sign(r.weightEffect)+'</td><td class="n">'+sign(r.processVariance)+'</td><td class="n">'+fmt(r.plannedAvgMg,1)+'</td><td class="n">'+fmt(r.actualAvgMg,1)+'</td>'
@@ -5907,7 +6316,7 @@ function exportMaterialReconFlat(){
       {key:'yieldPct',label:'Yield %',w:10,num:true},{key:'yieldVariance',label:'vs target',w:10,num:true},{key:'outputKg',label:'Output kg',w:11,num:true},{key:'netMaterialKg',label:'Net material kg',w:14,num:true},
       {key:'freshMaterialKg',label:'Fresh material kg',w:15,num:true},{key:'consumedKg',label:'Reuse charged kg',w:15,num:true},{key:'generatedManualKg',label:'Generated kg',w:13,num:true},{key:'salvageRecoveredKg',label:'Salvage recovered kg',w:18,num:true},
       {key:'packedLakhs',label:'Packed L',w:10,num:true},{key:'wipLakhs',label:'WIP L',w:9,num:true},{key:'yieldAvgMg',label:'Avg mg (labels)',w:13,num:true},
-      {key:'plannedGel',label:'Planned kg',w:12,num:true},{key:'usedGel',label:'Charged kg',w:12,num:true},
+      {key:'plannedGel',label:'Planned kg',w:12,num:true},{key:'usedGel',label:'Net charged kg',w:12,num:true},
       {key:'totalDifference',label:'Difference kg',w:13,num:true},{key:'pctOfPlan',label:'% of plan',w:10,num:true},
       {key:'qtyEffect',label:'Cause: quantity',w:15,num:true},{key:'weightEffect',label:'Cause: weight',w:14,num:true},
       {key:'processVariance',label:'Cause: process',w:14,num:true},
