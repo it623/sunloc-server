@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v58T</title>
+<title>GPR · build v58U</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -420,8 +420,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v58T</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58T</div>
+    <h1>GPR<span class="vpill">v58U</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v58U</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -441,7 +441,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v58T</span></div>
+  <div class="nbrand">GPR<span class="vpill">v58U</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -6227,11 +6227,12 @@ function renderMaterialRecon(rows, d){
 // the working behind one row — yield components + the three-cause reconciliation + TT variance
 async function mrOpen(bn){
   ttModalOpen('Batch '+esc(bn)+' &mdash; yield working &amp; material reconciliation',
-    '<div id="mrY"><div class="empty">Working out the yield&hellip;</div></div><div id="mrM" style="margin-top:14px"></div><div id="mrR" style="margin-top:14px"></div>');   // v58M item 2: + movements section
+    _ywToolbar('B|'+bn)+'<div id="mrY"><div class="empty">Working out the yield&hellip;</div></div><div id="mrM" style="margin-top:14px"></div><div id="mrR" style="margin-top:14px"></div>');   // v58M item 2: + movements section; v58U: export / print
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '1080px';
   const yEl = document.getElementById('mrY');
   try{
     const y = await api('/api/gpr/yield/'+encodeURIComponent(bn));
+    (window._MVD = window._MVD || {})['B|'+bn] = Object.assign((window._MVD||{})['B|'+bn]||{}, { yield: y.ok ? Object.assign({ batch: bn }, y) : null });   // v58U: for export
     if(!y.ok){ yEl.innerHTML = '<div class="empty">'+esc(y.error||'Could not compute the yield')+'</div>'; }
     else {
       const N = y.numerator, D = y.denominator, n1 = v => fmt(Number(v||0),1), n2 = v => fmt(Number(v||0),2);
@@ -6279,9 +6280,9 @@ function _mvToggle(gid){
   const c = document.getElementById('mvc_'+gid); if(c) c.innerHTML = open ? '&#9662;' : '&#9656;';
 }
 // groups: [{ key, cells:[html…], kg, n, sub:[{cells:[html…]}] }] ; head: [labels…] (last = kg) ; subHead: [labels…]
-function _mvGroupTable(tid, head, subHead, groups, emptyText, extraTotals){
+function _mvGroupTable(tid, head, subHead, groups, emptyText, extraTotals, nWord){
   if(!groups.length) return '<div class="empty" style="padding:8px">'+emptyText+'</div>';
-  const n2 = v => fmt(Number(v||0),2);
+  const n2 = v => fmt(Number(v||0),2), nw = (k) => nWord ? (k+' '+nWord[k===1?0:1]) : (k+' entr'+(k===1?'y':'ies'));
   let h = '<div class="tswrap" style="max-height:300px"><table class="gtable"><thead><tr><th style="width:18px"></th>'+head.map((x,i)=>'<th'+(i===head.length-1?' class="num"':'')+'>'+x+'</th>').join('')+'</tr></thead><tbody>';
   let tot = 0, totN = 0;
   groups.forEach((g,gi)=>{
@@ -6293,13 +6294,21 @@ function _mvGroupTable(tid, head, subHead, groups, emptyText, extraTotals){
       + g.sub.map(r=>'<tr'+(r.style?' style="'+r.style+'"':'')+'>'+r.cells.map((c,i)=>'<td'+(i===r.cells.length-1?' class="num"':'')+'>'+c+'</td>').join('')+'</tr>').join('')
       + '</tbody></table></td></tr>';
   });
-  h += '<tr style="background:var(--s3);font-weight:700"><td></td><td colspan="'+(head.length-2)+'">TOTAL &mdash; '+groups.length+' group'+(groups.length===1?'':'s')+'</td><td>'+totN+' entr'+(totN===1?'y':'ies')+'</td><td class="num">'+n2(tot)+(extraTotals||'')+'</td></tr>';
+  h += '<tr style="background:var(--s3);font-weight:700"><td></td><td colspan="'+(head.length-2)+'">TOTAL &mdash; '+groups.length+' group'+(groups.length===1?'':'s')+'</td><td>'+nw(totN)+'</td><td class="num">'+n2(tot)+(extraTotals||'')+'</td></tr>';
   return h + '</tbody></table></div>';
 }
 async function loadBatchMovements(bn, target){
   const out = target || document.getElementById('mrMin'); if(!out) return;
   let d = null; try{ d = await api('/api/gpr/batch-movements/'+encodeURIComponent(bn)); }catch(e){}
   if(!d || !d.ok){ out.innerHTML = '<div class="empty">'+esc((d&&d.error)||'Could not load the movements')+'</div>'; return; }
+  (window._MVD = window._MVD || {})['B|'+bn] = Object.assign((window._MVD||{})['B|'+bn]||{}, { mv: d });   // v58U: kept for export
+  out.innerHTML = _mvRender(d, { bn, scope: 'this batch', own: 'own batch', tanks: "this batch's tanks" });
+}
+// v58U (Ishan, 21 Oct): ONE renderer for the movements picture — the batch modal and the floor-period modal
+// (day / date range / month) use it unchanged; ctx says whose stock is being read. The floor variant adds a
+// per-batch reconciliation (how much of each batch's generation stayed in the batch vs went to other batches).
+function _mvRender(d, ctx){
+  const bn = ctx.bn || '';
   window._MVOPEN = {};
   const S = d.summary||{}, R = d.recon||{}, n1 = v => fmt(Number(v||0),1), n2 = v => fmt(Number(v||0),2);
   const SRC = { dpr:'DPR cuttings', tracking:'Tracking salvage', manual:'GPR entry', estimate:'estimate (voided)', return:'return stock', legacy:'Ledger B' };
@@ -6311,13 +6320,13 @@ async function loadBatchMovements(bn, target){
   const kpiH = (label, v, cls, subHtml) => '<div class="kpi"><div class="kpi-label">'+esc(label)+'</div><div class="kpi-val '+(cls||'')+'">'+esc(v)+'</div>'+(subHtml?'<div class="kpi-sub">'+subHtml+'</div>':'')+'</div>';
   const consumedTotal = Number(S.consumedOwn||0)+fromOther+Number(S.consumedLegacy||0);
   let h = '<div class="kgrid mv5">'
-    + kpiH('Generated by this batch', n1(S.generatedAccepted)+' kg', 'green',
+    + kpiH('Generated by '+ctx.scope, n1(S.generatedAccepted)+' kg', 'green',
         'cuttings &amp; GPR entries <b>'+n1(S.generatedOwnAccepted)+'</b> · Tracking salvage <b>'+n1(S.generatedTrackingAccepted)+'</b>'
         +(S.generatedPending>0.005?' · <span style="color:var(--amber)">pending '+n1(S.generatedPending)+'</span>':'')+(S.generatedVoided>0.005?' · <span class="dim">voided '+n1(S.generatedVoided)+'</span>':''))
     + kpiH('Consumed into its tanks', n1(consumedTotal)+' kg', '',
-        'from own batch <b>'+n1(S.consumedOwn)+'</b><br>from other batches <b'+(fromOther>0.005?' style="color:var(--amber)"':'')+'>'+n1(fromOther)+'</b>'
+        'from '+ctx.own+' <b>'+n1(S.consumedOwn)+'</b><br>from other batches <b'+(fromOther>0.005?' style="color:var(--amber)"':'')+'>'+n1(fromOther)+'</b>'
         +(fromOther>0.005?' <span class="dim">('+list(S.fromOtherByBatch)+')</span>':'')+(S.consumedLegacy>0.005?'<br>legacy stock <b>'+n1(S.consumedLegacy)+'</b>':''))
-    + kpiH('Drawn TO other batches', n1(byOthers)+' kg', byOthers>0.005?'amber':'', byOthers>0.005 ? '<span class="dim">'+list(S.byOthersByBatch)+'</span>' : '<span class="dim">nothing drawn from this batch\'s stock</span>')
+    + kpiH('Drawn TO other batches', n1(byOthers)+' kg', byOthers>0.005?'amber':'', byOthers>0.005 ? '<span class="dim">'+list(S.byOthersByBatch)+'</span>' : '<span class="dim">nothing drawn from '+esc(ctx.scope)+'\'s stock</span>')
     + kpiH('Reconciliation — own stock', n1(R.closing)+' kg', R.closing<-0.005?'red':(R.closing>0.005?'teal':''),
         (R.closing<-0.005?'<b style="color:var(--red)">over-drawn</b> · ':'<b>unused</b> · ')+'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span class="dim">· +'+n1(R.pending)+' pending</span>':''))
     + kpiH('Return solution', n1((S.returnSolution||{}).recoveredL)+' L', 'teal',
@@ -6328,6 +6337,14 @@ async function loadBatchMovements(bn, target){
       + R.byAccount.map(a=>'<tr><td>'+esc(a.account_label)+'</td><td class="num">'+n2(a.generated)+'</td><td class="num">'+n2(a.consumedOwn)+'</td><td class="num">'+n2(a.drawnByOthers)+'</td><td class="num" style="color:'+(a.closing<-0.005?'var(--red)':'var(--t1)')+'"><b>'+n2(a.closing)+'</b></td></tr>').join('')
       + '</tbody></table>';
   }
+  // v58U: floor view — per-batch reconciliation of the floor's generation (summarised, click for where it went)
+  if((R.byBatch||[]).length){
+    const bG = R.byBatch.map(b=>({ cells: ['<span class="mono"><b>'+esc(b.batch)+'</b></span>', n2(b.generated)+(b.pending>0.005?' <span style="color:var(--amber);font-size:10px">+'+n2(b.pending)+' pending</span>':''), n2(b.consumedOwn), n2(b.drawnByOthers), '<b style="color:'+(b.closing<-0.005?'var(--red)':(b.closing>0.005?'var(--teal)':'var(--t3)'))+'">'+n2(b.closing)+'</b>'],
+      kg: b.closing, n: 1,
+      sub: Object.entries(b.drawnInto||{}).sort((x,y)=>y[1]-x[1]).map(([into,kg])=>({ cells: ['drawn into <span class="mono"><b>'+esc(into)+'</b></span>', n2(kg)] })) }));
+    h += '<div class="fgroup-title" style="margin-top:4px;font-size:11px">Generation by batch &mdash; stayed in the batch vs went to other batches ('+R.byBatch.length+' batch'+(R.byBatch.length===1?'':'es')+')</div>'
+      + _mvGroupTable('b', ['Batch','Generated kg','Used in same batch','Used by other batches','Unused / closing'], ['Where it went','kg'], bG, '', '', ['batch','batches']);
+  }
   const ex = Object.keys(d.excess||{});
   if(ex.length) h += '<div class="banner warn"><b>Consumed from own stock beyond what this batch generated.</b><span>'+ex.map(a=>acc(a)+': drew '+n1(d.excess[a].consumedOwn)+' kg against '+n1(d.excess[a].generated)+' kg generated (+'+n1(d.excess[a].excess)+' kg)').join(' · ')+' &mdash; the stock came from another batch\'s or earlier material; check the source batch below.</span></div>';
   // ── Generated: account · side · how, with the status split ──
@@ -6337,18 +6354,18 @@ async function loadBatchMovements(bn, target){
     cells: [acc(g.account), sideTag(g.side), esc(SRC[g.how]||g.how||''), g.n+' entr'+(g.n===1?'y':'ies'), n2(g.acc)+(g.pend>0.005?' <span style="color:var(--amber);font-size:10px">+'+n2(g.pend)+' pending</span>':'')+(g.void>0.005?' <span style="color:var(--t3);font-size:10px">'+n2(g.void)+' voided</span>':'')],
     kg: g.acc, n: g.n,
     sub: g.rows.sort((a,b)=>String(a.production_day||'').localeCompare(String(b.production_day||''))).map(r=>({ style: r.state==='voided'?'color:var(--t3);text-decoration:line-through':(r.state==='pending'?'background:var(--amber-l)':''),
-      cells: [esc(_dm(r.production_day)||''), esc(r.machine_id||'—'), esc(r.state)+(r.accepted_by?' <span style="color:var(--t3)">'+esc(r.accepted_by)+'</span>':''), esc(r.note||''), n2(r.qty_kg)] })) }));
+      cells: [esc(_dm(r.production_day)||''), (bn ? '' : '<span class="mono">'+esc(r.batch_number||'')+'</span> ')+esc(r.machine_id||'—'), esc(r.state)+(r.accepted_by?' <span style="color:var(--t3)">'+esc(r.accepted_by)+'</span>':''), esc(r.note||''), n2(r.qty_kg)] })) }));
   // ── Consumed into this batch's tanks: account · from batch · side/code ──
-  const cG = {}; (d.consumedInto||[]).forEach(r=>{ const from = r.from==='legacy' ? 'Ledger B' : (r.source_batch||bn); const k=[r.account,from,r.side||'',r.colour_code||''].join('|');
+  const cG = {}; (d.consumedInto||[]).forEach(r=>{ const from = r.from==='legacy' ? 'Ledger B' : (r.source_batch||bn||String(r.batch_number||'').toUpperCase()); const k=[r.account,from,r.side||'',r.colour_code||''].join('|');
     const g = cG[k] = cG[k]||{ account:r.account, label:r.account_label||ACCOUNTS[r.account]||r.account, from, fromKind:r.from, side:r.side||'', code:r.colour_code||'', kg:0, n:0, rows:[] }; g.kg+=Number(r.qty_kg||0); g.n++; g.rows.push(r); });
   const fromBadge = k => k==='other' ? ' <span class="badge warn">FROM OTHER BATCH</span>' : (k==='legacy' ? ' <span class="badge planned">LEGACY STOCK</span>' : '');
   const conGroups = Object.values(cG).sort((a,b)=>(a.fromKind==='own'?0:1)-(b.fromKind==='own'?0:1)||String(a.from).localeCompare(b.from)||String(a.account).localeCompare(b.account)).map(g=>({
     cells: [esc(g.label), '<span class="mono">'+esc(g.from)+'</span>'+fromBadge(g.fromKind), sideTag(g.side)+(g.code?' <span class="mono">'+esc(g.code)+'</span>':''), g.n+' entr'+(g.n===1?'y':'ies'), n2(g.kg)],
     kg: g.kg, n: g.n,
-    sub: g.rows.sort((a,b)=>String(a.production_day||'').localeCompare(String(b.production_day||''))).map(r=>({ cells: [esc(_dm(r.production_day)||''), r.tt_id?'#'+r.tt_id:'—', esc(r.note||''), n2(r.qty_kg)] })) }));
-  h += '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:8px;font-size:11px">Generated by this batch &mdash; '+(d.generated||[]).length+' entries, click a row for the detail</div>'
+    sub: g.rows.sort((a,b)=>String(a.production_day||'').localeCompare(String(b.production_day||''))).map(r=>({ cells: [esc(_dm(r.production_day)||''), (bn ? '' : '<span class="mono">'+esc(String(r.batch_number||'').toUpperCase())+'</span> ')+(r.tt_id?'#'+r.tt_id:'—'), esc(r.note||''), n2(r.qty_kg)] })) }));
+  h += '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:8px;font-size:11px">Generated by '+esc(ctx.scope)+' &mdash; '+(d.generated||[]).length+' entries, click a row for the detail</div>'
     + _mvGroupTable('g', ['Account','Side','How','Entries','kg'], ['Day','MC','Status','Note','kg'], genGroups, 'Nothing generated yet.')
-    + '</div><div><div class="fgroup-title" style="margin-top:8px;font-size:11px">Consumed into this batch\'s tanks &mdash; '+(d.consumedInto||[]).length+' entries</div>'
+    + '</div><div><div class="fgroup-title" style="margin-top:8px;font-size:11px">Consumed into '+esc(ctx.tanks)+' &mdash; '+(d.consumedInto||[]).length+' entries</div>'
     + _mvGroupTable('c', ['Account','From batch','Side · code','Entries','kg'], ['Day','TT','Note','kg'], conGroups, 'No cutting / salvage drawn into its tanks.')
     + '</div></div>';
   // ── Drawn by other batches: into batch, then day-wise entries ──
@@ -6359,7 +6376,7 @@ async function loadBatchMovements(bn, target){
     kg: g.kg, n: g.n,
     sub: g.rows.sort((a,b)=>String(a.production_day||'').localeCompare(String(b.production_day||''))).map(r=>({ cells: [esc(_dm(r.production_day)||''), r.tt_id?'#'+r.tt_id:'—', acc(r.account), esc(String(r.side||'').toUpperCase())+(r.colour_code?' '+esc(r.colour_code):''), n2(r.qty_kg)] })) }; });
   if(othGroups.length){
-    h += '<div class="fgroup-title" style="margin-top:8px;font-size:11px">Drawn TO other batches from this batch\'s stock &mdash; '+(d.consumedByOthers||[]).length+' entries</div>'
+    h += '<div class="fgroup-title" style="margin-top:8px;font-size:11px">Drawn TO other batches from '+esc(ctx.scope)+'\'s stock &mdash; '+(d.consumedByOthers||[]).length+' entries</div>'
       + _mvGroupTable('o', ['Into batch','Account(s)','Days','Entries','kg'], ['Day','TT','Account','Side · code','kg'], othGroups, '');
   }
   if((d.returnSolution||[]).length){
@@ -6367,7 +6384,7 @@ async function loadBatchMovements(bn, target){
     d.returnSolution.forEach(r=>{ const isCr = r.movement_type!=='consumption'; h += '<tr'+(r.from==='other'?' style="background:var(--amber-l)"':'')+'><td class="mono">'+esc(_dm(r.production_day)||'')+'</td><td><span class="badge '+(isCr?'inprod':'warn')+'">'+esc(r.direction==='drawn-by-other'?'DRAWN BY '+(r.batch_number||''):(isCr?'RECOVERED':'USED'))+'</span>'+(r.from==='other'?' <span class="badge warn">FROM OTHER BATCH</span>':'')+'</td><td class="mono">'+esc((isCr?r.batch_number:(r.source_batch||r.batch_number))||'')+' '+esc(String(r.side||'').toUpperCase())+'</td><td class="mono" style="font-size:11px">'+(isCr?'—':esc(r.batch_number||'')+(r.tt_id?' · TT #'+r.tt_id:''))+'</td><td class="num">'+n1(r.litres)+'</td><td class="num">'+(r.conc_kg_per_l!=null?Number(r.conc_kg_per_l).toFixed(3):'—')+'</td><td class="num">'+n1(r.virgin_kg)+'</td><td style="font-size:11px;white-space:normal" title="'+esc(r.note||'')+'">'+esc(_rsNote(r.note))+'</td></tr>'; });
     h += '</tbody></table></div>';
   }
-  out.innerHTML = h;
+  return h;
 }
 // v58P item 6: the note's bracketed basis is shown on hover, not in the cell
 function _rsNote(n){ return String(n||'').replace(/\s*\[[^\]]*\]\s*$/, '').replace(/^recovered at batch close( — entered later)?\s*\([^)]*\)/, 'at close$1').replace(/^correction \([^)]*\)/, 'correction'); }
@@ -6472,13 +6489,15 @@ async function loadYieldDaily(){
         }));
         const el2 = document.getElementById('ydSummary');
         if(el2){
-          el2.innerHTML = '<table class="gtable"><thead><tr><th>Floor</th><th class="num">Prev day yield %</th><th class="num">MTD yield %</th></tr></thead><tbody>'
+          const _pf = val('yd_from'), _pt = val('yd_to') || productionDay();   // v58U: the whole selected range, one click
+          el2.innerHTML = '<table class="gtable"><thead><tr><th>Floor</th><th class="num">Prev day yield %</th><th class="num">MTD yield %</th>'+(_pf && _pf!==_pt ? '<th>Period</th>' : '')+'</tr></thead><tbody>'
             + Object.keys(flAgg).sort((a,b)=>(({GF:0,'1F':1,'2F':2})[a]??9)-(({GF:0,'1F':1,'2F':2})[b]??9)).map(k=>{   // v58H item 6: Ground → First → Second
                 const a = flAgg[k];
                 if(!a.last){ a.last = a.anyF; a.lastDay = a.anyDay; }
                 const prev = a.last ? a.last.yieldPct : null;
                 const mtd = a.mtdIn>0 ? a.mtdOut/a.mtdIn*100 : null;
-                return '<tr class="clickable" style="cursor:pointer" title="Show the working for the latest day" onclick="yieldWorking(\''+esc(a.lastDay)+'\',\''+esc(k)+'\')"><td><b>'+esc(FLOOR_LABELS[k]||k)+'</b> <span style="font-size:10.5px;color:var(--accent)">working &rsaquo;</span></td><td class="num mono">'+(prev==null?'—':fmt(prev,1)+'%')+'</td><td class="num mono">'+(mtd==null?'—':fmt(mtd,1)+'%')+'</td></tr>';
+                return '<tr class="clickable" style="cursor:pointer" title="Show the working for the latest day" onclick="yieldWorking(\''+esc(a.lastDay)+'\',\''+esc(k)+'\')"><td><b>'+esc(FLOOR_LABELS[k]||k)+'</b> <span style="font-size:10.5px;color:var(--accent)">working &rsaquo;</span></td><td class="num mono">'+(prev==null?'—':fmt(prev,1)+'%')+'</td><td class="num mono">'+(mtd==null?'—':fmt(mtd,1)+'%')+'</td>'
+                  + (_pf && _pf!==_pt ? '<td><a href="javascript:void(0)" style="font-size:11px" onclick="event.stopPropagation();floorWorking(\''+esc(k)+'\',\''+esc(_pf)+'\',\''+esc(_pt)+'\')">'+esc(_dm(_pf))+' → '+esc(_dm(_pt))+' working &rsaquo;</a></td>' : '')+'</tr>';
               }).join('') + '</tbody></table>';
         }
       }
@@ -6514,32 +6533,161 @@ async function loadYieldDaily(){
 // plus approved crushing, so the percentage can be checked line by line.
 // v57F (Ishan, 25 Sep): the working behind a floor's daily yield — PACKABLE output of the day's
 // production (all batches) over the NET material consumed on the floor that day.
-function yieldWorking(day, floor){
-  const W = (window._YW||{})[day+'|'+floor]; if(!W) return;
-  const f = W.f, L = (f.working||[]).slice().sort((a,b)=>String(a.batch).localeCompare(String(b.batch)));
-  const m = f.material || {}, n = (x,d) => fmt(Number(x||0), d==null?1:d);
-  let h = '<div class="ywf">Yield = <b>Packable output</b> &divide; <b>Net material</b> &times; 100 = <b>'+fmt(f.numeratorKg,1)+'</b> &divide; <b>'+fmt(f.denominatorKg,1)+'</b> &times; 100 = '
-        + '<b style="font-size:15px">'+(f.yieldPct!=null?fmt(f.yieldPct,2)+'%':'—')+'</b> <span style="color:var(--t3)">(target '+W.target+'%)</span></div>'
-        + '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:0">Packable output &mdash; this day\'s production only</div>'
-        + '<div class="tswrap" style="max-height:48vh"><table class="gtable"><thead><tr><th>Batch</th><th class="num">Produced today (L)</th>'
-        + '<th class="num" title="(packed + WIP × A-grade) lakhs to date ÷ DPR production to date">Packable %</th><th class="num">Packable today (L)</th>'
-        + '<th class="num" title="average weight from the batch\'s labels — the weight TTs are issued on">Avg wt (mg, labels)</th><th class="num">Packable kg</th></tr></thead><tbody>'
-        + (L.length ? L.map(w=>'<tr><td class="mono"><b>'+esc(w.batch)+'</b></td><td class="num">'+n(w.dprDayL,2)+'</td><td class="num">'+n(w.packableSharePct,1)+'%</td>'
-              + '<td class="num">'+n(w.packableDayL,2)+'</td><td class="num"'+(w.weightBasis && !/label/.test(w.weightBasis)?' title="no label weight yet — size master used" style="color:var(--amber)"':'')+'>'+n(w.avgMg,1)+'</td><td class="num"><b>'+n(w.outputKg)+'</b></td></tr>').join('')
-                    : '<tr><td colspan="6" style="color:var(--t3)">No production on this floor this day</td></tr>')
-        + '<tr class="sumrow"><td>Total</td><td class="num">'+n(L.reduce((a,w)=>a+(w.dprDayL||0),0),2)+'</td><td></td><td class="num">'+n(L.reduce((a,w)=>a+(w.packableDayL||0),0),2)+'</td><td></td><td class="num">'+fmt(f.numeratorKg,1)+'</td></tr></tbody></table></div></div>'
-        + '<div><div class="fgroup-title" style="margin-top:0">Net material consumed &mdash; this day</div>'
-        + '<div class="hbnote" style="margin:-2px 0 6px">Tanks count on the day they are <b>released</b> to the machine; tanks still on hold, MMT not yet drawn, and cutting/salvage generated stay out.</div>'
-        + '<table class="gtable"><tbody>'
-        + '<tr><td>Virgin gelatine'+(m.tanks?' <span style="color:var(--t3)">('+m.tanks+' tank'+(m.tanks===1?'':'s')+' released)</span>':'')+'</td><td class="num">'+n(m.virginKg)+'</td></tr>'
-        + '<tr><td>Colour + TiO&#8322;</td><td class="num">'+n(m.colourKg)+'</td></tr>'
-        + '<tr><td>FG remelt</td><td class="num">'+n(m.fgRemeltKg)+'</td></tr>'
-        + '<tr><td>Cutting &amp; salvage charged</td><td class="num">'+n(m.reuseInKg)+'</td></tr>'
-        + '<tr><td>less: cutting &amp; salvage generated</td><td class="num" style="color:var(--red)">&minus;'+n(m.generatedKg)+'</td></tr>'
-        + (f.crushKg > 0.05 ? '<tr><td>Approved crushing</td><td class="num">'+n(f.crushKg)+'</td></tr>' : '')
-        + '<tr class="sumrow"><td>Net material</td><td class="num">'+fmt(f.denominatorKg,1)+'</td></tr></tbody></table></div></div>';
-  ttModalOpen('Yield working &mdash; '+esc(FLOOR_LABELS[floor]||floor)+' &middot; '+esc(_dm(day)), h);
-  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '1000px';
+function yieldWorking(day, floor){ floorWorking(floor, day, day); }   // v58U: the day is a one-day period
+// ═══ v58U (Ishan, 21 Oct) — FLOOR WORKING, UNIFIED WITH THE BATCH WORKING ════════════════════════
+// One modal for a floor over a day, a date range or a month: the same formula line, the same packable-output
+// table (per batch, summed over the days), the same net-material ladder (fresh material → + reuse charged →
+// − generated → = net recirculation → − Tracking salvage → ± return solution → crushing → net) and the same
+// movements section (generated / consumed / drawn to others / reconciliation, summarised and expandable),
+// plus a per-batch reconciliation of the floor's generation. Numbers are the SUM of the day cells the
+// yield-daily route already computes, so the modal always ties to the table it was opened from.
+async function floorWorking(floor, from, to){
+  const lbl = FLOOR_LABELS[floor]||floor, period = from===to ? _dm(from) : _dm(from)+' → '+_dm(to);
+  const key = 'F|'+floor+'|'+from+'|'+to;
+  ttModalOpen('Yield working &mdash; '+esc(lbl)+' &middot; '+esc(period),
+    _ywToolbar(key)+'<div id="fwY"><div class="empty">Working out the yield&hellip;</div></div><div id="fwM" style="margin-top:14px"></div>');
+  const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '1080px';
+  const yEl = document.getElementById('fwY'), mEl = document.getElementById('fwM');
+  let d = null; try{ d = await api('/api/gpr/yield-daily?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+'&floor='+encodeURIComponent(floor)); }catch(e){}
+  if(!d || !d.ok){ yEl.innerHTML = '<div class="empty">'+esc((d&&d.error)||'Could not compute the yield')+'</div>'; return; }
+  // sum the day cells of this floor
+  const M = { virginKg:0, colourKg:0, fgRemeltKg:0, reuseInKg:0, generatedKg:0, generatedOwnKg:0, trackingSalvageKg:0, returnUsedKg:0, returnRecoveredKg:0, tanks:0 };
+  let num = 0, den = 0, crush = 0, days = 0; const W = {};
+  (d.days||[]).forEach(day=>(day.floors||[]).forEach(f=>{ if(f.floor!==floor) return; days++;
+    num += Number(f.numeratorKg||0); den += Number(f.denominatorKg||0); crush += Number(f.crushKg||0);
+    const m = f.material||{}; Object.keys(M).forEach(k=>{ M[k] += Number(m[k]||0); });
+    (f.working||[]).forEach(w=>{ const g = W[w.batch] = W[w.batch]||{ batch:w.batch, dprDayL:0, packableDayL:0, outputKg:0, mgW:0, days:0, weightBasis:w.weightBasis };
+      g.dprDayL += Number(w.dprDayL||0); g.packableDayL += Number(w.packableDayL||0); g.outputKg += Number(w.outputKg||0); g.mgW += Number(w.avgMg||0)*Number(w.packableDayL||0); g.days++; }); }));
+  const L = Object.values(W).sort((a,b)=>_gprBatchCmpC(a.batch,b.batch));
+  const y = den>0 ? num/den*100 : null, cls = yCls(y, d.target), n1 = (v,dd) => fmt(Number(v||0), dd==null?1:dd);
+  const fresh = M.virginKg + M.colourKg + M.fgRemeltKg, netRecirc = M.reuseInKg - M.generatedOwnKg;
+  (window._MVD = window._MVD || {})[key] = { yield: { floor, from, to, num, den, y, target: d.target, M, L, crush, days } };
+  yEl.innerHTML = '<div class="ywf">Yield = <b>Packable output</b> &divide; <b>Net material</b> &times; 100 = <b>'+n1(num)+'</b> &divide; <b>'+n1(den)+'</b> &times; 100 = '
+    + '<b style="font-size:15px;color:var(--'+(cls==='green'?'green':cls==='red'?'red':cls==='amber'?'amber':'t1')+')">'+(y!=null?fmt(y,2)+'%':'—')+'</b> <span style="color:var(--t3)">(target '+d.target+'%'+(y!=null?' · '+((y-d.target)>=0?'+':'')+fmt(y-d.target,2):'')+')'+(days>1?' · '+days+' production days':'')+'</span></div>'
+    + '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:0">Packable output &mdash; '+(from===to?'this day\'s':'the period\'s')+' production only</div>'
+    + '<div class="tswrap" style="max-height:48vh"><table class="gtable"><thead><tr><th>Batch</th>'+(days>1?'<th class="num">Days</th>':'')+'<th class="num" title="DPR production in the period">Prod. L</th>'
+    + '<th class="num" title="(packed + WIP × A-grade) lakhs to date ÷ DPR production to date">Pack. %</th><th class="num">Pack. L</th>'
+    + '<th class="num" title="average weight from the batch\'s labels — the weight TTs are issued on">Avg mg</th><th class="num">kg</th></tr></thead><tbody>'
+    + (L.length ? L.map(w=>{ const mg = w.packableDayL>0 ? w.mgW/w.packableDayL : 0, sh = w.dprDayL>0 ? w.packableDayL/w.dprDayL*100 : 0;
+          return '<tr><td class="mono"><b>'+esc(w.batch)+'</b></td>'+(days>1?'<td class="num">'+w.days+'</td>':'')+'<td class="num">'+n1(w.dprDayL,2)+'</td><td class="num">'+n1(sh,1)+'%</td>'
+            + '<td class="num">'+n1(w.packableDayL,2)+'</td><td class="num"'+(w.weightBasis && !/label/.test(w.weightBasis)?' title="no label weight yet — size master used" style="color:var(--amber)"':'')+'>'+n1(mg,1)+'</td><td class="num"><b>'+n1(w.outputKg)+'</b></td></tr>'; }).join('')
+        : '<tr><td colspan="7" style="color:var(--t3)">No production on this floor in this period</td></tr>')
+    + '<tr class="sumrow"><td>Packable output</td>'+(days>1?'<td></td>':'')+'<td class="num">'+n1(L.reduce((a,w)=>a+w.dprDayL,0),2)+'</td><td></td><td class="num">'+n1(L.reduce((a,w)=>a+w.packableDayL,0),2)+'</td><td></td><td class="num"><b>'+n1(num)+'</b> kg</td></tr></tbody></table></div>'
+    + '<div class="hbnote" style="margin-top:6px">Output = each batch\'s DPR production in the period × its packable share to date × its label average weight ÷ 10 — the same packable basis as the batch working.</div></div>'
+    + '<div><div class="fgroup-title" style="margin-top:0">Net material</div>'
+    + '<div class="hbnote" style="margin:-2px 0 6px">Tanks count on the day they are <b>released</b> to the machine; tanks still on hold and MMT not yet drawn stay out.</div>'
+    + '<table class="gtable"><tbody>'
+    + '<tr><td>Virgin gelatine (tanks'+(M.tanks?', '+M.tanks+' released':'')+')</td><td class="num">'+n1(M.virginKg)+'</td></tr>'
+    + '<tr><td>Colour + TiO&#8322;</td><td class="num">'+n1(M.colourKg)+'</td></tr>'
+    + '<tr><td>FG remelt</td><td class="num">'+n1(M.fgRemeltKg)+'</td></tr>'
+    + '<tr class="sumrow"><td>Fresh material</td><td class="num">'+n1(fresh)+'</td></tr>'
+    + '<tr><td>+ Cutting &amp; salvage charged into the tanks (Ledger A)</td><td class="num">'+n1(M.reuseInKg)+'</td></tr>'
+    + '<tr><td>&minus; Cutting &amp; salvage generated by the floor\'s batches (DPR cuttings, GPR entries)</td><td class="num" style="color:var(--red)">&minus;'+n1(M.generatedOwnKg)+'</td></tr>'
+    + '<tr class="sumrow"><td>= Net recirculation</td><td class="num">'+(netRecirc>=0?'+':'')+n1(netRecirc)+'</td></tr>'
+    + '<tr><td>&minus; AIM / printing salvage recovered (Tracking)</td><td class="num" style="color:var(--red)">&minus;'+n1(M.trackingSalvageKg)+'</td></tr>'
+    + (M.returnUsedKg>0.005 ? '<tr><td>+ Return solution drawn into the tanks (at the lots\' concentration)</td><td class="num">+'+n1(M.returnUsedKg)+'</td></tr>' : '')
+    + (M.returnRecoveredKg>0.005 ? '<tr><td>&minus; Return solution recovered at batch close</td><td class="num" style="color:var(--red)">&minus;'+n1(M.returnRecoveredKg)+'</td></tr>' : '')
+    + (crush>0.05 ? '<tr><td>+ Approved crushing</td><td class="num">'+n1(crush)+'</td></tr>' : '')
+    + '<tr class="sumrow"><td>Net material</td><td class="num"><b>'+n1(den)+'</b></td></tr></tbody></table>'
+    + '<div class="hbnote" style="margin-top:6px">Same ladder as the batch working: cutting / salvage is counted once — what the floor\'s batches generated came out of virgin gelatine already in this figure, so only the net of consumed over generated stays in; return solution follows the same rule (used in, recovered out). The batch working also nets the salvage its WIP is still expected to return; a day-split cannot attribute that, so it is not applied here.</div></div></div>';
+  mEl.innerHTML = '<div class="fgroup-title">Cutting, salvage &amp; return solution &mdash; movements on '+esc(lbl)+', '+esc(period)+'</div><div id="fwMin"><div class="empty">Loading the movements&hellip;</div></div>';
+  let mv = null; try{ mv = await api('/api/gpr/floor-movements?floor='+encodeURIComponent(floor)+'&from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)); }catch(e){}
+  const mIn = document.getElementById('fwMin'); if(!mIn) return;
+  if(!mv || !mv.ok){ mIn.innerHTML = '<div class="empty">'+esc((mv&&mv.error)||'Could not load the movements')+'</div>'; return; }
+  window._MVD[key].mv = mv;
+  mIn.innerHTML = _mvRender(mv, { bn: '', scope: 'this floor', own: 'same batch', tanks: "this floor's tanks" });
+}
+// ═══ v58U item 2 — EXPORT (xlsx) and PRINT (A4) of a yield working modal (batch or floor) ═══════════
+function _ywToolbar(key){
+  return '<div class="noprint" style="display:flex;gap:6px;justify-content:flex-end;margin:-4px 0 8px">'
+    + '<button class="btn sm" onclick="ywExport(\''+esc(key)+'\')" title="Everything in this working as an Excel workbook">&#8681; Export</button>'
+    + '<button class="btn sm" onclick="ywPrint(\''+esc(key)+'\')" title="Print-ready A4 copy of this working">&#9113; Print</button></div>';
+}
+// Print: the modal body as it stands (all detail rows unfolded) in a print window with an A4 stylesheet —
+// the same mechanism as the TT card, so what prints is exactly what was reviewed on screen.
+function ywPrint(key){
+  const box = document.getElementById('ttModalBox'); if(!box) return;
+  const title = (box.querySelector('.card-title')||{}).textContent || 'Yield working';
+  const body = box.children[1] ? box.children[1].cloneNode(true) : null; if(!body) return;
+  body.querySelectorAll('.noprint').forEach(e=>e.remove());
+  body.querySelectorAll('tr[data-g]').forEach(tr=>{ tr.style.display=''; });
+  body.querySelectorAll('[id^="mvc_"]').forEach(e=>{ e.textContent=''; });
+  body.querySelectorAll('.tswrap,.tscroll,.froze').forEach(e=>{ e.style.maxHeight='none'; e.style.overflow='visible'; });
+  body.querySelectorAll('[onclick]').forEach(e=>{ e.removeAttribute('onclick'); e.style.cursor='default'; });
+  const meta = (SESSION&&SESSION.username?SESSION.username+' · ':'')+'printed '+new Date().toLocaleString('en-IN',{day:'2-digit',month:'short',year:'numeric',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Asia/Kolkata'})+' IST · Sunloc GPR build v58U';
+  const css = '@page{size:A4 portrait;margin:12mm 11mm}'
+    + 'body{font-family:-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;font-size:10px;color:#1f2937;margin:0}'
+    + 'h1{font-size:15px;margin:0 0 2px;color:#7a5209}.meta{color:#6b7280;font-size:9.5px;margin-bottom:8px;border-bottom:1px solid #e8d68a;padding-bottom:6px}'
+    + '.ywf{font-size:11px;padding:6px 8px;background:#fff9e6;border:1px solid #e8d68a;border-radius:4px;margin-bottom:8px}'
+    + '.ywcols{display:grid;grid-template-columns:1fr 1fr;gap:10px;align-items:start}'
+    + '.fgroup-title{font-size:9.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#6b7280;margin:8px 0 3px;break-after:avoid}'
+    + '.kgrid{display:grid;grid-template-columns:repeat(5,1fr);gap:5px;margin:4px 0 8px}.kpi{border:1px solid #e5e7eb;border-radius:4px;padding:5px 6px}'
+    + '.kpi-label{font-size:7.5px;font-weight:700;letter-spacing:.5px;text-transform:uppercase;color:#6b7280}.kpi-val{font-family:ui-monospace,Menlo,Consolas,monospace;font-size:12.5px;font-weight:600;margin:1px 0}.kpi-sub{font-size:8px;color:#6b7280;line-height:1.25}'
+    + '.kpi-val.green{color:#15803d}.kpi-val.red{color:#b91c1c}.kpi-val.amber{color:#b45309}.kpi-val.teal{color:#0f766e}'
+    + 'table{border-collapse:collapse;width:100%;margin:2px 0 6px;break-inside:auto}tr{break-inside:avoid}th,td{border:1px solid #e5e7eb;padding:2px 4px;text-align:left;vertical-align:top;font-size:9px}'
+    + 'th{background:#f9fafb;font-size:8px;text-transform:uppercase;letter-spacing:.3px}td.num,th.num{text-align:right;font-variant-numeric:tabular-nums;white-space:nowrap}'
+    + 'tr.sumrow td{background:#f3f4f6;font-weight:700}.mono{font-family:ui-monospace,Menlo,Consolas,monospace}'
+    + '.badge,.sdtag{display:inline-block;font-size:7.5px;font-weight:700;padding:0 4px;border:1px solid #d1d5db;border-radius:3px;text-transform:uppercase}'
+    + '.hbnote,.hint{font-size:8.5px;color:#6b7280;margin:3px 0}.empty{color:#9ca3af;font-size:9px;padding:4px}'
+    + '.banner{border:1px solid #fcd34d;background:#fffbeb;padding:4px 6px;border-radius:4px;font-size:9px;margin:4px 0}'
+    + 'tr[data-g] td{background:#fafafa}tr[data-g] table{margin:2px 0}'
+    + '@media print{.ywcols{grid-template-columns:1fr 1fr}}';
+  const w = window.open('', '_blank'); if(!w){ toast('Allow pop-ups to print the working','err'); return; }
+  w.document.write('<!doctype html><html><head><meta charset="utf-8"><title>'+esc(title)+'</title><style>'+css+'</style></head><body>'
+    + '<h1>'+esc(title)+'</h1><div class="meta">'+esc(meta)+'</div>'+body.innerHTML
+    + '<script>setTimeout(function(){window.print()},400)<\/script></body></html>');
+  w.document.close();
+}
+// Export: one workbook — Yield (formula + output + net material), Movements (generated / consumed / drawn
+// to others, entry-wise), Reconciliation (per account / per batch).
+function ywExport(key){
+  const D = (window._MVD||{})[key]; if(!D){ toast('Nothing to export yet','err'); return; }
+  const wb = XLSX.utils.book_new();
+  const isB = key.startsWith('B|');
+  const rows = [];
+  const n = v => v==null ? '' : +Number(v).toFixed(2);
+  if(isB){
+    const y = D.yield || {}, N = y.numerator||{}, Dn = y.denominator||{};
+    rows.push(['GPR — Batch yield working', y.batch||key.slice(2)], ['Machine', y.machineId||''], ['Status', y.status||''], ['Generated', new Date().toISOString()], []);
+    rows.push(['Yield %', y.yieldPct!=null?+y.yieldPct.toFixed(2):'', 'target', y.target], []);
+    rows.push(['PACKABLE OUTPUT','Lakhs','kg']);
+    rows.push(['Packed (Tracking)', n(N.packedLakhs), n(N.packedWeightKg)], ['WIP × A-grade', n(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs), n(N.wipWeightKg)], ['Packable output', n(Number(N.packedLakhs||0)+Number(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs||0)), n(N.total)], ['Average weight mg', n(y.avgMg)], []);
+    rows.push(['NET MATERIAL','kg']);
+    [['Virgin gelatine',Dn.virginKg],['Colour + TiO2',Dn.colourKg],['FG remelt',Dn.fgRemeltKg],['Fresh material',Dn.freshMaterialKg],['+ Cutting & salvage charged',Dn.reuseInKg!=null?Dn.reuseInKg:Dn.consumedKg],['− Cutting & salvage generated',-Number(Dn.generatedManualKg||0)],['= Net recirculation',Dn.netRecirc],
+     ['− AIM / printing salvage recovered',-Number(Dn.salvageRecoveredKg||0)],['− Expected WIP salvage',-Number(Dn.expectedSalvageKg||0)],['+ Return solution used',Dn.returnUsedKg],['− Return solution recovered',-Number(Dn.returnRecoveredKg||0)],['Net material',Dn.total]].forEach(r=>rows.push([r[0], n(r[1])]));
+  } else {
+    const y = D.yield||{}, M = y.M||{};
+    rows.push(['GPR — Floor yield working', FLOOR_LABELS[y.floor]||y.floor], ['Period', y.from+' → '+y.to], ['Production days', y.days], ['Generated', new Date().toISOString()], []);
+    rows.push(['Yield %', y.y!=null?+y.y.toFixed(2):'', 'target', y.target], ['Packable output kg', n(y.num)], ['Net material kg', n(y.den)], []);
+    rows.push(['PACKABLE OUTPUT — by batch','Days','Produced L','Packable L','Avg wt mg','Packable kg']);
+    (y.L||[]).forEach(w=>rows.push([w.batch, w.days, n(w.dprDayL), n(w.packableDayL), n(w.packableDayL>0?w.mgW/w.packableDayL:0), n(w.outputKg)]));
+    rows.push([]);
+    rows.push(['NET MATERIAL','kg']);
+    [['Virgin gelatine',M.virginKg],['Colour + TiO2',M.colourKg],['FG remelt',M.fgRemeltKg],['Fresh material',M.virginKg+M.colourKg+M.fgRemeltKg],['+ Cutting & salvage charged',M.reuseInKg],['− Cutting & salvage generated',-M.generatedOwnKg],['= Net recirculation',M.reuseInKg-M.generatedOwnKg],
+     ['− AIM / printing salvage recovered (Tracking)',-M.trackingSalvageKg],['+ Return solution used',M.returnUsedKg],['− Return solution recovered',-M.returnRecoveredKg],['+ Approved crushing',y.crush],['Net material',y.den]].forEach(r=>rows.push([r[0], n(r[1])]));
+  }
+  XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Yield');
+  const mv = D.mv; if(mv){
+    const S = mv.summary||{}, R = mv.recon||{};
+    const m1 = [['MOVEMENTS — summary','kg'],['Generated (accepted)',n(S.generatedAccepted)],['  of which cuttings / GPR entries',n(S.generatedOwnAccepted)],['  of which Tracking salvage',n(S.generatedTrackingAccepted)],['Generated pending',n(S.generatedPending)],['Generated voided',n(S.generatedVoided)],
+      ['Consumed from own / same batch',n(S.consumedOwn)],['Consumed from other batches',n(S.consumedOther)],['Consumed legacy (Ledger B)',n(S.consumedLegacy)],['Drawn to other batches',n(S.consumedByOthers)],['Closing unused stock',n(R.closing)],[]];
+    m1.push(['GENERATED','Day','Batch','MC','Account','Side','How','Status','Note','kg']);
+    (mv.generated||[]).forEach(r=>m1.push(['', r.production_day||'', r.batch_number||'', r.machine_id||'', r.account_label||r.account, (r.side||'').toUpperCase(), r.source||'', r.state||'', r.note||'', n(r.qty_kg)]));
+    m1.push([], ['CONSUMED INTO TANKS','Day','Into batch','TT','Account','From batch','From','Side','Code','Note','kg']);
+    (mv.consumedInto||[]).forEach(r=>m1.push(['', r.production_day||'', r.batch_number||'', r.tt_id?'#'+r.tt_id:'', r.account_label||r.account, r.source_batch||r.batch_number||'', r.from||'', (r.side||'').toUpperCase(), r.colour_code||'', r.note||'', n(r.qty_kg)]));
+    m1.push([], ['DRAWN TO OTHER BATCHES','Day','From batch','Into batch','TT','Account','Side','Code','Note','kg']);
+    (mv.consumedByOthers||[]).forEach(r=>m1.push(['', r.production_day||'', r.source_batch||'', r.batch_number||'', r.tt_id?'#'+r.tt_id:'', r.account_label||r.account, (r.side||'').toUpperCase(), r.colour_code||'', r.note||'', n(r.qty_kg)]));
+    if((mv.returnSolution||[]).length){ m1.push([], ['RETURN SOLUTION','Day','Type','Lot batch','Side','Into batch','TT','Litres','kg/L','Virgin kg','Note']);
+      mv.returnSolution.forEach(r=>m1.push(['', r.production_day||'', r.direction||r.movement_type, r.movement_type==='consumption'?(r.source_batch||r.batch_number):r.batch_number, (r.side||'').toUpperCase(), r.movement_type==='consumption'?r.batch_number:'', r.tt_id?'#'+r.tt_id:'', n(r.litres), r.conc_kg_per_l!=null?+Number(r.conc_kg_per_l).toFixed(3):'', n(r.virgin_kg), _rsNote(r.note)])); }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(m1), 'Movements');
+    const r1 = [['RECONCILIATION BY ACCOUNT','Generated','Used in same batch','Drawn to others','Closing']];
+    (R.byAccount||[]).forEach(a=>r1.push([a.account_label, n(a.generated), n(a.consumedOwn), n(a.drawnByOthers), n(a.closing)]));
+    if((R.byBatch||[]).length){ r1.push([], ['RECONCILIATION BY BATCH','Generated','Pending','Used in same batch','Drawn to others','Closing','Drawn into']);
+      R.byBatch.forEach(b=>r1.push([b.batch, n(b.generated), n(b.pending), n(b.consumedOwn), n(b.drawnByOthers), n(b.closing), Object.entries(b.drawnInto||{}).map(([k,v])=>k+' '+n(v)).join(' · ')])); }
+    XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(r1), 'Reconciliation');
+  }
+  const nm = isB ? 'GPR_Yield_'+key.slice(2) : 'GPR_Yield_'+(D.yield.floor)+'_'+D.yield.from+(D.yield.to!==D.yield.from?'_'+D.yield.to:'');
+  XLSX.writeFile(wb, nm+'.xlsx');
 }
 async function loadYieldMonth(){
   const out = document.getElementById('yieldMonthResult');
@@ -6560,7 +6708,7 @@ async function loadYieldMonth(){
        + '<th class="num">Output kg</th><th class="num">Material kg</th><th class="num">Batches</th></tr></thead><tbody>';
     d.floors.slice().sort((a,b)=>(({GF:0,'1F':1,'2F':2})[a.floor]??9)-(({GF:0,'1F':1,'2F':2})[b.floor]??9)).forEach(f=>{   // v58H item 6
       const fc = yCls(f.yieldPct, d.target);
-      h += `<tr><td>${esc(FLOOR_LABELS[f.floor]||f.floor)}</td>`
+      h += `<tr class="clickable" style="cursor:pointer" title="Show how this month's yield is worked out" onclick="floorWorking('${esc(f.floor)}','${esc(d.from)}','${esc(d.to)}')"><td>${esc(FLOOR_LABELS[f.floor]||f.floor)} <span style="font-size:10.5px;color:var(--accent)">working &rsaquo;</span></td>`
         + `<td class="num"><b style="color:var(--${fc==='green'?'green':fc==='red'?'red':fc==='amber'?'amber':'t1'})">`
         + (f.yieldPct!=null?fmt(f.yieldPct,2)+'%':'—')+'</b></td>'
         + `<td class="num">${f.yieldPct!=null?((f.yieldPct-d.target)>=0?'+':'')+fmt(f.yieldPct-d.target,2):'—'}</td>`

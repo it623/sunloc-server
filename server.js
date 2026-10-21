@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58T';
+const APP_BUILD = 'v58U';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -29144,6 +29144,97 @@ app.get('/api/gpr/batch-movements/:batch', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ═══ v58U (Ishan, 21 Oct) — FLOOR-PERIOD MOVEMENTS: the batch movements picture for one floor over a day,
+// a date range or a month, in the SAME shape as /api/gpr/batch-movements so the modal renders identically.
+//   generated        — generation / correction rows on this floor in the period (accepted / pending / voided)
+//   consumedInto     — cutting / salvage drawn into this floor's tanks in the period; from = 'own' when the
+//                      lot is the consuming batch's own stock, 'other' when another batch's, 'legacy' (Ledger B)
+//   consumedByOthers — draws in the period from the stock of a batch whose cuttings come from THIS floor,
+//                      into a DIFFERENT batch (same floor or another) — "drawn to other batches"
+//   recon            — generated − consumed from own batch − drawn to other batches = closing, overall,
+//                      per account and PER BATCH (how much of each batch's generation stayed in the batch)
+app.get('/api/gpr/floor-movements', async (req, res) => {
+  try {
+    const floor = String(req.query.floor || '').trim();
+    if (!/^(GF|1F|2F)$/.test(floor)) return res.status(400).json({ ok: false, error: 'floor GF | 1F | 2F required' });
+    const isD = d => /^\d{4}-\d{2}-\d{2}$/.test(String(d || ''));
+    const to = isD(req.query.to) ? String(req.query.to) : gprProductionDay();
+    const from = isD(req.query.from) ? String(req.query.from) : to;
+    const P = i => pgPool ? `$${i}` : '?';
+    const q = async (sql, p) => pgPool ? (await pgPool.query(sql, p)).rows : db.prepare(sql).all(...p);
+    const COLS = `id, moved_at, production_day, movement_type, account, source, side, colour_code, pc_code, machine_id, floor, batch_number, source_batch, tt_id, qty_kg, note, moved_by, receipt_status, receipt_ref, accepted_by, accepted_at`;
+    // on-floor rows in the period (generation + consumption into the floor's tanks)
+    const onFloor = await q(`SELECT ${COLS} FROM gpr_ledger WHERE floor=${P(1)} AND production_day BETWEEN ${P(2)} AND ${P(3)} ORDER BY production_day, moved_at, id`, [floor, from, to]);
+    // cross-batch draws anywhere in the period — the source batch's floor decides whether they are "ours"
+    const cross = await q(`SELECT ${COLS} FROM gpr_ledger WHERE movement_type IN ${GPR_A_DEBIT} AND source_batch IS NOT NULL AND UPPER(source_batch) <> UPPER(COALESCE(batch_number,''))
+                           AND production_day BETWEEN ${P(1)} AND ${P(2)} ORDER BY production_day, moved_at, id`, [from, to]);
+    const srcSet = Array.from(new Set(cross.map(r => String(r.source_batch).toUpperCase())));
+    const srcFloor = {};
+    if (srcSet.length) {
+      const ph = srcSet.map((_, i) => P(i + 1)).join(',');
+      (await q(`SELECT UPPER(batch_number) AS bn, MAX(floor) AS fl FROM gpr_ledger WHERE movement_type='generation' AND UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`, srcSet)).forEach(r => { if (r.fl) srcFloor[r.bn] = r.fl; });
+      (await q(`SELECT UPPER(batch_number) AS bn, MIN(floor) AS fl FROM gpr_tt WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`, srcSet)).forEach(r => { if (r.fl && !srcFloor[r.bn]) srcFloor[r.bn] = r.fl; });
+    }
+    let legacy = [];
+    try { legacy = await q(`SELECT id, moved_at, movement_type, account, location, batch_number, tt_id, floor, qty_kg, note, moved_by FROM gpr_legacy_stock WHERE movement_type='draw' AND floor=${P(1)} AND SUBSTR(moved_at,1,10) BETWEEN ${P(2)} AND ${P(3)} ORDER BY moved_at, id`, [floor, from, to]); } catch (_) {}
+    let rs = [];
+    try { rs = await q(`SELECT * FROM gpr_return_solution WHERE floor=${P(1)} AND production_day BETWEEN ${P(2)} AND ${P(3)} ORDER BY production_day, moved_at, id`, [floor, from, to]); } catch (_) {}
+
+    const generated = [], consumedInto = [], consumedByOthers = [];
+    const S = { generatedAccepted: 0, generatedPending: 0, generatedVoided: 0, consumedOwn: 0, consumedOther: 0, consumedLegacy: 0, consumedByOthers: 0, byAccountGen: {}, byAccountCon: {},
+                generatedTrackingAccepted: 0, generatedOwnAccepted: 0, fromOtherByBatch: {}, byOthersByBatch: {}, byAccountOwnCon: {}, byAccountByOthers: {} };
+    const B = {};   // per batch of this floor: generated, consumed from own, drawn by others
+    const bb = bn => (B[bn] = B[bn] || { batch: bn, generated: 0, pending: 0, consumedOwn: 0, drawnByOthers: 0, drawnInto: {} });
+    const add = (o, k, v) => { o[k] = (o[k] || 0) + v; };
+    onFloor.forEach(r => {
+      const isCr = r.movement_type === 'generation' || r.movement_type === 'correction';
+      const bn = String(r.batch_number || '').toUpperCase();
+      const kg = Number(r.qty_kg || 0);
+      r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account;
+      if (isCr) {
+        r.state = r.receipt_status === 'rejected' ? 'voided' : (r.receipt_status === 'pending' ? 'pending' : 'accepted');
+        generated.push(r);
+        if (r.state === 'accepted') { S.generatedAccepted += kg; add(S.byAccountGen, r.account, kg); if (r.source === 'tracking') S.generatedTrackingAccepted += kg; else S.generatedOwnAccepted += kg; if (bn) bb(bn).generated += kg; }
+        else if (r.state === 'pending') { S.generatedPending += kg; if (bn) bb(bn).pending += kg; } else S.generatedVoided += kg;
+      } else {
+        const src = String(r.source_batch || '').toUpperCase();
+        r.from = src && src !== bn ? 'other' : 'own';
+        if (r.from === 'other') { S.consumedOther += kg; add(S.fromOtherByBatch, src, kg); }
+        else { S.consumedOwn += kg; add(S.byAccountOwnCon, r.account, kg); if (bn) bb(bn).consumedOwn += kg; }
+        add(S.byAccountCon, r.account, kg);
+        consumedInto.push(r);
+      }
+    });
+    cross.forEach(r => {
+      const src = String(r.source_batch).toUpperCase();
+      if (srcFloor[src] !== floor) return;                       // not this floor's stock
+      const kg = Number(r.qty_kg || 0), into = String(r.batch_number || '').toUpperCase();
+      r.account_label = GPR_ACCOUNT_LABELS[r.account] || r.account;
+      consumedByOthers.push(r); S.consumedByOthers += kg; add(S.byOthersByBatch, into, kg); add(S.byAccountByOthers, r.account, kg);
+      const b = bb(src); b.drawnByOthers += kg; add(b.drawnInto, into, kg);
+    });
+    legacy.forEach(r => { r.from = 'legacy'; r.source = 'legacy'; r.account_label = (GPR_ACCOUNT_LABELS[r.account] || r.account || 'legacy') + ' (Ledger B ' + (r.location || '') + ')';
+      r.production_day = String(r.moved_at || '').slice(0, 10); S.consumedLegacy += Number(r.qty_kg || 0); consumedInto.push(r); });
+    consumedInto.sort((a, b) => String(a.production_day || '').localeCompare(String(b.production_day || '')) || String(a.moved_at || '').localeCompare(String(b.moved_at || '')));
+    const rsRows = (rs || []).map(r => { const isCr = r.movement_type !== 'consumption';
+      return Object.assign(r, { direction: isCr ? 'recovered' : 'used', from: !isCr ? (String(r.source_batch || '').toUpperCase() === String(r.batch_number || '').toUpperCase() ? 'own' : 'other') : null }); });
+    const rsSum = { recoveredL: 0, recoveredKg: 0, usedL: 0, usedKg: 0, drawnByOthersL: 0 };
+    rsRows.forEach(r => { if (r.direction === 'recovered') { rsSum.recoveredL += Number(r.litres || 0); rsSum.recoveredKg += Number(r.virgin_kg || 0); } else { rsSum.usedL += Number(r.litres || 0); rsSum.usedKg += Number(r.virgin_kg || 0); } });
+    const r2 = o => { Object.keys(o).forEach(k => { if (typeof o[k] === 'number') o[k] = +o[k].toFixed(2); }); return o; };
+    const accs = Array.from(new Set([...Object.keys(S.byAccountGen), ...Object.keys(S.byAccountOwnCon), ...Object.keys(S.byAccountByOthers)]));
+    const reconByAccount = accs.map(a => { const g = S.byAccountGen[a] || 0, o = S.byAccountOwnCon[a] || 0, x = S.byAccountByOthers[a] || 0;
+      return { account: a, account_label: GPR_ACCOUNT_LABELS[a] || a, generated: +g.toFixed(2), consumedOwn: +o.toFixed(2), drawnByOthers: +x.toFixed(2), closing: +(g - o - x).toFixed(2) }; })
+      .sort((a, b) => String(a.account).localeCompare(String(b.account)));
+    const reconByBatch = Object.values(B).map(b => ({ batch: b.batch, generated: +b.generated.toFixed(2), pending: +b.pending.toFixed(2), consumedOwn: +b.consumedOwn.toFixed(2), drawnByOthers: +b.drawnByOthers.toFixed(2),
+                                                      closing: +(b.generated - b.consumedOwn - b.drawnByOthers).toFixed(2), drawnInto: r2(b.drawnInto) }))
+      .sort((a, b) => _gprBatchCmp(a.batch, b.batch));
+    const recon = { generated: +S.generatedAccepted.toFixed(2), consumedOwn: +S.consumedOwn.toFixed(2), drawnByOthers: +S.consumedByOthers.toFixed(2),
+                    closing: +(S.generatedAccepted - S.consumedOwn - S.consumedByOthers).toFixed(2), pending: +S.generatedPending.toFixed(2), byAccount: reconByAccount, byBatch: reconByBatch };
+    res.json({ ok: true, floor, from, to, generated, consumedInto, consumedByOthers, returnSolution: rsRows, excess: {}, recon,
+               summary: Object.assign(r2(S), { byAccountGen: r2(S.byAccountGen), byAccountCon: r2(S.byAccountCon), fromOtherByBatch: r2(S.fromOtherByBatch), byOthersByBatch: r2(S.byOthersByBatch), returnSolution: r2(rsSum) }) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+
 // ─── v56B item 1 (Ishan, 20 Sep) — REMEMBERED ENTRIES: vendors, gelatine batches, colour names
 // and the other free-text fields are typed over and over. This returns the DISTINCT values the
 // plant has already entered, so the forms can offer them as a pick-list (Tracking's customer-name
@@ -30422,7 +30513,7 @@ async function _v57fDayYield(from, to, floorFilter) {
   const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
   const grid = {};
   const cell = (d, fl) => ((grid[d] = grid[d] || {})[fl] = grid[d][fl] || { num: 0, den: 0, batches: 0, working: [], crushKg: 0,
-    material: { virginKg: 0, colourKg: 0, fgRemeltKg: 0, reuseInKg: 0, generatedKg: 0, returnUsedKg: 0, returnRecoveredKg: 0, tanks: 0 } });   // v58M: + return solution
+    material: { virginKg: 0, colourKg: 0, fgRemeltKg: 0, reuseInKg: 0, generatedKg: 0, generatedOwnKg: 0, trackingSalvageKg: 0, returnUsedKg: 0, returnRecoveredKg: 0, tanks: 0 } });   // v58M: + return solution; v58U: generated split as in the batch working
   // ── material: NET consumption — a tank counts on the production day it was RELEASED to the
   //    machine (Hold & Release), not the day it was charged. Until then it is WIP and stays out of
   //    consumption: charged today and run tomorrow = tomorrow's material. Likewise an MMT charge not
@@ -30452,12 +30543,15 @@ async function _v57fDayYield(from, to, floorFilter) {
     rsg.forEach(r => { const fl = r.floor || 'unknown'; if (floorFilter && fl !== floorFilter) return; cell(r.d, fl).material.returnRecoveredKg += +r.kg || 0; });
   } catch (_) {}
   // ── material: cutting / salvage generated that day on that floor (returned to stock, not consumed) ──
-  const gen = await q(`SELECT production_day AS d, floor, SUM(qty_kg) AS kg FROM gpr_ledger
+  // v58U (Ishan, 21 Oct): split by source so the floor working reads like the batch working — "generated by
+  // the floor's batches" (DPR cuttings, GPR entries) and "AIM / printing salvage recovered" (Tracking) are
+  // separate lines; the total (and so the denominator) is unchanged.
+  const gen = await q(`SELECT production_day AS d, floor, CASE WHEN source='tracking' THEN 'tracking' ELSE 'own' END AS src, SUM(qty_kg) AS kg FROM gpr_ledger
                         WHERE movement_type='generation' AND COALESCE(receipt_status,'') <> 'rejected'
                           AND source <> 'estimate' AND source <> 'return' AND account <> 'return_remelt'   -- v58I: no estimates, no returned FG
-                          AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor`, [from, to]);
+                          AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor, CASE WHEN source='tracking' THEN 'tracking' ELSE 'own' END`, [from, to]);
   gen.forEach(r => { const fl = r.floor || 'unknown'; if (floorFilter && fl !== floorFilter) return;
-    cell(r.d, fl).material.generatedKg += +r.kg || 0; });
+    const m = cell(r.d, fl).material; m.generatedKg += +r.kg || 0; if (r.src === 'tracking') m.trackingSalvageKg += +r.kg || 0; else m.generatedOwnKg += +r.kg || 0; });
   // ── output: the day's DPR production, converted to packable kg per batch ──
   const dp = await q(`SELECT UPPER(batch_number) AS bn, date AS d, SUM(COALESCE(qty_lakhs,0)) AS l FROM production_actuals
                        WHERE date BETWEEN ${P1} AND ${P2} AND COALESCE(batch_number,'') <> '' GROUP BY UPPER(batch_number), date`, [from, to]);
