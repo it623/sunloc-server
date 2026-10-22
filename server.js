@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58U';
+const APP_BUILD = 'v58V';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -21719,10 +21719,16 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
     // production date — so it stays a plain date-prefix compare (no ts conversion).
     const asof = /^\d{4}-\d{2}-\d{2}$/.test(String(req.query.asof||'')) ? String(req.query.asof) : null;
     let scanRows, wastageRows, dispatchRows, grossRows = null;
+    // v58V (Ishan, 22 Oct — Report E / NSR exported with every scan, salvage and dispatch figure at 0): a failed
+    // aggregation used to be swallowed into [] and shipped as ok:true, so the client ADOPTED an empty summary,
+    // persisted it and rendered blanks as if they were real. Failures are now collected and the response is a
+    // 503 the client treats as "keep what you have"; an all-empty scan set against a non-empty table is
+    // treated the same way (a silent empty is a failure, whatever caused it).
+    const _failed = [];
     if (pgPool) {
-      const safeQuery = async (sql, params) => {
+      const safeQuery = async (sql, params, tag) => {
         try { return (await pgPool.query(sql, params||[])).rows; }
-        catch(e) { console.warn('[scan-summary] query failed:', e.message); return []; }
+        catch(e) { console.warn('[scan-summary] query failed:', tag || '', e.message); _failed.push((tag || 'query') + ': ' + e.message); return []; }
       };
       const pgCut = col => `(LEFT(${col},19))::timestamp < ($1::date + interval '1 day' + interval '30 minutes')`;
       // v51ZF (Ishan, Report G stale): MIN/MAX ts per (batch,dept,type) — the client's ONLY prior
@@ -21735,17 +21741,21 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
       const wasteSql = `SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number, dept, type`;
       const dispSql  = `SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${pgCut('ts')}`:''} GROUP BY batch_number`;
       [scanRows, wastageRows, dispatchRows] = await Promise.all([
-        safeQuery(scanSql, asof?[asof]:[]),
-        safeQuery(wasteSql, asof?[asof]:[]),
-        safeQuery(dispSql,  asof?[asof]:[])
+        safeQuery(scanSql, asof?[asof]:[], 'scans'),
+        safeQuery(wasteSql, asof?[asof]:[], 'wastage'),
+        safeQuery(dispSql,  asof?[asof]:[], 'dispatch')
       ]);
+      if (!asof && scanRows.length === 0) {   // v58V: an empty aggregate over a non-empty table is a failure, not a fact
+        try { const c = (await pgPool.query('SELECT COUNT(*)::int AS n FROM tracking_scans')).rows[0]; if (c && c.n > 0) _failed.push('scans: aggregate returned 0 groups over ' + c.n + ' rows'); }
+        catch (e) { _failed.push('scans: count check failed: ' + e.message); }
+      }
       if (asof) grossRows = await safeQuery(`SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE LEFT(date,10) <= $1 GROUP BY batch_number`, [asof]);
     } else {
-      const sc = (sql, params) => { try { return db.prepare(sql).all(...(params||[])); } catch(e) { return []; } };
+      const sc = (sql, params, tag) => { try { return db.prepare(sql).all(...(params||[])); } catch(e) { _failed.push((tag || 'query') + ': ' + e.message); return []; } };   // v58V: failures surface
       const liteCut = col => `datetime(${col}) < datetime(?, '+1 day', '+30 minutes')`;
-      scanRows     = sc(`SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END AS rt, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty, MIN(s.ts) as first_ts, MAX(s.ts) as last_ts FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0), CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END`, asof?[asof]:[]);   // v51ZF: same MIN/MAX as PG
-      wastageRows  = sc(`SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number, dept, type`, asof?[asof]:[]);
-      dispatchRows = sc(`SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number`, asof?[asof]:[]);
+      scanRows     = sc(`SELECT s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0) AS lg, CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END AS rt, COUNT(*) as cnt, SUM(${_v47gScanQtySql('s','l')}) as total_qty, MIN(s.ts) as first_ts, MAX(s.ts) as last_ts FROM tracking_scans s LEFT JOIN tracking_labels l ON l.id = s.label_id WHERE NOT EXISTS (SELECT 1 FROM tracking_scan_reversals r WHERE r.reversed_scan_id=s.id)${asof?` AND ${liteCut('s.ts')}`:''} GROUP BY s.batch_number, s.dept, s.type, COALESCE(l.is_legacy_rebatch,0), CASE WHEN COALESCE(l.legacy_ref,'') LIKE '%-RET' THEN 1 ELSE 0 END`, asof?[asof]:[], 'scans');   // v51ZF: same MIN/MAX as PG
+      wastageRows  = sc(`SELECT batch_number, dept, type, SUM(qty) as total_qty FROM tracking_wastage${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number, dept, type`, asof?[asof]:[], 'wastage');
+      dispatchRows = sc(`SELECT batch_number, SUM(qty) as total_qty FROM tracking_dispatch_records${asof?` WHERE ${liteCut('ts')}`:''} GROUP BY batch_number`, asof?[asof]:[], 'dispatch');
       if (asof) grossRows = sc(`SELECT batch_number, SUM(qty_lakhs) as total FROM production_actuals WHERE substr(date,1,10) <= ? GROUP BY batch_number`, [asof]);
     }
 
@@ -21826,7 +21836,12 @@ app.get('/api/tracking/scan-summary', async (req, res) => {
       for (const r of (_ovr || [])) if (r.batch_number) grossOverrides[r.batch_number] = {
         gross: parseFloat(r.gross_lakhs) || 0, by: r.updated_by || '', at: r.updated_at || '', reason: r.reason || '' };
     } catch(_) {}
-    res.json({ ok: true, summary, wastage, dispatched, grossByBatch, grossOverrides, asof: asof||null });
+    if (_failed.length) {   // v58V: never ship a partial / empty aggregate as a success
+      console.error('[scan-summary] incomplete —', _failed.join(' | '));
+      return res.status(503).json({ ok: false, error: 'SCAN_SUMMARY_INCOMPLETE', detail: _failed, counts: { scans: scanRows.length, wastage: wastageRows.length, dispatch: dispatchRows.length } });
+    }
+    res.json({ ok: true, summary, wastage, dispatched, grossByBatch, grossOverrides, asof: asof||null,
+               counts: { scanGroups: scanRows.length, wastageGroups: wastageRows.length, dispatchBatches: dispatchRows.length } });   // v58V: visible in /api/tracking/scan-summary for a quick health read
   } catch(err) {
     console.error('[scan-summary]', err.message);
     res.status(500).json({ ok: false, error: err.message });

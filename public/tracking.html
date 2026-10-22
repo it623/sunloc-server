@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v58U</title>
+<title>Sunloc Tracking Suite v1.0 · build v58V</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v58U</p>
+      <p>Tracking Suite v1.0 · build v58V</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v58U</p>
+      <p>Tracking Suite v1.0 · build v58V</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -2245,7 +2245,7 @@ async function pullFromServer(force){
     let _ssOk = false, _bsOk = false, _wOk = false;
     const [_wRes, _ssRes, _bsRes, _psRes] = await Promise.allSettled([
       _wNeed  ? fetch(serverUrl+'/api/tracking/wastage',{signal:AbortSignal.timeout(15000)})      : Promise.resolve(null),
-      _ssNeed ? fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(15000)}) : Promise.resolve(null),
+      _ssNeed ? fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(40000)}) : Promise.resolve(null),   // v58V: the full-history aggregate gets 40 s, not 15 — a timeout here blanks every report
       _bsNeed ? fetch(serverUrl+'/api/tracking/box-stages',{signal:AbortSignal.timeout(20000)})   : Promise.resolve(null),
       fetch(serverUrl+'/api/daily-printing/salvage-pct',{signal:AbortSignal.timeout(15000)}),
     ]);
@@ -2272,8 +2272,16 @@ async function pullFromServer(force){
       const ss = _ssRes.status==='fulfilled' ? _ssRes.value : null;
       if(ss&&ss.ok){
         const sj=await ss.json();
-        if(sj.ok){
-          _ssOk = true;
+        // v58V DATA-INTEGRITY GUARD (same class as labels / wastage): an EMPTY summary while we hold a
+        // non-empty one is suspect (deploy restart, DB not ready, aggregate failure) — keep what we have,
+        // never persist the emptiness. Report E / NSR exported all-zero scan and dispatch columns because
+        // exactly this overwrite happened and was then saved to localStorage.
+        const _sjEmpty = !sj.summary || Object.keys(sj.summary).length===0;
+        if(sj.ok && _sjEmpty && hasScanSummary()){
+          console.warn('[scan-summary] server returned an EMPTY summary but local has '+Object.keys(state.scanSummary).length+' batches — NOT overwriting');
+          window._ssStale = true;
+        } else if(sj.ok){
+          _ssOk = true; window._ssStale = false;
           state.scanSummary  = sj.summary   || {};
           state.wastageSummary = sj.wastage  || {};
           state.dispatchedSummary = sj.dispatched || {};
@@ -2304,7 +2312,8 @@ async function pullFromServer(force){
           });
         }
       }
-    }catch(e36){ console.warn('STEP 3.6 scan-summary failed:',e36?.message||e36); }
+      else if(ss && !ss.ok){ window._ssStale = true; console.warn('[scan-summary] HTTP '+ss.status+' — keeping the last good summary'); }   // v58V: 503 SCAN_SUMMARY_INCOMPLETE etc.
+    }catch(e36){ window._ssStale = true; console.warn('STEP 3.6 scan-summary failed:',e36?.message||e36); }
 
     // STEP 3.7 (v40 P18.14): Server-authoritative box stages — full DB, no limits.
     // Combines per-box scans with Phase 18 dispatch records so Batch Tracker shows
@@ -16026,6 +16035,7 @@ document.querySelectorAll('thead th').forEach((th,col)=>{
   // works even if popup is blocked or user is on mobile. Search input + sticky headers added.
   document.getElementById('report-output').innerHTML = `<div class="card">
     <div class="section-title mb-8">Report E — Machine-wise Production Tracking Sheet</div>
+    ${_v58vScanGuardHtml()}
     ${_v41_agradeToggleHtml('renderReportE')}
     <div class="text-sm text-muted mb-12">${dateLabel} · ${rows.length} batch rows</div>
     <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:16px">
@@ -18924,7 +18934,37 @@ function _v52lAppendNsrSheet(wb, rows, done) {
                   _build({}); });   // offline → sheet still builds, price cells blank for manual entry
 }
 
+// v58V (Ishan, 22 Oct): Report E / NSR must never be read or exported with the scan summary missing — every
+// Scan-In / Scan-Out / salvage / A-grade / dispatch column would be 0 and look like a fact. The banner says
+// so and offers a reload; the export refuses until the summary is back (admin may override knowingly).
+function _v58vScanGuardHtml(){
+  if(hasScanSummary() && !window._ssStale) return '';
+  const why = hasScanSummary() ? 'The last scan-summary refresh from the server failed — these figures are from the previous successful load.' : 'The scan summary has not loaded from the server — Scan-In, Scan-Out, salvage, A-grade and Dispatch columns are BLANK (shown as 0), not zero in reality.';
+  return `<div style="background:#3a1a1a;border:1px solid #ff5252;border-left:4px solid #ff5252;border-radius:6px;padding:10px 12px;margin-bottom:10px;font-size:12.5px;color:#ffd6d6">
+    <b>⚠ Scan data ${hasScanSummary() ? 'may be stale' : 'not loaded'}.</b> ${why}
+    <button class="btn btn-sm" style="margin-left:10px" onclick="_v58vReloadScanSummary()">Reload scan data</button></div>`;
+}
+async function _v58vReloadScanSummary(){
+  toast('Reloading the scan summary…', '#1a3a2e');
+  try{
+    const r = await fetch(serverUrl+'/api/tracking/scan-summary',{signal:AbortSignal.timeout(40000)});
+    const j = r.ok ? await r.json() : null;
+    if(j && j.ok && j.summary && Object.keys(j.summary).length){
+      state.scanSummary = j.summary; state.wastageSummary = j.wastage||{}; state.dispatchedSummary = j.dispatched||{}; state.grossSummary = j.grossByBatch||state.grossSummary; state.grossOverrides = j.grossOverrides||state.grossOverrides;
+      window._ssStale = false; if(typeof _v41_clearAgradeMonthCache==='function') _v41_clearAgradeMonthCache(); saveLocal();
+      toast('Scan summary loaded — '+Object.keys(j.summary).length+' batches', '#1a3a2e');
+      if(typeof window._activeReport==='function') window._activeReport(true);
+    } else {
+      let d = ''; try{ const e = r.ok ? j : await r.json(); d = (e && (e.error||'')) + (e && e.detail ? ' — '+[].concat(e.detail).join('; ') : ''); }catch(_){}
+      toast('Scan summary still unavailable (HTTP '+r.status+')'+(d?': '+d:'')+' — check the server log for [scan-summary]', '#5a1a1a', 6000);
+    }
+  }catch(e){ toast('Scan summary request failed: '+(e&&e.message||e), '#5a1a1a', 5000); }
+}
 function exportReportE(){
+  if(!hasScanSummary()){   // v58V: refuse to write a sheet whose scan / dispatch columns are blanks
+    toast('Export blocked — the scan summary is not loaded, so Scan-In / Scan-Out / Dispatch would export as 0. Use "Reload scan data" first.', '#5a1a1a', 6000);
+    if(!(state.currentUser && state.currentUser.role==='admin' && confirm('Scan summary is NOT loaded. Export anyway with blank scan and dispatch columns?'))) return;
+  } else if(window._ssStale && !confirm('The last scan-summary refresh failed; this sheet uses the previous successful load. Export anyway?')) return;
   // v49V (locked scope): SINGLE ROW MODEL — the render body emits window._rptERows and this export
   // serializes THOSE SAME rows, so view and export match row-for-row BY CONSTRUCTION. This kills
   // the month-slice divergence: the old export recomputed everything cumulatively (_reconGross,
