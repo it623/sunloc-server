@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v58X</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59A</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -764,6 +764,27 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
 </div>
 
 <div id="page-settings" class="page">
+  <!-- v59A: device identity — names this browser in every save, audit row and day history -->
+  <div class="card" id="dpr-device-card">
+    <div class="card-title">📱 This device</div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">Every save from this browser is recorded under this id, so a day's history names the device — not a server address. Give it a name people recognise (e.g. <i>GF tablet</i>, <i>Rahul laptop</i>).</div>
+    <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+      <div class="modal-fgrp" style="margin:0"><label>Device name</label><input type="text" id="dev-label" maxlength="32" placeholder="GF tablet" style="min-width:180px"></div>
+      <button class="btn btn-secondary btn-sm" onclick="dprSaveDeviceLabel()">Save name</button>
+      <div style="font-size:12px;color:var(--t2)">Id: <b id="dev-id" style="font-family:var(--mono)"></b></div>
+    </div>
+  </div>
+  <!-- v58Y: save history of a floor-day + one-step restore (admin) -->
+  <div class="card" id="dpr-savelog-card">
+    <div class="card-title">🕘 Day history &amp; restore</div>
+    <div style="font-size:12px;color:var(--t3);margin-bottom:8px">Every save of a floor-day is kept with the day as it stood before it — who saved, from where, and what the save removed. An Admin can put a day back to the state before any save.</div>
+    <div style="display:flex;gap:8px;align-items:end;flex-wrap:wrap">
+      <div class="modal-fgrp" style="margin:0"><label>Floor</label><select id="sl-floor"><option value="GF">Ground Floor</option><option value="FF">First Floor</option><option value="SF">Second Floor</option></select></div>
+      <div class="modal-fgrp" style="margin:0"><label>Date</label><input type="date" id="sl-date"></div>
+      <button class="btn btn-secondary btn-sm" onclick="dprLoadSaveLog()">Show history</button>
+    </div>
+    <div id="sl-out" style="margin-top:10px;font-size:12px"></div>
+  </div>
   <div class="card">
     <div class="card-title">🔗 Server Sync Configuration</div>
     <div class="sync-row" id="settingsSyncStatus">Checking server...</div>
@@ -1005,6 +1026,70 @@ function _localYMD(dt){ const d=dt||new Date(); return `${d.getFullYear()}-${Str
 function today(){ return _localYMD(new Date()); }
 function getDate(){ return document.getElementById('ndate').value || today(); }
 function skey(fl,d){ return `dpr3_${fl}_${d}`; }
+// ═══ v59A (Ishan, 26 Oct) — self-healing sync ═══════════════════════════════════════════════════════════════
+// Every copy of a day this device holds is paired with the SERVER copy it came from (the "base", with its
+// revision). A save sends the base revision and the list of slots that differ from the base; the server
+// applies only those slots when it has moved on. Freshness is decided by revision, never by device clocks.
+// A persistent device id travels with every save so the log names the device, not a Railway proxy address.
+function bkey(fl,d){ return `dpr3b_${fl}_${d}`; }
+function _dprDeviceId(){
+  try{
+    let id = localStorage.getItem('dpr_device_id');
+    if(!id){ id = Math.random().toString(36).slice(2,6).toUpperCase() + '-' + Math.random().toString(36).slice(2,6).toUpperCase(); localStorage.setItem('dpr_device_id', id); }
+    const label = (localStorage.getItem('dpr_device_label')||'').trim();
+    return label ? (label.replace(/[^\w .-]/g,'').slice(0,32) + '/' + id) : id;
+  }catch(_){ return 'nostorage'; }
+}
+function _dprLoadBase(fl,d){ try{ const r = localStorage.getItem(bkey(fl,d)); return r ? JSON.parse(r) : null; }catch(_){ return null; } }
+function _dprSetBase(fl,d,rev,data){ try{ if(data) localStorage.setItem(bkey(fl,d), JSON.stringify({rev: Number(rev)||0, data})); }catch(_){} }
+// canonical form of a slot — blank lines and empty strings do not count as a difference
+function _dprSlotSig(x){
+  if(x==null) return '';
+  if(Array.isArray(x)){ const a=x.map(_dprSlotSig).filter(v=>v!==''); return a.length ? JSON.stringify(a) : ''; }
+  if(typeof x==='object'){ const o={}; Object.keys(x).sort().forEach(k=>{ if(k.startsWith('_')) return; const v=_dprSlotSig(x[k]); if(v!=='') o[k]=v; }); const r=JSON.stringify(o); return r==='{}' ? '' : r; }
+  const s=String(x).trim(); return s==='' ? '' : JSON.stringify(s);
+}
+function _dprDirtySlots(fl,d,data){
+  const base=_dprLoadBase(fl,d); if(!base||!base.data) return null;     // no base yet → legacy full save
+  const out=[]; const B=base.data||{}, D=data||{};
+  const shifts=new Set([...Object.keys(B.shifts||{}), ...Object.keys(D.shifts||{})]);
+  for(const sh of shifts){
+    const bs=(B.shifts||{})[sh]||{}, ds=(D.shifts||{})[sh]||{};
+    const mcs=new Set([...Object.keys(bs.machines||{}), ...Object.keys(ds.machines||{})]);
+    for(const mc of mcs){ if(_dprSlotSig((bs.machines||{})[mc])!==_dprSlotSig((ds.machines||{})[mc])) out.push(sh+'|'+mc); }
+    const bst={...bs}, dst={...ds}; delete bst.machines; delete dst.machines;
+    if(_dprSlotSig(bst)!==_dprSlotSig(dst)) out.push(sh+'|_staff');
+  }
+  const bd={...B}, dd={...D}; delete bd.shifts; delete dd.shifts;
+  if(_dprSlotSig(bd)!==_dprSlotSig(dd)) out.push('_day');
+  return out;
+}
+// lay this device's changed slots over a fresher server copy (the mirror of the server's merge)
+function _dprMergeOnto(serverData, localData, dirty){
+  const out=JSON.parse(JSON.stringify(serverData||{})); out.shifts=out.shifts||{};
+  for(const k of (dirty||[])){
+    if(k==='_day'){ Object.keys(localData||{}).forEach(f=>{ if(f!=='shifts'&&!f.startsWith('_')) out[f]=localData[f]; }); continue; }
+    const i=k.indexOf('|'); if(i<0) continue; const sh=k.slice(0,i), mc=k.slice(i+1);
+    const ls=((localData||{}).shifts||{})[sh]; out.shifts[sh]=out.shifts[sh]||{machines:{}}; out.shifts[sh].machines=out.shifts[sh].machines||{};
+    if(mc==='_staff'){ if(ls) Object.keys(ls).forEach(f=>{ if(f!=='machines') out.shifts[sh][f]=ls[f]; }); continue; }
+    const lm=ls&&ls.machines&&ls.machines[mc]; if(lm) out.shifts[sh].machines[mc]=lm; else delete out.shifts[sh].machines[mc];
+  }
+  return out;
+}
+// Take a server copy (GET or save reply) on board: replace the local copy unless this device has changes
+// of its own, in which case those slots are kept on top of the server copy. Returns the data now held.
+function _dprAcceptServer(fl,d,serverData,rev,savedAt,opts){
+  opts=opts||{};
+  const onScreen = (fl===curFloor && d===getDate() && document.getElementById('page-entry')?.classList.contains('on'));
+  let local=null; try{ local = (onScreen && !opts.noDom && typeof collectForm==='function') ? collectForm() : JSON.parse(localStorage.getItem(skey(fl,d))||'null'); }catch(_){ local=null; }
+  const dirty = (local && !opts.force) ? (_dprDirtySlots(fl,d,local)||[]) : [];
+  const held = (dirty.length && local) ? _dprMergeOnto(serverData, local, dirty) : JSON.parse(JSON.stringify(serverData||{}));
+  held._rev = Number(rev)||0; held._savedAt = savedAt ? new Date(savedAt).getTime() : Date.now();
+  try{ localStorage.setItem(skey(fl,d), JSON.stringify(held)); }catch(_){}
+  _dprSetBase(fl,d,rev,serverData);
+  return { data: held, kept: dirty };
+}
+
 function tgt(fl,mcId){ return parseFloat(targets[`${fl}_${mcId}`]||8); }
 
 // ── DPR range setter functions ────────────────────────────────
@@ -1455,7 +1540,18 @@ async function syncFromServer(fl, d){
     if(!r.ok) return;
     const j=await r.json();
     if(j.data){
-      // Only update localStorage if server savedAt is after our last save time
+      // v59A: freshness by revision. Same revision → nothing to do. Different → take the server copy,
+      // keeping only the slots this device changed since the copy it holds (none, for an idle tablet).
+      if(j.rev!==undefined && j.rev!==null){
+        const localRaw = localStorage.getItem(skey(fl,d));
+        let localRev = null; try{ localRev = localRaw ? JSON.parse(localRaw)._rev : null; }catch(_){}
+        if(localRev!==Number(j.rev) || !_dprLoadBase(fl,d)){
+          const R=_dprAcceptServer(fl,d,j.data,j.rev,j.savedAt);
+          console.log('[DPR v59A] synced', fl, d, 'rev', j.rev, R.kept.length ? ('keeping own changes: '+R.kept.join(',')) : '');
+        }
+        return;
+      }
+      // (pre-v59A server) Only update localStorage if server savedAt is after our last save time
       const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
       const localRaw = localStorage.getItem(skey(fl,d));
       const localSavedAt = localRaw ? (JSON.parse(localRaw)._savedAt || 0) : 0;
@@ -1518,6 +1614,7 @@ function saveDay(){
 function _doSaveDay(fl, d){
   const data=collectForm();
   data._savedAt = Date.now();
+  try{ const prev=JSON.parse(localStorage.getItem(skey(fl,d))||'null'); if(prev && prev._rev!==undefined) data._rev=prev._rev; }catch(_){}   // v59A: carry the revision this copy came from
   localStorage.setItem(skey(fl,d),JSON.stringify(data));
   setUnsaved(false);
   _dprLastSaveTime = Date.now(); // block fetch for 10s after save
@@ -1724,9 +1821,14 @@ async function _dprPushRawInner(fl,d,data){
         .some(s => s.dataset.forceEntry === '1');
     const r=await fetch(serverUrl+'/api/dpr/save',{
       method:'POST',
-      headers:{'Content-Type':'application/json','X-User-Role':(dprUser?.role||'')},
+      headers:{'Content-Type':'application/json','X-User-Role':(dprUser?.role||''),'X-Sunloc-Device':_dprDeviceId()},   // v59A: device named on every save
       body:JSON.stringify({
         floor:fl,date:d,data,actuals,
+        // v59A: the revision this copy came from and the slots this device changed against it. The server
+        // applies only those slots when it has moved on; with none, it writes nothing and sends the day back.
+        baseRev: (()=>{ const b=_dprLoadBase(fl,d); return (b && data && data._rev!==undefined) ? Number(data._rev) : (b ? Number(b.rev) : null); })(),
+        dirtySlots: _dprDirtySlots(fl,d,data) || undefined,
+        deviceId: _dprDeviceId(),
         // v50K: declare the machines THIS floor view is authoritative for. The server replaces only
         // these, so a machine this client never loaded keeps its rows — and a machine that IS on
         // screen but left blank is still cleared, because it is in scope. Without this, a stale or
@@ -1736,14 +1838,41 @@ async function _dprPushRawInner(fl,d,data){
         userRole: dprUser?.role || '',
         userName: dprUser?.username || dprUser?.name || '',
         forceEntry: _forceEntryAny,
+        confirmShrink: !!(window._dprConfirmShrink && window._dprConfirmShrink[fl+'|'+d]),   // v58Y: admin confirmed a removal once
       }),
       signal:AbortSignal.timeout(30000)   // v53L: was 15 s — a slow-but-succeeding save was abandoned and re-queued
     });
+    if(r.status===409){
+      // v58Y (Ishan, 26 Oct — GF 24 Oct wiped from 167.5 L to 61.45 L): the server refused this save because it would
+      // REMOVE production other devices entered — this device's copy of the day is stale. The queued save is dropped
+      // (returning true dequeues it; retrying would refuse forever), the day is reloaded from the server, and the
+      // operator sees exactly what would have been lost. An Admin can confirm the removal if it is intended.
+      let j = {}; try { j = await r.json(); } catch(_){}
+      if (j && j.error==='DPR_SHRINK_BLOCKED') { _dprShrinkBlocked(fl, d, j); setSyncBadge('synced'); return true; }
+    }
     if(r.ok){
       // Update _savedAt in localStorage from server-confirmed time
       // This ensures fetchDayFromServer staleness check is accurate
       try{
         const j=await r.json();
+        // v59A: the server answers with the revision it now holds; a stale push is a no-op and a save that
+        // raced another device comes back merged — in both cases this device takes the server's copy on board.
+        if(j.stale && j.data){
+          _dprAcceptServer(fl,d,j.data,j.rev,j.savedAt,{force:true});
+          toast('↻ This device had an older copy of '+fl+' '+d+' — nothing was changed on the server; the screen now shows the current entries.','var(--amber)',6000);
+          if(fl===curFloor && d===getDate()){ try{ renderShifts(); renderRemarks(); renderResort(); renderDayKpis(); }catch(_){} }
+          return true;
+        }
+        if(j.data && (j.merged>0 || (j.refused&&j.refused.length))){
+          _dprAcceptServer(fl,d,j.data,j.rev,j.savedAt,{force:true});
+          if(j.merged>0) toast('✓ Saved — your '+j.merged+' change(s) were merged with entries made on other devices.','var(--green)',5000);
+          if(fl===curFloor && d===getDate()){ try{ renderShifts(); renderRemarks(); renderResort(); renderDayKpis(); }catch(_){} }
+        } else if(j.rev!==undefined && j.rev!==null){
+          const raw=localStorage.getItem(skey(fl,d));
+          const saved=raw?JSON.parse(raw):data; saved._rev=Number(j.rev); if(j.savedAt) saved._savedAt=new Date(j.savedAt).getTime();
+          localStorage.setItem(skey(fl,d),JSON.stringify(saved));
+          const b={...saved}; delete b._rev; delete b._savedAt; _dprSetBase(fl,d,j.rev,b);
+        }
         if(j.savedAt){
           const raw=localStorage.getItem(skey(fl,d));
           if(raw){
@@ -1813,6 +1942,78 @@ async function _dprPushRawInner(fl,d,data){
     setSyncBadge('offline'); return false;
   }
 }
+// v58Y: Settings → Day history & restore
+async function dprLoadSaveLog(){
+  const fl = document.getElementById('sl-floor').value, d = document.getElementById('sl-date').value, out = document.getElementById('sl-out');
+  if(!d){ out.innerHTML = '<span style="color:var(--red)">Pick a date</span>'; return; }
+  out.innerHTML = 'Loading…';
+  try{
+    const r = await fetch(serverUrl+'/api/dpr/save-log?floor='+encodeURIComponent(fl)+'&date='+encodeURIComponent(d), {signal:AbortSignal.timeout(10000)});
+    const j = await r.json(); if(!j.ok) throw new Error(j.error||'failed');
+    if(!j.rows.length){ out.innerHTML = 'No saves recorded for '+fl+' '+d+' since v58Y went live.'; return; }
+    const isAdmin = dprUser?.role === 'admin';
+    const ist = ts => { const t = new Date(String(ts).replace(' ','T') + (/Z$|[+-]\d\d:?\d\d$/.test(String(ts))?'':'Z')); return isNaN(t) ? String(ts) : t.toLocaleString('en-IN',{day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit',hour12:false,timeZone:'Asia/Kolkata'}); };
+    out.innerHTML = '<div style="overflow:auto"><table style="width:100%;border-collapse:collapse"><thead><tr style="color:var(--t3)"><th style="text-align:left;padding:4px 6px">When (IST)</th><th style="text-align:left;padding:4px 6px">By</th><th style="text-align:left;padding:4px 6px">From</th><th style="text-align:right;padding:4px 6px">Day before (L)</th><th style="text-align:right;padding:4px 6px">Payload (L)</th><th style="text-align:right;padding:4px 6px">Removed (L)</th><th style="text-align:left;padding:4px 6px">Removed on</th><th style="text-align:left;padding:4px 6px">Result</th><th></th></tr></thead><tbody>'
+      + j.rows.map(r=>`<tr style="border-top:1px solid var(--b1)"><td style="padding:4px 6px;white-space:nowrap">${ist(r.saved_at)}</td><td style="padding:4px 6px">${r.saved_by||'—'}${r.role?' <span style="color:var(--t3)">['+r.role+']</span>':''}</td><td style="padding:4px 6px;font-family:var(--mono);font-size:11px">${r.ip||''}</td>`
+        + `<td style="padding:4px 6px;text-align:right;font-family:var(--mono)">${Number(r.before_total||0).toFixed(2)}</td><td style="padding:4px 6px;text-align:right;font-family:var(--mono)">${Number(r.after_total||0).toFixed(2)}</td>`
+        + `<td style="padding:4px 6px;text-align:right;font-family:var(--mono);color:${Number(r.purged_total)>0.005?'var(--red)':'var(--t3)'}">${Number(r.purged_total||0).toFixed(2)}</td>`
+        + `<td style="padding:4px 6px;font-size:11px">${(r.purged||[]).map(p=>p.machine+'/'+p.shift+' '+Number(p.qty).toFixed(1)).join(', ')||'—'}</td>`
+        + `<td style="padding:4px 6px">${r.blocked?'<span style="color:var(--red)">refused</span>':(r.confirmed?'<span style="color:#b45309">admin confirmed</span>':'saved')}</td>`
+        + `<td style="padding:4px 6px">${isAdmin && Number(r.before_total||0)>0 ? '<button class="btn btn-secondary btn-sm" onclick="dprRestoreDay('+r.id+',\''+fl+'\',\''+d+'\','+Number(r.before_total||0).toFixed(2)+')">Restore day as before this save</button>' : ''}</td></tr>`).join('')
+      + '</tbody></table></div><div style="color:var(--t3);margin-top:6px">"Day before" is the floor-day total the server held when that save arrived. Restoring puts production_actuals and the day record back to that state; the restore is itself logged and reversible.</div>';
+  }catch(e){ out.innerHTML = '<span style="color:var(--red)">'+(e.message||e)+'</span>'; }
+}
+async function dprRestoreDay(logId, fl, d, total){
+  if(!confirm('Restore '+fl+' '+d+' to the state before save #'+logId+' ('+total+' L)?\n\nThe current state is logged first, so this can be undone the same way.')) return;
+  try{
+    const r = await fetch(serverUrl+'/api/dpr/restore-day', { method:'POST', headers:{'Content-Type':'application/json','X-User-Role':(dprUser?.role||'')}, body: JSON.stringify({ logId, userRole: dprUser?.role||'', userName: dprUser?.username||dprUser?.name||'' }), signal:AbortSignal.timeout(20000) });
+    const j = await r.json(); if(!j.ok) throw new Error(j.error||'failed');
+    localStorage.removeItem(skey(fl,d)); _dprPendingSaves.delete(fl+'|'+d);
+    alert('Restored: '+j.rows+' rows, '+j.total+' L for '+fl+' '+d+'. Every device will pick up the restored day on its next load.');
+    dprLoadSaveLog();
+    if (fl===curFloor && d===getDate()) { await _dprReloadDayFromServer(fl, d); }
+  }catch(e){ alert('Restore failed: '+(e.message||e)); }
+}
+// v58Y: the save was refused outright (nothing written). Show what it would have removed, reload the day.
+function dprSaveDeviceLabel(){
+  try{ localStorage.setItem('dpr_device_label', (document.getElementById('dev-label')?.value||'').trim()); }catch(_){}
+  dprRenderDeviceCard(); toast('Device name saved','var(--green)');
+}
+function dprRenderDeviceCard(){
+  try{ const id=document.getElementById('dev-id'); if(id) id.textContent=_dprDeviceId(); const l=document.getElementById('dev-label'); if(l && !l.value) l.value=localStorage.getItem('dpr_device_label')||''; }catch(_){}
+}
+async function _dprReloadDayFromServer(fl, d){
+  try{
+    const r = await fetch(serverUrl+'/api/dpr/'+encodeURIComponent(fl)+'/'+d, {signal:AbortSignal.timeout(8000)});
+    const j = r.ok ? await r.json() : null;
+    if (j && j.data) { _dprAcceptServer(fl,d,j.data,j.rev||0,j.savedAt,{force:true}); }   // v59A
+    else { localStorage.removeItem(skey(fl,d)); localStorage.removeItem(bkey(fl,d)); }
+  }catch(e){ console.warn('[v58Y] reload failed', e?.message); }
+  _dprPendingSaves.delete(fl+'|'+d);
+  if (fl===curFloor && d===getDate()) { try { renderShifts(); renderDayKpis(); } catch(_){} }
+}
+function _dprShrinkBlocked(fl, d, j){
+  try { const old = document.getElementById('dpr-shrink-modal'); if (old) old.remove(); } catch(_){}
+  const wrap = document.createElement('div');
+  wrap.id = 'dpr-shrink-modal';
+  wrap.style.cssText = 'position:fixed;inset:0;background:rgba(0,0,0,.6);z-index:99999;display:flex;align-items:center;justify-content:center;padding:20px';
+  const rows = (j.purged||[]).map(p=>`<tr><td style="padding:2px 8px">${p.machine}</td><td style="padding:2px 8px">${p.shift}</td><td style="padding:2px 8px;text-align:right;font-family:var(--mono)">${Number(p.qty).toFixed(2)}</td></tr>`).join('');
+  const isAdmin = dprUser?.role === 'admin';
+  // v58Z (GF 24-Oct): a stale device re-pushed its old copy twice in one day (14:22 and 19:07 IST), the
+  // second time wiping a re-entry in progress. A refused non-admin device must lose its stale copy NOW —
+  // not when somebody happens to look at the tablet and clicks. Admins keep theirs so "remove anyway" can still send it.
+  if (!isAdmin) { try { _dprReloadDayFromServer(fl, d); } catch(_){} }
+  wrap.innerHTML = `<div style="background:#fff;color:#1a1208;border-radius:10px;max-width:560px;width:100%;padding:18px 20px;box-shadow:0 10px 40px rgba(0,0,0,.4);font-size:13px;line-height:1.5">
+    <div style="font-size:16px;font-weight:800;color:#b91c1c;margin-bottom:6px">⛔ Save refused — it would delete production already entered</div>
+    <div><b>${fl} · ${d}</b>: the server holds <b>${Number(j.beforeTotal||0).toFixed(2)} L</b> for this day; this device was about to save <b>${Number(j.incomingTotal||0).toFixed(2)} L</b> and remove <b style="color:#b91c1c">${Number(j.purgedTotal||0).toFixed(2)} L</b> on ${j.machines} machine(s):</div>
+    <div style="max-height:180px;overflow:auto;margin:8px 0;border:1px solid #e5e7eb;border-radius:6px"><table style="width:100%;border-collapse:collapse;font-size:12px"><thead><tr style="background:#f3f4f6"><th style="text-align:left;padding:3px 8px">Machine</th><th style="text-align:left;padding:3px 8px">Shift</th><th style="text-align:right;padding:3px 8px">L entered</th></tr></thead><tbody>${rows}</tbody></table></div>
+    <div style="background:#fef3c7;border:1px solid #f59e0b;border-radius:6px;padding:8px 10px;font-size:12px">This happens when a device's copy of the day is older than the server's (a tablet that opened the day earlier, or a save queued while offline). <b>Nothing was written.</b> ${isAdmin ? 'Reload the day from the server, then re-enter only your own correction and save again.' : 'This device\'s copy has been replaced with the server\'s; re-enter only your own correction and save again.'}</div>
+    <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:12px;flex-wrap:wrap">
+      ${isAdmin ? `<button class="btn btn-secondary btn-sm" onclick="(window._dprConfirmShrink=window._dprConfirmShrink||{})['${fl}|${d}']=true;document.getElementById('dpr-shrink-modal').remove();_dprPushRaw('${fl}','${d}',JSON.parse(localStorage.getItem(skey('${fl}','${d}'))||'{}')).then(()=>{delete window._dprConfirmShrink['${fl}|${d}'];})" style="border-color:#b91c1c;color:#b91c1c" title="Admin only — writes this device's figures and removes the listed entries (audited)">Admin: remove anyway</button>` : ''}
+      <button class="btn btn-primary btn-sm" onclick="document.getElementById('dpr-shrink-modal').remove();_dprReloadDayFromServer('${fl}','${d}')">${isAdmin ? 'Reload the day from server' : 'OK'}</button>
+    </div></div>`;
+  document.body.appendChild(wrap);
+}
 // v49ZA: blocking rejection modal — the save partially succeeded; the listed rows were REFUSED and
 // their previous server values restored. Requires explicit acknowledgement (no outside-click close).
 function _dprShowRejectionModal(lines, hasClosed){
@@ -1876,6 +2077,12 @@ async function fetchDayFromServer(fl, d){
     if(!r.ok) return null;
     const j=await r.json();
     if(j.data){
+      if(j.rev!==undefined && j.rev!==null){   // v59A: revision rule (see syncFromServer)
+        const localRaw = localStorage.getItem(skey(fl,d));
+        let localRev = null; try{ localRev = localRaw ? JSON.parse(localRaw)._rev : null; }catch(_){}
+        if(localRev!==Number(j.rev) || !_dprLoadBase(fl,d)) return _dprAcceptServer(fl,d,j.data,j.rev,j.savedAt,{noDom:true}).data;
+        return localRaw ? JSON.parse(localRaw) : null;
+      }
       // Only overwrite local data if server's savedAt is newer than our local savedAt
       const serverSavedAt = j.savedAt ? new Date(j.savedAt).getTime() : 0;
       const localRaw = localStorage.getItem(skey(fl,d));
@@ -5018,6 +5225,7 @@ function loadRecord(fl,d){
 // SETTINGS
 // ═══════════════════════════════════════════════════════
 function renderSettings(){
+  try{ dprRenderDeviceCard(); }catch(_){}   // v59A
   // Sync status
   const su=document.getElementById('settingsSyncStatus');
   if(su) su.innerHTML=serverUrl?`Connected to: <b style="color:var(--cyan)">${serverUrl}</b>`:'<span style="color:var(--amber)">Offline mode — no server configured</span>';
@@ -5450,11 +5658,17 @@ function importData(input){
         if(records.length > 0){
           fetch(serverUrl+'/api/dpr/bulk-import',{
             method:'POST',
-            headers:{'Content-Type':'application/json'},
-            body:JSON.stringify({records}),
+            headers:{'Content-Type':'application/json','X-Sunloc-Device':_dprDeviceId()},
+            body:JSON.stringify({records, userName: dprUser?.username || dprUser?.name || 'dpr', userRole: dprUser?.role || '', deviceId:_dprDeviceId()}),   // v58Z: attributed like a save
             signal:AbortSignal.timeout(60000)
           }).then(r=>r.json()).then(d=>{
             if(d.ok) toast('✅ '+d.saved+' DPR records saved to server','var(--green)',5000);
+            else if(d.error==='DPR_SHRINK_BLOCKED'){
+              // v58Z: the backup is older than the server for these days — nothing was imported; put the
+              // server's copies back on this device so the stale ones cannot be pushed later by auto-sync.
+              (d.blocked||[]).forEach(b=>{ try{ _dprReloadDayFromServer(b.floor,b.date); }catch(_){} });
+              alert('⛔ Import refused — nothing was written.\n\n'+(d.detail||'')+'\n\nThe server copies of those days have been reloaded on this device.');
+            }
             else toast('⚠️ Server save failed: '+d.error,'var(--amber)',5000);
           }).catch(()=>toast('⚠️ Could not reach server','var(--amber)',4000));
         }

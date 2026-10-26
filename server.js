@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v58X';
+const APP_BUILD = 'v59A';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -1262,6 +1262,51 @@ const MIGRATIONS = [
       DROP INDEX IF EXISTS idx_gpr_ledger_autosync;
       CREATE UNIQUE INDEX IF NOT EXISTS idx_gpr_ledger_autosync_day
         ON gpr_ledger(batch_number, account, source, (COALESCE(receipt_ref,''))) WHERE source = 'tracking';
+    `
+  },
+  {
+    version: 92,
+    name: 'v58y_dpr_save_log',
+    // v58Y (Ishan, 26 Oct — GF 24 Oct: 167.5 L on the morning plant report, 61.45 L by evening): every DPR
+    // save keeps the floor-day AS IT WAS before the save (the production_actuals rows and the day record),
+    // who saved, from where, and what the save removed — so a day that was overwritten can be put back
+    // in one step, and the overwrite can be attributed. Saves that would wipe entered production are
+    // refused unless an admin confirms (see /api/dpr/save).
+    sql: `
+      CREATE TABLE IF NOT EXISTS dpr_save_log (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        floor TEXT NOT NULL,
+        date TEXT NOT NULL,
+        saved_at TEXT NOT NULL DEFAULT (datetime('now')),
+        saved_by TEXT,
+        role TEXT,
+        ip TEXT,
+        before_total REAL,
+        after_total REAL,
+        purged_total REAL,
+        purged_json TEXT,
+        scope_json TEXT,
+        before_actuals_json TEXT,
+        before_record_json TEXT,
+        blocked INTEGER DEFAULT 0,
+        confirmed INTEGER DEFAULT 0
+      );
+      CREATE INDEX IF NOT EXISTS idx_dpr_save_log_day ON dpr_save_log(floor, date, saved_at);
+    `
+  },
+  {
+    version: 93,
+    name: 'v59a_dpr_rev_device',
+    // v59A (Ishan, 26 Oct — "devise a system which self-heals and blocks stale entries from re-syncing"):
+    // every day record carries a revision number that moves on every write. A client saves against the
+    // revision it loaded; when the server has moved on, only the slots the client actually changed are
+    // merged onto the server's copy — a device holding an old copy can no longer put the day back, whoever
+    // it is. The save log also records the device (a persistent id each browser generates) and the merge.
+    sql: `
+      ALTER TABLE dpr_records ADD COLUMN rev INTEGER DEFAULT 0;
+      ALTER TABLE dpr_save_log ADD COLUMN device TEXT;
+      ALTER TABLE dpr_save_log ADD COLUMN base_rev INTEGER;
+      ALTER TABLE dpr_save_log ADD COLUMN merged_json TEXT;
     `
   },
   {
@@ -3834,6 +3879,15 @@ async function ensurePostgresTables() {
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_audit_ts ON audit_log(ts DESC)`).catch(()=>{});
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_prod_actuals_date ON production_actuals(date, machine_id)`).catch(()=>{});
     await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_records_date ON dpr_records(date)`).catch(()=>{});
+    // v58Y: per-save snapshot of a DPR floor-day (restore + attribution)
+    await pgPool.query(`CREATE TABLE IF NOT EXISTS dpr_save_log (
+      id SERIAL PRIMARY KEY, floor TEXT NOT NULL, date TEXT NOT NULL, saved_at TEXT NOT NULL DEFAULT (NOW()::TEXT),
+      saved_by TEXT, role TEXT, ip TEXT, before_total REAL, after_total REAL, purged_total REAL, purged_json TEXT, scope_json TEXT,
+      before_actuals_json TEXT, before_record_json TEXT, blocked INTEGER DEFAULT 0, confirmed INTEGER DEFAULT 0)`).catch(()=>{});
+    await pgPool.query(`CREATE INDEX IF NOT EXISTS idx_dpr_save_log_day ON dpr_save_log(floor, date, saved_at)`).catch(()=>{});
+    // v59A: record revision + device attribution
+    await pgPool.query(`ALTER TABLE dpr_records ADD COLUMN IF NOT EXISTS rev INTEGER DEFAULT 0`).catch(()=>{});
+    for (const col of ['device TEXT', 'base_rev INTEGER', 'merged_json TEXT']) await pgPool.query(`ALTER TABLE dpr_save_log ADD COLUMN IF NOT EXISTS ${col}`).catch(()=>{});
 
     // v37H: idempotent ALTER for tracking_labels to bring any prod table up to spec
     const labelColumns = [
@@ -15256,9 +15310,26 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
       const client = await pgPool.connect();
       try {
         await client.query('BEGIN');
+        // v58Z (GF 24-Oct loss, 26 Oct): the same shrink guard + before-snapshot as /api/dpr/save. A backup file
+        // is by nature an OLD copy of many days; without this, Settings → Import could silently put every
+        // floor-day back to what one device held when the file was written. Any day the import would shrink
+        // (same thresholds as the single-day save) aborts the WHOLE import unless an admin confirms.
+        const _blocked58z = [];
+        const _confirmed58z = _isAdminCaller && req.body.confirmShrink === true;
         for (const { floor, date, data } of records) {
           if (!floor || !date || !data) continue;
-          await client.query(`INSERT INTO dpr_records (floor, date, data_json) VALUES ($1, $2, $3) ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW()`, [floor, date, JSON.stringify(data)]);
+          try {
+            const _before = (await client.query(`SELECT order_id, batch_number, machine_id, shift, run_index, qty_lakhs, floor FROM production_actuals WHERE floor = $1 AND date = $2`, [floor, date])).rows;
+            const _rr = (await client.query(`SELECT data_json FROM dpr_records WHERE floor = $1 AND date = $2`, [floor, date])).rows[0];
+            const _scope = _v50kScopeMachines(data, null);
+            const A = _v58yPurgeAnalysis(_before, _v58zActualsFromRecord(data), _scope);
+            await _v58yLogSave({ floor, date, saved_by: (req.body.userName || 'dpr') + ' (import)', role: req.body.userRole || req.headers['x-user-role'] || '', ip: req.ip,
+              before_total: A.beforeTotal, after_total: A.incomingTotal, purged_total: A.purgedTotal, purged: A.purged, scope: _scope,
+              before_actuals: _before, before_record: _rr ? _rr.data_json : null, blocked: A.block && !_confirmed58z, confirmed: _confirmed58z });
+            if (A.block && !_confirmed58z) { _blocked58z.push({ floor, date, beforeTotal: A.beforeTotal, incomingTotal: A.incomingTotal, purgedTotal: A.purgedTotal, machines: A.machines, purged: A.purged.slice(0, 12) }); continue; }
+          } catch (e) { console.warn('[v58Z import shrink-guard] skipped for', floor, date, e.message); }
+          if (_blocked58z.length) continue;   // already failing — read the rest for the report, write nothing
+          await client.query(`INSERT INTO dpr_records (floor, date, data_json, rev) VALUES ($1, $2, $3, 1) ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW(), rev = COALESCE(dpr_records.rev, 0) + 1`, [floor, date, JSON.stringify(data)]);
           // Extract actuals from DPR data
           // v50K: same scoping as the single-day save — a bulk import must not erase machines it
           // does not carry.
@@ -15309,9 +15380,16 @@ app.post('/api/dpr/bulk-import', async (req, res) => {
           }
           saved++;
         }
+        if (_blocked58z.length) {
+          await client.query('ROLLBACK');   // the finally below releases the client
+          try { logAudit(req.body.userName || 'dpr', String(req.body.userRole || req.headers['x-user-role'] || ''), 'dpr', 'DPR_BULK_IMPORT_BLOCKED',
+            `${records.length} record(s) — import would remove production on ${_blocked58z.length} day(s): ${_blocked58z.slice(0, 6).map(b => `${b.floor} ${b.date} (${b.purgedTotal} L / ${b.machines} mc)`).join(', ')}${_blocked58z.length > 6 ? ', …' : ''}; nothing written`, req.ip); } catch (_) {}
+          return res.status(409).json({ ok: false, error: 'DPR_SHRINK_BLOCKED', blocked: _blocked58z,
+            detail: `This backup is older than the server for ${_blocked58z.length} day(s) and would remove production already entered (${_blocked58z.slice(0, 4).map(b => `${b.floor} ${b.date}: −${b.purgedTotal} L on ${b.machines} machine(s)`).join('; ')}${_blocked58z.length > 4 ? '; …' : ''}). Nothing was imported. An Admin can confirm the removal if it is intended.` });
+        }
         await client.query('COMMIT');
-      } catch(e) { await client.query('ROLLBACK'); throw e; }
-      finally { client.release(); }
+      } catch(e) { try { await client.query('ROLLBACK'); } catch (_) {} throw e; }
+      finally { try { client.release(); } catch (_) {} }
       // Refresh actuals cache
       await warmActualsCache();
     }
@@ -15351,18 +15429,172 @@ async function _v56uReconcileRefused(floor, date, data, rejected) {
                typed: +typed.toFixed(2), recorded: +recorded.toFixed(2), reason: r.reason || '' });
   }
   if (out.length) {
-    if (pgPool) await pgPool.query('UPDATE dpr_records SET data_json=$1 WHERE floor=$2 AND date=$3', [JSON.stringify(data), floor, date]);
-    else db.prepare('UPDATE dpr_records SET data_json=? WHERE floor=? AND date=?').run(JSON.stringify(data), floor, date);
+    if (pgPool) await pgPool.query('UPDATE dpr_records SET data_json=$1, rev = COALESCE(rev, 0) + 1 WHERE floor=$2 AND date=$3', [JSON.stringify(data), floor, date]);
+    else db.prepare('UPDATE dpr_records SET data_json=?, rev = COALESCE(rev, 0) + 1 WHERE floor=? AND date=?').run(JSON.stringify(data), floor, date);
     console.log(`[v56U refused] ${floor} ${date}: ${out.length} refused line(s) set back to the recorded figure — ` +
       out.map(o => `${o.batchNumber || '?'}@${o.machineId}/${o.shift}/L${o.runIndex + 1} typed ${o.typed} → ${o.recorded}`).join('; '));
   }
   return out;
 }
 
+// ═══ v58Y (Ishan, 26 Oct) — DPR SAVE: SHRINK GUARD + BEFORE-SNAPSHOT ════════════════════════════════════
+// The (machine, shift)-grain replace (v51/v54E) is what lets a client whose copy of the day is out of date —
+// a tablet that opened the day early, went offline, and pushed its queued save later; a stale tab — wipe
+// the entries every other device made since. The guard measures what a save would REMOVE (existing qty on
+// machine·shift slots the payload purges) and refuses the save when it would remove entered production
+// (≥ 0.5 L and either ≥ 25 % of the day or on ≥ 2 machines) unless an admin confirms. Every save (refused or
+// not) first writes the floor-day as it stood into dpr_save_log, so any day can be put back and attributed.
+// v58Z: the bulk import carries day records, not an actuals list — derive the (machine, shift, qty) list the
+// guard needs from the record itself, exactly as the client builds it for a single-day save.
+function _v58zActualsFromRecord(data) {
+  const out = [];
+  for (const [sn, sd] of Object.entries((data && data.shifts) || {})) {
+    for (const [mid, md] of Object.entries((sd && sd.machines) || {})) {
+      const runs = (md && md.runs) || [{ qty: md && md.prod }];
+      runs.forEach(r => { const q = parseFloat(r && r.qty) || 0; if (q > 0) out.push({ machineId: mid, shift: sn, qty: q }); });
+    }
+  }
+  return out;
+}
+function _v58yPurgeAnalysis(preRows, actuals, scope) {
+  const scopeSet = new Set((scope || []).map(String));
+  const shiftsWithData = new Set((actuals || []).filter(a => a && (parseFloat(a.qty) || 0) > 0).map(a => String(a.shift)));
+  const incoming = {};   // 'mc||shift' → qty
+  (actuals || []).forEach(a => { if (!a) return; const q = parseFloat(a.qty) || 0; if (!(q > 0)) return; const k = String(a.machineId) + '||' + String(a.shift); incoming[k] = (incoming[k] || 0) + q; });
+  const before = {};     // 'mc||shift' → qty
+  let beforeTotal = 0;
+  (preRows || []).forEach(r => { const q = parseFloat(r.qty_lakhs) || 0; beforeTotal += q; const k = String(r.machine_id) + '||' + String(r.shift); before[k] = (before[k] || 0) + q; });
+  const purged = [];
+  let purgedTotal = 0;
+  for (const k of Object.keys(before)) {
+    const [mc, sh] = k.split('||');
+    if (!scopeSet.has(mc) || !shiftsWithData.has(sh)) continue;      // slot not touched by this save
+    if (!(incoming[k] > 0) && before[k] > 0.005) { purged.push({ machine: mc, shift: sh, qty: +before[k].toFixed(2) }); purgedTotal += before[k]; }
+  }
+  const incomingTotal = Object.values(incoming).reduce((a, b) => a + b, 0);
+  const machines = new Set(purged.map(p => p.machine)).size;
+  const block = purgedTotal >= 0.5 && (purgedTotal >= 0.25 * beforeTotal || machines >= 2);
+  return { beforeTotal: +beforeTotal.toFixed(2), incomingTotal: +incomingTotal.toFixed(2), purgedTotal: +purgedTotal.toFixed(2), purged, machines, block };
+}
+async function _v58yLogSave(o) {
+  try {
+    const vals = [o.floor, o.date, o.saved_by || null, o.role || null, o.ip || null, o.before_total, o.after_total, o.purged_total,
+      JSON.stringify(o.purged || []), JSON.stringify(o.scope || []), JSON.stringify(o.before_actuals || []), o.before_record == null ? null : (typeof o.before_record === 'string' ? o.before_record : JSON.stringify(o.before_record)),
+      o.blocked ? 1 : 0, o.confirmed ? 1 : 0,
+      o.device || null, (o.base_rev === undefined || o.base_rev === null) ? null : Number(o.base_rev), o.merged ? JSON.stringify(o.merged) : null];   // v59A
+    const cols = '(floor,date,saved_by,role,ip,before_total,after_total,purged_total,purged_json,scope_json,before_actuals_json,before_record_json,blocked,confirmed,device,base_rev,merged_json)';
+    if (pgPool) { const r = await pgPool.query(`INSERT INTO dpr_save_log ${cols} VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17) RETURNING id`, vals); return r.rows[0].id; }
+    return db.prepare(`INSERT INTO dpr_save_log ${cols} VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)`).run(...vals).lastInsertRowid;
+  } catch (e) { console.warn('[v58Y save-log] failed:', e.message); return null; }
+}
+// ═══ v59A (Ishan, 26 Oct) — SELF-HEALING SAVE: revision + slot merge ════════════════════════════════════
+// GF 24-Oct was wiped by a device whose copy of the day was hours old; the operator could not even be found
+// because Railway hides device addresses. Rather than hunting devices, the save itself is made safe:
+//  • every day record carries a revision (rev) that moves on every write; GET returns it;
+//  • a client sends baseRev (the revision its copy came from) and dirtySlots (the slots — machine·shift,
+//    shift staff, day-level — that differ from that copy);
+//  • when the server's rev ≠ baseRev the client's copy is stale: nothing of it is taken as a whole. With no
+//    dirty slots the save is a no-op (the device gets the current day back and replaces its copy); with
+//    dirty slots only those slots are laid over the server's current copy and THAT is saved;
+//  • a persistent per-browser device id travels with every save (audit + save log), so any future question
+//    of "which device" is answered from the log, not from an IP.
+// Clients from before v59A send neither field and keep the v58Y/v58Z behaviour (full replace behind the
+// shrink guard).
+function _v59aActualsFromRecord(data, floor) {
+  const out = [];
+  for (const [sn, sd] of Object.entries((data && data.shifts) || {})) {
+    for (const [mid, md] of Object.entries((sd && sd.machines) || {})) {
+      const runs = (md && Array.isArray(md.runs)) ? md.runs : [{ orderId: md && md.orderId, batchNumber: md && md.batchNumber, qty: md && md.prod }];
+      runs.forEach((r, ri) => { const q = parseFloat(r && r.qty) || 0; if (q > 0) out.push({ floor, machineId: mid, shift: sn, orderId: (r && r.orderId) || null, batchNumber: (r && r.batchNumber) || null, qty: q, runIndex: ri }); });
+    }
+  }
+  return out;
+}
+function _v59aMerge(serverData, clientData, dirty, floor) {
+  const out = JSON.parse(JSON.stringify(serverData || {}));
+  out.shifts = out.shifts || {};
+  const applied = [];
+  for (const k of (dirty || [])) {
+    const key = String(k);
+    if (key === '_day') {
+      for (const f of Object.keys(clientData || {})) if (f !== 'shifts' && !f.startsWith('_')) out[f] = clientData[f];
+      applied.push(key); continue;
+    }
+    const i = key.indexOf('|'); if (i < 0) continue;
+    const sh = key.slice(0, i), mc = key.slice(i + 1);
+    if (!sh || !mc) continue;
+    const cs = ((clientData || {}).shifts || {})[sh];
+    out.shifts[sh] = out.shifts[sh] || { machines: {} };
+    out.shifts[sh].machines = out.shifts[sh].machines || {};
+    if (mc === '_staff') {
+      if (cs) for (const f of Object.keys(cs)) if (f !== 'machines') out.shifts[sh][f] = cs[f];
+      applied.push(key); continue;
+    }
+    const cm = cs && cs.machines && cs.machines[mc];
+    if (cm) out.shifts[sh].machines[mc] = cm; else delete out.shifts[sh].machines[mc];
+    applied.push(key);
+  }
+  for (const f of Object.keys(clientData || {})) if (f.startsWith('_') && out[f] === undefined) out[f] = clientData[f];
+  return { data: out, actuals: _v59aActualsFromRecord(out, floor), applied };
+}
+async function _v59aCurrent(floor, date) {
+  const sql = `SELECT data_json, saved_at, rev FROM dpr_records WHERE floor = ${pgPool ? '$1' : '?'} AND date = ${pgPool ? '$2' : '?'}`;
+  const row = pgPool ? (await pgPool.query(sql, [floor, date])).rows[0] : db.prepare(sql).get(floor, date);
+  if (!row) return null;
+  let data = null; try { data = JSON.parse(row.data_json); } catch (_) {}
+  return { data, savedAt: row.saved_at, rev: Number(row.rev || 0) };
+}
 app.post('/api/dpr/save', async (req, res) => {
   try {
-    const { floor, date, data, actuals } = req.body;
+    let { floor, date, data, actuals } = req.body;
     if (!floor || !date || !data) return res.status(400).json({ ok: false, error: 'Missing floor, date, or data' });
+    // v59A: revision check + slot merge (see block above). Runs BEFORE the shrink guard so the guard judges
+    // what will actually be written.
+    const _device59a = String(req.headers['x-sunloc-device'] || req.body.deviceId || '').slice(0, 80) || null;
+    let _merge59a = null;
+    const _baseRevRaw = req.body.baseRev;
+    const _baseRev = (_baseRevRaw === undefined || _baseRevRaw === null || _baseRevRaw === '') ? null : Number(_baseRevRaw);
+    if (_baseRev !== null && Number.isFinite(_baseRev)) {
+      try {
+        const cur = await _v59aCurrent(floor, date);
+        if (cur && cur.data && cur.rev !== _baseRev) {
+          const dirty = Array.isArray(req.body.dirtySlots) ? req.body.dirtySlots.map(String).slice(0, 400) : [];
+          if (!dirty.length) {
+            try { logAudit(req.body.userName || 'dpr', String(req.body.userRole || req.headers['x-user-role'] || ''), 'dpr', 'DPR_SAVE_STALE_NOOP',
+              `${floor} ${date} — device ${_device59a || '?'} pushed revision ${_baseRev} while the server holds ${cur.rev}; nothing changed on that device, nothing written; device copy replaced`, req.ip); } catch (_) {}
+            return res.json({ ok: true, stale: true, merged: 0, rev: cur.rev, savedAt: cur.savedAt, data: cur.data, rejectedCount: 0, rejected: [], refused: [] });
+          }
+          const M = _v59aMerge(cur.data, data, dirty, floor);
+          _merge59a = { baseRev: _baseRev, serverRev: cur.rev, dirty, applied: M.applied };
+          data = M.data; actuals = M.actuals;
+          try { logAudit(req.body.userName || 'dpr', String(req.body.userRole || req.headers['x-user-role'] || ''), 'dpr', 'DPR_SAVE_MERGED',
+            `${floor} ${date} — device ${_device59a || '?'} saved against revision ${_baseRev}, server at ${cur.rev}: only its ${M.applied.length} changed slot(s) applied [${M.applied.slice(0, 12).join(', ')}${M.applied.length > 12 ? ', …' : ''}]`, req.ip); } catch (_) {}
+        }
+      } catch (e) { console.warn('[v59A rev-merge] skipped:', e.message); }
+    }
+    // v58Y: measure what this save would remove BEFORE anything is written; refuse a wipe unless an admin confirms
+    try {
+      const _P1 = pgPool ? '$1' : '?', _P2 = pgPool ? '$2' : '?';
+      const _sel = `SELECT order_id, batch_number, machine_id, shift, run_index, qty_lakhs, floor FROM production_actuals WHERE floor = ${_P1} AND date = ${_P2}`;
+      const _before = pgPool ? (await pgPool.query(_sel, [floor, date])).rows : db.prepare(_sel).all(floor, date);
+      const _rec = `SELECT data_json FROM dpr_records WHERE floor = ${_P1} AND date = ${_P2}`;
+      const _rr = pgPool ? (await pgPool.query(_rec, [floor, date])).rows[0] : db.prepare(_rec).get(floor, date);
+      const _scope = _v50kScopeMachines(data, req.body && req.body.machinesInScope);
+      const A = _v58yPurgeAnalysis(_before, actuals, _scope);
+      const _isAdmin58y = (req.body.userRole === 'admin') || (req.headers['x-user-role'] === 'admin');
+      const _confirmed = _isAdmin58y && req.body.confirmShrink === true;
+      const _logId = await _v58yLogSave({ floor, date, saved_by: req.body.userName || 'dpr', role: req.body.userRole || req.headers['x-user-role'] || '', ip: req.ip,
+        before_total: A.beforeTotal, after_total: A.incomingTotal, purged_total: A.purgedTotal, purged: A.purged, scope: _scope,
+        before_actuals: _before, before_record: _rr ? _rr.data_json : null, blocked: A.block && !_confirmed, confirmed: _confirmed,
+        device: _device59a, base_rev: _baseRev, merged: _merge59a });
+      if (A.block && !_confirmed) {
+        try { logAudit(req.body.userName || 'dpr', String(req.body.userRole || req.headers['x-user-role'] || ''), 'dpr', 'DPR_SAVE_BLOCKED',
+          `${floor} ${date} — save would remove ${A.purgedTotal} L on ${A.machines} machine(s) [${A.purged.slice(0, 8).map(p => p.machine + '/' + p.shift + ' ' + p.qty).join(', ')}]; day holds ${A.beforeTotal} L, payload ${A.incomingTotal} L`, req.ip); } catch (_) {}
+        return res.status(409).json({ ok: false, error: 'DPR_SHRINK_BLOCKED', logId: _logId, beforeTotal: A.beforeTotal, incomingTotal: A.incomingTotal, purgedTotal: A.purgedTotal, machines: A.machines, purged: A.purged,
+          detail: `This save would remove ${A.purgedTotal} L of production already entered for ${floor} ${date} on ${A.machines} machine(s) (${A.purged.slice(0, 6).map(p => p.machine + ' ' + p.shift + ' ' + p.qty + ' L').join(', ')}${A.purged.length > 6 ? ', …' : ''}). This device's copy of the day is out of date — reload the day from the server before saving. An Admin can confirm the removal if it is intended.` });
+      }
+      if (A.purgedTotal > 0.005) console.log(`[v58Y] ${floor} ${date}: save by ${req.body.userName || '?'} removes ${A.purgedTotal} L on ${A.machines} machine(s)${_confirmed ? ' (ADMIN CONFIRMED)' : ''}`);
+    } catch (e) { console.warn('[v58Y shrink-guard] skipped:', e.message); }
 
     // ═══ v55B item 1 (Ishan, 18 Sep) ═══════════════════════════════════════════════════════════
     // GPR closing a batch signals its TT supply is COMPLETE — but a TT takes up to ~36 h to become
@@ -15432,9 +15664,9 @@ app.post('/api/dpr/save', async (req, res) => {
 
       // Save merged DPR record to PostgreSQL
       await pgPool.query(
-        `INSERT INTO dpr_records (floor, date, data_json)
-         VALUES ($1, $2, $3)
-         ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW()`,
+        `INSERT INTO dpr_records (floor, date, data_json, rev)
+         VALUES ($1, $2, $3, 1)
+         ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW(), rev = COALESCE(dpr_records.rev, 0) + 1`,
         [floor, date, JSON.stringify(data)]
       );
 
@@ -15726,7 +15958,7 @@ app.post('/api/dpr/save', async (req, res) => {
         _rejectedSq.push({ orderId, batchNumber, machineId, shift, qty, reason: `Order status is '${meta.status}' — only running orders accept DPR entries` });
         return false;
       };
-      db.prepare(`INSERT INTO dpr_records (floor, date, data_json) VALUES (?, ?, ?) ON CONFLICT(floor, date) DO UPDATE SET data_json = excluded.data_json, saved_at = datetime('now')`).run(floor, date, JSON.stringify(data));
+      db.prepare(`INSERT INTO dpr_records (floor, date, data_json, rev) VALUES (?, ?, ?, 1) ON CONFLICT(floor, date) DO UPDATE SET data_json = excluded.data_json, saved_at = datetime('now'), rev = COALESCE(rev, 0) + 1`).run(floor, date, JSON.stringify(data));
       // v43 #1: snapshot before the blanket delete so a post-close re-save can't erase a DPR-closed
       // batch's recorded production (see PG path for rationale). Restored after the gated re-insert.
       let _preDeleteActualsSq = [];
@@ -15804,7 +16036,7 @@ app.post('/api/dpr/save', async (req, res) => {
         ? ` — REJECTED ${_rejA.length}: ` + _rejA.slice(0, 6).map(r => `${r.batchNumber||r.orderId||'?'}@${r.machineId||'?'}/${r.shift||'?'} (${String(r.reason||'').slice(0, 60)})`).join('; ')
         : '';
       logAudit(req.body.userName || 'dpr', String(req.headers['x-user-role'] || ''), 'dpr', 'DPR_SAVE',
-        `${floor} ${date} — machines with data per shift [${_shifts51b.join(', ')}]${_rejTxt}`.slice(0, 900), req.ip);
+        `${floor} ${date} — machines with data per shift [${_shifts51b.join(', ')}]${_rejTxt}${_device59a ? ' · device ' + _device59a : ''}${_merge59a ? ' · MERGED ' + _merge59a.applied.length + ' slot(s) onto rev ' + _merge59a.serverRev : ''}`.slice(0, 900), req.ip);
     } catch (_) {}
     // v40 P18.14i Fix 2: include any gate rejections so client can alert the operator
     const rejected = res._dprRejected || [];
@@ -15816,12 +16048,17 @@ app.post('/api/dpr/save', async (req, res) => {
     let refused = [];
     try { refused = await _v56uReconcileRefused(floor, date, data, rejected); }
     catch (e) { console.warn('[v56U refused-reconcile] skipped:', e.message); }
+    let _rev59a = null, _data59a = undefined;
+    try { const cur = await _v59aCurrent(floor, date); if (cur) { _rev59a = cur.rev; if (_merge59a || refused.length) _data59a = cur.data; } } catch (_) {}
     res.json({
       ok: true,
       savedAt: new Date().toISOString(),
       rejectedCount: rejected.length,
       rejected: rejected,
       refused,
+      rev: _rev59a,                                   // v59A: the revision this save produced
+      merged: _merge59a ? _merge59a.applied.length : 0,
+      data: _data59a,                                 // v59A: the record as the server now holds it (merged / corrected saves only)
     });
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
@@ -15830,6 +16067,51 @@ app.post('/api/dpr/save', async (req, res) => {
 
 // GET plant report data — all floors for a single date in one call
 // Returns { ok, date, floors: { GF: data|null, '1F': data|null, '2F': data|null } }
+// v58Y: the save history of a floor-day (no blobs) and a one-step restore of the day as it stood before a save
+app.get('/api/dpr/save-log', async (req, res) => {
+  try {
+    const floor = String(req.query.floor || ''), date = String(req.query.date || '');
+    if (!floor || !date) return res.status(400).json({ ok: false, error: 'floor and date required' });
+    const sql = `SELECT id, floor, date, saved_at, saved_by, role, ip, before_total, after_total, purged_total, purged_json, blocked, confirmed FROM dpr_save_log WHERE floor=${pgPool ? '$1' : '?'} AND date=${pgPool ? '$2' : '?'} ORDER BY id DESC LIMIT 100`;
+    const rows = pgPool ? (await pgPool.query(sql, [floor, date])).rows : db.prepare(sql).all(floor, date);
+    res.json({ ok: true, rows: (rows || []).map(r => { let purged = []; try { purged = JSON.parse(r.purged_json || '[]'); } catch (_) {} return Object.assign({}, r, { purged, purged_json: undefined }); }) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
+app.post('/api/dpr/restore-day', async (req, res) => {
+  try {
+    const isAdmin = (req.body && req.body.userRole === 'admin') || (req.headers['x-user-role'] === 'admin');
+    if (!isAdmin) return res.status(403).json({ ok: false, error: 'Admin only' });
+    const logId = Number(req.body && req.body.logId);
+    if (!logId) return res.status(400).json({ ok: false, error: 'logId required' });
+    const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
+    const sel = `SELECT * FROM dpr_save_log WHERE id=${P1}`;
+    const L = pgPool ? (await pgPool.query(sel, [logId])).rows[0] : db.prepare(sel).get(logId);
+    if (!L) return res.status(404).json({ ok: false, error: 'log entry not found' });
+    const rows = JSON.parse(L.before_actuals_json || '[]');
+    const tot = a => +a.reduce((x, r) => x + (parseFloat(r.qty_lakhs) || 0), 0).toFixed(2);
+    // the CURRENT state is logged first, so a restore is itself reversible
+    const curSel = `SELECT order_id, batch_number, machine_id, shift, run_index, qty_lakhs, floor FROM production_actuals WHERE floor = ${P1} AND date = ${P2}`;
+    const cur = pgPool ? (await pgPool.query(curSel, [L.floor, L.date])).rows : db.prepare(curSel).all(L.floor, L.date);
+    const recSel = `SELECT data_json FROM dpr_records WHERE floor = ${P1} AND date = ${P2}`;
+    const curRec = pgPool ? (await pgPool.query(recSel, [L.floor, L.date])).rows[0] : db.prepare(recSel).get(L.floor, L.date);
+    await _v58yLogSave({ floor: L.floor, date: L.date, saved_by: (req.body.userName || 'admin') + ' (restore of #' + logId + ')', role: 'admin', ip: req.ip,
+      before_total: tot(cur), after_total: tot(rows), purged_total: 0, purged: [], scope: [], before_actuals: cur, before_record: curRec ? curRec.data_json : null, blocked: false, confirmed: true });
+    const ins = rows.map(r => [r.order_id || null, r.batch_number || null, r.machine_id, L.date, r.shift, r.run_index || 0, r.qty_lakhs, r.floor || L.floor]);
+    if (pgPool) {
+      await pgPool.query('DELETE FROM production_actuals WHERE floor=$1 AND date=$2', [L.floor, L.date]);
+      await _v53lUpsertActuals(ins);
+      if (L.before_record_json) await pgPool.query(`INSERT INTO dpr_records (floor, date, data_json, rev) VALUES ($1,$2,$3,1) ON CONFLICT(floor, date) DO UPDATE SET data_json = EXCLUDED.data_json, saved_at = NOW(), rev = COALESCE(dpr_records.rev, 0) + 1`, [L.floor, L.date, L.before_record_json]);
+    } else {
+      db.prepare('DELETE FROM production_actuals WHERE floor=? AND date=?').run(L.floor, L.date);
+      const st = db.prepare('INSERT INTO production_actuals (order_id, batch_number, machine_id, date, shift, run_index, qty_lakhs, floor) VALUES (?,?,?,?,?,?,?,?)');
+      ins.forEach(r => st.run(...r));
+      if (L.before_record_json) db.prepare(`INSERT INTO dpr_records (floor, date, data_json, rev) VALUES (?, ?, ?, 1) ON CONFLICT(floor, date) DO UPDATE SET data_json = excluded.data_json, saved_at = datetime('now'), rev = COALESCE(rev, 0) + 1`).run(L.floor, L.date, L.before_record_json);
+    }
+    try { await warmActualsCache(); } catch (_) {}
+    logAudit(req.body.userName || 'admin', 'admin', 'dpr', 'DPR_RESTORE_DAY', `${L.floor} ${L.date} restored to the state before save #${logId} (${L.saved_at} by ${L.saved_by || '?'}): ${rows.length} rows, ${tot(rows)} L`, req.ip);
+    res.json({ ok: true, floor: L.floor, date: L.date, rows: rows.length, total: tot(rows) });
+  } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
+});
 app.get('/api/dpr/plant-report/:date', async (req, res) => {
   try {
     const { date } = req.params;
@@ -17741,13 +18023,13 @@ app.get('/api/dpr/:floor/:date', async (req, res) => {
   try {
     const { floor, date } = req.params;
     if (pgPool) {
-      const r = await pgPool.query('SELECT data_json, saved_at FROM dpr_records WHERE floor = $1 AND date = $2', [floor, date]);
-      if (!r.rows.length) return res.json({ ok: true, data: null });
-      res.json({ ok: true, data: JSON.parse(r.rows[0].data_json), savedAt: r.rows[0].saved_at });
+      const r = await pgPool.query('SELECT data_json, saved_at, rev FROM dpr_records WHERE floor = $1 AND date = $2', [floor, date]);
+      if (!r.rows.length) return res.json({ ok: true, data: null, rev: 0 });
+      res.json({ ok: true, data: JSON.parse(r.rows[0].data_json), savedAt: r.rows[0].saved_at, rev: Number(r.rows[0].rev || 0) });   // v59A: revision
     } else {
-      const row = db.prepare('SELECT data_json, saved_at FROM dpr_records WHERE floor = ? AND date = ?').get(floor, date);
-      if (!row) return res.json({ ok: true, data: null });
-      res.json({ ok: true, data: JSON.parse(row.data_json), savedAt: row.saved_at });
+      const row = db.prepare('SELECT data_json, saved_at, rev FROM dpr_records WHERE floor = ? AND date = ?').get(floor, date);
+      if (!row) return res.json({ ok: true, data: null, rev: 0 });
+      res.json({ ok: true, data: JSON.parse(row.data_json), savedAt: row.saved_at, rev: Number(row.rev || 0) });
     }
   } catch (err) {
     res.status(500).json({ ok: false, error: err.message });
