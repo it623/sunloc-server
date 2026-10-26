@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v58W</title>
+<title>Sunloc Tracking Suite v1.0 · build v58X</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v58W</p>
+      <p>Tracking Suite v1.0 · build v58X</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v58W</p>
+      <p>Tracking Suite v1.0 · build v58X</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -8471,13 +8471,29 @@ function _v51dOverInvInRange(i, df, dt) {
   if (dt && i.date > dt) return false;
   return true;
 }
+// v58X (Ishan, 25 Oct): with an invoice-date range set, EXCESS is the over-invoicing that HAPPENED in the range —
+// the growth of the batch's excess between the start and the end of the range, against today's packed figure:
+//   excess(range) = max(0, invoiced through END − packed) − max(0, invoiced before START − packed)
+// 26ZB051: packed 11, invoiced 32+50 before 1 Oct and 32 on 19 Oct → all-time excess 103, but in Oct only 32.
+// Undated invoices count as "before the start". Without a range the server's all-time excess stands unchanged.
+function _v51dOverInvRangeExcess(r, df, dt) {
+  if (!df && !dt) return { excess: r.excess, inv: r.invoiced, ranged: false };
+  const packed = Number(r.packed || 0);
+  let before = 0, through = 0;
+  (r.invoices || []).forEach(i => { const q = Number(i.qty || 0); const d = i.date ? String(i.date).slice(0, 10) : '';
+    if (!d || (df && d < df)) before += q;
+    if (!d || !dt || d <= dt) through += q; });
+  const ex = Math.max(0, Math.max(0, through - packed) - Math.max(0, before - packed));
+  return { excess: +ex.toFixed(2), inv: +(through - before).toFixed(2), ranged: true };
+}
 function _v51dFilteredOverInvRows() {
   const { fb, fc, df, dt, pm } = _v51dOverInvFilters();
   return (_v51dOverInvRows || []).filter(r =>
     (!fb || r.batch.toUpperCase().includes(fb)) &&
     (!fc || (r.customer||'').toUpperCase().includes(fc)) &&
     (!pm || (r.prodMonth || '') === pm) &&
-    ((!df && !dt) || (r.invoices||[]).some(i => _v51dOverInvInRange(i, df, dt))));
+    ((!df && !dt) || ((r.invoices||[]).some(i => _v51dOverInvInRange(i, df, dt)) && _v51dOverInvRangeExcess(r, df, dt).excess > 0.005)))
+    .map(r => Object.assign({}, r, { _rx: _v51dOverInvRangeExcess(r, df, dt) }));   // v58X: ranged excess carried on the row
 }
 function _v51dOverInvDateFmt(d) {
   if (!d) return '';
@@ -8509,6 +8525,8 @@ function _v51dRenderOverInv() {
   const _pmOpts = [...new Set((_v51dOverInvRows||[]).map(r=>r.prodMonth).filter(Boolean))].sort().reverse()
     .map(ym => `<option value="${ym}" ${pm===ym?'selected':''}>${_pmLabel(ym)}</option>`).join('');
   const tot = k => rows.reduce((a,r)=>a+(r[k]||0),0).toFixed(2);
+  const ranged = !!(df || dt);
+  const totEx = rows.reduce((a,r)=>a+((r._rx||{}).excess||0),0).toFixed(2);   // v58X: in-range excess when a range is set
   const body = rows.map(r => `<tr>
       <td class="td-mono fw-bold">${r.batch}</td>
       <td>${r.customer||'—'}</td>
@@ -8516,7 +8534,7 @@ function _v51dRenderOverInv() {
       <td class="td-mono" style="text-align:right" title="Gross produced (DPR actuals) — production context for the packed-basis excess; a batch can be legitimately produced but not yet packed">${r.producedL != null ? r.producedL.toFixed(2) : '—'}</td>
       <td class="td-mono" style="text-align:right">${r.packed.toFixed(2)}</td>
       <td class="td-mono" style="text-align:right" title="Received ${r.received.toFixed(2)}L + Pending ${r.pending.toFixed(2)}L">${r.invoiced.toFixed(2)}</td>
-      <td class="td-mono fw-bold" style="text-align:right;color:#dc2626">${r.excess.toFixed(2)}${r.legacyRemark?`<div style="font-size:10px;font-weight:400;color:#047857;white-space:normal;text-align:right" title="v53P: re-batched legacy stock ships under this batch but is not its packed production">♻ ${r.legacyRemark}</div>`:''}</td>
+      <td class="td-mono fw-bold" style="text-align:right;color:#dc2626" title="${ranged ? 'Over-invoiced within the selected invoice-date range (all-time excess '+r.excess.toFixed(2)+' L)' : 'All-time: invoiced − packed'}">${ranged ? r._rx.excess.toFixed(2)+'<div style="font-size:10px;font-weight:400;color:var(--text3)">all-time '+r.excess.toFixed(2)+'</div>' : r.excess.toFixed(2)}${r.legacyRemark?`<div style="font-size:10px;font-weight:400;color:#047857;white-space:normal;text-align:right" title="v53P: re-batched legacy stock ships under this batch but is not its packed production">♻ ${r.legacyRemark}</div>`:''}</td>
       <td class="td-mono" style="font-size:10px">${(r.invoices||[]).map(i=>{
         const _in = _v51dOverInvInRange(i, df, dt);
         const _dtxt = i.date ? `, ${_v51dOverInvDateFmt(i.date)}` : '';
@@ -8552,7 +8570,7 @@ function _v51dRenderOverInv() {
           <th style="text-align:right" title="Gross produced (DPR actuals)">PRODUCED (L)</th>
           <th style="text-align:right">PACKED (L)</th>
           <th style="text-align:right" title="Received + pending requests (v49C definition)">INVOICED (L)</th>
-          <th style="text-align:right">EXCESS (L)</th><th>INVOICE #s (QTY, DATE)</th>
+          <th style="text-align:right" title="${ranged ? 'Over-invoicing that occurred inside the selected invoice-date range' : 'Invoiced − packed, all time'}">EXCESS (L)${ranged ? '<div style="font-size:9px;font-weight:400;color:var(--text3)">in date range</div>' : ''}</th><th>INVOICE #s (QTY, DATE)</th>
         </tr></thead>
         <tbody>${body || '<tr><td colspan="8" style="text-align:center;padding:16px;color:var(--text3)">No over-invoiced batches 🎉</td></tr>'}</tbody>
         ${rows.length ? `<tfoot><tr style="font-weight:700;border-top:2px solid var(--border)">
@@ -8560,7 +8578,7 @@ function _v51dRenderOverInv() {
           <td class="td-mono" style="text-align:right">${rows.reduce((a,r)=>a+(r.producedL||0),0).toFixed(2)}</td>
           <td class="td-mono" style="text-align:right">${tot('packed')}</td>
           <td class="td-mono" style="text-align:right">${tot('invoiced')}</td>
-          <td class="td-mono" style="text-align:right;color:#dc2626">${tot('excess')}</td><td></td>
+          <td class="td-mono" style="text-align:right;color:#dc2626">${ranged ? totEx : tot('excess')}</td><td></td>
         </tr></tfoot>` : ''}
       </table>
     </div>${unattr}`;
@@ -8571,7 +8589,8 @@ function _v51dExportOverInv() {
   // month of production) and carries the new PROD MONTH column + per-invoice dates.
   const rows = _v51dFilteredOverInvRows();
   const wb = XLSX.utils.book_new();
-  const HDR = ['BATCH','CUSTOMER','PROD MONTH','PRODUCED (L)','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)','EXCESS (L)','INVOICE #s (QTY, DATE)','REMARK'];   // v51H: Produced = gross DPR actuals · v53P: REMARK (re-batch explanation)
+  const { df: _rdf, dt: _rdt } = _v51dOverInvFilters(); const _ranged = !!(_rdf || _rdt);   // v58X
+  const HDR = ['BATCH','CUSTOMER','PROD MONTH','PRODUCED (L)','PACKED (L)','RECEIVED (L)','PENDING (L)','INVOICED (L)', _ranged ? 'EXCESS IN RANGE (L)' : 'EXCESS (L)', _ranged ? 'EXCESS ALL-TIME (L)' : null,'INVOICE #s (QTY, DATE)','REMARK'].filter(x => x !== null);   // v51H: Produced = gross DPR actuals · v53P: REMARK (re-batch explanation) · v58X: ranged excess
   const NC = HDR.length;
   const aoa = []; const merges = []; const kinds = [];
   const _push = (row, kind) => { aoa.push(row); kinds.push(kind); };
@@ -8580,20 +8599,20 @@ function _v51dExportOverInv() {
   const { df: _xdf, dt: _xdt, pm: _xpm } = _v51dOverInvFilters();
   const _fltNote = [(_xdf||_xdt) ? `Invoice date ${_xdf||'…'} → ${_xdt||'…'}` : '', _xpm ? `Prod. month ${_xpm}` : ''].filter(Boolean).join('  |  ');
   merges.push({s:{r:1,c:0},e:{r:1,c:NC-1}});
-  _push([`Definition: invoiced (received + pending) − packed ≥ 0.01L${_fltNote ? '  |  ' + _fltNote : ''}  |  Generated ${new Date().toLocaleString()}`],'subtitle');
+  _push([`Definition: invoiced (received + pending) − packed ≥ 0.01L${_ranged ? '  |  EXCESS IN RANGE = growth of the excess between the range start and end (invoices before the start count against packed first)' : ''}${_fltNote ? '  |  ' + _fltNote : ''}  |  Generated ${new Date().toLocaleString()}`],'subtitle');
   _push([],'spacer');
   _push(HDR,'hdr');
-  rows.forEach(r => _push([r.batch, r.customer||'—', r.prodMonth||'—', (r.producedL != null ? r.producedL : '—'), r.packed, r.received, r.pending, r.invoiced, r.excess,
-    (r.invoices||[]).map(i=>`${i.no} (${i.qty}L${i.date ? ', ' + _v51dOverInvDateFmt(i.date) : ''})`).join(', '), r.legacyRemark||''],'data'));   // v53P REMARK
+  rows.forEach(r => _push([r.batch, r.customer||'—', r.prodMonth||'—', (r.producedL != null ? r.producedL : '—'), r.packed, r.received, r.pending, r.invoiced, _ranged ? r._rx.excess : r.excess].concat(_ranged ? [r.excess] : []).concat([
+    (r.invoices||[]).map(i=>`${i.no} (${i.qty}L${i.date ? ', ' + _v51dOverInvDateFmt(i.date) : ''})`).join(', '), r.legacyRemark||'']),'data'));   // v53P REMARK · v58X ranged excess
   const s = k => rows.reduce((a,r)=>a+(r[k]||0),0);
   _push([`TOTAL (${rows.length} batches)`,'','',Math.round(rows.reduce((a,r)=>a+(r.producedL||0),0)*100)/100,Math.round(s('packed')*100)/100,Math.round(s('received')*100)/100,
-    Math.round(s('pending')*100)/100,Math.round(s('invoiced')*100)/100,Math.round(s('excess')*100)/100,'',
-    (rows.filter(r=>r.legacyQty).length ? `${rows.filter(r=>r.legacyQty).length} batch(es) over-invoiced by re-batch: ${Math.round(rows.reduce((a,r)=>a+(r.legacyQty||0),0)*100)/100} L` : '')],'grand');   // v53P
+    Math.round(s('pending')*100)/100,Math.round(s('invoiced')*100)/100, Math.round((_ranged ? rows.reduce((a,r)=>a+((r._rx||{}).excess||0),0) : s('excess'))*100)/100].concat(_ranged ? [Math.round(s('excess')*100)/100] : []).concat(['',
+    (rows.filter(r=>r.legacyQty).length ? `${rows.filter(r=>r.legacyQty).length} batch(es) over-invoiced by re-batch: ${Math.round(rows.reduce((a,r)=>a+(r.legacyQty||0),0)*100)/100} L` : '')]),'grand');   // v53P
   const ws = XLSX.utils.aoa_to_sheet(aoa);
   ws['!merges'] = merges;
-  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:56},{wch:48}];   // v53P: REMARK
+  ws['!cols'] = [{wch:12},{wch:28},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11},{wch:12},{wch:11}].concat(_ranged ? [{wch:11}] : []).concat([{wch:56},{wch:48}]);   // v53P: REMARK · v58X
   const R = XLSX.utils.decode_range(ws['!ref']);
-  for(let r=R.s.r; r<=R.e.r; r++) for(let c=3; c<=8; c++){
+  for(let r=R.s.r; r<=R.e.r; r++) for(let c=3; c<=(_ranged?9:8); c++){   // v58X: one more numeric column when ranged
     const cell = ws[XLSX.utils.encode_cell({r,c})];
     if(cell && cell.t==='n') cell.z = '0.00';
   }
