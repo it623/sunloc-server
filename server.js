@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59A';
+const APP_BUILD = 'v59D';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -2423,7 +2423,12 @@ function runMigrations() {
     db.prepare('SELECT version FROM schema_migrations').all().map(r => r.version)
   );
   let ran = 0;
-  for (const m of MIGRATIONS) {
+  // v59B: run in VERSION order, not array order. The array lists v64–v93 before v7–v63 (the GPR merge put its
+  // block above the base's), so a database starting from nothing hit v87's ALTER TABLE invoices_received
+  // before v15 had created the table (SQLite throws at boot; PG only swallowed it). Every live database has
+  // 1–93 applied, so this changes nothing there; it only makes a fresh start — or a future migration that
+  // depends on a lower-numbered one — run in the order the numbers promise.
+  for (const m of [...MIGRATIONS].sort((a, b) => a.version - b.version)) {
     if (applied.has(m.version)) continue;
     console.log(`[Migration] Running v${m.version}: ${m.name}`);
     db.exec(m.sql);
@@ -2612,6 +2617,10 @@ const GPR_SEED_MASTERS = (() => {
     underFillPct: 5,              // % below tank capacity that demands a reason (was 0.95 literal)
     estFactorMin: 0.85,           // end-shift estimate factor floor (was a bare 0.85)
     estFactorMax: 1.30,           // ceiling (was a bare 1.30)
+    // v59B (Ishan, 27 Oct): Planning's STANDARD stage losses (gross = order × 1.07 × 1.01 × 1.01) — the
+    // yield's packable-WIP working divides post-AIM WIP by the losses still ahead of it (see _v59bWipSplit)
+    stdPrintLossFactor: 1.01,     // printing: 1 % (Planning STD_PRINT_WASTE)
+    stdPiLossFactor: 1.01,        // print inspection: 1 % (Planning STD_PI_WASTE)
     // v56U (Ishan, 23 Sep): colour and TiO2 go into the tank as prepared solutions and DO add to its
     // volume. Colour at 10% w/w, except Erythrosine and Brilliant Blue at 5%; TiO2 at 10% w/w. The
     // solution mass (grams / strength) is counted at 1 kg = 1 L, being an aqueous preparation.
@@ -27047,6 +27056,11 @@ function _v58mNetCalc(i) {
   return { freshMaterialKg: r2(fresh), virginKg: r2(i.virginKg), colourKg: r2(i.colourKg), fgRemeltKg: r2(i.fgRemeltKg),
            consumedKg: r2(n(i.consumedKg)), legacyDrawKg: r2(i.legacyDrawKg), reuseInKg: r2(reuseIn), generatedManualKg: r2(i.generatedManualKg),
            generatedTrackingKg: r2(i.generatedTrackingKg), netRecirc: r2(netRecirc),
+           // v59B: cuttings vs salvage, accepted vs pending — presentation only, the arithmetic above is unchanged
+           consumedCuttingKg: r2(i.consumedCuttingKg), consumedSalvageKg: r2(i.consumedSalvageKg),
+           generatedCuttingKg: r2(n(i.genCutAcceptedKg) + n(i.genCutPendingKg)), genCutAcceptedKg: r2(i.genCutAcceptedKg), genCutPendingKg: r2(i.genCutPendingKg),
+           generatedSalvageManualKg: r2(n(i.genSalManualAcceptedKg) + n(i.genSalManualPendingKg)), genSalManualAcceptedKg: r2(i.genSalManualAcceptedKg), genSalManualPendingKg: r2(i.genSalManualPendingKg),
+           genTrkAcceptedKg: r2(i.genTrkAcceptedKg), genTrkPendingKg: r2(i.genTrkPendingKg),
            salvageLakhs: +Number(i.salvageLakhs || 0).toFixed(3), salvageRecoveredKg: r2(i.salvageRecoveredKg), printingSalvageKg: r2(i.printingSalvageKg),   // v58X
            expectedSalvageLakhs: +Number(i.expectedSalvageLakhs || 0).toFixed(3), expectedSalvageKg: r2(i.expectedSalvageKg),
            returnUsedL: +Number(i.returnUsedL || 0).toFixed(2), returnUsedKg: r2(i.returnUsedKg),
@@ -27059,7 +27073,9 @@ function _v58mNetCalc(i) {
 async function _v58mNetInputsMany(bns) {
   const list = Array.from(new Set((bns || []).map(b => String(b || '').trim().toUpperCase()).filter(Boolean)));
   const out = {}; list.forEach(b => { out[b] = { virginKg: 0, colourKg: 0, fgRemeltKg: 0, totalChargedKg: 0, ttLitres: 0, ttCount: 0, returnUsedL: 0, returnUsedKg: 0,
-    consumedKg: 0, legacyDrawKg: 0, generatedManualKg: 0, generatedTrackingKg: 0, salvageLakhs: 0, aimRemeltLakhs: 0, returnRecoveredL: 0, returnRecoveredKg: 0, printingSalvageKg: 0 }; });   // v58X: + Planning Daily-Printing salvage (kg)
+    consumedKg: 0, legacyDrawKg: 0, generatedManualKg: 0, generatedTrackingKg: 0, salvageLakhs: 0, aimRemeltLakhs: 0, returnRecoveredL: 0, returnRecoveredKg: 0, printingSalvageKg: 0,   // v58X: + Planning Daily-Printing salvage (kg)
+    // v59B (Ishan, 27 Oct): the ladder reads CUTTINGS and SALVAGE as separate lines, each with its accepted / pending state — so the split travels with the inputs
+    consumedCuttingKg: 0, consumedSalvageKg: 0, genCutAcceptedKg: 0, genCutPendingKg: 0, genSalManualAcceptedKg: 0, genSalManualPendingKg: 0, genTrkAcceptedKg: 0, genTrkPendingKg: 0 }; });
   if (!list.length) return out;
   const ph = list.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',');
   const q = async sql => pgPool ? (await pgPool.query(sql, list)).rows : db.prepare(sql).all(...list);
@@ -27079,10 +27095,20 @@ async function _v58mNetInputsMany(bns) {
   // salvage is the separate salvageRecovered term, so it is counted once.
   (await q(`SELECT UPPER(batch_number) AS bn,
                    COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} THEN qty_kg ELSE 0 END),0) AS consumed,
+                   COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} AND account='cutting' THEN qty_kg ELSE 0 END),0) AS consumed_cut,
                    COALESCE(SUM(CASE WHEN movement_type='generation' AND source NOT IN ('tracking','estimate','return') AND account<>'return_remelt' AND COALESCE(receipt_status,'')<>'rejected' THEN qty_kg ELSE 0 END),0) AS gen_manual,
-                   COALESCE(SUM(CASE WHEN movement_type='generation' AND source='tracking' AND COALESCE(receipt_status,'')<>'rejected' THEN qty_kg ELSE 0 END),0) AS gen_tracking
+                   COALESCE(SUM(CASE WHEN movement_type='generation' AND source='tracking' AND COALESCE(receipt_status,'')<>'rejected' THEN qty_kg ELSE 0 END),0) AS gen_tracking,
+                   COALESCE(SUM(CASE WHEN movement_type='generation' AND source NOT IN ('tracking','estimate','return') AND account='cutting' AND COALESCE(receipt_status,'')='pending' THEN qty_kg ELSE 0 END),0) AS gen_cut_pend,
+                   COALESCE(SUM(CASE WHEN movement_type='generation' AND source NOT IN ('tracking','estimate','return') AND account='cutting' AND COALESCE(receipt_status,'') NOT IN ('pending','rejected') THEN qty_kg ELSE 0 END),0) AS gen_cut_acc,
+                   COALESCE(SUM(CASE WHEN movement_type='generation' AND source NOT IN ('tracking','estimate','return') AND account<>'cutting' AND account<>'return_remelt' AND COALESCE(receipt_status,'')='pending' THEN qty_kg ELSE 0 END),0) AS gen_sal_pend,
+                   COALESCE(SUM(CASE WHEN movement_type='generation' AND source NOT IN ('tracking','estimate','return') AND account<>'cutting' AND account<>'return_remelt' AND COALESCE(receipt_status,'') NOT IN ('pending','rejected') THEN qty_kg ELSE 0 END),0) AS gen_sal_acc,
+                   COALESCE(SUM(CASE WHEN movement_type='generation' AND source='tracking' AND COALESCE(receipt_status,'')='pending' THEN qty_kg ELSE 0 END),0) AS gen_trk_pend,
+                   COALESCE(SUM(CASE WHEN movement_type='generation' AND source='tracking' AND COALESCE(receipt_status,'') NOT IN ('pending','rejected') THEN qty_kg ELSE 0 END),0) AS gen_trk_acc
             FROM gpr_ledger WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`)).forEach(r => {
-    const o = out[r.bn]; if (!o) return; o.consumedKg = Number(r.consumed || 0); o.generatedManualKg = Number(r.gen_manual || 0); o.generatedTrackingKg = Number(r.gen_tracking || 0); });
+    const o = out[r.bn]; if (!o) return; o.consumedKg = Number(r.consumed || 0); o.generatedManualKg = Number(r.gen_manual || 0); o.generatedTrackingKg = Number(r.gen_tracking || 0);
+    o.consumedCuttingKg = Number(r.consumed_cut || 0); o.consumedSalvageKg = +(o.consumedKg - o.consumedCuttingKg).toFixed(3);   // v59B splits
+    o.genCutAcceptedKg = Number(r.gen_cut_acc || 0); o.genCutPendingKg = Number(r.gen_cut_pend || 0); o.genSalManualAcceptedKg = Number(r.gen_sal_acc || 0); o.genSalManualPendingKg = Number(r.gen_sal_pend || 0);
+    o.genTrkAcceptedKg = Number(r.gen_trk_acc || 0); o.genTrkPendingKg = Number(r.gen_trk_pend || 0); });
   // Ledger B draws into the batch's tanks (legacy lump stock) — material consumed all the same
   try { (await q(`SELECT UPPER(batch_number) AS bn, COALESCE(SUM(qty_kg),0) AS kg FROM gpr_legacy_stock WHERE movement_type='draw' AND UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`)).forEach(r => { const o = out[r.bn]; if (o) o.legacyDrawKg = Number(r.kg || 0); }); } catch (_) {}
   // Tracking salvage recovered (lakhs) — AIM salvage + printing / PI salvage & remelt; AIM remelt apart
@@ -27110,6 +27136,59 @@ async function _v58mWipAPct(live, order, sizeKey, masters) {
     if (aPct == null) { const Cq = (masters && masters.gpr_constants) || GPR_SEED_MASTERS.gpr_constants; aPct = Number(Cq.defaultAGradePct || 93); aBasis = 'default'; }
   }
   return { aPct: Math.max(0, Math.min(100, aPct)), aBasis };
+}
+// ═══ v59B (Ishan, 27 Oct — 26V134) — PACKABLE WIP BY STAGE ═══════════════════════════════════════════
+// v58K multiplied the WHOLE consolidated WIP by the AIM A-grade. Wrong for everything past AIM: 26V134's
+// 51.35 L sitting at Printing is ALREADY the A-grade (it was scanned in at AIM; the 3.70 L salvage came
+// off before it), so × 93.3 % took the AIM loss twice. What still lies ahead of a lakh depends on the stage
+// it has reached, and the losses ahead are Planning's standard factors (gross = order × 1.07 × 1.01 × 1.01:
+// 1 % printing, 1 % PI), seeded as masters stdPrintLossFactor / stdPiLossFactor (tunable, no rebuild):
+//   unscanned (before AIM)   × A %  ÷ print ÷ PI      — AIM loss still to come, then printing + PI
+//   AIM dept / printing WIP          ÷ print ÷ PI      — inspected; printing and PI ahead
+//   PI WIP                                   ÷ PI      — printed; PI ahead
+//   transit to packing                 as is           — inspected / printed, nothing ahead
+// Unprinted batches skip the printing factor (no printing stage; Planning plans them with no 1.01s).
+// The salvage the WIP is "expected to return" is the complement (WIP − packable): ~2 % of post-AIM WIP plus
+// (100 − A) % of unscanned WIP. It is a forecast, replaced by the actual printing / PI salvage as Tracking
+// and the Daily Printing Log record it (those enter salvageRecovered and shrink the WIP). When the live legs
+// do not add up to the consolidated figure (reconciled / retired basis) the leg mix is scaled onto it.
+function _v59bLossFactors(masters) {
+  const C = (masters && masters.gpr_constants) || GPR_SEED_MASTERS.gpr_constants;
+  const fp = Number(C.stdPrintLossFactor) > 0 ? Number(C.stdPrintLossFactor) : 1.01;
+  const fi = Number(C.stdPiLossFactor) > 0 ? Number(C.stdPiLossFactor) : 1.01;
+  return { fp, fi };
+}
+function _v59bWipSplit(live, aPct, masters) {
+  const { fp, fi } = _v59bLossFactors(masters);
+  const wip = Number((live && live.consolidatedWip) || 0);
+  const printed = !!(live && live.printed);
+  const empty = { wipLakhs: +wip.toFixed(3), packableWipLakhs: +wip.toFixed(3), expectedSalvageLakhs: 0, legs: [], factors: { print: printed ? fp : 1, pi: printed ? fi : 1 }, printed, aPctUsed: null, basis: 'none' };
+  if (!(wip > 0.0005)) return Object.assign(empty, { packableWipLakhs: 0 });
+  const a = (aPct != null && Number(aPct) > 0) ? Math.min(100, Number(aPct)) / 100 : 1;
+  const post = printed ? fp * fi : 1;   // ahead of a lakh that has passed AIM inspection
+  const L = [
+    { leg: 'preAIM',        label: 'Unscanned (before AIM)',  lakhs: Number(live.preAIM || 0),        mult: a / post,      note: printed ? ('× A ' + (a * 100).toFixed(1) + '% ÷ ' + fp + ' ÷ ' + fi) : ('× A ' + (a * 100).toFixed(1) + '%') },
+    { leg: 'aimWIP',        label: 'AIM dept (inspected)',    lakhs: Number(live.aimWIP || 0),        mult: 1 / post,      note: printed ? ('÷ ' + fp + ' ÷ ' + fi) : 'as is' },
+    { leg: 'printWIP',      label: 'Printing',                lakhs: Number(live.printWIP || 0),      mult: 1 / (fp * fi), note: '÷ ' + fp + ' ÷ ' + fi },
+    { leg: 'piWIP',         label: 'PI',                      lakhs: Number(live.piWIP || 0),         mult: 1 / fi,        note: '÷ ' + fi },
+    { leg: 'toPackTransit', label: 'To packing (transit)',    lakhs: Number(live.toPackTransit || 0), mult: 1,             note: 'as is' },
+  ].filter(x => x.lakhs > 0.0005);
+  const legSum = L.reduce((s, x) => s + x.lakhs, 0);
+  let packable, basis;
+  if (legSum > 0.0005 && Math.abs(legSum - wip) <= 0.0015) { packable = L.reduce((s, x) => s + x.lakhs * x.mult, 0); basis = 'live-legs'; }
+  else if (legSum > 0.0005) { const scale = wip / legSum; L.forEach(x => { x.lakhs = +(x.lakhs * scale).toFixed(3); }); packable = L.reduce((s, x) => s + x.lakhs * x.mult, 0); basis = 'scaled-legs'; }
+  else { packable = wip / post; L.push({ leg: 'consolidated', label: 'Consolidated WIP (post-AIM assumed)', lakhs: wip, mult: 1 / post, note: printed ? ('÷ ' + fp + ' ÷ ' + fi) : 'as is' }); basis = 'consolidated'; }
+  packable = Math.max(0, Math.min(wip, packable));
+  L.forEach(x => { x.packable = +(x.lakhs * x.mult).toFixed(3); x.lakhs = +x.lakhs.toFixed(3); delete x.mult; });
+  return { wipLakhs: +wip.toFixed(3), packableWipLakhs: +packable.toFixed(3), expectedSalvageLakhs: +(wip - packable).toFixed(3), legs: L,
+           factors: { print: printed ? fp : 1, pi: printed ? fi : 1 }, printed, aPctUsed: Number(live.preAIM || 0) > 0.0005 ? +(a * 100).toFixed(2) : null, basis };
+}
+// Resolves the A % only when an unscanned leg needs it (the v58M rule), then splits. One call per consumer.
+async function _v59bWipTerms(live, order, sizeKey, masters, avgMg) {
+  let aPct = null, aBasis = 'none';
+  if (live && Number(live.preAIM || 0) > 0.0005) { const ap = await _v58mWipAPct(live, order, sizeKey, masters); aPct = ap.aPct; aBasis = ap.aBasis; }
+  const sp = _v59bWipSplit(live, aPct, masters);
+  return Object.assign(sp, { aPct: sp.aPctUsed, aBasis: sp.aPctUsed != null ? aBasis : 'none', expectedSalvageKg: +(sp.expectedSalvageLakhs * Number(avgMg || 0) / 10).toFixed(2) });
 }
 
 // ── Tracking auto-credit (item 5d) ─────────────────────────────────────────
@@ -27332,11 +27411,14 @@ async function gprComputeYield(batchNumber) {
   // salvage does, so both sides move together. A % = the batch's own live AIM figure when it has
   // inspections; else the machine's live A for the month; else the masters' default. A closed batch
   // with no WIP is unchanged.
-  let aPct = null, aBasis = 'none';
-  if (wipLakhs > 0.0005) { const ap = await _v58mWipAPct(_live55a, order, sizeKey, masters); aPct = ap.aPct; aBasis = ap.aBasis; }   // v58M: shared rule
-  const packableWipLakhs = aPct != null ? +(wipLakhs * aPct / 100).toFixed(3) : +wipLakhs.toFixed(3);
-  const expectedSalvageLakhs = +(wipLakhs - packableWipLakhs).toFixed(3);
-  const expectedSalvageKg = +(expectedSalvageLakhs * avgMg / 10).toFixed(2);
+  // v59B (Ishan, 27 Oct): packable WIP by STAGE — A % only on the unscanned leg, Planning's standard
+  // printing / PI loss factors on what lies ahead of each leg (see _v59bWipSplit). Same call in the
+  // performance report, the reconciliation and the Planning sheet.
+  const _ws = await _v59bWipTerms(_live55a, order, sizeKey, masters, avgMg);
+  const aPct = _ws.aPct, aBasis = _ws.aBasis;
+  const packableWipLakhs = _ws.packableWipLakhs;
+  const expectedSalvageLakhs = _ws.expectedSalvageLakhs;
+  const expectedSalvageKg = _ws.expectedSalvageKg;
   const packedWeightKg = +(packLakhs * avgMg / 10).toFixed(2);
   const wipWeightKg    = +(packableWipLakhs * avgMg / 10).toFixed(2);
   const numerator      = +(packedWeightKg + wipWeightKg).toFixed(2);
@@ -27352,6 +27434,7 @@ async function gprComputeYield(batchNumber) {
     numerator: {
       packedLakhs: +packLakhs.toFixed(3), wipLakhs: +wipLakhs.toFixed(3),
       packableWipLakhs, aPct: aPct != null ? +aPct.toFixed(2) : null, aBasis,   // v58K
+      wipSplit: { legs: _ws.legs, factors: _ws.factors, printed: _ws.printed, basis: _ws.basis },   // v59B: stage-wise working for the modal / export
       packedWeightKg, wipWeightKg, total: numerator,
     },
     denominator: Object.assign({}, NET, {   // v58M: the shared breakdown (fresh, reuse in, generated, Tracking salvage, expected WIP salvage, return solution)
@@ -27405,6 +27488,35 @@ app.post('/api/gpr/masters', async (req, res) => {
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
 
+// ═══ v59B item 4 (Ishan, 27 Oct — MMT 0968 drawn 960 L of 750) — ONE WRITER AT A TIME ON THE MMT POSITION ═══
+// The gate was right but not atomic: every MMT write (allocate, cancel, TT create, distribute, update) READ the
+// charge's position, judged, then WROTE — and a second request that arrived in between read the same position.
+// 0968: 14 allocations took the whole 750 L (gate held); three tanks then arrived together with their twins
+// (BE2/BE3 at 19:21, B2/7 twice + B3/7 at 19:22 — one of the B2/7s is the same tank submitted twice), each
+// matched the one open allocation for its batch · side before the other had settled it, so each saw
+// "750 − 750 + 70 = 70 L available", and 210 L went out that the charge never had. Now every route that moves
+// a charge's position runs under one in-process lock (single Node process on Railway: a lock here IS the
+// serialisation), so the second request judges the position the first one left. A duplicate submission of the
+// same tank is refused outright (DUPLICATE_TT: same batch · side · machine · virgin kg · litres inside 90 s, or
+// the client's own submit_key seen before) instead of becoming a second tank.
+const _v59bLocks = new Map();
+async function _v59bLocked(key, fn) {
+  const prev = _v59bLocks.get(key) || Promise.resolve();
+  let release; const gate = new Promise(r => { release = r; });
+  const mine = prev.then(() => gate, () => gate);
+  _v59bLocks.set(key, mine);
+  await prev.catch(() => {});
+  try { return await fn(); }
+  finally { release(); if (_v59bLocks.get(key) === mine) _v59bLocks.delete(key); }
+}
+const _v59bSerial = handler => (req, res) => _v59bLocked('gpr-mmt', () => handler(req, res)).catch(err => { try { res.status(500).json({ ok: false, error: err.message }); } catch (_) {} });
+const _v59bSeenKeys = new Map();   // submit_key → { at, status, body }
+function _v59bSeen(key) {
+  const now = Date.now();
+  for (const [k, v] of _v59bSeenKeys) if (now - v.at > 15 * 60 * 1000) _v59bSeenKeys.delete(k);
+  return key ? _v59bSeenKeys.get(key) : null;
+}
+
 // ─── MMT CHARGES ───────────────────────────────────────────────────────────
 app.get('/api/gpr/mmt', async (req, res) => {
   try {
@@ -27440,7 +27552,7 @@ app.get('/api/gpr/mmt', async (req, res) => {
 // left of it into the tanks that actually took it (those still unreleased on its floor). Each tank's
 // virgin gelatine and charged total rise by its share and it is linked to the charge; the charge's
 // allocated kg rises by the total. Every change is audited with before → after.
-app.post('/api/gpr/mmt/:id/update', async (req, res) => {
+app.post('/api/gpr/mmt/:id/update', _v59bSerial(async (req, res) => {   // v59B: serialised
   try {
     const session = gprSession(req);
     if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
@@ -27479,8 +27591,8 @@ app.post('/api/gpr/mmt/:id/update', async (req, res) => {
     logAudit(session.username, session.role, 'gpr', 'GPR_MMT_UPDATE', `mmt=${cur.mmt_ref} ${changed.join('; ')}`, req.ip);
     res.json({ ok: true, changed: changed.length });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-app.post('/api/gpr/mmt/:id/distribute', async (req, res) => {
+}));
+app.post('/api/gpr/mmt/:id/distribute', _v59bSerial(async (req, res) => {   // v59B: serialised
   try {
     const session = gprSession(req);
     if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
@@ -27529,7 +27641,7 @@ app.post('/api/gpr/mmt/:id/distribute', async (req, res) => {
       `mmt=${mmt.mmt_ref} +${totalL}L (${total}kg) → ${done.map(x => x.t.tt_number + '/' + x.t.batch_number + ' ' + x.l.l + 'L').join(', ') || '—'}${close ? ' · CLOSED' : ''}`, req.ip);
     res.json({ ok: true, distributed: total, distributed_l: totalL, tanks: done.length, closed: close });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
+}));
 
 app.post('/api/gpr/mmt', async (req, res) => {
   try {
@@ -28027,7 +28139,7 @@ app.get('/api/gpr/mmt-alloc', async (req, res) => {
     res.json({ ok: true, rows, diag });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
 });
-app.post('/api/gpr/mmt-alloc', async (req, res) => {
+app.post('/api/gpr/mmt-alloc', _v59bSerial(async (req, res) => {   // v59B: serialised
   try {
     const session = gprSession(req);
     if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
@@ -28093,8 +28205,8 @@ app.post('/api/gpr/mmt-alloc', async (req, res) => {
     res.json({ ok: true, created, reserved_kg: needKg, reserved_l: needL, conc_kg_per_l: gPerL, split: { cap: split.cap.litres, body: split.body.litres },
                remaining_l: +(remainingL - needL).toFixed(1), remaining_kg: +(remaining - needKg).toFixed(3), mmt_exhausted: exhausted });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
-app.post('/api/gpr/mmt-alloc/:id/cancel', async (req, res) => {
+}));
+app.post('/api/gpr/mmt-alloc/:id/cancel', _v59bSerial(async (req, res) => {   // v59B: serialised
   try {
     const session = gprSession(req);
     if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
@@ -28131,7 +28243,7 @@ app.post('/api/gpr/mmt-alloc/:id/cancel', async (req, res) => {
     logAudit(session.username, session.role, 'gpr', 'GPR_MMT_ALLOC_CANCEL', `alloc=${a.id} mmt=${a.mmt_ref} ${a.machine_id} ${a.batch_number} ${a.side}${a.alloc_seq} ${a.planned_l}L released ${kg}kg${reopened ? ' — charge reopened' : ''}`, req.ip);
     res.json({ ok: true, released_kg: kg, released_l: L, reopened });
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
+}));
 
 // ─── TT PLANNING ───────────────────────────────────────────────────────────
 // Gross comes straight from Planning. GPR applies NO A-Grade factor of its own.
@@ -28263,7 +28375,7 @@ app.get('/api/gpr/tt-plan/:batch', async (req, res) => {
 });
 
 // ─── TT ISSUE ──────────────────────────────────────────────────────────────
-app.post('/api/gpr/tt', async (req, res) => {
+app.post('/api/gpr/tt', _v59bSerial(async (req, res) => {   // v59B: serialised
   try {
     const session = gprSession(req);
     if (!session) return res.status(403).json({ ok: false, error: 'GPR login required' });
@@ -28276,6 +28388,23 @@ app.post('/api/gpr/tt', async (req, res) => {
     const bn = String(b.batch_number).trim().toUpperCase();
     const masters = await gprLoadMasters();
     const C = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
+    // v59B: the same submission twice (double click, retried request) is answered with the first result, never a second tank
+    const _sk59b = String(b.submit_key || '').slice(0, 80);
+    { const seen = _v59bSeen(_sk59b); if (seen) return res.status(seen.status).json(Object.assign({}, seen.body, { duplicate_submit: true })); }
+    {
+      const _dP = (i) => pgPool ? '$' + i : '?';
+      const dSql = `SELECT id, tt_number, created_at FROM gpr_tt WHERE UPPER(batch_number)=${_dP(1)} AND side=${_dP(2)} AND UPPER(COALESCE(machine_id,''))=${_dP(3)}
+                    AND ABS(COALESCE(virgin_kg,0) - ${_dP(4)}) < 0.005 AND ABS(COALESCE(actual_l,0) - ${_dP(5)}) < 0.05 AND created_by=${_dP(6)} ORDER BY id DESC LIMIT 1`;
+      const dv = [bn, side, String(b.machine_id || '').toUpperCase(), Number(b.virgin_kg || 0), Number(b.actual_l || 0), session.username];
+      let dup = null; try { dup = pgPool ? (await pgPool.query(dSql, dv)).rows[0] : db.prepare(dSql).get(...dv); } catch (_) { dup = null; }
+      const _dupAt = dup ? _v58eMs(dup.created_at) : null;   // PG "+00" / microsecond stamps parse through the v58E helper
+      const dupMs = _dupAt != null ? Date.now() - _dupAt : NaN;
+      if (dup && Number.isFinite(dupMs) && dupMs >= 0 && dupMs < 90 * 1000) {
+        logAudit(session.username, session.role, 'gpr', 'GPR_TT_DUPLICATE_REFUSED', `batch=${bn} ${side} ${b.machine_id} ${Number(b.virgin_kg || 0)} kg / ${Number(b.actual_l || 0)} L — same tank as ${dup.tt_number} (#${dup.id}) ${Math.round(dupMs / 1000)} s ago`, req.ip);
+        return res.status(409).json({ ok: false, error: 'DUPLICATE_TT', tt_id: dup.id, tt_number: dup.tt_number,
+          detail: `This tank was already saved ${Math.round(dupMs / 1000)} s ago as ${dup.tt_number} (#${dup.id}) — the same batch, side, machine, virgin kg and litres. Nothing was created again.` });
+      }
+    }
 
     // v57L: a tank prepared against an MMT → TT ALLOCATION settles that allocation. alloc_id comes
     // from the TT tab's allocated-tank list; a tank entered without one (New TT entry / Planning
@@ -28573,11 +28702,13 @@ app.post('/api/gpr/tt', async (req, res) => {
     _v58lYieldForget(bn);   // v58L: the batch's live yield recomputes on the next read
     logAudit(session.username, session.role, 'gpr', 'GPR_TT_CREATED',
       `batch=${bn} ${side} ${ttNumber} ${actualL}L charged=${totalChargedKg}kg${alloc ? ' alloc=' + alloc.id + ' (' + alloc.mmt_ref + ' reserved ' + alloc.reserved_kg + 'kg)' : ''}${returnSolL ? ' return-solution ' + returnSolL + 'L (' + returnSolKg + 'kg) from ' + returnLines.map(l => l.source_batch + ' ' + l.side + ' ' + l.litres + 'L').join(', ') : ''}`, req.ip);
-    res.json({ ok: true, tt_id: ttId, tt_number: ttNumber, seq_index: seqIndex, return_solution_l: returnSolL, return_solution_kg: returnSolKg,
+    const _out59b = { ok: true, tt_id: ttId, tt_number: ttNumber, seq_index: seqIndex, return_solution_l: returnSolL, return_solution_kg: returnSolKg,
       label_payload: finalPayload, production_day: pday, total_charged_kg: totalChargedKg,
-      cutting_generated_kg: genCutting, cutting_expected_kg: estCutting, warning: mmtWarning, alloc_id: alloc ? alloc.id : null, mmt_exhausted: mmtExhausted });
+      cutting_generated_kg: genCutting, cutting_expected_kg: estCutting, warning: mmtWarning, alloc_id: alloc ? alloc.id : null, mmt_exhausted: mmtExhausted };
+    if (_sk59b) _v59bSeenKeys.set(_sk59b, { at: Date.now(), status: 200, body: _out59b });   // v59B
+    res.json(_out59b);
   } catch (err) { res.status(500).json({ ok: false, error: err.message }); }
-});
+}));
 
 app.get('/api/gpr/tt/:batch', async (req, res) => {
   try {
@@ -29057,9 +29188,8 @@ app.get('/api/gpr/performance', async (req, res) => {
         const mr = (pgPool ? (await pgPool.query(mSql, [bn])).rows[0] : db.prepare(mSql).get(bn)) || {};
         // v58M item 10: material used = NET gelatine-equivalent (same calculator as the yield and the sheet)
         const _nI = _netMany[bn] || (await _v58mNetInputsMany([bn]))[bn];
-        const _wa = (live && Number(live.consolidatedWip || 0) > 0.0005) ? await _v58mWipAPct(live, o, sizeKey, masters) : { aPct: null };
         const _mg = wt.actualMg != null ? Number(wt.actualMg) : Number(wt.avgMg || 0);
-        const _eL = (live && _wa.aPct != null) ? +(Number(live.consolidatedWip || 0) * (1 - _wa.aPct / 100)).toFixed(3) : 0;
+        const _eL = live ? (await _v59bWipTerms(live, o, sizeKey, masters, _mg)).expectedSalvageLakhs : 0;   // v59B: stage-wise, not WIP × (100 − A)
         const _NET = _v58mNetCalc(Object.assign({}, _nI, { salvageRecoveredKg: +(_nI.salvageLakhs * _mg / 10 + Number(_nI.printingSalvageKg || 0)).toFixed(2), expectedSalvageLakhs: _eL, expectedSalvageKg: +(_eL * _mg / 10).toFixed(2) }));   // v58X
         const usedGel = _NET.total;   // v58M (Ishan): incl. colour / chemicals, as the yield denominator
         const usedGelGross = +Number(mr.gel || 0).toFixed(2);
@@ -29228,9 +29358,8 @@ app.get('/api/gpr/reconcile/:batch', async (req, res) => {
     // divides by (less colour). Adding the gross reuse on top of virgin counted the batch's own
     // cuttings twice (they were made from the virgin already in the figure).
     const _netI = (await _v58mNetInputsMany([bn]))[bn];
-    const _wipA = (live && Number(live.consolidatedWip || 0) > 0.0005) ? await _v58mWipAPct(live, order, sizeKey, masters) : { aPct: null };
     const _avgForNet = wt.actualMg != null ? Number(wt.actualMg) : Number(wt.avgMg || 0);
-    const _expL = (live && _wipA.aPct != null) ? +(Number(live.consolidatedWip || 0) * (1 - _wipA.aPct / 100)).toFixed(3) : 0;
+    const _expL = live ? (await _v59bWipTerms(live, order, sizeKey, masters, _avgForNet)).expectedSalvageLakhs : 0;   // v59B: stage-wise, not WIP × (100 − A)
     const NET = _v58mNetCalc(Object.assign({}, _netI, { salvageRecoveredKg: +(_netI.salvageLakhs * _avgForNet / 10 + Number(_netI.printingSalvageKg || 0)).toFixed(2), expectedSalvageLakhs: _expL, expectedSalvageKg: +(_expL * _avgForNet / 10).toFixed(2) }));   // v58X
     actual.net = NET;
     actual.grossReuse = N(actual.salvage + actual.cutting);
@@ -29489,7 +29618,8 @@ app.get('/api/gpr/batch-movements/:batch', async (req, res) => {
     try { rs = await q(`SELECT * FROM gpr_return_solution WHERE UPPER(batch_number)=${P1} OR UPPER(source_batch)=${P1} ORDER BY production_day, moved_at, id`, two); } catch (_) {}
     const generated = [], consumedInto = [], consumedByOthers = [];
     const S = { generatedAccepted: 0, generatedPending: 0, generatedVoided: 0, consumedOwn: 0, consumedOther: 0, consumedLegacy: 0, consumedByOthers: 0, byAccountGen: {}, byAccountCon: {},
-                generatedTrackingAccepted: 0, generatedOwnAccepted: 0, fromOtherByBatch: {}, byOthersByBatch: {}, byAccountOwnCon: {}, byAccountByOthers: {} };   // v58P item 2: split + reconciliation
+                generatedTrackingAccepted: 0, generatedOwnAccepted: 0, fromOtherByBatch: {}, byOthersByBatch: {}, byAccountOwnCon: {}, byAccountByOthers: {},   // v58P item 2: split + reconciliation
+                generatedOwnPending: 0, generatedTrackingPending: 0 };   // v59B (Ishan, 27 Oct): pending split the same way, so the KPI ties to the yield's two generation lines
     (led || []).forEach(r => {
       const isCr = r.movement_type === 'generation' || r.movement_type === 'correction';
       const own = String(r.batch_number || '').toUpperCase() === bn;
@@ -29501,7 +29631,8 @@ app.get('/api/gpr/batch-movements/:batch', async (req, res) => {
         if (r.state === 'accepted') { S.generatedAccepted += kg; S.byAccountGen[r.account] = (S.byAccountGen[r.account] || 0) + kg;
           // v58P: the Tracking salvage credit is the yield's own "salvage recovered" line — shown apart so the KPI ties to the yield rows
           if (r.source === 'tracking') S.generatedTrackingAccepted += kg; else S.generatedOwnAccepted += kg; }
-        else if (r.state === 'pending') S.generatedPending += kg; else S.generatedVoided += kg;
+        else if (r.state === 'pending') { S.generatedPending += kg; if (r.source === 'tracking') S.generatedTrackingPending += kg; else S.generatedOwnPending += kg; }
+        else S.generatedVoided += kg;
       } else if (!isCr && own) {
         const src = String(r.source_batch || '').toUpperCase();
         r.from = src && src !== bn ? 'other' : 'own';
@@ -29582,7 +29713,7 @@ app.get('/api/gpr/floor-movements', async (req, res) => {
 
     const generated = [], consumedInto = [], consumedByOthers = [];
     const S = { generatedAccepted: 0, generatedPending: 0, generatedVoided: 0, consumedOwn: 0, consumedOther: 0, consumedLegacy: 0, consumedByOthers: 0, byAccountGen: {}, byAccountCon: {},
-                generatedTrackingAccepted: 0, generatedOwnAccepted: 0, fromOtherByBatch: {}, byOthersByBatch: {}, byAccountOwnCon: {}, byAccountByOthers: {} };
+                generatedTrackingAccepted: 0, generatedOwnAccepted: 0, fromOtherByBatch: {}, byOthersByBatch: {}, byAccountOwnCon: {}, byAccountByOthers: {}, generatedOwnPending: 0, generatedTrackingPending: 0 };   // v59B
     const B = {};   // per batch of this floor: generated, consumed from own, drawn by others
     const bb = bn => (B[bn] = B[bn] || { batch: bn, generated: 0, pending: 0, consumedOwn: 0, drawnByOthers: 0, drawnInto: {} });
     const add = (o, k, v) => { o[k] = (o[k] || 0) + v; };
@@ -29595,7 +29726,7 @@ app.get('/api/gpr/floor-movements', async (req, res) => {
         r.state = r.receipt_status === 'rejected' ? 'voided' : (r.receipt_status === 'pending' ? 'pending' : 'accepted');
         generated.push(r);
         if (r.state === 'accepted') { S.generatedAccepted += kg; add(S.byAccountGen, r.account, kg); if (r.source === 'tracking') S.generatedTrackingAccepted += kg; else S.generatedOwnAccepted += kg; if (bn) bb(bn).generated += kg; }
-        else if (r.state === 'pending') { S.generatedPending += kg; if (bn) bb(bn).pending += kg; } else S.generatedVoided += kg;
+        else if (r.state === 'pending') { S.generatedPending += kg; if (r.source === 'tracking') S.generatedTrackingPending += kg; else S.generatedOwnPending += kg; if (bn) bb(bn).pending += kg; } else S.generatedVoided += kg;   // v59B
       } else {
         const src = String(r.source_batch || '').toUpperCase();
         r.from = src && src !== bn ? 'other' : 'own';
@@ -30913,7 +31044,8 @@ async function _v57fDayYield(from, to, floorFilter) {
   const P1 = pgPool ? '$1' : '?', P2 = pgPool ? '$2' : '?';
   const grid = {};
   const cell = (d, fl) => ((grid[d] = grid[d] || {})[fl] = grid[d][fl] || { num: 0, den: 0, batches: 0, working: [], crushKg: 0,
-    material: { virginKg: 0, colourKg: 0, fgRemeltKg: 0, reuseInKg: 0, generatedKg: 0, generatedOwnKg: 0, trackingSalvageKg: 0, returnUsedKg: 0, returnRecoveredKg: 0, tanks: 0 } });   // v58M: + return solution; v58U: generated split as in the batch working
+    material: { virginKg: 0, colourKg: 0, fgRemeltKg: 0, reuseInKg: 0, generatedKg: 0, generatedOwnKg: 0, trackingSalvageKg: 0, returnUsedKg: 0, returnRecoveredKg: 0, tanks: 0,   // v58M: + return solution; v58U: generated split as in the batch working
+                reuseCuttingKg: 0, reuseSalvageKg: 0, genCutAcceptedKg: 0, genCutPendingKg: 0, genSalManualAcceptedKg: 0, genSalManualPendingKg: 0, genTrkAcceptedKg: 0, genTrkPendingKg: 0 } });   // v59B: cuttings / salvage, accepted / pending
   // ── material: NET consumption — a tank counts on the production day it was RELEASED to the
   //    machine (Hold & Release), not the day it was charged. Until then it is WIP and stays out of
   //    consumption: charged today and run tomorrow = tomorrow's material. Likewise an MMT charge not
@@ -30924,7 +31056,7 @@ async function _v57fDayYield(from, to, floorFilter) {
   const shift = (x) => { const d = new Date(Date.parse(from + 'T00:00:00Z') + x * 86400000); return d.toISOString().slice(0, 10); };
   const tt = await q(`SELECT floor, production_day, issued_at, scan_out_at, scan_in_at, created_at,
                              COALESCE(virgin_kg,0) AS v, COALESCE(colour_kg,0) AS c, COALESCE(fg_remelt_kg,0) AS f,
-                             COALESCE(salvage_kg,0) + COALESCE(cutting_kg,0) AS r, COALESCE(return_solution_kg,0) AS rs
+                             COALESCE(salvage_kg,0) + COALESCE(cutting_kg,0) AS r, COALESCE(cutting_kg,0) AS rc, COALESCE(return_solution_kg,0) AS rs
                         FROM gpr_tt WHERE production_day BETWEEN ${P1} AND ${P2}
                            OR SUBSTR(COALESCE(issued_at, scan_out_at, ''),1,10) BETWEEN ${P1} AND ${P2}`, [shift(-30), (() => { const d = new Date(Date.parse(to + 'T00:00:00Z') + 86400000); return d.toISOString().slice(0, 10); })()]);
   tt.forEach(r => {
@@ -30936,6 +31068,7 @@ async function _v57fDayYield(from, to, floorFilter) {
     if (!d || d < from || d > to) return;                                                      // WIP, or outside the window
     const m = cell(d, fl).material;
     m.virginKg += +r.v || 0; m.colourKg += +r.c || 0; m.fgRemeltKg += +r.f || 0; m.reuseInKg += +r.r || 0; m.returnUsedKg += +r.rs || 0; m.tanks += 1;   // v58M item 8
+    m.reuseCuttingKg += +r.rc || 0; m.reuseSalvageKg += (+r.r || 0) - (+r.rc || 0);   // v59B
   });
   // v58M item 8: return solution recovered at batch close that day comes off the day's material
   try {
@@ -30946,12 +31079,17 @@ async function _v57fDayYield(from, to, floorFilter) {
   // v58U (Ishan, 21 Oct): split by source so the floor working reads like the batch working — "generated by
   // the floor's batches" (DPR cuttings, GPR entries) and "AIM / printing salvage recovered" (Tracking) are
   // separate lines; the total (and so the denominator) is unchanged.
-  const gen = await q(`SELECT production_day AS d, floor, CASE WHEN source='tracking' THEN 'tracking' ELSE 'own' END AS src, SUM(qty_kg) AS kg FROM gpr_ledger
+  const gen = await q(`SELECT production_day AS d, floor, CASE WHEN source='tracking' THEN 'tracking' ELSE 'own' END AS src,
+                               CASE WHEN account='cutting' THEN 'cut' ELSE 'sal' END AS acc, CASE WHEN COALESCE(receipt_status,'')='pending' THEN 'p' ELSE 'a' END AS st, SUM(qty_kg) AS kg FROM gpr_ledger
                         WHERE movement_type='generation' AND COALESCE(receipt_status,'') <> 'rejected'
                           AND source <> 'estimate' AND source <> 'return' AND account <> 'return_remelt'   -- v58I: no estimates, no returned FG
-                          AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor, CASE WHEN source='tracking' THEN 'tracking' ELSE 'own' END`, [from, to]);
+                          AND production_day BETWEEN ${P1} AND ${P2} GROUP BY production_day, floor, CASE WHEN source='tracking' THEN 'tracking' ELSE 'own' END,
+                          CASE WHEN account='cutting' THEN 'cut' ELSE 'sal' END, CASE WHEN COALESCE(receipt_status,'')='pending' THEN 'p' ELSE 'a' END`, [from, to]);   // v59B: + account / status split
   gen.forEach(r => { const fl = r.floor || 'unknown'; if (floorFilter && fl !== floorFilter) return;
-    const m = cell(r.d, fl).material; m.generatedKg += +r.kg || 0; if (r.src === 'tracking') m.trackingSalvageKg += +r.kg || 0; else m.generatedOwnKg += +r.kg || 0; });
+    const m = cell(r.d, fl).material, kg = +r.kg || 0; m.generatedKg += kg; if (r.src === 'tracking') m.trackingSalvageKg += kg; else m.generatedOwnKg += kg;
+    if (r.src === 'tracking') { if (r.st === 'p') m.genTrkPendingKg += kg; else m.genTrkAcceptedKg += kg; }
+    else if (r.acc === 'cut') { if (r.st === 'p') m.genCutPendingKg += kg; else m.genCutAcceptedKg += kg; }
+    else { if (r.st === 'p') m.genSalManualPendingKg += kg; else m.genSalManualAcceptedKg += kg; } });
   // ── output: the day's DPR production, converted to packable kg per batch ──
   const dp = await q(`SELECT UPPER(batch_number) AS bn, date AS d, SUM(COALESCE(qty_lakhs,0)) AS l FROM production_actuals
                        WHERE date BETWEEN ${P1} AND ${P2} AND COALESCE(batch_number,'') <> '' GROUP BY UPPER(batch_number), date`, [from, to]);
@@ -31351,17 +31489,26 @@ app.get('/api/gpr/receipts', async (req, res) => {
     // batches regardless of the floor asked for (so a floor's queue no longer depends on which
     // floor's read happened to trigger the sweep), and the response carries a diagnostic block —
     // pending rows overall, on other floors and with no floor — which the client shows.
-    const _sweep = async () => {
+    // v59B item 3 (Ishan, 27 Oct — "the Stock tab keeps fluctuating"): the v58X full-coverage credits sweep
+    // takes ~40 s (1,096 batches) and was started by ANY read older than 120 s — so it was running a third
+    // of the time, and while it runs it rewrites pending credit rows (day totals re-synced, rows re-created
+    // with new ids), which the three parallel floor reads then caught at different moments. The IMPLICIT
+    // sweep behind a read now does only the cheap DPR-cuttings feed; the heavy Tracking credits sweep runs on
+    // its own 15-minute timer (gprSyncTrackingCreditsAll) and on an explicit Refresh (?sync=1), which waits
+    // for it. The queue a chemist sees between refreshes is therefore a stable snapshot.
+    const _sweep = async (full) => {
       _gprReceiptSyncAt = Date.now();
-      const t0 = Date.now(); const last = { at: new Date().toISOString(), cuttings: null, credits: 0, error: null, ms: 0 };
+      const t0 = Date.now(); const last = { at: new Date().toISOString(), cuttings: null, credits: 0, error: null, ms: 0, full: !!full };
       const cut = await gprSyncDprCuttings().catch(e => ({ synced: 0, error: e.message }));
       last.cuttings = cut && cut.synced != null ? cut.synced : null;
       if (cut && cut.error) last.error = 'cuttings: ' + cut.error;
-      try {
+      if (full) try {
         // v58X: every batch with Tracking / Daily-Printing salvage since the cohort start, not just the running ones
         const cs = await gprSyncTrackingCreditsAll(); last.credits = cs.batches; last.creditRows = { created: cs.created, updated: cs.updated, removed: cs.removed };
         if (cs.errors && cs.errors.length) last.error = (last.error ? last.error + '; ' : '') + 'credits: ' + cs.errors.join('; ');
       } catch (e) { last.error = (last.error ? last.error + '; ' : '') + 'credits: ' + e.message; }
+      else if (_gprSweepLast && _gprSweepLast.full) { last.credits = _gprSweepLast.credits; last.creditRows = _gprSweepLast.creditRows; last.creditsAt = _gprSweepLast.creditsAt || _gprSweepLast.at; }
+      if (full) last.creditsAt = last.at;
       last.ms = Date.now() - t0; _gprSweepLast = last;
     };
     // v58F item 4 (Ishan, 14 Oct): waiting for the first sweep after a restart made the Stock tab sit
@@ -31369,10 +31516,10 @@ app.get('/api/gpr/receipts', async (req, res) => {
     // the first sweep is started at boot (below, app.listen) so it is normally done before anyone opens
     // the tab, and the client shows "a sweep is running" and re-reads once if it is still going.
     if (_force) {
-      if (!_gprSweepInFlight) _gprSweepInFlight = _sweep().finally(() => { _gprSweepInFlight = null; });
+      if (!_gprSweepInFlight) _gprSweepInFlight = _sweep(true).finally(() => { _gprSweepInFlight = null; });
       await _gprSweepInFlight.catch(() => {});
-    } else if (!_gprSweepInFlight && Date.now() - _gprReceiptSyncAt > 120000) {
-      _gprSweepInFlight = _sweep().finally(() => { _gprSweepInFlight = null; });   // not awaited
+    } else if (!_gprSweepInFlight && !_gprCreditSweepInFlight && Date.now() - _gprReceiptSyncAt > 120000) {
+      _gprSweepInFlight = _sweep(false).finally(() => { _gprSweepInFlight = null; });   // not awaited; v59B: cuttings feed only
     }
     const conds = ["receipt_status='pending'"]; const params = [];
     // v58D item 8: rows with NO floor (an unmapped machine, a manual/return row without one) were
@@ -31403,7 +31550,7 @@ app.get('/api/gpr/receipts', async (req, res) => {
                pending_total: dRows.reduce((a, r) => a + Number(r.n), 0),
                cutting_rows_total: Number((cRow || {}).n || 0), cutting_last_day: (cRow || {}).last_day || null, cutting_last_at: (cRow || {}).last_at || null,
                dpr_records: Number((rRow || {}).n || 0), dpr_last_day: (rRow || {}).last_day || null,
-               sweep: _gprSweepLast, sweep_in_flight: !!_gprSweepInFlight };
+               sweep: _gprSweepLast, sweep_in_flight: !!_gprSweepInFlight || !!_gprCreditSweepInFlight };   // v59B: the timer's credits sweep counts too
       global._v58lDiag = { t: Date.now(), d: diag };
     } catch (e) { diag = { error: e.message }; }
     res.json({ ok: true, floor, pending: rows, totalKg, diag });
@@ -31843,8 +31990,7 @@ app.get('/api/gpr/plan', async (req, res) => {
           try {
             const _nI = _netM[bn];
             if (_nI) {
-              const _wa = (live && Number(live.consolidatedWip || 0) > 0.0005) ? await _v58mWipAPct(live, o, _sk57, masters) : { aPct: null };
-              const _eL = (live && _wa.aPct != null) ? +(Number(live.consolidatedWip || 0) * (1 - _wa.aPct / 100)).toFixed(3) : 0;
+              const _eL = live ? (await _v59bWipTerms(live, o, _sk57, masters, WaMg2)).expectedSalvageLakhs : 0;   // v59B: stage-wise, not WIP × (100 − A)
               _netRow = _v58mNetCalc(Object.assign({}, _nI, { salvageRecoveredKg: +(_nI.salvageLakhs * WaMg2 / 10 + Number(_nI.printingSalvageKg || 0)).toFixed(2), expectedSalvageLakhs: _eL, expectedSalvageKg: +(_eL * WaMg2 / 10).toFixed(2) }));
               usedGel = _netRow.total;   // v58M (Ishan): MAT USED includes colour / chemicals, like the yield denominator
             }

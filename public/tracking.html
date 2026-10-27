@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>Sunloc Tracking Suite v1.0 · build v59A</title>
+<title>Sunloc Tracking Suite v1.0 · build v59D</title>
 <script src="https://cdnjs.cloudflare.com/ajax/libs/xlsx/0.18.5/xlsx.full.min.js"></script>
 <!-- v50W: xlsx-js-style is a drop-in superset of SheetJS 0.18 (identical API + cell .s styling).
      Loaded AFTER the cdnjs build so it takes over window.XLSX; if this CDN is unreachable the
@@ -594,7 +594,7 @@ input[type=number]{font-family:var(--mono)}
   <div class="login-card">
     <div class="login-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59A</p>
+      <p>Tracking Suite v1.0 · build v59D</p>
     </div>
     <div class="form-group">
       <label>Select Department / Role</label>
@@ -625,7 +625,7 @@ input[type=number]{font-family:var(--mono)}
 <div id="sidebar">
     <div class="sb-logo">
       <h1>SUNLOC</h1>
-      <p>Tracking Suite v1.0 · build v59A</p>
+      <p>Tracking Suite v1.0 · build v59D</p>
     </div>
     <div class="sb-user">
       <div class="sb-avatar" id="sb-avatar">A</div>
@@ -18660,14 +18660,56 @@ function exportReportD_LegacyStageTable(){
 // USD→INR cell ($B$3): the moment PM types the rate, every USD price, order value, subtotal and
 // NSR figure recomputes inside Excel itself. Summary SUMIFs condition on the SIZE / ZONE columns,
 // which are BLANK on subtotal and grand rows — so band rows can never double-count.
+// ═══ v59D (Ishan, 27 Oct) — NSR sheet: START / END per batch, size-wise movement tables, machine space ═══
+// Month membership for the machine-space table: a VERBATIM port of Planning's orderInMonth (v49T), so the
+// "Planned (L)" per machine is exactly the Production Summary's figure for the same month.
+function _v59dOrderInMonth(ord, ym) {
+  if (ord.deleted) return false;
+  const [y, m] = ym.split('-').map(Number);
+  const mStart = new Date(y, m-1, 1);
+  const mEnd   = new Date(y, m, 0, 23, 59, 59);
+  if (!ord.startDate && !ord.endDate) return ord.status !== 'closed';
+  const start = ord.startDate ? new Date(ord.startDate) : null;
+  const end   = ord.endDate   ? new Date(ord.endDate)   : null;
+  if (start && start >= mStart && start <= mEnd) return true;
+  if (end   && end   >= mStart && end   <= mEnd) return true;
+  if (start && end   && start < mStart && end > mEnd) return true;
+  if (ord.status !== 'closed' && start && start <= mEnd) return true;
+  return false;
+}
+function _v59dDaysInMonth(ym) { const m = /^(\d{4})-(\d{2})$/.exec(String(ym || '')); return m ? new Date(parseInt(m[1], 10), parseInt(m[2], 10), 0).getDate() : 30; }
+// Insert `n` blank columns at 0-based column `at` of a built SheetJS worksheet: every cell at/after `at`
+// moves right, every formula reference to a column at/after `at` is rewritten, merges / widths /
+// autofilter follow. A merge that ends exactly at `at−1` and starts before it is widened over the new
+// columns (a band label keeps covering the row). Done AFTER the sheet is built so the ~60 column-letter
+// formulas above stay exactly as written and proven — nothing is retyped.
+function _v59dInsertCols(ws, at, n) {
+  const dec = XLSX.utils.decode_cell, enc = XLSX.utils.encode_cell, dcol = XLSX.utils.decode_col, ecol = XLSX.utils.encode_col;
+  const mapCol = c => c >= at ? c + n : c;
+  const fixF = f => String(f).replace(/(\$?)([A-Z]{1,3})(\$?)(\d+)/g, (m, d1, col, d2, row) => d1 + ecol(mapCol(dcol(col))) + d2 + row);
+  const out = {};
+  Object.keys(ws).forEach(k => {
+    if (k[0] === '!') { out[k] = ws[k]; return; }
+    const a = dec(k); const cell = ws[k];
+    if (cell && cell.f) cell.f = fixF(cell.f);
+    out[enc({ r: a.r, c: mapCol(a.c) })] = cell;
+  });
+  Object.keys(ws).forEach(k => { delete ws[k]; }); Object.assign(ws, out);
+  if (ws['!ref']) { const r = XLSX.utils.decode_range(ws['!ref']); if (r.e.c >= at) r.e.c += n; ws['!ref'] = XLSX.utils.encode_range(r); }
+  if (ws['!autofilter'] && ws['!autofilter'].ref) { const r = XLSX.utils.decode_range(ws['!autofilter'].ref); r.e.c = r.e.c >= at ? r.e.c + n : r.e.c; r.s.c = mapCol(r.s.c); ws['!autofilter'].ref = XLSX.utils.encode_range(r); }
+  (ws['!merges'] || []).forEach(m => { if (m.s.c < at && m.e.c === at - 1) { m.e.c += n; return; } m.s.c = mapCol(m.s.c); m.e.c = mapCol(m.e.c); });
+  if (Array.isArray(ws['!cols'])) ws['!cols'].splice(at, 0, ...Array(n).fill({ wch: 12 }));
+}
 function _v52lAppendNsrSheet(wb, rows, done) {
   // Tracking roles are 'admin' and 'tracking_planning' (server user table); planning-app admins/PMs
   // exporting from a planning session carry 'planning_manager'. All three are the PM/Admin audience.
   const role = (state.currentUser?.role) || (typeof currentUser !== 'undefined' && currentUser?.role) || '';
   if (role !== 'admin' && role !== 'tracking_planning' && role !== 'planning_manager') { done(); return; }
   const batches = [...new Set(rows.map(r => String(r.batchNo || '').trim().toUpperCase()).filter(Boolean))];
-  const _build = (prices) => {
+  const _build = (prices, mcRate) => {
     try {
+      const _dateCells = {};   // v59D: aoa row index → [start, end] (filled into the two inserted columns at the end)
+      const _dt59d = v => v ? new Date(v).toLocaleDateString('en-GB', { day: '2-digit', month: 'short', year: 'numeric' }) : '—';
       // v52N (Ishan, 22 Aug): DISPATCHED + BALANCE sections sit immediately right of Net Packable —
       // the ready-reckoner. Dispatched qty is PREFILLED with the batch's actual dispatched lakhs at
       // export time and stays PM-editable; both sections' prices are cell references to the single
@@ -18736,6 +18778,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           const mainIdx = aoa.length;
           dataRowIdxs.push(mainIdx);
           if (_splitExcess) capIdxs[mainIdx] = true;
+          _dateCells[mainIdx] = [_dt59d(r.startDate), _dt59d(r.endDate)];   // v59D
           _push([r.machine, r.floor, r.batchNo, r.customer || '—', r.pcCode || '—', r.colour || '—', String(r.size), zone,
             _n(r._plannedQty), _n(r._grossProd), _n(r._aimAGrade), _n(r._unscannedWip), P('_printRej'), P('_piSalRem'),
             null, _dispMain, null, null, null, null, null,
@@ -18744,6 +18787,7 @@ function _v52lAppendNsrSheet(wb, rows, done) {
             const exIdx = aoa.length;
             dataRowIdxs.push(exIdx);
             excessIdxs[exIdx] = mainIdx;
+            _dateCells[exIdx] = [_dt59d(r.startDate), _dt59d(r.endDate)];   // v59D
             _push([r.machine, r.floor, r.batchNo + ' (EXCESS)', '⚠ RE-CUSTOMER — enter buyer', r.pcCode || '—', r.colour || '—', String(r.size), zone,
               0, 0, 0, 0, 0, 0,
               null, _dispEx, null, null, null, null, null,
@@ -18899,18 +18943,56 @@ function _v52lAppendNsrSheet(wb, rows, done) {
         { title: 'MOVEMENT — EXPORT', crit: 'Export' },
       ];
       const _mvQ = (qr, z) => z ? `SUMIFS(${qr},${F},"?*",${G},"${z}")` : `SUMIF(${F},"?*",${qr})`;
+      // v59D (Ishan, 27 Oct): each movement table is now a SIZE MATRIX — the ALL SIZES row is the old
+      // three-figure table turned sideways, and one row per size splits it (SUMIFS on the size key, the
+      // same exact-match helper the NSR summary uses), for Overall, Domestic and Export alike.
+      const _mvQS = (qr, z, rowRef) => z ? `SUMIFS(${qr},${KEY},"SZ"&${rowRef},${G},"${z}")` : `SUMIFS(${qr},${KEY},"SZ"&${rowRef})`;
       _mvTables.forEach(t => {
         _sp([], 'spacer');
-        merges.push({s:{r:si,c:0},e:{r:si,c:3}});
-        _sp([t.title], 'floor');
-        _sp(['', 'QTY (L)', 'VALUE (₹)'], 'hdr2');
-        [['PACKABLE', N, RR], ['DISPATCHED', DQ, DV], ['BALANCE', BQ, BV]].forEach(([lbl, qr, vr]) => {
-          XLSX.utils.sheet_add_aoa(ws, [[lbl]], { origin: { r: si, c: 0 } });
-          _fc(si, 1, `ROUND(${_mvQ(qr, t.crit)},2)`);
-          _fc(si, 2, `ROUND(${_mvQ(vr, t.crit)},0)`, '#,##0');
+        merges.push({s:{r:si,c:0},e:{r:si,c:6}});
+        _sp([t.title + ' — by size'], 'floor');
+        _sp(['SIZE', 'PACKABLE (L)', 'PACKABLE VALUE (₹)', 'DISPATCHED (L)', 'DISPATCHED VALUE (₹)', 'BALANCE (L)', 'BALANCE VALUE (₹)'], 'hdr7');
+        XLSX.utils.sheet_add_aoa(ws, [['ALL SIZES']], { origin: { r: si, c: 0 } });
+        [[N, RR], [DQ, DV], [BQ, BV]].forEach(([qr, vr], k) => { _fc(si, 1 + k * 2, `ROUND(${_mvQ(qr, t.crit)},2)`); _fc(si, 2 + k * 2, `ROUND(${_mvQ(vr, t.crit)},0)`, '#,##0'); });
+        kinds[si] = 'grand'; si++;
+        sizesAll.forEach(sz => {
+          const r1 = si + 1;
+          XLSX.utils.sheet_add_aoa(ws, [[sz]], { origin: { r: si, c: 0 } });
+          [[N, RR], [DQ, DV], [BQ, BV]].forEach(([qr, vr], k) => { _fc(si, 1 + k * 2, `ROUND(${_mvQS(qr, t.crit, 'A' + r1)},2)`); _fc(si, 2 + k * 2, `ROUND(${_mvQS(vr, t.crit, 'A' + r1)},0)`, '#,##0'); });
           kinds[si] = 'data'; si++;
         });
       });
+      // ── v59D: MACHINE-WISE SPACE AVAILABLE — the Planning → Production Summary basis, for the sheet's
+      //    header month: capacity/day = the machine's DPR average per producing day this month (its
+      //    configured standard until it has one), × calendar days; planned = Σ order qty of the machine's
+      //    orders in the month (Planning's own month membership); available = capacity − planned, ≥ 0.
+      try {
+        const ym = (window._rptEExportMeta && window._rptEExportMeta.month) || trkCurrentYM();
+        const days = _v59dDaysInMonth(ym);
+        const mm = (state.machineMaster || []).filter(m => m && m.id);
+        const ords = (state.batches || []).filter(o => o && !o.deleted && !o._v53tVirtual && _v59dOrderInMonth(o, ym));
+        const n2 = v => Math.round((+v || 0) * 100) / 100;
+        _sp([], 'spacer');
+        merges.push({s:{r:si,c:0},e:{r:si,c:7}});
+        _sp([`MACHINE-WISE SPACE AVAILABLE — ${_v57yPmLabel(ym)} (Planning → Production Summary basis: capacity/day = this month's DPR average per producing day, standard rate until the first production day; × ${days} calendar days; planned = the machine's orders in the month)`], 'floor');
+        _sp(['MACHINE', 'SIZE', 'CAP/DAY (L)', 'RATE BASIS', 'CAP/MONTH (L)', 'PLANNED (L)', 'AVAILABLE (L)', 'LOADED %'], 'hdr8');   // 8 columns — stays left of the inserted START/END columns
+        let tCap = 0, tPl = 0, tAv = 0;
+        mm.forEach(mc => {
+          const r = mcRate && mcRate[mc.id];
+          const live = !!(r && r.distinctDays > 0);
+          const perDay = live ? +r.avgPerDay : (+mc.cap || 0);
+          const cap = perDay * days;
+          const mine = ords.filter(o => o.machineId === mc.id);
+          const planned = mine.reduce((a, o) => a + (parseFloat(o.qty) || 0), 0);
+          const avail = Math.max(0, cap - planned);
+          tCap += cap; tPl += planned; tAv += avail;
+          XLSX.utils.sheet_add_aoa(ws, [[mc.id, String(mc.size || ''), n2(perDay), live ? `DPR avg · ${r.distinctDays} day${r.distinctDays === 1 ? '' : 's'}` : 'STD (no DPR day yet)', n2(cap), n2(planned), n2(avail), cap > 0 ? Math.round(planned / cap * 100) + '%' : '—']], { origin: { r: si, c: 0 } });
+          kinds[si] = 'data'; si++;
+        });
+        XLSX.utils.sheet_add_aoa(ws, [[`TOTAL — ${mm.length} machines, ${ords.length} orders in the month`, '', '', '', n2(tCap), n2(tPl), n2(tAv), tCap > 0 ? Math.round(tPl / tCap * 100) + '%' : '—']], { origin: { r: si, c: 0 } });
+        kinds[si] = 'grand'; si++;
+        if (!mcRate) { _sp(['⚠ DPR averages could not be fetched — every machine is on its standard rate above'], 'subtitle'); }
+      } catch (e) { console.warn('[v59D NSR] machine space table skipped:', e && e.message); }
       if (ws['!ref']) { const rng = XLSX.utils.decode_range(ws['!ref']); rng.e.r = Math.max(rng.e.r, si); rng.e.c = Math.max(rng.e.c, NC - 1); ws['!ref'] = XLSX.utils.encode_range(rng); }
       // Styling — v50W colour language, same palette as the main sheet.
       try {
@@ -18923,9 +19005,9 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           if (kind === 'title')    { _set(r, 0, { font:{ bold:true, sz:14 } }); return; }
           if (kind === 'subtitle') { _set(r, 0, { font:{ italic:true, sz:10, color:{ rgb:'555555' } } }); return; }
           if (kind === 'rate')     { _set(r, 0, { font:{ bold:true, sz:11 } }); _set(r, 1, { font:{ bold:true, sz:12 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.RATE } }, border:_bAll }); _set(r, 2, { font:{ italic:true, sz:9, color:{ rgb:'92400E' } } }); return; }
-          const span = kind === 'hdr2' ? 4 : NC;   // hdr2 also serves the movement tables (3 cols)
+          const span = kind === 'hdr2' ? 4 : kind === 'hdr7' ? 7 : kind === 'hdr8' ? 8 : NC;   // hdr2: NSR summary; hdr7 / hdr8: v59D size matrices / machine space
           for (let c = 0; c < span; c++) {
-            if (kind === 'hdr' || kind === 'hdr2') _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
+            if (kind === 'hdr' || kind === 'hdr2' || kind === 'hdr7' || kind === 'hdr8') _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.HDR } }, border:_bAll, alignment:{ horizontal:'center', vertical:'center', wrapText:true } });
             else if (kind === 'mc')    _set(r, c, { font:{ bold:true, sz:10 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.MC } }, border:_bAll });
             else if (kind === 'floor') _set(r, c, { font:{ bold:true, sz:11 }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.FLOOR } }, border:_bAll });
             else if (kind === 'sub')   _set(r, c, { font:{ bold:true }, fill:{ patternType:'solid', fgColor:{ rgb:_Fc.SUB } }, border:_bAll, alignment:{ horizontal: c>=8?'right':'left' } });
@@ -18934,6 +19016,16 @@ function _v52lAppendNsrSheet(wb, rows, done) {
           }
         });
       } catch (e) { console.warn('[v52L NSR] style pass skipped:', e && e.message); }
+      // v59D: START / END per batch, right after ZONE (columns I, J) — inserted into the finished sheet
+      try {
+        _v59dInsertCols(ws, 8, 2);
+        const hdrStyle = (ws[XLSX.utils.encode_cell({ r: hdrRowIdx, c: 7 })] || {}).s;
+        ws[XLSX.utils.encode_cell({ r: hdrRowIdx, c: 8 })] = { t: 's', v: 'START', s: hdrStyle };
+        ws[XLSX.utils.encode_cell({ r: hdrRowIdx, c: 9 })] = { t: 's', v: 'END', s: hdrStyle };
+        Object.keys(_dateCells).forEach(k => { const i = +k; const st = (ws[XLSX.utils.encode_cell({ r: i, c: 7 })] || {}).s;
+          ws[XLSX.utils.encode_cell({ r: i, c: 8 })] = { t: 's', v: _dateCells[k][0], s: st }; ws[XLSX.utils.encode_cell({ r: i, c: 9 })] = { t: 's', v: _dateCells[k][1], s: st }; });
+        ws['!cols'][8] = { wch: 12 }; ws['!cols'][9] = { wch: 12 };
+      } catch (e) { console.warn('[v59D NSR] date columns skipped:', e && e.message); }
       XLSX.utils.book_append_sheet(wb, ws, 'NSR Planning');
     } catch (e) { console.warn('[v52L NSR] sheet build failed:', e && e.message); }
     done();
@@ -18942,15 +19034,21 @@ function _v52lAppendNsrSheet(wb, rows, done) {
   // looked finished with every price blank and nothing said why. Now: 90 s allowance, and if prices
   // still can't be fetched the sheet says so in its subtitle and the user gets a toast.
   window._v57bNsrPriceErr = null;
-  fetch(serverUrl + '/api/nsr/prices', {
+  // v59D: the machine-space table needs this month's DPR averages — the same /api/actuals/machine-summary
+  // Planning reads (no params = current production month; a past header month passes its own window)
+  const _ym59d = (window._rptEExportMeta && window._rptEExportMeta.month) || trkCurrentYM();
+  const _msQ = _ym59d === trkCurrentYM() ? '' : ('?from=' + _ym59d + '-01&to=' + _ym59d + '-' + String(_v59dDaysInMonth(_ym59d)).padStart(2, '0'));
+  const _rateP = fetch(serverUrl + '/api/actuals/machine-summary' + _msQ, { signal: AbortSignal.timeout(20000) }).then(r => r.json()).then(j => (j && j.ok && j.machines) || null).catch(() => null);
+  const _priceP = fetch(serverUrl + '/api/nsr/prices', {
     method: 'POST', headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify({ batches }), signal: AbortSignal.timeout(90000)
   }).then(r => r.json()).then(j => {
       if (!(j && j.ok)) window._v57bNsrPriceErr = (j && j.error) || 'price service returned an error';
-      _build((j && j.ok && j.prices) || {});
+      return (j && j.ok && j.prices) || {};
     })
     .catch(e => { window._v57bNsrPriceErr = (e && e.name === 'TimeoutError') ? 'price lookup timed out' : ((e && e.message) || 'price lookup failed');
-                  _build({}); });   // offline → sheet still builds, price cells blank for manual entry
+                  return {}; });   // offline → sheet still builds, price cells blank for manual entry
+  Promise.all([_priceP, _rateP]).then(([prices, mcRate]) => _build(prices, mcRate));
 }
 
 // v58V (Ishan, 22 Oct): Report E / NSR must never be read or exported with the scan summary missing — every

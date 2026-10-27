@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v59A</title>
+<title>GPR · build v59D</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -420,8 +420,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v59A</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59A</div>
+    <h1>GPR<span class="vpill">v59D</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59D</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -441,7 +441,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v59A</span></div>
+  <div class="nbrand">GPR<span class="vpill">v59D</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -3756,7 +3756,16 @@ function setPrep(m){
   const go = document.getElementById('prepGo');
   if(go) go.textContent = 'Complete TT entry — create ' + (M==='both' ? 'CAP + BODY tanks' : M.toUpperCase()+' tank');
 }
+// v59B item 4: one submission at a time, and each side carries a submit key that survives a retry — the server
+// answers a repeated key with the first tank instead of creating a second one (MMT 0968: B2/7 saved twice).
+function _ttSubmitKey(p){ const K = window._TT_SK = window._TT_SK || {}; if(!K[p]) K[p] = 'tt-'+Date.now().toString(36)+'-'+Math.random().toString(36).slice(2,10); return K[p]; }
 async function completeDualTt(){
+  if(window._TT_SUBMITTING){ toast('Saving the tank — one moment','' ); return; }
+  window._TT_SUBMITTING = true;
+  const _btn = document.getElementById('prepGo'); if(_btn) _btn.disabled = true;
+  try { await _completeDualTtInner(); } finally { window._TT_SUBMITTING = false; if(_btn) _btn.disabled = false; }
+}
+async function _completeDualTtInner(){
   if(!gMonthEditable('tank entry')) return;   // v58S
   const batch = val('td_batch');
   if(!batch){ toast('A batch number is required','err'); return; }
@@ -3817,8 +3826,10 @@ async function completeDualTt(){
   }
   const created = [];
   for(const [p, side] of sides){
-    const d = await post('/api/gpr/tt', _sidePayload(p, side));
+    const d = await post('/api/gpr/tt', Object.assign(_sidePayload(p, side), { submit_key: _ttSubmitKey(p) }));   // v59B
+    if(d.ok) delete (window._TT_SK||{})[p];
     if(!d.ok){
+      if(d.error==='DUPLICATE_TT'){ toast(side.toUpperCase()+' — '+(d.detail||'this tank was already saved'),'err'); delete (window._TT_SK||{})[p]; loadTtList(batch); loadMmtOptions(); if(created.length) renderDualCreated(created, true); return; }   // v59B
       // v57W: an exhausted charge is a stop, not a warning — say what to do, keep the form as typed
       if(d.error==='CHARGE_EXHAUSTED'){ toast(side.toUpperCase()+' — '+(d.detail||'The linked MMT charge has no litres left. Take a new charge and link it.'),'err'); loadMmtOptions(); if(created.length) renderDualCreated(created, true); return; }
       toast(side.toUpperCase()+': '+(d.detail || d.error || 'could not create the tank'),'err');
@@ -5155,11 +5166,24 @@ function exportOilyLedger(){
 }
 // ── v56 item 15: receipts are cached, filtered and selectable; bulk accept in one action ─────
 let RCP_ROWS = [], RCP_SEL = {};
+// v59B item 3 (Ishan, 27 Oct — "the Stock tab isn't stable, it keeps fluctuating"): the queue was wiped to
+// "Loading…" on every read, re-read every 8 s while a sweep ran, and concurrent reads raced each other. Now
+// one read at a time (a second call rides the first); the table stays on screen with a small "refreshing"
+// mark and is redrawn ONLY when the rows actually changed (same ids and kg → untouched, scroll and ticks
+// kept); selections survive a redraw; a running sweep is polled quietly, not re-rendered.
+let _rcpInFlight = null, _rcpSig = null;
 async function loadReceipts(force){
-  // v55X item 7: the server throttles the heavy DPR/Tracking sweeps to once per 2 min; Refresh
-  // forces a fresh sweep with ?sync=1. Routine opens serve the queue instantly.
+  if(_rcpInFlight && !force) return _rcpInFlight;
+  _rcpInFlight = _loadReceiptsInner(force).finally(()=>{ _rcpInFlight = null; });
+  return _rcpInFlight;
+}
+async function _loadReceiptsInner(force){
+  // v55X item 7: the server throttles the DPR cuttings feed to once per 2 min; Refresh forces a full
+  // Tracking-credits sweep with ?sync=1 and waits for it. Routine opens serve the queue instantly.
   const el = document.getElementById('rcpList'); if(!el) return;
-  el.innerHTML = '<span style="color:var(--t3)">Loading&hellip;</span>';
+  const hadTable = !!el.querySelector('table');
+  if(!hadTable) el.innerHTML = '<span style="color:var(--t3)">Loading&hellip;</span>';
+  else { const m = document.getElementById('rcpRefreshing'); if(m) m.style.display = 'inline'; }
   try{
     const fl = (typeof visibleFloors==='function' ? visibleFloors() : [CUR_FLOOR==='ALL' ? 'GF' : CUR_FLOOR]);
     // v56C item 10: the three floors were fetched one after another — three round-trips in
@@ -5177,16 +5201,21 @@ async function loadReceipts(force){
       if(d.diag && !diag) diag = d.diag;
     });
     window._RCP_ERRS = errs; window._RCP_DIAG = diag;
-    // v58F item 4: the read no longer waits for the feed sweep; if one is running, re-read once when it should be done
-    if(diag && diag.sweep_in_flight && !window._RCP_RETRY) window._RCP_RETRY = setTimeout(()=>{ window._RCP_RETRY = null; loadReceipts(); }, 8000);
-    RCP_ROWS = rows; RCP_SEL = {};
+    // v58F item 4 / v59B: if a sweep is running, look again when it should be done — quietly, and no more than
+    // once every 15 s; the table is redrawn only if the rows changed.
+    if(diag && diag.sweep_in_flight && !window._RCP_RETRY) window._RCP_RETRY = setTimeout(()=>{ window._RCP_RETRY = null; loadReceipts(); }, 15000);
+    const sig = rows.map(r=>r.id+':'+Number(r.qty_kg||0).toFixed(2)+':'+(r.floor||'')).sort().join('|') + '#' + errs.join('|') + '#' + (diag ? (diag.sweep_in_flight?'S':'-')+(diag.pending_total||0)+':'+((diag.sweep||{}).at||'') : '');
+    const changed = sig !== _rcpSig; _rcpSig = sig;
+    RCP_ROWS = rows;
+    const keep = {}; rows.forEach(r=>{ if(RCP_SEL[r.id]) keep[r.id] = 1; }); RCP_SEL = keep;   // selections survive a reload
     const sel = document.getElementById('rcp_acct');
     if(sel && sel.options.length<=1){
       const accts = [...new Set(rows.map(r=>r.account).filter(Boolean))];
       sel.innerHTML = '<option value="">All accounts</option>' + accts.map(a=>'<option value="'+esc(a)+'">'+esc((rows.find(r=>r.account===a)||{}).account_label||a)+'</option>').join('');
     }
-    renderReceipts();
-  }catch(e){ el.innerHTML = '<span style="color:var(--red)">Receipts failed: '+esc(e.message||'error')+'</span>'; }
+    if(changed || !hadTable || force) renderReceipts();
+    else { const m = document.getElementById('rcpRefreshing'); if(m) m.style.display = 'none'; }
+  }catch(e){ if(!hadTable) el.innerHTML = '<span style="color:var(--red)">Receipts failed: '+esc(e.message||'error')+'</span>'; else toast('Receipts refresh failed: '+(e.message||'error'),'err'); const m = document.getElementById('rcpRefreshing'); if(m) m.style.display='none'; }
 }
 function _rcpFiltered(){
   const src = (document.getElementById('rcp_src')||{}).value || '';
@@ -5226,7 +5255,8 @@ function renderReceipts(){
       + ' &middot; DPR records: '+(dg.dpr_records||0)+(dg.dpr_last_day?' (last '+esc(_dm(dg.dpr_last_day))+')':'')
       + ' &middot; last feed sweep: '+(sw.at?esc(_v58dDt(sw.at))+' &mdash; '+(sw.cuttings==null?'?':sw.cuttings)+' cutting increment'+(sw.cuttings===1?'':'s')+', '+(sw.credits||0)+' batch'+(sw.credits===1?'':'es')+' checked ('+(sw.ms||0)+' ms)':'not yet run')
       + (sw.error?' <span style="color:var(--red)">&#9888; '+esc(sw.error)+'</span>':'')
-      + (dg.sweep_in_flight?' &middot; <i>a sweep is running &mdash; Refresh in a moment</i>':'')+'</div>';
+      + (dg.sweep_in_flight?' &middot; <i>a feed sweep is running in the background &mdash; this list refreshes itself when it finishes</i>':'')
+      + ' <span id="rcpRefreshing" style="display:none;color:var(--amber)">&#8635; refreshing&hellip;</span></div>';
   }
   if(!RCP_ROWS.length){ el.innerHTML = pre + '<div style="padding:10px 14px;border:1px solid var(--green);border-left:5px solid var(--green);border-radius:var(--r);background:var(--green-l);color:var(--green);font-weight:600">Nothing pending &mdash; all generation received into stock.</div>'; _rcpBtn(); return; }
   if(!rows.length){ el.innerHTML = pre + '<div class="empty">No pending receipts match these filters.</div>'; _rcpBtn(); return; }
@@ -6234,6 +6264,18 @@ function renderMaterialRecon(rows, d){
   out.innerHTML = h;
 }
 // the working behind one row — yield components + the three-cause reconciliation + TT variance
+// v59B (Ishan, 27 Oct — 26V134): the WIP row shows the STAGE-WISE working — what lies ahead of each leg is
+// Planning's standard printing / PI loss (÷ 1.01 ÷ 1.01), the AIM A-grade only on the unscanned part.
+// v59B (Ishan, 27 Oct): every generation line names its state in full — accepted into stock · pending GPR acceptance
+function _ywAP(acc, pend){ const n1 = v => fmt(Number(v||0),1); return ' <span style="color:var(--t3);font-size:10.5px">accepted '+n1(acc)+' · pending '+n1(pend)+'</span>'; }
+function _ywWipLabel(N){
+  const n2 = v => fmt(Number(v||0),2), W = N.wipSplit || {}, legs = W.legs || [], F = W.factors || {};
+  if(!legs.length) return 'WIP (consolidated, Report E) '+n2(N.wipLakhs)+' L';
+  const fac = W.printed ? ('÷ '+F.print+' (printing) ÷ '+F.pi+' (PI)') : 'as is (unprinted batch — nothing ahead of inspected capsules)';
+  const det = legs.map(l=>esc(l.label)+' '+n2(l.lakhs)+' L '+esc(l.note)+' = '+n2(l.packable)+' L').join('<br>');
+  return 'WIP (consolidated, Report E) '+n2(N.wipLakhs)+' L, packable by stage <span style="color:var(--t3)">(post-AIM WIP '+fac+(N.aPct!=null?'; unscanned × A-grade '+fmt(N.aPct,1)+'%'+(N.aBasis&&N.aBasis!=='none'?' ('+esc(N.aBasis)+')':''):'')+'; standard losses from Planning / Masters)</span>'
+    + '<div style="font-size:10.5px;color:var(--t2);margin-top:3px;line-height:1.45">'+det+'</div>';
+}
 async function mrOpen(bn){
   ttModalOpen('Batch '+esc(bn)+' &mdash; yield working &amp; material reconciliation',
     _ywToolbar('B|'+bn)+'<div id="mrY"><div class="empty">Working out the yield&hellip;</div></div><div id="mrM" style="margin-top:14px"></div><div id="mrR" style="margin-top:14px"></div>');   // v58M item 2: + movements section; v58U: export / print
@@ -6250,7 +6292,7 @@ async function mrOpen(bn){
         + '<b style="font-size:15px;color:var(--'+(cls==='green'?'green':cls==='red'?'red':cls==='amber'?'amber':'t1')+')">'+(y.yieldPct!=null?fmt(y.yieldPct,2)+'%':'—')+'</b> <span style="color:var(--t3)">(target '+y.target+'%'+(y.variance!=null?' · '+(y.variance>=0?'+':'')+fmt(y.variance,2):'')+')</span></div>'
         + '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:0">Packable output</div><table class="gtable"><tbody>'
         + '<tr><td>Packed (Tracking, packing IN)</td><td class="num">'+n2(N.packedLakhs)+' L</td><td class="num">× '+n1(y.avgMg)+' mg ÷ 10 =</td><td class="num"><b>'+n1(N.packedWeightKg)+'</b> kg</td></tr>'
-        + '<tr><td>WIP (consolidated, Report E) '+n2(N.wipLakhs)+' L × A-grade '+(N.aPct!=null?n1(N.aPct)+'%':'—')+(N.aBasis&&N.aBasis!=='none'?' <span style="color:var(--t3)">('+esc(N.aBasis)+')</span>':'')+'</td><td class="num">'+n2(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs)+' L</td><td class="num">× '+n1(y.avgMg)+' mg ÷ 10 =</td><td class="num"><b>'+n1(N.wipWeightKg)+'</b> kg</td></tr>'   /* v58K */
+        + '<tr><td>'+_ywWipLabel(N)+'</td><td class="num">'+n2(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs)+' L</td><td class="num">× '+n1(y.avgMg)+' mg ÷ 10 =</td><td class="num"><b>'+n1(N.wipWeightKg)+'</b> kg</td></tr>'   /* v58K; v59B: stage-wise (see _ywWipLabel) */
         + '<tr class="sumrow"><td>Packable output</td><td class="num">'+n2(Number(N.packedLakhs)+Number(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs))+' L</td><td></td><td class="num"><b>'+n1(N.total)+'</b> kg</td></tr></tbody></table>'
         + '<div class="hbnote" style="margin-top:6px">Average weight '+n1(y.avgMg)+' mg'+(y.weightBasis&&y.weightBasis.basis?' ('+esc(y.weightBasis.basis)+')':'')+' · DPR gross '+n2(y.grossProd)+' L · '+y.ttCount+' tank'+(y.ttCount===1?'':'s')+', '+n1(y.ttLitres)+' L'+(y.denominator.aimRemeltKg>0?' · AIM remelt '+n1(y.denominator.aimRemeltKg)+' kg (out of process, not in the yield)':'')+'</div></div>'
         + '<div><div class="fgroup-title" style="margin-top:0">Net material</div><table class="gtable"><tbody>'
@@ -6258,16 +6300,18 @@ async function mrOpen(bn){
         + '<tr><td>Colour + TiO&#8322;</td><td class="num">'+n1(D.colourKg)+'</td></tr>'
         + '<tr><td>FG remelt</td><td class="num">'+n1(D.fgRemeltKg)+'</td></tr>'
         + '<tr class="sumrow"><td>Fresh material</td><td class="num">'+n1(D.freshMaterialKg)+'</td></tr>'
-        + '<tr><td>+ Cutting &amp; salvage charged into the tanks (Ledger A'+(Number(D.legacyDrawKg)>0.005?' + Ledger B '+n1(D.legacyDrawKg):'')+')</td><td class="num">'+n1(D.reuseInKg!=null?D.reuseInKg:D.consumedKg)+'</td></tr>'
-        + '<tr><td>&minus; Cutting &amp; salvage generated by this batch (DPR cuttings, GPR entries)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.generatedManualKg)+'</td></tr>'
+        /* v59B (Ishan, 27 Oct): cuttings and salvage are separate lines, each with accepted / pending stated in full */
+        + '<tr><td>+ Cuttings &amp; salvage charged into the tanks (Ledger A'+(Number(D.legacyDrawKg)>0.005?' + Ledger B '+n1(D.legacyDrawKg):'')+') <span style="color:var(--t3);font-size:10.5px">cuttings '+n1(D.consumedCuttingKg)+' · salvage '+n1(D.consumedSalvageKg)+(Number(D.legacyDrawKg)>0.005?' · Ledger B '+n1(D.legacyDrawKg):'')+'</span></td><td class="num">'+n1(D.reuseInKg!=null?D.reuseInKg:D.consumedKg)+'</td></tr>'
+        + '<tr><td>&minus; Cuttings generated by this batch (DPR cuttings, GPR entries)'+_ywAP(D.genCutAcceptedKg,D.genCutPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(D.generatedCuttingKg)+'</td></tr>'
+        + (Number(D.generatedSalvageManualKg)>0.005 ? '<tr><td>&minus; Salvage generated by this batch (GPR entries)'+_ywAP(D.genSalManualAcceptedKg,D.genSalManualPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(D.generatedSalvageManualKg)+'</td></tr>' : '')
         + '<tr class="sumrow"><td>= Net recirculation</td><td class="num">'+(D.netRecirc>=0?'+':'')+n1(D.netRecirc)+'</td></tr>'
-        + '<tr><td>&minus; AIM / PI salvage recovered (Tracking, '+n2(D.salvageLakhs)+' L × '+n1(y.avgMg)+' mg)'+(Number(D.printingSalvageKg)>0.005?' + printing salvage (Planning Daily Printing Log, '+n1(D.printingSalvageKg)+' kg)':'')+'</td><td class="num" style="color:var(--red)">&minus;'+n1(D.salvageRecoveredKg)+'</td></tr>'   /* v58X: + Daily-Printing salvage */
-        + (Number(D.expectedSalvageKg)>0.005 ? '<tr><td>&minus; Salvage the WIP is expected to return ('+n2(D.expectedSalvageLakhs)+' L = WIP × (100 − A) %, × '+n1(y.avgMg)+' mg)</td><td class="num" style="color:var(--red)">&minus;'+n1(D.expectedSalvageKg)+'</td></tr>' : '')   /* v58K */
+        + '<tr><td>&minus; Salvage recovered through Tracking (AIM / PI wastage '+n2(D.salvageLakhs)+' L × '+n1(y.avgMg)+' mg'+(Number(D.printingSalvageKg)>0.005?'; printing salvage from the Daily Printing Log '+n1(D.printingSalvageKg)+' kg':'')+')'+_ywAP(D.genTrkAcceptedKg,D.genTrkPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(D.salvageRecoveredKg)+'</td></tr>'   /* v58X: + Daily-Printing salvage; v59B: state in full */
+        + (Number(D.expectedSalvageKg)>0.005 ? '<tr><td>&minus; Salvage the WIP is expected to return ('+n2(D.expectedSalvageLakhs)+' L = WIP − packable WIP: the standard printing / PI loss still ahead'+(N.aPct!=null?' + (100 − A) % of the unscanned part':'')+', × '+n1(y.avgMg)+' mg) <span style="color:var(--t3)">— a forecast, replaced by the actual printing / PI salvage as it is entered</span></td><td class="num" style="color:var(--red)">&minus;'+n1(D.expectedSalvageKg)+'</td></tr>' : '')   /* v58K; v59B wording */
         /* v58M item 8; v58X item 2 (Ishan, 25 Oct): the two return-solution lines are ALWAYS shown, at 0.0 when the batch has none, so their place in the formula is explicit */
         + '<tr><td>+ Return solution drawn into the tanks ('+n1(D.returnUsedL)+' L at the lots\' concentration)</td><td class="num"'+(Number(D.returnUsedKg)>0.005?'':' style="color:var(--t3)"')+'>+'+n1(D.returnUsedKg)+'</td></tr>'
         + '<tr><td>&minus; Return solution recovered at batch close ('+n1(D.returnRecoveredL)+' L at this batch\'s concentration)</td><td class="num" style="color:'+(Number(D.returnRecoveredKg)>0.005?'var(--red)':'var(--t3)')+'">&minus;'+n1(D.returnRecoveredKg)+'</td></tr>'
         + '<tr class="sumrow"><td>Net material</td><td class="num"><b>'+n1(D.total)+'</b></td></tr></tbody></table>'
-        + '<div class="hbnote" style="margin-top:6px"><b>Net material charged '+n1(D.total)+' kg</b> (gelatine-equivalent '+n1(D.gelatineEquivalentKg)+' kg + colour '+n1(D.colourKg)+' kg)'+(Number(D.totalChargedKg)>0?' · gross issued into the tanks '+n1(D.totalChargedKg)+' kg before netting':'')+'. Cutting / salvage is counted once: what the batch generated came out of the virgin gelatine already in this figure, so only the net of consumed over generated stays in. Return solution follows the same rule (used in, recovered out).</div></div></div>';
+        + '<div class="hbnote" style="margin-top:6px"><b>Net material charged '+n1(D.total)+' kg</b> (gelatine-equivalent '+n1(D.gelatineEquivalentKg)+' kg + colour '+n1(D.colourKg)+' kg)'+(Number(D.totalChargedKg)>0?' · gross issued into the tanks '+n1(D.totalChargedKg)+' kg before netting':'')+'. Cuttings and salvage are counted once: what the batch generated came out of the virgin gelatine already in this figure, so only the net of consumed over generated stays in. Pending = credited by DPR / Tracking, awaiting GPR\'s Accept in the Stock tab; it counts here already. Return solution follows the same rule (used in, recovered out).</div></div></div>';
     }
   }catch(e){ yEl.innerHTML = '<div class="empty">Could not compute the yield.</div>'; }
   // v58M item 2: how the batch's cutting / salvage was generated and consumed, and from whose stock
@@ -6329,16 +6373,23 @@ function _mvRender(d, ctx){
   // Generated → Consumed (own · from other batches) → Drawn to other batches → Reconciliation → Return solution.
   const kpiH = (label, v, cls, subHtml) => '<div class="kpi"><div class="kpi-label">'+esc(label)+'</div><div class="kpi-val '+(cls||'')+'">'+esc(v)+'</div>'+(subHtml?'<div class="kpi-sub">'+subHtml+'</div>':'')+'</div>';
   const consumedTotal = Number(S.consumedOwn||0)+fromOther+Number(S.consumedLegacy||0);
+  // v59B: generated by ACCOUNT (cuttings / salvage) and STATE (accepted / pending), straight from the rows — the same split the yield ladder shows
+  const G = { cut:{a:0,p:0}, sal:{a:0,p:0} };
+  (d.generated||[]).forEach(r=>{ if(r.state==='voided') return; const g = r.account==='cutting' ? G.cut : G.sal; const kg = Number(r.qty_kg||0); if(r.state==='pending') g.p += kg; else g.a += kg; });
   let h = '<div class="kgrid mv5">'
-    + kpiH('Generated by '+ctx.scope, n1(S.generatedAccepted)+' kg', 'green',
-        'cuttings &amp; GPR entries <b>'+n1(S.generatedOwnAccepted)+'</b> · Tracking salvage <b>'+n1(S.generatedTrackingAccepted)+'</b>'
-        +(S.generatedPending>0.005?' · <span style="color:var(--amber)">pending '+n1(S.generatedPending)+'</span>':'')+(S.generatedVoided>0.005?' · <span class="dim">voided '+n1(S.generatedVoided)+'</span>':''))
+    /* v59B (Ishan, 27 Oct): the headline is accepted + pending — the figure the yield ladder nets off — split the
+       way the ladder is: "cuttings & GPR entries" (its generated line) and "Tracking salvage" (its recovered line),
+       each with its accepted / pending state. Pending credits await GPR's Accept in the Stock tab but already count. */
+    + kpiH('Generated by '+ctx.scope, n1(Number(S.generatedAccepted||0)+Number(S.generatedPending||0))+' kg', 'green',
+        'Cuttings <b>'+n1(G.cut.a+G.cut.p)+'</b> <span class="dim">accepted '+n1(G.cut.a)+' · pending '+n1(G.cut.p)+'</span>'
+        +'<br>Salvage <b>'+n1(G.sal.a+G.sal.p)+'</b> <span class="dim">accepted '+n1(G.sal.a)+' · pending '+n1(G.sal.p)+'</span>'
+        +(S.generatedVoided>0.005?'<br><span class="dim">voided '+n1(S.generatedVoided)+'</span>':''))
     + kpiH('Consumed into its tanks', n1(consumedTotal)+' kg', '',
         'from '+ctx.own+' <b>'+n1(S.consumedOwn)+'</b><br>from other batches <b'+(fromOther>0.005?' style="color:var(--amber)"':'')+'>'+n1(fromOther)+'</b>'
         +(fromOther>0.005?' <span class="dim">('+list(S.fromOtherByBatch)+')</span>':'')+(S.consumedLegacy>0.005?'<br>legacy stock <b>'+n1(S.consumedLegacy)+'</b>':''))
     + kpiH('Drawn TO other batches', n1(byOthers)+' kg', byOthers>0.005?'amber':'', byOthers>0.005 ? '<span class="dim">'+list(S.byOthersByBatch)+'</span>' : '<span class="dim">nothing drawn from '+esc(ctx.scope)+'\'s stock</span>')
     + kpiH('Reconciliation — own stock', n1(R.closing)+' kg', R.closing<-0.005?'red':(R.closing>0.005?'teal':''),
-        (R.closing<-0.005?'<b style="color:var(--red)">over-drawn</b> · ':'<b>unused</b> · ')+'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span class="dim">· +'+n1(R.pending)+' pending</span>':''))
+        (R.closing<-0.005?'<b style="color:var(--red)">over-drawn</b> · ':'<b>unused</b> · ')+'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span class="dim">· '+n1(R.pending)+' pending receipt, not yet in stock</span>':''))
     + kpiH('Return solution', n1((S.returnSolution||{}).recoveredL)+' L', 'teal',
         'recovered · used <b>'+n1((S.returnSolution||{}).usedL)+' L</b>'+((S.returnSolution||{}).drawnByOthersL>0.005?' · drawn by others <b>'+n1(S.returnSolution.drawnByOthersL)+' L</b>':''))
     + '</div>';
@@ -6561,7 +6612,8 @@ async function floorWorking(floor, from, to){
   let d = null; try{ d = await api('/api/gpr/yield-daily?from='+encodeURIComponent(from)+'&to='+encodeURIComponent(to)+'&floor='+encodeURIComponent(floor)); }catch(e){}
   if(!d || !d.ok){ yEl.innerHTML = '<div class="empty">'+esc((d&&d.error)||'Could not compute the yield')+'</div>'; return; }
   // sum the day cells of this floor
-  const M = { virginKg:0, colourKg:0, fgRemeltKg:0, reuseInKg:0, generatedKg:0, generatedOwnKg:0, trackingSalvageKg:0, returnUsedKg:0, returnRecoveredKg:0, tanks:0 };
+  const M = { virginKg:0, colourKg:0, fgRemeltKg:0, reuseInKg:0, generatedKg:0, generatedOwnKg:0, trackingSalvageKg:0, returnUsedKg:0, returnRecoveredKg:0, tanks:0,
+              reuseCuttingKg:0, reuseSalvageKg:0, genCutAcceptedKg:0, genCutPendingKg:0, genSalManualAcceptedKg:0, genSalManualPendingKg:0, genTrkAcceptedKg:0, genTrkPendingKg:0 };   // v59B
   let num = 0, den = 0, crush = 0, days = 0; const W = {};
   (d.days||[]).forEach(day=>(day.floors||[]).forEach(f=>{ if(f.floor!==floor) return; days++;
     num += Number(f.numeratorKg||0); den += Number(f.denominatorKg||0); crush += Number(f.crushKg||0);
@@ -6576,7 +6628,7 @@ async function floorWorking(floor, from, to){
     + '<b style="font-size:15px;color:var(--'+(cls==='green'?'green':cls==='red'?'red':cls==='amber'?'amber':'t1')+')">'+(y!=null?fmt(y,2)+'%':'—')+'</b> <span style="color:var(--t3)">(target '+d.target+'%'+(y!=null?' · '+((y-d.target)>=0?'+':'')+fmt(y-d.target,2):'')+')'+(days>1?' · '+days+' production days':'')+'</span></div>'
     + '<div class="ywcols"><div><div class="fgroup-title" style="margin-top:0">Packable output &mdash; '+(from===to?'this day\'s':'the period\'s')+' production only</div>'
     + '<div class="tswrap" style="max-height:48vh"><table class="gtable"><thead><tr><th>Batch</th>'+(days>1?'<th class="num">Days</th>':'')+'<th class="num" title="DPR production in the period">Prod. L</th>'
-    + '<th class="num" title="(packed + WIP × A-grade) lakhs to date ÷ DPR production to date">Pack. %</th><th class="num">Pack. L</th>'
+    + '<th class="num" title="(packed + packable WIP by stage) lakhs to date ÷ DPR production to date">Pack. %</th><th class="num">Pack. L</th>'
     + '<th class="num" title="average weight from the batch\'s labels — the weight TTs are issued on">Avg mg</th><th class="num">kg</th></tr></thead><tbody>'
     + (L.length ? L.map(w=>{ const mg = w.packableDayL>0 ? w.mgW/w.packableDayL : 0, sh = w.dprDayL>0 ? w.packableDayL/w.dprDayL*100 : 0;
           return '<tr><td class="mono"><b>'+esc(w.batch)+'</b></td>'+(days>1?'<td class="num">'+w.days+'</td>':'')+'<td class="num">'+n1(w.dprDayL,2)+'</td><td class="num">'+n1(sh,1)+'%</td>'
@@ -6591,10 +6643,11 @@ async function floorWorking(floor, from, to){
     + '<tr><td>Colour + TiO&#8322;</td><td class="num">'+n1(M.colourKg)+'</td></tr>'
     + '<tr><td>FG remelt</td><td class="num">'+n1(M.fgRemeltKg)+'</td></tr>'
     + '<tr class="sumrow"><td>Fresh material</td><td class="num">'+n1(fresh)+'</td></tr>'
-    + '<tr><td>+ Cutting &amp; salvage charged into the tanks (Ledger A)</td><td class="num">'+n1(M.reuseInKg)+'</td></tr>'
-    + '<tr><td>&minus; Cutting &amp; salvage generated by the floor\'s batches (DPR cuttings, GPR entries)</td><td class="num" style="color:var(--red)">&minus;'+n1(M.generatedOwnKg)+'</td></tr>'
+    + '<tr><td>+ Cuttings &amp; salvage charged into the tanks (Ledger A) <span style="color:var(--t3);font-size:10.5px">cuttings '+n1(M.reuseCuttingKg)+' · salvage '+n1(M.reuseSalvageKg)+'</span></td><td class="num">'+n1(M.reuseInKg)+'</td></tr>'
+    + '<tr><td>&minus; Cuttings generated by the floor\'s batches (DPR cuttings, GPR entries)'+_ywAP(M.genCutAcceptedKg,M.genCutPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(M.genCutAcceptedKg+M.genCutPendingKg)+'</td></tr>'   /* v59B */
+    + ((M.genSalManualAcceptedKg+M.genSalManualPendingKg)>0.005 ? '<tr><td>&minus; Salvage generated by the floor\'s batches (GPR entries)'+_ywAP(M.genSalManualAcceptedKg,M.genSalManualPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(M.genSalManualAcceptedKg+M.genSalManualPendingKg)+'</td></tr>' : '')
     + '<tr class="sumrow"><td>= Net recirculation</td><td class="num">'+(netRecirc>=0?'+':'')+n1(netRecirc)+'</td></tr>'
-    + '<tr><td>&minus; AIM / printing salvage recovered (Tracking)</td><td class="num" style="color:var(--red)">&minus;'+n1(M.trackingSalvageKg)+'</td></tr>'
+    + '<tr><td>&minus; Salvage recovered through Tracking (AIM / PI wastage; printing salvage from the Daily Printing Log)'+_ywAP(M.genTrkAcceptedKg,M.genTrkPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(M.trackingSalvageKg)+'</td></tr>'
     + '<tr><td>+ Return solution drawn into the tanks (at the lots\' concentration)</td><td class="num"'+(M.returnUsedKg>0.005?'':' style="color:var(--t3)"')+'>+'+n1(M.returnUsedKg)+'</td></tr>'   /* v58X item 2: always shown */
     + '<tr><td>&minus; Return solution recovered at batch close</td><td class="num" style="color:'+(M.returnRecoveredKg>0.005?'var(--red)':'var(--t3)')+'">&minus;'+n1(M.returnRecoveredKg)+'</td></tr>'
     + (crush>0.05 ? '<tr><td>+ Approved crushing</td><td class="num">'+n1(crush)+'</td></tr>' : '')
@@ -6661,10 +6714,11 @@ function ywExport(key){
     rows.push(['GPR — Batch yield working', y.batch||key.slice(2)], ['Machine', y.machineId||''], ['Status', y.status||''], ['Generated', new Date().toISOString()], []);
     rows.push(['Yield %', y.yieldPct!=null?+y.yieldPct.toFixed(2):'', 'target', y.target], []);
     rows.push(['PACKABLE OUTPUT','Lakhs','kg']);
-    rows.push(['Packed (Tracking)', n(N.packedLakhs), n(N.packedWeightKg)], ['WIP × A-grade', n(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs), n(N.wipWeightKg)], ['Packable output', n(Number(N.packedLakhs||0)+Number(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs||0)), n(N.total)], ['Average weight mg', n(y.avgMg)], []);
+    rows.push(['Packed (Tracking)', n(N.packedLakhs), n(N.packedWeightKg)], ['WIP packable by stage (post-AIM ÷ std printing / PI loss; unscanned × A-grade)', n(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs), n(N.wipWeightKg)], ['Packable output', n(Number(N.packedLakhs||0)+Number(N.packableWipLakhs!=null?N.packableWipLakhs:N.wipLakhs||0)), n(N.total)], ['Average weight mg', n(y.avgMg)], []);
+    if(N.wipSplit && (N.wipSplit.legs||[]).length){ rows.push(['WIP BY STAGE','WIP L','Working','Packable L']); N.wipSplit.legs.forEach(l=>rows.push([l.label, n(l.lakhs), l.note, n(l.packable)])); rows.push([]); }   // v59B
     rows.push(['NET MATERIAL','kg']);
-    [['Virgin gelatine',Dn.virginKg],['Colour + TiO2',Dn.colourKg],['FG remelt',Dn.fgRemeltKg],['Fresh material',Dn.freshMaterialKg],['+ Cutting & salvage charged',Dn.reuseInKg!=null?Dn.reuseInKg:Dn.consumedKg],['− Cutting & salvage generated',-Number(Dn.generatedManualKg||0)],['= Net recirculation',Dn.netRecirc],
-     ['− AIM / printing salvage recovered',-Number(Dn.salvageRecoveredKg||0)],['− Expected WIP salvage',-Number(Dn.expectedSalvageKg||0)],['+ Return solution used',Dn.returnUsedKg],['− Return solution recovered',-Number(Dn.returnRecoveredKg||0)],['Net material',Dn.total]].forEach(r=>rows.push([r[0], n(r[1])]));
+    [['Virgin gelatine',Dn.virginKg],['Colour + TiO2',Dn.colourKg],['FG remelt',Dn.fgRemeltKg],['Fresh material',Dn.freshMaterialKg],['+ Cuttings & salvage charged (cuttings '+n(Dn.consumedCuttingKg)+' · salvage '+n(Dn.consumedSalvageKg)+')',Dn.reuseInKg!=null?Dn.reuseInKg:Dn.consumedKg],['− Cuttings generated (accepted '+n(Dn.genCutAcceptedKg)+' · pending '+n(Dn.genCutPendingKg)+')',-Number(Dn.generatedCuttingKg||0)],['− Salvage generated, GPR entries (accepted '+n(Dn.genSalManualAcceptedKg)+' · pending '+n(Dn.genSalManualPendingKg)+')',-Number(Dn.generatedSalvageManualKg||0)],['= Net recirculation',Dn.netRecirc],
+     ['− Salvage recovered through Tracking (accepted '+n(Dn.genTrkAcceptedKg)+' · pending '+n(Dn.genTrkPendingKg)+')',-Number(Dn.salvageRecoveredKg||0)],['− Expected WIP salvage (std printing / PI loss ahead; forecast)',-Number(Dn.expectedSalvageKg||0)],['+ Return solution used',Dn.returnUsedKg],['− Return solution recovered',-Number(Dn.returnRecoveredKg||0)],['Net material',Dn.total]].forEach(r=>rows.push([r[0], n(r[1])]));
   } else {
     const y = D.yield||{}, M = y.M||{};
     rows.push(['GPR — Floor yield working', FLOOR_LABELS[y.floor]||y.floor], ['Period', y.from+' → '+y.to], ['Production days', y.days], ['Generated', new Date().toISOString()], []);
@@ -6673,8 +6727,8 @@ function ywExport(key){
     (y.L||[]).forEach(w=>rows.push([w.batch, w.days, n(w.dprDayL), n(w.packableDayL), n(w.packableDayL>0?w.mgW/w.packableDayL:0), n(w.outputKg)]));
     rows.push([]);
     rows.push(['NET MATERIAL','kg']);
-    [['Virgin gelatine',M.virginKg],['Colour + TiO2',M.colourKg],['FG remelt',M.fgRemeltKg],['Fresh material',M.virginKg+M.colourKg+M.fgRemeltKg],['+ Cutting & salvage charged',M.reuseInKg],['− Cutting & salvage generated',-M.generatedOwnKg],['= Net recirculation',M.reuseInKg-M.generatedOwnKg],
-     ['− AIM / printing salvage recovered (Tracking)',-M.trackingSalvageKg],['+ Return solution used',M.returnUsedKg],['− Return solution recovered',-M.returnRecoveredKg],['+ Approved crushing',y.crush],['Net material',y.den]].forEach(r=>rows.push([r[0], n(r[1])]));
+    [['Virgin gelatine',M.virginKg],['Colour + TiO2',M.colourKg],['FG remelt',M.fgRemeltKg],['Fresh material',M.virginKg+M.colourKg+M.fgRemeltKg],['+ Cuttings & salvage charged (cuttings '+n(M.reuseCuttingKg)+' · salvage '+n(M.reuseSalvageKg)+')',M.reuseInKg],['− Cuttings generated (accepted '+n(M.genCutAcceptedKg)+' · pending '+n(M.genCutPendingKg)+')',-(M.genCutAcceptedKg+M.genCutPendingKg)],['− Salvage generated, GPR entries (accepted '+n(M.genSalManualAcceptedKg)+' · pending '+n(M.genSalManualPendingKg)+')',-(M.genSalManualAcceptedKg+M.genSalManualPendingKg)],['= Net recirculation',M.reuseInKg-M.generatedOwnKg],
+     ['− Salvage recovered through Tracking (accepted '+n(M.genTrkAcceptedKg)+' · pending '+n(M.genTrkPendingKg)+')',-M.trackingSalvageKg],['+ Return solution used',M.returnUsedKg],['− Return solution recovered',-M.returnRecoveredKg],['+ Approved crushing',y.crush],['Net material',y.den]].forEach(r=>rows.push([r[0], n(r[1])]));
   }
   XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(rows), 'Yield');
   const mv = D.mv; if(mv){

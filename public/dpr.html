@@ -499,7 +499,7 @@ input[type=number] { -moz-appearance:textfield; appearance:textfield; }
   </div>
 </div>
 <div id="nav">
-  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59A</small></div>
+  <div class="nbrand"><b>DPR</b>.tracker <small>v7 · build v59D</small></div>
   <div class="ntabs">
     <div class="ntab on" onclick="go('entry')">✏ Data Entry</div>
     <div class="ntab" onclick="go('analytics')">📊 Analytics</div>
@@ -1032,6 +1032,9 @@ function skey(fl,d){ return `dpr3_${fl}_${d}`; }
 // applies only those slots when it has moved on. Freshness is decided by revision, never by device clocks.
 // A persistent device id travels with every save so the log names the device, not a Railway proxy address.
 function bkey(fl,d){ return `dpr3b_${fl}_${d}`; }
+// v59B: every local write of a day copy keeps the revision it came from — the keystroke backup wrote a bare
+// collectForm() and silently dropped _rev, so a save after a date change could fall back to a stale base.
+function _dprStoreDay(fl,d,data){ try{ if(data && data._rev===undefined){ const prev=JSON.parse(localStorage.getItem(skey(fl,d))||'null'); if(prev && prev._rev!==undefined) data._rev=prev._rev; } localStorage.setItem(skey(fl,d),JSON.stringify(data)); }catch(_){} }
 function _dprDeviceId(){
   try{
     let id = localStorage.getItem('dpr_device_id');
@@ -4840,7 +4843,7 @@ async function renderPlantReport(){
           Object.entries(j.floors).forEach(([fl, data]) => {
             floorDataMap[fl] = data; // may be null if no data saved for that floor+date
             // Cache to localStorage so cumulative calc can use it
-            if(data) localStorage.setItem(skey(fl, selectedDate), JSON.stringify(data));
+            if(data) _dprStoreDay(fl, selectedDate, data);   // v59B: keeps _rev
           });
         }
       }
@@ -5481,7 +5484,7 @@ function setFloor(fl){
   if(unsaved && curFloor && dprUser){
     try{
       const data=collectForm();
-      localStorage.setItem(skey(curFloor,getDate()),JSON.stringify(data));
+      _dprStoreDay(curFloor,getDate(),data);   // v59B: keeps _rev
     }catch(_){}
   }
   curFloor=fl;
@@ -5541,7 +5544,7 @@ function onDateChange(){
       fetch(serverUrl+`/api/dpr/${fl}/${d}`,{signal:AbortSignal.timeout(4000)})
         .then(r=>r.json()).then(j=>{
           if(j.ok&&j.data){
-            localStorage.setItem(skey(fl,d),JSON.stringify(j.data));
+            _dprAcceptServer(fl,d,j.data,j.rev||0,j.savedAt,{force:true,noDom:true});   // v59B: carries rev + base (a raw write dropped the revision, so the next save fell back to a stale base)
             renderEntry();toast('C-shift: Loaded '+prevStr+' data','var(--amber)');
           } else { renderEntry(); }
         }).catch(()=>renderEntry());
@@ -5557,7 +5560,7 @@ function onDateChange(){
     fetch(serverUrl+`/api/dpr/${fl}/${d}`,{signal:AbortSignal.timeout(4000)})
       .then(r=>r.json()).then(j=>{
         if(j.ok&&j.data){
-          localStorage.setItem(skey(fl,d),JSON.stringify(j.data));
+          _dprAcceptServer(fl,d,j.data,j.rev||0,j.savedAt,{force:true,noDom:true});   // v59B: same — the date-change load now sets the revision base like every other server load
           renderEntry();toast('Loaded from server','var(--cyan)');
         }
       }).catch(()=>{});
@@ -5595,7 +5598,7 @@ function markUnsaved(){
   document.getElementById('unsavedDot').style.display='flex';
   // Backup to localStorage on every change — protects against browser crash
   // No server push — user must press Save button for that
-  try{ const data=collectForm(); localStorage.setItem(skey(curFloor,getDate()),JSON.stringify(data)); }catch(_){}
+  try{ const data=collectForm(); _dprStoreDay(curFloor,getDate(),data); }catch(_){}   // v59B: keeps _rev
 }
 function setUnsaved(v){ unsaved=v; document.getElementById('unsavedDot').style.display=v?'flex':'none'; }
 function toast(msg,col,dur){
@@ -5839,7 +5842,7 @@ window.addEventListener('beforeunload', e => {
     // Last chance — backup to localStorage before page closes
     try{
       const data=collectForm();
-      localStorage.setItem(skey(curFloor,getDate()),JSON.stringify(data));
+      _dprStoreDay(curFloor,getDate(),data);   // v59B: keeps _rev
     }catch(_){}
     e.preventDefault();
     e.returnValue='You have unsaved data. Press Save before leaving.';
