@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v59D</title>
+<title>GPR · build v59E</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -420,8 +420,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v59D</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59D</div>
+    <h1>GPR<span class="vpill">v59E</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59E</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -441,7 +441,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v59D</span></div>
+  <div class="nbrand">GPR<span class="vpill">v59E</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -1258,9 +1258,12 @@ function toast(msg, kind){
   t.textContent = msg; t.className = 'toast show ' + (kind||'');
   setTimeout(()=>{ t.className = 'toast'; }, 3000);
 }
+// v59E item 6 (Ishan, 27 Oct): a read that dies on the wire (NetworkError — a deploy cut-over, a dropped
+// connection) is retried once after 1.5 s before the screen gives up; writes are never repeated.
 async function api(path, opts){
-  const r = await fetch(API + path, opts);
-  return await r.json();
+  const isWrite = !!(opts && opts.method && String(opts.method).toUpperCase() !== 'GET');
+  try { const r = await fetch(API + path, opts); return await r.json(); }
+  catch(e){ if(isWrite) throw e; await new Promise(res=>setTimeout(res, 1500)); const r = await fetch(API + path, opts); return await r.json(); }
 }
 async function post(path, body){
   return await api(path, { method:'POST', headers:{'Content-Type':'application/json'},
@@ -5217,17 +5220,23 @@ async function _loadReceiptsInner(force){
     else { const m = document.getElementById('rcpRefreshing'); if(m) m.style.display = 'none'; }
   }catch(e){ if(!hadTable) el.innerHTML = '<span style="color:var(--red)">Receipts failed: '+esc(e.message||'error')+'</span>'; else toast('Receipts refresh failed: '+(e.message||'error'),'err'); const m = document.getElementById('rcpRefreshing'); if(m) m.style.display='none'; }
 }
+// v59E item 2 (Ishan, 27 Oct): the queue reads grouped by account, then day in order, then batch — not arrival order
+function _rcpSort(rows){
+  return rows.slice().sort((a,b)=> String(a.account_label||a.account||'').localeCompare(String(b.account_label||b.account||''))
+    || String(a.production_day||'').localeCompare(String(b.production_day||''))
+    || String(a.batch_number||'').localeCompare(String(b.batch_number||'')) || (Number(a.id)-Number(b.id)));
+}
 function _rcpFiltered(){
   const src = (document.getElementById('rcp_src')||{}).value || '';
   const acct = (document.getElementById('rcp_acct')||{}).value || '';
   const mc = (val('rcp_mc')||'').trim().toUpperCase();
   const bt = (val('rcp_batch')||'').trim().toUpperCase();
   const day = val('rcp_day')||'';
-  return RCP_ROWS.filter(r=>
+  return _rcpSort(RCP_ROWS.filter(r=>
     (!src || r.source===src) && (!acct || r.account===acct)
     && (!mc || String(r.machine_id||'').toUpperCase().includes(mc))
     && (!bt || String(r.batch_number||'').toUpperCase().includes(bt))
-    && (!day || r.production_day===day));
+    && (!day || String(r.production_day||'').slice(0,10)===day)));
 }
 function rcpSelectAll(on){ _rcpFiltered().forEach(r=>{ if(on) RCP_SEL[r.id]=1; else delete RCP_SEL[r.id]; }); renderReceipts(); }
 function rcpToggle(id, on){ if(on) RCP_SEL[id]=1; else delete RCP_SEL[id]; _rcpBtn(); }
@@ -6301,7 +6310,7 @@ async function mrOpen(bn){
         + '<tr><td>FG remelt</td><td class="num">'+n1(D.fgRemeltKg)+'</td></tr>'
         + '<tr class="sumrow"><td>Fresh material</td><td class="num">'+n1(D.freshMaterialKg)+'</td></tr>'
         /* v59B (Ishan, 27 Oct): cuttings and salvage are separate lines, each with accepted / pending stated in full */
-        + '<tr><td>+ Cuttings &amp; salvage charged into the tanks (Ledger A'+(Number(D.legacyDrawKg)>0.005?' + Ledger B '+n1(D.legacyDrawKg):'')+') <span style="color:var(--t3);font-size:10.5px">cuttings '+n1(D.consumedCuttingKg)+' · salvage '+n1(D.consumedSalvageKg)+(Number(D.legacyDrawKg)>0.005?' · Ledger B '+n1(D.legacyDrawKg):'')+'</span></td><td class="num">'+n1(D.reuseInKg!=null?D.reuseInKg:D.consumedKg)+'</td></tr>'
+        + '<tr><td>+ Cuttings &amp; salvage charged into the tanks (Ledger A'+(Number(D.legacyDrawKg)>0.005?' + Ledger B '+n1(D.legacyDrawKg):'')+') <span style="color:var(--t3);font-size:10.5px">cuttings '+n1(D.consumedCuttingKg)+' (own batch '+n1(D.consumedCuttingOwnKg)+' · other batches '+n1(Number(D.consumedCuttingKg||0)-Number(D.consumedCuttingOwnKg||0))+') · salvage '+n1(D.consumedSalvageKg)+' (own batch '+n1(D.consumedSalvageOwnKg)+' · other batches '+n1(Number(D.consumedSalvageKg||0)-Number(D.consumedSalvageOwnKg||0))+')'+(Number(D.legacyDrawKg)>0.005?' · Ledger B '+n1(D.legacyDrawKg):'')+'</span></td><td class="num">'+n1(D.reuseInKg!=null?D.reuseInKg:D.consumedKg)+'</td></tr>'
         + '<tr><td>&minus; Cuttings generated by this batch (DPR cuttings, GPR entries)'+_ywAP(D.genCutAcceptedKg,D.genCutPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(D.generatedCuttingKg)+'</td></tr>'
         + (Number(D.generatedSalvageManualKg)>0.005 ? '<tr><td>&minus; Salvage generated by this batch (GPR entries)'+_ywAP(D.genSalManualAcceptedKg,D.genSalManualPendingKg)+'</td><td class="num" style="color:var(--red)">&minus;'+n1(D.generatedSalvageManualKg)+'</td></tr>' : '')
         + '<tr class="sumrow"><td>= Net recirculation</td><td class="num">'+(D.netRecirc>=0?'+':'')+n1(D.netRecirc)+'</td></tr>'
@@ -6311,7 +6320,7 @@ async function mrOpen(bn){
         + '<tr><td>+ Return solution drawn into the tanks ('+n1(D.returnUsedL)+' L at the lots\' concentration)</td><td class="num"'+(Number(D.returnUsedKg)>0.005?'':' style="color:var(--t3)"')+'>+'+n1(D.returnUsedKg)+'</td></tr>'
         + '<tr><td>&minus; Return solution recovered at batch close ('+n1(D.returnRecoveredL)+' L at this batch\'s concentration)</td><td class="num" style="color:'+(Number(D.returnRecoveredKg)>0.005?'var(--red)':'var(--t3)')+'">&minus;'+n1(D.returnRecoveredKg)+'</td></tr>'
         + '<tr class="sumrow"><td>Net material</td><td class="num"><b>'+n1(D.total)+'</b></td></tr></tbody></table>'
-        + '<div class="hbnote" style="margin-top:6px"><b>Net material charged '+n1(D.total)+' kg</b> (gelatine-equivalent '+n1(D.gelatineEquivalentKg)+' kg + colour '+n1(D.colourKg)+' kg)'+(Number(D.totalChargedKg)>0?' · gross issued into the tanks '+n1(D.totalChargedKg)+' kg before netting':'')+'. Cuttings and salvage are counted once: what the batch generated came out of the virgin gelatine already in this figure, so only the net of consumed over generated stays in. Pending = credited by DPR / Tracking, awaiting GPR\'s Accept in the Stock tab; it counts here already. Return solution follows the same rule (used in, recovered out).</div></div></div>';
+        + '<div class="hbnote" style="margin-top:6px"><b>Net material charged '+n1(D.total)+' kg</b> (gelatine-equivalent '+n1(D.gelatineEquivalentKg)+' kg + colour '+n1(D.colourKg)+' kg)'+(Number(D.totalChargedKg)>0?' · gross issued into the tanks '+n1(D.totalChargedKg)+' kg before netting':'')+'. Cuttings and salvage are counted once: what the batch generated came out of the virgin gelatine already in this figure, so only the net of consumed over generated stays in. What the tanks CHARGED may come from any batch\'s stock (own or another\'s), so it need not equal what this batch GENERATED. Pending = credited by DPR / Tracking, awaiting GPR\'s Accept in the Stock tab; it counts here already. Return solution follows the same rule (used in, recovered out).</div></div></div>';
     }
   }catch(e){ yEl.innerHTML = '<div class="empty">Could not compute the yield.</div>'; }
   // v58M item 2: how the batch's cutting / salvage was generated and consumed, and from whose stock
@@ -6385,11 +6394,11 @@ function _mvRender(d, ctx){
         +'<br>Salvage <b>'+n1(G.sal.a+G.sal.p)+'</b> <span class="dim">accepted '+n1(G.sal.a)+' · pending '+n1(G.sal.p)+'</span>'
         +(S.generatedVoided>0.005?'<br><span class="dim">voided '+n1(S.generatedVoided)+'</span>':''))
     + kpiH('Consumed into its tanks', n1(consumedTotal)+' kg', '',
-        'from '+ctx.own+' <b>'+n1(S.consumedOwn)+'</b><br>from other batches <b'+(fromOther>0.005?' style="color:var(--amber)"':'')+'>'+n1(fromOther)+'</b>'
+        'cuttings <b>'+n1(Number((S.byAccountCon||{}).cutting||0))+'</b> · salvage <b>'+n1(consumedTotal-Number(S.consumedLegacy||0)-Number((S.byAccountCon||{}).cutting||0))+'</b><br>from '+ctx.own+' <b>'+n1(S.consumedOwn)+'</b><br>from other batches <b'+(fromOther>0.005?' style="color:var(--amber)"':'')+'>'+n1(fromOther)+'</b>'
         +(fromOther>0.005?' <span class="dim">('+list(S.fromOtherByBatch)+')</span>':'')+(S.consumedLegacy>0.005?'<br>legacy stock <b>'+n1(S.consumedLegacy)+'</b>':''))
     + kpiH('Drawn TO other batches', n1(byOthers)+' kg', byOthers>0.005?'amber':'', byOthers>0.005 ? '<span class="dim">'+list(S.byOthersByBatch)+'</span>' : '<span class="dim">nothing drawn from '+esc(ctx.scope)+'\'s stock</span>')
     + kpiH('Reconciliation — own stock', n1(R.closing)+' kg', R.closing<-0.005?'red':(R.closing>0.005?'teal':''),
-        (R.closing<-0.005?'<b style="color:var(--red)">over-drawn</b> · ':'<b>unused</b> · ')+'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span class="dim">· '+n1(R.pending)+' pending receipt, not yet in stock</span>':''))
+        (R.closing<-0.005?'<b style="color:var(--red)">over-drawn</b> · ':'<b>unused</b> · ')+'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span style="color:var(--amber)">· '+n1(R.pending)+' pending receipt, not yet in stock</span>':''))
     + kpiH('Return solution', n1((S.returnSolution||{}).recoveredL)+' L', 'teal',
         'recovered · used <b>'+n1((S.returnSolution||{}).usedL)+' L</b>'+((S.returnSolution||{}).drawnByOthersL>0.005?' · drawn by others <b>'+n1(S.returnSolution.drawnByOthersL)+' L</b>':''))
     + '</div>';

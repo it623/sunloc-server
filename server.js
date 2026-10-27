@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59D';
+const APP_BUILD = 'v59E';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -27058,6 +27058,7 @@ function _v58mNetCalc(i) {
            generatedTrackingKg: r2(i.generatedTrackingKg), netRecirc: r2(netRecirc),
            // v59B: cuttings vs salvage, accepted vs pending — presentation only, the arithmetic above is unchanged
            consumedCuttingKg: r2(i.consumedCuttingKg), consumedSalvageKg: r2(i.consumedSalvageKg),
+           consumedCuttingOwnKg: r2(i.consumedCuttingOwnKg), consumedSalvageOwnKg: r2(i.consumedSalvageOwnKg),   // v59E
            generatedCuttingKg: r2(n(i.genCutAcceptedKg) + n(i.genCutPendingKg)), genCutAcceptedKg: r2(i.genCutAcceptedKg), genCutPendingKg: r2(i.genCutPendingKg),
            generatedSalvageManualKg: r2(n(i.genSalManualAcceptedKg) + n(i.genSalManualPendingKg)), genSalManualAcceptedKg: r2(i.genSalManualAcceptedKg), genSalManualPendingKg: r2(i.genSalManualPendingKg),
            genTrkAcceptedKg: r2(i.genTrkAcceptedKg), genTrkPendingKg: r2(i.genTrkPendingKg),
@@ -27075,7 +27076,7 @@ async function _v58mNetInputsMany(bns) {
   const out = {}; list.forEach(b => { out[b] = { virginKg: 0, colourKg: 0, fgRemeltKg: 0, totalChargedKg: 0, ttLitres: 0, ttCount: 0, returnUsedL: 0, returnUsedKg: 0,
     consumedKg: 0, legacyDrawKg: 0, generatedManualKg: 0, generatedTrackingKg: 0, salvageLakhs: 0, aimRemeltLakhs: 0, returnRecoveredL: 0, returnRecoveredKg: 0, printingSalvageKg: 0,   // v58X: + Planning Daily-Printing salvage (kg)
     // v59B (Ishan, 27 Oct): the ladder reads CUTTINGS and SALVAGE as separate lines, each with its accepted / pending state — so the split travels with the inputs
-    consumedCuttingKg: 0, consumedSalvageKg: 0, genCutAcceptedKg: 0, genCutPendingKg: 0, genSalManualAcceptedKg: 0, genSalManualPendingKg: 0, genTrkAcceptedKg: 0, genTrkPendingKg: 0 }; });
+    consumedCuttingKg: 0, consumedSalvageKg: 0, consumedCuttingOwnKg: 0, consumedSalvageOwnKg: 0, genCutAcceptedKg: 0, genCutPendingKg: 0, genSalManualAcceptedKg: 0, genSalManualPendingKg: 0, genTrkAcceptedKg: 0, genTrkPendingKg: 0 }; });
   if (!list.length) return out;
   const ph = list.map((_, i) => pgPool ? '$' + (i + 1) : '?').join(',');
   const q = async sql => pgPool ? (await pgPool.query(sql, list)).rows : db.prepare(sql).all(...list);
@@ -27096,6 +27097,8 @@ async function _v58mNetInputsMany(bns) {
   (await q(`SELECT UPPER(batch_number) AS bn,
                    COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} THEN qty_kg ELSE 0 END),0) AS consumed,
                    COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} AND account='cutting' THEN qty_kg ELSE 0 END),0) AS consumed_cut,
+                   COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} AND account='cutting' AND UPPER(COALESCE(source_batch, batch_number))=UPPER(batch_number) THEN qty_kg ELSE 0 END),0) AS consumed_cut_own,
+                   COALESCE(SUM(CASE WHEN movement_type IN ${GPR_A_DEBIT} AND account<>'cutting' AND UPPER(COALESCE(source_batch, batch_number))=UPPER(batch_number) THEN qty_kg ELSE 0 END),0) AS consumed_sal_own,
                    COALESCE(SUM(CASE WHEN movement_type='generation' AND source NOT IN ('tracking','estimate','return') AND account<>'return_remelt' AND COALESCE(receipt_status,'')<>'rejected' THEN qty_kg ELSE 0 END),0) AS gen_manual,
                    COALESCE(SUM(CASE WHEN movement_type='generation' AND source='tracking' AND COALESCE(receipt_status,'')<>'rejected' THEN qty_kg ELSE 0 END),0) AS gen_tracking,
                    COALESCE(SUM(CASE WHEN movement_type='generation' AND source NOT IN ('tracking','estimate','return') AND account='cutting' AND COALESCE(receipt_status,'')='pending' THEN qty_kg ELSE 0 END),0) AS gen_cut_pend,
@@ -27107,6 +27110,7 @@ async function _v58mNetInputsMany(bns) {
             FROM gpr_ledger WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`)).forEach(r => {
     const o = out[r.bn]; if (!o) return; o.consumedKg = Number(r.consumed || 0); o.generatedManualKg = Number(r.gen_manual || 0); o.generatedTrackingKg = Number(r.gen_tracking || 0);
     o.consumedCuttingKg = Number(r.consumed_cut || 0); o.consumedSalvageKg = +(o.consumedKg - o.consumedCuttingKg).toFixed(3);   // v59B splits
+    o.consumedCuttingOwnKg = Number(r.consumed_cut_own || 0); o.consumedSalvageOwnKg = Number(r.consumed_sal_own || 0);   // v59E: own-batch stock vs other batches' stock
     o.genCutAcceptedKg = Number(r.gen_cut_acc || 0); o.genCutPendingKg = Number(r.gen_cut_pend || 0); o.genSalManualAcceptedKg = Number(r.gen_sal_acc || 0); o.genSalManualPendingKg = Number(r.gen_sal_pend || 0);
     o.genTrkAcceptedKg = Number(r.gen_trk_acc || 0); o.genTrkPendingKg = Number(r.gen_trk_pend || 0); });
   // Ledger B draws into the batch's tanks (legacy lump stock) — material consumed all the same
@@ -27232,7 +27236,43 @@ async function _gprDplSalvageMap() {   // { BATCH: { 'YYYY-MM-DD': salvage kg } 
   _gprDplSalCache = out; _gprDplSalTime = Date.now();
   return out;
 }
+function _v59eDayKey(v) {
+  if (v == null || v === '') return null;
+  if (v instanceof Date) { if (isNaN(v)) return null; const p = n => String(n).padStart(2, '0'); return `${v.getFullYear()}-${p(v.getMonth() + 1)}-${p(v.getDate())}`; }
+  const s = String(v); if (/^\d{4}-\d{2}-\d{2}/.test(s)) return s.slice(0, 10);
+  return null;   // a bare "Tue Oct 27" has no year — never guess one; the caller falls back to gprProductionDay(ts)
+}
+// v59E one-time repair of the credits written with "Tue Oct 27"-style day keys (v58X on PG, 25–27 Oct 2026):
+// pending rows are simply dropped — the next sync recreates them under their real YYYY-MM-DD key; accepted rows
+// (already stock) keep their id and kg and get the day re-derived from the label plus the year of their own stamp,
+// so the sync recognises them and does not credit the day twice. Idempotent: a repaired row no longer matches.
+async function _v59eRepairCreditDays() {
+  try {
+    const sel = `SELECT id, receipt_ref, production_day, receipt_status, moved_at, accepted_at FROM gpr_ledger WHERE source='tracking' AND receipt_ref LIKE 'day:%' AND receipt_ref NOT LIKE 'day:____-__-__'`;
+    const rows = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+    if (!rows.length) return;
+    const MON = { jan: 1, feb: 2, mar: 3, apr: 4, may: 5, jun: 6, jul: 7, aug: 8, sep: 9, oct: 10, nov: 11, dec: 12 };
+    let dropped = 0, fixed = 0, left = 0;
+    for (const r of rows) {
+      if (r.receipt_status === 'pending') { if (pgPool) await pgPool.query('DELETE FROM gpr_ledger WHERE id=$1', [r.id]); else db.prepare('DELETE FROM gpr_ledger WHERE id=?').run(r.id); dropped++; continue; }
+      const m = /^day:\w{3}\s+(\w{3})\s+(\d{1,2})$/.exec(String(r.receipt_ref || '').trim());
+      const ms = _v58eMs(r.moved_at) ?? _v58eMs(r.accepted_at);
+      if (!m || !MON[m[1].toLowerCase()] || ms == null) { left++; continue; }
+      const y = new Date(ms).getUTCFullYear();
+      const iso = `${y}-${String(MON[m[1].toLowerCase()]).padStart(2, '0')}-${String(m[2]).padStart(2, '0')}`;
+      // a pending ISO-keyed twin of the same batch · account · day (written by a sync that ran after the accept) would double the day — drop it first
+      if (pgPool) await pgPool.query(`DELETE FROM gpr_ledger WHERE source='tracking' AND receipt_status='pending' AND receipt_ref=$1 AND batch_number=(SELECT batch_number FROM gpr_ledger WHERE id=$2) AND account=(SELECT account FROM gpr_ledger WHERE id=$2)`, ['day:' + iso, r.id]);
+      else db.prepare(`DELETE FROM gpr_ledger WHERE source='tracking' AND receipt_status='pending' AND receipt_ref=? AND batch_number=(SELECT batch_number FROM gpr_ledger WHERE id=?) AND account=(SELECT account FROM gpr_ledger WHERE id=?)`).run('day:' + iso, r.id, r.id);
+      if (pgPool) await pgPool.query(`UPDATE gpr_ledger SET receipt_ref=$1, production_day=$2 WHERE id=$3`, ['day:' + iso, iso, r.id]);
+      else db.prepare(`UPDATE gpr_ledger SET receipt_ref=?, production_day=? WHERE id=?`).run('day:' + iso, iso, r.id);
+      fixed++;
+    }
+    console.log(`[v59E credit-day repair] ${rows.length} rows with non-ISO day keys: ${dropped} pending dropped (re-synced), ${fixed} accepted re-keyed, ${left} left as is`);
+    try { logAudit('system', 'system', 'gpr', 'GPR_CREDIT_DAY_REPAIR', `${rows.length} Tracking credit rows carried a "Tue Oct 27"-style day key: ${dropped} pending dropped for re-sync, ${fixed} accepted re-keyed to YYYY-MM-DD, ${left} unparseable left`, 'boot'); } catch (_) {}
+  } catch (e) { console.warn('[v59E credit-day repair] skipped:', e.message); }
+}
 async function gprSyncTrackingCredits(batchNumber) {
+  if (_v59eCreditRepairDone) { try { await _v59eCreditRepairDone; } catch (_) {} }   // v59E: never sync over un-repaired keys
   const bn = String(batchNumber || '').trim().toUpperCase();
   const zero = { aim_salvage: 0, printing_salvage: 0, pi_salvage: 0 };
   if (!bn) return zero;
@@ -27254,18 +27294,22 @@ async function gprSyncTrackingCredits(batchNumber) {
   const eSql = `SELECT id, account, qty_kg, receipt_status, receipt_ref, moved_at, accepted_at FROM gpr_ledger WHERE batch_number=${P1} AND source='tracking'`;
   const existing = pgPool ? (await pgPool.query(eSql, [bn])).rows : db.prepare(eSql).all(bn);
   const cutoff = {};   // account → ISO instant covered by an ACCEPTED cumulative row
+  // v59E (Ishan, 27 Oct — 26ZE167 "accepted 22.8 · pending 22.8"): PG returns moved_at as "… +00" (a two-digit
+  // offset) and the old parser appended a 'Z' to it → NaN → no cut-off → every day's wastage was credited AGAIN
+  // beside the accepted cumulative row. The v58E parser reads PG stamps; a cut-off that still fails to parse
+  // is treated as "covers everything up to now" rather than "covers nothing" — never a second credit.
   for (const r of existing) {
     if (String(r.receipt_ref || '').startsWith('day:')) continue;          // already day-wise
     if (r.receipt_status === 'pending' || r.account === 'printed_salvage') {   // never received → superseded by the day-wise rows
       if (pgPool) await pgPool.query('DELETE FROM gpr_ledger WHERE id=$1', [r.id]); else db.prepare('DELETE FROM gpr_ledger WHERE id=?').run(r.id);
       continue;
     }
-    const t = Date.parse(String(r.moved_at || '').replace(' ', 'T') + (/Z$|[+-]\d\d:?\d\d$/.test(String(r.moved_at || '')) ? '' : 'Z'));
-    if (!isNaN(t)) cutoff[r.account] = Math.max(cutoff[r.account] || 0, t);
+    const t = _v58eMs(r.moved_at) ?? _v58eMs(r.accepted_at) ?? Date.now();
+    cutoff[r.account] = Math.max(cutoff[r.account] || 0, t);
   }
   const after = (account, iso, day) => {   // is this entry after the account's accepted cumulative cut-off?
     const c = cutoff[account]; if (!c) return true;
-    if (iso) { const t = Date.parse(String(iso).replace(' ', 'T') + (/Z$|[+-]\d\d:?\d\d$/.test(String(iso)) ? '' : 'Z')); if (!isNaN(t)) return t > c; }
+    if (iso) { const t = _v58eMs(iso); if (t != null) return t > c; }
     return String(day || '') > gprProductionDay(new Date(c).toISOString());
   };
 
@@ -27273,7 +27317,10 @@ async function gprSyncTrackingCredits(batchNumber) {
   const T = { aim_salvage: {}, pi_salvage: {}, printing_salvage: {} };
   const addL = (acc, day, l, iso) => { if (!(l > 0) || !day || !after(acc, iso, day)) return; T[acc][day] = (T[acc][day] || 0) + l; };
   for (const r of (wrows || [])) {
-    const d = String(r.dept || '').toLowerCase(), t = String(r.type || '').toLowerCase(), q = parseFloat(r.qty || 0) || 0, day = String(r.d || '').slice(0, 10);
+    // v59E (Ishan, 27 Oct — Stock tab "Tue Oct 27" days, PI salvage never matching a date filter): PG hands the
+    // ::date back as a JS Date, and String(Date).slice(0,10) is "Tue Oct 27" — that became the day key, the
+    // receipt_ref and production_day of every AIM / PI credit. Normalised to YYYY-MM-DD whatever the driver returns.
+    const d = String(r.dept || '').toLowerCase(), t = String(r.type || '').toLowerCase(), q = parseFloat(r.qty || 0) || 0, day = _v59eDayKey(r.d) || gprProductionDay(r.ts);
     if (d === 'aim' && t === 'salvage') addL('aim_salvage', day, q, r.ts);
     else if (d === 'pi' && (t === 'salvage' || t === 'remelt')) addL('pi_salvage', day, q, r.ts);
     else if (d === 'printing' && (t === 'salvage' || t === 'remelt')) addL('printing_salvage', day, q, r.ts);
@@ -27317,7 +27364,9 @@ async function gprSyncTrackingCredits(batchNumber) {
 // since the cohort start, not just the running ones. One sweep at a time; stats kept for the Stock tab.
 const _GPR_CREDIT_SWEEP_FROM = '2026-07-01';
 let _gprCreditSweepInFlight = null, _gprCreditSweepLast = null;
+let _v59eCreditRepairDone = null;
 async function gprSyncTrackingCreditsAll() {
+  if (_v59eCreditRepairDone) { try { await _v59eCreditRepairDone; } catch (_) {} }   // v59E: never sweep over un-repaired keys
   if (_gprCreditSweepInFlight) return _gprCreditSweepInFlight;
   _gprCreditSweepInFlight = (async () => {
     const t0 = Date.now(); const st = { at: new Date().toISOString(), batches: 0, created: 0, updated: 0, removed: 0, skipped: 0, errors: [] };
@@ -27339,7 +27388,7 @@ async function gprSyncTrackingCreditsAll() {
   })().finally(() => { _gprCreditSweepInFlight = null; });
   return _gprCreditSweepInFlight;
 }
-setTimeout(() => { gprSyncTrackingCreditsAll().catch(() => {}); setInterval(() => { gprSyncTrackingCreditsAll().catch(() => {}); }, 15 * 60 * 1000); }, 150 * 1000);
+setTimeout(() => { gprSyncTrackingCreditsAll().catch(() => {}); setInterval(() => { gprSyncTrackingCreditsAll().catch(() => {}); }, 15 * 60 * 1000); }, 150 * 1000);   // v59E: the sweep waits for the boot repair
 
 // Machine -> floor, from the editable machine master. Replaces the v42 bug that
 // stamped every TT with the operator's FIRST visible floor (blocker H2).
@@ -32328,7 +32377,9 @@ app.listen(PORT, () => {
     _v58iVoidCuttingEstimates().catch(e => console.warn('[v58I GPR] estimate void failed:', e?.message));   // v58I: cuttings counted once
     // v58F item 4: warm the GPR receipts feed in the background so the first Stock-tab open after a
     // restart is served from a swept queue instead of waiting on (or missing) the sweep.
-    setTimeout(() => { try { require('http').get(`http://127.0.0.1:${PORT}/api/gpr/receipts?sync=1&floor=GF`, r => r.resume()).on('error', () => {}); } catch (_) {} }, 4000);
+    // v59E: the credit-day repair runs BEFORE the first sweep, so the sweep meets ISO-keyed rows and never credits a day twice.
+    _v59eCreditRepairDone = _v59eRepairCreditDays().catch(e => console.warn('[v59E GPR] credit-day repair failed:', e?.message));
+    _v59eCreditRepairDone.then(() => setTimeout(() => { try { require('http').get(`http://127.0.0.1:${PORT}/api/gpr/receipts?sync=1&floor=GF`, r => r.resume()).on('error', () => {}); } catch (_) {} }, 4000));
     warmPlanningCache();
     warmActualsCache();
     loadRetiredBatches(); // v41ZZ: populate retired-batch set for WIP exclusion
