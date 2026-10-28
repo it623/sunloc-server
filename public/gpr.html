@@ -3,7 +3,7 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>GPR · build v59E</title>
+<title>GPR · build v59F</title>
 <style>
 @import url('https://fonts.googleapis.com/css2?family=Sora:wght@500;600;700;800&family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap');
 :root{
@@ -420,8 +420,8 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 <!-- LOGIN -->
 <div id="login">
   <div class="login-card">
-    <h1>GPR<span class="vpill">v59E</span></h1>
-    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59E</div>
+    <h1>GPR<span class="vpill">v59F</span></h1>
+    <div class="sub">Gelatine Processing Room · Sunloc Suite · build v59F</div>
     <div class="field-grp" style="margin-bottom:14px">
       <label>Sign in as</label>
       <select id="loginUser">
@@ -441,7 +441,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
 
 <!-- NAV -->
 <div id="nav" style="display:none">
-  <div class="nbrand">GPR<span class="vpill">v59E</span></div>
+  <div class="nbrand">GPR<span class="vpill">v59F</span></div>
   <div class="ntabs" id="ntabs"></div>
   <div class="nright">
     <span style="display:inline-flex;align-items:center;gap:5px;margin-right:10px;padding:2px 6px;border:1px solid #3949ab;border-radius:6px;background:#232b6e" title="Production month — the month turns at 06:00 IST on the 1st (same rule as DPR, Tracking and Planning). Every list, picker and period view is scoped to this month's batch cohort; stock balances and pending receipts always show the live position.">
@@ -982,7 +982,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
       <div id="lgsec-r" style="display:none">
     <div class="card" style="border-left:4px solid var(--teal)">
       <div class="card-title">Return solution &mdash; stock position <span id="rsCount" style="font-weight:400;color:var(--t3);font-size:12px"></span></div>
-      <div class="card-sub">Gelatine solution left in the cap and body tanks when GPR closes a batch, recovered in solution form and kept in <b>litres</b>, batch-wise and cap / body-wise with the colour code. The virgin gelatine it carries is valued at the batch's own concentration (kg = L &times; conc). A later tank draws it from the <b>Return Solution (L)</b> field of the TT entry; every draw debits the lot here.</div>
+      <div class="card-sub">Gelatine solution left in the cap and body tanks when GPR closes a batch, recovered in solution form and kept in <b>litres</b>, batch-wise and cap / body-wise with the colour code. The gelatine (all forms) it carries is valued at the batch's own concentration (kg = L &times; conc). A later tank draws it from the <b>Return Solution (L)</b> field of the TT entry; every draw debits the lot here.</div>
       <div class="frow">
         <span class="fl">Floor <select id="rs_floor" class="sm" onchange="loadReturnSolution()"><option value="">All visible</option><option value="GF">Ground</option><option value="1F">First</option><option value="2F">Second</option></select></span>
         <span class="fl">Lots <select id="rs_showall" class="sm" onchange="renderRsPosition()"><option value="">With stock only</option><option value="1">All incl. exhausted</option></select></span>
@@ -1012,7 +1012,7 @@ input[type="datetime-local"]{min-width:0;font-size:12.5px;padding:7px 8px;font-v
     </div>
     <div class="card" style="border-left:4px solid var(--teal)">
       <div class="card-title">Return solution ledger <span id="rsmCount" style="font-weight:400;color:var(--t3);font-size:12px"></span></div>
-      <div class="card-sub">Every credit (recovered at close, corrections) and debit (drawn into a tank), in date order with the running balance in litres and the virgin gelatine kg behind it.</div>
+      <div class="card-sub">Every credit (recovered at close, corrections) and debit (drawn into a tank), in date order with the running balance in litres and the gelatine kg (all forms — virgin, cuttings, salvage, remelt — at the batch's tank concentration) behind it.</div>
       <div class="frow">
         <span class="fl">From <input id="rsm_from" type="date" onchange="loadRsMovements()"></span>
         <span class="fl">To <input id="rsm_to" type="date" onchange="loadRsMovements()"></span>
@@ -3361,7 +3361,7 @@ function toggleLegacySide(p){
 function drawChargeSide(p){
   const virgin=num(p+'_virgin'), colour=num(p+'_colourkg'), fg=num(p+'_fgremelt');
   const salv=num(p+'_salvage'), cut=num(p+'_cutting');
-  const rsKg = _returnLines(p).reduce((a,l)=>a+(l.kg||0),0);   // v58M: virgin kg carried by return solution
+  const rsKg = _returnLines(p).reduce((a,l)=>a+(l.kg||0),0);   // v58M: gelatine kg carried by return solution (v59F: all forms, at the lots' tank concentration)
   const total = virgin+colour+fg+salv+cut+rsKg;
   const el = document.getElementById(p+'_charge'); if(!el) return;
   if(total<=0){ el.innerHTML=''; return; }
@@ -3442,7 +3442,7 @@ async function ttRsPicker(p){
   ttModalOpen('Return solution stock &mdash; '+(p==='tc'?'CAP':'BODY')+' tank',
     '<div class="tspbar"><input id="trs_q" placeholder="Search batch, colour code or PC&hellip;" oninput="_trsRender()" autofocus>'
     + '<select id="trs_side" onchange="_trsRender()"><option value="">Cap &amp; body</option><option value="cap"'+(p==='tc'?' selected':'')+'>Cap</option><option value="body"'+(p==='tb'?' selected':'')+'>Body</option></select></div>'
-    + '<div class="hbnote" style="margin-top:6px">Solution recovered when a batch was closed, in litres, at that batch\'s own virgin-gelatine concentration. Enter the litres to take against one or more lots.</div>'
+    + '<div class="hbnote" style="margin-top:6px">Solution recovered when a batch was closed, in litres, at that batch\'s own tank concentration (gelatine in all its forms ÷ litres). Enter the litres to take against one or more lots.</div>'
     + '<div id="trs_list" class="tswrap" style="max-height:52vh;margin-top:8px"></div>'
     + '<div class="tspfoot"><span id="trs_sum" class="hbnote"></span><span style="flex:1"></span><button class="btn" onclick="ttModalClose()">Cancel</button><button class="btn primary" onclick="_trsConfirm()">Add to tank</button></div>');
   const bx = document.getElementById('ttModalBox'); if(bx) bx.style.maxWidth = '980px';
@@ -3471,7 +3471,7 @@ function _trsTake(el){ const T = window._TRS; const v = parseFloat(el.value)||0;
 function _trsSum(){ const T = window._TRS, s = document.getElementById('trs_sum'); if(!T||!s) return;
   const ks = Object.keys(T.take), L = ks.reduce((a,k)=>a+(parseFloat(T.take[k])||0),0);
   const kg = ks.reduce((a,k)=>{ const [bn,sd]=k.split('|'); const l = T.lots.find(x=>x.batch_number===bn&&x.side===sd)||{}; return a+(parseFloat(T.take[k])||0)*Number(l.conc_kg_per_l||0); },0);
-  s.innerHTML = ks.length ? '<b>'+ks.length+'</b> lot'+(ks.length>1?'s':'')+' &middot; <b>'+fmt(L,1)+' L</b> = '+fmt(kg,1)+' kg virgin gelatine' : 'Enter the litres to take against one or more lots'; }
+  s.innerHTML = ks.length ? '<b>'+ks.length+'</b> lot'+(ks.length>1?'s':'')+' &middot; <b>'+fmt(L,1)+' L</b> = '+fmt(kg,1)+' kg gelatine (all forms)' : 'Enter the litres to take against one or more lots'; }
 function _trsConfirm(){
   const T = window._TRS; if(!T) return;
   const picks = Object.keys(T.take).map(k=>{ const [bn, sd] = k.split('|'); const l = T.lots.find(x=>x.batch_number===bn && x.side===sd) || {};
@@ -3672,7 +3672,7 @@ function ttCalc(p){
   // v58M item 5: return solution is already solution — its litres add to the tank's volume as they are
   const RL = _returnLines(p); const rsL = RL.reduce((a,l)=>a+l.litres,0), rsKg = RL.reduce((a,l)=>a+(l.kg||0),0);
   setVal(p+'_retsol', rsL>0 ? +rsL.toFixed(1) : '');
-  { const rn = document.getElementById(p+'_retsolnote'); if(rn) rn.innerHTML = rsL>0 ? '= <b>'+fmt(rsKg,1)+' kg</b> virgin gelatine at the lots\' concentration · '+RL.map(l=>esc(l.source_batch)+' '+esc(String(l.side).toUpperCase())+' '+fmt(l.litres,1)+' L').join(', ') : ''; }
+  { const rn = document.getElementById(p+'_retsolnote'); if(rn) rn.innerHTML = rsL>0 ? '= <b>'+fmt(rsKg,1)+' kg</b> gelatine (all forms) at the lots\' concentration · '+RL.map(l=>esc(l.source_batch)+' '+esc(String(l.side).toUpperCase())+' '+fmt(l.litres,1)+' L').join(', ') : ''; }
   const calcL = (gelKg > 0 || rsL > 0) ? (gelKg > 0 ? gelKg / gPerL : 0) + solKg + rsL : 0;
   const note = document.getElementById(p+'_calcL');
   if(act && calcL > 0 && act.dataset.manual!=='1') act.value = calcL.toFixed(1);
@@ -4961,11 +4961,11 @@ function renderRsPosition(){
   const lots = (d.lots||[]).filter(l=>all || l.balance_l>0.005);
   const live = (d.lots||[]).filter(l=>l.balance_l>0.005);
   const totL = live.reduce((a,l)=>a+l.balance_l,0), totKg = live.reduce((a,l)=>a+l.balance_kg,0);
-  if(kp) kp.innerHTML = '<div class="kgrid">'+kpi('In stock', fmt(totL,1)+' L', 'teal', live.length+' lot'+(live.length===1?'':'s'))+kpi('Virgin gelatine in it', fmt(totKg,1)+' kg','', 'at each batch\'s concentration')
+  if(kp) kp.innerHTML = '<div class="kgrid">'+kpi('In stock', fmt(totL,1)+' L', 'teal', live.length+' lot'+(live.length===1?'':'s'))+kpi('Gelatine in it (all forms)', fmt(totKg,1)+' kg','', 'at each batch\'s concentration')
     + kpi('Cap', fmt(live.filter(l=>l.side==='cap').reduce((a,l)=>a+l.balance_l,0),1)+' L') + kpi('Body', fmt(live.filter(l=>l.side==='body').reduce((a,l)=>a+l.balance_l,0),1)+' L') + '</div>';
   if(cnt) cnt.textContent = live.length ? live.length+' lot'+(live.length===1?'':'s')+' · '+fmt(totL,1)+' L' : '';
   if(!lots.length){ el.innerHTML = '<div class="empty">No return solution in stock'+(all?'':' — no batch has been closed with solution left since this ledger went live')+'.</div>'; return; }
-  let h = '<div class="tswrap" style="max-height:340px"><table class="gtable"><thead><tr><th>Batch</th><th>Side</th><th>Colour code</th><th>PC</th><th>Machine</th><th>Floor</th><th>Days</th><th class="num" style="color:var(--green)">Recovered L</th><th class="num" style="color:var(--red)">Drawn L</th><th class="num">In stock L</th><th class="num">kg/L</th><th class="num">Virgin kg in stock</th><th></th></tr></thead><tbody>';
+  let h = '<div class="tswrap" style="max-height:340px"><table class="gtable"><thead><tr><th>Batch</th><th>Side</th><th>Colour code</th><th>PC</th><th>Machine</th><th>Floor</th><th>Days</th><th class="num" style="color:var(--green)">Recovered L</th><th class="num" style="color:var(--red)">Drawn L</th><th class="num">In stock L</th><th class="num">kg/L</th><th class="num">Gelatine kg in stock</th><th></th></tr></thead><tbody>';
   lots.forEach(l=>{
     const tag = '<span class="sdtag sd-'+esc(l.side)+'">'+esc(String(l.side).toUpperCase())+'</span>';
     h += '<tr'+(l.balance_l>0.005?'':' style="color:var(--t3)"')+'><td class="mono"><b>'+esc(l.batch_number)+'</b></td><td>'+tag+'</td><td class="mono">'+esc(l.colour_code||'—')+(l.colour_name?' <span style="color:var(--t3);font-size:10px">'+esc(l.colour_name)+'</span>':'')+'</td>'
@@ -5079,7 +5079,7 @@ function exportRsMovements(){
   gprExport({ rows, title:'GPR — return solution ledger', context:[d.from?(_dm(d.from)+' → '+_dm(d.to||d.from)):'', 'opening '+fmt(d.opening_l,1)+' L', 'closing '+fmt(d.closing_l,1)+' L'].filter(Boolean).join(' · '), sheet:'Return solution', file:'gpr_return_solution_ledger', totals:true,
     columns:[ {key:'production_day',label:'Production day',w:14},{key:'when_ist',label:'When (IST)',w:14},{key:'movement_type',label:'Type',w:12},{key:'lot',label:'Lot batch',w:12},{key:'side_u',label:'Side',w:7},{key:'into',label:'Into batch',w:12},{key:'tt_id',label:'TT id',w:8},
       {key:'colour_code',label:'Colour code',w:12},{key:'pc_code',label:'PC',w:10},{key:'machine_id',label:'Machine',w:9},{key:'floor_label',label:'Floor',w:12},{key:'credit_l',label:'Credit L',w:10,num:true},{key:'debit_l',label:'Debit L',w:10,num:true},{key:'balance_l',label:'Balance L',w:11,num:true},
-      {key:'conc_kg_per_l',label:'kg/L',w:8,num:true},{key:'virgin_kg',label:'Virgin kg',w:10,num:true},{key:'balance_kg',label:'Balance kg',w:11,num:true},{key:'note',label:'Note',w:40},{key:'moved_by',label:'By',w:12} ] });
+      {key:'conc_kg_per_l',label:'kg/L',w:8,num:true},{key:'virgin_kg',label:'Gelatine kg',w:10,num:true},{key:'balance_kg',label:'Balance kg',w:11,num:true},{key:'note',label:'Note',w:40},{key:'moved_by',label:'By',w:12} ] });
 }
 // ═══ v58D item 9: oily salvage ledger — credit / debit register with running balance ═══════════════
 window._OL = null;
@@ -5387,9 +5387,9 @@ async function gprCloseOrder(batch, mc){
   const basis = sd => (cc && cc[sd] && cc[sd].basis) || 'seed factor';
   const prior = (cc && cc.existing) || [];
   ttModalOpen('Close batch '+esc(bn)+' &mdash; '+esc(mc||''),
-    '<div class="hbnote" style="margin-bottom:8px">The batch becomes history: every figure it earned is kept and it stops appearing as a TT target. Before it closes, enter the <b>solution left in the tanks</b> &mdash; it is recovered as <b>Return Solution</b> stock (litres) at this batch\'s own virgin-gelatine concentration and comes off its material consumption.</div>'
+    '<div class="hbnote" style="margin-bottom:8px">The batch becomes history: every figure it earned is kept and it stops appearing as a TT target. Before it closes, enter the <b>solution left in the tanks</b> &mdash; it is recovered as <b>Return Solution</b> stock (litres) at this batch\'s own gelatine concentration and comes off its material consumption.</div>'
     + (prior.length ? '<div class="banner warn" style="margin-bottom:8px"><b>Return solution already on record for this batch:</b><span>'+prior.map(l=>esc(String(l.side).toUpperCase())+' '+fmt(l.generated_l,1)+' L').join(' · ')+' &mdash; a new entry here ADDS to it.</span></div>' : '')
-    + '<table class="gtable"><thead><tr><th>Side</th><th class="num" style="width:160px">Return solution (L) *</th><th>Concentration</th><th class="num">Virgin gelatine kg</th></tr></thead><tbody>'
+    + '<table class="gtable"><thead><tr><th>Side</th><th class="num" style="width:160px">Return solution (L) *</th><th>Concentration</th><th class="num">Gelatine kg (all forms)</th></tr></thead><tbody>'
     + ['cap','body'].map(sd=>'<tr><td><span class="sdtag sd-'+sd+'">'+sd.toUpperCase()+'</span></td>'
         + '<td class="num"><input id="rs_'+sd+'" type="number" inputmode="decimal" min="0" step="0.1" placeholder="0" style="width:120px;text-align:right" oninput="_rsKgNote(\''+sd+'\','+conc(sd)+')"></td>'
         + '<td style="font-size:11px"><b>'+conc(sd).toFixed(3)+' kg/L</b><div style="color:var(--t3)">'+esc(basis(sd))+'</div></td>'
@@ -6397,10 +6397,16 @@ function _mvRender(d, ctx){
         'cuttings <b>'+n1(Number((S.byAccountCon||{}).cutting||0))+'</b> · salvage <b>'+n1(consumedTotal-Number(S.consumedLegacy||0)-Number((S.byAccountCon||{}).cutting||0))+'</b><br>from '+ctx.own+' <b>'+n1(S.consumedOwn)+'</b><br>from other batches <b'+(fromOther>0.005?' style="color:var(--amber)"':'')+'>'+n1(fromOther)+'</b>'
         +(fromOther>0.005?' <span class="dim">('+list(S.fromOtherByBatch)+')</span>':'')+(S.consumedLegacy>0.005?'<br>legacy stock <b>'+n1(S.consumedLegacy)+'</b>':''))
     + kpiH('Drawn TO other batches', n1(byOthers)+' kg', byOthers>0.005?'amber':'', byOthers>0.005 ? '<span class="dim">'+list(S.byOthersByBatch)+'</span>' : '<span class="dim">nothing drawn from '+esc(ctx.scope)+'\'s stock</span>')
-    + kpiH('Reconciliation — own stock', n1(R.closing)+' kg', R.closing<-0.005?'red':(R.closing>0.005?'teal':''),
-        (R.closing<-0.005?'<b style="color:var(--red)">over-drawn</b> · ':'<b>unused</b> · ')+'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span style="color:var(--amber)">· '+n1(R.pending)+' pending receipt, not yet in stock</span>':''))
+    /* v59F (Ishan, 27 Oct): a FLOOR / period view compares the period's generation with the period's consumption —
+       the tanks draw on stock accepted on or before the day, so a negative figure is a stock MOVEMENT, not an
+       over-draw (over-draws are impossible by the v58R guard; the batch view keeps its own-stock reconciliation). */
+    + (bn
+      ? kpiH('Reconciliation — own stock', n1(R.closing)+' kg', R.closing<-0.005?'red':(R.closing>0.005?'teal':''),
+          (R.closing<-0.005?'<b style="color:var(--red)">over-drawn</b> · ':'<b>unused</b> · ')+'generated '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span style="color:var(--amber)">· '+n1(R.pending)+' pending receipt, not yet in stock</span>':''))
+      : kpiH('Stock movement — this period', (R.closing>=0?'+':'')+n1(R.closing)+' kg', R.closing>0.005?'teal':'',
+          'accepted into stock '+n1(R.generated)+' − own tanks '+n1(R.consumedOwn)+' − other batches '+n1(R.drawnByOthers)+(R.pending>0.005?' <span style="color:var(--amber)">· '+n1(R.pending)+' pending receipt, not yet in stock</span>':'')+'<br><span class="dim">tanks draw on stock accepted on or before the day, so a minus here is stock drawn down, not an over-draw</span>'))
     + kpiH('Return solution', n1((S.returnSolution||{}).recoveredL)+' L', 'teal',
-        'recovered · used <b>'+n1((S.returnSolution||{}).usedL)+' L</b>'+((S.returnSolution||{}).drawnByOthersL>0.005?' · drawn by others <b>'+n1(S.returnSolution.drawnByOthersL)+' L</b>':''))
+        'recovered = <b>'+n1((S.returnSolution||{}).recoveredKg)+' kg</b> gelatine, all forms (the ladder\'s figure) · used <b>'+n1((S.returnSolution||{}).usedL)+' L</b>'+((S.returnSolution||{}).drawnByOthersL>0.005?' · drawn by others <b>'+n1(S.returnSolution.drawnByOthersL)+' L</b>':''))
     + '</div>';
   if((R.byAccount||[]).length > 1 || (R.byAccount||[]).some(a=>a.closing<-0.005)){
     h += '<table class="gtable" style="margin:4px 0 8px;font-size:11.5px"><thead><tr><th>Account</th><th class="num">Generated kg</th><th class="num">Into own tanks</th><th class="num">Drawn to others</th><th class="num">Unused stock</th></tr></thead><tbody>'
@@ -6750,7 +6756,7 @@ function ywExport(key){
     (mv.consumedInto||[]).forEach(r=>m1.push(['', r.production_day||'', r.batch_number||'', r.tt_id?'#'+r.tt_id:'', r.account_label||r.account, r.source_batch||r.batch_number||'', r.from||'', (r.side||'').toUpperCase(), r.colour_code||'', r.note||'', n(r.qty_kg)]));
     m1.push([], ['DRAWN TO OTHER BATCHES','Day','From batch','Into batch','TT','Account','Side','Code','Note','kg']);
     (mv.consumedByOthers||[]).forEach(r=>m1.push(['', r.production_day||'', r.source_batch||'', r.batch_number||'', r.tt_id?'#'+r.tt_id:'', r.account_label||r.account, (r.side||'').toUpperCase(), r.colour_code||'', r.note||'', n(r.qty_kg)]));
-    if((mv.returnSolution||[]).length){ m1.push([], ['RETURN SOLUTION','Day','Type','Lot batch','Side','Into batch','TT','Litres','kg/L','Virgin kg','Note']);
+    if((mv.returnSolution||[]).length){ m1.push([], ['RETURN SOLUTION','Day','Type','Lot batch','Side','Into batch','TT','Litres','kg/L','Gelatine kg','Note']);
       mv.returnSolution.forEach(r=>m1.push(['', r.production_day||'', r.direction||r.movement_type, r.movement_type==='consumption'?(r.source_batch||r.batch_number):r.batch_number, (r.side||'').toUpperCase(), r.movement_type==='consumption'?r.batch_number:'', r.tt_id?'#'+r.tt_id:'', n(r.litres), r.conc_kg_per_l!=null?+Number(r.conc_kg_per_l).toFixed(3):'', n(r.virgin_kg), _rsNote(r.note)])); }
     XLSX.utils.book_append_sheet(wb, XLSX.utils.aoa_to_sheet(m1), 'Movements');
     const r1 = [['RECONCILIATION BY ACCOUNT','Generated','Used in same batch','Drawn to others','Closing']];

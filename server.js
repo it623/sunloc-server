@@ -16,7 +16,7 @@ const fs      = require('fs');
 // all read this — so the reported version can never again drift from the deployed code (the v46B
 // deploy confusion was a stale hardcoded 'v45ZV' health stamp masquerading as a failed deploy). A
 // validator check (sunloc_validate.py) fails the build if this does not match the HTML build markers.
-const APP_BUILD = 'v59E';
+const APP_BUILD = 'v59F';
 // ═══ v53K item 1 — FUTURE-TS CLAMP (re-applied; first shipped in v53I, dropped when v53J was forked ═
 // from v53H in a parallel chat and deployed over it) ══════════════════════════════════════════════
 // 68 real AIM scans arrived stamped 2036 because the scan routes store the CLIENT's ts verbatim and
@@ -26626,7 +26626,10 @@ async function _gprBatchLive(batchNumber, order) {
   const piSal = w('pi_salvage'), piRem = w('pi_remelt');
 
   // Gross: the server canonical resolver (DPR closed-batch correction → apportioned actuals).
-  const gross = effectiveGross(bn) || Number((order && order.grossQty) || 0);
+  // v59F (Ishan, 27 Oct — 26ZD164 "gross 51.65 in GPR, nothing in Tracking"): gross is DPR production ONLY, as
+  // Report E reads it. The old fallback to the Planning order's grossQty put the PLANNED gross on a batch that
+  // had not produced a litre, and with it an unscanned WIP, a packable output and a 2,424 % live yield.
+  const gross = Number(effectiveGross(bn) || 0);
   const printed = !!((order && order.isPrinted) || printOut > 0 || piOut > 0);
   const dplPct = (await _gprDplPrintPctMap())[bn] || 0;
   const printSalDPL = printed ? printOut * (dplPct / 100) : 0;
@@ -26913,9 +26916,13 @@ async function gprLegacyMove(row) {
 // by the litre (gpr_tt.return_solution_l, lines in return_json); yield treats it exactly like
 // cutting / salvage: recovered comes OFF the batch's material, used goes ON (item 8).
 const GPR_RS_CREDIT = `('generation','correction')`;
+// ═══ v59F (Ishan, 27 Oct): the solution carries GELATINE IN ALL ITS FORMS — virgin, cuttings, salvage, FG remelt
+// and return solution already in the tanks — so the concentration is total gelatine kg ÷ litres of the batch's
+// tanks on that side, and the kg on every return-solution row is gelatine kg, not virgin kg. (The column is still
+// named virgin_kg; its meaning is gelatine kg from this build on, and existing rows are re-valued once at boot.)
 async function _v58mBatchConc(bn, side, masters) {
   const P1 = pgPool ? '$1' : '?';
-  const sql = `SELECT LOWER(side) AS side, COALESCE(SUM(virgin_kg),0) AS kg, COALESCE(SUM(actual_l),0) AS l FROM gpr_tt WHERE UPPER(batch_number)=${P1} GROUP BY LOWER(side)`;
+  const sql = `SELECT LOWER(side) AS side, COALESCE(SUM(COALESCE(virgin_kg,0)+COALESCE(cutting_kg,0)+COALESCE(salvage_kg,0)+COALESCE(fg_remelt_kg,0)+COALESCE(return_solution_kg,0)),0) AS kg, COALESCE(SUM(actual_l),0) AS l FROM gpr_tt WHERE UPPER(batch_number)=${P1} GROUP BY LOWER(side)`;
   const rows = pgPool ? (await pgPool.query(sql, [String(bn).toUpperCase()])).rows : db.prepare(sql).all(String(bn).toUpperCase());
   const by = {}; let tk = 0, tl = 0;
   (rows || []).forEach(r => { by[r.side] = { kg: Number(r.kg || 0), l: Number(r.l || 0) }; tk += Number(r.kg || 0); tl += Number(r.l || 0); });
@@ -27268,8 +27275,64 @@ async function _v59eRepairCreditDays() {
       fixed++;
     }
     console.log(`[v59E credit-day repair] ${rows.length} rows with non-ISO day keys: ${dropped} pending dropped (re-synced), ${fixed} accepted re-keyed, ${left} left as is`);
+  } catch (e) { console.warn('[v59E credit-day repair] skipped:', e.message); }
+  // v59F: credits a chemist HAD accepted and the v55A delta rule flipped back to pending (accepted_at still set)
+  // return to accepted at their current quantity — the acceptance stands; tanks drew against it in good faith.
+  try {
+    const sel = `SELECT id FROM gpr_ledger WHERE source='tracking' AND receipt_status='pending' AND accepted_at IS NOT NULL`;
+    const rows = pgPool ? (await pgPool.query(sel)).rows : db.prepare(sel).all();
+    if (rows.length) {
+      if (pgPool) await pgPool.query(`UPDATE gpr_ledger SET receipt_status='accepted' WHERE source='tracking' AND receipt_status='pending' AND accepted_at IS NOT NULL`);
+      else db.prepare(`UPDATE gpr_ledger SET receipt_status='accepted' WHERE source='tracking' AND receipt_status='pending' AND accepted_at IS NOT NULL`).run();
+      console.log(`[v59F credit repair] ${rows.length} accepted credits that had been flipped back to pending restored to accepted`);
+      try { logAudit('system', 'system', 'gpr', 'GPR_CREDIT_ACCEPT_RESTORED', `${rows.length} Tracking credit rows a chemist had accepted were back at pending after a re-sync — restored to accepted; the sync no longer undoes an acceptance`, 'boot'); } catch (_) {}
+    }
     try { logAudit('system', 'system', 'gpr', 'GPR_CREDIT_DAY_REPAIR', `${rows.length} Tracking credit rows carried a "Tue Oct 27"-style day key: ${dropped} pending dropped for re-sync, ${fixed} accepted re-keyed to YYYY-MM-DD, ${left} unparseable left`, 'boot'); } catch (_) {}
   } catch (e) { console.warn('[v59E credit-day repair] skipped:', e.message); }
+}
+// v59F one-time re-valuation of return solution from the virgin-only basis to gelatine-in-all-forms: every credit row
+// is re-priced at its batch's (side's) new concentration, every consumption row at its lot's new concentration, and
+// every tank that took return solution gets its return_solution_kg / total_charged_kg moved by the difference.
+// Re-running it recomputes the same figures (a fixed point), so it is safe at every boot; it logs only when it moved.
+async function _v59fRevalueReturnSolution() {
+  try {
+    const q = async (sql, p) => pgPool ? (await pgPool.query(sql, p || [])).rows : db.prepare(sql).all(...(p || []));
+    const P = i => pgPool ? '$' + i : '?';
+    const masters = await gprLoadMasters();
+    const gen = await q(`SELECT id, batch_number, side, litres, conc_kg_per_l, virgin_kg FROM gpr_return_solution WHERE movement_type IN ${GPR_RS_CREDIT} ORDER BY id`);
+    if (!gen.length) return;
+    const concOf = {}; let moved = 0, dKg = 0;
+    for (const r of gen) {
+      const k = String(r.batch_number).toUpperCase() + '|' + String(r.side).toLowerCase();
+      if (concOf[k] == null) concOf[k] = (await _v58mBatchConc(r.batch_number, r.side, masters)).conc;
+      const conc = concOf[k], kg = +(Number(r.litres || 0) * conc).toFixed(3);
+      if (Math.abs(kg - Number(r.virgin_kg || 0)) >= 0.0005 || Math.abs(conc - Number(r.conc_kg_per_l || 0)) >= 0.00005) {
+        await q(`UPDATE gpr_return_solution SET conc_kg_per_l=${P(1)}, virgin_kg=${P(2)} WHERE id=${P(3)}`, [conc, kg, r.id]); moved++; dKg += kg - Number(r.virgin_kg || 0);
+      }
+    }
+    // lots' concentration now = Σ kg ÷ Σ L of their credit rows; consumption rows inherit it
+    const lots = await _v58mRsLots({ all: true });
+    const lotConc = {}; lots.forEach(l => { lotConc[l.batch_number + '|' + l.side] = l.conc_kg_per_l; });
+    const con = await q(`SELECT id, batch_number, source_batch, side, litres, conc_kg_per_l, virgin_kg, tt_id FROM gpr_return_solution WHERE movement_type='consumption' ORDER BY id`);
+    const ttDelta = {};
+    for (const r of con) {
+      const conc = lotConc[String(r.source_batch || r.batch_number).toUpperCase() + '|' + String(r.side).toLowerCase()]; if (conc == null) continue;
+      const kg = +(Number(r.litres || 0) * conc).toFixed(3), old = Number(r.virgin_kg || 0);
+      if (Math.abs(kg - old) >= 0.0005 || Math.abs(conc - Number(r.conc_kg_per_l || 0)) >= 0.00005) {
+        await q(`UPDATE gpr_return_solution SET conc_kg_per_l=${P(1)}, virgin_kg=${P(2)} WHERE id=${P(3)}`, [conc, kg, r.id]); moved++;
+        if (r.tt_id) ttDelta[r.tt_id] = (ttDelta[r.tt_id] || 0) + (kg - old);
+      }
+    }
+    for (const [ttId, d] of Object.entries(ttDelta)) {
+      if (Math.abs(d) < 0.0005) continue;
+      await q(`UPDATE gpr_tt SET return_solution_kg=COALESCE(return_solution_kg,0)+${P(1)}, total_charged_kg=COALESCE(total_charged_kg,0)+${P(2)} WHERE id=${P(3)}`, [+d.toFixed(3), +d.toFixed(3), Number(ttId)]);
+    }
+    if (moved) {
+      console.log(`[v59F return-solution revalue] ${moved} rows re-priced to gelatine-in-all-forms (credits net ${dKg >= 0 ? '+' : ''}${dKg.toFixed(2)} kg), ${Object.keys(ttDelta).length} tanks adjusted`);
+      try { logAudit('system', 'system', 'gpr', 'GPR_RETURN_SOLUTION_REVALUED', `${moved} return-solution rows re-priced from virgin-only to gelatine in all forms (credits net ${dKg.toFixed(2)} kg); ${Object.keys(ttDelta).length} tanks' return kg / charged kg adjusted`, 'boot'); } catch (_) {}
+      try { _v58jYieldCache.clear(); } catch (_) {}
+    }
+  } catch (e) { console.warn('[v59F return-solution revalue] skipped:', e.message); }
 }
 async function gprSyncTrackingCredits(batchNumber) {
   if (_v59eCreditRepairDone) { try { await _v59eCreditRepairDone; } catch (_) {} }   // v59E: never sync over un-repaired keys
@@ -27329,35 +27392,53 @@ async function gprSyncTrackingCredits(batchNumber) {
   for (const acc of Object.keys(T)) { targets[acc] = {}; for (const day of Object.keys(T[acc])) targets[acc][day] = toKg(T[acc][day]); }
   for (const day of Object.keys(dpl)) { if (!after('printing_salvage', null, day)) continue; targets.printing_salvage[day] = +((targets.printing_salvage[day] || 0) + dpl[day]).toFixed(2); }   // kg as keyed in Planning
 
-  const have = {};   // 'account|day' → row
-  existing.forEach(r => { if (String(r.receipt_ref || '').startsWith('day:')) have[r.account + '|' + String(r.receipt_ref).slice(4)] = r; });
-  const totals = { aim_salvage: 0, printing_salvage: 0, pi_salvage: 0 }, changed = { created: 0, updated: 0, removed: 0 };
+  // ═══ v59F (Ishan, 27 Oct — 26ZF163: 9 kg AIM salvage drawn by 26ZF164 against "accepted 0.0 · pending 11.7") ═══
+  // The v55A delta rule put an ACCEPTED day row back to PENDING, at the new total, whenever the day's Tracking
+  // figure moved — so stock a chemist had accepted (and a tank had already, legitimately, drawn) vanished from
+  // the accepted balance and the draw read as an over-draw. An acceptance is never undone here: the accepted
+  // row keeps its quantity; a day that GROWS gets a separate pending ADJUSTMENT row (receipt_ref 'day:D/adj')
+  // for the increase; a day that SHRINKS reduces its pending rows first and, below the accepted figure, is left
+  // for a GPR correction entry (logged). Only accepted rows are stock; only stock can be issued (v58R guard).
+  const have = {};   // 'account|day' → { accepted: [rows], pending: [rows] }
+  existing.forEach(r => {
+    const ref = String(r.receipt_ref || ''); if (!ref.startsWith('day:')) return;
+    const day = ref.slice(4, 14); const k = r.account + '|' + day;
+    const h = have[k] = have[k] || { accepted: [], pending: [] };
+    (r.receipt_status === 'pending' ? h.pending : h.accepted).push(r);
+  });
+  const _del = async id => { if (pgPool) await pgPool.query('DELETE FROM gpr_ledger WHERE id=$1', [id]); else db.prepare('DELETE FROM gpr_ledger WHERE id=?').run(id); };
+  const _setQty = async (id, kg) => { if (pgPool) await pgPool.query(`UPDATE gpr_ledger SET qty_kg=$1, moved_at=NOW()::TEXT WHERE id=$2`, [kg, id]); else db.prepare(`UPDATE gpr_ledger SET qty_kg=?, moved_at=datetime('now') WHERE id=?`).run(kg, id); };
+  const totals = { aim_salvage: 0, printing_salvage: 0, pi_salvage: 0 }, changed = { created: 0, updated: 0, removed: 0, belowAccepted: 0 };
   for (const acc of Object.keys(targets)) {
     for (const day of Object.keys(targets[acc]).sort()) {
       const kg = targets[acc][day]; totals[acc] += kg;
-      const row = have[acc + '|' + day]; delete have[acc + '|' + day];
-      if (!(kg > 0)) { if (row && row.receipt_status === 'pending') { if (pgPool) await pgPool.query('DELETE FROM gpr_ledger WHERE id=$1', [row.id]); else db.prepare('DELETE FROM gpr_ledger WHERE id=?').run(row.id); changed.removed++; } continue; }
-      if (row) {
-        if (Math.abs(Number(row.qty_kg || 0) - kg) < 0.005) continue;
-        // quantity moved since the chemist last saw it — back to PENDING at the new total (v55A rule)
-        if (pgPool) await pgPool.query(`UPDATE gpr_ledger SET qty_kg=$1, receipt_status='pending', moved_at=NOW()::TEXT WHERE id=$2`, [kg, row.id]);
-        else db.prepare(`UPDATE gpr_ledger SET qty_kg=?, receipt_status='pending', moved_at=datetime('now') WHERE id=?`).run(kg, row.id);
-        changed.updated++;
+      const h = have[acc + '|' + day] || { accepted: [], pending: [] }; delete have[acc + '|' + day];
+      const accSum = h.accepted.reduce((a, r) => a + Number(r.qty_kg || 0), 0);
+      const want = +(kg - accSum).toFixed(2);   // what is still to be credited beyond what the chemist has accepted
+      if (want <= 0.005) {
+        for (const r of h.pending) { await _del(r.id); changed.removed++; }
+        if (want < -0.005) { changed.belowAccepted++; console.warn(`[gpr-credits] ${bn} ${acc} ${day}: Tracking now ${kg} kg but ${accSum.toFixed(2)} kg already accepted into stock — accepted figure kept; correct in GPR if the entry was wrong`); }
+        continue;
+      }
+      if (h.pending.length) {
+        const keep = h.pending[0];
+        for (const r of h.pending.slice(1)) { await _del(r.id); changed.removed++; }
+        if (Math.abs(Number(keep.qty_kg || 0) - want) >= 0.005) { await _setQty(keep.id, want); changed.updated++; }
       } else {
         await gprLedgerMove({
           movement_type: 'generation', account: acc, source: 'tracking',
           batch_number: bn, pc_code: order?.pcCode || order?.pc_code || null,
           colour_name: order?.colour || null, machine_id: order?.machineId || null,
           floor: gprFloorOfMachine(order?.machineId, masters),
-          qty_kg: kg, production_day: day, moved_by: 'system', receipt_status: 'pending', receipt_ref: 'day:' + day,
-          note: (acc === 'printing_salvage' && dpl[day] ? 'from Planning Daily Printing Log' : 'from Tracking wastage') + ' ' + day + ' (pending GPR receipt)',
+          qty_kg: want, production_day: day, moved_by: 'system', receipt_status: 'pending', receipt_ref: 'day:' + day + (accSum > 0.005 ? '/adj' : ''),
+          note: (acc === 'printing_salvage' && dpl[day] ? 'from Planning Daily Printing Log' : 'from Tracking wastage') + ' ' + day + (accSum > 0.005 ? ' — increase over the ' + accSum.toFixed(2) + ' kg already accepted' : '') + ' (pending GPR receipt)',
         });
         changed.created++;
       }
     }
   }
-  // day rows whose source entries vanished (edited away in Tracking / Planning): drop them if never received
-  for (const k of Object.keys(have)) { const row = have[k]; if (row.receipt_status === 'pending') { if (pgPool) await pgPool.query('DELETE FROM gpr_ledger WHERE id=$1', [row.id]); else db.prepare('DELETE FROM gpr_ledger WHERE id=?').run(row.id); changed.removed++; } }
+  // day rows whose source entries vanished (edited away in Tracking / Planning): drop the pending ones; accepted stock stays
+  for (const k of Object.keys(have)) { for (const r of have[k].pending) { await _del(r.id); changed.removed++; } }
   return Object.assign({ aim_salvage: +totals.aim_salvage.toFixed(2), printing_salvage: +totals.printing_salvage.toFixed(2), pi_salvage: +totals.pi_salvage.toFixed(2) }, changed);
 }
 // v58X: FULL-COVERAGE sweep — every batch with Tracking wastage (AIM / printing / PI) or Daily-Printing salvage
@@ -27474,7 +27555,8 @@ async function gprComputeYield(batchNumber) {
   const NET = _v58mNetCalc(Object.assign({}, I, { salvageRecoveredKg, expectedSalvageLakhs, expectedSalvageKg }));   // v58M: one calculator
   const netRecirc = NET.netRecirc;
   const denominator = NET.total;
-  const yieldPct = denominator > 0 ? +((numerator / denominator) * 100).toFixed(2) : null;
+  // v59F: a batch with no DPR production and nothing packed has no yield yet (material may already be in its tanks)
+  const yieldPct = (denominator > 0 && (grossProd > 0.0005 || packLakhs > 0.0005)) ? +((numerator / denominator) * 100).toFixed(2) : null;
   const C = masters.gpr_constants || GPR_SEED_MASTERS.gpr_constants;
   const target = Number(C.yieldTargetPct || 103);
 
@@ -29743,11 +29825,33 @@ app.get('/api/gpr/floor-movements', async (req, res) => {
     const P = i => pgPool ? `$${i}` : '?';
     const q = async (sql, p) => pgPool ? (await pgPool.query(sql, p)).rows : db.prepare(sql).all(...p);
     const COLS = `id, moved_at, production_day, movement_type, account, source, side, colour_code, pc_code, machine_id, floor, batch_number, source_batch, tt_id, qty_kg, note, moved_by, receipt_status, receipt_ref, accepted_by, accepted_at`;
-    // on-floor rows in the period (generation + consumption into the floor's tanks)
-    const onFloor = await q(`SELECT ${COLS} FROM gpr_ledger WHERE floor=${P(1)} AND production_day BETWEEN ${P(2)} AND ${P(3)} ORDER BY production_day, moved_at, id`, [floor, from, to]);
+    // ═══ v59F (Ishan, 27 Oct — GF 26/10: KPI 234.6 kg consumed vs ladder 226.6) ═══════════════════════════
+    // The floor yield ladder counts a tank's cuttings / salvage on the production day the tank was RELEASED
+    // to the machine (v57F: charged today, run tomorrow = tomorrow's material); this picture counted the
+    // ledger rows on the day the tank was CHARGED. Two calendars, two totals. Consumption is now attributed
+    // exactly as the ladder does — by the tank's release day (its preparation day for pre-Hold & Release
+    // tanks; a manual ledger consumption with no tank keeps its own day) — so KPI and ladder are one figure.
+    const _shift = (d, n) => { const x = new Date(Date.parse(d + 'T00:00:00Z') + n * 86400000); return x.toISOString().slice(0, 10); };
+    const HR_LIVE = '2026-09-24';
+    const _relDay = (t) => {   // the day a tank's material counts on — the _v57fDayYield rule, verbatim in effect
+      if (!t) return null;
+      const rel = t.issued_at || t.scan_out_at;
+      if (rel) { const x = _v57dShiftOf(rel); return x && x.day; }
+      if (!t.scan_in_at && String(t.production_day || '') < HR_LIVE) return t.production_day;
+      return null;   // charged, not yet released — WIP, not consumption
+    };
+    const genRows = await q(`SELECT ${COLS} FROM gpr_ledger WHERE floor=${P(1)} AND movement_type IN ${GPR_A_CREDIT} AND production_day BETWEEN ${P(2)} AND ${P(3)} ORDER BY production_day, moved_at, id`, [floor, from, to]);
+    const TTC = `t.id AS tt_id_j, t.issued_at, t.scan_out_at, t.scan_in_at, t.production_day AS tt_pday`;
+    const wide = [_shift(from, -30), _shift(to, 1)];
+    const conRaw = await q(`SELECT ${COLS.split(',').map(c => 'l.' + c.trim()).join(', ')}, ${TTC} FROM gpr_ledger l LEFT JOIN gpr_tt t ON t.id = l.tt_id
+                            WHERE l.movement_type IN ${GPR_A_DEBIT} AND (l.floor=${P(1)} OR (l.source_batch IS NOT NULL AND UPPER(l.source_batch) <> UPPER(COALESCE(l.batch_number,''))))
+                              AND l.production_day BETWEEN ${P(2)} AND ${P(3)} ORDER BY l.production_day, l.moved_at, l.id`, [floor, wide[0], wide[1]]);
+    conRaw.forEach(r => { const d = r.tt_id_j ? _relDay({ issued_at: r.issued_at, scan_out_at: r.scan_out_at, scan_in_at: r.scan_in_at, production_day: r.tt_pday }) : String(r.production_day || '').slice(0, 10);
+      r._day = d; r.production_day = d || r.production_day; delete r.tt_id_j; delete r.issued_at; delete r.scan_out_at; delete r.scan_in_at; delete r.tt_pday; });
+    const conRows = conRaw.filter(r => r._day && r._day >= from && r._day <= to);
+    const onFloor = [...genRows, ...conRows.filter(r => r.floor === floor)];
     // cross-batch draws anywhere in the period — the source batch's floor decides whether they are "ours"
-    const cross = await q(`SELECT ${COLS} FROM gpr_ledger WHERE movement_type IN ${GPR_A_DEBIT} AND source_batch IS NOT NULL AND UPPER(source_batch) <> UPPER(COALESCE(batch_number,''))
-                           AND production_day BETWEEN ${P(1)} AND ${P(2)} ORDER BY production_day, moved_at, id`, [from, to]);
+    const cross = conRows.filter(r => r.source_batch && String(r.source_batch).toUpperCase() !== String(r.batch_number || '').toUpperCase());
     const srcSet = Array.from(new Set(cross.map(r => String(r.source_batch).toUpperCase())));
     const srcFloor = {};
     if (srcSet.length) {
@@ -29756,7 +29860,13 @@ app.get('/api/gpr/floor-movements', async (req, res) => {
       (await q(`SELECT UPPER(batch_number) AS bn, MIN(floor) AS fl FROM gpr_tt WHERE UPPER(batch_number) IN (${ph}) GROUP BY UPPER(batch_number)`, srcSet)).forEach(r => { if (r.fl && !srcFloor[r.bn]) srcFloor[r.bn] = r.fl; });
     }
     let legacy = [];
-    try { legacy = await q(`SELECT id, moved_at, movement_type, account, location, batch_number, tt_id, floor, qty_kg, note, moved_by FROM gpr_legacy_stock WHERE movement_type='draw' AND floor=${P(1)} AND SUBSTR(moved_at,1,10) BETWEEN ${P(2)} AND ${P(3)} ORDER BY moved_at, id`, [floor, from, to]); } catch (_) {}
+    try {
+      const lg = await q(`SELECT g.id, g.moved_at, g.movement_type, g.account, g.location, g.batch_number, g.tt_id, g.floor, g.qty_kg, g.note, g.moved_by, ${TTC} FROM gpr_legacy_stock g LEFT JOIN gpr_tt t ON t.id = g.tt_id
+                          WHERE g.movement_type='draw' AND g.floor=${P(1)} AND SUBSTR(g.moved_at,1,10) BETWEEN ${P(2)} AND ${P(3)} ORDER BY g.moved_at, g.id`, [floor, wide[0], wide[1]]);
+      lg.forEach(r => { r._day = r.tt_id_j ? _relDay({ issued_at: r.issued_at, scan_out_at: r.scan_out_at, scan_in_at: r.scan_in_at, production_day: r.tt_pday }) : String(r.moved_at || '').slice(0, 10);
+        delete r.tt_id_j; delete r.issued_at; delete r.scan_out_at; delete r.scan_in_at; delete r.tt_pday; });
+      legacy = lg.filter(r => r._day && r._day >= from && r._day <= to);   // v59F: by the tank's release day, as the ladder
+    } catch (_) {}
     let rs = [];
     try { rs = await q(`SELECT * FROM gpr_return_solution WHERE floor=${P(1)} AND production_day BETWEEN ${P(2)} AND ${P(3)} ORDER BY production_day, moved_at, id`, [floor, from, to]); } catch (_) {}
 
@@ -29794,7 +29904,7 @@ app.get('/api/gpr/floor-movements', async (req, res) => {
       const b = bb(src); b.drawnByOthers += kg; add(b.drawnInto, into, kg);
     });
     legacy.forEach(r => { r.from = 'legacy'; r.source = 'legacy'; r.account_label = (GPR_ACCOUNT_LABELS[r.account] || r.account || 'legacy') + ' (Ledger B ' + (r.location || '') + ')';
-      r.production_day = String(r.moved_at || '').slice(0, 10); S.consumedLegacy += Number(r.qty_kg || 0); consumedInto.push(r); });
+      r.production_day = r._day || String(r.moved_at || '').slice(0, 10); S.consumedLegacy += Number(r.qty_kg || 0); consumedInto.push(r); });
     consumedInto.sort((a, b) => String(a.production_day || '').localeCompare(String(b.production_day || '')) || String(a.moved_at || '').localeCompare(String(b.moved_at || '')));
     const rsRows = (rs || []).map(r => { const isCr = r.movement_type !== 'consumption';
       return Object.assign(r, { direction: isCr ? 'recovered' : 'used', from: !isCr ? (String(r.source_batch || '').toUpperCase() === String(r.batch_number || '').toUpperCase() ? 'own' : 'other') : null }); });
@@ -32379,6 +32489,7 @@ app.listen(PORT, () => {
     // restart is served from a swept queue instead of waiting on (or missing) the sweep.
     // v59E: the credit-day repair runs BEFORE the first sweep, so the sweep meets ISO-keyed rows and never credits a day twice.
     _v59eCreditRepairDone = _v59eRepairCreditDays().catch(e => console.warn('[v59E GPR] credit-day repair failed:', e?.message));
+    _v59eCreditRepairDone.then(() => _v59fRevalueReturnSolution()).catch(e => console.warn('[v59F GPR] return-solution revalue failed:', e?.message));
     _v59eCreditRepairDone.then(() => setTimeout(() => { try { require('http').get(`http://127.0.0.1:${PORT}/api/gpr/receipts?sync=1&floor=GF`, r => r.resume()).on('error', () => {}); } catch (_) {} }, 4000));
     warmPlanningCache();
     warmActualsCache();
